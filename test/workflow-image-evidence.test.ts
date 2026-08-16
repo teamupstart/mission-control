@@ -36,6 +36,7 @@ const { QueueManager } = await import("../src/server/queue.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const {
   captureSubmissionImages,
+  captureSubmissionTextArtifacts,
   readSubmissionImageBody,
   reconcileWorkflowEvidenceFiles,
   resolveSubmissionImageInputs,
@@ -160,6 +161,130 @@ test("workflow image contracts default historical context and bind image citatio
   assert.equal(SubmitWorkflowEvidenceSchema.safeParse({
     images: [{ ...duplicate, kind: "agent", path: "screen.png" }, { ...duplicate, kind: "agent", path: "other.png" }],
   }).success, false);
+  assert.equal(SubmitWorkflowEvidenceSchema.safeParse({
+    artifacts: [{
+      kind: "text",
+      clientItemId: "focused-log",
+      path: "evidence/focused.tap",
+      caption: "Focused TAP output",
+      repositoryScope: "repo-01",
+    }],
+  }).success, true);
+  assert.equal(SubmitWorkflowEvidenceSchema.safeParse({}).success, false);
+  assert.equal(SubmitWorkflowEvidenceSchema.safeParse({
+    images: [{ ...duplicate, kind: "agent", path: "screen.png" }],
+    artifacts: [{
+      kind: "text",
+      clientItemId: duplicate.clientItemId,
+      path: "evidence/focused.tap",
+      caption: "Focused TAP output",
+      repositoryScope: "repo-01",
+    }],
+  }).success, false);
+});
+
+test("gitignored UTF-8 logs are digest-bound, submission-frozen, and resumable", async () => {
+  const repo = realpathSync(mkdtempSync(join(tmpdir(), "mission-workflow-text-repo-")));
+  const original = "TAP version 13\nok 13 - focused regression\n";
+  try {
+    execFileSync("git", ["init", "-q", repo]);
+    writeFileSync(join(repo, ".gitignore"), "evidence/\n");
+    mkdirSync(join(repo, "evidence"));
+    const logPath = join(repo, "evidence", "focused.tap");
+    writeFileSync(logPath, original);
+    writeFileSync(join(repo, "evidence", "invalid.log"), Buffer.from([0xff]));
+    writeFileSync(join(repo, "not-ignored.log"), original);
+    const store = new WorkflowStore();
+    const stageTextPath = (path: string) => stageAgentWorkflowEvidence({
+      store,
+      noteKey: "text-note",
+      task: taskAt(repo),
+      fallbackRoot: repo,
+      images: [],
+      artifacts: [{
+        kind: "text",
+        clientItemId: `invalid-${path}`,
+        path,
+        caption: "Focused TAP output",
+        repositoryScope: "repo-01",
+      }],
+      now: 1,
+    });
+    await assert.rejects(stageTextPath("evidence/invalid.log"), (error: unknown) =>
+      error instanceof WorkflowImageEvidenceError && error.code === "artifact_encoding");
+    await assert.rejects(stageTextPath("not-ignored.log"), /gitignored/);
+    const staged = await stageAgentWorkflowEvidence({
+      store,
+      noteKey: "text-note",
+      task: taskAt(repo),
+      fallbackRoot: repo,
+      images: [],
+      artifacts: [{
+        kind: "text",
+        clientItemId: "focused-log",
+        path: "evidence/focused.tap",
+        caption: "Focused TAP output",
+        repositoryScope: "repo-01",
+      }],
+      now: 1,
+    });
+    assert.deepEqual(staged.images, []);
+    assert.equal(staged.artifacts.length, 1);
+    assert.equal(staged.artifacts[0]?.bytes, Buffer.byteLength(original));
+
+    const binding = store.insertBinding({
+      id: "text-binding",
+      workflowVersionId: IMAGE_WORKFLOW_VERSION_ID,
+      noteKey: "text-note",
+      sessionId: "text-session",
+      sessionAgent: "codex",
+      sessionName: "text evidence",
+      sessionCwd: repo,
+      sessionRepoRoot: repo,
+      triggerMode: "manual",
+      deliveryMode: "preview",
+      maxRepairRounds: 5,
+      now: 2,
+    });
+    const created = store.createInitialSubmission(
+      { id: "text-run", binding, triggerSource: "manual", triggerKey: "text-run", now: 3 },
+      {
+        id: "text-submission",
+        triggerSource: "manual",
+        triggerKey: "text-run",
+        evidenceGroupKey: "manual:text-note:text-run",
+        context: {},
+        evidence: {},
+        now: 3,
+      },
+    );
+    assert.equal(store.listReservedWorkflowEvidence(created.submission.id)[0]?.evidenceKind, "text");
+
+    writeFileSync(logPath, `${original}not the staged bytes\n`);
+    await assert.rejects(
+      () => captureSubmissionTextArtifacts(store, created.submission.id, 4),
+      (error: unknown) => error instanceof WorkflowImageEvidenceError && error.code === "artifact_changed",
+    );
+    assert.deepEqual(store.listSubmissionTextArtifacts(created.submission.id), []);
+
+    writeFileSync(logPath, original);
+    const captured = await captureSubmissionTextArtifacts(store, created.submission.id, 5);
+    assert.equal(captured.length, 1);
+    assert.match(captured[0]?.id ?? "", /^txt_[a-f0-9]{32}$/);
+    assert.equal(captured[0]?.content, original);
+    assert.equal(captured[0]?.sha256, staged.artifacts[0]?.sha256);
+
+    writeFileSync(logPath, "later mutable source\n");
+    const replayed = await captureSubmissionTextArtifacts(store, created.submission.id, 6);
+    assert.deepEqual(replayed, captured);
+    assert.equal(store.listSubmissionTextArtifacts(created.submission.id)[0]?.content, original);
+
+    store.resetForNoteKey("text-note");
+    assert.deepEqual(store.listSubmissionTextArtifacts(created.submission.id), []);
+    assert.deepEqual(store.listWorkflowEvidence("text-note").artifacts, []);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
 });
 
 test("secure agent staging accepts only contained gitignored raster files", async () => {

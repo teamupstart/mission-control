@@ -1,13 +1,18 @@
-import { randomUUID } from "node:crypto";
-import { PersonaVerdictSchema, WorkflowContextSnapshotSchema } from "@shared/protocol.ts";
+import { createHash, randomUUID } from "node:crypto";
+import {
+  PersonaVerdictSchema,
+  WorkflowCheckEvidenceSchema,
+  WorkflowCheckOutcomeSchema,
+  WorkflowContextSnapshotSchema,
+} from "@shared/protocol.ts";
 import { llmRunInputBytes, type LlmImageInput, type LlmRunner } from "@shared/llm.ts";
 import type {
   PersonaFeedbackSummary,
   PersonaVerdict,
   PublishedWorkflowGraph,
   PublishedWorkflowNode,
-  WorkflowContextSnapshot,
   WorkflowEdge,
+  WorkflowEdgeReceipt,
   WorkflowJson,
   WorkflowNodeAttempt,
   WorkflowRun,
@@ -15,6 +20,7 @@ import type {
   WorkflowVersion,
   PersonaExecutionView,
   WorkflowCheckOutcome,
+  WorkflowCheckEvidence,
   WorkflowCheckSlot,
   WorkflowCommandView,
   WorkflowPolicy,
@@ -212,6 +218,72 @@ function edgesFrom(
   return graph.edges.filter((edge) => edge.source === nodeId && edge.sourcePort === port);
 }
 
+const MAX_PERSONA_CHECK_OUTPUT_BYTES = 96_000;
+
+function upstreamNodeIds(
+  graph: PublishedWorkflowGraph,
+  targetId: string,
+  receipts: readonly WorkflowEdgeReceipt[],
+): Set<string> {
+  const receivedEdges = new Set(receipts.map((receipt) => receipt.edgeId));
+  const upstream = new Set<string>();
+  const queue = [targetId];
+  while (queue.length > 0) {
+    const target = queue.shift()!;
+    for (const edge of graph.edges) {
+      if (!receivedEdges.has(edge.id) || edge.target !== target || upstream.has(edge.source)) continue;
+      upstream.add(edge.source);
+      queue.push(edge.source);
+    }
+  }
+  return upstream;
+}
+
+/** Completed same-submission Check outcomes frozen for one newly-runnable Persona attempt. */
+export function personaCheckEvidence(
+  graph: PublishedWorkflowGraph,
+  targetNodeId: string,
+  attempts: readonly WorkflowNodeAttempt[],
+  receipts: readonly WorkflowEdgeReceipt[],
+  headSha: string | null,
+): WorkflowCheckEvidence[] {
+  const upstream = upstreamNodeIds(graph, targetNodeId, receipts);
+  const latestCompleted = new Map<string, WorkflowNodeAttempt>();
+  for (const attempt of attempts) {
+    if (!upstream.has(attempt.nodeId) || attempt.state !== "completed") continue;
+    const current = latestCompleted.get(attempt.nodeId);
+    if (!current || attempt.attempt > current.attempt) latestCompleted.set(attempt.nodeId, attempt);
+  }
+  let remaining = MAX_PERSONA_CHECK_OUTPUT_BYTES;
+  const evidence: WorkflowCheckEvidence[] = [];
+  for (const node of graph.nodes) {
+    if (node.kind !== "check" || !upstream.has(node.id)) continue;
+    const attempt = latestCompleted.get(node.id);
+    const parsed = WorkflowCheckOutcomeSchema.safeParse(attempt?.output);
+    if (!attempt || !parsed.success) continue;
+    const retained = tailBounded(parsed.data.output, remaining);
+    remaining = Math.max(0, remaining - Buffer.byteLength(retained.text));
+    evidence.push(WorkflowCheckEvidenceSchema.parse({
+      nodeId: node.id,
+      attemptId: attempt.id,
+      attempt: attempt.attempt,
+      slot: parsed.data.slot,
+      status: parsed.data.status,
+      command: parsed.data.command,
+      exitCode: parsed.data.exitCode,
+      outputTail: retained.text,
+      omittedBytes: parsed.data.truncatedBytes + retained.droppedBytes,
+      headSha,
+      note: parsed.data.note,
+    }));
+  }
+  return evidence;
+}
+
+function checkEvidenceFingerprint(evidence: readonly WorkflowCheckEvidence[]): string {
+  return createHash("sha256").update(JSON.stringify(evidence)).digest("hex");
+}
+
 /**
  * The `complete` routes one action node authorizes, exported so the manager can seed exactly
  * these edges into the child segment rather than re-deriving the rule.
@@ -242,7 +314,7 @@ export function sessionActionCompleteEdges(
  * A build log with an empty tail would otherwise produce an empty `rationale`, which the
  * strict schema refuses.
  */
-function checkVerdict(outcome: WorkflowCheckOutcome): PersonaVerdict | null {
+function checkVerdict(outcome: WorkflowCheckOutcome, attemptId: string): PersonaVerdict | null {
   const summary = outcome.note;
   if (checkOutcomePasses(outcome)) {
     return normalizePersonaVerdict({
@@ -264,10 +336,10 @@ function checkVerdict(outcome: WorkflowCheckOutcome): PersonaVerdict | null {
     requestedChanges: [{
       title: `Fix the failing ${outcome.slot} check`,
       rationale,
-      evidence: [{ kind: "check", quote }],
+      evidence: [{ kind: "check", path: attemptId, quote }],
     }],
     confidence: 1,
-  });
+  }, new Set(), new Set(), new Set([attemptId]));
 }
 
 /**
@@ -496,6 +568,21 @@ export class WorkflowEngine {
         if (target.kind === "persona" || target.kind === "check") {
           const latest = this.store.latestAttemptForNode(submission.id, target.id);
           if (!latest || latest.state === "cancelled") {
+            const captured = target.kind === "persona"
+              ? WorkflowContextSnapshotSchema.safeParse(submission.context)
+              : null;
+            const checkEvidence = target.kind === "persona" && captured?.success
+              ? personaCheckEvidence(
+                  graph,
+                  target.id,
+                  this.store.listAttempts(submission.id),
+                  currentReceipts,
+                  submission.prHeadSha ?? captured.data.evidence.headSha,
+                )
+              : [];
+            const fingerprint = checkEvidence.length > 0
+              ? `${submission.evidenceFingerprint}:${target.id}:${checkEvidenceFingerprint(checkEvidence)}`
+              : `${submission.evidenceFingerprint}:${target.id}`;
             this.store.insertAttempt({
               id: randomUUID(),
               submissionId: submission.id,
@@ -503,7 +590,8 @@ export class WorkflowEngine {
               attempt: (latest?.attempt ?? 0) + 1,
               state: "queued",
               persona: target.kind === "persona" ? target.persona : null,
-              inputFingerprint: `${submission.evidenceFingerprint}:${target.id}`,
+              checkEvidence: checkEvidence.length > 0 ? checkEvidence : undefined,
+              inputFingerprint: fingerprint,
               now: this.now(),
             });
             changed = true;
@@ -854,7 +942,12 @@ export class WorkflowEngine {
       this.handleInfrastructureFailure(claimed, run.id, "The persisted workflow context is invalid");
       return;
     }
-    const prompt = buildPersonaPrompt(node.persona, context.data, claimed.operatorDirective ?? null);
+    const prompt = buildPersonaPrompt(
+      node.persona,
+      context.data,
+      claimed.operatorDirective ?? null,
+      claimed.checkEvidence ?? [],
+    );
     let images: readonly LlmImageInput[];
     try {
       images = resolveSubmissionImageInputs(this.store, submission.id);
@@ -863,6 +956,10 @@ export class WorkflowEngine {
       return;
     }
     const currentImageIds = new Set(images.map((image) => image.id));
+    const currentArtifactIds = new Set((context.data.evidence.artifacts ?? []).map((artifact) => artifact.id));
+    const currentCheckAttemptIds = new Set(
+      (claimed.checkEvidence ?? []).map((evidence) => evidence.attemptId),
+    );
     let runner: LlmRunner;
     try {
       runner = this.runnerFor(execution.runner.id);
@@ -923,7 +1020,12 @@ export class WorkflowEngine {
         images,
       }),
       prompt,
-      (raw) => parsePersonaVerdict(raw, currentImageIds),
+      (raw) => parsePersonaVerdict(
+        raw,
+        currentImageIds,
+        currentArtifactIds,
+        currentCheckAttemptIds,
+      ),
       `${node.persona.name} Persona`,
       observer,
     );
@@ -1083,7 +1185,7 @@ export class WorkflowEngine {
     }
 
     const { outcome: checkOutcome } = result;
-    const verdict = checkVerdict(checkOutcome);
+    const verdict = checkVerdict(checkOutcome, claimed.id);
     if (!verdict) {
       this.handleInfrastructureFailure(
         claimed,
@@ -1093,7 +1195,6 @@ export class WorkflowEngine {
       return;
     }
     const author = verdictAuthor(node);
-    const packet = requestedChangePacket(verdict, author);
     const latestRun = this.store.getRun(run.id);
     const latestSubmission = this.store.getSubmission(submission.id);
     if (latestRun?.status !== "running" || latestSubmission?.status !== "running") {
@@ -1121,9 +1222,13 @@ export class WorkflowEngine {
     }, this.now());
     this.store.appendEvent(run.id, "check_outcome", {
       nodeId: node.id,
+      attemptId: claimed.id,
       slot: node.slot,
       status: checkOutcome.status,
       exitCode: checkOutcome.exitCode,
+      headSha: submission.prHeadSha ?? context.data.evidence.headSha,
+      outputBytes: Buffer.byteLength(checkOutcome.output),
+      omittedBytes: checkOutcome.truncatedBytes,
     }, this.now());
     this.advanceStructure(submission, version);
     this.onRunChanged(run.id);
@@ -1158,6 +1263,7 @@ export class WorkflowEngine {
         attempt: attempt.attempt + 1,
         state: "retry_wait",
         persona: attempt.persona,
+        checkEvidence: attempt.checkEvidence,
         inputFingerprint: attempt.inputFingerprint,
         retryAt,
         error: `Retry scheduled after infrastructure failure: ${reason}`,
@@ -1288,6 +1394,7 @@ export class WorkflowEngine {
       attempt: failed.attempt + 1,
       state: "retry_wait",
       persona: failed.persona,
+      checkEvidence: failed.checkEvidence,
       inputFingerprint: failed.inputFingerprint,
       retryAt,
       error: `Retry scheduled after the check cleanup resolved: ${gate.error}`,
@@ -1358,6 +1465,7 @@ export class WorkflowEngine {
               attempt: attempt.attempt + 1,
               state: "retry_wait",
               persona: attempt.persona,
+              checkEvidence: attempt.checkEvidence,
               inputFingerprint: attempt.inputFingerprint,
               retryAt: this.now(),
               error: "Retrying interrupted tool-less call",
@@ -1409,6 +1517,7 @@ export class WorkflowEngine {
             attempt: attempt.attempt + 1,
             state: "retry_wait",
             persona: attempt.persona,
+            checkEvidence: attempt.checkEvidence,
             inputFingerprint: attempt.inputFingerprint,
             retryAt: now,
             error: "Retrying recovered infrastructure failure",

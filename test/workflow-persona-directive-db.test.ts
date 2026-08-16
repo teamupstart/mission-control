@@ -45,6 +45,24 @@ function seedPreFeatureDb(): void {
       ON workflow_node_attempts(submission_id, node_id, attempt);
     CREATE INDEX idx_workflow_node_attempts_state
       ON workflow_node_attempts(state, retry_at);
+    CREATE TABLE workflow_evidence_staging (
+      id TEXT PRIMARY KEY, note_key TEXT NOT NULL, client_item_id TEXT NOT NULL,
+      source_kind TEXT NOT NULL, source_root TEXT NOT NULL, source_locator TEXT NOT NULL,
+      display_name TEXT NOT NULL, caption TEXT NOT NULL, repository_scope TEXT NOT NULL,
+      mime_type TEXT NOT NULL, bytes INTEGER NOT NULL, sha256 TEXT NOT NULL,
+      generation INTEGER NOT NULL, state TEXT NOT NULL, reserved_group_key TEXT,
+      created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+      UNIQUE(note_key, client_item_id)
+    );
+    INSERT INTO workflow_evidence_staging (
+      id, note_key, client_item_id, source_kind, source_root, source_locator,
+      display_name, caption, repository_scope, mime_type, bytes, sha256,
+      generation, state, reserved_group_key, created_at, updated_at
+    ) VALUES (
+      'old-image', 'old-note', 'old-client', 'agent', '/repo', 'evidence/old.png',
+      'old.png', 'Historical image', 'repo-01', 'image/png', 10,
+      '${"a".repeat(64)}', 1, 'staged', NULL, 1, 1
+    );
     INSERT INTO workflow_runs (
       id, binding_id, workflow_version_id, status, current_phase, max_repair_rounds,
       trigger_source, trigger_key, started_at, updated_at
@@ -71,7 +89,15 @@ test("an upgraded run persists feedback and snapshots each later Persona attempt
   );
   assert.ok(runColumns.has("persona_directives_json"));
   assert.ok(attemptColumns.has("operator_directive_json"));
+  assert.ok(attemptColumns.has("check_evidence_json"));
   assert.deepEqual(store.getRun("run")?.personaDirectives, []);
+  const stagingColumns = new Set(
+    (db.prepare("PRAGMA table_info(workflow_evidence_staging)").all() as Array<{ name: string }>)
+      .map((row) => row.name),
+  );
+  assert.ok(stagingColumns.has("evidence_kind"));
+  assert.equal(store.listWorkflowEvidence("old-note").images[0]?.id, "old-image");
+  assert.deepEqual(store.listWorkflowEvidence("old-note").artifacts, []);
 
   db.prepare(`
     INSERT INTO workflow_submissions (

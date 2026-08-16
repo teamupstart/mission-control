@@ -1096,6 +1096,7 @@ export function openDb(): DatabaseSync {
       note_key              TEXT NOT NULL,
       client_item_id        TEXT NOT NULL,
       source_kind           TEXT NOT NULL,
+      evidence_kind         TEXT NOT NULL DEFAULT 'image',
       source_root           TEXT NOT NULL,
       source_locator        TEXT NOT NULL,
       display_name          TEXT NOT NULL,
@@ -1150,6 +1151,29 @@ export function openDb(): DatabaseSync {
     CREATE INDEX IF NOT EXISTS idx_workflow_submission_images_availability
       ON workflow_submission_images(availability, created_at, id);
 
+    CREATE TABLE IF NOT EXISTS workflow_submission_text_artifacts (
+      id                    TEXT PRIMARY KEY,
+      submission_id         TEXT NOT NULL,
+      staging_id            TEXT NOT NULL,
+      ordinal               INTEGER NOT NULL,
+      display_name          TEXT NOT NULL,
+      caption               TEXT NOT NULL,
+      repository_scope      TEXT NOT NULL,
+      mime_type             TEXT NOT NULL,
+      bytes                 INTEGER NOT NULL,
+      sha256                TEXT NOT NULL,
+      content               TEXT NOT NULL,
+      availability          TEXT NOT NULL,
+      pruned_at             INTEGER,
+      created_at            INTEGER NOT NULL,
+      UNIQUE(submission_id, ordinal),
+      UNIQUE(submission_id, staging_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_workflow_submission_text_artifacts_submission
+      ON workflow_submission_text_artifacts(submission_id, ordinal);
+    CREATE INDEX IF NOT EXISTS idx_workflow_submission_text_artifacts_availability
+      ON workflow_submission_text_artifacts(availability, created_at, id);
+
     -- A database-first cleanup ledger makes every body deletion retryable after a crash.
     CREATE TABLE IF NOT EXISTS workflow_image_cleanup (
       id                    TEXT PRIMARY KEY,
@@ -1176,6 +1200,8 @@ export function openDb(): DatabaseSync {
       -- Exact run-scoped feedback this Persona attempt claimed. NULL for every non-Persona
       -- attempt and for a Persona that started while no directive was active.
       operator_directive_json TEXT,
+      -- Same-submission Check outcomes frozen when a Persona first became runnable.
+      check_evidence_json     TEXT,
       runner_id             TEXT,
       model_id              TEXT,
       verdict_json          TEXT,
@@ -2506,6 +2532,9 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "workflow_submissions", "evidence_group_key", "TEXT NOT NULL DEFAULT ''");
   addColumn(d, "workflow_submissions", "staged_image_generation", "INTEGER NOT NULL DEFAULT 0");
   addColumn(d, "workflow_evidence_owners", "all_generation", "INTEGER NOT NULL DEFAULT 0");
+  // Existing staged rows are images. The append-only kind lets text/log evidence share the
+  // reservation and generation lifecycle without changing any historical row's meaning.
+  addColumn(d, "workflow_evidence_staging", "evidence_kind", "TEXT NOT NULL DEFAULT 'image'");
   // The one verified index replacement, both halves, in this order and only here.
   //
   // `idx_workflow_submissions_round` was UNIQUE on (run_id, round), and it is precisely what
@@ -2530,6 +2559,7 @@ function migrate(d: DatabaseSync): void {
   // The exact active directive a Persona attempt claimed. Nullable means no feedback was
   // active at claim time; retries of the same attempt retain a non-null snapshot.
   addColumn(d, "workflow_node_attempts", "operator_directive_json", "TEXT");
+  addColumn(d, "workflow_node_attempts", "check_evidence_json", "TEXT");
 
   // Where an imported Persona was read from, so an upstream edit can be SEEN rather than
   // silently adopted. Nullable with no default because a Persona authored in the editor

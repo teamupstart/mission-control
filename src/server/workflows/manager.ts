@@ -64,6 +64,7 @@ import type {
   WorkflowInspectorGateState,
   WorkflowRunRepeatOffender,
   WorkflowAgentEvidenceLocator,
+  WorkflowAgentTextEvidenceLocator,
   WorkflowUploadEvidenceLocator,
   WorkflowRetainedEvidenceLocator,
   WorkflowStagedEvidenceList,
@@ -165,6 +166,7 @@ import { runWorkflowRetention, WORKFLOW_RETENTION_INTERVAL_MS } from "./retentio
 import { workflowLog } from "./log.ts";
 import {
   captureSubmissionImages,
+  captureSubmissionTextArtifacts,
   reconcileWorkflowEvidenceFiles,
   stageAgentWorkflowEvidence,
   stageUploadedWorkflowEvidenceSync,
@@ -1242,7 +1244,10 @@ export class WorkflowManager {
   /** Session-attributed intake used by the bundled Mission MCP tool. */
   async stageAgentEvidence(
     sessionId: string,
-    images: readonly WorkflowAgentEvidenceLocator[],
+    evidence: {
+      images: readonly WorkflowAgentEvidenceLocator[];
+      artifacts?: readonly WorkflowAgentTextEvidenceLocator[];
+    },
     now = Date.now(),
   ): Promise<WorkflowStagedEvidenceList> {
     const session = this.registry.getSession(sessionId);
@@ -1275,7 +1280,8 @@ export class WorkflowManager {
       noteKey: binding.noteKey,
       task,
       fallbackRoot: session.cwd,
-      images,
+      images: evidence.images,
+      artifacts: evidence.artifacts,
       now,
     });
   }
@@ -5467,15 +5473,18 @@ export class WorkflowManager {
       // bytes into daemon-owned immutable storage after the external artifact guard, but
       // before raw context is persisted or the compaction model can spend a token.
       const submissionImages = await captureSubmissionImages(this.store, submission.id);
+      const submissionArtifacts = await captureSubmissionTextArtifacts(this.store, submission.id);
       const reservedSubmission = this.store.getSubmission(submission.id) ?? submission;
       captured.raw.evidence = {
         ...captured.raw.evidence,
         images: submissionImages,
+        artifacts: submissionArtifacts,
         stagedImageGeneration: reservedSubmission.stagedImageGeneration ?? 0,
       };
       captured.context.evidence = {
         ...captured.context.evidence,
         images: submissionImages,
+        artifacts: submissionArtifacts,
         stagedImageGeneration: reservedSubmission.stagedImageGeneration ?? 0,
       };
       // Persist bounded raw intent and evidence before the advisory model call.
@@ -5712,7 +5721,7 @@ export class WorkflowManager {
     for (const attempt of this.store.listWaitingActionAttempts()) {
       const resolved = this.resolveSessionAction(attempt.id);
       if (!resolved) continue;
-      const { state, binding, run } = resolved;
+      const { state, binding } = resolved;
       const delivery = state.deliveryId ? this.store.getDelivery(state.deliveryId) : null;
       // A waiting attempt that owns NO packet at all: prepare the one it needs.
       // `prepareDelivery` is keyed on the attempt, so a packet prepared before the restart is

@@ -83,6 +83,8 @@ function requestedChange(value: z.infer<typeof RequestedChangeInputSchema>): Req
 export function normalizePersonaVerdict(
   value: unknown,
   currentImageIds: ReadonlySet<string> = new Set(),
+  currentArtifactIds: ReadonlySet<string> = new Set(),
+  currentCheckAttemptIds: ReadonlySet<string> = new Set(),
 ): PersonaVerdict | null {
   const parsed = PersonaVerdictInputSchema.safeParse(value);
   if (!parsed.success) return null;
@@ -115,6 +117,13 @@ export function normalizePersonaVerdict(
   if (refs.some((ref) => ref.kind === "image" && (!ref.path || !currentImageIds.has(ref.path)))) {
     return null;
   }
+  if (refs.some((ref) => ref.kind === "artifact" && (!ref.path || !currentArtifactIds.has(ref.path)))) {
+    return null;
+  }
+  if (refs.some((ref) =>
+    ref.kind === "check" && (!ref.path || !currentCheckAttemptIds.has(ref.path)))) {
+    return null;
+  }
   return strict.data;
 }
 
@@ -122,9 +131,13 @@ export function normalizePersonaVerdict(
 export function parsePersonaVerdict(
   raw: string,
   currentImageIds: ReadonlySet<string> = new Set(),
+  currentArtifactIds: ReadonlySet<string> = new Set(),
+  currentCheckAttemptIds: ReadonlySet<string> = new Set(),
 ): PersonaVerdict | null {
   const input = parseModelJson(raw, PersonaVerdictInputSchema);
-  return input ? normalizePersonaVerdict(input, currentImageIds) : null;
+  return input
+    ? normalizePersonaVerdict(input, currentImageIds, currentArtifactIds, currentCheckAttemptIds)
+    : null;
 }
 
 export function verdictRequestedChanges(verdict: PersonaVerdict): RequestedChange[] {

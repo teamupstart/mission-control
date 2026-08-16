@@ -31,7 +31,12 @@ const MAX_DECISIONS = 200;
 const MAX_DECISION_TEXT = 16_000;
 const MAX_STATUS = 500;
 const MAX_STATUS_LINE = 2_000;
-const MAX_TRANSCRIPT_TURN = 3_000;
+export const WORKFLOW_TRANSCRIPT_LIMITS = {
+  perTurnBytes: 8_000,
+  aggregateBytes: 180_000,
+  /** Headroom under the shared 240,000-character prompt-section ceiling for JSON framing. */
+  jsonCharacters: 230_000,
+} as const;
 const MAX_DECISION_BYTES = 320_000;
 const MAX_FEEDBACK_BYTES = 120_000;
 const MAX_DIFF_BYTES = 800_000;
@@ -140,6 +145,92 @@ function boundedStrings(items: string[], maxBytes: number, maxItems: number): st
 
 function sha(value: string): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function utf8Bytes(value: string): number {
+  return Buffer.byteLength(value);
+}
+
+function tailUtf8Bytes(value: string, maxBytes: number): string {
+  if (utf8Bytes(value) <= maxBytes) return value;
+  const scalars = [...value];
+  let bytes = 0;
+  let index = scalars.length;
+  while (index > 0) {
+    const size = utf8Bytes(scalars[index - 1]!);
+    if (bytes + size > maxBytes) break;
+    bytes += size;
+    index -= 1;
+  }
+  return scalars.slice(index).join("");
+}
+
+function boundedTranscriptTurn(message: TranscriptMessage): WorkflowContextSnapshot["evidence"]["transcript"][number] {
+  const total = utf8Bytes(message.text);
+  const base = {
+    role: message.role,
+    ...(message.ts > 0 ? { timestamp: message.ts } : {}),
+  };
+  if (total <= WORKFLOW_TRANSCRIPT_LIMITS.perTurnBytes) {
+    return { ...base, content: message.text };
+  }
+  let omitted = total;
+  let head = "";
+  let tail = "";
+  let marker = "";
+  // The omitted count affects the marker width. Two passes make the displayed count and the
+  // retained byte arithmetic agree without ever splitting a UTF-8 scalar.
+  for (let pass = 0; pass < 2; pass += 1) {
+    marker = `\n[transcript turn head retained; ${omitted} UTF-8 bytes omitted]\n`
+      + "[transcript turn tail retained]\n";
+    const available = Math.max(0, WORKFLOW_TRANSCRIPT_LIMITS.perTurnBytes - utf8Bytes(marker));
+    const headBudget = Math.min(2_000, Math.floor(available / 2));
+    const tailBudget = Math.max(0, available - headBudget);
+    head = clipUtf8Bytes(message.text, headBudget);
+    tail = tailUtf8Bytes(message.text, tailBudget);
+    omitted = Math.max(0, total - utf8Bytes(head) - utf8Bytes(tail));
+  }
+  return { ...base, content: `${head}${marker}${tail}`, omittedMiddleBytes: omitted };
+}
+
+/**
+ * Bound transcript evidence independently from the harness window.
+ *
+ * Turns are clipped with visible head/tail markers, then the aggregate selects from newest to
+ * oldest. That ordering is deliberate: the opening goal already has its own immutable field,
+ * while the end of the transcript contains the verification output a Persona otherwise loses.
+ */
+export function boundedWorkflowTranscript(
+  messages: TranscriptMessage[],
+): {
+  transcript: WorkflowContextSnapshot["evidence"]["transcript"];
+  omittedHeadBytes: number;
+  truncated: boolean;
+} {
+  const bounded = messages.map(boundedTranscriptTurn);
+  const selected: typeof bounded = [];
+  let retainedBytes = 0;
+  let firstRetained = bounded.length;
+  for (let index = bounded.length - 1; index >= 0; index -= 1) {
+    const candidate = bounded[index]!;
+    const candidateBytes = utf8Bytes(candidate.content);
+    const next = [candidate, ...selected];
+    if (
+      retainedBytes + candidateBytes > WORKFLOW_TRANSCRIPT_LIMITS.aggregateBytes
+      || JSON.stringify(next).length > WORKFLOW_TRANSCRIPT_LIMITS.jsonCharacters
+    ) break;
+    selected.unshift(candidate);
+    retainedBytes += candidateBytes;
+    firstRetained = index;
+  }
+  const omittedHeadBytes = messages
+    .slice(0, firstRetained)
+    .reduce((sum, message) => sum + utf8Bytes(message.text), 0);
+  return {
+    transcript: selected,
+    omittedHeadBytes,
+    truncated: omittedHeadBytes > 0 || selected.some((message) => (message.omittedMiddleBytes ?? 0) > 0),
+  };
 }
 
 function transcriptDecision(message: TranscriptMessage): WorkflowHumanDecision | null {
@@ -357,6 +448,12 @@ function sourceFingerprint(context: WorkflowContextSnapshot): string {
       caption: image.caption,
       repositoryScope: image.repositoryScope,
     })),
+    artifacts: (context.evidence.artifacts ?? []).map((artifact) => ({
+      id: artifact.id,
+      sha256: artifact.sha256,
+      caption: artifact.caption,
+      repositoryScope: artifact.repositoryScope,
+    })),
     stagedImageGeneration: context.evidence.stagedImageGeneration ?? 0,
   }));
 }
@@ -446,11 +543,8 @@ export async function readWorkflowContextRaw(
     ...humanTranscriptDecisions(transcriptWindow.messages),
   ]);
   const boundedDiff = clipUtf8Bytes(diff.patch, MAX_DIFF_BYTES);
-  const transcript = transcriptWindow.messages.map((message) => ({
-    role: message.role,
-    content: clipUtf8Bytes(message.text, MAX_TRANSCRIPT_TURN),
-    ...(message.ts > 0 ? { timestamp: message.ts } : {}),
-  }));
+  const boundedTranscript = boundedWorkflowTranscript(transcriptWindow.messages);
+  const transcript = boundedTranscript.transcript;
   const raw: RawWorkflowContext = {
     primaryGoal: {
       rawPrompt: clip(goal?.prompt ?? goal?.text ?? "", MAX_GOAL),
@@ -479,8 +573,9 @@ export async function readWorkflowContextRaw(
       transcriptAnchor,
       transcriptTruncated:
         transcriptWindow.truncated
-        || transcript.some((message, index) =>
-          message.content !== transcriptWindow.messages[index]?.text),
+        || boundedTranscript.truncated,
+      transcriptOmittedHeadBytes: boundedTranscript.omittedHeadBytes,
+      transcriptMiddleOmitted: transcriptWindow.truncated && transcriptWindow.headCount > 0,
       standards: standardsDocuments(standards.docs),
       standardsTruncated: standards.truncated,
     },

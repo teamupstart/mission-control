@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_WORKFLOW_CONFIG } from "../src/shared/workflow.ts";
+import type { WorkflowContextSnapshot } from "../src/shared/workflow.ts";
 import { WorkflowConfigSchema } from "../src/shared/protocol.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-workflow-retention-"));
@@ -90,6 +91,22 @@ function insertRawSubmission(
      ) VALUES (?, ?, 1, ?, 'manual', ?, 'fingerprint', ?, '{}',
                ?, 1, 1, 1)`,
   ).run(id, runId, mode, `submission:${id}`, contextJson, status);
+}
+
+function insertTextArtifact(submissionId: string, id: string, content: string): void {
+  store.finalizeSubmissionTextArtifacts(submissionId, [{
+    id,
+    stagingId: `staging-${id}`,
+    ordinal: 0,
+    displayName: "focused.tap",
+    caption: "Focused test evidence",
+    repositoryScope: "repo-01",
+    mimeType: "text/plain",
+    bytes: Buffer.byteLength(content),
+    sha256: "a".repeat(64),
+    content,
+    createdAt: 1,
+  }]);
 }
 
 function seedReusableCatalog(): void {
@@ -182,6 +199,8 @@ test("retention config defaults old blobs and rejects unsafe ranges", () => {
 test("stage one prunes only eligible terminal evidence and records a sentinel first", () => {
   insertRun("compact", "completed", 1);
   insertSubmission("submission-compact", "compact");
+  const focusedLog = "TAP version 13\nok 13 - focused regression\n";
+  insertTextArtifact("submission-compact", "artifact-compact", focusedLog);
   db.prepare(
     `INSERT INTO workflow_deliveries (
        id, run_id, submission_id, kind, session_id, note_key, payload, payload_sha256,
@@ -213,17 +232,27 @@ test("stage one prunes only eligible terminal evidence and records a sentinel fi
   });
   assert.deepEqual(result.compactedRunIds, ["compact"]);
   const submission = store.getSubmission("submission-compact")!;
-  const compacted = submission.context as typeof context;
-  assert.equal(compacted.evidence.retention.state, "pruned");
+  const compacted = submission.context as unknown as WorkflowContextSnapshot;
+  const retention = compacted.evidence.retention;
+  assert.equal(retention?.state, "pruned");
+  if (retention?.state !== "pruned") assert.fail("retention sentinel was not persisted");
   assert.equal(compacted.evidence.diff, "");
   assert.deepEqual(compacted.evidence.workingTreeStatus, []);
   assert.deepEqual(compacted.evidence.transcript, []);
   assert.equal(compacted.evidence.standards[0]?.text, "");
+  assert.equal(compacted.evidence.artifacts?.[0]?.content, "");
+  assert.equal(compacted.evidence.artifacts?.[0]?.availability, "pruned");
+  assert.equal(retention.textArtifactCount, 1);
+  assert.equal(retention.textArtifactBytes, Buffer.byteLength(focusedLog));
+  assert.equal(store.listSubmissionTextArtifacts("submission-compact")[0]?.content, "");
+  assert.equal(store.listSubmissionTextArtifacts("submission-compact")[0]?.availability, "pruned");
   assert.equal(compacted.primaryGoal.rawPrompt, "Keep this goal");
   assert.equal(compacted.evidence.headSha, context.evidence.headSha);
   assert.equal(store.getDelivery("delivery")?.payload, "");
   assert.equal(store.getDelivery("delivery")?.payloadPrunedAt, 20);
-  assert.equal(store.listEvents("compact").at(-1)?.kind, "evidence_pruned");
+  const pruneEvent = store.listEvents("compact").at(-1);
+  assert.equal(pruneEvent?.kind, "evidence_pruned");
+  assert.equal((pruneEvent?.payload as { textArtifactCount?: number }).textArtifactCount, 1);
   assert.equal((store.getSubmission("submission-uncertain")!.context as typeof context).evidence.diff, "secret diff body");
   assert.equal(store.getDelivery("uncertain-delivery")?.payload, "must remain exact");
   assert.equal(store.getRun("failed")?.evidencePrunedAt ?? null, null);
@@ -329,6 +358,7 @@ test("stage two keeps the newest cap and never deletes failed or uncertain famil
     insertRun(`run-${String(index).padStart(3, "0")}`, "completed", index);
   }
   insertSubmission("submission-001", "run-001");
+  insertTextArtifact("submission-001", "artifact-001", "focused output\n");
   db.prepare(
     `INSERT INTO workflow_node_attempts (
        id, submission_id, node_id, attempt, state, persona_snapshot_json,
@@ -407,12 +437,14 @@ test("stage two keeps the newest cap and never deletes failed or uncertain famil
     "workflow_deliveries",
     "workflow_edge_receipts",
     "workflow_node_attempts",
+    "workflow_submission_text_artifacts",
     "workflow_submissions",
     "workflow_events",
   ]) {
     const row = db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE ${
       table === "workflow_edge_receipts"
         || table === "workflow_node_attempts"
+        || table === "workflow_submission_text_artifacts"
         ? "submission_id = 'submission-001'"
         : table === "workflow_submissions"
           ? "id = 'submission-001'"

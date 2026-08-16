@@ -18,13 +18,15 @@ import { basename, dirname, extname, join, relative, resolve, sep } from "node:p
 import type { LlmImageInput } from "@shared/llm.ts";
 import type {
   WorkflowAgentEvidenceLocator,
+  WorkflowAgentTextEvidenceLocator,
   WorkflowEvidenceImage,
+  WorkflowEvidenceTextArtifact,
   WorkflowEvidenceRepositoryScope,
   WorkflowRetainedEvidenceLocator,
   WorkflowStagedEvidenceList,
   WorkflowUploadEvidenceLocator,
 } from "@shared/workflow.ts";
-import { WORKFLOW_IMAGE_LIMITS } from "@shared/workflow.ts";
+import { WORKFLOW_IMAGE_LIMITS, WORKFLOW_TEXT_EVIDENCE_LIMITS } from "@shared/workflow.ts";
 import { sniffRasterImageMimeType } from "@shared/images.ts";
 import { STATE_DIR } from "../config.ts";
 import { resolveCheckoutFile, resolveRoots, isIgnored } from "../archives/checkout.ts";
@@ -41,6 +43,7 @@ import type {
   WorkflowStagedEvidenceWrite,
   WorkflowStore,
   WorkflowSubmissionImageWrite,
+  WorkflowSubmissionTextArtifactWrite,
 } from "./store.ts";
 
 export const WORKFLOW_EVIDENCE_DIR = join(STATE_DIR, "workflow-evidence");
@@ -67,12 +70,74 @@ interface InspectedImage {
   data: Buffer;
 }
 
+interface InspectedTextArtifact {
+  path: string;
+  bytes: number;
+  mimeType: "text/plain";
+  sha256: string;
+  content: string;
+}
+
+const strictUtf8 = new TextDecoder("utf-8", { fatal: true });
+
 function cleanDisplayName(value: string): string {
   const printable = [...value].map((character) => {
     const code = character.charCodeAt(0);
     return code <= 0x1f || code === 0x7f ? " " : character;
   }).join("").trim();
   return (printable || "image").slice(0, WORKFLOW_IMAGE_LIMITS.displayNameChars);
+}
+
+function inspectOpenTextFile(path: string, expected?: {
+  bytes: number;
+  sha256: string;
+}): InspectedTextArtifact {
+  let fd: number | null = null;
+  try {
+    if (lstatSync(path).isSymbolicLink()) {
+      throw new WorkflowImageEvidenceError("artifact_symlink", "Text evidence cannot be a symbolic link");
+    }
+    fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const before = fstatSync(fd);
+    if (!before.isFile()) {
+      throw new WorkflowImageEvidenceError("artifact_not_file", "Text evidence is not an ordinary file");
+    }
+    if (before.size <= 0 || before.size > WORKFLOW_TEXT_EVIDENCE_LIMITS.maxBytesPerArtifact) {
+      throw new WorkflowImageEvidenceError(
+        "artifact_size",
+        `Text evidence must be between 1 and ${WORKFLOW_TEXT_EVIDENCE_LIMITS.maxBytesPerArtifact} bytes`,
+      );
+    }
+    const data = readFileSync(fd);
+    const after = fstatSync(fd);
+    if (
+      before.dev !== after.dev
+      || before.ino !== after.ino
+      || before.size !== after.size
+      || before.mtimeMs !== after.mtimeMs
+    ) {
+      throw new WorkflowImageEvidenceError("artifact_changed", "Text evidence changed while it was read");
+    }
+    let content: string;
+    try {
+      content = strictUtf8.decode(data);
+    } catch {
+      throw new WorkflowImageEvidenceError("artifact_encoding", "Text evidence must be valid UTF-8");
+    }
+    const sha256 = createHash("sha256").update(data).digest("hex");
+    if (expected && (expected.bytes !== data.byteLength || expected.sha256 !== sha256)) {
+      throw new WorkflowImageEvidenceError(
+        "artifact_changed",
+        "Text evidence changed after it was staged; register it again",
+      );
+    }
+    return { path, bytes: data.byteLength, mimeType: "text/plain", sha256, content };
+  } catch (error) {
+    if (error instanceof WorkflowImageEvidenceError) throw error;
+    throw new WorkflowImageEvidenceError("artifact_unreadable", "Text evidence could not be opened safely");
+  } finally {
+    if (fd !== null) closeSync(fd);
+  }
 }
 
 function extensionFor(mimeType: WorkflowEvidenceImage["mimeType"]): string {
@@ -163,6 +228,18 @@ async function inspectCheckoutImage(root: string, locator: string): Promise<Insp
   return inspected;
 }
 
+async function inspectCheckoutTextArtifact(root: string, locator: string): Promise<InspectedTextArtifact> {
+  const resolved = await resolveCheckoutFile(root, locator);
+  if (!resolved.ok) {
+    throw new WorkflowImageEvidenceError("artifact_path", `Text evidence path ${resolved.reason}`);
+  }
+  const inspected = inspectOpenTextFile(resolved.path);
+  if (inspected.bytes !== resolved.bytes) {
+    throw new WorkflowImageEvidenceError("artifact_changed", "Text evidence changed while it was resolved");
+  }
+  return inspected;
+}
+
 function rootForScope(
   roots: Awaited<ReturnType<typeof resolveRoots>>,
   scope: WorkflowEvidenceRepositoryScope,
@@ -186,6 +263,7 @@ export async function stageAgentWorkflowEvidence(input: {
   task: ScoutRepoTask;
   fallbackRoot: string | null;
   images: readonly WorkflowAgentEvidenceLocator[];
+  artifacts?: readonly WorkflowAgentTextEvidenceLocator[];
   now?: number;
 }): Promise<WorkflowStagedEvidenceList> {
   const roots = await resolveRoots(scoutRepoSlots(input.task, input.fallbackRoot));
@@ -218,6 +296,47 @@ export async function stageAgentWorkflowEvidence(input: {
       caption: image.caption.trim(),
       repositoryScope: image.repositoryScope,
       mimeType: inspected.mimeType,
+      bytes: inspected.bytes,
+      sha256: inspected.sha256,
+    });
+  }
+  let artifactAggregate = 0;
+  for (const artifact of input.artifacts ?? []) {
+    const selected = rootForScope(roots, artifact.repositoryScope);
+    if (
+      artifact.repositoryScope !== "all"
+      && !findScoutRepoSlot(
+        scoutRepoSlots(input.task, input.fallbackRoot),
+        artifact.repositoryScope,
+      )
+    ) {
+      throw new WorkflowImageEvidenceError("repository_scope", "Evidence repository slot was not issued", 403);
+    }
+    const inspected = await inspectCheckoutTextArtifact(selected.realRoot, artifact.path);
+    if (!(await isIgnored(selected.realRoot, artifact.path))) {
+      throw new WorkflowImageEvidenceError(
+        "artifact_not_ignored",
+        "Workflow text evidence must be gitignored and must not be committed",
+      );
+    }
+    artifactAggregate += inspected.bytes;
+    if (artifactAggregate > WORKFLOW_TEXT_EVIDENCE_LIMITS.maxAggregateBytes) {
+      throw new WorkflowImageEvidenceError(
+        "artifact_aggregate",
+        "Workflow text evidence exceeds the aggregate byte limit",
+      );
+    }
+    writes.push({
+      id: randomUUID(),
+      clientItemId: artifact.clientItemId,
+      sourceKind: "agent",
+      evidenceKind: "text",
+      sourceRoot: selected.realRoot,
+      sourceLocator: artifact.path,
+      displayName: cleanDisplayName(basename(artifact.path)),
+      caption: artifact.caption.trim(),
+      repositoryScope: artifact.repositoryScope,
+      mimeType: "text/plain",
       bytes: inspected.bytes,
       sha256: inspected.sha256,
     });
@@ -346,7 +465,14 @@ export function stageRetainedWorkflowEvidence(input: {
 }
 
 async function inspectReservedSource(item: WorkflowReservedEvidence): Promise<InspectedImage> {
-  const expected = { bytes: item.bytes, mimeType: item.mimeType, sha256: item.sha256 };
+  if (item.evidenceKind === "text" || item.mimeType === "text/plain") {
+    throw new WorkflowImageEvidenceError("image_mime", "Reserved evidence is not an image");
+  }
+  const expected = {
+    bytes: item.bytes,
+    mimeType: item.mimeType as WorkflowEvidenceImage["mimeType"],
+    sha256: item.sha256,
+  };
   if (item.sourceKind === "agent") {
     const resolved = await resolveCheckoutFile(item.sourceRoot, item.sourceLocator);
     if (!resolved.ok) {
@@ -396,7 +522,8 @@ export async function captureSubmissionImages(
 ): Promise<WorkflowEvidenceImage[]> {
   const existing = store.listSubmissionImages(submissionId);
   if (existing.length > 0) return existing;
-  const reserved = store.listReservedWorkflowEvidence(submissionId);
+  const reserved = store.listReservedWorkflowEvidence(submissionId)
+    .filter((item) => (item.evidenceKind ?? "image") === "image");
   if (reserved.length === 0) return [];
   mkdirSync(RETAINED_DIR, { recursive: true });
   const writes: WorkflowSubmissionImageWrite[] = [];
@@ -433,6 +560,56 @@ export async function captureSubmissionImages(
     for (const path of created) rmSync(path, { force: true });
     throw error;
   }
+}
+
+function stableTextArtifactId(submissionId: string, stagingId: string): string {
+  return `txt_${createHash("sha256").update(`${submissionId}\0${stagingId}`).digest("hex").slice(0, 32)}`;
+}
+
+/** Freeze every reserved UTF-8 text/log source before context compaction or Persona spend. */
+export async function captureSubmissionTextArtifacts(
+  store: WorkflowStore,
+  submissionId: string,
+  now = Date.now(),
+): Promise<WorkflowEvidenceTextArtifact[]> {
+  const existing = store.listSubmissionTextArtifacts(submissionId);
+  if (existing.length > 0) return existing;
+  const reserved = store.listReservedWorkflowEvidence(submissionId)
+    .filter((item) => item.evidenceKind === "text");
+  if (reserved.length === 0) return [];
+  const writes: WorkflowSubmissionTextArtifactWrite[] = [];
+  let aggregate = 0;
+  for (const item of reserved) {
+    if (item.sourceKind !== "agent") {
+      throw new WorkflowImageEvidenceError("artifact_source", "Reserved text evidence has an invalid source");
+    }
+    const resolved = await resolveCheckoutFile(item.sourceRoot, item.sourceLocator);
+    if (!resolved.ok) {
+      throw new WorkflowImageEvidenceError("artifact_path", `Reserved text evidence path ${resolved.reason}`);
+    }
+    const inspected = inspectOpenTextFile(resolved.path, { bytes: item.bytes, sha256: item.sha256 });
+    aggregate += inspected.bytes;
+    if (aggregate > WORKFLOW_TEXT_EVIDENCE_LIMITS.maxAggregateBytes) {
+      throw new WorkflowImageEvidenceError(
+        "artifact_aggregate",
+        "Workflow text evidence exceeds the aggregate byte limit",
+      );
+    }
+    writes.push({
+      id: stableTextArtifactId(submissionId, item.id),
+      stagingId: item.id,
+      ordinal: item.ordinal,
+      displayName: item.displayName,
+      caption: item.caption,
+      repositoryScope: item.repositoryScope,
+      mimeType: "text/plain",
+      bytes: inspected.bytes,
+      sha256: inspected.sha256,
+      content: inspected.content,
+      createdAt: now,
+    });
+  }
+  return store.finalizeSubmissionTextArtifacts(submissionId, writes);
 }
 
 export function resolveSubmissionImageInputs(

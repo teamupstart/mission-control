@@ -1161,6 +1161,124 @@ test("a passing check advances the graph and reaches the End through the Join", 
   assert.equal(store.getRun("run-check-pass")?.currentPhase, "complete");
 });
 
+test("a downstream Persona receives frozen Check evidence in its prompt and input identity", async () => {
+  const sequentialGraph: PublishedWorkflowGraph = {
+    nodes: [
+      { id: "session", kind: "session", position: { x: 0, y: 0 } },
+      { id: "gate", kind: "check", slot: "test", position: { x: 100, y: 0 } },
+      {
+        id: "auditor",
+        kind: "persona",
+        persona: persona("auditor", "Test Evidence Auditor", "claude", "Review the test evidence."),
+        position: { x: 200, y: 0 },
+      },
+      { id: "end", kind: "end", outcome: "Complete", position: { x: 300, y: 0 } },
+    ],
+    edges: [
+      { id: "submitted", source: "session", sourcePort: "submitted", target: "gate", targetPort: "activate" },
+      { id: "checked", source: "gate", sourcePort: "pass", target: "auditor", targetPort: "activate" },
+      { id: "check-repair", source: "gate", sourcePort: "fail", target: "session", targetPort: "return_for_changes" },
+      { id: "approved", source: "auditor", sourcePort: "pass", target: "end", targetPort: "terminal" },
+      { id: "review-repair", source: "auditor", sourcePort: "fail", target: "session", targetPort: "return_for_changes" },
+    ],
+  };
+  const store = seedSubmission("check-evidence", sequentialGraph);
+  const prompts: string[] = [];
+  const engine = new WorkflowEngine(store, () => {}, {
+    runnerFor: (id) => ({
+      ...passingRunner(id),
+      async run(prompt) {
+        prompts.push(prompt);
+        const check = store.listAttempts("submission-check-evidence")
+          .find((attempt) => attempt.nodeId === "gate");
+        assert.ok(check);
+        return JSON.stringify({
+          verdict: "pass",
+          summary: "The frozen Check evidence passed",
+          approvalDetails: {
+            reason: "The retained output records the regression pass",
+            evidence: [{
+              kind: "check",
+              path: check.id,
+              quote: "ok 13 - regression retained",
+            }],
+          },
+          confidence: 1,
+        });
+      },
+    }),
+    resolveExecution: passingExecution,
+    retryBaseMs: 1,
+    workflowPolicy: () => checkPolicy(),
+    workflowCommand: checkCatalog(),
+    checkDeps: () => ({
+      execute: async () => ({
+        kind: "exited",
+        exitCode: 0,
+        output: "TAP version 13\nok 13 - regression retained\n",
+        truncatedBytes: 1_393,
+      }),
+    }),
+  });
+  engine.start();
+  engine.activateSubmission("submission-check-evidence");
+  await waitFor(() => store.getRun("run-check-evidence")?.status === "completed");
+  await engine.stop();
+
+  const attempts = store.listAttempts("submission-check-evidence");
+  const check = attempts.find((attempt) => attempt.nodeId === "gate")!;
+  const auditor = attempts.find((attempt) => attempt.nodeId === "auditor")!;
+  assert.deepEqual(auditor.checkEvidence, [{
+    nodeId: "gate",
+    attemptId: check.id,
+    attempt: 1,
+    slot: "test",
+    status: "passed",
+    command: ["npm", "test"],
+    exitCode: 0,
+    outputTail: "TAP version 13\nok 13 - regression retained\n",
+    omittedBytes: 1_393,
+    headSha: "abc",
+    note: "`npm test` passed.",
+  }]);
+  assert.notEqual(
+    auditor.inputFingerprint,
+    "fingerprint-check-evidence:auditor",
+    "the Persona cache identity must include its frozen Check evidence",
+  );
+  assert.deepEqual(
+    auditor.verdict,
+    {
+      verdict: "pass",
+      summary: "The frozen Check evidence passed",
+      approvalDetails: {
+        reason: "The retained output records the regression pass",
+        evidence: [{
+          kind: "check",
+          path: check.id,
+          quote: "ok 13 - regression retained",
+        }],
+      },
+      confidence: 1,
+    },
+  );
+  assert.equal(prompts.length, 1);
+  for (const expected of [check.id, "ok 13 - regression retained", '"omittedBytes": 1393', '"check"']) {
+    assert.ok(prompts[0]!.includes(expected), `Persona prompt omitted ${expected}`);
+  }
+  const event = store.listEvents("run-check-evidence").find((item) => item.kind === "check_outcome")!;
+  assert.deepEqual(event.payload, {
+    nodeId: "gate",
+    attemptId: check.id,
+    slot: "test",
+    status: "passed",
+    exitCode: 0,
+    headSha: "abc",
+    outputBytes: Buffer.byteLength("TAP version 13\nok 13 - regression retained\n"),
+    omittedBytes: 1_393,
+  });
+});
+
 test("a repository-neutral global default runs, at the checkout root", async () => {
   // The catalog's whole point, driven through the engine rather than through resolution
   // alone: this run's binding names `/repo`, the catalog holds NO override for it, and the
@@ -1188,7 +1306,8 @@ test("a repository-neutral global default runs, at the checkout root", async () 
 
   assert.deepEqual(seen, [{ command: ["npm", "test"], workingSubpath: "" }]);
   const attempt = store.listAttempts("submission-check-default").find((item) => item.nodeId === "gate");
-  assert.equal((attempt?.output as Record<string, unknown>).status, "passed");
+  assert.ok(attempt);
+  assert.equal((attempt.output as Record<string, unknown>).status, "passed");
 });
 
 test("a failing check returns a repair packet to the Session, citing its own output", async () => {
@@ -1474,7 +1593,12 @@ test("the shipped v3 gate fails a broken build at stage 1 with zero Persona call
 
   // And the failure came back as a repair packet naming the gate and quoting its own output.
   const gate = attempts.find((item) => item.nodeId === "nmr-check-typecheck")!;
-  assert.equal((gate.verdict as { verdict: string }).verdict, "fail");
+  const gateVerdict = gate.verdict as {
+    verdict: string;
+    requestedChanges: Array<{ evidence: Array<{ path?: string }> }>;
+  };
+  assert.equal(gateVerdict.verdict, "fail");
+  assert.equal(gateVerdict.requestedChanges[0]?.evidence[0]?.path, gate.id);
   const delivery = store.listDeliveries("run-nmr-gate")[0]!;
   assert.match(delivery.payload, /## Command · typecheck/);
   assert.match(delivery.payload, /TS2345/);

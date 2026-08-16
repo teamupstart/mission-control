@@ -172,6 +172,8 @@ control's tooltip and accessible description - rather than printing under the fi
 current Foreman posture stays above the tabs so a stopped worker is always visible. **Live
 repositories** and **Right now** stay below them as read-only cards; the repository card
 shows the grant count and links to **Settings → Trust**, where repository access is edited.
+The read-only **Standing guidance** card reports its current source and links to the single
+editor at **Library → Personas → Foreman**. Settings does not fetch or write that document.
 
 Two default-on safeguards under **Settings → Foreman → Safety** decide which
 finished work never reaches an automatic completion action:
@@ -288,12 +290,31 @@ Two things make these different from the `AGENTS.md` / `CLAUDE.md` that Foreman 
 With no instructions the section renders as nothing at all, and a test pins that adding them
 changes only that block, leaving the rest of every prompt byte-for-byte identical.
 
-> **Next:** these move into a dashboard setting, stored in the database and editable from
-> **Settings → Foreman**. `personas/FOREMAN.md` stays the seed a fresh install starts from; once you save
-> your own, the file is only what "Reset to default" restores. The plumbing is already in place -
-> `GET`/`PUT /api/foreman/instructions`, stored under `app_config`, with empty and unset kept
-> distinct so clearing the box means "judge on your own policy" rather than silently reinstating
-> the default.
+Edit the document at **Library → Personas → Foreman** or open
+`#/library/personas/foreman` directly. The fixed System profile exposes only the
+operator-owned prose. Foreman's name, description, built-in policy, safety checks, output
+contracts, provider/model settings, operational posture, and repository authority remain
+application-owned or link to their existing Settings and Trust controls. Foreman is not a
+workflow or ensemble Persona.
+
+The source readout distinguishes three durable states:
+
+- **Built-in default** uses the exact `personas/FOREMAN.md` shipped with the app.
+- **Customized** uses the exact stored Markdown, even when it happens to equal the default.
+- **No standing guidance** is an intentional empty save. It does not fall back to the default.
+
+Save uses compare-and-swap against the loaded ETag. A focus refresh adopts a newer clean
+document, but preserves a dirty local draft and reports a conflict. **Reload latest** takes
+the newer saved text; **Keep editing** preserves every local character and rebases the next
+explicit Save on the known current ETag. Copy and Download always use the local draft,
+including during a conflict. **Reset to built-in default** is a separately confirmed
+operation, not an empty save, and restores the shipped document. The browser and route share
+the 64,000 JavaScript-character ceiling with the server contract.
+
+Each Foreman evaluation captures the effective standing guidance once when it starts. A save,
+clear, or reset affects later evaluations; work already in flight finishes with the document
+it captured. This prevents one evaluation from mixing two revisions while still making the
+next call observe the operator's latest choice.
 
 ### Which model Foreman runs as
 

@@ -87,6 +87,14 @@ test("a built-in id survives its colon, and an undecodable one opens the shelf a
   });
 });
 
+test("Foreman's fixed local id round-trips as the canonical System profile route", () => {
+  const route = { page: "library", shelf: "personas", assetId: "foreman" } as const;
+  assert.equal(missionRouteHash(route), "#/library/personas/foreman");
+  assert.deepEqual(parseMissionRoute("#/library/personas/foreman"), route);
+  assert.equal(missionRouteHash(parseMissionRoute("#/library/personas/foreman")),
+    "#/library/personas/foreman");
+});
+
 test("a shelf with no surface, and an unknown one, land on the shelves index", () => {
   // Ensembles shelves launchers and Missions links out, so neither has a page to deep-link
   // into. A hash that names one is a link someone will write by hand from the shelf list.

@@ -22,6 +22,7 @@ import {
   type ForemanSettingsTabId,
 } from "../lib/foreman-settings-tabs.ts";
 import { ago } from "./InspectorSettingsPanel.tsx";
+import { foremanInstructionsSourceLabel } from "../lib/foreman-profile.ts";
 import {
   ConsoleCard,
   ConsoleState,
@@ -402,11 +403,14 @@ function tierLabel(tier: number | null): string {
 export function ForemanSettingsPanel({
   state,
   onNavigate,
+  onOpenProfile = () => {},
   jumpAnchor,
   jumpRequestId,
 }: {
   state: ForemanState;
   onNavigate: SettingsNavigate;
+  /** Open the exact standing-guidance document in Library's fixed System profile. */
+  onOpenProfile?: () => void;
   jumpAnchor?: string | null;
   /** Distinguishes repeated requests for the same anchor after the operator changes tabs. */
   jumpRequestId?: number | null;
@@ -525,6 +529,26 @@ export function ForemanSettingsPanel({
               controls below are showing defaults, not its current state.
             </p>
           )}
+
+          <ConsoleCard title="Standing guidance">
+            <p className="foreman-guidance-source">
+              <span>Source</span>
+              <strong>
+                {status
+                  ? foremanInstructionsSourceLabel(status.instructionsSource)
+                  : "Unknown - the daemon has not answered"}
+              </strong>
+            </p>
+            <p className="settings-hint">
+              Judgment prose is edited in Foreman&apos;s System profile. Identity, policy,
+              safeguards, and authority remain application-owned.
+            </p>
+            <Tooltip label="Open the exact FOREMAN.md standing-guidance editor in Library">
+              <button type="button" className="btn btn-ghost" onClick={onOpenProfile}>
+                Open System profile
+              </button>
+            </Tooltip>
+          </ConsoleCard>
 
           <div
             className="sc-tabs"

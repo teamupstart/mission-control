@@ -118,13 +118,14 @@ export function libraryShelfCopy(id: LibraryShelf): LibraryShelfCopy {
 /**
  * A tag chip on a card: a durable fact about the asset, never a live one.
  *
- * Two tones, named for what they MEAN rather than for one asset's word for it: `builtin` is
+ * Three tones, named for what they MEAN rather than for one asset's word for it: `builtin` is
  * "this ships with the build and you cannot edit it", `attention` is "this exists but will not
- * do anything yet" - an unpublished workflow draft and a paused mission are the same fact.
+ * do anything yet" - an unpublished workflow draft and a paused mission are the same fact -
+ * and `system` marks an application-owned identity whose operator-owned document is editable.
  */
 export interface LibraryCardTag {
   label: string;
-  tone: "builtin" | "attention";
+  tone: "builtin" | "attention" | "system";
 }
 
 export interface LibraryCard {

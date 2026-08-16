@@ -76,13 +76,12 @@ test("each Foreman tab reveals one group while the posture and read-only cards s
     heights.set(name, height);
   }
 
-  // The bound sits between two measured states of this column, not at a target: with the
-  // per-field prose printed (Phase 1) the tallest tab laid out at 1134px, and with it moved
-  // into the tooltips it lays out at 889px. 1000 is the midpoint-ish line that a reprinting
-  // regression must cross while leaving ~110px for CI font metrics - a knife-edge assert
-  // against the observed value itself would turn rounding into flakes.
+  // The bound sits between two measured states of this column, not at a target. The compact
+  // Standing guidance card added by the fixed System profile puts the tallest tab near
+  // 1160px locally and 1185px in CI. Printing the per-field prose again would add roughly
+  // 245px, so 1300 still catches that regression while leaving room for CI font metrics.
   expect(Math.max(...heights.values()), "a field's explanation is printing under it again")
-    .toBeLessThan(1_000);
+    .toBeLessThan(1_300);
   if (process.env.MC_E2E_EVIDENCE) {
     // eslint-disable-next-line no-console
     console.log(`OBSERVED Foreman control heights: ${JSON.stringify(Object.fromEntries(heights))}`);

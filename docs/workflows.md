@@ -8,6 +8,14 @@ gets an explicit conflict and keeps its local text. Archive is soft: archived Pe
 read-only, remain addressable for future published history, and continue reserving their
 normalized names.
 
+Foreman's fixed **System profile** also appears in **Library → Personas**, but it is not a
+Persona and never enters this catalog. It edits Foreman's global standing guidance only.
+Workflow stage pickers and graph validation resolve exclusively against real `PersonaView`
+rows, so a forged `foreman` reviewer is unknown. Ensemble evaluator and panel-judge choices
+use that same supplied Persona catalog, so Foreman is unavailable there as well. Editing,
+clearing, or resetting the System profile creates no Persona revision, Registry row, SSE
+event, workflow snapshot, or ensemble metadata.
+
 Guidance is exact text. Accepted Markdown is not trimmed or newline-normalized when it is
 created or updated. Copy writes that same text to the browser clipboard, download writes it
 to a local `.md` Blob, and both imports store the document unchanged after deriving a proposed

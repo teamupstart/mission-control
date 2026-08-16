@@ -171,6 +171,7 @@ export function SettingsPage({
   harnessesRevision = 0,
   workflowSummaries = [],
   onOpenPalette,
+  onOpenForemanProfile,
   jump = null,
 }: {
   /** Which category is showing, from the route. The page holds no copy of it. */
@@ -231,6 +232,8 @@ export function SettingsPage({
    * of its own - there is one input over everything, and this page is not a second one.
    */
   onOpenPalette?: () => void;
+  /** Leave Settings for Foreman's fixed System profile in Library. */
+  onOpenForemanProfile?: () => void;
   /**
    * A control to scroll to and flash, handed down by App when the palette lands on a setting.
    *
@@ -541,6 +544,7 @@ export function SettingsPage({
           <ForemanSettingsPanel
             state={foreman}
             onNavigate={navigateWithAnchor}
+            onOpenProfile={onOpenForemanProfile ?? (() => {})}
             jumpAnchor={unhandledJump?.anchor ?? null}
             jumpRequestId={unhandledJump?.id ?? null}
           />

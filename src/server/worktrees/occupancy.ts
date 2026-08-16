@@ -104,6 +104,21 @@ export async function inspectWorktreeOccupancy(
     return result;
   }
 
+  // Treat the dependency result as untrusted evidence: even a reader that reports itself
+  // healthy cannot make omission prove that a ps-listed process exited. This also keeps
+  // injected readers and future implementations behind the same fail-closed boundary.
+  const unresolvedPids = processes
+    .filter((process) => !cwdSnapshot.cwds.has(process.pid))
+    .map((process) => process.pid);
+  if (unresolvedPids.length > 0) {
+    const shown = unresolvedPids.slice(0, 8).join(", ");
+    const remainder = unresolvedPids.length > 8 ? ` and ${unresolvedPids.length - 8} more` : "";
+    const reason =
+      `cwd listing omitted ${unresolvedPids.length} ps-listed PID${unresolvedPids.length === 1 ? "" : "s"}: ${shown}${remainder}`;
+    for (const target of targets) result.set(target, { status: "unknown", reason });
+    return result;
+  }
+
   const canonicalTargets = new Map<string, string>();
   await Promise.all(targets.map(async (target) => canonicalTargets.set(target, await physical(target))));
   const byPid = new Map(processes.map((process) => [process.pid, process]));

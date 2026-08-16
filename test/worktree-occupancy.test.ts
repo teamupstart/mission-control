@@ -70,16 +70,17 @@ test("occupancy batches one process read and one cwd read across every target", 
   if (inTen.status === "known") assert.deepEqual(inTen.occupants.map((one) => one.pid), [20]);
 });
 
-test("a PID omitted by a partial lsof result is ignored as churn", async () => {
+test("a ps-listed PID omitted by a partial cwd result makes occupancy unknown", async () => {
   const { one } = fixture();
   const result = await inspectWorktreeOccupancy([one], {
     listProcesses: async () => ({ processes: [process(10), process(20)], unknownReason: null }),
-    // PID 20 vanished between ps and lsof. The detailed reader reports no global failure.
+    // The cwd reader cannot prove whether PID 20 vanished or was merely omitted.
     readCwds: async () => ({ cwds: new Map([[10, one]]), unknownReason: null }),
   });
-  const occupancy = result.get(one)!;
-  assert.equal(occupancy.status, "known");
-  if (occupancy.status === "known") assert.deepEqual(occupancy.occupants.map((one) => one.pid), [10]);
+  assert.deepEqual(result.get(one), {
+    status: "unknown",
+    reason: "cwd listing omitted 1 ps-listed PID: 20",
+  });
 });
 
 test("a failed or timed-out process read is unknown, never empty", async () => {

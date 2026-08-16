@@ -2,7 +2,7 @@ import { run } from "../util/exec.ts";
 
 export interface ProcCwdSnapshot {
   cwds: Map<number, string>;
-  /** Non-null only when lsof failed to return any usable process records. */
+  /** Non-null when lsof failed or did not resolve every requested process. */
   unknownReason: string | null;
 }
 
@@ -16,7 +16,8 @@ export interface ProcCwdSnapshot {
  *
  * `-Fpn` prints `p<pid>` then `n<path>` records; we pair them. Never throws:
  * lsof may exit non-zero when some pids vanish mid-call, but still prints the
- * survivors, and pids it can't resolve are simply absent from the map.
+ * survivors. The partial map remains available to non-destructive discovery callers;
+ * `unknownReason` prevents destructive callers from treating an omitted pid as gone.
  */
 export async function readProcCwdsSnapshot(pids: number[]): Promise<ProcCwdSnapshot> {
   const out = new Map<number, string>();
@@ -36,11 +37,14 @@ export async function readProcCwdsSnapshot(pids: number[]): Promise<ProcCwdSnaps
     }
   }
   // lsof exits 1 when one PID vanishes during a batched read, while still printing the
-  // survivors. That partial answer is usable and omitted PIDs are ignored. No records at
-  // all, a timeout, or an overflow is a failed observation and must fail closed.
+  // survivors. Missing output is not proof that the process exited, so destructive callers
+  // must fail closed until every PID from their process snapshot has a resolved cwd.
+  const unresolved = uniq.filter((requestedPid) => !out.has(requestedPid));
   const unknown =
     res.outcomeUnknown || res.overflowed || (res.code !== 0 && out.size === 0)
       ? `cwd listing failed: ${res.stderr.trim() || `exit ${res.code}`}`
+      : unresolved.length > 0
+        ? `cwd listing omitted ${unresolved.length} requested PID${unresolved.length === 1 ? "" : "s"}`
       : null;
   return { cwds: out, unknownReason: unknown };
 }

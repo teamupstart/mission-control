@@ -24,7 +24,7 @@ import {
 } from "../components/session-bits.tsx";
 import { Tooltip } from "../components/Tooltip.tsx";
 import { Keycap } from "../components/Keycap.tsx";
-import { CarriedProvenance, type PipelineStatus } from "./pipeline-bits.tsx";
+import { CarriedProvenance, Rung, type PipelineStatus } from "./pipeline-bits.tsx";
 import {
   actionBlockSentence,
   actionWaitSentence,
@@ -114,13 +114,6 @@ interface WorkflowLadderProps {
   isPending?: (id: RunActionId) => boolean;
 }
 
-function rungState(status: PipelineStatus, pending = false): string {
-  if (status.tone === "passed") return "is-passed";
-  if (status.tone === "running") return "is-running";
-  if (status.tone === "failed") return "is-failed";
-  return pending ? "is-pending" : "is-waiting";
-}
-
 function statusGlyph(status: PipelineStatus): string {
   if (status.degraded) return "○";
   if (status.tone === "passed") return "✓";
@@ -152,64 +145,6 @@ function LadderAction({
         {descriptor.label}
       </button>
     </Tooltip>
-  );
-}
-
-function Rung({
-  name,
-  sub = null,
-  status,
-  terminal = false,
-  pending = false,
-  fixed = false,
-  carried = false,
-  children = null,
-}: {
-  name: string;
-  sub?: string | null;
-  status: PipelineStatus;
-  terminal?: boolean;
-  pending?: boolean;
-  /** Not run in this round because an earlier one already passed it. Recedes, never hides. */
-  carried?: boolean;
-  /**
-   * This rung is the completion POLICY, not an authored stage: it sits after the End and
-   * nothing about it can be edited from any surface. A word rather than only a class, for
-   * the reason the pipeline footer's badge is one - the distinction has to survive a reader
-   * who never sees the styling.
-   */
-  fixed?: boolean;
-  children?: React.ReactNode;
-}): React.JSX.Element {
-  const state = (
-    <span
-      className={`wf-ladder-state${status.tooltip ? " wf-status-explained" : ""}`}
-      tabIndex={status.tooltip ? 0 : undefined}
-    >
-      {status.label}
-    </span>
-  );
-  return (
-    <li
-      className={[
-        "wf-ladder-rung",
-        `workflow-${status.tone}`,
-        rungState(status, pending),
-        terminal ? "is-terminal" : "",
-        fixed ? "is-fixed" : "",
-        carried ? "is-carried" : "",
-      ].filter(Boolean).join(" ")}
-    >
-      <div className="wf-ladder-row">
-        <span className="wf-ladder-title">
-          <strong>{name}</strong>
-          {fixed && <span className="wf-ladder-fixed">Fixed</span>}
-          {sub && <span className="wf-ladder-sub">{sub}</span>}
-        </span>
-        {status.tooltip ? <Tooltip label={status.tooltip}>{state}</Tooltip> : state}
-      </div>
-      {children}
-    </li>
   );
 }
 

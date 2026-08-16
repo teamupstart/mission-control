@@ -183,6 +183,85 @@ engines observing one checkout cannot share a link. A link to a feature that is 
 being observed says so and offers the Settings panel, rather than falling back to a blank
 pane.
 
+## On the fleet
+
+An engine spawns real agents into real panes. Mission Control's discovery cards any agent
+process with a tty and daemon ancestry, so those agents were already on the fleet before this
+feature - as **ordinary cards**, indistinguishable from an agent waiting for your next
+instruction, complete with a composer writing into a `--print` process that reads nothing at
+all. This section is about telling the two apart.
+
+**The correlation is the worktree, and only the worktree.** A discovered session whose working
+directory is inside an observed run's worktree is that run's; anything else is not. Nothing is
+matched on a branch name, a task, a slug in a title, or anything else the operator can type:
+the engine cuts the worktree and records its path in its own state file, so containment is the
+one fact both programs already agree on. Nested worktrees resolve to the **deepest** enclosing
+run, and a repository root that is not itself a worktree correlates nothing - which is what
+lets an ordinary agent work in the same checkout, untouched.
+
+Two consequences worth stating, because both are deliberate:
+
+- **Correlation follows consent.** Switch a repository off and every card in it goes back to
+  being an ordinary card in the same request. Nothing about the session changes - same pane,
+  same transcript, same history - it simply stops being described as an engine's.
+- **Dispatched sessions are never correlated.** A session Mission Control launched itself keeps
+  its composer even if it happens to sit in a conductor worktree. It is *your* agent; the fact
+  that a directory has a `.pipeline/` in it does not make it somebody else's.
+
+A correlated card carries:
+
+- **A pipeline chip** (`⇶ add-widgets · Build`) naming the run and the step the engine is on,
+  which opens the run in Runs. Two engine-driven agents on one board are told apart by the
+  feature they are working on rather than by their pane ids.
+- **A sentence where the composer was.** Not a disabled box - the two are different claims. A
+  greyed-out composer says "not right now", which is what a busy agent's looks like, so an
+  operator waits for it to come back; this one never does, because the process is running under
+  `--print` and reads nothing. The card says *Driven by ai-conductor - act through its run in
+  Runs* and links there. The same fact refuses the mode picker and the work queue, through one
+  predicate (`messageBlockReason` in [`src/shared/pane.ts`](../src/shared/pane.ts)).
+- **Its permission posture, still drawn.** Shown and no longer pickable. An agent running under
+  a permissive posture must not look *safer* than it is merely because nobody can change it
+  from here.
+- **A frame around its run.** Sessions of one run cluster under a header naming it, on the
+  board and in the console rail, exactly as an ensemble's members do. An ensemble membership
+  outranks a pipeline correlation when a session somehow has both: the ensemble is a binding
+  Mission Control made, the correlation is a path coincidence the engine's layout produced.
+
+The conversation window's **Workflows** tab draws the run as a **vertical ladder** for such a
+session - the same rungs and the same status chips as a workflow run's ladder, folded from the
+same phase model the Runs page's horizontal strip uses, so the two surfaces cannot drift. Phase
+groups are collapsible and arrive collapsed except the one the run is in: a 22-step engine drawn
+flat is a column longer than the conversation beside it, and the question this pane answers is
+*where has my agent got to*. The current step is haloed and says `current` in a word, not only
+in styling. Its one control is **Open in Runs**.
+
+### A halted pipeline in the inbox
+
+A **halt** is where the engine stopped and will not resume on its own. It is the one obligation
+on the machine with no session behind it - the engine stops dispatching, so the agent that hit
+the gate has usually exited by the time anybody looks - which made it, before this, the most
+definitively stuck thing on the fleet that the [attention inbox](attention-and-alerts.md) could
+not show.
+
+Each halted run is one row in the inbox and raises **to answer** by one. The row carries the
+feature, the provider, the halt's **class**, the engine's own sentence about what stopped it,
+and the runbook section that owns that class:
+
+| Class | What it means |
+| --- | --- |
+| `needs-human` | Only an operator can clear it; the engine will not re-kick it. |
+| `mechanical` | The engine may re-kick it on its own once the cause clears. |
+| `protected-artifact` | A sealed decision artifact changed under the engine. |
+| `legacy` | Raised before the engine classified halts. Read the reason and decide. |
+| `unclassified` | The engine recorded no class, so nothing here guesses one. |
+
+The class comes from the engine's own `HALT.class` sidecar; the readings and the runbook
+pointers are Mission Control's, and live in
+[`src/shared/pipeline.ts`](../src/shared/pipeline.ts) beside the halt-class tuple so a class
+added to the vocabulary cannot ship without one. The row is **read-only**: clearing a halt is
+the engine's CLI, and those verbs arrive with the rest of the control surface. Its **Open run**
+link is a real address, so a halted run opens in a second window without losing the inbox.
+
 ## Live events
 
 Reading files on a cadence always works and needs nothing installed. It also means Mission
@@ -361,6 +440,6 @@ the Foreman, Skills, Harnesses, Task sources, Models and GitHub Inspector settin
 
 This page describes what has landed. The
 [integration plan](plans/conductor-sdlc-integration/plan.md) and its
-[phase split](plans/conductor-sdlc-integration/phased-plan.md) describe the rest: recognition
-of engine-driven sessions on the fleet, halts as attention items, control verbs (the run
-detail's header keeps a slot for them), live event ingest, and dispatch.
+[phase split](plans/conductor-sdlc-integration/phased-plan.md) describe the rest: control verbs
+(the run detail's header and the inbox row both keep a slot for them), live event ingest, and
+dispatch.

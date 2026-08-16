@@ -3358,13 +3358,13 @@ export function buildApp(
       parsed.data.ask
         ? {
             promptedGoal: parsed.data.goal,
-            promptedEvidence: parsed.data.evidenceMarker,
+            promptedEvidence: parsed.data.evidenceMarker ?? null,
             wrapupAskedAt: now,
             wrapupAnswer: null,
           }
         : {
             promptedGoal: parsed.data.goal,
-            promptedEvidence: parsed.data.evidenceMarker,
+            promptedEvidence: parsed.data.evidenceMarker ?? null,
           },
       now,
     );

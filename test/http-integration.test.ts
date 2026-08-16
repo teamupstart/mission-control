@@ -1102,6 +1102,23 @@ test("the prompted trigger's episode guard round-trips, and is separate from the
   assert.equal(((await read.json()) as { promptedGoal: string | null }).promptedGoal, goal);
 });
 
+test("an old worker can retire a prompted episode without an evidence marker", async () => {
+  seedSession();
+  const goal = "finish the upload retry";
+  const res = await app.request("/api/sessions/sess-1/queue/wrapup/prompted", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ goal }),
+  });
+  assert.equal(res.status, 200);
+  const queue = (await res.json()) as {
+    promptedGoal: string | null;
+    promptedEvidence: string | null;
+  };
+  assert.equal(queue.promptedGoal, goal);
+  assert.equal(queue.promptedEvidence, null, "the version-skew write is a legacy spent guard");
+});
+
 test("a prompted human handoff retires its episode and raises the card atomically", async () => {
   seedSession();
   await app.request("/api/sessions/sess-1/queue/wrapup", {

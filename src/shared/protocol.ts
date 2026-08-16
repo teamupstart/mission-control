@@ -2398,8 +2398,12 @@ export type WrapupAsked = z.infer<typeof WrapupAskedSchema>;
  */
 export const PromptedWrapupSchema = z.object({
   goal: z.string().min(1).max(INTENT_MAX),
-  /** SHA-256 marker of the HEAD + transcript completion evidence just decided. */
-  evidenceMarker: z.string().regex(/^[a-f0-9]{64}$/),
+  /**
+   * SHA-256 marker of the HEAD + transcript completion evidence just decided.
+   * Optional only for an old worker talking to a newly upgraded daemon. The route
+   * stores that write as the same legacy spent guard an upgraded database exposes.
+   */
+  evidenceMarker: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   // The human-decision path must retire the prompted episode and raise its Ship it?
   // card in one durable write. If that write fails, neither marker lands and the
   // worker can retry the whole verified boundary on its next unhurried tick.

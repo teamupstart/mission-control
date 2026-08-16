@@ -189,6 +189,32 @@ test("the link probe and the path index share one request; the Files tab publish
   assert.equal(store.match(/publishPaths\(sessionId, result\.files\)/g)?.length, 2, "ensure and refresh");
 });
 
+test("reopening a conversation refreshes its path index without blanking or racing Files", () => {
+  // The first listing is only a checkout snapshot. An agent can create a report after the
+  // transcript closes, so treating that set as durable makes the report path dead text on
+  // the next open. Files appears to heal it because that tab performs a separate listing.
+  const store = readFileSync("src/web/lib/sessionFiles.ts", "utf8");
+  const from = store.indexOf("const warmPaths = useCallback(");
+  assert.ok(from > 0, "warmPaths still exists");
+  const warmBody = store.slice(from, store.indexOf("\n  const ", from + 1));
+  assert.match(warmBody, /const previous = pathIndexRef\.current\[sessionId\]/);
+  assert.match(
+    warmBody,
+    /if \(previous\) probeFiles\.current\.delete\(sessionId\)/,
+    "a reopened conversation must not reuse the resolved listing promise",
+  );
+  assert.doesNotMatch(
+    warmBody,
+    /if \(pathIndexRef\.current\[sessionId\]\) return/,
+    "an existing index is the reason to refresh, not a reason to skip it",
+  );
+  assert.match(
+    warmBody,
+    /if \(all\[sessionId\] !== previous\) return all/,
+    "a slower conversation refresh must yield to a newer Files-tab listing",
+  );
+});
+
 test("a path warm that lands after the session was dropped does not resurrect it", () => {
   // The race, in order: `warmPaths` starts a listing, the session leaves the fleet and
   // `drop` clears its state, then the listing resolves. Writing the index at that point

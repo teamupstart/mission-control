@@ -126,6 +126,7 @@ function mkQueue(over: Partial<SessionQueue> = {}): SessionQueue {
     promptedGoal: null,
     promptedEvidence: null,
     promptedActivityAt: null,
+    promptedLegacyCutoverGeneration: null,
     promptedConsumedGeneration: null,
     updatedAt: 0,
     items: [],
@@ -404,6 +405,29 @@ test("legacy intent and evidence fields are not an active fallback trigger", () 
     }).kind,
     "check",
   );
+});
+
+test("an ambiguous legacy cutover blocks only its recorded work-cycle generation", () => {
+  const retired = mkQueue({
+    promptedGoal: "intent:1:1",
+    promptedLegacyCutoverGeneration: 1,
+  });
+  assert.equal(decide({ queue: retired }).kind, "skip");
+
+  const next = decide({
+    queue: retired,
+    session: mkSession({
+      workCycle: {
+        logicalKey: "agent-1",
+        generation: 2,
+        active: false,
+        completedAt: NOW - 10_000,
+        updatedAt: NOW - 10_000,
+      },
+    }),
+  });
+  assert.equal(next.kind, "check");
+  assert.equal(next.kind === "check" && next.generation, 2);
 });
 
 test("the card's display sentence cannot re-arm a consumed work cycle", () => {

@@ -157,6 +157,7 @@ test("prompted consumption survives delivery; only a natural work cycle re-arms 
     promptedGoal: "Ship the feature",
     promptedEvidence: "a".repeat(64),
     promptedActivityAt: 9,
+    promptedLegacyCutoverGeneration: null,
     promptedConsumedGeneration: 2,
     updatedAt: 10,
   });

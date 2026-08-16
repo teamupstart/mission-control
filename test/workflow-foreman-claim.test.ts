@@ -18,6 +18,7 @@ const queue: SessionQueue = {
   promptedGoal: null,
   promptedEvidence: null,
   promptedActivityAt: null,
+  promptedLegacyCutoverGeneration: null,
   promptedConsumedGeneration: null,
   updatedAt: 42,
   items: [{

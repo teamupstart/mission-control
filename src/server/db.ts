@@ -1676,6 +1676,7 @@ export function openDb(): DatabaseSync {
       prompted_goal   TEXT,               -- historical intent guard for upgrade bootstrap
       prompted_evidence TEXT,             -- historical evidence guard, compatibility only
       prompted_activity_at INTEGER,       -- historical activity watermark, compatibility only
+      prompted_legacy_cutover_generation INTEGER, -- conservative ceiling for ambiguous legacy guards
       prompted_consumed_generation INTEGER, -- latest work-cycle generation handled
       updated_at      INTEGER NOT NULL
     );
@@ -2938,6 +2939,12 @@ function migrate(d: DatabaseSync): void {
   // The historical activity watermark paired with `prompted_evidence`. Retained only
   // for compatibility after the work-cycle cutover.
   addColumn(d, "foreman_queues", "prompted_activity_at", "INTEGER");
+
+  // Very old prompted guards predate the immutable activity watermark. Their queue
+  // `updated_at` can move after later work and therefore cannot identify what the guard
+  // actually retired. Record the current settled generation as a conservative cutover
+  // ceiling instead: it cannot be claimed, while a later generation naturally re-arms.
+  addColumn(d, "foreman_queues", "prompted_legacy_cutover_generation", "INTEGER");
 
   // The current prompted completion guard. A generation is meaningful only beside the
   // `session_work_cycles` row for this queue's logical note key. NULL means no completed
@@ -7545,6 +7552,7 @@ interface QueueRow {
   prompted_goal: string | null;
   prompted_evidence: string | null;
   prompted_activity_at: number | null;
+  prompted_legacy_cutover_generation: number | null;
   prompted_consumed_generation: number | null;
   updated_at: number;
 }
@@ -7566,6 +7574,7 @@ function toQueueRow(r: QueueRow): Omit<SessionQueue, "items"> {
     promptedGoal: r.prompted_goal,
     promptedEvidence: r.prompted_evidence,
     promptedActivityAt: r.prompted_activity_at,
+    promptedLegacyCutoverGeneration: r.prompted_legacy_cutover_generation,
     promptedConsumedGeneration: r.prompted_consumed_generation,
     updatedAt: r.updated_at,
   };
@@ -7637,13 +7646,15 @@ export function upsertQueue(q: Omit<SessionQueue, "items">): void {
     .prepare(
       `INSERT INTO foreman_queues
          (note_key, cwd, branch, wrapup_asked_at, wrapup_answer, prompted_goal,
-          prompted_evidence, prompted_activity_at, prompted_consumed_generation, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          prompted_evidence, prompted_activity_at, prompted_legacy_cutover_generation,
+          prompted_consumed_generation, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(note_key) DO UPDATE SET
          cwd=excluded.cwd, branch=excluded.branch, wrapup_asked_at=excluded.wrapup_asked_at,
          wrapup_answer=excluded.wrapup_answer, prompted_goal=excluded.prompted_goal,
          prompted_evidence=excluded.prompted_evidence,
          prompted_activity_at=excluded.prompted_activity_at,
+         prompted_legacy_cutover_generation=excluded.prompted_legacy_cutover_generation,
          prompted_consumed_generation=excluded.prompted_consumed_generation,
          updated_at=excluded.updated_at`,
     )
@@ -7656,6 +7667,7 @@ export function upsertQueue(q: Omit<SessionQueue, "items">): void {
       q.promptedGoal,
       q.promptedEvidence,
       q.promptedActivityAt,
+      q.promptedLegacyCutoverGeneration,
       q.promptedConsumedGeneration,
       q.updatedAt,
     );
@@ -7675,9 +7687,10 @@ export function getQueueRow(noteKey: string): Omit<SessionQueue, "items"> | unde
  * the current reader can fail closed and try the bootstrap again after state is known. An
  * active row is not a completed cutover boundary even when it retains an older completion
  * timestamp, so compatibility must not consume its generation while work is in progress.
- * The historical activity watermark associates the guard with the completion it examined;
- * rows from before that watermark existed fall back to the queue write time. A later completed
- * cycle stays unconsumed instead of letting an old intent guard advance onto new work.
+ * The historical activity watermark associates the guard with the completion it examined. A later
+ * completed cycle stays unconsumed instead of letting an old intent guard advance onto new work.
+ * Rows from before the immutable watermark existed fail closed by recording the current settled
+ * generation as a separate cutover ceiling. That generation cannot be claimed, but the next one can.
  */
 export function bootstrapPromptedConsumedGeneration(
   noteKey: string,
@@ -7686,19 +7699,30 @@ export function bootstrapPromptedConsumedGeneration(
 ): boolean {
   const result = d.prepare(
     `UPDATE foreman_queues
-        SET prompted_consumed_generation = (
-          SELECT generation FROM session_work_cycles
-           WHERE logical_key = foreman_queues.note_key
-             AND generation > 0
-             AND active = 0
-             AND completed_at IS NOT NULL
-             AND completed_at <= COALESCE(
-               foreman_queues.prompted_activity_at,
-               foreman_queues.updated_at
-             )
-        )
+        SET prompted_consumed_generation = CASE
+              WHEN prompted_activity_at IS NOT NULL THEN (
+                SELECT generation FROM session_work_cycles
+                 WHERE logical_key = foreman_queues.note_key
+                   AND generation > 0
+                   AND active = 0
+                   AND completed_at IS NOT NULL
+                   AND completed_at <= foreman_queues.prompted_activity_at
+              )
+              ELSE prompted_consumed_generation
+            END,
+            prompted_legacy_cutover_generation = CASE
+              WHEN prompted_activity_at IS NULL THEN (
+                SELECT generation FROM session_work_cycles
+                 WHERE logical_key = foreman_queues.note_key
+                   AND generation > 0
+                   AND active = 0
+                   AND completed_at IS NOT NULL
+              )
+              ELSE prompted_legacy_cutover_generation
+            END
       WHERE note_key = ?
         AND prompted_consumed_generation IS NULL
+        AND prompted_legacy_cutover_generation IS NULL
         AND prompted_goal = ?
         AND EXISTS (
           SELECT 1 FROM session_work_cycles
@@ -7706,9 +7730,9 @@ export function bootstrapPromptedConsumedGeneration(
              AND generation > 0
              AND active = 0
              AND completed_at IS NOT NULL
-             AND completed_at <= COALESCE(
-               foreman_queues.prompted_activity_at,
-               foreman_queues.updated_at
+             AND (
+               foreman_queues.prompted_activity_at IS NULL
+               OR completed_at <= foreman_queues.prompted_activity_at
              )
         )`,
   ).run(noteKey, resolvedEpisodeKey);
@@ -7739,11 +7763,12 @@ export function consumePromptedGeneration(
   const result = d.prepare(
     `INSERT INTO foreman_queues (
        note_key, cwd, branch, wrapup_asked_at, wrapup_answer, prompted_goal,
-       prompted_evidence, prompted_activity_at, prompted_consumed_generation, updated_at
+       prompted_evidence, prompted_activity_at, prompted_legacy_cutover_generation,
+       prompted_consumed_generation, updated_at
      )
      SELECT ?, ?, NULL,
             CASE WHEN ? = 1 THEN ? ELSE NULL END,
-            NULL, NULL, NULL, NULL, generation, ?
+            NULL, NULL, NULL, NULL, NULL, generation, ?
        FROM session_work_cycles
       WHERE logical_key = ?
         AND generation = ?
@@ -7760,8 +7785,14 @@ export function consumePromptedGeneration(
        wrapup_answer = CASE
          WHEN ? = 1 THEN NULL ELSE foreman_queues.wrapup_answer END,
        updated_at = excluded.updated_at
-     WHERE foreman_queues.prompted_consumed_generation IS NULL
-        OR foreman_queues.prompted_consumed_generation < excluded.prompted_consumed_generation`,
+     WHERE (
+         foreman_queues.prompted_consumed_generation IS NULL
+         OR foreman_queues.prompted_consumed_generation < excluded.prompted_consumed_generation
+       )
+       AND (
+         foreman_queues.prompted_legacy_cutover_generation IS NULL
+         OR foreman_queues.prompted_legacy_cutover_generation < excluded.prompted_consumed_generation
+       )`,
   ).run(
     input.noteKey,
     input.sessionCwd,
@@ -7863,6 +7894,7 @@ export function pruneDeadQueues(liveKeys: Set<string>, cutoff: number): number {
                 AND q.prompted_goal IS NULL
                 AND q.prompted_evidence IS NULL
                 AND q.prompted_activity_at IS NULL
+                AND q.prompted_legacy_cutover_generation IS NULL
                 AND q.prompted_consumed_generation IS NULL
                 AND NOT EXISTS (
                   SELECT 1 FROM foreman_queue_items i WHERE i.note_key = q.note_key

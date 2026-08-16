@@ -114,9 +114,11 @@ separately for staleness, while evidence fingerprints remain proof and workflow 
 than lifecycle identity. Historical `prompted_goal` values are read only for an idempotent upgrade
 bootstrap: a value matching the current resolved intent marks the current completed generation as
 consumed only when the cycle is inactive and its completion does not postdate the legacy activity
-watermark, or the queue write time for rows from before that watermark existed. A null or mismatched
-guard, active cycle, or newer completion stays eligible. New decisions never use the legacy
-intent/evidence columns as a fallback trigger.
+watermark. A row from before that immutable watermark existed instead records the current settled
+generation as a conservative legacy cutover ceiling: that ambiguous generation cannot be claimed,
+while a later completed generation naturally becomes eligible. A null or mismatched guard, active
+cycle, or completion newer than a known watermark stays eligible. New decisions never use the
+legacy intent/evidence columns as a fallback trigger.
 
 ## GitHub Inspector and PR provenance
 

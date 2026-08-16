@@ -6413,6 +6413,7 @@ export class Registry extends EventEmitter {
       promptedGoal: row?.promptedGoal ?? null,
       promptedEvidence: row?.promptedEvidence ?? null,
       promptedActivityAt: row?.promptedActivityAt ?? null,
+      promptedLegacyCutoverGeneration: row?.promptedLegacyCutoverGeneration ?? null,
       promptedConsumedGeneration: row?.promptedConsumedGeneration ?? null,
       updatedAt: row?.updatedAt ?? 0,
       items,
@@ -6503,6 +6504,7 @@ export class Registry extends EventEmitter {
       promptedGoal: prev?.promptedGoal ?? null,
       promptedEvidence: prev?.promptedEvidence ?? null,
       promptedActivityAt: prev?.promptedActivityAt ?? null,
+      promptedLegacyCutoverGeneration: prev?.promptedLegacyCutoverGeneration ?? null,
       promptedConsumedGeneration: prev?.promptedConsumedGeneration ?? null,
       updatedAt: now,
     });
@@ -6518,6 +6520,7 @@ export class Registry extends EventEmitter {
       promptedGoal?: string | null;
       promptedEvidence?: string | null;
       promptedActivityAt?: number | null;
+      promptedLegacyCutoverGeneration?: number | null;
       promptedConsumedGeneration?: number | null;
     },
     now = Date.now(),
@@ -6541,6 +6544,10 @@ export class Registry extends EventEmitter {
           : patch.promptedGoal === null
             ? null
             : prev.promptedActivityAt,
+      promptedLegacyCutoverGeneration:
+        patch.promptedLegacyCutoverGeneration !== undefined
+          ? patch.promptedLegacyCutoverGeneration
+          : prev.promptedLegacyCutoverGeneration,
       promptedConsumedGeneration:
         patch.promptedConsumedGeneration !== undefined
           ? patch.promptedConsumedGeneration
@@ -6759,6 +6766,7 @@ export class Registry extends EventEmitter {
         promptedGoal: row.promptedGoal,
         promptedEvidence: row.promptedEvidence,
         promptedActivityAt: row.promptedActivityAt,
+        promptedLegacyCutoverGeneration: row.promptedLegacyCutoverGeneration,
         promptedConsumedGeneration: row.promptedConsumedGeneration,
         updatedAt: now,
       },

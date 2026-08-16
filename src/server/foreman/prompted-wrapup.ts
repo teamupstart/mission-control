@@ -219,6 +219,12 @@ export function decidePromptedWrapup(input: PromptedInput): PromptedCandidate {
   if (queue?.promptedConsumedGeneration === cycle.generation) {
     return { kind: "skip", why: "already handled this completed work cycle" };
   }
+  if (
+    queue?.promptedLegacyCutoverGeneration != null &&
+    queue.promptedLegacyCutoverGeneration >= cycle.generation
+  ) {
+    return { kind: "skip", why: "the legacy prompted completion boundary is ambiguous" };
+  }
 
   // A scout or an explicit review-artifact objective is complete when its report or design
   // output is ready, not when it has become a PR. Retire the episode without spending a

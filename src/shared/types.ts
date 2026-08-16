@@ -1231,7 +1231,8 @@ export interface SessionQueue {
   /**
    * Historical resolved-intent guard from prompted completion before work-cycle cutover.
    * New completion decisions never read or write it; it remains readable so an upgraded
-   * daemon can bootstrap `promptedConsumedGeneration` without replaying a spent turn.
+   * daemon can bootstrap a proven consumption or conservative cutover ceiling without
+   * replaying a spent turn.
    *
    * The historical field name is persisted and must not be renamed casually; its value
    * is now an opaque episode key rather than goal text.
@@ -1251,6 +1252,12 @@ export interface SessionQueue {
    * completion consumes work-cycle generations instead.
    */
   promptedActivityAt: number | null;
+  /**
+   * Conservative one-time upgrade ceiling for a legacy guard with no immutable activity
+   * watermark. Generations at or below it are ineligible; a later completed generation
+   * naturally re-arms prompted completion without consulting legacy intent or evidence.
+   */
+  promptedLegacyCutoverGeneration: number | null;
   /** Latest completed work-cycle generation consumed by prompted completion. */
   promptedConsumedGeneration: number | null;
   updatedAt: number;

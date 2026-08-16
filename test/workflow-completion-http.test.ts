@@ -403,14 +403,16 @@ test("completion HTTP claims server-owned identity once and atomically retires t
   assert.equal(heldPrompted.status, 409, JSON.stringify({ heldError, cycle: registry.getSession("prompted")?.workCycle }));
   assert.equal(workflows.store.latestRunForBinding(promptedBinding.id), null);
   const legacyBootstrap = db.prepare(
-    `SELECT prompted_consumed_generation AS generation
+    `SELECT prompted_consumed_generation AS consumed_generation,
+            prompted_legacy_cutover_generation AS cutover_generation
        FROM foreman_queues WHERE note_key = 'prompted'`,
-  ).get() as { generation: number | null } | undefined;
+  ).get() as { consumed_generation: number | null; cutover_generation: number | null } | undefined;
   assert.equal(
-    legacyBootstrap?.generation,
-    1,
-    "the matching legacy guard bootstraps generation 1 as spent",
+    legacyBootstrap?.consumed_generation,
+    null,
+    "an undated legacy guard cannot prove generation 1 was consumed",
   );
+  assert.equal(legacyBootstrap?.cutover_generation, 1, "the ambiguous generation fails closed");
   registry.applyHook({
     agent: "claude",
     event: "PreToolUse",

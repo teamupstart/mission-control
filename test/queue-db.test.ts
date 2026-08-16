@@ -78,6 +78,7 @@ test("a queue row round-trips and upserts in place", () => {
     promptedGoal: null,
     promptedEvidence: null,
     promptedActivityAt: null,
+    promptedLegacyCutoverGeneration: null,
     promptedConsumedGeneration: null,
     updatedAt: 1,
   });
@@ -92,16 +93,18 @@ test("a queue row round-trips and upserts in place", () => {
     promptedGoal: null,
     promptedEvidence: null,
     promptedActivityAt: null,
+    promptedLegacyCutoverGeneration: 3,
     promptedConsumedGeneration: null,
     updatedAt: 2,
   });
   const r = getQueueRow("k1");
   assert.equal(r?.branch, "feature");
   assert.equal(r?.wrapupAskedAt, 55);
+  assert.equal(r?.promptedLegacyCutoverGeneration, 3);
   assert.equal(listQueueRows().filter((q) => q.noteKey === "k1").length, 1, "no duplicate row");
 });
 
-test("a matching legacy prompted guard bootstraps the current generation as consumed", () => {
+test("a legacy prompted guard without an activity watermark records a cutover ceiling", () => {
   const legacy = mkdtempSync(join(tmpdir(), "mission-prompted-evidence-upgrade-"));
   const env = { ...process.env, MISSION_HOME: legacy };
   execFileSync(
@@ -147,14 +150,23 @@ test("a matching legacy prompted guard bootstraps the current generation as cons
     matched: boolean;
     repeated: boolean;
     unguarded: boolean;
-    legacy: { promptedGoal: string | null; promptedConsumedGeneration: number | null };
-    legacyNull: { promptedGoal: string | null; promptedConsumedGeneration: number | null };
+    legacy: {
+      promptedGoal: string | null;
+      promptedLegacyCutoverGeneration: number | null;
+      promptedConsumedGeneration: number | null;
+    };
+    legacyNull: {
+      promptedLegacyCutoverGeneration: number | null;
+      promptedConsumedGeneration: number | null;
+    };
   };
   assert.equal(result.matched, true);
   assert.equal(result.repeated, false, "bootstrap is idempotent");
   assert.equal(result.unguarded, false, "a null legacy guard stays eligible");
   assert.equal(result.legacy.promptedGoal, "intent:1:1", "legacy data remains readable");
-  assert.equal(result.legacy.promptedConsumedGeneration, 1);
+  assert.equal(result.legacy.promptedConsumedGeneration, null, "ambiguous work is not called consumed");
+  assert.equal(result.legacy.promptedLegacyCutoverGeneration, 1, "the current cycle fails closed");
+  assert.equal(result.legacyNull.promptedLegacyCutoverGeneration, null);
   assert.equal(result.legacyNull.promptedConsumedGeneration, null);
   const restarted = execFileSync(
     process.execPath,
@@ -169,10 +181,83 @@ test("a matching legacy prompted guard bootstraps the current generation as cons
     { env, cwd: process.cwd(), encoding: "utf8" },
   ).trim();
   const afterRestart = JSON.parse(restarted.split("\n").at(-1)!) as {
+    promptedLegacyCutoverGeneration: number | null;
     promptedConsumedGeneration: number | null;
   };
-  assert.equal(afterRestart.promptedConsumedGeneration, 1, "restart preserves the consumed generation");
+  assert.equal(afterRestart.promptedConsumedGeneration, null);
+  assert.equal(afterRestart.promptedLegacyCutoverGeneration, 1, "restart preserves the cutover ceiling");
   rmSync(legacy, { recursive: true, force: true });
+});
+
+test("a matching legacy watermark bootstraps only the completion it observed", () => {
+  const key = "prompted-known-bootstrap";
+  markWorkCycleActive(key, 20);
+  completeWorkCycle(key, 21, 21);
+  upsertQueue({
+    noteKey: key,
+    cwd: "/repo",
+    branch: "feature",
+    wrapupAskedAt: null,
+    wrapupAnswer: null,
+    promptedGoal: "intent:1:1",
+    promptedEvidence: "generation-1-proof",
+    promptedActivityAt: 21,
+    promptedLegacyCutoverGeneration: null,
+    promptedConsumedGeneration: null,
+    updatedAt: 22,
+  });
+
+  assert.equal(bootstrapPromptedConsumedGeneration(key, "intent:1:1"), true);
+  assert.equal(getQueueRow(key)?.promptedConsumedGeneration, 1);
+  assert.equal(getQueueRow(key)?.promptedLegacyCutoverGeneration, null);
+});
+
+test("an ambiguous legacy ceiling blocks its cycle but naturally allows the next", () => {
+  const key = "prompted-ambiguous-bootstrap";
+  markWorkCycleActive(key, 20);
+  completeWorkCycle(key, 21, 21);
+  upsertQueue({
+    noteKey: key,
+    cwd: "/repo",
+    branch: "feature",
+    wrapupAskedAt: null,
+    wrapupAnswer: null,
+    promptedGoal: "intent:1:1",
+    promptedEvidence: null,
+    promptedActivityAt: null,
+    promptedLegacyCutoverGeneration: null,
+    promptedConsumedGeneration: null,
+    updatedAt: 50,
+  });
+
+  assert.equal(bootstrapPromptedConsumedGeneration(key, "intent:1:1"), true);
+  assert.equal(getQueueRow(key)?.promptedLegacyCutoverGeneration, 1);
+  assert.equal(
+    consumePromptedGeneration({
+      noteKey: key,
+      sessionCwd: "/repo",
+      generation: 1,
+      ask: false,
+      now: 51,
+    }),
+    false,
+    "the ambiguous current cycle cannot be claimed",
+  );
+
+  markWorkCycleActive(key, 52);
+  completeWorkCycle(key, 53, 53);
+  assert.equal(
+    consumePromptedGeneration({
+      noteKey: key,
+      sessionCwd: "/repo",
+      generation: 2,
+      ask: false,
+      now: 54,
+    }),
+    true,
+    "a later completed cycle re-arms without a legacy prompt reset",
+  );
+  assert.equal(getQueueRow(key)?.promptedConsumedGeneration, 2);
 });
 
 test("prompted consumption is an exact-generation compare-and-set with an atomic ask", () => {
@@ -238,6 +323,7 @@ test("legacy prompted bootstrap refuses an active work cycle with an older compl
     promptedGoal: "intent:1:1",
     promptedEvidence: "old-proof",
     promptedActivityAt: 13,
+    promptedLegacyCutoverGeneration: null,
     promptedConsumedGeneration: null,
     updatedAt: 14,
   });
@@ -263,6 +349,7 @@ test("legacy prompted bootstrap does not consume a completion newer than its bou
     promptedGoal: "intent:1:1",
     promptedEvidence: "generation-1-proof",
     promptedActivityAt: 21,
+    promptedLegacyCutoverGeneration: null,
     promptedConsumedGeneration: null,
     updatedAt: 22,
   });
@@ -297,6 +384,7 @@ test("prompted consumption never moves a consumed generation backward", () => {
     promptedGoal: null,
     promptedEvidence: null,
     promptedActivityAt: null,
+    promptedLegacyCutoverGeneration: null,
     promptedConsumedGeneration: 2,
     updatedAt: 12,
   });
@@ -516,6 +604,7 @@ test("deleting an item and a queue row leaves nothing behind", () => {
     promptedGoal: null,
     promptedEvidence: null,
     promptedActivityAt: null,
+    promptedLegacyCutoverGeneration: null,
     promptedConsumedGeneration: null,
     updatedAt: 1,
   });
@@ -562,7 +651,7 @@ test("the single-flight index is rebuilt when its predicate drifts from the shar
   // `verifying` item in one queue is rejected by the db, not merely by hope.
   const guard = run(`const db = await import("./src/server/db.ts");
     db.openDb();
-    db.upsertQueue({ noteKey: "drift", cwd: null, branch: null, wrapupAskedAt: null, wrapupAnswer: null, promptedGoal: null, promptedEvidence: null, promptedActivityAt: null, promptedConsumedGeneration: null, updatedAt: 0 });
+    db.upsertQueue({ noteKey: "drift", cwd: null, branch: null, wrapupAskedAt: null, wrapupAnswer: null, promptedGoal: null, promptedEvidence: null, promptedActivityAt: null, promptedLegacyCutoverGeneration: null, promptedConsumedGeneration: null, updatedAt: 0 });
     const mk = (id, seq) => ({ id, noteKey: "drift", seq, intent: "i", state: "verifying", round: 0,
       baseSha: null, transcriptAnchor: null, gaps: [], sendAttempts: 0, verifyFailures: 0,
       escalationReason: null, lastVerdict: null, approvedAt: null, proposedPayload: null,
@@ -609,7 +698,7 @@ test("a single-flight rebuild that CANNOT succeed keeps the old index and still 
     const d = db.openDb();
     d.exec("DROP INDEX one_inflight_per_queue;");
     d.exec("CREATE UNIQUE INDEX one_inflight_per_queue ON foreman_queue_items(note_key) WHERE state IN ('sending','awaiting_pickup','in_progress');");
-    db.upsertQueue({ noteKey: "stuck", cwd: null, branch: null, wrapupAskedAt: null, wrapupAnswer: null, promptedGoal: null, promptedEvidence: null, promptedActivityAt: null, promptedConsumedGeneration: null, updatedAt: 0 });
+    db.upsertQueue({ noteKey: "stuck", cwd: null, branch: null, wrapupAskedAt: null, wrapupAnswer: null, promptedGoal: null, promptedEvidence: null, promptedActivityAt: null, promptedLegacyCutoverGeneration: null, promptedConsumedGeneration: null, updatedAt: 0 });
     const mk = (id, seq) => ({ id, noteKey: "stuck", seq, intent: "i", state: "verifying", round: 0,
       baseSha: null, transcriptAnchor: null, gaps: [], sendAttempts: 0, verifyFailures: 0,
       escalationReason: null, lastVerdict: null, approvedAt: null, proposedPayload: null,
@@ -634,7 +723,7 @@ test("a single-flight rebuild that CANNOT succeed keeps the old index and still 
 });
 
 test("rekeyQueue moves a whole queue onto a new key", () => {
-  upsertQueue({ noteKey: "rk-from", cwd: "/r", branch: "b", wrapupAskedAt: 7, wrapupAnswer: null, promptedGoal: null, promptedEvidence: null, promptedActivityAt: null, promptedConsumedGeneration: null, updatedAt: 1 });
+  upsertQueue({ noteKey: "rk-from", cwd: "/r", branch: "b", wrapupAskedAt: 7, wrapupAnswer: null, promptedGoal: null, promptedEvidence: null, promptedActivityAt: null, promptedLegacyCutoverGeneration: null, promptedConsumedGeneration: null, updatedAt: 1 });
   const a = mkItem({ noteKey: "rk-from", seq: 0, intent: "first" });
   const b = mkItem({ noteKey: "rk-from", seq: 1, intent: "second" });
   upsertQueueItem(a);
@@ -642,7 +731,7 @@ test("rekeyQueue moves a whole queue onto a new key", () => {
 
   rekeyQueue(
     "rk-from",
-    { noteKey: "rk-to", cwd: "/r", branch: "b", wrapupAskedAt: 7, wrapupAnswer: null, promptedGoal: null, promptedEvidence: null, promptedActivityAt: null, promptedConsumedGeneration: null, updatedAt: 2 },
+    { noteKey: "rk-to", cwd: "/r", branch: "b", wrapupAskedAt: 7, wrapupAnswer: null, promptedGoal: null, promptedEvidence: null, promptedActivityAt: null, promptedLegacyCutoverGeneration: null, promptedConsumedGeneration: null, updatedAt: 2 },
     [
       { ...a, noteKey: "rk-to", seq: 0 },
       { ...b, noteKey: "rk-to", seq: 1 },
@@ -663,7 +752,7 @@ test("rekeyQueue ROLLS BACK a half-applied move - the batch is never split", () 
   // leaves some items re-keyed under a queue row that may already be deleted and the
   // rest on the old key: a split no reader models, and one the re-attach button can't
   // repair, since the hint it keys off is computed from the very rows that got moved.
-  upsertQueue({ noteKey: "rb-from", cwd: "/r", branch: "b", wrapupAskedAt: null, wrapupAnswer: null, promptedGoal: null, promptedEvidence: null, promptedActivityAt: null, promptedConsumedGeneration: null, updatedAt: 1 });
+  upsertQueue({ noteKey: "rb-from", cwd: "/r", branch: "b", wrapupAskedAt: null, wrapupAnswer: null, promptedGoal: null, promptedEvidence: null, promptedActivityAt: null, promptedLegacyCutoverGeneration: null, promptedConsumedGeneration: null, updatedAt: 1 });
   const good = mkItem({ noteKey: "rb-from", seq: 0, intent: "keep me" });
   const also = mkItem({ noteKey: "rb-from", seq: 1, intent: "and me" });
   upsertQueueItem(good);
@@ -674,7 +763,7 @@ test("rekeyQueue ROLLS BACK a half-applied move - the batch is never split", () 
   assert.throws(() =>
     rekeyQueue(
       "rb-from",
-      { noteKey: "rb-to", cwd: "/r", branch: "b", wrapupAskedAt: null, wrapupAnswer: null, promptedGoal: null, promptedEvidence: null, promptedActivityAt: null, promptedConsumedGeneration: null, updatedAt: 2 },
+      { noteKey: "rb-to", cwd: "/r", branch: "b", wrapupAskedAt: null, wrapupAnswer: null, promptedGoal: null, promptedEvidence: null, promptedActivityAt: null, promptedLegacyCutoverGeneration: null, promptedConsumedGeneration: null, updatedAt: 2 },
       [
         { ...good, noteKey: "rb-to", seq: 0 },
         { ...also, noteKey: "rb-to", seq: 1, intent: null as unknown as string },
@@ -700,7 +789,7 @@ test("rekeyQueue ROLLS BACK a half-applied move - the batch is never split", () 
 // ingest and SSE, so the floor rose with use and never came back down.
 
 function seedRow(key: string, cwd: string, updatedAt: number): void {
-  upsertQueue({ noteKey: key, cwd, branch: "b", wrapupAskedAt: null, wrapupAnswer: null, promptedGoal: null, promptedEvidence: null, promptedActivityAt: null, promptedConsumedGeneration: null, updatedAt });
+  upsertQueue({ noteKey: key, cwd, branch: "b", wrapupAskedAt: null, wrapupAnswer: null, promptedGoal: null, promptedEvidence: null, promptedActivityAt: null, promptedLegacyCutoverGeneration: null, promptedConsumedGeneration: null, updatedAt });
 }
 
 test("listQueueRowsForCwd returns only that cwd's queues", () => {
@@ -784,17 +873,18 @@ test("pruneDeadQueues collects an EMPTY row at any age, but keeps one holding wr
   pruneDeadQueues(new Set(), 1);
   assert.equal(getQueueRow("empty-1"), undefined, "an itemless, stateless row is not history");
 
-  // ...but each of the three fields alone is state worth keeping: an unanswered Ship it?
-  // card, a human's answer, and the once-per-episode guard that stops the prompted
-  // trigger re-verifying an idle session every tick.
-  upsertQueue({ noteKey: "keep-ask", cwd: "/k", branch: "b", wrapupAskedAt: 500, wrapupAnswer: null, promptedGoal: null, promptedEvidence: null, promptedActivityAt: null, promptedConsumedGeneration: null, updatedAt: Date.now() });
-  upsertQueue({ noteKey: "keep-answer", cwd: "/k", branch: "b", wrapupAskedAt: null, wrapupAnswer: "ship directly", promptedGoal: null, promptedEvidence: null, promptedActivityAt: null, promptedConsumedGeneration: null, updatedAt: Date.now() });
-  upsertQueue({ noteKey: "keep-goal", cwd: "/k", branch: "b", wrapupAskedAt: null, wrapupAnswer: null, promptedGoal: "ship the uploader", promptedEvidence: null, promptedActivityAt: null, promptedConsumedGeneration: null, updatedAt: Date.now() });
+  // ...but each guard field alone is state worth keeping: an unanswered Ship it? card,
+  // a human's answer, a legacy prompt guard, or a conservative migration ceiling.
+  upsertQueue({ noteKey: "keep-ask", cwd: "/k", branch: "b", wrapupAskedAt: 500, wrapupAnswer: null, promptedGoal: null, promptedEvidence: null, promptedActivityAt: null, promptedLegacyCutoverGeneration: null, promptedConsumedGeneration: null, updatedAt: Date.now() });
+  upsertQueue({ noteKey: "keep-answer", cwd: "/k", branch: "b", wrapupAskedAt: null, wrapupAnswer: "ship directly", promptedGoal: null, promptedEvidence: null, promptedActivityAt: null, promptedLegacyCutoverGeneration: null, promptedConsumedGeneration: null, updatedAt: Date.now() });
+  upsertQueue({ noteKey: "keep-goal", cwd: "/k", branch: "b", wrapupAskedAt: null, wrapupAnswer: null, promptedGoal: "ship the uploader", promptedEvidence: null, promptedActivityAt: null, promptedLegacyCutoverGeneration: null, promptedConsumedGeneration: null, updatedAt: Date.now() });
+  upsertQueue({ noteKey: "keep-cutover", cwd: "/k", branch: "b", wrapupAskedAt: null, wrapupAnswer: null, promptedGoal: null, promptedEvidence: null, promptedActivityAt: null, promptedLegacyCutoverGeneration: 1, promptedConsumedGeneration: null, updatedAt: Date.now() });
 
   pruneDeadQueues(new Set(), 1);
   assert.ok(getQueueRow("keep-ask"), "an unanswered ask still has to render");
   assert.ok(getQueueRow("keep-answer"), "an answer is the human's, not ours to drop");
   assert.ok(getQueueRow("keep-goal"), "dropping the guard re-arms the trigger on an idle session");
+  assert.ok(getQueueRow("keep-cutover"), "dropping the cutover ceiling can replay legacy work");
 
   // And a LIVE session's empty row is untouchable, because `ensureQueue` plus the stamp
   // that follows it are two writes - between them the row is legitimately empty.

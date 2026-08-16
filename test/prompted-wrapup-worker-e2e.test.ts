@@ -236,6 +236,7 @@ function mkQueue(cwd: string, over: Partial<SessionQueue> = {}): SessionQueue {
     promptedGoal: null,
     promptedEvidence: null,
     promptedActivityAt: null,
+    promptedLegacyCutoverGeneration: null,
     promptedConsumedGeneration: null,
     updatedAt: 0,
     items: [],

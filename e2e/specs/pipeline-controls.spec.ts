@@ -23,14 +23,15 @@ import { pipelineRepoKey } from "../../src/shared/pipeline.ts";
  * marker, the projection re-read it and the row change under an operator who never reloaded.
  * That chain is the whole feature, and every link in it belongs to a different program.
  *
- * Eight claims:
+ * Nine claims:
  *
  *  1. A verb pressed in the attention inbox reaches the engine's own CLI, in the argv and the
  *     working directory the engine requires - and the row leaves the inbox when the halt it
  *     was about clears.
  *  2. The daemon chip follows the engine's pidfile and PAUSED marker, through the verbs, with
  *     no reload.
- *  3. The grant picker never offers `plan`, and says why rather than leaving a gap.
+ *  3. The grant picker never offers `plan`, and says why rather than leaving a gap - and the
+ *     verb itself is offered only where a halt asked for it.
  *  4. The reseal ceremony opens a HOSTED TERMINAL running the engine's own command, because
  *     the engine refuses to re-seal without one.
  *  5. A shipped feature's cost is the engine's own committed figure, on the run detail.
@@ -190,6 +191,12 @@ test("the daemon chip follows the engine's own pidfile and pause marker", async 
   const reader = dashboard.locator("div.pipelines-reader");
   await expect(rail.getByText("daemon running", { exact: true })).toBeVisible();
 
+  // A run that has not stopped is offered no grant. A grant authorizes the engine to re-enter
+  // a DECIDE step unattended, and it is the answer to a refusal - offered to a feature that
+  // never met one, it is the next gate spent before it is reached.
+  await expect(reader.getByRole("button", { name: "Park" })).toBeVisible();
+  await expect(reader.getByRole("button", { name: "Grant DECIDE re-entry" })).toHaveCount(0);
+
   // Pause: the engine writes PAUSED, the chip follows, and the verbs on offer change with it
   // - an operator is never shown a button whose only outcome is "already paused".
   await reader.getByRole("button", { name: "Pause daemon" }).click();
@@ -300,6 +307,10 @@ test("a broken seal offers the ceremony, in a terminal, running the engine's own
   const repoKey = encodeURIComponent(pipelineRepoKey("ai-conductor", daemon.repo));
   await dashboard.goto(`${daemon.baseURL}/#/runs/pipeline/${repoKey}/fix-the-thing`);
   const reader = dashboard.locator("div.pipelines-reader");
+  // This halt's way out is the ceremony, and only the ceremony. A grant beside it would offer
+  // to authorize a DECIDE re-entry for a run that stopped over a broken seal, which no
+  // decision gate refused - the header reads the same halt-class table the inbox does.
+  await expect(reader.getByRole("button", { name: "Grant DECIDE re-entry" })).toHaveCount(0);
   await reader.getByRole("button", { name: "Reseal an artifact" }).click();
 
   const form = reader.getByRole("group", { name: "Reseal a protected artifact" });

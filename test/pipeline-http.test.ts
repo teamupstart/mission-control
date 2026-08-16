@@ -496,7 +496,14 @@ function verbsAsked(): string[][] {
 /** A repository with one halted run, consented to and projected. */
 async function actable(name: string, registry: Registry, request: ReturnType<typeof fixture>["request"]) {
   const repo = gitRepo(name);
-  seedConductorRun(repo, "feat", { steps: { build: "done" }, halt: "a gate refused" });
+  // `needs-human`, because that is the halt these cases are about: it is the class a refused
+  // DECIDE gate raises, and the only one a grant is licensed by. A halt with no class file
+  // reads as `unclassified`, which the route now refuses a grant for - see the case below.
+  seedConductorRun(repo, "feat", {
+    steps: { build: "done" },
+    halt: "a gate refused",
+    haltClass: "needs-human",
+  });
   seedConductorDaemon(repo, { pid: process.pid });
   await request("/api/pipelines/config", {
     method: "PUT",
@@ -626,6 +633,78 @@ test("a grant is recorded by the engine, and a plan grant never reaches it", asy
     assert.match(body.detail, /never grants re-entry to 'plan'/);
     assert.equal(body.output, "");
     assert.equal(verbsAsked().length, before, "nothing was spawned");
+  });
+});
+
+test("a grant is refused for a run whose halt did not ask for one", async () => {
+  // The eligibility rule the surface draws its buttons from, held HERE as well - because
+  // hiding a button decides what an operator is offered, not what the loopback API accepts.
+  // A grant is a standing authorization for the engine to re-enter a DECIDE step unattended:
+  // handed to a run that never stopped at a gate, it is the gate's whole purpose spent in
+  // advance, and the engine would record it without complaint because from its side a person
+  // typed it.
+  const { registry, request } = fixture();
+  await withEngine(async () => {
+    const repo = gitRepo("act-grant-class");
+    // Three runs, one per shape the rule has to separate: never halted, halted for something
+    // the engine re-kicks itself, and halted for a broken seal - which is a ceremony, not a
+    // decision.
+    seedConductorRun(repo, "running", { steps: { build: "in_progress" } });
+    seedConductorRun(repo, "mech", {
+      steps: { build: "done" },
+      halt: "the branch would not rebase",
+      haltClass: "mechanical",
+    });
+    seedConductorRun(repo, "sealed", {
+      steps: { build: "done" },
+      halt: "a sealed decision changed",
+      haltClass: "protected-artifact",
+    });
+    seedConductorRun(repo, "asked", {
+      steps: { build: "done" },
+      halt: "the DECIDE gate refused a second autonomous entry",
+      haltClass: "needs-human",
+    });
+    seedConductorDaemon(repo, { pid: process.pid });
+    await request("/api/pipelines/config", {
+      method: "PUT",
+      body: JSON.stringify({
+        enabled: true,
+        repos: [{ provider: "ai-conductor", repoRoot: repo, enabled: true }],
+      }),
+    });
+    await refreshPipelineRepo(registry, "ai-conductor", repo);
+
+    const grant = (slug: string) =>
+      request("/api/pipelines/action", {
+        method: "POST",
+        body: JSON.stringify({
+          provider: "ai-conductor",
+          repoRoot: repo,
+          slug,
+          action: "grant",
+          step: "prd",
+          reason: "because I said so",
+        }),
+      });
+
+    const before = verbsAsked().length;
+    for (const slug of ["running", "mech", "sealed"]) {
+      const refused = await grant(slug);
+      // 409 rather than 404 or 400: the request is well formed and the run exists - its STATE
+      // is what refuses this, which is a different thing to tell an operator.
+      assert.equal(refused.status, 409, slug);
+      assert.match(await refused.text(), /answers a halt that asked for one/, slug);
+    }
+    assert.equal(verbsAsked().length, before, "and nothing was spawned for any of them");
+    assert.equal(existsSync(join(repo, ".daemon", "grants")), false, "no grant was recorded");
+
+    // And the run that DID stop at a gate still gets one, so this is an eligibility rule
+    // rather than the verb quietly going away.
+    const allowed = await grant("asked");
+    assert.equal(allowed.status, 200);
+    assert.equal(((await allowed.json()) as { ok: boolean }).ok, true);
+    assert.equal(existsSync(join(repo, ".daemon", "grants", "asked.json")), true);
   });
 });
 

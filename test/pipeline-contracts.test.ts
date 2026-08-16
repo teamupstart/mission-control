@@ -29,6 +29,7 @@ import {
   isPipelineHaltClass,
   isPipelineProviderId,
   isPipelineStepState,
+  pipelineGrantAllowed,
   pipelineGrantRefusal,
   pipelineGrantableSteps,
   pipelinePhaseOfStep,
@@ -347,6 +348,31 @@ test("what a halt offers, and what a daemon state offers, is decided once", () =
   assert.equal(PIPELINE_DAEMON_ACTIONS.running.includes("daemon-start"), false);
   assert.equal(PIPELINE_DAEMON_ACTIONS.paused.includes("daemon-pause"), false);
   assert.equal(PIPELINE_DAEMON_ACTIONS.stopped.includes("daemon-stop"), false);
+});
+
+test("a grant is licensed by the halt it answers, wherever the question is asked", () => {
+  // Two surfaces offer this verb and one route accepts it, and all three read the SAME table.
+  // The bug this pins is a run header that decided for itself which verbs an unfinished run
+  // deserves: it offered a grant on a run that had not stopped at all, which is a standing
+  // authorization for the engine to walk through the next DECIDE gate unattended.
+  assert.equal(pipelineGrantAllowed({ class: "needs-human" }), true);
+  // Never without a halt. This is the case the header got wrong.
+  assert.equal(pipelineGrantAllowed(null), false);
+  // And never for a class whose way out is something else: the engine re-kicks `mechanical`
+  // itself, and `protected-artifact` is cleared by a ceremony rather than by a decision.
+  for (const haltClass of PIPELINE_HALT_CLASSES) {
+    assert.equal(
+      pipelineGrantAllowed({ class: haltClass }),
+      PIPELINE_HALT_ACTIONS[haltClass].includes("grant"),
+      haltClass,
+    );
+  }
+  // Exactly one class licenses it today. Stated as a literal so that widening the rule is a
+  // decision somebody makes here, rather than a side effect of editing the table above.
+  assert.deepEqual(
+    PIPELINE_HALT_CLASSES.filter((haltClass) => pipelineGrantAllowed({ class: haltClass })),
+    ["needs-human"],
+  );
 });
 
 test("a request is checked against what the verb says it needs, in both directions", () => {

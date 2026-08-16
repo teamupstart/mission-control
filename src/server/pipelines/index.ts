@@ -3,6 +3,7 @@ import {
   PIPELINE_SPEND_ROLES,
   PIPELINE_SPEND_WRITERS,
   activePipelineRepos,
+  pipelineGrantAllowed,
   pipelineRepoKey,
   pipelineRunKey,
   type PipelineAction,
@@ -281,10 +282,20 @@ function consented(provider: PipelineProviderId, repoRoot: string): boolean {
  * reason it should be - no such run - without this file having to reason about paths at all.
  */
 function projecting(provider: PipelineProviderId, repoRoot: string, slug: string): boolean {
-  return loadPipelineRuns().some(
+  return projectedRun(provider, repoRoot, slug) !== null;
+}
+
+/** The projected run a verb names, or null when this daemon is not holding one. */
+function projectedRun(
+  provider: PipelineProviderId,
+  repoRoot: string,
+  slug: string,
+): PipelineRun | null {
+  const found = loadPipelineRuns().find(
     (row) =>
       row.run.provider === provider && row.run.repoRoot === repoRoot && row.run.slug === slug,
   );
+  return found?.run ?? null;
 }
 
 /**
@@ -296,7 +307,7 @@ function projecting(provider: PipelineProviderId, repoRoot: string, slug: string
  */
 export interface PipelineControlRefused {
   ok: false;
-  status: 400 | 404;
+  status: 400 | 404 | 409;
   error: string;
 }
 
@@ -344,6 +355,23 @@ export async function runPipelineAction(
 ): Promise<{ ok: true; result: PipelineActionResult } | PipelineControlRefused> {
   const refused = refuseControl(target.provider, target.repoRoot, target.slug);
   if (refused) return refused;
+  // The one verb whose ELIGIBILITY is a fact about the run rather than about the request, and
+  // the daemon decides it rather than trusting the surface to have hidden the button. A grant
+  // is a standing authorization for the engine to re-enter a DECIDE step unattended, so a
+  // request for one on a run that never stopped at a gate is the gate's whole purpose spent in
+  // advance - and "the browser would not have offered it" is not a check, it is a hope about
+  // who is calling. Same posture as the `plan` refusal in the provider: stated on both sides.
+  if (action === "grant") {
+    const run = projectedRun(target.provider, target.repoRoot, target.slug ?? "");
+    if (!pipelineGrantAllowed(run?.halt ?? null)) {
+      return {
+        ok: false,
+        // The request is well-formed and the run exists; its STATE is what refuses this.
+        status: 409,
+        error: "a DECIDE grant answers a halt that asked for one, and this run has no such halt",
+      };
+    }
+  }
   const result = await PIPELINE_PROVIDERS[target.provider].control(action, target);
   try {
     await refreshPipelineRepo(sink, target.provider, target.repoRoot);

@@ -1,6 +1,7 @@
 import { Fragment, useMemo } from "react";
 import {
   PIPELINE_DAEMON_ACTIONS,
+  pipelineGrantAllowed,
   pipelineRepoKey,
   pipelineRunKeyOf,
   type PipelineAction,
@@ -79,8 +80,19 @@ export function PipelineRuns({
   // park or a grant on a slug it has already processed and print a success line for it, and a
   // verb whose only effect is that sentence is one an operator learns to distrust. The daemon
   // verbs stay, because they are about the repository rather than about this run.
+  //
+  // Park and unpark apply to any live feature - parking is how an operator takes one out of
+  // the engine's hands, halted or not. A GRANT does not: it is the answer to a refusal, and
+  // `pipelineGrantAllowed` reads that off the same halt-class table the attention inbox draws
+  // its verbs from, so the two surfaces cannot come to different conclusions about when a
+  // DECIDE re-entry is a thing to offer.
   const runVerbs: PipelineAction[] =
-    !run || run.group === "processed" ? [] : [run.group === "parked" ? "unpark" : "park", "grant"];
+    !run || run.group === "processed"
+      ? []
+      : [
+          run.group === "parked" ? "unpark" : "park",
+          ...(pipelineGrantAllowed(run.halt) ? (["grant"] as const) : []),
+        ];
   const runActions: PipelineAction[] = run
     ? [...PIPELINE_DAEMON_ACTIONS[daemon], ...runVerbs]
     : [];

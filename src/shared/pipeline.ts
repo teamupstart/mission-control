@@ -1000,6 +1000,29 @@ export const PIPELINE_HALT_ACTIONS: Record<PipelineHaltClass, readonly PipelineA
 };
 
 /**
+ * Whether a DECIDE re-entry grant is a thing this run can be offered at all.
+ *
+ * Read off the table above rather than decided again here, and that is the whole point of the
+ * function: the inbox draws a halt's verbs from `PIPELINE_HALT_ACTIONS`, and a run header that
+ * decided for itself which verbs a run deserves is a second policy that agrees with the first
+ * one only until somebody edits one of them. It disagreed exactly there - the header offered a
+ * grant on every unfinished run, including a run that has not halted at all.
+ *
+ * A grant is the ANSWER TO A REFUSAL, which is why the halt is what licenses it. The engine
+ * stops at a DECIDE gate, classifies that stop `needs-human`, and the grant authorizes one
+ * re-entry past it; granted to a run that never stopped, the same record is a standing
+ * permission for the engine to walk through the next gate it meets with nobody watching. That
+ * is the gate's entire purpose, spent in advance.
+ *
+ * The daemon holds this too (`POST /api/pipelines/action`), for the reason every refusal in
+ * this file is held on both sides: hiding a button decides what an operator is offered, not
+ * what the loopback API accepts.
+ */
+export function pipelineGrantAllowed(halt: { class: PipelineHaltClass } | null): boolean {
+  return halt !== null && PIPELINE_HALT_ACTIONS[halt.class].includes("grant");
+}
+
+/**
  * Which daemon verbs are worth offering for each state the daemon was observed in.
  *
  * Derived from the state rather than drawn as four permanent buttons, because three of them

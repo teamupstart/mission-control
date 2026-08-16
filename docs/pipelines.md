@@ -212,7 +212,7 @@ engine has never heard of - the engine's own line about a subcommand nobody aske
 tells them apart. A confirmation clears itself after a few seconds; a failure stays until you
 dismiss it, because a transcript on a timer is one you race rather than read.
 
-Four things follow that are worth knowing before pressing anything:
+Five things follow that are worth knowing before pressing anything:
 
 - **Only useful verbs are offered.** The daemon verbs shown are the ones the daemon's observed
   state makes meaningful - a running daemon offers Pause and Stop, never Start. The engine
@@ -221,6 +221,14 @@ Four things follow that are worth knowing before pressing anything:
   same rule takes the feature verbs off a feature the engine has already processed: it would
   accept a park or a grant on one and print a success line, and a button whose only effect is
   that sentence is one an operator learns to distrust.
+- **A grant is licensed by the halt it answers.** Park and unpark apply to any live feature -
+  parking is how you take one out of the engine's hands, halted or not. A DECIDE re-entry grant
+  is offered only where the halt class asks for one, which today means `needs-human`: it is a
+  standing authorization for the engine to walk through a decision gate unattended, and on a
+  run that never stopped at one it spends that gate before it is reached. The run header and
+  the inbox read the same halt-class table, and **the daemon holds the rule too** - a grant for
+  a run with no such halt is `409` from `POST /api/pipelines/action`, because hiding a button
+  decides what an operator is offered, not what the loopback API accepts.
 - **`plan` can never be granted, and Mission Control says so rather than relaying a refusal.**
   The picker lists every DECIDE step *except* `plan`, with the reason printed under it. A
   re-planning pass would rewrite an approved decision with nobody at the gate, which is the
@@ -241,7 +249,9 @@ Four things follow that are worth knowing before pressing anything:
 An inbox row offers only what its halt's class calls for - a grant and an unpark for
 `needs-human`, an unpark for `mechanical`, the reseal ceremony for `protected-artifact` - and
 never the repository-wide daemon verbs, because a row about one feature must not be able to
-stop every feature in the checkout.
+stop every feature in the checkout. That table is `PIPELINE_HALT_ACTIONS`, and it is the one
+the run header consults as well: two surfaces deciding separately which verbs a run deserves
+agree only until somebody edits one of them.
 
 ### Hosted consoles
 

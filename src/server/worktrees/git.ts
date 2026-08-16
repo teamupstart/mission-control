@@ -45,6 +45,10 @@ function failure(step: string, result: Awaited<ReturnType<typeof run>>): GitResu
   };
 }
 
+function commandFailed(result: Awaited<ReturnType<typeof run>>): boolean {
+  return result.code !== 0 || result.outcomeUnknown || result.overflowed;
+}
+
 async function canonical(path: string): Promise<string> {
   try {
     return await realpath(path);
@@ -82,13 +86,15 @@ export function parseWorktreePorcelain(stdout: string): WorktreeRegistration[] {
 
 /** Production Git operations for the native allocator. */
 export class NativeWorktreeGit implements WorktreeGit {
+  constructor(private readonly execute: typeof run = run) {}
+
   async list(identity: WorktreeRepositoryIdentity): Promise<GitResult<WorktreeRegistration[]>> {
-    const result = await run(
+    const result = await this.execute(
       "git",
       ["-C", identity.mainCheckoutRoot, "worktree", "list", "--porcelain"],
       { timeoutMs: 30_000 },
     );
-    if (result.code !== 0 || result.overflowed) return failure("git worktree list", result);
+    if (commandFailed(result)) return failure("git worktree list", result);
     const parsed = parseWorktreePorcelain(result.stdout);
     for (const registration of parsed) registration.path = await canonical(registration.path);
     return { ok: true, value: parsed };
@@ -100,13 +106,13 @@ export class NativeWorktreeGit implements WorktreeGit {
       return { ok: false, reason: `${path} is not a provable linked worktree`, outcomeUnknown: false };
     }
     const [head, status] = await Promise.all([
-      run("git", ["-C", path, "rev-parse", "HEAD"], { timeoutMs: 15_000 }),
-      run("git", ["-C", path, "status", "--porcelain", "--untracked-files=all"], {
+      this.execute("git", ["-C", path, "rev-parse", "HEAD"], { timeoutMs: 15_000 }),
+      this.execute("git", ["-C", path, "status", "--porcelain", "--untracked-files=all"], {
         timeoutMs: 15_000,
       }),
     ]);
-    if (head.code !== 0 || head.overflowed) return failure("git rev-parse HEAD", head);
-    if (status.code !== 0 || status.overflowed) return failure("git status", status);
+    if (commandFailed(head)) return failure("git rev-parse HEAD", head);
+    if (commandFailed(status)) return failure("git status", status);
     return {
       ok: true,
       value: {
@@ -133,12 +139,12 @@ export class NativeWorktreeGit implements WorktreeGit {
         outcomeUnknown: false,
       };
     }
-    const result = await run(
+    const result = await this.execute(
       "git",
       ["-C", identity.mainCheckoutRoot, "worktree", "add", "--detach", path, commit],
       { timeoutMs: 60_000 },
     );
-    if (result.code !== 0 || result.overflowed) return failure("git worktree add", result);
+    if (commandFailed(result)) return failure("git worktree add", result);
     return { ok: true, value: undefined };
   }
 
@@ -156,18 +162,20 @@ export class NativeWorktreeGit implements WorktreeGit {
   }
 
   async fetchDefaultSha(identity: WorktreeRepositoryIdentity): Promise<GitResult<string>> {
-    const fetched = await run("git", ["-C", identity.mainCheckoutRoot, "fetch", "origin"], {
+    const fetched = await this.execute("git", ["-C", identity.mainCheckoutRoot, "fetch", "origin"], {
       timeoutMs: 30_000,
     });
-    if (fetched.code !== 0 || fetched.overflowed) return failure("git fetch origin", fetched);
+    if (commandFailed(fetched)) return failure("git fetch origin", fetched);
     const target = await remoteDefaultRef(identity.mainCheckoutRoot);
     if (!target) {
       return { ok: false, reason: "no remote default branch is available", outcomeUnknown: false };
     }
-    const resolved = await run("git", ["-C", identity.mainCheckoutRoot, "rev-parse", target], {
-      timeoutMs: 15_000,
-    });
-    if (resolved.code !== 0 || resolved.overflowed) return failure(`git rev-parse ${target}`, resolved);
+    const resolved = await this.execute(
+      "git",
+      ["-C", identity.mainCheckoutRoot, "rev-parse", target],
+      { timeoutMs: 15_000 },
+    );
+    if (commandFailed(resolved)) return failure(`git rev-parse ${target}`, resolved);
     const sha = resolved.stdout.trim();
     if (!/^[0-9a-f]{40}$/.test(sha)) {
       return { ok: false, reason: `${target} did not resolve to a full commit id`, outcomeUnknown: false };
@@ -176,11 +184,16 @@ export class NativeWorktreeGit implements WorktreeGit {
   }
 
   async mergedInto(path: string, targetSha: string): Promise<GitResult<boolean>> {
-    const result = await run("git", ["-C", path, "merge-base", "--is-ancestor", "HEAD", targetSha], {
-      timeoutMs: 15_000,
-    });
+    const result = await this.execute(
+      "git",
+      ["-C", path, "merge-base", "--is-ancestor", "HEAD", targetSha],
+      { timeoutMs: 15_000 },
+    );
+    if (result.outcomeUnknown || result.overflowed) {
+      return failure("git merge-base --is-ancestor", result);
+    }
     if (result.code === 0) return { ok: true, value: true };
-    if (result.code === 1 && !result.outcomeUnknown) return { ok: true, value: false };
+    if (result.code === 1) return { ok: true, value: false };
     return failure("git merge-base --is-ancestor", result);
   }
 }

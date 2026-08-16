@@ -24,8 +24,9 @@ import {
   type NativeWorktreeLease,
   type WorktreeManagerDeps,
 } from "../src/server/worktrees/manager.ts";
-import { NativeWorktreeGit } from "../src/server/worktrees/git.ts";
+import { NativeWorktreeGit, type GitResult } from "../src/server/worktrees/git.ts";
 import type { WorktreeOccupancy } from "../src/server/worktrees/occupancy.ts";
+import type { RunResult } from "../src/server/util/exec.ts";
 import { worktreeRepositoryIdentity } from "../src/server/util/git.ts";
 import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
 
@@ -119,6 +120,65 @@ test("worktree config defaults on, is bounded, and merges repository patches", (
     }),
   );
   assert.deepEqual(cleared.repositories["/one/.git"], { enabled: false, maxSlots: 4 });
+});
+
+test("native Git operations fail closed when a subprocess outcome is unknown", async () => {
+  const { clone, sha } = repository("mission-native-git-unknown-");
+  const identity = worktreeRepositoryIdentity(clone);
+  assert.ok(identity);
+
+  const known = (stdout = ""): RunResult => ({
+    stdout,
+    stderr: "",
+    code: 0,
+    outcomeUnknown: false,
+    overflowed: false,
+  });
+  const unknown = (stdout = ""): RunResult => ({
+    stdout,
+    stderr: "child disappeared after producing output",
+    code: 0,
+    outcomeUnknown: true,
+    overflowed: false,
+  });
+  const assertUnknown = (result: GitResult<unknown>, step: RegExp) => {
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.outcomeUnknown, true);
+      assert.match(result.reason, step);
+    }
+  };
+
+  const listed = await new NativeWorktreeGit(async () =>
+    unknown(`worktree ${clone}\nHEAD ${sha}\ndetached\n`)
+  ).list(identity);
+  assertUnknown(listed, /git worktree list/);
+
+  for (const unknownProbe of ["rev-parse", "status"]) {
+    const inspected = await new NativeWorktreeGit(async (_bin, args) => {
+      if (args.includes(unknownProbe)) return unknown(unknownProbe === "rev-parse" ? `${sha}\n` : "");
+      return known(unknownProbe === "status" ? `${sha}\n` : "");
+    }).inspect(clone);
+    assertUnknown(inspected, unknownProbe === "rev-parse" ? /git rev-parse HEAD/ : /git status/);
+  }
+
+  const added = await new NativeWorktreeGit(async () => unknown()).add(
+    identity,
+    join(identity.poolPath, "unknown-add"),
+    sha,
+  );
+  assertUnknown(added, /git worktree add/);
+
+  const fetched = await new NativeWorktreeGit(async () => unknown()).fetchDefaultSha(identity);
+  assertUnknown(fetched, /git fetch origin/);
+
+  const resolved = await new NativeWorktreeGit(async (_bin, args) =>
+    args.includes("fetch") ? known() : unknown(`${sha}\n`)
+  ).fetchDefaultSha(identity);
+  assertUnknown(resolved, /git rev-parse origin\//);
+
+  const merged = await new NativeWorktreeGit(async () => unknown()).mergedInto(clone, sha);
+  assertUnknown(merged, /git merge-base --is-ancestor/);
 });
 
 test("concurrent acquires receive different exact slots and respect capacity", async () => {

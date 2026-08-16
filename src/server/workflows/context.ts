@@ -178,9 +178,11 @@ function boundedTranscriptTurn(message: TranscriptMessage): WorkflowContextSnaps
   let head = "";
   let tail = "";
   let marker = "";
-  // The omitted count affects the marker width. Two passes make the displayed count and the
-  // retained byte arithmetic agree without ever splitting a UTF-8 scalar.
-  for (let pass = 0; pass < 2; pass += 1) {
+  // The omitted count affects the marker width. Start with the longest possible count and
+  // converge until the displayed count and retained byte arithmetic agree. The count can only
+  // decrease; once its decimal width stops shrinking, the next calculation is identical.
+  while (true) {
+    const displayedOmitted = omitted;
     marker = `\n[transcript turn head retained; ${omitted} UTF-8 bytes omitted]\n`
       + "[transcript turn tail retained]\n";
     const available = Math.max(0, WORKFLOW_TRANSCRIPT_LIMITS.perTurnBytes - utf8Bytes(marker));
@@ -189,6 +191,7 @@ function boundedTranscriptTurn(message: TranscriptMessage): WorkflowContextSnaps
     head = clipUtf8Bytes(message.text, headBudget);
     tail = tailUtf8Bytes(message.text, tailBudget);
     omitted = Math.max(0, total - utf8Bytes(head) - utf8Bytes(tail));
+    if (omitted === displayedOmitted) break;
   }
   return { ...base, content: `${head}${marker}${tail}`, omittedMiddleBytes: omitted };
 }

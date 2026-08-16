@@ -154,6 +154,21 @@ test("oversized transcript turns preserve marked heads and tails within aggregat
   assert.ok(JSON.stringify(many.transcript).length <= WORKFLOW_TRANSCRIPT_LIMITS.jsonCharacters);
 });
 
+test("transcript omission markers match stored metadata after marker-width changes", () => {
+  const bounded = boundedWorkflowTranscript([{
+    id: "marker-boundary",
+    role: "assistant",
+    text: "x".repeat(WORKFLOW_TRANSCRIPT_LIMITS.perTurnBytes + 1),
+    tools: [],
+    ts: 1,
+  }]);
+  const retained = bounded.transcript[0]!;
+  const marker = /\[transcript turn head retained; (\d+) UTF-8 bytes omitted\]/.exec(retained.content);
+  assert.ok(marker);
+  assert.equal(Number(marker[1]), retained.omittedMiddleBytes);
+  assert.ok(Buffer.byteLength(retained.content) <= WORKFLOW_TRANSCRIPT_LIMITS.perTurnBytes);
+});
+
 test("source fingerprints are deterministic and ignore compaction prose", () => {
   const base = fallbackWorkflowContext(raw, "one error");
   const changedCompaction = {

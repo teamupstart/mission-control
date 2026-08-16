@@ -85,6 +85,23 @@ with Treehouse itself after confirming their current owner. Do not convert them 
 delete their directories behind Treehouse's bookkeeping. See
 [Legacy Treehouse compatibility](worktrees-and-checks.md#legacy-treehouse-compatibility).
 
+**Settings > Worktrees > Legacy drain** shows the same provider reading with its exact
+classification. An exact row offers a preview-first Return only when durable owner identity,
+cleanliness, and empty occupancy all agree. Unverifiable, foreign, and unreadable rows show
+remediation instead of a Force button. Treehouse can be removed after that section reports no
+durable legacy rows and you have separately reviewed every foreign lease.
+
+## A Worktrees action says the preview is stale
+
+Nothing was changed. A short-lived preview is bound to the exact owner, slot version, Git and
+process observations, and fixed target set it displayed. Refresh the preview and review the new
+facts. This commonly happens when a task finishes, a process exits, Git state moves, another
+dashboard changes policy, or reconciliation repairs a slot between preview and Execute.
+
+An unknown-process blocker is different: it cannot be acknowledged. Restore the host's process
+inspection, stop the owning task or check through its normal control, and use **Reconcile**. Do not
+delete the directory or Git registration by hand; uncertainty is why Mission Control kept it.
+
 ## A session says exited but its task or workflow has not settled yet
 
 **Exited** is the temporary presentation state at the start of session eviction, not the

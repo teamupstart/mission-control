@@ -66,7 +66,11 @@ import { createFinalizeDeps, resolveEnsembleWorkflowVersion } from "./ensembles/
 import { createReviewScheduler } from "./llm/review-scheduler.ts";
 import { createCheckScheduler } from "./workflows/checks.ts";
 import { WorktreeManager } from "./worktrees/manager.ts";
-import { warnRetiredTreehouseCadence } from "./worktrees/legacy-treehouse.ts";
+import {
+  LegacyTreehouseService,
+  warnRetiredTreehouseCadence,
+} from "./worktrees/legacy-treehouse.ts";
+import { WorktreeOperationsService } from "./worktrees/operations.ts";
 import { nativeWorktreeOwnerReferenced } from "./worktrees/owners.ts";
 
 openDb();
@@ -100,7 +104,9 @@ const registry = new Registry();
 // then shared by task dispatch, checks, manual leases, routes, and recurring maintenance.
 const worktrees = new WorktreeManager(undefined, {
   ownerReferenced: async (reference) => nativeWorktreeOwnerReferenced(reference),
+  publishChanged: () => registry.emitWorktreesChanged(),
 });
+const legacyWorktrees = new LegacyTreehouseService();
 try {
   await worktrees.reconcile();
 } catch (err) {
@@ -185,13 +191,29 @@ const checkScheduler = createCheckScheduler();
 // Awaited rather than fire-and-forget for the ordering itself, and best-effort because a
 // daemon that refused to start over one unreconcilable lease would be worse than one
 // running without it.
-const checkLeases = new CheckLeaseManager(undefined, { manager: worktrees });
+const checkLeases = new CheckLeaseManager(undefined, {
+  manager: worktrees,
+  legacy: legacyWorktrees,
+});
 const checkRuntime = new CheckRuntime(checkLeases);
 try {
   await checkLeases.reconcileOnStartup(checkRuntime.groupRecovery);
 } catch (err) {
   console.error("[mission-control] could not reconcile check leases:", err);
 }
+const worktreeOperations = new WorktreeOperationsService(worktrees, {
+  legacy: legacyWorktrees,
+  tasks: {
+    get: (id) => {
+      const task = registry.getTask(id);
+      return task ? { id: task.id, title: task.title } : null;
+    },
+    reclaim: (id) => tasks.reclaim(id),
+  },
+  checks: checkLeases,
+  checkRecovery: checkRuntime.groupRecovery,
+  notifyChanged: () => registry.emitWorktreesChanged(),
+});
 // Assigned below. The Workflow binding guard reaches it through this reference, and the reference
 // is safe because the guard fires only at bind time - long after `ensembles` is constructed. This
 // is the two-way seam the plan requires: Workflow asks Ensemble whether a session may be bound,
@@ -420,6 +442,7 @@ const app = buildApp(
   archives,
   workflowCommands,
   worktrees,
+  worktreeOperations,
 );
 
 // In production the daemon serves the built SPA; in dev, Vite serves it and

@@ -44,6 +44,7 @@ import {
   MarkItemSentSchema,
   ManualWorktreeAcquireSchema,
   ManualWorktreeReturnSchema,
+  OpenWorktreeSchema,
   OtlpMetricsSchema,
   PendingTurnRevisionSchema,
   ReattachQueueSchema,
@@ -117,6 +118,9 @@ import {
   UpdateWorkflowCommandSchema,
   WorkflowConfigSchema,
   WorkflowRunActionSchema,
+  WorktreeActionExecuteSchema,
+  WorktreeActionRequestSchema,
+  WorktreesConfigPatchSchema,
   SubmitWorkflowSchema,
   SubmitWorkflowEvidenceSchema,
   WorkflowRetainedEvidenceLocatorSchema,
@@ -185,6 +189,10 @@ import type { AwayWatcher } from "./away/watcher.ts";
 import { getHarnessesConfig, setHarnessesConfig } from "./harnesses.ts";
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
 import type { WorktreeManager } from "./worktrees/manager.ts";
+import {
+  WorktreeOperationError,
+  type WorktreeOperationsService,
+} from "./worktrees/operations.ts";
 import { run as runCommand } from "./util/exec.ts";
 import type { PendingTurnManager } from "./pending-turns.ts";
 import { driverFormAnswer, driverOptionAnswer, type DriverAnswer } from "./sdk/answer.ts";
@@ -775,6 +783,8 @@ export function buildApp(
   workflowCommands?: WorkflowCommandManager,
   /** The daemon's singleton native allocator. Manual-session routes return 503 without it. */
   worktrees?: WorktreeManager,
+  /** Singleton projection/action owner for Settings > Worktrees. */
+  worktreeOperations?: WorktreeOperationsService,
 ): Hono {
   const app = new Hono();
   const terminalLauncher = launchSessionTerminal ?? launchTerminal;
@@ -879,6 +889,102 @@ export function buildApp(
       { error: released.reason, outcome: released.outcome },
       released.outcome === "outcomeUnknown" ? 503 : 409,
     );
+  });
+
+  function worktreeFailure(error: unknown) {
+    if (error instanceof WorktreeOperationError) {
+      return { status: error.status, body: { error: error.message, code: error.code } } as const;
+    }
+    const message = (error instanceof Error ? error.message : String(error)).trim().replace(/\s+/g, " ");
+    return {
+      status: 503 as const,
+      body: { error: message.slice(0, 2_048), code: "unavailable" },
+    };
+  }
+
+  app.get("/api/worktrees", async (c) => {
+    if (!worktreeOperations) return c.json({ error: "worktree operations unavailable" }, 503);
+    try {
+      return c.json(await worktreeOperations.inventory());
+    } catch (error) {
+      const failure = worktreeFailure(error);
+      return c.json(failure.body, failure.status);
+    }
+  });
+
+  app.get("/api/worktrees/config", async (c) => {
+    if (!worktreeOperations) return c.json({ error: "worktree operations unavailable" }, 503);
+    try {
+      const inventory = await worktreeOperations.inventory();
+      return c.json({
+        config: inventory.config,
+        effective: inventory.repositories.map((repo) => ({
+          poolId: repo.id,
+          commonDirectory: repo.commonDirectory,
+          policy: repo.policy,
+        })),
+      });
+    } catch (error) {
+      const failure = worktreeFailure(error);
+      return c.json(failure.body, failure.status);
+    }
+  });
+
+  app.put("/api/worktrees/config", async (c) => {
+    if (!worktreeOperations) return c.json({ error: "worktree operations unavailable" }, 503);
+    const parsed = await parseBody(c, WorktreesConfigPatchSchema);
+    if (!parsed.ok) return parsed.res;
+    try {
+      return c.json({ config: worktreeOperations.setConfig(parsed.data) });
+    } catch (error) {
+      const failure = worktreeFailure(error);
+      return c.json(failure.body, failure.status);
+    }
+  });
+
+  app.post("/api/worktrees/actions/preview", async (c) => {
+    if (!worktreeOperations) return c.json({ error: "worktree operations unavailable" }, 503);
+    const parsed = await parseBody(c, WorktreeActionRequestSchema);
+    if (!parsed.ok) return parsed.res;
+    try {
+      return c.json(await worktreeOperations.preview(parsed.data));
+    } catch (error) {
+      const failure = worktreeFailure(error);
+      return c.json(failure.body, failure.status);
+    }
+  });
+
+  app.post("/api/worktrees/actions/execute", async (c) => {
+    if (!worktreeOperations) return c.json({ error: "worktree operations unavailable" }, 503);
+    const parsed = await parseBody(c, WorktreeActionExecuteSchema);
+    if (!parsed.ok) return parsed.res;
+    try {
+      return c.json(await worktreeOperations.execute(parsed.data.token, parsed.data.acknowledgements));
+    } catch (error) {
+      const failure = worktreeFailure(error);
+      return c.json(failure.body, failure.status);
+    }
+  });
+
+  app.post("/api/worktrees/:slotId/open", async (c) => {
+    if (!worktreeOperations) return c.json({ error: "worktree operations unavailable" }, 503);
+    const parsed = await parseBody(c, OpenWorktreeSchema);
+    if (!parsed.ok) return parsed.res;
+    const slotId = c.req.param("slotId");
+    const cwd = await worktreeOperations.slotPath(slotId);
+    if (!cwd) return c.json({ error: "native worktree slot was not found" }, 404);
+    const result = await terminalLauncher(parsed.data.backend, {
+      name: `worktree-${slotId.slice(0, 8)}`,
+      cwd,
+      argv: [process.env.SHELL || "/bin/sh", "-l"],
+    });
+    const body = {
+      ok: result.ok,
+      backend: parsed.data.backend,
+      label: result.label,
+      ...(result.error ? { error: result.error } : {}),
+    };
+    return result.ok ? c.json(body) : c.json(body, result.status as 404 | 409 | 502 | 504);
   });
   app.get("/api/sessions", (c) => c.json(registry.snapshot().sessions));
 

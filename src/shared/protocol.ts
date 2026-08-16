@@ -1814,6 +1814,66 @@ export const ManualWorktreeReturnSchema = z
   .strict();
 export type ManualWorktreeReturn = z.infer<typeof ManualWorktreeReturnSchema>;
 
+const WorktreeStableIdSchema = z.string().min(1).max(128);
+const WorktreeOwnerTargetSchema = z
+  .object({
+    kind: z.enum(["task", "check"]),
+    id: WorktreeStableIdSchema,
+    position: z.number().int().min(0).max(255).optional(),
+  })
+  .strict();
+
+/** Closed, stable-id-only operation vocabulary for Settings > Worktrees. */
+export const WorktreeActionRequestSchema = z.discriminatedUnion("action", [
+  z.object({ action: z.literal("return"), slotId: WorktreeStableIdSchema }).strict(),
+  z
+    .object({
+      action: z.literal("prune"),
+      poolId: WorktreeStableIdSchema,
+      mode: z.enum(["safe", "rightSize"]),
+    })
+    .strict(),
+  z.object({ action: z.literal("reconcile"), poolId: WorktreeStableIdSchema }).strict(),
+  z
+    .object({
+      action: z.literal("destroy"),
+      target: z.discriminatedUnion("kind", [
+        z.object({ kind: z.literal("slot"), slotId: WorktreeStableIdSchema }).strict(),
+        z.object({ kind: z.literal("pool"), poolId: WorktreeStableIdSchema }).strict(),
+      ]),
+    })
+    .strict(),
+  z
+    .object({ action: z.literal("legacyReturn"), owner: WorktreeOwnerTargetSchema })
+    .strict(),
+]);
+
+export const WorktreeActionExecuteSchema = z
+  .object({
+    token: z.string().uuid(),
+    acknowledgements: z
+      .array(
+        z.enum([
+          "dirty",
+          "unlanded",
+          "leased",
+          "domain-owned",
+          "occupied",
+          "unknown-occupancy",
+          "quarantined",
+          "over-capacity",
+          "legacy-unverifiable",
+          "foreign",
+        ]),
+      )
+      .max(16),
+  })
+  .strict();
+
+export const OpenWorktreeSchema = z
+  .object({ backend: z.enum(TERMINAL_BACKEND_IDS) })
+  .strict();
+
 /**
  * Partial update of the harnesses config from the dashboard.
  *

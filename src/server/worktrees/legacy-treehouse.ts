@@ -405,6 +405,11 @@ export class LegacyTreehouseService {
     this.git = deps.git ?? new NativeWorktreeGit();
   }
 
+  /** Browser-safe capability observation; no Treehouse command or path comes from a request. */
+  capabilities(): Promise<LegacyTreehouseCapability> {
+    return this.adapter.capabilities();
+  }
+
   async inventory(): Promise<LegacyInventoryItem[]> {
     const owners = this.owners();
     const repoRoots = [...new Set(owners.map((owner) => owner.repoRoot))];

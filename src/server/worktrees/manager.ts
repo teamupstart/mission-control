@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { lstat, realpath } from "node:fs/promises";
@@ -87,6 +88,7 @@ export interface NativeSlotStatus {
   dirty: boolean | null;
   occupancy: WorktreeOccupancy;
   ownerReferenced: boolean | null;
+  mergedIntoDefault: boolean | null;
 }
 
 export interface NativePoolStatus {
@@ -94,8 +96,16 @@ export interface NativePoolStatus {
   policy: WorktreePolicy;
   identityValid: boolean;
   markerValid: boolean;
+  observedDefaultSha: string | null;
   slots: NativeSlotStatus[];
 }
+
+export type WorktreeRemoveResult =
+  | { outcome: "removed" }
+  | { outcome: "alreadyRemoved" }
+  | { outcome: "refused"; reason: string }
+  | { outcome: "conflict"; reason: string }
+  | { outcome: "outcomeUnknown"; reason: string };
 
 export interface NativeMaintenanceCandidate {
   poolId: string;
@@ -245,6 +255,7 @@ export class WorktreeManager {
   private reclaimDomainLeases: () => Promise<void> = async () => {};
   /** Grants protected until their task/check row durably records the random lease ID. */
   private readonly pendingDomainLeases = new Set<string>();
+  private readonly changeBatch = new AsyncLocalStorage<{ pending: boolean }>();
 
   constructor(db: DatabaseSync = openDb(), deps: Partial<WorktreeManagerDeps> = {}) {
     this.store = new WorktreeStore(db);
@@ -290,11 +301,33 @@ export class WorktreeManager {
     return this.acquireLock(`slot:${slotId}`);
   }
 
-  private publish(): void {
+  private deliverPublish(): void {
     try {
       this.deps.publishChanged();
     } catch (error) {
       console.warn("[worktrees] change publication failed:", error);
+    }
+  }
+
+  private publish(): void {
+    const batch = this.changeBatch.getStore();
+    if (batch) {
+      batch.pending = true;
+      return;
+    }
+    this.deliverPublish();
+  }
+
+  /** Coalesces every visible mutation in one operator action into one invalidation. */
+  async runChangeBatch<T>(operation: () => Promise<T>, publishOnSuccess = true): Promise<T> {
+    if (this.changeBatch.getStore()) return operation();
+    const batch = { pending: false };
+    try {
+      const result = await this.changeBatch.run(batch, operation);
+      if (publishOnSuccess) batch.pending = true;
+      return result;
+    } finally {
+      if (batch.pending) this.deliverPublish();
     }
   }
 
@@ -601,8 +634,6 @@ export class WorktreeManager {
     if (!reservation) {
       return { outcome: "notAcquired", reason: `native pool capacity ${policy.maxSlots} is exhausted` };
     }
-    this.publish();
-
     return this.withSlot(reservation.id, async () => {
       try {
         if (!created) {
@@ -840,7 +871,6 @@ export class WorktreeManager {
         return { outcome: "outcomeUnknown", reason: bounded(String(error)) };
       }
       if (!returning) return { outcome: "outcomeUnknown", reason: "return intent could not be persisted" };
-      this.publish();
       let reset: Awaited<ReturnType<WorktreeGit["reset"]>>;
       try {
         reset = await this.deps.git.reset(slot.path, target.value);
@@ -890,9 +920,18 @@ export class WorktreeManager {
   }
 
   async reconcile(): Promise<void> {
-    for (const pool of this.store.pools()) {
-      await this.reconcilePool(pool);
-    }
+    await this.runChangeBatch(async () => {
+      for (const pool of this.store.pools()) {
+        await this.reconcilePool(pool);
+      }
+    }, false);
+  }
+
+  async reconcilePoolById(poolId: string): Promise<boolean> {
+    const pool = this.store.pool(poolId);
+    if (!pool) return false;
+    await this.reconcilePool(pool);
+    return true;
   }
 
   private async reconcilePool(pool: WorktreePoolRow): Promise<void> {
@@ -1111,12 +1150,17 @@ export class WorktreeManager {
       const marker = await readWorktreePoolMarker(pool.poolPath);
       const markerValid = marker?.poolId === pool.id;
       let listed: Awaited<ReturnType<WorktreeGit["list"]>> | null = null;
+      let observedDefaultSha: string | null = null;
       if (identityValid && identity) {
         try {
           listed = await this.deps.git.list(identity);
         } catch {
           listed = null;
         }
+        try {
+          const observed = await this.deps.git.observedDefaultSha(identity);
+          if (observed.ok) observedDefaultSha = observed.value;
+        } catch {}
       }
       const slots: NativeSlotStatus[] = [];
       for (const slot of allSlots.filter((candidate) => candidate.poolId === pool.id)) {
@@ -1144,6 +1188,13 @@ export class WorktreeManager {
         const registration = listed?.ok === true
           ? registrationFor(listed.value, slot.path)
           : null;
+        let mergedIntoDefault: boolean | null = null;
+        if (inspection?.ok === true && observedDefaultSha) {
+          try {
+            const merged = await this.deps.git.mergedInto(slot.path, observedDefaultSha);
+            if (merged.ok) mergedIntoDefault = merged.value;
+          } catch {}
+        }
         slots.push({
           slot,
           nativePath,
@@ -1159,6 +1210,7 @@ export class WorktreeManager {
           dirty: inspection?.ok === true ? inspection.value.dirty : null,
           occupancy: occupancy.get(slot.path) ?? { status: "unknown", reason: "path is missing" },
           ownerReferenced: referenced,
+          mergedIntoDefault,
         });
       }
       output.push({
@@ -1166,10 +1218,139 @@ export class WorktreeManager {
         policy: this.deps.resolvePolicy(pool.gitCommonDirectory),
         identityValid,
         markerValid,
+        observedDefaultSha,
         slots,
       });
     }
     return output;
+  }
+
+  /**
+   * Remove one exact manager-owned slot after rechecking every destructive boundary.
+   * Dirty or unmerged work may be explicitly acknowledged; unknown identity, ownership,
+   * registration, or process state is never overrideable.
+   */
+  async removeSlot(input: {
+    slotId: string;
+    expectedVersion?: number;
+    allowDirty: boolean;
+    allowUnmerged: boolean;
+  }): Promise<WorktreeRemoveResult> {
+    return this.withSlot(input.slotId, async () => {
+      const slot = this.store.slot(input.slotId);
+      if (!slot) return { outcome: "alreadyRemoved" };
+      if (input.expectedVersion !== undefined && slot.version !== input.expectedVersion) {
+        return { outcome: "conflict", reason: "slot version changed after preview" };
+      }
+      if (slot.state !== "available" && slot.state !== "quarantined") {
+        return { outcome: "refused", reason: `slot is ${slot.state}, not removable` };
+      }
+      const active = activeReference(slot);
+      if (active !== null) {
+        return { outcome: "refused", reason: "slot still carries active lease identity" };
+      }
+      const prior = lastReference(slot);
+      if (prior === "invalid") {
+        return { outcome: "refused", reason: "last-released lease identity is incomplete" };
+      }
+      if (prior) {
+        try {
+          if (await this.ownerReferenced(prior)) {
+            return { outcome: "refused", reason: "domain owner still references this lease" };
+          }
+        } catch (error) {
+          return { outcome: "outcomeUnknown", reason: `domain ownership is unknown: ${bounded(String(error))}` };
+        }
+      }
+      const blocker = await this.occupancyBlocker(slot.path);
+      if (blocker) return { outcome: "refused", reason: blocker };
+      const pool = this.store.poolForSlot(slot.id);
+      if (!pool) return { outcome: "refused", reason: "native slot pool no longer exists" };
+      const identity = this.identity(pool.mainCheckoutRoot);
+      if (!identity || !exactSlotPath(pool, identity, slot)) {
+        return { outcome: "refused", reason: "pool repository identity can no longer be proven" };
+      }
+      const marker = await readWorktreePoolMarker(pool.poolPath);
+      if (marker?.poolId !== pool.id) {
+        return { outcome: "refused", reason: "native pool marker is missing or does not match" };
+      }
+      let observed: [
+        Awaited<ReturnType<WorktreeGit["list"]>>,
+        Awaited<ReturnType<WorktreeGit["inspect"]>>,
+        Awaited<ReturnType<WorktreeGit["observedDefaultSha"]>>,
+      ];
+      try {
+        observed = await Promise.all([
+          this.deps.git.list(identity),
+          this.deps.git.inspect(slot.path),
+          this.deps.git.observedDefaultSha(identity),
+        ]);
+      } catch (error) {
+        return { outcome: "outcomeUnknown", reason: bounded(String(error)) };
+      }
+      const [listed, inspection, target] = observed;
+      if (!listed.ok) return { outcome: listed.outcomeUnknown ? "outcomeUnknown" : "refused", reason: listed.reason };
+      const registration = registrationFor(listed.value, slot.path);
+      if (!registration || registration.bare || registration.locked || registration.prunable) {
+        return { outcome: "refused", reason: "slot has no safe Git worktree registration" };
+      }
+      if (!inspection.ok) {
+        return { outcome: inspection.outcomeUnknown ? "outcomeUnknown" : "refused", reason: inspection.reason };
+      }
+      if (inspection.value.path !== slot.path || inspection.value.commonDirectory !== pool.gitCommonDirectory) {
+        return { outcome: "refused", reason: "slot repository ownership is not proven" };
+      }
+      if (inspection.value.dirty && !input.allowDirty) {
+        return { outcome: "refused", reason: "slot is dirty" };
+      }
+      if (!target.ok) {
+        return { outcome: target.outcomeUnknown ? "outcomeUnknown" : "refused", reason: target.reason };
+      }
+      let merged: Awaited<ReturnType<WorktreeGit["mergedInto"]>>;
+      try {
+        merged = await this.deps.git.mergedInto(slot.path, target.value);
+      } catch (error) {
+        return { outcome: "outcomeUnknown", reason: bounded(String(error)) };
+      }
+      if (!merged.ok) {
+        return { outcome: merged.outcomeUnknown ? "outcomeUnknown" : "refused", reason: merged.reason };
+      }
+      if (!merged.value && !input.allowUnmerged) {
+        return { outcome: "refused", reason: "slot HEAD is not merged into the observed remote default" };
+      }
+      const finalBlocker = await this.occupancyBlocker(slot.path);
+      if (finalBlocker) return { outcome: "refused", reason: finalBlocker };
+      const pruning = this.store.markPruning(slot.id, slot.version, this.deps.now());
+      if (!pruning) return { outcome: "conflict", reason: "prune intent lost its slot compare-and-swap" };
+      this.publish();
+      let removed: Awaited<ReturnType<WorktreeGit["remove"]>>;
+      try {
+        removed = await this.deps.git.remove(identity, slot.path, inspection.value.dirty);
+      } catch (error) {
+        return { outcome: "outcomeUnknown", reason: bounded(String(error)) };
+      }
+      if (!removed.ok) {
+        return { outcome: "outcomeUnknown", reason: removed.reason };
+      }
+      let after: Awaited<ReturnType<WorktreeGit["list"]>>;
+      try {
+        after = await this.deps.git.list(identity);
+      } catch (error) {
+        return { outcome: "outcomeUnknown", reason: bounded(String(error)) };
+      }
+      if (!after.ok) {
+        return { outcome: "outcomeUnknown", reason: after.reason };
+      }
+      if (existsSync(slot.path) || registrationFor(after.value, slot.path)) {
+        this.quarantine(pruning, "worktree removal could not be verified");
+        return { outcome: "outcomeUnknown", reason: "worktree removal could not be verified" };
+      }
+      if (!this.store.removePruned(pruning.id, pruning.version)) {
+        return { outcome: "outcomeUnknown", reason: "removed worktree row could not be settled" };
+      }
+      this.publish();
+      return { outcome: "removed" };
+    });
   }
 
   /** Preview-only safe prune and right-size candidates. No filesystem mutation occurs. */
@@ -1177,15 +1358,6 @@ export class WorktreeManager {
     const status = await this.status();
     const candidates: NativeMaintenanceCandidate[] = [];
     for (const poolStatus of status) {
-      const identity = this.identity(poolStatus.pool.mainCheckoutRoot);
-      let target: Awaited<ReturnType<WorktreeGit["observedDefaultSha"]>> | null = null;
-      if (identity && poolStatus.identityValid && poolStatus.markerValid) {
-        try {
-          target = await this.deps.git.observedDefaultSha(identity);
-        } catch (error) {
-          target = { ok: false, reason: bounded(String(error)), outcomeUnknown: true };
-        }
-      }
       const overCapacity = Math.max(0, poolStatus.slots.length - poolStatus.policy.maxSlots);
       const rightSizeIds = new Set(
         [...poolStatus.slots]
@@ -1205,15 +1377,11 @@ export class WorktreeManager {
         else if (entry.dirty !== false) reason = "slot cleanliness is not proven";
         else if (entry.occupancy.status === "unknown") reason = entry.occupancy.reason;
         else if (entry.occupancy.occupants.length > 0) reason = "slot is occupied";
-        else if (!target?.ok) reason = target?.reason ?? "pool repository identity is unknown";
-        else {
-          try {
-            const merged = await this.deps.git.mergedInto(entry.slot.path, target.value);
-            if (!merged.ok) reason = merged.reason;
-            else if (!merged.value) reason = "slot HEAD is not merged into the observed remote default";
-          } catch (error) {
-            reason = bounded(String(error));
-          }
+        else if (!poolStatus.observedDefaultSha) reason = "remote default branch is unknown";
+        else if (entry.mergedIntoDefault !== true) {
+          reason = entry.mergedIntoDefault === false
+            ? "slot HEAD is not merged into the observed remote default"
+            : "slot merge relationship is unknown";
         }
         candidates.push({
           poolId: poolStatus.pool.id,

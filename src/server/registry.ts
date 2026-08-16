@@ -436,6 +436,8 @@ const LINE_INPUT_EVENTS = new Set<ServerEvent["type"]>([
   // Changes which model/effort/runtime the NEXT dispatch uses, so the pickers naming those
   // defaults have to re-read rather than wait out a poll.
   "harnesses_config_changed",
+  // Deliberately absent: worktree inventory and policy do not feed the Line's execution
+  // fold. Its content-free event only tells an open Settings panel to re-observe.
   // `pipeline_upsert` / `pipeline_remove` are DELIBERATELY absent, and the question was
   // asked rather than skipped. The Line folds Mission Control's own execution - its
   // sessions, tasks, runs and ensembles - and a pipeline run is a second engine's, which
@@ -899,6 +901,11 @@ export class Registry extends EventEmitter {
    */
   emitHarnessesConfigChanged(): void {
     this.emitEvent({ type: "harnesses_config_changed" });
+  }
+
+  /** Announce that the bounded Worktrees route should be re-observed. */
+  emitWorktreesChanged(): void {
+    this.emitEvent({ type: "worktrees_changed" });
   }
 
   /**

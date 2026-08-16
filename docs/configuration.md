@@ -145,6 +145,11 @@ node scripts/codex-app-server-bindings.mjs  # regenerate app-server types from t
 npx tsx scripts/measure-inspector-prompt.ts # size the GitHub Inspector review prompt on this checkout
 ```
 
+The same lease and pool policy are visible under **Settings > Worktrees**. The panel can set
+default and per-repository native enablement, maximum capacity, and an operator-authored setup
+argv for newly created slots. Capacity reductions are future-only until a separately previewed
+safe Prune or right-size operation runs. See [Worktree settings and operations](worktrees-and-checks.md#settings--worktrees).
+
 The `make` wrappers for the build and verification commands - `make build`, `make test`,
 `make lint`, `make check`, `make smoke` - install dependencies first, through a stamp file
 (`node_modules/.install-stamp`) that carries `package.json` and `package-lock.json` as its

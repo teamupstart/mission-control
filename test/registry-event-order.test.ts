@@ -78,3 +78,12 @@ test("a listener that throws does not strand the queue for the next emit", () =>
   registry.upsertTask(baseTask({ id: "t-throw", title: "after", repoRoot: "/repo" }));
   assert.deepEqual(seen, ["after"]);
 });
+
+test("worktree invalidation is content-free and delivered synchronously", () => {
+  const registry = new Registry();
+  const seen: ServerEvent[] = [];
+  registry.subscribe((event) => seen.push(event));
+  registry.emitWorktreesChanged();
+  assert.deepEqual(seen, [{ type: "worktrees_changed" }]);
+  assert.deepEqual(Object.keys(seen[0]!), ["type"]);
+});

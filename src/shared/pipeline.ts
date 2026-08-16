@@ -1,5 +1,8 @@
 import { z } from "zod";
 
+import type { LlmSpendRole } from "./llm-spend.ts";
+import { TERMINAL_BACKEND_IDS } from "./terminal.ts";
+
 // Pipelines: what Mission Control knows about a gated SDLC engine it does not own.
 //
 // A "pipeline provider" is an EXTERNAL engine that drives a feature through a fixed,
@@ -497,6 +500,33 @@ export interface PipelineProbe {
   checkedAt: number;
 }
 
+/**
+ * Which spend role each provider's usage lands under in the ledger.
+ *
+ * `Record<PipelineProviderId, LlmSpendRole>` is the point of the indirection: the role keys
+ * are persisted in `usage_ledger.note_key` and read back by exact value, so a provider that
+ * shipped without one would either write an unlabelled key into permanent history or write
+ * nothing at all - and the second failure is invisible. This way a provider appended to
+ * `PIPELINE_PROVIDER_IDS` does not compile until somebody has appended its role too.
+ */
+export const PIPELINE_SPEND_ROLES: Record<PipelineProviderId, LlmSpendRole> = {
+  "ai-conductor": "pipeline:ai-conductor",
+};
+
+/**
+ * Which ledger WRITER id each provider's rows carry. The same argument as the roles above,
+ * about the other persisted identifier on the row.
+ *
+ * `usage_ledger.writer` is append-only and is read back by exact value - it is how a row's
+ * provenance survives a schema that can no longer tell one ingest from another by its
+ * columns. A second engine gets a writer id of its own rather than borrowing this one:
+ * "which program wrote this" is the one question the column answers, and two engines behind
+ * one id makes it unanswerable for ever, because the rows are already written.
+ */
+export const PIPELINE_SPEND_WRITERS: Record<PipelineProviderId, string> = {
+  "ai-conductor": "conductor",
+};
+
 /** Whether the provider's own background daemon is running in one repository. */
 export type PipelineDaemonState = "running" | "paused" | "stopped" | "unknown";
 
@@ -769,4 +799,461 @@ export function sortByPipelineStep<T>(
       return byOrder !== 0 ? byOrder : a.i - b.i;
     })
     .map((entry) => entry.item);
+}
+
+// ---- control: the verbs Mission Control may ask an engine to perform ----------------------
+//
+// The line every one of these is on the far side of: **Mission Control still writes nothing
+// the engine owns.** An action spawns the engine's own CLI and reads what it says. The park
+// markers, the grant files, the pidfile and the pause marker are all written by the engine,
+// in response to a verb, exactly as they are when an operator types it - which is what keeps
+// the projection a read of one program's state rather than a negotiation between two.
+//
+// So this vocabulary is a WIRE contract rather than a persisted one: nothing here reaches
+// SQLite or a config blob, and a verb this build does not offer is simply a button that is
+// not drawn. What makes it worth stating once, here, is that four surfaces read it - the run
+// header, the attention row, the daemon route and (from phase 6) the Foreman's triage - and
+// a second spelling of "unpark" would be a second control path to the same engine.
+
+/**
+ * Every control verb, as it crosses the wire.
+ *
+ * Named for what an OPERATOR is asking for rather than for the engine's own argv: `grant`
+ * is one word here and `decide-grant --slug … --step … --reason …` at the provider, because
+ * a second engine's spelling of the same intent must be a difference inside its provider and
+ * not a second entry in this tuple.
+ */
+export const PIPELINE_ACTIONS = [
+  "daemon-start",
+  "daemon-stop",
+  "daemon-pause",
+  "daemon-resume",
+  "park",
+  "unpark",
+  "grant",
+] as const;
+export type PipelineAction = (typeof PIPELINE_ACTIONS)[number];
+
+/** Runtime membership, for a verb that arrived over the wire. */
+export function isPipelineAction(value: string): value is PipelineAction {
+  return (PIPELINE_ACTIONS as readonly string[]).includes(value);
+}
+
+/**
+ * What one verb is called, what it needs, and what it acts on.
+ *
+ * `scope` is the load-bearing field and it is not cosmetic: a repository verb addressed at a
+ * run would silently pause every OTHER feature in that checkout, and a run verb with no run
+ * has nothing to name. The route refuses on this record rather than on a hand-written list
+ * per verb, so the button that is drawn and the request that is accepted cannot disagree.
+ */
+export interface PipelineActionInfo {
+  label: string;
+  /** One sentence for the tooltip: what pressing this does, in the engine's terms. */
+  blurb: string;
+  scope: "repo" | "run";
+  /** The verb names a step - only a DECIDE re-entry grant does. */
+  needsStep: boolean;
+  /**
+   * The verb carries the operator's own justification, which Mission Control never invents.
+   *
+   * True for exactly one verb today, and the reason is the engine's: a grant is a one-time
+   * authorization recorded with `grantedBy: "operator"`, and its `reason` is the whole audit
+   * trail of why an autonomous DECIDE re-entry was allowed. A default sentence supplied from
+   * here would be Mission Control forging that trail - so the form asks, and the button
+   * cannot be pressed until somebody has answered.
+   */
+  needsReason: boolean;
+}
+
+export const PIPELINE_ACTION_INFO: Record<PipelineAction, PipelineActionInfo> = {
+  "daemon-start": {
+    label: "Start daemon",
+    blurb: "Start the engine's own background daemon in this repository.",
+    scope: "repo",
+    needsStep: false,
+    needsReason: false,
+  },
+  "daemon-stop": {
+    label: "Stop daemon",
+    blurb: "Stop the engine's background daemon. Nothing in this repository advances after it.",
+    scope: "repo",
+    needsStep: false,
+    needsReason: false,
+  },
+  "daemon-pause": {
+    label: "Pause daemon",
+    blurb: "Hold the daemon between steps. A step already running finishes.",
+    scope: "repo",
+    needsStep: false,
+    needsReason: false,
+  },
+  "daemon-resume": {
+    label: "Resume daemon",
+    blurb: "Let the daemon dispatch again.",
+    scope: "repo",
+    needsStep: false,
+    needsReason: false,
+  },
+  park: {
+    label: "Park",
+    blurb: "Set this feature aside. The engine stops dispatching and re-kicking it.",
+    scope: "run",
+    needsStep: false,
+    needsReason: false,
+  },
+  unpark: {
+    label: "Unpark",
+    blurb: "Let the engine dispatch this feature again, and reset its no-evidence counter.",
+    scope: "run",
+    needsStep: false,
+    needsReason: false,
+  },
+  grant: {
+    label: "Grant DECIDE re-entry",
+    blurb:
+      "Authorize ONE autonomous entry to one DECIDE step for this feature. Spent on the next " +
+      "dispatch, and never renewed on its own.",
+    scope: "run",
+    needsStep: true,
+    needsReason: true,
+  },
+};
+
+/**
+ * The DECIDE steps a grant may NEVER name, per provider.
+ *
+ * `plan` for ai-conductor, and this copy exists so the picker can leave it out with a note
+ * rather than offering a button whose only outcome is the engine's refusal. The engine
+ * refuses it in four independent places of its own - the CLI, the entry policy before the
+ * grant is read, the consumption path, and the halt it raises - so nothing here is the
+ * enforcement. It is the EXPLANATION, which is the part a refusal relayed from a subprocess
+ * cannot give: a daemon that re-planned would rewrite an approved artifact with no human at
+ * the gate, which is the failure the re-entry gate exists to prevent.
+ */
+export const PIPELINE_UNGRANTABLE_STEPS: Record<PipelineProviderId, readonly string[]> = {
+  "ai-conductor": ["plan"],
+};
+
+/**
+ * The steps a DECIDE re-entry grant may name, in the engine's own order.
+ *
+ * DERIVED from the frozen step table rather than listed, because the engine derives it the
+ * same way - its policy gate asks `step.phase === "DECIDE"` and never consults a name list.
+ * A conductor release that adds a DECIDE step therefore appears in this picker as soon as
+ * the frozen table learns it, and one that this build has never heard of is simply absent
+ * from a picker rather than mis-offered.
+ */
+export function pipelineGrantableSteps(provider: PipelineProviderId): PipelineStepInfo[] {
+  const ungrantable = new Set(PIPELINE_UNGRANTABLE_STEPS[provider]);
+  return PIPELINE_STEPS[provider].filter(
+    (step) => step.phase === "DECIDE" && !step.outOfBand && !ungrantable.has(step.name),
+  );
+}
+
+/** Whether a step name may carry a grant. The route's refusal, and the picker's filter. */
+export function isPipelineGrantableStep(provider: PipelineProviderId, step: string): boolean {
+  return pipelineGrantableSteps(provider).some((entry) => entry.name === step);
+}
+
+/**
+ * The sentence a refused grant gets, spelled once.
+ *
+ * Mission Control refuses `plan` BEFORE spawning - see `PIPELINE_UNGRANTABLE_STEPS` - so this
+ * is what a caller reads instead of the engine's own stderr. Written as an explanation rather
+ * than as a relayed error for that reason: nothing ran, so there is no output to quote.
+ */
+export function pipelineGrantRefusal(provider: PipelineProviderId, step: string): string | null {
+  if (PIPELINE_UNGRANTABLE_STEPS[provider].includes(step)) {
+    return (
+      `${PIPELINE_PROVIDER_INFO[provider].label} never grants re-entry to '${step}': an ` +
+      "autonomous pass there would rewrite an approved decision with nobody at the gate. " +
+      "Drive that revision yourself, then resume the feature."
+    );
+  }
+  if (!isPipelineGrantableStep(provider, step)) {
+    return `'${step}' is not a DECIDE step this build can offer a grant for.`;
+  }
+  return null;
+}
+
+/**
+ * Which verbs each halt class offers, in the order an operator should consider them.
+ *
+ * `Record<PipelineHaltClass, …>` for the reason every record in this file is one: a class
+ * appended to the tuple does not compile until somebody has said what clears it. Empty is a
+ * legitimate answer and `protected-artifact` is it - that halt is cleared by the reseal
+ * ceremony, which is a console rather than a verb, because the engine refuses to perform it
+ * without a terminal.
+ *
+ * `mechanical` gets `unpark` alone deliberately. The engine re-kicks that class on its own
+ * once the cause clears, so the useful action is releasing a park somebody applied while
+ * looking at it - and offering a grant beside it would suggest a DECIDE gate is what stopped
+ * a run that no DECIDE gate touched.
+ */
+export const PIPELINE_HALT_ACTIONS: Record<PipelineHaltClass, readonly PipelineAction[]> = {
+  "needs-human": ["grant", "unpark"],
+  mechanical: ["unpark"],
+  "protected-artifact": [],
+  legacy: ["unpark"],
+  unclassified: ["unpark"],
+};
+
+/**
+ * Whether a DECIDE re-entry grant is a thing this run can be offered at all.
+ *
+ * Read off the table above rather than decided again here, and that is the whole point of the
+ * function: the inbox draws a halt's verbs from `PIPELINE_HALT_ACTIONS`, and a run header that
+ * decided for itself which verbs a run deserves is a second policy that agrees with the first
+ * one only until somebody edits one of them. It disagreed exactly there - the header offered a
+ * grant on every unfinished run, including a run that has not halted at all.
+ *
+ * A grant is the ANSWER TO A REFUSAL, which is why the halt is what licenses it. The engine
+ * stops at a DECIDE gate, classifies that stop `needs-human`, and the grant authorizes one
+ * re-entry past it; granted to a run that never stopped, the same record is a standing
+ * permission for the engine to walk through the next gate it meets with nobody watching. That
+ * is the gate's entire purpose, spent in advance.
+ *
+ * The daemon holds this too (`POST /api/pipelines/action`), for the reason every refusal in
+ * this file is held on both sides: hiding a button decides what an operator is offered, not
+ * what the loopback API accepts.
+ */
+export function pipelineGrantAllowed(halt: { class: PipelineHaltClass } | null): boolean {
+  return halt !== null && PIPELINE_HALT_ACTIONS[halt.class].includes("grant");
+}
+
+/**
+ * Which daemon verbs are worth offering for each state the daemon was observed in.
+ *
+ * Derived from the state rather than drawn as four permanent buttons, because three of them
+ * are no-ops at any given moment and a control whose only outcome is "already paused" teaches
+ * an operator to distrust the row. The engine tolerates every one of them regardless - pause
+ * on a paused daemon prints `already paused` - so this decides what is USEFUL, never what is
+ * permitted.
+ *
+ * `unknown` offers both ends deliberately. That state means a pass could not read the
+ * engine's `.daemon/` at all, so the honest offer is the two verbs that resolve the question
+ * either way rather than a guess about which one is needed.
+ */
+export const PIPELINE_DAEMON_ACTIONS: Record<PipelineDaemonState, readonly PipelineAction[]> = {
+  running: ["daemon-pause", "daemon-stop"],
+  paused: ["daemon-resume", "daemon-stop"],
+  stopped: ["daemon-start"],
+  unknown: ["daemon-start", "daemon-stop"],
+};
+
+// ---- consoles: the two things that need a terminal rather than a verb ---------------------
+
+/**
+ * The hosted terminals this integration opens.
+ *
+ * Separate from the verbs above because they are not requests with answers: one ATTACHES to
+ * a running daemon for as long as somebody watches it, and the other performs a ceremony the
+ * engine refuses to perform without a terminal at all. Neither has stdout Mission Control
+ * could validate, because in both cases the person reading the output is the point.
+ */
+export const PIPELINE_CONSOLES = ["daemon", "reseal"] as const;
+export type PipelineConsole = (typeof PIPELINE_CONSOLES)[number];
+
+/** Runtime membership, for a console named over the wire. */
+export function isPipelineConsole(value: string): value is PipelineConsole {
+  return (PIPELINE_CONSOLES as readonly string[]).includes(value);
+}
+
+export interface PipelineConsoleInfo {
+  label: string;
+  blurb: string;
+  scope: "repo" | "run";
+  /** The verb a person is about to perform, for the backend picker's heading. */
+  verb: string;
+}
+
+export const PIPELINE_CONSOLE_INFO: Record<PipelineConsole, PipelineConsoleInfo> = {
+  daemon: {
+    label: "Open daemon console",
+    blurb:
+      "Attach a terminal to the engine daemon's own session, read-only, so you can watch " +
+      "what it is doing without typing into it.",
+    scope: "repo",
+    verb: "Watch the engine daemon in",
+  },
+  reseal: {
+    label: "Open reseal terminal",
+    blurb:
+      "Re-seal a protected artifact the engine found changed under it. The engine refuses " +
+      "this without a terminal, so it happens where you can read the result.",
+    scope: "run",
+    verb: "Run the reseal ceremony in",
+  },
+};
+
+/**
+ * Which console each halt class offers, beside the verbs in `PIPELINE_HALT_ACTIONS`.
+ *
+ * The other half of that record, and the reason its `protected-artifact` entry is empty: that
+ * halt is cleared by a ceremony rather than by a verb, and a class whose only way out is a
+ * hosted terminal would otherwise be the one attention row with nothing on it. Kept as a
+ * second record rather than folded into the first because the two are not interchangeable at
+ * the call site - one posts and reads an answer, the other opens a window.
+ */
+export const PIPELINE_HALT_CONSOLES: Record<PipelineHaltClass, readonly PipelineConsole[]> = {
+  "needs-human": [],
+  mechanical: [],
+  "protected-artifact": ["reseal"],
+  legacy: [],
+  unclassified: [],
+};
+
+/**
+ * Whether one console is licensed by the run state the daemon is holding.
+ *
+ * Repository consoles do not answer a halt and are always eligible once repository consent
+ * has passed. A run console does: hiding its button decides what the dashboard offers, while
+ * this predicate also lets the route decide what the loopback API accepts from any caller.
+ */
+export function pipelineConsoleAllowed(
+  console_: PipelineConsole,
+  halt: { class: PipelineHaltClass } | null,
+): boolean {
+  return (
+    PIPELINE_CONSOLE_INFO[console_].scope === "repo" ||
+    (halt !== null && PIPELINE_HALT_CONSOLES[halt.class].includes(console_))
+  );
+}
+
+/**
+ * What a control request may carry: how many artifact paths one reseal may name, how long
+ * each may be, and how long a rationale may be - a grant's as well as a reseal's.
+ *
+ * Bounded because every one of them reaches an argv this daemon composes, and an unbounded
+ * list from a browser is an unbounded command line. Generous enough that no real ceremony
+ * or grant meets them.
+ */
+export const PIPELINE_CONTROL_LIMITS = { paths: 20, pathBytes: 1024, reasonBytes: 2000 } as const;
+
+// ---- what crosses the wire ----------------------------------------------------------------
+
+/**
+ * One control request.
+ *
+ * The run's identity is the same `(provider, repoRoot, slug)` triple every other pipeline
+ * route takes, with `slug` null for a repository verb - a discriminated union per verb would
+ * be seven near-identical members whose only difference is a field this record already
+ * declares in `PIPELINE_ACTION_INFO`. The cross-field rules are checked against that record
+ * below, so adding a verb cannot forget them.
+ */
+export const PipelineActionRequestSchema = z
+  .object({
+    provider: z.enum(PIPELINE_PROVIDER_IDS),
+    repoRoot: z.string().min(1),
+    /** The feature, for a run-scoped verb. Null, and refused, for a repository one. */
+    slug: z.string().min(1).nullable().default(null),
+    action: z.enum(PIPELINE_ACTIONS),
+    /** The DECIDE step a grant names. */
+    step: z.string().min(1).nullable().default(null),
+    /** The operator's own justification, for a verb that records one. */
+    reason: z.string().min(1).max(PIPELINE_CONTROL_LIMITS.reasonBytes).nullable().default(null),
+  })
+  .superRefine((value, ctx) => {
+    const info = PIPELINE_ACTION_INFO[value.action];
+    // Both directions. A missing slug on a run verb is the obvious half; a slug supplied
+    // with a repository verb is the dangerous one, because it reads as "pause this feature"
+    // and would in fact pause every feature in the checkout.
+    if (info.scope === "run" && value.slug === null) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["slug"], message: `${value.action} names a feature` });
+    }
+    if (info.scope === "repo" && value.slug !== null) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["slug"],
+        message: `${value.action} acts on the whole repository, not one feature`,
+      });
+    }
+    if (info.needsStep && value.step === null) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["step"], message: `${value.action} names a step` });
+    }
+    if (!info.needsStep && value.step !== null) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["step"], message: `${value.action} names no step` });
+    }
+    if (info.needsReason && (value.reason === null || value.reason.trim() === "")) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["reason"],
+        message: `${value.action} records why you allowed it`,
+      });
+    }
+  });
+export type PipelineActionRequest = z.infer<typeof PipelineActionRequestSchema>;
+
+/** One request to open a hosted terminal. */
+export const PipelineConsoleRequestSchema = z
+  .object({
+    provider: z.enum(PIPELINE_PROVIDER_IDS),
+    repoRoot: z.string().min(1),
+    slug: z.string().min(1).nullable().default(null),
+    console: z.enum(PIPELINE_CONSOLES),
+    /**
+     * The reseal ceremony's own arguments, absent for the daemon console.
+     *
+     * Supplied by the operator rather than derived here, and that is the same rule the grant
+     * form holds: the engine records a reseal as an operator act with a rationale, and a path
+     * list Mission Control guessed at would be Mission Control deciding which sealed decision
+     * is allowed to have moved.
+     */
+    paths: z
+      .array(z.string().min(1).max(PIPELINE_CONTROL_LIMITS.pathBytes))
+      .max(PIPELINE_CONTROL_LIMITS.paths)
+      .default([]),
+    reason: z.string().max(PIPELINE_CONTROL_LIMITS.reasonBytes).default(""),
+    /** Also clear the halt, which the engine does only for a protected-artifact one. */
+    clearHalt: z.boolean().default(false),
+    backend: z.enum(TERMINAL_BACKEND_IDS),
+  })
+  .superRefine((value, ctx) => {
+    if (PIPELINE_CONSOLE_INFO[value.console].scope === "run" && value.slug === null) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["slug"], message: "that console names a feature" });
+    }
+    if (value.console !== "reseal") return;
+    if (value.paths.length === 0) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["paths"], message: "name at least one sealed artifact" });
+    }
+    if (value.reason.trim() === "") {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["reason"], message: "the engine records why you resealed" });
+    }
+  });
+export type PipelineConsoleRequest = z.infer<typeof PipelineConsoleRequestSchema>;
+
+/**
+ * What an action answers with, whether it worked or not.
+ *
+ * Always a 200 with `ok` inside, the shape `POST /api/ensembles/preview` uses: "the engine
+ * refused" is the ANSWER to this request rather than a failure of it, and the surface that
+ * asked has to draw the engine's own words either way. The two refusal classes that DO get a
+ * status - a repository nobody consented to, a body that does not parse - are the ones where
+ * there is no engine answer to carry.
+ */
+export interface PipelineActionResult {
+  ok: boolean;
+  action: PipelineAction;
+  /**
+   * What was asked of the engine, as a command line.
+   *
+   * Shown beside a failure so an operator can run the same thing by hand and see more. It is
+   * assembled from the argv this daemon spawned rather than re-derived for display, so it
+   * cannot describe a command other than the one that ran.
+   */
+  command: string;
+  /** One sentence: the confirmation parsed out of the engine's output, or why this failed. */
+  detail: string;
+  /** The engine's own output, clipped. Carried on a failure; empty on a clean success. */
+  output: string;
+}
+
+/** What opening a console answers with. */
+export interface PipelineConsoleResult {
+  ok: boolean;
+  console: PipelineConsole;
+  /** The terminal that took it, for the flash an operator reads. */
+  label: string;
+  error?: string;
 }

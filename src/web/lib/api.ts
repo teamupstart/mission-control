@@ -82,6 +82,10 @@ import type {
 } from "@shared/schedules.ts";
 import type { SweepReport, TaskSourceRef, TaskSourcesView } from "@shared/task-source.ts";
 import type {
+  PipelineActionRequest,
+  PipelineActionResult,
+  PipelineConsoleRequest,
+  PipelineConsoleResult,
   PipelineProviderId,
   PipelineRepoStatus,
   PipelineRunDetail,
@@ -260,6 +264,77 @@ export const fetchPipelineRunDetail = (
   fetchJson<PipelineRunDetail>(
     `/api/pipelines/run?provider=${encodeURIComponent(provider)}&repoRoot=${encodeURIComponent(repoRoot)}&slug=${encodeURIComponent(slug)}`,
   );
+/**
+ * Ask the engine to do one thing, and answer with what it said about it.
+ *
+ * Deliberately not `post()`: that helper flattens every 2xx to `ok: true`, and this route's
+ * whole shape is a 200 carrying the ENGINE's own `ok`. A refused pause is the answer to
+ * "please pause this" rather than a failed request, so flattening it would draw an engine that
+ * ignored the operator as one that obeyed. Every failure - a refusal, a non-2xx, a dead fetch -
+ * comes back in the same record, because the surface needs one sentence for all of them.
+ *
+ * Nothing here re-reads the run afterwards. The daemon re-projects as part of the action and
+ * emits `pipeline_upsert`, so the row updates from the stream that already owns it.
+ */
+export async function runPipelineAction(req: PipelineActionRequest): Promise<PipelineActionResult> {
+  const failed = (detail: string): PipelineActionResult => ({
+    ok: false,
+    action: req.action,
+    command: "",
+    detail,
+    output: "",
+  });
+  try {
+    const res = await fetch("/api/pipelines/action", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(req),
+    });
+    const data = (await res.json().catch(() => ({}))) as Partial<PipelineActionResult> & {
+      error?: string;
+    };
+    if (!res.ok) return failed(data.error ?? `HTTP ${res.status}`);
+    return {
+      ok: data.ok === true,
+      action: data.action ?? req.action,
+      command: data.command ?? "",
+      detail: data.detail ?? "",
+      output: data.output ?? "",
+    };
+  } catch (err) {
+    return failed(err instanceof Error ? err.message : String(err));
+  }
+}
+
+/** Open one hosted terminal on the engine - its daemon console, or the reseal ceremony. */
+export async function openPipelineConsole(
+  req: PipelineConsoleRequest,
+): Promise<PipelineConsoleResult> {
+  try {
+    const res = await fetch("/api/pipelines/console", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(req),
+    });
+    const data = (await res.json().catch(() => ({}))) as Partial<PipelineConsoleResult> & {
+      error?: string;
+    };
+    return {
+      ok: res.ok && data.ok !== false,
+      console: req.console,
+      label: data.label ?? "",
+      ...(data.error ? { error: data.error } : res.ok ? {} : { error: `HTTP ${res.status}` }),
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      console: req.console,
+      label: "",
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
 /** Away mode: whether you're away, since when, and the stall thresholds. */
 export const fetchAwayConfig = () => fetchJson<AwayConfig>("/api/away");
 /**

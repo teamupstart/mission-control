@@ -1,5 +1,11 @@
 import { ensembleStageWord } from "@shared/ensemble.ts";
-import { PIPELINE_HALT_CLASS_INFO, PIPELINE_PROVIDER_INFO } from "@shared/pipeline.ts";
+import {
+  PIPELINE_HALT_ACTIONS,
+  PIPELINE_HALT_CLASS_INFO,
+  PIPELINE_HALT_CONSOLES,
+  PIPELINE_PROVIDER_INFO,
+} from "@shared/pipeline.ts";
+import { PipelineActions } from "../pipelines/PipelineActions.tsx";
 import { pipelineRunHash } from "../workflows/useWorkflowRoute.ts";
 import type { AttentionFold, AttentionItem } from "../lib/attention.ts";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
@@ -243,6 +249,23 @@ function InboxItem({
             <span className="dim">Runbook: </span>
             {item.runbook}
           </p>
+          {/*
+            The verbs this halt's own class calls for, and nothing wider: an unpark on a row
+            the engine will re-kick itself, a grant where a DECIDE gate refused, the reseal
+            ceremony where a seal broke. The daemon verbs are deliberately absent - they act
+            on the whole repository, and a repository-wide pause reached from a row about one
+            feature is the mis-click this inbox should not offer.
+
+            The row does NOT close when a verb lands. Draining is the point of this panel, and
+            the halt clearing is what removes the row - through the projection's own event, so
+            what disappears is a row the daemon agrees is finished rather than one this
+            component hid on its own.
+          */}
+          <PipelineActions
+            run={item.run}
+            actions={PIPELINE_HALT_ACTIONS[item.haltClass]}
+            consoles={PIPELINE_HALT_CONSOLES[item.haltClass]}
+          />
         </section>
       );
     case "session_blocked":

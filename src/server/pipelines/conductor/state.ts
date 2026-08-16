@@ -353,6 +353,151 @@ export function readDaemon(repoRoot: string): DaemonReading {
   };
 }
 
+// ---- .docs/shipped/<slug>.md, the engine's own per-feature cost record --------------------
+
+/**
+ * What one feature cost, as the engine wrote it down when the feature shipped.
+ *
+ * Every field is the engine's. Mission Control does NOT re-derive this from the event
+ * ledger, and the temptation to is worth naming: the engine's rollup counts each dispatch
+ * once by matching a `provider_attempt` against the `step_completed` that followed it, and
+ * a second implementation of that matching - incremental, in another program, over a file
+ * being appended to - is a copy of the engine's arithmetic that would quietly disagree with
+ * it. Reading the answer the engine committed is the same posture the rest of this file
+ * takes toward `conduct-state.json`: the engine decides, this reads.
+ *
+ * The trade is that only a SHIPPED feature has one, so a run still in flight contributes
+ * nothing to the spend ledger. That matches how the ledger already treats the app's own
+ * headless runs - a row appears when a run finishes - and the run detail keeps showing the
+ * live figure from the event tail in the meantime.
+ */
+export interface ShippedCostReading {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  /**
+   * What the engine priced this feature at, or NULL when its record does not say.
+   *
+   * Nullable rather than defaulted to zero, and it is the one field here where the
+   * difference is a lie rather than a rounding: every other missing line is a count, where
+   * absent and zero mean the same thing, and this one is a price, where they could not mean
+   * less alike. A record with real token counts and no `cost_usd` - an engine release that
+   * predates the line, a rollup that could price nothing, a value that did not parse - would
+   * otherwise reach the ledger as an exact $0.00 for work that certainly cost something.
+   */
+  costUsd: number | null;
+  dispatches: number;
+  /**
+   * Dispatches the engine could not meter at all - no usage record of any kind.
+   *
+   * Read because it is half of "is this cost figure complete". The other half is
+   * `costUnmetered`.
+   */
+  unmetered: number;
+  /**
+   * Dispatches that reported TOKENS but no cost.
+   *
+   * The field that decides whether the dollar figure may be presented as a total. The
+   * engine's own one-line finish summary omits it, which is why the record is read here
+   * rather than the event: a cost summed over the priced dispatches of a partly-unpriced
+   * feature is a subtotal presented as a total, and the ledger's rule everywhere else is to
+   * refuse that rather than show it.
+   */
+  costUnmetered: number;
+  /** When the record was last written, in epoch ms - the ledger row's `ts`. */
+  writtenAt: number;
+}
+
+/** The heading the cost block opens with, in the engine's own rendering. */
+const COST_HEADING = "## Cost";
+
+/**
+ * A non-negative finite number from one of the block's scalar lines, or null.
+ *
+ * An EMPTY value is null rather than zero, which `Number("")` is not: a key the engine wrote
+ * with nothing after it is a line that failed to render, and `cost_usd:` with no figure after
+ * it is the difference between "this cost nothing" and "this record does not say".
+ */
+function costNumber(raw: string | undefined): number | null {
+  if (raw === undefined || raw.trim() === "") return null;
+  const value = Number(raw.trim());
+  return Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+/**
+ * One feature's committed cost record, or null when there is not a readable one.
+ *
+ * The record lives in the FEATURE'S WORKTREE (`<worktree>/.docs/shipped/<slug>.md`), because
+ * the engine writes and commits it on the feature branch before the pull request opens - it
+ * reaches the main checkout only when that request merges, by which time the worktree is
+ * usually gone and the run is no longer projected.
+ *
+ * Total, like every reader here. A feature that has not shipped, a record with no cost block
+ * (the engine writes one without when its rollup failed), and a block whose numbers are
+ * missing all answer null - which the caller reads as "no cost to record yet", never as an
+ * error. `input` and `output` are required because a block missing both is not a cost
+ * reading; the rest default to zero, so a record from an engine that predates one of these
+ * lines still yields the figures it does carry.
+ */
+export function readShippedCost(worktree: string, slug: string): ShippedCostReading | null {
+  const path = join(worktree, ".docs", "shipped", `${slug}.md`);
+  const text = readSmallFile(path);
+  if (text === null) return null;
+  const at = text.indexOf(COST_HEADING);
+  if (at < 0) return null;
+  // Bounded at the next heading, so the `## Time` block the engine appends after this one
+  // cannot contribute a line to it. Both blocks use bare `key: value`, and `state:` is not a
+  // key this reads - but a block that stopped at end-of-file would start matching the moment
+  // the engine appends a third section that happens to share a name.
+  const body = text.slice(at + COST_HEADING.length);
+  const end = body.indexOf("\n## ");
+  const fields = new Map<string, string>();
+  for (const line of (end < 0 ? body : body.slice(0, end)).split("\n")) {
+    const split = line.indexOf(":");
+    // Indented lines are the per-provider breakdown, which this does not read: the ledger
+    // records what a FEATURE cost, and a provider split would be a second grouping nothing
+    // on any surface asks for.
+    if (split <= 0 || line.startsWith(" ")) continue;
+    fields.set(line.slice(0, split).trim(), line.slice(split + 1));
+  }
+
+  const input = costNumber(fields.get("input"));
+  const output = costNumber(fields.get("output"));
+  if (input === null || output === null) return null;
+
+  let writtenAt = Date.now();
+  try {
+    writtenAt = statSync(path).mtimeMs;
+  } catch {
+    // An unreadable stat on a file we have just read whole is not worth losing the reading
+    // over; `now` puts the spend in today, which is when we learned of it.
+  }
+
+  // `unmetered: count: 3, duration_ms: 900` - the count is the first number on the line, and
+  // the engine writes both halves of it on one line. Parsed by taking the leading integer of
+  // the value rather than by splitting on the comma, so the trailing field can change.
+  const countOf = (key: string): number => {
+    const raw = fields.get(key);
+    const match = raw?.match(/(\d+)/);
+    return match ? Number(match[1]) : 0;
+  };
+
+  return {
+    input,
+    output,
+    cacheRead: costNumber(fields.get("cache_read")) ?? 0,
+    cacheWrite: costNumber(fields.get("cache_creation")) ?? 0,
+    // Carried as null when the line is missing or unreadable. See the field's own note: the
+    // zero every other line falls back to would be a claim about money nobody made.
+    costUsd: costNumber(fields.get("cost_usd")),
+    dispatches: costNumber(fields.get("dispatches")) ?? 0,
+    unmetered: countOf("unmetered"),
+    costUnmetered: countOf("cost_unmetered"),
+    writtenAt,
+  };
+}
+
 // ---- worktree enumeration ---------------------------------------------------------------
 
 /** One feature's worktree: the engine's slug, and where it lives. */

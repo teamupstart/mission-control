@@ -458,8 +458,8 @@ function AutomationRow({ fleet }: { fleet: FleetCost }): React.JSX.Element | nul
         automation
         cost={cost !== null}
         tip={
-          `The Foreman's and GitHub Inspector's own model calls since midnight - the app watching your fleet, not the fleet itself.\n` +
-          `Counted separately from the figures beside it: this is overhead you did not ask for, and it spends while nothing else is happening.\n\n` +
+          `Model calls nobody sat and watched, since midnight - the Foreman's and the GitHub Inspector's own, plus what an external engine spent driving a pipeline for you.\n` +
+          `Counted separately from the figures beside it: none of it is a session you are looking at, and most of it spends while nothing else is happening.\n\n` +
           auto.roles
             .map((r) => {
               const money = r.costUsd === null ? "unpriced" : fmtUsd(r.costUsd);

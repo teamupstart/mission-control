@@ -11,6 +11,7 @@ import {
   readDone,
   readGateVerdicts,
   readHalt,
+  readShippedCost,
   readWorktrees,
 } from "../src/server/pipelines/conductor/state.ts";
 import { tailConductorEvents, tokensIn } from "../src/server/pipelines/conductor/tail.ts";
@@ -586,18 +587,207 @@ test("a stored offset with no recorded identity is rebuilt, not resumed", () => 
   assert.equal(resumed.records.length, 1);
 });
 
-test("token totals sum every numeric leaf, and stay null when nothing reported any", () => {
-  // Summed rather than named field by field, because the engine's usage shape varies by
-  // provider - a reader that named `input`/`output` would silently under-count a third one.
+test("token totals add the five tiers, and stay null when nothing reported any", () => {
+  // Named tiers rather than every numeric leaf. Each tier is exercised, so a table that
+  // dropped one is a failure here rather than a chip that is quietly low.
   assert.equal(
     tokensIn([
       { type: "step_completed", ts: null, offset: 0, body: { tokenUsage: { input: 10, output: 5 } } },
-      { type: "step_completed", ts: null, offset: 1, body: { tokenUsage: { input: 2, cacheRead: 3 } } },
+      {
+        type: "step_completed",
+        ts: null,
+        offset: 1,
+        body: { tokenUsage: { input: 2, cacheRead: 3, cacheCreation: 4, reasoningOutput: 6 } },
+      },
     ]),
-    20,
+    30,
   );
   // Null, not zero: a run whose ledger has not reached a completion has an UNKNOWN spend,
   // and a chip reading `0 tokens` would be a claim nobody made.
   assert.equal(tokensIn([{ type: "step_started", ts: null, offset: 0, body: {} }]), null);
   assert.equal(tokensIn([]), null);
+});
+
+test("a dollar figure and a duration in the usage object are not tokens", () => {
+  // The engine's `TokenUsage` carries `costUsd`, `numTurns` and `durationMs` in the same
+  // object as its tiers. Summing every numeric leaf - which this reader used to do - turned a
+  // two-minute step into 120,000 tokens.
+  assert.equal(
+    tokensIn([
+      {
+        type: "step_completed",
+        ts: null,
+        offset: 0,
+        body: {
+          tokenUsage: { input: 10, output: 5, costUsd: 0.42, numTurns: 3, durationMs: 120_000 },
+        },
+      },
+    ]),
+    15,
+  );
+  // A tier this build has never heard of is ignored rather than absorbed, for the same
+  // reason: nobody has said whether it is tokens.
+  assert.equal(
+    tokensIn([
+      { type: "step_completed", ts: null, offset: 0, body: { tokenUsage: { input: 4, quantumTokens: 900 } } },
+    ]),
+    4,
+  );
+});
+
+test("one dispatch reported twice is counted once", () => {
+  // The engine emits the attempt that ran a dispatch AND the completion of the step it
+  // satisfied, both carrying the same `tokenUsage`. Its own rollup skips the completion when
+  // an attempt covered it; this reader is incremental, so it uses the completion's
+  // `actualProvider` as the stateless equivalent of that skip.
+  const attempt = {
+    type: "provider_attempt",
+    ts: null,
+    offset: 0,
+    body: { invoked: true, step: "build", tokenUsage: { input: 100, output: 50 } },
+  } as const;
+  const completion = {
+    type: "step_completed",
+    ts: null,
+    offset: 1,
+    body: { step: "build", actualProvider: "claude", tokenUsage: { input: 100, output: 50 } },
+  } as const;
+  assert.equal(tokensIn([attempt, completion]), 150, "the pair is one dispatch, not two");
+  // And the halves count on their own: an attempt that landed in an earlier pass than its
+  // completion must not go missing, and a completion with no provider named is a step the
+  // attempt path never reported.
+  assert.equal(tokensIn([attempt]), 150);
+  assert.equal(
+    tokensIn([
+      { type: "step_completed", ts: null, offset: 0, body: { tokenUsage: { input: 7 } } },
+    ]),
+    7,
+  );
+  // An attempt the engine recorded but never invoked spent nothing.
+  assert.equal(
+    tokensIn([
+      {
+        type: "provider_attempt",
+        ts: null,
+        offset: 0,
+        body: { invoked: false, tokenUsage: { input: 100 } },
+      },
+    ]),
+    null,
+  );
+});
+
+// ---- .docs/shipped/<slug>.md, the engine's own cost record ------------------------------
+
+test("a shipped record yields the engine's own figures, and skips what is not one", () => {
+  const root = repo("shipped");
+  const worktree = seedConductorRun(root, "feat", {
+    steps: { finish: "done" },
+    done: true,
+    shipped: {
+      input: 1200,
+      output: 340,
+      cacheRead: 90,
+      cacheWrite: 10,
+      costUsd: 0.421,
+      dispatches: 6,
+    },
+  });
+  const cost = readShippedCost(worktree, "feat");
+  assert.equal(cost?.input, 1200);
+  assert.equal(cost?.output, 340);
+  assert.equal(cost?.cacheRead, 90);
+  assert.equal(cost?.cacheWrite, 10);
+  assert.equal(cost?.costUsd, 0.421);
+  assert.equal(cost?.dispatches, 6);
+  // Both completeness counters, which together decide whether the dollar figure may be
+  // presented as a total at all.
+  assert.equal(cost?.unmetered, 0);
+  assert.equal(cost?.costUnmetered, 0);
+  // The record's own mtime, so a feature that shipped yesterday lands in yesterday's window
+  // rather than in the window of whichever restart happened to read it.
+  assert.ok((cost?.writtenAt ?? 0) > 0);
+  assert.ok((cost?.writtenAt ?? 0) <= Date.now() + 1000);
+});
+
+test("the cost block stops at the next heading, and ignores the per-provider breakdown", () => {
+  // Two ways a naive parser reads a number that is not a cost. The fixture writes an
+  // INDENTED provider line inside the block and an `input:` line in the `## Time` section
+  // after it; both are in the engine's own rendering, and neither is this feature's cost.
+  const root = repo("shipped-bounds");
+  const worktree = seedConductorRun(root, "feat", {
+    steps: { finish: "done" },
+    shipped: { input: 5, output: 7 },
+  });
+  const cost = readShippedCost(worktree, "feat");
+  assert.equal(cost?.input, 5, "not the provider breakdown's 1, and not the ## Time section's");
+  assert.equal(cost?.output, 7);
+});
+
+test("an unpriced or partly-metered feature says so rather than rounding it away", () => {
+  const root = repo("shipped-partial");
+  const worktree = seedConductorRun(root, "feat", {
+    steps: { finish: "done" },
+    shipped: { input: 100, output: 50, costUsd: 0.02, unmetered: 2, costUnmetered: 3 },
+  });
+  const cost = readShippedCost(worktree, "feat");
+  // The counts survive as counts. Whether they make the dollars unpriced is the caller's
+  // decision - see `usageFrom` - but a reader that dropped them would take the evidence away.
+  assert.equal(cost?.unmetered, 2);
+  assert.equal(cost?.costUnmetered, 3);
+  assert.equal(cost?.costUsd, 0.02);
+});
+
+test("a record with no price line reports no price, rather than a price of zero", () => {
+  // The one field where absent and zero are different claims. An engine release that predates
+  // the line, or a rollup that could price nothing, writes real token counts and no
+  // `cost_usd` - and a reader that defaulted it to 0 would hand the ledger an exact $0.00 for
+  // work that certainly cost something. Every other missing line is a COUNT, where the same
+  // default is the honest reading, so those stay at zero here.
+  const root = repo("shipped-priceless");
+  const worktree = seedConductorRun(root, "feat", {
+    steps: { finish: "done" },
+    done: true,
+    shipped: { input: 900, output: 120, costUsd: null },
+  });
+  const cost = readShippedCost(worktree, "feat");
+  assert.equal(cost?.costUsd, null);
+  assert.equal(cost?.input, 900, "the tokens are real and stay");
+  assert.equal(cost?.output, 120);
+  assert.equal(cost?.cacheRead, 0);
+  assert.equal(cost?.unmetered, 0);
+
+  // A price line that does not parse is the same answer: `-1`, an empty value and a word are
+  // all "this record does not tell us what it cost".
+  const dir = join(worktree, ".docs", "shipped");
+  for (const raw of ["nonsense", "", "-1"]) {
+    writeFileSync(join(dir, "feat.md"), `# feat\n\n## Cost\n\ninput: 4\noutput: 2\ncost_usd: ${raw}\n`);
+    assert.equal(readShippedCost(worktree, "feat")?.costUsd, null, raw);
+  }
+  // And a price that IS there survives all of that, including an explicit zero - which is a
+  // claim the engine is entitled to make.
+  writeFileSync(join(dir, "feat.md"), "# feat\n\n## Cost\n\ninput: 4\noutput: 2\ncost_usd: 0\n");
+  assert.equal(readShippedCost(worktree, "feat")?.costUsd, 0);
+});
+
+test("no record, no cost block, and an unreadable one are all just null", () => {
+  const root = repo("shipped-absent");
+  const worktree = seedConductorRun(root, "feat", { steps: { build: "in_progress" } });
+  assert.equal(readShippedCost(worktree, "feat"), null, "a feature that has not shipped");
+
+  // The engine writes the record without a cost block when its own rollup failed.
+  const dir = join(worktree, ".docs", "shipped");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "feat.md"), "# feat\n\n## Time\n\nwall_ms: 12\n");
+  assert.equal(readShippedCost(worktree, "feat"), null, "a record with no cost block");
+
+  // A block whose two required figures are missing is not a cost reading, whatever else it
+  // carries: a row of zeroes entering the spend ledger would be a claim nobody made.
+  writeFileSync(join(dir, "feat.md"), "# feat\n\n## Cost\n\ncost_usd: 0.10\n");
+  assert.equal(readShippedCost(worktree, "feat"), null);
+  writeFileSync(join(dir, "feat.md"), "# feat\n\n## Cost\n\ninput: nonsense\noutput: 4\n");
+  assert.equal(readShippedCost(worktree, "feat"), null);
+
+  // And a record belonging to another feature is not this feature's.
+  assert.equal(readShippedCost(worktree, "other"), null);
 });

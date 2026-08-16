@@ -1454,9 +1454,16 @@ export function openDb(): DatabaseSync {
       -- codex's thread_id) rather than an export window, which is what makes a retried
       -- report idempotent and what lets SESSION_SPEND_ONLY find a claude run's OTel twin.
       spend_kind    TEXT NOT NULL DEFAULT 'session',
-      -- Which ingest wrote the row: 'otel' | 'driver' | 'rollout' | 'report'. See the
-      -- addColumn in migrate() for why this cannot be derived from the columns beside it,
-      -- and why '' (the upgrade default) means "predates the column" and nothing else.
+      -- Which ingest wrote the row: 'otel' | 'driver' | 'rollout' | 'report' | 'conductor'.
+      -- See the addColumn in migrate() for why this cannot be derived from the columns
+      -- beside it, and why '' (the upgrade default) means "predates the column" and nothing
+      -- else. APPEND-ONLY - see the persisted-identifier contract.
+      --
+      -- 'conductor' is the one writer whose subject is not this app: an observed external
+      -- pipeline engine, whose per-feature totals are automation spend under nobody's card.
+      -- It deliberately has NO backfill arm in migrate(), because the arm above it already
+      -- claims every legacy automation row for 'report' and a second claim on the same rows
+      -- would relabel history that 'report' did write.
       writer        TEXT NOT NULL DEFAULT '',
       cost_usd      REAL NOT NULL DEFAULT 0,
       cost_basis    TEXT NOT NULL DEFAULT 'reported',
@@ -6525,6 +6532,93 @@ export function recordDriverSessionUsage(input: {
     try { d.exec("ROLLBACK;"); } catch {}
     throw err;
   }
+}
+
+/**
+ * Record what one feature of an external pipeline engine cost.
+ *
+ * The FIFTH ledger writer, and the first whose subject is not this app. An observed engine
+ * spends on its own schedule, in its own worktrees, under no card and no dispatch of ours -
+ * which is exactly the property `spend_kind = 'automation'` selects for, so these rows fold
+ * into the automation strip beside the Foreman's and stay out of fleet session spend without
+ * any query learning that pipelines exist.
+ *
+ * **The row is REPLACED, not summed, and that is the whole idempotency story.** `window_end_ns`
+ * holds the feature's own key, and the value written is the engine's own whole-feature total
+ * as it committed it - so a re-projection re-reads the same record and writes the same row.
+ * The other three automation-shaped writers can use DO NOTHING because their subject is one
+ * finished run whose numbers never move again; a feature's committed record CAN be rewritten
+ * by the engine (a re-ship, a repair), and DO NOTHING would pin the first figure for ever
+ * while DO UPDATE with addition would double it on the next rebuild of a cache this database
+ * is allowed to lose at any time.
+ *
+ * `ts` is when the ENGINE wrote the record rather than when we read it, which is what keeps a
+ * feature that shipped last week out of today's automation figure after a daemon restart
+ * re-reads it.
+ *
+ * `model_id` and `query_source` are empty strings rather than null, for the reason stated on
+ * the table: they are in the UNIQUE index this upsert targets, and SQLite treats NULLs there
+ * as distinct - one nullable half turns every upsert into an insert.
+ */
+export function recordPipelineUsage(input: {
+  /** The spend role, from `PIPELINE_SPEND_ROLES`. Lands in `note_key`. */
+  role: string;
+  /**
+   * The engine's own writer id, from `PIPELINE_SPEND_WRITERS` - `conductor` today.
+   * Passed rather than hardcoded here so that appending a second engine cannot silently
+   * file its rows under the first one's provenance.
+   */
+  writer: string;
+  /** The feature's own key - `pipelineRunKey`. The dedup key, in `window_end_ns`. */
+  featureKey: string;
+  /** Which engine, for the `agent` column. */
+  agent: string;
+  ts: number;
+  costUsd: number;
+  /** Every dispatch behind `costUsd` was priced. False stores it as unpriced. */
+  costKnown: boolean;
+  input: number;
+  output: number;
+  reasoningOutput: number;
+  cacheRead: number;
+  cacheWrite: number;
+}): void {
+  openDb()
+    .prepare(
+      `INSERT INTO usage_ledger
+         (note_key, session_id, agent, model_id, query_source, window_end_ns, ts,
+          cost_usd, cost_basis, cost_known, pricing_version, input, output,
+          reasoning_output, cache_read, cache_write, spend_kind, writer)
+       VALUES (?, NULL, ?, '', '', ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, 'automation', ?)
+       ON CONFLICT(note_key, model_id, query_source, window_end_ns) DO UPDATE SET
+         ts=excluded.ts,
+         cost_usd=excluded.cost_usd,
+         cost_basis=excluded.cost_basis,
+         cost_known=excluded.cost_known,
+         input=excluded.input,
+         output=excluded.output,
+         reasoning_output=excluded.reasoning_output,
+         cache_read=excluded.cache_read,
+         cache_write=excluded.cache_write`,
+    )
+    .run(
+      input.role,
+      input.agent,
+      input.featureKey,
+      input.ts,
+      input.costKnown ? input.costUsd : 0,
+      // 'reported' because the engine's own provider priced it - the same provenance a
+      // driver row has, and for the same reason: the arithmetic was done by the CLI that
+      // holds the account's rates, not by a price snapshot in this repository.
+      input.costKnown ? "reported" : "unpriced",
+      input.costKnown ? 1 : 0,
+      input.input,
+      input.output,
+      input.reasoningOutput,
+      input.cacheRead,
+      input.cacheWrite,
+      input.writer,
+    );
 }
 
 /**

@@ -37,6 +37,13 @@ export const LLM_SPEND_ROLES = [
   "foreman:backlog",
   "inspector:review",
   "inspector:reply",
+  // Not one of this app's own loops, and the only member that is not. An observed pipeline
+  // engine spends on its own schedule in its own worktrees, under no card and no dispatch -
+  // which is the property this tuple selects for, and the only one it selects for. The
+  // subsystem half is `pipeline` rather than `conductor` so a second engine appends a
+  // sibling here instead of a second vocabulary; `PIPELINE_SPEND_ROLES` in `pipeline.ts` is
+  // what stops a provider shipping without one.
+  "pipeline:ai-conductor",
 ] as const;
 
 export type LlmSpendRole = (typeof LLM_SPEND_ROLES)[number];
@@ -60,6 +67,7 @@ export const LLM_SPEND_ROLE_LABELS: Record<LlmSpendRole, string> = {
   "foreman:backlog": "Foreman backlog",
   "inspector:review": "GitHub Inspector review",
   "inspector:reply": "GitHub Inspector reply",
+  "pipeline:ai-conductor": "ai-conductor pipelines",
 };
 
 /**

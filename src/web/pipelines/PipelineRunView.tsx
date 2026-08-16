@@ -8,7 +8,7 @@ import {
   type PipelineRun,
 } from "@shared/pipeline.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
-import { relativeTime, repoLeaf } from "../lib/format.ts";
+import { compactTokens, relativeTime, repoLeaf } from "../lib/format.ts";
 import {
   PipelineFrame,
   PipelineStatusChip,
@@ -211,12 +211,11 @@ export function PipelineRunView({
   run,
   detail,
   /**
-   * The header's trailing control slot - RESERVED, and empty in this phase.
+   * The header's trailing control slot - the engine's verbs and consoles.
    *
-   * Phase 4 fills it with the engine's control verbs (pause, park, grant, resume). It is a
-   * prop rather than an empty element so that nothing renders until there is something to
-   * render: a greyed-out button that cannot do anything is worse than no button, and a
-   * later phase should not have to restructure this header to add one.
+   * Still a prop rather than a mount, and that is what keeps this view drawable from a
+   * markup test and from a host that has no controls to offer: `PipelineRuns` decides which
+   * verbs a run's state makes useful, and this view decides only where they sit.
    */
   actions = null,
 }: {
@@ -240,6 +239,17 @@ export function PipelineRunView({
             </span>
             {run.tier && <span className="pipelines-chip">Tier {run.tier}</span>}
             {run.track && <span className="pipelines-chip">{run.track}</span>}
+            {/* The ENGINE's own figure, not a sum taken here: while a feature runs it is what
+                this daemon has tailed out of the engine's ledger, and once the feature ships
+                it is replaced by the total the engine committed to its own shipped record -
+                the same figure that enters the spend ledger. Tokens rather than dollars
+                because tokens are what every dispatch reports; a run whose provider priced
+                nothing has a real token count and no cost at all. */}
+            {run.costTokens !== null && (
+              <Tooltip label={`${PIPELINE_PROVIDER_INFO[run.provider].label} attributes ${run.costTokens.toLocaleString()} tokens to this feature`}>
+                <span className="pipelines-chip">{compactTokens(run.costTokens)} tokens</span>
+              </Tooltip>
+            )}
             {run.prUrl && (
               <Tooltip label="Open this run's pull request">
                 <a

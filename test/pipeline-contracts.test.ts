@@ -2,18 +2,37 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  PIPELINE_ACTIONS,
+  PIPELINE_ACTION_INFO,
+  PIPELINE_CONSOLES,
+  PIPELINE_CONSOLE_INFO,
+  PIPELINE_DAEMON_ACTIONS,
+  PIPELINE_HALT_ACTIONS,
   PIPELINE_HALT_CLASSES,
+  PIPELINE_HALT_CONSOLES,
   PIPELINE_PHASES,
   PIPELINE_PROVIDER_IDS,
   PIPELINE_PROVIDER_INFO,
   PIPELINE_RUN_GROUPS,
+  PIPELINE_SPEND_ROLES,
+  PIPELINE_SPEND_WRITERS,
   PIPELINE_STEPS,
   PIPELINE_STEP_STATES,
+  PIPELINE_UNGRANTABLE_STEPS,
+  PipelineActionRequestSchema,
+  PipelineConsoleRequestSchema,
   PipelinesConfigSchema,
   activePipelineRepos,
+  isPipelineAction,
+  isPipelineConsole,
+  isPipelineGrantableStep,
   isPipelineHaltClass,
   isPipelineProviderId,
   isPipelineStepState,
+  pipelineConsoleAllowed,
+  pipelineGrantAllowed,
+  pipelineGrantRefusal,
+  pipelineGrantableSteps,
   pipelinePhaseOfStep,
   pipelineRunKey,
   pipelineStepInfo,
@@ -21,6 +40,7 @@ import {
   sortPipelineSteps,
   type PipelinePhase,
 } from "../src/shared/pipeline.ts";
+import { LLM_SPEND_ROLES } from "../src/shared/llm-spend.ts";
 
 // What is at stake: `src/shared/pipeline.ts` is a cross-phase contract - phases 2 to 6 are
 // all consumers of it - and two of the things it promises are only true if somebody checks.
@@ -49,6 +69,19 @@ test("the provider id tuple is append-only, and every id has a Record entry", ()
   }
   assert.equal(isPipelineProviderId("ai-conductor"), true);
   assert.equal(isPipelineProviderId("ai-conductor-2"), false);
+});
+
+test("each provider's two persisted ledger identifiers are spelled out, once", () => {
+  // Both are written into `usage_ledger` and read back by exact value - the role by the
+  // spend strip's GROUP BY, the writer by the migration that must never claim these rows -
+  // so both are append-only and neither may be derived from the provider id. Spelled out
+  // here for `PIPELINE_PROVIDER_IDS`' reason: a test that derived them would pass through
+  // the rename that orphans the history.
+  assert.deepEqual(PIPELINE_SPEND_ROLES, { "ai-conductor": "pipeline:ai-conductor" });
+  assert.deepEqual(PIPELINE_SPEND_WRITERS, { "ai-conductor": "conductor" });
+  for (const id of PIPELINE_PROVIDER_IDS) {
+    assert.ok(LLM_SPEND_ROLES.includes(PIPELINE_SPEND_ROLES[id]), `${id}'s role must be a known one`);
+  }
 });
 
 test("the vocabularies read out of provider files are checked, not cast", () => {
@@ -224,5 +257,224 @@ test("the master switch gates every repository, without forgetting which were ch
   assert.deepEqual(
     activePipelineRepos({ ...config, enabled: true }).map((r) => r.repoRoot),
     ["/repo/a"],
+  );
+});
+
+// ---- the control vocabulary ---------------------------------------------------------------
+//
+// The verbs are the surface phase 6's Foreman triage was promised, so the tuple is a contract
+// in the same sense the provider ids are: a rename is a route that stops answering for a
+// caller nobody here can see. Everything below either pins a spelling or pins the rule that
+// keeps two surfaces from disagreeing about what a verb needs.
+
+test("the action tuple is append-only, and every verb says what it acts on", () => {
+  // Written out rather than derived, for `PIPELINE_PROVIDER_IDS`' reason: a test that read
+  // the tuple to check the tuple passes through the rename it exists to catch.
+  assert.deepEqual([...PIPELINE_ACTIONS], [
+    "daemon-start",
+    "daemon-stop",
+    "daemon-pause",
+    "daemon-resume",
+    "park",
+    "unpark",
+    "grant",
+  ]);
+  for (const action of PIPELINE_ACTIONS) {
+    const info = PIPELINE_ACTION_INFO[action];
+    assert.ok(info.label, `${action} needs a label`);
+    assert.ok(info.blurb, `${action} needs a sentence for its tooltip`);
+    assert.ok(info.scope === "repo" || info.scope === "run", `${action} needs a scope`);
+    // A daemon verb is a repository verb, always. One addressed at a run would read as
+    // "pause this feature" and pause every feature in the checkout.
+    if (action.startsWith("daemon-")) assert.equal(info.scope, "repo", action);
+  }
+  assert.equal(isPipelineAction("park"), true);
+  assert.equal(isPipelineAction("parkk"), false);
+
+  assert.deepEqual([...PIPELINE_CONSOLES], ["daemon", "reseal"]);
+  for (const console_ of PIPELINE_CONSOLES) {
+    const info = PIPELINE_CONSOLE_INFO[console_];
+    assert.ok(info.label && info.blurb && info.verb, console_);
+  }
+  assert.equal(isPipelineConsole("reseal"), true);
+  assert.equal(isPipelineConsole("re-seal"), false);
+});
+
+test("a grant may name any DECIDE step except the ones the engine refuses", () => {
+  const grantable = pipelineGrantableSteps("ai-conductor").map((step) => step.name);
+  // Derived from the frozen table the same way the engine derives it - `phase === "DECIDE"`,
+  // out-of-band excluded - so a conductor release that adds a DECIDE step appears here as
+  // soon as the table learns it.
+  assert.ok(grantable.length > 0);
+  for (const name of grantable) {
+    assert.equal(pipelineStepInfo("ai-conductor", name)?.phase, "DECIDE", name);
+    assert.equal(pipelineStepInfo("ai-conductor", name)?.outOfBand ?? false, false, name);
+    assert.equal(isPipelineGrantableStep("ai-conductor", name), true, name);
+    assert.equal(pipelineGrantRefusal("ai-conductor", name), null, name);
+  }
+  // `plan` is the one conductor refuses in four places of its own. Mission Control refuses it
+  // BEFORE spawning, and the refusal is an explanation rather than a relayed error, because
+  // nothing ran to produce one.
+  assert.deepEqual([...PIPELINE_UNGRANTABLE_STEPS["ai-conductor"]], ["plan"]);
+  assert.equal(grantable.includes("plan"), false);
+  assert.equal(isPipelineGrantableStep("ai-conductor", "plan"), false);
+  assert.match(pipelineGrantRefusal("ai-conductor", "plan") ?? "", /never grants re-entry to 'plan'/);
+  // A step that is not a DECIDE step at all is refused too, with its own sentence.
+  assert.match(pipelineGrantRefusal("ai-conductor", "build") ?? "", /not a DECIDE step/);
+  assert.match(pipelineGrantRefusal("ai-conductor", "nonsense") ?? "", /not a DECIDE step/);
+});
+
+test("what a halt offers, and what a daemon state offers, is decided once", () => {
+  // Both records are exhaustive over their tuple, which is the compile-time half. The runtime
+  // half is that what they offer is coherent: a halt row never carries a repository verb, and
+  // a class with no verb at all has a console instead.
+  for (const haltClass of PIPELINE_HALT_CLASSES) {
+    for (const action of PIPELINE_HALT_ACTIONS[haltClass]) {
+      assert.equal(PIPELINE_ACTION_INFO[action].scope, "run", `${haltClass}/${action}`);
+    }
+    const ways = PIPELINE_HALT_ACTIONS[haltClass].length + PIPELINE_HALT_CONSOLES[haltClass].length;
+    assert.ok(ways > 0, `${haltClass} needs at least one way out`);
+  }
+  assert.deepEqual([...PIPELINE_HALT_CONSOLES["protected-artifact"]], ["reseal"]);
+  assert.deepEqual(
+    PIPELINE_HALT_CLASSES.filter((haltClass) =>
+      pipelineConsoleAllowed("reseal", { class: haltClass }),
+    ),
+    ["protected-artifact"],
+    "a reseal is licensed only by the halt it answers",
+  );
+  assert.equal(pipelineConsoleAllowed("reseal", null), false);
+  assert.equal(pipelineConsoleAllowed("daemon", null), true, "a repository console answers no halt");
+
+  for (const state of ["running", "paused", "stopped", "unknown"] as const) {
+    const offered = PIPELINE_DAEMON_ACTIONS[state];
+    assert.ok(offered.length > 0, state);
+    for (const action of offered) {
+      assert.equal(PIPELINE_ACTION_INFO[action].scope, "repo", `${state}/${action}`);
+    }
+  }
+  // The one that would be a lie: offering to start a daemon that is running, or to pause one
+  // that is already paused.
+  assert.equal(PIPELINE_DAEMON_ACTIONS.running.includes("daemon-start"), false);
+  assert.equal(PIPELINE_DAEMON_ACTIONS.paused.includes("daemon-pause"), false);
+  assert.equal(PIPELINE_DAEMON_ACTIONS.stopped.includes("daemon-stop"), false);
+});
+
+test("a grant is licensed by the halt it answers, wherever the question is asked", () => {
+  // Two surfaces offer this verb and one route accepts it, and all three read the SAME table.
+  // The bug this pins is a run header that decided for itself which verbs an unfinished run
+  // deserves: it offered a grant on a run that had not stopped at all, which is a standing
+  // authorization for the engine to walk through the next DECIDE gate unattended.
+  assert.equal(pipelineGrantAllowed({ class: "needs-human" }), true);
+  // Never without a halt. This is the case the header got wrong.
+  assert.equal(pipelineGrantAllowed(null), false);
+  // And never for a class whose way out is something else: the engine re-kicks `mechanical`
+  // itself, and `protected-artifact` is cleared by a ceremony rather than by a decision.
+  for (const haltClass of PIPELINE_HALT_CLASSES) {
+    assert.equal(
+      pipelineGrantAllowed({ class: haltClass }),
+      PIPELINE_HALT_ACTIONS[haltClass].includes("grant"),
+      haltClass,
+    );
+  }
+  // Exactly one class licenses it today. Stated as a literal so that widening the rule is a
+  // decision somebody makes here, rather than a side effect of editing the table above.
+  assert.deepEqual(
+    PIPELINE_HALT_CLASSES.filter((haltClass) => pipelineGrantAllowed({ class: haltClass })),
+    ["needs-human"],
+  );
+});
+
+test("a request is checked against what the verb says it needs, in both directions", () => {
+  const base = { provider: "ai-conductor", repoRoot: "/repo/a" };
+  // A run verb needs a feature; a repository verb must not carry one.
+  assert.equal(PipelineActionRequestSchema.safeParse({ ...base, action: "park" }).success, false);
+  assert.equal(
+    PipelineActionRequestSchema.safeParse({ ...base, action: "park", slug: "feat" }).success,
+    true,
+  );
+  assert.equal(
+    PipelineActionRequestSchema.safeParse({ ...base, action: "daemon-pause", slug: "feat" }).success,
+    false,
+  );
+  assert.equal(
+    PipelineActionRequestSchema.safeParse({ ...base, action: "daemon-pause" }).success,
+    true,
+  );
+  // A grant carries the step AND the operator's own words. Neither is invented downstream.
+  assert.equal(
+    PipelineActionRequestSchema.safeParse({ ...base, action: "grant", slug: "feat", step: "prd" })
+      .success,
+    false,
+  );
+  assert.equal(
+    PipelineActionRequestSchema.safeParse({
+      ...base,
+      action: "grant",
+      slug: "feat",
+      step: "prd",
+      reason: "   ",
+    }).success,
+    false,
+    "whitespace is not a rationale",
+  );
+  assert.equal(
+    PipelineActionRequestSchema.safeParse({
+      ...base,
+      action: "grant",
+      slug: "feat",
+      step: "prd",
+      reason: "the spec's assumption changed",
+    }).success,
+    true,
+  );
+  // A step on a verb that names none is refused rather than ignored: it means the caller
+  // thinks it is asking for something this verb does not do.
+  assert.equal(
+    PipelineActionRequestSchema.safeParse({ ...base, action: "park", slug: "feat", step: "prd" })
+      .success,
+    false,
+  );
+});
+
+test("a reseal request names its artifacts and why, and a console names its feature", () => {
+  const base = { provider: "ai-conductor", repoRoot: "/repo/a", backend: "tmux" };
+  assert.equal(PipelineConsoleRequestSchema.safeParse({ ...base, console: "daemon" }).success, true);
+  // Run-scoped: a reseal with no feature names nothing.
+  assert.equal(PipelineConsoleRequestSchema.safeParse({ ...base, console: "reseal" }).success, false);
+  assert.equal(
+    PipelineConsoleRequestSchema.safeParse({ ...base, console: "reseal", slug: "feat" }).success,
+    false,
+    "and it names at least one sealed artifact",
+  );
+  assert.equal(
+    PipelineConsoleRequestSchema.safeParse({
+      ...base,
+      console: "reseal",
+      slug: "feat",
+      paths: [".docs/decisions/feat.md"],
+    }).success,
+    false,
+    "and why the seal broke",
+  );
+  const good = PipelineConsoleRequestSchema.safeParse({
+    ...base,
+    console: "reseal",
+    slug: "feat",
+    paths: [".docs/decisions/feat.md"],
+    reason: "the decision moved after review",
+  });
+  assert.equal(good.success, true);
+  assert.equal(good.success && good.data.clearHalt, false, "clearing the halt is asked for");
+  // Bounded, because every path reaches an argv this daemon composes.
+  assert.equal(
+    PipelineConsoleRequestSchema.safeParse({
+      ...base,
+      console: "reseal",
+      slug: "feat",
+      paths: Array.from({ length: 21 }, (_, i) => `p${i}`),
+      reason: "why",
+    }).success,
+    false,
   );
 });

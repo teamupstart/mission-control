@@ -1177,6 +1177,52 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
 
 Attach the generated frames to the pull request; they are never committed.
 
+### Acting on a pipeline
+
+`specs/pipeline-controls.spec.ts` is the other half of that surface: the verbs. It presses
+them where an operator does - the attention inbox and the run header - and then reads what the
+fake `conduct-ts` was actually asked for, out of the invocation log the fixture keeps
+(`readConductorInvocations`). That log is the assertion that matters, because a green flash
+proves only that a predicate matched: `daemon park` takes a BARE POSITIONAL and `decide-grant`
+takes exactly three flags, and the engine answers either mistake with a zero exit and a
+refusal about an unrelated subcommand.
+
+The fake WRITES the markers the real engine writes - the pidfile, `PAUSED`, `parked/<slug>`,
+`grants/<slug>.json` - so the daemon chip and the run's group move because a file moved and a
+projection pass read it, not because a fixture told the dashboard what to think. Both hosted
+consoles land in the same cmux record `continue-in-terminal-mode.spec.ts` reads, which is
+where the reseal ceremony's argv and its hold-open wrapper are visible.
+
+One case in that file is SAMPLED rather than awaited, and the comment there says why: the
+rail heals itself every four seconds, so an auto-retrying `toBeVisible` would sit through the
+wrong state and pass the moment the next poll arrived. Asserting what an operator saw for that
+second means reading the chip outright, over the window the stale answer would have owned. The
+first draft of that test passed against the unfixed code, which is the whole argument for
+running a new regression test against the bug before trusting it.
+
+It also misbehaves on demand, in the two shapes that matter. Drop a `.daemon/REFUSE` file and
+every verb answers the way the real engine answers an invocation its argv detectors rejected -
+the generic sentence about the `inline` subcommand, on stdout, behind EXIT CODE 0, having done
+none of the work. Drop `.daemon/HALFWAY` instead and a verb DOES its work and then says that
+same wrong thing about it, which is what any verb looks like when its confirmation and its
+side effect are not one atomic act. Both are the engine's documented shape rather than a
+failure mode the fixture invented, and the second is the only way to see the surface re-read a
+repository whose state moved without anyone being told.
+
+`e2e/.artifacts/pipeline-controls/` carries ten frames behind `MC_E2E_EVIDENCE`: the inbox
+row with its verbs and the same row drained, the paused daemon chip, the grant form with
+`plan` absent and explained, the reseal form, the run's cost chip, the spend popover carrying
+the engine's line, a refused verb showing the command and the engine's transcript, a reseal
+path refused for leaving the feature's worktree, and a shipped feature the engine could not
+price reading as `unpriced` rather than as $0.00. Regenerate them with:
+
+```sh
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/pipeline-controls.spec.ts \
+  --workers=1 --reporter=list
+```
+
 ## Steering a workflow reviewer
 
 `specs/workflow-run-disable.spec.ts` drives the Runs monitor's per-run disable toggle, and

@@ -1,10 +1,11 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
+  PipelineHaltClass,
   PipelineRepoStatus,
   PipelineRunDetail,
   PipelinesView,
@@ -38,7 +39,13 @@ const { getPipelinesConfig, setPipelinesConfig } = await import(
 const { refreshPipelineRepo, restorePipelineProjection } = await import(
   "../src/server/pipelines/index.ts"
 );
-const { seedConductorDaemon, seedConductorRun } = await import("../e2e/fixtures/conductor.ts");
+const {
+  readConductorInvocations,
+  seedConductorDaemon,
+  seedConductorRun,
+  writeFakeConductor,
+} = await import("../e2e/fixtures/conductor.ts");
+type Registry = InstanceType<typeof Registry>;
 
 const db = openDb();
 after(() => rmSync(home, { recursive: true, force: true }));
@@ -75,8 +82,16 @@ function gitRepo(name: string): string {
   return realpathSync(root);
 }
 
+/** Every terminal a test asked for, so the console route can be driven without a window. */
+interface FakeLaunch {
+  backend: string;
+  name: string;
+  cwd: string;
+  argv: string[];
+}
+
 /** A fresh daemon: an empty projection, no consent, and nothing yet found out. */
-function fixture() {
+function fixture(opened?: FakeLaunch[]) {
   db.exec("DELETE FROM pipeline_runs");
   setPipelinesConfig({ enabled: false, repos: [] });
   const registry = new Registry();
@@ -84,9 +99,16 @@ function fixture() {
   // about the FIRST read of a daemon is about a first read rather than about whichever
   // test in this file happened to run before it.
   restorePipelineProjection(registry);
+  const launcher = opened
+    ? (async (backend: never, spec: { name: string; cwd: string; argv: string[] }) => {
+        opened.push({ backend, name: spec.name, cwd: spec.cwd, argv: spec.argv });
+        return { ok: true as const, label: `fake ${String(backend)}`, homeName: spec.name };
+      })
+    : undefined;
   const app = buildApp(
     registry, null as never, null as never, null as never,
-    undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+    undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+    launcher as never,
     undefined, undefined, undefined, undefined, undefined, undefined,
   );
   const request = (path: string, init?: RequestInit) =>
@@ -278,6 +300,25 @@ test("the routes are loopback-only, like every other /api route", async () => {
     headers: { host: "example.com" },
   });
   assert.equal(detail.status, 403);
+  // The two that SPAWN, which is where the guard matters most: without it a page on the
+  // internet could run an engine verb on this machine.
+  const acted = await request("/api/pipelines/action", {
+    method: "POST",
+    headers: { host: "example.com" },
+    body: JSON.stringify({ provider: "ai-conductor", repoRoot: "/x", action: "daemon-stop" }),
+  });
+  assert.equal(acted.status, 403);
+  const console_ = await request("/api/pipelines/console", {
+    method: "POST",
+    headers: { host: "example.com" },
+    body: JSON.stringify({
+      provider: "ai-conductor",
+      repoRoot: "/x",
+      console: "daemon",
+      backend: "cmux",
+    }),
+  });
+  assert.equal(console_.status, 403);
 });
 
 // ---- what the Runs page's Pipelines tab reads ------------------------------------------
@@ -413,6 +454,522 @@ test("gate evidence is behind the same consent the projection is", async () => {
     }),
   });
   assert.equal((await request(url)).status, 404);
+});
+
+// ---- acting on a pipeline ------------------------------------------------------------------
+//
+// The consent boundary again, pointed the other way. A read behind it exposes an operator's
+// files; a VERB behind it spawns a process with a working directory of anywhere on the
+// machine, for anything that can reach the loopback API. So every case below is either about
+// what reaches the engine or about what is refused before anything is spawned.
+
+const fakeEngine = writeFakeConductor(home);
+process.env.MC_E2E_CONDUCTOR_LOG = fakeEngine.logPath;
+
+/** Run `body` with the fake engine installed, then put the missing binary back. */
+async function withEngine<T>(body: () => Promise<T>): Promise<T> {
+  const had = process.env.MISSION_CONDUCTOR_BIN;
+  process.env.MISSION_CONDUCTOR_BIN = fakeEngine.bin;
+  rmSync(fakeEngine.logPath, { force: true });
+  try {
+    return await body();
+  } finally {
+    process.env.MISSION_CONDUCTOR_BIN = had;
+  }
+}
+
+/**
+ * Every CONTROL verb the engine has been asked for, oldest first.
+ *
+ * Filtered rather than counted raw, and the filter is load-bearing rather than tidy: the
+ * settings routes these cases go through spawn `engineer projects` to probe the installation,
+ * behind a TTL cache this test cannot see. Counting every invocation therefore makes "nothing
+ * was spawned" an assertion about whether that cache happened to expire mid-test - which is
+ * true on a fast machine and false on a slow one, and which failed on CI while passing here.
+ * What each of these cases actually claims is that the engine was never asked to DO anything.
+ */
+function verbsAsked(): string[][] {
+  return readConductorInvocations(home)
+    .filter((call) => call.argv[0] !== "engineer")
+    .map((call) => call.argv);
+}
+
+/** A repository with one halted run, consented to and projected. */
+async function actable(
+  name: string,
+  registry: Registry,
+  request: ReturnType<typeof fixture>["request"],
+  haltClass: PipelineHaltClass = "needs-human",
+) {
+  const repo = gitRepo(name);
+  // `needs-human` by default, because that is the halt most action cases are about: it is the
+  // class a refused DECIDE gate raises, and the only one a grant is licensed by. The console
+  // case asks for `protected-artifact`, because the reseal ceremony is licensed the same way.
+  seedConductorRun(repo, "feat", {
+    steps: { build: "done" },
+    halt: haltClass === "protected-artifact" ? "a sealed decision changed" : "a gate refused",
+    haltClass,
+  });
+  seedConductorDaemon(repo, { pid: process.pid });
+  await request("/api/pipelines/config", {
+    method: "PUT",
+    body: JSON.stringify({
+      enabled: true,
+      repos: [{ provider: "ai-conductor", repoRoot: repo, enabled: true }],
+    }),
+  });
+  await refreshPipelineRepo(registry, "ai-conductor", repo);
+  return repo;
+}
+
+test("a verb reaches the engine, and the run it changed is re-projected in the same request", async () => {
+  // The re-projection is what makes this a control rather than a request: every verb changes
+  // something the projection reads FROM FILES, so a pass immediately afterwards is what turns
+  // it into the `pipeline_upsert` the open dashboard is already listening for. Without it the
+  // operator presses Park and watches an unchanged row until the next tick.
+  const { registry, request } = fixture();
+  await withEngine(async () => {
+    const repo = await actable("act-park", registry, request);
+    assert.equal(registry.listPipelineRuns()[0]?.group, "halted");
+
+    const emitted: string[] = [];
+    const unsubscribe = registry.subscribe((event) => {
+      if (event.type === "pipeline_upsert") emitted.push(event.run.group);
+    });
+    const res = await request("/api/pipelines/action", {
+      method: "POST",
+      body: JSON.stringify({
+        provider: "ai-conductor",
+        repoRoot: repo,
+        slug: "feat",
+        action: "park",
+      }),
+    });
+    unsubscribe();
+
+    assert.equal(res.status, 200);
+    const result = (await res.json()) as { ok: boolean; detail: string; command: string };
+    assert.equal(result.ok, true, result.detail);
+    assert.match(result.command, /daemon park feat$/);
+    // The engine wrote the marker, and the projection read it back.
+    assert.equal(registry.listPipelineRuns()[0]?.group, "parked");
+    assert.deepEqual(emitted, ["parked"], "the browser is told, once");
+
+    // And the way back out.
+    const back = await request("/api/pipelines/action", {
+      method: "POST",
+      body: JSON.stringify({
+        provider: "ai-conductor",
+        repoRoot: repo,
+        slug: "feat",
+        action: "unpark",
+      }),
+    });
+    assert.equal(((await back.json()) as { ok: boolean }).ok, true);
+    assert.equal(registry.listPipelineRuns()[0]?.group, "halted");
+  });
+});
+
+test("a repository verb moves the daemon the rail reports, without naming a feature", async () => {
+  const { registry, request } = fixture();
+  await withEngine(async () => {
+    const repo = await actable("act-daemon", registry, request);
+    const daemonNow = async (): Promise<string | undefined> => {
+      const view = (await (await request("/api/pipelines/repos")).json()) as {
+        repos: PipelineRepoStatus[];
+      };
+      return view.repos[0]?.daemon;
+    };
+    assert.equal(await daemonNow(), "running");
+
+    const paused = await request("/api/pipelines/action", {
+      method: "POST",
+      body: JSON.stringify({ provider: "ai-conductor", repoRoot: repo, action: "daemon-pause" }),
+    });
+    assert.equal(((await paused.json()) as { ok: boolean }).ok, true);
+    assert.equal(await daemonNow(), "paused");
+
+    // Idempotent at the engine, and therefore idempotent here: an operator who pauses a
+    // paused daemon got what they asked for, and a red flash on a correct state is a lie.
+    const again = await request("/api/pipelines/action", {
+      method: "POST",
+      body: JSON.stringify({ provider: "ai-conductor", repoRoot: repo, action: "daemon-pause" }),
+    });
+    assert.equal(((await again.json()) as { ok: boolean }).ok, true);
+
+    const resumed = await request("/api/pipelines/action", {
+      method: "POST",
+      body: JSON.stringify({ provider: "ai-conductor", repoRoot: repo, action: "daemon-resume" }),
+    });
+    assert.equal(((await resumed.json()) as { ok: boolean }).ok, true);
+    assert.equal(await daemonNow(), "running");
+  });
+});
+
+test("a grant is recorded by the engine, and a plan grant never reaches it", async () => {
+  const { registry, request } = fixture();
+  await withEngine(async () => {
+    const repo = await actable("act-grant", registry, request);
+    const grant = (step: string) =>
+      request("/api/pipelines/action", {
+        method: "POST",
+        body: JSON.stringify({
+          provider: "ai-conductor",
+          repoRoot: repo,
+          slug: "feat",
+          action: "grant",
+          step,
+          reason: "the PRD's assumption changed",
+        }),
+      });
+
+    const ok = (await (await grant("prd")).json()) as { ok: boolean; detail: string };
+    assert.equal(ok.ok, true, ok.detail);
+    assert.equal(existsSync(join(repo, ".daemon", "grants", "feat.json")), true);
+
+    // Refused HERE, with an explanation, and no subprocess: the engine refuses `plan` in
+    // four places of its own, and relaying an exit code would teach by rejection.
+    const before = verbsAsked().length;
+    const refused = await grant("plan");
+    // A 200, because the engine's answer IS the answer to the request - the surface draws
+    // the sentence either way.
+    assert.equal(refused.status, 200);
+    const body = (await refused.json()) as { ok: boolean; detail: string; output: string };
+    assert.equal(body.ok, false);
+    assert.match(body.detail, /never grants re-entry to 'plan'/);
+    assert.equal(body.output, "");
+    assert.equal(verbsAsked().length, before, "nothing was spawned");
+  });
+});
+
+test("a grant is refused for a run whose halt did not ask for one", async () => {
+  // The eligibility rule the surface draws its buttons from, held HERE as well - because
+  // hiding a button decides what an operator is offered, not what the loopback API accepts.
+  // A grant is a standing authorization for the engine to re-enter a DECIDE step unattended:
+  // handed to a run that never stopped at a gate, it is the gate's whole purpose spent in
+  // advance, and the engine would record it without complaint because from its side a person
+  // typed it.
+  const { registry, request } = fixture();
+  await withEngine(async () => {
+    const repo = gitRepo("act-grant-class");
+    // Three runs, one per shape the rule has to separate: never halted, halted for something
+    // the engine re-kicks itself, and halted for a broken seal - which is a ceremony, not a
+    // decision.
+    seedConductorRun(repo, "running", { steps: { build: "in_progress" } });
+    seedConductorRun(repo, "mech", {
+      steps: { build: "done" },
+      halt: "the branch would not rebase",
+      haltClass: "mechanical",
+    });
+    seedConductorRun(repo, "sealed", {
+      steps: { build: "done" },
+      halt: "a sealed decision changed",
+      haltClass: "protected-artifact",
+    });
+    seedConductorRun(repo, "asked", {
+      steps: { build: "done" },
+      halt: "the DECIDE gate refused a second autonomous entry",
+      haltClass: "needs-human",
+    });
+    seedConductorDaemon(repo, { pid: process.pid });
+    await request("/api/pipelines/config", {
+      method: "PUT",
+      body: JSON.stringify({
+        enabled: true,
+        repos: [{ provider: "ai-conductor", repoRoot: repo, enabled: true }],
+      }),
+    });
+    await refreshPipelineRepo(registry, "ai-conductor", repo);
+
+    const grant = (slug: string) =>
+      request("/api/pipelines/action", {
+        method: "POST",
+        body: JSON.stringify({
+          provider: "ai-conductor",
+          repoRoot: repo,
+          slug,
+          action: "grant",
+          step: "prd",
+          reason: "because I said so",
+        }),
+      });
+
+    const before = verbsAsked().length;
+    for (const slug of ["running", "mech", "sealed"]) {
+      const refused = await grant(slug);
+      // 409 rather than 404 or 400: the request is well formed and the run exists - its STATE
+      // is what refuses this, which is a different thing to tell an operator.
+      assert.equal(refused.status, 409, slug);
+      assert.match(await refused.text(), /answers a halt that asked for one/, slug);
+    }
+    assert.equal(verbsAsked().length, before, "and nothing was spawned for any of them");
+    assert.equal(existsSync(join(repo, ".daemon", "grants")), false, "no grant was recorded");
+
+    // And the run that DID stop at a gate still gets one, so this is an eligibility rule
+    // rather than the verb quietly going away.
+    const allowed = await grant("asked");
+    assert.equal(allowed.status, 200);
+    assert.equal(((await allowed.json()) as { ok: boolean }).ok, true);
+    assert.equal(existsSync(join(repo, ".daemon", "grants", "asked.json")), true);
+  });
+});
+
+test("a verb is refused for a repository nobody consented to, and for a run nobody projects", async () => {
+  const { registry, request } = fixture();
+  await withEngine(async () => {
+    const repo = await actable("act-consent", registry, request);
+    const before = verbsAsked().length;
+
+    // 404 and the same sentence for both, so the loopback API answers no questions about
+    // which directories on this machine exist.
+    const elsewhere = await request("/api/pipelines/action", {
+      method: "POST",
+      body: JSON.stringify({
+        provider: "ai-conductor",
+        repoRoot: join(home, "somewhere-else"),
+        action: "daemon-stop",
+      }),
+    });
+    assert.equal(elsewhere.status, 404);
+    assert.match((await elsewhere.text()), /no such pipeline repository/);
+
+    // A slug is a path component the engine joins onto a root, so it is checked against the
+    // runs actually projected rather than validated for shape - which makes `..` a 404 for
+    // the right reason.
+    for (const slug of ["nope", "../..", ".."]) {
+      const res = await request("/api/pipelines/action", {
+        method: "POST",
+        body: JSON.stringify({ provider: "ai-conductor", repoRoot: repo, slug, action: "park" }),
+      });
+      assert.equal(res.status, 404, slug);
+      assert.match(await res.text(), /no such pipeline run/);
+    }
+
+    // Withdrawal is felt at the verb, in the same request that withdrew it.
+    await request("/api/pipelines/config", {
+      method: "PUT",
+      body: JSON.stringify({
+        enabled: true,
+        repos: [{ provider: "ai-conductor", repoRoot: repo, enabled: false }],
+      }),
+    });
+    const withdrawn = await request("/api/pipelines/action", {
+      method: "POST",
+      body: JSON.stringify({ provider: "ai-conductor", repoRoot: repo, slug: "feat", action: "park" }),
+    });
+    assert.equal(withdrawn.status, 404);
+    assert.equal(verbsAsked().length, before, "and nothing was spawned");
+  });
+});
+
+test("a verb addressed at the wrong scope is refused by the schema, not by the engine", async () => {
+  const { registry, request } = fixture();
+  await withEngine(async () => {
+    const repo = await actable("act-scope", registry, request);
+    const before = verbsAsked().length;
+    const bad = async (body: Record<string, unknown>): Promise<number> =>
+      (await request("/api/pipelines/action", { method: "POST", body: JSON.stringify(body) })).status;
+
+    // A repository verb carrying a slug is the dangerous direction: it reads as "pause this
+    // feature" and would in fact pause every feature in the checkout.
+    assert.equal(await bad({ provider: "ai-conductor", repoRoot: repo, slug: "feat", action: "daemon-pause" }), 400);
+    assert.equal(await bad({ provider: "ai-conductor", repoRoot: repo, action: "park" }), 400);
+    assert.equal(await bad({ provider: "ai-conductor", repoRoot: repo, slug: "feat", action: "grant" }), 400);
+    assert.equal(await bad({ provider: "ai-conductor", repoRoot: repo, action: "nonsense" }), 400);
+    assert.equal(verbsAsked().length, before, "nothing was spawned");
+  });
+});
+
+test("a reseal terminal is refused for a run whose halt did not ask for one", async () => {
+  // The dashboard already hides this ceremony everywhere except a protected-artifact halt.
+  // The route holds the same rule because it is the authority boundary: a direct loopback
+  // caller must not be able to break a seal, or clear its halt, on an unrelated run.
+  const opened: FakeLaunch[] = [];
+  const { registry, request } = fixture(opened);
+  await withEngine(async () => {
+    const repo = gitRepo("act-reseal-class");
+    seedConductorRun(repo, "running", { steps: { build: "in_progress" } });
+    seedConductorRun(repo, "asked", {
+      steps: { build: "done" },
+      halt: "a DECIDE gate refused another entry",
+      haltClass: "needs-human",
+    });
+    seedConductorDaemon(repo, { pid: process.pid });
+    await request("/api/pipelines/config", {
+      method: "PUT",
+      body: JSON.stringify({
+        enabled: true,
+        repos: [{ provider: "ai-conductor", repoRoot: repo, enabled: true }],
+      }),
+    });
+    await refreshPipelineRepo(registry, "ai-conductor", repo);
+
+    for (const slug of ["running", "asked"]) {
+      const refused = await request("/api/pipelines/console", {
+        method: "POST",
+        body: JSON.stringify({
+          provider: "ai-conductor",
+          repoRoot: repo,
+          slug,
+          console: "reseal",
+          paths: [".docs/decisions/feature.md"],
+          reason: "a direct caller supplied this",
+          clearHalt: true,
+          backend: "cmux",
+        }),
+      });
+      assert.equal(refused.status, 409, slug);
+      assert.match(await refused.text(), /answers a protected-artifact halt/, slug);
+    }
+    assert.equal(opened.length, 0, "an ineligible ceremony opens no terminal");
+  });
+});
+
+test("a console opens a hosted terminal running the engine's own command", async () => {
+  const opened: FakeLaunch[] = [];
+  const { registry, request } = fixture(opened);
+  await withEngine(async () => {
+    const repo = await actable("act-console", registry, request, "protected-artifact");
+
+    const daemonConsole = await request("/api/pipelines/console", {
+      method: "POST",
+      body: JSON.stringify({
+        provider: "ai-conductor",
+        repoRoot: repo,
+        console: "daemon",
+        backend: "cmux",
+      }),
+    });
+    assert.equal(daemonConsole.status, 200);
+    assert.equal(((await daemonConsole.json()) as { ok: boolean }).ok, true);
+    assert.equal(opened.length, 1);
+    // From the MAIN checkout, and through a shell that holds the window open: `connect`
+    // prints and exits when it cannot find a session, and a window that closed with it would
+    // take the explanation with it.
+    assert.equal(opened[0]?.cwd, repo);
+    // Every word single-quoted by `shellCommand`, because this is a shell script the daemon
+    // composed - a slug or a path with a space in it must not become two arguments.
+    const command = opened[0]?.argv.at(-1) ?? "";
+    assert.match(command, /'daemon' 'connect'/);
+    assert.doesNotMatch(command, /--attach-into/, "we host the terminal, so there is no target");
+    assert.match(command, /read -r _/);
+    assert.match(opened[0]?.name ?? "", /ai-conductor daemon/);
+
+    // The ceremony carries the operator's own artifacts and rationale, one `--path` each.
+    const reseal = await request("/api/pipelines/console", {
+      method: "POST",
+      body: JSON.stringify({
+        provider: "ai-conductor",
+        repoRoot: repo,
+        slug: "feat",
+        console: "reseal",
+        paths: [".docs/decisions/feat.md", ".docs/prd/feat.md"],
+        reason: "the decision moved after review",
+        clearHalt: true,
+        backend: "cmux",
+      }),
+    });
+    assert.equal(reseal.status, 200);
+    assert.equal(opened.length, 2);
+    const ceremony = opened[1]?.argv.at(-1) ?? "";
+    assert.match(ceremony, /'reseal' '--slug' 'feat'/);
+    assert.match(
+      ceremony,
+      /'--path' '\.docs\/decisions\/feat\.md' '--path' '\.docs\/prd\/feat\.md'/,
+      "one --path per artifact, repeated - a joined list is one path with commas in it",
+    );
+    assert.match(ceremony, /'--reason' 'the decision moved after review'/);
+    assert.match(ceremony, /'--clear-halt'/);
+    assert.match(opened[1]?.name ?? "", /reseal feat/);
+
+    // And the refusals: a reseal with nothing to re-seal, and one naming no feature.
+    const noPaths = await request("/api/pipelines/console", {
+      method: "POST",
+      body: JSON.stringify({
+        provider: "ai-conductor",
+        repoRoot: repo,
+        slug: "feat",
+        console: "reseal",
+        reason: "why",
+        backend: "cmux",
+      }),
+    });
+    assert.equal(noPaths.status, 400);
+    const noSlug = await request("/api/pipelines/console", {
+      method: "POST",
+      body: JSON.stringify({
+        provider: "ai-conductor",
+        repoRoot: repo,
+        console: "reseal",
+        paths: ["a.md"],
+        reason: "why",
+        backend: "cmux",
+      }),
+    });
+    assert.equal(noSlug.status, 400);
+
+    // And the one a length bound cannot catch: a path that leaves the feature's worktree.
+    // The engine would accept every one of these - from its side an operator typed them -
+    // so the containment is Mission Control's, and it happens before argv is composed.
+    for (const path of [
+      "../other/.docs/decisions/x.md",
+      "a/../../x.md",
+      join(repo, "sealed.md"),
+      "/etc/passwd",
+    ]) {
+      const escaped = await request("/api/pipelines/console", {
+        method: "POST",
+        body: JSON.stringify({
+          provider: "ai-conductor",
+          repoRoot: repo,
+          slug: "feat",
+          console: "reseal",
+          paths: [".docs/decisions/feat.md", path],
+          reason: "why",
+          backend: "cmux",
+        }),
+      });
+      assert.equal(escaped.status, 400, path);
+      assert.match(await escaped.text(), /outside this feature's worktree|absolute path/, path);
+    }
+    assert.equal(opened.length, 2, "a refused console opens no window");
+  });
+});
+
+test("with the integration switched off, no verb acts and no console opens", async () => {
+  // The phase's own exit criterion, asserted as one case rather than inferred from the two
+  // above: the master switch is what an operator reaches for, and it has to stop BOTH routes.
+  const opened: FakeLaunch[] = [];
+  const { registry, request } = fixture(opened);
+  await withEngine(async () => {
+    const repo = await actable("act-master-switch", registry, request);
+    await request("/api/pipelines/config", {
+      method: "PUT",
+      body: JSON.stringify({
+        enabled: false,
+        repos: [{ provider: "ai-conductor", repoRoot: repo, enabled: true }],
+      }),
+    });
+    const before = verbsAsked().length;
+
+    const acted = await request("/api/pipelines/action", {
+      method: "POST",
+      body: JSON.stringify({ provider: "ai-conductor", repoRoot: repo, action: "daemon-stop" }),
+    });
+    assert.equal(acted.status, 404);
+    const console_ = await request("/api/pipelines/console", {
+      method: "POST",
+      body: JSON.stringify({
+        provider: "ai-conductor",
+        repoRoot: repo,
+        console: "daemon",
+        backend: "cmux",
+      }),
+    });
+    assert.equal(console_.status, 404);
+    assert.equal(verbsAsked().length, before);
+    assert.deepEqual(opened, []);
+  });
 });
 
 test("consent moves the settings tuple, so the Runs page's tab appears with it", async () => {

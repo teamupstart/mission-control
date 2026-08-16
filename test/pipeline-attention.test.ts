@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
+  PIPELINE_ACTION_INFO,
+  PIPELINE_HALT_ACTIONS,
   PIPELINE_HALT_CLASSES,
   PIPELINE_HALT_CLASS_INFO,
   pipelineHaltRunbookLine,
@@ -157,10 +159,42 @@ test("the inbox row states the class, the reason, the runbook and a link to the 
   // The deep link is an ADDRESS, so it survives a middle click into a second window - and it
   // is the phase 2 route rather than a hand-built hash.
   assert.match(html, /href="#\/runs\/pipeline\/[^"]+\/fix-the-thing"/);
-  // No verb buttons: clearing a halt is the engine's CLI and those controls are phase 4's. A
-  // greyed-out control that cannot act is worse than none.
-  const row = html.slice(html.indexOf("inbox-halt"));
-  assert.doesNotMatch(row, /Unpark|Grant|Resume/);
+});
+
+test("a halt row offers the verbs its own class calls for, and no repository-wide ones", () => {
+  // The inverse of what this file asserted through phase 3, when the row deliberately had no
+  // controls at all. What replaced "no buttons" is not "every button": the verbs come from
+  // `PIPELINE_HALT_ACTIONS`, so a row about one feature can never carry a verb that stops
+  // every feature in the checkout.
+  const row = (haltClass: PipelineHaltClass): string => {
+    const html = renderToStaticMarkup(
+      withOverlayHost(
+        createElement(AttentionInbox, {
+          fold: fold([mkRun({ halt: { class: haltClass, reason: "stopped" } })]),
+          onClose: () => {},
+          onOpenEnsemble: () => {},
+          onOpenSession: () => {},
+        }),
+      ),
+    );
+    return html.slice(html.indexOf("inbox-halt"));
+  };
+
+  for (const haltClass of PIPELINE_HALT_CLASSES) {
+    const html = row(haltClass);
+    for (const action of PIPELINE_HALT_ACTIONS[haltClass]) {
+      assert.match(html, new RegExp(PIPELINE_ACTION_INFO[action].label), `${haltClass}/${action}`);
+    }
+    // Never the daemon verbs, whatever the class. They act on the whole repository, and a
+    // repository-wide stop reached from a row about one feature is the mis-click this list
+    // must not offer.
+    assert.doesNotMatch(html, /Start daemon|Stop daemon|Pause daemon|Resume daemon/, haltClass);
+  }
+
+  // A protected artifact is cleared by a ceremony rather than a verb, so its row carries the
+  // console instead - and it is the only class that does.
+  assert.match(row("protected-artifact"), /Reseal an artifact/);
+  assert.doesNotMatch(row("needs-human"), /Reseal an artifact/);
 });
 
 // ---- the conversation window's ladder -----------------------------------------------------

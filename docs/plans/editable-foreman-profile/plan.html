@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Editable Foreman profile</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f4f1ea;
+      --paper: #fffdf8;
+      --ink: #20221f;
+      --muted: #63675f;
+      --line: #d8d2c5;
+      --accent: #7250c7;
+      --accent-soft: #eee8ff;
+      --good: #20744a;
+      --warn: #9a5f00;
+      --code: #f0ece3;
+      --shadow: 0 18px 48px rgba(46, 39, 25, .10);
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #121310;
+        --paper: #1b1d19;
+        --ink: #eceee8;
+        --muted: #aeb3a7;
+        --line: #373b33;
+        --accent: #b69aff;
+        --accent-soft: #302748;
+        --good: #71d7a4;
+        --warn: #f1bd63;
+        --code: #252821;
+        --shadow: 0 20px 55px rgba(0, 0, 0, .32);
+      }
+    }
+    * { box-sizing: border-box; }
+    html { background: var(--bg); }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 12% 0%, color-mix(in srgb, var(--accent) 12%, transparent), transparent 34rem),
+        var(--bg);
+      font: 16px/1.62 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main {
+      width: min(1120px, calc(100% - 32px));
+      margin: 36px auto 80px;
+      padding: clamp(24px, 5vw, 62px);
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+    header.hero {
+      padding-bottom: 28px;
+      margin-bottom: 34px;
+      border-bottom: 1px solid var(--line);
+    }
+    .kicker {
+      margin: 0 0 8px;
+      color: var(--accent);
+      font-weight: 750;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      font-size: .78rem;
+    }
+    h1 { margin: 0; font-size: clamp(2.1rem, 5vw, 4rem); line-height: 1.02; letter-spacing: -.045em; }
+    .status { display: inline-flex; margin-top: 18px; padding: 5px 10px; border: 1px solid var(--accent); border-radius: 999px; color: var(--accent); font-weight: 700; font-size: .85rem; }
+    h2 { margin: 2.6rem 0 .8rem; font-size: 1.58rem; letter-spacing: -.02em; }
+    h3 { margin: 2rem 0 .55rem; font-size: 1.16rem; }
+    p { margin: .7rem 0; }
+    ul, ol { padding-left: 1.4rem; }
+    li + li { margin-top: .34rem; }
+    strong { font-weight: 760; }
+    a { color: var(--accent); }
+    code {
+      padding: .12em .34em;
+      border-radius: 5px;
+      background: var(--code);
+      font: .91em ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    pre {
+      margin: 1rem 0;
+      padding: 16px;
+      background: var(--code);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      overflow: auto;
+    }
+    pre code { padding: 0; background: transparent; }
+    .table-wrap { width: 100%; overflow-x: auto; margin: 1rem 0; border: 1px solid var(--line); border-radius: 12px; }
+    table { width: 100%; min-width: 760px; border-collapse: collapse; }
+    th, td { padding: 12px 14px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); }
+    th { color: var(--muted); background: color-mix(in srgb, var(--code) 72%, transparent); font-size: .78rem; letter-spacing: .06em; text-transform: uppercase; }
+    tr:last-child td { border-bottom: 0; }
+    blockquote, .callout { margin: 1rem 0; padding: 14px 17px; border-left: 4px solid var(--accent); background: var(--accent-soft); border-radius: 0 10px 10px 0; }
+    .decision { margin: 1.1rem 0; padding: 18px; border: 1px solid var(--accent); border-radius: 14px; background: color-mix(in srgb, var(--accent-soft) 58%, transparent); }
+    .decision h3 { margin-top: 0; }
+    .recommended { color: var(--good); font-weight: 750; }
+    figure.flow { margin: 1.4rem 0; padding: 16px; border: 1px solid var(--line); border-radius: 16px; overflow-x: auto; background: color-mix(in srgb, var(--paper) 88%, var(--accent-soft)); }
+    figure.flow svg { display: block; min-width: 920px; width: 100%; height: auto; }
+    figcaption { margin-top: 10px; color: var(--muted); font-size: .9rem; }
+    .box { fill: var(--paper); stroke: var(--line); stroke-width: 2; }
+    .box-accent { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 2; }
+    .svg-title { fill: var(--ink); font: 700 15px ui-sans-serif, system-ui, sans-serif; }
+    .svg-sub { fill: var(--muted); font: 12px ui-sans-serif, system-ui, sans-serif; }
+    .arrow { stroke: var(--accent); stroke-width: 2.3; fill: none; marker-end: url(#arrow); }
+    .arrow-muted { stroke: var(--muted); stroke-width: 2; stroke-dasharray: 6 6; fill: none; marker-end: url(#arrow-muted); }
+    .wall { stroke: var(--warn); stroke-width: 3; stroke-dasharray: 4 5; }
+    .small { color: var(--muted); font-size: .92rem; }
+    @media (max-width: 640px) {
+      main { width: min(100% - 18px, 1120px); margin-top: 9px; padding: 22px 17px 40px; border-radius: 15px; }
+      h2 { font-size: 1.35rem; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <header class="hero">
+    <p class="kicker">Mission Control plan</p>
+    <h1>Editable Foreman profile</h1>
+    <span class="status">Approved on 2026-08-15</span>
+  </header>
+
+  <h2>Outcome</h2>
+  <p>Give Foreman a first-class, editable profile beside Personas in the Library without turning it into a workflow Persona.</p>
+  <p>The profile lets an operator read, preview, replace, clear, copy, download, and restore Foreman's standing guidance. It also makes the current provider and model-role configuration easy to find. Foreman's identity, built-in operating policy, safety boundaries, protocol grammar, and eligibility remain owned by Mission Control and cannot be changed through the profile.</p>
+  <p>The intended result is:</p>
+  <ul>
+    <li>Foreman appears under a distinct <strong>System</strong> group in <strong>Library -&gt; Personas</strong>.</li>
+    <li>Its fixed identity is visibly different from built-in and operator-authored workflow Personas.</li>
+    <li>Its standing Markdown is editable with the same quality of draft, preview, conflict, keyboard, copy, download, and reset interactions as the Persona editor.</li>
+    <li>Operational and authority-bearing controls retain one owner in the top-bar Foreman control, <strong>Settings -&gt; Foreman</strong>, and <strong>Settings -&gt; Trust</strong>.</li>
+    <li>Foreman never enters the Persona catalog consumed by workflow stages or ensemble evaluators.</li>
+    <li>A save affects the next Foreman evaluation, while an evaluation already in flight finishes with the exact guidance it captured at its start.</li>
+  </ul>
+
+  <h2>Approved decisions</h2>
+  <ul>
+    <li><strong>Profile location:</strong> add a System guidance profile in the Persona Library. Existing Settings, top-bar, and Trust surfaces continue owning typed model, operational, and authority controls.</li>
+    <li><strong>Save semantics:</strong> keep one current, exact-text document with compare-and-swap conflict protection. Do not add immutable version history or an activation step.</li>
+    <li><strong>Prompt coverage:</strong> preserve the current guidance surfaces only: triage, full review, queued-work verification, and prompted completion verification. Do not add guidance to backlog dependency planning.</li>
+    <li><strong>Follow-up:</strong> stop after publishing this approved root plan. Do not create phased plans or implementation tasks.</li>
+  </ul>
+
+  <h2>Why this is smaller than the older Persona versioning plan</h2>
+  <p><code>docs/plans/persona-versioning-and-foreman/plan.md</code> proposed extracting a shared Persona domain, adding immutable Persona versions, migrating every workflow draft, changing ensemble references, and representing Foreman as a non-stage-eligible database Persona. The repository has changed since that plan was written:</p>
+  <ul>
+    <li>Persona authoring now has an independent home in the Library rather than under Workflows or Settings.</li>
+    <li>Operator Personas still use one mutable row with a compare-and-swap revision.</li>
+    <li>Workflow publication already snapshots exact Persona content for durable execution.</li>
+    <li>Foreman's standing guidance already has a dedicated storage and prompt-injection seam.</li>
+    <li>No current consumer needs Foreman to share the workflow Persona store.</li>
+  </ul>
+  <p>This plan therefore does not make general Persona versioning a prerequisite for editing Foreman. It reuses the current product semantics: one current editable document protected against stale writes, with immutable workflow snapshots remaining a separate concern. The older plan remains a possible future expansion for Persona history, but its broad migration is not required here.</p>
+
+  <h2>Current repository facts</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Current behavior</th><th>Owner</th><th>Consequence for this plan</th></tr></thead>
+    <tbody>
+      <tr><td>The shipped seed is <code>personas/FOREMAN.md</code></td><td><code>foremanInstructionsPath()</code> and <code>src/server/foreman/instructions.ts</code></td><td>Keep it as the built-in default and the Reset target.</td></tr>
+      <tr><td><code>app_config["foreman.instructions"]</code> stores a custom string; empty and unset are different</td><td><code>src/server/foreman/instructions.ts</code></td><td>Preserve all three states: built-in default, custom Markdown, and no standing guidance.</td></tr>
+      <tr><td><code>GET</code> and <code>PUT /api/foreman/instructions</code> already read, replace, clear, and reset the document</td><td><code>src/server/routes.ts</code> and shared Zod schemas</td><td>Strengthen this route with stale-write protection instead of inventing a second storage path.</td></tr>
+      <tr><td>The Foreman worker reaches the daemon over HTTP and reads guidance once per evaluation</td><td><code>src/server/foreman/client.ts</code> and <code>worker.ts</code></td><td>Keep Foreman HTTP-only and keep the one-capture boundary.</td></tr>
+      <tr><td>Standing guidance is inserted by <code>instructionsSection()</code> into triage, full review, and verification prompts</td><td><code>prefs.ts</code>, <code>prompt.ts</code>, <code>triage-prompt.ts</code>, and <code>queue-prompt.ts</code></td><td>Keep the existing one-way ratchet and prompt placement byte-for-byte outside the edited block.</td></tr>
+      <tr><td>Workflow Personas are delivered through PersonaManager, Registry/SSE, <code>/api/personas</code>, workflow pickers, and ensemble pickers</td><td><code>src/server/workflows/*</code>, <code>useEventStream.ts</code>, and browser consumers</td><td>Do not put Foreman into this collection. Absence is the strongest eligibility rule.</td></tr>
+      <tr><td>Foreman's operational controls are already distributed by purpose</td><td>top-bar Foreman control, Settings, and Trust</td><td>Cross-link these owners; do not create duplicate controls in the profile.</td></tr>
+    </tbody>
+  </table></div>
+  <p>The daemon remains the only SQLite writer. The worker must not import the Persona store or the instructions storage module.</p>
+
+  <h2>Editable and application-owned boundaries</h2>
+  <p>The central rule is that prose may shape judgment but may not grant authority or rewrite the protocol that makes Foreman safe and compatible.</p>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Surface</th><th>User editable?</th><th>Reason</th></tr></thead>
+    <tbody>
+      <tr><td>Standing guidance: priorities, quality bar, escalation preferences, completion expectations</td><td><strong>Yes, in the System profile</strong></td><td>This is the operator speaking to Foreman and is already the supported editable prompt block.</td></tr>
+      <tr><td>Empty guidance</td><td><strong>Yes</strong></td><td>Empty means use Foreman's built-in policy without extra operator guidance, not Reset.</td></tr>
+      <tr><td>Restore <code>personas/FOREMAN.md</code></td><td><strong>Yes, explicit Reset</strong></td><td>Reset is separate because default and empty are intentionally different.</td></tr>
+      <tr><td>Provider and Review, Verify, Triage, and Backlog models</td><td><strong>Yes, in Settings</strong></td><td>These are typed cost and quality controls with four distinct roles, not profile prose.</td></tr>
+      <tr><td>Enable, mode, access approval, queue budgets, backlog automation, wrap-up, and PR follow-through</td><td><strong>Yes, in existing controls</strong></td><td>These are operational choices with bounded schemas and visible consequences.</td></tr>
+      <tr><td>Repository allowlists</td><td><strong>Yes, in Trust</strong></td><td>Repository consent remains an explicit authority grant and is never inferred from Markdown.</td></tr>
+      <tr><td>Name, description, system identity, archive/delete state</td><td><strong>No</strong></td><td>Foreman is an application service with one durable meaning.</td></tr>
+      <tr><td>Workflow-stage or ensemble eligibility</td><td><strong>No</strong></td><td>Foreman must never be selectable as a reviewer or evaluator.</td></tr>
+      <tr><td>Review policy, triage buckets, verifier contract, structured-output schemas</td><td><strong>No</strong></td><td>Existing features parse and act on these exact contracts.</td></tr>
+      <tr><td>Destructive-action backstops, allowlists, invites, delivery validation</td><td><strong>No</strong></td><td>These enforce authority in code and must outrank prose.</td></tr>
+      <tr><td>Menu/request grammar, evidence fences, prompt-injection framing, captured context</td><td><strong>No</strong></td><td>These are compatibility and trust boundaries.</td></tr>
+      <tr><td>Lease timing, retry caps, prompt-size caps, retention, concurrency, and transport</td><td><strong>No profile control</strong></td><td>These are application mechanisms or existing environment escape hatches.</td></tr>
+    </tbody>
+  </table></div>
+  <p>Standing guidance continues to be a one-way ratchet. It may make Foreman more careful, move an ask away from automatic approval, or raise the definition of complete. It cannot make Foreman less careful, authorize a destructive action, bypass a typed switch, dictate a literal message, or redefine the JSON it must return.</p>
+  <p>This change does not add standing guidance to the backlog dependency planner. It preserves the current prompt coverage: triage, full review, queued-work verification, and prompted completion verification.</p>
+
+  <h2>Product experience</h2>
+  <h3>Library entry and routing</h3>
+  <p>Add a fixed <code>foreman</code> asset under <code>#/library/personas/foreman</code>. The Persona rail becomes three groups: <strong>System</strong>, <strong>Built-in</strong>, and <strong>Yours</strong>. The System group always contains one Foreman row.</p>
+  <p>The row is sourced locally by the Persona Library and is not appended to streamed <code>PersonaView[]</code>. Its sub-label names its effective provider and four model roles. A System tag and tooltip state that it is unavailable to workflows and ensembles. The Library front-page Personas shelf also shows a System card without changing the count of workflow Personas.</p>
+
+  <h3>Foreman profile editor</h3>
+  <p>Use the Persona workspace's visual language without forcing Foreman through <code>PersonaEditor</code>'s data model. A focused <code>ForemanProfileEditor</code> reuses the workspace header, file editor, Markdown preview, property chips, overflow menu, copy feedback, and unsaved-change navigation guard.</p>
+  <ul>
+    <li>Fixed name <strong>Foreman</strong>, fixed description, and System profile identity.</li>
+    <li>Source chip: <strong>Built-in default</strong>, <strong>Customized</strong>, or <strong>No standing guidance</strong>.</li>
+    <li>Provider/model summary linked to <strong>Settings -&gt; Foreman -&gt; Models</strong>.</li>
+    <li>Authority summary linked to the top-bar Foreman control and <strong>Settings -&gt; Trust</strong>.</li>
+    <li>Character usage against the existing 64,000-character ceiling, plus Edit and Preview modes.</li>
+    <li>Promoted Save, with Copy Markdown, Download FOREMAN.md, and Reset in the overflow menu.</li>
+  </ul>
+  <p>There is no Rename, Duplicate, Archive, Delete, or Re-import action. Duplicate would imply that standing preferences are a complete workflow reviewer prompt when they are only an overlay on Foreman's fixed policy.</p>
+  <p>Reset requires confirmation when it discards a custom or empty saved state. Clearing and saving stores <strong>No standing guidance</strong>. Reset restores the shipped default.</p>
+
+  <h3>Cross-links, not duplicate owners</h3>
+  <p>Add a compact <strong>Standing guidance</strong> card near the stable posture in <strong>Settings -&gt; Foreman</strong>. It reports the current source and opens the Library profile. The Library profile links back to Models, posture, and Trust.</p>
+  <p>Provider/model fields remain in Settings; authority and scheduling controls remain in their current top-bar and Settings homes. This keeps one writing surface per value.</p>
+
+  <h2>Persistence and API contract</h2>
+  <h3>Keep the existing value and add compare-and-swap</h3>
+  <p>Continue storing the exact custom string in <code>app_config["foreman.instructions"]</code> and <code>null</code> for the built-in default. Do not add a Persona row, a second text key, or a database migration.</p>
+  <p>Build a stable ETag from the source discriminator and exact effective bytes. Including the source prevents custom text identical to the default from being mistaken for the built-in state. The ETag supplies stale-write protection without changing the storage shape or losing downgrade readability.</p>
+  <pre><code>interface ForemanInstructionsView {
+  text: string;
+  defaultText: string;
+  source: "builtin" | "custom" | "none";
+  etag: string;
+}
+
+type ForemanInstructionsUpdate =
+  | { expectedEtag: string; text: string }
+  | { expectedEtag: string; reset: true };</code></pre>
+  <p>The schema must preserve exact text, accept empty text, distinguish Reset, require <code>expectedEtag</code>, return HTTP 409 with the current view on stale writes, and reject malformed, oversized, or non-loopback requests before storage changes.</p>
+  <p>Keep <code>GET /api/foreman/instructions</code> as the worker and editor read. Keep PUT as the one CAS-protected mutation. The worker projects only <code>text</code>; the browser consumes the full view.</p>
+  <p>The editor fetches the document when selected and when the browser window regains focus. A clean editor adopts a changed ETag. A dirty editor preserves every local byte and shows an explicit conflict. No 64 KB document enters the global SSE snapshot or four-second Foreman poll.</p>
+
+  <h3>Runtime atomicity</h3>
+  <ol>
+    <li>The worker requests the effective text once while gathering an evaluation's inputs.</li>
+    <li>Shadow triage and full review receive the same captured string.</li>
+    <li>A verification call receives the one string gathered for that verification.</li>
+    <li>A save during a model call does not mutate the in-flight prompt.</li>
+    <li>The next evaluation reads the newly saved state.</li>
+  </ol>
+  <p><code>instructionsSection()</code> remains the only way editable prose enters a Foreman prompt.</p>
+
+  <h2>Data and request flow</h2>
+  <figure class="flow">
+    <svg viewBox="0 0 980 430" role="img" aria-labelledby="flow-title flow-desc">
+      <title id="flow-title">Editable Foreman guidance remains separate from workflow Personas</title>
+      <desc id="flow-desc">The Library Foreman profile reads and writes a dedicated daemon route backed by app config. The Foreman worker captures that guidance and combines it with fixed policy. Typed settings reach daemon authority gates. Workflow and ensemble pickers consume a separate Persona catalog that never contains Foreman.</desc>
+      <defs>
+        <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="var(--accent)"/></marker>
+        <marker id="arrow-muted" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="var(--muted)"/></marker>
+      </defs>
+      <rect class="box-accent" x="20" y="38" width="210" height="76" rx="12"/>
+      <text class="svg-title" x="125" y="69" text-anchor="middle">Library Foreman profile</text>
+      <text class="svg-sub" x="125" y="91" text-anchor="middle">editable standing guidance</text>
+      <rect class="box" x="286" y="38" width="210" height="76" rx="12"/>
+      <text class="svg-title" x="391" y="69" text-anchor="middle">Instructions route</text>
+      <text class="svg-sub" x="391" y="91" text-anchor="middle">GET and CAS PUT</text>
+      <rect class="box" x="552" y="38" width="190" height="76" rx="12"/>
+      <text class="svg-title" x="647" y="69" text-anchor="middle">app_config</text>
+      <text class="svg-sub" x="647" y="91" text-anchor="middle">exact string or default</text>
+      <rect class="box-accent" x="798" y="38" width="162" height="76" rx="12"/>
+      <text class="svg-title" x="879" y="69" text-anchor="middle">Foreman worker</text>
+      <text class="svg-sub" x="879" y="91" text-anchor="middle">one capture per call</text>
+      <path class="arrow" d="M230 76 H286"/><path class="arrow" d="M496 76 H552"/><path class="arrow" d="M742 76 H798"/>
+
+      <rect class="box" x="552" y="154" width="190" height="76" rx="12"/>
+      <text class="svg-title" x="647" y="185" text-anchor="middle">Fixed policy</text>
+      <text class="svg-sub" x="647" y="207" text-anchor="middle">schemas and safety framing</text>
+      <path class="arrow" d="M742 192 H770 Q786 192 786 176 V114 H798"/>
+      <rect class="box" x="798" y="154" width="162" height="76" rx="12"/>
+      <text class="svg-title" x="879" y="185" text-anchor="middle">Model calls</text>
+      <text class="svg-sub" x="879" y="207" text-anchor="middle">triage, review, verify</text>
+      <path class="arrow" d="M879 114 V154"/>
+
+      <rect class="box" x="20" y="154" width="210" height="76" rx="12"/>
+      <text class="svg-title" x="125" y="185" text-anchor="middle">Settings and Trust</text>
+      <text class="svg-sub" x="125" y="207" text-anchor="middle">typed config and authority</text>
+      <rect class="box" x="286" y="154" width="210" height="76" rx="12"/>
+      <text class="svg-title" x="391" y="185" text-anchor="middle">Daemon gates</text>
+      <text class="svg-sub" x="391" y="207" text-anchor="middle">allow, refuse, or downgrade</text>
+      <path class="arrow" d="M230 192 H286"/><path class="arrow" d="M496 192 H525 Q535 192 535 176 V132 Q535 114 552 114 H798"/>
+
+      <rect class="box" x="20" y="310" width="210" height="76" rx="12"/>
+      <text class="svg-title" x="125" y="341" text-anchor="middle">Workflow Persona catalog</text>
+      <text class="svg-sub" x="125" y="363" text-anchor="middle">PersonaView collection only</text>
+      <rect class="box" x="286" y="310" width="210" height="76" rx="12"/>
+      <text class="svg-title" x="391" y="341" text-anchor="middle">Workflow and ensemble</text>
+      <text class="svg-sub" x="391" y="363" text-anchor="middle">pickers and validation</text>
+      <path class="arrow" d="M230 348 H286"/>
+      <line class="wall" x1="647" y1="280" x2="647" y2="410"/>
+      <text class="svg-title" x="665" y="326">No Foreman entry</text>
+      <text class="svg-sub" x="665" y="349">separate routes, types, and state</text>
+      <path class="arrow-muted" d="M230 114 C260 252 525 258 620 315"/>
+    </svg>
+    <figcaption>Editable judgment guidance and typed operational authority remain separate inputs. Workflow and ensemble consumers continue to see only the workflow Persona catalog.</figcaption>
+  </figure>
+
+  <h2>Workflow and ensemble exclusion</h2>
+  <p>Do not add a <code>stageEligible</code> flag merely to filter Foreman back out of a catalog it does not need to enter. Use separation as the primary invariant:</p>
+  <ul>
+    <li><code>PersonaManager.list()</code>, <code>personaCatalog()</code>, Registry snapshots, and <code>persona_upsert</code> never contain Foreman.</li>
+    <li><code>/api/personas</code> and <code>/api/personas/:id</code> do not resolve the fixed Foreman id.</li>
+    <li><code>PersonaView</code> and the personas SSE collection remain workflow Persona contracts.</li>
+    <li>The Library alone composes its local System entry with streamed workflow Personas.</li>
+    <li>Workflow and ensemble validation reject a forged Foreman reference as an unknown Persona.</li>
+  </ul>
+
+  <h2>Implementation workstreams</h2>
+  <h3>1. Harden the standing-guidance contract</h3>
+  <ul><li>Add shared view and CAS update schemas.</li><li>Return source-aware views and compute exact-byte ETags without changing stored compatibility.</li><li>Update routes, body limit, 409 response, and loopback tests.</li><li>Keep the worker reading only text and degrading to fixed policy alone on a read failure.</li></ul>
+  <h3>2. Add the System profile to the Library</h3>
+  <ul><li>Add a focused API helper and <code>ForemanProfileEditor</code> without widening <code>PersonaView</code>.</li><li>Compose the fixed System row into the rail and add the front-page card and canonical route.</li><li>Reuse the file editor, preview, header, property chips, copy feedback, confirmation, save shortcut, and navigation guard.</li><li>Implement clean refresh, dirty conflict, empty-save, character limit, reset, copy, and download states.</li></ul>
+  <h3>3. Connect existing configuration owners</h3>
+  <ul><li>Add a source summary and profile link to Foreman Settings.</li><li>Link profile summaries back to Models, posture, and Trust.</li><li>Keep typed config writes on <code>ForemanConfigPatchSchema</code>.</li></ul>
+  <h3>4. Lock the boundary with tests and documentation</h3>
+  <ul><li>Cover default, custom, empty, reset, exact text preservation, conflicts, malformed/oversized input, and missing seed behavior.</li><li>Cover the System rail, fixed identity, allowed actions, source states, links, and conflict copy.</li><li>Assert that API catalogs, SSE, workflow choices, graph validation, and ensemble choices never admit Foreman.</li><li>Add a Playwright profile flow with no model or agent call.</li><li>Update README and the Foreman, Library, workflow, and personas documentation.</li></ul>
+
+  <h2>Verification bar</h2>
+  <pre><code>npm run typecheck
+npm run lint
+npm test
+npm run build
+npm run smoke
+npm run test:e2e -- e2e/specs/foreman-profile.spec.ts</code></pre>
+  <p>The Playwright run captures review evidence in the gitignored <code>e2e/.artifacts/</code> location. No evidence artifact is committed.</p>
+
+  <h2>Explicit non-goals</h2>
+  <ul>
+    <li>General immutable Persona history or activation.</li>
+    <li>Migration of workflow drafts or ensemble evaluator references.</li>
+    <li>Making Foreman a workflow node, Persona evaluator, or plugin-imported Persona.</li>
+    <li>Editing built-in prompts, policies, schemas, or delivery grammar.</li>
+    <li>Per-repository or per-session Foreman guidance.</li>
+    <li>Changing which model roles receive standing guidance.</li>
+    <li>Moving authority-bearing controls into Markdown.</li>
+    <li>Changing worker startup, leases, retention, caps, concurrency, or transport.</li>
+  </ul>
+
+</main>
+</body>
+</html>

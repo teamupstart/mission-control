@@ -18,8 +18,8 @@ kind.
 
 ## Repository findings that changed the route
 
-Verified against the planning checkout. The implementation task must re-check the current tree
-before editing.
+Verified against the planning checkout. Paths and ownership describe that commit and may move
+before implementation.
 
 - **Manual-only is a service invariant, not a picker filter.** `TaskManager.create` converts a
   request with unmet dependencies into a backlog task even when `backlog` is false. Backlog edits

@@ -18,17 +18,18 @@ ordinary completion behavior; otherwise Foreman never offers shipping actions fo
 
 ## 2. Entry criteria and direct phase dependencies
 
-**Direct dependency: the planning pull request.** This task starts only after
+**Direct dependency: the planning pull request.** The phase becomes eligible only after
 `docs/plans/chat-task-kind/plan.md`, `phased-plan.md`, and this phase document resolve on the
 default branch.
 
 Entry criteria:
 
-- Re-read the source plan and its incorporated decisions before editing.
-- Re-check `TASK_KINDS`, every exhaustive `Record<TaskKind, ...>`, `DispatchSchema`,
-  `TaskManager.create/update/dispatch/reschedule`, and all `automaticWrapupBlock` call sites in
-  the current tree. Line numbers in this document describe the planning checkout, not an API.
-- Preserve unrelated worktree changes and follow the test isolation command in `AGENTS.md`.
+- The source plan and its incorporated decisions are the accepted product baseline.
+- `TASK_KINDS`, every exhaustive `Record<TaskKind, ...>`, `DispatchSchema`,
+  `TaskManager.create/update/dispatch/reschedule`, and all `automaticWrapupBlock` call sites are
+  current-tree integration points. Line numbers in this document describe the planning checkout,
+  not an API.
+- Repository working rules and the test-isolation contract in `AGENTS.md` remain in force.
 
 ## 3. Scope and explicit non-goals
 
@@ -55,7 +56,8 @@ Explicit non-goals:
 
 ## 4. Repository findings and inherited contracts
 
-Verified against the planning checkout. Re-check before editing.
+Verified against the planning checkout. Paths and ownership describe that commit and may move
+before implementation.
 
 - `src/shared/types.ts` defines `TASK_KINDS = ["ship", "scout", "plan"]` and derives
   `DEFAULT_TASK_KIND` from index 0. The tuple is append-only and feeds persisted reads plus wire

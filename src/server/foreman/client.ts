@@ -22,6 +22,7 @@ import { ForemanConfigSchema, TRANSCRIPT_DEFAULT_TAIL_TURNS } from "@shared/prot
 import type {
   BacklogPlanInput,
   ForemanConfig,
+  ForemanInstructionsView,
   ForemanLeaseResult,
   ForemanPlannerControl,
   RecordEpisode,
@@ -1149,7 +1150,7 @@ export class ForemanClient implements ForemanActions {
    * (see `readInstructions`), which is the same state as an operator who cleared the box.
    */
   async instructions(): Promise<string> {
-    const r = await get<{ text: string }>("/api/foreman/instructions");
+    const r = await get<ForemanInstructionsView>("/api/foreman/instructions");
     return typeof r?.text === "string" ? r.text : "";
   }
 

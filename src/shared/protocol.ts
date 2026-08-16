@@ -1311,6 +1311,39 @@ export const AwayConfigSchema = z.object({
 });
 export type AwayConfig = z.infer<typeof AwayConfigSchema>;
 
+/** Semantic ceiling for Foreman's exact standing-guidance document. */
+export const FOREMAN_INSTRUCTIONS_MAX_LENGTH = 64_000;
+
+/** Which durable state supplies the effective standing-guidance bytes. */
+export const ForemanInstructionsSourceSchema = z.enum(["builtin", "custom", "none"]);
+export type ForemanInstructionsSource = z.infer<typeof ForemanInstructionsSourceSchema>;
+
+/**
+ * Foreman's current exact-text document, including the shipped Reset target and opaque
+ * compare-and-swap token. The source stays explicit because custom text may be byte-identical
+ * to the built-in document, while an empty built-in seed is not an intentional clear.
+ */
+export const ForemanInstructionsViewSchema = z.object({
+  text: z.string(),
+  defaultText: z.string(),
+  source: ForemanInstructionsSourceSchema,
+  etag: z.string().min(1),
+}).strict();
+export type ForemanInstructionsView = z.infer<typeof ForemanInstructionsViewSchema>;
+
+/** The stable conflict vocabulary consumed by every standing-guidance editor. */
+export const FOREMAN_INSTRUCTIONS_CONFLICT_MESSAGE =
+  "Foreman standing guidance changed in another window";
+export const FOREMAN_INSTRUCTIONS_CONFLICT_CODE =
+  "foreman_instructions_revision_conflict";
+
+export const ForemanInstructionsConflictSchema = z.object({
+  error: z.literal(FOREMAN_INSTRUCTIONS_CONFLICT_MESSAGE),
+  code: z.literal(FOREMAN_INSTRUCTIONS_CONFLICT_CODE),
+  current: ForemanInstructionsViewSchema,
+}).strict();
+export type ForemanInstructionsConflict = z.infer<typeof ForemanInstructionsConflictSchema>;
+
 /**
  * Foreman's standing instructions - the prose half of its configuration, edited as one
  * document rather than as fields.
@@ -1320,20 +1353,21 @@ export type AwayConfig = z.infer<typeof AwayConfigSchema>;
  * carries prose that shapes JUDGEMENT. Keeping them apart is what stops a sentence in a text
  * box from doing a switch's job - see `PREFS_FRAMING`.
  *
- * `reset` and `text` are distinct operations because empty is a real value: an operator who
- * clears the box wants Foreman judging by its own policy alone, which is not the same as
- * wanting the shipped default back.
+ * Reset and text are strict, disjoint operations because empty is a real value: an operator
+ * who clears the box wants Foreman judging by its own policy alone, which is not the same as
+ * wanting the shipped default back. Every mutation carries the exact ETag it was based on so
+ * a stale window cannot overwrite a newer document silently.
  */
-export const ForemanInstructionsSchema = z
-  .object({
-    /** The new document. Ignored when `reset` is true. */
-    text: z.string().max(64_000).optional(),
-    /** Drop the stored value so the shipped `FOREMAN.md` applies again. */
-    reset: z.boolean().default(false),
-  })
-  .refine((o) => o.reset || typeof o.text === "string", {
-    message: "provide `text`, or `reset: true`",
-  });
+export const ForemanInstructionsSchema = z.union([
+  z.object({
+    expectedEtag: z.string().min(1),
+    text: z.string().max(FOREMAN_INSTRUCTIONS_MAX_LENGTH),
+  }).strict(),
+  z.object({
+    expectedEtag: z.string().min(1),
+    reset: z.literal(true),
+  }).strict(),
+]);
 export type ForemanInstructionsUpdate = z.infer<typeof ForemanInstructionsSchema>;
 
 /** Partial update of the away config from the dashboard. */

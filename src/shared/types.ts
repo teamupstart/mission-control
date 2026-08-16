@@ -17,6 +17,9 @@ import type { LineSummary } from "./line.ts";
 import type { ClaudeTransport, LlmRunnerId, ResolvedLlmRunner } from "./llm.ts";
 import type { ResolvedModel } from "./model-choice.ts";
 import type { PipelineProviderId, PipelineRun, SessionPipelineLink } from "./pipeline.ts";
+// Type-only in the opposite direction from protocol.ts's runtime schema imports, so the wire
+// status can reuse the document contract without introducing an emitted module cycle.
+import type { ForemanInstructionsSource } from "./protocol.ts";
 import type { SkillEnforcement } from "./skills.ts";
 import type { TaskSourceRef } from "./task-source.ts";
 import type { TerminalBackendId, TerminalHandle } from "./terminal.ts";
@@ -1363,6 +1366,11 @@ export interface SessionNoteSummary {
 export interface ForemanStatus {
   enabled: boolean;
   mode: "dry-run" | "live" | "semi-auto";
+  /**
+   * Which standing-guidance state is current. The document and its ETag stay on the focused
+   * instructions route rather than joining this frequently polled status response.
+   */
+  instructionsSource: ForemanInstructionsSource;
   /**
    * True when a worker currently HOLDS THE LEASE and renewed it recently - i.e. a
    * leader is alive. A second `npm run foreman` idles as a standby (so it can take

@@ -21,6 +21,9 @@ import {
   DispatchSchema,
   ResolveRepoSchema,
   EditWorkItemSchema,
+  FOREMAN_INSTRUCTIONS_CONFLICT_CODE,
+  FOREMAN_INSTRUCTIONS_CONFLICT_MESSAGE,
+  FOREMAN_INSTRUCTIONS_MAX_LENGTH,
   ForemanConfigPatchSchema,
   ForemanInstructionsSchema,
   ForemanHeartbeatSchema,
@@ -116,7 +119,11 @@ import {
   UpdateWorkflowBindingSchema,
   WrapupSchema,
 } from "@shared/protocol.ts";
-import type { ResolveFindingsResult, TaskDependencyInput } from "@shared/protocol.ts";
+import type {
+  ForemanInstructionsConflict,
+  ResolveFindingsResult,
+  TaskDependencyInput,
+} from "@shared/protocol.ts";
 import { capturePaneText } from "./discovery/pane-capture.ts";
 import { noteKeyFor } from "./registry.ts";
 import type { Registry } from "./registry.ts";
@@ -223,10 +230,8 @@ import { skillDrift } from "./skills/reconcile.ts";
 import { pendingReloads } from "./skills/reload.ts";
 import { readStandards } from "./standards.ts";
 import {
-  defaultForemanInstructions,
-  foremanInstructions,
-  resetForemanInstructions,
-  setForemanInstructions,
+  foremanInstructionsView,
+  updateForemanInstructions,
 } from "./foreman/instructions.ts";
 import { computeCommitDiff, computeSessionDiff, repoRootOf } from "./diff.ts";
 import { readRuntimeEffortBaseline } from "./runtime-meta.ts";
@@ -346,6 +351,13 @@ const WAIT_TIMEOUT_MS = 30000;
 /** The upload cap as the refusal states it - both size guards say the same number. */
 const TOO_BIG_MB = Math.round(MAX_UPLOAD_BYTES / 1024 / 1024);
 const PERSONA_BODY_MAX_BYTES = WORKFLOW_LIMITS.personaGuidanceBytes * 6 + 16 * 1024;
+/**
+ * The semantic schema counts JavaScript code units, while this stream guard counts raw request
+ * bytes. A caller may legally spell each code unit as a six-byte `\uXXXX` escape, so the guard
+ * includes that worst case plus ample room for the fixed ETag and JSON envelope.
+ */
+const FOREMAN_INSTRUCTIONS_BODY_MAX_BYTES =
+  FOREMAN_INSTRUCTIONS_MAX_LENGTH * 6 + 16 * 1024;
 /**
  * The same ×6 headroom as a Persona's, and derived from the prompt ceiling rather than
  * copied from it: JSON string escaping can expand a UTF-8 byte several times over, so a
@@ -2248,22 +2260,28 @@ export function buildApp(
   // they have edited it and the shipped `FOREMAN.md` otherwise, so the worker never has to
   // know which of the two it got.
   //
-  // A plain string body rather than JSON: the value IS the document, and the settings panel
-  // that will edit it wants a textarea, not a wrapper object.
-  app.get("/api/foreman/instructions", (c) =>
-    c.json({ text: foremanInstructions(), default: defaultForemanInstructions() }),
-  );
+  // The document route carries the exact effective text, built-in Reset target, durable source,
+  // and opaque ETag together. Status carries only the source so this document never joins the
+  // frequent global poll.
+  app.get("/api/foreman/instructions", (c) => c.json(foremanInstructionsView()));
 
-  // Replace them, or reset to the shipped default. An empty string is a real choice ("judge
-  // by your own policy alone") and is stored as such; resetting is a separate action, which
-  // is why it is a flag rather than an empty write.
-  app.put("/api/foreman/instructions", async (c) => {
+  // Replace or reset only from the exact view the caller read. An empty string is a real choice
+  // ("judge by your own policy alone") and is stored as such; reset writes null so the shipped
+  // default applies and older builds remain able to read the same row.
+  app.put("/api/foreman/instructions", bodyLimit({
+    maxSize: FOREMAN_INSTRUCTIONS_BODY_MAX_BYTES,
+    onError: (c) => c.json({ error: "Foreman instructions request is too large" }, 413),
+  }), async (c) => {
     const parsed = await parseBody(c, ForemanInstructionsSchema);
     if (!parsed.ok) return parsed.res;
-    const text = parsed.data.reset
-      ? resetForemanInstructions()
-      : setForemanInstructions(parsed.data.text ?? "");
-    return c.json({ text, default: defaultForemanInstructions() });
+    const result = updateForemanInstructions(parsed.data);
+    if (result.ok) return c.json(result.view);
+    const conflict = {
+      error: FOREMAN_INSTRUCTIONS_CONFLICT_MESSAGE,
+      code: FOREMAN_INSTRUCTIONS_CONFLICT_CODE,
+      current: result.current,
+    } satisfies ForemanInstructionsConflict;
+    return c.json(conflict, 409);
   });
 
   // Diff of a session's worktree/branch vs its source branch (localhost read).

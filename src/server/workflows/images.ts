@@ -78,7 +78,9 @@ interface InspectedTextArtifact {
   content: string;
 }
 
-const strictUtf8 = new TextDecoder("utf-8", { fatal: true });
+// TextDecoder strips a leading BOM unless ignoreBOM is true. Evidence content must retain it
+// so its encoded bytes still match the immutable source byte count and digest.
+const strictUtf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 function cleanDisplayName(value: string): string {
   const printable = [...value].map((character) => {

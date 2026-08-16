@@ -183,9 +183,9 @@ test("workflow image contracts default historical context and bind image citatio
   }).success, false);
 });
 
-test("gitignored UTF-8 logs are digest-bound, submission-frozen, and resumable", async () => {
+test("gitignored UTF-8 logs preserve BOM bytes when digest-bound and submission-frozen", async () => {
   const repo = realpathSync(mkdtempSync(join(tmpdir(), "mission-workflow-text-repo-")));
-  const original = "TAP version 13\nok 13 - focused regression\n";
+  const original = "\uFEFFTAP version 13\nok 13 - focused regression\n";
   try {
     execFileSync("git", ["init", "-q", repo]);
     writeFileSync(join(repo, ".gitignore"), "evidence/\n");

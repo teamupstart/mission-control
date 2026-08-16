@@ -1,5 +1,11 @@
 import type { EnsembleSummary, TaskEnsembleLink } from "@shared/ensemble.ts";
 import type { ReviewItem, Session } from "@shared/types.ts";
+import {
+  pipelineHaltRunbookLine,
+  pipelineRunKeyOf,
+  type PipelineHaltClass,
+  type PipelineRun,
+} from "@shared/pipeline.ts";
 import { activePaneDialog } from "@shared/session.ts";
 import { stateDisplay } from "./format.ts";
 
@@ -58,6 +64,31 @@ export type AttentionItem =
       context: string | null;
       /** The question the menu answers, when the parse found one above the rows. */
       prompt: string | null;
+    }
+  | {
+      /**
+       * An external engine stopped a pipeline and is waiting for a person.
+       *
+       * The one item in this fold that is not about a SESSION, and it has to be: a halt is a
+       * fact about the run, and the agent that hit it has usually exited by the time anyone
+       * looks - the engine stops dispatching, so there is frequently no card on the board at
+       * all. Before this the most definitively stuck thing on an operator's machine was the
+       * one thing the inbox could not show.
+       *
+       * Carries the whole `PipelineRun` rather than a copy of the fields drawn here: the row
+       * needs the key to link with, phase 4 attaches its verbs to these rows, and a payload
+       * that had been narrowed to what today's row prints would have to be widened by each
+       * of them - which is how two surfaces come to disagree about which run they are on.
+       */
+      kind: "pipeline_halt";
+      id: string;
+      run: PipelineRun;
+      /** `run.halt.class`, lifted so the row and phase 6's triage read one field. */
+      haltClass: PipelineHaltClass;
+      /** The engine's own first line about why it stopped. */
+      reason: string;
+      /** The provider's runbook that owns clearing this class, as one line. */
+      runbook: string;
     }
   | {
       /**
@@ -140,6 +171,17 @@ export interface AttentionInput {
    */
   reviews: readonly ReviewItem[];
   ensembles: readonly EnsembleSummary[];
+  /**
+   * Every pipeline run the daemon is projecting, halted or not.
+   *
+   * Optional, and that is the fail-open posture the whole feature ships with rather than a
+   * convenience for callers: a fleet observing no engine passes nothing, gets the same fold
+   * it always got, and the section below contributes no rows and no count. The narrowing to
+   * halted runs happens here rather than at the call site for the reason the whole module
+   * exists - the fold decides what is owed, and a caller that pre-filtered would be a second
+   * opinion on it.
+   */
+  pipelineRuns?: readonly PipelineRun[];
 }
 
 /**
@@ -151,8 +193,12 @@ export interface AttentionInput {
  *  1. **Ensemble decisions** - a run parked on you; nothing else in the run moves until it is answered.
  *  2. **Session reviews** - answerable inline, right here, which is what makes this an inbox.
  *  3. **Pane dialogs** - a TUI menu, answered on the card (see the inbox's comment).
- *  4. **Blocked sessions** - amber on the fleet with no row above; the invariant's backstop.
- *  5. **Parked finalizations** - a stuck destructive step.
+ *  4. **Pipeline halts** - an external engine stopped a feature and is waiting for a person.
+ *  5. **Blocked sessions** - amber on the fleet with no row above; the invariant's backstop.
+ *  6. **Parked finalizations** - a stuck destructive step.
+ *
+ * The five that predate pipelines keep their relative order exactly: the new section was
+ * inserted, never interleaved, so a fleet observing no engine renders the identical list.
  *
  * Within a section the oldest wait leads, so draining top-to-bottom answers whoever has been
  * waiting longest. Every order is total (a timestamp then an id) so the list cannot reshuffle
@@ -244,7 +290,33 @@ export function foldAttention(input: AttentionInput): AttentionFold {
     });
   }
 
-  // (4) The backstop: sessions the fleet paints amber that nothing above accounts for. See
+  // (4) Pipelines an external engine stopped for a person.
+  //
+  // BEFORE the backstop below, deliberately. The backstop's whole job is to claim what
+  // nothing else did, so any section derived after it would be a section whose rows had
+  // already been drawn as something else - and a halt drawn as "waiting on you" would name
+  // the agent rather than the run and offer to focus a card that has usually exited.
+  //
+  // Oldest wait leads, like every other section: `updatedAt` is when the projection last
+  // changed, which for a halted run is when it stopped. Ties break on the run key so the
+  // order is total and two renders of one fleet cannot reshuffle.
+  for (const run of [...(input.pipelineRuns ?? [])]
+    .filter((run) => run.halt !== null)
+    .sort(
+      (a, b) =>
+        a.updatedAt - b.updatedAt || (pipelineRunKeyOf(a) < pipelineRunKeyOf(b) ? -1 : 1),
+    )) {
+    items.push({
+      kind: "pipeline_halt",
+      id: `pipeline-halt:${pipelineRunKeyOf(run)}`,
+      run,
+      haltClass: run.halt!.class,
+      reason: run.halt!.reason,
+      runbook: pipelineHaltRunbookLine(run.provider, run.halt!.class),
+    });
+  }
+
+  // (5) The backstop: sessions the fleet paints amber that nothing above accounts for. See
   // the `session_blocked` doc for the two populations this catches. Ordered by name then id
   // like the dialogs, because a lifecycle state carries no "waiting since" to sort on.
   const blocked = input.sessions
@@ -260,7 +332,7 @@ export function foldAttention(input: AttentionInput): AttentionFold {
     });
   }
 
-  // (5) A finalization that stopped on an error. The run is past its decision and holding a
+  // (6) A finalization that stopped on an error. The run is past its decision and holding a
   // half-finished destructive step, which is a retry only a person can ask for.
   for (const summary of [...input.ensembles]
     .filter((e) => e.status === "finalizing" && e.error)

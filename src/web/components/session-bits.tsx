@@ -28,6 +28,13 @@ import { Tooltip } from "./Tooltip.tsx";
 import { EffortPicker } from "./EffortPicker.tsx";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
 import { ensembleStageWord, type EnsembleSummary, type TaskEnsembleLink } from "@shared/ensemble.ts";
+import {
+  PIPELINE_PROVIDER_INFO,
+  pipelineStepInfo,
+  type PipelineRun,
+  type SessionPipelineLink,
+} from "@shared/pipeline.ts";
+import { PIPELINE_GROUP_LABELS } from "../pipelines/pipeline-run-model.ts";
 
 /**
  * The small, presentational pieces a session is drawn from - the agent dot, the
@@ -255,6 +262,135 @@ export function WorkflowChips({
         />
       ))}
     </>
+  );
+}
+
+/**
+ * The mark that says this agent is not yours to talk to: an external engine is driving it.
+ *
+ * The one thing on a correlated card that is not also true of an ordinary session, and it has
+ * to be legible at a glance, because the surrounding card looks EXACTLY like an ordinary
+ * one - the engine spawns a real agent into a real pane, so every other affordance a person
+ * reads (name, state badge, transcript) is drawn from the same facts. Without this chip a
+ * conductor-driven `--print` claude is indistinguishable from an agent waiting for your next
+ * instruction, which is the carding hazard this phase exists to close.
+ *
+ * Says the slug and the step, not the provider, because that is what tells two of them apart
+ * on one board; the provider is on the tooltip, where a person who has not met one before
+ * finds out what is driving it.
+ */
+export function PipelineChip({
+  link,
+  onOpen,
+}: {
+  link: SessionPipelineLink | null;
+  onOpen?: () => void;
+}): React.JSX.Element | null {
+  if (!link) return null;
+  const provider = PIPELINE_PROVIDER_INFO[link.provider];
+  const step = link.step ? pipelineStepInfo(link.provider, link.step)?.label ?? link.step : null;
+  return (
+    <Tooltip
+      label={`${provider.label} is driving ${link.slug}${
+        step ? ` - on ${step}` : ""
+      }. Open its run in Runs; this agent reads no input here.`}
+    >
+      <button
+        className="pipeline-chip"
+        onClick={(event) => {
+          event.stopPropagation();
+          onOpen?.();
+        }}
+      >
+        <span aria-hidden>⇶</span>
+        {/* Real spaces rather than a flex gap: this button's text IS its accessible name, and
+            a gap would weld "add-widgetsBuild" into one word for a screen reader. */}
+        {` ${link.slug}`}
+        {step ? <span className="pipeline-chip-step">{` · ${step}`}</span> : null}
+      </button>
+    </Tooltip>
+  );
+}
+
+/**
+ * The frame header over the sessions of one pipeline run, for the board and the console rail.
+ *
+ * The pipeline twin of `EnsembleClusterHead` / `EnsembleRailGroup`, and a separate component
+ * rather than a widened one because almost nothing they draw carries over: an ensemble's
+ * header is about a comparison in flight (strategy, stage word, one dot per candidate), and a
+ * pipeline's is about one feature walking a gated sequence. What IS shared is the shape - a
+ * button that names the run and opens it - so the class names are the same and the two look
+ * alike in the column, which is the point.
+ *
+ * `run` may be null for the same reason the ensemble head's summary may be: a card knows its
+ * link from its own session frame, and the run's projection is a separate collection that can
+ * land a tick later. The slug is on the link, so the header never has to wait to say which
+ * run this is.
+ */
+export function PipelineClusterHead({
+  run,
+  slug,
+  variant,
+  onOpen,
+}: {
+  run: PipelineRun | null;
+  /** The engine's key for the feature, from the member link - always available. */
+  slug: string;
+  /** `board` draws the two-line cluster head; `rail` draws the one-line rail group. */
+  variant: "board" | "rail";
+  onOpen?: () => void;
+}): React.JSX.Element {
+  const halted = run?.halt ?? null;
+  const tooltip = halted
+    ? `${slug} - halted: ${halted.reason}`
+    : run
+      ? `${slug} - ${PIPELINE_GROUP_LABELS[run.group].toLowerCase()}${
+          run.lastStep ? ` on ${pipelineStepInfo(run.provider, run.lastStep)?.label ?? run.lastStep}` : ""
+        }. Open it in Runs.`
+      : `${slug} - open this pipeline in Runs`;
+  const step = run?.lastStep
+    ? pipelineStepInfo(run.provider, run.lastStep)?.label ?? run.lastStep
+    : null;
+  if (variant === "rail") {
+    return (
+      <Tooltip label={tooltip}>
+        <button
+          className={`rail-ensemble-group rail-pipeline-group${halted ? " needs-you" : ""}`}
+          aria-label={tooltip}
+          onClick={onOpen}
+        >
+          <span className="reg-glyph" aria-hidden>
+            ⇶
+          </span>
+          <span className="reg-title">{slug}</span>
+          {step && <span className="reg-stage">{step}</span>}
+          {halted && <span className="reg-needs">halted</span>}
+        </button>
+      </Tooltip>
+    );
+  }
+  return (
+    <Tooltip label={tooltip}>
+      <button
+        className={`board-cluster-head board-pipeline-head${halted ? " needs-you" : ""}`}
+        aria-label={tooltip}
+        onClick={onOpen}
+      >
+        <span className="bch-line">
+          <span className="bch-glyph" aria-hidden>
+            ⇶
+          </span>
+          <span className="bch-title">{slug}</span>
+        </span>
+        <span className="bch-line">
+          <span className="bch-meta">
+            {run ? PIPELINE_GROUP_LABELS[run.group] : "Pipeline"}
+            {step ? ` · ${step}` : ""}
+          </span>
+          {halted && <span className="bch-needs">halted</span>}
+        </span>
+      </button>
+    </Tooltip>
   );
 }
 

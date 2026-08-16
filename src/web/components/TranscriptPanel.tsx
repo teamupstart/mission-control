@@ -11,7 +11,10 @@ import type {
 import type { ConversationView } from "@shared/protocol.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { withAttachments } from "@shared/attachments.ts";
+import { messageBlockReason } from "@shared/pane.ts";
+import { pipelineDrivenSentence } from "@shared/pipeline.ts";
 import { liveActivity } from "@shared/session.ts";
+import { pipelineRunHash } from "../workflows/useWorkflowRoute.ts";
 import { api, fetchTranscriptBefore } from "../lib/api.ts";
 import { clearDraft, readDraft, writeDraft } from "../lib/drafts.ts";
 import { sdkDeliveryConfirmation } from "../lib/sdk-delivery.ts";
@@ -318,6 +321,15 @@ export function TranscriptPanel({
   const turnFlashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  /**
+   * WHY this session cannot be replied to, when it cannot: the reason behind `canSend`.
+   *
+   * Read off the session rather than taken as a prop, because `canSend` is the boolean every
+   * host already computes from the same fact (`canMessage`) and threading a second prop
+   * beside it would let a host pass a reason that disagrees with its own gate. Null on every
+   * session that can be replied to, which is the overwhelmingly common case.
+   */
+  const block = messageBlockReason(session);
   const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const atBottom = useRef(true);
   const historyEpoch = useRef(0);
@@ -1011,6 +1023,30 @@ export function TranscriptPanel({
         )}
       </div>
 
+      {/*
+        An engine-driven session gets a SENTENCE where the box would be, not a disabled box.
+        The two are different claims and the difference is the whole point of this phase: a
+        greyed-out composer says "not right now", which is what a busy agent's looks like, and
+        an operator waits for it to come back. This one never does - the process is running
+        under `--print` and reads nothing at all - so the surface says who IS driving it and
+        where to act instead. `messageBlockReason` decides; `canMessage` already refused the
+        Send box, the mode picker and the work queue through the same fact.
+      */}
+      {block === "pipeline" && session.pipeline ? (
+        <div className="transcript-compose">
+          <p className="compose-notice">
+            <span className="cn-glyph" aria-hidden>
+              ⇶
+            </span>
+            {pipelineDrivenSentence(session.pipeline)}
+            <Tooltip label="Open this pipeline in Runs - its steps, its gate verdicts, and what it is waiting on">
+              <a className="cn-link" href={pipelineRunHash(session.pipeline)}>
+                Open its run
+              </a>
+            </Tooltip>
+          </p>
+        </div>
+      ) : (
       <div className="transcript-compose" {...drop.dropProps}>
         <AttachmentStrip attachments={attachments} onRemove={drop.remove} />
         <div className="compose-row">
@@ -1115,6 +1151,7 @@ export function TranscriptPanel({
         )}
         {drop.dropping && <div className="drop-veil">Drop images to attach</div>}
       </div>
+      )}
     </>
   );
 

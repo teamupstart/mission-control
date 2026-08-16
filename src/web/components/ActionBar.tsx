@@ -3,7 +3,8 @@ import type { Session } from "@shared/types.ts";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
 import { canCycleMode, canInterruptSession } from "@shared/session.ts";
 import { interruptUnsupportedWhy } from "@shared/harness-capabilities.ts";
-import { canMessage, muxHandle } from "@shared/pane.ts";
+import { canMessage, messageBlockReason, muxHandle } from "@shared/pane.ts";
+import { pipelineDrivenSentence } from "@shared/pipeline.ts";
 import { api, type ActionResult } from "../lib/api.ts";
 import { retroOffer, retroOutcome } from "../lib/retro-offer.ts";
 import { clearDraft, readDraft, writeDraft } from "../lib/drafts.ts";
@@ -169,6 +170,9 @@ export function ActionBar({
   // Delivery, not pane mechanics: the Send box asks whether a turn can REACH this
   // session, which a driver-run one answers yes to without holding a pane.
   const canSend = canMessage(session);
+  // And WHY, when it cannot. An engine-driven session HAS a pane, so the old blanket "No
+  // pane to send to" was false on the one card where the reason matters most.
+  const block = messageBlockReason(session);
   // No pane to raise, so Focus is replaced rather than disabled: the affordance an embedded
   // session wants in that slot is the handoff that GIVES it one.
   const isEmbedded = session.runtime === "sdk";
@@ -586,7 +590,9 @@ export function ActionBar({
             label={
               canSend
                 ? `Type into this session's prompt (${formatChord(bindings.send)})`
-                : "No pane to send to"
+                : block === "pipeline" && session.pipeline
+                  ? pipelineDrivenSentence(session.pipeline)
+                  : "No pane to send to"
             }
           >
             <button className="btn" disabled={!canSend} onClick={startSend}>

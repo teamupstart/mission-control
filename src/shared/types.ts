@@ -16,7 +16,7 @@ import type { AutomationRoleCost } from "./llm-spend.ts";
 import type { LineSummary } from "./line.ts";
 import type { ClaudeTransport, LlmRunnerId, ResolvedLlmRunner } from "./llm.ts";
 import type { ResolvedModel } from "./model-choice.ts";
-import type { PipelineProviderId, PipelineRun } from "./pipeline.ts";
+import type { PipelineProviderId, PipelineRun, SessionPipelineLink } from "./pipeline.ts";
 import type { SkillEnforcement } from "./skills.ts";
 import type { TaskSourceRef } from "./task-source.ts";
 import type { TerminalBackendId, TerminalHandle } from "./terminal.ts";
@@ -638,12 +638,14 @@ export interface Session {
    * 22 step states once per correlated card per sweep, to say one word on a chip.
    *
    * Null-by-default is load-bearing rather than incidental. An uncorrelated session must
-   * behave EXACTLY as it does today, so every consumer of this field fails open. Phase 1
-   * defines the contract and stamps nothing; the correlation pass that fills it in - and
-   * the composer suppression that hangs off it, because an engine-driven agent runs in
-   * `--print` mode and reads no input at all - is phase 3's.
+   * behave EXACTLY as it does today, so every consumer of this field fails open.
+   *
+   * Stamped by `Registry.pipelineLinkFor` against the projection's own worktree paths, and
+   * only on a session Mission Control did NOT launch - see that method. The composer
+   * suppression that hangs off it (`canMessage`) is why: an engine-driven agent runs in
+   * `--print` mode and reads no input at all.
    */
-  pipeline: { provider: PipelineProviderId; slug: string; step: string | null } | null;
+  pipeline: SessionPipelineLink | null;
   /**
    * The option dialog this session's pane is showing right now - a permission prompt, an
    * `AskUserQuestion` clarification menu, the folder-trust check - or null when it isn't

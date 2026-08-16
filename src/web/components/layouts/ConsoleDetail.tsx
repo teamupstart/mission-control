@@ -3,6 +3,7 @@ import type { ForemanEpisode, Session, SessionGoal } from "@shared/types.ts";
 import { foremanAllowlisted } from "@shared/foreman.ts";
 import { activePaneDialog } from "@shared/session.ts";
 import { canMessage } from "@shared/pane.ts";
+import { pipelineRunKey } from "@shared/pipeline.ts";
 import { taskPillParts } from "@shared/task.ts";
 import { shortenCwd, stateDisplay, uptime, relativeTime } from "../../lib/format.ts";
 import {
@@ -40,6 +41,7 @@ import {
   TaskRepoPrs,
   WorkflowChips,
   EnsembleChip,
+  PipelineChip,
   SessionWhere,
 } from "../session-bits.tsx";
 import { canRenameSession } from "../../lib/format.ts";
@@ -442,6 +444,14 @@ export function ConsoleDetail({
           summary={ensembleSummaryFor(view, session)}
           onOpen={ensembleLink ? () => view.onOpenEnsemble?.(ensembleLink.runId) : undefined}
         />
+        {/* Renders nothing on an uncorrelated session, which is every session on a fleet
+            observing no engine - so this row is byte-identical to what it was there. */}
+        <PipelineChip
+          link={session.pipeline}
+          onOpen={
+            session.pipeline ? () => view.onOpenPipelineRun?.(session.pipeline!) : undefined
+          }
+        />
         {/* The card's gate, read from the same helper: a terminal run releases the offer here
             too, and stands its outcome chip next to it rather than instead of it. */}
         {sessionCanBindWorkflow(workflowRuns) && view.onBindWorkflow && (
@@ -706,7 +716,23 @@ export function ConsoleDetail({
             <SessionWorkflowsPane
               run={workflowRun}
               session={session}
+              pipelineRun={
+                session.pipeline
+                  ? view.pipelineRunByKey?.get(
+                      pipelineRunKey(
+                        session.pipeline.provider,
+                        session.pipeline.repoRoot,
+                        session.pipeline.slug,
+                      ),
+                    ) ?? null
+                  : null
+              }
               onOpenRun={(runId) => view.onOpenWorkflowRun?.(runId)}
+              onOpenPipelineRun={
+                session.pipeline
+                  ? () => view.onOpenPipelineRun?.(session.pipeline!)
+                  : undefined
+              }
             />
           </div>
         )}

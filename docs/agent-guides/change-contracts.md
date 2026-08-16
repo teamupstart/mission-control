@@ -150,6 +150,43 @@ Persisted ID tuples are append-only. Never rename, reorder, or reuse values. Thi
   owns, and a row this build cannot read is dropped and re-projected rather than migrated.
   The engine's own step names are NOT append-only here either: MC keeps a frozen display copy
   and tolerates any name it does not know. See [Pipelines](../pipelines.md)
+- The pipeline event ledger key (`pipeline_events(provider, repo_root, slug, seq)`) - the one
+  thing this integration stores that files cannot re-derive, so unlike `pipeline_runs` it is
+  durable state and its key never reorders or renames. `seq` is MISSION CONTROL'S own per-run
+  ordinal, assigned on insert, and that is load-bearing rather than incidental: the file tail
+  and the visualizer plugin observe the same events by two unrelated coordinates - a byte
+  offset into `events.jsonl` and a counter of the plugin's own - because conductor stamps no
+  sequence number on anything. Keying on a producer's number would collapse two spaces into
+  one and silently drop a pushed event whose counter matched an old byte offset. Convergence
+  is by `fingerprint` - a hash of the event's CONTENT, canonicalized by sorting keys at every
+  level and with the writer-added observation fields removed first (`OBSERVATION_ONLY_FIELDS`
+  in `src/server/db.ts`: `ts`, `activeInterval`, `observedIntervals`) - never by the number.
+  That exclusion is the contract rather than a detail of the hash: conductor's `EventPersister`
+  writes `{ ...event, activeInterval?, observedIntervals?, ts }`, so the record in
+  `events.jsonl` and the record the plugin sends are different objects describing ONE event,
+  and a hash over either one whole could never match the other. Convergence is also CLAIMED
+  rather than compared: an event converges onto the oldest row with its fingerprint
+  that the other path wrote and this one has not claimed, stamping its coordinate into
+  `also_seq`, and gets a row of its own when there is none. Do not reduce that to a unique
+  index over the fingerprint. It reads as the same rule and is not: conductor stamps no
+  sequence number, so a retried step emits a byte-identical record, and an index cannot tell a
+  second occurrence from a second observation - it refuses the occurrence, which for the 30
+  kinds conductor never persists deletes the only record that existed. Nothing in the
+  projection is derived from this table, which is what makes a duplicate row a wart and a
+  dropped event the only real failure. See [Pipelines](../pipelines.md#the-ledger)
+- The pipeline ingest envelope (`ConductorIngestEnvelopeSchema` in `src/shared/protocol.ts`) -
+  `{ repo, worktree, slug, seq, event }`, posted to `POST /ingest/conductor`. FROZEN, and
+  evolvable only by appending optional fields. The producer is an artifact this repository
+  ships into `~/.ai-conductor/plugins/mission-control/`, installed by hand and upgraded on
+  nobody's schedule, so an operator can be running a plugin copied from a build months older
+  than the daemon serving it - a renamed or narrowed field silently drops every event from an
+  installation nobody re-copied. `event` is deliberately unvalidated beyond being an object,
+  and so are the addressing fields: every one of them is a non-empty string and nothing more.
+  They are checked against the WORLD rather than against a pattern - `repo` must `realpath` to
+  a consented root, `slug` must name a worktree the provider is driving - which is what lets
+  the schema stay wide enough to survive a plugin nobody re-copied. Do not add a format
+  constraint to any of them; that is the narrowing this entry exists to forbid.
+  See [Pipelines](../pipelines.md#the-route)
 - Scout prompt origins (`SCOUT_PROMPT_ORIGINS` in `src/server/scouts/prompt-context.ts`) -
   written into `scout_prompt_turns.origin` and read back by exact value through
   `readPersistedEnum`, so an origin this build cannot read decodes to `null`. That is the

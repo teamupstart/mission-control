@@ -6,7 +6,8 @@ import {
   type PipelineRunDetail,
 } from "@shared/pipeline.ts";
 
-import type { PipelineProvider, PipelineRepoReading } from "../types.ts";
+import type { PipelineEventInput } from "../../db.ts";
+import type { PipelineProvider, PipelineReadOptions, PipelineRepoReading } from "../types.ts";
 import { normalizeConductorRun } from "./normalize.ts";
 import { conductorBin, probeConductor } from "./probe.ts";
 import {
@@ -19,7 +20,7 @@ import {
   readWorktrees,
   type DaemonReading,
 } from "./state.ts";
-import { tailConductorEvents, tokensIn } from "./tail.ts";
+import { ledgerReplaced, tailConductorEvents, tokensIn } from "./tail.ts";
 
 // The ai-conductor provider: one probe, and one file-only pass over a repository.
 //
@@ -56,6 +57,7 @@ function daemonState(daemon: DaemonReading): PipelineDaemonState {
 async function readConductorRepo(
   repoRoot: string,
   cursors: Map<string, { offset: number; identity: string }>,
+  options?: PipelineReadOptions,
 ): Promise<PipelineRepoReading> {
   const now = Date.now();
   try {
@@ -69,6 +71,7 @@ async function readConductorRepo(
         runs: [],
         cursors,
         restarted: new Set(),
+        events: new Map(),
         daemon: daemonState(daemon),
         error: `could not list ${INFO.worktreesDir}/ in this repository`,
       };
@@ -76,16 +79,51 @@ async function readConductorRepo(
     const runs: PipelineRun[] = [];
     const nextCursors = new Map<string, { offset: number; identity: string }>();
     const restarted = new Set<string>();
+    const events = new Map<string, PipelineEventInput[]>();
     for (const worktree of listing.worktrees) {
       const state = readConductState(worktree.path);
       const held = cursors.get(worktree.slug);
-      const tail = tailConductorEvents(
-        worktree.path,
-        held?.offset ?? 0,
-        held?.identity ?? null,
+      // The state files above are read unconditionally; only the ledger read is governed.
+      // See `PipelineReadOptions.shouldTail` - a run whose events are arriving by push still
+      // has its halt marker, its step statuses and its daemon markers read every pass,
+      // because those are the source of truth and a push is not.
+      //
+      // A REPLACED ledger overrules the demotion, and that is not a hedge. Both the restart
+      // flag and this pass's own token spend are produced by the read; decline it on a
+      // worktree that was torn down and re-cut under the same slug, and the watcher never
+      // learns to drop the old run's carried total, so the new run is displayed with the
+      // spend of the one it replaced - for up to a whole backfill interval, on the runs that
+      // are live enough to have been demoted in the first place. `ledgerReplaced` is a single
+      // `stat` and answers exactly that case.
+      const wanted = options?.shouldTail?.(worktree.slug) ?? true;
+      const tail =
+        wanted || ledgerReplaced(worktree.path, held?.identity ?? null)
+          ? tailConductorEvents(worktree.path, held?.offset ?? 0, held?.identity ?? null)
+          : null;
+      // A declined read carries the held cursor forward UNCHANGED. Writing a zero here
+      // instead would make every relaxed tick re-read the whole ledger from the top the
+      // moment the run stopped being live, which is the opposite of relaxing it.
+      nextCursors.set(
+        worktree.slug,
+        tail
+          ? { offset: tail.offset, identity: tail.identity }
+          : (held ?? { offset: 0, identity: "" }),
       );
-      nextCursors.set(worktree.slug, { offset: tail.offset, identity: tail.identity });
-      if (tail.restarted) restarted.add(worktree.slug);
+      if (tail?.restarted) restarted.add(worktree.slug);
+      if (tail) {
+        events.set(
+          worktree.slug,
+          tail.records.map((record) => ({
+            kind: record.type,
+            ts: record.ts,
+            // The byte offset the record starts at: unique within a file and monotonic,
+            // which is the whole of what a producer's sequence number owes. The engine
+            // stamps none of its own.
+            producerSeq: record.offset,
+            body: record.body,
+          })),
+        );
+      }
       runs.push(
         normalizeConductorRun({
           repoRoot,
@@ -99,7 +137,11 @@ async function readConductorRepo(
           // watcher, which is the thing that holds the previous projection - a reader
           // that summed only its own batch would report a live run's spend falling back
           // to null the moment its ledger went quiet.
-          costTokens: tokensIn(tail.records),
+          //
+          // A pass that declined to read the ledger reports `null` for the same reason a
+          // quiet ledger does: it learned nothing about this run's spend, which is not the
+          // same claim as it having none. The watcher's carried total stands.
+          costTokens: tail ? tokensIn(tail.records) : null,
           now,
         }),
       );
@@ -108,6 +150,7 @@ async function readConductorRepo(
       runs,
       cursors: nextCursors,
       restarted,
+      events,
       daemon: daemonState(daemon),
       // Asked of the reader rather than inferred from the count: a repository sitting at
       // exactly the cap has lost nothing, and calling that an error would stop the caller
@@ -124,10 +167,33 @@ async function readConductorRepo(
       runs: [],
       cursors,
       restarted: new Set(),
+      events: new Map(),
       daemon: "unknown",
       error: err instanceof Error ? err.message : String(err),
     };
   }
+}
+
+/**
+ * Which slugs this repository is actually driving, for the ingest door.
+ *
+ * `readWorktrees` and nothing else, so this cannot drift from what `readConductorRepo`
+ * counts as a run: same directory, same `.pipeline/` requirement, same cap.
+ *
+ * A TRUNCATED listing still answers, with the runs it did see. Returning null there - "could
+ * not look" - was the earlier judgement and it was wrong in the direction that costs events:
+ * a repository over the cap would have had every push refused, including pushes for the runs
+ * this build is actively projecting, because some OTHER slug might have been cut off. The
+ * slugs beyond the cap are still refused, and that is the correct half of the old reasoning:
+ * a run no pass enumerates is a run no retirement walks, so a row under its slug would be a
+ * row nothing ever retires.
+ *
+ * Only an unreadable directory is "could not look", and only that refuses everything.
+ */
+function conductorRunSlugs(repoRoot: string): ReadonlySet<string> | null {
+  const listing = readWorktrees(repoRoot, INFO.worktreesDir);
+  if (listing === null) return null;
+  return new Set(listing.worktrees.map((worktree) => worktree.slug));
 }
 
 /**
@@ -183,5 +249,6 @@ export const CONDUCTOR_PROVIDER: PipelineProvider = {
   binForPresence: conductorBin,
   probe: probeConductor,
   readRepo: readConductorRepo,
+  knownRunSlugs: conductorRunSlugs,
   readRunDetail: readConductorRunDetail,
 };

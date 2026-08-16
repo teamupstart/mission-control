@@ -112,6 +112,93 @@ export function isPipelineHaltClass(value: string): value is PipelineHaltClass {
   return (PIPELINE_HALT_CLASSES as readonly string[]).includes(value);
 }
 
+/** How a halt class is named and what it means for whoever has to clear it. */
+export interface PipelineHaltClassInfo {
+  label: string;
+  /** One line: what this class says about who can act on it. */
+  blurb: string;
+}
+
+/**
+ * The operator-facing reading of each halt class.
+ *
+ * `Record<PipelineHaltClass, …>` for the reason every other record in this file is one: a
+ * class appended to the tuple above does not compile until somebody has said what it means.
+ * Flat rather than keyed by provider because the CLASSES are - `PIPELINE_HALT_CLASSES` is
+ * one tuple that every provider's markers are read into, and a second provider whose halts
+ * did not fit it would be extending that tuple, not this record.
+ *
+ * The runbook that clears a halt IS provider-specific, and lives in
+ * `PIPELINE_HALT_RUNBOOKS` below rather than here.
+ */
+export const PIPELINE_HALT_CLASS_INFO: Record<PipelineHaltClass, PipelineHaltClassInfo> = {
+  "needs-human": {
+    label: "Needs a human",
+    blurb: "Only an operator can clear this one; the engine will not re-kick it.",
+  },
+  mechanical: {
+    label: "Mechanical",
+    blurb: "The engine may re-kick this one on its own once the cause clears.",
+  },
+  "protected-artifact": {
+    label: "Protected artifact",
+    blurb: "A sealed decision artifact changed under the engine; the seal wants a ceremony.",
+  },
+  legacy: {
+    label: "Legacy",
+    blurb: "A halt raised before the engine classified them. Read the reason and decide.",
+  },
+  unclassified: {
+    label: "Unclassified",
+    blurb: "The engine recorded no class, so nothing here guesses one.",
+  },
+};
+
+/** A provider's own operational document for a halt, and the part of it that applies. */
+export interface PipelineRunbook {
+  /** The document's title, as the provider publishes it. */
+  name: string;
+  /** The section inside it that owns this class, or null when the whole document does. */
+  section: string | null;
+}
+
+/**
+ * Which of a provider's runbooks an operator opens for each halt class.
+ *
+ * Part of the same frozen display copy as the step table, under the same rule: it names
+ * another program's documentation so the inbox can say where to go, and it decides nothing.
+ * A name that has fallen behind a provider release makes one line of a row stale.
+ *
+ * Read from ai-conductor's own `docs/runbooks/` at `8b51392d`, where a HALT is owned by one
+ * document - "Stalled or stuck feature", whose symptom list leads with `■ done <slug>:
+ * halted` - and the classes differ by which of its sections applies. Both fields are copied
+ * from that file's headings rather than paraphrased, so a reader can find them.
+ */
+export const PIPELINE_HALT_RUNBOOKS: Record<
+  PipelineProviderId,
+  Record<PipelineHaltClass, PipelineRunbook>
+> = {
+  "ai-conductor": {
+    "needs-human": { name: "Stalled or stuck feature", section: "The halt refused a DECIDE entry" },
+    mechanical: { name: "Stalled or stuck feature", section: "Classify the stall" },
+    "protected-artifact": {
+      name: "Stalled or stuck feature",
+      section: "The halt is a protected-artifact violation",
+    },
+    legacy: { name: "Stalled or stuck feature", section: "Classify the stall" },
+    unclassified: { name: "Stalled or stuck feature", section: "Classify the stall" },
+  },
+};
+
+/** The runbook for one halt, as one line: `"Stalled or stuck feature - Classify the stall"`. */
+export function pipelineHaltRunbookLine(
+  provider: PipelineProviderId,
+  haltClass: PipelineHaltClass,
+): string {
+  const runbook = PIPELINE_HALT_RUNBOOKS[provider][haltClass];
+  return runbook.section ? `${runbook.name} - ${runbook.section}` : runbook.name;
+}
+
 /**
  * Which bucket a run sits in, for the rail that will group them (phase 2).
  *
@@ -184,6 +271,38 @@ export interface PipelineRun {
   costTokens: number | null;
   /** When the projection last changed, in epoch ms. */
   updatedAt: number;
+}
+
+/**
+ * What one SESSION carries about the run it is doing the work of - `Session.pipeline`.
+ *
+ * The run's key plus the step that was running when the session was last observed, and
+ * nothing else: a whole `PipelineRun` on every session frame would ship 22 step states per
+ * correlated card per sweep to say one word on a chip.
+ *
+ * The key is all three coordinates because two repositories legitimately hold the same slug
+ * (`pipeline-sse.test.ts` pins that case), so a link naming only provider and slug cannot
+ * address the run it belongs to - and addressing it is the whole job of the chip, the ladder
+ * and the composer's replacement notice.
+ */
+export interface SessionPipelineLink {
+  provider: PipelineProviderId;
+  /** Absolute repository root, matching `PipelineRun.repoRoot` exactly. */
+  repoRoot: string;
+  slug: string;
+  /** The provider's `lastStep` as of the observation, or null before the first one. */
+  step: string | null;
+}
+
+/**
+ * The sentence a surface shows in place of a composer on an engine-driven session.
+ *
+ * One spelling, because three surfaces say it - the reply box's placeholder, the Send
+ * button's tooltip and the notice that replaces the box - and an operator reading two
+ * different reasons for one disabled control has to work out which is true.
+ */
+export function pipelineDrivenSentence(link: SessionPipelineLink): string {
+  return `Driven by ${PIPELINE_PROVIDER_INFO[link.provider].label} - act through its run in Runs`;
 }
 
 // ---- what a selected run is read in detail ---------------------------------------------
@@ -382,6 +501,26 @@ export interface PipelineProbe {
 export type PipelineDaemonState = "running" | "paused" | "stopped" | "unknown";
 
 /**
+ * How observation is arriving for one repository - by push, or by reading files.
+ *
+ * Mission Control observes a pipeline engine two ways at once. Reading the engine's files on
+ * a cadence always works and needs nothing installed; a visualizer plugin pushing events to
+ * `POST /ingest/conductor` is faster but needs the operator to have installed it AND the
+ * engine to start it. So this is the answer to "is my plugin working", and it has to
+ * distinguish three things an operator would otherwise have to guess between:
+ *
+ * - `never` - nothing has ever been pushed for this repository. The shipped state, and the
+ *   permanent one for anyone who has not installed the plugin. The file tail is observation.
+ * - `live` - events are arriving now, so the tail has relaxed to a backfill sweep.
+ * - `quiet` - the plugin has delivered here before and has stopped. The tail is primary
+ *   again, so nothing is lost - but this is also exactly what a revoked token or a crashed
+ *   engine looks like, and it must not read as `never`.
+ *
+ * Never a reason to stop reading files. The tail's cadence changes; its authority does not.
+ */
+export type PipelineIngestState = "never" | "live" | "quiet";
+
+/**
  * What the last pass over one consented repository saw - the panel's health line.
  *
  * Derived and never persisted, like `TaskSourceStatus`: every figure is re-derived by the
@@ -405,6 +544,14 @@ export interface PipelineRepoStatus {
   lastReadAt: number | null;
   /** Why the last pass saw less than it should have, or null. */
   error: string | null;
+  /**
+   * Whether a visualizer plugin is pushing events for this repository.
+   *
+   * Optional so a status assembled by an older build, or by a test that predates ingest,
+   * still typechecks and renders - it reads as `never`, which is the honest answer for a
+   * daemon that has no ingest at all.
+   */
+  ingest?: PipelineIngestState;
 }
 
 /** The whole Conductor panel in one read: consent, detection, and health. */

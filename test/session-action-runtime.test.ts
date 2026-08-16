@@ -404,8 +404,30 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
     assert.equal(registry.getSession(sessionId)?.state, "idle", "the Stop hook did not land");
   };
 
-  /** The session picking the packet up, exactly as its own tool-use hook would report it. */
+  /**
+   * The session picking the packet up, exactly as its own tool-use hook would report it.
+   *
+   * Held back to the next millisecond first, which is load-bearing rather than tidiness.
+   * Pickup is proven by `lastActivity > anchor.deliveredAt` - STRICTLY, so that an idle the
+   * session was already sitting in before the send can never satisfy it - and this harness
+   * leaves that comparison as the ONLY proof there is: it reports `transcriptPath: null`, so
+   * the byte-offset route `sessionActionPickup` uses is closed, and this is the single ACTIVE
+   * transition a whole test makes. Both stamps are `Date.now()` in milliseconds, and the
+   * anchor is written in the same transaction that marks the packet delivered, so a test that
+   * observes `delivered` and reports its hook inside that same millisecond hands the runtime
+   * an activity timestamp EQUAL to the anchor. That is rejected, correctly, and no second
+   * transition ever comes: the action waits for a pickup that already happened, and the test
+   * fails thirty seconds later at whatever it was really waiting for. It is invisible in the
+   * events, too - the run reaches `delivery_delivered` and simply never emits
+   * `session_action_picked_up`.
+   *
+   * A real agent cannot read a packet and run a tool inside the millisecond it was typed, so
+   * the runtime is right and this harness was wrong to be able to. Waiting out the millisecond
+   * costs each turn under 1ms and buys back an interval that is never zero in production.
+   */
   const reportWorking = (): void => {
+    const entered = Date.now();
+    while (Date.now() <= entered) { /* the clock has to move before the hook can prove pickup */ }
     registry.applyHook({
       agent: "claude",
       event: "PreToolUse",

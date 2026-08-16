@@ -8,6 +8,7 @@ import {
   parsePoolStatus,
   planReap,
   poolRepos,
+  recoverDryPoolCapacity,
   reapIntervalMs,
   reapPool,
   startPoolReaper,
@@ -447,6 +448,52 @@ test("reapPool reports a failed return as a skip instead of claiming the slot is
   const r = await reapPool(clone, () => pins(), deps);
   assert.deepEqual(r.reaped, []);
   assert.deepEqual(r.skipped.map((c) => c.skip), ["treehouse return failed: lease is held elsewhere"]);
+});
+
+test("dry-pool recovery stops when another cleanup already made capacity available", async () => {
+  const clone = mkPoolRepo("harness-pool-capacity-ready-");
+  const idle = mkLinkedWorktree(clone, "capacity-idle", join(clone, "..", "c-idle"));
+  const available = mkLinkedWorktree(clone, "capacity-available", join(clone, "..", "c-available"));
+  const { deps, returned } = fakeDeps(
+    [
+      `1     leased       ${idle}  (held by mission-control)`,
+      `2     available    ${available}`,
+    ].join("\n"),
+  );
+
+  const recovered = await recoverDryPoolCapacity(clone, () => pins(), deps);
+
+  assert.equal(recovered.capacityAvailable, true);
+  assert.deepEqual(returned, [], "available capacity makes every destructive return unnecessary");
+  assert.deepEqual(
+    recovered.skipped.map((candidate) => [candidate.tree.name, candidate.skip]),
+    [
+      ["1", "the pool already has available capacity"],
+      ["2", "it is available"],
+    ],
+  );
+});
+
+test("dry-pool recovery returns only the one safe lease a waiting dispatch needs", async () => {
+  const clone = mkPoolRepo("harness-pool-capacity-one-");
+  const paths = ["first", "second", "third"].map((name) =>
+    mkLinkedWorktree(clone, `capacity-${name}`, join(clone, "..", `capacity-${name}`)),
+  );
+  const { deps, returned } = fakeDeps(
+    paths
+      .map((path, index) => `${index + 1}     leased       ${path}  (held by mission-control)`)
+      .join("\n"),
+  );
+
+  const recovered = await recoverDryPoolCapacity(clone, () => pins(), deps);
+
+  assert.equal(recovered.capacityAvailable, true);
+  assert.deepEqual(returned, [paths[0]], "recovery is capacity work, not an exhaustive sweep");
+  assert.deepEqual(recovered.reaped.map((candidate) => candidate.name), ["1"]);
+  assert.deepEqual(
+    recovered.skipped.map((candidate) => candidate.skip),
+    ["enough pool capacity was restored", "enough pool capacity was restored"],
+  );
 });
 
 // --- the fetch window -------------------------------------------------------

@@ -77,6 +77,9 @@ session` and dispatch record), treehouse reports no processes under it, no live
 session's cwd is inside it, no task the harness tracks still records it - including as one of
 a multi-repo task's attached repositories, whose trees no session's cwd is inside - it has no
 uncommitted changes, and origin's default branch already contains its HEAD.
+It also leaves a lease alone when a Workflow check has pinned its path. Check leases use a
+separate holder identity as the primary guard, and the path pin is deliberate defence in
+depth for the interval before a check process appears.
 Anything else - including any uncertainty - leaves the lease alone: a leaked lease
 costs a slot, a wrong reap costs your work.
 
@@ -126,6 +129,17 @@ outside all of this, which is why the holder check above stays the thing protect
 Set `MISSION_POOL_REAP_MS=0` to switch the background sweep off entirely; the
 dispatch-time reap stays on, since its only alternative is abandoning the pool
 for a throwaway worktree.
+
+Pool work is scheduled in two lanes per repository. New worktree acquisition uses the
+foreground lane. Periodic reaping and restart cleanup use the background lane, so an
+acquisition can pass returns that are waiting but never interrupts a return already in
+progress. Restart cleanup is also admitted one task at a time for each repository rather
+than placing every historical task on the pool lock at once.
+
+The dispatch-time pass restores capacity rather than draining the pool. If its status read
+already sees an available tree, it retries `get` without returning anything. Otherwise it
+stops after the first lease passes every safety check and is returned. The slow exhaustive
+cleanup remains the periodic reaper's job.
 
 That last-resort fallback is no longer silent, which is how a pool could sit full
 without anyone noticing: a dispatch that still can't get a tree warns in the daemon

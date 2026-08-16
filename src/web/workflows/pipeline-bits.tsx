@@ -104,6 +104,85 @@ export function PipelineStatusChip({ status }: { status: PipelineStatus }): Reac
   return status.tooltip ? <Tooltip label={status.tooltip}>{chip}</Tooltip> : chip;
 }
 
+/** Which of the ladder's five rung treatments a status earns. */
+export function rungState(status: PipelineStatus, pending = false): string {
+  if (status.tone === "passed") return "is-passed";
+  if (status.tone === "running") return "is-running";
+  if (status.tone === "failed") return "is-failed";
+  return pending ? "is-pending" : "is-waiting";
+}
+
+/**
+ * One step of the VERTICAL ladder - the compact reading a session's detail pane draws.
+ *
+ * Here rather than inside `WorkflowLadder.tsx`, where it was, because a second reader
+ * arrived: an external engine's pipeline is drawn as a ladder in the same pane, and it is the
+ * same grammar - a titled row, a status on the right, and whatever the caller nests under it.
+ * A lookalike built beside it would drift on the one thing that matters here, which is that
+ * the two ladders read as ONE component to whoever is looking at the pane.
+ *
+ * The horizontal strip's leaves are the neighbours above and below for the same reason: this
+ * module is where the run-drawing vocabulary lives, and both readers borrow from it rather
+ * than from each other.
+ */
+export function Rung({
+  name,
+  sub = null,
+  status,
+  terminal = false,
+  pending = false,
+  fixed = false,
+  carried = false,
+  children = null,
+}: {
+  name: string;
+  sub?: string | null;
+  status: PipelineStatus;
+  terminal?: boolean;
+  pending?: boolean;
+  /** Not run in this round because an earlier one already passed it. Recedes, never hides. */
+  carried?: boolean;
+  /**
+   * This rung is the completion POLICY, not an authored stage: it sits after the End and
+   * nothing about it can be edited from any surface. A word rather than only a class, for
+   * the reason the pipeline footer's badge is one - the distinction has to survive a reader
+   * who never sees the styling.
+   */
+  fixed?: boolean;
+  children?: React.ReactNode;
+}): React.JSX.Element {
+  const state = (
+    <span
+      className={`wf-ladder-state${status.tooltip ? " wf-status-explained" : ""}`}
+      tabIndex={status.tooltip ? 0 : undefined}
+    >
+      {status.label}
+    </span>
+  );
+  return (
+    <li
+      className={[
+        "wf-ladder-rung",
+        `workflow-${status.tone}`,
+        rungState(status, pending),
+        terminal ? "is-terminal" : "",
+        fixed ? "is-fixed" : "",
+        carried ? "is-carried" : "",
+      ].filter(Boolean).join(" ")}
+    >
+      <div className="wf-ladder-row">
+        <span className="wf-ladder-title">
+          <strong>{name}</strong>
+          {fixed && <span className="wf-ladder-fixed">Fixed</span>}
+          {sub && <span className="wf-ladder-sub">{sub}</span>}
+        </span>
+        {status.tooltip ? <Tooltip label={status.tooltip}>{state}</Tooltip> : state}
+      </div>
+      {children}
+    </li>
+  );
+}
+
 /**
  * One member inside a stage. `meta` is the `runner · model` line; `actions` is the trailing
  * control slot (Remove here, "open verdict" for the monitor).

@@ -161,3 +161,35 @@ test("Settings Worktrees configures, inventories, previews, blocks, launches, an
   await expect(repo).toBeVisible();
   await shoot(dashboard, "04-narrow-inventory", true);
 });
+
+test("refreshing a preview drops acknowledgements that the new token does not require", async ({
+  dashboard,
+  daemon,
+}) => {
+  const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+    data: { repositoryPath: daemon.repo, label: "acknowledgement refresh" },
+  });
+  expect(acquired.status()).toBe(201);
+  const lease = await acquired.json() as { path: string };
+  const dirtyFile = join(lease.path, "dirty-before-preview.txt");
+  writeFileSync(dirtyFile, "preview this risk\n");
+
+  await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+  const repo = dashboard.locator(".wt-repo", { hasText: "demo-repo" });
+  await repo.getByRole("button", { name: /demo-repo/ }).click();
+  await repo.getByRole("button", { name: "Return", exact: true }).click();
+  const preview = dashboard.getByRole("dialog", { name: "return worktree preview" });
+  const dirtyAcknowledgement = preview.getByRole("checkbox", {
+    name: /Dirty or untracked work will be discarded/,
+  });
+  await dirtyAcknowledgement.check();
+
+  unlinkSync(dirtyFile);
+  await preview.getByRole("button", { name: "Execute" }).click();
+  await expect(preview.getByText("State changed after this preview.")).toBeVisible();
+  await preview.getByRole("button", { name: "Refresh preview" }).click();
+  await expect(dirtyAcknowledgement).toHaveCount(0);
+  await expect(preview.getByRole("button", { name: "Execute" })).toBeEnabled();
+  await preview.getByRole("button", { name: "Execute" }).click();
+  await expect(preview).toHaveCount(0);
+});

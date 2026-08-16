@@ -268,6 +268,10 @@ function ActionDialog({
 }): React.JSX.Element {
   const dialog = useRef<HTMLDivElement>(null);
   const [acks, setAcks] = useState<Set<WorktreeRiskKey>>(new Set());
+  const acknowledgementSignature = preview.requiredAcknowledgements.join(",");
+  useEffect(() => {
+    setAcks(new Set());
+  }, [preview.token, acknowledgementSignature]);
   useEffect(() => {
     const root = dialog.current;
     if (!root) return;
@@ -290,6 +294,7 @@ function ActionDialog({
     root.addEventListener("keydown", trap);
     return () => root.removeEventListener("keydown", trap);
   }, []);
+  const currentAcks = [...acks].filter((key) => preview.requiredAcknowledgements.includes(key));
   const acknowledged = preview.requiredAcknowledgements.every((key) => acks.has(key));
   return (
     <Overlay id={OVERLAY_IDS.worktreeAction} onClose={onClose} className="modal wt-action-modal" role="dialog" ariaLabel={`${preview.request.action} worktree preview`} closable={!busy}>
@@ -308,7 +313,7 @@ function ActionDialog({
           {preview.consequences.length > 0 && <section><h4>What happens</h4><ul>{preview.consequences.map((item) => <li key={item}>{item}</li>)}</ul></section>}
           {preview.requiredAcknowledgements.length > 0 && <fieldset className="wt-acknowledgements"><legend>Required acknowledgements</legend>{preview.risks.filter((item) => item.acknowledgeable).map((item) => <Tooltip key={item.key} label={`Acknowledge this previewed risk: ${item.label}`}><label><input type="checkbox" checked={acks.has(item.key)} onChange={(event) => setAcks((current) => { const next = new Set(current); if (event.target.checked) next.add(item.key); else next.delete(item.key); return next; })} />I understand: {item.label}</label></Tooltip>)}</fieldset>}
         </div>
-        <footer className="modal-actions"><Tooltip label="Cancel without changing the worktree"><button className="btn btn-ghost" type="button" onClick={onClose} disabled={busy}>Cancel</button></Tooltip><Tooltip label="Execute this exact preview after every safety check passes"><button className="btn btn-danger" type="button" disabled={busy || changed || !preview.allowed || !acknowledged} onClick={() => onExecute([...acks])}>{busy ? "Executing…" : "Execute"}</button></Tooltip></footer>
+        <footer className="modal-actions"><Tooltip label="Cancel without changing the worktree"><button className="btn btn-ghost" type="button" onClick={onClose} disabled={busy}>Cancel</button></Tooltip><Tooltip label="Execute this exact preview after every safety check passes"><button className="btn btn-danger" type="button" disabled={busy || changed || !preview.allowed || !acknowledged} onClick={() => onExecute(currentAcks)}>{busy ? "Executing…" : "Execute"}</button></Tooltip></footer>
       </div>
     </Overlay>
   );

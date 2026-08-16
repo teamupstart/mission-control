@@ -1211,29 +1211,32 @@ round.
 **Foreman complete** lets an active binding claim Foreman's existing queue-drain or prompted
 completion proof. Foreman still runs as a separate HTTP-only worker and never reads workflow
 SQLite. The daemon creates or resumes the durable workflow and retires the matching Foreman
-once-only guard in one transaction. A prompted guard includes the human intent episode and the
-HEAD plus transcript anchor Foreman verified. This keeps retries idempotent while allowing a
-later settled turn on the same intent, such as work resumed by a Claude background task
-notification, to claim the existing binding exactly once after that evidence advances. The
-session activity observed with that proof is the cheap watermark before Foreman refetches it,
-so an unchanged idle boundary does not incur repeated diff reads. Because the watermark is the
-observed boundary rather than the later guard write, a Stop arriving during verification remains
-eligible afterward. A missing or failed claim endpoint fails closed - Foreman does not fall
-through to an unreviewed wrap-up. If no Foreman binding claims the boundary,
+once-only guard in one transaction. A prompted claim carries the expected logical conversation
+key and completed work-cycle generation alongside the reconciled human intent and the HEAD plus
+transcript proof Foreman verified. The daemon atomically compares and consumes that generation;
+evidence keeps retries idempotent, while a later completed generation under unchanged intent can
+claim the binding exactly once. Work restarting, a newer completion, key rotation, intent drift,
+or queue work appearing before the claim makes the old result fail closed. A missing or failed
+claim endpoint also fails closed, so Foreman does not fall through to an unreviewed wrap-up. If no
+Foreman binding claims the boundary,
 the existing wrap-up behavior is unchanged.
 
 #### The repair loop, end to end
 
-One confirmed Live delivery re-arms **exactly one** completion episode - drain when the session
-has queue items, prompted when it does not. Exactly one, because re-arming both would let a
-single repair packet produce two completion claims and therefore two review rounds for one fix.
+One confirmed Live delivery can explicitly re-arm only the queue-drain guard, and only when the
+session has queue items. Prompted completion has no delivery reset: on an item-less session, the
+repair turn's natural work start and completion advance its durable generation. This separation
+prevents one packet from opening both completion paths while still letting either session shape
+reach the next round.
 So the whole cycle runs without you:
 
 1. A Persona (or a [Command](#command-nodes)) fails. The run parks in
    `waiting_for_session` and the repair packet is typed into the pane.
-2. Confirming that delivery re-arms one Foreman completion episode.
-3. The session makes the change and goes idle.
-4. Foreman notices, claims the completion, and opens round N+1.
+2. Confirming a queue-backed delivery re-arms drain; an item-less prompted session waits for its
+   next natural work-cycle generation.
+3. The session makes the change and goes idle, completing that cycle.
+4. Foreman consumes the matching drain guard or work-cycle generation, claims the completion,
+   and opens round N+1.
 5. The graph re-runs **from the top** - every reviewer, against fresh evidence. Attempts are
    keyed by submission, so round N+1 starts with an empty slate rather than resuming round N.
 

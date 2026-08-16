@@ -2671,29 +2671,30 @@ export const WrapupAskedSchema = z.object({
 });
 export type WrapupAsked = z.infer<typeof WrapupAskedSchema>;
 
+const SessionIntentGuardSchema = z.object({
+  objective: z.string().trim().min(1).max(INTENT_MAX),
+  objectiveVersion: z.number().int().min(1),
+  promptRevision: z.number().int().min(1),
+  episodeKey: z.string().min(1).max(200),
+}).refine(
+  (intent) => intent.episodeKey === `intent:${intent.objectiveVersion}:${intent.promptRevision}`,
+  { message: "Intent episode key does not match its revisions" },
+);
+
 /**
- * Retire one episode of the `prompted` wrap-up trigger: the goal it just decided on.
+ * Consume one completed work-cycle generation for the `prompted` trigger.
  *
- * INTENT_MAX is generous headroom here, not a tight fit: this carries a whole captured
- * prompt, which `clampPrompt` has already bounded to ~4k upstream. The bound is about
- * weight rather than safety - unlike `WrapupSchema.answer` this value is never
- * delivered into a pane and is only ever compared for equality, so its content is
- * inert. It still belongs at the boundary, since it is persisted and re-served on
- * every queue read the worker polls.
+ * The daemon compares every field again at the write boundary. A worker result from a
+ * rotated conversation, changed intent, restarted turn, or newer completion therefore
+ * cannot spend either the stale or current generation.
  */
 export const PromptedWrapupSchema = z.object({
-  goal: z.string().min(1).max(INTENT_MAX),
-  /**
-   * SHA-256 marker of the HEAD + transcript completion evidence just decided.
-   * Optional only for an old worker talking to a newly upgraded daemon. The route
-   * stores that write as the same legacy spent guard an upgraded database exposes.
-   */
-  evidenceMarker: z.string().regex(/^[a-f0-9]{64}$/).optional(),
-  /** Activity boundary observed with the evidence. Optional for worker version skew. */
-  activityAt: z.number().int().nonnegative().optional(),
-  // The human-decision path must retire the prompted episode and raise its Ship it?
-  // card in one durable write. If that write fails, neither marker lands and the
-  // worker can retry the whole verified boundary on its next unhurried tick.
+  logicalKey: z.string().min(1).max(NOTE_KEY_MAX),
+  generation: z.number().int().min(1),
+  expectedIntent: SessionIntentGuardSchema,
+  // The human-decision path must consume the generation and raise its Ship it?
+  // card in one durable write. If that write fails, neither fact lands and the worker
+  // can retry the whole verified boundary on its next unhurried tick.
   ask: z.boolean().optional().default(false),
 });
 export type PromptedWrapup = z.infer<typeof PromptedWrapupSchema>;
@@ -3976,20 +3977,20 @@ export const WorkflowCheckOutcomeSchema = z.object({
 export const WorkflowCompletionClaimSchema = z.object({
   completionKind: z.enum(WORKFLOW_COMPLETION_KINDS),
   marker: z.string().regex(/^[a-f0-9]{64}$/),
-  /** Prompted session activity observed with this proof. Absent on drain or old-worker claims. */
-  activityAt: z.number().int().nonnegative().nullable().optional().default(null),
+  expectedWorkCycle: z.object({
+    logicalKey: z.string().min(1).max(NOTE_KEY_MAX),
+    generation: z.number().int().min(1),
+  }).nullable().optional().default(null),
   summary: z.string().min(1).max(WORKFLOW_EXECUTION_LIMITS.verdictSummary),
   evidenceFingerprint: z.string().min(1).max(200),
-  expectedIntent: z.object({
-    objective: z.string().trim().min(1).max(INTENT_MAX),
-    objectiveVersion: z.number().int().min(1),
-    promptRevision: z.number().int().min(1),
-    episodeKey: z.string().min(1).max(200),
-  }).refine(
-    (intent) =>
-      intent.episodeKey === `intent:${intent.objectiveVersion}:${intent.promptRevision}`,
-    { message: "Intent episode key does not match its revisions" },
-  ).nullable().optional().default(null),
+  expectedIntent: SessionIntentGuardSchema.nullable().optional().default(null),
+}).superRefine((claim, ctx) => {
+  if (claim.completionKind === "prompted" && !claim.expectedWorkCycle) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Prompted completion requires a work cycle" });
+  }
+  if (claim.completionKind === "drain" && claim.expectedWorkCycle) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Drain completion cannot consume a work cycle" });
+  }
 });
 export type WorkflowCompletionClaimInput = z.infer<typeof WorkflowCompletionClaimSchema>;
 

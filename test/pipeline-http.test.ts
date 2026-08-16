@@ -49,7 +49,10 @@ const {
 type Registry = InstanceType<typeof Registry>;
 
 const db = openDb();
-after(() => rmSync(home, { recursive: true, force: true }));
+// Background probe/refresh promises can finish while the test worker is tearing its home
+// down. Linux may report ENOTEMPTY when one lands between recursive enumeration and removal,
+// so give the standard recursive remover a short bounded retry window.
+after(() => rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }));
 
 /**
  * Poll `read` until it equals `want`, or fail saying what it was.

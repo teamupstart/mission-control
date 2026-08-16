@@ -169,6 +169,8 @@ function mkFake(over: { session?: Session; items?: WorkItem[]; injectFailure?: u
       promptedGoal: null,
       promptedEvidence: null,
       promptedActivityAt: null,
+      promptedLegacyCutoverGeneration: null,
+      promptedConsumedGeneration: null,
       updatedAt: 0,
       items,
     }),

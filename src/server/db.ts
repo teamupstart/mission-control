@@ -1682,9 +1682,11 @@ export function openDb(): DatabaseSync {
       branch          TEXT,
       wrapup_asked_at INTEGER,            -- the drain ask fires exactly once
       wrapup_answer   TEXT,
-      prompted_goal   TEXT,               -- the goal the prompted trigger last fired on
-      prompted_evidence TEXT,             -- HEAD + transcript proof handled for that goal
-      prompted_activity_at INTEGER,       -- session activity observed with that proof
+      prompted_goal   TEXT,               -- historical intent guard for upgrade bootstrap
+      prompted_evidence TEXT,             -- historical evidence guard, compatibility only
+      prompted_activity_at INTEGER,       -- historical activity watermark, compatibility only
+      prompted_legacy_cutover_generation INTEGER, -- conservative ceiling for ambiguous legacy guards
+      prompted_consumed_generation INTEGER, -- latest work-cycle generation handled
       updated_at      INTEGER NOT NULL
     );
 
@@ -2927,37 +2929,37 @@ function migrate(d: DatabaseSync): void {
   // truthful answer for a row written before the daemon could recover one.
   addColumn(d, "foreman_queue_items", "recovered_at", "INTEGER");
 
-  // `prompted_goal`: the resolved intent episode the `prompted` wrap-up trigger last
-  // handled. The historical column name remains, but new writes store an opaque
-  // `intent:<objectiveVersion>:<promptRevision>` guard rather than goal text.
+  // `prompted_goal`: the historical resolved-intent guard used before prompted
+  // completion consumed work-cycle generations. It remains readable for one-time
+  // compatibility bootstrap and is no longer written by current completion paths.
   // Same exposure as the two ALTERs above: added to the CREATE TABLE after
   // `foreman_queues` shipped, and CREATE TABLE IF NOT EXISTS will not add a column to
   // an existing table, so without this every queue write on an upgraded db would fail.
   //
-  // Nullable with no default, and that reads correctly rather than merely harmlessly:
-  // NULL means "this checkout has never had a prompted wrap-up", which is the truthful
-  // answer for every row written before the trigger existed. It leaves the trigger
-  // ARMED on those checkouts, which is right - the whole point is to fire once the
-  // human turns it on - and the verify step still has to agree before anything types.
+  // Nullable with no default: NULL means no legacy guard needs compatibility handling.
   addColumn(d, "foreman_queues", "prompted_goal", "TEXT");
 
-  // `prompted_evidence`: the durable completion proof handled alongside
-  // `prompted_goal`. A Claude background task notification is not a human prompt and
-  // correctly leaves the intent episode unchanged, but the work it resumes can end at
-  // a later Stop with a newer transcript anchor. Keeping that proof separately lets
-  // the worker reverify the later boundary without polling the same settled Stop.
-  //
-  // NULL beside an existing `prompted_goal` means the row predates this proof axis.
-  // Read it as a spent legacy guard, not as permission to replay a shipping action on
-  // upgrade; the next reconciled human intent still re-arms it normally.
+  // `prompted_evidence`: the historical proof axis paired with `prompted_goal`.
+  // Current completion claims carry their own evidence fingerprint, while lifecycle
+  // selection reads only `prompted_consumed_generation`. Keep the column readable for
+  // wire and database compatibility; do not revive it as a fallback trigger.
   addColumn(d, "foreman_queues", "prompted_evidence", "TEXT");
 
-  // The guard write can land after a slow verifier returns. Its `updated_at` therefore
-  // cannot identify the activity boundary that verifier actually examined: a later Stop
-  // may already have arrived by then. Persist the observed session activity separately so
-  // that later boundary stays armed. NULL is a spent legacy guard, matching the evidence
-  // migration above, because an old worker cannot say which boundary it observed safely.
+  // The historical activity watermark paired with `prompted_evidence`. Retained only
+  // for compatibility after the work-cycle cutover.
   addColumn(d, "foreman_queues", "prompted_activity_at", "INTEGER");
+
+  // Very old prompted guards predate the immutable activity watermark. Their queue
+  // `updated_at` can move after later work and therefore cannot identify what the guard
+  // actually retired. Record the current settled generation as a conservative cutover
+  // ceiling instead: it cannot be claimed, while a later generation naturally re-arms.
+  addColumn(d, "foreman_queues", "prompted_legacy_cutover_generation", "INTEGER");
+
+  // The current prompted completion guard. A generation is meaningful only beside the
+  // `session_work_cycles` row for this queue's logical note key. NULL means no completed
+  // generation has been consumed yet; legacy rows are bootstrapped lazily only when their
+  // historical `prompted_goal` still matches the resolved intent.
+  addColumn(d, "foreman_queues", "prompted_consumed_generation", "INTEGER");
 
   // `decisions`: the structured questions of a `plan-decisions` review, as a JSON
   // array. Added to `reviews` after it shipped, so an upgraded DB only gets it via
@@ -7595,16 +7597,17 @@ interface QueueRow {
   prompted_goal: string | null;
   prompted_evidence: string | null;
   prompted_activity_at: number | null;
+  prompted_legacy_cutover_generation: number | null;
+  prompted_consumed_generation: number | null;
   updated_at: number;
 }
 
 /**
- * One row -> object mapping, for the four readers that need it.
+ * One row -> object mapping, shared by every queue reader.
  *
  * Spelled once because it was spelled four times, and a column added to the table
- * reached whichever copies its author happened to grep: a `prompted_goal` missing
- * from `listQueueRows` alone would leave the orphan sweep reading every queue as
- * never-wrapped-up, which is the state that FIRES the trigger.
+ * reached whichever copies its author happened to grep. Missing the current consumed
+ * generation in one reader would make the same completed cycle appear eligible again.
  */
 function toQueueRow(r: QueueRow): Omit<SessionQueue, "items"> {
   return {
@@ -7616,6 +7619,8 @@ function toQueueRow(r: QueueRow): Omit<SessionQueue, "items"> {
     promptedGoal: r.prompted_goal,
     promptedEvidence: r.prompted_evidence,
     promptedActivityAt: r.prompted_activity_at,
+    promptedLegacyCutoverGeneration: r.prompted_legacy_cutover_generation,
+    promptedConsumedGeneration: r.prompted_consumed_generation,
     updatedAt: r.updated_at,
   };
 }
@@ -7686,13 +7691,16 @@ export function upsertQueue(q: Omit<SessionQueue, "items">): void {
     .prepare(
       `INSERT INTO foreman_queues
          (note_key, cwd, branch, wrapup_asked_at, wrapup_answer, prompted_goal,
-          prompted_evidence, prompted_activity_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          prompted_evidence, prompted_activity_at, prompted_legacy_cutover_generation,
+          prompted_consumed_generation, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(note_key) DO UPDATE SET
          cwd=excluded.cwd, branch=excluded.branch, wrapup_asked_at=excluded.wrapup_asked_at,
          wrapup_answer=excluded.wrapup_answer, prompted_goal=excluded.prompted_goal,
          prompted_evidence=excluded.prompted_evidence,
          prompted_activity_at=excluded.prompted_activity_at,
+         prompted_legacy_cutover_generation=excluded.prompted_legacy_cutover_generation,
+         prompted_consumed_generation=excluded.prompted_consumed_generation,
          updated_at=excluded.updated_at`,
     )
     .run(
@@ -7704,6 +7712,8 @@ export function upsertQueue(q: Omit<SessionQueue, "items">): void {
       q.promptedGoal,
       q.promptedEvidence,
       q.promptedActivityAt,
+      q.promptedLegacyCutoverGeneration,
+      q.promptedConsumedGeneration,
       q.updatedAt,
     );
 }
@@ -7712,6 +7722,135 @@ export function getQueueRow(noteKey: string): Omit<SessionQueue, "items"> | unde
   const r = openDb().prepare(`SELECT * FROM foreman_queues WHERE note_key = ?`).get(noteKey) as
     | unknown as QueueRow | undefined;
   return r ? toQueueRow(r) : undefined;
+}
+
+/**
+ * Lazily translate one matching legacy prompted guard into the generation it had spent.
+ *
+ * A null legacy guard stays eligible. A mismatched guard means intent advanced after the
+ * historical decision and also stays eligible. Missing lifecycle state changes nothing so
+ * the current reader can fail closed and try the bootstrap again after state is known. An
+ * active row is not a completed cutover boundary even when it retains an older completion
+ * timestamp, so compatibility must not consume its generation while work is in progress.
+ * The historical activity watermark associates the guard with the completion it examined. A later
+ * completed cycle stays unconsumed instead of letting an old intent guard advance onto new work.
+ * Rows from before the immutable watermark existed fail closed by recording the current settled
+ * generation as a separate cutover ceiling. That generation cannot be claimed, but the next one can.
+ */
+export function bootstrapPromptedConsumedGeneration(
+  noteKey: string,
+  resolvedEpisodeKey: string,
+  d: DatabaseSync = openDb(),
+): boolean {
+  const result = d.prepare(
+    `UPDATE foreman_queues
+        SET prompted_consumed_generation = CASE
+              WHEN prompted_activity_at IS NOT NULL THEN (
+                SELECT generation FROM session_work_cycles
+                 WHERE logical_key = foreman_queues.note_key
+                   AND generation > 0
+                   AND active = 0
+                   AND completed_at IS NOT NULL
+                   AND completed_at <= foreman_queues.prompted_activity_at
+              )
+              ELSE prompted_consumed_generation
+            END,
+            prompted_legacy_cutover_generation = CASE
+              WHEN prompted_activity_at IS NULL THEN (
+                SELECT generation FROM session_work_cycles
+                 WHERE logical_key = foreman_queues.note_key
+                   AND generation > 0
+                   AND active = 0
+                   AND completed_at IS NOT NULL
+              )
+              ELSE prompted_legacy_cutover_generation
+            END
+      WHERE note_key = ?
+        AND prompted_consumed_generation IS NULL
+        AND prompted_legacy_cutover_generation IS NULL
+        AND prompted_goal = ?
+        AND EXISTS (
+          SELECT 1 FROM session_work_cycles
+           WHERE logical_key = foreman_queues.note_key
+             AND generation > 0
+             AND active = 0
+             AND completed_at IS NOT NULL
+             AND (
+               foreman_queues.prompted_activity_at IS NULL
+               OR completed_at <= foreman_queues.prompted_activity_at
+             )
+        )`,
+  ).run(noteKey, resolvedEpisodeKey);
+  return Number(result.changes) === 1;
+}
+
+export interface ConsumePromptedGenerationInput {
+  noteKey: string;
+  sessionCwd: string | null;
+  generation: number;
+  ask: boolean;
+  now: number;
+}
+
+/**
+ * Compare and consume one currently completed work-cycle generation in one SQL statement.
+ *
+ * This is the shared daemon-owned action boundary for direct prompted handoffs and Workflow
+ * claims. The INSERT arm lets a queue-less prompted session record its first consumption;
+ * the conflict arm advances only to a newer generation. Both arms require the durable
+ * lifecycle row to still be the exact settled generation the caller observed.
+ */
+export function consumePromptedGeneration(
+  input: ConsumePromptedGenerationInput,
+  d: DatabaseSync = openDb(),
+): boolean {
+  const ask = input.ask ? 1 : 0;
+  const result = d.prepare(
+    `INSERT INTO foreman_queues (
+       note_key, cwd, branch, wrapup_asked_at, wrapup_answer, prompted_goal,
+       prompted_evidence, prompted_activity_at, prompted_legacy_cutover_generation,
+       prompted_consumed_generation, updated_at
+     )
+     SELECT ?, ?, NULL,
+            CASE WHEN ? = 1 THEN ? ELSE NULL END,
+            NULL, NULL, NULL, NULL, NULL, generation, ?
+       FROM session_work_cycles
+      WHERE logical_key = ?
+        AND generation = ?
+        AND generation > 0
+        AND active = 0
+        AND completed_at IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM foreman_queue_items WHERE note_key = ?
+        )
+     ON CONFLICT(note_key) DO UPDATE SET
+       prompted_consumed_generation = excluded.prompted_consumed_generation,
+       wrapup_asked_at = CASE
+         WHEN ? = 1 THEN excluded.wrapup_asked_at ELSE foreman_queues.wrapup_asked_at END,
+       wrapup_answer = CASE
+         WHEN ? = 1 THEN NULL ELSE foreman_queues.wrapup_answer END,
+       updated_at = excluded.updated_at
+     WHERE (
+         foreman_queues.prompted_consumed_generation IS NULL
+         OR foreman_queues.prompted_consumed_generation < excluded.prompted_consumed_generation
+       )
+       AND (
+         foreman_queues.prompted_legacy_cutover_generation IS NULL
+         OR foreman_queues.prompted_legacy_cutover_generation < excluded.prompted_consumed_generation
+       )`,
+  ).run(
+    input.noteKey,
+    input.sessionCwd,
+    ask,
+    input.now,
+    input.now,
+    input.noteKey,
+    input.generation,
+    input.noteKey,
+    ask,
+    ask,
+  );
+  return Number(result.changes) === 1;
 }
 
 /** Every stored queue (without items) - for the orphan sweep + the session list. */
@@ -7771,16 +7910,15 @@ export function countOpenQueueItems(noteKey: string): number {
  * So this only ever drops a fully-finished batch whose session is gone and which
  * nothing has touched since `cutoff`.
  *
- * The second branch collects rows that hold NOTHING - no items at all, and none of the
- * four wrap-up fields set - regardless of age. `ensureQueue` mints a row for any
+ * The second branch collects rows that hold NOTHING: no items and no wrap-up or
+ * prompted compatibility/current guard fields, regardless of age. `ensureQueue` mints a row for any
  * session whose wrap-up state is merely touched, and the `prompted` trigger touches
  * every session it ever considers, so this is now the common shape of a row rather than
  * a rarity. Waiting out `cutoff` for a row with nothing in it buys no safety: there is
  * no backlog to resume, no ask to answer and no episode to keep retired, and if the
  * session comes back `ensureQueue` mints it again for free. The `liveKeys` guard still
  * applies to both branches, which is what keeps this away from the row a live session is
- * mid-write on - `ensureQueue` and the `promptedGoal` stamp that follows it are two
- * writes, and between them the row is legitimately empty.
+ * mid-write on. A live direct consume can create and populate this row atomically.
  */
 export function pruneDeadQueues(liveKeys: Set<string>, cutoff: number): number {
   const db = openDb();
@@ -7800,6 +7938,9 @@ export function pruneDeadQueues(liveKeys: Set<string>, cutoff: number): number {
                 AND q.wrapup_answer IS NULL
                 AND q.prompted_goal IS NULL
                 AND q.prompted_evidence IS NULL
+                AND q.prompted_activity_at IS NULL
+                AND q.prompted_legacy_cutover_generation IS NULL
+                AND q.prompted_consumed_generation IS NULL
                 AND NOT EXISTS (
                   SELECT 1 FROM foreman_queue_items i WHERE i.note_key = q.note_key
                 )

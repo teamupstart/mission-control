@@ -1081,104 +1081,108 @@ test("a prompted ask clears a PREVIOUS episode's answer; the drain ask never doe
   assert.equal(q.wrapupAnswer, null, "and the stale answer went with it, so the card renders");
 });
 
-test("the prompted trigger's episode guard round-trips, and is separate from the drain ask", async () => {
-  // One field for both guards would mean a prompted wrap-up consumed the drain ask (or
-  // the reverse) on a checkout that later gets a work queue. They must not interfere.
+test("the prompted endpoint consumes exact work-cycle generations and raises its ask atomically", async () => {
   seedSession();
-  // Read the drain ask's current value rather than assuming null: these tests share one
-  // registry and one db, so an earlier case may have stamped it. UNCHANGED is the real
-  // invariant here anyway - "never null" would pass for a stamp that was already there.
-  const before = await app.request("/api/sessions/sess-1/queue", { headers: LOOPBACK });
-  const askedBefore = ((await before.json()) as { wrapupAskedAt: number | null }).wrapupAskedAt;
+  const agentSessionId = "agent-prompted-generation";
+  const goal = "preserve the existing Manual workflow binding";
+  const prompt = await app.request("/hooks/UserPromptSubmit", {
+    method: "POST",
+    headers: authed,
+    body: JSON.stringify({ env: { tmuxPane: "%3" }, sessionId: agentSessionId, prompt: goal }),
+  });
+  assert.equal(prompt.status, 204);
+  registry.upsertGoal("sess-1", {
+    prompt: goal,
+    text: goal,
+    objective: goal,
+    focus: goal,
+    relationship: "initial",
+    rationale: "Initial objective",
+    objectiveVersion: 1,
+    promptRevision: 1,
+    resolvedPromptRevision: 1,
+    pendingPrompts: [],
+    source: "heuristic",
+  }, Date.now());
+  const stop = await app.request("/hooks/Stop", {
+    method: "POST",
+    headers: authed,
+    body: JSON.stringify({ env: { tmuxPane: "%3" }, sessionId: agentSessionId }),
+  });
+  assert.equal(stop.status, 204);
 
-  const goal = "add retry handling to the uploader";
-  const evidenceMarker = "a".repeat(64);
-  const activityAt = 1234;
-  const res = await app.request("/api/sessions/sess-1/queue/wrapup/prompted", {
+  const first = registry.getSession("sess-1")!;
+  const currentGoal = registry.getGoal("sess-1")!;
+  assert.equal(first.workCycle?.generation, 1);
+  const expectedIntent = {
+    objective: currentGoal.objective,
+    objectiveVersion: currentGoal.objectiveVersion,
+    promptRevision: currentGoal.promptRevision,
+    episodeKey: `intent:${currentGoal.objectiveVersion}:${currentGoal.promptRevision}`,
+  };
+  const logicalKey = first.workCycle!.logicalKey;
+
+  const consumed = await app.request("/api/sessions/sess-1/queue/wrapup/prompted", {
     method: "POST",
     headers: jsonHeaders,
-    body: JSON.stringify({ goal, evidenceMarker, activityAt }),
+    body: JSON.stringify({ logicalKey, generation: 1, expectedIntent }),
   });
-  assert.equal(res.status, 200);
-  const q = (await res.json()) as {
+  assert.equal(consumed.status, 200);
+  const firstQueue = (await consumed.json()) as {
+    promptedConsumedGeneration: number | null;
     promptedGoal: string | null;
-    promptedEvidence: string | null;
-    promptedActivityAt: number | null;
     wrapupAskedAt: number | null;
   };
-  assert.equal(q.promptedGoal, goal);
-  assert.equal(q.promptedEvidence, evidenceMarker);
-  assert.equal(q.promptedActivityAt, activityAt);
-  assert.equal(q.wrapupAskedAt, askedBefore, "retiring a prompted episode never touches the drain ask");
+  assert.equal(firstQueue.promptedConsumedGeneration, 1);
+  assert.equal(firstQueue.promptedGoal, null, "new writes do not use the legacy fallback");
 
-  // And it survives a re-read, since it is the thing that stops the trigger re-firing.
-  const read = await app.request("/api/sessions/sess-1/queue", { headers: LOOPBACK });
-  assert.equal(((await read.json()) as { promptedGoal: string | null }).promptedGoal, goal);
-});
-
-test("an old worker can retire a prompted episode without an evidence marker", async () => {
-  seedSession();
-  const goal = "finish the upload retry";
-  const res = await app.request("/api/sessions/sess-1/queue/wrapup/prompted", {
+  const duplicate = await app.request("/api/sessions/sess-1/queue/wrapup/prompted", {
     method: "POST",
     headers: jsonHeaders,
-    body: JSON.stringify({ goal }),
+    body: JSON.stringify({ logicalKey, generation: 1, expectedIntent }),
   });
-  assert.equal(res.status, 200);
-  const queue = (await res.json()) as {
-    promptedGoal: string | null;
-    promptedEvidence: string | null;
-    promptedActivityAt: number | null;
-  };
-  assert.equal(queue.promptedGoal, goal);
-  assert.equal(queue.promptedEvidence, null, "the version-skew write is a legacy spent guard");
-  assert.equal(queue.promptedActivityAt, null);
+  assert.equal(duplicate.status, 409, "one completed generation can be consumed only once");
 
-  // The immediately preceding worker version knew the evidence marker but not the
-  // observed-activity axis. That upgrade window must remain valid and spent too.
-  const markerOnly = await app.request("/api/sessions/sess-1/queue/wrapup/prompted", {
+  // A later work start invalidates the old result before that work has completed.
+  const work = await app.request("/hooks/PreToolUse", {
+    method: "POST",
+    headers: authed,
+    body: JSON.stringify({ env: { tmuxPane: "%3" }, sessionId: agentSessionId, toolName: "Bash" }),
+  });
+  assert.equal(work.status, 204);
+  const stale = await app.request("/api/sessions/sess-1/queue/wrapup/prompted", {
     method: "POST",
     headers: jsonHeaders,
-    body: JSON.stringify({ goal: `${goal} again`, evidenceMarker: "c".repeat(64) }),
+    body: JSON.stringify({ logicalKey, generation: 1, expectedIntent }),
   });
-  assert.equal(markerOnly.status, 200);
-  const markerOnlyQueue = (await markerOnly.json()) as {
-    promptedEvidence: string | null;
-    promptedActivityAt: number | null;
-  };
-  assert.equal(markerOnlyQueue.promptedEvidence, "c".repeat(64));
-  assert.equal(markerOnlyQueue.promptedActivityAt, null, "unknown activity stays a legacy boundary");
-});
+  assert.equal(stale.status, 409, "a stale verifier result cannot consume across active work");
 
-test("a prompted human handoff retires its episode and raises the card atomically", async () => {
-  seedSession();
+  const secondStop = await app.request("/hooks/Stop", {
+    method: "POST",
+    headers: authed,
+    body: JSON.stringify({ env: { tmuxPane: "%3" }, sessionId: agentSessionId }),
+  });
+  assert.equal(secondStop.status, 204);
   await app.request("/api/sessions/sess-1/queue/wrapup", {
     method: "PUT",
     headers: jsonHeaders,
     body: JSON.stringify({ answer: "ship directly" }),
   });
 
-  const goal = "preserve the existing Manual workflow binding";
-  const evidenceMarker = "b".repeat(64);
-  const activityAt = 5678;
   const res = await app.request("/api/sessions/sess-1/queue/wrapup/prompted", {
     method: "POST",
     headers: jsonHeaders,
-    body: JSON.stringify({ goal, evidenceMarker, activityAt, ask: true }),
+    body: JSON.stringify({ logicalKey, generation: 2, expectedIntent, ask: true }),
   });
   assert.equal(res.status, 200);
   const queue = (await res.json()) as {
-    promptedGoal: string | null;
-    promptedEvidence: string | null;
-    promptedActivityAt: number | null;
+    promptedConsumedGeneration: number | null;
     wrapupAskedAt: number | null;
     wrapupAnswer: string | null;
   };
-  assert.equal(queue.promptedGoal, goal);
-  assert.equal(queue.promptedEvidence, evidenceMarker);
-  assert.equal(queue.promptedActivityAt, activityAt);
-  assert.ok(queue.wrapupAskedAt, "the Ship it? card is raised with the episode guard");
-  assert.equal(queue.wrapupAnswer, null, "the previous episode's answer cannot hide the new card");
+  assert.equal(queue.promptedConsumedGeneration, 2);
+  assert.ok(queue.wrapupAskedAt, "the Ship it? card is raised with the generation consume");
+  assert.equal(queue.wrapupAnswer, null, "the previous generation's answer cannot hide the new card");
 });
 
 test("a second in-flight item is refused with a clean 409, not a raw 500", async () => {

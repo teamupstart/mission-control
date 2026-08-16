@@ -1237,9 +1237,10 @@ export interface SessionQueue {
   wrapupAskedAt: number | null;
   wrapupAnswer: string | null;
   /**
-   * The resolved intent episode the `prompted` wrap-up trigger last handled, or null if
-   * it never has. Encoded as `intent:<objectiveVersion>:<promptRevision>`, so a newly
-   * reconciled human instruction re-arms it and an unchanged idle session stays quiet.
+   * Historical resolved-intent guard from prompted completion before work-cycle cutover.
+   * New completion decisions never read or write it; it remains readable so an upgraded
+   * daemon can bootstrap a proven consumption or conservative cutover ceiling without
+   * replaying a spent turn.
    *
    * The historical field name is persisted and must not be renamed casually; its value
    * is now an opaque episode key rather than goal text.
@@ -1250,20 +1251,23 @@ export interface SessionQueue {
    */
   promptedGoal: string | null;
   /**
-   * SHA-256 proof marker for the completion boundary recorded with `promptedGoal`.
-   * A later settled turn may reuse the same human intent episode, so this second axis
-   * is what lets Foreman re-check only after HEAD or the transcript anchor advances.
-   * Null beside a non-null goal, or beside a null activity boundary, is a legacy
-   * spent guard and stays spent until the human intent changes.
+   * Historical prompted evidence marker. Retained for database and wire compatibility;
+   * current evidence fingerprints live on completion claims and do not re-arm lifecycle.
    */
   promptedEvidence: string | null;
   /**
-   * Session activity timestamp observed with `promptedEvidence`.
-   * This is the cheap re-arm watermark. It records the completion boundary Foreman
-   * examined, rather than the later time when its verifier result was persisted.
-   * Null beside a prompted guard is a legacy spent guard.
+   * Historical activity watermark paired with `promptedEvidence`. Current prompted
+   * completion consumes work-cycle generations instead.
    */
   promptedActivityAt: number | null;
+  /**
+   * Conservative one-time upgrade ceiling for a legacy guard with no immutable activity
+   * watermark. Generations at or below it are ineligible; a later completed generation
+   * naturally re-arms prompted completion without consulting legacy intent or evidence.
+   */
+  promptedLegacyCutoverGeneration: number | null;
+  /** Latest completed work-cycle generation consumed by prompted completion. */
+  promptedConsumedGeneration: number | null;
   updatedAt: number;
   items: WorkItem[];
 }

@@ -3605,38 +3605,19 @@ export function buildApp(
     return c.json(queues.get(session.id));
   });
 
-  // The `prompted` trigger's once-per-episode stamp: the goal it last fired (or held)
-  // on. `ask` atomically raises the matching Ship it? card too; splitting those writes
-  // can retire a verified episode and then permanently lose its question on a daemon
-  // error. A separate endpoint from the drain ask because the two triggers still own
-  // separate guards - see `SessionQueue.promptedGoal`.
-  //
-  // Same `ensureQueue` reasoning: these sessions have no queue by definition.
+  // Consume one durable prompted work-cycle generation. `ask` atomically raises the
+  // matching Ship it? card too; splitting those writes can spend a verified generation
+  // and then permanently lose its question on a daemon error. The Registry rechecks the
+  // logical key, generation and resolved intent at this daemon-owned write boundary.
   app.post("/api/sessions/:id/queue/wrapup/prompted", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
     const parsed = await parseBody(c, PromptedWrapupSchema);
     if (!parsed.ok) return parsed.res;
-    const key = registry.ensureQueue(session.id);
-    if (!key) return c.json({ error: "no queue for this session" }, 404);
     const now = Date.now();
-    registry.setQueueWrapup(
-      key,
-      parsed.data.ask
-        ? {
-            promptedGoal: parsed.data.goal,
-            promptedEvidence: parsed.data.evidenceMarker ?? null,
-            promptedActivityAt: parsed.data.activityAt ?? null,
-            wrapupAskedAt: now,
-            wrapupAnswer: null,
-          }
-        : {
-            promptedGoal: parsed.data.goal,
-            promptedEvidence: parsed.data.evidenceMarker ?? null,
-            promptedActivityAt: parsed.data.activityAt ?? null,
-          },
-      now,
-    );
+    if (!registry.consumePromptedGeneration(session.id, parsed.data, now)) {
+      return c.json({ error: "prompted work-cycle generation is no longer current" }, 409);
+    }
     return c.json(queues.get(session.id));
   });
 

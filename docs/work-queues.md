@@ -98,18 +98,22 @@ the same verifier queued items get - a fresh tool-less model call reading the br
 against the reconciled durable objective - and acts only on a **complete** verdict; an empty diff
 decides itself without a model call. A session that still needs you is left alone, and a
 checkout that *has* a work queue belongs to the drain trigger, which wins. It fires once
-per resolved instruction and durable completion boundary. The guard records both the intent
-episode and the HEAD plus transcript anchor it judged, so repeated ticks at the same settled
-Stop stay quiet without refetching that evidence. The guard stores the session activity
-observed with that proof, so a later hook must first advance past that boundary. Activity
-that leaves HEAD and transcript unchanged is restamped without another verifier call. A new
-prompt from you re-arms it after intent reconciliation. If Claude resumes the same objective
-from a background task notification, that notification remains excluded from the human Goal,
-but a later settled Stop re-arms verification once its durable
-completion evidence advances. A confirmed workflow repair packet also re-arms it -
-which is what lets [the repair loop](workflows.md#the-repair-loop-end-to-end) run for a session that has no
-queue to drain. An incomplete verdict retires the episode rather than sending the agent back -
-Foreman didn't commission that work. Untick both triggers and Foreman never wraps up on its own.
+per completed **work cycle**. Mission Control records work starting and the matching turn
+completion as a durable generation, and Foreman consumes that exact generation before it asks,
+ships, or claims a Workflow. Repeated ticks and daemon restarts therefore stay quiet on the same
+settled completion. The reconciled intent remains an independent staleness guard and the HEAD plus
+transcript fingerprint remains proof and claim idempotency; neither one creates a new lifecycle
+opportunity. A new prompt without a later completed work cycle does not re-arm completion.
+
+If Claude resumes the same objective from a background task notification, that notification
+remains excluded from the human Goal, while its later settled Stop completes a new work-cycle
+generation and opens one new verification. The same natural start-and-complete path follows a
+Live Workflow repair packet on an item-less session; confirming delivery does not reset the
+prompted guard itself. Foreman rechecks the generation, logical key, reconciled intent,
+settled-idle state, human-attention state, and queue precedence after verification, so work that
+restarts while the model is judging discards the stale result without consuming either cycle.
+An incomplete verdict consumes the completed generation without sending the agent back, because
+Foreman did not commission that work. Untick both triggers and Foreman never wraps up on its own.
 
 The action is the same whichever trigger fired:
 

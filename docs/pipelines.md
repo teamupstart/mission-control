@@ -372,8 +372,17 @@ Two details are worth knowing before reading the table:
   ones were being written - so a pushed event whose counter happened to equal an old byte
   offset would be dropped as a duplicate. What each producer said is kept beside the row.
 - **Convergence is by event, not by number - and it is claimed, not compared.** A
-  `fingerprint` over the record with its keys sorted is what lets two paths recognise one
-  event. It cannot be the whole answer, because conductor stamps no sequence number: a step
+  `fingerprint` over the event's CONTENT is what lets two paths recognise one event:
+  canonicalized by sorting keys at every level, and with the fields a *writer* adds stripped
+  out first - `ts`, `activeInterval` and `observedIntervals`, listed as
+  `OBSERVATION_ONLY_FIELDS` in [`src/server/db.ts`](../src/server/db.ts). Those three are not
+  an implementation detail of the hash - they are what make it possible at all: conductor's
+  `EventPersister` writes `{ ...event, activeInterval?, observedIntervals?, ts }`, so the
+  record in `events.jsonl` and the record the plugin sends are different objects describing
+  one event, and a hash over either one whole could never match the other. What the engine
+  emitted is the event's identity; when it was written down, and how long the writer held it,
+  are facts about the observation.
+  It cannot be the whole answer even so, because conductor stamps no sequence number: a step
   that is retried emits a record byte-identical to its first attempt, so "same fingerprint"
   and "same event" are not the same question. An arriving event therefore converges onto the
   oldest row with its fingerprint that the *other* path wrote and this one has not claimed;

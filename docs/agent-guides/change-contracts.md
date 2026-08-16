@@ -158,8 +158,14 @@ Persisted ID tuples are append-only. Never rename, reorder, or reuse values. Thi
   offset into `events.jsonl` and a counter of the plugin's own - because conductor stamps no
   sequence number on anything. Keying on a producer's number would collapse two spaces into
   one and silently drop a pushed event whose counter matched an old byte offset. Convergence
-  is by `fingerprint` (the record with its keys sorted, hashed), never by the number - and it
-  is CLAIMED rather than compared: an event converges onto the oldest row with its fingerprint
+  is by `fingerprint` - a hash of the event's CONTENT, canonicalized by sorting keys at every
+  level and with the writer-added observation fields removed first (`OBSERVATION_ONLY_FIELDS`
+  in `src/server/db.ts`: `ts`, `activeInterval`, `observedIntervals`) - never by the number.
+  That exclusion is the contract rather than a detail of the hash: conductor's `EventPersister`
+  writes `{ ...event, activeInterval?, observedIntervals?, ts }`, so the record in
+  `events.jsonl` and the record the plugin sends are different objects describing ONE event,
+  and a hash over either one whole could never match the other. Convergence is also CLAIMED
+  rather than compared: an event converges onto the oldest row with its fingerprint
   that the other path wrote and this one has not claimed, stamping its coordinate into
   `also_seq`, and gets a row of its own when there is none. Do not reduce that to a unique
   index over the fingerprint. It reads as the same rule and is not: conductor stamps no

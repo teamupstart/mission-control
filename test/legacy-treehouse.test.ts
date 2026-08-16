@@ -128,7 +128,7 @@ test("capabilities distinguish missing, diagnostic-only, and conditional JSON bi
 
   const old = runnerFor(jsonTree(), { version: "v2.0.9" });
   assert.equal((await adapterFor(old).capabilities()).kind, "diagnostic-only");
-  const modern = runnerFor(jsonTree());
+  const modern = runnerFor(jsonTree(), { version: "treehouse version v2.1.1" });
   assert.equal((await adapterFor(modern).capabilities()).kind, "conditional-json");
 });
 
@@ -516,6 +516,58 @@ test("dirty, occupied, and unknown occupancy all block exact return", async () =
     assert.equal(retained?.provider, "treehouse", entry.name);
     assert.equal(retained?.worktreePath, path, entry.name);
     assert.equal(retained?.worktreeLeaseId, "gated-lease", entry.name);
+  }
+});
+
+test("execute rechecks process and dirty safety after preview before forced return", async () => {
+  const repoRoot = join(home, "safety-race-repo");
+  const path = join(home, "pool", "safety-race", "repo");
+  registry.upsertTask(mkTask({
+    id: "safety-race-task",
+    repoRoot,
+    status: "done",
+    provider: "treehouse",
+    worktreePath: path,
+    worktreeLeaseId: "safety-race-lease",
+  }));
+
+  for (const kind of ["occupied", "dirty"] as const) {
+    let occupancyReads = 0;
+    let dirtyReads = 0;
+    const model = runnerFor(jsonTree({ path, lease_id: "safety-race-lease" }));
+    const service = new LegacyTreehouseService(db, {
+      adapter: adapterFor(model),
+      occupancy: async (paths: readonly string[]) => {
+        occupancyReads += 1;
+        return new Map(paths.map((entry) => [entry, kind === "occupied" && occupancyReads > 1
+          ? {
+              status: "known" as const,
+              occupants: [{ pid: 19, ppid: 1, startRaw: "1", startMs: 1, command: "node", cwd: entry, knownOwner: null }],
+            }
+          : { status: "known" as const, occupants: [] }]));
+      },
+      git: {
+        inspect: async () => {
+          dirtyReads += 1;
+          return {
+            ok: true as const,
+            value: {
+              path,
+              head: "a".repeat(40),
+              dirty: kind === "dirty" && dirtyReads > 1,
+              commonDirectory: home,
+            },
+          };
+        },
+      },
+    });
+
+    const result = await service.executeReturn({ kind: "task", id: "safety-race-task", position: 0 });
+
+    assert.equal(result.outcome, "blocked", kind);
+    assert.equal(model.calls.some((call) => call.args[0] === "return"), false, kind);
+    assert.ok(occupancyReads >= 2, `${kind}: occupancy must be sampled again after preview`);
+    assert.ok(dirtyReads >= 2, `${kind}: cleanliness must be sampled again after preview`);
   }
 });
 

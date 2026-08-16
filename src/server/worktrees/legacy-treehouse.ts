@@ -89,10 +89,9 @@ function failedCommand(label: string, result: RunResult): string {
 }
 
 function parseVersion(stdout: string): { raw: string; parts: [number, number, number] } | null {
-  const raw = stdout.trim().split(/\s+/)[0] ?? "";
-  const match = /^v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/.exec(raw);
+  const match = /(?:^|[^\d.])(v?(\d+)\.(\d+)\.(\d+)(?:[-+][0-9A-Za-z.-]+)?)(?![\d.])/.exec(stdout);
   if (!match) return null;
-  return { raw, parts: [Number(match[1]), Number(match[2]), Number(match[3])] };
+  return { raw: match[1]!, parts: [Number(match[2]), Number(match[3]), Number(match[4])] };
 }
 
 function atLeast(parts: readonly number[], minimum: readonly number[]): boolean {
@@ -266,7 +265,10 @@ export class LegacyTreehouseAdapter {
     return { state: "readable", capability, trees, diagnostic: null };
   }
 
-  async conditionalReturn(ref: LegacyTreehouseReturnRef): Promise<LegacyTreehouseReturnResult> {
+  async conditionalReturn(
+    ref: LegacyTreehouseReturnRef,
+    finalGate?: () => Promise<string | null>,
+  ): Promise<LegacyTreehouseReturnResult> {
     const before = await this.status(ref.repoRoot);
     if (before.state === "unreadable") return { outcome: "blocked", reason: before.diagnostic };
     if (before.capability.kind !== "conditional-json") {
@@ -279,6 +281,15 @@ export class LegacyTreehouseAdapter {
         outcome: "conflict",
         reason: `legacy Treehouse identity changed for ${path}; expected lease ${ref.leaseId} held by ${ref.expectedHolder}`,
       };
+    }
+    if (finalGate) {
+      let refusal: string | null;
+      try {
+        refusal = await finalGate();
+      } catch {
+        refusal = "final legacy return safety checks failed";
+      }
+      if (refusal) return { outcome: "blocked", reason: refusal };
     }
     const returned = await this.exec([
       "return",
@@ -538,7 +549,33 @@ export class LegacyTreehouseService {
       path: current.path,
       leaseId: current.leaseId!,
       expectedHolder: current.expectedHolder,
+    }, async () => {
+      const unsafe = await this.returnSafetyReason(current.path);
+      if (unsafe) return unsafe;
+      const finalOwner = this.owner(ownerRef);
+      if (!finalOwner || ownerKey(finalOwner) !== ownerKey(current) || finalOwner.path !== current.path ||
+        finalOwner.leaseId !== current.leaseId || finalOwner.expectedHolder !== current.expectedHolder) {
+        return "the durable legacy owner changed during final safety checks";
+      }
+      return null;
     });
+  }
+
+  /** Final destructive-action gates, sampled again after preview and immediately before CAS return. */
+  private async returnSafetyReason(path: string): Promise<string | null> {
+    const [occupancy, inspected] = await Promise.all([
+      this.occupancy([path]).then(
+        (observed) => observed.get(path) ?? { status: "unknown" as const, reason: "occupancy was not inspected" },
+        () => ({ status: "unknown" as const, reason: "occupancy inspection failed" }),
+      ),
+      this.git.inspect(path).catch(() => null),
+    ]);
+    if (occupancy.status !== "known") return occupancy.reason;
+    if (occupancy.occupants.length > 0) {
+      return `legacy worktree is occupied by ${occupancy.occupants.length} process(es)`;
+    }
+    if (!inspected?.ok) return "legacy worktree cleanliness is unknown";
+    return inspected.value.dirty ? "legacy worktree is dirty" : null;
   }
 
   private owners(): LegacyOwner[] {

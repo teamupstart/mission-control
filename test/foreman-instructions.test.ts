@@ -70,6 +70,23 @@ test("a custom view preserves whitespace, line endings, Unicode, and storage byt
   assert.equal(getAppConfig<string>("foreman.instructions"), exact);
 });
 
+test("ETags preserve lone UTF-16 surrogates as distinct exact text", async () => {
+  const m = await withSeed("# Defaults\n\nCorrectness first.");
+  const initial = m.foremanInstructionsView();
+  const first = m.updateForemanInstructions({ expectedEtag: initial.etag, text: "\ud800" });
+  assert.ok(first.ok);
+
+  const second = m.updateForemanInstructions({ expectedEtag: first.view.etag, text: "\ud801" });
+  assert.ok(second.ok);
+  assert.notEqual(second.view.etag, first.view.etag);
+
+  const stale = m.updateForemanInstructions({ expectedEtag: first.view.etag, text: "overwrite" });
+  assert.ok(!stale.ok);
+  assert.deepEqual(stale.current, second.view);
+  assert.equal(m.foremanInstructionsView().text, "\ud801");
+  assert.equal(getAppConfig<string>("foreman.instructions"), "\ud801");
+});
+
 test("custom text identical to the seed remains source-distinct from built-in", async () => {
   const text = "# Defaults\n\nCorrectness first.";
   const m = await withSeed(text);

@@ -49,14 +49,17 @@ function seed(): string {
   return seeded;
 }
 
-/** Hash the source and exact effective UTF-8 bytes into one stable opaque CAS token. */
+/** Hash the source and every exact effective UTF-16 code unit into one stable opaque CAS token. */
 function instructionsEtag(source: ForemanInstructionsSource, text: string): string {
   const hash = createHash("sha256");
   hash.update(ETAG_NAMESPACE, "utf8");
   hash.update("\0", "utf8");
   hash.update(source, "utf8");
   hash.update("\0", "utf8");
-  hash.update(text, "utf8");
+  // The API accepts every JavaScript string, including escaped lone surrogates. UTF-8 encoding
+  // replaces each lone surrogate with the same U+FFFD bytes, which would let distinct documents
+  // share a CAS token. Fixed little-endian code units preserve the exact accepted string instead.
+  hash.update(text, "utf16le");
   return `foreman-instructions-v1:${hash.digest("hex")}`;
 }
 

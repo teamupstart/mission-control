@@ -606,4 +606,6 @@ created: the ordinary Inspector lifecycle, Shipped page, and shipping gates take
 Foreman's optional mechanical triage reads halted runs over HTTP, reserves an episode through
 the daemon before acting, and calls `POST /api/pipelines/action`. Exact equality with
 `mechanical` is the automation gate. Any other or future class fails closed and remains in the
-Attention inbox for the operator.
+Attention inbox for the operator. The daemon re-checks Foreman's master switch and the separate
+pipeline-triage permission on the halt feed, episode reservation, and Foreman-tagged action, so
+turning either switch off closes an in-flight automation race without disabling operator verbs.

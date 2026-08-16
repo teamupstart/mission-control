@@ -395,6 +395,24 @@ test("a request is checked against what the verb says it needs, in both directio
     true,
   );
   assert.equal(
+    PipelineActionRequestSchema.safeParse({
+      ...base,
+      action: "unpark",
+      slug: "feat",
+      requestedBy: "foreman",
+    }).success,
+    true,
+  );
+  assert.equal(
+    PipelineActionRequestSchema.safeParse({
+      ...base,
+      action: "unpark",
+      slug: "feat",
+      requestedBy: "future-automation",
+    }).success,
+    false,
+  );
+  assert.equal(
     PipelineActionRequestSchema.safeParse({ ...base, action: "daemon-pause", slug: "feat" }).success,
     false,
   );

@@ -4192,6 +4192,15 @@ export function buildApp(
     return c.json(await pipelinesView(false));
   });
 
+  /** Both independent operator grants required for Foreman to touch an external pipeline. */
+  const pipelineForemanEnabled = (): boolean => {
+    const pipeline = getPipelinesConfig();
+    return getForemanConfig().enabled && pipeline.enabled && pipeline.foremanMechanicalTriage;
+  };
+
+  const pipelineForemanDisabled = (c: Context) =>
+    c.json({ error: "Foreman pipeline triage is disabled" }, 403);
+
   /**
    * Ask the engine to do one thing: start, stop, pause, resume, park, unpark, grant.
    *
@@ -4215,7 +4224,24 @@ export function buildApp(
   app.post("/api/pipelines/action", async (c) => {
     const parsed = await parseBody(c, PipelineActionSchema);
     if (!parsed.ok) return parsed.res;
-    const { provider, repoRoot, slug, action, step, reason } = parsed.data;
+    const { provider, repoRoot, slug, action, step, reason, requestedBy } = parsed.data;
+    if (requestedBy === "foreman") {
+      if (!pipelineForemanEnabled()) return pipelineForemanDisabled(c);
+      const run = registry
+        .listPipelineRuns()
+        .find(
+          (candidate) =>
+            candidate.provider === provider &&
+            candidate.repoRoot === repoRoot &&
+            candidate.slug === slug,
+        );
+      if (action !== "unpark" || run?.halt?.class !== "mechanical") {
+        return c.json({ error: "Foreman may only unpark a current mechanical pipeline halt" }, 403);
+      }
+      if (!foremanEpisodeExists(pipelineEpisodeKey(run), pipelineHaltMarker(run))) {
+        return c.json({ error: "Foreman must reserve the pipeline halt before acting" }, 409);
+      }
+    }
     const outcome = await runPipelineAction(registry, action, {
       provider,
       repoRoot,
@@ -4229,8 +4255,7 @@ export function buildApp(
 
   /** Halt observations for the standalone Foreman worker, with no probe or subprocess. */
   app.get("/api/pipelines/foreman", (c) => {
-    const config = getPipelinesConfig();
-    const enabled = config.enabled && config.foremanMechanicalTriage;
+    const enabled = pipelineForemanEnabled();
     const items = enabled
       ? registry
           .listPipelineRuns()
@@ -4255,6 +4280,7 @@ export function buildApp(
   app.post("/api/pipelines/foreman-episode", async (c) => {
     const parsed = await parseBody(c, PipelineForemanEpisodeSchema);
     if (!parsed.ok) return parsed.res;
+    if (!pipelineForemanEnabled()) return pipelineForemanDisabled(c);
     const { provider, repoRoot, slug, episode } = parsed.data;
     const run = registry
       .listPipelineRuns()
@@ -4265,6 +4291,9 @@ export function buildApp(
           candidate.slug === slug,
       );
     if (!run?.halt) return c.json({ error: "no such halted pipeline run" }, 404);
+    if (run.halt.class !== "mechanical" || episode.classification !== "mechanical") {
+      return c.json({ error: "Foreman may only reserve a mechanical pipeline halt" }, 403);
+    }
     if (episode.marker !== pipelineHaltMarker(run)) {
       return c.json({ error: "the pipeline halt changed before Foreman could act" }, 409);
     }

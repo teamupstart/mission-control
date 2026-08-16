@@ -1098,6 +1098,7 @@ export class ForemanClient implements ForemanActions {
       repoRoot: run.repoRoot,
       slug: run.slug,
       action,
+      requestedBy: "foreman",
     });
     if (!res.ok) throw new Error(`pipelineAction -> ${res.status}`);
     return (await res.json()) as PipelineActionResult;

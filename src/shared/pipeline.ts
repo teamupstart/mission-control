@@ -1167,6 +1167,12 @@ export const PipelineActionRequestSchema = z
     /** The feature, for a run-scoped verb. Null, and refused, for a repository one. */
     slug: z.string().min(1).nullable().default(null),
     action: z.enum(PIPELINE_ACTIONS),
+    /**
+     * Present only for the standalone Foreman worker. An absent value is an operator action,
+     * which remains available when Foreman is off; the daemon re-checks both automation
+     * switches for a Foreman-tagged request immediately before it reaches the provider.
+     */
+    requestedBy: z.literal("foreman").optional(),
     /** The DECIDE step a grant names. */
     step: z.string().min(1).nullable().default(null),
     /** The operator's own justification, for a verb that records one. */

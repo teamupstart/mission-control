@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   PromptedFailureTracker,
   decidePromptedWrapup,
+  promptedEvidenceAdvanced,
   planPromptedWrapup,
 } from "../src/server/foreman/prompted-wrapup.ts";
 import type { PromptedConfig, PromptedInput } from "../src/server/foreman/prompted-wrapup.ts";
@@ -117,6 +118,7 @@ function mkQueue(over: Partial<SessionQueue> = {}): SessionQueue {
     wrapupAskedAt: null,
     wrapupAnswer: null,
     promptedGoal: null,
+    promptedEvidence: null,
     updatedAt: 0,
     items: [],
     ...over,
@@ -352,6 +354,41 @@ test("THE RE-ARM: the same goal is decided once; a new prompt arms it again", ()
   assert.equal(next.kind, "check");
   assert.equal(next.kind === "check" && next.episodeKey, "intent:2:2");
   assert.equal(next.kind === "check" && next.objective, `${GOAL} and add metrics`);
+});
+
+test("THE RE-ARM: the same human goal waits for durable completion evidence to advance", () => {
+  const handled = "a".repeat(64);
+  const sameIntent = decide({
+    queue: mkQueue({
+      promptedGoal: "intent:1:1",
+      promptedEvidence: handled,
+    }),
+  });
+  assert.equal(sameIntent.kind, "check", "a task notification does not need to become a human goal");
+  if (sameIntent.kind !== "check") return;
+  assert.equal(sameIntent.previousEvidenceMarker, handled);
+  assert.equal(
+    promptedEvidenceAdvanced(sameIntent, handled),
+    false,
+    "the same settled Stop must stay cheap on every later worker tick",
+  );
+  assert.equal(
+    promptedEvidenceAdvanced(sameIntent, "b".repeat(64)),
+    true,
+    "a later Stop with a newer HEAD or transcript anchor re-arms verification once",
+  );
+});
+
+test("a legacy prompt-only guard stays spent until a human prompt changes", () => {
+  assert.equal(
+    decide({
+      queue: mkQueue({
+        promptedGoal: "intent:1:1",
+        promptedEvidence: null,
+      }),
+    }).kind,
+    "skip",
+  );
 });
 
 test("the re-arm key is the intent revision, NOT the card's display sentence", () => {

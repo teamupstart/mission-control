@@ -3358,10 +3358,14 @@ export function buildApp(
       parsed.data.ask
         ? {
             promptedGoal: parsed.data.goal,
+            promptedEvidence: parsed.data.evidenceMarker,
             wrapupAskedAt: now,
             wrapupAnswer: null,
           }
-        : { promptedGoal: parsed.data.goal },
+        : {
+            promptedGoal: parsed.data.goal,
+            promptedEvidence: parsed.data.evidenceMarker,
+          },
       now,
     );
     return c.json(queues.get(session.id));

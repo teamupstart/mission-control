@@ -16,6 +16,7 @@ const queue: SessionQueue = {
   wrapupAskedAt: null,
   wrapupAnswer: null,
   promptedGoal: null,
+  promptedEvidence: null,
   updatedAt: 42,
   items: [{
     id: "item",

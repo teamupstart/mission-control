@@ -68,13 +68,19 @@ const IDLE_SETTLE_MS = 5_500;
  * there and ends it - a child that exits without reading leaves the parent writing to
  * a closed pipe.
  */
-function mkFakeClaude(opts: { fail: boolean }): { bin: string; log: string } {
+function mkFakeClaude(opts: { fail: boolean; completions?: boolean[] }): { bin: string; log: string } {
   const dir = tmp("fake-claude-");
   const log = join(dir, "calls.log");
   const bin = join(dir, "claude");
   const body = opts.fail
     ? `process.stderr.write("the model is broken"); process.exit(1);`
-    : `process.stdout.write(JSON.stringify({ result: JSON.stringify({ complete: true, summary: "the ask was satisfied", gaps: [] }) }));`;
+    : opts.completions
+      ? `
+  const call = fs.readFileSync(process.env.FAKE_CLAUDE_LOG, "utf8").split("\\n").filter(Boolean).length;
+  const completions = ${JSON.stringify(opts.completions)};
+  const complete = completions[Math.min(call - 1, completions.length - 1)];
+  process.stdout.write(JSON.stringify({ result: JSON.stringify({ complete, summary: complete ? "the ask was satisfied" : "background work is still pending", gaps: [] }) }));`
+      : `process.stdout.write(JSON.stringify({ result: JSON.stringify({ complete: true, summary: "the ask was satisfied", gaps: [] }) }));`;
   writeFileSync(
     bin,
     `#!/usr/bin/env node
@@ -221,6 +227,7 @@ function mkQueue(cwd: string, over: Partial<SessionQueue> = {}): SessionQueue {
     wrapupAskedAt: null,
     wrapupAnswer: null,
     promptedGoal: null,
+    promptedEvidence: null,
     updatedAt: 0,
     items: [],
     ...over,
@@ -480,6 +487,7 @@ test("a verified prompt submits its existing workflow instead of Straight to PR"
         },
       };
     }
+    if (p === "/api/sessions/s1/transcript/size") return { status: 200, json: { size: 100 } };
     if (p === "/api/sessions/s1/transcript") {
       return {
         status: 200,
@@ -493,7 +501,8 @@ test("a verified prompt submits its existing workflow instead of Straight to PR"
       // The real daemon retires the prompted guard in the same transaction that claims
       // the completion. Mirror that durable effect so later worker ticks see the episode
       // as spent and prove this path does not request a second run.
-      queue = { ...queue, promptedGoal: INTENT_KEY };
+      const body = JSON.parse(raw) as { marker: string };
+      queue = { ...queue, promptedGoal: INTENT_KEY, promptedEvidence: body.marker };
       return {
         status: 200,
         json: { claimed: true, runId: "run-review", submissionId: "sub-1", state: "started" },
@@ -501,7 +510,12 @@ test("a verified prompt submits its existing workflow instead of Straight to PR"
     }
     if (p === "/api/sessions/s1/standards") return { status: 200, json: { docs: [], truncated: false } };
     if (p === "/api/sessions/s1/queue/wrapup/prompted") {
-      queue = { ...queue, promptedGoal: (JSON.parse(raw) as { goal: string }).goal };
+      const body = JSON.parse(raw) as { goal: string; evidenceMarker: string };
+      queue = {
+        ...queue,
+        promptedGoal: body.goal,
+        promptedEvidence: body.evidenceMarker,
+      };
       return { status: 200, json: { ok: true } };
     }
     if (p === "/api/sessions/s1/queue/wrapup") return { status: 200, json: { ok: true } };
@@ -536,6 +550,139 @@ test("a verified prompt submits its existing workflow instead of Straight to PR"
   // The claimed path raises no Ship it? recovery card: the workflow owns this completion.
   assert.equal(stub.calls.filter((c) => c.path.endsWith("/wrapup/asked")).length, 0, out);
   assert.equal(claudeCalls(fake.log).length, 1, `verified more than once\n${out}`);
+});
+
+test("an incomplete prompted hold re-arms on a task-notification turn and claims one workflow", async () => {
+  const repo = tmp("pw-repo-");
+  const fake = mkFakeClaude({ fail: false, completions: [false, true] });
+  const session = mkSession(repo);
+  let queue = mkQueue(repo);
+  let phase: "first-stop" | "task-notification" | "later-stop" = "first-stop";
+  let claimedAt = 0;
+
+  const stub = await startStub((req, url, raw) => {
+    const p = url.pathname;
+    if (p === "/api/foreman/config") {
+      return { status: 200, json: cfg({ mode: "live", repoAllowlist: [repo], wrapup: "pr" }) };
+    }
+    if (p === "/api/foreman/heartbeat") return { status: 200, json: { leader: true } };
+    if (p === "/api/sessions") {
+      const now = Date.now();
+      if (phase === "task-notification") {
+        // Claude reports the background result through UserPromptSubmit, so lifecycle
+        // state resumes even though scaffolding.ts correctly rejects it as a human goal.
+        phase = "later-stop";
+        return {
+          status: 200,
+          json: [{
+            ...session,
+            state: "working",
+            activity: "<task-notification><status>completed</status></task-notification>",
+            lastSeen: now,
+            lastActivity: now,
+          }],
+        };
+      }
+      return {
+        status: 200,
+        json: [{
+          ...session,
+          state: "idle",
+          activity: "idle",
+          lastSeen: now,
+          lastActivity: phase === "first-stop" ? now - 120_000 : now - 2_000,
+        }],
+      };
+    }
+    if (p === "/api/reviews") return { status: 200, json: [] };
+    if (p === "/api/queues") return { status: 200, json: [] };
+    if (p === "/api/sessions/s1/queue") return { status: 200, json: queue };
+    if (p === "/api/sessions/s1/goal") {
+      // The intent never advances. That is the production behavior under test: the
+      // task-notification is automation, not a replacement objective from the human.
+      return { status: 200, json: goalRecord };
+    }
+    if (p === "/api/sessions/s1/diff") {
+      return {
+        status: 200,
+        json: {
+          ok: true,
+          patch: "diff --git a/up.ts b/up.ts\n+retry();\n",
+          truncated: false,
+          headSha: "abc123",
+        },
+      };
+    }
+    if (p === "/api/sessions/s1/transcript/size") {
+      return { status: 200, json: { size: phase === "first-stop" ? 100 : 200 } };
+    }
+    if (p === "/api/sessions/s1/transcript") {
+      return {
+        status: 200,
+        json: {
+          messages: phase === "first-stop"
+            ? [{ role: "user", text: GOAL, tools: [] }, { role: "assistant", text: "Started the change.", tools: [] }]
+            : [
+                { role: "user", text: GOAL, tools: [] },
+                { role: "assistant", text: "Started the change.", tools: [] },
+                { role: "assistant", text: "The background work finished; the retry is complete.", tools: [] },
+              ],
+          truncated: false,
+        },
+      };
+    }
+    if (p === "/api/sessions/s1/standards") return { status: 200, json: { docs: [], truncated: false } };
+    if (p === "/api/sessions/s1/queue/wrapup/prompted") {
+      const body = JSON.parse(raw) as { goal: string; evidenceMarker: string };
+      queue = {
+        ...queue,
+        promptedGoal: body.goal,
+        promptedEvidence: body.evidenceMarker,
+      };
+      phase = "task-notification";
+      return { status: 200, json: queue };
+    }
+    if (p === "/api/sessions/s1/workflow-completion") {
+      const body = JSON.parse(raw) as { marker: string };
+      queue = {
+        ...queue,
+        promptedGoal: INTENT_KEY,
+        promptedEvidence: body.marker,
+      };
+      claimedAt = Date.now();
+      return {
+        status: 200,
+        json: { claimed: true, runId: "run-review", submissionId: "sub-1", state: "started" },
+      };
+    }
+    if (p === "/api/sessions/s1/inject") return { status: 200, json: { ok: true } };
+    return { status: 200, json: null };
+  });
+
+  const out = await runWorker({
+    port: stub.port,
+    claudeBin: fake.bin,
+    claudeLog: fake.log,
+    ms: 30_000,
+    until: () => claimedAt !== 0 && Date.now() - claimedAt >= IDLE_SETTLE_MS,
+  });
+  await stub.close();
+
+  const holds = stub.to("POST", "/api/sessions/s1/queue/wrapup/prompted");
+  const claims = stub.to("POST", "/api/sessions/s1/workflow-completion");
+  assert.equal(holds.length, 1, `the incomplete Stop was not retired exactly once\n${out}`);
+  assert.equal(claims.length, 1, `the later Stop did not claim exactly one binding\n${out}`);
+  assert.equal(claudeCalls(fake.log).length, 2, `unchanged evidence re-entered the verifier\n${out}`);
+  assert.notEqual(
+    (holds[0]!.body as { evidenceMarker?: string }).evidenceMarker,
+    (claims[0]!.body as { marker?: string }).marker,
+    "the later transcript anchor must produce a fresh durable completion marker",
+  );
+  assert.equal(
+    stub.calls.filter((call) => call.path.endsWith("/inject")).length,
+    0,
+    `Straight to PR raced the existing Foreman-complete binding\n${out}`,
+  );
 });
 
 test("a Manual binding blocks Straight to PR and a failed card write stays retryable", async () => {
@@ -574,6 +721,7 @@ test("a Manual binding blocks Straight to PR and a failed card write stays retry
         },
       };
     }
+    if (p === "/api/sessions/s1/transcript/size") return { status: 200, json: { size: 100 } };
     if (p === "/api/sessions/s1/transcript") {
       return {
         status: 200,
@@ -591,11 +739,12 @@ test("a Manual binding blocks Straight to PR and a failed card write stays retry
       promptedWrites += 1;
       if (promptedWrites === 1) return { status: 500, json: { error: "temporary write failure" } };
       if (promptedWrites === 2) retriedAt = Date.now();
-      const body = JSON.parse(raw) as { goal: string; ask?: boolean };
+      const body = JSON.parse(raw) as { goal: string; evidenceMarker: string; ask?: boolean };
       assert.equal(body.ask, true, "the guard and Ship it? card must share one write");
       queue = {
         ...queue,
         promptedGoal: body.goal,
+        promptedEvidence: body.evidenceMarker,
         wrapupAskedAt: Date.now(),
         wrapupAnswer: null,
       };
@@ -672,6 +821,7 @@ test("a broken verifier gives up after the strike cap, at one strike per unhurri
         json: { ok: true, patch: "diff --git a/up.ts b/up.ts\n+retry();\n", truncated: false, headSha: "abc" },
       };
     }
+    if (p === "/api/sessions/s1/transcript/size") return { status: 200, json: { size: 100 } };
     if (p === "/api/sessions/s1/transcript") {
       return {
         status: 200,
@@ -680,7 +830,12 @@ test("a broken verifier gives up after the strike cap, at one strike per unhurri
     }
     if (p === "/api/sessions/s1/standards") return { status: 200, json: { docs: [], truncated: false } };
     if (p === "/api/sessions/s1/queue/wrapup/prompted") {
-      queue = { ...queue, promptedGoal: (JSON.parse(raw) as { goal: string }).goal };
+      const body = JSON.parse(raw) as { goal: string; evidenceMarker: string };
+      queue = {
+        ...queue,
+        promptedGoal: body.goal,
+        promptedEvidence: body.evidenceMarker,
+      };
       return { status: 200, json: { ok: true } };
     }
     return { status: 200, json: null };

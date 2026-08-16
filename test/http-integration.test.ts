@@ -1081,14 +1081,20 @@ test("the prompted trigger's episode guard round-trips, and is separate from the
   const askedBefore = ((await before.json()) as { wrapupAskedAt: number | null }).wrapupAskedAt;
 
   const goal = "add retry handling to the uploader";
+  const evidenceMarker = "a".repeat(64);
   const res = await app.request("/api/sessions/sess-1/queue/wrapup/prompted", {
     method: "POST",
     headers: jsonHeaders,
-    body: JSON.stringify({ goal }),
+    body: JSON.stringify({ goal, evidenceMarker }),
   });
   assert.equal(res.status, 200);
-  const q = (await res.json()) as { promptedGoal: string | null; wrapupAskedAt: number | null };
+  const q = (await res.json()) as {
+    promptedGoal: string | null;
+    promptedEvidence: string | null;
+    wrapupAskedAt: number | null;
+  };
   assert.equal(q.promptedGoal, goal);
+  assert.equal(q.promptedEvidence, evidenceMarker);
   assert.equal(q.wrapupAskedAt, askedBefore, "retiring a prompted episode never touches the drain ask");
 
   // And it survives a re-read, since it is the thing that stops the trigger re-firing.
@@ -1105,18 +1111,21 @@ test("a prompted human handoff retires its episode and raises the card atomicall
   });
 
   const goal = "preserve the existing Manual workflow binding";
+  const evidenceMarker = "b".repeat(64);
   const res = await app.request("/api/sessions/sess-1/queue/wrapup/prompted", {
     method: "POST",
     headers: jsonHeaders,
-    body: JSON.stringify({ goal, ask: true }),
+    body: JSON.stringify({ goal, evidenceMarker, ask: true }),
   });
   assert.equal(res.status, 200);
   const queue = (await res.json()) as {
     promptedGoal: string | null;
+    promptedEvidence: string | null;
     wrapupAskedAt: number | null;
     wrapupAnswer: string | null;
   };
   assert.equal(queue.promptedGoal, goal);
+  assert.equal(queue.promptedEvidence, evidenceMarker);
   assert.ok(queue.wrapupAskedAt, "the Ship it? card is raised with the episode guard");
   assert.equal(queue.wrapupAnswer, null, "the previous episode's answer cannot hide the new card");
 });

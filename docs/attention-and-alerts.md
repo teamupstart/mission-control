@@ -12,11 +12,19 @@ obligation:
    modal draws, diff/plan/question and option menus included. A member of an ensemble carries
    its run context on the header line - *Best of N "Fix the parser" - candidate 3 of 5* - so
    whoever answers can tell they are steering one competitor of a comparison.
-3. **Members parked on a menu** - an ensemble member sitting on a terminal
+3. **Parked on a menu** - a session sitting on a terminal
    [option menu](sessions.md#answer-a-sessions-menu-from-the-dashboard). Listed, not answered in the
-   inbox: it deep-links to the session card, while the member's live lane in the run detail
-   also renders the verified pane dialog in place.
-4. **Stuck finalizations** - a promotion that stopped on an error.
+   inbox: it deep-links to the session card, while an ensemble member's live lane in the run
+   detail also renders the verified pane dialog in place.
+4. **Pipeline halts** - a [pipeline](pipelines.md) an external SDLC engine stopped and will not
+   resume on its own. Each row names the feature, the [halt class](pipelines.md#a-halted-pipeline-in-the-inbox)
+   and what the engine said stopped it, points at the provider's runbook section for that class,
+   and links to the run's own detail. This is the only section with no session behind it: the
+   engine stops dispatching at a halt, so the agent that hit the gate has usually exited by the
+   time anybody looks. Read-only here - clearing a halt is the engine's own CLI.
+5. **Waiting on you** - the backstop: a session the fleet paints amber that no section above
+   already accounts for. It deep-links to the card, because the answer goes to the agent.
+6. **Stuck finalizations** - a promotion that stopped on an error.
 
 The count is **answers owed**, not rows: a session holding three questions is one row and
 three. It is a rendering of state the dashboard already has - it subscribes to nothing, decides

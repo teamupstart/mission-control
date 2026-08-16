@@ -970,6 +970,25 @@ const PASTE_NOT_SUBMITTED =
   "the prompt was pasted but the agent never took the Enter - it is sitting in the composer unsubmitted";
 
 /**
+ * A session an external engine is driving, refused before a byte reaches its pane.
+ *
+ * The one refusal here that is NOT about the pane, and it has to be: an engine-driven agent
+ * genuinely owns a writable tty - that is why Mission Control cards it - and it is running
+ * under `--print` with its stdin on a pipe from the engine, so anything typed at that pane
+ * lands in a pty nothing is reading. Every pane check below would pass, and the write would
+ * be silently, permanently lost.
+ *
+ * Stated HERE rather than only at the send route because the route is not the only caller: a
+ * workflow's session action, a queued turn's delivery and a task assignment all reach
+ * `injectPrompt` directly, and a guard on the operator's own Send box would leave those three
+ * typing into the void. This is the same reasoning as the `NO_KEYSTROKE_DELIVERY` backstop
+ * beside it - "must not fall through and quietly type at nothing" - for the second way a
+ * session can be undeliverable.
+ */
+const ENGINE_DRIVEN =
+  "an external engine is driving this session in --print mode; it reads nothing typed at its pane";
+
+/**
  * Whether this session could take a prompt RIGHT NOW, without sending one.
  *
  * The point is the caller that has something destructive to do first. `TaskManager.assign`
@@ -991,7 +1010,10 @@ export async function paneAcceptsPrompt(
   // Asked before the handles, and refused in `injectPrompt`'s own words: a harness that
   // does not take keystrokes cannot become deliverable by owning a pane, so answering
   // `ok` on the strength of one is how the destructive step runs anyway and the refusal
-  // arrives afterwards, on a stripped agent whose task went back to the backlog.
+  // arrives afterwards, on a stripped agent whose task went back to the backlog. The
+  // engine-driven refusal is here for exactly that reason too, and first, because it is the
+  // one an owned pane cannot argue with.
+  if (session.pipeline) return { ok: false, error: ENGINE_DRIVEN };
   if (controlFor(session).kind !== "keystroke") return { ok: false, error: NO_KEYSTROKE_DELIVERY };
   const pane = deps.pane(session);
   if (!pane) return { ok: false, error: NO_HANDLE };
@@ -1047,6 +1069,10 @@ async function injectPromptLocked(
   deps: InjectDeps,
   beforeWrite?: PromptWriteGuard,
 ): Promise<InjectResult> {
+  // Refused ahead of every pane question, and `undelivered` because nothing was written:
+  // this session's pane is real and writable, and the process behind it reads none of it.
+  // See `ENGINE_DRIVEN`.
+  if (session.pipeline) return undelivered({ ok: false, error: ENGINE_DRIVEN });
   // How this agent takes a turn. Read once, up front, rather than branched on per step:
   // the delivery below is generic over harnesses and must never name one.
   const control = controlFor(session);

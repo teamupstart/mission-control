@@ -47,6 +47,7 @@ import {
   pipelineRunKeyOf,
   type PipelineProviderId,
   type PipelineRun,
+  type SessionPipelineLink,
 } from "@shared/pipeline.ts";
 import type {
   HookIngest,
@@ -101,6 +102,10 @@ import { getBacklogPlan } from "./backlog.ts";
 import { getTaskSourcesConfig } from "./task-sources/config.ts";
 import { taskSourceStatuses } from "./task-sources/sweeper.ts";
 import { clampPrompt } from "./util/prompt-text.ts";
+// The repository's one segment-safe "is this path at or under that one" predicate. Reached
+// for rather than re-spelled as a `startsWith`, which would read `.worktrees/add-widgets` as
+// living inside `.worktrees/add`.
+import { withinRoot } from "./util/repo-doc.ts";
 import {
   clearPendingTurns as clearPendingTurnsDb,
   clearQueue as clearQueueDb,
@@ -1337,11 +1342,19 @@ export class Registry extends EventEmitter {
     this.pipelineRuns.set(key, run);
     if (prev && pipelineRunDisplayEqual(prev, run)) return;
     this.emitEvent({ type: "pipeline_upsert", run });
+    // After the frame, and after the map already holds the new run: the sessions this moves
+    // are re-derived FROM the projection, so it has to be current before they are asked.
+    this.syncSessionsForPipelineRun(run.provider, run.repoRoot, run.slug, run.worktree);
   }
 
   removePipelineRun(provider: PipelineProviderId, repoRoot: string, slug: string): void {
+    const gone = this.pipelineRuns.get(pipelineRunKey(provider, repoRoot, slug));
     if (this.pipelineRuns.delete(pipelineRunKey(provider, repoRoot, slug))) {
       this.emitEvent({ type: "pipeline_remove", provider, repoRoot, slug });
+      // A retired run - the engine tore its worktree down, or consent was withdrawn - has to
+      // give its sessions back. They are ordinary sessions again, composer included, which
+      // is the fail-open posture stated on `Session.pipeline`.
+      this.syncSessionsForPipelineRun(provider, repoRoot, slug, gone?.worktree ?? null);
     }
   }
 
@@ -1550,11 +1563,11 @@ export class Registry extends EventEmitter {
       // Carried forward like the PR fields for the same reason: discovery cannot see it.
       // Re-resolved from the ledger just below, once cwd/prUrl are settled.
       inspector: prev?.inspector ?? null,
-      // Carried forward for the SAME reason as `inspector` above, and it is the reason
-      // this field exists on a session at all: the correlation is derived from `cwd`
-      // against the enabled repositories' worktrees, which nothing in this merge holds.
-      // Null on every fleet with no pipeline provider enabled. Phase 3 stamps it.
-      pipeline: prev?.pipeline ?? null,
+      // Derived from `cwd` against the projection's own worktree paths, exactly as `task`
+      // above is derived from it against the task rows'. Null on every fleet with no
+      // pipeline provider enabled, which is the check `pipelineLinkFor` makes first.
+      // Re-stamped below, once cwd has settled.
+      pipeline: this.pipelineLinkFor(d.cwd),
       retro: prev?.retro,
       prUrl: prev?.prUrl ?? null,
       prNumber: prev?.prNumber ?? null,
@@ -1662,6 +1675,7 @@ export class Registry extends EventEmitter {
         : { kind: "none" },
     );
     base.task = this.taskSummaryFor(base.id, base.cwd);
+    base.pipeline = this.pipelineLinkFor(base.cwd);
     return base;
   }
 
@@ -5422,6 +5436,105 @@ export class Registry extends EventEmitter {
       if (!best || t.updatedAt > best.updatedAt) best = t;
     }
     return best;
+  }
+
+  /**
+   * The pipeline run whose worktree this session is working inside, or null.
+   *
+   * THE CORRELATION RULE, in one place: a session whose cwd is at or below a projected run's
+   * own worktree is doing that run's work. The projection is the only thing consulted, which
+   * is what makes consent free rather than a second check - the watcher retires every run of
+   * a repository the operator switched off (`reconcilePipelineConsent`), so a disabled
+   * repository has no rows here and every session in it goes back to being an ordinary one.
+   * A fleet observing nothing pays one `size === 0` per session per sweep.
+   *
+   * CONTAINMENT, not equality, because an agent legitimately works below the worktree root -
+   * conductor spawns it at the top, but a shell that has `cd`'d into `src/` is the same
+   * session doing the same run's work. Segment-safe (`withinRoot`), so `.worktrees/add`
+   * cannot claim a session sitting in `.worktrees/add-widgets`.
+   *
+   * DEEPEST WINS when two runs' worktrees nest, which they can: nothing stops an operator's
+   * engine from cutting `.worktrees/a` and `.worktrees/a/.worktrees/b`, and the inner run is
+   * the one whose work is happening there. Ties break on the run key so two projections of
+   * one fleet cannot disagree about which of two equally-deep runs claimed a session.
+   *
+   * Paths are compared as the two sides spell them. Both sides descend from a repository root
+   * the daemon resolved through `realpathSync` (`resolveRepoRoot`), and a session's cwd comes
+   * from `lsof`, which prints the kernel's own physical path - so the one arrangement this
+   * cannot see is a `.worktrees/<slug>` that is itself a symlink somewhere else. That is not
+   * a shape the engine produces (it cuts real git worktrees), and reading it wrong fails
+   * OPEN: the session is simply not correlated and behaves exactly as it does today.
+   */
+  private pipelineLinkFor(cwd: string | null): SessionPipelineLink | null {
+    if (!cwd || this.pipelineRuns.size === 0) return null;
+    let best: PipelineRun | null = null;
+    for (const run of this.pipelineRuns.values()) {
+      if (!run.worktree || !withinRoot(run.worktree, cwd)) continue;
+      if (
+        !best ||
+        run.worktree.length > best.worktree!.length ||
+        (run.worktree.length === best.worktree!.length &&
+          pipelineRunKeyOf(run) < pipelineRunKeyOf(best))
+      ) {
+        best = run;
+      }
+    }
+    return best
+      ? {
+          provider: best.provider,
+          repoRoot: best.repoRoot,
+          slug: best.slug,
+          step: best.lastStep,
+        }
+      : null;
+  }
+
+  /**
+   * Re-stamp the sessions one pipeline run's movement could have changed, and emit.
+   *
+   * The counterpart of `syncSessionsForWorktree` for the other correlation, and needed for
+   * the same reason: a run's `lastStep` advances with nothing about the session moving, so a
+   * card that only re-derived on a discovery sweep would show the step the run was on when
+   * the agent was first seen. Called from `upsertPipelineRun`/`removePipelineRun` AFTER their
+   * own no-op suppression, so a quiet fleet does no work here at all.
+   *
+   * The candidate set is deliberately wider than "sessions inside this worktree": a run that
+   * was just retired has no worktree to test against any more, and the sessions that must be
+   * cleared are exactly the ones still NAMING it. Both halves are cheap - the map is the
+   * fleet, and `pipelineLinkFor` returns on an empty projection.
+   *
+   * DRIVER-RUN SESSIONS ARE SKIPPED, which is the same invariant `upsertSdkSession` states by
+   * writing `pipeline: null` structurally - repeated here because this is the only other door
+   * to the field, and an invariant one door enforces is not an invariant. A session Mission
+   * Control's own supervisor launched is YOURS: the fact that its worktree happens to sit
+   * inside a directory an engine also manages does not make it somebody else's, and taking its
+   * composer away over a path coincidence would strand a conversation nothing else can answer.
+   */
+  private syncSessionsForPipelineRun(
+    provider: PipelineProviderId,
+    repoRoot: string,
+    slug: string,
+    worktree: string | null,
+  ): void {
+    const key = pipelineRunKey(provider, repoRoot, slug);
+    for (const session of [...this.sessions.values()]) {
+      if (session.runtime !== "terminal") continue;
+      const named = session.pipeline
+        ? pipelineRunKey(
+            session.pipeline.provider,
+            session.pipeline.repoRoot,
+            session.pipeline.slug,
+          ) === key
+        : false;
+      const inside =
+        worktree !== null && session.cwd !== null && withinRoot(worktree, session.cwd);
+      if (!named && !inside) continue;
+      const link = this.pipelineLinkFor(session.cwd);
+      if (JSON.stringify(session.pipeline) === JSON.stringify(link)) continue;
+      const next = { ...session, pipeline: link };
+      this.sessions.set(session.id, next);
+      this.emitSession(next);
+    }
   }
 
   private syncSessionsForWorktree(cwd: string | null): void {

@@ -4,6 +4,7 @@ import type {
   TerminalBackendId,
   TerminalHandle,
 } from "./terminal.ts";
+import type { SessionPipelineLink } from "./pipeline.ts";
 import type { SessionRuntime } from "./types.ts";
 
 /**
@@ -126,9 +127,43 @@ export function canWriteTo(s: PaneHandles): boolean {
  * Takes `runtime` as well as the handles because a `DiscoveredSession` has no runtime to
  * ask about: discovery only ever produces pane-backed sessions, so its consumers stay on
  * `canWriteTo` by construction rather than by remembering to.
+ *
+ * An ENGINE-DRIVEN session is refused outright, ahead of both. See `messageBlockReason`.
  */
-export function canMessage(s: PaneHandles & { runtime: SessionRuntime }): boolean {
-  return canWriteTo(s) || s.runtime === "sdk";
+export function canMessage(s: Messageable): boolean {
+  return messageBlockReason(s) === null;
+}
+
+/** What a session's turn delivery needs to be asked about, beyond its panes. */
+export type Messageable = PaneHandles & {
+  runtime: SessionRuntime;
+  /**
+   * Optional rather than required so the predicate stays callable with anything
+   * session-shaped, and so a caller that has never heard of pipelines is unchanged: absent
+   * and null are the same answer, which is the answer on every fleet observing no engine.
+   */
+  pipeline?: SessionPipelineLink | null;
+};
+
+/**
+ * WHY a turn cannot be delivered, for the surfaces that have to say so - or null when it can.
+ *
+ * `canMessage` is the boolean twenty call sites ask; this is the sentence three of them
+ * print, and it lives here so they cannot each invent their own. The reply box's
+ * placeholder, the Send button's tooltip and the notice drawn in the composer's place were
+ * all spelling "No pane to send to", which became a lie the moment a session could be
+ * refused for a second reason.
+ *
+ * `pipeline` outranks the pane question, and the order is the whole point rather than a
+ * tidiness preference: an engine-driven agent HAS a pane - the engine spawns it non-detached
+ * into a real tty, which is why Mission Control cards it at all - and it is running under
+ * `--print`, so it reads nothing that pane receives. Answering "no pane" there would be
+ * false; answering "there is a pane" and enabling the box would be worse, because the text
+ * goes nowhere and the operator has no way to find that out.
+ */
+export function messageBlockReason(s: Messageable): "pipeline" | "no-pane" | null {
+  if (s.pipeline) return "pipeline";
+  return canWriteTo(s) || s.runtime === "sdk" ? null : "no-pane";
 }
 
 /**

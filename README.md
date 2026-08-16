@@ -102,6 +102,14 @@ page it always was; **Pipelines** shows what the engine is driving - a rail grou
 repository under its engine daemon's state, and each feature's whole gated sequence drawn in
 the same diagram grammar a workflow run uses.
 
+The engine's own agents show up on the fleet too, and are marked as its rather than yours: a
+session working inside an observed feature's worktree wears the run's badge, groups under it,
+and has a sentence where its composer was, because it is a `--print` process that reads nothing
+typed at it. Its Workflows tab draws the feature's ladder. And when the engine **halts** a
+feature for a human, that halt is a row in the [attention inbox](docs/attention-and-alerts.md)
+with its class, what stopped it, and the runbook that clears it - the one thing waiting on you
+that has no session behind it.
+
 ## Quick start
 
 Mission Control needs Node.js 24 or newer.

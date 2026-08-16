@@ -1239,20 +1239,23 @@ booted on a developer's laptop adopts their real running sessions: the fleet cou
 non-deterministic against CI where there are none, and the dashboard's Kill and Reset
 controls act on live work.
 
-**One spec turns discovery back on, and it is the exception that explains the rule.**
+**Two specs turn discovery back on, and they are the exception that explains the rule.**
 `session-interrupt-terminal.spec.ts` needs a session whose runtime is `terminal`, and there
 is exactly one way one comes into being: `registry.ts:mergeDiscovered` stamps that runtime,
 and only the discovery poller reaches it. No route, no dispatch and no handoff produces one.
-So that file - and only that file - sets `MISSION_POLL_MS` through the `daemonEnv` option,
-which merges last and therefore wins.
+`session-driven-by-engine.spec.ts` needs the same door for a different reason - the pipeline
+correlation exists *because* an external engine's agents arrive through discovery rather than
+through dispatch, so a spec that faked a session would be testing the one path the hazard
+cannot reach. Those two files - and only those - set `MISSION_POLL_MS` through the `daemonEnv`
+option, which merges last and therefore wins.
 
-It pays for the hazard rather than ignoring it: it never asserts on the fleet as a whole, it
-addresses its own card by a tmux session name it generated for that test, and it touches no
-control on any other card. A spec that turns discovery on and then counts sessions, or
-presses Kill on "the only card", is the failure mode this note exists to prevent. It also
-needs real `tmux` - the one multiplexer with no binary override, since `TMUX_BIN` declares
-`env: null` - which CI installs for exactly this reason, and which the spec skips itself over
-when absent.
+They pay for the hazard rather than ignoring it: neither asserts on the fleet as a whole, each
+addresses its own cards by tmux session names it generated for that test, and neither touches a
+control on any other card. A spec that turns discovery on and then counts sessions, or presses
+Kill on "the only card", is the failure mode this note exists to prevent. Both also need real
+`tmux` - the one multiplexer with no binary override, since `TMUX_BIN` declares `env: null` -
+which CI installs for exactly this reason, and which both specs skip themselves over when
+absent.
 
 `startDaemon()` then verifies two things before any test runs, because the whole isolation
 story is worthless if the daemon under test is not the one it thinks it is:

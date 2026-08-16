@@ -639,6 +639,92 @@ test("Foreman's master switch gates its pipeline feed, reservation, and provider
   });
 });
 
+test("Foreman finalizes a reserved triage after Unpark clears the projected halt", async () => {
+  const { registry, request } = fixture();
+  await withEngine(async () => {
+    const repo = await actable("foreman-finalize-after-refresh", registry, request, "mechanical");
+    setPipelinesConfig({ ...getPipelinesConfig(), foremanMechanicalTriage: true });
+    setForemanConfig({ enabled: true });
+
+    const available = (await (await request("/api/pipelines/foreman")).json()) as {
+      items: Array<{ marker: string }>;
+    };
+    const marker = available.items[0]?.marker;
+    assert.ok(marker);
+    const episode = {
+      marker,
+      situation: "pipeline-halt",
+      surface: "pipeline",
+      question: "a mechanical gate refused",
+      classification: "mechanical",
+      disposition: "pending" as const,
+    };
+
+    const unreserved = await request("/api/pipelines/foreman-episode", {
+      method: "POST",
+      body: JSON.stringify({
+        provider: "ai-conductor",
+        repoRoot: repo,
+        slug: "feat",
+        episode: { ...episode, disposition: "answered" },
+      }),
+    });
+    assert.equal(unreserved.status, 409, "an outcome cannot create its own reservation");
+
+    const reserved = await request("/api/pipelines/foreman-episode", {
+      method: "POST",
+      body: JSON.stringify({ provider: "ai-conductor", repoRoot: repo, slug: "feat", episode }),
+    });
+    assert.equal(reserved.status, 200);
+
+    const action = await request("/api/pipelines/action", {
+      method: "POST",
+      body: JSON.stringify({
+        provider: "ai-conductor",
+        repoRoot: repo,
+        slug: "feat",
+        action: "unpark",
+        requestedBy: "foreman",
+      }),
+    });
+    assert.equal(action.status, 200);
+    assert.equal(((await action.json()) as { ok: boolean }).ok, true);
+
+    const projected = registry.listPipelineRuns()[0];
+    assert.ok(projected);
+    registry.upsertPipelineRun({
+      ...projected,
+      halt: null,
+      group: "building",
+      updatedAt: projected.updatedAt + 1,
+    });
+
+    const finalized = await request("/api/pipelines/foreman-episode", {
+      method: "POST",
+      body: JSON.stringify({
+        provider: "ai-conductor",
+        repoRoot: repo,
+        slug: "feat",
+        episode: {
+          ...episode,
+          disposition: "answered",
+          lastAction: "unpark: released",
+        },
+      }),
+    });
+    assert.equal(finalized.status, 200, await finalized.text());
+
+    const ledger = (await (await request("/api/foreman/episodes")).json()) as Array<{
+      marker: string;
+      disposition: string;
+      resolvedBy: string | null;
+    }>;
+    const recorded = ledger.find((entry) => entry.marker === marker);
+    assert.equal(recorded?.disposition, "answered");
+    assert.equal(recorded?.resolvedBy, "foreman");
+  });
+});
+
 test("a repository verb moves the daemon the rail reports, without naming a feature", async () => {
   const { registry, request } = fixture();
   await withEngine(async () => {

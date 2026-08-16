@@ -4274,8 +4274,10 @@ export function buildApp(
 
   /**
    * Persist a pipeline triage episode for Foreman, through the daemon's only-writer boundary.
-   * The marker is re-derived from the current projection so a worker cannot stamp a stale
-   * observation and then act on a newer halt under its identity.
+   * A reservation re-derives its marker from the current projection so a worker cannot stamp
+   * a stale observation and then act on a newer halt under its identity. A later outcome is
+   * different: Unpark can refresh the projection and clear that halt before the worker writes
+   * its result, so the existing durable reservation is the authority for finalizing it.
    */
   app.post("/api/pipelines/foreman-episode", async (c) => {
     const parsed = await parseBody(c, PipelineForemanEpisodeSchema);
@@ -4290,7 +4292,19 @@ export function buildApp(
           candidate.repoRoot === repoRoot &&
           candidate.slug === slug,
       );
-    if (!run?.halt) return c.json({ error: "no such halted pipeline run" }, 404);
+    if (!run) return c.json({ error: "no such pipeline run" }, 404);
+    const noteKey = pipelineEpisodeKey(run);
+    if (episode.disposition !== "pending") {
+      if (episode.classification !== "mechanical") {
+        return c.json({ error: "Foreman may only finalize mechanical pipeline triage" }, 403);
+      }
+      if (!foremanEpisodeExists(noteKey, episode.marker)) {
+        return c.json({ error: "Foreman must reserve the pipeline halt before finalizing it" }, 409);
+      }
+      recordForemanEpisode(pipelineEpisodeWrite(run, episode));
+      return c.json({ ok: true });
+    }
+    if (!run.halt) return c.json({ error: "no such halted pipeline run" }, 404);
     if (run.halt.class !== "mechanical" || episode.classification !== "mechanical") {
       return c.json({ error: "Foreman may only reserve a mechanical pipeline halt" }, 403);
     }

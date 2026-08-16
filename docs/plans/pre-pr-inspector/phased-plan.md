@@ -1,6 +1,6 @@
 # Phased implementation: Code Quality Judge dual mode
 
-Status: approved and scheduled after publication
+Status: approved, scheduled, and gated on planning publication
 
 ## Source of truth
 
@@ -67,6 +67,17 @@ provide the safe boundary inside one reviewable pull request.
 | Phase | Implementation unit | Direct prerequisites | Execution | Value at merge |
 |---|---|---|---|---|
 | 1 | [Code Quality Judge dual mode](phase-1-code-quality-judge-dual-mode.md) | Planning session publication | Codex 5.6 Sol, xhigh | Local review runs before the verified PR action; optional remote behavior is clearly GitHub Inspector |
+
+## Scheduled task
+
+| Phase | Task id | Backlog state | Direct dependency | Stored execution profile |
+|---|---|---|---|---|
+| 1 | `a59d9f2f-2786-4099-a750-f3fe86865eb9` | Backlogged and enabled | This planning session (`58712017-e25f-49a6-abb1-ecaebc7f31e8`) | Codex, `gpt-5.6-sol`, `xhigh` |
+
+The scheduling API creates a default-agent backlog row and exposes no model or effort fields. With
+the human's explicit approval, the task was created behind the unfinished planning-session
+dependency, immediately updated through the normal backlog task-edit endpoint, and read back before
+the planning pull request was opened. The dependency prevented dispatch during that transition.
 
 ## Dependency graph and merge order
 
@@ -139,4 +150,4 @@ Final audit on 2026-08-15:
 - The task dependency graph has no missing or transitive-only edge.
 - One repository and one implementation pull request are sufficient.
 - The phase file records the requested Codex 5.6 Sol, xhigh execution profile and the implementation
-  task will be verified against that profile after creation.
+  task was read back with that profile after creation.

@@ -16,7 +16,7 @@
     <p class="eyebrow">Mission Control phased plan</p>
     <h1>Code Quality Judge dual mode</h1>
     <p class="lede">One merge-aware implementation phase that moves local judgment before pull request creation while preserving optional GitHub Inspector behavior and Shipping proof.</p>
-    <span class="status">Approved and awaiting publication</span>
+    <span class="status">Approved, scheduled, publication-gated</span>
   </header>
 
   <section id="source">
@@ -62,6 +62,12 @@
       <thead><tr><th>Phase</th><th>Implementation unit</th><th>Direct prerequisites</th><th>Execution</th><th>Value at merge</th></tr></thead>
       <tbody><tr><td>1</td><td><a href="phase-1-code-quality-judge-dual-mode.md">Code Quality Judge dual mode</a></td><td>Planning session publication</td><td>Codex 5.6 Sol, xhigh</td><td>Local review precedes verified PR creation; the optional remote service is clearly GitHub Inspector</td></tr></tbody>
     </table></div>
+    <h3>Scheduled task</h3>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Phase</th><th>Task id</th><th>Backlog state</th><th>Direct dependency</th><th>Stored execution profile</th></tr></thead>
+      <tbody><tr><td>1</td><td><code>a59d9f2f-2786-4099-a750-f3fe86865eb9</code></td><td>Backlogged and enabled</td><td>This planning session (<code>58712017-e25f-49a6-abb1-ecaebc7f31e8</code>)</td><td>Codex, <code>gpt-5.6-sol</code>, <code>xhigh</code></td></tr></tbody>
+    </table></div>
+    <p>The task API exposes no model or effort fields during creation. With explicit human approval, the task was created behind the unfinished planning-session dependency, immediately updated through the normal backlog editor path, and read back before this planning pull request was opened. The dependency prevented dispatch during that transition.</p>
   </section>
 
   <section id="flows">
@@ -122,7 +128,7 @@
     <h2>Final audit</h2>
     <div class="audit">
       <p>Every approved requirement maps to Phase 1 exactly once. Rejected observer/attestation and privileged-stage work maps to no phase. The graph has no missing dependency, no cross-repository merge unit, and no undocumented cleanup phase.</p>
-      <p>The implementation task is gated on publication of these paths and must be verified after creation as Codex 5.6 Sol with xhigh effort.</p>
+      <p>The implementation task is gated on publication of these paths and was read back after creation as Codex 5.6 Sol with xhigh effort.</p>
     </div>
   </section>
 </article></main>

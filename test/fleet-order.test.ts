@@ -74,7 +74,7 @@ test("siblings of one run come out adjacent, in ordinal order, where the first o
   assert.deepEqual(names(ordered.sessions), ["alpha", "november", "zulu", "mid"]);
 
   const working = ordered.groups.find((g) => g.tone === "working")!;
-  assert.deepEqual(working.clusters, [{ runId: "run-a", startIndex: 0, length: 3 }]);
+  assert.deepEqual(working.clusters, [{ kind: "ensemble", runId: "run-a", startIndex: 0, length: 3 }]);
 });
 
 test("two runs in one column each cluster, without absorbing the other's members", () => {
@@ -89,8 +89,8 @@ test("two runs in one column each cluster, without absorbing the other's members
 
   const working = ordered.groups.find((g) => g.tone === "working")!;
   assert.deepEqual(working.clusters, [
-    { runId: "run-a", startIndex: 0, length: 2 },
-    { runId: "run-b", startIndex: 2, length: 2 },
+    { kind: "ensemble", runId: "run-a", startIndex: 0, length: 2 },
+    { kind: "ensemble", runId: "run-b", startIndex: 2, length: 2 },
   ]);
 });
 
@@ -108,8 +108,8 @@ test("a cluster never crosses a tone boundary: a blocked member stays in needs-y
   assert.deepEqual(names(attention.sessions), ["beta"]);
   assert.deepEqual(names(working.sessions), ["alpha", "gamma"]);
   // Both halves are clusters of the same run - the header renders in each column.
-  assert.deepEqual(attention.clusters, [{ runId: "run-a", startIndex: 0, length: 1 }]);
-  assert.deepEqual(working.clusters, [{ runId: "run-a", startIndex: 0, length: 2 }]);
+  assert.deepEqual(attention.clusters, [{ kind: "ensemble", runId: "run-a", startIndex: 0, length: 1 }]);
+  assert.deepEqual(working.clusters, [{ kind: "ensemble", runId: "run-a", startIndex: 0, length: 2 }]);
   // And the tone ranking still decides which comes first overall.
   assert.deepEqual(names(ordered.sessions), ["beta", "alpha", "gamma"]);
 });
@@ -292,8 +292,8 @@ test("a cluster never straddles the free/held boundary", () => {
   assert.equal(idle.heldFrom, 2);
   // Two frames for the one run, one either side - the tone-boundary rule's shape.
   assert.deepEqual(idle.clusters, [
-    { runId: "run-a", startIndex: 0, length: 1 },
-    { runId: "run-a", startIndex: 2, length: 1 },
+    { kind: "ensemble", runId: "run-a", startIndex: 0, length: 1 },
+    { kind: "ensemble", runId: "run-a", startIndex: 2, length: 1 },
   ]);
   // Every cluster lies wholly on one side of the boundary.
   for (const c of idle.clusters) {
@@ -308,7 +308,7 @@ test("a cluster never straddles the free/held boundary", () => {
   assert.equal(clusterBlocks.length, 2);
   const keys = clusterBlocks.map((b) => (b as { key: string }).key);
   assert.notEqual(keys[0], keys[1]);
-  for (const key of keys) assert.match(key, /^cluster-run-a-/);
+  for (const key of keys) assert.match(key, /^cluster-ensemble-run-a-/);
 });
 
 test("fleetRows places both rules, and the walk lands exactly on the boundary", () => {

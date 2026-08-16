@@ -363,6 +363,12 @@ earns two surfaces a card has nowhere to put:
   **needs you** with the run's header repeated there, rather than dragging its working siblings
   out of the column that describes what they are. Dragging a backlog card onto a clustered tile
   works exactly as it does anywhere else - the frame is a drawing, not a drop target.
+- **A [pipeline](pipelines.md#on-the-fleet) engine's sessions are drawn together the same way.**
+  A discovered agent working inside an observed run's worktree wears a `⇶` chip naming the run
+  and its current step, groups under a header that opens the run, and loses its composer - it
+  is a `--print` process and reads nothing typed at it. Its permission posture is still shown,
+  because an agent nobody can retune must not look safer than it is. A session with both an
+  ensemble membership and a pipeline correlation frames as the ensemble's.
 - **The idle column separates free agents from ones a workflow is holding.** A session bound
   to a live [Workflow](workflows.md#workflows-and-personas) run sits at `idle` for most of that run's life: it finished
   its turn, and the run is off working checks, judges and reviewers before it sends the next

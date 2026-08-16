@@ -1,25 +1,43 @@
 import type { Session } from "@shared/types.ts";
+import { pipelineRunKey } from "@shared/pipeline.ts";
 import { stateDisplay } from "./format.ts";
 import { NO_HELD_SESSIONS } from "./held.ts";
 import { groupByTone, TONE_ORDER, type ToneGroup } from "./tone.ts";
 
 /**
- * Where one ensemble's sibling members sit inside ONE tone group.
+ * What kind of run a cluster's members share.
+ *
+ * Two things group sessions on this fleet, and they are genuinely different obligations: an
+ * ENSEMBLE is Mission Control's own comparison of several candidates, and a PIPELINE is an
+ * external engine walking one feature through a gated sequence. A view has to draw a
+ * different header for each - the ensemble's is about a comparison in flight, the pipeline's
+ * about a feature's position - so the discriminant travels with the span rather than being
+ * re-derived from a member, which is how the frame and its header could come to disagree.
+ */
+export type FleetClusterKind = "ensemble" | "pipeline";
+
+/**
+ * Where one run's sessions sit inside ONE tone group.
  *
  * A span, not a list of ids, because the whole point is that the members are CONTIGUOUS in
  * the group's rendered order: a view slices `sessions` at `[startIndex, startIndex + length)`
  * and draws a frame around exactly what the arrow keys will walk.
  */
-export interface EnsembleClusterSpan {
+export interface FleetClusterSpan {
+  kind: FleetClusterKind;
+  /**
+   * The run this frame belongs to: an ensemble run id, or a `pipelineRunKey`. Opaque here -
+   * it is a bucket key and a React key, and only the view that draws the header resolves it.
+   */
   runId: string;
   /** Index into the tone group's `sessions`, not into the flat fleet. */
   startIndex: number;
   length: number;
 }
 
-/** A tone group plus where its ensemble clusters are. */
+/** A tone group plus where its run clusters are. */
 export interface FleetToneGroup extends ToneGroup {
-  clusters: EnsembleClusterSpan[];
+  clusters: FleetClusterSpan[];
   /**
    * Index into `sessions` where the sessions held by an open workflow run begin, or null when
    * this group has none.
@@ -52,6 +70,8 @@ export type FleetBlock =
   | { kind: "session"; session: Session }
   | {
       kind: "cluster";
+      /** Which header the view draws over this frame. See `FleetClusterKind`. */
+      cluster: FleetClusterKind;
       runId: string;
       /**
        * The React key for this frame, computed HERE because `runId` alone is not one: a run
@@ -65,7 +85,11 @@ export type FleetBlock =
     };
 
 /**
- * The ONE fleet ordering: tone first, then siblings of an ensemble run adjacent.
+ * The ONE fleet ordering: tone first, then the sessions of one run adjacent.
+ *
+ * "One run" is an ensemble run or an external engine's pipeline - see `clusterOf`. A fleet
+ * with neither comes out byte-identical to the old order, which is the same guarantee this
+ * gave before pipelines existed and is what keeps an unobserved fleet unchanged.
  *
  * Two facts have to stay one fact here. The grid, the console rail and the board all render
  * this order, and the arrow keys walk index arrays derived from the SAME call - `moveSelection`
@@ -116,13 +140,29 @@ export function orderSessions(
   return { sessions: groups.flatMap((g) => g.sessions), groups };
 }
 
-/** The run this session is a member of, or null. */
-function runIdOf(session: Session): string | null {
-  return session.task?.ensemble?.runId ?? null;
+/**
+ * The run this session's card sits under, or null when it sits loose.
+ *
+ * An ensemble membership OUTRANKS a pipeline correlation, and the case is real rather than
+ * theoretical: a member dispatched into a repository an engine also drives would satisfy
+ * both, and the ensemble is the stronger claim - it is an explicit binding Mission Control
+ * made, while the correlation is a path coincidence the engine's worktree layout produced.
+ * A session can only be in one frame, so the order here IS the precedence.
+ */
+function clusterOf(session: Session): { kind: FleetClusterKind; runId: string } | null {
+  const ensemble = session.task?.ensemble?.runId ?? null;
+  if (ensemble !== null) return { kind: "ensemble", runId: ensemble };
+  const pipeline = session.pipeline;
+  return pipeline
+    ? {
+        kind: "pipeline",
+        runId: pipelineRunKey(pipeline.provider, pipeline.repoRoot, pipeline.slug),
+      }
+    : null;
 }
 
 /**
- * Pull one tone group's ensemble siblings together, anchored where the first of them sat.
+ * Pull one tone group's run siblings together, anchored where the first of them sat.
  *
  * Anchoring at the FIRST member's baseline position (rather than, say, appending clusters at
  * the end) is what keeps the move small: within a tone group the baseline is already the
@@ -150,7 +190,7 @@ function clusterGroup(group: ToneGroup, held: ReadonlySet<string>): FleetToneGro
     : [group.sessions];
 
   const sessions: Session[] = [];
-  const clusters: EnsembleClusterSpan[] = [];
+  const clusters: FleetClusterSpan[] = [];
   let heldFrom: number | null = null;
   for (const [index, partition] of partitions.entries()) {
     if (index === 1) heldFrom = sessions.length;
@@ -163,42 +203,51 @@ function clusterGroup(group: ToneGroup, held: ReadonlySet<string>): FleetToneGro
   return { ...group, sessions, clusters, heldFrom };
 }
 
-/** One contiguous run of sessions, with its ensemble siblings pulled together. */
+/** One contiguous run of sessions, with the siblings of one run pulled together. */
 function clusterPartition(
   input: readonly Session[],
-): { sessions: Session[]; clusters: EnsembleClusterSpan[] } {
+): { sessions: Session[]; clusters: FleetClusterSpan[] } {
+  // Keyed by kind AND id, so an ensemble run id could never collide with a pipeline run key.
+  // They cannot today - one is a uuid, the other a unit-separated triple - but a bucket map
+  // that relies on two vocabularies staying disjoint is one nobody would think to check.
   const buckets = new Map<string, Session[]>();
   const slots: (Session | Session[])[] = [];
   for (const session of input) {
-    const runId = runIdOf(session);
-    if (runId === null) {
+    const cluster = clusterOf(session);
+    if (cluster === null) {
       slots.push(session);
       continue;
     }
-    const existing = buckets.get(runId);
+    const key = `${cluster.kind}:${cluster.runId}`;
+    const existing = buckets.get(key);
     if (existing) {
       existing.push(session);
       continue;
     }
     const bucket = [session];
-    buckets.set(runId, bucket);
+    buckets.set(key, bucket);
     slots.push(bucket);
   }
 
   const sessions: Session[] = [];
-  const clusters: EnsembleClusterSpan[] = [];
+  const clusters: FleetClusterSpan[] = [];
   for (const slot of slots) {
     if (!Array.isArray(slot)) {
       sessions.push(slot);
       continue;
     }
+    // Ordinal first, which is the ensemble's own vocabulary and the only order its header's
+    // counts read against. A pipeline's members have none - the engine runs one step at a
+    // time, so a frame with two of them is two agents in one worktree - and fall through to
+    // the baseline tiebreak, which is what the group was already sorted by.
     slot.sort(
       (a, b) =>
         (a.task?.ensemble?.ordinal ?? 0) - (b.task?.ensemble?.ordinal ?? 0) ||
         a.name.localeCompare(b.name) ||
         a.pid - b.pid,
     );
-    clusters.push({ runId: runIdOf(slot[0]!)!, startIndex: sessions.length, length: slot.length });
+    const cluster = clusterOf(slot[0]!)!;
+    clusters.push({ ...cluster, startIndex: sessions.length, length: slot.length });
     sessions.push(...slot);
   }
   return { sessions, clusters };
@@ -231,8 +280,9 @@ export function fleetBlocks(group: FleetToneGroup): FleetBlock[] {
       const members = group.sessions.slice(i, i + span.length);
       blocks.push({
         kind: "cluster",
+        cluster: span.kind,
         runId: span.runId,
-        key: `cluster-${span.runId}-${members[0]!.id}`,
+        key: `cluster-${span.kind}-${span.runId}-${members[0]!.id}`,
         sessions: members,
       });
       i += span.length;

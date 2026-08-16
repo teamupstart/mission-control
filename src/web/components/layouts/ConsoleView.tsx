@@ -3,7 +3,12 @@ import { clusterFallbackLabel, fleetRows, orderSessions } from "../../lib/fleet-
 import { heldSessionIds, newestSessionRun } from "../../lib/held.ts";
 import { ConsoleDetail } from "./ConsoleDetail.tsx";
 import { RailRow } from "./RailRow.tsx";
-import { blockedMembersIn, EnsembleRailGroup, FleetSectionHead } from "../session-bits.tsx";
+import {
+  blockedMembersIn,
+  EnsembleRailGroup,
+  FleetSectionHead,
+  PipelineClusterHead,
+} from "../session-bits.tsx";
 import { Tooltip } from "../Tooltip.tsx";
 import { ensembleSummaryFor, type SessionViewProps } from "./types.ts";
 
@@ -104,12 +109,21 @@ export function ConsoleView(props: SessionViewProps): React.JSX.Element {
                 // `row.key`, not the runId: a run split across the free/held boundary
                 // frames once per side, and two frames keyed by one run collide.
                 <div className="rail-cluster" key={row.key}>
-                  <EnsembleRailGroup
-                    summary={props.ensembleSummaryByRun?.get(row.runId) ?? null}
-                    fallbackLabel={clusterFallbackLabel(row.sessions[0]!)}
-                    blockedHere={blockedMembersIn(row.sessions)}
-                    onOpen={() => props.onOpenEnsemble?.(row.runId)}
-                  />
+                  {row.cluster === "pipeline" ? (
+                    <PipelineClusterHead
+                      run={props.pipelineRunByKey?.get(row.runId) ?? null}
+                      slug={row.sessions[0]!.pipeline!.slug}
+                      variant="rail"
+                      onOpen={() => props.onOpenPipelineRun?.(row.sessions[0]!.pipeline!)}
+                    />
+                  ) : (
+                    <EnsembleRailGroup
+                      summary={props.ensembleSummaryByRun?.get(row.runId) ?? null}
+                      fallbackLabel={clusterFallbackLabel(row.sessions[0]!)}
+                      blockedHere={blockedMembersIn(row.sessions)}
+                      onOpen={() => props.onOpenEnsemble?.(row.runId)}
+                    />
+                  )}
                   {row.sessions.map(railRow)}
                 </div>
               ),

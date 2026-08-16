@@ -123,7 +123,7 @@ Verified at `dc2d99a`:
 - 2026-08-14: initial version. Route helper placed here rather than `src/shared/` because only
   the web layer consumes it; phase 3 and 4 import it from the workflows module. Header action
   slot reserved so phase 4 does not restructure this phase's detail layout.
-- 2026-08-15, on implementation. Seven deviations from the route above, each because the
+- 2026-08-15, on implementation. Eight deviations from the route above, each because the
   repository disagreed with it. **Later phases should read these rather than the prose above.**
   1. **Gate verdicts had no transport, and are fetched rather than projected.** Phase 1 ships
      `readGateVerdicts` with no production consumer, and `PipelineRun` carries no gates: the

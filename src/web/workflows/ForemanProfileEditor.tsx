@@ -291,6 +291,11 @@ export function ForemanProfileEditor({
   async function mutate(kind: "save" | "reset"): Promise<void> {
     const base = loadedRef.current;
     if (!base || saving || conflictRef.current) return;
+    // A focus refresh may already hold a response based on `base`, or may leave while this
+    // write is in flight. Neither response is allowed to replace the mutation's newer view.
+    // Bumping on both sides fences reads started before and during the write; a later focus
+    // refresh receives the next sequence normally.
+    refreshSequence.current += 1;
     const submittedGeneration = editGeneration.current;
     const submittedDraft = draftRef.current;
     setSaving(true);
@@ -312,6 +317,7 @@ export function ForemanProfileEditor({
         setError(cause instanceof Error ? cause.message : "Could not save Foreman standing guidance");
       }
     } finally {
+      refreshSequence.current += 1;
       setSaving(false);
     }
   }

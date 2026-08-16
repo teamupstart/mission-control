@@ -250,3 +250,52 @@ test("Foreman's fixed System profile owns exact guidance and links every other s
     }
   }
 });
+
+test("a refresh captured before Save cannot replace the saved System profile", async ({
+  dashboard,
+  daemon,
+}) => {
+  await dashboard.goto(`${daemon.baseURL}/#/library/personas/foreman`);
+  await expect(readout(dashboard, "source")).toContainText("Built-in default");
+
+  let releaseRefresh: (() => void) | null = null;
+  const refreshReleased = new Promise<void>((resolve) => {
+    releaseRefresh = resolve;
+  });
+  let markRefreshCaptured: (() => void) | null = null;
+  const refreshCaptured = new Promise<void>((resolve) => {
+    markRefreshCaptured = resolve;
+  });
+  let markRefreshDelivered: (() => void) | null = null;
+  const refreshDelivered = new Promise<void>((resolve) => {
+    markRefreshDelivered = resolve;
+  });
+  let held = false;
+  await dashboard.route("**/api/foreman/instructions", async (route) => {
+    if (route.request().method() !== "GET" || held) return route.fallback();
+    held = true;
+    const response = await route.fetch();
+    const body = await response.text();
+    markRefreshCaptured?.();
+    await refreshReleased;
+    await route.fulfill({ response, body });
+    markRefreshDelivered?.();
+  });
+
+  const savedText = "# Saved while refresh waits\n\nKeep this newer document.\n";
+  await replaceEditorText(dashboard, savedText);
+  await dashboard.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await refreshCaptured;
+
+  await profile(dashboard).getByRole("button", { name: "Save", exact: true }).click();
+  await expect.poll(async () => (await instructions(daemon)).text).toBe(savedText);
+  await expect(profile(dashboard).getByRole("button", { name: "Save", exact: true }))
+    .toBeDisabled();
+
+  releaseRefresh?.();
+  await refreshDelivered;
+  await dashboard.waitForTimeout(100);
+  await expect(readout(dashboard, "source")).toContainText("Customized");
+  await profile(dashboard).getByRole("button", { name: "Preview", exact: true }).click();
+  await expect(profile(dashboard)).toContainText("Keep this newer document.");
+});

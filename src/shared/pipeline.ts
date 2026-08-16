@@ -186,6 +186,60 @@ export interface PipelineRun {
   updatedAt: number;
 }
 
+// ---- what a selected run is read in detail ---------------------------------------------
+
+/**
+ * One gate's verdict, as the provider recorded it.
+ *
+ * Deliberately NOT a field on `PipelineRun`. The projection rides the connect snapshot for
+ * every run on the fleet, and `test/pipeline-sse.test.ts` pins one run at under 2kB with the
+ * answer to growth written into its failure message: fetch step detail on demand for the
+ * detail view rather than widening the wire. Verdicts are read by exactly one surface - the
+ * one run somebody has open - so they travel on that surface's own request.
+ */
+export interface PipelineGateVerdict {
+  /** The step whose gate this is. May be a name this build does not know. */
+  step: string;
+  satisfied: boolean;
+  /** The provider's own sentence, or null when it recorded none. */
+  reason: string | null;
+  /** When the gate was answered, in epoch ms, or null when the record carried no time. */
+  checkedAt: number | null;
+  /**
+   * The step that re-opened this gate, when a downstream refusal kicked the run back to it.
+   *
+   * The one durable trace a provider leaves of a run having gone round again, which is what
+   * the detail view draws its attempts from - see `pipelineAttempts` in the web module.
+   */
+  kickbackFrom: string | null;
+  /**
+   * The verdict records a SKIP rather than evidence that passed.
+   *
+   * A tier-S run "passes" nine gates it never ran, and a surface that read `satisfied` alone
+   * would credit it with them. Decided by the daemon's reader, once, so no two surfaces can
+   * come to disagree about which of a run's ticks were earned.
+   */
+  skipped: boolean;
+}
+
+/**
+ * Everything the detail view needs that the rail does not: the run's gate evidence.
+ *
+ * Read from the provider's files at request time rather than from the projection, so it is
+ * as fresh as the moment it was asked for and costs nothing on a fleet where nobody has a
+ * pipeline open. Keyed by the same triple as the run itself, and echoed back so a slow
+ * response cannot be drawn under a run the operator has since moved off.
+ */
+export interface PipelineRunDetail {
+  provider: PipelineProviderId;
+  repoRoot: string;
+  slug: string;
+  /** Every gate the run has a record for, in the provider's own step order. */
+  gates: PipelineGateVerdict[];
+  /** When these files were read, in epoch ms. */
+  readAt: number;
+}
+
 /**
  * What separates the parts of a composite key here.
  *
@@ -509,6 +563,23 @@ export const PIPELINE_STEPS: Record<PipelineProviderId, readonly PipelineStepInf
   "ai-conductor": AI_CONDUCTOR_STEPS,
 };
 
+/**
+ * The steps a refused gate can send a run BACK to, per provider.
+ *
+ * Part of the same frozen display copy as the step table above, and under the same rule: it
+ * states the engine's kickback rule so the detail view can print it beside the strip, and it
+ * decides nothing. Mission Control never kicks a run back - the engine does - so a copy that
+ * has fallen behind a conductor release makes one footer sentence stale and changes no
+ * behaviour anywhere.
+ *
+ * It is drawn as a sentence rather than as return edges for the reason the workflow strip
+ * draws its repair loop as one: four arrows from five phase cards back to four steps is a
+ * picture nobody can read, and every one of them says the same thing.
+ */
+export const PIPELINE_KICKBACK_TARGETS: Record<PipelineProviderId, readonly string[]> = {
+  "ai-conductor": ["prd", "architecture_review", "stories", "plan"],
+};
+
 /** Index of each known step's position, so ordering is a lookup rather than a scan. */
 const STEP_ORDER: Record<PipelineProviderId, ReadonlyMap<string, number>> = {
   "ai-conductor": new Map(AI_CONDUCTOR_STEPS.map((step, i) => [step.name, i])),
@@ -555,12 +626,28 @@ export function sortPipelineSteps<T extends { name: string }>(
   provider: PipelineProviderId,
   steps: readonly T[],
 ): T[] {
-  return [...steps]
-    .map((step, i) => ({ step, i }))
+  return sortByPipelineStep(provider, steps, (step) => step.name);
+}
+
+/**
+ * The same ordering for anything else keyed by a step name - gate verdicts, most of all,
+ * which name their step `step` rather than `name`.
+ *
+ * One implementation, reached two ways, because the tolerance rule is the interesting part:
+ * a second sort that spelled "unknown steps last, stably" slightly differently would draw a
+ * strip and its evidence list in two different orders for the same run.
+ */
+export function sortByPipelineStep<T>(
+  provider: PipelineProviderId,
+  items: readonly T[],
+  nameOf: (item: T) => string,
+): T[] {
+  return [...items]
+    .map((item, i) => ({ item, i }))
     .sort((a, b) => {
       const byOrder =
-        pipelineStepOrder(provider, a.step.name) - pipelineStepOrder(provider, b.step.name);
+        pipelineStepOrder(provider, nameOf(a.item)) - pipelineStepOrder(provider, nameOf(b.item));
       return byOrder !== 0 ? byOrder : a.i - b.i;
     })
-    .map((entry) => entry.step);
+    .map((entry) => entry.item);
 }

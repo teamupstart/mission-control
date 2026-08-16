@@ -1,7 +1,7 @@
 # INSPECTOR.md
 
-The brief for Mission Control's Inspector - the automated reviewer that comments on the
-pull requests Mission Control itself opened. See the Inspector section of `README.md` for
+The brief for Mission Control's GitHub Inspector - the automated reviewer that comments on the
+pull requests Mission Control itself opened. See the [GitHub Inspector documentation](../docs/inspector-and-shipping.md) for
 how it runs; this file is what it reviews *for*.
 
 `CLAUDE.md` is this repo's contract and is loaded alongside this file. Where the two

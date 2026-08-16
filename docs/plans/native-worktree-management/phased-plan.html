@@ -1,0 +1,421 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Approved phased implementation plan for native Mission Control worktree management">
+  <title>Native worktree management - phased plan</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --canvas: #e8ebe7;
+      --paper: #fffdf8;
+      --ink: #1b2824;
+      --muted: #68736e;
+      --line: #c8d0ca;
+      --forest: #173f34;
+      --moss: #3d765b;
+      --mint: #dcebe1;
+      --teal: #2d6d70;
+      --teal-pale: #dcebed;
+      --ochre: #a7652f;
+      --ochre-pale: #f3e3d2;
+      --plum: #72556f;
+      --plum-pale: #eee2ec;
+      --code-bg: #15221e;
+      --code-ink: #edf5f0;
+      --shadow: 0 24px 70px rgba(25, 54, 43, .14);
+      --display: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+      --body: "Avenir Next", Avenir, "Segoe UI", sans-serif;
+      --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 88% 0, rgba(45, 109, 112, .13), transparent 32rem),
+        linear-gradient(rgba(23, 63, 52, .035) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(23, 63, 52, .035) 1px, transparent 1px),
+        var(--canvas);
+      background-size: auto, 28px 28px, 28px 28px, auto;
+      font: 16px/1.66 var(--body);
+    }
+    a { color: var(--moss); text-underline-offset: .2em; }
+    a:hover { color: var(--ochre); }
+    a:focus-visible { outline: 3px solid #79b89a; outline-offset: 4px; }
+    code, pre, .eyebrow, th, .step { font-family: var(--mono); }
+    .shell {
+      width: min(1220px, calc(100% - 28px));
+      margin: 22px auto 72px;
+      overflow: hidden;
+      background: var(--paper);
+      border-top: 7px solid var(--teal);
+      box-shadow: var(--shadow);
+    }
+    .hero {
+      position: relative;
+      overflow: hidden;
+      padding: clamp(44px, 8vw, 92px) clamp(24px, 7vw, 84px) 60px;
+      color: #f1f7f3;
+      background: linear-gradient(125deg, #12352d 0%, #205449 54%, #2d6d70 100%);
+    }
+    .hero::after {
+      content: "04";
+      position: absolute;
+      right: clamp(-36px, 2vw, 24px);
+      top: -78px;
+      color: rgba(223, 241, 233, .08);
+      font: 800 clamp(15rem, 31vw, 28rem)/1 var(--mono);
+      letter-spacing: -.12em;
+    }
+    .hero > * { position: relative; z-index: 1; }
+    .eyebrow {
+      margin: 0 0 20px;
+      color: #a9d7be;
+      font-size: .74rem;
+      font-weight: 800;
+      letter-spacing: .16em;
+      text-transform: uppercase;
+    }
+    h1, h2, h3 { font-family: var(--display); font-weight: 600; }
+    h1 {
+      max-width: 880px;
+      margin: 0;
+      font-size: clamp(3rem, 7vw, 6.2rem);
+      line-height: .92;
+      letter-spacing: -.047em;
+    }
+    .lede { max-width: 820px; margin: 28px 0 0; color: #d8e9df; font-size: 1.14rem; }
+    .sequence {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 1px;
+      background: var(--line);
+      border-bottom: 1px solid var(--line);
+    }
+    .sequence div { padding: 16px 18px; background: var(--paper); }
+    .sequence .step { display: block; color: var(--teal); font-size: .7rem; font-weight: 800; letter-spacing: .1em; }
+    .sequence strong { display: block; margin-top: 4px; font-size: .9rem; }
+    nav {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 18px;
+      padding: 16px clamp(22px, 6vw, 72px);
+      background: #e0ebe5;
+      border-bottom: 1px solid var(--line);
+    }
+    nav a { font: 700 .74rem var(--mono); text-decoration: none; text-transform: uppercase; letter-spacing: .03em; }
+    main { padding: 25px clamp(22px, 6vw, 72px) 80px; }
+    h2 {
+      margin: 68px 0 18px;
+      padding-top: 10px;
+      color: var(--forest);
+      font-size: clamp(2rem, 4vw, 3.15rem);
+      line-height: 1.05;
+      letter-spacing: -.032em;
+      scroll-margin-top: 20px;
+    }
+    h3 { margin: 34px 0 10px; color: var(--forest); font-size: 1.5rem; scroll-margin-top: 20px; }
+    p, li { max-width: 88ch; }
+    p { margin: 12px 0; }
+    li { margin: 6px 0; }
+    strong { color: var(--forest); }
+    .table-wrap, .code-wrap, .diagram { max-width: 100%; overflow-x: auto; margin: 25px 0; }
+    table { width: 100%; min-width: 820px; border-collapse: collapse; font-size: .93rem; }
+    th, td { padding: 11px 13px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); }
+    th { color: #f1f7f3; background: var(--forest); font-size: .72rem; letter-spacing: .05em; text-transform: uppercase; }
+    tbody tr:nth-child(even) { background: #edf2ee; }
+    :not(pre) > code { padding: .12em .34em; color: #1e4a3d; background: #e2ece5; border-radius: 4px; font-size: .9em; }
+    pre { margin: 0; padding: 19px 21px; color: var(--code-ink); background: var(--code-bg); font-size: .84rem; line-height: 1.58; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .diagram { padding: 18px; background: #edf3ef; border: 1px solid var(--line); }
+    .diagram svg { display: block; width: 100%; min-width: 980px; height: auto; }
+    .diagram figcaption { max-width: 88ch; margin: 12px 12px 3px; color: var(--muted); font-size: .88rem; }
+    .diagram text { font-family: var(--mono); text-anchor: start; }
+    .diagram .diagram-kicker { fill: var(--teal); font-size: 12px; font-weight: 800; letter-spacing: .1em; }
+    .diagram .phase rect { fill: var(--paper); stroke-width: 2.5; }
+    .diagram .p1 rect { stroke: var(--moss); }
+    .diagram .p2 rect { stroke: var(--teal); }
+    .diagram .p3 rect { stroke: var(--ochre); }
+    .diagram .p4 rect { stroke: var(--plum); }
+    .diagram .num { fill: var(--muted); font-size: 18px; font-weight: 800; }
+    .diagram .title { fill: var(--ink); font: 700 15px var(--body); }
+    .diagram .sub { fill: var(--muted); font-size: 11px; }
+    .diagram .arrow { fill: none; stroke: var(--teal); stroke-width: 2.5; marker-end: url(#phase-arrow); }
+    .diagram .arrow-fill { fill: var(--teal); }
+    .diagram .note { fill: var(--muted); font-size: 11px; }
+    .handoff {
+      margin: 50px 0 5px;
+      padding: 22px 24px;
+      background: var(--teal-pale);
+      border: 1px solid color-mix(in srgb, var(--teal) 45%, transparent);
+      border-left: 6px solid var(--teal);
+    }
+    .handoff strong { color: var(--teal); }
+    footer { padding: 25px clamp(22px, 6vw, 72px); color: var(--muted); background: #e0ebe5; border-top: 1px solid var(--line); font-size: .84rem; }
+    @media (max-width: 820px) {
+      .sequence { grid-template-columns: 1fr 1fr; }
+    }
+    @media (max-width: 560px) {
+      .shell { width: min(100% - 14px, 1220px); margin-top: 7px; }
+      .sequence { grid-template-columns: 1fr; }
+      main { padding-bottom: 58px; }
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --canvas: #101614; --paper: #18221e; --ink: #e7eee9; --muted: #aab7b0;
+        --line: #394941; --forest: #8bc7a6; --moss: #7fbd9d; --mint: #203a2d;
+        --teal: #83c5c7; --teal-pale: #20383a; --ochre: #e0a46e; --ochre-pale: #3a2b21;
+        --plum: #c6a1c1; --plum-pale: #352832; --code-bg: #0d1512; --code-ink: #edf5f0;
+        --shadow: 0 24px 70px rgba(0, 0, 0, .42);
+      }
+      nav, footer { background: #172b22; }
+      tbody tr:nth-child(even) { background: #202d27; }
+      :not(pre) > code { color: #dff1e5; background: #294036; }
+      .sequence div { background: #18221e; }
+      .diagram { background: #15271f; }
+      .diagram .phase rect { fill: #1a2721; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header class="hero">
+      <p class="eyebrow">Approved implementation sequence · 15 August 2026</p>
+      <h1>Native worktree management</h1>
+      <p class="lede">Four merge-aware phases absorb pooled-worktree ownership into Mission Control, stop new Treehouse use, preserve historical safety, and finish with an operator-facing worktree control plane.</p>
+    </header>
+    <div class="sequence" aria-label="Implementation phases">
+      <div><span class="step">PHASE 01</span><strong>Prove the allocator</strong></div>
+      <div><span class="step">PHASE 02</span><strong>Move every caller</strong></div>
+      <div><span class="step">PHASE 03</span><strong>Retire the dependency</strong></div>
+      <div><span class="step">PHASE 04</span><strong>Expose operations</strong></div>
+    </div>
+    <nav aria-label="Phased plan sections">
+      <a href="#source-and-approval">Approval</a>
+      <a href="#repository-findings-that-refine-the-source-design">Findings</a>
+      <a href="#sizing-estimate-and-phase-count-rationale">Sizing</a>
+      <a href="#phases">Phases</a>
+      <a href="#dependency-graph-and-merge-order">Dependencies</a>
+      <a href="#cross-phase-contracts">Contracts</a>
+      <a href="#final-verification-strategy">Verification</a>
+      <a href="#complete-set-audit">Audit</a>
+    </nav>
+    <main>
+      <h2 id="source-and-approval">Source and approval</h2>
+<ul>
+<li>Approved source: <a href="plan.md"><code>plan.md</code></a>, rendered at <a href="plan.html"><code>plan.html</code></a>.</li>
+<li>Submitted on 2026-08-15 through Mission Control&#x27;s plan review.</li>
+<li>The human selected the recommended answer for all four architecture choices and authorized this
+phased implementation follow-up.</li>
+</ul>
+<h2 id="incorporated-human-decisions">Incorporated human decisions</h2>
+<div class="table-wrap"><table><thead><tr><th>Decision</th><th>Adopted requirement</th><th>Consequence for implementation</th></tr></thead><tbody><tr><td>Native pool activation</td><td>Default on for Mission Control acquisitions, with lazy creation and per-repository disable/capacity controls</td><td>Dispatch and checks stop consulting different gates. A repository without config gets the safe default policy, while a stored override can select the disposable Git provider.</td></tr><tr><td>Legacy transition</td><td>Staged compatibility drain</td><td>New worktrees never enter Treehouse after cutover. Existing <code>provider = &#x27;treehouse&#x27;</code> rows keep provider-authoritative cleanup, and foreign or uncertain leases remain untouched.</td></tr><tr><td>Operator surface</td><td>Settings &gt; Worktrees in this initiative</td><td>The final phase includes configuration, inventory, legacy drain, and preview-first actions with Playwright and visual verification.</td></tr><tr><td>Manual sessions</td><td>Keep <code>make session</code> as a daemon client</td><td>The script no longer allocates independently. A running daemon is required, and release is available through the panel and a companion client action.</td></tr><tr><td>Follow-up</td><td>Create phases and dependency-linked tasks</td><td>Every phase below becomes one task gated on this planning session and its own direct prerequisite.</td></tr></tbody></table></div>
+<h2 id="repository-findings-that-refine-the-source-design">Repository findings that refine the source design</h2>
+<p>The source plan&#x27;s architecture is compatible with the repository, with these implementation-level
+refinements:</p>
+<ol>
+<li><strong>Pool policy belongs in <code>app_config</code>, not in two places.</strong> The root plan&#x27;s illustrative
+<code>worktree_pools</code> fields mixed operational identity with enablement, maximum slots, and setup
+policy. Existing daemon settings consistently use a schema-validated blob over <code>app_config</code>
+(<code>harnesses.ts</code>, workflow config, skills config). Native pool tables will therefore store
+operational facts only; <code>app_config.worktrees</code> is the sole policy source.</li>
+<li><strong>Lease identity must reach durable domain rows.</strong> A random lease ID held only in
+<code>worktree_slots</code> does not protect a late teardown from a task or check that has already acquired a
+newer lease under the same owner key. Native task and check records need nullable lease-ID
+columns, populated only by the <code>mission</code> provider and cleared with the existing resource fields.</li>
+<li><strong>The process substrate is reusable as-is.</strong> <code>listProcesses()</code> already returns every process,
+not only agents, and <code>readProcCwds()</code> resolves their cwd in one batched <code>lsof</code>. The manager needs a
+bounded occupancy projection over those functions, not a new scanner or a Go port.</li>
+<li><strong>The settings integration has a registry contract.</strong> <code>SETTINGS_CATEGORIES</code> owns route validity,
+rail order, scope, search, and test discovery. Worktrees becomes a <code>sessions</code> / <code>machine</code>
+category through that registry, not a one-off link in <code>SettingsPage</code>.</li>
+<li><strong>Volatile detail stays off the snapshot.</strong> Existing content-free config invalidation events and
+hooks such as <code>useHarnesses(revision)</code> provide the correct pattern. <code>worktrees_changed</code> bumps a
+revision; the open panel fetches current Git/process detail over HTTP.</li>
+<li><strong>Legacy Treehouse cannot be removed as a persisted provider.</strong> The append-only
+<code>WorktreeProvider</code> and historical <code>workflow_check_leases.provider</code> default require a fail-closed
+bridge for as long as a database can still contain those values. Dependency removal means no
+install requirement and no new Treehouse acquisition, not pretending old rows were Git rows.</li>
+<li><strong>The existing reaper also schedules check recovery.</strong> Native maintenance must accept the check
+lease manager&#x27;s reclaim hook before the Treehouse reaper is retired, or the cutover would quietly
+remove crash recovery for checks.</li>
+<li><strong>Historical Treehouse identity cannot be manufactured safely.</strong> Current acquisition persists a
+path and holder but discards the v2.1.1 lease ID. Observing an ID during upgrade cannot prove it is
+the lease the old row originally owned. Phase 3 may conditionally return only a durably captured
+exact ID; existing null-ID rows remain pinned and visible with manual remediation.</li>
+</ol>
+<h2 id="sizing-estimate-and-phase-count-rationale">Sizing estimate and phase-count rationale</h2>
+<p>Expected production change: <strong>2,700 to 4,100 non-test lines</strong>, excluding tests, documentation, plan
+artifacts, and generated output.</p>
+<p>Assumptions behind the range:</p>
+<ul>
+<li>900 to 1,350 lines for durable native pool state, Git materialization, occupancy, reconciliation,
+configuration, and manager lifecycle;</li>
+<li>650 to 950 lines to adapt task dispatch, workflow checks, task/check persistence, manual session
+routes and client behavior;</li>
+<li>350 to 600 lines for the structured legacy bridge, drain accounting, setup removal, and timer/env
+compatibility;</li>
+<li>800 to 1,200 lines for Settings registration, browser state, inventory/actions, styling, and route
+presentation.</li>
+</ul>
+<p>Four phases are the fewest safe implementation units for work of this size and concurrency risk:</p>
+<ul>
+<li>Combining Phases 1 and 2 would ask one change to prove the allocator&#x27;s crash/ABA safety while also
+moving three production consumers and multi-repository rollback onto it. A regression could not be
+localized to the new mechanism or the cutover.</li>
+<li>Combining Phases 2 and 3 would mix stopping new Treehouse ownership with deleting the old acquisition
+and setup paths. The separate boundary proves all new acquisitions are native before legacy code is
+narrowed.</li>
+<li>Combining Phases 3 and 4 would put provider migration, destructive legacy safety, settings routing,
+browser state, layout, and end-to-end tests into one large review. The backend contract must be
+stable before the destructive operations surface is exposed to people.</li>
+<li>Splitting any phase further would create a test-only or schema-only preparation PR, or a UI shell
+without an operable API. Those are not useful merge units.</li>
+</ul>
+<h2 id="phases">Phases</h2>
+<div class="table-wrap"><table><thead><tr><th>#</th><th>Phase</th><th>Delivers</th><th>Behavior after merge</th></tr></thead><tbody><tr><td>1</td><td><a href="phase-1-durable-native-allocator.md">Durable native allocator</a></td><td><code>mission</code> provider identity, schema, policy config, native slot manager, occupancy and startup reconciliation</td><td>Native allocation is implemented and tested behind an unselected provider; current Treehouse/Git callers are unchanged.</td></tr><tr><td>2</td><td><a href="phase-2-unified-acquisition-cutover.md">Unified acquisition cutover</a></td><td>Task, check, and manual session acquisition through the manager, default-on policy, durable lease IDs, Git degradation</td><td>All new Mission Control worktrees are native by default; <code>make session</code> is a daemon client; no new Treehouse lease is created.</td></tr><tr><td>3</td><td><a href="phase-3-legacy-drain-and-dependency-retirement.md">Legacy drain and dependency retirement</a></td><td>Structured Treehouse compatibility, legacy inventory/drain APIs, retired install/config/runtime assumptions</td><td>Exact-ID legacy rows remain conditionally reclaimable and uncertain rows fail closed, while Treehouse stops being an installation or new-runtime prerequisite.</td></tr><tr><td>4</td><td><a href="phase-4-settings-worktree-operations.md">Settings worktree operations</a></td><td>Settings &gt; Worktrees, configuration, native and legacy inventory, preview-first actions, SSE invalidation, E2E proof</td><td>Operators can understand, configure, open, return, prune, reconcile, destroy, and drain worktrees from the application.</td></tr></tbody></table></div>
+<h2 id="dependency-graph-and-merge-order">Dependency graph and merge order</h2>
+<div>
+<figure class="diagram" role="group" aria-labelledby="phase-flow-caption">
+  <svg viewBox="0 0 1160 330" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="phase-flow-title phase-flow-desc">
+    <title id="phase-flow-title">Four serial implementation phases</title>
+    <desc id="phase-flow-desc">Durable native allocation precedes consumer cutover, which precedes Treehouse dependency retirement, which precedes the Settings worktree operations surface.</desc>
+    <defs>
+      <marker id="phase-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" class="arrow-fill"/></marker>
+    </defs>
+    <text x="30" y="34" class="diagram-kicker">MERGE ORDER: EACH PHASE LEAVES A COMPLETE, SAFE SYSTEM</text>
+    <g class="phase p1">
+      <rect x="30" y="78" width="238" height="152" rx="18"/>
+      <text x="54" y="111" class="num">01</text>
+      <text x="54" y="145" class="title">Durable native allocator</text>
+      <text x="54" y="174" class="sub">state machine + SQLite</text>
+      <text x="54" y="196" class="sub">occupancy + reconciliation</text>
+    </g>
+    <g class="phase p2">
+      <rect x="318" y="78" width="238" height="152" rx="18"/>
+      <text x="342" y="111" class="num">02</text>
+      <text x="342" y="145" class="title">Acquisition cutover</text>
+      <text x="342" y="174" class="sub">tasks + checks + manual</text>
+      <text x="342" y="196" class="sub">native default, Git fallback</text>
+    </g>
+    <g class="phase p3">
+      <rect x="606" y="78" width="238" height="152" rx="18"/>
+      <text x="630" y="111" class="num">03</text>
+      <text x="630" y="145" class="title">Legacy retirement</text>
+      <text x="630" y="174" class="sub">read / conditional return</text>
+      <text x="630" y="196" class="sub">remove runtime dependency</text>
+    </g>
+    <g class="phase p4">
+      <rect x="894" y="78" width="238" height="152" rx="18"/>
+      <text x="918" y="111" class="num">04</text>
+      <text x="918" y="145" class="title">Settings operations</text>
+      <text x="918" y="174" class="sub">inventory + policy</text>
+      <text x="918" y="196" class="sub">preview-first actions</text>
+    </g>
+    <path d="M268 154 H318" class="arrow"/>
+    <path d="M556 154 H606" class="arrow"/>
+    <path d="M844 154 H894" class="arrow"/>
+    <text x="30" y="278" class="note">No concurrent phases: the manager contract, provider cutover, compatibility boundary, and browser projection overlap in sequence.</text>
+    <text x="30" y="301" class="note">Every phase task depends on this plan session; each later task also depends directly on the phase before it.</text>
+  </svg>
+  <figcaption id="phase-flow-caption">The sequence first proves the allocator, then moves every caller, then retires Treehouse assumptions, and only then exposes the final operations contract.</figcaption>
+</figure></div>
+<p>Direct prerequisites:</p>
+<ul>
+<li><strong>Phase 1:</strong> none.</li>
+<li><strong>Phase 2:</strong> Phase 1.</li>
+<li><strong>Phase 3:</strong> Phase 2.</li>
+<li><strong>Phase 4:</strong> Phase 3.</li>
+</ul>
+<p>Merge order is Phase 1, then Phase 2, then Phase 3, then Phase 4.</p>
+<h2 id="concurrency">Concurrency</h2>
+<p>There are no concurrent implementation phases.</p>
+<ul>
+<li>Phases 1 and 2 both shape the manager/provider interface, persistence mapping, and daemon startup
+ordering.</li>
+<li>Phases 2 and 3 both change <code>dispatcher.ts</code>, <code>check-lease.ts</code>, the Treehouse adapter, the reaper
+lifecycle, scripts, and provider tests.</li>
+<li>Phase 4 consumes the final native plus legacy status/action contracts and must not invent a browser
+projection while Phase 3 is still changing their meaning.</li>
+</ul>
+<p>Serial execution is also operationally useful: each merge answers one migration question before the
+next is allowed to remove or expose anything.</p>
+<h2 id="cross-phase-contracts">Cross-phase contracts</h2>
+<p>Phase 1 owns these contracts; later phases consume rather than redefine them:</p>
+<ol>
+<li><strong>Provider identity:</strong> append <code>&quot;mission&quot;</code> to <code>WorktreeProvider</code>. <code>&quot;treehouse&quot;</code> and <code>&quot;git&quot;</code>
+keep their historical meanings forever. Cleanup selects the persisted provider, never current
+availability.</li>
+<li><strong>Policy authority:</strong> <code>app_config.worktrees</code> is the only source for default enablement, repository
+overrides, maximum slots, and optional operator-authored setup profiles. Pool and slot tables do
+not duplicate policy.</li>
+<li><strong>Repository identity:</strong> a pool is unique by the physical Git common directory. Pool paths are
+under <code>$MISSION_HOME/worktree-pools</code>; remote URL is display metadata, not identity.</li>
+<li><strong>Lease identity:</strong> every native acquisition creates a cryptographically random lease ID. Release
+compares slot, lease ID, and owner. Task/check domain rows persist that ID; Git and legacy rows
+leave it null unless legacy identity was captured at acquisition.</li>
+<li><strong>Authority split:</strong> the slot row owns allocation state. Tasks and workflow check rows own the
+meaning and lifetime of their work. The manager verifies both before destructive actions; a
+session becoming <code>exited</code> is never cleanup authorization.</li>
+<li><strong>State machine:</strong> filesystem mutations are bracketed by durable <code>provisioning</code>, <code>returning</code>, or
+<code>pruning</code> intent. Any mismatch among SQLite, Git registration, filesystem, owner rows, and
+occupancy becomes <code>quarantined</code>.</li>
+<li><strong>Git hygiene:</strong> reuse <code>resetWorktreeToCommit</code>; clean with <code>-fd</code>, never <code>-fdx</code>; verify exact HEAD;
+preserve multi-repository all-or-nothing unwind and <code>WorktreeTeardownError.reclaimed</code> semantics.</li>
+<li><strong>Process safety:</strong> known Mission Control processes close through their existing owner. A batched
+all-process cwd scan runs before reuse or deletion. Unknown occupancy fails closed and is never
+killed automatically.</li>
+<li><strong>Manual ownership:</strong> <code>make session</code> talks to the loopback daemon. It does not write SQLite or
+allocate Git worktrees itself, and a daemon outage produces a direct start-the-daemon error.</li>
+<li><strong>Legacy boundary:</strong> the Treehouse adapter is read/return-only after Phase 2. It uses JSON and
+conditional identity where provable, never adopts a slot into native state, never substitutes
+<code>git worktree remove</code>, and never touches null-ID, foreign, or otherwise uncertain leases.</li>
+<li><strong>Browser convergence:</strong> <code>worktrees_changed</code> is content-free and exhaustively handled. Detailed
+status stays on HTTP and is refreshed on open, invalidation, and a slow reconnect backstop.</li>
+<li><strong>Action safety:</strong> preview and execute are separate calls. Execute revalidates owner, lease,
+process, Git, and observed slot version; a stale preview returns conflict rather than acting.</li>
+</ol>
+<h2 id="final-verification-strategy">Final verification strategy</h2>
+<p>Each phase runs the focused tests named in its file, <code>npm run typecheck</code>, <code>npm run lint</code>, and
+<code>npm test</code>. Runtime phases also run <code>npm run build</code> and <code>npm run smoke</code>. Phase 4 runs the built
+Playwright suite and captures gitignored desktop and narrow evidence for the inventory and destructive
+preview states.</p>
+<p>The complete initiative must additionally prove:</p>
+<ul>
+<li>a new installation with no <code>treehouse</code> binary can dispatch tasks, run checks, and acquire/release a
+manual session through one native inventory;</li>
+<li>existing <code>treehouse</code> and <code>git</code> rows from an upgraded database still call only their recorded
+provider, including when the binary is absent;</li>
+<li>a stale native teardown cannot release a newer lease;</li>
+<li>crash recovery cannot make an uncertain slot available;</li>
+<li>separate clones of one remote get separate pools, while a linked worktree resolves to its owning
+common directory;</li>
+<li>capacity reduction is a preview-first right-size operation, not automatic deletion;</li>
+<li>the Settings page shows native, legacy, dirty, occupied, quarantined, and over-capacity states and
+keeps wide detail scrollable at narrow widths;</li>
+<li>no e2e daemon can see or mutate the operator&#x27;s Treehouse pool or launch a real model binary;</li>
+<li>setup, configuration, README, and worktree/check documentation no longer require Treehouse for new
+operation.</li>
+</ul>
+<h2 id="complete-set-audit">Complete-set audit</h2>
+<ul>
+<li>Every adopted decision is assigned: activation and manual sessions in Phase 2, legacy drain in
+Phase 3, Settings &gt; Worktrees in Phase 4, and task scheduling in this planning session.</li>
+<li>Every root-plan capability is owned once: allocator/status safety in Phase 1, acquire/return
+integration in Phase 2, Treehouse compatibility/removal in Phase 3, and human operations in Phase 4.</li>
+<li>No phase changes a provider value created by another provider. The append-only and
+provider-authoritative contracts are repeated in every phase where cleanup occurs.</li>
+<li>No phase converts an observed legacy ID into ownership. Phase 3 and Phase 4 surface null-ID rows as
+unverifiable and preserve their domain pins until the operator resolves them outside the app.</li>
+<li>The graph is strictly serial and the file overlap justifying that order is explicit.</li>
+<li>The final state contains one native allocator and one intentionally narrow legacy adapter, not two
+competing pool implementations.</li>
+</ul>
+      <div class="handoff"><strong>Scheduling contract.</strong> Each phase is one Mission Control task. All four depend on this planning session, and Phases 2 through 4 also depend directly on the preceding phase task.</div>
+    </main>
+    <footer>Source of truth: docs/plans/native-worktree-management/phased-plan.md · Detailed phase files sit beside it · Offline render: phased-plan.html</footer>
+  </div>
+</body>
+</html>

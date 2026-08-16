@@ -91,7 +91,7 @@ function status(over: Partial<SettingsStatus> = {}): SettingsStatus {
     taskSources: { failing: 0 },
     // Present by default so the tests that are about OTHER categories keep seeing the whole
     // rail; the ones about Conductor's conditional row override it.
-    pipelines: { present: true },
+    pipelines: { present: true, observing: 0 },
     ...over,
   };
 }
@@ -105,7 +105,7 @@ const HARNESSES_ONLY = /Auto mode on dispatch/; // the harnesses toggle label
 const APPEARANCE_ONLY = /Format messages/; // the rich-text toggle label
 const CONVERSATION_ONLY = /Conversation rendering/; // the view picker's radiogroup label
 const COST_ONLY = /Track Claude estimated cost/; // the telemetry master toggle label
-const INSPECTOR_ONLY = /Run the Inspector/; // the inspector master toggle label
+const INSPECTOR_ONLY = /Run GitHub Inspector/; // the inspector master toggle label
 const SHIPPING_ONLY = /YOLO mode - merge/; // the auto-merge master toggle label
 const TASK_SOURCES_ONLY = /never dispatches an agent/; // the task-sources safety sentence
 const MODELS_ONLY = /Background jobs/; // the LLM panel's per-job group label
@@ -126,7 +126,7 @@ test("the rail lists every category exactly once", () => {
 // however off it ships. Conductor is the only category conditional this way, because it is
 // the only one that configures somebody else's software.
 test("without an engine installed, the Conductor category does not exist at all", () => {
-  const html = render("display", { settingsStatus: status({ pipelines: { present: false } }) });
+  const html = render("display", { settingsStatus: status({ pipelines: { present: false, observing: 0 } }) });
   assert.equal(
     (html.match(/class="settings-nav-item/g) ?? []).length,
     SETTINGS_CATEGORIES.length - 1,
@@ -141,7 +141,7 @@ test("without an engine installed, the Conductor category does not exist at all"
 // engine was uninstalled, must land where an unknown category lands rather than on an empty
 // pane - or the panel is reachable after all.
 test("routing to Conductor without an engine falls back rather than rendering it", () => {
-  const html = render("conductor", { settingsStatus: status({ pipelines: { present: false } }) });
+  const html = render("conductor", { settingsStatus: status({ pipelines: { present: false, observing: 0 } }) });
   assert.doesNotMatch(html, CONDUCTOR_ONLY);
   assert.match(html, LAYOUT_ONLY, "falls back to the default category");
   assert.equal((html.match(/settings-nav-item is-active/g) ?? []).length, 1);
@@ -526,18 +526,18 @@ test("the pane is a tabpanel labelled by the active tab", () => {
 // "is its panel reachable" is a slightly bigger question here than for the others: a
 // category that silently fails to render is one whose live/dry-run state nobody can see
 // or change, while the daemon goes on acting on whatever was last stored.
-test("Inspector is a category of its own: its panel shows, the others don't", () => {
+test("GitHub Inspector is a category of its own: its panel shows, the others don't", () => {
   const html = render("inspector");
   assert.match(html, INSPECTOR_ONLY);
   assert.doesNotMatch(html, KEYBOARD_ONLY);
   assert.doesNotMatch(html, SKILLS_ONLY);
-  assert.match(html, /settings-nav-item is-active"[^>]*><span[^>]*>⌕<\/span>Inspector/);
+  assert.match(html, /settings-nav-item is-active"[^>]*><span[^>]*>⌕<\/span>GitHub Inspector/);
 });
 
 // Ships off, and ships not-live. A static render runs no effects, so this is the
 // pre-poll state - which is exactly the state a first-run user sees, and it must not
 // show a mode that would post anything.
-test("the Inspector panel's defaults are the off position", () => {
+test("the GitHub Inspector panel's defaults are the off position", () => {
   const html = render("inspector");
   // No checked master toggle, and no live-mode warning banner.
   assert.doesNotMatch(html, /inspector-live-warn/);
@@ -548,13 +548,13 @@ test("the Inspector panel's defaults are the off position", () => {
 // posture, and presenting them as the daemon's answer is how an operator reads "off, dry
 // run, no repos" as fact while the stored config is enabled and live and the daemon is
 // merely restarting. Disabled inputs are not a statement about what is running.
-test("with no answer from the daemon, the Inspector panel says so rather than showing defaults as fact", () => {
+test("with no answer from the daemon, the GitHub Inspector panel says so rather than showing defaults as fact", () => {
   const html = render("inspector");
   assert.match(html, /inspector-unknown/);
   assert.match(html, /is unknown/);
   assert.doesNotMatch(
     html,
-    /No repos yet - the Inspector won't post anywhere/,
+    /No repos yet - GitHub Inspector won't post anywhere/,
     "an unanswered panel must not assert an empty allowlist",
   );
 });
@@ -615,16 +615,16 @@ test("a null status lights none of the SSE-fed dots - unknown is not an all-clea
   assert.doesNotMatch(html, /settings-dot settings-dot-(live|armed|failing|foreman)/);
 });
 
-test("a live Inspector lights the Inspector dot green, and only it", () => {
+test("a live GitHub Inspector lights the GitHub Inspector dot green, and only it", () => {
   const html = render("display", {
     settingsStatus: status({ inspector: { enabled: true, mode: "live" } }),
   });
-  assert.ok(railDot(html, "Inspector", "live"), "Inspector should carry the green live dot");
+  assert.ok(railDot(html, "GitHub Inspector", "live"), "GitHub Inspector should carry the green live dot");
   // enabled-but-dry-run, or disabled, is not live - no dot.
   const dry = render("display", {
     settingsStatus: status({ inspector: { enabled: true, mode: "dry-run" } }),
   });
-  assert.ok(!railDot(dry, "Inspector", "live"), "dry-run is not live and lights no dot");
+  assert.ok(!railDot(dry, "GitHub Inspector", "live"), "dry-run is not live and lights no dot");
 });
 
 test("armed YOLO lights the Shipping dot amber", () => {

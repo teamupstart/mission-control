@@ -15,6 +15,7 @@ import type {
   ClaudeSdkOneShotDeps,
   ClaudeSdkOneShotQuery,
   ClaudeSdkOneShotQueryOptions,
+  ClaudeSdkUserMessage,
 } from "../src/server/harness/claude/sdk-types.ts";
 import { claudeSdkTranscriptPath } from "../src/server/harness/claude/sdk.ts";
 import { DENY_PATHS, DENY_SETTINGS, REVIEW_TOOLS } from "../src/server/inspector/worker.ts";
@@ -25,6 +26,10 @@ import {
   killLiveClaudeSdkRuns,
   runClaudeSdkOneShot,
 } from "../src/server/llm/claude-sdk.ts";
+import {
+  PNG_IMAGE,
+  writeImageDescriptor,
+} from "./helpers/llm-image-fixtures.ts";
 
 // What is at stake: this is the new boundary around app-owned Claude calls. A regression
 // here is silent in the dangerous cases. Reusing a session lets one review influence the
@@ -50,7 +55,7 @@ class FakeQuery implements ClaudeSdkOneShotQuery {
 }
 
 interface CapturedQuery {
-  prompt: string;
+  prompt: string | AsyncIterable<ClaudeSdkUserMessage>;
   options: ClaudeSdkOneShotQueryOptions;
 }
 
@@ -142,6 +147,75 @@ test("one fresh query has tools off, deterministic settings, and no context opti
       `${absent} was passed and the run is no longer a fresh persisted one-shot`,
     );
   }
+});
+
+test("an empty image list keeps the exact text-only SDK prompt shape", async () => {
+  let captured!: CapturedQuery;
+  const fake = fakeDeps([SPEND_FRAME], (value) => {
+    captured = value;
+  });
+  await runClaudeSdkOneShot("text-only prompt", { images: [] }, fake.deps);
+  assert.equal(captured.prompt, "text-only prompt");
+});
+
+test("SDK images form one ordered user message with base64 blocks before text", async () => {
+  const dir = mkdtempSync(join(root, "sdk-images-"));
+  const first = writeImageDescriptor(dir, "first.png", PNG_IMAGE, "image/png", "first");
+  const second = writeImageDescriptor(dir, "second.png", PNG_IMAGE, "image/png", "second");
+  let captured!: CapturedQuery;
+  const fake = fakeDeps([SPEND_FRAME], (value) => {
+    captured = value;
+  });
+
+  await runClaudeSdkOneShot("compare the screenshots", {
+    images: [first, second],
+  }, fake.deps);
+
+  assert.notEqual(typeof captured.prompt, "string");
+  const messages: ClaudeSdkUserMessage[] = [];
+  if (typeof captured.prompt !== "string") {
+    for await (const message of captured.prompt) messages.push(message);
+  }
+  assert.deepEqual(messages, [{
+    type: "user",
+    message: {
+      role: "user",
+      content: [
+        {
+          type: "image",
+          source: {
+            type: "base64",
+            media_type: "image/png",
+            data: PNG_IMAGE.toString("base64"),
+          },
+        },
+        {
+          type: "image",
+          source: {
+            type: "base64",
+            media_type: "image/png",
+            data: PNG_IMAGE.toString("base64"),
+          },
+        },
+        { type: "text", text: "compare the screenshots" },
+      ],
+    },
+    parent_tool_use_id: null,
+  }]);
+  assert.equal(Object.hasOwn(messages[0] ?? {}, "session_id"), false);
+});
+
+test("SDK refuses a changed image before resolving the binary or constructing a query", async () => {
+  const dir = mkdtempSync(join(root, "sdk-image-refusal-"));
+  const image = writeImageDescriptor(dir, "changed.png", PNG_IMAGE, "image/png", "changed");
+  writeFileSync(image.path, Buffer.concat([PNG_IMAGE, Buffer.from([0])]));
+  const fake = fakeDeps([SPEND_FRAME]);
+  await assert.rejects(
+    runClaudeSdkOneShot("inspect this", { images: [image] }, fake.deps),
+    /LLM image input refused/,
+  );
+  assert.equal(fake.executableCalls(), 0);
+  assert.equal(fake.calls(), 0);
 });
 
 const SCHEMA = {

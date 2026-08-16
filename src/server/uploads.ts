@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
-import { mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { lstatSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { basename, join } from "node:path";
+import { sniffRasterImageMimeType } from "@shared/images.ts";
 import { STATE_DIR } from "./config.ts";
 
 /**
@@ -38,6 +39,8 @@ export interface SavedUpload {
   path: string;
   /** The stored basename (not the client's original). */
   name: string;
+  /** Opaque workflow locator. It reveals no state-directory path. */
+  uploadId: string;
   bytes: number;
 }
 
@@ -50,16 +53,13 @@ export interface SavedUpload {
  * relabeling service for arbitrary bytes.
  */
 export function detectImageExt(buf: Uint8Array): ImageExt | null {
-  const at = (i: number): number => buf[i] ?? -1;
-  const ascii = (off: number, s: string): boolean =>
-    [...s].every((ch, i) => at(off + i) === ch.charCodeAt(0));
-
-  if (ascii(1, "PNG") && at(0) === 0x89 && at(4) === 0x0d && at(5) === 0x0a) return "png";
-  if (at(0) === 0xff && at(1) === 0xd8 && at(2) === 0xff) return "jpg";
-  if (ascii(0, "GIF8")) return "gif";
-  // WEBP is a RIFF container; the format tag sits past the 4-byte length field.
-  if (ascii(0, "RIFF") && ascii(8, "WEBP")) return "webp";
-  return null;
+  switch (sniffRasterImageMimeType(buf)) {
+    case "image/png": return "png";
+    case "image/jpeg": return "jpg";
+    case "image/gif": return "gif";
+    case "image/webp": return "webp";
+    case null: return null;
+  }
 }
 
 /**
@@ -93,7 +93,28 @@ export function saveImageUpload(bytes: Uint8Array, originalName: string): SavedU
   const name = uploadFileName(originalName, ext);
   const path = join(UPLOADS_DIR, name);
   writeFileSync(path, bytes);
-  return { path, name, bytes: bytes.byteLength };
+  return { path, name, uploadId: name, bytes: bytes.byteLength };
+}
+
+/** Resolve only a basename this server issued, while it is still inside the upload TTL. */
+export function resolveImageUpload(
+  uploadId: string,
+  now: number = Date.now(),
+): SavedUpload | null {
+  if (
+    !uploadId
+    || uploadId !== basename(uploadId)
+    || uploadId.length > 200
+    || !/^[A-Za-z0-9._-]+$/.test(uploadId)
+  ) return null;
+  const path = join(UPLOADS_DIR, uploadId);
+  try {
+    const info = lstatSync(path);
+    if (!info.isFile() || info.isSymbolicLink() || now - info.mtimeMs > UPLOAD_TTL_MS) return null;
+    return { path, name: uploadId, uploadId, bytes: info.size };
+  } catch {
+    return null;
+  }
 }
 
 /**

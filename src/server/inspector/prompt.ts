@@ -36,7 +36,7 @@ const OUTPUT_CONTRACT = [
   "}",
 ].join("\n");
 
-const POLICY = `You are the Inspector: an automated reviewer that leaves comments on a pull request.
+const POLICY = `You are GitHub Inspector: an automated reviewer that leaves comments on a pull request.
 
 Your comments are PUBLIC and are posted under a human's GitHub account. Write as if the
 author will read every word, because they will.
@@ -239,7 +239,7 @@ const REPLY_OUTPUT_CONTRACT = [
  */
 export function buildReplyPrompt(input: ReplyPromptInput): string {
   return [
-    "You are the Inspector: an automated reviewer. You left a comment on a pull request",
+    "You are GitHub Inspector: an automated reviewer. You left a comment on a pull request",
     "and somebody has replied. Answer them.",
     "",
     "Your reply is PUBLIC and is posted under a human's GitHub account.",

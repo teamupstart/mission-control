@@ -168,12 +168,16 @@ test("an item-less session re-arms through the prompted episode, and never inven
     wrapupAskedAt: null,
     wrapupAnswer: null,
     promptedGoal: "Ship the feature",
+    promptedEvidence: "a".repeat(64),
+    promptedActivityAt: 9,
     updatedAt: 10,
   });
 
   const confirmed = store.confirmDeliverySend(delivery.id, 1, true, 11);
   assert.equal(confirmed?.rearmed, "prompted");
   assert.equal(getQueueRow("note-prompted-rearm")?.promptedGoal, null);
+  assert.equal(getQueueRow("note-prompted-rearm")?.promptedEvidence, null);
+  assert.equal(getQueueRow("note-prompted-rearm")?.promptedActivityAt, null);
 
   const noRow = seededStore("prompted-absent");
   const absent = prepare(noRow, "prompted-absent");

@@ -17,7 +17,7 @@ const POLL_MS = 4000;
 
 function whyItFailed(error: string | undefined): string {
   const flat = (error ?? "").replace(/\s+/g, " ").trim();
-  if (!flat) return "That change didn't stick - the Inspector refused it.";
+  if (!flat) return "That change didn't stick - GitHub Inspector refused it.";
   return `That change didn't stick: ${flat.length > 80 ? `${flat.slice(0, 79)}…` : flat}`;
 }
 

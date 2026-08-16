@@ -251,12 +251,12 @@ export const SETTINGS_CATEGORIES = [
   },
   {
     id: "inspector",
-    label: "Inspector",
+    label: "GitHub Inspector",
     icon: "⌕",
-    blurb: "Review of the pull requests we open",
+    blurb: "Remote review of the pull requests we open",
     group: "outbound",
     scope: "github",
-    keywords: ["review", "pull request", "dry run", "live", "comments"],
+    keywords: ["github inspector", "remote review", "review", "pull request", "dry run", "live", "comments"],
   },
   {
     id: "shipping",

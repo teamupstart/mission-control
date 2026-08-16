@@ -1,7 +1,9 @@
 import {
   PIPELINE_PROVIDER_INFO,
+  sortByPipelineStep,
   type PipelineDaemonState,
   type PipelineRun,
+  type PipelineRunDetail,
 } from "@shared/pipeline.ts";
 
 import type { PipelineEventInput } from "../../db.ts";
@@ -13,6 +15,7 @@ import {
   readConductState,
   readDaemon,
   readDone,
+  readGateVerdicts,
   readHalt,
   readWorktrees,
   type DaemonReading,
@@ -176,10 +179,59 @@ function conductorRunSlugs(repoRoot: string): ReadonlySet<string> | null {
   return new Set(listing.worktrees.map((worktree) => worktree.slug));
 }
 
+/**
+ * One run's gate evidence, read fresh.
+ *
+ * The worktree is found by LISTING the repository rather than by joining the slug onto a
+ * path, and that is a boundary decision rather than a style one: the slug reaching this
+ * function came off a URL, and `..` joined onto a repository root is a directory traversal.
+ * `readWorktrees` returns only real feature worktrees under `.worktrees/` - a slug that is
+ * not one of them names nothing, and null is exactly what a stale deep link deserves.
+ *
+ * Sorted into the engine's own step order so the detail view can zip verdicts against the
+ * strip without sorting them a second time, with unknown gate names carried at the end under
+ * the same tolerance rule the strip uses.
+ */
+async function readConductorRunDetail(
+  repoRoot: string,
+  slug: string,
+): Promise<PipelineRunDetail | null> {
+  try {
+    const listing = readWorktrees(repoRoot, INFO.worktreesDir);
+    const worktree = listing?.worktrees.find((entry) => entry.slug === slug);
+    if (!worktree) return null;
+    return {
+      provider: "ai-conductor",
+      repoRoot,
+      slug,
+      gates: sortByPipelineStep(
+        "ai-conductor",
+        readGateVerdicts(worktree.path).map((verdict) => ({
+          // Named rather than spread, so a field the reader gains stays a decision about
+          // what crosses the wire instead of arriving on it unnoticed.
+          step: verdict.step,
+          satisfied: verdict.satisfied,
+          reason: verdict.reason,
+          checkedAt: verdict.checkedAt,
+          kickbackFrom: verdict.kickbackFrom,
+          skipped: verdict.skipped,
+        })),
+        (verdict) => verdict.step,
+      ),
+      readAt: Date.now(),
+    };
+  } catch {
+    // Same posture as the pass above: total. A detail read that threw would put a stack
+    // trace where a run's evidence goes, over a file another program rewrites underneath us.
+    return null;
+  }
+}
+
 export const CONDUCTOR_PROVIDER: PipelineProvider = {
   provider: "ai-conductor",
   binForPresence: conductorBin,
   probe: probeConductor,
   readRepo: readConductorRepo,
   knownRunSlugs: conductorRunSlugs,
+  readRunDetail: readConductorRunDetail,
 };

@@ -1215,6 +1215,21 @@ export interface SessionQueue {
    * reverse) on a checkout that later gets a work queue.
    */
   promptedGoal: string | null;
+  /**
+   * SHA-256 proof marker for the completion boundary recorded with `promptedGoal`.
+   * A later settled turn may reuse the same human intent episode, so this second axis
+   * is what lets Foreman re-check only after HEAD or the transcript anchor advances.
+   * Null beside a non-null goal, or beside a null activity boundary, is a legacy
+   * spent guard and stays spent until the human intent changes.
+   */
+  promptedEvidence: string | null;
+  /**
+   * Session activity timestamp observed with `promptedEvidence`.
+   * This is the cheap re-arm watermark. It records the completion boundary Foreman
+   * examined, rather than the later time when its verifier result was persisted.
+   * Null beside a prompted guard is a legacy spent guard.
+   */
+  promptedActivityAt: number | null;
   updatedAt: number;
   items: WorkItem[];
 }
@@ -2379,7 +2394,23 @@ export interface SettingsStatus {
    * synchronously on the first paint, and this tuple is already in the connect snapshot.
    * Computing it costs no subprocess - see `pipelinesPresent`.
    */
-  pipelines: { present: boolean };
+  pipelines: {
+    present: boolean;
+    /**
+     * How many repositories are being READ right now - master switch on, repository
+     * switched on.
+     *
+     * A different question from `present`, and it decides a different surface: this is what
+     * draws the Runs page's Pipelines tab. Zero means the page is byte-for-byte the one
+     * that shipped before this feature - no tab strip, no rail, and nothing fetching
+     * anything - which is the state almost every fleet stays in.
+     *
+     * A count rather than a boolean because the tab's empty state names how many
+     * repositories are being watched, and a surface deriving that a second way is how it
+     * comes to disagree with Settings.
+     */
+    observing: number;
+  };
 }
 
 // ---- Keep Awake (transient idle-sleep inhibition) ----

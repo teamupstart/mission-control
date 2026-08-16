@@ -7,6 +7,7 @@ import {
   type PipelineProviderId,
   type PipelineRepoStatus,
   type PipelineRun,
+  type PipelineRunDetail,
 } from "@shared/pipeline.ts";
 
 import { envVar } from "../config.ts";
@@ -155,6 +156,68 @@ export function pipelinesPresent(): boolean {
   return PIPELINE_PROVIDER_IDS.some((provider) =>
     onPath(PIPELINE_PROVIDERS[provider].binForPresence()),
   );
+}
+
+/**
+ * How many repositories are actually being read right now.
+ *
+ * The weaker sibling of `pipelinesPresent`, and it decides a different thing: `present`
+ * draws the Settings row for an operator who has an engine INSTALLED, while this draws the
+ * Runs page's Pipelines tab for one who has consented to a repository. A tab offering to
+ * show pipelines to somebody observing none would be a page with nothing behind it, and -
+ * because the tab is what starts the surface's own reads - it would also be the thing that
+ * makes "off costs nothing" stop being true.
+ *
+ * A number rather than a boolean because the tab's empty state says how many repositories
+ * are being watched, and deriving that twice is how two surfaces come to disagree.
+ */
+export function pipelinesObserving(): number {
+  return activePipelineRepos(getPipelinesConfig()).length;
+}
+
+/**
+ * The health of the repositories being READ, for the Pipelines rail's group headers.
+ *
+ * Narrower than `pipelineRepoStatuses` on purpose. That one answers the Settings panel,
+ * which lists every repository an operator has configured precisely so they can see the
+ * ones that are switched off; this one answers a rail that groups runs, where a repository
+ * nothing is reading has no runs to group and would draw an empty heading that no control
+ * on the page can explain.
+ */
+export function activePipelineRepoStatuses(): PipelineRepoStatus[] {
+  const active = new Set(
+    activePipelineRepos(getPipelinesConfig()).map((repo) =>
+      pipelineRepoKey(repo.provider, repo.repoRoot),
+    ),
+  );
+  return pipelineRepoStatuses().filter((status) =>
+    active.has(pipelineRepoKey(status.provider, status.repoRoot)),
+  );
+}
+
+/**
+ * One run's gate evidence, for the surface that has it open.
+ *
+ * Behind the SAME consent this module's watch loop is behind, and that is the whole reason
+ * this wrapper exists rather than the route calling the provider directly: the argument is a
+ * repository path off a URL, so without this check the route would read `.pipeline/` files
+ * out of any directory on the machine for anyone who can reach the loopback API. Consent is
+ * what makes a path readable here, exactly as it is what makes it projected.
+ *
+ * Null covers every "there is nothing to show" case - no such provider, a repository nobody
+ * consented to, a slug that names no worktree - because a caller renders all three the same
+ * way, as a link that has gone stale.
+ */
+export async function readPipelineRunDetail(
+  provider: PipelineProviderId,
+  repoRoot: string,
+  slug: string,
+): Promise<PipelineRunDetail | null> {
+  const consented = activePipelineRepos(getPipelinesConfig()).some(
+    (repo) => repo.provider === provider && repo.repoRoot === repoRoot,
+  );
+  if (!consented) return null;
+  return PIPELINE_PROVIDERS[provider].readRunDetail(repoRoot, slug);
 }
 
 /** Probes already running, so a burst of polls cannot become a burst of subprocesses. */

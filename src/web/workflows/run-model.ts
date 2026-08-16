@@ -515,7 +515,7 @@ function segmentCounts(submissions: readonly WorkflowSubmission[]): Map<number, 
 
 function roundLabelFor(submission: WorkflowSubmission, continued: boolean): string {
   return `Round ${submission.round}`
-    + (submission.mode === "inspector_only" ? " · Inspector" : "")
+    + (submission.mode === "inspector_only" ? " · GitHub Inspector" : "")
     // One-based for a human. `segment` is a durable zero-based index and stays that way in the
     // field beside this; the label is the only place it is counted for reading.
     + (continued ? ` · evidence ${submission.segment + 1}` : "");
@@ -578,7 +578,7 @@ export function submissionStatus(
 
 /** The latest round intentionally skipped Personas and exists only to re-audit an Inspector fix. */
 export function inspectorOnlyRoundSentence(): string {
-  return "Persona review bypassed for Inspector repair.";
+  return "Persona review bypassed for GitHub Inspector repair.";
 }
 
 const REVIEWER_STATUSES: Record<
@@ -804,7 +804,7 @@ export function endStatus(
     return { tone: "passed", label: "Completed" };
   }
   if (isLatest && detail.summary.gate !== "none" && detail.summary.gate !== "clean") {
-    return { tone: "waiting", label: "Inspector gate" };
+    return { tone: "waiting", label: "GitHub Inspector gate" };
   }
   if (submission?.status === "completed") return { tone: "passed", label: "Reached" };
   return { tone: "waiting", label: "Not reached" };
@@ -815,7 +815,7 @@ const RUN_STATUS_LABELS: Record<WorkflowRunStatus, string> = {
   running: "Reviewing",
   waiting_for_session: "Waiting for the session",
   waiting_for_pr: "Waiting for a pull request",
-  waiting_for_inspector: "Waiting for Inspector",
+  waiting_for_inspector: "Waiting for GitHub Inspector",
   waiting_for_new_head: "Waiting for a new pushed head",
   blocked: "Blocked",
   completed: "Completed",
@@ -853,10 +853,10 @@ const BLOCKED_PHASE_CLAUSES: Record<string, string> = {
   // Written by the gate as an EVENT kind today rather than as a phase (the phase it sets is
   // `round_limit`), so this entry is insurance rather than a live case. It costs one line and
   // it means a later code change cannot silently produce "inspector round limit" prose.
-  inspector_round_limit: "out of Inspector rounds",
+  inspector_round_limit: "out of GitHub Inspector rounds",
   infrastructure_error: "provider call failed",
-  inspector_findings: "Inspector findings",
-  inspector_disabled: "Inspector off",
+  inspector_findings: "GitHub Inspector findings",
+  inspector_disabled: "GitHub Inspector off",
   inspector_pr_closed: "PR closed",
   inspector_head_mismatch: "head moved",
   inspector_gate_context_invalid: "gate context lost",
@@ -885,29 +885,29 @@ export function blockedPhaseClause(phase: string): string {
 
 const GATE_WAIT_SENTENCES: Record<WorkflowGateWaitReason, string> = {
   missing_pr: "No pull request has been opened for this work yet.",
-  unadopted_pr: "A pull request exists, but Inspector has not adopted it as one we opened.",
-  inspector_disabled: "Inspector is switched off, so the gate cannot be evaluated.",
-  awaiting_fresh_observation: "Waiting for Inspector's next sweep to observe the pushed head.",
+  unadopted_pr: "A pull request exists, but GitHub Inspector has not adopted it as one we opened.",
+  inspector_disabled: "GitHub Inspector is switched off, so the gate cannot be evaluated.",
+  awaiting_fresh_observation: "Waiting for GitHub Inspector's next sweep to observe the pushed head.",
   working_tree_not_pushed: "The captured working tree has changes that were never committed and pushed.",
   head_mismatch: "The pull request's head is not the commit this submission reviewed.",
-  review_pending: "Inspector has the pull request and has not finished reviewing it.",
-  review_backoff: "Inspector's review failed and is waiting out its retry backoff.",
-  review_error: "Inspector's last review attempt errored.",
-  findings: "Inspector left findings that have to be resolved.",
+  review_pending: "GitHub Inspector has the pull request and has not finished reviewing it.",
+  review_backoff: "GitHub Inspector's review failed and is waiting out its retry backoff.",
+  review_error: "GitHub Inspector's last review attempt errored.",
+  findings: "GitHub Inspector left findings that have to be resolved.",
   pr_closed: "The adopted pull request was closed or switched.",
 };
 
 /** What the Inspector gate is waiting on, as a sentence. `null` means it is satisfied. */
 export function gateWaitSentence(reason: WorkflowGateWaitReason | null): string {
   return reason === null
-    ? "Inspector has reviewed the exact head this submission produced."
+    ? "GitHub Inspector has reviewed the exact head this submission produced."
     : GATE_WAIT_SENTENCES[reason];
 }
 
 const GATE_SUMMARIES: Record<WorkflowGateSummary, PipelineStatus> = {
   none: { tone: "waiting", label: "No gate" },
   waiting_pr: { tone: "waiting", label: "Waiting for a PR" },
-  waiting_inspector: { tone: "waiting", label: "Waiting for Inspector" },
+  waiting_inspector: { tone: "waiting", label: "Waiting for GitHub Inspector" },
   findings: { tone: "failed", label: "Findings" },
   clean: { tone: "passed", label: "Clean" },
   blocked: { tone: "failed", label: "Blocked" },
@@ -963,7 +963,7 @@ export function deliveryStateView(state: WorkflowDeliveryState): { label: string
  */
 const DELIVERY_KIND_LABELS: Record<WorkflowDeliveryKind, string> = {
   persona_feedback: "Review feedback",
-  inspector_feedback: "Inspector findings",
+  inspector_feedback: "GitHub Inspector findings",
   pr_handoff: "PR handoff",
   unchanged_evidence_nudge: "Nothing changed",
   session_action: "Session action",
@@ -2177,15 +2177,15 @@ export function runRemedy(
       // The ellipsis is the promise that a dialog follows. The daemon demands the phrase
       // itself (`manager.restartFull`), so this is not a confirmation the drawer chose.
       label: "Restart…",
-      tooltip: "Abandon this Inspector-only repair and rerun every Persona from fresh evidence",
+      tooltip: "Abandon this GitHub Inspector-only repair and rerun every Persona from fresh evidence",
       path: runPath("restart-full"),
       body: { confirmation: RESTART_FULL_PHRASE },
       confirm: {
         title: "Restart the full workflow",
-        body: "This abandons the Inspector-only repair and reruns every Persona against"
+        body: "This abandons the GitHub Inspector-only repair and reruns every Persona against"
           + " freshly captured evidence. The audited repair submissions stay in history.",
         confirmLabel: "Restart full workflow",
-        confirmHint: "Abandons the Inspector-only repair and reruns every Persona",
+        confirmHint: "Abandons the GitHub Inspector-only repair and reruns every Persona",
         danger: true,
         requirePhrase: RESTART_FULL_PHRASE,
       },

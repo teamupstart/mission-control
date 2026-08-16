@@ -64,7 +64,7 @@ Claude, `~/.agents/skills` for Codex, and `~/.pi/agent/skills` for Pi - which is
 agent's own loading path; the harness never reimplements it.
 
 The opt-in **Pull Request** row applies whenever a session prepares, opens, or reports a
-PR. Inspector-gated workflows also require it for **Prepare PR in session** and invoke it
+PR. GitHub Inspector-gated workflows also require it for **Prepare PR in session** and invoke it
 through the bound harness's native skill syntax, so that final handoff is enforced rather
 than left to model selection. Its reviewer-ready description contract has two sections: a
 concise, bullet-forward **For Humans** for the why, feature description, tradeoffs, known gaps,
@@ -210,7 +210,7 @@ these stays in this browser, and which of them acts publicly under your account.
 | **This screen** | This browser | **Display** (layout + message formatting), **Keyboard**, **Dispatch** |
 | **Sessions** | This machine | **Harnesses**, **Skills** (writes `~/`), **Cost** (writes `~/`) |
 | **Background work** | This machine | **Foreman**, **Workflows**, **Task sources**, **Conductor** (only when an engine is installed), **Models** |
-| **Leaves the machine** | Acts on GitHub | **Inspector**, **Shipping**, **Trust** |
+| **Leaves the machine** | Acts on GitHub | **GitHub Inspector**, **Shipping**, **Trust** |
 
 The badge on a group is the general case; the badge in a panel's own header is that
 category's precise claim, which can be stronger - Skills sits under *This machine* and
@@ -263,7 +263,7 @@ costs less than a badge that overclaims. What the row buys is the thing the head
 could not: the preference is now in ⌘K by name, flippable from a search result without
 leaving the page you are on, and `#/settings/dispatch` is a link you can keep.
 
-**Inspector, Shipping and Foreman are consoles**, not forms: the controls sit in a narrow
+**GitHub Inspector, Shipping and Foreman are consoles**, not forms: the controls sit in a narrow
 column and a per-item ledger takes the wide one, under a strip of counts. That is the
 split those three panels needed and the other ten do not - their knobs are set once,
 while their ledgers are read repeatedly and answer the only questions those subsystems
@@ -298,7 +298,7 @@ browser-scoped category, so a stale link can never open a panel that acts on Git
 
 **Status dots** on the rail say what each subsystem is doing without opening it, and they
 move over the live channel - no polling, and right whenever the app is open, not only while
-a panel is on screen. **Inspector** is green when it is switched on and live (reviews post
+a panel is on screen. **GitHub Inspector** is green when it is switched on and live (reviews post
 to GitHub); **Shipping** is amber when YOLO mode is armed; **Task sources** is red when a
 source failed its last sweep; **Foreman** is purple when the auto-responder is on; **Trust**
 is amber when YOLO is armed with a merge-without-review blind spot. The topbar ⚙ **gear
@@ -328,7 +328,7 @@ current value has actually been read, and the configs behind **Auto mode on disp
 **Enable Mission Control skills** are polled by the Settings page alone. A palette that
 opens over the fleet has not read them, so it takes you to the panel that has.
 
-The **risky set** - YOLO mode, the Inspector's enable and mode, Live workflow delivery and
+The **risky set** - YOLO mode, the GitHub Inspector's enable and mode, Live workflow delivery and
 workflow Commands - never flips from a row under any circumstances: it always jumps,
 so the consent copy that explains what merges, gets published, or runs branch-authored code
 is on screen when it changes.
@@ -336,15 +336,15 @@ is on screen when it changes.
 ### Trust (who may act in which repository)
 
 Four subsystems act outside this app, and each keeps its own list of the repos it is allowed
-to act in: Foreman sends live, Workflows deliver repairs and run Commands, the Inspector posts
+to act in: Foreman sends live, Workflows deliver repairs and run Commands, the GitHub Inspector posts
 reviews, and Shipping (YOLO) merges. **Settings → Trust** (`#/settings/trust`) is one table
 over all four - a row per repository, a column per grant - so the whole surface of "what may
 act where" is on one screen instead of scattered across four panels. Columns run local blast
-radius first (Foreman, Workflows), then GitHub (Inspector, YOLO).
+radius first (Foreman, Workflows), then GitHub (GitHub Inspector, YOLO).
 
 - **It is a view, not a new store.** Each column is the subsystem's existing allowlist;
   ticking a cell writes to that subsystem's own config through the same route its panel used
-  to, and the daemon's four consent gates are unchanged. The Foreman, Workflows, Inspector and
+  to, and the daemon's four consent gates are unchanged. The Foreman, Workflows, GitHub Inspector and
   Shipping panels now show a grant **count** and a **Manage in Trust** link where their repo
   editors used to be - a grant is not the same permission in each column, which is the whole
   reason they stay four lists.
@@ -365,7 +365,7 @@ radius first (Foreman, Workflows), then GitHub (Inspector, YOLO).
   value being edited.
 - **Worktrees count too.** A grant names the **repo**, so a session in any worktree of a
   granted repo is covered, wherever that worktree lives on disk.
-- **The blind spot is visible.** If YOLO may merge in a repo the Inspector may not review,
+- **The blind spot is visible.** If YOLO may merge in a repo the GitHub Inspector may not review,
   nothing there can ever qualify - the merge cell and the empty review cell both go amber, and
   a footnote offers the two fixes in place: **grant the review**, or **revoke the merge**.
   Shipping's own dependency warnings link straight here. The rail's Trust dot carries it, so

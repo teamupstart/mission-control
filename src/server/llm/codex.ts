@@ -7,6 +7,7 @@ import { codexTokenSplit } from "../harness/codex/usage.ts";
 import { estimateStandardApiUsage } from "../harness/codex/pricing.ts";
 import { grantRefusal } from "@shared/llm.ts";
 import { reportLlmSpend, spendReportIsRecordable } from "./spend.ts";
+import { validateLlmImages } from "./images.ts";
 import type { LlmRunOptions, LlmRunner } from "@shared/llm.ts";
 import type { LlmSpendReport, LlmSpendRole } from "@shared/llm-spend.ts";
 
@@ -233,6 +234,9 @@ export const codexRunner: LlmRunner = {
       const refusal = grantRefusal(codexRunner.sandbox, grant);
       throw new Error(`codex runner refused the tool grant: ${refusal ?? "unsupported grant"}`);
     }
+    // Open and verify every image before schema materialization and, critically, before
+    // the provider process is spawned. Empty and omitted lists preserve the former argv.
+    const images = validateLlmImages(opts.images);
     const schema = materializeSchema(opts.schema);
     try {
       return await new Promise((resolve, reject) => {
@@ -254,6 +258,7 @@ export const codexRunner: LlmRunner = {
         ];
         if (schema) args.push("--output-schema", schema.path);
         if (opts.model) args.push("--model", opts.model);
+        for (const image of images) args.push("--image", image.path);
         args.push("-");
         const child = spawn(CODEX_BIN, args, {
           cwd: tmpdir(),

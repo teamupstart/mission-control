@@ -275,6 +275,7 @@ const NO_MISTAKES_REVIEW_NODES = {
   evidence: "nmr-test-evidence",
   documentation: "nmr-documentation",
   depth: "nmr-depth-join",
+  quality: "nmr-code-quality-judge",
   pullRequest: "nmr-pull-request",
   end: "nmr-end",
 } as const;
@@ -448,6 +449,51 @@ const NO_MISTAKES_REVIEW_V4: StagePipeline = {
 };
 
 /**
+ * Version 9: the complete version 8 pipeline with local code-quality judgment before the PR.
+ *
+ * Written out in full so versions 1 through 8 remain immutable. Code Quality Judge is an
+ * ordinary tool-less Persona: its fail route returns to Session through the shared repair loop,
+ * and only its pass route activates the already-proven Pull Request action. The version's
+ * completion policy is `none`, so the verified action reaches End and completes without turning
+ * the optional GitHub Inspector into a final gate.
+ */
+const NO_MISTAKES_REVIEW_V5: StagePipeline = {
+  sessionId: NO_MISTAKES_REVIEW_NODES.session,
+  endId: NO_MISTAKES_REVIEW_NODES.end,
+  endOutcome: "Complete",
+  stages: [
+    {
+      kind: "evaluation",
+      joinId: NO_MISTAKES_REVIEW_NODES.build,
+      members: [
+        check(NO_MISTAKES_REVIEW_NODES.typecheck, "typecheck"),
+        check(NO_MISTAKES_REVIEW_NODES.test, "test"),
+      ],
+    },
+    {
+      kind: "evaluation",
+      joinId: null,
+      members: [reviewer(NO_MISTAKES_REVIEW_NODES.intent, "intent-conformance-judge")],
+    },
+    {
+      kind: "evaluation",
+      joinId: NO_MISTAKES_REVIEW_NODES.depth,
+      members: [
+        reviewer(NO_MISTAKES_REVIEW_NODES.risk, "code-risk-reviewer"),
+        reviewer(NO_MISTAKES_REVIEW_NODES.evidence, "test-evidence-auditor"),
+        reviewer(NO_MISTAKES_REVIEW_NODES.documentation, "documentation-steward"),
+      ],
+    },
+    {
+      kind: "evaluation",
+      joinId: null,
+      members: [reviewer(NO_MISTAKES_REVIEW_NODES.quality, "code-quality-judge")],
+    },
+    action(NO_MISTAKES_REVIEW_NODES.pullRequest, PULL_REQUEST_SESSION_ACTION_ID),
+  ],
+};
+
+/**
  * The binding posture shipped before Foreman Complete became the application default.
  *
  * Built-in versions are immutable app data: deriving versions 1-5 from today's default would
@@ -484,12 +530,11 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
     slug: NO_MISTAKES_REVIEW_WORKFLOW_SLUG,
     name: "No-Mistakes Review",
     description:
-      "A typecheck and test stage, then four built-in review roles composed as designed: "
-      + "Intent Conformance as the cheap first judge, then Code Risk, "
-      + "Test Evidence and Documentation in parallel behind it. Configured check commands run "
-      + "for real; unconfigured slots are skipped and pass. Every fail returns to the session "
-      + "for repair. The current version then opens the pull request as its last stage, and a "
-      + "passed review is gated on the Inspector finding nothing on it.",
+      "Typecheck and test, then five built-in review roles: Intent Conformance first; Code Risk, "
+      + "Test Evidence, and Documentation in parallel; and Code Quality Judge last. Configured "
+      + "checks run for real, while unconfigured slots skip and pass. Every failure returns to the "
+      + "session for repair. The current version judges code quality before opening and verifying "
+      + "the pull request, then completes without requiring the optional GitHub Inspector gate.",
     // Versions 1 and 2 remain addressable exactly as shipped. Version 2 changed only the
     // binding posture; version 3 appends the deterministic gate and retains Live delivery.
     // Version 4 keeps that graph but repairs Inspector findings by repushing, then checking
@@ -604,6 +649,19 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
         resumptionPolicy: "auto",
         bindingDefaults: NO_MISTAKES_REVIEW_LIVE_DEFAULTS,
         sourceDraftRevision: 7,
+      },
+      {
+        // Version 9: local code-quality judgment precedes the verified Pull Request action.
+        //
+        // `completionPolicy: none` is deliberate. The graph owns the local review and cannot
+        // reach End until the action has observed an open pull request at the continuation's
+        // captured commit. GitHub Inspector remains an optional remote service and still owns
+        // its review ledger, public GitHub behavior, and exact-head Shipping proof.
+        pipeline: NO_MISTAKES_REVIEW_V5,
+        completionPolicy: { kind: "none" },
+        resumptionPolicy: "auto",
+        bindingDefaults: NO_MISTAKES_REVIEW_LIVE_DEFAULTS,
+        sourceDraftRevision: 8,
       },
     ],
   }),

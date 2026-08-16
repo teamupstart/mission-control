@@ -517,6 +517,7 @@ test("an item-less session repairs itself through the prompted episode", async (
       },
       headSha: h.head.sha,
       transcriptAnchor: 100,
+      activityAt: 5,
       summary: "complete",
     });
     const claimed = await h.manager.claimCompletion(h.sessionId, claim);

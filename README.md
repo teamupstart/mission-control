@@ -78,12 +78,12 @@ blocks. The Line keeps their live runs attached to the fleet.
 
 ## Coordinate the fleet
 
-Foreman provides configurable operational guidance for the fleet. Inspector keeps shipping
-and review state visible beside the work that produced it.
+Foreman provides configurable operational guidance for the fleet. GitHub Inspector keeps shipping
+and remote review state visible beside the work that produced it.
 
 ![Mission Control Foreman settings](docs/images/foreman.png)
 
-![Mission Control Inspector settings](docs/images/inspector.png)
+![Mission Control GitHub Inspector settings](docs/images/inspector.png)
 
 ## Watch a pipeline engine you already use
 
@@ -96,6 +96,11 @@ Detection is automatic and consent is not. Nothing is read until a repository is
 and Mission Control never writes a file the engine owns. With no engine installed and nothing
 configured, the dashboard is exactly what it was - no row, no panel, nothing in the command
 palette. [Pipelines](docs/pipelines.md) owns the exact visibility rule.
+
+Once a repository is switched on, the **Runs** page gains a second tab. **Workflows** is the
+page it always was; **Pipelines** shows what the engine is driving - a rail grouped per
+repository under its engine daemon's state, and each feature's whole gated sequence drawn in
+the same diagram grammar a workflow run uses.
 
 ## Quick start
 

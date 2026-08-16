@@ -23,7 +23,15 @@ When adding a `ServerEvent`:
 4. Say what BOUNDS the collection, in its own doc comment, and pin it. Every collection here
    rides every reconnect, so "how large can this get" has to have an answer before it ships;
    `test/pipeline-sse.test.ts` measures one run and states the fleet arithmetic, which is the
-   shape that tells a later change what it broke.
+   shape that tells a later change what it broke. When a surface needs more than the budget
+   allows, fetch it for the one thing that is open - `GET /api/pipelines/run` is that pattern
+   for gate evidence - rather than widening the number.
+
+`SettingsStatus` has one extra rule, and it fails silently: **every field of the tuple must
+appear in `Registry.emitSettingsStatus`'s comparison.** A field left out of it is not
+compared loosely, it is a field whose change never reaches a browser - the tuple that moved
+only there compares equal and no frame is sent. `test/settings-status.test.ts` walks the
+composed tuple and fails on a leaf it has no case for.
 
 When adding a dashboard preference to `UiConfig`, three edits are one obligation:
 
@@ -98,7 +106,7 @@ Persisted ID tuples are append-only. Never rename, reorder, or reuse values. Thi
   `src/server/ensembles/store.ts`, which is what stops a late outcome rewriting a settled
   attempt) and what the walk makes of it (`stageStatus` in `src/server/ensembles/engine.ts`,
   whose fall-through reads anything unhandled as a stage still running)
-- Inspector marker versions
+- GitHub Inspector marker versions
 - Workflow graph node kinds, source and target ports, and SessionAction completion kinds
   (`SESSION_ACTION_COMPLETION_KINDS`) - these reach draft graphs, immutable published
   versions, and `session_actions.completion_kind`, and a completion kind is read STRICTLY:
@@ -379,7 +387,7 @@ A SessionAction is a durable side effect, not an evaluator:
   repository root and branch as the bound checkout, whose last observed remote head is the
   exact commit the continuation captured. `Session.prUrl` is a lookup hint and satisfies
   nothing; neither does a branch name, nor a pull request merely existing.
-- It never talks to a provider. The Inspector poller is the only thing that does, and
+- It never talks to a provider. The GitHub Inspector poller is the only thing that does, and
   `inspector_prs.observed_head_sha` / `observed_state` / `head_ref_name` are the durable form
   of what it saw. A second poll loop would double the API cost of every open pull request to
   answer a question the first one already answers.
@@ -490,22 +498,81 @@ A SessionAction is a durable side effect, not an evaluator:
   cross-submission read, and it is provenance the runtime wrote rather than a relationship
   inferred from ordering.
 
-## The Inspector footer
+## The GitHub Inspector footer
 
-Inspector is `WorkflowCompletionPolicy`, and it gains no node, no id and no edge. `InspectorFooter`
+GitHub Inspector is `WorkflowCompletionPolicy`, and it gains no node, no id and no edge. `InspectorFooter`
 in `src/web/workflows/pipeline-bits.tsx` is the one projection of it, rendered after End by the
 Pipeline editor, the run pipeline, published version detail and the Board ladder. It returns
 `null` for a `none` policy, which is why every call site passes the policy unconditionally.
 
 Two things about it are load-bearing. It reads the **version's** policy on a run surface and the
 **workflow's** on a draft surface, so a run pinned to an older version shows the gate that
-version was published with. And `none` beneath an Inspector policy means "the run has not
+version was published with. And `none` beneath a GitHub Inspector policy means "the run has not
 reached the gate", not "there is no gate" - `inspectorFooterStatus` exists so the footer does
 not contradict its own sentence for most of a live run's life.
 
+## The Runs page's two surfaces
+
+The Runs page hosts Mission Control's own workflow runs and an external engine's pipelines
+behind one page-level kind tab. Three rules hold them apart, and each exists because the
+approved plan forbids this integration from changing the workflow surface at all.
+
+- **The workflow rail and reader are not modified.** `WorkflowRuns.tsx`, `RunPipeline.tsx`
+  and the `wf-run-*` family belong to that surface. The pipelines surface lives in
+  `src/web/pipelines/` under its own `pipelines-` class prefix - the call `EnsembleRuns` and
+  the Ship log already made - so a change to one is never silently a change to the other.
+  `e2e/specs/runs-workflows-unchanged.spec.ts` pins that with the integration switched ON,
+  which is the only configuration in which the regression could happen.
+- **The STRIP is shared, deliberately.** `pipeline-bits.tsx` draws the cards, seams and
+  termini on both, because both are the same picture and a second stage-rendering dialect is
+  the defect that module exists to prevent. Use its slots as they are; a new prop for one
+  caller is a modification of the other's surface. A new leaf that renders a
+  `PipelineStatusChip` also has to enter `CHIP_CONTAINERS` in
+  `test/workflow-pipeline-label-width.test.ts`. Where one surface genuinely needs different
+  layout, override it under that surface's own root rather than editing the shared rule -
+  `.pipelines-run .wf-pipeline-strip` re-aligns the strip because this engine's phases are
+  1, 1, 9, 5 and 6 steps where a workflow stage holds one to three members, and
+  `test/pipeline-runs-view.test.ts` asserts both that the override is scoped and that the
+  shared rule is unchanged.
+- **The tab is keyed on `settingsStatus.pipelines.observing`**, not on `present` and not on
+  whether any run happens to exist. Zero means no tab strip, no pipelines surface, and
+  nothing on the page reading a pipelines route. Later phases must not add a second entry
+  point that bypasses it.
+- **A kind tab is a statement about which surface is showing, not a reset button.**
+  `RunsKindTabs` swallows a click on the already-selected tab, because the address the caller
+  builds for a genuine switch is the BARE one - so firing it while a run is open drops that
+  run, and the router's same-hash guard cannot help since `#/runs` and `#/runs/<id>` really
+  are different hashes.
+- **A pipeline run's identity is `pipelineRunKey` / `pipelineRunKeyOf`, never a join.**
+  `src/shared/pipeline.ts` owns the separator and states why: a repository root and a slug
+  concatenated with nothing between them are ambiguous, so `("/repo/foo", "1-fix")` and
+  `("/repo/foo1", "-fix")` become one string. That is a React key, an "active" mark and a
+  fetch-cache key all pointing at the wrong run. The same rule covers any other composite key
+  on this surface - use a tuple through `JSON.stringify` rather than a literal separator
+  byte, which is invisible to `git diff` and `grep`.
+- **Every run group must appear in `PIPELINE_GROUP_ORDER`.** `pipelineRail` emits only the
+  groups listed there, so a member missing from it is not a mis-sorted rail: it is a run that
+  is invisible, uncounted in `section.total`, and unreachable through `pipelineLeadRun`. The
+  order is derived from `PIPELINE_RUN_GROUPS` sorted by an exhaustive
+  `Record<PipelineRunGroup, number>`, which makes a new group a compile error rather than a
+  silent disappearance. Do not replace that with a hand-written list -
+  `satisfies readonly PipelineRunGroup[]` checks that every element is a group, never that
+  every group is an element.
+
+Routes, owned here and consumed by later phases: `#/runs` and `#/runs/<run-id>` keep meaning
+a workflow run; `#/runs/pipeline` and `#/runs/pipeline/<repoKey>/<slug>` address the
+pipelines surface, where `repoKey` is `pipelineRepoKey(provider, repoRoot)` so the provider
+travels with the path. Build them through `pipelineRunRoute` / `pipelineRunHash` in
+`useWorkflowRoute.ts` rather than by hand - the shape is frozen, and `missionRouteHash` still
+ends in an unguarded ensembles return, so a hash a branch forgets to name serializes to the
+wrong page with no error anywhere.
+
+`PipelineRunView`'s header takes an `actions` slot that renders nothing today. It is the
+place the engine's control verbs go; filling it must not restructure the header around it.
+
 ## Ledger tables
 
-A settings panel whose subject keeps an append-only record - Inspector, Shipping, Foreman today - draws that record with `ConsoleTable` from `src/web/components/settings-console.tsx`, and never assembles a table of its own out of the `sc-` leaves. The component owns the heading, the column-name row, the bounded scroller, the pager and the caption; a panel supplies its filtered rows, its columns, its `renderRow` and its copy.
+A settings panel whose subject keeps an append-only record - GitHub Inspector, Shipping, Foreman today - draws that record with `ConsoleTable` from `src/web/components/settings-console.tsx`, and never assembles a table of its own out of the `sc-` leaves. The component owns the heading, the column-name row, the bounded scroller, the pager and the caption; a panel supplies its filtered rows, its columns, its `renderRow` and its copy.
 
 Three properties come with it, and all three are the component's rather than the panel's:
 
@@ -514,7 +581,7 @@ Three properties come with it, and all three are the component's rather than the
 - **The count strip is the filter, and the pager restarts with it.** Tiles fold over one bucket function so a tally and the rows it selects cannot disagree, and changing the filter is a new list, so it opens at its first page.
 - **Paging keeps the keyboard's place.** Reaching the first or last page disables the button that was just pressed, and a browser blurs a control that becomes disabled; the focus is handed to the button that can still act. Two pages is the ordinary case here, so this fires on most page changes rather than at an edge.
 
-This is a rule because the drift it prevents is invisible in a one-file diff. The three panels shared a vocabulary of leaves and each assembled its own table, so they diverged on the one thing a class name says nothing about - how much of a list they will put on screen. Foreman grew a budget at its 100-row cap; Inspector and Shipping reached 50 and grew nothing, running the settings page on for screens of table beside a control column a quarter of their height, with the filter strip scrolled out of reach.
+This is a rule because the drift it prevents is invisible in a one-file diff. The three panels shared a vocabulary of leaves and each assembled its own table, so they diverged on the one thing a class name says nothing about - how much of a list they will put on screen. Foreman grew a budget at its 100-row cap; GitHub Inspector and Shipping reached 50 and grew nothing, running the settings page on for screens of table beside a control column a quarter of their height, with the filter strip scrolled out of reach.
 
 Ledger reads stay capped server-side (`loadInspectorInspections(50)`, `recentEpisodes(100)`); the pager pages what the panel was served and its total says so. A new bucket needs a strip tile and an `EMPTY_FILTER` sentence, both `Record`-typed so the compiler asks.
 
@@ -673,7 +740,7 @@ imports the generator rather than re-implementing it.
 
 `personas/` also holds the two operator briefs the daemon reads as files at runtime -
 `FOREMAN.md` (the seed for Foreman's standing instructions) and `INSPECTOR.md` (this repo's
-brief for the Inspector) - plus a `README.md`. The generator globs the whole directory, so
+brief for the GitHub Inspector) - plus a `README.md`. The generator globs the whole directory, so
 those three are excluded by name in `NON_PERSONA_DOCUMENTS`; anything else added there becomes
 a built-in Persona. A persona filename is the durable `builtin:<slug>` id that published
 workflow versions reference, so adding and removing documents is safe and renaming one is a

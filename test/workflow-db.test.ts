@@ -20,6 +20,7 @@ const {
   parseWorkflowBindingClaimRow,
   parseWorkflowBindingRow,
   parseWorkflowDefinitionRow,
+  parseWorkflowEvidenceStagingRow,
   parseWorkflowDeliveryRow,
   parseWorkflowEdgeReceiptRow,
   parseWorkflowEventRow,
@@ -27,6 +28,7 @@ const {
   parseWorkflowNodeAttemptRow,
   parseWorkflowRunRow,
   parseWorkflowSubmissionRow,
+  parseWorkflowSubmissionImageRow,
   parseWorkflowVersionRow,
 } = await import("../src/server/workflows/store.ts");
 
@@ -77,6 +79,16 @@ test("the complete Phase 1 table family and required indexes exist", () => {
     ),
   );
   assert.ok(indexes("workflow_runs").some((columns) => columns.join(",") === "updated_at,id"));
+  assert.ok(
+    indexes("workflow_evidence_staging").some(
+      (columns) => columns.join(",") === "note_key,state,generation,created_at,id",
+    ),
+  );
+  assert.ok(
+    indexes("workflow_submission_images").some(
+      (columns) => columns.join(",") === "submission_id,ordinal",
+    ),
+  );
   assert.ok(
     indexes("workflow_runs").some((columns) => columns.join(",") === "status,updated_at,id"),
   );
@@ -357,4 +369,68 @@ test("every later-phase state parser rejects unknown durable enum values", () =>
   assert.equal(parseWorkflowLlmCallRow(call).purpose, "context_compaction");
   assert.throws(() => parseWorkflowLlmCallRow({ ...call, purpose: "unknown" }), WorkflowRowError);
   assert.throws(() => parseWorkflowLlmCallRow({ ...call, error_code: "x".repeat(201) }), WorkflowRowError);
+});
+
+test("workflow image rows reject unknown durable states and malformed digests", () => {
+  const staged = {
+    id: "stage",
+    note_key: "note",
+    client_item_id: "client",
+    source_kind: "agent",
+    source_root: "/repo",
+    source_locator: "evidence/screen.png",
+    display_name: "screen.png",
+    caption: "Visible result",
+    repository_scope: "repo-01",
+    mime_type: "image/png",
+    bytes: 10,
+    sha256: "a".repeat(64),
+    generation: 1,
+    state: "staged",
+    reserved_group_key: null,
+    created_at: 1,
+    updated_at: 1,
+  };
+  assert.equal(parseWorkflowEvidenceStagingRow(staged).state, "staged");
+  assert.throws(
+    () => parseWorkflowEvidenceStagingRow({ ...staged, state: "attached" }),
+    WorkflowRowError,
+  );
+  assert.throws(
+    () => parseWorkflowEvidenceStagingRow({ ...staged, repository_scope: "repo-primary" }),
+    WorkflowRowError,
+  );
+  assert.throws(
+    () => parseWorkflowEvidenceStagingRow({
+      ...staged,
+      state: "reserved",
+      reserved_group_key: null,
+    }),
+    WorkflowRowError,
+  );
+  const image = {
+    id: "image",
+    submission_id: "submission",
+    staging_id: "stage",
+    ordinal: 0,
+    display_name: "screen.png",
+    caption: "Visible result",
+    repository_scope: "repo-01",
+    mime_type: "image/png",
+    bytes: 10,
+    sha256: "a".repeat(64),
+    storage_relative_path: "retained/submission/image.png",
+    availability: "retained",
+    pruned_at: null,
+    created_at: 1,
+  };
+  assert.equal(parseWorkflowSubmissionImageRow(image).availability, "retained");
+  assert.throws(
+    () => parseWorkflowSubmissionImageRow({ ...image, sha256: "not-a-digest" }),
+    WorkflowRowError,
+  );
+  assert.throws(
+    () => parseWorkflowSubmissionImageRow({ ...image, availability: "pruned", pruned_at: null }),
+    WorkflowRowError,
+  );
 });

@@ -166,6 +166,8 @@ export class Dispatcher {
        * construction: this launch's conversation does not exist yet.
        */
       planSkills?: typeof planSkillsForAgent;
+      /** Server-owned immutable graph check; kept injectable so this launch layer stays DB-free. */
+      workflowEvidenceEnabled?: (task: Pick<Task, "kind" | "workflowId">) => boolean;
       resolveRuntime?: typeof resolveDispatchRuntime;
     } = {},
   ) {}
@@ -296,8 +298,10 @@ export class Dispatcher {
       // operator's own words are never buried and the ordering is the same on both delivery
       // seams. A ship task passes through `withTaskKindContract` unchanged, which is what
       // keeps its intent bytes identical to what they were.
+      const workflowEvidence = this.deps.workflowEvidenceEnabled?.(task) ?? false;
       const intent = withTaskKindContract(provisioned, intentWithRepoManifest(provisioned), {
         planSkills: planSkills?.ok ? planSkills.commands : null,
+        workflowEvidence,
       });
       // Which of OUR tools this launch has to be able to call. A scout ALWAYS has to be able
       // to submit its report and a plan ALWAYS has to be able to ask its human and file the
@@ -305,7 +309,11 @@ export class Dispatcher {
       // whichever caller happened to dispatch it. A ship task is unaffected:
       // `kindMissionMcpRequirement` returns the caller's requirement untouched, `null`
       // included.
-      const missionMcp = kindMissionMcpRequirement(task, options.missionMcp ?? null);
+      const missionMcp = kindMissionMcpRequirement(
+        task,
+        options.missionMcp ?? null,
+        workflowEvidence,
+      );
       if (task.kind === "scout") {
         (this.deps.provisionScoutCredential ?? provisionScoutSubmissionCredential)(taskId, wt.path);
       }

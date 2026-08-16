@@ -15,7 +15,7 @@ flowchart LR
   mcp -->|loopback HTTP| daemon
   hooks[Hook bridges] -->|loopback HTTP POST| daemon
   foreman[Foreman worker] -->|loopback HTTP| daemon
-  daemon --> inspector[Inspector]
+  daemon --> inspector[GitHub Inspector]
   daemon --> sdk[SDK supervisor]
   daemon --> terminal[Terminal registry]
   sdk --> agents[Embedded agent SDKs]
@@ -38,7 +38,7 @@ HTTP interface, so they cannot create competing state writers.
 | Session system | Discovers terminal sessions, supervises embedded SDK sessions, and removes sessions through one lifecycle. | [Session lifecycle](session-lifecycle.md) |
 | Dispatch and harnesses | Chooses a runtime and expresses agent and terminal differences through capabilities. | [Dispatch](dispatch-and-runtimes.md), [harnesses](harnesses-and-terminals.md) |
 | Work coordination | Runs workflows, personas, session actions, ensembles, tasks, queues, and schedules. | [Workflow system](workflow-system.md), [tasks and schedules](tasks-and-scheduling.md) |
-| Foreman and Inspector | Foreman is an HTTP-only worker; Inspector is daemon-owned PR review state. | [Foreman](foreman.md), [Inspector and shipping](inspector-and-shipping.md) |
+| Foreman and GitHub Inspector | Foreman is an HTTP-only worker; GitHub Inspector is daemon-owned PR review state. | [Foreman](foreman.md), [GitHub Inspector and shipping](inspector-and-shipping.md) |
 | Integrations | MCP and hook bridges post facts to the daemon rather than modifying state directly. | [MCP server](../src/mcp/server.ts), [hooks](../hooks/) |
 
 ## How to read the technical pages

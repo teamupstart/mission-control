@@ -3,6 +3,7 @@ import type {
   PipelineProbe,
   PipelineProviderId,
   PipelineRun,
+  PipelineRunDetail,
 } from "@shared/pipeline.ts";
 
 import type { PipelineEventInput } from "../db.ts";
@@ -138,4 +139,18 @@ export interface PipelineProvider {
    * whatever was turned away.
    */
   knownRunSlugs(repoRoot: string): ReadonlySet<string> | null;
+  /**
+   * Read the gate evidence for ONE run, for the surface that has it open.
+   *
+   * Separate from `readRepo` rather than folded into the projection because of what the
+   * projection is: a collection that rides every reconnect for every run on the fleet.
+   * `test/pipeline-sse.test.ts` pins one run under 2kB and names this as the answer to
+   * growth - detail is fetched by the one surface that draws it, so a fleet where nobody
+   * has a pipeline open pays nothing for the fact that verdicts exist.
+   *
+   * Null means "no such run here", which a caller renders as a stale link rather than as an
+   * error. Spawns nothing, writes nothing, and never throws: it reads the same files
+   * `readRepo` does.
+   */
+  readRunDetail(repoRoot: string, slug: string): Promise<PipelineRunDetail | null>;
 }

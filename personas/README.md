@@ -3,10 +3,10 @@
 Every persona document Mission Control ships, in one directory. Two kinds live here, and
 they reach the running app by different routes.
 
-## The four workflow persona sources
+## The five workflow persona sources
 
-`code-risk-reviewer.md`, `documentation-steward.md`, `intent-conformance-judge.md`, and
-`test-evidence-auditor.md` are the built-in review roles. They are **compiled into the
+`code-quality-judge.md`, `code-risk-reviewer.md`, `documentation-steward.md`,
+`intent-conformance-judge.md`, and `test-evidence-auditor.md` are the built-in review roles. They are **compiled into the
 build**: `npm run personas` embeds their exact bytes in
 `src/server/workflows/builtin-personas.generated.ts`, which is the only copy that survives
 bundling and packaging. Edit the Markdown here and run the generator; never hand-edit the
@@ -25,7 +25,7 @@ the point of them being Markdown is that they can be read and edited without a r
   root in dev and at the app root in a packaged build; `electron-builder.yml` ships this one
   file for that reason. Once an operator saves their own text in **Settings → Foreman** the
   stored value wins and this file is only what "Reset to default" restores.
-- `INSPECTOR.md` is this repository's brief for the Inspector. The Inspector resolves the
+- `INSPECTOR.md` is this repository's brief for the GitHub Inspector. The GitHub Inspector resolves the
   brief against the *reviewed* repository, preferring `personas/INSPECTOR.md` and falling
   back to a root `INSPECTOR.md`, so this copy is what Mission Control's own pull requests
   are reviewed against.
@@ -33,7 +33,7 @@ the point of them being Markdown is that they can be read and edited without a r
 ## Filenames are durable ids
 
 A workflow persona's filename slug is the durable half of its `builtin:<slug>` id, and
-published workflow versions reference those ids. Renaming one of the four documents strands
+published workflow versions reference those ids. Renaming one of the five documents strands
 them. Add and remove freely; rename only with a migration.
 
 `scripts/builtin-personas.ts` therefore globs `personas/*.md` and excludes the two briefs

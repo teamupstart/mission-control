@@ -311,7 +311,7 @@ function reviewBody(
   mode: InspectorMode,
   round: number,
 ): string {
-  const parts = [`**⌕ Inspector** · round ${round}`, "", summary.trim()];
+  const parts = [`**⌕ GitHub Inspector** · round ${round}`, "", summary.trim()];
   if (demoted.length) {
     parts.push("", "---", "");
     for (const d of demoted) {

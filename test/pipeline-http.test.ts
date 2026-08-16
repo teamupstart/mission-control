@@ -4,7 +4,11 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { PipelinesView } from "../src/shared/pipeline.ts";
+import type {
+  PipelineRepoStatus,
+  PipelineRunDetail,
+  PipelinesView,
+} from "../src/shared/pipeline.ts";
 
 // What is at stake: this route is the consent boundary. Everything the integration does is
 // downstream of a repository being switched on here, so the two things it must never do are
@@ -268,4 +272,176 @@ test("the routes are loopback-only, like every other /api route", async () => {
     body: JSON.stringify({ enabled: true, repos: [] }),
   });
   assert.equal(write.status, 403);
+  const repos = await request("/api/pipelines/repos", { headers: { host: "example.com" } });
+  assert.equal(repos.status, 403);
+  const detail = await request("/api/pipelines/run?provider=ai-conductor&repoRoot=/x&slug=y", {
+    headers: { host: "example.com" },
+  });
+  assert.equal(detail.status, 403);
+});
+
+// ---- what the Runs page's Pipelines tab reads ------------------------------------------
+
+test("the rail's repositories are the ones being READ, not the ones configured", async () => {
+  // The narrower question, and the reason this is not a field on the panel's route: the
+  // Settings panel lists every configured repository precisely so an operator can see the
+  // ones that are off, while a rail that grouped runs under a repository nothing is reading
+  // would draw an empty heading no control on that page explains.
+  const { registry, request } = fixture();
+  const observed = gitRepo("rail-observed");
+  const off = gitRepo("rail-off");
+  seedConductorRun(observed, "feat", { steps: { build: "in_progress" } });
+  seedConductorDaemon(observed, { pid: process.pid });
+
+  await request("/api/pipelines/config", {
+    method: "PUT",
+    body: JSON.stringify({
+      enabled: true,
+      repos: [
+        { provider: "ai-conductor", repoRoot: observed, enabled: true },
+        { provider: "ai-conductor", repoRoot: off, enabled: false },
+      ],
+    }),
+  });
+  await refreshPipelineRepo(registry, "ai-conductor", observed);
+
+  const res = await request("/api/pipelines/repos");
+  assert.equal(res.status, 200);
+  const { repos } = (await res.json()) as { repos: PipelineRepoStatus[] };
+  assert.deepEqual(repos.map((repo) => repo.repoRoot), [observed]);
+  assert.equal(repos[0]?.daemon, "running");
+  assert.equal(repos[0]?.runs, 1);
+
+  // And the master switch takes every heading with it, without forgetting the choice.
+  await request("/api/pipelines/config", {
+    method: "PUT",
+    body: JSON.stringify({
+      enabled: false,
+      repos: [{ provider: "ai-conductor", repoRoot: observed, enabled: true }],
+    }),
+  });
+  const after = (await (await request("/api/pipelines/repos")).json()) as {
+    repos: PipelineRepoStatus[];
+  };
+  assert.deepEqual(after.repos, []);
+});
+
+test("one run's gate evidence is read from the engine's files, on demand", async () => {
+  const { request } = fixture();
+  const repo = gitRepo("detail");
+  seedConductorRun(repo, "feat", {
+    steps: { plan: "done", build: "in_progress" },
+    gates: {
+      // Deliberately out of the engine's own step order in the fixture, so the response
+      // proves the sort rather than the write order.
+      build: { satisfied: false, reason: "two blocking defects" },
+      plan: { satisfied: true, reason: "approved", kickbackFrom: "build_review" },
+      complexity: { satisfied: true, reason: "skipped: tier S" },
+    },
+  });
+  await request("/api/pipelines/config", {
+    method: "PUT",
+    body: JSON.stringify({
+      enabled: true,
+      repos: [{ provider: "ai-conductor", repoRoot: repo, enabled: true }],
+    }),
+  });
+
+  const res = await request(
+    `/api/pipelines/run?provider=ai-conductor&repoRoot=${encodeURIComponent(repo)}&slug=feat`,
+  );
+  assert.equal(res.status, 200);
+  const detail = (await res.json()) as PipelineRunDetail;
+  assert.equal(detail.slug, "feat");
+  assert.deepEqual(
+    detail.gates.map((gate) => gate.step),
+    ["complexity", "plan", "build"],
+    "the engine's own step order, so the strip and this list cannot disagree",
+  );
+  // A skip is not a pass. The engine writes both as `satisfied: true`, and a surface reading
+  // that alone would credit a tier-S run with gates it never ran.
+  assert.equal(detail.gates[0]?.skipped, true);
+  assert.equal(detail.gates[1]?.kickbackFrom, "build_review");
+  assert.equal(detail.gates[2]?.satisfied, false);
+});
+
+test("gate evidence is behind the same consent the projection is", async () => {
+  // The argument is a repository path off a URL. Without the consent check this route reads
+  // `.pipeline/` files out of any directory on the machine for anything that can reach the
+  // loopback API - and every "no" is the same 404, because telling an unknown provider from
+  // an unconsented repository from a missing worktree would answer questions about the
+  // filesystem that nobody asked.
+  const { request } = fixture();
+  const repo = gitRepo("unconsented");
+  seedConductorRun(repo, "feat", { steps: { build: "done" }, gates: { build: { satisfied: true } } });
+
+  const url = `/api/pipelines/run?provider=ai-conductor&repoRoot=${encodeURIComponent(repo)}&slug=feat`;
+  assert.equal((await request(url)).status, 404, "a repository nobody consented to");
+
+  await request("/api/pipelines/config", {
+    method: "PUT",
+    body: JSON.stringify({
+      enabled: true,
+      repos: [{ provider: "ai-conductor", repoRoot: repo, enabled: true }],
+    }),
+  });
+  assert.equal((await request(url)).status, 200, "and the same repository once switched on");
+
+  // A slug is a path segment in the engine's layout, so it is resolved by LISTING the
+  // repository rather than by joining it onto a root: `..` would otherwise be a traversal.
+  const traversal = `/api/pipelines/run?provider=ai-conductor&repoRoot=${encodeURIComponent(repo)}&slug=${encodeURIComponent("../..")}`;
+  assert.equal((await request(traversal)).status, 404);
+  assert.equal(
+    (await request(`/api/pipelines/run?provider=nope&repoRoot=${encodeURIComponent(repo)}&slug=feat`))
+      .status,
+    404,
+    "a provider this build does not have",
+  );
+  assert.equal(
+    (await request(`/api/pipelines/run?provider=ai-conductor&repoRoot=${encodeURIComponent(repo)}`))
+      .status,
+    404,
+    "and an incomplete address",
+  );
+
+  // Withdrawal is felt here in the same request too, for the reason the projection's is.
+  await request("/api/pipelines/config", {
+    method: "PUT",
+    body: JSON.stringify({
+      enabled: true,
+      repos: [{ provider: "ai-conductor", repoRoot: repo, enabled: false }],
+    }),
+  });
+  assert.equal((await request(url)).status, 404);
+});
+
+test("consent moves the settings tuple, so the Runs page's tab appears with it", async () => {
+  // The Pipelines tab is drawn from `settingsStatus.pipelines.observing`, which rides the
+  // connect snapshot. Published at the write rather than waited for on the watcher's
+  // once-a-minute presence check: an operator who switches a repository on is entitled to
+  // see the surface it produces without wondering whether they mis-clicked.
+  const { registry, request } = fixture();
+  const repo = gitRepo("observing");
+  const seen: number[] = [];
+  const unsubscribe = registry.subscribe((event) => {
+    if (event.type === "settings_status") seen.push(event.status.pipelines.observing);
+  });
+
+  await request("/api/pipelines/config", {
+    method: "PUT",
+    body: JSON.stringify({
+      enabled: true,
+      repos: [{ provider: "ai-conductor", repoRoot: repo, enabled: true }],
+    }),
+  });
+  await request("/api/pipelines/config", {
+    method: "PUT",
+    body: JSON.stringify({
+      enabled: true,
+      repos: [{ provider: "ai-conductor", repoRoot: repo, enabled: false }],
+    }),
+  });
+  unsubscribe();
+
+  assert.deepEqual(seen, [1, 0], "on and off both reach the browser at the write");
 });

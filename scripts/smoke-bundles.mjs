@@ -311,12 +311,14 @@ async function declaredMcpTools() {
       continue;
     }
     // Some names arrive as imported constants, each spelled in exactly one module: the two
-    // submission tools, and the two a plan task's prompt names and its launch pre-approves.
+    // submission tools, workflow evidence, and the two a plan task's prompt names and its
+    // launch pre-approves.
     const ref = /^\s*([A-Z_]+),/.exec(line);
     if (!ref) continue;
     const from = {
       SUBMIT_ENSEMBLE_RESULT_TOOL: "src/server/ensembles/submission-tool.ts",
       SUBMIT_SCOUT_ARTIFACTS_TOOL: "src/server/scouts/submission-tool.ts",
+      SUBMIT_WORKFLOW_EVIDENCE_TOOL: "src/server/workflows/evidence-tool.ts",
       PLAN_DECISIONS_TOOL: "src/server/plans/tools.ts",
       PLAN_SCHEDULING_TOOL: "src/server/plans/tools.ts",
     }[ref[1]];

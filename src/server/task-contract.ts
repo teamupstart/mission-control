@@ -2,6 +2,9 @@ import type { Task, TaskKind } from "@shared/types.ts";
 import { planContractAppendix, type PlanSkillInvocations } from "./plans/prompt.ts";
 import { scoutReportAppendix } from "./scouts/prompt.ts";
 import { scoutRepoSlots } from "./scouts/repos.ts";
+import {
+  workflowEvidenceContractAppendix,
+} from "./workflows/agent-contract.ts";
 
 /**
  * What a task's KIND adds to the intent it is delivered, composed at the delivery boundary.
@@ -48,6 +51,8 @@ export interface TaskContractInputs {
    * here when they cannot be resolved (`plans/skills.ts`).
    */
   planSkills?: PlanSkillInvocations | null;
+  /** The server resolved a Persona node in the selected immutable workflow graph. */
+  workflowEvidence?: boolean;
 }
 
 /**
@@ -91,6 +96,9 @@ export function withTaskKindContract(
   composedIntent: string,
   inputs: TaskContractInputs = {},
 ): string {
-  const appendix = KIND_CONTRACT[task.kind](task, inputs);
-  return appendix === null ? composedIntent : `${composedIntent}\n\n${appendix}`;
+  const appendices = [
+    KIND_CONTRACT[task.kind](task, inputs),
+    task.kind === "ship" && inputs.workflowEvidence ? workflowEvidenceContractAppendix() : null,
+  ].filter((value): value is string => value !== null);
+  return appendices.length === 0 ? composedIntent : `${composedIntent}\n\n${appendices.join("\n\n")}`;
 }

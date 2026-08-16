@@ -218,6 +218,10 @@ const workflows = new WorkflowManager(registry, personas.store, {
   canBindSessionToWorkflow: (sessionId) => ensembles.canBindSessionToWorkflow(sessionId),
   externalBindingEligibility: ({ sessionId }) => ensembles.canBindSessionToWorkflow(sessionId),
 });
+tasks.registerWorkflowEvidenceEligibility((task) =>
+  task.kind === "ship"
+  && Boolean(task.workflowId && workflows.supportsImageEvidence(task.workflowId))
+);
 workflows.start();
 // The ensemble manager: it populates the registry's ensemble collection so a reconnect snapshot
 // is truthful, registers the task projection so a member's session card names its group, owns the

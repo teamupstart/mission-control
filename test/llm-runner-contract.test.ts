@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import { assertStrictJsonSchema } from "./helpers/strict-json-schema.ts";
+import { PNG_IMAGE, writeImageDescriptor } from "./helpers/llm-image-fixtures.ts";
 import type {
   ClaudeSdkMessage,
   ClaudeSdkOneShotDeps,
@@ -38,12 +39,14 @@ const RUN_CWD = join(home, "cwd");
 const RUN_ENV = join(home, "env");
 const RUN_SCHEMA_PATH = join(home, "schema-path");
 const RUN_SCHEMA = join(home, "schema");
+const RUN_STDIN = join(home, "stdin");
 const RUN_ORPHAN_READY = join(home, "orphan-ready");
 process.env.RUN_ARGS = RUN_ARGS;
 process.env.RUN_CWD = RUN_CWD;
 process.env.RUN_ENV = RUN_ENV;
 process.env.RUN_SCHEMA_PATH = RUN_SCHEMA_PATH;
 process.env.RUN_SCHEMA = RUN_SCHEMA;
+process.env.RUN_STDIN = RUN_STDIN;
 process.env.RUN_NODE = process.execPath;
 process.env.RUN_ORPHAN_READY = RUN_ORPHAN_READY;
 
@@ -51,7 +54,7 @@ const fakeBin = join(home, "fake-claude.sh");
 writeFileSync(
   fakeBin,
   `#!/bin/sh
-cat > /dev/null
+cat > "$RUN_STDIN"
 : > "$RUN_ARGS"
 for a in "$@"; do printf '%s\\n' "$a" >> "$RUN_ARGS"; done
 pwd > "$RUN_CWD"
@@ -67,7 +70,7 @@ const fakeCodexBin = join(home, "fake-codex.sh");
 writeFileSync(
   fakeCodexBin,
   `#!/bin/sh
-cat > /dev/null
+cat > "$RUN_STDIN"
 : > "$RUN_ARGS"
 want_schema=0
 for a in "$@"; do
@@ -171,7 +174,7 @@ function flag(name: string): string | null {
 }
 
 function clearRecording(): void {
-  for (const f of [RUN_ARGS, RUN_CWD, RUN_ENV, RUN_SCHEMA_PATH, RUN_SCHEMA, RUN_ORPHAN_READY]) {
+  for (const f of [RUN_ARGS, RUN_CWD, RUN_ENV, RUN_SCHEMA_PATH, RUN_SCHEMA, RUN_STDIN, RUN_ORPHAN_READY]) {
     rmSync(f, { force: true });
   }
 }
@@ -406,6 +409,70 @@ test("Codex omits the schema flag when none was supplied", async () => {
   await codexRunner.run("answer as text", { timeoutMs: 5000 });
   assert.equal(flag("--output-schema"), null);
   assert.equal(existsSync(RUN_SCHEMA_PATH), false);
+});
+
+test("Codex text-only and empty-image calls retain the exact historical argv and stdin", async () => {
+  const expected = [
+    "exec",
+    "--ephemeral",
+    "--ignore-user-config",
+    "--ignore-rules",
+    "--skip-git-repo-check",
+    "--sandbox",
+    "read-only",
+    "--color",
+    "never",
+    "-c",
+    'approval_policy="never"',
+    "-c",
+    "features.shell_tool=false",
+    "-c",
+    "features.unified_exec=false",
+    "--json",
+    "-",
+  ];
+  for (const images of [undefined, []] as const) {
+    clearRecording();
+    await codexRunner.run("text-only prompt", { timeoutMs: 5_000, images });
+    assert.deepEqual(argv(), expected);
+    assert.equal(readFileSync(RUN_STDIN, "utf8"), "text-only prompt");
+  }
+});
+
+test("Codex appends repeated ordered image arguments before the stdin prompt", async () => {
+  const dir = mkdtempSync(join(home, "codex-images-"));
+  try {
+    const first = writeImageDescriptor(dir, "first.png", PNG_IMAGE, "image/png", "first");
+    const second = writeImageDescriptor(dir, "second.png", PNG_IMAGE, "image/png", "second");
+    clearRecording();
+    await codexRunner.run("compare these", { timeoutMs: 5_000, images: [first, second] });
+    assert.deepEqual(argv().slice(-5), [
+      "--image",
+      first.path,
+      "--image",
+      second.path,
+      "-",
+    ]);
+    assert.equal(readFileSync(RUN_STDIN, "utf8"), "compare these");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("Codex refuses an unreadable image before spawning", async () => {
+  const dir = mkdtempSync(join(home, "codex-refusal-"));
+  try {
+    const image = writeImageDescriptor(dir, "gone.png", PNG_IMAGE, "image/png", "gone");
+    rmSync(image.path);
+    clearRecording();
+    await assert.rejects(
+      codexRunner.run("inspect this", { timeoutMs: 5_000, images: [image] }),
+      /LLM image input refused/,
+    );
+    assert.equal(existsSync(RUN_ARGS), false, "an invalid image still spawned codex exec");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("Codex keeps a bounded JSON-stream failure reason without leaking agent text", async () => {

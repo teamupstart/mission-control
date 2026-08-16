@@ -22,7 +22,7 @@ database. Session and task
 actions (send / rename / focus / kill, dispatch / cancel / complete) are localhost-only.
 
 Two subsystems act outside this machine, and both are off until you separately arm them
-and name the repositories they may act in: the [Inspector](inspector-and-shipping.md#inspector-automated-pr-review),
+and name the repositories they may act in: the [GitHub Inspector](inspector-and-shipping.md#inspector-automated-pr-review),
 which comments on pull requests under your GitHub account, and
 [YOLO mode](inspector-and-shipping.md#shipping-yolo-mode), which merges them. Their allowlists are deliberately
 separate - trusting an automated reviewer to comment in a repo is not the same act as

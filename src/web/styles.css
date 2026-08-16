@@ -12204,8 +12204,14 @@ select.ensemble-judge-persona {
   font-size: 12.5px;
   color: var(--dim);
 }
+/* The page-level kind tab, above both of the Runs page's surfaces.
+   `width: max-content` because it is now a block-level child of the page rather than a flex
+   item inside the header: a `display: flex` box in block flow takes the full width, and a
+   tab strip whose border ran the width of the page would read as a toolbar. */
 .workflow-tabs {
   display: flex;
+  width: max-content;
+  margin: 0 0 14px;
   gap: 3px;
   padding: 3px;
   border: 1px solid var(--border-soft);
@@ -12216,6 +12222,7 @@ select.ensemble-judge-persona {
   padding: 7px 13px;
   font: inherit;
   font-size: 12px;
+  font-variant-numeric: tabular-nums;
   color: var(--muted);
   background: transparent;
   border: 0;
@@ -12268,6 +12275,346 @@ select.ensemble-judge-persona {
 .workflow-empty-mark {
   font-size: 28px;
   color: var(--working);
+}
+
+/* ---- Pipelines: what an external SDLC engine is driving ----
+
+   Its own `pipelines-` prefix in the routed pages' neighborhood, beside the frame it borrows
+   (`.workflow-page`, from `ExecutionPage`) - the same call the Ship log makes below. NOT
+   `wf-run-*`, though the two surfaces sit behind one tab strip and read alike: they are two
+   readings of two different engines, and sharing one family would make every later change to
+   this surface a change to the workflow run page, which is the one thing this work promises
+   never to do.
+
+   What IS shared is the STRIP. `wf-pipeline-*` draws the cards, seams and termini here
+   exactly as it draws them in the editor and the workflow run monitor, because this detail
+   is deliberately the same picture - one shape, one dialect, no second stage-rendering
+   grammar. Everything below is the reading furniture around it.
+
+   Tones are the fleet's own `workflow-<tone>` vocabulary throughout. No new colours: an
+   external engine's run is not a new kind of thing to look at, it is the same four states
+   the rest of the dashboard already speaks. */
+.pipelines {
+  display: grid;
+  grid-template-columns: minmax(240px, 320px) minmax(0, 1fr);
+  min-height: 0;
+  flex: 1;
+}
+.pipelines-rail {
+  overflow: auto;
+  border-right: 1px solid var(--border);
+  padding: 10px;
+}
+.pipelines-reader {
+  min-width: 0;
+  overflow: auto;
+  padding: 16px;
+}
+/* A grid or flex child's `min-width` is `auto`, so one wide thing - a halt reason, an
+   engine's own path - would stretch the whole ancestry and scroll the reader sideways with
+   its right edge clipped. The same floor the workflow reader declares. */
+.pipelines-run > *,
+.pipelines-section > *,
+.pipelines-run-head > * {
+  min-width: 0;
+}
+
+.pipelines-repo {
+  display: grid;
+  gap: 5px;
+  margin-bottom: 16px;
+}
+.pipelines-repo-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.pipelines-repo-head strong {
+  font-size: 12px;
+  overflow-wrap: break-word;
+}
+.pipelines-repo-head small {
+  color: var(--dim);
+  font-size: 10.5px;
+}
+.pipelines-repo-error {
+  margin: 0;
+  border: 1px solid color-mix(in srgb, var(--danger) 45%, var(--border));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--danger) 8%, var(--panel));
+  padding: 8px 10px;
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+.pipelines-group {
+  margin: 7px 0 1px;
+  color: var(--muted);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+/* One column, every part on its own row: the status chip is `flex: none` and carries a whole
+   word, so on a shared line it takes its width out of the slug beside it - the defect
+   `workflow-pipeline-label-width.test.ts` exists for, in the surface next door. */
+.pipelines-row {
+  display: grid;
+  gap: 5px;
+  justify-items: start;
+  width: 100%;
+  margin-bottom: 4px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  padding: 9px 10px;
+  text-align: left;
+  cursor: pointer;
+}
+.pipelines-row:hover,
+.pipelines-row.active {
+  border-color: var(--border);
+  background: var(--panel);
+}
+.pipelines-row.active {
+  border-color: color-mix(in srgb, var(--working) 45%, var(--border));
+}
+.pipelines-row-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+.pipelines-row-head strong {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  overflow-wrap: break-word;
+}
+.pipelines-row-tier,
+.pipelines-chip {
+  flex: none;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 7px;
+  color: var(--muted);
+  font: 10px var(--mono);
+  white-space: nowrap;
+}
+.pipelines-row-line {
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 1.4;
+  overflow-wrap: break-word;
+}
+.pipelines-note {
+  margin: 0;
+  color: var(--dim);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.pipelines-run {
+  display: grid;
+  gap: 16px;
+}
+/* The strip's cards hang on a common midline here, rather than stretching to the tallest.
+   `align-items: stretch` is right on the workflow surface, where a stage holds one to three
+   reviewers and the cards come out close in height anyway. This engine's phases are 1, 1, 9,
+   5 and 6 steps, so stretching gave SETUP and UNDERSTAND a single row of content in a card
+   nine rows tall - two thirds of the strip's height was empty box.
+
+   Centring rather than top-aligning because it is what the rest of the strip already does:
+   `.wf-pipeline-terminus` sets `align-self: center` and `.wf-pipeline-seam` centres its
+   arrow, so the wire is a horizontal line through the middle of the diagram, and the stage
+   cards were the only things not hanging on it.
+
+   Scoped to this surface, which is the whole point of the separate class family: nothing
+   about the workflow run's own strip changes. */
+.pipelines-run .wf-pipeline-strip {
+  align-items: center;
+}
+.pipelines-run-head {
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.pipelines-run-identity {
+  display: grid;
+  gap: 4px;
+  min-width: 220px;
+  margin-right: auto;
+}
+.pipelines-run-identity h3,
+.pipelines-run-identity p {
+  margin: 0;
+  overflow-wrap: break-word;
+}
+.pipelines-run-identity small {
+  color: var(--dim);
+  font-size: 10.5px;
+}
+/* The engine's own phase and position, in the eyebrow's voice - the same mono, uppercase
+   line the page header uses to say which half of the product you are in. */
+.pipelines-run-eyebrow {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--working);
+}
+.pipelines-run-title {
+  font-family: var(--mono);
+  font-size: 18px;
+  letter-spacing: -0.01em;
+}
+.pipelines-run-facts {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+a.pipelines-chip.is-link {
+  color: var(--working);
+  text-decoration: none;
+}
+a.pipelines-chip.is-link:hover,
+a.pipelines-chip.is-link:focus-visible {
+  border-color: var(--working);
+}
+/* A halt is the one state waiting on a person, so it is a band rather than a chip - the same
+   treatment a stale round takes on the workflow reader. */
+.pipelines-run-halt {
+  margin: 0;
+  border: 1px solid color-mix(in srgb, var(--danger) 45%, var(--border));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--danger) 9%, var(--panel));
+  padding: 9px 11px;
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+.pipelines-run-halt b {
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.pipelines-attempts,
+.pipelines-section {
+  display: grid;
+  gap: 10px;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel);
+  padding: 14px;
+}
+.pipelines-attempts > h4,
+.pipelines-section > h4 {
+  margin: 0;
+}
+.pipelines-attempt-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+/* Cards rather than tabs, where the workflow reader puts its round scrubber. There is one
+   projection of a pipeline run and no per-attempt snapshot to scrub to, so a control shaped
+   like a tab would promise a history nothing can show. */
+.pipelines-attempt {
+  display: grid;
+  gap: 2px;
+  justify-items: start;
+  max-width: 320px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--panel-2);
+  padding: 7px 11px;
+}
+.pipelines-attempt.is-current {
+  border-color: color-mix(in srgb, var(--working) 60%, var(--border));
+  background: color-mix(in srgb, var(--working) 12%, var(--panel));
+}
+.pipelines-attempt-name {
+  color: var(--fg);
+  font-size: 11.5px;
+  font-weight: 700;
+}
+.pipelines-attempt-line {
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 1.4;
+  overflow-wrap: break-word;
+}
+.pipelines-attempt small {
+  color: var(--dim);
+  font-size: 10px;
+}
+
+.pipelines-verdicts {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+/* The left edge is the verdict, which is why it is a border rather than a background - the
+   card grammar the workflow reader's changes, verdicts and checks all take. */
+.pipelines-verdict {
+  display: grid;
+  gap: 4px;
+  border: 1px solid var(--border-soft);
+  border-left: 3px solid var(--border);
+  border-radius: 9px;
+  background: var(--panel-2);
+  padding: 9px 11px;
+}
+.pipelines-verdict.is-satisfied {
+  border-left-color: var(--idle);
+}
+.pipelines-verdict.is-refused {
+  border-left-color: var(--danger);
+}
+.pipelines-verdict.is-skipped {
+  border-left-color: var(--exited);
+}
+/* Grid, with the chip in a column of its own: on one flex line the chip is `flex: none` and
+   the step's name is what shrinks. */
+.pipelines-verdict-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 8px;
+}
+.pipelines-verdict-head strong {
+  font-size: 11.5px;
+  overflow-wrap: break-word;
+}
+.pipelines-verdict-reason,
+.pipelines-verdict-kickback {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+  overflow-wrap: break-word;
+}
+.pipelines-verdict-kickback {
+  color: var(--attention);
+}
+.pipelines-verdict small {
+  color: var(--dim);
+  font-size: 10px;
+}
+/* A step this build has no entry for. A word rather than a colour, so it survives a
+   greyscale screenshot and a reader who never sees the styling. */
+.pipelines-unknown-mark {
+  margin-top: 4px;
+  color: var(--attention);
+  font: 700 8.5px/1.25 var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 
 /* ---- the Ship log: the adoption ledger as a cross-repo page ----

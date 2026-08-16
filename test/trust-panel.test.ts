@@ -303,7 +303,7 @@ test("the matrix renders one grant column per subsystem and the add row's anchor
   assert.match(html, /data-anchor="trust\/add"/);
   assert.match(html, /Foreman sends live/);
   assert.match(html, /Workflows act/);
-  assert.match(html, /Inspector posts reviews/);
+  assert.match(html, /GitHub Inspector posts reviews/);
   assert.match(html, /YOLO merges/);
   // The one repo appears once by directory name, with its absolute path in the tooltip.
   assert.match(html, /class="trust-repo-path"[^>]*>harness<\/span>/);

@@ -33,8 +33,9 @@ The intended result is:
 - **Prompt coverage:** preserve the current guidance surfaces only: triage, full review,
   queued-work verification, and prompted completion verification. Do not add the guidance to
   backlog dependency planning.
-- **Follow-up:** stop after publishing this approved root plan. Do not create phased plans or
-  implementation tasks.
+- **Follow-up:** decompose this approved plan into merge-aware implementation phases and schedule
+  one task per phase. Keep every task disabled so backlog automation cannot pull it, and pin each
+  task to Codex `gpt-5.6-sol` with `xhigh` reasoning effort.
 
 ## Why this is smaller than the older Persona versioning plan
 

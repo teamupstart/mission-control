@@ -22119,6 +22119,11 @@ span.line-run-prov {
 .bl-added {
   margin-left: auto;
 }
+.bl-recovery {
+  color: var(--attention);
+  font-size: 10.5px;
+  line-height: 1.45;
+}
 .bl-launch {
   align-self: flex-start;
   padding: 2px 7px;
@@ -26439,4 +26444,135 @@ body.foreman-sidecar-open .modal-backdrop {
   border: 1px solid var(--border-soft);
   border-radius: 999px;
   padding: 1px 6px;
+}
+
+/* ---- an external engine's session, on the fleet ----------------------------------------
+   Everything here is drawn for ONE fact: this agent is not yours to talk to. It sits beside
+   affordances that all look ordinary, because the engine spawns a real agent into a real
+   pane - so the marks below are the only thing distinguishing a `--print` process from an
+   agent waiting on your next instruction.
+
+   No new colours. The chip and cluster head reuse the fleet's own `--dim`/`--muted` ramp and
+   the `needs-you` accent every other cluster frame wears, because an engine's run is not a
+   new kind of thing to look at. The glyph `⇶` is the Conductor settings panel's, so the
+   Settings row, the Runs tab, the card chip and the inbox row all mark themselves the same
+   way. */
+.pipeline-chip {
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  background: var(--panel-2);
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  padding: 5px 8px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.pipeline-chip:hover {
+  border-color: var(--fg);
+  color: var(--fg);
+}
+/* One step dimmer than the slug beside it: the slug is the run's identity and the step is
+   where it has got to, and the second moves on its own every few minutes. */
+.pipeline-chip-step {
+  color: var(--dim);
+}
+
+/* The frame header over an engine-driven session, in both layouts. Borrows the ensemble
+   cluster's classes for its box (see `PipelineClusterHead`) and only re-tints the glyph, so
+   two frames in one column read as the same kind of structure. */
+.rail-pipeline-group .reg-glyph,
+.board-pipeline-head .bch-glyph {
+  color: var(--muted);
+}
+
+/* The composer's replacement. A SENTENCE where the box was, not a disabled box: a greyed
+   composer says "not right now", which is what a busy agent's looks like, and this one is
+   never coming back. Same padding as `.compose-row` so the pane does not jump when a
+   correlation lands on a session somebody is reading. */
+.compose-notice {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  padding: 10px 12px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.compose-notice .cn-glyph {
+  color: var(--dim);
+}
+.compose-notice .cn-link {
+  color: var(--working);
+  text-decoration: none;
+  border-bottom: 1px solid color-mix(in srgb, var(--working) 40%, transparent);
+}
+.compose-notice .cn-link:hover {
+  border-bottom-color: var(--working);
+}
+
+/* The conversation window's pipeline ladder. The panel, head, rungs and action row are the
+   workflow ladder's own classes - one grammar, two readers - so only the pieces that have no
+   workflow equivalent are styled here. */
+.pipeline-ladder-halt {
+  color: var(--danger);
+}
+/* The phase disclosure. Collapsed by default for every phase but the one the run is in: a
+   22-step engine drawn flat is a column longer than the conversation beside it. */
+.pipeline-ladder-phase > summary {
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--dim);
+  padding: 2px 0;
+}
+.pipeline-ladder-phase > summary:hover {
+  color: var(--muted);
+}
+.pipeline-ladder-steps {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+}
+.pipeline-ladder-step {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+}
+/* The halo the plan asks for, drawn as a border AND the word beside it: "the step the engine
+   is on" is the single fact this pane exists to deliver, and it has to survive a reader who
+   never sees this stylesheet.
+   The negative margin pays the border and padding back into the gutter, so the haloed row's
+   NAME stays on the same left edge as every other step's. Without it the one row a reader is
+   looking for is the one row jogged 8px out of the column, which reads as a layout bug rather
+   than as emphasis. */
+.pipeline-ladder-step.is-current {
+  border-left: 2px solid var(--working);
+  padding-left: 6px;
+  margin-left: -8px;
+}
+.pipeline-ladder-current {
+  font-size: 10px;
+  color: var(--working);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+/* A retained no-op slot in the engine's own state: dashed and receded, exactly as the
+   horizontal detail draws it, rather than hidden - it still occupies a slot in the file. */
+.pipeline-ladder-step.is-disabled {
+  opacity: 0.55;
+}
+
+/* The inbox's halt row. A neutral rule like the other rows whose answer is somewhere else -
+   clearing a halt is the engine's CLI, and the verbs that spawn it are a later phase - with
+   the runbook on its own line because it is a place to go rather than part of the reason. */
+.inbox-halt {
+  border-left: 3px solid var(--border);
+}
+.inbox-runbook {
+  font-size: 11px;
 }

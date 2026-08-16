@@ -14,6 +14,7 @@ import {
   TREEHOUSE_BIN,
   withPoolLock,
   type PoolDeps,
+  type PoolLockPriority,
 } from "./pool-lease.ts";
 import type { Registry } from "./registry.ts";
 import { listRepos } from "./repos.ts";
@@ -104,6 +105,11 @@ export interface ReapResult {
   reaped: PoolTree[];
   /** Every tree we considered and declined, with the reason. */
   skipped: ReapCandidate[];
+}
+
+/** A dispatch-time cleanup pass, including whether one `get` is now worth retrying. */
+export interface PoolRecoveryResult extends ReapResult {
+  capacityAvailable: boolean;
 }
 
 /**
@@ -648,22 +654,81 @@ export async function reapPool(
   pins: () => PoolPins,
   deps: PoolDeps = defaultPoolDeps,
 ): Promise<ReapResult> {
+  return (await reapPoolWithPolicy(repoRoot, pins, deps, {
+    lockPriority: "background",
+    maxReaped: Number.POSITIVE_INFINITY,
+    stopWhenCapacityExists: false,
+  })).result;
+}
+
+/**
+ * Recover only the capacity one waiting dispatch needs.
+ *
+ * A dry-pool recovery is not a maintenance sweep. If another return already made a slot
+ * available while `get` was waiting, it stops at the status read. Otherwise it returns at
+ * most one provably safe lease, then lets the dispatch retry acquisition. The safety plan
+ * and the fresh pre-return checks are exactly the same ones the exhaustive reaper uses.
+ */
+export async function recoverDryPoolCapacity(
+  repoRoot: string,
+  pins: () => PoolPins,
+  deps: PoolDeps = defaultPoolDeps,
+): Promise<PoolRecoveryResult> {
+  const run = await reapPoolWithPolicy(repoRoot, pins, deps, {
+    lockPriority: "foreground",
+    maxReaped: 1,
+    stopWhenCapacityExists: true,
+  });
+  return { ...run.result, capacityAvailable: run.capacityAvailable };
+}
+
+interface ReapPolicy {
+  lockPriority: PoolLockPriority;
+  maxReaped: number;
+  stopWhenCapacityExists: boolean;
+}
+
+async function reapPoolWithPolicy(
+  repoRoot: string,
+  pins: () => PoolPins,
+  deps: PoolDeps,
+  policy: ReapPolicy,
+): Promise<{ result: ReapResult; capacityAvailable: boolean }> {
   const empty: ReapResult = { reaped: [], skipped: [] };
-  if (!isTreehouseRepo(repoRoot)) return empty;
+  if (!isTreehouseRepo(repoRoot)) return { result: empty, capacityAvailable: false };
 
   // Read BEFORE the status below, so "this process leased that tree after we looked" is
   // answerable at the moment of each return. See `returnIfStillIdle`.
   const generation = leaseGeneration();
-  const status = await withPoolLock(repoRoot, () => deps.status(repoRoot));
-  if (status.code !== 0) return empty;
+  const status = await withPoolLock(
+    repoRoot,
+    () => deps.status(repoRoot),
+    policy.lockPriority,
+  );
+  if (status.code !== 0) return { result: empty, capacityAvailable: false };
   const trees = parsePoolStatus(status.stdout);
-  if (trees.length === 0) return empty;
+  if (trees.length === 0) return { result: empty, capacityAvailable: false };
 
   const canon = canonicalPins(pins());
   // Nothing even plausibly idle (the healthy case: every tree busy or available)?
   // Then don't reach for the network at all - a sweep costs one `treehouse status`.
   const cheap = trees.map((tree) => ({ tree, skip: cheapVerdict(tree, canon) }));
-  if (cheap.every((c) => c.skip !== null)) return { reaped: [], skipped: cheap };
+  const capacityAvailable = trees.some((tree) => tree.state === "available");
+  if (policy.stopWhenCapacityExists && capacityAvailable) {
+    return {
+      result: {
+        reaped: [],
+        skipped: cheap.map((candidate) => ({
+          ...candidate,
+          skip: candidate.skip ?? "the pool already has available capacity",
+        })),
+      },
+      capacityAvailable: true,
+    };
+  }
+  if (cheap.every((c) => c.skip !== null)) {
+    return { result: { reaped: [], skipped: cheap }, capacityAvailable };
+  }
 
   // One fetch for the whole pool: linked worktrees share the main repo's git dir,
   // so this refreshes `origin/*` for every tree at once. It's what keeps the
@@ -675,7 +740,7 @@ export async function reapPool(
   const plan = await planReapWith(trees, canon);
   const result: ReapResult = { reaped: [], skipped: plan.filter((c) => c.skip !== null) };
   const candidates = plan.filter((c) => c.skip === null).map((c) => c.tree);
-  if (candidates.length === 0) return result;
+  if (candidates.length === 0) return { result, capacityAvailable };
 
   // Everything above was judged against evidence the fetch has now left up to
   // 30s stale, and `return --force` kills whatever it finds. That gap is enough
@@ -710,13 +775,27 @@ export async function reapPool(
   // does not reach another process (see `pool-lease.ts`), which is why the holder rung
   // above and not the lock is what keeps a stranger's lease safe - but it does close
   // the window against ourselves, which is the one we can close.
-  for (const tree of candidates) {
-    const outcome = await withPoolLock(repoRoot, () =>
-      returnIfStillIdle(repoRoot, tree, pins, deps, generation));
+  for (const [index, tree] of candidates.entries()) {
+    const outcome = await withPoolLock(
+      repoRoot,
+      () => returnIfStillIdle(repoRoot, tree, pins, deps, generation),
+      policy.lockPriority,
+    );
     if (outcome === null) result.reaped.push(tree);
     else result.skipped.push({ tree, skip: outcome });
+    if (result.reaped.length >= policy.maxReaped) {
+      // These were safe candidates in the same plan, but this caller asked for capacity,
+      // not an exhaustive cleanup. Account for them without acting on stale evidence.
+      for (const remaining of candidates.slice(index + 1)) {
+        result.skipped.push({ tree: remaining, skip: "enough pool capacity was restored" });
+      }
+      break;
+    }
   }
-  return result;
+  return {
+    result,
+    capacityAvailable: capacityAvailable || result.reaped.length > 0,
+  };
 }
 
 /**

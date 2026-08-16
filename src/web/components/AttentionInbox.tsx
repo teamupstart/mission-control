@@ -1,4 +1,6 @@
 import { ensembleStageWord } from "@shared/ensemble.ts";
+import { PIPELINE_HALT_CLASS_INFO, PIPELINE_PROVIDER_INFO } from "@shared/pipeline.ts";
+import { pipelineRunHash } from "../workflows/useWorkflowRoute.ts";
 import type { AttentionFold, AttentionItem } from "../lib/attention.ts";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
 import { Tooltip } from "./Tooltip.tsx";
@@ -35,6 +37,7 @@ const SECTION_TITLES: Record<AttentionItem["kind"], string> = {
   ensemble_decision: "Decisions",
   session_reviews: "Questions from agents",
   session_dialog: "Parked on a menu",
+  pipeline_halt: "Pipeline halts",
   session_blocked: "Waiting on you",
   parked_finalization: "Stuck finalizations",
 };
@@ -81,7 +84,10 @@ export function AttentionInbox({
             figure at the moment they were trying to drain it.
           */}
           <strong>{fold.total > 0 ? `${fold.total} to answer` : "Nothing to answer"}</strong>
-          <span className="dim"> · answers, decisions and stuck finalizations</span>
+          {/* Enumerates the sections below, so it has to grow when one does - a subtitle that
+              lists four kinds of obligation over a panel holding five reads as a panel showing
+              you less than it has. */}
+          <span className="dim"> · answers, decisions, halts and stuck finalizations</span>
         </div>
         <Tooltip label="Close the inbox - nothing is resolved">
           <button className="btn btn-ghost" onClick={onClose}>
@@ -106,6 +112,7 @@ export function AttentionInbox({
                 item={item}
                 onOpenEnsemble={(runId) => leave(() => onOpenEnsemble(runId))()}
                 onOpenSession={(sessionId) => leave(() => onOpenSession(sessionId))()}
+                onLeave={onClose}
               />
             </div>
           );
@@ -119,10 +126,13 @@ function InboxItem({
   item,
   onOpenEnsemble,
   onOpenSession,
+  onLeave,
 }: {
   item: AttentionItem;
   onOpenEnsemble: (runId: string) => void;
   onOpenSession: (sessionId: string) => void;
+  /** Close the inbox, for the one row whose deep link is an `href` rather than a handler. */
+  onLeave: () => void;
 }): React.JSX.Element {
   switch (item.kind) {
     case "ensemble_decision":
@@ -190,6 +200,48 @@ function InboxItem({
                 straight onto it ("...use Bash Answered on the session card"). The app's
                 separator rather than a full stop, because the clause is a different voice. */}
             <span className="dim"> · Answered on the session card, not here.</span>
+          </p>
+        </section>
+      );
+    case "pipeline_halt":
+      return (
+        <section className="inbox-item inbox-halt">
+          <div className="inbox-head">
+            <span className="inbox-glyph" aria-hidden>
+              ⇶
+            </span>
+            <strong>{item.run.slug}</strong>
+            <span className="inbox-meta">
+              {PIPELINE_PROVIDER_INFO[item.run.provider].label} ·{" "}
+              {PIPELINE_HALT_CLASS_INFO[item.haltClass].label}
+            </span>
+            <span className="inbox-spacer" />
+            {/*
+              An ANCHOR, not a button, and the only row here that is one. Every other deep
+              link in this inbox leaves through a handler the app owns, because it moves
+              within a page's own state; this one addresses a route by hash, which is exactly
+              what `pipelineRunHash` exists to assemble - and an anchor is what lets an
+              operator open a halted run in a second window without losing the inbox.
+
+              It still closes the inbox, like every other deep link here: what it opens is
+              somewhere else, and a modal left standing over it would hide the thing the
+              click asked for.
+            */}
+            <Tooltip label="Open this pipeline's run - its steps, its gate verdicts, and what stopped it">
+              <a className="btn btn-ghost" href={pipelineRunHash(item.run)} onClick={onLeave}>
+                Open run
+              </a>
+            </Tooltip>
+          </div>
+          <p className="inbox-line">
+            {item.reason}
+            {/* The app's separator rather than a full stop: the engine's own sentence ends
+                without punctuation, and the clause after it is a different voice. */}
+            <span className="dim"> · {PIPELINE_HALT_CLASS_INFO[item.haltClass].blurb}</span>
+          </p>
+          <p className="inbox-line inbox-runbook">
+            <span className="dim">Runbook: </span>
+            {item.runbook}
           </p>
         </section>
       );

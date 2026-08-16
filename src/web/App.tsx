@@ -89,7 +89,7 @@ import {
 import type { LibrarySurface } from "./workflows/useWorkflowRoute.ts";
 import { PipelineRuns } from "./pipelines/PipelineRuns.tsx";
 import { RunsKindTabs, type RunsKind } from "./pipelines/RunsKindTabs.tsx";
-import type { PipelineRun } from "@shared/pipeline.ts";
+import { pipelineRunKeyOf, type PipelineRun } from "@shared/pipeline.ts";
 import { LibraryPage } from "./library/LibraryPage.tsx";
 import type { EnsembleStrategyId } from "@shared/ensemble.ts";
 import { PersonaLibrary } from "./workflows/PersonaLibrary.tsx";
@@ -842,7 +842,11 @@ export function App(): React.JSX.Element {
    * a link out of the rail could lose.
    */
   const openPipelineRun = useCallback(
-    (run: PipelineRun): void => {
+    // The run's KEY, not a whole `PipelineRun`: a session's own `pipeline` link carries the
+    // three coordinates and nothing else, and it is the caller a card, a ladder and an inbox
+    // row all reach this through. `pipelineRunRoute` asks for exactly these three, so both
+    // shapes satisfy it structurally and neither caller has to destructure.
+    (run: { provider: PipelineRun["provider"]; repoRoot: string; slug: string }): void => {
       navigate(pipelineRunRoute(run));
     },
     [navigate],
@@ -1185,6 +1189,15 @@ export function App(): React.JSX.Element {
     for (const summary of ensembleSummaries) map.set(summary.id, summary);
     return map;
   }, [ensembleSummaries]);
+  // The same shape for the other kind of run a card can sit under - an external engine's
+  // pipeline - keyed by `pipelineRunKey` because that is what a session's own link
+  // reconstitutes and what `orderSessions` buckets by. EMPTY on every fleet observing no
+  // engine, which is the map every consumer of it is written to fall back from.
+  const pipelineRunByKey = useMemo(() => {
+    const map = new Map<string, PipelineRun>();
+    for (const run of pipelineRuns) map.set(pipelineRunKeyOf(run), run);
+    return map;
+  }, [pipelineRuns]);
   // The Ensembles tab badge: runs the DAEMON flagged as needing attention (a parked decision,
   // a failure, an unreadable row, or a member sitting on your answer). Counted here, never
   // recomputed - `ensembleNeedsAttention` is the server's derivation and the run list's dot,
@@ -1199,8 +1212,14 @@ export function App(): React.JSX.Element {
   // scope - and NOT through `detectAlerts`, which answers a different question (what deserves
   // an OS notification while you are away) and deliberately excludes reviews.
   const attention = useMemo(
-    () => foldAttention({ sessions, reviews: answerableReviews, ensembles: ensembleSummaries }),
-    [sessions, answerableReviews, ensembleSummaries],
+    () =>
+      foldAttention({
+        sessions,
+        reviews: answerableReviews,
+        ensembles: ensembleSummaries,
+        pipelineRuns,
+      }),
+    [sessions, answerableReviews, ensembleSummaries, pipelineRuns],
   );
   // The topbar badge: enabled schedules the daemon flagged as needing attention. Health is
   // the server's derivation (`schedule.health`); this only counts it, never recomputes it.
@@ -1366,6 +1385,8 @@ export function App(): React.JSX.Element {
     scheduleNameById,
     onOpenEnsemble: openEnsembleRun,
     ensembleSummaryByRun,
+    onOpenPipelineRun: openPipelineRun,
+    pipelineRunByKey,
   };
 
   /**

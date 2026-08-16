@@ -699,7 +699,10 @@ Settings the page grows a second tab, **Pipelines**, and
 appears, and `#/runs` and `#/runs/<run-id>` keep meaning exactly what they mean here.
 
 When a session has a bound run, its Console and Board detail pane shows a vertical stage
-ladder in the **Workflows** tab (<kbd>y</kbd>). Every stage names its members and each member's own
+ladder in the **Workflows** tab (<kbd>y</kbd>). A session an external engine is driving gets
+[that engine's pipeline](pipelines.md#on-the-fleet) on the same tab instead, drawn as the same
+ladder from the same rungs - such a session has no workflow run to bind, and the question the
+tab answers is the same one. Every stage names its members and each member's own
 status, so a stage that folded to `All passed` still says which reviewers and checks passed it,
 and an objection, GitHub Inspector wait, session-action wait, or uncertain delivery opens in
 place. A workflow whose final gate is GitHub Inspector ends the ladder with a fixed `GitHub Inspector` rung

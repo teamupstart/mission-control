@@ -60,7 +60,14 @@ Control controls. So:
 - **Nothing throws.** The emitter swallows handler errors, so throwing would be invisible
   here and expensive elsewhere. Failures are counted and warned about once per process.
 - **The buffer is bounded** at 5000 events, oldest dropped first, because a daemon that is
-  not running must not grow the memory of a process that runs for days.
+  not running must not grow the memory of a process that runs for days. A batch being
+  RETRIED is the exception: it sits at the front, and the ceiling is applied to the newest
+  entries instead, so a delivery failure cannot discard the events it was carrying.
+- **Shutdown is bounded.** `stop()` is awaited by conductor's shutdown path, so the whole
+  drain runs under a 2s deadline and the in-flight request is aborted when it expires. A
+  daemon that accepts a connection and never answers costs the engine two seconds, not its
+  exit. Nothing is discarded to meet the deadline - the aborted request requeues its batch
+  exactly as a refused connection does.
 - **A failed delivery is retried, not discarded.** The batch goes back to the front of the
   queue and is retried with backoff (up to 30s between attempts), so a daemon restart costs
   latency rather than data. The buffer ceiling still applies to the requeue, so a daemon that

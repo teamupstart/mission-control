@@ -69,6 +69,17 @@ const MAX_WARNINGS = 1;
 const MAX_RETRY_MS = 30_000;
 
 /**
+ * The longest `stop()` will spend trying to deliver before it gives up and returns.
+ *
+ * A daemon that accepts the connection and then never answers leaves `fetch` pending for
+ * ever, and `stop()` is called on conductor's shutdown path - so an unbounded await here is
+ * this plugin holding the ENGINE open, which is the one thing it is not allowed to do. The
+ * in-flight request is aborted when this expires; its batch goes back through the ordinary
+ * retry path, so nothing is discarded to meet the deadline, it simply is not delivered.
+ */
+const SHUTDOWN_MS = 2_000;
+
+/**
  * The event kinds this build forwards, frozen at ai-conductor 8b51392d.
  *
  * Enumerated because conductor's bus has no wildcard: `.on()` takes one type. So this list
@@ -306,6 +317,8 @@ export function createMissionControlVisualizer(options = {}) {
   let warned = 0;
   let dropped = 0;
   let inFlight = null;
+  /** Aborts the open request, so a hung daemon cannot hold conductor's shutdown. */
+  let inFlightAbort = null;
   let stopped = false;
   /** Consecutive failed deliveries, for the retry backoff. Reset by any success. */
   let failures = 0;
@@ -318,6 +331,37 @@ export function createMissionControlVisualizer(options = {}) {
    * the connection, so it must not slow delivery for the rest of the run.
    */
   let sendLimit = MAX_BATCH;
+
+  /** A promise that settles after `ms`, without keeping conductor's loop alive for it. */
+  const sleep = (ms) =>
+    new Promise((resolve) => {
+      const handle = setTimeout(resolve, ms);
+      if (typeof handle?.unref === "function") handle.unref();
+    });
+
+  /**
+   * Await `promise`, but for no longer than `ms`, aborting the open request if it expires.
+   *
+   * The abort is what makes the deadline real: without it the socket stays open and the
+   * pending `fetch` keeps a handle on conductor's loop even after `stop()` has returned. The
+   * aborted request rejects, which lands in `flush`'s catch and requeues its batch, so the
+   * retry policy still owns those events.
+   */
+  const settleWithin = async (promise, ms) => {
+    if (ms <= 0) inFlightAbort?.abort?.();
+    let expired = false;
+    await Promise.race([
+      promise,
+      sleep(Math.max(0, ms)).then(() => {
+        expired = true;
+      }),
+    ]);
+    if (!expired) return;
+    inFlightAbort?.abort?.();
+    // Let the abort propagate through the catch that requeues, so the batch is not left
+    // owned by a request nobody is waiting for.
+    await promise.catch(() => {});
+  };
 
   /** Complain at most `MAX_WARNINGS` times, about anything, for the life of the process. */
   const warnOnce = (message) => {
@@ -391,7 +435,14 @@ export function createMissionControlVisualizer(options = {}) {
     buffer = batch.concat(buffer);
     if (buffer.length > MAX_BUFFER) {
       dropped += buffer.length - MAX_BUFFER;
-      buffer = buffer.slice(-MAX_BUFFER);
+      // Trimmed from the TAIL here, where `enqueue` trims from the head, and the asymmetry
+      // is the whole point rather than an inconsistency. `enqueue` drops the oldest because
+      // the newest events are the ones still worth having. On this path the oldest events
+      // ARE the batch just put back - so the same rule would let a delivery failure destroy
+      // exactly the events that failed to deliver, which is the loss this function exists to
+      // prevent. A batch is at most 500 and the ceiling is 5000, so what is dropped is
+      // always queued events and never the batch itself.
+      buffer = buffer.slice(0, MAX_BUFFER);
       warnOnce(
         `dropped ${dropped} buffered event(s) - is the Mission Control daemon running at ${url}?`,
       );
@@ -413,6 +464,10 @@ export function createMissionControlVisualizer(options = {}) {
     // queue behind it and order is preserved. A failure puts it back; see `requeue`.
     buffer = buffer.slice(batch.length);
     const body = `${batch.map((entry) => JSON.stringify(entry)).join("\n")}\n`;
+    // A handle on this request, so `stop()` can end one the daemon never answers. Guarded
+    // because this file runs under whatever runtime conductor was started with.
+    const controller = typeof AbortController === "function" ? new AbortController() : null;
+    inFlightAbort = controller;
     inFlight = (async () => {
       try {
         const res = await fetchImpl(`${url}/ingest/conductor`, {
@@ -422,6 +477,7 @@ export function createMissionControlVisualizer(options = {}) {
             "x-harness-token": tokenNow(),
           },
           body,
+          signal: controller?.signal,
         });
         if (res.ok) {
           failures = 0;
@@ -476,6 +532,7 @@ export function createMissionControlVisualizer(options = {}) {
         );
       } finally {
         inFlight = null;
+        inFlightAbort = null;
       }
     })();
     await inFlight;
@@ -525,25 +582,34 @@ export function createMissionControlVisualizer(options = {}) {
       handlers = [];
       emitter = null;
       // Drain rather than send once: a run that ended with more than one batch pending owes
-      // its last events to the ledger, and this is the one place in the file that is allowed
-      // to take its time - it happens after the run, not on the bus.
+      // its last events to the ledger. But every await below is conductor's shutdown waiting
+      // on this plugin, so the whole drain runs under one deadline - a daemon that accepts a
+      // connection and never answers must cost the engine two seconds, not for ever.
       //
-      // The in-flight request is awaited FIRST, because `flush()` hands back the open one
+      // Nothing is discarded to meet it. An expired wait aborts the open request, which
+      // rejects into the same catch a refused connection uses, which requeues the batch. The
+      // events are simply undelivered, which is the state the file tail already covers for
+      // everything conductor writes down.
+      //
+      // The in-flight request is settled FIRST, because `flush()` hands back the open one
       // rather than starting a second - so a loop that did not settle it would measure a
       // buffer nothing had drained yet and give up on the remainder.
-      if (inFlight) await inFlight;
-      //
+      const deadline = Date.now() + SHUTDOWN_MS;
+      const remaining = () => deadline - Date.now();
+      if (inFlight) await settleWithin(inFlight, remaining());
       // Give up when an attempt changed NOTHING - neither the backlog nor the strategy for
       // sending it. A failed batch is put back, so buffer length alone would call a 413 no
       // progress and abandon events the very next (smaller) attempt would have delivered;
       // `sendLimit` is what makes that attempt different. Both together still terminate,
       // because `sendLimit` strictly decreases toward 1 and at 1 a refusal shortens the
-      // buffer instead. Shutdown is the one moment an unbounded retry is wrong: there is no
-      // later flush to inherit the backlog.
-      while (buffer.length > 0) {
+      // buffer instead.
+      while (buffer.length > 0 && remaining() > 0) {
         const before = buffer.length;
         const limitBefore = sendLimit;
-        await flush();
+        // Each attempt under the same deadline, not just the first: a hung daemon can hang
+        // every request, so bounding only the one that was already open would move the
+        // unbounded wait one line down rather than remove it.
+        await settleWithin(flush(), remaining());
         if (buffer.length >= before && sendLimit === limitBefore) break;
       }
     },

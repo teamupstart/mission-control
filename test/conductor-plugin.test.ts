@@ -281,6 +281,88 @@ test("one event too large for any batch is dropped rather than retried for ever"
   assert.ok(calls.length <= 2, `bounded attempts, got ${calls.length}`);
 });
 
+test("a failed batch survives the buffer filling up behind it", async () => {
+  // The eviction that would defeat the whole retry: a POST is open, events keep arriving and
+  // fill the buffer to its ceiling, then the request fails. Trimming the oldest - which is
+  // what enqueue does, correctly - would discard the batch just put back, so a delivery
+  // failure would destroy exactly the events it was carrying.
+  // An object holder rather than a bare `let`: TypeScript narrows a variable assigned only
+  // inside a callback to `never` at the call site, since it cannot see that the callback ran.
+  const gate: { release?: () => void } = {};
+  let attempts = 0;
+  const seen: string[] = [];
+  const fetchImpl = (async (_url: unknown, init: unknown) => {
+    attempts += 1;
+    const request = init as { body: string };
+    const lines = request.body.split("\n").filter((l) => l.trim() !== "");
+    if (attempts === 1) {
+      // Hold the first request open so the buffer fills behind it, then fail it.
+      await new Promise<void>((resolve) => {
+        gate.release = resolve;
+      });
+      throw new Error("ECONNREFUSED");
+    }
+    for (const raw of lines) {
+      seen.push((JSON.parse(raw) as { event: { step: string } }).event.step);
+    }
+    return { ok: true, status: 200 } as Response;
+  }) as unknown as typeof fetch;
+
+  const bus = stubBus();
+  const plugin = createMissionControlVisualizer({
+    worktree: WORKTREE,
+    token: "t",
+    fetchImpl,
+    warn: () => {},
+  });
+  plugin.start(bus);
+  // One event, sent on the first flush and held open by the transport above.
+  bus.emit({ type: "gate_verdict", step: "held-0" });
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  // Now bury it: fill the buffer to its ceiling while that request is still open.
+  for (let i = 0; i < 5200; i += 1) bus.emit({ type: "step_started", step: `late-${i}` });
+  gate.release?.();
+  await plugin.stop();
+
+  assert.ok(
+    seen.includes("held-0"),
+    "the batch that failed was evicted by the events queued behind it",
+  );
+});
+
+test("shutdown is bounded when the daemon accepts a connection and never answers", async () => {
+  // `stop()` is awaited by conductor's shutdown path, so an unbounded await here is this
+  // plugin holding the ENGINE open. A hung daemon is the case that produces it: the socket
+  // is accepted, so nothing errors and nothing times out on its own.
+  const fetchImpl = ((_url: unknown, init: unknown) => {
+    const signal = (init as { signal?: AbortSignal }).signal;
+    return new Promise<Response>((_resolve, reject) => {
+      // Never answers. Only an abort ends it, which is what the deadline must produce.
+      signal?.addEventListener("abort", () => reject(new Error("aborted")));
+    });
+  }) as unknown as typeof fetch;
+
+  const bus = stubBus();
+  const plugin = createMissionControlVisualizer({
+    worktree: WORKTREE,
+    token: "t",
+    fetchImpl,
+    warn: () => {},
+  });
+  plugin.start(bus);
+  bus.emit({ type: "gate_verdict", step: "build" });
+  await new Promise((resolve) => setTimeout(resolve, 400));
+
+  const started = Date.now();
+  await plugin.stop();
+  const elapsed = Date.now() - started;
+  assert.ok(elapsed < 10_000, `stop() must not wait for ever (waited ${elapsed}ms)`);
+  // And the undelivered event is kept rather than sacrificed to meet the deadline: the abort
+  // rejects into the same catch a refused connection uses, which requeues.
+  assert.equal(plugin.stats().buffered, 1);
+  assert.equal(plugin.stats().dropped, 0);
+});
+
 test("retrying cannot grow the buffer past its ceiling", async () => {
   // Requeue puts a failed batch BACK, so the ceiling has to be re-applied there too or a
   // daemon that stays down turns a bounded buffer into an unbounded one.

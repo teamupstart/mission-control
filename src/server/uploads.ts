@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
-import { mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { lstatSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { basename, join } from "node:path";
 import { sniffRasterImageMimeType } from "@shared/images.ts";
 import { STATE_DIR } from "./config.ts";
 
@@ -39,6 +39,8 @@ export interface SavedUpload {
   path: string;
   /** The stored basename (not the client's original). */
   name: string;
+  /** Opaque workflow locator. It reveals no state-directory path. */
+  uploadId: string;
   bytes: number;
 }
 
@@ -91,7 +93,28 @@ export function saveImageUpload(bytes: Uint8Array, originalName: string): SavedU
   const name = uploadFileName(originalName, ext);
   const path = join(UPLOADS_DIR, name);
   writeFileSync(path, bytes);
-  return { path, name, bytes: bytes.byteLength };
+  return { path, name, uploadId: name, bytes: bytes.byteLength };
+}
+
+/** Resolve only a basename this server issued, while it is still inside the upload TTL. */
+export function resolveImageUpload(
+  uploadId: string,
+  now: number = Date.now(),
+): SavedUpload | null {
+  if (
+    !uploadId
+    || uploadId !== basename(uploadId)
+    || uploadId.length > 200
+    || !/^[A-Za-z0-9._-]+$/.test(uploadId)
+  ) return null;
+  const path = join(UPLOADS_DIR, uploadId);
+  try {
+    const info = lstatSync(path);
+    if (!info.isFile() || info.isSymbolicLink() || now - info.mtimeMs > UPLOAD_TTL_MS) return null;
+    return { path, name: uploadId, uploadId, bytes: info.size };
+  } catch {
+    return null;
+  }
 }
 
 /**

@@ -331,12 +331,42 @@ test("every existing submission keeps its id and reads as segment zero", () => {
     assert.equal(submission.parentSubmissionId, null);
     assert.equal(submission.continuationNodeId, null);
     assert.equal(submission.continuationNodeAttemptId, null);
+    assert.equal(submission.evidenceGroupKey, undefined);
+    assert.equal(submission.stagedImageGeneration, 0);
   }
   // Ordering is by (round, segment) and still resolves the same latest row.
   assert.equal(store.latestSubmissionForRun(LEGACY_IDS.run)?.id, LEGACY_IDS.roundTwo);
   assert.equal(store.submissionForRepairRound(LEGACY_IDS.run, 1)?.id, LEGACY_IDS.roundOne);
   assert.equal(store.submissionForSegment(LEGACY_IDS.run, 2, 0)?.id, LEGACY_IDS.roundTwo);
   assert.equal(store.submissionForSegment(LEGACY_IDS.run, 2, 1), null);
+});
+
+test("workflow image evidence tables and indexes arrive on an upgraded database", () => {
+  const tables = new Set((db.prepare(
+    `SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'workflow_%'`,
+  ).all() as unknown as Array<{ name: string }>).map((row) => row.name));
+  for (const table of [
+    "workflow_evidence_owners",
+    "workflow_evidence_scope_generations",
+    "workflow_evidence_staging",
+    "workflow_evidence_reservations",
+    "workflow_submission_images",
+    "workflow_image_cleanup",
+  ]) {
+    assert.ok(tables.has(table), `${table} was not added during upgrade`);
+  }
+  assert.deepEqual(
+    indexColumns("workflow_evidence_staging").get("idx_workflow_evidence_staging_owner"),
+    ["note_key", "state", "generation", "created_at", "id"],
+  );
+  assert.deepEqual(
+    indexColumns("workflow_submission_images").get("idx_workflow_submission_images_submission"),
+    ["submission_id", "ordinal"],
+  );
+  assert.deepEqual(
+    indexColumns("workflow_submissions").get("idx_workflow_submissions_evidence_group"),
+    ["evidence_group_key", "run_id"],
+  );
 });
 
 test("a second segment is now insertable where the old index forbade it", () => {

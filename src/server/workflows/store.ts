@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
+import { RASTER_IMAGE_MIME_TYPES } from "@shared/images.ts";
 import type {
   CreatePersona,
   CreateSessionAction,
@@ -28,6 +29,8 @@ import {
   WorkflowRunStatusSchema,
   WorkflowInspectorGateStateSchema,
   WorkflowContextSnapshotSchema,
+  WorkflowEvidenceImageSchema,
+  WorkflowEvidenceRepositoryScopeSchema,
   WorkflowInspectorOnlyContextSchema,
   WorkflowSubmissionModeSchema,
   WorkflowSubmissionStatusSchema,
@@ -41,6 +44,7 @@ import {
   WORKFLOW_DELIVERY_MODES,
   WORKFLOW_DELIVERY_STATES,
   WORKFLOW_EXECUTION_LIMITS,
+  WORKFLOW_IMAGE_LIMITS,
   WORKFLOW_LIMITS,
   WORKFLOW_LLM_CALL_STATES,
   WORKFLOW_LLM_PURPOSES,
@@ -61,6 +65,9 @@ import {
   type WorkflowGateSummary,
   type WorkflowInspectorGateState,
   type WorkflowResumptionPolicy,
+  type WorkflowEvidenceImage,
+  type WorkflowStagedEvidenceImage,
+  type WorkflowStagedEvidenceList,
 } from "@shared/workflow.ts";
 import { SESSION_ACTION_COMPLETION_CAPABILITIES } from "@shared/workflow.ts";
 import type {
@@ -87,6 +94,7 @@ import type {
   WorkflowRunDetail,
   WorkflowRunPage,
   WorkflowRunSummary,
+  WorkflowSubmissionEvidenceImages,
   WorkflowEventPage,
   WorkflowLlmCallPage,
   WorkflowContextSnapshot,
@@ -268,6 +276,12 @@ export const WORKFLOW_TABLES = [
   "workflow_llm_calls",
   "workflow_events",
   "workflow_binding_claims",
+  "workflow_evidence_owners",
+  "workflow_evidence_scope_generations",
+  "workflow_evidence_staging",
+  "workflow_evidence_reservations",
+  "workflow_submission_images",
+  "workflow_image_cleanup",
 ] as const;
 
 export class WorkflowRowError extends Error {
@@ -890,6 +904,8 @@ const WorkflowSubmissionRowSchema = z.object({
   mode: WorkflowSubmissionModeSchema,
   trigger_source: WorkflowTriggerSourceSchema,
   trigger_key: nonempty,
+  evidence_group_key: text.optional().default(""),
+  staged_image_generation: integer.nonnegative().optional().default(0),
   evidence_fingerprint: nonempty,
   context_json: nonempty,
   evidence_json: nonempty,
@@ -930,6 +946,8 @@ export function parseWorkflowSubmissionRow(value: unknown): WorkflowSubmission {
     mode: row.mode,
     triggerSource: row.trigger_source,
     triggerKey: row.trigger_key,
+    evidenceGroupKey: row.evidence_group_key || undefined,
+    stagedImageGeneration: row.staged_image_generation ?? 0,
     evidenceFingerprint: row.evidence_fingerprint,
     context: parseJson(
       "workflow_submissions",
@@ -953,6 +971,87 @@ export function parseWorkflowSubmissionRow(value: unknown): WorkflowSubmission {
     updatedAt: row.updated_at,
     completedAt: row.completed_at,
   };
+}
+
+const WorkflowEvidenceStagingRowSchema = z.object({
+  id: nonempty.max(200),
+  note_key: nonempty,
+  client_item_id: nonempty.max(WORKFLOW_IMAGE_LIMITS.clientItemIdChars),
+  source_kind: z.enum(["agent", "upload", "retained"]),
+  source_root: nonempty,
+  source_locator: nonempty.max(WORKFLOW_IMAGE_LIMITS.relativePathChars),
+  display_name: nonempty.max(WORKFLOW_IMAGE_LIMITS.displayNameChars),
+  caption: nonempty.max(WORKFLOW_IMAGE_LIMITS.captionChars),
+  repository_scope: WorkflowEvidenceRepositoryScopeSchema,
+  mime_type: z.enum(RASTER_IMAGE_MIME_TYPES),
+  bytes: positive.max(WORKFLOW_IMAGE_LIMITS.maxBytesPerImage),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/),
+  generation: positive,
+  state: z.enum(["staged", "reserved"]),
+  reserved_group_key: nullableText,
+  created_at: integer,
+  updated_at: integer,
+}).superRefine((row, ctx) => {
+  if ((row.state === "staged") !== (row.reserved_group_key === null)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["reserved_group_key"],
+      message: "Reserved state and evidence group must be present together",
+    });
+  }
+});
+
+export type WorkflowEvidenceStagingRow = z.infer<typeof WorkflowEvidenceStagingRowSchema>;
+
+export function parseWorkflowEvidenceStagingRow(value: unknown): WorkflowEvidenceStagingRow {
+  return parseShape("workflow_evidence_staging", WorkflowEvidenceStagingRowSchema, value);
+}
+
+const WorkflowSubmissionImageRowSchema = z.object({
+  id: nonempty.max(200),
+  submission_id: nonempty,
+  staging_id: nonempty,
+  ordinal: integer.nonnegative(),
+  display_name: nonempty.max(WORKFLOW_IMAGE_LIMITS.displayNameChars),
+  caption: nonempty.max(WORKFLOW_IMAGE_LIMITS.captionChars),
+  repository_scope: WorkflowEvidenceRepositoryScopeSchema,
+  mime_type: z.enum(RASTER_IMAGE_MIME_TYPES),
+  bytes: positive.max(WORKFLOW_IMAGE_LIMITS.maxBytesPerImage),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/),
+  storage_relative_path: nonempty.max(WORKFLOW_IMAGE_LIMITS.relativePathChars),
+  availability: z.enum(["retained", "pruned"]),
+  pruned_at: nullableInteger,
+  created_at: integer,
+}).superRefine((row, ctx) => {
+  if ((row.availability === "retained") !== (row.pruned_at === null)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["pruned_at"],
+      message: "Pruned availability and pruning timestamp must be present together",
+    });
+  }
+});
+
+export type WorkflowSubmissionImageRow = z.infer<typeof WorkflowSubmissionImageRowSchema>;
+
+export function parseWorkflowSubmissionImageRow(value: unknown): WorkflowSubmissionImageRow {
+  return parseShape("workflow_submission_images", WorkflowSubmissionImageRowSchema, value);
+}
+
+function workflowEvidenceImageFromRow(row: WorkflowSubmissionImageRow): WorkflowEvidenceImage {
+  return WorkflowEvidenceImageSchema.parse({
+    id: row.id,
+    ordinal: row.ordinal,
+    displayName: row.display_name,
+    caption: row.caption,
+    repositoryScope: row.repository_scope,
+    mimeType: row.mime_type,
+    bytes: row.bytes,
+    sha256: row.sha256,
+    availability: row.availability,
+    prunedAt: row.pruned_at,
+    createdAt: row.created_at,
+  });
 }
 
 const WorkflowNodeAttemptRowSchema = z.object({
@@ -1310,7 +1409,7 @@ function runContextState(
         diagnose(new WorkflowRowError(
           "workflow_submissions",
           submission.id,
-          "context_json is not a valid Inspector-only context",
+          "context_json is not a valid GitHub Inspector-only context",
         ));
         return "corrupt";
       }
@@ -1557,6 +1656,8 @@ export interface WorkflowSubmissionInsert {
   };
   triggerSource: WorkflowTriggerSource;
   triggerKey: string;
+  /** Shared by sibling repository submissions created for one completion boundary. */
+  evidenceGroupKey?: string;
   context: WorkflowJson;
   evidence: WorkflowJson;
   mode?: WorkflowSubmission["mode"];
@@ -1564,6 +1665,39 @@ export interface WorkflowSubmissionInsert {
   prHeadSha?: string | null;
   status?: WorkflowSubmission["status"];
   now: number;
+}
+
+export interface WorkflowStagedEvidenceWrite {
+  id: string;
+  clientItemId: string;
+  sourceKind: "agent" | "upload" | "retained";
+  sourceRoot: string;
+  sourceLocator: string;
+  displayName: string;
+  caption: string;
+  repositoryScope: string;
+  mimeType: WorkflowEvidenceImage["mimeType"];
+  bytes: number;
+  sha256: string;
+}
+
+export interface WorkflowReservedEvidence extends WorkflowStagedEvidenceWrite {
+  generation: number;
+  ordinal: number;
+}
+
+export interface WorkflowSubmissionImageWrite {
+  id: string;
+  stagingId: string;
+  ordinal: number;
+  displayName: string;
+  caption: string;
+  repositoryScope: string;
+  mimeType: WorkflowEvidenceImage["mimeType"];
+  bytes: number;
+  sha256: string;
+  storageRelativePath: string;
+  createdAt: number;
 }
 
 export interface WorkflowExternalClaimInput {
@@ -1629,8 +1763,11 @@ export interface ForemanCompletionStoreInput {
   binding: WorkflowBinding;
   completionKind: "drain" | "prompted";
   marker: string;
+  promptedActivityAt: number | null;
   summary: string;
   evidenceFingerprint: string;
+  /** Same completion episode across every repository sibling. */
+  evidenceGroupKey?: string;
   expectedIntent: SessionIntentGuard | null;
   runId: string;
   submissionId: string;
@@ -3520,6 +3657,334 @@ export class WorkflowStore {
     }
   }
 
+  /** Register one material staged-set change under the durable conversation identity. */
+  stageWorkflowEvidence(
+    noteKey: string,
+    items: readonly WorkflowStagedEvidenceWrite[],
+    now = Date.now(),
+  ): WorkflowStagedEvidenceList {
+    return transaction(this.db, () => {
+      this.db.prepare(
+        `INSERT OR IGNORE INTO workflow_evidence_owners (
+           note_key, generation, all_generation, updated_at
+         ) VALUES (?, 0, 0, ?)`,
+      ).run(noteKey, now);
+      const existingRows = (this.db.prepare(
+        `SELECT * FROM workflow_evidence_staging WHERE note_key = ?`,
+      ).all(noteKey) as unknown[]).map(parseWorkflowEvidenceStagingRow);
+      const existing = new Map(existingRows.map((row) => [row.client_item_id, row]));
+      const changedItems: WorkflowStagedEvidenceWrite[] = [];
+      const affectedRoots = new Set<string>();
+      let allAffected = false;
+      for (const item of items) {
+        const row = existing.get(item.clientItemId);
+        const same = row
+          && row.source_kind === item.sourceKind
+          && row.source_root === item.sourceRoot
+          && row.source_locator === item.sourceLocator
+          && row.display_name === item.displayName
+          && row.caption === item.caption
+          && row.repository_scope === item.repositoryScope
+          && row.mime_type === item.mimeType
+          && row.bytes === item.bytes
+          && row.sha256 === item.sha256;
+        if (same) continue;
+        if (row?.reserved_group_key) {
+          throw new Error(`Workflow evidence item ${item.clientItemId} is already reserved`);
+        }
+        changedItems.push(item);
+        if (row?.repository_scope === "all" || item.repositoryScope === "all") allAffected = true;
+        if (row && row.repository_scope !== "all") affectedRoots.add(row.source_root);
+        if (item.repositoryScope !== "all") affectedRoots.add(item.sourceRoot);
+      }
+      if (changedItems.length === 0) return this.listWorkflowEvidence(noteKey);
+
+      const currentStaged = existingRows.filter((row) => row.state === "staged");
+      const nextIds = new Set(changedItems.map((item) => item.clientItemId));
+      const nextCount = currentStaged.filter((row) => !nextIds.has(row.client_item_id)).length
+        + changedItems.length;
+      const nextBytes = currentStaged
+        .filter((row) => !nextIds.has(row.client_item_id))
+        .reduce((sum, row) => sum + row.bytes, 0)
+        + changedItems.reduce((sum, item) => sum + item.bytes, 0);
+      if (nextCount > WORKFLOW_IMAGE_LIMITS.maxCount) {
+        throw new Error(`At most ${WORKFLOW_IMAGE_LIMITS.maxCount} workflow evidence images may be staged`);
+      }
+      if (nextBytes > WORKFLOW_IMAGE_LIMITS.maxAggregateBytes) {
+        throw new Error("Workflow evidence images exceed the aggregate byte limit");
+      }
+      this.db.prepare(
+        `UPDATE workflow_evidence_owners
+            SET generation = generation + 1, updated_at = ?
+          WHERE note_key = ?`,
+      ).run(now, noteKey);
+      const owner = this.db.prepare(
+        `SELECT generation FROM workflow_evidence_owners WHERE note_key = ?`,
+      ).get(noteKey) as { generation: number };
+      if (allAffected) {
+        this.db.prepare(
+          `UPDATE workflow_evidence_owners SET all_generation = ? WHERE note_key = ?`,
+        ).run(owner.generation, noteKey);
+      }
+      const updateScopeGeneration = this.db.prepare(
+        `INSERT INTO workflow_evidence_scope_generations (
+           note_key, source_root, generation, updated_at
+         ) VALUES (?, ?, ?, ?)
+         ON CONFLICT(note_key, source_root) DO UPDATE SET
+           generation = excluded.generation,
+           updated_at = excluded.updated_at`,
+      );
+      for (const root of affectedRoots) {
+        updateScopeGeneration.run(noteKey, root, owner.generation, now);
+      }
+      const write = this.db.prepare(
+        `INSERT INTO workflow_evidence_staging (
+           id, note_key, client_item_id, source_kind, source_root, source_locator,
+           display_name, caption, repository_scope, mime_type, bytes, sha256,
+           generation, state, reserved_group_key, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'staged', NULL, ?, ?)
+         ON CONFLICT(note_key, client_item_id) DO UPDATE SET
+           source_kind = excluded.source_kind,
+           source_root = excluded.source_root,
+           source_locator = excluded.source_locator,
+           display_name = excluded.display_name,
+           caption = excluded.caption,
+           repository_scope = excluded.repository_scope,
+           mime_type = excluded.mime_type,
+           bytes = excluded.bytes,
+           sha256 = excluded.sha256,
+           generation = excluded.generation,
+           state = 'staged',
+           reserved_group_key = NULL,
+           updated_at = excluded.updated_at`,
+      );
+      for (const item of changedItems) {
+        const prior = existing.get(item.clientItemId);
+        write.run(
+          prior?.id ?? item.id,
+          noteKey,
+          item.clientItemId,
+          item.sourceKind,
+          item.sourceRoot,
+          item.sourceLocator,
+          item.displayName,
+          item.caption,
+          item.repositoryScope,
+          item.mimeType,
+          item.bytes,
+          item.sha256,
+          owner.generation,
+          prior?.created_at ?? now,
+          now,
+        );
+      }
+      return this.listWorkflowEvidence(noteKey);
+    });
+  }
+
+  listWorkflowEvidence(noteKey: string): WorkflowStagedEvidenceList {
+    const owner = this.db.prepare(
+      `SELECT generation FROM workflow_evidence_owners WHERE note_key = ?`,
+    ).get(noteKey) as { generation: number } | undefined;
+    const rows = (this.db.prepare(
+      `SELECT * FROM workflow_evidence_staging
+        WHERE note_key = ? AND state = 'staged'
+        ORDER BY created_at ASC, id ASC`,
+    ).all(noteKey) as unknown[]).map(parseWorkflowEvidenceStagingRow);
+    return {
+      generation: Number(owner?.generation ?? 0),
+      images: rows.map((row): WorkflowStagedEvidenceImage => ({
+        id: row.id,
+        clientItemId: row.client_item_id,
+        sourceKind: row.source_kind,
+        displayName: row.display_name,
+        caption: row.caption,
+        repositoryScope: row.repository_scope,
+        mimeType: row.mime_type,
+        bytes: row.bytes,
+        sha256: row.sha256,
+        generation: row.generation,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+      })),
+    };
+  }
+
+  /** Latest material staged-set change that applies to this one repository checkout. */
+  workflowEvidenceGeneration(noteKey: string, sourceRoot: string): number {
+    const row = this.db.prepare(
+      `SELECT MAX(o.all_generation, COALESCE(g.generation, 0)) AS generation
+         FROM workflow_evidence_owners o
+         LEFT JOIN workflow_evidence_scope_generations g
+           ON g.note_key = o.note_key AND g.source_root = ?
+        WHERE o.note_key = ?`,
+    ).get(sourceRoot, noteKey) as { generation: number } | undefined;
+    return Number(row?.generation ?? 0);
+  }
+
+  removeWorkflowEvidence(noteKey: string, clientItemId: string, now = Date.now()): WorkflowStagedEvidenceList {
+    return transaction(this.db, () => {
+      const item = this.db.prepare(
+        `SELECT * FROM workflow_evidence_staging
+          WHERE note_key = ? AND client_item_id = ? AND state = 'staged'
+            AND reserved_group_key IS NULL`,
+      ).get(noteKey, clientItemId);
+      const parsed = item ? parseWorkflowEvidenceStagingRow(item) : null;
+      const removed = this.db.prepare(
+        `DELETE FROM workflow_evidence_staging
+          WHERE note_key = ? AND client_item_id = ? AND state = 'staged'
+            AND reserved_group_key IS NULL`,
+      ).run(noteKey, clientItemId);
+      if (Number(removed.changes) > 0) {
+        this.db.prepare(
+          `UPDATE workflow_evidence_owners
+              SET generation = generation + 1, updated_at = ?
+            WHERE note_key = ?`,
+        ).run(now, noteKey);
+        const owner = this.db.prepare(
+          `SELECT generation FROM workflow_evidence_owners WHERE note_key = ?`,
+        ).get(noteKey) as { generation: number };
+        if (parsed?.repository_scope === "all") {
+          this.db.prepare(
+            `UPDATE workflow_evidence_owners SET all_generation = ? WHERE note_key = ?`,
+          ).run(owner.generation, noteKey);
+        } else if (parsed) {
+          this.db.prepare(
+            `INSERT INTO workflow_evidence_scope_generations (
+               note_key, source_root, generation, updated_at
+             ) VALUES (?, ?, ?, ?)
+             ON CONFLICT(note_key, source_root) DO UPDATE SET
+               generation = excluded.generation,
+               updated_at = excluded.updated_at`,
+          ).run(noteKey, parsed.source_root, owner.generation, now);
+        }
+      }
+      return this.listWorkflowEvidence(noteKey);
+    });
+  }
+
+  listReservedWorkflowEvidence(submissionId: string): WorkflowReservedEvidence[] {
+    return (this.db.prepare(
+      `SELECT s.*, r.ordinal
+         FROM workflow_evidence_reservations r
+         JOIN workflow_evidence_staging s ON s.id = r.staging_id
+        WHERE r.submission_id = ?
+        ORDER BY r.ordinal ASC`,
+    ).all(submissionId) as Array<Record<string, unknown>>).map((value) => {
+      const row = parseWorkflowEvidenceStagingRow(value);
+      const ordinal = integer.nonnegative().parse(value.ordinal);
+      return {
+        id: row.id,
+        clientItemId: row.client_item_id,
+        sourceKind: row.source_kind,
+        sourceRoot: row.source_root,
+        sourceLocator: row.source_locator,
+        displayName: row.display_name,
+        caption: row.caption,
+        repositoryScope: row.repository_scope,
+        mimeType: row.mime_type,
+        bytes: row.bytes,
+        sha256: row.sha256,
+        generation: row.generation,
+        ordinal,
+      };
+    });
+  }
+
+  finalizeSubmissionImages(
+    submissionId: string,
+    images: readonly WorkflowSubmissionImageWrite[],
+  ): WorkflowEvidenceImage[] {
+    return transaction(this.db, () => {
+      const existing = this.listSubmissionImages(submissionId);
+      if (existing.length > 0) return existing;
+      const insert = this.db.prepare(
+        `INSERT INTO workflow_submission_images (
+           id, submission_id, staging_id, ordinal, display_name, caption,
+           repository_scope, mime_type, bytes, sha256, storage_relative_path,
+           availability, pruned_at, created_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'retained', NULL, ?)`,
+      );
+      for (const image of images) {
+        insert.run(
+          image.id,
+          submissionId,
+          image.stagingId,
+          image.ordinal,
+          image.displayName,
+          image.caption,
+          image.repositoryScope,
+          image.mimeType,
+          image.bytes,
+          image.sha256,
+          image.storageRelativePath,
+          image.createdAt,
+        );
+      }
+      return this.listSubmissionImages(submissionId);
+    });
+  }
+
+  listSubmissionImages(submissionId: string): WorkflowEvidenceImage[] {
+    return (this.db.prepare(
+      `SELECT * FROM workflow_submission_images
+        WHERE submission_id = ? ORDER BY ordinal ASC`,
+    ).all(submissionId) as unknown[])
+      .map(parseWorkflowSubmissionImageRow)
+      .map(workflowEvidenceImageFromRow);
+  }
+
+  private runSubmissionImageGroups(
+    runId: string,
+    submissions: readonly WorkflowSubmission[],
+  ): WorkflowSubmissionEvidenceImages[] {
+    const groups = new Map<string, WorkflowEvidenceImage[]>();
+    const rows = this.db.prepare(
+      `SELECT i.* FROM workflow_submission_images i
+        JOIN workflow_submissions s ON s.id = i.submission_id
+       WHERE s.run_id = ?
+       ORDER BY i.submission_id ASC, i.ordinal ASC`,
+    ).all(runId) as unknown[];
+    for (const value of rows) {
+      const row = parseWorkflowSubmissionImageRow(value);
+      const images = groups.get(row.submission_id) ?? [];
+      images.push(workflowEvidenceImageFromRow(row));
+      groups.set(row.submission_id, images);
+    }
+    return submissions.map((submission) => ({
+      submissionId: submission.id,
+      images: groups.get(submission.id) ?? [],
+    }));
+  }
+
+  submissionImageRecord(imageId: string): (WorkflowEvidenceImage & {
+    submissionId: string;
+    storageRelativePath: string;
+  }) | null {
+    const value = this.db.prepare(
+      `SELECT * FROM workflow_submission_images WHERE id = ?`,
+    ).get(imageId);
+    if (!value) return null;
+    const row = parseWorkflowSubmissionImageRow(value);
+    return {
+      ...workflowEvidenceImageFromRow(row),
+      submissionId: row.submission_id,
+      storageRelativePath: row.storage_relative_path,
+    };
+  }
+
+  submissionImageStorageRecords(submissionId: string): Array<WorkflowEvidenceImage & {
+    storageRelativePath: string;
+  }> {
+    return (this.db.prepare(
+      `SELECT * FROM workflow_submission_images
+        WHERE submission_id = ? ORDER BY ordinal ASC`,
+    ).all(submissionId) as unknown[]).map((value) => {
+      const row = parseWorkflowSubmissionImageRow(value);
+      return { ...workflowEvidenceImageFromRow(row), storageRelativePath: row.storage_relative_path };
+    });
+  }
+
   getSubmission(id: string): WorkflowSubmission | null {
     const row = this.db.prepare(`SELECT * FROM workflow_submissions WHERE id = ?`).get(id);
     return row ? parseWorkflowSubmissionRow(row) : null;
@@ -3537,6 +4002,16 @@ export class WorkflowStore {
     return (this.db.prepare(
       `SELECT * FROM workflow_submissions WHERE run_id = ? ORDER BY round ASC, segment ASC`,
     ).all(runId) as unknown[]).map(parseWorkflowSubmissionRow);
+  }
+
+  /** Every repository sibling that froze evidence from one completion boundary. */
+  listSubmissionsByEvidenceGroup(evidenceGroupKey: string): WorkflowSubmission[] {
+    if (!evidenceGroupKey) return [];
+    return (this.db.prepare(
+      `SELECT * FROM workflow_submissions
+        WHERE evidence_group_key = ?
+        ORDER BY created_at ASC, id ASC`,
+    ).all(evidenceGroupKey) as unknown[]).map(parseWorkflowSubmissionRow);
   }
 
   listSubmissionsByState(status: WorkflowSubmission["status"]): WorkflowSubmission[] {
@@ -3773,6 +4248,7 @@ export class WorkflowStore {
           round: 1,
           triggerSource: "foreman",
           triggerKey,
+          evidenceGroupKey: input.evidenceGroupKey,
           context: {},
           evidence: {},
           now: input.now,
@@ -3791,6 +4267,7 @@ export class WorkflowStore {
             round: latest.round + 1,
             triggerSource: "foreman",
             triggerKey,
+            evidenceGroupKey: input.evidenceGroupKey,
             context: {},
             evidence: {},
             now: input.now,
@@ -3837,6 +4314,8 @@ export class WorkflowStore {
                 sessionCwd: input.guardCwd === undefined ? binding.sessionCwd : input.guardCwd,
               },
               expectedIntent!.episodeKey,
+              input.marker,
+              input.promptedActivityAt,
               input.now,
             );
         if (!retired) {
@@ -4096,7 +4575,7 @@ export class WorkflowStore {
         input.runId,
       );
       if (Number(runChanged.changes) !== 1) {
-        throw new Error(`Workflow run ${input.runId} cannot enter its Inspector gate`);
+        throw new Error(`Workflow run ${input.runId} cannot enter its GitHub Inspector gate`);
       }
       this.appendEvent(input.runId, "inspector_gate_entered", {
         submissionId: input.submissionId,
@@ -4248,7 +4727,7 @@ export class WorkflowStore {
         JSON.stringify(input.expectedState),
       );
       if (Number(changed.changes) !== 1) {
-        throw new Error(`Workflow run ${run.id} changed while creating an Inspector-only submission`);
+        throw new Error(`Workflow run ${run.id} changed while creating a GitHub Inspector-only submission`);
       }
       this.appendEvent(run.id, "inspector_persona_bypass_used", {
         submissionId: input.id,
@@ -5765,6 +6244,8 @@ export class WorkflowStore {
           let statusEntries = 0;
           let transcriptMessages = 0;
           let standardsDocuments = 0;
+          let imageCount = 0;
+          let imageBytes = 0;
           const updates: Array<{ id: string; context: WorkflowContextSnapshot }> = [];
           for (const row of rows) {
             if (row.mode !== "full_workflow") continue;
@@ -5791,12 +6272,20 @@ export class WorkflowStore {
             statusEntries += parsed.evidence.workingTreeStatus.length;
             transcriptMessages += parsed.evidence.transcript.length;
             standardsDocuments += parsed.evidence.standards.length;
+            const submissionImages = this.listSubmissionImages(row.id);
+            imageCount += submissionImages.length;
+            imageBytes += submissionImages.reduce((sum, image) => sum + image.bytes, 0);
             parsed.evidence = {
               ...parsed.evidence,
               diff: "",
               workingTreeStatus: [],
               transcript: [],
               standards: parsed.evidence.standards.map((document) => ({ ...document, text: "" })),
+              images: submissionImages.map((image) => ({
+                ...image,
+                availability: "pruned" as const,
+                prunedAt: input.now,
+              })),
               retention: {
                 state: "pruned",
                 prunedAt: input.now,
@@ -5804,6 +6293,8 @@ export class WorkflowStore {
                 workingTreeStatusEntries: parsed.evidence.workingTreeStatus.length,
                 transcriptMessages: parsed.evidence.transcript.length,
                 standardsDocuments: parsed.evidence.standards.length,
+                imageCount: submissionImages.length,
+                imageBytes: submissionImages.reduce((sum, image) => sum + image.bytes, 0),
               },
             };
             updates.push({ id: row.id, context: parsed });
@@ -5815,6 +6306,8 @@ export class WorkflowStore {
             workingTreeStatusEntries: statusEntries,
             transcriptMessages,
             standardsDocuments,
+            imageCount,
+            imageBytes,
           }, input.now);
           const updateSubmission = this.db.prepare(
             `UPDATE workflow_submissions
@@ -5829,6 +6322,14 @@ export class WorkflowStore {
               update.id,
             );
           }
+          this.enqueueRunImageCleanupInTransaction(runId, input.now);
+          this.db.prepare(
+            `UPDATE workflow_submission_images
+                SET availability = 'pruned', pruned_at = ?
+              WHERE submission_id IN (
+                SELECT id FROM workflow_submissions WHERE run_id = ?
+              ) AND availability = 'retained'`,
+          ).run(input.now, runId);
           this.db.prepare(
             `UPDATE workflow_deliveries
                 SET payload = '', payload_pruned_at = ?,
@@ -5918,6 +6419,8 @@ export class WorkflowStore {
                 SELECT id FROM workflow_submissions WHERE run_id = ?
               )`,
           ).run(runId);
+          this.enqueueRunImageCleanupInTransaction(runId, input.now);
+          this.deleteRunImageRowsInTransaction(runId);
           this.db.prepare(`DELETE FROM workflow_submissions WHERE run_id = ?`).run(runId);
           this.db.prepare(`DELETE FROM workflow_events WHERE run_id = ?`).run(runId);
           this.db.prepare(`DELETE FROM workflow_runs WHERE id = ?`).run(runId);
@@ -5936,6 +6439,73 @@ export class WorkflowStore {
     };
   }
 
+  private enqueueRunImageCleanupInTransaction(runId: string, now: number): void {
+    const rows = this.db.prepare(
+      `SELECT i.storage_relative_path
+         FROM workflow_submission_images i
+         JOIN workflow_submissions s ON s.id = i.submission_id
+        WHERE s.run_id = ?`,
+    ).all(runId) as Array<{ storage_relative_path: string }>;
+    const insert = this.db.prepare(
+      `INSERT OR IGNORE INTO workflow_image_cleanup (
+         id, storage_relative_path, trash_relative_path, state, created_at, updated_at
+       ) VALUES (?, ?, ?, 'pending', ?, ?)`,
+    );
+    for (const row of rows) {
+      const id = randomUUID();
+      insert.run(id, row.storage_relative_path, `.trash/${id}`, now, now);
+    }
+  }
+
+  private deleteRunImageRowsInTransaction(runId: string): void {
+    this.db.prepare(
+      `DELETE FROM workflow_submission_images
+        WHERE submission_id IN (SELECT id FROM workflow_submissions WHERE run_id = ?)`,
+    ).run(runId);
+    this.db.prepare(
+      `DELETE FROM workflow_evidence_reservations
+        WHERE submission_id IN (SELECT id FROM workflow_submissions WHERE run_id = ?)`,
+    ).run(runId);
+    this.db.prepare(
+      `DELETE FROM workflow_evidence_staging
+        WHERE state = 'reserved'
+          AND NOT EXISTS (
+            SELECT 1 FROM workflow_evidence_reservations r
+             WHERE r.staging_id = workflow_evidence_staging.id
+          )`,
+    ).run();
+  }
+
+  processWorkflowImageCleanup(
+    remove: (storageRelativePath: string, trashRelativePath: string) => void,
+  ): void {
+    const rows = this.db.prepare(
+      `SELECT id, storage_relative_path, trash_relative_path
+         FROM workflow_image_cleanup
+        ORDER BY created_at ASC, id ASC LIMIT ?`,
+    ).all(WORKFLOW_RETENTION_BATCH_SIZE) as Array<{
+      id: string;
+      storage_relative_path: string;
+      trash_relative_path: string | null;
+    }>;
+    for (const row of rows) {
+      try {
+        remove(row.storage_relative_path, row.trash_relative_path ?? `.trash/${row.id}`);
+        this.db.prepare(`DELETE FROM workflow_image_cleanup WHERE id = ?`).run(row.id);
+      } catch (error) {
+        diagnose(error);
+      }
+    }
+  }
+
+  trackedImageStoragePaths(): string[] {
+    return (this.db.prepare(
+      `SELECT storage_relative_path FROM workflow_submission_images
+       UNION
+       SELECT storage_relative_path FROM workflow_image_cleanup`,
+    ).all() as Array<{ storage_relative_path: string }>).map((row) => row.storage_relative_path);
+  }
+
   workflowStatusCounts(): {
     activeRuns: number;
     queuedPersonaCalls: number;
@@ -5946,6 +6516,11 @@ export class WorkflowStore {
     retainedRunCount: number;
     completedRunCount: number;
     deliveredDeliveries: number;
+    retainedEvidenceImages: number;
+    retainedEvidenceImageBytes: number;
+    prunedEvidenceImages: number;
+    pendingEvidenceImageCleanup: number;
+    orphanedEvidenceImages: number;
   } {
     const scalar = (sql: string): number => Number(
       (this.db.prepare(sql).get() as { count: number }).count,
@@ -6009,6 +6584,22 @@ export class WorkflowStore {
       deliveredDeliveries: scalar(
         `SELECT COUNT(*) AS count FROM workflow_deliveries WHERE state = 'delivered'`,
       ),
+      retainedEvidenceImages: scalar(
+        `SELECT COUNT(*) AS count FROM workflow_submission_images WHERE availability = 'retained'`,
+      ),
+      retainedEvidenceImageBytes: scalar(
+        `SELECT COALESCE(SUM(bytes), 0) AS count
+           FROM workflow_submission_images WHERE availability = 'retained'`,
+      ),
+      prunedEvidenceImages: scalar(
+        `SELECT COUNT(*) AS count FROM workflow_submission_images WHERE availability = 'pruned'`,
+      ),
+      pendingEvidenceImageCleanup: scalar(
+        `SELECT COUNT(*) AS count FROM workflow_image_cleanup`,
+      ),
+      // Filesystem reconciliation reports bounded orphans without deleting them. The store
+      // owns no filesystem handle, so zero here is replaced by the manager's cached count.
+      orphanedEvidenceImages: 0,
     };
   }
 
@@ -6058,6 +6649,7 @@ export class WorkflowStore {
       run,
       contextState: runContextState(submissions),
       submissions,
+      evidenceImages: this.runSubmissionImageGroups(id, submissions),
       attempts,
       receipts: this.listReceiptsForRun(id),
       deliveries: this.listDeliveries(id),
@@ -6296,6 +6888,8 @@ export class WorkflowStore {
         ).run(runId);
         this.db.prepare(`DELETE FROM workflow_deliveries WHERE run_id = ?`).run(runId);
         this.db.prepare(`DELETE FROM workflow_events WHERE run_id = ?`).run(runId);
+        this.enqueueRunImageCleanupInTransaction(runId, Date.now());
+        this.deleteRunImageRowsInTransaction(runId);
         this.db.prepare(`DELETE FROM workflow_submissions WHERE run_id = ?`).run(runId);
         this.db.prepare(`DELETE FROM workflow_runs WHERE id = ?`).run(runId);
       }
@@ -6310,6 +6904,9 @@ export class WorkflowStore {
           WHERE binding_id IN (SELECT id FROM workflow_bindings WHERE note_key = ?)`,
       ).run(noteKey);
       this.db.prepare(`DELETE FROM workflow_bindings WHERE note_key = ?`).run(noteKey);
+      this.db.prepare(`DELETE FROM workflow_evidence_staging WHERE note_key = ?`).run(noteKey);
+      this.db.prepare(`DELETE FROM workflow_evidence_scope_generations WHERE note_key = ?`).run(noteKey);
+      this.db.prepare(`DELETE FROM workflow_evidence_owners WHERE note_key = ?`).run(noteKey);
       return { runIds, bindingIds };
     });
   }
@@ -6384,7 +6981,7 @@ export class WorkflowStore {
    * items - its `EXISTS` clause is what makes "the queue drained again" a true statement.
    * A session driven by a human prompt has no items at all, so before this existed a
    * confirmed repair packet re-armed nothing and the loop depended on a new human prompt.
-   * Clearing `prompted_goal` is the exact inverse of what
+   * Clearing `prompted_goal` and both evidence boundary fields is the exact inverse of what
    * `retirePromptedGuard` writes, so `decidePromptedWrapup` step 10 stops matching and the
    * episode is armed again.
    *
@@ -6399,7 +6996,8 @@ export class WorkflowStore {
   ): boolean {
     const result = this.db.prepare(
       `UPDATE foreman_queues
-          SET prompted_goal = NULL, updated_at = ?
+          SET prompted_goal = NULL, prompted_evidence = NULL,
+              prompted_activity_at = NULL, updated_at = ?
         WHERE note_key = ? AND prompted_goal IS NOT NULL`,
     ).run(now, delivery.noteKey);
     return Number(result.changes) === 1;
@@ -6435,25 +7033,49 @@ export class WorkflowStore {
   private retirePromptedGuard(
     binding: Pick<WorkflowBinding, "noteKey" | "sessionCwd">,
     episodeKey: string,
+    evidenceMarker: string,
+    activityAt: number | null,
     now: number,
   ): boolean {
     const existing = this.db.prepare(
-      `SELECT prompted_goal FROM foreman_queues WHERE note_key = ?`,
-    ).get(binding.noteKey) as { prompted_goal: string | null } | undefined;
-    if (existing?.prompted_goal === episodeKey) return false;
+      `SELECT prompted_goal, prompted_evidence FROM foreman_queues WHERE note_key = ?`,
+    ).get(binding.noteKey) as {
+      prompted_goal: string | null;
+      prompted_evidence: string | null;
+    } | undefined;
+    if (
+      existing?.prompted_goal === episodeKey
+      && (
+        existing.prompted_evidence === null
+        || existing.prompted_evidence === evidenceMarker
+      )
+    ) return false;
     if (existing) {
       const result = this.db.prepare(
-        `UPDATE foreman_queues SET prompted_goal = ?, updated_at = ?
+        `UPDATE foreman_queues
+            SET prompted_goal = ?, prompted_evidence = ?, prompted_activity_at = ?, updated_at = ?
           WHERE note_key = ?
-            AND (prompted_goal IS NULL OR prompted_goal <> ?)`,
-      ).run(episodeKey, now, binding.noteKey, episodeKey);
+            AND (
+              prompted_goal IS NULL OR prompted_goal <> ?
+              OR prompted_evidence IS NULL OR prompted_evidence <> ?
+            )`,
+      ).run(
+        episodeKey,
+        evidenceMarker,
+        activityAt,
+        now,
+        binding.noteKey,
+        episodeKey,
+        evidenceMarker,
+      );
       return Number(result.changes) === 1;
     }
     const result = this.db.prepare(
       `INSERT INTO foreman_queues (
-         note_key, cwd, branch, wrapup_asked_at, wrapup_answer, prompted_goal, updated_at
-       ) VALUES (?, ?, NULL, NULL, NULL, ?, ?)`,
-    ).run(binding.noteKey, binding.sessionCwd, episodeKey, now);
+         note_key, cwd, branch, wrapup_asked_at, wrapup_answer, prompted_goal,
+         prompted_evidence, prompted_activity_at, updated_at
+       ) VALUES (?, ?, NULL, NULL, NULL, ?, ?, ?, ?)`,
+    ).run(binding.noteKey, binding.sessionCwd, episodeKey, evidenceMarker, activityAt, now);
     return Number(result.changes) === 1;
   }
 
@@ -6468,9 +7090,10 @@ export class WorkflowStore {
     this.db.prepare(
       `INSERT INTO workflow_submissions (
          id, run_id, round, segment, parent_submission_id, continuation_node_id,
-         continuation_node_attempt_id, mode, trigger_source, trigger_key, evidence_fingerprint,
-         context_json, evidence_json, pr_head_sha, status, created_at, updated_at, completed_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+         continuation_node_attempt_id, mode, trigger_source, trigger_key, evidence_group_key,
+         staged_image_generation, evidence_fingerprint, context_json, evidence_json, pr_head_sha,
+         status, created_at, updated_at, completed_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?,
                  CASE WHEN ? IN ('completed', 'cancelled', 'failed') THEN ? ELSE NULL END)`,
     ).run(
       input.id,
@@ -6483,6 +7106,7 @@ export class WorkflowStore {
       input.mode ?? "full_workflow",
       input.triggerSource,
       input.triggerKey,
+      input.evidenceGroupKey ?? input.triggerKey,
       input.evidenceFingerprint ?? `capturing:${input.id}`,
       JSON.stringify(input.context),
       JSON.stringify(input.evidence),
@@ -6493,6 +7117,70 @@ export class WorkflowStore {
       input.status ?? "capturing",
       input.now,
     );
+    this.reserveWorkflowEvidenceInTransaction(
+      input.id,
+      input.evidenceGroupKey ?? input.triggerKey,
+      input.now,
+    );
+  }
+
+  private reserveWorkflowEvidenceInTransaction(
+    submissionId: string,
+    groupKey: string,
+    now: number,
+  ): void {
+    const owner = this.db.prepare(
+      `SELECT b.note_key,
+              CASE WHEN b.repo_root <> '' THEN b.repo_root ELSE b.session_cwd END AS checkout_root,
+              MAX(COALESCE(o.all_generation, 0), COALESCE(g.generation, 0)) AS generation
+         FROM workflow_submissions s
+         JOIN workflow_runs r ON r.id = s.run_id
+         JOIN workflow_bindings b ON b.id = r.binding_id
+         LEFT JOIN workflow_evidence_owners o ON o.note_key = b.note_key
+         LEFT JOIN workflow_evidence_scope_generations g
+           ON g.note_key = b.note_key
+          AND g.source_root = CASE WHEN b.repo_root <> '' THEN b.repo_root ELSE b.session_cwd END
+        WHERE s.id = ?`,
+    ).get(submissionId) as {
+      note_key: string;
+      checkout_root: string | null;
+      generation: number;
+    } | undefined;
+    if (!owner) throw new Error(`Workflow submission ${submissionId} has no evidence owner`);
+    this.db.prepare(
+      `UPDATE workflow_submissions SET staged_image_generation = ? WHERE id = ?`,
+    ).run(owner.generation, submissionId);
+    const rows = (this.db.prepare(
+      `SELECT * FROM workflow_evidence_staging
+        WHERE note_key = ?
+          AND (state = 'staged' OR reserved_group_key = ?)
+          AND (repository_scope = 'all' OR source_root = ?)
+        ORDER BY created_at ASC, id ASC`,
+    ).all(owner.note_key, groupKey, owner.checkout_root ?? "") as unknown[])
+      .map(parseWorkflowEvidenceStagingRow);
+    if (rows.length > WORKFLOW_IMAGE_LIMITS.maxCount) {
+      throw new Error(`At most ${WORKFLOW_IMAGE_LIMITS.maxCount} workflow evidence images apply to a submission`);
+    }
+    if (rows.reduce((sum, row) => sum + row.bytes, 0) > WORKFLOW_IMAGE_LIMITS.maxAggregateBytes) {
+      throw new Error("Applicable workflow evidence exceeds the aggregate byte limit");
+    }
+    const reserve = this.db.prepare(
+      `INSERT OR IGNORE INTO workflow_evidence_reservations
+         (staging_id, submission_id, ordinal, created_at)
+       VALUES (?, ?, ?, ?)`,
+    );
+    const mark = this.db.prepare(
+      `UPDATE workflow_evidence_staging
+          SET state = 'reserved', reserved_group_key = ?, updated_at = ?
+        WHERE id = ? AND (reserved_group_key IS NULL OR reserved_group_key = ?)`,
+    );
+    rows.forEach((row, ordinal) => {
+      const marked = mark.run(groupKey, now, row.id, groupKey);
+      if (Number(marked.changes) !== 1) {
+        throw new Error(`Workflow evidence item ${row.client_item_id} was reserved concurrently`);
+      }
+      reserve.run(row.id, submissionId, ordinal, now);
+    });
   }
 
   private mustRun(id: string): WorkflowRun {

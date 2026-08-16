@@ -486,12 +486,12 @@ export function InspectorFooter({
       <StageSeam gate="workflow succeeded" />
       <section
         className="wf-pipeline-inspector"
-        aria-label="Inspector, the fixed completion policy after End"
+        aria-label="GitHub Inspector, the fixed completion policy after End"
       >
         <span className="wf-pipeline-inspector-mark" aria-hidden>✦</span>
         <span className="wf-pipeline-inspector-body">
           <span className="wf-pipeline-inspector-name">
-            Inspector
+            GitHub Inspector
             {/* A word, not a colour. The point of this badge is that the card is not part of
                 the pipeline an author is editing, and that has to survive a greyscale
                 screenshot and a reader who never sees the styling. */}

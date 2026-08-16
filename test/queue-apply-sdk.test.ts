@@ -167,6 +167,8 @@ function mkFake(over: { session?: Session; items?: WorkItem[]; injectFailure?: u
       wrapupAskedAt: null,
       wrapupAnswer: null,
       promptedGoal: null,
+      promptedEvidence: null,
+      promptedActivityAt: null,
       updatedAt: 0,
       items,
     }),

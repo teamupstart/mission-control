@@ -719,7 +719,7 @@ Meanwhile work already exists somewhere: open issues, a triage board, an on-call
 
 **A sweep files backlog rows and nothing else.** It never dispatches an agent, never cuts
 a worktree, never resets a checkout and never types into a session. That is what makes
-turning one on a much smaller decision than [Inspector](inspector-and-shipping.md#inspector-automated-pr-review) or
+turning one on a much smaller decision than [GitHub Inspector](inspector-and-shipping.md#inspector-automated-pr-review) or
 [Shipping](inspector-and-shipping.md#shipping-yolo-mode): the worst a broken source can do is put junk in a list you
 then read and delete. Auto-dispatching swept work is deliberately **not** a feature - it is
 a different risk class, and it would need its own gate (an allowlist, a rate limit, a dry

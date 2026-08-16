@@ -142,7 +142,7 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   --workers=1 --reporter=list
 ```
 
-### Resolving a stuck Inspector finding
+### Resolving a stuck GitHub Inspector finding
 
 `e2e/.artifacts/inspector-resolve-findings/` holds three frames from the run that asserts an
 operator can close a finding no review round is left to close - the case that held
@@ -836,16 +836,16 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   --workers=1 --reporter=list
 ```
 
-### Where the Inspector's brief lives
+### Where the GitHub Inspector's brief lives
 
 `e2e/.artifacts/inspector-brief-location/` carries
-three frames from `specs/inspector-brief-location.spec.ts`, which asserts that the Inspector
+three frames from `specs/inspector-brief-location.spec.ts`, which asserts that the GitHub Inspector
 panel names both places a repo may keep its brief - `personas/INSPECTOR.md` first, a root
 `INSPECTOR.md` as the fallback - and that neither filename is split across lines.
 
 `inspector-settings-lede.png` is the sentence at reading scale and
 `inspector-settings-panel.png` places it where an operator meets it, above the switch that
-turns the Inspector on. The third frame is the one that makes the other two mean anything.
+turns the GitHub Inspector on. The third frame is the one that makes the other two mean anything.
 `inspector-settings-lede-before-word-break-all.png` is the same clip with the
 `word-break: break-all` that settings blurbs used to style inline code with, which breaks
 between any two characters and rendered the path as `personas/INSPE` + `CTOR.md` - a filename
@@ -971,7 +971,7 @@ Attach the generated frames to the pull request; they are never committed.
 that **appears**, so the pair either side of that is the point: `01-no-offer-yet.png` is a
 fresh session's action row, and `02-offer-on-the-card.png` is the same row once a human has
 corrected the session and its review has come back clean - `Run retro` between Reset and
-Complete, with the Inspector's `⌕ ✓` beside the pull request chip that earned it.
+Complete, with the GitHub Inspector's `⌕ ✓` beside the pull request chip that earned it.
 
 `03-delivered-into-the-conversation.png` is what one click does: the flash reading
 `Retro sent - the session will propose memories for you to approve.` under the row, and the
@@ -1213,7 +1213,7 @@ three env vars at fakes closes every route to a real model.
 A dispatch uses **two** of them, which is worth knowing before adding a spec:
 
 - `claude -p --output-format json` - the one-shot headless runner (`llm/claude-cli.ts`) used
-  by the task titler, Foreman, the goal refiner and the Inspector.
+  by the task titler, Foreman, the goal refiner and the GitHub Inspector.
 - `claude --input-format stream-json …` - the Agent SDK session.
 
 `e2e/fixtures/fake-claude.mjs` serves both. Faking only the session would still bill a real

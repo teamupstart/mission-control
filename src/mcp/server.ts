@@ -4,6 +4,7 @@ import { z } from "zod";
 import type { ReviewItem } from "@shared/types.ts";
 import { ENSEMBLE_LIMITS } from "@shared/ensemble.ts";
 import { SCOUT_REPORT_PATH_SHAPE, SCOUT_SUBMISSION_LIMITS } from "@shared/scouts.ts";
+import { WORKFLOW_IMAGE_LIMITS } from "@shared/workflow.ts";
 import {
   BASE_URL,
   SCOUT_SUBMISSION_CREDENTIAL_HEADER,
@@ -414,6 +415,66 @@ server.registerTool(
         body.replayed
           ? `Already submitted; returning the existing snapshot (${ref}). You can stop.`
           : `Submitted. Your work was captured as an immutable snapshot (${ref}). You can stop.`,
+      );
+    } catch (err) {
+      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
+    }
+  },
+);
+
+// Register workflow evidence without letting the caller select a session, task, or root. The
+// daemon attributes the existing launch environment and resolves repository slots itself.
+// The zod here mirrors the locator bounds in `SubmitWorkflowEvidenceSchema`; the bridge adds
+// the fixed `agent` discriminator and its own launch identity to the authenticated request.
+server.registerTool(
+  "submit_workflow_evidence",
+  {
+    title: "Register workflow screenshot evidence",
+    description:
+      "Register gitignored screenshots for the Persona workflow that will run when this task completes. " +
+      "Mission Control freezes the applicable pixels into the immutable submission. Do not commit them.",
+    inputSchema: {
+      images: z.array(z.object({
+        clientItemId: z.string().min(1).max(WORKFLOW_IMAGE_LIMITS.clientItemIdChars)
+          .describe("Stable caller id used to make an identical registration idempotent."),
+        path: z.string().min(1).max(WORKFLOW_IMAGE_LIMITS.relativePathChars)
+          .describe("Path relative to the issued repository checkout."),
+        caption: z.string().trim().min(1).max(WORKFLOW_IMAGE_LIMITS.captionChars)
+          .describe("A precise statement of what the screenshot demonstrates."),
+        repositoryScope: z.union([
+          z.literal("all"),
+          z.string().regex(/^repo-\d{2}$/),
+        ]).describe("An issued repository slot such as repo-01, or all."),
+      }))
+        .min(1)
+        .max(WORKFLOW_IMAGE_LIMITS.maxCount)
+        .refine(
+          (value) => new Set(value.map((item) => item.clientItemId)).size === value.length,
+          "Workflow evidence client item ids must be unique",
+        )
+        .refine(
+          (value) => Buffer.byteLength(JSON.stringify(value)) <= WORKFLOW_IMAGE_LIMITS.locatorJsonBytes,
+          `Workflow evidence locators exceed ${WORKFLOW_IMAGE_LIMITS.locatorJsonBytes} UTF-8 bytes`,
+        ),
+    },
+  },
+  async ({ images }) => {
+    try {
+      const res = await http("/mcp/workflow-evidence", "POST", {
+        env: ENV,
+        sessionId: SESSION_ID,
+        cwd: process.cwd(),
+        images: images.map((image) => ({ kind: "agent", ...image })),
+      });
+      if (!res.ok) {
+        return textResult(
+          `Mission Control refused the workflow evidence (${res.status}): ${await res.text()}`,
+          true,
+        );
+      }
+      const body = (await res.json()) as { images?: unknown[]; generation?: number };
+      return textResult(
+        `Registered ${body.images?.length ?? images.length} workflow evidence image(s) at generation ${body.generation ?? 0}.`,
       );
     } catch (err) {
       return textResult(`Could not reach Mission Control: ${String(err)}`, true);

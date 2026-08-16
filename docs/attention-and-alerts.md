@@ -84,7 +84,7 @@ waiting in `waiting_for_session` or `waiting_for_new_head` is waiting on *that s
 next turn*, so a session that took the repair packet, made the fix and went idle has
 work outstanding against it even though its task is done and its queue is empty. The
 alert names the missing step rather than the silence - "repair round 2 never reopened",
-or "waiting for a pushed head" for the Inspector findings that clear only when the
+or "waiting for a pushed head" for the GitHub Inspector findings that clear only when the
 poller sees a new head **on the remote**.
 
 It deep-links to the **run** rather than to the session, because the run is where that
@@ -102,7 +102,7 @@ same distinction the Line uses to decide whether the run is counted as yours:
   manual resubmit is still available; it is simply not the expected move.
 - **`waiting_for_new_head`** has no such control at all, under any posture. Nothing on
   this page - or anywhere else in the app - restarts it: it clears only when the
-  Inspector poller observes a new head that the bound session has **pushed**. The deep
+  GitHub Inspector poller observes a new head that the bound session has **pushed**. The deep
   link is context rather than a remedy, and the useful next move is to get that branch
   pushed.
 
@@ -114,7 +114,7 @@ the difference between a session that fixed the findings and forgot the last ste
 that did nothing at all, which is otherwise invisible from the daemon's side.
 
 The comparison is the branch's **configured upstream** - `@{upstream}..HEAD`, the commits
-the branch it tracks has not received. That is the ref the Inspector is watching, because
+the branch it tracks has not received. That is the ref the GitHub Inspector is watching, because
 it is the one the pull request points at, so commits that reached some other branch or
 some other remote have not reached the thing being waited on.
 
@@ -127,7 +127,7 @@ plain wait. A branch that tracks no remote, a detached HEAD, and a git call that
 are all *unknown* rather than *not pushed* - being told you forgot to push a branch that
 was never meant to be pushed sends you looking for a mistake you did not make. A checkout
 level with its upstream is also silent, for a subtler reason: that only proves a push is
-not the missing step, not that the head the Inspector wants exists.
+not the missing step, not that the head the GitHub Inspector wants exists.
 
 ![The run a stuck parked-run notification opens, showing the parked round and its state](images/line-review-parked-toast-run.png)
 

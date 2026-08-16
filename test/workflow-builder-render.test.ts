@@ -74,7 +74,7 @@ test("policy controls and structured diagnostics render in the right pane", () =
     onConfirm: () => {},
   }));
   assert.match(html, /Default trigger/);
-  assert.match(html, /Inspector approval/);
+  assert.match(html, /GitHub Inspector approval/);
   assert.match(html, /Restart all Personas/);
   // Message first; the machine code survives as the detail affordance, not the headline.
   assert.match(html, /Session needs one route/);

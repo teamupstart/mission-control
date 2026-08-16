@@ -1,11 +1,11 @@
 /**
- * What is at stake: eight built-in versions now open a pull request two different ways, and
- * seven of them are pinned by bindings on operators' machines.
+ * What is at stake: nine built-in versions now open a pull request two different ways, and
+ * eight of them may be pinned by bindings on operators' machines.
  *
  * Versions 5 through 7 reach End and then have the completion policy TYPE a handoff, recorded
- * as a `pr_handoff` delivery. Version 8 opens the pull request as an authored stage before End,
- * recorded as a `session_action` delivery linked to a node attempt, and sets `missingPrAction`
- * to `wait` because by the time its gate is entered the pull request has already been proven.
+ * as a `pr_handoff` delivery. Versions 8 and 9 open the pull request as an authored stage before
+ * End, recorded as a `session_action` delivery linked to a node attempt. Version 8 retains its
+ * Inspector gate; version 9 completes locally after the verified action.
  *
  * The failure this file exists to catch is the quiet one: shared extraction that routes a
  * legacy version through the new path. It would look correct - a pull request still gets
@@ -28,7 +28,7 @@ const { WORKFLOW_DELIVERY_KINDS } = await import("../src/shared/workflow.ts");
 const noMistakes = () => BUILTIN_WORKFLOWS.find((item) => item.definition.name === "No-Mistakes Review")!;
 
 before(() => {
-  assert.equal(noMistakes().versions.length, 8, "this file is written against eight versions");
+  assert.equal(noMistakes().versions.length, 9, "this file is written against nine versions");
 });
 
 test("both delivery kinds remain in the durable vocabulary, and neither replaced the other", () => {
@@ -39,7 +39,7 @@ test("both delivery kinds remain in the durable vocabulary, and neither replaced
   assert.ok(WORKFLOW_DELIVERY_KINDS.includes("session_action"));
 });
 
-test("every legacy version keeps a post-End handoff policy, and only version 8 waits", () => {
+test("legacy versions keep their post-End handoff policies while version 9 needs none", () => {
   // The split stated once, across all eight. A legacy version set to `wait` would reach End
   // with no pull request and no way to ask for one; version 8 set to `prepare_pr` would type a
   // second handoff asking for the pull request its own stage had just proven.
@@ -54,13 +54,12 @@ test("every legacy version keeps a post-End handoff policy, and only version 8 w
     "prepare_pr",
     "prepare_pr",
     "wait",
+    null,
   ]);
 });
 
-test("Inspector remains every version's completion policy, and never a graph node", () => {
-  // The approved decision, asserted against the shipped data rather than trusted. An Inspector
-  // node would be a second lifecycle to migrate and a stage an operator could delete.
-  for (const [index, version] of noMistakes().versions.entries()) {
+test("GitHub Inspector remains versions 1 through 8's policy and never becomes a graph node", () => {
+  for (const [index, version] of noMistakes().versions.slice(0, 8).entries()) {
     assert.equal(
       version.completionPolicy.kind,
       "inspector",
@@ -72,9 +71,10 @@ test("Inspector remains every version's completion policy, and never a graph nod
       `version ${index + 1} grew an Inspector node`,
     );
   }
+  assert.deepEqual(noMistakes().versions[8]!.completionPolicy, { kind: "none" });
 });
 
-test("only version 8 authors the pull request, and only it reaches End through one", () => {
+test("versions 8 and 9 author the pull request and reach End only through it", () => {
   const versions = noMistakes().versions;
   for (const [index, version] of versions.slice(0, 7).entries()) {
     // No action node, and End is reached from an evaluation join or reviewer exactly as it
@@ -92,25 +92,25 @@ test("only version 8 authors the pull request, and only it reaches End through o
     );
   }
 
-  const current = versions[7]!;
-  const action = current.graph.nodes.find((node) => node.kind === "session_action");
-  assert.ok(action && action.kind === "session_action");
-  assert.deepEqual(action.action.completion, { kind: "pull_request" });
-  // Its completion is the ONLY way this version reaches End, which is what makes "no Inspector
-  // without a proven pull request" a property of the graph rather than of a policy.
-  const toEnd = current.graph.edges.filter((edge) => edge.target === current.graph.nodes
-    .find((node) => node.kind === "end")!.id);
-  assert.deepEqual(toEnd.map((edge) => [edge.source, edge.sourcePort]), [[action.id, "complete"]]);
+  for (const current of versions.slice(7)) {
+    const action = current.graph.nodes.find((node) => node.kind === "session_action");
+    assert.ok(action && action.kind === "session_action");
+    assert.deepEqual(action.action.completion, { kind: "pull_request" });
+    const toEnd = current.graph.edges.filter((edge) => edge.target === current.graph.nodes
+      .find((node) => node.kind === "end")!.id);
+    assert.deepEqual(toEnd.map((edge) => [edge.source, edge.sourcePort]), [[action.id, "complete"]]);
+  }
 });
 
-test("the shipped action's prompt is frozen into version 8, not referenced from it", () => {
+test("the shipped action's prompt is frozen into versions 8 and 9, not referenced from them", () => {
   // A published version carries its own copy. Editing the shipped Markdown must not change
   // what a run already pinned to this version types - which is exactly what a reference,
   // resolved at run time, would do.
-  const current = noMistakes().versions[7]!;
-  const node = current.graph.nodes.find((item) => item.kind === "session_action");
-  assert.ok(node && node.kind === "session_action");
-  assert.match(node.action.promptMarkdown, /^# Pull Request/);
-  assert.equal(node.action.requiredSkillId, "pull-request");
-  assert.equal(node.action.sourceSessionActionId, "builtin:pull-request");
+  for (const current of noMistakes().versions.slice(7)) {
+    const node = current.graph.nodes.find((item) => item.kind === "session_action");
+    assert.ok(node && node.kind === "session_action");
+    assert.match(node.action.promptMarkdown, /^# Pull Request/);
+    assert.equal(node.action.requiredSkillId, "pull-request");
+    assert.equal(node.action.sourceSessionActionId, "builtin:pull-request");
+  }
 });

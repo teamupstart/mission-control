@@ -172,7 +172,7 @@ test("the popover carries the tokens, the automation line and every quota runway
   await expect(popover.locator(".spend-row", { hasText: "Tokens today" })).toContainText("8.4M");
   // The overhead, with the role split printed under it rather than hidden in a tooltip.
   await expect(popover.locator(".spend-row", { hasText: "Automation" })).toContainText("≈$1.85");
-  await expect(popover.locator(".spend-sub")).toContainText("Inspector review $1.85");
+  await expect(popover.locator(".spend-sub")).toContainText("GitHub Inspector review $1.85");
 
   // Both quota windows, each with its consumption and its projection in one figure.
   const runways = popover.locator(".spend-runway");

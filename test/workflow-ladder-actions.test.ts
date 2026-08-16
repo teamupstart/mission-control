@@ -30,14 +30,14 @@ function buttonFor(html: string, label: string): string {
 }
 
 test("the Inspector rung offers recheck only while the gate has a wait reason", () => {
-  assert.match(render(), /Recheck Inspector/);
+  assert.match(render(), /Recheck GitHub Inspector/);
 
   const detail = ladderDetail("gate");
   detail.inspectorGate = {
     ...detail.inspectorGate!,
     state: { ...detail.inspectorGate!.state, waitReason: null },
   };
-  assert.doesNotMatch(render(detail), /Recheck Inspector/);
+  assert.doesNotMatch(render(detail), /Recheck GitHub Inspector/);
 });
 
 test("Prepare PR follows the run version's missing-PR policy", () => {
@@ -87,11 +87,11 @@ test("the renderer disables only the action reported pending", () => {
   const pending = render(ladderDetail("gate"), {
     isPending: (id: string) => id === "recheck-inspector",
   });
-  assert.match(buttonFor(pending, "Recheck Inspector"), /disabled/);
+  assert.match(buttonFor(pending, "Recheck GitHub Inspector"), /disabled/);
   assert.doesNotMatch(buttonFor(pending, "Open PR"), /disabled/);
 
   const idle = render();
-  assert.doesNotMatch(buttonFor(idle, "Recheck Inspector"), /disabled/);
+  assert.doesNotMatch(buttonFor(idle, "Recheck GitHub Inspector"), /disabled/);
 });
 
 /**
@@ -114,13 +114,13 @@ test("Open PR leaves the Inspector rung when the gate has no pull request to ope
   assert.doesNotMatch(html, /Open PR/);
   assert.doesNotMatch(html, /This run has no adopted pull request/);
   // The rung itself and its other action survive: this removed a control, not the gate.
-  assert.match(html, /Recheck Inspector/);
+  assert.match(html, /Recheck GitHub Inspector/);
 });
 
 /** The policy still decides whether the rung exists at all, which is the ladder's own gate. */
 test("the Inspector rung renders under an inspector policy and not under none", () => {
   assert.match(render(), /Inspector/);
-  assert.match(render(), /Recheck Inspector/);
+  assert.match(render(), /Recheck GitHub Inspector/);
 
   const unpolicied = ladderDetail("gate");
   unpolicied.version = {
@@ -128,6 +128,6 @@ test("the Inspector rung renders under an inspector policy and not under none", 
     completionPolicy: { kind: "none" },
   };
   const html = render(unpolicied);
-  assert.doesNotMatch(html, /Recheck Inspector/);
+  assert.doesNotMatch(html, /Recheck GitHub Inspector/);
   assert.doesNotMatch(html, /Open PR/);
 });

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { PersonaVerdictSchema, WorkflowContextSnapshotSchema } from "@shared/protocol.ts";
-import type { LlmRunner } from "@shared/llm.ts";
+import { llmRunInputBytes, type LlmImageInput, type LlmRunner } from "@shared/llm.ts";
 import type {
   PersonaFeedbackSummary,
   PersonaVerdict,
@@ -37,6 +37,7 @@ import { resolvePersonaExecution } from "./personas.ts";
 import { type WorkflowStore, workflowJson } from "./store.ts";
 import { normalizePersonaVerdict, parsePersonaVerdict, verdictRequestedChanges } from "./verdict.ts";
 import { workflowLog } from "./log.ts";
+import { resolveSubmissionImageInputs } from "./images.ts";
 import { getWorkflowPolicy } from "./config.ts";
 import {
   DEFAULT_CHECK_CONCURRENCY,
@@ -854,6 +855,14 @@ export class WorkflowEngine {
       return;
     }
     const prompt = buildPersonaPrompt(node.persona, context.data, claimed.operatorDirective ?? null);
+    let images: readonly LlmImageInput[];
+    try {
+      images = resolveSubmissionImageInputs(this.store, submission.id);
+    } catch (error) {
+      this.handleInfrastructureFailure(claimed, run.id, `Workflow image evidence unavailable: ${String(error)}`);
+      return;
+    }
+    const currentImageIds = new Set(images.map((image) => image.id));
     let runner: LlmRunner;
     try {
       runner = this.runnerFor(execution.runner.id);
@@ -885,7 +894,7 @@ export class WorkflowEngine {
           startedAt: this.now(),
           finishedAt: null,
           durationMs: null,
-          inputBytes: Buffer.byteLength(request),
+          inputBytes: llmRunInputBytes(request, images),
           outputBytes: 0,
           costUsd: null,
           errorCode: null,
@@ -911,9 +920,10 @@ export class WorkflowEngine {
       (request) => runner.run(request, {
         model: execution.model.id,
         timeoutMs: PERSONA_TIMEOUT_MS,
+        images,
       }),
       prompt,
-      parsePersonaVerdict,
+      (raw) => parsePersonaVerdict(raw, currentImageIds),
       `${node.persona.name} Persona`,
       observer,
     );

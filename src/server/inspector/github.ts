@@ -572,7 +572,10 @@ export async function hasBodyOnlyFindings(
       (review) =>
         (isOurs(review, input.login) && review.body.includes(BODY_ONLY_FINDINGS_MARKER)) ||
         (review.author === input.login &&
-          review.body.startsWith("**⌕ Inspector** · round") &&
+          (
+            review.body.startsWith("**⌕ Inspector** · round") ||
+            review.body.startsWith("**⌕ GitHub Inspector** · round")
+          ) &&
           review.body.includes("\n---\n")),
     );
     if (found) return { ok: true, value: true };
@@ -864,7 +867,7 @@ export async function mergePr(
 export function renderComment(marker: string, c: PlannedComment): string {
   return [
     marker,
-    `**⌕ Inspector** · \`${c.severity}\` · ${c.title}`,
+    `**⌕ GitHub Inspector** · \`${c.severity}\` · ${c.title}`,
     "",
     c.body,
     "",
@@ -876,7 +879,7 @@ export function renderComment(marker: string, c: PlannedComment): string {
 export function renderCleanReview(marker: string, round: number): string {
   return [
     marker,
-    `**⌕ Inspector** · round ${round}`,
+    `**⌕ GitHub Inspector** · round ${round}`,
     "",
     "No further issues found. This pull request is safe to merge.",
   ].join("\n");

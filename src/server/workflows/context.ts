@@ -351,6 +351,13 @@ function sourceFingerprint(context: WorkflowContextSnapshot): string {
       path: doc.path,
       fingerprint: doc.fingerprint,
     })),
+    images: (context.evidence.images ?? []).map((image) => ({
+      id: image.id,
+      sha256: image.sha256,
+      caption: image.caption,
+      repositoryScope: image.repositoryScope,
+    })),
+    stagedImageGeneration: context.evidence.stagedImageGeneration ?? 0,
   }));
 }
 
@@ -535,6 +542,7 @@ export interface WorkflowEvidenceProbe {
   headSha: string | null;
   workingTreeStatus: string[];
   diffFingerprint: string;
+  stagedImageGeneration?: number;
 }
 
 export async function readWorkflowEvidenceProbe(
@@ -566,7 +574,8 @@ export function probeMatchesEvidence(
   return probe.headSha === evidence.headSha
     && probe.workingTreeStatus.length === evidence.workingTreeStatus.length
     && probe.workingTreeStatus.every((line, index) => line === evidence.workingTreeStatus[index])
-    && probe.diffFingerprint === evidence.diffFingerprint;
+    && probe.diffFingerprint === evidence.diffFingerprint
+    && (probe.stagedImageGeneration ?? 0) === (evidence.stagedImageGeneration ?? 0);
 }
 
 /**

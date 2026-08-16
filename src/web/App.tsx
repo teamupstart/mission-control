@@ -150,7 +150,7 @@ function gearDotPhrase(tone: ReturnType<typeof settingsGearDot>): string | null 
     case "armed":
       return "YOLO mode is armed";
     case "live":
-      return "the Inspector is live";
+      return "GitHub Inspector is live";
     // Foreman's purple never reaches the gear; the gear ranks only settingsStatus facts.
     case "foreman":
     case null:

@@ -146,6 +146,8 @@ function mkQueue(items: WorkItem[], over: Partial<SessionQueue> = {}): SessionQu
     wrapupAskedAt: null,
     wrapupAnswer: null,
     promptedGoal: null,
+    promptedEvidence: null,
+    promptedActivityAt: null,
     updatedAt: 0,
     items,
     ...over,

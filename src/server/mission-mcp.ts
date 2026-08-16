@@ -15,6 +15,7 @@ import { STATE_DIR, mcpServerPath } from "./config.ts";
 import { SUBMIT_ENSEMBLE_RESULT_TOOL } from "./ensembles/submission-tool.ts";
 import { PLAN_DECISIONS_TOOL, PLAN_SCHEDULING_TOOL } from "./plans/tools.ts";
 import { SUBMIT_SCOUT_ARTIFACTS_TOOL } from "./scouts/submission-tool.ts";
+import { SUBMIT_WORKFLOW_EVIDENCE_TOOL } from "./workflows/evidence-tool.ts";
 import { run } from "./util/exec.ts";
 
 // The one place that knows how to hand a LAUNCHING agent our own MCP server.
@@ -55,6 +56,7 @@ export const MISSION_MCP_TOOLS = [
   "report_status",
   SUBMIT_ENSEMBLE_RESULT_TOOL,
   SUBMIT_SCOUT_ARTIFACTS_TOOL,
+  SUBMIT_WORKFLOW_EVIDENCE_TOOL,
 ] as const;
 
 export type MissionMcpTool = (typeof MISSION_MCP_TOOLS)[number];
@@ -111,13 +113,15 @@ const KIND_MISSION_MCP_TOOLS: Record<TaskKind, readonly MissionMcpTool[]> = {
  * same object, `null` included - so every existing ship dispatch's argv stays byte-identical.
  */
 export function kindMissionMcpRequirement(
-  task: Pick<Task, "kind">,
+  task: Pick<Task, "kind" | "workflowId">,
   requested: MissionMcpRequirement | null,
+  workflowEvidence = false,
 ): MissionMcpRequirement | null {
   const required = KIND_MISSION_MCP_TOOLS[task.kind];
-  if (required.length === 0) return requested;
+  if (required.length === 0 && !workflowEvidence) return requested;
   const tools = new Set<MissionMcpTool>(requested?.tools ?? []);
   for (const tool of required) tools.add(tool);
+  if (workflowEvidence) tools.add(SUBMIT_WORKFLOW_EVIDENCE_TOOL);
   return { tools: [...tools] };
 }
 

@@ -15,3 +15,6 @@
 - [private-pr-images-need-attachments](private-pr-images-need-attachments.md) - a SHA-pinned
   `raw.githubusercontent.com` image can still 404 in a private PR comment; attach it through
   GitHub's signed-in comment UI and verify it in an authorized context.
+- [github-push-is-preauthorized](github-push-is-preauthorized.md) - when a task asks for a PR
+  or merge in this private repository, pushing its scoped branch to the configured GitHub
+  remote is already authorized and needs no separate confirmation.

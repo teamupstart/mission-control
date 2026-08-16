@@ -28,7 +28,7 @@ model boxes below it, because a `claude` model id is not something `codex` can r
 | Ensemble evaluation | `claude-haiku-4-5` | `MISSION_ENSEMBLE_COMPARISON_MODEL` | Ranks Best-of-N candidates, mines a Consensus run's divergences, or scores one Panel-vote ballot per judge, all tool-less. A judging Persona's own model wins over this |
 
 Each resolves the same way [Foreman's four](foreman.md#which-model-foreman-runs-as) and the
-[Inspector's one](inspector-and-shipping.md#the-review-model) do: **your setting, then the environment variable, then the
+[GitHub Inspector's one](inspector-and-shipping.md#the-review-model) do: **your setting, then the environment variable, then the
 shipped default**. Clearing a field means "fall back", never "run with no model" - an unset
 `--model` inherits whatever the CLI happens to default to, which is the priciest tier available
 and is not recorded anywhere. The panel prints which of the three won, because an environment
@@ -41,6 +41,6 @@ fallback, so a missing or logged-out provider degrades their output rather than 
 dispatch. An Ensemble evaluation is different: a provider failure or invalid reply fails its
 durable, bounded attempt, and the engine never invents a recommendation or a question set.
 
-**Foreman's four models and the Inspector's review model are not here.** They live with the
-subsystem that spends them - **Settings → Foreman** and **Settings → Inspector** - because each
+**Foreman's four models and the GitHub Inspector's review model are not here.** They live with the
+subsystem that spends them - **Settings → Foreman** and **Settings → GitHub Inspector** - because each
 panel owns the config it writes.

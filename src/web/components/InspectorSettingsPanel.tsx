@@ -165,7 +165,7 @@ const STRIP: readonly { id: InspectionBucket; label: string; tone: ConsoleStat["
       id: "findings",
       label: "with findings",
       tone: "attention",
-      hint: "Show only pull requests the Inspector is carrying open findings on",
+      hint: "Show only pull requests GitHub Inspector is carrying open findings on",
     },
     { id: "clean", label: "clean", tone: "ok", hint: "Show only pull requests reviewed with nothing outstanding" },
     { id: "queued", label: "queued", tone: "plain", hint: "Show only pull requests nothing has looked at yet" },
@@ -256,11 +256,11 @@ export function InspectorSettingsPanel({
       <div className="sc-split">
         <div className="sc-controls">
           <ConsoleCard
-            title="Inspector"
+            title="GitHub Inspector"
             anchor="inspector/enabled"
             action={
               <ConsoleSwitch
-                label="Run the Inspector"
+                label="Run GitHub Inspector"
                 tooltip="Review the pull requests Mission Control opened, and comment on them"
                 checked={enabled}
                 disabled={!config}
@@ -284,12 +284,12 @@ export function InspectorSettingsPanel({
 
             {/* The daemon has not answered. Said out loud, because the fallbacks below are
                 `off` / `dry run` / `no repos` - the safe posture - and presenting schema
-                defaults as the daemon's answer tells the operator the Inspector is quiet
+                defaults as the daemon's answer tells the operator GitHub Inspector is quiet
                 when the stored config may well be enabled and live. Disabled inputs are
                 not a statement about what is running. */}
             {!config && (
               <p className="settings-warn inspector-unknown">
-                Can't reach the daemon, so what the Inspector is actually set to is unknown. The
+                Can't reach the daemon, so what GitHub Inspector is actually set to is unknown. The
                 controls below are showing defaults, not its current state.
               </p>
             )}
@@ -300,7 +300,7 @@ export function InspectorSettingsPanel({
             {mode === "live" && enabled && (
               <p className="settings-warn inspector-live-warn">
                 Comments are posted to GitHub under your account, and are public on a public
-                repository. The Inspector can read files in the reviewed worktree to do its job.
+                repository. GitHub Inspector can read files in the reviewed worktree to do its job.
               </p>
             )}
 
@@ -329,7 +329,7 @@ export function InspectorSettingsPanel({
               <label className="sc-field-label" htmlFor="inspector-provider">
                 Provider
               </label>
-              <Tooltip label="Which model provider the Inspector's review call is spawned with">
+              <Tooltip label="Which model provider GitHub Inspector's review call is spawned with">
                 <select
                   id="inspector-provider"
                   className="field-input sc-input"
@@ -350,7 +350,7 @@ export function InspectorSettingsPanel({
                 </select>
               </Tooltip>
               <p className="settings-hint">
-                The Inspector starts an isolated call per review. Claude receives read-only tools
+                GitHub Inspector starts an isolated call per review. Claude receives read-only tools
                 scoped to the worktree; Codex reviews the supplied diff without repository tools.
               </p>
             </div>
@@ -384,13 +384,13 @@ export function InspectorSettingsPanel({
           <ConsoleCard title="May post in" anchor="inspector/reviewed-repos">
             {/* The consent copy stays with the count: it is about the grant, not the editor. */}
             <p className="settings-hint">
-              The Inspector only posts in these repos - their worktrees count too, wherever they
+              GitHub Inspector only posts in these repos - their worktrees count too, wherever they
               live on disk. It still reviews everywhere while in dry run.
             </p>
             <TrustGrantSummary
               configured={Boolean(config)}
               count={allowlist.length}
-              subject="The Inspector may post reviews in"
+              subject="GitHub Inspector may post reviews in"
               onNavigate={onNavigate}
             />
           </ConsoleCard>
@@ -450,7 +450,7 @@ export function InspectorSettingsPanel({
                 ? "Nothing yet. A pull request appears here once Mission Control opens one."
                 : EMPTY_FILTER[active.id]
             }
-            foot="In dry run this table is the only place the Inspector's findings exist - nothing is posted, and nothing else in the app shows them."
+            foot="In dry run this table is the only place GitHub Inspector's findings exist - nothing is posted, and nothing else in the app shows them."
             renderRow={(row) => {
               const bucket = inspectionBucket(row);
               return (
@@ -471,7 +471,7 @@ export function InspectorSettingsPanel({
                       It says "closed", not "fixed", and the distinction is the honest one:
                       `resolvedFindings` sums a single `resolved` status that three different
                       things now write - a review round confirming a push fixed it, the
-                      Inspector dropping its own finding in conversation, and an operator
+                      GitHub Inspector dropping its own finding in conversation, and an operator
                       asserting it was handled. Only the first is evidence a fix landed, and
                       the ledger does not record which of the three it was, so a column
                       labelled "fixed" would be claiming provenance the number does not
@@ -483,7 +483,7 @@ export function InspectorSettingsPanel({
                         label={
                           `${row.resolvedFindings} finding${row.resolvedFindings === 1 ? "" : "s"} ` +
                           "on this pull request are no longer open. A finding closes when a review " +
-                          "round confirms a push fixed it, when the Inspector drops it while " +
+                          "round confirms a push fixed it, when GitHub Inspector drops it while " +
                           "answering a reply, or when an operator resolves it here - this count " +
                           "does not distinguish them."
                         }
@@ -504,7 +504,7 @@ export function InspectorSettingsPanel({
                     {canResolveFindings(row) && (
                       <Tooltip
                         label={
-                          `Mark the Inspector's ${row.openFindings} open ` +
+                          `Mark GitHub Inspector's ${row.openFindings} open ` +
                           `finding${row.openFindings === 1 ? "" : "s"} on ${row.repo}#${row.number} ` +
                           "as resolved, for when they have been addressed but no review round " +
                           "is left to say so. This does not merge anything: every other gate, " +
@@ -514,7 +514,7 @@ export function InspectorSettingsPanel({
                         <button
                           type="button"
                           className="settings-link"
-                          aria-label={`Resolve the Inspector's findings on ${row.repo}#${row.number}`}
+                          aria-label={`Resolve GitHub Inspector's findings on ${row.repo}#${row.number}`}
                           disabled={resolving === row.key}
                           onClick={() => {
                             setResolving(row.key);

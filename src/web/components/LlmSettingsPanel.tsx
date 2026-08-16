@@ -150,8 +150,8 @@ export function LlmSettingsPanel({ state }: { state: LlmState }): React.JSX.Elem
       </div>
 
       <p className="settings-hint llm-elsewhere">
-        Foreman's four models are under <strong>Foreman</strong>, and the Inspector's review
-        model is under <strong>Inspector</strong> - each with the subsystem that spends it.
+        Foreman's four models are under <strong>Foreman</strong>, and GitHub Inspector's review
+        model is under <strong>GitHub Inspector</strong> - each with the subsystem that spends it.
       </p>
 
       {error && <p className="settings-error">{error}</p>}

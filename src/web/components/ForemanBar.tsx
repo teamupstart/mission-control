@@ -599,7 +599,7 @@ export function ForemanPopover({
       */}
       <fieldset className="foreman-modes" disabled={!enabled}>
         <legend>Pull requests</legend>
-        <Tooltip label="Nudge a parked session back onto its open PR to resolve Inspector comments">
+        <Tooltip label="Nudge a parked session back onto its open PR to resolve GitHub Inspector comments">
           <label className="alert-row">
             {/*
               `!== false`, not the value itself: a web build newer than the daemon it is

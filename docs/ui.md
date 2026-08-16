@@ -33,7 +33,7 @@ is non-zero.
 **The strip never computes anything.** Every count, sentence and tone is folded on the daemon
 and pushed as one `line_summary` SSE event, change-gated exactly like the cost figures - so an
 unchanged fleet emits nothing. That is not an implementation detail: two of the six stages read
-inputs that never cross the wire at all (task-source sweep recency, the Inspector's adoption
+inputs that never cross the wire at all (task-source sweep recency, the GitHub Inspector's adoption
 ledger), and every other stage reuses the daemon's *existing* derivation - `reportBucket`,
 `readyBacklog`, `ensembleNeedsAttention`, `deriveScheduleHealth` - rather than inventing a
 second opinion that agrees until it doesn't.
@@ -80,7 +80,7 @@ fetched one detail per row would fire N bounded HTTP reads on a single strip cli
 Decide and Backlog are drawn entirely from state the fleet already holds - the SSE summaries,
 the task list, and the backlog plan Foreman polls every four seconds - and fetch nothing at
 all. **Intake and Shipped each make exactly one read**, on the click that opens them and never
-otherwise, because their inputs never cross the wire: task-source health and the Inspector's
+otherwise, because their inputs never cross the wire: task-source health and the GitHub Inspector's
 adoption ledger are the two stages the daemon folds from data the browser has no copy of. Both
 therefore hold **three** states rather than two - loading, failed, and the answer - since
 `fetchJson` resolves null on every failure, and a drawer that read that as "nothing here" would
@@ -99,7 +99,7 @@ on a failed call would be lying about the queue it is describing.
 
 | Drawer | Each row says | Escalates to |
 |--------|---------------|--------------|
-| **Review** | The session, the workflow and version, the repair round, a compact pipeline of chips (evidence → reviewers → session action → Inspector), and what the run is doing - **including why it stopped**, as `Blocked · session gone`. A run stopped on *you* is marked amber; a run that has stopped and will not move on its own is marked red. Three or more runs stopped for the *same* reason are one bar instead of three rows. A run an ensemble handed off wears its **⧉ from an ensemble** provenance, which opens that ensemble | The one remedy that run's state actually takes - `Dismiss`, `Retry`, `Resubmit`, `Restart…`, or `Dismiss all` for a bar - then `Open run` → `#/runs/:id`, `All runs →` → `#/runs`, and `Bind a workflow…` opens the binding dialog |
+| **Review** | The session, the workflow and version, the repair round, a compact pipeline of chips (evidence → reviewers → session action → GitHub Inspector), and what the run is doing - **including why it stopped**, as `Blocked · session gone`. A run stopped on *you* is marked amber; a run that has stopped and will not move on its own is marked red. Three or more runs stopped for the *same* reason are one bar instead of three rows. A run an ensemble handed off wears its **⧉ from an ensemble** provenance, which opens that ensemble | The one remedy that run's state actually takes - `Dismiss`, `Retry`, `Resubmit`, `Restart…`, or `Dismiss all` for a bar - then `Open run` → `#/runs/:id`, `All runs →` → `#/runs`, and `Bind a workflow…` opens the binding dialog |
 | **Decide** | What was at stake, elapsed, the candidate progress dots, and what the run wants next. The ones awaiting an answer sort first | `Decide` (awaiting an answer) or `Open full dossier` → `#/ensembles/:id`, `All ensembles →` → `#/ensembles` |
 | **Backlog** | One queued task: its title (which reopens the [Dispatch](dispatch-and-backlog.md#dispatch-an-agent) form over it), its kind, agent and age, and the marks for its state - **next up**, what it is waiting on, **parked**. The ready band is in [plan order](work-queues.md#backlog-autopilot-foreman-schedules-the-fleet), so the top row is what autopilot takes next; blocked and parked follow. **next up** is a button: it opens the [planner](#the-autopilot-planner), which says why that row is the row | `Launch now` dispatches it into a fresh worktree, the switch parks or resumes it, the picker sets its priority, and a dead prerequisite resolves from the row it is blocking. The footer carries the [autopilot switch and its readout](#the-autopilot-planner), and `Sitrep →` opens the [Roundup](attention-and-alerts.md#roundup) |
 | **Intake** | Each source's last sweep and what it filed, or the error it failed with; each mission's cadence, next firing, and health | `Settings` → task sources, `Open` → [Recurring Missions](recurring-missions.md#recurring-missions) |
@@ -200,13 +200,13 @@ the refused ones stay, and the bar recounts from what is actually still there.
 Only `Dismiss` batches. `Restart…` demands a typed phrase each time and batching it would
 launder thirty deliberate acts into one; `Retry` fires provider calls, and a batch button is a
 way to fire thirty of them by accident. A bar over runs with no argument-free remedy at all -
-five runs holding Inspector findings, say - still earns its place by saying the reason once,
+five runs holding GitHub Inspector findings, say - still earns its place by saying the reason once,
 and carries no control.
 
 Two chips the Review drawer deliberately cannot draw: **how many** reviewers a run has, and a
 stage the run has not reached. A run summary carries no graph, so "reviewers 2 of 4" would be
 a denominator invented in the browser - the row says who is reviewing right now and points at
-the run for the rest. Chips for a session action or an Inspector gate appear only when the run
+the run for the rest. Chips for a session action or a GitHub Inspector gate appear only when the run
 actually has one, which makes their absence informative rather than grey furniture. A run
 whose session disappeared shows **Reviewers stopped** in grey rather than an amber
 **Reviewers**: those attempts were cancelled where they stood, so they are not waiting.

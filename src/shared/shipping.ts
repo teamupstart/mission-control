@@ -63,15 +63,15 @@ export type MergeBlock =
 export const MERGE_BLOCK_LABEL: Record<MergeBlock, string> = {
   off: "YOLO mode is off",
   "not-allowlisted": "this repo is not on the auto-merge list",
-  "inspector-off": "the Inspector is switched off, so nothing is reviewing this",
-  "inspector-dry-run": "the Inspector is in dry run, so its review was never published",
+  "inspector-off": "GitHub Inspector is switched off, so nothing is reviewing this",
+  "inspector-dry-run": "GitHub Inspector is in dry run, so its review was never published",
   "inspector-not-allowlisted":
-    "this repo is not on the Inspector's list, so its review was never published",
+    "this repo is not on GitHub Inspector's list, so its review was never published",
   "review-unpublished":
-    "this push was reviewed without live publishing; the Inspector must review it again live",
+    "this push was reviewed without live publishing; GitHub Inspector must review it again live",
   "not-open": "the pull request is closed",
   draft: "still a draft",
-  "workflow-gate-pending": "an active workflow still owns the Inspector final gate",
+  "workflow-gate-pending": "an active workflow still owns the GitHub Inspector final gate",
   // Front-loaded deliberately. The Merge queue's standing column is one ellipsized line
   // (`.sc-standing`), so roughly the first forty characters are all an operator reads
   // without opening anything - and the two workflow blocks have to be told apart THERE.
@@ -79,8 +79,8 @@ export const MERGE_BLOCK_LABEL: Record<MergeBlock, string> = {
   // detail trails past the ellipsis where it costs nothing.
   "workflow-gate-spent":
     "a workflow gate gave up - open the run to grant more rounds or retire it",
-  "not-reviewed": "the Inspector has not reviewed this push yet",
-  findings: "the Inspector has open findings",
+  "not-reviewed": "GitHub Inspector has not reviewed this push yet",
+  findings: "GitHub Inspector has open findings",
   threads: "there are unresolved review threads",
   "changes-requested": "somebody requested changes",
   "review-required": "a review is required and has not been given",

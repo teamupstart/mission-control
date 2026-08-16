@@ -63,6 +63,10 @@ import type {
   WorkflowTriggerSource,
   WorkflowInspectorGateState,
   WorkflowRunRepeatOffender,
+  WorkflowAgentEvidenceLocator,
+  WorkflowUploadEvidenceLocator,
+  WorkflowRetainedEvidenceLocator,
+  WorkflowStagedEvidenceList,
 } from "@shared/workflow.ts";
 import {
   WORKFLOW_EXTERNAL_SOURCE_KINDS,
@@ -159,6 +163,15 @@ import { parsePrUrl } from "../inspector/github.ts";
 import { inspectorPosture } from "@shared/inspector.ts";
 import { runWorkflowRetention, WORKFLOW_RETENTION_INTERVAL_MS } from "./retention.ts";
 import { workflowLog } from "./log.ts";
+import {
+  captureSubmissionImages,
+  reconcileWorkflowEvidenceFiles,
+  stageAgentWorkflowEvidence,
+  stageUploadedWorkflowEvidenceSync,
+  stageRetainedWorkflowEvidence,
+  WorkflowImageEvidenceError,
+  workflowEvidenceOrphanCount,
+} from "./images.ts";
 import {
   requiredSkillCommand,
   type RequiredSkillCommand,
@@ -373,12 +386,15 @@ function runIsTerminal(run: WorkflowRun): boolean {
  * unwritten, which is what makes resuming the SAME submission correct rather than a way to
  * paper over a run that failed for some other reason.
  */
-const EXTERNAL_RESUMABLE_PHASES = [
+const CAPTURE_RESUMABLE_PHASES = [
   "external_artifact_mismatch",
   "capture_interrupted",
   "capture_error",
   "stale_capture",
+  "image_evidence_capture",
 ] as const;
+
+const IMAGE_CAPTURE_RESUMABLE_PHASES = ["image_evidence_capture"] as const;
 
 /**
  * Whether this run's evidence is pinned to an external artifact.
@@ -468,6 +484,7 @@ export class WorkflowManager {
   private lastRetentionError: string | null = null;
   private lastRetentionCompacted = 0;
   private lastRetentionDeleted = 0;
+  private orphanedEvidenceImages = 0;
 
   constructor(
     private readonly registry: Registry,
@@ -523,6 +540,8 @@ export class WorkflowManager {
     this.registry.initializeWorkflowBindings(this.bindingSummaries());
     this.registry.registerWorkflowReset((noteKey) => {
       const removed = this.store.resetForNoteKey(noteKey);
+      reconcileWorkflowEvidenceFiles(this.store);
+      this.orphanedEvidenceImages = workflowEvidenceOrphanCount(this.store);
       for (const id of removed.runIds) this.registry.removeWorkflowRun(id);
       // The bindings too. A reset deletes them in the same transaction as the runs, and
       // retiring only the runs left the stream publishing a binding whose row was gone - so a
@@ -882,6 +901,7 @@ export class WorkflowManager {
   status(): WorkflowStatus {
     return {
       ...this.store.workflowStatusCounts(),
+      orphanedEvidenceImages: this.orphanedEvidenceImages,
       lastRecoveryAt: this.lastRecoveryAt,
       lastRetentionAt: this.lastRetentionAt,
       lastRetentionError: this.lastRetentionError,
@@ -1210,11 +1230,161 @@ export class WorkflowManager {
       : { ok: false, reason: "not_found", message: "No such workflow binding" };
   }
 
+  /** Whether the selected current immutable version can consume visual evidence. */
+  supportsImageEvidence(workflowId: string): boolean {
+    const workflow = this.store.getWorkflow(workflowId);
+    const version = workflow?.currentVersionId
+      ? this.store.getWorkflowVersionById(workflow.currentVersionId)
+      : null;
+    return Boolean(version?.graph.nodes.some((node) => node.kind === "persona"));
+  }
+
+  /** Session-attributed intake used by the bundled Mission MCP tool. */
+  async stageAgentEvidence(
+    sessionId: string,
+    images: readonly WorkflowAgentEvidenceLocator[],
+    now = Date.now(),
+  ): Promise<WorkflowStagedEvidenceList> {
+    const session = this.registry.getSession(sessionId);
+    if (!session || session.state === "exited") {
+      throw new WorkflowImageEvidenceError("session_unavailable", "The evidence session is not live", 404);
+    }
+    const task = this.registry.taskForSession(session.id, session.cwd);
+    if (!task || !["dispatching", "running"].includes(task.status) || !task.workflowId) {
+      throw new WorkflowImageEvidenceError(
+        "workflow_unbound",
+        "The active task is not bound to a workflow",
+        403,
+      );
+    }
+    const binding = this.store.activeBindingForNote(noteKeyFor(session));
+    const version = binding ? this.store.getWorkflowVersionById(binding.workflowVersionId) : null;
+    if (
+      !binding
+      || version?.workflowId !== task.workflowId
+      || !version.graph.nodes.some((node) => node.kind === "persona")
+    ) {
+      throw new WorkflowImageEvidenceError(
+        "workflow_unbound",
+        "The session does not have the selected Persona workflow binding",
+        403,
+      );
+    }
+    return stageAgentWorkflowEvidence({
+      store: this.store,
+      noteKey: binding.noteKey,
+      task,
+      fallbackRoot: session.cwd,
+      images,
+      now,
+    });
+  }
+
+  stagedEvidence(bindingId: string): WorkflowStagedEvidenceList | null {
+    const binding = this.store.getBinding(bindingId);
+    return binding ? this.store.listWorkflowEvidence(binding.noteKey) : null;
+  }
+
+  removeStagedEvidence(
+    bindingId: string,
+    clientItemId: string,
+    now = Date.now(),
+  ): WorkflowStagedEvidenceList | null {
+    const binding = this.store.getBinding(bindingId);
+    return binding
+      ? this.store.removeWorkflowEvidence(binding.noteKey, clientItemId, now)
+      : null;
+  }
+
+  reattachRetainedEvidence(
+    bindingId: string,
+    locator: WorkflowRetainedEvidenceLocator,
+    now = Date.now(),
+  ): WorkflowStagedEvidenceList {
+    const binding = this.store.getBinding(bindingId);
+    const session = binding?.sessionId ? this.registry.getSession(binding.sessionId) : undefined;
+    const activeTask = session ? this.registry.taskForSession(session.id, session.cwd) : undefined;
+    const image = this.store.submissionImageRecord(locator.imageId);
+    const sourceSubmission = image ? this.store.getSubmission(image.submissionId) : null;
+    const sourceRun = sourceSubmission ? this.store.getRun(sourceSubmission.runId) : null;
+    const sourceBinding = sourceRun ? this.store.getBinding(sourceRun.bindingId) : null;
+    const version = binding ? this.store.getWorkflowVersionById(binding.workflowVersionId) : null;
+    if (
+      !binding
+      || binding.state !== "active"
+      || !session
+      || session.state === "exited"
+      || !image
+      || sourceBinding?.noteKey !== binding.noteKey
+      || !version?.graph.nodes.some((node) => node.kind === "persona")
+    ) {
+      throw new WorkflowImageEvidenceError(
+        "image_ownership",
+        "Historical evidence does not belong to this workflow conversation",
+        403,
+      );
+    }
+    const task = activeTask ?? {
+      repoRoot: session.repoRoot ?? session.cwd ?? "",
+      worktreePath: session.cwd,
+      baseSha: null,
+      extraRepos: [],
+    };
+    return stageRetainedWorkflowEvidence({
+      store: this.store,
+      noteKey: binding.noteKey,
+      task,
+      fallbackRoot: session.cwd,
+      locator,
+      now,
+    });
+  }
+
+  private stageSubmitEvidence(
+    bindingId: string,
+    images: readonly WorkflowUploadEvidenceLocator[],
+    now: number,
+  ): void {
+    if (images.length === 0) return;
+    const binding = this.store.getBinding(bindingId);
+    const session = binding?.sessionId ? this.registry.getSession(binding.sessionId) : undefined;
+    const activeTask = session ? this.registry.taskForSession(session.id, session.cwd) : undefined;
+    const version = binding ? this.store.getWorkflowVersionById(binding.workflowVersionId) : null;
+    if (
+      !binding
+      || binding.state !== "active"
+      || !session
+      || session.state === "exited"
+      || !version?.graph.nodes.some((node) => node.kind === "persona")
+    ) {
+      throw new WorkflowImageEvidenceError(
+        "workflow_unbound",
+        "Browser evidence requires a live Persona workflow binding",
+        403,
+      );
+    }
+    const task = activeTask ?? {
+      repoRoot: session.repoRoot ?? session.cwd ?? "",
+      worktreePath: session.cwd,
+      baseSha: null,
+      extraRepos: [],
+    };
+    stageUploadedWorkflowEvidenceSync({
+      store: this.store,
+      noteKey: binding.noteKey,
+      task,
+      fallbackRoot: session.cwd,
+      images,
+      now,
+    });
+  }
+
   async submit(
     bindingId: string,
     input: SubmitWorkflow,
     now = Date.now(),
   ): Promise<WorkflowRuntimeMutation<WorkflowSubmitResult>> {
+    this.stageSubmitEvidence(bindingId, input.evidence ?? [], now);
     const prepared = this.prepareSubmit(bindingId, input, now);
     if (!prepared.ok) return prepared;
     const { lead, siblings } = prepared.value;
@@ -1244,6 +1414,7 @@ export class WorkflowManager {
     input: SubmitWorkflow,
     now = Date.now(),
   ): WorkflowRuntimeMutation<WorkflowSubmitResult> {
+    this.stageSubmitEvidence(bindingId, input.evidence ?? [], now);
     const prepared = this.prepareSubmit(bindingId, input, now);
     if (!prepared.ok) return prepared;
     const { lead, siblings } = prepared.value;
@@ -1311,16 +1482,28 @@ export class WorkflowManager {
       return { ok: false, reason: "inactive_binding", message: "The workflow binding is not active" };
     }
     const key = manualWorkflowTriggerKey(binding.id, input.requestId);
+    const evidenceGroupKey = `manual:${binding.noteKey}:${input.requestId}`;
     const existing = this.store.submissionByTrigger(key);
     if (existing) {
       const run = this.store.getRun(existing.runId);
-      return run
-        ? {
+      if (!run) return { ok: false, reason: "not_found", message: "The idempotent run is missing" };
+      const group = this.store.listSubmissionsByEvidenceGroup(evidenceGroupKey)
+        .flatMap((submission) => {
+          const memberRun = this.store.getRun(submission.runId);
+          const memberBinding = memberRun ? this.store.getBinding(memberRun.bindingId) : null;
+          if (!memberRun || !memberBinding) return [];
+          const resumed = this.resumeImageEvidenceCapture(memberBinding, memberRun, submission, now);
+          return resumed ? [resumed] : [];
+        });
+      const resumedLead = group.find((item) => item.submission.id === existing.id);
+      const siblings = group.filter((item) => item.submission.id !== existing.id);
+      return resumedLead
+        ? { ok: true, value: { lead: resumedLead, siblings } }
+        : {
             ok: true,
-            value: { lead: { binding, run, submission: existing }, siblings: [] },
+            value: { lead: { binding, run, submission: existing }, siblings },
             idempotent: true,
-          }
-        : { ok: false, reason: "not_found", message: "The idempotent run is missing" };
+          };
     }
     const session = binding.sessionId ? this.registry.getSession(binding.sessionId) : undefined;
     const targets = session && session.state !== "exited"
@@ -1338,7 +1521,15 @@ export class WorkflowManager {
       const targetKey = manualWorkflowTriggerKey(target.id, input.requestId);
       const created = this.store.createInitialSubmission(
         { id: randomUUID(), binding: target, triggerSource: "manual", triggerKey: targetKey, now },
-        { id: randomUUID(), triggerSource: "manual", triggerKey: targetKey, context: {}, evidence: {}, now },
+        {
+          id: randomUUID(),
+          triggerSource: "manual",
+          triggerKey: targetKey,
+          evidenceGroupKey,
+          context: {},
+          evidence: {},
+          now,
+        },
       );
       if (created.idempotent) {
         // Lost the insert to a concurrent caller holding the same request id. Only the lead's
@@ -1363,6 +1554,33 @@ export class WorkflowManager {
     return leadWasIdempotent
       ? { ok: true, value: { lead, siblings }, idempotent: true }
       : { ok: true, value: { lead, siblings } };
+  }
+
+  /** Resume only the same failed immutable reservation, never a fresh staged set. */
+  private resumeImageEvidenceCapture(
+    binding: WorkflowBinding,
+    run: WorkflowRun,
+    submission: WorkflowSubmission,
+    now: number,
+  ): PreparedWorkflowRun | null {
+    const resumed = this.store.resumeCapture(
+      run.id,
+      submission.id,
+      IMAGE_CAPTURE_RESUMABLE_PHASES,
+      now,
+    );
+    if (!resumed) return null;
+    const previousFingerprint = this.store.listSubmissions(run.id)
+      .filter((candidate) =>
+        candidate.round < submission.round
+        || (candidate.round === submission.round && candidate.segment < submission.segment))
+      .at(-1)?.evidenceFingerprint;
+    return {
+      binding,
+      run: resumed.run,
+      submission: resumed.submission,
+      previousFingerprint,
+    };
   }
 
   /**
@@ -1396,6 +1614,15 @@ export class WorkflowManager {
       const active = this.store.activeRunForBinding(binding.id);
       const submission = active ? this.store.latestSubmission(active.id) : null;
       if (active && submission) {
+        const resumed = this.resumeImageEvidenceCapture(binding, active, submission, now);
+        if (resumed) {
+          return this.captureAndActivate(
+            resumed.binding,
+            resumed.run,
+            resumed.submission,
+            resumed.previousFingerprint,
+          );
+        }
         return { ok: true, value: { run: active, submission }, idempotent: true };
       }
       return this.submit(binding.id, input, now);
@@ -1446,7 +1673,7 @@ export class WorkflowManager {
       return {
         ok: false,
         reason: "run_not_waiting",
-        message: "Inspector-only repair resumes on a new head or through the confirmed full restart action",
+        message: "GitHub Inspector-only repair resumes on a new head or through the confirmed full restart action",
       };
     }
     const binding = this.store.getBinding(run.bindingId);
@@ -1454,10 +1681,21 @@ export class WorkflowManager {
     if (externallySourced(run)) {
       return { ok: false, reason: "unsupported_mode", message: EXTERNAL_MANUAL_ROUND_REFUSAL };
     }
+    this.stageSubmitEvidence(binding.id, input.evidence ?? [], now);
     const key = manualWorkflowTriggerKey(binding.id, input.requestId);
     const existing = this.store.submissionByTrigger(key);
     if (existing) {
       const existingRun = this.store.getRun(existing.runId) ?? run;
+      const resumed = this.resumeImageEvidenceCapture(binding, existingRun, existing, now);
+      if (resumed) {
+        return this.captureAndActivate(
+          resumed.binding,
+          resumed.run,
+          resumed.submission,
+          resumed.previousFingerprint,
+          input.resubmitUnchanged,
+        );
+      }
       if (
         existing.status === "failed"
         && existingRun.currentPhase === "unchanged_evidence"
@@ -1534,6 +1772,7 @@ export class WorkflowManager {
       round: latest.round + 1,
       triggerSource: "manual",
       triggerKey: key,
+      evidenceGroupKey: `manual:${binding.noteKey}:${input.requestId}`,
       context: {},
       evidence: {},
       now,
@@ -2190,7 +2429,7 @@ export class WorkflowManager {
     const version = run ? this.store.getWorkflowVersionById(run.workflowVersionId) : null;
     const submission = run ? this.store.latestSubmission(run.id) : null;
     if (!run || !gate || !binding || !submission || version?.completionPolicy.kind !== "inspector") {
-      return { ok: false, reason: "not_found", message: "No active Inspector gate exists" };
+      return { ok: false, reason: "not_found", message: "No active GitHub Inspector gate exists" };
     }
     const prior = this.store.listEvents(run.id).find((event) =>
       event.kind === "pr_handoff_prepared"
@@ -2274,13 +2513,13 @@ export class WorkflowManager {
   ): WorkflowRuntimeMutation<WorkflowRun> {
     const run = this.store.getRun(runId);
     if (!run || !this.gateState(run)) {
-      return { ok: false, reason: "not_found", message: "No active Inspector gate exists" };
+      return { ok: false, reason: "not_found", message: "No active GitHub Inspector gate exists" };
     }
     if (runIsTerminal(run)) {
       return {
         ok: false,
         reason: "run_not_waiting",
-        message: "This Inspector gate is already terminal",
+        message: "This GitHub Inspector gate is already terminal",
       };
     }
     const repeated = this.store.listEvents(run.id).some((event) =>
@@ -2307,6 +2546,18 @@ export class WorkflowManager {
       : null;
     const existing = triggerKey ? this.store.submissionByTrigger(triggerKey) : null;
     if (run && existing?.runId === run.id) {
+      const binding = this.store.getBinding(run.bindingId);
+      const resumed = binding
+        ? this.resumeImageEvidenceCapture(binding, run, existing, now)
+        : null;
+      if (resumed) {
+        return this.captureAndActivate(
+          resumed.binding,
+          resumed.run,
+          resumed.submission,
+          resumed.previousFingerprint,
+        );
+      }
       return {
         ok: true,
         value: { run, submission: existing },
@@ -2316,7 +2567,7 @@ export class WorkflowManager {
     const gate = run ? this.gateState(run) : null;
     const latest = run ? this.store.latestSubmission(run.id) : null;
     if (!run || !gate || !binding || !latest) {
-      return { ok: false, reason: "not_found", message: "No active Inspector gate exists" };
+      return { ok: false, reason: "not_found", message: "No active GitHub Inspector gate exists" };
     }
     const abandoningBypass =
       run.status === "waiting_for_new_head"
@@ -2325,14 +2576,14 @@ export class WorkflowManager {
       return {
         ok: false,
         reason: "run_not_waiting",
-        message: "Full restart is the explicit escape from an active Inspector-only repair",
+        message: "Full restart is the explicit escape from an active GitHub Inspector-only repair",
       };
     }
     if (input.confirmation !== "RESTART FULL WORKFLOW") {
       return {
         ok: false,
         reason: "confirmation_required",
-        message: "Type RESTART FULL WORKFLOW to abandon the active Inspector-only repair",
+        message: "Type RESTART FULL WORKFLOW to abandon the active GitHub Inspector-only repair",
       };
     }
     if (latest.round > run.maxRepairRounds) {
@@ -2450,7 +2701,7 @@ export class WorkflowManager {
       return {
         ok: false,
         reason: "invalid_delivery_state",
-        message: "Inspector-only repair can be abandoned only through the confirmed full restart action",
+        message: "GitHub Inspector-only repair can be abandoned only through the confirmed full restart action",
         current: delivery,
       };
     }
@@ -2553,7 +2804,16 @@ export class WorkflowManager {
       };
     }
     this.publishRun(run.id);
-    if (replaced.idempotent && replaced.submission.status !== "capturing") {
+    const resumedReplacement = replaced.idempotent
+      ? this.resumeImageEvidenceCapture(binding, replaced.run, replaced.submission, now)
+      : null;
+    const captureTarget = resumedReplacement ?? {
+      binding,
+      run: replaced.run,
+      submission: replaced.submission,
+      previousFingerprint: latest.evidenceFingerprint,
+    };
+    if (replaced.idempotent && !resumedReplacement && replaced.submission.status !== "capturing") {
       return {
         ok: true,
         value: { run: replaced.run, submission: replaced.submission },
@@ -2561,10 +2821,10 @@ export class WorkflowManager {
       };
     }
     const captured = await this.captureAndActivate(
-      binding,
-      replaced.run,
-      replaced.submission,
-      latest.evidenceFingerprint,
+      captureTarget.binding,
+      captureTarget.run,
+      captureTarget.submission,
+      captureTarget.previousFingerprint,
       true,
     );
     return captured.ok && replaced.idempotent
@@ -2713,8 +2973,10 @@ export class WorkflowManager {
         binding,
         completionKind: claim.completionKind,
         marker: claim.marker,
+        promptedActivityAt: claim.activityAt,
         summary: claim.summary,
         evidenceFingerprint: claim.evidenceFingerprint,
+        evidenceGroupKey: `foreman:${binding.noteKey}:${claim.completionKind}:${claim.marker}`,
         expectedIntent: claim.expectedIntent,
         runId: randomUUID(),
         submissionId: randomUUID(),
@@ -2737,12 +2999,15 @@ export class WorkflowManager {
     if (!stored.result.claimed) return { ...nothing, result: stored.result };
     if (!stored.run) throw new Error("Claimed Foreman completion has no workflow run");
     this.publishRun(stored.run.id);
+    const resumed = stored.submission
+      ? this.resumeImageEvidenceCapture(stored.binding, stored.run, stored.submission, now)
+      : null;
     return {
       result: stored.result,
-      activate: stored.created && stored.submission
+      activate: resumed ?? (stored.created && stored.submission
         ? { binding: stored.binding, run: stored.run, submission: stored.submission }
-        : null,
-      previousFingerprint: stored.previousFingerprint,
+        : null),
+      previousFingerprint: resumed?.previousFingerprint ?? stored.previousFingerprint,
     };
   }
 
@@ -2974,7 +3239,7 @@ export class WorkflowManager {
       const resumed = this.store.resumeCapture(
         existingRun.id,
         existing.id,
-        EXTERNAL_RESUMABLE_PHASES,
+        CAPTURE_RESUMABLE_PHASES,
         now,
       );
       if (!resumed) {
@@ -3401,7 +3666,7 @@ export class WorkflowManager {
         newHeadSha: newHead,
         failedHeadSha: state.failedHeadSha,
         priorFindingFingerprints: state.findingFingerprints,
-        bypassReason: "Published Inspector-only findings policy",
+        bypassReason: "Published GitHub Inspector-only findings policy",
         expectedState: state,
         state: nextState,
         now,
@@ -5198,6 +5463,21 @@ export class WorkflowManager {
           current: mismatch,
         };
       }
+      // The reservation was frozen with the submission. Re-open those sources and copy their
+      // bytes into daemon-owned immutable storage after the external artifact guard, but
+      // before raw context is persisted or the compaction model can spend a token.
+      const submissionImages = await captureSubmissionImages(this.store, submission.id);
+      const reservedSubmission = this.store.getSubmission(submission.id) ?? submission;
+      captured.raw.evidence = {
+        ...captured.raw.evidence,
+        images: submissionImages,
+        stagedImageGeneration: reservedSubmission.stagedImageGeneration ?? 0,
+      };
+      captured.context.evidence = {
+        ...captured.context.evidence,
+        images: submissionImages,
+        stagedImageGeneration: reservedSubmission.stagedImageGeneration ?? 0,
+      };
       // Persist bounded raw intent and evidence before the advisory model call.
       this.store.updateSubmissionCapture(submission.id, {
         context: workflowJson(captured.context),
@@ -5344,10 +5624,16 @@ export class WorkflowManager {
       const message = error instanceof Error ? error.message : String(error);
       if (this.captureIsActive(run.id, submission.id)) {
         this.store.setSubmissionState(submission.id, "failed", Date.now());
-        this.store.setRunState(run.id, "blocked", "capture_error", { error: message }, Date.now());
-        this.store.appendEvent(run.id, "capture_error", {
+        const imageFailure = error instanceof WorkflowImageEvidenceError;
+        const phase = imageFailure ? "image_evidence_capture" : "capture_error";
+        this.store.setRunState(run.id, "blocked", phase, {
+          error: message,
+          ...(imageFailure ? { code: error.code } : {}),
+        }, Date.now());
+        this.store.appendEvent(run.id, phase, {
           submissionId: submission.id,
           error: message,
+          ...(imageFailure ? { code: error.code } : {}),
         }, Date.now());
         this.publishRun(run.id);
       } else {
@@ -5488,7 +5774,7 @@ export class WorkflowManager {
     }
     const run = this.store.getRun(child.runId);
     if (child.status === "failed" && run?.status === "blocked") {
-      this.store.resumeCapture(run.id, child.id, EXTERNAL_RESUMABLE_PHASES);
+      this.store.resumeCapture(run.id, child.id, CAPTURE_RESUMABLE_PHASES);
     }
     await this.captureSessionActionContinuation(attemptId, Date.now());
   }
@@ -5529,6 +5815,8 @@ export class WorkflowManager {
   }
 
   private startEngineAndMaintenance(): void {
+    reconcileWorkflowEvidenceFiles(this.store);
+    this.orphanedEvidenceImages = workflowEvidenceOrphanCount(this.store);
     this.engine.start();
     this.recoverSessionActions();
     this.lastRecoveryAt = Date.now();
@@ -5570,6 +5858,8 @@ export class WorkflowManager {
         this.store,
         getWorkflowPolicy().retention,
       );
+      reconcileWorkflowEvidenceFiles(this.store);
+      this.orphanedEvidenceImages = workflowEvidenceOrphanCount(this.store);
       this.lastRetentionAt = Date.now();
       this.lastRetentionError = result.failedRunCount > 0
         ? "retention_partial_failure"
@@ -5720,6 +6010,10 @@ export class WorkflowManager {
     const probe = await (this.options.readEvidenceProbe ?? readWorkflowEvidenceProbe)(
       this.registry,
       binding,
+    );
+    probe.stagedImageGeneration = this.store.workflowEvidenceGeneration(
+      binding.noteKey,
+      binding.repoRoot || binding.sessionCwd || "",
     );
     if (probeMatchesEvidence(probe, parsed.data.evidence)) {
       if (run.currentPhase === "pr_handoff") {

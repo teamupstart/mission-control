@@ -188,7 +188,7 @@ test("the batch is Phase 1's dismiss applied to a set, and nothing else batches"
   const findings = groups(fold(Array.from({ length: 3 }, (_, i) =>
     stopped(`r${i}`, "inspector_findings"))))[0]!;
   assert.equal(findings.remedy, null);
-  assert.equal(findings.clause, "Inspector findings");
+  assert.equal(findings.clause, "GitHub Inspector findings");
 });
 
 test("the batch posts each member's own remedy, never one run id repeated", () => {

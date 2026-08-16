@@ -42,8 +42,9 @@ export interface SessionFilesController {
   /**
    * The checkout listing by session, for readers that must answer "is this a real file?"
    * about many paths at once and synchronously - the transcript's path links. Absent until
-   * something asked; `warmPaths` is that ask, and it shares one request with `probe` (see
-   * `listPaths`), so those two can never hold different answers.
+   * something asked; `warmPaths` is that ask. It refreshes when a conversation mounts so a
+   * file created since the last visit is linkable on the first render, and shares that new
+   * request with `probe` (see `listPaths`), so those two can never hold different answers.
    *
    * The Files tab is NOT on that shared request. `ensure` and `refresh` list the checkout
    * themselves and publish the result here, which converges the ANSWER without sharing the
@@ -54,7 +55,7 @@ export interface SessionFilesController {
   pathIndex: Record<string, ReadonlySet<string>>;
   ensure: (sessionId: string) => void;
   refresh: (sessionId: string) => void;
-  /** Load `pathIndex` for a session. Idempotent, and a no-op once the listing is in. */
+  /** Refresh `pathIndex` when a session conversation mounts, retaining the old set in flight. */
   warmPaths: (sessionId: string) => void;
   probe: (sessionId: string, path: string) => Promise<boolean>;
   select: (sessionId: string, path: string) => void;
@@ -400,7 +401,13 @@ export function useSessionFilesStore(connected: boolean): SessionFilesController
   }, [listPaths]);
 
   const warmPaths = useCallback((sessionId: string) => {
-    if (pathIndexRef.current[sessionId]) return;
+    const previous = pathIndexRef.current[sessionId];
+    // A resolved listing is a snapshot, not durable checkout state. The agent can create a
+    // report while its conversation is closed; reusing this promise on the next open leaves
+    // that path as dead prose until Files performs its separate listing. Keep the rendered
+    // index standing while the refresh is in flight, but make this mount ask the checkout
+    // again and make subsequent written-link probes share the new answer.
+    if (previous) probeFiles.current.delete(sessionId);
     // The same staleness guard every other fetch in this file uses, and it is load
     // bearing for the SAME reason `drop` already calls `forgetSession`: a warm that is
     // still in flight when the session goes away would otherwise land afterwards and
@@ -414,8 +421,9 @@ export function useSessionFilesStore(connected: boolean): SessionFilesController
     void listPaths(sessionId).then((paths) => {
       if (!requests.current.isCurrent(key, request)) return;
       setPathIndex((all) => {
-        // A listing that lost a race to `refresh` must not replace the newer one.
-        if (all[sessionId]) return all;
+        // A listing that lost a race to Files' `ensure` or `refresh` must not replace the
+        // newer one. Identity is the generation here: publishPaths always installs a new Set.
+        if (all[sessionId] !== previous) return all;
         const next = { ...all, [sessionId]: paths };
         pathIndexRef.current = next;
         return next;

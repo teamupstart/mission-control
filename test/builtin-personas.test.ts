@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { ServerEvent } from "../src/shared/types.ts";
 
-// What is at stake: the four review roles ship WITH the application, which is a promise about
+// What is at stake: the five review roles ship WITH the application, which is a promise about
 // two different things. First, that a build serves the exact Markdown it was made from - the
 // generated module is the only copy that survives bundling and packaging, so a drifted or
 // hand-edited one is a build quietly reviewing with guidance nobody wrote. Second, that they
@@ -113,6 +113,16 @@ test("each built-in derives its identity from its document and declares itself b
     BUILTIN_PERSONAS.some((persona) => persona.id === builtinPersonaId("code-risk-reviewer")),
     true,
   );
+  const quality = BUILTIN_PERSONAS.find(
+    (persona) => persona.id === builtinPersonaId("code-quality-judge"),
+  );
+  assert.ok(quality, "Code Quality Judge is present in the built-in catalog");
+  assert.equal(quality.name, "Code Quality Judge");
+  assert.equal(
+    quality.description,
+    "Judge whether the submitted local change is safe, correct, and ready for its verified Pull Request action.",
+  );
+  assert.match(quality.guidanceMarkdown, /You have no repository tools and the pull request does not exist yet\./);
 });
 
 test("the catalog carries built-ins with no row and no seeding step", () => {

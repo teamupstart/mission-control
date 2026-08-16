@@ -376,7 +376,17 @@ export interface ShippedCostReading {
   output: number;
   cacheRead: number;
   cacheWrite: number;
-  costUsd: number;
+  /**
+   * What the engine priced this feature at, or NULL when its record does not say.
+   *
+   * Nullable rather than defaulted to zero, and it is the one field here where the
+   * difference is a lie rather than a rounding: every other missing line is a count, where
+   * absent and zero mean the same thing, and this one is a price, where they could not mean
+   * less alike. A record with real token counts and no `cost_usd` - an engine release that
+   * predates the line, a rollup that could price nothing, a value that did not parse - would
+   * otherwise reach the ledger as an exact $0.00 for work that certainly cost something.
+   */
+  costUsd: number | null;
   dispatches: number;
   /**
    * Dispatches the engine could not meter at all - no usage record of any kind.
@@ -402,9 +412,15 @@ export interface ShippedCostReading {
 /** The heading the cost block opens with, in the engine's own rendering. */
 const COST_HEADING = "## Cost";
 
-/** A non-negative finite number from one of the block's scalar lines, or null. */
+/**
+ * A non-negative finite number from one of the block's scalar lines, or null.
+ *
+ * An EMPTY value is null rather than zero, which `Number("")` is not: a key the engine wrote
+ * with nothing after it is a line that failed to render, and `cost_usd:` with no figure after
+ * it is the difference between "this cost nothing" and "this record does not say".
+ */
 function costNumber(raw: string | undefined): number | null {
-  if (raw === undefined) return null;
+  if (raw === undefined || raw.trim() === "") return null;
   const value = Number(raw.trim());
   return Number.isFinite(value) && value >= 0 ? value : null;
 }
@@ -472,7 +488,9 @@ export function readShippedCost(worktree: string, slug: string): ShippedCostRead
     output,
     cacheRead: costNumber(fields.get("cache_read")) ?? 0,
     cacheWrite: costNumber(fields.get("cache_creation")) ?? 0,
-    costUsd: costNumber(fields.get("cost_usd")) ?? 0,
+    // Carried as null when the line is missing or unreadable. See the field's own note: the
+    // zero every other line falls back to would be a claim about money nobody made.
+    costUsd: costNumber(fields.get("cost_usd")),
     dispatches: costNumber(fields.get("dispatches")) ?? 0,
     unmetered: countOf("unmetered"),
     costUnmetered: countOf("cost_unmetered"),

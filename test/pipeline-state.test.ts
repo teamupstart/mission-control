@@ -738,6 +738,38 @@ test("an unpriced or partly-metered feature says so rather than rounding it away
   assert.equal(cost?.costUsd, 0.02);
 });
 
+test("a record with no price line reports no price, rather than a price of zero", () => {
+  // The one field where absent and zero are different claims. An engine release that predates
+  // the line, or a rollup that could price nothing, writes real token counts and no
+  // `cost_usd` - and a reader that defaulted it to 0 would hand the ledger an exact $0.00 for
+  // work that certainly cost something. Every other missing line is a COUNT, where the same
+  // default is the honest reading, so those stay at zero here.
+  const root = repo("shipped-priceless");
+  const worktree = seedConductorRun(root, "feat", {
+    steps: { finish: "done" },
+    done: true,
+    shipped: { input: 900, output: 120, costUsd: null },
+  });
+  const cost = readShippedCost(worktree, "feat");
+  assert.equal(cost?.costUsd, null);
+  assert.equal(cost?.input, 900, "the tokens are real and stay");
+  assert.equal(cost?.output, 120);
+  assert.equal(cost?.cacheRead, 0);
+  assert.equal(cost?.unmetered, 0);
+
+  // A price line that does not parse is the same answer: `-1`, an empty value and a word are
+  // all "this record does not tell us what it cost".
+  const dir = join(worktree, ".docs", "shipped");
+  for (const raw of ["nonsense", "", "-1"]) {
+    writeFileSync(join(dir, "feat.md"), `# feat\n\n## Cost\n\ninput: 4\noutput: 2\ncost_usd: ${raw}\n`);
+    assert.equal(readShippedCost(worktree, "feat")?.costUsd, null, raw);
+  }
+  // And a price that IS there survives all of that, including an explicit zero - which is a
+  // claim the engine is entitled to make.
+  writeFileSync(join(dir, "feat.md"), "# feat\n\n## Cost\n\ninput: 4\noutput: 2\ncost_usd: 0\n");
+  assert.equal(readShippedCost(worktree, "feat")?.costUsd, 0);
+});
+
 test("no record, no cost block, and an unreadable one are all just null", () => {
   const root = repo("shipped-absent");
   const worktree = seedConductorRun(root, "feat", { steps: { build: "in_progress" } });

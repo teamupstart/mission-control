@@ -746,6 +746,36 @@ test("a partly-metered feature is stored as unpriced, with its tokens intact", a
   assert.equal(spend?.costUsd, null);
 });
 
+test("a record with no price line is unpriced, not free", async () => {
+  // The same rule as the partly-metered case above, reached by the other road: here the
+  // engine metered everything it ran and simply did not say what any of it cost. A reader
+  // that defaulted the missing line to zero would satisfy both completeness counters and
+  // write a KNOWN $0.00 - the one number a reader must never invent, because it is
+  // indistinguishable on every surface from a feature that genuinely cost nothing.
+  reset();
+  db.exec("DELETE FROM usage_ledger");
+  const root = repo("cost-priceless");
+  seedConductorRun(root, "feat", {
+    steps: { finish: "done" },
+    done: true,
+    shipped: { input: 900, output: 120, costUsd: null },
+  });
+  seedConductorDaemon(root, { pid: process.pid });
+  consentTo(root);
+  await refreshPipelineRepo(new Registry(), "ai-conductor", root);
+
+  const [row] = conductorRows();
+  assert.equal(row?.cost_known, 0);
+  assert.equal(row?.cost_basis, "unpriced");
+  assert.equal(row?.cost_usd, 0, "the placeholder a row carries when it has no dollars");
+  assert.equal(row?.input, 900, "and the tokens, which the engine did count");
+  assert.equal(row?.output, 120);
+
+  const spend = automationSpendSince(0).find((entry) => entry.role === "pipeline:ai-conductor");
+  assert.equal(spend?.tokens, 1020);
+  assert.equal(spend?.costUsd, null, "the strip says unpriced rather than $0.00");
+});
+
 test("a feature still in flight contributes no row at all", async () => {
   // Not a zero. The engine writes the record when a feature ships, and a row of zeroes for a
   // run that is spending money right now would be a claim nobody made - the same distinction

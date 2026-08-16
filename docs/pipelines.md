@@ -286,9 +286,14 @@ Three decisions behind that, each of which had a plausible alternative:
 - **One row per feature, replaced rather than appended.** The ledger row is keyed on the
   feature, so re-reading the same repository every few seconds - or rebuilding the projection
   from scratch - cannot double-count anything.
-- **An incomplete figure is stored as unpriced.** If the engine could not meter every dispatch,
-  or metered some without a price, the dollars are a subtotal; the tokens are still recorded,
-  and the spend strip says `unpriced` rather than presenting a partial sum as a total.
+- **An incomplete figure is stored as unpriced, and so is a missing one.** If the engine could
+  not meter every dispatch, or metered some without a price, the dollars are a subtotal. If its
+  record carries no `cost_usd` line at all - an older release, a rollup that priced nothing, a
+  value that does not parse - there is no figure to carry. All three record the tokens and say
+  `unpriced` on the spend strip. A missing price is never read as `$0.00`: on every surface that
+  is indistinguishable from a feature that genuinely cost nothing, and only one of the two is a
+  claim anybody made. Every other missing line is a count, where absent and zero do mean the
+  same thing, and those default to zero.
 
 The writer id is `conductor`, appended to the ledger's writer vocabulary
 ([change contracts](agent-guides/change-contracts.md)); a run that has not shipped contributes

@@ -1202,11 +1202,12 @@ side effect are not one atomic act. Both are the engine's documented shape rathe
 failure mode the fixture invented, and the second is the only way to see the surface re-read a
 repository whose state moved without anyone being told.
 
-`e2e/.artifacts/pipeline-controls/` carries nine frames behind `MC_E2E_EVIDENCE`: the inbox
+`e2e/.artifacts/pipeline-controls/` carries ten frames behind `MC_E2E_EVIDENCE`: the inbox
 row with its verbs and the same row drained, the paused daemon chip, the grant form with
 `plan` absent and explained, the reseal form, the run's cost chip, the spend popover carrying
-the engine's line, a refused verb showing the command and the engine's transcript, and a
-reseal path refused for leaving the feature's worktree. Regenerate them with:
+the engine's line, a refused verb showing the command and the engine's transcript, a reseal
+path refused for leaving the feature's worktree, and a shipped feature the engine could not
+price reading as `unpriced` rather than as $0.00. Regenerate them with:
 
 ```sh
 env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \

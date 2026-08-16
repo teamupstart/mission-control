@@ -323,7 +323,15 @@ export interface SeedShippedCost {
   output: number;
   cacheRead?: number;
   cacheWrite?: number;
-  costUsd?: number;
+  /**
+   * The price line, or `null` to leave it OUT of the record entirely.
+   *
+   * Omitting it is a real record rather than a broken one: an engine release that predates
+   * the line, or a rollup that could price nothing, writes exactly this - token counts and
+   * no dollars - and it is the case where a reader that defaults to zero reports somebody's
+   * unpriced feature as having cost exactly nothing.
+   */
+  costUsd?: number | null;
   dispatches?: number;
   /** Dispatches with no usage record at all. */
   unmetered?: number;
@@ -425,7 +433,9 @@ export function writeShippedRecord(
       `output: ${cost.output}`,
       `cache_read: ${cost.cacheRead ?? 0}`,
       `cache_creation: ${cost.cacheWrite ?? 0}`,
-      `cost_usd: ${(cost.costUsd ?? 0).toFixed(4)}`,
+      // `null` leaves the line out, which is what an engine that could not price the feature
+      // writes. `undefined` still means "priced at zero", so every existing caller is unmoved.
+      ...(cost.costUsd === null ? [] : [`cost_usd: ${(cost.costUsd ?? 0).toFixed(4)}`]),
       `dispatches: ${cost.dispatches ?? 1}`,
       `unmetered: count: ${cost.unmetered ?? 0}, duration_ms: 0`,
       `cost_unmetered: count: ${cost.costUnmetered ?? 0}`,

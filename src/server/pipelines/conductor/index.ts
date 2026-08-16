@@ -58,14 +58,17 @@ function daemonState(daemon: DaemonReading): PipelineDaemonState {
 /**
  * One feature's committed cost record, in the shape the ledger takes.
  *
- * `costKnown` is the only judgement here and it is a strict one: the engine has to have
- * metered every dispatch AND priced every one it metered. Either count above zero means the
- * dollar figure is a subtotal, and the ledger's standing rule - held by every other writer -
- * is that a subtotal is stored as unpriced rather than presented as a total.
+ * `costKnown` is the only judgement here and it is a strict one, in three parts: the record
+ * has to CARRY a price at all, the engine has to have metered every dispatch, and it has to
+ * have priced every one it metered. A missing `cost_usd` line and either count above zero are
+ * the same situation from the ledger's point of view - the dollar figure on hand is not this
+ * feature's cost - and the ledger's standing rule, held by every other writer, is that such a
+ * figure is stored as unpriced rather than presented as a total.
  *
  * A record whose engine could price nothing at all still contributes its TOKENS, which is
  * the case a Codex-backed feature is in: tokens are counted, dollars are not, and the strip
- * says "unpriced" beside a real token figure rather than dropping the feature entirely.
+ * says "unpriced" beside a real token figure rather than dropping the feature entirely. The
+ * zero that travels with `costKnown: false` is a placeholder the ledger never reads as money.
  */
 function usageFrom(cost: ShippedCostReading): PipelineFeatureUsage {
   return {
@@ -77,8 +80,8 @@ function usageFrom(cost: ShippedCostReading): PipelineFeatureUsage {
     reasoningOutput: 0,
     cacheRead: cost.cacheRead,
     cacheWrite: cost.cacheWrite,
-    costUsd: cost.costUsd,
-    costKnown: cost.unmetered === 0 && cost.costUnmetered === 0,
+    costUsd: cost.costUsd ?? 0,
+    costKnown: cost.costUsd !== null && cost.unmetered === 0 && cost.costUnmetered === 0,
     ts: cost.writtenAt,
   };
 }

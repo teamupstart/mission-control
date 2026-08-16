@@ -38,6 +38,7 @@ import { pipelineRepoKey } from "../../src/shared/pipeline.ts";
  *     printed, and stays on screen until it is dismissed.
  *  7. An artifact path that leaves the feature's worktree is refused, and no terminal opens.
  *  8. A verb that moved the engine and did not say so still moves the daemon chip, now.
+ *  9. A shipped feature the engine could not price reads as unpriced, never as $0.00.
  *
  * No model tokens: nothing here dispatches an agent, and the only engine is the fake
  * `conduct-ts` that `e2e/fixtures/conductor.ts` installs - which writes the same marker files
@@ -441,6 +442,41 @@ test("a verb the engine did not confirm shows the command and its own words, unt
   await expect(flash).toBeVisible();
   await flash.getByRole("button", { name: "Dismiss" }).click();
   await expect(reader.locator(".pipelines-flash")).toHaveCount(0);
+});
+
+test("a shipped feature the engine could not price reads as unpriced, not as free", async ({
+  dashboard,
+  daemon,
+}) => {
+  seedConductorRun(daemon.repo, "add-widgets", {
+    steps: { worktree: "done", finish: "done" },
+    lastStep: "finish",
+    done: true,
+    // Real tokens, no price line. The engine writes exactly this when its rollup could price
+    // nothing - a Codex-backed feature, or a release older than the line - and the tokens are
+    // as real as any other feature's.
+    shipped: { input: 12_000, output: 3400, cacheRead: 900, cacheWrite: 100, costUsd: null },
+  });
+  seedConductorDaemon(daemon.repo, { pid: process.pid });
+  await observe(daemon, 1);
+
+  const repoKey = encodeURIComponent(pipelineRepoKey("ai-conductor", daemon.repo));
+  await dashboard.goto(`${daemon.baseURL}/#/runs/pipeline/${repoKey}/add-widgets`);
+  // The tokens still reach the feature, because those the engine did count.
+  await expect(
+    dashboard.locator("div.pipelines-reader").getByText("16k tokens", { exact: true }),
+  ).toBeVisible();
+
+  // And the fleet's spend surface says it has no price for them, rather than the $0.00 a
+  // defaulted field would have produced - a figure indistinguishable, on this row, from a
+  // feature that genuinely cost nothing.
+  const chip = dashboard.getByRole("button", { name: /^Spend - / });
+  await expect(chip).toBeVisible();
+  await chip.click();
+  const popover = dashboard.getByRole("dialog", { name: "Spend today" });
+  await expect(popover.locator(".spend-sub")).toContainText("ai-conductor pipelines unpriced");
+  await expect(popover.locator(".spend-sub")).not.toContainText("$0.00");
+  await shoot(dashboard, "10-unpriced-feature");
 });
 
 test("a verb that moved the engine and did not confirm it still moves the chip, now", async ({

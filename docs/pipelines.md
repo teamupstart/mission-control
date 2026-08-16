@@ -135,12 +135,6 @@ repository, runs are grouped by [where they sit](#where-a-run-sits) with halted 
 only group waiting on a person - and sorted by slug inside each group, so a finishing step
 never moves the row you were reaching for.
 
-![The Pipelines tab: a rail grouped under two repositories, each with a chip naming its engine
-daemon's state - one running, one stopped - with demo-repo's three features under Halted and
-Building headings and second-repo's one under Waiting, and the halted feature open in the
-reader beside it, leading with a red Needs a human band carrying the reason the build review
-gave](images/pipelines-rail.png)
-
 Opened without naming a run, the tab lands on **the most urgent run on the fleet**, which is
 not the same as the first row of the rail. The rail is grouped per repository because that is
 how it is read, but urgency does not stop at a repository boundary: a halted run in the second
@@ -168,25 +162,11 @@ picture rather than a lookalike:
   re-opened it. A gate the engine recorded as a *skip* is never drawn as a pass, though the
   engine writes both as `satisfied: true`.
 
-![One feature in full: the eyebrow reading BUILD, Build, step 13 of 22 above the engine's own
-slug, chips for its group, tier and track, two attempt cards with the second naming the Build
-Review that sent it back to Plan, the horizontal strip from the Spec terminus through the phase
-cards on labelled wires, the kickback rule stated once underneath, and the Gate verdicts
-section listing each answer with its reason and when it was given](images/pipelines-run.png)
-
 Gate verdicts are fetched for the run you have open rather than carried on the projection.
 The projection rides every reconnect for every run on the fleet and is held under a per-run
 wire budget (`test/pipeline-sse.test.ts`), so evidence travels with the one surface that
 draws it and a fleet where nobody has a pipeline open pays nothing for the fact that it
 exists.
-
-![A tier-S run degrading rather than breaking, with the strip scrolled to its end: an Unknown
-steps card reading 1 not in this build's table and marked Unplaced, holding the engine's own
-name for the step, vibe_check, with the note that this build has no entry for it, an amber
-UNKNOWN STEP mark and the Running state the engine reported; the unlabelled wire into it and
-the run finished wire out of it to the Pull request terminus; and below, the Complexity gate
-listed as Gate skipped carrying the engine's own skipped: tier S reason rather than drawn as a
-pass](images/pipelines-degraded.png)
 
 Steps this build has never heard of are drawn after every step it knows, in the state the
 engine reported, under an **Unknown steps** card. That is the frozen step table's tolerance

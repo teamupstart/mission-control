@@ -20,7 +20,7 @@ System profile.
   `docs/plans/editable-foreman-profile/` to the default branch.
 - The scheduled Phase 2 task remains disabled after those dependency edges are satisfied. A human
   explicitly enables it when implementation should begin.
-- Read these files first:
+- Required context:
   - `docs/plans/editable-foreman-profile/plan.md`
   - `docs/plans/editable-foreman-profile/phased-plan.md`
   - `docs/plans/editable-foreman-profile/phase-1-conflict-safe-guidance-contract.md`

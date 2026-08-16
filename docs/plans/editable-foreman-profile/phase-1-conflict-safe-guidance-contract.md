@@ -18,7 +18,7 @@ today. There is intentionally no dashboard editor yet.
 - The scheduled Phase 1 task is still in the backlog and disabled. A human explicitly enables it when
   implementation should start.
 - No other implementation phase is a prerequisite.
-- Read these files first:
+- Required context:
   - `docs/plans/editable-foreman-profile/plan.md`
   - `docs/plans/editable-foreman-profile/phased-plan.md`
   - this phase file

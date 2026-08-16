@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Locator, Page } from "@playwright/test";
 
@@ -23,7 +23,7 @@ import { pipelineRepoKey } from "../../src/shared/pipeline.ts";
  * marker, the projection re-read it and the row change under an operator who never reloaded.
  * That chain is the whole feature, and every link in it belongs to a different program.
  *
- * Five claims:
+ * Seven claims:
  *
  *  1. A verb pressed in the attention inbox reaches the engine's own CLI, in the argv and the
  *     working directory the engine requires - and the row leaves the inbox when the halt it
@@ -34,6 +34,9 @@ import { pipelineRepoKey } from "../../src/shared/pipeline.ts";
  *  4. The reseal ceremony opens a HOSTED TERMINAL running the engine's own command, because
  *     the engine refuses to re-seal without one.
  *  5. A shipped feature's cost is the engine's own committed figure, on the run detail.
+ *  6. A verb the engine did not confirm shows the command that was run and what the engine
+ *     printed, and stays on screen until it is dismissed.
+ *  7. An artifact path that leaves the feature's worktree is refused, and no terminal opens.
  *
  * No model tokens: nothing here dispatches an agent, and the only engine is the fake
  * `conduct-ts` that `e2e/fixtures/conductor.ts` installs - which writes the same marker files
@@ -388,4 +391,105 @@ test("a shipped feature shows the engine's own committed cost", async ({ dashboa
   await expect(popover.locator(".spend-row", { hasText: "Automation" })).toContainText("≈$0.42");
   await expect(popover.locator(".spend-sub")).toContainText("ai-conductor pipelines $0.42");
   await shoot(dashboard, "07-spend-popover");
+});
+
+test("a verb the engine did not confirm shows the command and its own words, until dismissed", async ({
+  dashboard,
+  daemon,
+}) => {
+  seedConductorRun(daemon.repo, "add-widgets", {
+    steps: { worktree: "done", build: "in_progress" },
+    lastStep: "build",
+  });
+  seedConductorDaemon(daemon.repo, { pid: process.pid });
+  await observe(daemon, 1);
+
+  const repoKey = encodeURIComponent(pipelineRepoKey("ai-conductor", daemon.repo));
+  await dashboard.goto(`${daemon.baseURL}/#/runs/pipeline/${repoKey}/add-widgets`);
+  const rail = dashboard.locator("aside.pipelines-rail");
+  const reader = dashboard.locator("div.pipelines-reader");
+  await expect(rail.getByText("daemon running", { exact: true })).toBeVisible();
+
+  // The case the whole stdout posture exists for, armed: from here every verb answers the way
+  // the real engine answers an invocation its argv detectors rejected - a sentence about a
+  // subcommand nobody asked for, printed to stdout, behind EXIT CODE 0, having done nothing.
+  writeFileSync(join(daemon.repo, ".daemon", "REFUSE"), "");
+  await reader.getByRole("button", { name: "Pause daemon" }).click();
+
+  const flash = reader.locator(".pipelines-flash");
+  await expect(flash).toHaveAttribute("role", "alert");
+  await expect(flash).toContainText("exited cleanly without confirming");
+  // Our sentence is true and, alone, useless: "it did not confirm" reads the same for a
+  // version skew, a wrong working directory and a feature the engine never heard of. These
+  // two lines are what tells them apart, which is why the failure carries them.
+  await expect(flash.locator(".pipelines-transcript.is-command")).toContainText("daemon pause");
+  await expect(flash.locator(".pipelines-transcript").last()).toContainText(
+    "the inline SDLC pipeline now runs under the `inline` subcommand",
+  );
+  await shoot(dashboard, "08-refused-verb");
+
+  // Nothing was assumed to have happened: no marker, and the chip still reads the engine's own
+  // state rather than the state the button was named after.
+  expect(existsSync(join(daemon.repo, ".daemon", "PAUSED"))).toBe(false);
+  await expect(rail.getByText("daemon running", { exact: true })).toBeVisible();
+
+  // A success clears itself after 3.5s. A transcript must NOT - one that vanished while
+  // somebody was reading it would be worse than none - so it is still here well past that,
+  // and it goes when the operator says so.
+  await dashboard.waitForTimeout(4500);
+  await expect(flash).toBeVisible();
+  await flash.getByRole("button", { name: "Dismiss" }).click();
+  await expect(reader.locator(".pipelines-flash")).toHaveCount(0);
+});
+
+test("an artifact path that leaves the feature's worktree is refused, and opens nothing", async ({
+  dashboard,
+  daemon,
+}) => {
+  seedConductorRun(daemon.repo, "fix-the-thing", {
+    steps: { worktree: "done", build: "in_progress" },
+    lastStep: "build",
+    halt: "docs/decisions/fix-the-thing.md changed under a sealed approval",
+    haltClass: "protected-artifact",
+  });
+  seedConductorDaemon(daemon.repo, { pid: process.pid });
+  await observe(daemon, 1);
+
+  const repoKey = encodeURIComponent(pipelineRepoKey("ai-conductor", daemon.repo));
+  await dashboard.goto(`${daemon.baseURL}/#/runs/pipeline/${repoKey}/fix-the-thing`);
+  const reader = dashboard.locator("div.pipelines-reader");
+  await reader.getByRole("button", { name: "Reseal an artifact" }).click();
+
+  const form = reader.getByRole("group", { name: "Reseal a protected artifact" });
+  // A path that is well under every length bound and points at ANOTHER feature's sealed
+  // decision. `reseal` breaks a cryptographic seal and can be told to clear the halt that
+  // seal raised, so the only thing standing between the loopback API and somebody else's
+  // artifact is where this path resolves to.
+  await form.getByLabel("Artifacts, one path per line").fill("../other-feature/.docs/decisions/x.md");
+  await form.getByLabel("Why they changed").fill("the decision moved after review");
+  await form.getByRole("button", { name: "Open reseal terminal" }).click();
+  await reader.getByRole("menu", { name: "Open reseal terminal" }).getByRole("menuitem", {
+    name: /cmux/,
+  }).click();
+
+  const flash = reader.locator(".pipelines-flash");
+  await expect(flash).toContainText("points outside this feature's worktree");
+  await shoot(dashboard, "09-reseal-refused");
+  // Refused BEFORE argv was composed, so there is no window in which the ceremony sat waiting
+  // for a person to notice what it had been pointed at.
+  expect(terminals(daemon)).toEqual([]);
+
+  // And the refusal is about that path rather than about resealing: the same form, with a
+  // path inside the worktree, opens the ceremony.
+  await flash.getByRole("button", { name: "Dismiss" }).click();
+  await form.getByLabel("Artifacts, one path per line").fill(".docs/decisions/fix-the-thing.md");
+  await form.getByRole("button", { name: "Open reseal terminal" }).click();
+  await reader.getByRole("menu", { name: "Open reseal terminal" }).getByRole("menuitem", {
+    name: /cmux/,
+  }).click();
+  await expect(reader.locator(".pipelines-flash")).toContainText("Opened in");
+  await expect.poll(() => terminals(daemon).length, { timeout: 10_000 }).toBe(1);
+  expect(unquoteOnce(terminals(daemon)[0] ?? "")).toContain(
+    "'--path' '.docs/decisions/fix-the-thing.md'",
+  );
 });

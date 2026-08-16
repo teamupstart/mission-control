@@ -3,10 +3,12 @@ import assert from "node:assert/strict";
 import {
   chmodSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -86,6 +88,36 @@ const target = (over: Partial<{ slug: string | null; step: string | null; reason
   reason: null,
   ...over,
 });
+
+/** The feature worktree every reseal path has to resolve inside, as the provider computes it. */
+const WORKTREE = join(REPO, ".worktrees", "fix-the-thing");
+mkdirSync(join(WORKTREE, ".docs", "decisions"), { recursive: true });
+
+/** The composed reseal argv, for a case that is only about the paths in it. */
+function reseal(paths: readonly string[], worktree = WORKTREE): string[] {
+  const composed = conductorConsoleArgv(
+    "reseal",
+    { ...target({ slug: "fix-the-thing", reason: "r" }), paths, clearHalt: false },
+    worktree,
+  );
+  assert.ok(!("refused" in composed), `expected argv, got ${JSON.stringify(composed)}`);
+  return composed.argv;
+}
+
+/** Just the `--path` values out of a composed argv, in order. */
+function pathsIn(argv: readonly string[]): string[] {
+  return argv.filter((_, at) => argv[at - 1] === "--path");
+}
+
+/** Why the composer refused these paths, or `null` if it did not. */
+function resealRefusal(paths: readonly string[], worktree = WORKTREE): string | null {
+  const composed = conductorConsoleArgv(
+    "reseal",
+    { ...target({ slug: "fix-the-thing", reason: "r" }), paths, clearHalt: false },
+    worktree,
+  );
+  return "refused" in composed ? composed.refused : null;
+}
 
 test("a verb that printed its confirmation is a success, whatever else it printed", async () => {
   // `daemon start` runs the engine's own installation check first with INHERITED stdio, so
@@ -231,39 +263,82 @@ test("the console argv is what conductor's own CLI takes, and no more", () => {
   // a tmux pane that already exists; Mission Control hosts the terminal itself, so there is
   // no target to mint - and it is the only form that works on the emulator backends.
   assert.deepEqual(
-    conductorConsoleArgv("daemon", { ...target(), paths: [], clearHalt: false }),
-    [fake, "daemon", "connect"],
+    conductorConsoleArgv("daemon", { ...target(), paths: [], clearHalt: false }, WORKTREE),
+    { argv: [fake, "daemon", "connect"] },
   );
   assert.deepEqual(
-    conductorConsoleArgv("reseal", {
-      ...target({ slug: "fix-the-thing", reason: "the decision moved" }),
-      paths: [".docs/decisions/a.md", ".docs/decisions/b.md"],
-      clearHalt: true,
-    }),
-    [
-      fake,
+    conductorConsoleArgv(
       "reseal",
-      "--slug",
-      "fix-the-thing",
-      "--path",
-      ".docs/decisions/a.md",
-      "--path",
-      ".docs/decisions/b.md",
-      "--reason",
-      "the decision moved",
-      "--clear-halt",
-    ],
+      {
+        ...target({ slug: "fix-the-thing", reason: "the decision moved" }),
+        paths: [".docs/decisions/a.md", ".docs/decisions/b.md"],
+        clearHalt: true,
+      },
+      WORKTREE,
+    ),
+    {
+      argv: [
+        fake,
+        "reseal",
+        "--slug",
+        "fix-the-thing",
+        "--path",
+        ".docs/decisions/a.md",
+        "--path",
+        ".docs/decisions/b.md",
+        "--reason",
+        "the decision moved",
+        "--clear-halt",
+      ],
+    },
   );
   // One `--path` per artifact, repeated. A comma-joined list is one path with commas in it.
   assert.equal(
-    conductorConsoleArgv("reseal", {
-      ...target({ slug: "s", reason: "r" }),
-      paths: ["a", "b"],
-      clearHalt: false,
-    }).filter((part) => part === "--path").length,
+    reseal(["a", "b"]).filter((part) => part === "--path").length,
     2,
   );
   // And the verb table itself, for the two verbs whose shape is easiest to get wrong.
   assert.deepEqual(conductorControlArgv("park", target({ slug: "s" })), [fake, "daemon", "park", "s"]);
   assert.deepEqual(conductorControlArgv("daemon-start", target()), [fake, "daemon", "start", "-D"]);
+});
+
+test("a reseal path that leaves the feature's worktree is refused before argv is composed", () => {
+  // The paths arrive in a request body and leave as arguments to a command that breaks a
+  // cryptographic seal and can clear the halt that seal raised. Length-bounding them says
+  // nothing about WHERE they point, and the engine will not check: from its side, an
+  // operator typed them.
+  const inside = ".docs/decisions/a.md";
+  assert.deepEqual(pathsIn(reseal([inside])), [inside]);
+
+  // Traversal, in the two spellings that reach a different feature's artifacts.
+  assert.match(
+    String(resealRefusal(["../other-feature/.docs/decisions/a.md"])),
+    /points outside this feature's worktree/,
+  );
+  assert.match(String(resealRefusal(["a/../../b.md"])), /points outside/);
+  // An absolute path is refused rather than rebased: the caller meant a different root, and
+  // silently reinterpreting it would re-seal a file nobody named.
+  assert.match(String(resealRefusal([join(REPO, "sealed.md")])), /absolute path/);
+  assert.match(String(resealRefusal(["/etc/passwd"])), /absolute path/);
+  assert.equal(resealRefusal(["   "]), "an artifact path cannot be blank");
+
+  // The one a string comparison misses. `linked` is a symlink out of the worktree, so a path
+  // under it carries no `..`, is not absolute, and still lands somewhere else on disk.
+  const escapee = join(WORKTREE, "linked");
+  mkdirSync(join(REPO, "outside"), { recursive: true });
+  if (!existsSync(escapee)) symlinkSync(join(REPO, "outside"), escapee);
+  assert.match(String(resealRefusal(["linked/a.md"])), /points outside/);
+
+  // A file that does not exist is still resealable - deletion is one of the ways a seal
+  // breaks - as long as the directory that would hold it is inside.
+  assert.deepEqual(pathsIn(reseal([".docs/decisions/never-written.md"])), [
+    ".docs/decisions/never-written.md",
+  ]);
+
+  // What reaches argv is the form this check verified, not the string that arrived: the two
+  // can name one file, and passing the original through would leave the command carrying a
+  // spelling nothing validated.
+  assert.deepEqual(pathsIn(reseal(["./.docs/decisions/../decisions/a.md"])), [
+    ".docs/decisions/a.md",
+  ]);
 });

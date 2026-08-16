@@ -33,10 +33,29 @@ import { useTerminalTargets } from "../lib/terminalTargets.ts";
  * exists for the one fact that is NOT on that stream: the daemon chip, which the rail polls.
  */
 
-/** A sentence to read, and whether it went wrong. Clears itself, more slowly when it did. */
+/**
+ * What came back, in the two parts an operator needs: our sentence, and the engine's.
+ *
+ * A failure carries the ENGINE'S OWN WORDS, and that is the whole point of the stdout
+ * posture rather than a nicety. conductor exits 0 on a malformed invocation and answers with
+ * a refusal about an unrelated subcommand, so `detail` can only ever say "it exited cleanly
+ * without confirming this" - a sentence that is true, useless on its own, and reads exactly
+ * the same for a version skew, a wrong working directory and a feature the engine has never
+ * heard of. The route already carries the clipped output and the command it ran; dropping
+ * them here would have thrown away the only thing that tells those three apart.
+ *
+ * A success clears itself. A FAILURE DOES NOT: it is now a transcript to read rather than a
+ * sentence to glance at, and one that vanished on a timer while somebody was reading it
+ * would be worse than none. It goes when the operator dismisses it, or when the next verb
+ * replaces it.
+ */
 interface Flash {
   text: string;
   error: boolean;
+  /** The exact command the daemon spawned, shown so a failure can be reproduced by hand. */
+  command?: string;
+  /** What the engine printed, already clipped by the daemon. */
+  output?: string;
 }
 
 /** One console button and the backend chooser it opens. */
@@ -146,11 +165,12 @@ export function PipelineActions({
   // they are looking at rather than being asked a question the run has already answered.
   const [clearHalt, setClearHalt] = useState(run.halt?.class === "protected-artifact");
 
-  // A confirmation clears itself; a failure lingers, because it has a sentence to read. The
-  // same two timings the session launchers' flash uses.
+  // A confirmation clears itself, on the session launchers' own timing. A failure does not -
+  // see `Flash`: it carries the engine's transcript, and a transcript on a timer is one an
+  // operator races rather than reads.
   useEffect(() => {
-    if (!flash) return;
-    const timer = setTimeout(() => setFlash(null), flash.error ? 9000 : 3500);
+    if (!flash || flash.error) return;
+    const timer = setTimeout(() => setFlash(null), 3500);
     return () => clearTimeout(timer);
   }, [flash]);
 
@@ -174,7 +194,13 @@ export function PipelineActions({
       reason: info.needsReason ? grantReason.trim() || null : null,
     });
     setBusy(null);
-    setFlash({ text: result.detail, error: !result.ok });
+    setFlash({
+      text: result.detail,
+      error: !result.ok,
+      // Only on a failure. A successful verb's output is a sentence we have just restated in
+      // our own words, and showing both invites the reader to look for the difference.
+      ...(result.ok ? {} : { command: result.command, output: result.output }),
+    });
     if (!result.ok) return;
     if (info.needsReason) setGrantReason("");
     setForm(null);
@@ -392,12 +418,43 @@ export function PipelineActions({
       )}
 
       {flash && (
-        <p
+        <div
           className={`pipelines-flash${flash.error ? " is-error" : ""}`}
           role={flash.error ? "alert" : "status"}
         >
-          {flash.text}
-        </p>
+          <p className="pipelines-flash-line">{flash.text}</p>
+          {/* The engine's own transcript, verbatim and already clipped by the daemon. It is
+              the whole difference between "conductor refused this" and knowing WHY, and it
+              is the only place the operator can see that the refusal was about a subcommand
+              they never asked for - which is what a version skew looks like from here. */}
+          {flash.error && (flash.output || flash.command) && (
+            <>
+              {flash.command && (
+                <pre className="pipelines-transcript is-command">
+                  <code>{flash.command}</code>
+                </pre>
+              )}
+              {flash.output && (
+                <pre className="pipelines-transcript">
+                  <code>{flash.output}</code>
+                </pre>
+              )}
+            </>
+          )}
+          {flash.error && (
+            <div className="pipelines-form-foot">
+              <Tooltip label="Dismiss what the engine said">
+                <button
+                  type="button"
+                  className="btn btn-ghost pipelines-action"
+                  onClick={() => setFlash(null)}
+                >
+                  Dismiss
+                </button>
+              </Tooltip>
+            </div>
+          )}
+        </div>
       )}
     </div>
   );

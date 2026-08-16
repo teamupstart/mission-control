@@ -204,6 +204,14 @@ exit with no confirmation is reported as a failure with the engine's own words a
 (`src/server/pipelines/conductor/control.ts`). `daemon stop` is the interesting one: it prints
 nothing when it works and prints its failures to *stdout*, so silence is its confirmation.
 
+A failure shows that transcript where you pressed the button: **the exact command the daemon
+spawned, and what the engine printed**, clipped to 4000 characters and scrolled inside its own
+block. Without them the sentence would be "it exited cleanly without confirming this", which is
+true and reads identically for a version skew, a wrong working directory and a feature the
+engine has never heard of - the engine's own line about a subcommand nobody asked for is what
+tells them apart. A confirmation clears itself after a few seconds; a failure stays until you
+dismiss it, because a transcript on a timer is one you race rather than read.
+
 Four things follow that are worth knowing before pressing anything:
 
 - **Only useful verbs are offered.** The daemon verbs shown are the ones the daemon's observed
@@ -247,6 +255,13 @@ on whichever backend you pick from the same chooser the session launchers use:
   it was told not to touch. The ceremony therefore happens where a person can read it. It is
   offered on a run whose halt is `protected-artifact`, not permanently: a standing button for
   breaking a seal invites breaking one.
+
+**Every `--path` must resolve inside the feature's own worktree**, and one that does not is
+refused before any argv is composed - no terminal opens. This is a containment check rather
+than tidying: `reseal` breaks a cryptographic seal and can be told to clear the halt that seal
+raised, so a path is refused if it is absolute, if it resolves outside the worktree once `..`
+segments collapse, or if a symlink in its existing prefix lands outside. What reaches the
+engine is the relative path that check verified, not the string that arrived.
 
 Both windows are held open after the command exits (`press enter to close`), because both print
 their outcome and return - including the refusal an operator most needs to read.

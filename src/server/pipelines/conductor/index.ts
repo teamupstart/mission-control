@@ -1,3 +1,5 @@
+import { join } from "node:path";
+
 import {
   PIPELINE_PROVIDER_INFO,
   sortByPipelineStep,
@@ -302,11 +304,16 @@ async function readConductorRunDetail(
 /**
  * What to run in a hosted terminal for one console.
  *
- * The reseal refusal is Mission Control's, not a relayed one, and it is here rather than in
- * the schema because the schema cannot see the run: a reseal names artifacts inside a
- * feature's worktree, and a console asked for without a feature has nothing to name. The
- * engine would refuse it too - `unknown feature worktree` - but a terminal that opens purely
- * to print that is worse than a button that explains itself.
+ * Both refusals here are Mission Control's, not relayed ones, and both are here rather than
+ * in the schema because the schema cannot see the run. A reseal names artifacts inside a
+ * FEATURE'S WORKTREE: a console asked for without a feature has nothing to name, and a path
+ * that leaves that worktree is naming somebody else's artifact. The engine would refuse the
+ * first of those itself - `unknown feature worktree` - but a terminal that opens purely to
+ * print that is worse than a button that explains itself, and it would not refuse the second
+ * at all, because from its point of view an operator typed it.
+ *
+ * `conductorConsoleArgv` is told where the worktree IS rather than deriving it, which keeps
+ * this file the only place that knows the engine's `.worktrees/<slug>` layout.
  */
 function conductorConsole(
   console_: PipelineConsole,
@@ -315,8 +322,11 @@ function conductorConsole(
   if (console_ === "reseal" && target.slug === null) {
     return { refused: "a reseal names the feature whose artifacts moved" };
   }
+  const worktree = join(target.repoRoot, INFO.worktreesDir, target.slug ?? "");
+  const composed = conductorConsoleArgv(console_, target, worktree);
+  if ("refused" in composed) return composed;
   return {
-    argv: conductorConsoleArgv(console_, target),
+    argv: composed.argv,
     // The MAIN checkout, for both. `daemon connect` resolves the repository itself, but
     // `reseal` joins `.worktrees/<slug>` onto its own working directory with no git
     // resolution - so run from anywhere else it looks for a worktree inside a worktree and

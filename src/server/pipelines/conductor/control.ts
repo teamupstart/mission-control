@@ -1,3 +1,6 @@
+import { realpathSync } from "node:fs";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+
 import {
   pipelineGrantRefusal,
   type PipelineAction,
@@ -300,19 +303,105 @@ export async function runConductorControl(
 export function conductorConsoleArgv(
   console_: "daemon" | "reseal",
   target: ConductorControlTarget & { paths: readonly string[]; clearHalt: boolean },
-): string[] {
+  /** The feature's own worktree, which every `--path` must resolve inside. */
+  worktree: string,
+): { argv: string[] } | { refused: string } {
   const bin = conductorBin();
-  if (console_ === "daemon") return [bin, "daemon", "connect"];
-  return [
-    bin,
-    "reseal",
-    "--slug",
-    target.slug ?? "",
-    ...target.paths.flatMap((path) => ["--path", path]),
-    "--reason",
-    target.reason ?? "",
-    ...(target.clearHalt ? ["--clear-halt"] : []),
-  ];
+  if (console_ === "daemon") return { argv: [bin, "daemon", "connect"] };
+  const contained = containedPaths(worktree, target.paths);
+  if ("refused" in contained) return contained;
+  return {
+    argv: [
+      bin,
+      "reseal",
+      "--slug",
+      target.slug ?? "",
+      ...contained.paths.flatMap((path) => ["--path", path]),
+      "--reason",
+      target.reason ?? "",
+      ...(target.clearHalt ? ["--clear-halt"] : []),
+    ],
+  };
+}
+
+/**
+ * Every artifact path, re-expressed as a path inside this feature's worktree, or a refusal.
+ *
+ * **This is a containment check, not a tidy-up.** The strings arrive in a request body and
+ * leave as `--path` arguments to a command that breaks a cryptographic seal and can be told
+ * to clear the halt that seal raised. Length-bounding them says nothing about where they
+ * point: `../../../other-feature/.docs/decisions/x.md` is 44 characters, and so is an
+ * absolute path to somebody else's repository. Anything that can reach the loopback API
+ * could otherwise re-seal an artifact belonging to a feature it never named.
+ *
+ * Three refusals, and the third is the one a string comparison misses. An ABSOLUTE path is
+ * refused outright rather than reinterpreted, because the caller meant a different root and
+ * silently rebasing it onto this one would re-seal a file nobody asked about. A path that
+ * RESOLVES outside the worktree is refused after `..` segments are collapsed, which is the
+ * traversal case. And a path whose existing prefix is a SYMLINK out is refused after that
+ * link is followed - `.docs -> ../../shared-docs` passes both string checks and lands
+ * outside, so the deepest ancestor that exists is resolved on disk and the containment is
+ * re-tested against the real one.
+ *
+ * The value returned is the RELATIVE path this check verified, not the string that arrived.
+ * Passing the original through would leave argv carrying a form nothing validated, and the
+ * two can differ (`./a/../b/x.md` and `b/x.md` name one file); the engine receives the form
+ * this function proved.
+ */
+function containedPaths(
+  worktree: string,
+  paths: readonly string[],
+): { paths: string[] } | { refused: string } {
+  // The worktree's own real path first: on macOS the state dir is routinely reached through
+  // `/var -> /private/var`, so comparing a resolved artifact against an unresolved root
+  // would refuse every path in an ordinary checkout.
+  const root = realPathOf(worktree);
+  const out: string[] = [];
+  for (const raw of paths) {
+    const path = raw.trim();
+    if (path === "") return { refused: "an artifact path cannot be blank" };
+    if (isAbsolute(path)) {
+      return { refused: `${path} is an absolute path; name it relative to the feature's worktree` };
+    }
+    const target = resolve(root, path);
+    if (!inside(root, target) || !inside(root, realPathOf(target))) {
+      return { refused: `${path} points outside this feature's worktree` };
+    }
+    out.push(relative(root, target).split(sep).join("/"));
+  }
+  return { paths: out };
+}
+
+/** Whether `target` is the root itself or something beneath it, as paths rather than text. */
+function inside(root: string, target: string): boolean {
+  const rel = relative(root, target);
+  return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+}
+
+/**
+ * `path`, with every symlink in its EXISTING prefix followed.
+ *
+ * `realpathSync` throws on anything that does not exist, and a reseal may legitimately name
+ * a file that was deleted - that is one of the ways a seal breaks. So the deepest ancestor
+ * that does exist is resolved and the rest is re-joined onto it: a link anywhere in the
+ * chain is followed, and a missing leaf is still checked against the real directory that
+ * would hold it. The walk terminates at the filesystem root, which always exists.
+ */
+function realPathOf(path: string): string {
+  let head = resolve(path);
+  const tail: string[] = [];
+  for (;;) {
+    try {
+      return join(realpathSync(head), ...tail);
+    } catch {
+      const parent = dirname(head);
+      // `dirname('/') === '/'`: nothing above this exists as far as we can tell, so the
+      // lexical form is the most this can honestly report.
+      if (parent === head) return resolve(path);
+      tail.unshift(head.slice(parent.length + 1));
+      head = parent;
+    }
+  }
 }
 
 /** The verb table, for a test that wants to assert on argv without spawning anything. */

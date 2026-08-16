@@ -12538,6 +12538,13 @@ a.pipelines-chip.is-link:focus-visible {
 .pipelines-run-head .pipelines-flash {
   text-align: right;
 }
+/* Except a failure, which is a block to read rather than a line to glance at: the sentence
+   above the transcript wraps to several lines, and ragged-left prose sitting on top of a
+   left-aligned transcript reads as two things that came from different places. The block
+   itself stays pinned to the right, under the cluster it answers. */
+.pipelines-run-head .pipelines-flash.is-error {
+  text-align: left;
+}
 .pipelines-form {
   display: grid;
   gap: 9px;
@@ -12589,14 +12596,53 @@ a.pipelines-chip.is-link:focus-visible {
   color: var(--attention);
 }
 .pipelines-flash {
+  display: grid;
+  gap: 7px;
+  justify-items: start;
   margin: 0;
+  max-width: min(520px, 100%);
   color: var(--muted);
   font-size: 11px;
   line-height: 1.45;
   overflow-wrap: break-word;
 }
+.pipelines-run-head .pipelines-flash {
+  justify-items: end;
+  justify-self: end;
+}
+.pipelines-flash-line {
+  margin: 0;
+}
 .pipelines-flash.is-error {
   color: var(--danger);
+}
+/* What the engine printed, verbatim. Bounded in BOTH directions rather than allowed to
+   grow: the daemon clips the text at 4000 characters, and this holds it to a block that
+   scrolls inside itself so a refusal with a stack trace in it cannot push the diagram it
+   sits above off the screen. Monospaced because it is a transcript of a terminal. */
+.pipelines-transcript {
+  margin: 0;
+  width: 100%;
+  max-height: 168px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 7px 9px;
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  line-height: 1.5;
+  text-align: left;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+/* The command sits above the output and reads as the thing that produced it, so it is
+   dimmer and never scrolls: it is one line, and wrapping it is what makes it copyable. */
+.pipelines-transcript.is-command {
+  max-height: none;
+  overflow: visible;
+  color: var(--muted);
 }
 
 .pipelines-attempts,

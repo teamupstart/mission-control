@@ -477,6 +477,22 @@ async function withEngine<T>(body: () => Promise<T>): Promise<T> {
   }
 }
 
+/**
+ * Every CONTROL verb the engine has been asked for, oldest first.
+ *
+ * Filtered rather than counted raw, and the filter is load-bearing rather than tidy: the
+ * settings routes these cases go through spawn `engineer projects` to probe the installation,
+ * behind a TTL cache this test cannot see. Counting every invocation therefore makes "nothing
+ * was spawned" an assertion about whether that cache happened to expire mid-test - which is
+ * true on a fast machine and false on a slow one, and which failed on CI while passing here.
+ * What each of these cases actually claims is that the engine was never asked to DO anything.
+ */
+function verbsAsked(): string[][] {
+  return readConductorInvocations(home)
+    .filter((call) => call.argv[0] !== "engineer")
+    .map((call) => call.argv);
+}
+
 /** A repository with one halted run, consented to and projected. */
 async function actable(name: string, registry: Registry, request: ReturnType<typeof fixture>["request"]) {
   const repo = gitRepo(name);
@@ -600,7 +616,7 @@ test("a grant is recorded by the engine, and a plan grant never reaches it", asy
 
     // Refused HERE, with an explanation, and no subprocess: the engine refuses `plan` in
     // four places of its own, and relaying an exit code would teach by rejection.
-    const before = readConductorInvocations(home).length;
+    const before = verbsAsked().length;
     const refused = await grant("plan");
     // A 200, because the engine's answer IS the answer to the request - the surface draws
     // the sentence either way.
@@ -609,7 +625,7 @@ test("a grant is recorded by the engine, and a plan grant never reaches it", asy
     assert.equal(body.ok, false);
     assert.match(body.detail, /never grants re-entry to 'plan'/);
     assert.equal(body.output, "");
-    assert.equal(readConductorInvocations(home).length, before, "nothing was spawned");
+    assert.equal(verbsAsked().length, before, "nothing was spawned");
   });
 });
 
@@ -617,7 +633,7 @@ test("a verb is refused for a repository nobody consented to, and for a run nobo
   const { registry, request } = fixture();
   await withEngine(async () => {
     const repo = await actable("act-consent", registry, request);
-    const before = readConductorInvocations(home).length;
+    const before = verbsAsked().length;
 
     // 404 and the same sentence for both, so the loopback API answers no questions about
     // which directories on this machine exist.
@@ -657,7 +673,7 @@ test("a verb is refused for a repository nobody consented to, and for a run nobo
       body: JSON.stringify({ provider: "ai-conductor", repoRoot: repo, slug: "feat", action: "park" }),
     });
     assert.equal(withdrawn.status, 404);
-    assert.equal(readConductorInvocations(home).length, before, "and nothing was spawned");
+    assert.equal(verbsAsked().length, before, "and nothing was spawned");
   });
 });
 
@@ -665,7 +681,7 @@ test("a verb addressed at the wrong scope is refused by the schema, not by the e
   const { registry, request } = fixture();
   await withEngine(async () => {
     const repo = await actable("act-scope", registry, request);
-    const before = readConductorInvocations(home).length;
+    const before = verbsAsked().length;
     const bad = async (body: Record<string, unknown>): Promise<number> =>
       (await request("/api/pipelines/action", { method: "POST", body: JSON.stringify(body) })).status;
 
@@ -675,7 +691,7 @@ test("a verb addressed at the wrong scope is refused by the schema, not by the e
     assert.equal(await bad({ provider: "ai-conductor", repoRoot: repo, action: "park" }), 400);
     assert.equal(await bad({ provider: "ai-conductor", repoRoot: repo, slug: "feat", action: "grant" }), 400);
     assert.equal(await bad({ provider: "ai-conductor", repoRoot: repo, action: "nonsense" }), 400);
-    assert.equal(readConductorInvocations(home).length, before, "nothing was spawned");
+    assert.equal(verbsAsked().length, before, "nothing was spawned");
   });
 });
 
@@ -761,6 +777,31 @@ test("a console opens a hosted terminal running the engine's own command", async
       }),
     });
     assert.equal(noSlug.status, 400);
+
+    // And the one a length bound cannot catch: a path that leaves the feature's worktree.
+    // The engine would accept every one of these - from its side an operator typed them -
+    // so the containment is Mission Control's, and it happens before argv is composed.
+    for (const path of [
+      "../other/.docs/decisions/x.md",
+      "a/../../x.md",
+      join(repo, "sealed.md"),
+      "/etc/passwd",
+    ]) {
+      const escaped = await request("/api/pipelines/console", {
+        method: "POST",
+        body: JSON.stringify({
+          provider: "ai-conductor",
+          repoRoot: repo,
+          slug: "feat",
+          console: "reseal",
+          paths: [".docs/decisions/feat.md", path],
+          reason: "why",
+          backend: "cmux",
+        }),
+      });
+      assert.equal(escaped.status, 400, path);
+      assert.match(await escaped.text(), /outside this feature's worktree|absolute path/, path);
+    }
     assert.equal(opened.length, 2, "a refused console opens no window");
   });
 });
@@ -779,7 +820,7 @@ test("with the integration switched off, no verb acts and no console opens", asy
         repos: [{ provider: "ai-conductor", repoRoot: repo, enabled: true }],
       }),
     });
-    const before = readConductorInvocations(home).length;
+    const before = verbsAsked().length;
 
     const acted = await request("/api/pipelines/action", {
       method: "POST",
@@ -796,7 +837,7 @@ test("with the integration switched off, no verb acts and no console opens", asy
       }),
     });
     assert.equal(console_.status, 404);
-    assert.equal(readConductorInvocations(home).length, before);
+    assert.equal(verbsAsked().length, before);
     assert.deepEqual(opened, []);
   });
 });

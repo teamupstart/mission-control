@@ -1193,10 +1193,17 @@ projection pass read it, not because a fixture told the dashboard what to think.
 consoles land in the same cmux record `continue-in-terminal-mode.spec.ts` reads, which is
 where the reseal ceremony's argv and its hold-open wrapper are visible.
 
-`e2e/.artifacts/pipeline-controls/` carries seven frames behind `MC_E2E_EVIDENCE`: the inbox
+It also refuses on demand. Drop a `.daemon/REFUSE` file and every verb answers the way the
+real engine answers an invocation its argv detectors rejected - the generic sentence about the
+`inline` subcommand, on stdout, behind EXIT CODE 0, having done none of the work. That is the
+case the whole stdout posture exists for, so the spec that presses a verb against it is
+asserting on the engine's documented shape rather than on a failure mode the fixture invented.
+
+`e2e/.artifacts/pipeline-controls/` carries nine frames behind `MC_E2E_EVIDENCE`: the inbox
 row with its verbs and the same row drained, the paused daemon chip, the grant form with
-`plan` absent and explained, the reseal form, the run's cost chip, and the spend popover
-carrying the engine's line. Regenerate them with:
+`plan` absent and explained, the reseal form, the run's cost chip, the spend popover carrying
+the engine's line, a refused verb showing the command and the engine's transcript, and a
+reseal path refused for leaving the feature's worktree. Regenerate them with:
 
 ```sh
 env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \

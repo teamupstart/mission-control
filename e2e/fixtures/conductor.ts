@@ -106,7 +106,15 @@ const flag = (name) => {
   return at >= 0 && at + 1 < argv.length ? argv[at + 1] : null;
 };
 
-if (argv[0] === "engineer" && argv[1] === "projects") {
+// The documented misbehaviour, on demand. With \`.daemon/REFUSE\` present every verb answers
+// the way the real engine answers an invocation its argv detectors rejected: the generic
+// sentence about the inline subcommand, on stdout, behind EXIT CODE 0 - and it does none of
+// the work. A spec that writes that file is exercising the case the whole stdout posture
+// exists for, rather than a failure mode invented here.
+if (existsSync(join(daemonDir, "REFUSE")) && argv[0] !== "engineer") {
+  say("the inline SDLC pipeline now runs under the \`inline\` subcommand");
+  say("run \`conduct-ts inline --help\` for the verbs it carries");
+} else if (argv[0] === "engineer" && argv[1] === "projects") {
   let projects = [];
   const path = process.env.MC_E2E_CONDUCTOR_PROJECTS;
   if (path) {

@@ -134,7 +134,7 @@ test("the reviewed-repos section is a grant count that deep-links to Trust, not 
       config: InspectorConfigSchema.parse({ enabled: true, repoAllowlist: ["/repo/a", "/repo/b"] }),
     }),
   );
-  assert.match(html, /The Inspector may post reviews in 2 repositories/);
+  assert.match(html, /GitHub Inspector may post reviews in 2 repositories/);
   assert.match(html, /Manage in Trust/);
   assert.doesNotMatch(html, /placeholder="search repos or type a path…"/);
   assert.doesNotMatch(html, /aria-label="Stop reviewing/);
@@ -154,7 +154,7 @@ test("the model blurb is still printed under the field - Foreman's tooltip-only 
   assert.match(render(), /<p class="settings-hint foreman-model-blurb">Reviews each push/);
 });
 
-test("Inspector can select Codex and offers only Codex catalog models", () => {
+test("GitHub Inspector can select Codex and offers only Codex catalog models", () => {
   const html = render(state({
     config: InspectorConfigSchema.parse({ enabled: true, runner: "codex", model: "" }),
     model: { id: "gpt-5.6-sol", source: "default" },
@@ -241,7 +241,7 @@ test("the resolve control names the pull request it acts on, so a table of them 
   // Named by pull request rather than by position: every row in this table would otherwise
   // offer an identically-named control, which is unusable by keyboard or screen reader.
   // The apostrophe arrives escaped - this is static markup, not a live DOM.
-  assert.match(html, /aria-label="Resolve the Inspector&#x27;s findings on repo#494"/);
+  assert.match(html, /aria-label="Resolve GitHub Inspector&#x27;s findings on repo#494"/);
   // In the ledger's own action cell, under a column that names it.
   assert.match(html, /<span class="sc-act"><button type="button" class="settings-link"/);
   assert.match(html, /<span class="sc-act">Resolve<\/span>/);

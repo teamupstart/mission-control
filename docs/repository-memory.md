@@ -57,7 +57,7 @@ What does **not** belong: secrets, tokens, per-user paths, machine-local state, 
 | Claude (terminal and Agent SDK) | loads the worktree's root doc itself; the reference line instructs the read |
 | Codex | reads `AGENTS.md` natively, same line |
 | Pi | has no file channel, so **dispatch prepends a one-line pointer** to its opening prompt |
-| Inspector, Personas, workflow context, Foreman verify | the index is part of the [standards bundle](inspector-and-shipping.md) MC builds for its own prompts |
+| GitHub Inspector, Personas, workflow context, Foreman verify | the index is part of the [standards bundle](inspector-and-shipping.md) MC builds for its own prompts |
 
 The pi pointer is added only when the dispatched worktree actually carries an index - a repo
 with no memory opens its sessions exactly as it did before, rather than sending them after a
@@ -183,12 +183,12 @@ dialog - see below):
 
 1. **The session is worth retrospecting.** Either a human corrected it - a turn in its
    transcript beyond the opening brief that Mission Control did not type itself - or the
-   Inspector raised findings on its pull request that were then resolved. A clean run nobody
+   GitHub Inspector raised findings on its pull request that were then resolved. A clean run nobody
    had to steer teaches nothing, and gets no prompt. This rides the session payload as
    `Session.retro`, and the offer's tooltip names which reason applied.
-2. **The review has finished.** Either the bound workflow run's Inspector gate reads `clean`,
+2. **The review has finished.** Either the bound workflow run's GitHub Inspector gate reads `clean`,
    or - for the great majority of sessions, which bind no workflow - the session's own
-   Inspector chip reads clean. A dry-run review counts, because that chip counts it. A pull
+   GitHub Inspector chip reads clean. A dry-run review counts, because that chip counts it. A pull
    request that merged before the gate cleared keeps the offer, because the session's review
    outcome is unchanged even though the run is now blocked on a closed pull request.
 
@@ -200,13 +200,13 @@ because the retro is a turn that session still has to take.
 Clicking reports which arm the route took - typed into this session, or filed as a backlog
 task - rather than a bare success, because those are different next moves.
 
-Two things this deliberately is **not**: there is no post-Inspector workflow stage (the
-Inspector is the completion policy that runs after the graph's End, not a node to hook), and
+Two things this deliberately is **not**: there is no post-GitHub Inspector workflow stage (the
+GitHub Inspector is the completion policy that runs after the graph's End, not a node to hook), and
 there is no per-repo "always retro" policy. Both were considered and rejected for v1; the
 completion policy, not the graph, is where a standing offer would be raised later.
 
 The signal behind half of it is computed lazily. The findings half is free - it comes out of
-the same ledger query that already builds the Inspector chip. The corrections half reads the
+the same ledger query that already builds the GitHub Inspector chip. The corrections half reads the
 transcript, so it is polled (`MISSION_RETRO_SCAN_MS`, default 10s), reads only the bytes
 appended since the last pass, and stops reading a session entirely once it has flipped. Set
 it to `0` to switch transcript scanning off; the findings half still works.

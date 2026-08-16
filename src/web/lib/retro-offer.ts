@@ -42,7 +42,7 @@ function because(reasons: RetroReason[]): string {
     reason === "corrections"
       ? "you corrected it during the work"
       : reason === "findings"
-        ? "the Inspector raised findings that were then resolved"
+        ? "GitHub Inspector raised findings that were then resolved"
         : null,
   ).filter((clause): clause is string => clause !== null);
   return clauses.length > 0

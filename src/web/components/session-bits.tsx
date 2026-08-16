@@ -170,8 +170,8 @@ export function workflowRunLabel(run: WorkflowRunSummary): string {
   const tone = workflowRunTone(run);
   if (tone === "passed") return "Approved";
   if (run.gate === "waiting_pr") return "Waiting for PR";
-  if (run.gate === "waiting_inspector") return "Inspector gate";
-  if (run.gate === "findings") return "Inspector findings";
+  if (run.gate === "waiting_inspector") return "GitHub Inspector gate";
+  if (run.gate === "findings") return "GitHub Inspector findings";
   if (tone === "waiting") return "Review changes";
   if (tone === "blocked") return "Workflow blocked";
   if (tone === "failed") return run.status === "cancelled" ? "Preview cancelled" : "Preview failed";
@@ -1064,7 +1064,7 @@ export function inspectorChipView(inspector: Session["inspector"]): InspectorChi
       mark: "!",
       tone: "insp-failed",
       dry,
-      title: `Inspector: the last review of this pull request did not complete${suffix}`,
+      title: `GitHub Inspector: the last review of this pull request did not complete${suffix}`,
     };
   }
   if (inspector.round === 0) {
@@ -1074,7 +1074,7 @@ export function inspectorChipView(inspector: Session["inspector"]): InspectorChi
       mark: "",
       tone: "insp-queued",
       dry,
-      title: `Inspector: adopted for review, not looked at yet${suffix}`,
+      title: `GitHub Inspector: adopted for review, not looked at yet${suffix}`,
     };
   }
   if (inspector.open === 0) {
@@ -1082,7 +1082,7 @@ export function inspectorChipView(inspector: Session["inspector"]): InspectorChi
       mark: "✓",
       tone: "insp-clean",
       dry,
-      title: `Inspector: reviewed, nothing outstanding${suffix}`,
+      title: `GitHub Inspector: reviewed, nothing outstanding${suffix}`,
     };
   }
   return {
@@ -1090,7 +1090,7 @@ export function inspectorChipView(inspector: Session["inspector"]): InspectorChi
     tone: "insp-findings",
     dry,
     title:
-      `Inspector: ${inspector.open} open finding${inspector.open === 1 ? "" : "s"} ` +
+      `GitHub Inspector: ${inspector.open} open finding${inspector.open === 1 ? "" : "s"} ` +
       `after ${inspector.round} round${inspector.round === 1 ? "" : "s"}${suffix}`,
   };
 }

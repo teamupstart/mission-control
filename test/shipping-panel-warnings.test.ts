@@ -37,9 +37,9 @@ function render(inspectorConfig: Posture | null, state: ShippingState = SHIPPING
   );
 }
 
-test("the Inspector switched off is named", () => {
+test("GitHub Inspector switched off is named", () => {
   const html = render({ enabled: false, mode: "dry-run", repoAllowlist: [] });
-  assert.match(html, /Inspector is switched off/);
+  assert.match(html, /GitHub Inspector is switched off/);
 });
 
 // The regression's own warning. This state used to merge silently; now it merges nothing,
@@ -48,7 +48,7 @@ test("dry run is named, and says merging is what it is stopping", () => {
   const html = render({ enabled: true, mode: "dry-run", repoAllowlist: ["/repo"] });
   assert.match(html, /dry run/i);
   assert.match(html, /will not merge/i);
-  assert.doesNotMatch(html, /Inspector is switched off/, "the wrong switch would be named");
+  assert.doesNotMatch(html, /GitHub Inspector is switched off/, "the wrong switch would be named");
 });
 
 test("a repo missing from the INSPECTOR's allowlist is named, by path", () => {
@@ -61,12 +61,12 @@ test("a repo missing from the INSPECTOR's allowlist is named, by path", () => {
 // text above pins that); this pins that each now carries a real control to act on, and the
 // two Inspector-posture ones point at the Inspector while the untrusted-repo one points at
 // Trust (where the fix - grant the review, or revoke the merge - actually lives).
-test("the Inspector-off and dry-run warnings carry a link, the untrusted one a Trust link", () => {
+test("the GitHub Inspector-off and dry-run warnings carry a link, the untrusted one a Trust link", () => {
   const off = render({ enabled: false, mode: "dry-run", repoAllowlist: [] });
-  assert.match(off, /class="settings-link"[^>]*>Turn it on in Inspector/);
+  assert.match(off, /class="settings-link"[^>]*>Turn it on in GitHub Inspector/);
 
   const dry = render({ enabled: true, mode: "dry-run", repoAllowlist: ["/repo"] });
-  assert.match(dry, /class="settings-link"[^>]*>Set it to live in Inspector/);
+  assert.match(dry, /class="settings-link"[^>]*>Set it to live in GitHub Inspector/);
 
   const untrusted = render({ enabled: true, mode: "live", repoAllowlist: [] });
   assert.match(untrusted, /class="settings-link"[^>]*>Fix in Trust/);
@@ -81,9 +81,9 @@ test("the merge-repos section is a grant count that deep-links to Trust, not an 
   assert.doesNotMatch(html, /aria-label="Stop auto-merging/);
 });
 
-test("fully on and trusted: no warning about the Inspector at all", () => {
+test("fully on and trusted: no warning about GitHub Inspector at all", () => {
   const html = render({ enabled: true, mode: "live", repoAllowlist: ["/repo"] });
-  assert.doesNotMatch(html, /Inspector is switched off/);
+  assert.doesNotMatch(html, /GitHub Inspector is switched off/);
   assert.doesNotMatch(html, /dry run/i);
   assert.doesNotMatch(html, /not allowed to review/i);
 });
@@ -108,9 +108,9 @@ test("the warning uses the shared allowlist rule, so a parent trusts its worktre
 
 // Null is "the daemon is unreachable", which is not evidence the Inspector is off. Warning
 // there would tell an operator to go and switch on something that may already be on.
-test("an unreachable daemon warns about reachability, not about the Inspector", () => {
+test("an unreachable daemon warns about reachability, not about GitHub Inspector", () => {
   const html = render(null, { ...SHIPPING, config: null });
-  assert.doesNotMatch(html, /Inspector is switched off/);
+  assert.doesNotMatch(html, /GitHub Inspector is switched off/);
   // Apostrophes render escaped, so match around one rather than through it.
   assert.match(html, /reach the daemon/);
 });
@@ -123,7 +123,7 @@ test("nothing is warned about while YOLO mode is off", () => {
     config: { ...SHIPPING.config!, autoMerge: false },
   };
   const html = render({ enabled: false, mode: "dry-run", repoAllowlist: [] }, disarmed);
-  assert.doesNotMatch(html, /Inspector is switched off/);
+  assert.doesNotMatch(html, /GitHub Inspector is switched off/);
 });
 
 // Raised by the Inspector on this change: the Prerequisites card was gated on
@@ -142,5 +142,5 @@ test("with every prerequisite met, the Prerequisites card is not drawn at all", 
 test("an unmet prerequisite still draws the card, with the fix beside it", () => {
   const html = render({ enabled: false, mode: "dry-run", repoAllowlist: [] });
   assert.match(html, /Prerequisites/);
-  assert.match(html, /class="settings-link"[^>]*>Turn it on in Inspector/);
+  assert.match(html, /class="settings-link"[^>]*>Turn it on in GitHub Inspector/);
 });

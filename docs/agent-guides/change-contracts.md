@@ -98,7 +98,7 @@ Persisted ID tuples are append-only. Never rename, reorder, or reuse values. Thi
   `src/server/ensembles/store.ts`, which is what stops a late outcome rewriting a settled
   attempt) and what the walk makes of it (`stageStatus` in `src/server/ensembles/engine.ts`,
   whose fall-through reads anything unhandled as a stage still running)
-- Inspector marker versions
+- GitHub Inspector marker versions
 - Workflow graph node kinds, source and target ports, and SessionAction completion kinds
   (`SESSION_ACTION_COMPLETION_KINDS`) - these reach draft graphs, immutable published
   versions, and `session_actions.completion_kind`, and a completion kind is read STRICTLY:
@@ -348,7 +348,7 @@ A SessionAction is a durable side effect, not an evaluator:
   repository root and branch as the bound checkout, whose last observed remote head is the
   exact commit the continuation captured. `Session.prUrl` is a lookup hint and satisfies
   nothing; neither does a branch name, nor a pull request merely existing.
-- It never talks to a provider. The Inspector poller is the only thing that does, and
+- It never talks to a provider. The GitHub Inspector poller is the only thing that does, and
   `inspector_prs.observed_head_sha` / `observed_state` / `head_ref_name` are the durable form
   of what it saw. A second poll loop would double the API cost of every open pull request to
   answer a question the first one already answers.
@@ -459,22 +459,22 @@ A SessionAction is a durable side effect, not an evaluator:
   cross-submission read, and it is provenance the runtime wrote rather than a relationship
   inferred from ordering.
 
-## The Inspector footer
+## The GitHub Inspector footer
 
-Inspector is `WorkflowCompletionPolicy`, and it gains no node, no id and no edge. `InspectorFooter`
+GitHub Inspector is `WorkflowCompletionPolicy`, and it gains no node, no id and no edge. `InspectorFooter`
 in `src/web/workflows/pipeline-bits.tsx` is the one projection of it, rendered after End by the
 Pipeline editor, the run pipeline, published version detail and the Board ladder. It returns
 `null` for a `none` policy, which is why every call site passes the policy unconditionally.
 
 Two things about it are load-bearing. It reads the **version's** policy on a run surface and the
 **workflow's** on a draft surface, so a run pinned to an older version shows the gate that
-version was published with. And `none` beneath an Inspector policy means "the run has not
+version was published with. And `none` beneath a GitHub Inspector policy means "the run has not
 reached the gate", not "there is no gate" - `inspectorFooterStatus` exists so the footer does
 not contradict its own sentence for most of a live run's life.
 
 ## Ledger tables
 
-A settings panel whose subject keeps an append-only record - Inspector, Shipping, Foreman today - draws that record with `ConsoleTable` from `src/web/components/settings-console.tsx`, and never assembles a table of its own out of the `sc-` leaves. The component owns the heading, the column-name row, the bounded scroller, the pager and the caption; a panel supplies its filtered rows, its columns, its `renderRow` and its copy.
+A settings panel whose subject keeps an append-only record - GitHub Inspector, Shipping, Foreman today - draws that record with `ConsoleTable` from `src/web/components/settings-console.tsx`, and never assembles a table of its own out of the `sc-` leaves. The component owns the heading, the column-name row, the bounded scroller, the pager and the caption; a panel supplies its filtered rows, its columns, its `renderRow` and its copy.
 
 Three properties come with it, and all three are the component's rather than the panel's:
 
@@ -483,7 +483,7 @@ Three properties come with it, and all three are the component's rather than the
 - **The count strip is the filter, and the pager restarts with it.** Tiles fold over one bucket function so a tally and the rows it selects cannot disagree, and changing the filter is a new list, so it opens at its first page.
 - **Paging keeps the keyboard's place.** Reaching the first or last page disables the button that was just pressed, and a browser blurs a control that becomes disabled; the focus is handed to the button that can still act. Two pages is the ordinary case here, so this fires on most page changes rather than at an edge.
 
-This is a rule because the drift it prevents is invisible in a one-file diff. The three panels shared a vocabulary of leaves and each assembled its own table, so they diverged on the one thing a class name says nothing about - how much of a list they will put on screen. Foreman grew a budget at its 100-row cap; Inspector and Shipping reached 50 and grew nothing, running the settings page on for screens of table beside a control column a quarter of their height, with the filter strip scrolled out of reach.
+This is a rule because the drift it prevents is invisible in a one-file diff. The three panels shared a vocabulary of leaves and each assembled its own table, so they diverged on the one thing a class name says nothing about - how much of a list they will put on screen. Foreman grew a budget at its 100-row cap; GitHub Inspector and Shipping reached 50 and grew nothing, running the settings page on for screens of table beside a control column a quarter of their height, with the filter strip scrolled out of reach.
 
 Ledger reads stay capped server-side (`loadInspectorInspections(50)`, `recentEpisodes(100)`); the pager pages what the panel was served and its total says so. A new bucket needs a strip tile and an `EMPTY_FILTER` sentence, both `Record`-typed so the compiler asks.
 
@@ -642,7 +642,7 @@ imports the generator rather than re-implementing it.
 
 `personas/` also holds the two operator briefs the daemon reads as files at runtime -
 `FOREMAN.md` (the seed for Foreman's standing instructions) and `INSPECTOR.md` (this repo's
-brief for the Inspector) - plus a `README.md`. The generator globs the whole directory, so
+brief for the GitHub Inspector) - plus a `README.md`. The generator globs the whole directory, so
 those three are excluded by name in `NON_PERSONA_DOCUMENTS`; anything else added there becomes
 a built-in Persona. A persona filename is the durable `builtin:<slug>` id that published
 workflow versions reference, so adding and removing documents is safe and renaming one is a

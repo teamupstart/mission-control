@@ -161,16 +161,16 @@ queue that has never moved is exactly where you go looking for the reason.
 ### Keeping a PR on track
 
 Once work has an **open pull request**, its session can park while the
-[Inspector](inspector-and-shipping.md#inspector-automated-pr-review) posts comments or CI goes red. The Foreman
+[GitHub Inspector](inspector-and-shipping.md#inspector-automated-pr-review) posts comments or CI goes red. The Foreman
 popover's **Pull requests** section has two independent, default-on controls:
 
 - **Keep sessions on track with review comments** nudges the parked session to resolve
-  Inspector comments already posted on its PR.
+  GitHub Inspector comments already posted on its PR.
 - **Keep sessions on track with CI** nudges the parked session to fix failing checks. It
   never creates a PR; an existing open PR is a required input, and every fix stays on that
   PR's branch.
 
-Each control can be disabled without disabling the other. A later Inspector round or a new
+Each control can be disabled without disabling the other. A later GitHub Inspector round or a new
 CI failure episode re-arms only the corresponding follow-through.
 
 When upgrading from the earlier combined **Keep sessions on track** control, its saved answer
@@ -187,19 +187,19 @@ Each nudge is typed into the session's pane, so it carries the usual gates and o
   wrap-up - dry-run leaves the parked PR for you;
 - it fires only at a **settled-idle** session, so it never interrupts one already working the
   fixes, and it does not nag a PR that's being handled: review comments re-arm **once per
-  Inspector round**, and a failing CI re-arms **once per failure episode** - after the checks
+  GitHub Inspector round**, and a failing CI re-arms **once per failure episode** - after the checks
   recover, a later failure counts as new (so a red CI is never permanently silenced, and a
   CI that merely goes green does not re-nudge the comments already relayed);
 - it stands down while the session **needs you**, while it has a live **work queue**
   (the drain trigger owns that checkout), and while a non-terminal **workflow run owns the
   session and branch**;
-- the review-comment half counts only Inspector findings **already posted on the PR**
+- the review-comment half counts only GitHub Inspector findings **already posted on the PR**
   (dry-run drafts and findings still being posted do not count) - the failing-CI half works
   regardless.
 
 **A session holding several pull requests is followed through on each of them.** A
 [multi-repo task](dispatch-and-backlog.md#attaching-more-than-one-repository) opens one per
-repository it changed, and each is tracked separately here: its own Inspector rounds, its own
+repository it changed, and each is tracked separately here: its own GitHub Inspector rounds, its own
 CI-failure episodes, its own re-arming. Repo B's review landing does not re-relay what repo A
 was already told, and a red CI in one repository is nudged even while the other is green -
 which before this was invisible, because the trigger only ever looked at the pull request on

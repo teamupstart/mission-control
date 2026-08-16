@@ -1,7 +1,7 @@
 # Workflows and Personas
 
 A Persona is a reusable Markdown review role, not an agent, terminal session, Foreman rule,
-or Inspector setting. Personas you create or import live in Mission Control's SQLite
+or GitHub Inspector setting. Personas you create or import live in Mission Control's SQLite
 database. Their name, description, optional provider and model overrides, and guidance are
 revisioned together. Saves use compare-and-swap, so a second tab editing an older revision
 gets an explicit conflict and keeps its local text. Archive is soft: archived Personas are
@@ -86,7 +86,7 @@ plugin's to version, and an imported Persona is your database's content.
 
 ### Built-in Personas
 
-Four ready-made review roles ship with the application. Nothing has to be
+Five ready-made review roles ship with the application. Nothing has to be
 imported: they are in the Personas tab of a fresh install, and any workflow stage can pick
 one immediately.
 
@@ -96,6 +96,7 @@ one immediately.
 | Code Risk Reviewer | Risk the changed code introduces: bugs, security, performance, breaking changes, error handling. Never style, formatting, linting, or types |
 | Test Evidence Auditor | Whether the evidence shows the intent working end to end, with visual evidence required for anything a user will see |
 | Documentation Steward | Documentation this change made stale, against a one-owner-per-fact placement policy |
+| Code Quality Judge | Final local judgment of correctness, security, resource lifetime, error handling, compatibility, and regression evidence before pull request creation |
 
 They are **app data, not your data**, and the Persona rail groups them under `Built-in`, apart
 from the ones you wrote. Each
@@ -121,16 +122,18 @@ generated module. Each document's first level-one heading is the Persona's name 
 paragraph under it is the description. **Import .md** shares only the heading-to-name rule;
 an imported Persona's description stays empty.
 
-The four are written to compose, and they ship already composed: **No-Mistakes Review** is the
+The five are written to compose, and they ship already composed: **No-Mistakes Review** is the
 built-in workflow below. Among its Personas, Intent Conformance Judge runs first as a cheap
-gate, then the other three fan out behind an All-pass Join. None of them restates the engine's
-own review contract or output format, which every Persona prompt already carries, so editing
-your copy changes what that role judges, not how it replies.
+gate, then Code Risk Reviewer, Test Evidence Auditor, and Documentation Steward fan out behind
+an All-pass Join. Code Quality Judge runs once that deeper stage passes, immediately before the
+verified Pull Request action. None of them restates the engine's own review contract or output
+format, which every Persona prompt already carries, so editing your copy changes what that role
+judges, not how it replies.
 
 ### Built-in workflows
 
 One ready-made review workflow ships with the application: **No-Mistakes Review**. Versions 1
-through 7 are preserved for bindings that already pin them, and version 8 is current. There is
+through 8 are preserved for bindings that already pin them, and version 9 is current. There is
 nothing to author and nothing to import - it is in the Workflows tab of a fresh install,
 already published, and can be bound to a session immediately.
 
@@ -147,29 +150,41 @@ path version 2 does while preserving the deterministic stage in the graph. The
 [Command nodes](#command-nodes) section owns the rules for configured, unconfigured and unauthorized
 slots.
 
-Behind it are the four built-in Personas wired the way they were written to compose. Intent
+Behind it are the first four built-in Personas wired the way they were written to compose. Intent
 Conformance Judge is stage 2, the cheap gate: there is no point spending three deeper reviews
 on a change that has already drifted from what was asked. Code Risk Reviewer, Test Evidence
 Auditor and Documentation Steward are stage 3, running **in parallel on the same submission**
 and aggregating into one combined repair packet at their All-pass Join. Every fail returns to
 the session for repair.
 
-**Version 8 adds a fourth stage: the built-in [Pull Request action](#pull-request-actions),
+**Version 9 adds Code Quality Judge as stage 4.** It runs after the parallel deep-review Join
+and before the Pull Request action. A failure returns a focused repair request through the same
+Workflow loop and no pull request action runs. A pass activates the verified publication action.
+Code Quality Judge is a normal tool-less Persona and judges the same immutable local evidence
+bundle as the other roles, including dirty and untracked work, intent, decisions, transcript,
+standards, and prior feedback.
+
+**Version 8 added the built-in [Pull Request action](#pull-request-actions),
 after the reviews and before End.** That is a change of *where the pull request comes from*.
 Versions 5 through 7 reach End first and then have the completion policy type a handoff, so the
 run is already successful at the moment the pull request is asked for and nothing proves one
 arrived. In version 8 the pull request is an authored stage: it types the same skill, and its
 `complete` route reaches End only once an open pull request has been observed at the commit the
 continuation captured. End still means the authored graph succeeded - and by the time the
-Inspector claims that success there is provably something for it to review. Because the graph
+GitHub Inspector claims that success there is provably something for it to review. Because the graph
 cannot reach End without one, version 8's missing-PR policy is **wait**: a gate that found no
 pull request has met a state its own preparation would not fix, and typing a second handoff
-would ask for one the run already has.
+would ask for one the run already has. Version 9 preserves that verified publication contract,
+with Code Quality Judge immediately before the action.
 
-A passed review is then gated on the
-[Inspector final gate](#inspector-final-gate) finding nothing on the pull request:
-in versions 4 onward, findings require the session to fix, verify, commit and push, then
-Inspector reviews the new head without rerunning the already-passed Personas. Versions 1
+A passed review in versions 1 through 8 is then gated on the
+[GitHub Inspector final gate](#inspector-final-gate) finding nothing on the pull request.
+Version 9 instead completes when its Pull Request action reaches End, so the default workflow
+does not wait for optional remote review. GitHub Inspector remains independently available for
+reviewing pushed heads on GitHub and remains the source of exact-head proof used by Shipping.
+
+In versions 4 through 8, findings require the session to fix, verify, commit and push, then
+GitHub Inspector reviews the new head without rerunning the already-passed Personas. Versions 1
 through 3 retain their original whole-workflow restart behavior. Versions 5 through 7
 automatically return a passed, PR-less review to the session to prepare the pull request;
 versions 1 through 4 offer **Prepare PR in session** instead. Every one of those paths
@@ -197,21 +212,22 @@ it already reserved, and the built-in it shadows stays hidden behind your copy w
 addressable, so bindings and runs pinned to it keep resolving. Archive or rename your copy to
 see the built-in.
 
-An upgrade that improves one of the four Personas improves this workflow too, with no gesture
+An upgrade that improves one of the five Personas improves this workflow too, with no gesture
 from you: it always carries the guidance and the graph the build was made from. Improving the
 shipped workflow itself appends a **new version** rather than editing the one you may be bound
 to, so an existing binding keeps running exactly the graph it was bound to until you rebind it.
 
 Versions 3 through 7 are that rule in practice. Version 3 added the deterministic check
-stage; version 4 preserves that graph and changes only the immutable Inspector-findings
+stage; version 4 preserves that graph and changes only the immutable GitHub Inspector-findings
 policy; version 5 automatically prepares a missing pull request; version 6 makes Foreman
 complete the default trigger; version 7 changes only the immutable
-[repair-resumption policy](#repair-resumption) to `auto`; and version 8 appends the Pull
-Request stage and sets its missing-PR policy to `wait`. Every earlier version remains in the
+[repair-resumption policy](#repair-resumption) to `auto`; version 8 appends the Pull Request
+stage and sets its missing-PR policy to `wait`; and version 9 adds Code Quality Judge before
+that action and changes only the new version's completion policy to `none`. Every earlier version remains in the
 catalog and still resolves, so an existing binding keeps its pinned graph, policies, and
 binding defaults - including versions 1 through 6, which stay `manual` and still wait for you,
 and versions 1 through 7, none of which carries an action node or has its post-End handoff
-changed. New bindings take version 8 because it is current. Adopting the newer version on an
+changed. Version 8 retains its GitHub Inspector gate unchanged. New bindings take version 9 because it is current. Adopting the newer version on an
 existing binding means creating a new binding, which is the same gesture adopting any newly
 published version already requires.
 
@@ -259,7 +275,7 @@ both outcomes from at least two distinct predecessors, waits for one result from
 passes only when all passed; a predecessor may be a Persona, a Check or another Join, and
 never a session action - an action produces no verdict for a join to aggregate. Cycles are
 legal only when they include Session. Persona-only cycles are rejected because they could
-spend repeatedly against unchanged work. There is no checkpoint node and Inspector is not a
+spend repeatedly against unchanged work. There is no checkpoint node and GitHub Inspector is not a
 graph node.
 
 The Pipeline view is offered exactly when a draft *is* a pipeline: one Session, a linear chain
@@ -276,10 +292,10 @@ action stage has neither - it holds exactly one action by construction - so its 
 chooses **which** action it sends. Checks are offered even before you have authored a Persona,
 because the slots are a fixed vocabulary rather than something you configure here.
 
-Immediately after End, the Pipeline draws a fixed **Inspector** footer whenever the workflow's
-final gate is Inspector. It is a projection of the completion policy and not a stage: it has
+Immediately after End, the Pipeline draws a fixed **GitHub Inspector** footer whenever the workflow's
+final gate is GitHub Inspector. It is a projection of the completion policy and not a stage: it has
 no drag handle, no member list, no graph edge and no delete, it is marked `Fixed`, and its
-switches are the ones in the settings rail. End is still where the graph succeeds; Inspector
+switches are the ones in the settings rail. End is still where the graph succeeds; GitHub Inspector
 claims that success afterwards. A workflow whose final gate is None shows no footer at all.
 
 ### Session actions
@@ -358,7 +374,7 @@ What the daemon has to see before the stages below it run, and before End:
 1. the packet was confirmed sent, something newer than the send anchor proved the session read
    it, and the session has since settled without a question outstanding;
 2. Mission Control has **adopted** a pull request - the same ledger the
-   [Inspector](inspector-and-shipping.md#inspector-automated-pr-review) reviews from, which only records pull requests it can prove are
+   [GitHub Inspector](inspector-and-shipping.md#inspector-automated-pr-review) reviews from, which only records pull requests it can prove are
    ours;
 3. that pull request is on the **same repository root and the same branch** as the bound
    session's checkout;
@@ -371,7 +387,7 @@ existing is not proof. The head comparison is between full object ids on both si
 capture records an abbreviated commit, so the abbreviation is resolved against the repository's
 object database rather than prefix-matched.
 
-**Mission Control never polls GitHub for this.** The Inspector's existing poller is the only
+**Mission Control never polls GitHub for this.** The GitHub Inspector's existing poller is the only
 thing that talks to a provider, and the action reads what it wrote down - which is also why a
 freshly opened pull request can take up to one poll interval to be seen.
 
@@ -545,7 +561,7 @@ exact Persona Markdown from the version route.
 
 Workflow settings also store binding defaults: Manual or Foreman-complete trigger, Preview
 or Live delivery, and a repair-round limit. Foreman complete plus Preview is the default for
-new workflows. The optional Inspector final gate and its missing-PR and findings policies are
+new workflows. The optional GitHub Inspector final gate and its missing-PR and findings policies are
 immutable parts of each published version, and so is the
 [repair-resumption policy](#repair-resumption) below.
 
@@ -577,7 +593,7 @@ not. Delete asks for confirmation and cannot be undone.
 Bind a session to an exact published workflow version from the workflow history or from any
 fleet layout, then choose **Preview**. On a Cards card and in the Console and Board detail
 header the chip states what the session is armed with, naming the workflow and its version -
-**⌘ No-Mistakes Review v8**. It falls back to an offer, **＋ workflow**, in two cases: nothing is
+**⌘ No-Mistakes Review v9**. It falls back to an offer, **＋ workflow**, in two cases: nothing is
 bound at all, and the binding that exists is no longer `active` - `orphaned` after its session
 disappeared, or `paused` after the conversation changed. Those rows are not archived and the
 bind dialog still reattaches them, but neither will run when this session's work completes, so
@@ -625,7 +641,7 @@ binding's repair-round limit. A failing path back to Session either resumes itse
 a manual resubmit, depending on the published [repair-resumption policy](#repair-resumption).
 Resubmission captures fresh evidence and refuses an unchanged snapshot unless the operator
 explicitly confirms it, so an approval from an older round is never reused. Preview performs
-no terminal write, keystroke injection, Foreman action, Inspector action, or message delivery.
+no terminal write, keystroke injection, Foreman action, GitHub Inspector action, or message delivery.
 
 The whole daemon runs at most three review calls at once, and Persona attempts and context
 compaction spend that one budget together rather than each holding a private ceiling. The
@@ -652,21 +668,21 @@ whole run, so their query count does not grow with the number of submissions.
 When a session has a bound run, its Console and Board detail pane shows a vertical stage
 ladder in the **Workflows** tab (<kbd>y</kbd>). Every stage names its members and each member's own
 status, so a stage that folded to `All passed` still says which reviewers and checks passed it,
-and an objection, Inspector wait, session-action wait, or uncertain delivery opens in
-place. A workflow whose final gate is Inspector ends the ladder with a fixed `Inspector` rung
+and an objection, GitHub Inspector wait, session-action wait, or uncertain delivery opens in
+place. A workflow whose final gate is GitHub Inspector ends the ladder with a fixed `GitHub Inspector` rung
 *after* the End outcome, marked `Fixed`, reading `Not reached` until the run gets there.
 Preview feedback can be copied there. The failing rung also reports a member that has failed consecutive
-repair rounds, the signal of a non-converging repair loop. At the Inspector gate, **Recheck
-Inspector** evaluates the wait again, and **Open PR** opens the adopted pull request when there
+repair rounds, the signal of a non-converging repair loop. At the GitHub Inspector gate, **Recheck
+GitHub Inspector** evaluates the wait again, and **Open PR** opens the adopted pull request when there
 is one - it is absent rather than greyed out on a gate with no pull request adopted yet, which
-is every Inspector workflow up to the moment one is. A waiting run with a missing or unadopted
+is every GitHub Inspector workflow up to the moment one is. A waiting run with a missing or unadopted
 PR also offers **Prepare PR in session** when its immutable run policy permits preparation. An uncertain delivery can be resolved under the same confirmation
 and typed-phrase guards as the Runs page. Use **Open run** for the full evidence and timeline.
 A published version whose graph cannot be expressed as stages keeps the existing workflow chip
 here and links to the Runs page, where its read-only graph remains available.
 
 The Board overview also keeps a compact **active-rung preview** inside each bound session tile.
-It names the consequential stage and its members, and keeps the first objection, Inspector wait,
+It names the consequential stage and its members, and keeps the first objection, GitHub Inspector wait,
 or uncertain-delivery warning in view. A stage carried forward from an earlier round never takes
 that slot - it is finished work, so the preview keeps naming whatever is actually running - and the
 tile instead carries one line counting them, **✓ 2 stages carried from Round 1 · evidence 1**.
@@ -688,7 +704,7 @@ green - it speaks for the round on screen, where nothing executed - and the tick
 provenance line is the only green a carried stage wears, because it is a claim about a
 different round. Both shapes that leave a stage without an attempt of its own read this one way:
 a **continuation segment**, which resumes after a session action and re-runs only the stages
-below it, and an **Inspector-only repair round**, which bypasses Persona review entirely.
+below it, and a **GitHub Inspector-only repair round**, which bypasses Persona review entirely.
 A **session action** never carries, because it judges nothing and so has no pass to stand on:
 a completed one still reads **Complete** in the very segment its completion created.
 A check skipped because its command is not configured stays amber, with its reason available
@@ -697,7 +713,7 @@ explanation rather than being folded into a carried pass.
 A stage of two or more members shows each one and passes only when all do. A version
 drawn freehand in the Graph view is not a pipeline, so its run falls back to that graph,
 read-only, carrying the same statuses. No surface prints a node id. The same fixed
-**Inspector** footer the author saw follows End here, carrying the gate's live state.
+**GitHub Inspector** footer the author saw follows End here, carrying the gate's live state.
 
 A **session action** reports a lifecycle rather than an outcome, and its vocabulary is
 deliberately its own - nothing about it ever reads Passed, Failed or Changes requested,
@@ -794,10 +810,10 @@ every state, and workflow id and session filters sit beside it. Filters and the 
 are part of the bookmarkable hash, and history pages 50 rows at a time.
 
 A run is read one **submission** at a time. The scrubber lists every one with the round it
-belongs to - Inspector-only repair rounds marked as such - and the round that asked for
+belongs to - GitHub Inspector-only repair rounds marked as such - and the round that asked for
 changes is marked even though its submission is a healthy `waiting for the session`.
 Selecting one scopes the pipeline statuses, the review worklist, the join packets and the
-timeline to it; the latest is selected by default. The Inspector gate, completion claims, deliveries and
+timeline to it; the latest is selected by default. The GitHub Inspector gate, completion claims, deliveries and
 every recovery action always reflect the live run whatever is on screen, and a note says so
 while an earlier one is selected.
 
@@ -839,7 +855,7 @@ chip never folds its stage to **Failed**; the stage counts it with the not-run g
 
 Verdicts are cards: the outcome, the reviewer, its summary, its approval rationale or
 requested changes with evidence references, and the runner, model, duration and cost that
-actually ran. Inspector gate state, Foreman completion claims and repair deliveries are the
+actually ran. GitHub Inspector gate state, Foreman completion claims and repair deliveries are the
 same card with a different accent. Durable failures read as sentences - "The write may or may
 not have landed" - with the machine code kept beside them for a bug report, never instead of
 them. The timeline names Personas and rounds rather than printing payload JSON; the run id and
@@ -848,7 +864,7 @@ because they answer a bug report rather than a reader.
 
 **The header offers one next move, derived from the run's own state.** Not every control the
 run might accept: a single primary, in the language of the person reading the page rather than
-of the route behind it. A parked run offers **Resume review**; an Inspector gate waiting on a
+of the route behind it. A parked run offers **Resume review**; a GitHub Inspector gate waiting on a
 pull request offers **Ask the session to open a PR**, or **Check again** when its immutable
 policy declines the handoff; a run blocked on an exhausted provider call offers **Retry the
 failed call**. A run whose evidence snapshot has not moved since the last round is refused by
@@ -856,7 +872,7 @@ the daemon, and the primary becomes the recovery for exactly that refusal - **Re
 snapshot anyway** - which is the only state it appears in.
 
 When there is no move, the header says so **in a sentence** and names where the decision
-actually lives: "Confirm or discard it in Deliveries below", "they are listed under Inspector
+actually lives: "Confirm or discard it in Deliveries below", "they are listed under GitHub Inspector
 final gate below". A control that cannot run is never left standing in place of an explanation.
 That covers the states nothing argument-free revives - the bound session is gone, the run is
 externally sourced - and the states blocked on a judgement the page carries the material for
@@ -864,7 +880,7 @@ further down.
 
 **A run that spent its repair budget is the exception, and it gets a button.** It used to get
 the sentence too, and that was the one dead end on the page: the run had stopped, nothing on
-the dashboard could restart it, and its Inspector gate went on vetoing its pull request
+the dashboard could restart it, and its GitHub Inspector gate went on vetoing its pull request
 forever. Its primary is now **Grant 2 more rounds**. The sentence that used to stand there
 named the binding's `Max repair rounds` as the fix, which was wrong: a run snapshots its
 budget when its row is created, and editing the binding changes what the *next* run may
@@ -873,7 +889,7 @@ spend.
 What the grant does depends on what stopped the run, and the difference is not cosmetic. A
 **parked repair round** needs only the number: the resume move refuses on
 `round > maxRepairRounds`, so raising the budget hands the run straight back to it, and the
-header repaints from the grant to **Preview fresh evidence**. An **Inspector-only gate run**
+header repaints from the grant to **Preview fresh evidence**. A **GitHub Inspector-only gate run**
 needs its status back as well, because nothing polls a blocked run - the gate evaluator
 returns early on one - so the grant restores `waiting_for_new_head` and the gate re-enters
 on the next observation, picking up the very head it refused. Without that second half the
@@ -920,7 +936,7 @@ unchanged:
 - Its evidence - the diff, the working tree, the repository standards - is read from **its
   own** worktree. The goal, the transcript and your decisions are shared, because the
   conversation is one.
-- Its Inspector gate pins **its own** repository's pull request. A review of one repository
+- Its GitHub Inspector gate pins **its own** repository's pull request. A review of one repository
   never pins or vetoes a sibling's, which is what keeps the two pull requests merging
   independently.
 - Its repair budget is its own. A finding in one repository restarts that repository's graph
@@ -1008,7 +1024,7 @@ Four things it deliberately does not do:
   gated on the repository: a repair that changed no code is not a repair, and resubmitting
   byte-identical work into the same reviewers would spend the whole budget proving nothing.
 - **It does not touch a run waiting for a new pushed head.** The `inspector_only` findings
-  policy already resumes on its own, when the Inspector observes a head that is not the failed
+  policy already resumes on its own, when the GitHub Inspector observes a head that is not the failed
   one, and that remains its business.
 - **It does not fire under Preview delivery.** Preview stores the repair packet and never
   types it, so the agent has not been told what to fix. Resuming there would spend every round
@@ -1054,14 +1070,14 @@ came back, is recoverable from the page rather than reading as terminal.
 **`blocked` is deliberately not a terminal status**, and the reason is written down beside
 `WORKFLOW_RUN_TERMINAL_STATUSES` in `src/shared/workflow.ts` because it looks like an
 oversight from both directions. A blocked run has stopped, so adding it to the terminal set
-would in one line release the Shipping veto its Inspector gate holds - and that is exactly
+would in one line release the Shipping veto its GitHub Inspector gate holds - and that is exactly
 why it is not there. A gate that ran out of repair rounds did **not** pass; releasing its veto
 would turn "the reviewer gave up with findings open" into "the reviewer approved it", which is
 the bypass the veto exists to prevent. Blocked also is not reliably an ending: a reattach
 revives one, and a grant revives another.
 
 So the veto stays, and what changed is that it stops lying about itself. A gate still working
-reports `workflow-gate-pending` - "an active workflow still owns the Inspector final gate",
+reports `workflow-gate-pending` - "an active workflow still owns the GitHub Inspector final gate",
 and waiting is correct. A gate that spent its budget reports **`workflow-gate-spent`**, which
 says the stop is permanent and names the way out, because no further push can clear it: the
 gate re-tests the budget on every new head, so the operator cannot push their way out. The two
@@ -1155,27 +1171,27 @@ asked for, and stating that the only two acceptable answers are to make the chan
 it should not be made. That happens at most **twice**. A third consecutive unchanged completion
 blocks the run for you to resolve, and any round that captures a real change resets the count.
 
-### Inspector final gate
+### GitHub Inspector final gate
 
-An Inspector completion policy adds a final stage after a successful End. End stays successful,
-but the run does not complete until Inspector has reviewed the exact PR head represented by that
+A GitHub Inspector completion policy adds a final stage after a successful End. End stays successful,
+but the run does not complete until GitHub Inspector has reviewed the exact PR head represented by that
 submission. A PR URL on the session is only a lookup hint. The gate can use it only when the
-durable Inspector ledger already says the hook saw `gh pr create`. A URL alone never adopts a
+durable GitHub Inspector ledger already says the hook saw `gh pr create`. A URL alone never adopts a
 pull request and never grants permission to comment on it.
 
-Gate entry records the local committed HEAD, then waits for a normal Inspector sweep observed
+Gate entry records the local committed HEAD, then waits for a normal GitHub Inspector sweep observed
 after entry. It does not start a second GitHub poller. The observed PR must still be open, its
 remote head must equal that captured HEAD, and the captured working tree must have no staged,
 unstaged, or untracked changes outside the commit. A dirty tree requires commit, push, and a fresh
-full submission. A pre-pin mismatch waits for Inspector to observe the captured committed head; a
+full submission. A pre-pin mismatch waits for GitHub Inspector to observe the captured committed head; a
 push after pinning requires a fresh full submission. A stale ledger timestamp or reviewed head
 alone, including one loaded after a daemon restart, cannot satisfy the gate; the next normal
-Inspector observation must first prove which head is current.
+GitHub Inspector observation must first prove which head is current.
 
-Once the matching head is pinned, the durable Inspector ledger decides the state:
+Once the matching head is pinned, the durable GitHub Inspector ledger decides the state:
 
 - A pending, failed, or backed-off review remains waiting and shows its current posture and retry.
-- Every non-resolved Inspector row remains a finding, including dry-run drafts and interrupted
+- Every non-resolved GitHub Inspector row remains a finding, including dry-run drafts and interrupted
   posting rows. Run detail shows its stored scrubbed body, or an explicit fallback for legacy rows.
 - A completed current-head review with zero findings completes the workflow.
 - Closing or switching the PR blocks instead of accepting old approval.
@@ -1183,7 +1199,7 @@ Once the matching head is pinned, the durable Inspector ledger decides the state
 Findings produce one frozen, bounded, hashed `inspector_feedback` packet through the same Preview
 or safe Live delivery state machine as Persona repair. The published default,
 `restart_workflow`, requires fix, verify, commit, push, and a full resubmission that reruns every
-Persona. The narrower `inspector_only` policy waits for Inspector to observe a different pushed
+Persona. The narrower `inspector_only` policy waits for GitHub Inspector to observe a different pushed
 head, records an immutable attempt-free bypass submission, and reviews that head normally. It
 refuses the failed head, every prior repair head, PR switching, and the round cap. Run detail
 labels the Persona bypass and offers an explicit confirmed restart of the full workflow.
@@ -1197,16 +1213,16 @@ or sends it under Live delivery. Automatic preparation is scheduled only for a L
 When that handoff opens an already-reviewed clean commit, its durable adoption record pins the PR.
 The record must belong to the bound session, match its exact known repository root, and have been
 adopted after gate entry, so an older PR or one from a nested checkout is never claimed.
-After the handoff turn settles, unchanged repository evidence advances the gate to a fresh Inspector
+After the handoff turn settles, unchanged repository evidence advances the gate to a fresh GitHub Inspector
 observation without spending another Persona round. If PR preparation changed the head, the normal
 full resubmission requirement still applies. The durable adoption also preserves the workflow's
 Shipping veto across a daemon or SDK-session restart before the gate has pinned the PR key.
-**Recheck Inspector** only reevaluates the current durable observation and remains waiting until
-Inspector's normal sweep has seen a new head.
+**Recheck GitHub Inspector** only reevaluates the current durable observation and remains waiting until
+GitHub Inspector's normal sweep has seen a new head.
 
 Gate summaries travel on the existing workflow-run SSE upsert. Finding bodies and full audit
 state stay on the selected run's HTTP detail, so the browser adds no polling. Reset removes the
-session-bound workflow gate, submissions, packets, and events, but retains Inspector's adopted PR
+session-bound workflow gate, submissions, packets, and events, but retains GitHub Inspector's adopted PR
 and comment ledgers because those records outlive a session.
 
 ### Retention, history, exports, and workflow health
@@ -1216,7 +1232,7 @@ Workflow retention is configured under **Settings → Workflows**. It has two st
 1. Raw evidence is compacted from eligible completed or cancelled runs after 30 days by default.
    The diff, transcript, status paths, standards bodies, and delivered or refused packet text are
    removed. Their hashes, counts, truncation flags, HEAD, branch, timestamps, goals, decisions,
-   compacted constraints, immutable Persona snapshots, verdicts, Inspector fingerprints,
+   compacted constraints, immutable Persona snapshots, verdicts, GitHub Inspector fingerprints,
    delivery state, event history, and model-call records remain.
 2. A complete eligible run family can be removed after 180 days, but only when it is also outside
    the newest 1,000 completed or cancelled runs.
@@ -1250,12 +1266,12 @@ It is never displayed as zero, inferred from the fleet ledger, or estimated.
 
 Workflow health is read under **Settings → Workflows**, and refreshes on its own while that
 panel is open. It reports active runs, queued and running Persona calls, waiting, uncertain and
-delivered deliveries among retained run families, Inspector gates, retained run count, recovery
+delivered deliveries among retained run families, GitHub Inspector gates, retained run count, recovery
 time, retention time, the last retention error code, and the last compacted and deleted counts.
 It contains no prompt, diff, transcript, Persona guidance, model output, or delivery payload.
 
 Five of those counters lead as a **strip of tiles, in escalation order** - *Needs you*
-(uncertain deliveries), *Waiting*, *Inspector gates*, *Active*, *Delivered* - and each tile
+(uncertain deliveries), *Waiting*, *GitHub Inspector gates*, *Active*, *Delivered* - and each tile
 opens the nearest corresponding view in the
 [run list](#workflow-drafts-and-published-versions), applying a status filter where one exists.
 *Active* counts every run that has not finished - running, waiting and blocked alike - so it

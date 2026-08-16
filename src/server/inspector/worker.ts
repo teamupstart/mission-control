@@ -752,7 +752,7 @@ async function answerFollowUp(
   // answer forever.
   const body = [
     formatMarker({ id: randomUUID(), fingerprint: w.row.fingerprint, round: pr.round }),
-    "**⌕ Inspector**",
+    "**⌕ GitHub Inspector**",
     "",
     reply,
   ].join("\n");

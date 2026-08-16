@@ -501,6 +501,6 @@ test("a published version shows the exact instruction it froze", () => {
     personas: [],
     sessionActions: [action],
   }));
-  assert.match(gated, /Inspector, the fixed completion policy after End/);
+  assert.match(gated, /GitHub Inspector, the fixed completion policy after End/);
   assert.match(gated, /Set in Workflow\s+settings, not on the graph/);
 });

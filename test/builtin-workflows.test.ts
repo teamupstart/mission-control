@@ -203,7 +203,7 @@ test("new tasks default to the newest immutable No-Mistakes Review version", () 
   assert.equal(builtin.definition.id, builtinWorkflowId(NO_MISTAKES_REVIEW_WORKFLOW_SLUG));
   assert.equal(
     builtin.definition.currentVersionId,
-    builtinWorkflowVersionId(NO_MISTAKES_REVIEW_WORKFLOW_SLUG, 8),
+    builtinWorkflowVersionId(NO_MISTAKES_REVIEW_WORKFLOW_SLUG, 9),
   );
   assert.equal(
     builtin.definition.currentVersionId,
@@ -240,10 +240,10 @@ const shapeOf = (graph: WorkflowDraftGraph) => {
         member.kind === "persona" ? member.personaId : `check:${member.slot}`));
 };
 
-test("No-Mistakes Review ships the adopted graph, defaults and final gate", () => {
+test("No-Mistakes Review ships the adopted graph, defaults and local completion", () => {
   const builtin = noMistakesReview();
   assert.equal(builtin.definition.name, "No-Mistakes Review");
-  assert.equal(builtin.versions.length, 8);
+  assert.equal(builtin.versions.length, 9);
   assert.deepEqual(builtin.versions[0]!.bindingDefaults, {
     triggerMode: "manual",
     deliveryMode: "preview",
@@ -263,13 +263,7 @@ test("No-Mistakes Review ships the adopted graph, defaults and final gate", () =
     });
   }
   assert.deepEqual(builtin.definition.bindingDefaults, builtin.versions.at(-1)!.bindingDefaults);
-  assert.deepEqual(builtin.definition.completionPolicy, {
-    kind: "inspector",
-    onFindings: "inspector_only",
-    // `wait`, because the current version's own last stage opens the pull request. See the
-    // version 8 test below for why a gate that found none must not type a second handoff.
-    missingPrAction: "wait",
-  });
+  assert.deepEqual(builtin.definition.completionPolicy, { kind: "none" });
 
   // Version 1's shape, read from version 1 rather than from the draft: the draft is now
   // version 3, and a test that kept reading it would silently stop checking v1 the moment a
@@ -375,7 +369,7 @@ test("version 1 of No-Mistakes Review is frozen, asserted against a literal", ()
 
 test("version 5 adds automatic PR preparation after the Inspector-only repair policy", () => {
   const builtin = noMistakesReview();
-  assert.equal(builtin.versions.length, 8, "one workflow, eight versions");
+  assert.equal(builtin.versions.length, 9, "one workflow, nine versions");
   for (const priorVersion of builtin.versions.slice(0, 3)) {
     assert.deepEqual(priorVersion.completionPolicy, {
       kind: "inspector",
@@ -601,4 +595,87 @@ test("appending version 8 rewrote no earlier version", () => {
       `version ${index + 1} must keep the missing-PR policy it was published with`,
     );
   }
+});
+
+// ---- Version 9: local Code Quality Judge before verified publication ----
+
+const NO_MISTAKES_V9_NODES = [
+  ["nmr-session", "session", 60, 60],
+  ["nmr-check-typecheck", "check", 340, 60],
+  ["nmr-check-test", "check", 340, 230],
+  ["nmr-build-join", "all_pass", 620, 145],
+  ["nmr-intent-conformance", "persona", 900, 60],
+  ["nmr-code-risk", "persona", 1180, 60],
+  ["nmr-test-evidence", "persona", 1180, 230],
+  ["nmr-documentation", "persona", 1180, 400],
+  ["nmr-depth-join", "all_pass", 1460, 230],
+  ["nmr-code-quality-judge", "persona", 1740, 60],
+  ["nmr-pull-request", "session_action", 2020, 60],
+  ["nmr-end", "end", 2300, 60],
+];
+
+test("version 9 judges code quality before the verified PR action and completes locally", () => {
+  const builtin = noMistakesReview();
+  const version = builtin.versions[8]!;
+  assert.equal(version.id, builtinWorkflowVersionId("no-mistakes-review", 9));
+  assert.equal(version.version, 9);
+  assert.equal(version.sourceDraftRevision, 8);
+  assert.deepEqual(
+    version.graph.nodes.map((node) => [node.id, node.kind, node.position.x, node.position.y]),
+    NO_MISTAKES_V9_NODES,
+  );
+  assert.deepEqual(shapeOf(asDraft(version.graph)), [
+    ["check:typecheck", "check:test"],
+    ["builtin:intent-conformance-judge"],
+    [
+      "builtin:code-risk-reviewer",
+      "builtin:test-evidence-auditor",
+      "builtin:documentation-steward",
+    ],
+    ["builtin:code-quality-judge"],
+    ["action:builtin:pull-request"],
+  ]);
+
+  const quality = version.graph.nodes.find((node) => node.id === "nmr-code-quality-judge");
+  assert.ok(quality && quality.kind === "persona");
+  const shippedQuality = BUILTIN_PERSONAS.find((item) => item.id === "builtin:code-quality-judge")!;
+  assert.equal(quality.persona.sourcePersonaId, shippedQuality.id);
+  assert.equal(quality.persona.guidanceMarkdown, shippedQuality.guidanceMarkdown);
+
+  const pullRequest = version.graph.nodes.find((node) => node.id === "nmr-pull-request");
+  assert.ok(pullRequest && pullRequest.kind === "session_action");
+  const shippedAction = BUILTIN_SESSION_ACTIONS.find((item) => item.id === "builtin:pull-request")!;
+  assert.equal(pullRequest.action.promptMarkdown, shippedAction.promptMarkdown);
+  assert.deepEqual(pullRequest.action.completion, { kind: "pull_request" });
+
+  const route = (source: string, port: string) => version.graph.edges
+    .filter((edge) => edge.source === source && edge.sourcePort === port)
+    .map((edge) => `${edge.target}:${edge.targetPort}`);
+  assert.deepEqual(route("nmr-depth-join", "pass"), ["nmr-code-quality-judge:activate"]);
+  assert.deepEqual(route("nmr-code-quality-judge", "fail"), ["nmr-session:return_for_changes"]);
+  assert.deepEqual(route("nmr-code-quality-judge", "pass"), ["nmr-pull-request:activate"]);
+  assert.deepEqual(route("nmr-pull-request", "complete"), ["nmr-end:terminal"]);
+
+  assert.deepEqual(version.completionPolicy, { kind: "none" });
+  assert.equal(version.resumptionPolicy, "auto");
+  assert.deepEqual(version.bindingDefaults, builtin.versions[7]!.bindingDefaults);
+  assert.deepEqual(builtin.definition.draft, asDraft(version.graph));
+  assert.deepEqual(builtin.definition.completionPolicy, { kind: "none" });
+});
+
+test("appending version 9 rewrote no earlier version", () => {
+  const builtin = noMistakesReview();
+  assert.equal(builtin.versions.length, 9);
+  for (const [index, version] of builtin.versions.slice(0, 8).entries()) {
+    assert.equal(
+      version.graph.nodes.some((node) => node.id === "nmr-code-quality-judge"),
+      false,
+      `version ${index + 1} grew Code Quality Judge`,
+    );
+    assert.equal(version.completionPolicy.kind, "inspector", `version ${index + 1} lost its gate`);
+  }
+  assert.deepEqual(
+    builtin.versions[7]!.graph.nodes.map((node) => [node.id, node.kind, node.position.x, node.position.y]),
+    NO_MISTAKES_V8_NODES,
+  );
 });

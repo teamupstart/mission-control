@@ -381,7 +381,7 @@ test("a tile with a zero count still renders", () => {
   assert.equal(STATUS.inspectorGates, 0, "the fixture must keep a zero for this to test");
   const tiles = workflowStripLinks(STATUS);
   assert.ok(tiles.some((tile) => tile.id === "gates" && tile.count === 0));
-  assert.match(render(ANSWERED), /<b>0<\/b><span>Inspector gates<\/span>/);
+  assert.match(render(ANSWERED), /<b>0<\/b><span>GitHub Inspector gates<\/span>/);
 });
 
 // The one assertion that stops the strip drifting back into being a filter. `ConsoleStrip`'s

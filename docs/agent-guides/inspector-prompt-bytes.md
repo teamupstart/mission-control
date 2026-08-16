@@ -1,8 +1,8 @@
-# Inspector review prompt: the cost of a symlinked standards doc
+# GitHub Inspector review prompt: the cost of a symlinked standards doc
 
 Captured evidence for the fix in `fix(standards): load a symlinked repo doc once, not once
 per name`. `docs/foreman-inspector-token-usage.html` ("Waste and defects found", defect 1)
-measured that every Inspector review and every Foreman verify prompt on this repo carried
+measured that every GitHub Inspector review and every Foreman verify prompt on this repo carried
 24,576 bytes of byte-identical duplicate content. This is that claim, measured.
 
 `AGENTS.md` and `CLAUDE.md` are both in `ROOT_NAMES`, and this repo ships the second as a
@@ -57,7 +57,7 @@ root doc currently weighs:
 Both rows are real runs of this script; the first is preserved because it is the number the
 analysis reported and a reviewer comparing the two documents will otherwise think one of
 them is wrong. The duplicate is still ~40% of a small-PR review prompt, still paid on every
-Inspector review and every Foreman verify, and grows again the moment the root doc does.
+GitHub Inspector review and every Foreman verify, and grows again the moment the root doc does.
 
 `test/standards-prompt-bytes.test.ts` is the CI regression guard for the same property. It
 builds its own temp repository at `MAX_FILE_BYTES` rather than reading this checkout, so it

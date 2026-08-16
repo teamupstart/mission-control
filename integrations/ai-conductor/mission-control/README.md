@@ -63,26 +63,36 @@ Control controls. So:
   not running must not grow the memory of a process that runs for days. A batch being
   RETRIED is the exception: it sits at the front, and the ceiling is applied to the newest
   entries instead, so a delivery failure cannot discard the events it was carrying.
-- **Shutdown is bounded.** `stop()` is awaited by conductor's shutdown path, so the whole
-  drain runs under a 2s deadline and the in-flight request is aborted when it expires. A
-  daemon that accepts a connection and never answers costs the engine two seconds, not its
-  exit. Nothing is discarded to meet the deadline - the aborted request requeues its batch
-  exactly as a refused connection does.
-- **A failed delivery is retried, not discarded.** The batch goes back to the front of the
-  queue and is retried with backoff (up to 30s between attempts), so a daemon restart costs
-  latency rather than data. The buffer ceiling still applies to the requeue, so a daemon that
-  stays down costs bounded memory - it just spends it on the oldest events instead of
-  discarding them at the door. A `413` is not an exception to this: it says the BATCH is too
-  large, not that the events are unwanted, so the send size halves and the events are kept.
-  The only genuinely undeliverable case is a single event over the daemon's 4 MB ceiling,
-  which fits in no batch at any size; that one is dropped and counted, because retrying it
-  would block every event behind it for ever.
-- **Delivery is otherwise best-effort, and the limit of that is worth stating.** An event
-  this never delivers - the buffer ceiling dropped it, a conductor release added a kind this
-  build never subscribed to - is picked up by Mission Control's file tail, which is why the
-  tail is never switched off, only slowed down. **But the tail can only recover what conductor
-  wrote down.** For the 30 event kinds it does not persist, this plugin is the only durable
-  record, which is exactly why a failed batch is retried instead of trusted to the tail.
+- **A failed delivery is retried, not discarded, for as long as the plugin is running.** The
+  batch goes back to the front of the queue and is retried with backoff (up to 30s between
+  attempts), so a daemon restart costs latency rather than data. The buffer ceiling still
+  applies to the requeue, so a daemon that stays down costs bounded memory - it just spends it
+  on the oldest events instead of discarding them at the door. A `413` is not an exception to
+  this: it says the BATCH is too large, not that the events are unwanted, so the send size
+  halves and the events are kept. The only genuinely undeliverable case *while running* is a
+  single event over the daemon's 4 MB ceiling, which fits in no batch at any size; that one is
+  dropped and counted, because retrying it would block every event behind it for ever.
+- **Shutdown is bounded, and it is where "retried, not discarded" stops.** `stop()` is awaited
+  by conductor's shutdown path, so the whole drain runs under a 2s deadline and the in-flight
+  request is aborted when it expires. A daemon that accepts a connection and never answers
+  costs the engine two seconds, not its exit. Inside the deadline a failed batch is put back
+  and retried exactly as it would be at any other time. **When the deadline expires there is
+  no later.** `stop()` returns, conductor exits, and whatever is still buffered goes with the
+  process - the batch is in memory rather than on a retry schedule, and this plugin writes
+  nothing to disk. `stats().buffered` is the count that was lost. For the 44 kinds conductor
+  persists, Mission Control's file tail still has them and this is a delay; for the other 30
+  it is a real loss, bounded to the case where the daemon was unreachable for the two seconds
+  of the engine's exit.
+- **Delivery is otherwise best-effort for the events conductor persists, and only for those.**
+  An event of a persisted kind that this never delivers - the buffer ceiling dropped it, a
+  conductor release added a kind this build never subscribed to - is picked up by Mission
+  Control's file tail, which is why the tail is never switched off, only slowed down. For
+  those events, undelivered means late. **The tail can only recover what conductor wrote
+  down**, and it writes down 44 of its 74 event kinds. For the other 30 - gate verdicts,
+  halts, closeouts, the protected-artifact reseals - this plugin is the only durable record
+  there will ever be, so "best-effort" for them means exactly what it says: an event this
+  drops is gone. That is why a failed batch is retried rather than trusted to the tail, and
+  why the shutdown deadline above is the boundary worth knowing about rather than a footnote.
 
 ## Which run an event belongs to
 
@@ -143,8 +153,9 @@ daemon serving it.
 
 Re-copy the directory after a conductor upgrade. `harness_version` in `plugin.yml` pins the
 tested range and conductor refuses an out-of-range plugin loudly rather than starting one
-that half-works. New event kinds are not forwarded until this build's list is regenerated -
-until then Mission Control's file tail picks them up on its backfill sweep, which is a delay
-and not a loss.
+that half-works. New event kinds are not forwarded until this build's list is regenerated. For
+a kind conductor persists, the file tail picks it up on its backfill sweep meanwhile, which is
+a delay and not a loss; for a new kind it does *not* persist, nothing observes it at all until
+the list is regenerated. Re-copying promptly is what keeps that window short.
 
 The full picture is in `docs/pipelines.md` in the Mission Control repository.

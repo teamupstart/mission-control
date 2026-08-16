@@ -29,6 +29,12 @@ import { basename, dirname, join, sep } from "node:path";
 //    plugin is the only durable record there is, and a batch dropped because the daemon was
 //    restarting is gone for good. So a failed batch goes back to the front of the queue and
 //    is retried with backoff; what is still bounded is the BUFFER, not the attempt.
+//  - **Except at shutdown, which is where that stops.** `stop()` runs its drain under a
+//    deadline, and a deadline that expires has nowhere to put the batch: conductor is
+//    exiting, this plugin writes nothing to disk, and there is no next attempt. Those events
+//    are lost, and for the unpersisted kinds they are lost outright. That boundary is bought
+//    knowingly - the alternative is holding the engine's exit open on a daemon that may never
+//    answer - and it is stated in the README rather than left for a reader to find here.
 //
 // For everything the engine does write down, delivery remains best-effort in the way that
 // argument does cover: an event this never delivers - because the buffer ceiling dropped it,
@@ -73,9 +79,14 @@ const MAX_RETRY_MS = 30_000;
  *
  * A daemon that accepts the connection and then never answers leaves `fetch` pending for
  * ever, and `stop()` is called on conductor's shutdown path - so an unbounded await here is
- * this plugin holding the ENGINE open, which is the one thing it is not allowed to do. The
- * in-flight request is aborted when this expires; its batch goes back through the ordinary
- * retry path, so nothing is discarded to meet the deadline, it simply is not delivered.
+ * this plugin holding the ENGINE open, which is the one thing it is not allowed to do.
+ *
+ * What expiry costs is worth being exact about, because it is the plugin's only real loss.
+ * The in-flight request is aborted and its batch is requeued, which inside the deadline means
+ * another attempt - and past the deadline means nothing at all. `stop()` returns to a
+ * conductor that is exiting, and a buffer this process never wrote down dies with it. For
+ * everything conductor persists the file tail still has it; for the 30 kinds it does not, the
+ * events are gone. Two seconds is the price of the engine's exit not being ours to hold.
  */
 const SHUTDOWN_MS = 2_000;
 
@@ -86,10 +97,12 @@ const SHUTDOWN_MS = 2_000;
  * is what a copy of this directory knows about, for ever, and a conductor release that adds
  * a kind emits something no installed plugin asked for.
  *
- * That is a designed-for case and not a gap. The unsubscribed event still reaches
- * `events.jsonl`, and Mission Control's backfill sweep reads it - which is precisely why the
- * file tail is never switched off, only slowed down. Re-copying the directory after a
- * conductor upgrade is what shortens the delay for new kinds; nothing is lost until then.
+ * For a kind conductor PERSISTS that is a designed-for case and not a gap: the unsubscribed
+ * event still reaches `events.jsonl`, and Mission Control's backfill sweep reads it - which is
+ * precisely why the file tail is never switched off, only slowed down. For a new kind it does
+ * not persist, nothing observes it at all until this list is regenerated, because there is no
+ * file for the sweep to find it in. Re-copying the directory after a conductor upgrade is what
+ * closes both windows, and only the second one is a loss.
  */
 export const FORWARDED_EVENT_TYPES = Object.freeze([
   "acceptance_red",
@@ -376,7 +389,9 @@ export function createMissionControlVisualizer(options = {}) {
       warnOnce(
         "could not tell which conductor worktree these events belong to, so none are being " +
           "forwarded; set MISSION_CONTROL_WORKTREE, or MISSION_CONTROL_REPO. Mission " +
-          "Control still reads the engine's files, so nothing is lost - only delayed",
+          "Control still reads the engine's files, so everything conductor writes down is " +
+          "delayed rather than lost - but the kinds it does not write down are not observed " +
+          "at all until this is set",
       );
       return;
     }
@@ -586,10 +601,13 @@ export function createMissionControlVisualizer(options = {}) {
       // on this plugin, so the whole drain runs under one deadline - a daemon that accepts a
       // connection and never answers must cost the engine two seconds, not for ever.
       //
-      // Nothing is discarded to meet it. An expired wait aborts the open request, which
-      // rejects into the same catch a refused connection uses, which requeues the batch. The
-      // events are simply undelivered, which is the state the file tail already covers for
-      // everything conductor writes down.
+      // An expired wait aborts the open request, which rejects into the same catch a refused
+      // connection uses, which requeues the batch - so nothing is thrown away to meet the
+      // deadline. It is still where delivery ends: this returns into a conductor that is
+      // exiting, `stopped` has already closed the retry schedule, and nothing here writes to
+      // disk, so a buffer that is not empty when this returns is a buffer that is lost. The
+      // file tail covers everything conductor persists; the 30 kinds it does not persist are
+      // the ones this costs, and the README says so in those words.
       //
       // The in-flight request is settled FIRST, because `flush()` hands back the open one
       // rather than starting a second - so a loop that did not settle it would measure a

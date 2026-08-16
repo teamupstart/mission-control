@@ -315,13 +315,17 @@ export function refreshPipelineRepo(
 /** What one pass may be told, beyond which repository it is reading. */
 export interface PipelinePassOptions {
   /**
-   * Slugs whose event ledger must be read this pass, whatever their liveness says.
+   * The instant this pass is reckoned to happen at. Defaults to now.
    *
-   * How a pushed event becomes a projection update: the run that was pushed about is tailed
-   * NOW rather than on the next sweep. Everything else about the pass is unchanged, which is
-   * the whole design - the push says where to look, and the files still say what is true.
+   * The watcher's own clock, and the only reason it is injectable: both things this module
+   * decides on a timer - whether a live run's backfill sweep has come due, and whether the
+   * health line reads live or quiet - are measured in minutes, so a test that drove them by
+   * waiting would be either slow or a race. Every production caller omits it.
+   *
+   * It does not reach the provider, which stamps its own clock on a run's age from the files
+   * it just read. What is injectable here is when the WATCHER thinks it is.
    */
-  forceTail?: ReadonlySet<string>;
+  now?: number;
 }
 
 /**
@@ -335,15 +339,23 @@ const lastSweptAt = new Map<string, number>();
 /**
  * Whether this pass should read one run's event ledger.
  *
- * Three ways to yes, and the ordering is the demotion contract stated as code: an explicit
- * force (a push just arrived for it), no live ingest (the tail is primary, which is every
- * run on every machine today), or the sweep coming due (the backstop for events the
- * installed plugin never subscribed to).
+ * Two ways to yes, and they are the demotion contract stated as code: no live ingest (the
+ * tail is primary, which is every run on every machine today), or the sweep coming due - the
+ * backstop for events the installed plugin never subscribed to. A run this process has never
+ * swept takes the second one, so a pipeline that starts while its plugin is already pushing
+ * still gets its ledger read in full, once.
+ *
+ * **A push is deliberately not a third way.** It is the obvious one to add and it defeats the
+ * whole phase: the plugin flushes every 250ms, so "read the ledger of whatever was just
+ * pushed" is "read it on every flush", which is a FASTER cadence than the tick this exists to
+ * relax. It would also be redundant - a pushed event is in the ledger already, written by the
+ * ingest route before this pass was scheduled, so the tail would be re-reading a file to find
+ * what the daemon is holding. What a push buys is the state files being folded early, which
+ * needs no help from here; see `schedulePipelineRefresh`.
  */
 function tailPolicy(
   provider: PipelineProviderId,
   repoRoot: string,
-  forceTail: ReadonlySet<string> | undefined,
   now: number,
 ): (slug: string) => boolean {
   return (slug) => {
@@ -352,7 +364,6 @@ function tailPolicy(
       if (yes) lastSweptAt.set(key, now);
       return yes;
     };
-    if (forceTail?.has(slug)) return decided(true);
     if (!isPipelineIngestLive(provider, repoRoot, slug, now)) return decided(true);
     const swept = lastSweptAt.get(key);
     return decided(swept === undefined || now - swept >= BACKFILL_SWEEP_MS);
@@ -365,9 +376,10 @@ async function runPipelineRepoPass(
   repoRoot: string,
   options: PipelinePassOptions,
 ): Promise<void> {
+  const now = options.now ?? Date.now();
   const cursors = pipelineEventCursors(provider, repoRoot);
   const readOptions: PipelineReadOptions = {
-    shouldTail: tailPolicy(provider, repoRoot, options.forceTail, Date.now()),
+    shouldTail: tailPolicy(provider, repoRoot, now),
   };
   const reading = await PIPELINE_PROVIDERS[provider].readRepo(repoRoot, cursors, readOptions);
 
@@ -455,19 +467,21 @@ async function runPipelineRepoPass(
     daemon: reading.daemon,
     runs: reading.runs.length,
     halted,
-    lastReadAt: Date.now(),
+    lastReadAt: now,
     error: reading.error,
-    ingest: pipelineIngestState(provider, repoRoot),
+    ingest: pipelineIngestState(provider, repoRoot, now),
   });
 }
 
 /**
- * Runs a push has touched, waiting to be read. Keyed by repository, per pass.
+ * Repositories a push has touched, waiting to be read. One entry each, per pass.
+ *
+ * Repositories rather than runs, because a pass reads the whole repository's state files
+ * anyway and the one per-run decision it makes - whether to read that run's event ledger -
+ * belongs to `tailPolicy` and not to whoever was pushed about. Carrying the slugs here would
+ * be carrying an answer nothing is allowed to ask.
  */
-const pendingIngest = new Map<
-  string,
-  { provider: PipelineProviderId; repoRoot: string; slugs: Set<string> }
->();
+const pendingIngest = new Map<string, { provider: PipelineProviderId; repoRoot: string }>();
 
 /** The debounce that turns a burst of pushed events into one pass. */
 let ingestRefreshTimer: ReturnType<typeof setTimeout> | null = null;
@@ -482,20 +496,23 @@ let ingestRefreshTimer: ReturnType<typeof setTimeout> | null = null;
  * divergent answer to what a run's state is, which is the one thing `src/server/pipelines/`
  * is built not to have.
  *
- * So a push means "look at this run now". The pass that follows is the ordinary pass, over
- * the same files, producing the same `PipelineRun` - it just happens a tick early. That is
- * why nothing downstream of it needs to know whether ingest is live, and why an operator
- * with no plugin installed loses nothing.
+ * So a push means "fold this repository's state files now". The pass that follows is the
+ * ordinary pass, over the same files, producing the same `PipelineRun` - it just happens a
+ * tick early. That is why nothing downstream of it needs to know whether ingest is live, and
+ * why an operator with no plugin installed loses nothing.
+ *
+ * And it asks for nothing else. In particular it does NOT ask for the pushed run's event
+ * ledger to be read: those events are in the ledger already, put there by the route before
+ * this was called, and a tail per accepted batch would peg the file read to the plugin's
+ * 250ms flush - undoing, on exactly the runs it was meant for, the demotion this phase is.
+ * `tailPolicy` owns that decision and a push does not overrule it.
  */
 export function schedulePipelineRefresh(
   sink: PipelineProjectionSink,
   touched: readonly PipelineIngestTouch[],
 ): void {
-  for (const { provider, repoRoot, slug } of touched) {
-    const key = pipelineRepoKey(provider, repoRoot);
-    const held = pendingIngest.get(key) ?? { provider, repoRoot, slugs: new Set<string>() };
-    held.slugs.add(slug);
-    pendingIngest.set(key, held);
+  for (const { provider, repoRoot } of touched) {
+    pendingIngest.set(pipelineRepoKey(provider, repoRoot), { provider, repoRoot });
   }
   if (pendingIngest.size === 0 || ingestRefreshTimer !== null) return;
   ingestRefreshTimer = unref(
@@ -519,9 +536,9 @@ export async function drainPipelineRefreshes(sink: PipelineProjectionSink): Prom
   }
   const due = [...pendingIngest.values()];
   pendingIngest.clear();
-  for (const { provider, repoRoot, slugs } of due) {
+  for (const { provider, repoRoot } of due) {
     try {
-      await refreshPipelineRepo(sink, provider, repoRoot, { forceTail: slugs });
+      await refreshPipelineRepo(sink, provider, repoRoot);
     } catch (err) {
       // Same posture as the tick's own per-repository catch. A push is a notification, and
       // one repository that could not be read is not a reason to drop the others in the

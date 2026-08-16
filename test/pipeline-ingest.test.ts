@@ -43,6 +43,11 @@ process.env.AI_CONDUCTOR_REGISTRY = join(home, "no-such-registry.json");
 // The backfill sweep is the demotion's own backstop, and one of the tests below is about
 // what happens BEFORE it comes due. An hour is longer than this file's wall clock.
 process.env.MISSION_PIPELINE_BACKFILL_MS = String(60 * 60 * 1000);
+// And the liveness window is set LONGER than the sweep, which is the opposite of the shipped
+// ratio and is what makes the sweep reachable at all: a pass dated past a ten-minute window
+// would tail because the plugin looks quiet, and prove nothing about the backstop. Every test
+// that needs the sweep hands `refreshPipelineRepo` a clock rather than waiting for one.
+process.env.MISSION_PIPELINE_INGEST_LIVE_MS = String(6 * 60 * 60 * 1000);
 // The debounce is drained explicitly by every test that needs it, so this only decides how
 // long an undrained one would sit. Small, so nothing is left pending at exit.
 process.env.MISSION_PIPELINE_INGEST_REFRESH_MS = "5";
@@ -425,8 +430,7 @@ test("live ingest relaxes the ledger read and never the state files", async () =
   assert.equal(countPipelineEvents("ai-conductor", repo, "a-feature"), 1);
   assert.equal(isPipelineIngestLive("ai-conductor", repo, "a-feature"), false);
 
-  // A push makes the run live - and reads its ledger, because a forced pass is what a push
-  // buys. So after this the tail has seen everything on disk.
+  // A push makes the run live. What it does NOT do is read the ledger; see the test below.
   await push(line("a-feature", { type: "step_started", step: "build" }, 1));
   await drainPipelineRefreshes(registry);
   assert.equal(isPipelineIngestLive("ai-conductor", repo, "a-feature"), true);
@@ -459,16 +463,59 @@ test("live ingest relaxes the ledger read and never the state files", async () =
     "a live run's ledger should not be re-read on an ordinary tick",
   );
 
-  // The sweep coming due is what picks the unsubscribed event up. Reached by asking for the
-  // forced read a push would have caused, rather than by waiting out an hour.
-  await refreshPipelineRepo(registry, "ai-conductor", repo, {
-    forceTail: new Set(["a-feature"]),
-  });
+  // The sweep coming due is what picks the unsubscribed event up. Reached by dating the pass
+  // past the sweep interval rather than by waiting out an hour, and while the run is still
+  // live - so what this proves is the BACKSTOP firing, not the plugin being written off.
+  const swept = Date.now() + 90 * 60 * 1000;
+  assert.equal(isPipelineIngestLive("ai-conductor", repo, "a-feature", swept), true);
+  await refreshPipelineRepo(registry, "ai-conductor", repo, { now: swept });
   assert.equal(
     countPipelineEvents("ai-conductor", repo, "a-feature"),
     2,
     "the backfill sweep is what makes demotion safe; it must actually catch up",
   );
+});
+
+test("a run being pushed about does not have its ledger re-read per batch", async () => {
+  const { registry, push } = fixture();
+  seedConductorRun(repo, "a-feature", {
+    steps: { build: "in_progress" },
+    events: [{ type: "step_started", step: "build" }],
+  });
+  // One ordinary pass first, so the tail holds a cursor and the run has been swept once. This
+  // is the state every run reaches before its plugin ever delivers.
+  await refreshPipelineRepo(registry, "ai-conductor", repo);
+  assert.equal(countPipelineEvents("ai-conductor", repo, "a-feature"), 1);
+
+  // The engine appends a kind this build's plugin never subscribed to - conductor's bus has
+  // no wildcard - so this event exists ONLY in the file. It is the exact thing the sweep is
+  // for, and the exact thing that never arrives by push.
+  appendFileSync(
+    join(conductorWorktree(repo, "a-feature"), ".pipeline", "events.jsonl"),
+    `${JSON.stringify({ type: "a_kind_the_plugin_never_subscribed_to" })}\n`,
+  );
+
+  // Now the plugin flushes, repeatedly, the way it does during a busy step.
+  for (let seq = 1; seq <= 5; seq += 1) {
+    await push(line("a-feature", { type: "step_progress", n: seq }, seq));
+    await drainPipelineRefreshes(registry);
+  }
+
+  // Five flushes, five passes, and the ledger was not read once. That is the demotion: a push
+  // is not a licence to re-read a file, or the tail would run at the plugin's flush cadence -
+  // faster than the tick it was supposed to relax - for exactly the runs it was relaxed for.
+  const kinds = pipelineEvents("ai-conductor", repo, "a-feature").map((row) => row.kind);
+  assert.equal(kinds.filter((kind) => kind === "step_progress").length, 5);
+  assert.equal(
+    kinds.includes("a_kind_the_plugin_never_subscribed_to"),
+    false,
+    "a pushed batch must not force a tail; only the sweep may pick this up",
+  );
+  assert.equal(countPipelineEvents("ai-conductor", repo, "a-feature"), 6);
+
+  // And the state files were folded on every one of those passes, which is what the push is
+  // actually for. Nothing here is an argument for reading the run less.
+  assert.equal(registry.listPipelineRuns()[0]?.slug, "a-feature");
 });
 
 test("a quiet plugin puts the tail straight back on its ordinary cadence", async () => {
@@ -480,8 +527,9 @@ test("a quiet plugin puts the tail straight back on its ordinary cadence", async
   assert.equal(isPipelineIngestLive("ai-conductor", repo, "a-feature"), true);
 
   // Long enough after the last push that the window has closed. Read with an explicit clock
-  // rather than by waiting, because the window is measured in minutes on purpose.
-  const later = Date.now() + 60 * 60 * 1000;
+  // rather than by waiting, because the window is measured in minutes on purpose - and in
+  // hours in this file, where it is set wide so the sweep is reachable underneath it.
+  const later = Date.now() + 7 * 60 * 60 * 1000;
   assert.equal(pipelineIngestState("ai-conductor", repo, later), "quiet");
   assert.equal(isPipelineIngestLive("ai-conductor", repo, "a-feature", later), false);
   // `quiet` and `never` are different claims, and the difference is the whole diagnostic

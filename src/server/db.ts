@@ -2301,11 +2301,13 @@ export function openDb(): DatabaseSync {
     -- The pipeline event ledger: every engine event Mission Control has OBSERVED, from
     -- whichever path observed it first.
     --
-    -- Append-only, and that is the whole of its write contract: a row is inserted or it is
-    -- ignored, never updated and never re-keyed. Rows are retired only with the run they
-    -- belong to - a worktree the engine tore down, or a repository whose consent was
-    -- withdrawn - plus a per-run cap, so the table is bounded by the runs that still exist
-    -- rather than by how long the daemon has been up.
+    -- Append-only, and the write contract is exact about what that allows: a row's identity,
+    -- its ordinal and its body are written once and never rewritten. The single mutation is
+    -- also_seq below - the SECOND path to see an event stamping its own coordinate on the row
+    -- the first one wrote, NULL to a value, once. That records an observation; it does not
+    -- edit an event. Rows are retired only with the run they belong to - a worktree the engine
+    -- tore down, or a repository whose consent was withdrawn - plus a per-run cap, so the table
+    -- is bounded by the runs that still exist rather than by how long the daemon has been up.
     --
     -- Two writers reach it and they see the same events by two different routes: the file
     -- tail reads each worktree's events.jsonl, and the visualizer plugin pushes over
@@ -2344,6 +2346,29 @@ export function openDb(): DatabaseSync {
       -- plugin. Kept because it is the producer's own ordering evidence and lets a gap be
       -- noticed; never a key, for the reason seq states.
       producer_seq INTEGER,
+      -- The OTHER path's coordinate for the same event, once it has seen it, and NULL until
+      -- then. Written once, by convergence, and never changed again.
+      --
+      -- It is what makes a repeated event survive. Conductor stamps no sequence number, so two
+      -- genuine occurrences of one record - a step_started for a step that was retried, a
+      -- gate_verdict on a second attempt - are byte-identical and hash alike. Convergence on
+      -- the fingerprint ALONE therefore cannot tell "the other path is describing the event I
+      -- already have" from "this happened twice", and the ledger used to answer the second by
+      -- discarding it. For the 30 kinds conductor never persists this is the only record there
+      -- is, so that answer traded away the exact thing the table exists for.
+      --
+      -- With this column the question is answerable: an event converges onto the oldest row
+      -- with its fingerprint that the other path wrote and this path has not yet claimed, and
+      -- when there is no such row it is a new occurrence and gets a row of its own. Both paths
+      -- see occurrences in order, so the Nth from one lands on the Nth from the other however
+      -- they interleave, and neither has to remember anything between batches.
+      --
+      -- What it costs is stated rather than hidden: a source re-offering an event under a NEW
+      -- coordinate - a rewritten events.jsonl whose lines have shifted - is no longer
+      -- recognised, and stores a second row for one event. That is the trade taken on purpose.
+      -- A duplicate row here is a diagnostic wart and nothing derives from it; a dropped event
+      -- is gone.
+      also_seq     INTEGER,
       -- sha256 of the record body with its keys in a stable order. The identity of an EVENT
       -- as against the identity of an observation of one, and therefore what makes the two
       -- paths converge on a single row.
@@ -2355,10 +2380,14 @@ export function openDb(): DatabaseSync {
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_pipeline_events_key
       ON pipeline_events(provider, repo_root, slug, seq);
-    -- One row per event, however many times it is observed. Unique alongside the key above,
-    -- so a plain INSERT OR IGNORE satisfies both without naming a conflict target.
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_pipeline_events_identity
-      ON pipeline_events(provider, repo_root, slug, fingerprint);
+    -- One row per OBSERVATION a path has already recorded: the same path offering the same
+    -- event under the same coordinate again cannot mint a second row. The convergence above
+    -- is decided in appendPipelineEvents because it needs a claim rather than a comparison;
+    -- this index is the backstop under it, so a bug there degrades to an ignored insert rather
+    -- than to a ledger that says one event happened twice. Unique alongside the key, so a
+    -- plain INSERT OR IGNORE still answers to both without naming a conflict target.
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_pipeline_events_observation
+      ON pipeline_events(provider, repo_root, slug, source, fingerprint, producer_seq);
   `);
   db.exec(inFlightIndexSql());
   migrate(db);
@@ -2393,6 +2422,18 @@ function migrate(d: DatabaseSync): void {
   // ledger rather than trusting a figure accumulated by a build that could not tell a
   // replaced ledger from an appended one.
   addColumn(d, "pipeline_runs", "events_identity", "TEXT NOT NULL DEFAULT ''");
+
+  // The other path's coordinate for an event this one already recorded. Nullable with no
+  // default, which is exact for every existing row: a build without this column recorded no
+  // second observation, so "the other path has not been seen here" is the truth about all of
+  // them - and it leaves each of those rows claimable, which is what lets a ledger written by
+  // that build converge normally from the next pass on.
+  addColumn(d, "pipeline_events", "also_seq", "INTEGER");
+  // And the index that used to make a repeated event impossible. Dropped rather than left
+  // beside its replacement: while it exists, the second occurrence of a byte-identical event
+  // is still refused by SQLite before `appendPipelineEvents` can store it, so an upgraded
+  // database would keep the defect the column above exists to fix.
+  d.exec(`DROP INDEX IF EXISTS idx_pipeline_events_identity`);
 
   // An embedded driver can be relaunched from `status` plus `agent_session_id`, but those
   // facts cannot say whether the old process died in the middle of a turn. Existing rows
@@ -5338,6 +5379,14 @@ export interface PipelineEventRow {
   ts: string | null;
   source: PipelineEventSource;
   producerSeq: number | null;
+  /**
+   * The other path's coordinate, once it has seen this event, and null until then.
+   *
+   * The honest answer to "did both paths see this one", which `source` cannot give: null on a
+   * pushed event means a kind conductor never wrote to a file, and null on a tailed event
+   * means one the plugin never delivered.
+   */
+  alsoSeq: number | null;
   body: Record<string, unknown>;
   receivedAt: number;
 }
@@ -5357,11 +5406,12 @@ export interface PipelineEventRow {
  * long the writer had been holding it, are facts about the observation.
  *
  * The cost is stated rather than hidden: two events in one run that are byte-identical once
- * these are removed - a `step_started` for a step that was retried, say - collapse into one
- * row. That is a diagnostic row, never a number: nothing in the projection is derived from
- * this table, so the collapse cannot reach a figure an operator reads. If conductor ever
- * stamps a sequence number on persisted events (proposed alongside the visualizer wiring
- * upstream), this becomes exact and the list can go.
+ * these are removed - a `step_started` for a step that was retried, say - are one fingerprint.
+ * That is why the fingerprint is not the whole of convergence. `also_seq` carries the rest,
+ * so a repeat is kept as its own row instead of being read as an event already stored; see
+ * `appendPipelineEvents`. If conductor ever stamps a sequence number on persisted events
+ * (proposed alongside the visualizer wiring upstream), the identity becomes exact by itself
+ * and both this list and the claim can go.
  */
 const OBSERVATION_ONLY_FIELDS = ["ts", "activeInterval", "observedIntervals"] as const;
 
@@ -5397,10 +5447,26 @@ function pipelineEventFingerprint(body: Record<string, unknown>): string {
 /**
  * Append what one path observed of one run, and say how much of it was new.
  *
- * `INSERT OR IGNORE` rather than a named `ON CONFLICT` target, deliberately: two UNIQUE
- * indexes have to hold at once - the key, and the event identity - and a bare ignore is the
- * only form that answers to both. An ignored row does not consume an ordinal, so `seq` stays
- * gapless and means "the Nth distinct event Mission Control saw for this run".
+ * Every event takes one of three outcomes, decided in this order:
+ *
+ *  1. **This path has already recorded it**, under this very coordinate - a re-read of a
+ *     replaced `events.jsonl` from byte zero, or a batch the plugin re-sent after a failed
+ *     delivery. Nothing is stored and nothing is claimed.
+ *  2. **The other path recorded it and this one had not been counted.** The oldest such row
+ *     is claimed by stamping this coordinate into `also_seq`. One event, one row, seen twice.
+ *  3. **Otherwise it is an occurrence nobody has recorded**, and it gets a row.
+ *
+ * Rule 2 is what keeps convergence exact while rule 3 keeps a REPEAT. Those two pull against
+ * each other - conductor stamps no sequence number, so a retried step emits a record
+ * byte-identical to its first attempt - and a fingerprint comparison alone has to answer both
+ * with one verdict. Claiming is what separates them: a row may be converged onto once, so the
+ * second occurrence finds nothing to claim and is stored. See `also_seq` in the DDL.
+ *
+ * An event that converges does not consume an ordinal, so `seq` stays gapless and means "the
+ * Nth distinct occurrence Mission Control has recorded for this run". `INSERT OR IGNORE`
+ * rather than a named `ON CONFLICT` target, deliberately: two UNIQUE indexes have to hold at
+ * once - the key, and the observation - and a bare ignore is the only form that answers to
+ * both.
  *
  * One transaction for the batch, because a first pass over an existing ledger is up to a few
  * thousand rows and a commit each would be a few thousand fsyncs.
@@ -5427,12 +5493,54 @@ export function appendPipelineEvents(
     let next = Number(head?.top ?? 0);
     const insert = d.prepare(
       `INSERT OR IGNORE INTO pipeline_events
-         (provider, repo_root, slug, seq, kind, ts, source, producer_seq, fingerprint, body,
-          received_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (provider, repo_root, slug, seq, kind, ts, source, producer_seq, also_seq, fingerprint,
+          body, received_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)`,
+    );
+    /** Rule 1: this path's own coordinate for this event is already on a row. */
+    const recorded = d.prepare(
+      `SELECT 1 AS hit FROM pipeline_events
+        WHERE provider = ? AND repo_root = ? AND slug = ? AND fingerprint = ?
+          AND (CASE WHEN source = ? THEN producer_seq ELSE also_seq END) = ?
+        LIMIT 1`,
+    );
+    /** Rule 1 for a producer that offered no coordinate at all - see below. */
+    const anyRow = d.prepare(
+      `SELECT 1 AS hit FROM pipeline_events
+        WHERE provider = ? AND repo_root = ? AND slug = ? AND fingerprint = ? LIMIT 1`,
+    );
+    /** Rule 2: the oldest occurrence the other path recorded and this one has not claimed. */
+    const claimable = d.prepare(
+      `SELECT seq FROM pipeline_events
+        WHERE provider = ? AND repo_root = ? AND slug = ? AND fingerprint = ?
+          AND source <> ? AND also_seq IS NULL
+        ORDER BY seq LIMIT 1`,
+    );
+    const claim = d.prepare(
+      `UPDATE pipeline_events SET also_seq = ?
+        WHERE provider = ? AND repo_root = ? AND slug = ? AND seq = ?`,
     );
     let stored = 0;
     for (const event of events) {
+      const fingerprint = pipelineEventFingerprint(event.body);
+      const at = event.producerSeq;
+      if (at === null) {
+        // No coordinate, so this path cannot tell its own repeat from its own re-offer, and
+        // converging on the fingerprint alone is the only honest answer left - which is what
+        // every observation did before repeats were kept. Neither producer here is in this
+        // case: the tail's coordinate is a byte offset and the plugin's envelope requires a
+        // `seq`, so this is the branch for a producer that has not been written yet.
+        if (anyRow.get(provider, repoRoot, slug, fingerprint)) continue;
+      } else {
+        if (recorded.get(provider, repoRoot, slug, fingerprint, source, at)) continue;
+        const row = claimable.get(provider, repoRoot, slug, fingerprint, source) as unknown as
+          | { seq: number }
+          | undefined;
+        if (row) {
+          claim.run(at, provider, repoRoot, slug, Number(row.seq));
+          continue;
+        }
+      }
       const result = insert.run(
         provider,
         repoRoot,
@@ -5441,8 +5549,8 @@ export function appendPipelineEvents(
         event.kind && event.kind !== "" ? event.kind : "unknown",
         event.ts,
         source,
-        event.producerSeq,
-        pipelineEventFingerprint(event.body),
+        at,
+        fingerprint,
         JSON.stringify(event.body),
         now,
       );
@@ -5480,7 +5588,7 @@ export function pipelineEvents(
 ): PipelineEventRow[] {
   const rows = openDb()
     .prepare(
-      `SELECT seq, kind, ts, source, producer_seq, body, received_at
+      `SELECT seq, kind, ts, source, producer_seq, also_seq, body, received_at
          FROM pipeline_events
         WHERE provider = ? AND repo_root = ? AND slug = ?
         ORDER BY seq DESC LIMIT ?`,
@@ -5491,6 +5599,7 @@ export function pipelineEvents(
     ts: string | null;
     source: string;
     producer_seq: number | null;
+    also_seq: number | null;
     body: string;
     received_at: number;
   }>;
@@ -5510,6 +5619,7 @@ export function pipelineEvents(
       ts: row.ts,
       source: row.source === "ingest" ? "ingest" : "tail",
       producerSeq: row.producer_seq,
+      alsoSeq: row.also_seq,
       body,
       receivedAt: row.received_at,
     });

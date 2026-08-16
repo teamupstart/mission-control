@@ -141,8 +141,17 @@ are in the engine rather than in caution:
 
 So the file tail is never switched off. What live ingest changes is its **cadence**: while
 events are arriving for a run, its event ledger is read on a slow backfill sweep instead of
-on every tick, and a push reads it immediately. Everything else - the step statuses, the
-`HALT` marker, `DONE`, `.daemon/` - is read on every pass regardless.
+on every tick. Everything else - the step statuses, the `HALT` marker, `DONE`, `.daemon/` -
+is read on every pass regardless.
+
+A push does not lift that. It schedules a **pass**, so the state files are folded a tick
+early and the dashboard moves at once; whether that pass also reads the run's `events.jsonl`
+is the demotion policy's call and nobody else's. Two reasons, and the second is the one that
+matters: the pushed events are already in the ledger, written by the route before the pass
+was scheduled, so tailing on their account would re-read a file to find what the daemon is
+already holding - and the plugin flushes every 250ms, so "read the ledger of whatever was
+just pushed" is "read it several times a second", which is a *faster* cadence than the tick
+this was meant to relax, on precisely the runs it was relaxed for.
 
 ### The route
 
@@ -198,8 +207,10 @@ the daemon is single-threaded.
 ### The ledger
 
 `pipeline_events` records every engine event Mission Control has observed, from whichever
-path observed it first. It is append-only: a row is inserted or ignored, never updated and
-never re-keyed.
+path observed it first. It is append-only: a row's identity, its ordinal and its body are
+written once and never rewritten. The single mutation is convergence - the second path to see
+an event stamps its own coordinate into `also_seq`, null to a value, once - which records an
+observation rather than editing an event.
 
 It is the only thing this integration stores that is *not* re-derivable from the engine's
 files, and that is exactly why it exists - conductor's daemon-scope events reach `daemon.log`
@@ -213,10 +224,19 @@ Two details are worth knowing before reading the table:
   number on anything. Keying on a producer's number would mean one space where two unrelated
   ones were being written - so a pushed event whose counter happened to equal an old byte
   offset would be dropped as a duplicate. What each producer said is kept beside the row.
-- **Convergence is by event, not by number.** A `fingerprint` over the record with its keys
-  sorted is what makes one event one row however many times it is seen. Two observations that
-  hash apart cost one extra row and nothing else, because nothing in the projection is
-  derived from this table.
+- **Convergence is by event, not by number - and it is claimed, not compared.** A
+  `fingerprint` over the record with its keys sorted is what lets two paths recognise one
+  event. It cannot be the whole answer, because conductor stamps no sequence number: a step
+  that is retried emits a record byte-identical to its first attempt, so "same fingerprint"
+  and "same event" are not the same question. An arriving event therefore converges onto the
+  oldest row with its fingerprint that the *other* path wrote and this one has not claimed;
+  when there is none, it is a new occurrence and gets its own row. Both paths see occurrences
+  in order, so the Nth from one lands on the Nth from the other however they interleave.
+  What this gives up is named: a path re-offering an event under a *new* coordinate - a
+  rewritten `events.jsonl` whose lines shifted - stores a second row for one event. A
+  duplicate row costs nothing, because nothing in the projection is derived from this table;
+  a dropped event is the one thing that cannot be recovered, and for the 30 kinds conductor
+  never writes down there is nowhere to recover it from.
 
 Retention: a run's events are retired with the run - a worktree the engine tore down, or a
 repository whose consent was withdrawn - plus a cap of 2000 events per run, newest kept. The
@@ -252,7 +272,7 @@ The Settings health line says which of the three states a repository is in:
 | --- | --- |
 | `· file tail` | No plugin has ever pushed here. The shipped state, and the permanent one for anyone who has not installed it. |
 | `· live events` | Events are arriving now, so the tail has relaxed to its backfill sweep. |
-| `· file tail (plugin quiet)` | The plugin has delivered here before and has stopped. Nothing is lost - but this is also what a revoked token or a crashed engine looks like, which is why it does not read as "never". |
+| `· file tail (plugin quiet)` | The plugin has delivered here before and has stopped. The tail is back on its ordinary cadence and picks up everything conductor wrote down - which is 44 of its 74 event kinds; anything the plugin did not deliver from the other 30 was never written anywhere and is not recoverable. This is also what a revoked token or a crashed engine looks like, which is why it does not read as "never". |
 
 ## Configuration
 
@@ -263,7 +283,7 @@ The Settings health line says which of the three states a repository is in:
 | `MISSION_PIPELINE_PROBE_TTL_MS` | `30000` | How long a cached engine probe answers the Settings route before it is re-run. Floored at `1000`. |
 | `MISSION_PIPELINE_INGEST_LIVE_MS` | `600000` | How long after a pushed event a run still counts as live. Ten minutes because conductor emits at step boundaries and a build or a test suite runs for many of them - a shorter window would read every long step as "the plugin stopped". Floored at `1000`. |
 | `MISSION_PIPELINE_BACKFILL_MS` | `60000` | How long a live run may go without a full event-ledger read. The backstop that makes demotion safe: it is what picks up events the installed plugin never subscribed to. Floored at `1000`. |
-| `MISSION_PIPELINE_INGEST_REFRESH_MS` | `150` | How long a burst of pushed events coalesces before the runs it named are read. |
+| `MISSION_PIPELINE_INGEST_REFRESH_MS` | `150` | How long a burst of pushed events coalesces before the repositories it named have their state files folded. |
 | `AI_CONDUCTOR_REGISTRY` | `~/.ai-conductor/registry.json` | Read **bare**, without a `MISSION_` prefix, because it is the variable the engine itself reads - a machine already configured for conductor needs nothing new. Names the file, not its directory. |
 
 Consent itself is stored in the daemon's database (`app_config`, key `pipelines`), alongside

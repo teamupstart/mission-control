@@ -150,9 +150,16 @@ Persisted ID tuples are append-only. Never rename, reorder, or reuse values. Thi
   offset into `events.jsonl` and a counter of the plugin's own - because conductor stamps no
   sequence number on anything. Keying on a producer's number would collapse two spaces into
   one and silently drop a pushed event whose counter matched an old byte offset. Convergence
-  is by `fingerprint` (the record with its keys sorted, hashed), never by the number. Nothing
-  in the projection is derived from this table, which is what keeps a duplicate row a wart
-  rather than a wrong figure. See [Pipelines](../pipelines.md#the-ledger)
+  is by `fingerprint` (the record with its keys sorted, hashed), never by the number - and it
+  is CLAIMED rather than compared: an event converges onto the oldest row with its fingerprint
+  that the other path wrote and this one has not claimed, stamping its coordinate into
+  `also_seq`, and gets a row of its own when there is none. Do not reduce that to a unique
+  index over the fingerprint. It reads as the same rule and is not: conductor stamps no
+  sequence number, so a retried step emits a byte-identical record, and an index cannot tell a
+  second occurrence from a second observation - it refuses the occurrence, which for the 30
+  kinds conductor never persists deletes the only record that existed. Nothing in the
+  projection is derived from this table, which is what makes a duplicate row a wart and a
+  dropped event the only real failure. See [Pipelines](../pipelines.md#the-ledger)
 - The pipeline ingest envelope (`ConductorIngestEnvelopeSchema` in `src/shared/protocol.ts`) -
   `{ repo, worktree, slug, seq, event }`, posted to `POST /ingest/conductor`. FROZEN, and
   evolvable only by appending optional fields. The producer is an artifact this repository

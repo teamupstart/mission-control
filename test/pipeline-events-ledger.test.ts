@@ -138,11 +138,69 @@ test("every column of the ledger's key is NOT NULL", () => {
     assert.ok(column, `pipeline_events is missing ${key}`);
     assert.equal(column.notnull, 1, `${key} sits under a UNIQUE index and must be NOT NULL`);
   }
-  // And the two that are deliberately nullable, because absence is a real answer for both:
-  // a record may carry no instant, and the tail's own coordinate is not the plugin's.
-  for (const nullable of ["ts", "producer_seq"]) {
+  // And the three that are deliberately nullable, because absence is a real answer for each:
+  // a record may carry no instant, the tail's own coordinate is not the plugin's, and until
+  // the other path sees an event there is no second coordinate to record.
+  for (const nullable of ["ts", "producer_seq", "also_seq"]) {
     assert.equal(columns.find((c) => c.name === nullable)?.notnull, 0);
   }
+});
+
+test("a repeated event is kept as its own row, and each occurrence still converges", () => {
+  clear();
+  // The case a fingerprint cannot answer alone. Conductor stamps no sequence number, so a
+  // step that is retried emits a record byte-identical to its first attempt - and for the 30
+  // kinds it never writes to a file, this ledger is the only place either one exists. A
+  // convergence rule that read the second as "already stored" would delete it.
+  const body = event("gate_verdict", { step: "build", satisfied: false });
+  const first = appendPipelineEvents("ai-conductor", REPO, SLUG, "ingest", [
+    { kind: "gate_verdict", ts: null, producerSeq: 11, body },
+  ]);
+  const second = appendPipelineEvents("ai-conductor", REPO, SLUG, "ingest", [
+    { kind: "gate_verdict", ts: null, producerSeq: 12, body: { ...body } },
+  ]);
+  assert.equal(first, 1);
+  assert.equal(second, 1, "the same record under a new coordinate is a second occurrence");
+  assert.equal(countPipelineEvents("ai-conductor", REPO, SLUG), 2);
+
+  // And the file tail, arriving later with the same two events under ITS coordinates, still
+  // converges onto them one for one rather than doubling the run's history.
+  const tailed = appendPipelineEvents("ai-conductor", REPO, SLUG, "tail", [
+    { kind: "gate_verdict", ts: null, producerSeq: 4096, body: { ...body } },
+    { kind: "gate_verdict", ts: null, producerSeq: 8192, body: { ...body } },
+  ]);
+  assert.equal(tailed, 0, "two observations of two events are still two rows");
+  assert.equal(countPipelineEvents("ai-conductor", REPO, SLUG), 2);
+  // Each row now carries both paths' coordinates, oldest claimed first - which is what makes
+  // the pairing exact rather than merely equal in count.
+  assert.deepEqual(
+    pipelineEvents("ai-conductor", REPO, SLUG).map((r) => [r.seq, r.producerSeq, r.alsoSeq]),
+    [
+      [1, 11, 4096],
+      [2, 12, 8192],
+    ],
+  );
+});
+
+test("a path re-offering what it already recorded claims nothing and stores nothing", () => {
+  clear();
+  // The re-read: a worktree re-cut under the same slug gets a fresh ledger, and the tail reads
+  // it from byte zero and offers every record again. Those are the SAME observations, under
+  // the same coordinates, and must not become second occurrences.
+  const body = event("step_started", { step: "build" });
+  const twice = [
+    { kind: "step_started", ts: null, producerSeq: 0, body },
+    { kind: "step_started", ts: null, producerSeq: 64, body: { ...body } },
+  ];
+  assert.equal(appendPipelineEvents("ai-conductor", REPO, SLUG, "tail", twice), 2);
+  assert.equal(appendPipelineEvents("ai-conductor", REPO, SLUG, "tail", twice), 0);
+  assert.equal(countPipelineEvents("ai-conductor", REPO, SLUG), 2);
+  // Nothing was claimed either: a re-offer is not the other path arriving, so both rows are
+  // still open for the plugin to converge onto.
+  assert.deepEqual(
+    pipelineEvents("ai-conductor", REPO, SLUG).map((r) => r.alsoSeq),
+    [null, null],
+  );
 });
 
 test("appending assigns a gapless ordinal and stores the record verbatim", () => {
@@ -199,8 +257,12 @@ test("the same event observed by both paths is one row", () => {
   assert.equal(tailed, 0, "the file tail must not store an event the plugin already delivered");
   assert.equal(countPipelineEvents("ai-conductor", REPO, SLUG), 1);
   // And the row keeps the FIRST observation's provenance, which is the useful one: it says
-  // the plugin got there first.
-  assert.equal(pipelineEvents("ai-conductor", REPO, SLUG)[0]?.source, "ingest");
+  // the plugin got there first. The tail's coordinate lands beside it rather than replacing
+  // it, so the row records that both paths saw this event and what each called it.
+  const [row] = pipelineEvents("ai-conductor", REPO, SLUG);
+  assert.equal(row?.source, "ingest");
+  assert.equal(row?.producerSeq, 7);
+  assert.equal(row?.alsoSeq, 4096);
 });
 
 test("convergence does not depend on the key order the two paths happen to build", () => {

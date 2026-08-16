@@ -334,7 +334,9 @@ test("shutdown is bounded when the daemon accepts a connection and never answers
   // `stop()` is awaited by conductor's shutdown path, so an unbounded await here is this
   // plugin holding the ENGINE open. A hung daemon is the case that produces it: the socket
   // is accepted, so nothing errors and nothing times out on its own.
+  let attempts = 0;
   const fetchImpl = ((_url: unknown, init: unknown) => {
+    attempts += 1;
     const signal = (init as { signal?: AbortSignal }).signal;
     return new Promise<Response>((_resolve, reject) => {
       // Never answers. Only an abort ends it, which is what the deadline must produce.
@@ -361,6 +363,16 @@ test("shutdown is bounded when the daemon accepts a connection and never answers
   // rejects into the same catch a refused connection uses, which requeues.
   assert.equal(plugin.stats().buffered, 1);
   assert.equal(plugin.stats().dropped, 0);
+
+  // Kept, and not retried. This is the plugin's documented loss boundary, asserted here so it
+  // stays a boundary a reader can trust rather than a claim in a README: `stop()` returning
+  // is the end of delivery, the buffer is memory in a process that is exiting, and nothing
+  // here writes it down. Waited past two flush intervals, so a retry that WAS scheduled would
+  // have fired.
+  const attemptsAtStop = attempts;
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  assert.equal(attempts, attemptsAtStop, "stop() returning is the end of delivery");
+  assert.equal(plugin.stats().buffered, 1, "the batch is in memory, not on a schedule");
 });
 
 test("retrying cannot grow the buffer past its ceiling", async () => {
@@ -443,7 +455,11 @@ test("it forwards nothing rather than guessing which repository an event belongs
   assert.equal(calls.length, 0);
   assert.equal(warnings.length, 1);
   assert.match(warnings[0] ?? "", /could not tell which conductor worktree/);
-  assert.match(warnings[0] ?? "", /nothing is lost - only delayed/);
+  // And it says what this actually costs, in both halves. An operator who reads "nothing is
+  // lost" stops looking - which is right for the 44 kinds conductor writes down and wrong for
+  // the 30 it does not, where this plugin is the only record there would have been.
+  assert.match(warnings[0] ?? "", /delayed rather than lost/);
+  assert.match(warnings[0] ?? "", /not observed at all/);
 });
 
 test("identity resolves from the pin, the working directory, then the event", () => {

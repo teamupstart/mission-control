@@ -2242,7 +2242,7 @@ export function buildApp(
     // ordinary here (step names, branch names, commit subjects all reach this stream).
     if (Buffer.byteLength(body, "utf8") > MAX_INGEST_BYTES) return tooLarge();
     const { counts, touched } = ingestConductorEvents(body);
-    // Then read exactly the runs it named, a tick early. See `schedulePipelineRefresh`.
+    // Then fold the repositories it named, a tick early. See `schedulePipelineRefresh`.
     if (touched.length > 0) schedulePipelineRefresh(registry, touched);
     return c.json(counts);
   });

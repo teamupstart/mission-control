@@ -42,7 +42,8 @@ anywhere. It is still bounded and still consent-scoped: rows are retired with th
 describe and with the repository whose consent authorised writing them, plus a per-run cap.
 Nothing in the projection is derived from it - a run's group, steps, halt and cost all come
 from the engine's files - which is what keeps a duplicate row a diagnostic wart rather than a
-wrong figure. Its key is in
+wrong figure, and what settles every convergence question in favour of an extra row over a
+dropped event. Its key is in
 [Persisted identifiers](agent-guides/change-contracts.md#persisted-identifiers).
 
 `archive_capture_jobs` sits beside them and is a different kind of table again: local

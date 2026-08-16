@@ -105,7 +105,9 @@ test("native dispatch isolates concurrent work, cleans ownership, and reuses bot
   await expect(firstCard).toContainText("worktree-pools/");
   if (process.env.MC_E2E_EVIDENCE === "1") {
     mkdirSync(EVIDENCE, { recursive: true });
-    await firstCard.screenshot({ path: `${EVIDENCE}native-multi-repo-path.png` });
+    await firstCard.locator(".card-meta dd.mono").first().hover();
+    await expect(dashboard.locator(".tooltip")).toHaveText(first.worktreePath!);
+    await dashboard.screenshot({ path: `${EVIDENCE}native-multi-repo-path.png`, fullPage: true });
   }
 
   // A second live task in the primary repository must get a different slot. It stays active
@@ -169,6 +171,9 @@ test("native dispatch isolates concurrent work, cleans ownership, and reuses bot
   });
 
   if (process.env.MC_E2E_EVIDENCE === "1") {
+    const reusedCard = dashboard.locator("article.card", { hasText: reused.title });
+    await reusedCard.locator(".card-meta dd.mono").first().hover();
+    await expect(dashboard.locator(".tooltip")).toHaveText(reused.worktreePath!);
     await dashboard.screenshot({ path: `${EVIDENCE}native-reuse-with-concurrent-slot.png`, fullPage: true });
   }
 });

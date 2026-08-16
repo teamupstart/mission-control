@@ -124,16 +124,16 @@ an imported Persona's description stays empty.
 
 The five are written to compose, and they ship already composed: **No-Mistakes Review** is the
 built-in workflow below. Among its Personas, Intent Conformance Judge runs first as a cheap
-gate, then Code Risk Reviewer, Test Evidence Auditor, and Documentation Steward fan out behind
-an All-pass Join. Code Quality Judge runs once that deeper stage passes, immediately before the
-verified Pull Request action. None of them restates the engine's own review contract or output
-format, which every Persona prompt already carries, so editing your copy changes what that role
-judges, not how it replies.
+gate. Code Risk Reviewer and Code Quality Judge run together behind one All-pass Join. Test
+Evidence Auditor and Documentation Steward then run together behind another All-pass Join,
+immediately before the verified Pull Request action. None of them restates the engine's own
+review contract or output format, which every Persona prompt already carries, so editing your
+copy changes what that role judges, not how it replies.
 
 ### Built-in workflows
 
 One ready-made review workflow ships with the application: **No-Mistakes Review**. Versions 1
-through 8 are preserved for bindings that already pin them, and version 9 is current. There is
+through 9 are preserved for bindings that already pin them, and version 10 is current. There is
 nothing to author and nothing to import - it is in the Workflows tab of a fresh install,
 already published, and can be bound to a session immediately.
 
@@ -150,19 +150,18 @@ path version 2 does while preserving the deterministic stage in the graph. The
 [Command nodes](#command-nodes) section owns the rules for configured, unconfigured and unauthorized
 slots.
 
-Behind it are the first four built-in Personas wired the way they were written to compose. Intent
-Conformance Judge is stage 2, the cheap gate: there is no point spending three deeper reviews
-on a change that has already drifted from what was asked. Code Risk Reviewer, Test Evidence
-Auditor and Documentation Steward are stage 3, running **in parallel on the same submission**
-and aggregating into one combined repair packet at their All-pass Join. Every fail returns to
-the session for repair.
+Behind it are the five built-in Personas wired the way they were written to compose. Intent
+Conformance Judge is stage 2, the cheap gate: there is no point spending deeper reviews on a
+change that has already drifted from what was asked. In version 10, Code Risk Reviewer and Code
+Quality Judge are stage 3, running **in parallel on the same submission** and aggregating at an
+All-pass Join. Test Evidence Auditor and Documentation Steward are stage 4, also running in
+parallel and aggregating at their own All-pass Join. Every fail returns to the session for repair,
+and the Pull Request action does not run until both stages pass.
 
-**Version 9 adds Code Quality Judge as stage 4.** It runs after the parallel deep-review Join
-and before the Pull Request action. A failure returns a focused repair request through the same
-Workflow loop and no pull request action runs. A pass activates the verified publication action.
-Code Quality Judge is a normal tool-less Persona and judges the same immutable local evidence
+Code Quality Judge remains a normal tool-less Persona and judges the same immutable local evidence
 bundle as the other roles, including dirty and untracked work, intent, decisions, transcript,
-standards, and prior feedback.
+standards, and prior feedback. Version 9 introduced it as a singleton stage immediately before
+Pull Request; version 10 preserves that version and moves the judge alongside Code Risk Reviewer.
 
 **Version 8 added the built-in [Pull Request action](#pull-request-actions),
 after the reviews and before End.** That is a change of *where the pull request comes from*.
@@ -174,12 +173,13 @@ continuation captured. End still means the authored graph succeeded - and by the
 GitHub Inspector claims that success there is provably something for it to review. Because the graph
 cannot reach End without one, version 8's missing-PR policy is **wait**: a gate that found no
 pull request has met a state its own preparation would not fix, and typing a second handoff
-would ask for one the run already has. Version 9 preserves that verified publication contract,
-with Code Quality Judge immediately before the action.
+would ask for one the run already has. Versions 9 and 10 preserve that verified publication
+contract. Version 10 places the Test Evidence Auditor and Documentation Steward stage immediately
+before the action.
 
 A passed review in versions 1 through 8 is then gated on the
 [GitHub Inspector final gate](#inspector-final-gate) finding nothing on the pull request.
-Version 9 instead completes when its Pull Request action reaches End, so the default workflow
+Versions 9 and 10 instead complete when their Pull Request action reaches End, so the default workflow
 does not wait for optional remote review. GitHub Inspector remains independently available for
 reviewing pushed heads on GitHub and remains the source of exact-head proof used by Shipping.
 
@@ -222,12 +222,15 @@ stage; version 4 preserves that graph and changes only the immutable GitHub Insp
 policy; version 5 automatically prepares a missing pull request; version 6 makes Foreman
 complete the default trigger; version 7 changes only the immutable
 [repair-resumption policy](#repair-resumption) to `auto`; version 8 appends the Pull Request
-stage and sets its missing-PR policy to `wait`; and version 9 adds Code Quality Judge before
-that action and changes only the new version's completion policy to `none`. Every earlier version remains in the
+stage and sets its missing-PR policy to `wait`; version 9 adds Code Quality Judge before that
+action and changes only the new version's completion policy to `none`; and version 10 runs Code
+Risk Reviewer with Code Quality Judge in stage 3, then Test Evidence Auditor with Documentation
+Steward in stage 4. Every earlier version remains in the
 catalog and still resolves, so an existing binding keeps its pinned graph, policies, and
 binding defaults - including versions 1 through 6, which stay `manual` and still wait for you,
 and versions 1 through 7, none of which carries an action node or has its post-End handoff
-changed. Version 8 retains its GitHub Inspector gate unchanged. New bindings take version 9 because it is current. Adopting the newer version on an
+changed. Version 8 retains its GitHub Inspector gate unchanged. Version 9 retains its singleton
+Code Quality Judge stage unchanged. New bindings take version 10 because it is current. Adopting the newer version on an
 existing binding means creating a new binding, which is the same gesture adopting any newly
 published version already requires.
 
@@ -593,7 +596,7 @@ not. Delete asks for confirmation and cannot be undone.
 Bind a session to an exact published workflow version from the workflow history or from any
 fleet layout, then choose **Preview**. On a Cards card and in the Console and Board detail
 header the chip states what the session is armed with, naming the workflow and its version -
-**⌘ No-Mistakes Review v9**. It falls back to an offer, **＋ workflow**, in two cases: nothing is
+**⌘ No-Mistakes Review v10**. It falls back to an offer, **＋ workflow**, in two cases: nothing is
 bound at all, and the binding that exists is no longer `active` - `orphaned` after its session
 disappeared, or `paused` after the conversation changed. Those rows are not archived and the
 bind dialog still reattaches them, but neither will run when this session's work completes, so

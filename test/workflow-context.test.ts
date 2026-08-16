@@ -103,6 +103,57 @@ test("source fingerprints are deterministic and ignore compaction prose", () => 
     workflowContextFingerprint(base),
     workflowContextFingerprint({ ...base, primaryGoal: { ...base.primaryGoal, rawPrompt: "new goal" } }),
   );
+
+  const image = {
+    id: "img_evidence",
+    ordinal: 0,
+    displayName: "result.png",
+    caption: "The result is visible",
+    repositoryScope: "repo-01" as const,
+    mimeType: "image/png" as const,
+    bytes: 68,
+    sha256: "a".repeat(64),
+    availability: "retained" as const,
+    prunedAt: null,
+    createdAt: 1,
+  };
+  const withImage = {
+    ...base,
+    evidence: { ...base.evidence, images: [image], stagedImageGeneration: 1 },
+  };
+  const imageFingerprint = workflowContextFingerprint(withImage);
+  assert.equal(imageFingerprint, workflowContextFingerprint({
+    ...withImage,
+    evidence: {
+      ...withImage.evidence,
+      transcript: [{ role: "assistant" as const, content: "later transcript growth" }],
+    },
+  }));
+  assert.notEqual(imageFingerprint, workflowContextFingerprint({
+    ...withImage,
+    evidence: { ...withImage.evidence, images: [{ ...image, sha256: "b".repeat(64) }] },
+  }));
+  assert.notEqual(imageFingerprint, workflowContextFingerprint({
+    ...withImage,
+    evidence: { ...withImage.evidence, images: [{ ...image, caption: "A different claim" }] },
+  }));
+  assert.notEqual(imageFingerprint, workflowContextFingerprint({
+    ...withImage,
+    evidence: { ...withImage.evidence, images: [] },
+  }));
+  assert.notEqual(imageFingerprint, workflowContextFingerprint({
+    ...withImage,
+    evidence: { ...withImage.evidence, stagedImageGeneration: 2 },
+  }));
+
+  const matchingProbe = {
+    headSha: withImage.evidence.headSha,
+    workingTreeStatus: withImage.evidence.workingTreeStatus,
+    diffFingerprint: withImage.evidence.diffFingerprint,
+    stagedImageGeneration: 1,
+  };
+  assert.equal(probeMatchesEvidence(matchingProbe, withImage.evidence), true);
+  assert.equal(probeMatchesEvidence({ ...matchingProbe, stagedImageGeneration: 2 }, withImage.evidence), false);
 });
 
 test("resolved plan decisions preserve the reviewed plan and response", () => {

@@ -612,12 +612,36 @@ context, but its 45-second attempt cannot replace the raw evidence. An unparsabl
 one fresh 45-second attempt; invalid, timed-out, or unavailable compaction produces a
 deterministic visible fallback.
 
+A workflow-bound ship task whose published graph contains a Persona can register optional
+visual evidence before completion. The agent names an issued repository slot, a
+checkout-relative gitignored image, a stable client item id, and a required caption through
+`submit_workflow_evidence`. The daemon resolves the slot from the task, rejects paths outside
+that checkout and symlinked or non-image sources, and stages only bounded PNG, JPEG, static
+GIF, or WebP files. Browser submission accepts the same evidence shape through an opaque
+upload id; it never accepts the absolute upload path returned for chat compatibility.
+
+Submission creation reserves the applicable staged generation. A multi-repository completion
+copies an `all` image into every sibling submission and keeps a slot-scoped image in that
+repository's run. Inside the existing conversation capture lock, each reserved source is
+opened without following symlinks, re-sniffed, re-hashed, and copied to submission-owned
+storage before context compaction or Persona spend. A changed, missing, oversized, or invalid
+source blocks the whole run in `image_evidence_capture`. Normal repair rounds take only newly
+staged images; explicit unchanged confirmation revives the same submission and therefore the
+same immutable bytes.
+
 Persona prompts put the operator's intent, decisions, constraints, and acceptance criteria
 before repository evidence. Prior Persona feedback is labeled as non-human input and all
 captured evidence is fenced as untrusted data. A strict `pass` verdict requires approval
 details; a strict `fail` verdict requires concrete requested changes and evidence references.
 Malformed output, provider failures, and timeouts are infrastructure errors, never Persona
 fail verdicts.
+
+Every Persona on a submission receives the same ordered native image inputs and an untrusted
+manifest containing ids, captions, display names, scopes, MIME types, sizes, and digests, but
+no local paths. Prompt accounting includes both prompt bytes and raw image bytes. An image
+citation uses `kind: "image"`, names a current manifest id in `path`, omits `line`, and records
+the visual observation in `quote`; citations to any other image id are rejected as malformed
+model output.
 
 The durable engine records attempts and edge receipts, waits for all inputs at an all-pass
 Join, retries transient infrastructure failures with bounded backoff, and stops at the
@@ -639,7 +663,10 @@ are retried without duplicating receipts; missing immutable data fails visibly i
 falling back to a mutable draft. A disappearing session orphans its binding. A conversation
 clear pauses it. Reattachment is explicit and validates the harness and repository identity,
 then requires a fresh resubmit. Reset removes bindings, runs, submissions, attempts, receipts,
-captured context, and model-call metadata through the same session reset owner. Compact run
+captured context, retained image bodies, and model-call metadata through the same session reset
+owner. Raw-evidence retention keeps image metadata and digests while marking bodies pruned.
+Filesystem removal follows a durable cleanup ledger, so restart can finish an interrupted
+trash transition without deleting a referenced retained file. Compact run
 summaries update over the existing SSE stream, while detailed evidence and timelines are
 loaded on demand for a selected run or a bound Board tile. Cards, Console, and Board show the
 same workflow status. Run history pages use the updated-time cursor index, select the bounded

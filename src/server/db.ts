@@ -1055,6 +1055,8 @@ export function openDb(): DatabaseSync {
       mode                 TEXT NOT NULL,
       trigger_source       TEXT NOT NULL,
       trigger_key          TEXT NOT NULL,
+      evidence_group_key   TEXT NOT NULL DEFAULT '',
+      staged_image_generation INTEGER NOT NULL DEFAULT 0,
       evidence_fingerprint TEXT NOT NULL,
       context_json         TEXT NOT NULL,
       evidence_json        TEXT NOT NULL,
@@ -1071,6 +1073,94 @@ export function openDb(): DatabaseSync {
     -- database. It lives beside its ALTER, which is the house rule for exactly this reason.
     CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_submissions_trigger
       ON workflow_submissions(trigger_key);
+
+    -- Mutable, conversation-owned evidence remains separate from immutable submissions.
+    -- Filesystem locators are server-only and never enter context_json or API responses.
+    CREATE TABLE IF NOT EXISTS workflow_evidence_owners (
+      note_key              TEXT PRIMARY KEY,
+      generation            INTEGER NOT NULL DEFAULT 0,
+      all_generation        INTEGER NOT NULL DEFAULT 0,
+      updated_at            INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS workflow_evidence_scope_generations (
+      note_key              TEXT NOT NULL,
+      source_root           TEXT NOT NULL,
+      generation            INTEGER NOT NULL,
+      updated_at            INTEGER NOT NULL,
+      PRIMARY KEY(note_key, source_root)
+    );
+
+    CREATE TABLE IF NOT EXISTS workflow_evidence_staging (
+      id                    TEXT PRIMARY KEY,
+      note_key              TEXT NOT NULL,
+      client_item_id        TEXT NOT NULL,
+      source_kind           TEXT NOT NULL,
+      source_root           TEXT NOT NULL,
+      source_locator        TEXT NOT NULL,
+      display_name          TEXT NOT NULL,
+      caption               TEXT NOT NULL,
+      repository_scope      TEXT NOT NULL,
+      mime_type             TEXT NOT NULL,
+      bytes                 INTEGER NOT NULL,
+      sha256                TEXT NOT NULL,
+      generation            INTEGER NOT NULL,
+      state                 TEXT NOT NULL,
+      reserved_group_key    TEXT,
+      created_at            INTEGER NOT NULL,
+      updated_at            INTEGER NOT NULL,
+      UNIQUE(note_key, client_item_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_workflow_evidence_staging_owner
+      ON workflow_evidence_staging(note_key, state, generation, created_at, id);
+    CREATE INDEX IF NOT EXISTS idx_workflow_evidence_staging_reservation
+      ON workflow_evidence_staging(reserved_group_key, state);
+
+    CREATE TABLE IF NOT EXISTS workflow_evidence_reservations (
+      staging_id            TEXT NOT NULL,
+      submission_id         TEXT NOT NULL,
+      ordinal               INTEGER NOT NULL,
+      created_at            INTEGER NOT NULL,
+      PRIMARY KEY(staging_id, submission_id),
+      UNIQUE(submission_id, ordinal)
+    );
+    CREATE INDEX IF NOT EXISTS idx_workflow_evidence_reservations_submission
+      ON workflow_evidence_reservations(submission_id, ordinal);
+
+    CREATE TABLE IF NOT EXISTS workflow_submission_images (
+      id                    TEXT PRIMARY KEY,
+      submission_id         TEXT NOT NULL,
+      staging_id            TEXT NOT NULL,
+      ordinal               INTEGER NOT NULL,
+      display_name          TEXT NOT NULL,
+      caption               TEXT NOT NULL,
+      repository_scope      TEXT NOT NULL,
+      mime_type             TEXT NOT NULL,
+      bytes                 INTEGER NOT NULL,
+      sha256                TEXT NOT NULL,
+      storage_relative_path TEXT NOT NULL,
+      availability          TEXT NOT NULL,
+      pruned_at             INTEGER,
+      created_at            INTEGER NOT NULL,
+      UNIQUE(submission_id, ordinal),
+      UNIQUE(submission_id, staging_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_workflow_submission_images_submission
+      ON workflow_submission_images(submission_id, ordinal);
+    CREATE INDEX IF NOT EXISTS idx_workflow_submission_images_availability
+      ON workflow_submission_images(availability, created_at, id);
+
+    -- A database-first cleanup ledger makes every body deletion retryable after a crash.
+    CREATE TABLE IF NOT EXISTS workflow_image_cleanup (
+      id                    TEXT PRIMARY KEY,
+      storage_relative_path TEXT NOT NULL UNIQUE,
+      trash_relative_path   TEXT,
+      state                 TEXT NOT NULL,
+      created_at            INTEGER NOT NULL,
+      updated_at            INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_workflow_image_cleanup_state
+      ON workflow_image_cleanup(state, created_at, id);
 
     CREATE TABLE IF NOT EXISTS workflow_node_attempts (
       id                    TEXT PRIMARY KEY,
@@ -2409,6 +2499,11 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "workflow_submissions", "parent_submission_id", "TEXT");
   addColumn(d, "workflow_submissions", "continuation_node_id", "TEXT");
   addColumn(d, "workflow_submissions", "continuation_node_attempt_id", "TEXT");
+  // Phase 2 image evidence. Empty evidence groups preserve historical rows without
+  // inventing a completion boundary, and generation zero means no staged set was observed.
+  addColumn(d, "workflow_submissions", "evidence_group_key", "TEXT NOT NULL DEFAULT ''");
+  addColumn(d, "workflow_submissions", "staged_image_generation", "INTEGER NOT NULL DEFAULT 0");
+  addColumn(d, "workflow_evidence_owners", "all_generation", "INTEGER NOT NULL DEFAULT 0");
   // The one verified index replacement, both halves, in this order and only here.
   //
   // `idx_workflow_submissions_round` was UNIQUE on (run_id, round), and it is precisely what
@@ -2424,6 +2519,8 @@ function migrate(d: DatabaseSync): void {
   d.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_submissions_segment
       ON workflow_submissions(run_id, round, segment);
+    CREATE INDEX IF NOT EXISTS idx_workflow_submissions_evidence_group
+      ON workflow_submissions(evidence_group_key, run_id);
   `);
 
   // The action a waiting attempt is executing, frozen from the run's immutable version.

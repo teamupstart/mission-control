@@ -87,11 +87,20 @@ export function buildPersonaPrompt(
       transcriptTruncated: context.evidence.transcriptTruncated,
       standardsTruncated: context.evidence.standardsTruncated,
     }),
+    ...untrustedJsonBlock("workflow-image-manifest", (context.evidence.images ?? []).map((image) => ({
+      id: image.id,
+      caption: image.caption,
+      displayName: image.displayName,
+      repositoryScope: image.repositoryScope,
+      mimeType: image.mimeType,
+      bytes: image.bytes,
+      sha256: image.sha256,
+    }))),
     ...untrustedBlock("workflow-diff", context.evidence.diff),
     ...untrustedJsonBlock("workflow-transcript", context.evidence.transcript),
     ...untrustedJsonBlock("workflow-standards", context.evidence.standards),
     "",
     "# Required output",
-    "Reply with ONLY one JSON object. A pass must have {\"verdict\":\"pass\",\"summary\":string,\"approvalDetails\":{\"reason\":string,\"evidence\":[EvidenceRef]},\"confidence\":0..1}. A fail must have {\"verdict\":\"fail\",\"summary\":string,\"requestedChanges\":[{\"title\":string,\"rationale\":string,\"evidence\":[EvidenceRef],\"path\"?:string,\"line\"?:integer}],\"confidence\":0..1}, with at least one EvidenceRef for every requested change. EvidenceRef is {\"kind\":\"diff\"|\"transcript\"|\"standard\"|\"goal\"|\"decision\",\"quote\":string,\"path\"?:string,\"line\"?:integer}. Never use a fail verdict for an infrastructure or evidence-access problem.",
+    "Reply with ONLY one JSON object. A pass must have {\"verdict\":\"pass\",\"summary\":string,\"approvalDetails\":{\"reason\":string,\"evidence\":[EvidenceRef]},\"confidence\":0..1}. A fail must have {\"verdict\":\"fail\",\"summary\":string,\"requestedChanges\":[{\"title\":string,\"rationale\":string,\"evidence\":[EvidenceRef],\"path\"?:string,\"line\"?:integer}],\"confidence\":0..1}, with at least one EvidenceRef for every requested change. EvidenceRef is {\"kind\":\"diff\"|\"transcript\"|\"standard\"|\"goal\"|\"decision\"|\"image\",\"quote\":string,\"path\"?:string,\"line\"?:integer}. For image evidence, path MUST be the stable image id from the manifest, quote is your visual observation, and line must be omitted. Never use a fail verdict for an infrastructure or evidence-access problem.",
   ].join("\n");
 }

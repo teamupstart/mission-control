@@ -61,6 +61,11 @@ const STATUS: WorkflowStatus = {
   retainedRunCount: 42,
   completedRunCount: 17,
   deliveredDeliveries: 9,
+  retainedEvidenceImages: 11,
+  retainedEvidenceImageBytes: 12,
+  prunedEvidenceImages: 13,
+  pendingEvidenceImageCleanup: 14,
+  orphanedEvidenceImages: 15,
   lastRetentionCompacted: 0,
   lastRetentionDeleted: 0,
 };

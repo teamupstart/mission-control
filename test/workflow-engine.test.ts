@@ -1,6 +1,7 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { LlmRunner, LlmRunnerId } from "../src/shared/llm.ts";
@@ -283,6 +284,181 @@ test("concurrent provider-neutral Personas share one snapshot and Join aggregate
   assert.equal(receipts.filter((receipt) => receipt.edgeId === "join-fail").length, 1);
   assert.equal(new Set(receipts.map((receipt) => `${receipt.edgeId}:${receipt.sourceAttemptId}`)).size, receipts.length);
   assert.equal(store.getRun("run")?.currentPhase, "persona_feedback");
+});
+
+test("every Persona receives the same retained pixels and image bytes enter call accounting", async () => {
+  const imageGraph: PublishedWorkflowGraph = {
+    nodes: [
+      { id: "session", kind: "session", position: { x: 0, y: 0 } },
+      { id: "p1", kind: "persona", persona: persona("image-1", "Image one", "claude", "Inspect the image first"), position: { x: 100, y: 0 } },
+      { id: "p2", kind: "persona", persona: persona("image-2", "Image two", "codex", "Inspect the image independently"), position: { x: 100, y: 200 } },
+      { id: "join", kind: "all_pass", position: { x: 200, y: 100 } },
+      { id: "end", kind: "end", outcome: "Complete", position: { x: 300, y: 100 } },
+    ],
+    edges: [
+      { id: "s-p1", source: "session", sourcePort: "submitted", target: "p1", targetPort: "activate" },
+      { id: "s-p2", source: "session", sourcePort: "submitted", target: "p2", targetPort: "activate" },
+      { id: "p1-pass", source: "p1", sourcePort: "pass", target: "join", targetPort: "result" },
+      { id: "p1-fail", source: "p1", sourcePort: "fail", target: "join", targetPort: "result" },
+      { id: "p2-pass", source: "p2", sourcePort: "pass", target: "join", targetPort: "result" },
+      { id: "p2-fail", source: "p2", sourcePort: "fail", target: "join", targetPort: "result" },
+      { id: "join-pass", source: "join", sourcePort: "pass", target: "end", targetPort: "terminal" },
+      { id: "join-fail", source: "join", sourcePort: "fail", target: "session", targetPort: "return_for_changes" },
+    ],
+  };
+  const store = seedSubmission("image-pixels", imageGraph);
+  const png = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+    "base64",
+  );
+  const sha256 = createHash("sha256").update(png).digest("hex");
+  const storageRelativePath = "retained/submission-image-pixels/img_pixels.png";
+  const storagePath = join(home, "workflow-evidence", storageRelativePath);
+  mkdirSync(join(storagePath, ".."), { recursive: true });
+  writeFileSync(storagePath, png);
+  const images = store.finalizeSubmissionImages("submission-image-pixels", [{
+    id: "img_pixels",
+    stagingId: "staging-pixels",
+    ordinal: 0,
+    displayName: "pixels.png",
+    caption: "The requested state is visible",
+    repositoryScope: "repo-01",
+    mimeType: "image/png",
+    bytes: png.byteLength,
+    sha256,
+    storageRelativePath,
+    createdAt: 4,
+  }]);
+  const imageContext: WorkflowContextSnapshot = {
+    ...context,
+    evidence: { ...context.evidence, images, stagedImageGeneration: 1 },
+  };
+  store.updateSubmissionCapture("submission-image-pixels", {
+    context: workflowJson(imageContext),
+    evidence: workflowJson(imageContext.evidence),
+    fingerprint: "fingerprint-image-pixels",
+    status: "running",
+  }, 5);
+
+  const prompts: string[] = [];
+  const imageIds: string[][] = [];
+  const fake: LlmRunner = {
+    id: "claude",
+    label: "image",
+    runInThread: null,
+    structuredOutput: null,
+    sandbox: null,
+    price: () => null,
+    litter: null,
+    killLiveRuns() {},
+    async run(value, options) {
+      prompts.push(value);
+      imageIds.push(options?.images?.map((image) => image.id) ?? []);
+      return JSON.stringify({
+        verdict: "pass",
+        summary: "Visible",
+        approvalDetails: {
+          reason: "The pixels demonstrate the requested state",
+          evidence: [{ kind: "image", path: "img_pixels", quote: "The state is visible" }],
+        },
+        confidence: 0.9,
+      });
+    },
+  };
+  const engine = new WorkflowEngine(store, () => {}, {
+    runnerFor: () => fake,
+    resolveExecution: () => ({
+      runner: { id: "claude", source: "config", unknown: null },
+      model: { id: "fake-model", source: "config" },
+    }),
+  });
+  engine.start();
+  engine.activateSubmission("submission-image-pixels");
+  await waitFor(() => store.getRun("run-image-pixels")?.status === "completed");
+  await engine.stop();
+  assert.equal(prompts.length, 2);
+  assert.deepEqual(imageIds, [["img_pixels"], ["img_pixels"]]);
+  for (const prompt of prompts) {
+    assert.match(prompt, /workflow-image-manifest-untrusted/);
+    assert.doesNotMatch(prompt, new RegExp(storagePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  }
+  const calls = openDb().prepare(
+    `SELECT input_bytes FROM workflow_llm_calls WHERE run_id = 'run-image-pixels'`,
+  ).all() as unknown as Array<{ input_bytes: number }>;
+  assert.deepEqual(
+    calls.map((call) => call.input_bytes).sort((a, b) => a - b),
+    prompts.map((prompt) => Buffer.byteLength(prompt) + png.byteLength).sort((a, b) => a - b),
+  );
+});
+
+test("missing retained pixels are infrastructure failure and spend no provider call", async () => {
+  const missingGraph: PublishedWorkflowGraph = {
+    nodes: [
+      { id: "session", kind: "session", position: { x: 0, y: 0 } },
+      { id: "p", kind: "persona", persona: persona("missing", "Missing image", "claude", "Inspect it"), position: { x: 100, y: 0 } },
+      { id: "end", kind: "end", outcome: "Complete", position: { x: 200, y: 0 } },
+    ],
+    edges: [
+      { id: "s-p", source: "session", sourcePort: "submitted", target: "p", targetPort: "activate" },
+      { id: "p-pass", source: "p", sourcePort: "pass", target: "end", targetPort: "terminal" },
+      { id: "p-fail", source: "p", sourcePort: "fail", target: "session", targetPort: "return_for_changes" },
+    ],
+  };
+  const store = seedSubmission("image-missing", missingGraph);
+  const images = store.finalizeSubmissionImages("submission-image-missing", [{
+    id: "img_missing",
+    stagingId: "staging-missing",
+    ordinal: 0,
+    displayName: "missing.png",
+    caption: "This retained body is unavailable",
+    repositoryScope: "repo-01",
+    mimeType: "image/png",
+    bytes: 68,
+    sha256: "a".repeat(64),
+    storageRelativePath: "retained/submission-image-missing/img_missing.png",
+    createdAt: 4,
+  }]);
+  const missingContext: WorkflowContextSnapshot = {
+    ...context,
+    evidence: { ...context.evidence, images, stagedImageGeneration: 1 },
+  };
+  store.updateSubmissionCapture("submission-image-missing", {
+    context: workflowJson(missingContext),
+    evidence: workflowJson(missingContext.evidence),
+    fingerprint: "fingerprint-image-missing",
+    status: "running",
+  }, 5);
+
+  let providerCalls = 0;
+  const fake: LlmRunner = {
+    id: "claude",
+    label: "never called",
+    runInThread: null,
+    structuredOutput: null,
+    sandbox: null,
+    price: () => null,
+    litter: null,
+    killLiveRuns() {},
+    async run() {
+      providerCalls++;
+      return "{}";
+    },
+  };
+  const engine = new WorkflowEngine(store, () => {}, {
+    runnerFor: () => fake,
+    retryBaseMs: 1,
+    resolveExecution: () => ({
+      runner: { id: "claude", source: "config", unknown: null },
+      model: { id: "fake-model", source: "config" },
+    }),
+  });
+  engine.start();
+  engine.activateSubmission("submission-image-missing");
+  await waitFor(() => store.getRun("run-image-missing")?.status === "blocked");
+  await engine.stop();
+  assert.equal(providerCalls, 0);
+  assert.equal(store.getRun("run-image-missing")?.currentPhase, "infrastructure_error");
+  assert.equal(store.listLlmCallPage("run-image-missing", null, 10).items.length, 0);
 });
 
 // The validator used to refuse a second submitted route, so this shape could not be authored at

@@ -14,6 +14,7 @@ import {
   parseArchiveKey,
   type ArchiveIndexStatus,
 } from "@shared/archives.ts";
+import { pipelineRepoKey, type PipelineProviderId } from "@shared/pipeline.ts";
 
 // The one mission router, despite the name it was born with: every full-screen page the
 // dashboard has - fleet, Library, Runs, Ensembles, Settings - is a variant of `MissionRoute`
@@ -87,6 +88,25 @@ export interface WorkflowRunFilters {
 }
 
 /**
+ * One pipeline run, as an address rather than as an id.
+ *
+ * There is no Mission Control id to link to: a pipeline run is the engine's own feature,
+ * keyed `(provider, repoRoot, slug)`, and the projection it comes from is rebuildable from
+ * that engine's files at any moment - so an id of ours would be the one field a rebuild
+ * could not reproduce. `repoKey` is `pipelineRepoKey(provider, repoRoot)`, which carries the
+ * provider with the path in one path segment. Both halves of the pair, because a second
+ * provider observing the same checkout would otherwise share one link with the first.
+ *
+ * The pair is the WHOLE address, and nothing here validates it: whether a run exists is a
+ * question for the projection, and a link to a run that has been torn down should land on
+ * the Pipelines tab saying so rather than on the fleet.
+ */
+export interface PipelineRunAddress {
+  repoKey: string;
+  slug: string;
+}
+
+/**
  * The Scouts page's bounded search, as the address bar carries it.
  *
  * These are the SAME names `ScoutSearchQuerySchema` validates on the way into
@@ -132,9 +152,22 @@ export type MissionRoute =
       creating?: true;
     }
   | {
-      /** Workflow runs: the rail and its reader, the Line's Review stage one click deeper. */
+      /**
+       * The Runs page: the rail and its reader, the Line's Review stage one click deeper.
+       *
+       * One page with two surfaces behind a kind tab, rather than two pages, because that
+       * is what they are to an operator: both answer "what is executing", and a second
+       * top-level destination for the second engine would put the answer in two places.
+       * Workflow runs are Mission Control's own execution and keep the bare spellings;
+       * `kind: "pipelines"` addresses the surface that watches an external engine.
+       */
       page: "runs";
+      /** Which surface is showing. Absent is the workflow rail - every link kept from before. */
+      kind?: "pipelines";
+      /** The open workflow run. Meaningless on the pipelines surface, which has no run ids. */
       runId?: string;
+      /** The open pipeline run. Implies the pipelines surface, and never set with `runId`. */
+      pipelineRun?: PipelineRunAddress;
       filters?: WorkflowRunFilters;
     }
   | {
@@ -308,6 +341,25 @@ export function parseMissionRoute(hash: string): MissionRoute {
   if (execution === "/runs") {
     return { page: "runs", ...(withFilters ? { filters: withFilters } : {}) };
   }
+  // BEFORE the bare `/runs/:id` rule below, which would otherwise read `pipeline` as a
+  // workflow run id. Nothing is lost by claiming the word: workflow run ids are UUIDs, so
+  // `#/runs/pipeline` never named one, and a bookmark carrying it always landed on a rail
+  // with nothing selected.
+  //
+  // The filters are deliberately NOT carried onto either of these. They are workflow run
+  // filters - a workflow id, a session, a run status this surface does not have - and a
+  // pipelines link that kept them would print parameters no control on the page can clear.
+  if (execution === "/runs/pipeline") return { page: "runs", kind: "pipelines" };
+  const pipelineRun = /^\/runs\/pipeline\/([^/]+)\/([^/]+)$/.exec(execution);
+  if (pipelineRun) {
+    const repoKey = segment(pipelineRun[1]!);
+    const slug = segment(pipelineRun[2]!);
+    // Half an address is no address, so an undecodable segment lands on the Pipelines tab
+    // with nothing open - the same rule an undecodable run id takes one branch down.
+    return repoKey && slug
+      ? { page: "runs", kind: "pipelines", pipelineRun: { repoKey, slug } }
+      : { page: "runs", kind: "pipelines" };
+  }
   const run = /^\/runs\/([^/]+)$/.exec(execution);
   if (run) {
     // An id nothing can decode names no run, so it lands on the runs list - the same
@@ -414,6 +466,15 @@ export function missionRouteHash(route: MissionRoute): string {
     return query ? `${path}?${query}` : path;
   }
   if (route.page === "runs") {
+    // The pipelines surface first, and `pipelineRun` alone is enough to reach it: a
+    // hand-built route naming a run is unambiguous about which surface draws it, and
+    // requiring both fields would serialize that route to the workflow rail - the address
+    // bar disagreeing with the page, which is the failure the Library's `creating` guard a
+    // few lines up exists to prevent.
+    if (route.pipelineRun) {
+      return `#/runs/pipeline/${encodeURIComponent(route.pipelineRun.repoKey)}/${encodeURIComponent(route.pipelineRun.slug)}`;
+    }
+    if (route.kind === "pipelines") return "#/runs/pipeline";
     const path = route.runId ? `#/runs/${encodeURIComponent(route.runId)}` : "#/runs";
     const params = new URLSearchParams();
     if (route.filters?.status) params.set("status", route.filters.status);
@@ -425,6 +486,36 @@ export function missionRouteHash(route: MissionRoute): string {
   return route.ensembleId
     ? `#/ensembles/${encodeURIComponent(route.ensembleId)}`
     : "#/ensembles";
+}
+
+/**
+ * The route that opens one pipeline run, built from the engine's own identity for it.
+ *
+ * The one place the address is assembled. Every surface that links to a pipeline run - the
+ * rail here, and later a session card, an attention item and a hosted console - goes through
+ * this, so none of them has to know that the repository half of the address is a composite
+ * key rather than a path. Pass a `PipelineRun` straight in: it structurally satisfies the
+ * argument, so no caller has to destructure one.
+ */
+export function pipelineRunRoute(run: {
+  provider: PipelineProviderId;
+  repoRoot: string;
+  slug: string;
+}): MissionRoute {
+  return {
+    page: "runs",
+    kind: "pipelines",
+    pipelineRun: { repoKey: pipelineRepoKey(run.provider, run.repoRoot), slug: run.slug },
+  };
+}
+
+/** The same address as a hash, for a link that is an `href` rather than a `navigate`. */
+export function pipelineRunHash(run: {
+  provider: PipelineProviderId;
+  repoRoot: string;
+  slug: string;
+}): string {
+  return missionRouteHash(pipelineRunRoute(run));
 }
 
 export interface MissionRouter {

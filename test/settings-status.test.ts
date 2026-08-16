@@ -89,7 +89,7 @@ const ALL_OFF: SettingsStatus = {
   taskSources: { failing: 0 },
   // No engine on this test's PATH and nothing configured, which is what an ordinary
   // installation looks like - and the state in which the Conductor rail row does not exist.
-  pipelines: { present: false },
+  pipelines: { present: false, observing: 0 },
 };
 
 // ---- compose ----
@@ -158,6 +158,53 @@ test("an unchanged recompose is suppressed rather than waking every browser", as
   await put(app, "/api/shipping/config", { autoMerge: true });
   await put(app, "/api/shipping/config", { autoMerge: true });
   assert.equal(statuses().length, 1, "the identical second write should not emit again");
+});
+
+test("the suppression compares every field, so no change can be dropped in silence", () => {
+  // The other half of the rule above, and the one that fails silently. A field missing from
+  // the comparison is not compared loosely - it is a field whose change never reaches a
+  // browser at all, because the tuple that moved only there compares equal and no frame is
+  // sent. `pipelines` shipped outside it, which is how "installing the engine makes the
+  // Conductor row appear while you are still looking for it" came to depend on some
+  // unrelated setting moving next.
+  //
+  // Walked over the composed tuple rather than over a hand-written list, so a field added to
+  // `SettingsStatus` is in this test the moment it exists.
+  const registry = new Registry();
+  const base = settingsStatus();
+  const moved: Record<string, SettingsStatus> = {
+    "inspector.enabled": { ...base, inspector: { ...base.inspector, enabled: !base.inspector.enabled } },
+    "inspector.mode": {
+      ...base,
+      inspector: { ...base.inspector, mode: base.inspector.mode === "live" ? "dry-run" : "live" },
+    },
+    "shipping.autoMerge": { ...base, shipping: { autoMerge: !base.shipping.autoMerge } },
+    "taskSources.failing": { ...base, taskSources: { failing: base.taskSources.failing + 1 } },
+    "pipelines.present": { ...base, pipelines: { ...base.pipelines, present: !base.pipelines.present } },
+    "pipelines.observing": {
+      ...base,
+      pipelines: { ...base.pipelines, observing: base.pipelines.observing + 1 },
+    },
+  };
+  // Every leaf of the tuple has a case above. A new field with none is a field this test
+  // cannot speak for, which is exactly the state `pipelines` was in.
+  const leaves = Object.entries(base).flatMap(([group, value]) =>
+    Object.keys(value as Record<string, unknown>).map((field) => `${group}.${field}`),
+  );
+  assert.deepEqual(
+    leaves.filter((leaf) => !(leaf in moved)),
+    [],
+    "add the new SettingsStatus field to this test's `moved` map",
+  );
+
+  for (const [leaf, status] of Object.entries(moved)) {
+    const events: ServerEvent[] = [];
+    registry.emitSettingsStatus(base);
+    const unsubscribe = registry.subscribe((e) => events.push(e));
+    registry.emitSettingsStatus(status);
+    unsubscribe();
+    assert.equal(events.filter(isStatus).length, 1, `a change to ${leaf} must reach the browser`);
+  }
 });
 
 // ---- snapshot ----

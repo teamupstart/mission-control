@@ -81,7 +81,12 @@ import type {
   ScheduleValidationField,
 } from "@shared/schedules.ts";
 import type { SweepReport, TaskSourceRef, TaskSourcesView } from "@shared/task-source.ts";
-import type { PipelinesView } from "@shared/pipeline.ts";
+import type {
+  PipelineProviderId,
+  PipelineRepoStatus,
+  PipelineRunDetail,
+  PipelinesView,
+} from "@shared/pipeline.ts";
 import type { Attachment } from "@shared/attachments.ts";
 import type {
   ArchiveDetail,
@@ -230,6 +235,31 @@ export const fetchTaskSources = () => fetchJson<TaskSourcesView>("/api/task-sour
  */
 export const fetchPipelines = (refresh = false) =>
   fetchJson<PipelinesView>(`/api/pipelines/config${refresh ? "?refresh=1" : ""}`);
+/**
+ * The repositories being read, for the Pipelines rail's headings.
+ *
+ * Deliberately not `fetchPipelines`. That route carries the consent config and answers
+ * behind an engine probe; this one is a config read and a map lookup, which is what a rail
+ * polling while its tab is open should cost.
+ */
+export const fetchPipelineRepos = () =>
+  fetchJson<{ repos: PipelineRepoStatus[] }>("/api/pipelines/repos");
+/**
+ * One run's gate evidence, read from the engine's files at request time.
+ *
+ * On demand rather than over the stream because the projection rides every reconnect for
+ * every run on the fleet - see the per-run wire budget in `test/pipeline-sse.test.ts`. Null
+ * for a run that no longer exists or a repository nobody is observing, which the detail view
+ * draws as a stale link rather than as an error.
+ */
+export const fetchPipelineRunDetail = (
+  provider: PipelineProviderId,
+  repoRoot: string,
+  slug: string,
+) =>
+  fetchJson<PipelineRunDetail>(
+    `/api/pipelines/run?provider=${encodeURIComponent(provider)}&repoRoot=${encodeURIComponent(repoRoot)}&slug=${encodeURIComponent(slug)}`,
+  );
 /** Away mode: whether you're away, since when, and the stall thresholds. */
 export const fetchAwayConfig = () => fetchJson<AwayConfig>("/api/away");
 /**

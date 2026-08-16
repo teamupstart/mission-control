@@ -186,11 +186,17 @@ import { noteTaskSourceConfigChange, preflightOnce, sweepOnce, taskSourceStatuse
 import type { TaskSourcesView } from "@shared/task-source.ts";
 import { getPipelinesConfig, setPipelinesConfig } from "./pipelines/config.ts";
 import {
+  activePipelineRepoStatuses,
   pipelineRepoStatuses,
   probeAllPipelineProviders,
+  readPipelineRunDetail,
   reconcilePipelineConsent,
 } from "./pipelines/index.ts";
-import { pipelineRepoKey, type PipelinesView } from "@shared/pipeline.ts";
+import {
+  isPipelineProviderId,
+  pipelineRepoKey,
+  type PipelinesView,
+} from "@shared/pipeline.ts";
 import { setUiConfig, uiConfigView } from "./ui-config.ts";
 import { environmentCheckViews } from "./environment/index.ts";
 import type { EnvironmentChecksView } from "@shared/environment-checks.ts";
@@ -3926,6 +3932,42 @@ export function buildApp(
   );
 
   /**
+   * The repositories being READ, for the Pipelines rail's group headings.
+   *
+   * Separate from the route above rather than a field on it, and the difference is what it
+   * does NOT do: no probe, no subprocess, no consent config. The Runs page polls this while
+   * its Pipelines tab is open, and answering it out of `/api/pipelines/config` would put an
+   * engine spawn behind a rail that only needs to know whether a daemon is alive - on a
+   * cadence, for as long as the tab is on screen.
+   */
+  app.get("/api/pipelines/repos", (c) => c.json({ repos: activePipelineRepoStatuses() }));
+
+  /**
+   * One run's gate evidence, read from the engine's files at request time.
+   *
+   * On demand rather than on the projection because the projection rides every reconnect
+   * for every run on the fleet, and `test/pipeline-sse.test.ts` pins that budget with this
+   * route named as the answer. The three parts of the run's identity are query parameters
+   * because one of them is an absolute path: `repoRoot` cannot be a path segment without
+   * being double-encoded at every call site.
+   *
+   * 404 for anything that names nothing - an unknown provider, a repository nobody
+   * consented to, a slug with no worktree - because a surface draws all three as the same
+   * stale link, and telling them apart would answer questions about the filesystem to
+   * anything that can reach the loopback API.
+   */
+  app.get("/api/pipelines/run", async (c) => {
+    const provider = c.req.query("provider") ?? "";
+    const repoRoot = c.req.query("repoRoot") ?? "";
+    const slug = c.req.query("slug") ?? "";
+    if (!isPipelineProviderId(provider) || !repoRoot || !slug) {
+      return c.json({ error: "no such pipeline run" }, 404);
+    }
+    const detail = await readPipelineRunDetail(provider, repoRoot, slug);
+    return detail ? c.json(detail) : c.json({ error: "no such pipeline run" }, 404);
+  });
+
+  /**
    * Replace the consent config.
    *
    * Each repository is resolved to a git root here so a typo cannot enter it, using the
@@ -3960,6 +4002,12 @@ export function buildApp(
     }
     setPipelinesConfig({ enabled: parsed.data.enabled, repos });
     reconcilePipelineConsent(registry);
+    // The tuple carries how many repositories are being observed, and the Runs page draws
+    // its Pipelines tab from that. Published here rather than waited for on the watcher's
+    // once-a-minute presence check, for the same reason the reconciliation above is not
+    // deferred to the next tick: an operator who switches a repository on is entitled to
+    // see the surface it produces without wondering whether they mis-clicked.
+    publishSettingsStatus(registry);
     return c.json(await pipelinesView(false));
   });
 

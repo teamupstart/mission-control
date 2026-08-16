@@ -97,6 +97,11 @@ and Mission Control never writes a file the engine owns. With no engine installe
 configured, the dashboard is exactly what it was - no row, no panel, nothing in the command
 palette. [Pipelines](docs/pipelines.md) owns the exact visibility rule.
 
+Once a repository is switched on, the **Runs** page gains a second tab. **Workflows** is the
+page it always was; **Pipelines** shows what the engine is driving - a rail grouped per
+repository under its engine daemon's state, and each feature's whole gated sequence drawn in
+the same diagram grammar a workflow run uses.
+
 ## Quick start
 
 Mission Control needs Node.js 24 or newer.

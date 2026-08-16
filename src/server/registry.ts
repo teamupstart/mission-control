@@ -845,8 +845,15 @@ export class Registry extends EventEmitter {
    * The suppression mirrors `recomputeFleetCost`: `publishSettingsStatus` recomposes on
    * every config write and after every sweep, so without this an operator toggling one
    * source's interval would push an identical tuple to every open dashboard. The compare
-   * is a shallow field walk - the shape is three small scalars, so `byJson` would be the
-   * same answer at more cost.
+   * is a shallow field walk - the shape is a handful of small scalars, so `byJson` would be
+   * the same answer at more cost.
+   *
+   * **Every field of the tuple has to appear below.** A field left out is not merely
+   * compared loosely: it is a field whose CHANGE is silently dropped, because a tuple that
+   * moved only there compares equal and no frame is sent. The `pipelines` pair was missing
+   * when it arrived, which meant the promise that installing the engine makes the Conductor
+   * row appear "while you are still looking for it" was answered by a frame this method
+   * threw away - and the row waited for whatever unrelated setting moved next.
    */
   emitSettingsStatus(status: SettingsStatus): void {
     const prev = this.lastSettingsStatus;
@@ -855,7 +862,9 @@ export class Registry extends EventEmitter {
       prev.inspector.enabled === status.inspector.enabled &&
       prev.inspector.mode === status.inspector.mode &&
       prev.shipping.autoMerge === status.shipping.autoMerge &&
-      prev.taskSources.failing === status.taskSources.failing;
+      prev.taskSources.failing === status.taskSources.failing &&
+      prev.pipelines.present === status.pipelines.present &&
+      prev.pipelines.observing === status.pipelines.observing;
     this.lastSettingsStatus = status;
     if (same) return;
     this.emitEvent({ type: "settings_status", status });

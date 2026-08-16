@@ -1123,6 +1123,40 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
 
 Attach the generated frames to the pull request; they are never committed.
 
+### An external engine's pipelines, and the page that did not change
+
+`e2e/.artifacts/runs-pipelines-tab/` carries three frames from
+`specs/runs-pipelines-tab.spec.ts`, behind the same `MC_E2E_EVIDENCE` flag. The claim they
+answer is that a second engine's work reads as native rather than as a bolted-on panel, and
+that is a matter of weight, spacing and colour that no assertion reaches.
+
+`01-rail-and-halt.png` is the rail: two repositories, each under its own engine daemon's
+state, with the halted feature leading and its reason in the reader beside it.
+`02-run-detail.png` is one feature's whole gated sequence in the workflow diagram's grammar -
+the Spec and pull-request termini, five phase cards, labelled wires, the attempt a kickback
+opened, and the gate verdicts underneath. `03-tier-s-and-unknown.png` is the degrading pair:
+a tier-S run's skipped steps drawn dashed like disabled commands, and a step this build has
+never heard of drawn in the state the engine reported rather than dropped.
+
+Its sibling, `specs/runs-workflows-unchanged.spec.ts`, takes no pictures and is the more
+important of the two. It drives a real dispatch, a real published workflow and a real review
+round, switches the pipeline integration ON with two features projected underneath, and then
+asserts that the Workflows tab is the page it always was - the rail's filters, the run row,
+the header, the strip, the round scrubber and the Review worklist. The approved plan makes
+"the existing Runs page is not modified" a requirement; this is what holds it, in the only
+configuration where breaking it is possible.
+
+Regenerate the frames with:
+
+```sh
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/runs-pipelines-tab.spec.ts \
+  --workers=1 --reporter=list
+```
+
+Attach the generated frames to the pull request; they are never committed.
+
 ## Steering a workflow reviewer
 
 `specs/workflow-run-disable.spec.ts` drives the Runs monitor's per-run disable toggle, and

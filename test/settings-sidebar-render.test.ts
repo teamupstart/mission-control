@@ -91,7 +91,7 @@ function status(over: Partial<SettingsStatus> = {}): SettingsStatus {
     taskSources: { failing: 0 },
     // Present by default so the tests that are about OTHER categories keep seeing the whole
     // rail; the ones about Conductor's conditional row override it.
-    pipelines: { present: true },
+    pipelines: { present: true, observing: 0 },
     ...over,
   };
 }
@@ -126,7 +126,7 @@ test("the rail lists every category exactly once", () => {
 // however off it ships. Conductor is the only category conditional this way, because it is
 // the only one that configures somebody else's software.
 test("without an engine installed, the Conductor category does not exist at all", () => {
-  const html = render("display", { settingsStatus: status({ pipelines: { present: false } }) });
+  const html = render("display", { settingsStatus: status({ pipelines: { present: false, observing: 0 } }) });
   assert.equal(
     (html.match(/class="settings-nav-item/g) ?? []).length,
     SETTINGS_CATEGORIES.length - 1,
@@ -141,7 +141,7 @@ test("without an engine installed, the Conductor category does not exist at all"
 // engine was uninstalled, must land where an unknown category lands rather than on an empty
 // pane - or the panel is reachable after all.
 test("routing to Conductor without an engine falls back rather than rendering it", () => {
-  const html = render("conductor", { settingsStatus: status({ pipelines: { present: false } }) });
+  const html = render("conductor", { settingsStatus: status({ pipelines: { present: false, observing: 0 } }) });
   assert.doesNotMatch(html, CONDUCTOR_ONLY);
   assert.match(html, LAYOUT_ONLY, "falls back to the default category");
   assert.equal((html.match(/settings-nav-item is-active/g) ?? []).length, 1);

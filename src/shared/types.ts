@@ -2379,7 +2379,23 @@ export interface SettingsStatus {
    * synchronously on the first paint, and this tuple is already in the connect snapshot.
    * Computing it costs no subprocess - see `pipelinesPresent`.
    */
-  pipelines: { present: boolean };
+  pipelines: {
+    present: boolean;
+    /**
+     * How many repositories are being READ right now - master switch on, repository
+     * switched on.
+     *
+     * A different question from `present`, and it decides a different surface: this is what
+     * draws the Runs page's Pipelines tab. Zero means the page is byte-for-byte the one
+     * that shipped before this feature - no tab strip, no rail, and nothing fetching
+     * anything - which is the state almost every fleet stays in.
+     *
+     * A count rather than a boolean because the tab's empty state names how many
+     * repositories are being watched, and a surface deriving that a second way is how it
+     * comes to disagree with Settings.
+     */
+    observing: number;
+  };
 }
 
 // ---- Keep Awake (transient idle-sleep inhibition) ----

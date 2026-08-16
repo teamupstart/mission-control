@@ -132,6 +132,43 @@ export function conductorEventsPath(worktree: string): string {
 }
 
 /**
+ * Whether this path holds a DIFFERENT ledger from the one a stored identity came off.
+ *
+ * The cheap half of `ledgerIdentity`, and it exists for exactly one caller: the demotion in
+ * `readConductorRepo`, which skips reading a live run's ledger and therefore also skips the
+ * replacement detection that read performs. Skipping a ledger that GREW is the whole point.
+ * Skipping one that was REPLACED is a defect - a worktree re-cut under the same slug would
+ * keep the previous run's carried token total standing as the new run's cost, because the
+ * declined pass reports neither a restart nor a spend of its own.
+ *
+ * `stat` alone: no descriptor, no head hash, no read. That answers the case the demotion can
+ * actually meet - a re-cut worktree is a new file, with a new inode and a new birth time -
+ * for a fraction of what the read it guards would cost. An in-place rewrite that keeps both
+ * is not caught here and does not need to be: the backfill sweep is the backstop for
+ * everything this fast path cannot see, and it is a minute away at most.
+ *
+ * Biased toward reading, exactly as `ledgerIdentity` is biased toward noticing: no stored
+ * identity, an unreadable file, or a stat that throws all answer true, because a needless
+ * read costs one pass and a missed replacement costs a wrong number for as long as the run
+ * lives.
+ */
+export function ledgerReplaced(worktree: string, knownIdentity: string | null | undefined): boolean {
+  if (!knownIdentity) return true;
+  try {
+    const stat = statSync(conductorEventsPath(worktree));
+    if (!stat.isFile()) return true;
+    const birth =
+      Number.isFinite(stat.birthtimeMs) && stat.birthtimeMs > 0 ? Math.round(stat.birthtimeMs) : 0;
+    // The same three fields `ledgerIdentity` puts first, in the same order, read back as a
+    // prefix rather than re-derived - so the two cannot drift into disagreeing about what
+    // identifies a file.
+    return !knownIdentity.startsWith(`${stat.dev}:${stat.ino}:${birth}:`);
+  } catch {
+    return true;
+  }
+}
+
+/**
  * Read whatever has been appended since `from`.
  *
  * Total, like every reader in this module: a missing file, an unreadable one, or a

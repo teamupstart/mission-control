@@ -178,7 +178,7 @@ would ask for one the run already has. Version 9 preserves that verified publica
 with Code Quality Judge immediately before the action.
 
 A passed review in versions 1 through 8 is then gated on the
-[GitHub Inspector final gate](#inspector-final-gate) finding nothing on the pull request.
+[GitHub Inspector final gate](#github-inspector-final-gate) finding nothing on the pull request.
 Version 9 instead completes when its Pull Request action reaches End, so the default workflow
 does not wait for optional remote review. GitHub Inspector remains independently available for
 reviewing pushed heads on GitHub and remains the source of exact-head proof used by Shipping.

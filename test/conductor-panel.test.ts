@@ -247,6 +247,38 @@ test("the daemon state is named in words, per repository", () => {
   assert.match(line("unknown"), /state unknown/);
 });
 
+test("the health line says how observation is arriving, in all three states", () => {
+  // Three states because three things are true at different times, and the operator acting
+  // on them acts differently: nothing to do, it is working, it stopped. The third is the one
+  // that must not collapse into the first - a revoked token and a crashed engine both look
+  // exactly like `quiet`, and reading that as `never` would hide a working install failing.
+  const line = (ingest?: "never" | "live" | "quiet"): string =>
+    repoHealthLine(
+      { provider: "ai-conductor", repoRoot: "/w/a", daemon: "running", runs: 1, halted: 0, lastReadAt: 1, error: null, ingest },
+      "on",
+    );
+  assert.match(line("never"), /file tail$/);
+  assert.match(line("live"), /live events$/);
+  assert.match(line("quiet"), /file tail \(plugin quiet\)$/);
+  // Absent reads as the tail, which is exact rather than defensive: a status assembled by a
+  // build with no ingest at all was produced by a daemon reading files.
+  assert.match(line(undefined), /file tail$/);
+  // And it never displaces what the line already said. The engine's own daemon and the run
+  // counts are what an operator reads first; this is a clause, not a replacement.
+  assert.match(line("live"), /engine daemon running · 1 pipeline · live events/);
+});
+
+test("the panel names where the plugin is installed, without offering a control for it", () => {
+  // The phase's constraint: no new UI beyond the indicator. Installing the plugin is a file
+  // copy into another program's directory - there is nothing here that could do it, so the
+  // panel says where rather than pretending to a switch.
+  const html = render(answered({}));
+  assert.match(html, /~\/\.ai-conductor\/plugins\/mission-control\//);
+  assert.match(html, /integrations\/ai-conductor\/mission-control\//);
+  // And it says the thing that keeps an operator from reading this as a requirement.
+  assert.match(html, /needs nothing installed/);
+});
+
 test("a repository the engine has forgotten stays listed while its consent stands", () => {
   // Otherwise the consent would be in force with nothing on screen that could withdraw it.
   const repos = offeredRepos(

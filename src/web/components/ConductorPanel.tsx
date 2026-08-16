@@ -80,7 +80,18 @@ export function repoHealthLine(
           : "engine daemon state unknown";
   const runs = `${status.runs} ${status.runs === 1 ? "pipeline" : "pipelines"}`;
   const halted = status.halted > 0 ? `, ${status.halted} halted` : "";
-  return `${daemon} · ${runs}${halted}`;
+  // HOW this was observed, said out loud on every row rather than only when a plugin is
+  // installed. Without it "file tail" is invisible and "live events" reads as a state the
+  // integration invented; with it, the row an operator installs the plugin to change is the
+  // row that shows it changing. The absent case reads as the tail, which is exact: a status
+  // from a build or a test that predates ingest was produced by a daemon that had none.
+  const ingest =
+    status.ingest === "live"
+      ? " · live events"
+      : status.ingest === "quiet"
+        ? " · file tail (plugin quiet)"
+        : " · file tail";
+  return `${daemon} · ${runs}${halted}${ingest}`;
 }
 
 /**
@@ -167,6 +178,17 @@ export function ConductorPanel({ state }: { state: ConductorState }): React.JSX.
         Mission Control <em>reads</em> that engine's own state files and shows what it is
         doing. It never writes them, never starts or stops a pipeline, and never spends a
         token of its own: the engine's CLI stays the only thing that changes anything.
+      </p>
+      {/* The install path, in the panel rather than only in the docs, because this is where
+          somebody is standing when they wonder why their pipelines are a few seconds stale.
+          Deliberately framed as an OPTION and not a requirement - the file tail is what
+          every row below is using, and it works with nothing installed. */}
+      <p className="settings-hint conductor-ingest-hint">
+        Reading files on a cadence needs nothing installed, and each row below says so. To
+        have the engine push its events instead - the same picture, without the wait - copy{" "}
+        <code>integrations/ai-conductor/mission-control/</code> from the Mission Control
+        checkout into <code>~/.ai-conductor/plugins/mission-control/</code> and give it this
+        daemon's URL and token. The engine's files stay the source of truth either way.
       </p>
 
       {/* The daemon has not answered. Said out loud, on the Inspector panel's rule: the

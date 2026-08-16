@@ -1797,6 +1797,23 @@ export const WorktreesConfigPatchSchema = z
   });
 export type WorktreesConfigPatch = z.infer<typeof WorktreesConfigPatchSchema>;
 
+/** Loopback-only request used by `make session`; the daemon derives every destination. */
+export const ManualWorktreeAcquireSchema = z
+  .object({
+    repositoryPath: z.string().min(1).max(4096),
+    label: z.string().trim().min(1).max(160).optional(),
+  })
+  .strict();
+export type ManualWorktreeAcquire = z.infer<typeof ManualWorktreeAcquireSchema>;
+
+/** Return one exact manual lease by its unguessable durable identity. */
+export const ManualWorktreeReturnSchema = z
+  .object({
+    leaseId: z.string().min(1).max(512),
+  })
+  .strict();
+export type ManualWorktreeReturn = z.infer<typeof ManualWorktreeReturnSchema>;
+
 /**
  * Partial update of the harnesses config from the dashboard.
  *

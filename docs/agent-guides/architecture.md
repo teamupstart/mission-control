@@ -60,6 +60,17 @@ A handoff from SDK to terminal clears the task binding before stopping the drive
 
 Worktree snapshots use a temporary Git index. Never capture through the real index. Reset helpers use `clean -fd`, never `-fdx`, so ignored warm dependencies survive.
 
+The daemon constructs one `WorktreeManager` and injects it into task dispatch, Workflow checks,
+manual lease routes, and maintenance. New task and check acquisitions use native slots by default.
+Only a disabled policy or a positive native refusal may degrade to a disposable Git worktree; an
+unknown native outcome fails closed. Cleanup follows the provider and exact lease identity stored
+on the owning row, never current configuration. Native release remains conditional and
+occupancy-gated, and clearing a task's worktree facts is atomic with recording the successful
+release. Historical rows that name Treehouse retain their provider-specific cleanup path.
+
+Manual development sessions acquire and return native leases through the daemon's loopback API.
+The client does not create an independent inventory, and shell exit does not imply return.
+
 ## Dispatch runtime
 
 Runtime selection has one owner: `resolveDispatchRuntime`, composed with `resolveSessionRuntime`.

@@ -28,7 +28,8 @@ const home = realpathSync(mkdtempSync(join(tmpdir(), "mission-check-runtime-")))
 process.env.HARNESS_HOME = home;
 
 const { openDb } = await import("../src/server/db.ts");
-const { CheckLeaseManager, CheckLeaseStore } = await import("../src/server/workflows/check-lease.ts");
+const { CheckLeaseManager, CheckLeaseStore, TreehouseCheckTreeProvider } =
+  await import("../src/server/workflows/check-lease.ts");
 const { CheckRuntime } = await import("../src/server/workflows/check-runtime.ts");
 const { WorkflowStore, workflowJson } = await import("../src/server/workflows/store.ts");
 const { WorkflowEngine } = await import("../src/server/workflows/engine.ts");
@@ -44,7 +45,8 @@ type CheckSpawnOutcome = import("../src/server/workflows/check-supervisor.ts").C
 
 const db = openDb();
 const leaseRows = new CheckLeaseStore(db);
-const TREEHOUSE_PRESENT = async () => true;
+const modeledProvider = (cli: TreehouseCli) =>
+  new TreehouseCheckTreeProvider(cli, pinLeasedWorktree);
 
 /**
  * Every case here starts a real process, and a platform that cannot read a process start
@@ -203,7 +205,7 @@ function fixture(over: { slots?: number } = {}): Fixture {
     // captured commit" a property of the test rather than a claim in a comment.
     pin: pinLeasedWorktree,
     verifyBase: verifyPinnedBase,
-    treehouseInstalled: TREEHOUSE_PRESENT,
+    acquisitionProvider: modeledProvider(pool.cli),
   });
   const runtime = new CheckRuntime(leases, { leaseStore: leaseRows, teardown: TEARDOWN, timeoutMs: 30_000 });
   return { repoRoot, headSha, pool, leases, runtime };
@@ -580,7 +582,7 @@ test("test commands get sixty minutes while typecheck keeps ten", async () => {
     cli: pool.cli,
     pin: pinLeasedWorktree,
     verifyBase: verifyPinnedBase,
-    treehouseInstalled: TREEHOUSE_PRESENT,
+    acquisitionProvider: modeledProvider(pool.cli),
   });
   const timeouts: number[] = [];
   const runtime = new CheckRuntime(leases, {
@@ -617,7 +619,7 @@ test("an infrastructure result is not returned until the lease is resolved", asy
     cli: pool.cli,
     pin: pinLeasedWorktree,
     verifyBase: verifyPinnedBase,
-    treehouseInstalled: TREEHOUSE_PRESENT,
+    acquisitionProvider: modeledProvider(pool.cli),
   });
   const runtime = new CheckRuntime(leases, {
     leaseStore: leaseRows,
@@ -660,7 +662,7 @@ test("a group that cannot be proven empty withholds the verdict and keeps its le
     cli: pool.cli,
     pin: pinLeasedWorktree,
     verifyBase: verifyPinnedBase,
-    treehouseInstalled: TREEHOUSE_PRESENT,
+    acquisitionProvider: modeledProvider(pool.cli),
   });
   const runtime = new CheckRuntime(leases, {
     leaseStore: leaseRows,
@@ -718,7 +720,7 @@ test("a worktree that could not be handed back withholds the verdict too", async
     cli: pool.cli,
     pin: pinLeasedWorktree,
     verifyBase: verifyPinnedBase,
-    treehouseInstalled: TREEHOUSE_PRESENT,
+    acquisitionProvider: modeledProvider(pool.cli),
     now: () => clock.now,
   });
   const runtime = new CheckRuntime(leases, {
@@ -945,7 +947,7 @@ test("an unresolved lease blocks the retry instead of taking a second tree", asy
     cli: pool.cli,
     pin: pinLeasedWorktree,
     verifyBase: verifyPinnedBase,
-    treehouseInstalled: TREEHOUSE_PRESENT,
+    acquisitionProvider: modeledProvider(pool.cli),
   });
   const runtime = new CheckRuntime(leases, {
     leaseStore: leaseRows,

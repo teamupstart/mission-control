@@ -112,6 +112,7 @@ import { clampPrompt } from "./util/prompt-text.ts";
 // for rather than re-spelled as a `startsWith`, which would read `.worktrees/add-widgets` as
 // living inside `.worktrees/add`.
 import { withinRoot } from "./util/repo-doc.ts";
+import { gitInfo } from "./util/git.ts";
 import {
   clearPendingTurns as clearPendingTurnsDb,
   clearQueue as clearQueueDb,
@@ -2097,8 +2098,13 @@ export class Registry extends EventEmitter {
   private applyDriverPrCreated(s: Session, urls: string[]): void {
     const url = urls[0];
     if (!url) return;
+    // Native leases are detached at registration. The driver observed `gh pr create`, so
+    // read the branch from the checkout now and adopt it in place before the poller confirms
+    // the PR. The ordinary discovery refresh remains authoritative for later branch moves.
+    const gitBranch = s.gitBranch ?? (s.cwd ? gitInfo(s.cwd).branch : null);
     const next: Session = {
       ...s,
+      gitBranch,
       prUrl: url,
       prNumber: prNumberFromUrl(url),
       prState: "open",
@@ -2228,6 +2234,14 @@ export class Registry extends EventEmitter {
       const transcriptPath = agentRebound && evt.transcriptPath === target.transcriptPath
         ? null
         : evt.transcriptPath ?? (agentRebound ? null : target.transcriptPath);
+      // A native lease starts detached. A live SDK hook after the agent creates its branch
+      // is a better moment to observe that branch than a later passive sweep. Keep a known
+      // branch untouched, but let the first real branch replace the acquisition-time null
+      // so the existing PR and workflow lifecycles can use it immediately.
+      const gitBranch = target.gitBranch ??
+        (target.runtime === "sdk" && target.cwd
+          ? gitInfo(target.cwd).branch
+          : null);
       let next: Session = {
         ...target,
         ...pr,
@@ -2240,6 +2254,7 @@ export class Registry extends EventEmitter {
         lastActivity: ts,
         agentSessionId,
         transcriptPath,
+        gitBranch,
       };
       if (noteKeyFor(next) !== noteKeyFor(target)) {
         next.workCycle = dbWorkCycleFor(noteKeyFor(next)) ?? undefined;
@@ -3589,16 +3604,20 @@ export class Registry extends EventEmitter {
       if (!task || task.extraRepos.length === 0) continue;
       const episode = sessionWorkEpisodeFor(s.id);
       for (const entry of task.extraRepos) {
-        // No tree or no branch means nothing was provisioned here (or teardown already
-        // took it back), and there is no checkout to run `gh` in.
-        if (!entry.worktreePath || !entry.branch) continue;
+        // Native acquisition records the detached checkout honestly as `branch: null`.
+        // Agents create their branches later, so use the recorded provision-time branch
+        // when one exists and otherwise observe the checkout now. Do not write it back to
+        // the task: its resource record remains the exact acquisition result.
+        if (!entry.worktreePath) continue;
+        const branch = entry.branch ?? gitInfo(entry.worktreePath).branch;
+        if (!branch) continue;
         out.push({
           key: repoPrTargetKey(s.id, entry.repoRoot),
           sessionId: s.id,
           taskId: task.id,
           repoRoot: entry.repoRoot,
           cwd: entry.worktreePath,
-          branch: entry.branch,
+          branch,
           agentSessionId: s.agentSessionId,
           episodeId: episode?.episodeId ?? null,
         });

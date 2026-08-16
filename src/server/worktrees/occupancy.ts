@@ -109,17 +109,15 @@ export async function inspectWorktreeOccupancy(
     for (const target of targets) result.set(target, { status: "unknown", reason });
     return result;
   }
-  if (cwdSnapshot.unknownReason) {
-    for (const target of targets) {
-      result.set(target, { status: "unknown", reason: cwdSnapshot.unknownReason });
-    }
-    return result;
-  }
-
   // Treat the dependency result as untrusted evidence: even a reader that reports itself
   // healthy cannot make omission prove that a ps-listed process exited. Re-list and compare
-  // stable process identity so only independently proven PID churn is ignored.
-  let unresolved = processes.filter((process) => !cwdSnapshot.cwds.has(process.pid));
+  // stable process identity so only independently proven PID churn is ignored. A failed cwd
+  // read starts with every PID unresolved: an all-empty `lsof` result is safe only when the
+  // fresh snapshot proves every process in the original scope exited during the read.
+  const cwdFailure = cwdSnapshot.unknownReason;
+  let unresolved = cwdFailure
+    ? processes
+    : processes.filter((process) => !cwdSnapshot.cwds.has(process.pid));
   if (unresolved.length > 0) {
     let confirmation: ProcessSnapshot;
     try {
@@ -142,6 +140,10 @@ export async function inspectWorktreeOccupancy(
     });
   }
   if (unresolved.length > 0) {
+    if (cwdFailure) {
+      for (const target of targets) result.set(target, { status: "unknown", reason: cwdFailure });
+      return result;
+    }
     const unresolvedPids = unresolved.map((process) => process.pid);
     const shown = unresolvedPids.slice(0, 8).join(", ");
     const remainder = unresolvedPids.length > 8 ? ` and ${unresolvedPids.length - 8} more` : "";

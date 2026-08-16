@@ -3,12 +3,12 @@
 | Env | Default | Meaning |
 |-----|---------|---------|
 | `MISSION_PORT` | `7317` | daemon / dashboard port |
-| `MISSION_HOME` | `~/.mission-control` | state dir (db, token, logs, dispatch worktrees) |
-| `MISSION_WORKSPACE_DIRS` | `~/workspace` | colon-separated roots scanned for the dispatch repo picker, and for the treehouse pools the leaked-lease sweep visits |
+| `MISSION_HOME` | `~/.mission-control` | state dir (db, token, logs, native worktree pools, and disposable Git worktrees) |
+| `MISSION_WORKSPACE_DIRS` | `~/workspace` | colon-separated roots scanned for the dispatch repo picker and for the legacy Treehouse pools the compatibility sweep visits |
 | `MISSION_POLL_MS` | `1500` | discovery interval |
 | `MISSION_AGENTS_SHADOW_MS` | `0` (off) | how often to take a [shadow reading](sessions.md#shadow-reading-claudes-own-session-state) of `claude agents --json` and log where it disagrees with our own discovery. Diagnostic only - it never feeds the registry. `0` or any non-positive value disables it; anything under `5000` is clamped up, since one reading spawns the full `claude` binary |
 | `MISSION_POOL_REAP_MS` | `300000` | how often to sweep treehouse pools for leaked leases. `0` (or any non-positive value) turns the background sweep off; an unparseable value falls back to the default; anything under `30000` is clamped up to it, and anything over `604800000` (7d) clamped down to it, since past ~24.8d `setTimeout` overflows into a hot loop |
-| `MISSION_WORKTREE_SWEEP_MS` | `300000` | how often the daemon reconciles native worktree pool records. `0` (or any non-positive value) turns recurring reconciliation off; startup reconciliation still runs. An unparseable value falls back to the default, values under `30000` are clamped up, and values over `604800000` (7d) are clamped down. This foundation is not selected by dispatch or workflow checks yet |
+| `MISSION_WORKTREE_SWEEP_MS` | `300000` | how often the daemon reconciles native worktree slots and reclaims eligible task and check leases. `0` (or any non-positive value) turns recurring reconciliation off; startup reconciliation still runs. An unparseable value falls back to the default, values under `30000` are clamped up, and values over `604800000` (7d) are clamped down |
 | `MISSION_DISPATCH_READY_MS` | `30000` | dispatch: how long to wait for the agent's pane to be discovered before failing |
 | `MISSION_DISPATCH_SETTLE_MS` | `2000` | terminal-runtime dispatch: how long a discovered pane with no usable hook readiness signal must remain live before dispatch continues. This starts immediately for Pi, whose positional launch message needs no pane injection, and after a hook wait times out for a still-live session. An observed exit fails instead. Agent SDK dispatch does not use a settle delay |
 | `MISSION_DISPATCH_HOOK_READY_MS` | `20000` | terminal-runtime dispatch: how long to wait for the exact discovered session's first hook when that launch can produce one. Hook silence falls back to the settle above if the session is still live; an observed exit ends the wait immediately. The wait is skipped for hookless harnesses such as Pi and when a particular Codex launch could not install its [hook bridge](sessions.md#precise-status-for-codex-hooks-that-ride-on-the-dispatch) |
@@ -122,7 +122,8 @@ startup and the Cost panel says so on screen.
 
 ```sh
 make init              # one-time bootstrap (deps, build, hooks, treehouse)
-make session           # start an agent in a fresh worktree
+make session           # ask the running daemon for a durable manual worktree lease
+make session ARGS="--return <lease-id>" # return a clean manual lease by durable ID
 npm run dev            # daemon + web (dev)
 npm start              # daemon serving built UI
 npm run foreman        # Foreman worker (needs-you queue, work queues, PR follow-up, backlog autopilot)

@@ -31,6 +31,7 @@ process.env.MISSION_PI_BIN = "/bin/echo";
 
 const { Registry } = await import("../src/server/registry.ts");
 const { Dispatcher, provisionWorktree } = await import("../src/server/dispatcher.ts");
+const { WorktreeManager } = await import("../src/server/worktrees/manager.ts");
 const { poolPins } = await import("../src/server/pool.ts");
 const { WORKTREES_DIR } = await import("../src/server/config.ts");
 
@@ -40,8 +41,8 @@ after(() => {
   delete process.env.MISSION_PI_BIN;
 });
 
-// Nothing here opts into treehouse, so provisioning is the git fallback: nothing leased,
-// nothing held, and a reap has nothing to consider.
+// These repositories use the default-on native allocator. Direct provisioning cases that do
+// not inject the daemon manager remain on the disposable Git compatibility seam.
 const NO_PINS = () => ({ sessionCwds: [], taskWorktrees: [], checkLeasePaths: [] });
 
 function mkRepo(name: string): string {
@@ -53,6 +54,11 @@ function mkRepo(name: string): string {
   writeFileSync(join(repo, "file.txt"), `${name}\n`);
   execFileSync("git", ["-C", repo, "add", "-A"]);
   execFileSync("git", ["-C", repo, "commit", "-qm", "first"]);
+  const origin = join(home, `${name}.git`);
+  execFileSync("git", ["init", "-q", "--bare", origin]);
+  execFileSync("git", ["-C", repo, "remote", "add", "origin", origin]);
+  execFileSync("git", ["-C", repo, "push", "-qu", "origin", "main"]);
+  execFileSync("git", ["-C", origin, "symbolic-ref", "HEAD", "refs/heads/main"]);
   return repo;
 }
 
@@ -62,6 +68,7 @@ function entry(repoRoot: string): TaskRepoEntry {
     worktreePath: null,
     branch: null,
     provider: null,
+    worktreeLeaseId: null,
     baseSha: null,
     prUrl: null,
     prState: null,
@@ -88,27 +95,21 @@ test("a secondary that cannot be provisioned unwinds the primary's tree", async 
       extraRepos: [entry(broken)],
     }),
   );
-  const dispatcher = new Dispatcher(registry);
+  const worktrees = new WorktreeManager();
+  const dispatcher = new Dispatcher(registry, undefined, { worktrees });
 
   await dispatcher.dispatch("rollback-task");
 
   const failed = registry.getTask("rollback-task");
   assert.equal(failed?.status, "failed");
   assert.match(failed?.error ?? "", /is not a git repository/);
-  // The primary's tree was really taken and really given back. Asserting the DISK, not the
-  // row: the row never learned about it, which is exactly why nothing else could clean up.
-  assert.equal(
-    existsSync(join(WORKTREES_DIR, "rollback-task")),
-    false,
-    "the primary tree provisioned before the failure is gone",
-  );
-  // And the throwaway branch with it, so a retry of the same task can cut it again.
-  assert.equal(
-    execFileSync("git", ["-C", api, "branch", "--list", "harness/t-rollba"], { stdio: "pipe" })
-      .toString()
-      .trim(),
-    "",
-  );
+  // The primary's native lease was really returned. Its warm directory remains while its
+  // exact slot becomes available, which is the resource fact this row never got to record.
+  const slots = worktrees.store.slots().filter((slot) => slot.path.includes("rollback-api"));
+  assert.equal(slots.length, 1);
+  assert.equal(slots[0]?.state, "available");
+  assert.equal(slots[0]?.activeLeaseId, null);
+  assert.ok(slots[0] && existsSync(slots[0].path));
   // Nothing half-recorded: a task that provisioned nothing names nothing.
   assert.equal(failed?.worktreePath, null);
   assert.deepEqual(
@@ -119,12 +120,9 @@ test("a secondary that cannot be provisioned unwinds the primary's tree", async 
 });
 
 test("the unwind is provider-aware in every ordering", async () => {
-  // Mixed providers on one task are ordinary - a treehouse repo takes a lease while a plain
-  // repo does not - and the two are UNWOUND by different commands. A lease must be RETURNED
-  // (a `git worktree remove` would delete a pooled tree the pool still believes it owns);
-  // a fallback tree must be removed. `teardownWorktree` is what knows the difference, so
-  // what this pins is that every taken tree reaches it carrying its OWN provider, whichever
-  // position in the set failed.
+  // Every taken tree must reach teardown carrying its own persisted provider. Native leases
+  // are returned through the allocator; disposable Git trees are removed. This case exercises
+  // native unwind in both primary and secondary positions.
   const broken = join(home, "mixed-not-a-repo");
   mkdirSync(broken, { recursive: true });
 
@@ -160,7 +158,7 @@ test("the unwind is provider-aware in every ordering", async () => {
     const unwound = seen.filter((call) => call.path !== null);
     assert.equal(unwound.length, taken, `${id}: every tree taken before the failure is offered back`);
     for (const call of unwound) {
-      assert.equal(call.provider, "git", `${id}: unwound as the provider it was taken as`);
+      assert.equal(call.provider, "mission", `${id}: unwound as the provider it was taken as`);
     }
   }
 });

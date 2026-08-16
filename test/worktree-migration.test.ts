@@ -57,4 +57,11 @@ test("a pre-native database gains empty operational tables without rewriting old
     }).provider,
     "treehouse",
   );
+  assert.equal(
+    (db.prepare(`SELECT lease_id FROM workflow_check_leases WHERE attempt_id = 'attempt-old'`).get() as {
+      lease_id: string | null;
+    }).lease_id,
+    null,
+    "a historical Treehouse row gains no invented native lease identity",
+  );
 });

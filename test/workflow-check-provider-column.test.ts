@@ -67,7 +67,8 @@ raw.exec(`
 raw.close();
 
 const { openDb } = await import("../src/server/db.ts");
-const { CheckLeaseManager, CheckLeaseStore } = await import("../src/server/workflows/check-lease.ts");
+const { CheckLeaseManager, CheckLeaseStore, TreehouseCheckTreeProvider } =
+  await import("../src/server/workflows/check-lease.ts");
 const { checkHolderToken } = await import("../src/server/pool-lease.ts");
 const { stubRun } = await import("../src/server/util/exec.ts");
 
@@ -76,7 +77,6 @@ type TreehouseCli = import("../src/server/pool-lease.ts").TreehouseCli;
 const db = openDb();
 const store = new CheckLeaseStore(db);
 const SHA = "b".repeat(40);
-const TREEHOUSE_PRESENT = async () => true;
 
 const providerOf = (attemptId: string): unknown =>
   (
@@ -129,7 +129,7 @@ function mkManager() {
     cli: pool.cli,
     pin: async () => {},
     verifyBase: async (_repoRoot, sha) => sha,
-    treehouseInstalled: TREEHOUSE_PRESENT,
+    acquisitionProvider: new TreehouseCheckTreeProvider(pool.cli, async () => {}),
   });
   return { ...pool, manager, repoRoot: dir };
 }
@@ -242,7 +242,7 @@ test("a release routes on the recorded provider, not on what this machine has", 
   );
 });
 
-test("a treehouse row is released through treehouse when the current machine would choose git", async () => {
+test("a treehouse row is released through treehouse when new acquisition defaults to native", async () => {
   // A second manager over the same table is what a restart looks like. The point is that
   // nothing re-derives the column: the row that a treehouse build wrote still says treehouse,
   // and that is the value the next release will route on.
@@ -255,22 +255,16 @@ test("a treehouse row is released through treehouse when the current machine wou
     headSha: SHA,
   });
 
-  let probes = 0;
   const restarted = new CheckLeaseManager(db, {
     cli: m.cli,
     pin: async () => {},
     verifyBase: async (_r, s) => s,
-    treehouseInstalled: async () => {
-      probes++;
-      return false;
-    },
   });
   assert.equal(store.get("att-restart")?.provider, "treehouse");
   assert.deepEqual(await restarted.releaseForAttempt("att-restart"), { outcome: "returned" });
   assert.equal(providerOf("att-restart"), "treehouse", "a release must never rewrite it");
   assert.equal(m.slot.state, "available");
   assert.ok(m.calls.includes("return"), "the recorded provider is the one that acted");
-  assert.equal(probes, 0, "release re-probed the machine instead of reading the row");
 });
 
 test("a treehouse row fails closed when the binary vanishes", async () => {
@@ -284,7 +278,6 @@ test("a treehouse row fails closed when the binary vanishes", async () => {
   });
 
   let statusReads = 0;
-  let probes = 0;
   const missingBinary: TreehouseCli = {
     ...m.cli,
     status: async () => {
@@ -296,17 +289,12 @@ test("a treehouse row fails closed when the binary vanishes", async () => {
     cli: missingBinary,
     pin: async () => {},
     verifyBase: async (_r, s) => s,
-    treehouseInstalled: async () => {
-      probes++;
-      return false;
-    },
   });
 
   const outcome = await restarted.releaseForAttempt("att-vanished");
   assert.equal(outcome.outcome, "retry");
   assert.match(outcome.outcome === "retry" ? outcome.reason : "", /treehouse status exited 1/);
   assert.equal(statusReads, 1, "the recorded treehouse provider was not asked about ownership");
-  assert.equal(probes, 0, "release re-probed the machine instead of reading the row");
   assert.equal(store.get("att-vanished")?.cleanupState, "held");
   assert.equal(store.get("att-vanished")?.provider, "treehouse");
   assert.ok(restarted.pinnedPaths().includes(path), "an unreadable treehouse row lost its pin");

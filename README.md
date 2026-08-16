@@ -59,10 +59,11 @@ on unresolved comments or a red CI - tracks each pull request separately, so one
 feedback is never mistaken for another's or lost behind it. They share the pane, so they take
 turns in it: one instruction at a time, never two in a turn expecting neither.
 
-The daemon also carries the durable state and conservative restart reconciliation needed for
-Mission Control's native worktree pools. No dispatch or workflow-check acquisition path selects
-that allocator yet: current sessions and checks continue to use their existing treehouse or
-plain Git behavior until the later consumer cutover.
+The daemon owns a durable native worktree pool for every physical repository. New tasks,
+Workflow checks, and approved `make session` work use exact lease identities from that allocator
+by default. A disabled repository or positive capacity refusal degrades to a disposable Git
+worktree for tasks and checks, while ambiguous outcomes fail closed. Existing Treehouse rows keep
+their recorded cleanup behavior during the compatibility bridge.
 
 ![Mission Control dispatch](docs/images/dispatch.png)
 

@@ -16,7 +16,8 @@ const home = realpathSync(mkdtempSync(join(tmpdir(), "mission-check-lease-")));
 process.env.HARNESS_HOME = home;
 
 const { openDb } = await import("../src/server/db.ts");
-const { CheckLeaseManager, CheckLeaseStore } = await import("../src/server/workflows/check-lease.ts");
+const { CheckLeaseManager, CheckLeaseStore, TreehouseCheckTreeProvider } =
+  await import("../src/server/workflows/check-lease.ts");
 const { checkHolderToken, isCheckHolder, installCheckLeasePins } =
   await import("../src/server/pool-lease.ts");
 const { parsePoolStatus, poolPins } = await import("../src/server/pool.ts");
@@ -30,7 +31,10 @@ type CheckGroupRecovery = import("../src/server/workflows/check-lease.ts").Check
 const db = openDb();
 const store = new CheckLeaseStore(db);
 const SHA = "a".repeat(40);
-const TREEHOUSE_PRESENT = async () => true;
+const modeledProvider = (
+  cli: TreehouseCli,
+  pin: (repoRoot: string, leasePath: string, baseSha: string) => Promise<void>,
+) => new TreehouseCheckTreeProvider(cli, pin);
 
 const liveRows = (): unknown[] =>
   db
@@ -153,13 +157,14 @@ function mkManager(
 ) {
   const dir = mkdtempSync(join(home, `pool-${seq++}-`));
   const pool = fakePool(opts.slots ?? 3, dir);
+  const pin = opts.pin ?? (async () => {});
   const manager = new CheckLeaseManager(db, {
     cli: pool.cli,
     // The pin is real git work against a real pool tree; every case here is about the LEASE,
     // so it is stubbed unless the case is specifically about a pin failing.
-    pin: opts.pin ?? (async () => {}),
+    pin,
     verifyBase: async (_repoRoot, sha) => sha,
-    treehouseInstalled: TREEHOUSE_PRESENT,
+    acquisitionProvider: modeledProvider(pool.cli, pin),
   });
   return { ...pool, manager, repoRoot: dir };
 }
@@ -345,7 +350,7 @@ test("a primary-key clash from another manager leaves the winner's row alone", a
     cli: m.cli,
     pin: async () => {},
     verifyBase: async (_r, s) => s,
-    treehouseInstalled: TREEHOUSE_PRESENT,
+    acquisitionProvider: modeledProvider(m.cli, async () => {}),
   });
   const ask = (mgr: InstanceType<typeof CheckLeaseManager>) =>
     mgr.acquireForAttempt({
@@ -381,11 +386,15 @@ test("a loser whose unwind cannot return its tree still leaves the winner's row 
   // check's lease as being handed back, which invites reclamation to force-return a tree
   // with a build running in it.
   const m = mkManager({ slots: 4 });
+  const failingCli = {
+    ...m.cli,
+    return: async () => stubRun({ stdout: "", stderr: "tree is busy", code: 1 }),
+  };
   const other = new CheckLeaseManager(db, {
-    cli: { ...m.cli, return: async () => stubRun({ stdout: "", stderr: "tree is busy", code: 1 }) },
+    cli: failingCli,
     pin: async () => {},
     verifyBase: async (_r, s) => s,
-    treehouseInstalled: TREEHOUSE_PRESENT,
+    acquisitionProvider: modeledProvider(failingCli, async () => {}),
   });
   const ask = (mgr: InstanceType<typeof CheckLeaseManager>) =>
     mgr.acquireForAttempt({
@@ -419,14 +428,15 @@ test("a failed insert never deletes or re-states a row this acquire did not writ
   const held = await acquire(m, "att-owner");
 
   // Force the next acquire onto the same path, behind the owner's back.
+  const stealingCli = {
+    ...m.cli,
+    get: async () => stubRun({ stdout: `${held}\n`, stderr: "", code: 0 }),
+  };
   const stealer = new CheckLeaseManager(db, {
-    cli: {
-      ...m.cli,
-      get: async () => stubRun({ stdout: `${held}\n`, stderr: "", code: 0 }),
-    },
+    cli: stealingCli,
     pin: async () => {},
     verifyBase: async (_r, s) => s,
-    treehouseInstalled: TREEHOUSE_PRESENT,
+    acquisitionProvider: modeledProvider(stealingCli, async () => {}),
   });
 
   await assert.rejects(

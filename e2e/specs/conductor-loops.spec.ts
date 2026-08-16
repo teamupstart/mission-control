@@ -136,39 +136,52 @@ test("a projected pipeline pull request is adopted under pipeline provenance and
   daemon,
 }) => {
   const url = "https://github.com/example/pipeline-demo/pull/606";
+  const fixtureOrigin = execFileSync(
+    "git",
+    ["-C", daemon.repo, "remote", "get-url", "origin"],
+    { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+  ).trim();
   execFileSync(
     "git",
     [
       "-C",
       daemon.repo,
       "remote",
-      "add",
+      "set-url",
       "origin",
       "https://github.com/example/pipeline-demo.git",
     ],
     { stdio: "pipe" },
   );
-  seedConductorRun(daemon.repo, "ship-phase-six", {
-    steps: { worktree: "done", ship: "done" },
-    lastStep: "ship",
-    prUrl: url,
-    complete: true,
-  });
-  seedConductorDaemon(daemon.repo, { pid: process.pid });
-  await enablePipelines(daemon);
+  try {
+    seedConductorRun(daemon.repo, "ship-phase-six", {
+      steps: { worktree: "done", ship: "done" },
+      lastStep: "ship",
+      prUrl: url,
+      complete: true,
+    });
+    seedConductorDaemon(daemon.repo, { pid: process.pid });
+    await enablePipelines(daemon);
 
-  await expect
-    .poll(async () => request<Array<{ url: string; source: string }>>(daemon, "/api/inspector/prs"), {
-      message: "Inspector should adopt the projected pull request",
-      timeout: 15_000,
-    })
-    .toContainEqual(expect.objectContaining({ url, source: "pipeline" }));
+    await expect
+      .poll(async () => request<Array<{ url: string; source: string }>>(daemon, "/api/inspector/prs"), {
+        message: "Inspector should adopt the projected pull request",
+        timeout: 15_000,
+      })
+      .toContainEqual(expect.objectContaining({ url, source: "pipeline" }));
 
-  await dashboard.goto(`${daemon.baseURL}/#/shipped`);
-  const row = dashboard.getByRole("listitem").filter({ hasText: "#606" });
-  await expect(row).toBeVisible();
-  await expect(row.getByRole("link")).toHaveAttribute("href", url);
-  await shoot(dashboard, "02-pipeline-pr-in-shipped", row);
+    await dashboard.goto(`${daemon.baseURL}/#/shipped`);
+    const row = dashboard.getByRole("listitem").filter({ hasText: "#606" });
+    await expect(row).toBeVisible();
+    await expect(row.getByRole("link")).toHaveAttribute("href", url);
+    await shoot(dashboard, "02-pipeline-pr-in-shipped", row);
+  } finally {
+    execFileSync(
+      "git",
+      ["-C", daemon.repo, "remote", "set-url", "origin", fixtureOrigin],
+      { stdio: "pipe" },
+    );
+  }
 });
 
 test("Foreman acts on a mechanical halt through the provider route and leaves needs-human with the operator", async ({

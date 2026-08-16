@@ -267,7 +267,7 @@ test("a scout that has not submitted a report cannot be completed, and keeps its
   // agent can still be told to finish the job.
   await dashboard.getByRole("button", { name: "Close" }).first().click();
   await expect(dialog).toBeHidden();
-  await expect(card).toContainText("worktrees/");
+  await expect(card).toContainText("worktree-pools/");
   await expect(card.getByRole("button", { name: "Complete" })).toBeVisible();
 });
 

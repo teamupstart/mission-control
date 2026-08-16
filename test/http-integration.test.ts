@@ -468,6 +468,7 @@ test("rename: 404 unknown session, 400 invalid name, and it's wired to the actio
     worktreePath: "/wt/stale-xyzzy",
     branch: null,
     provider: null,
+    worktreeLeaseId: null,
     homeName: "harness-rename-taken-xyzzy",
     terminalResourceId: null,
     sessionId: null,

@@ -596,6 +596,8 @@ export function openDb(): DatabaseSync {
       worktree_path TEXT,
       branch        TEXT,
       provider      TEXT,
+      -- Opaque native allocator identity. NULL for historical treehouse and disposable git.
+      worktree_lease_id TEXT,
       -- The full 40-char commit the PRIMARY repo's branch was cut at. Here rather than in a
       -- task_repos row so "a single-repo task has zero task_repos rows" stays true; a reader
       -- that iterates task_repos alone therefore cannot see the primary and must read this.
@@ -638,6 +640,7 @@ export function openDb(): DatabaseSync {
       worktree_path TEXT,
       branch        TEXT,
       provider      TEXT,
+      worktree_lease_id TEXT,
       base_sha      TEXT,
       position      INTEGER NOT NULL,
       PRIMARY KEY (task_id, repo_root)
@@ -1467,6 +1470,8 @@ export function openDb(): DatabaseSync {
       -- convenient - see the migration in migrate(), and the warning about nullable columns
       -- a few lines above, which this default is what keeps clear of.
       provider               TEXT    NOT NULL DEFAULT 'treehouse',
+      -- Opaque native allocator identity. NULL on every historical provider row.
+      lease_id                TEXT,
       created_at             INTEGER NOT NULL,
       updated_at             INTEGER NOT NULL
     );
@@ -3060,6 +3065,8 @@ function migrate(d: DatabaseSync): void {
   // rule that later compares a head against it. `task_repos` needs no entry here - a new
   // TABLE is covered by the CREATE TABLE IF NOT EXISTS block, which runs on every open.
   addColumn(d, "tasks", "base_sha", "TEXT");
+  addColumn(d, "tasks", "worktree_lease_id", "TEXT");
+  addColumn(d, "task_repos", "worktree_lease_id", "TEXT");
 
   // `home_name`: the terminal home a dispatched agent lives in, renamed from the
   // tmux-specific `tmux_session` now that the name is resolved against ANY backend
@@ -3170,6 +3177,7 @@ function migrate(d: DatabaseSync): void {
   // No backfill statement and no index: the default IS the backfill, and the only reader
   // selects the row it already has by primary key.
   addColumn(d, "workflow_check_leases", "provider", "TEXT NOT NULL DEFAULT 'treehouse'");
+  addColumn(d, "workflow_check_leases", "lease_id", "TEXT");
 
   // `inspector_comments(pr_key)` is the leftmost prefix of the unique index on
   // (pr_key, fingerprint), so it can serve no query that one cannot. Dropped rather
@@ -4109,6 +4117,7 @@ interface TaskRow {
   worktree_path: string | null;
   branch: string | null;
   provider: string | null;
+  worktree_lease_id: string | null;
   base_sha: string | null;
   home_name: string | null;
   terminal_resource_id: string | null;
@@ -4132,6 +4141,7 @@ interface TaskRepoRow {
   worktree_path: string | null;
   branch: string | null;
   provider: string | null;
+  worktree_lease_id: string | null;
   base_sha: string | null;
   position: number;
 }
@@ -4187,6 +4197,7 @@ function rowToTaskRepo(
     worktreePath: r.worktree_path,
     branch: r.branch,
     provider: r.provider as WorktreeProvider | null,
+    worktreeLeaseId: r.worktree_lease_id,
     baseSha: r.base_sha,
     // Projected on read from `work_episode_prs` rather than stored on this row, so there is
     // one writer of a repository's pull request and one reader of it. Deriving any of this
@@ -4388,6 +4399,7 @@ function rowToTask(r: TaskRow, extraRepos: TaskRepoEntry[]): Task {
     worktreePath: r.worktree_path,
     branch: r.branch,
     provider: r.provider as WorktreeProvider | null,
+    worktreeLeaseId: r.worktree_lease_id,
     baseSha: r.base_sha,
     extraRepos,
     homeName: r.home_name,
@@ -4437,12 +4449,13 @@ export function upsertTask(t: Task): string[] {
       `INSERT INTO tasks (
          id, title, intent, kind, agent, priority, labels, dependencies, enabled, model, effort,
          workflow_id, source_id, external_id, source_url, repo_root,
-         pipeline_provider, pipeline_slug, worktree_path, branch, provider, base_sha,
+         pipeline_provider, pipeline_slug, worktree_path, branch, provider, worktree_lease_id,
+         base_sha,
          home_name, terminal_resource_id, session_id,
          schedule_id, schedule_occurrence_id, scheduled_for,
          status, outcome, outcome_url, error,
          created_at, updated_at, dispatched_at, completed_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          title=excluded.title, intent=excluded.intent, kind=excluded.kind, agent=excluded.agent,
          priority=excluded.priority, labels=excluded.labels, dependencies=excluded.dependencies,
@@ -4453,7 +4466,8 @@ export function upsertTask(t: Task): string[] {
          repo_root=excluded.repo_root,
          pipeline_provider=excluded.pipeline_provider, pipeline_slug=excluded.pipeline_slug,
          worktree_path=excluded.worktree_path, branch=excluded.branch,
-         provider=excluded.provider, base_sha=excluded.base_sha, home_name=excluded.home_name,
+         provider=excluded.provider, worktree_lease_id=excluded.worktree_lease_id,
+         base_sha=excluded.base_sha, home_name=excluded.home_name,
          terminal_resource_id=excluded.terminal_resource_id, session_id=excluded.session_id,
          schedule_id=excluded.schedule_id,
          schedule_occurrence_id=excluded.schedule_occurrence_id,
@@ -4474,7 +4488,7 @@ export function upsertTask(t: Task): string[] {
       t.workflowId,
       t.source?.sourceId ?? null, t.source?.externalId ?? null, t.source?.url ?? null,
       t.repoRoot, t.pipelineRun?.provider ?? null, t.pipelineRun?.slug ?? null,
-      t.worktreePath, t.branch, t.provider, t.baseSha,
+      t.worktreePath, t.branch, t.provider, t.worktreeLeaseId, t.baseSha,
       t.homeName, t.terminalResourceId, t.sessionId,
       t.scheduleId, t.scheduleOccurrenceId, t.scheduledFor,
       t.status, t.outcome, t.outcomeUrl, t.error, t.createdAt,
@@ -4489,8 +4503,9 @@ export function upsertTask(t: Task): string[] {
     d.prepare(`DELETE FROM task_repos WHERE task_id = ?`).run(t.id);
     if (t.extraRepos.length > 0) {
       const insert = d.prepare(
-        `INSERT INTO task_repos (task_id, repo_root, worktree_path, branch, provider, base_sha, position)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO task_repos
+           (task_id, repo_root, worktree_path, branch, provider, worktree_lease_id, base_sha, position)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       );
       t.extraRepos.forEach((entry, position) => {
         insert.run(
@@ -4499,6 +4514,7 @@ export function upsertTask(t: Task): string[] {
           entry.worktreePath,
           entry.branch,
           entry.provider,
+          entry.worktreeLeaseId,
           entry.baseSha,
           position,
         );

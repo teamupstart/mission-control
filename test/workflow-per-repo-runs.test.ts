@@ -51,6 +51,7 @@ function entry(over: Partial<TaskRepoEntry> = {}): TaskRepoEntry {
     worktreePath: null,
     branch: "feat/work",
     provider: "git",
+    worktreeLeaseId: null,
     baseSha: SECOND_BASE,
     prUrl: null,
     prState: null,

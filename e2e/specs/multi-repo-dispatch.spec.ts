@@ -1,4 +1,4 @@
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
@@ -16,10 +16,23 @@ import { recordsIn } from "../fixtures/records.ts";
 // fake claude records the argv it was launched with - which is what makes the write grant
 // assertable rather than merely intended.
 
-/** Every worktree the daemon cut, by directory name under the state dir. */
-function worktreeNames(daemon: DaemonHandle): string[] {
-  const dir = join(daemon.home, "worktrees");
-  return existsSync(dir) ? readdirSync(dir).sort() : [];
+interface ProvisionedTask {
+  intent: string;
+  worktreePath: string | null;
+  provider: string | null;
+  worktreeLeaseId: string | null;
+  extraRepos: Array<{
+    repoRoot: string;
+    worktreePath: string | null;
+    provider: string | null;
+    worktreeLeaseId: string | null;
+  }>;
+}
+
+async function provisionedTask(daemon: DaemonHandle, intent: string): Promise<ProvisionedTask | undefined> {
+  const response = await fetch(`${daemon.baseURL}/api/tasks`);
+  if (!response.ok) return undefined;
+  return ((await response.json()) as ProvisionedTask[]).find((task) => task.intent === intent);
 }
 
 /**
@@ -72,7 +85,7 @@ async function dispatchAcross(
   await expect(dialog).toBeHidden();
 }
 
-test("attaching a second repo dispatches one session with a worktree in each", async ({
+test("attaching a second repo dispatches one session with a native lease in each", async ({
   dashboard,
   daemon,
 }) => {
@@ -84,22 +97,26 @@ test("attaching a second repo dispatches one session with a worktree in each", a
   await expect(card).toBeVisible();
   await expect(dashboard.locator("article.card")).toHaveCount(1);
 
-  // Two worktrees, and specifically the slot scheme later phases are promised: the primary
-  // keeps the legacy `<taskId>` path and the secondary takes `<taskId>-1`.
-  await expect
-    .poll(() => worktreeNames(daemon), { message: "one worktree per attached repo" })
-    .toHaveLength(2);
-  // The primary is the one whose name another name EXTENDS. Not "the one without -1 in it":
-  // task ids are UUIDs and routinely contain that substring, which made an earlier version
-  // of this assertion pass or fail on the roll of a random id.
-  const names = worktreeNames(daemon);
-  const primary = names.find((n) => names.includes(`${n}-1`))!;
-  expect(primary, "one worktree's name extends the other's, by slot").toBeTruthy();
+  await expect.poll(() => provisionedTask(daemon, "Rename the shared field"), {
+    message: "the task should durably record both native leases",
+  }).toMatchObject({
+    provider: "mission",
+    worktreeLeaseId: expect.any(String),
+    extraRepos: [{
+      repoRoot: daemon.secondRepo,
+      provider: "mission",
+      worktreeLeaseId: expect.any(String),
+    }],
+  });
+  const task = (await provisionedTask(daemon, "Rename the shared field"))!;
+  expect(task.worktreePath).toContain(join(daemon.home, "worktree-pools"));
+  expect(task.extraRepos[0]?.worktreePath).toContain(join(daemon.home, "worktree-pools"));
+  expect(task.extraRepos[0]?.worktreePath).not.toBe(task.worktreePath);
 
-  // Each tree really belongs to its own repository - the failure a shared destination path
-  // would have produced looks identical from the outside until you ask this.
-  expect(existsSync(join(daemon.home, "worktrees", primary, "README.md"))).toBe(true);
-  expect(existsSync(join(daemon.home, "worktrees", `${primary}-1`, "README.md"))).toBe(true);
+  // Each tree really belongs to its own repository. The failure a shared destination path
+  // would have produced looks identical from the outside until the filesystem is asked.
+  expect(existsSync(join(task.worktreePath!, "README.md"))).toBe(true);
+  expect(existsSync(join(task.extraRepos[0]!.worktreePath!, "README.md"))).toBe(true);
 });
 
 for (const nextAction of ["Dispatch now", "Add to backlog"] as const) {
@@ -166,7 +183,7 @@ test("the launched agent is granted write access to the secondary worktree", asy
   const granted = launchArgvs(daemon).find((argv) => argv.includes("--add-dir"))!;
   const dir = granted[granted.indexOf("--add-dir") + 1];
   expect(dir, "the granted directory is the secondary WORKTREE, never the repo itself").toContain(
-    join(daemon.home, "worktrees"),
+    join(daemon.home, "worktree-pools"),
   );
   expect(dir).not.toBe(daemon.secondRepo);
 });
@@ -177,7 +194,8 @@ test("a single-repo dispatch is granted nothing extra", async ({ dashboard, daem
   await dispatchAcross(dashboard, daemon, [], "Write a haiku about flexbox");
   await expect(dashboard.locator("article.card").first()).toBeVisible();
 
-  await expect.poll(() => worktreeNames(daemon).length).toBe(1);
+  await expect.poll(async () => (await provisionedTask(daemon, "Write a haiku about flexbox"))?.provider)
+    .toBe("mission");
   expect(launchArgvs(daemon).some((argv) => argv.includes("--add-dir"))).toBe(false);
 });
 

@@ -103,6 +103,7 @@ function taskAt(primary: string, extras: string[] = []): ScoutRepoTask {
       position: position + 1,
       branch: null,
       provider: null,
+      worktreeLeaseId: null,
       prUrl: null,
       prState: null,
       mergedAt: null,

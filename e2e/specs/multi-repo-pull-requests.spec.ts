@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "../fixtures/test.ts";
@@ -132,6 +133,14 @@ async function provisionedTask(daemon: DaemonHandle, extras = 1): Promise<TaskRo
   return task!;
 }
 
+/** Model the agent creating its feature branch after native detached acquisition. */
+function createTaskBranches(task: TaskRow): void {
+  const paths = [task.worktreePath, ...task.extraRepos.map((entry) => entry.worktreePath)];
+  for (const path of paths) {
+    if (path) execFileSync("git", ["-C", path, "switch", "-q", "-c", "e2e/multi-repo-pr"]);
+  }
+}
+
 /**
  * The daemon's own adoption signal: the hook a harness fires when `gh pr create` returns,
  * carrying EVERY url the command printed.
@@ -202,6 +211,7 @@ test("a two-repo task shows a pull request per repo and completes only on the se
   await dispatchAcross(dashboard, daemon);
   const session = await settledSession(daemon);
   const task = await provisionedTask(daemon);
+  createTaskBranches(task);
 
   // One command, two pull requests. Everything downstream of this - adoption, the card, the
   // quorum - is reachable only if BOTH urls survived the hook.
@@ -295,6 +305,7 @@ test("a single-repo task still shows one outcome and no per-repo lines", async (
 
   const session = await settledSession(daemon);
   const task = await provisionedTask(daemon, 0);
+  createTaskBranches(task);
   await announcePullRequests(daemon, session, [PR_PRIMARY]);
   // Scripted, so the poller CONFIRMS the chip the hook drew optimistically rather than
   // retracting it a tick later - which is what it correctly does for a branch `gh` reports

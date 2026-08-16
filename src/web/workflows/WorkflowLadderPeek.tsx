@@ -22,7 +22,7 @@ import {
   deliveryStateView,
   endStatus,
   gateSummaryStatus,
-  gateWaitSentence,
+  inspectorGateSentence,
   inheritedPasses,
   latestAttemptsFor,
   newestInheritedSource,
@@ -33,6 +33,7 @@ import {
   sessionActionStatus,
   shortSha,
   stageStatus,
+  spentInspectorGateStatus,
   submissionStatus,
   verdictOf,
 } from "./run-model.ts";
@@ -119,18 +120,19 @@ export function workflowLadderPeekView(
     ? detail.inspectorGate
     : null;
   if (gate) {
+    const spentStatus = spentInspectorGateStatus(detail);
     const facts = [
       summary.gatePrNumber ? `PR #${summary.gatePrNumber}` : null,
-      shortSha(summary.gateHeadShort)
-        ? `head ${shortSha(summary.gateHeadShort)}`
+      shortSha(spentStatus ? gate.inspection?.observedHeadSha : summary.gateHeadShort)
+        ? `head ${shortSha(spentStatus ? gate.inspection?.observedHeadSha : summary.gateHeadShort)}`
         : null,
     ].filter((fact): fact is string => fact !== null);
     return {
       name: "GitHub Inspector gate",
       sub: facts.join(" · ") || null,
-      status: gateSummaryStatus(summary.gate),
+      status: spentStatus ?? gateSummaryStatus(summary.gate),
       members: [],
-      sentence: gateWaitSentence(gate.state.waitReason),
+      sentence: inspectorGateSentence(detail),
       carried: null,
     };
   }

@@ -156,6 +156,79 @@ function detailFor(shape: Shape): WorkflowRunDetail {
   } as unknown as WorkflowRunDetail;
 }
 
+function spentInspectorDetail(
+  patch: {
+    openFindings?: number;
+    observedHeadSha?: string | null;
+    observedState?: "OPEN" | "CLOSED" | "MERGED" | null;
+    reviewedHeadSha?: string | null;
+    reviewPosture?: "live" | "dry-run" | "off" | "not-allowlisted" | null;
+    currentPosture?: "live" | "dry-run" | "off" | "not-allowlisted" | null;
+    inspection?: boolean;
+    maxRepairRounds?: number;
+    round?: number;
+  } = {},
+): WorkflowRunDetail {
+  const detail = detailFor({
+    status: "blocked",
+    phase: "round_limit",
+    round: patch.round ?? 6,
+    maxRepairRounds: patch.maxRepairRounds ?? 5,
+    inspectorOnly: true,
+    policy: "inspector",
+    gatePrNumber: 91,
+    gate: {
+      waitReason: "findings",
+      prUrl: "https://github.com/owner/repo/pull/91",
+    },
+  });
+  const openFindings = patch.openFindings ?? 0;
+  const observedHeadSha = patch.observedHeadSha === undefined
+    ? "clean-head-123456789"
+    : patch.observedHeadSha;
+  detail.inspectorGate = {
+    ...detail.inspectorGate!,
+    state: {
+      ...detail.inspectorGate!.state,
+      targetHeadSha: "failed-head-123456789",
+      failedHeadSha: "failed-head-123456789",
+      observedHeadSha: "failed-head-123456789",
+      findingFingerprints: ["historical-finding"],
+    },
+    inspector: {
+      enabled: true,
+      mode: "live",
+      posture: patch.currentPosture === undefined ? "live" : patch.currentPosture,
+    },
+    inspection: patch.inspection === false ? null : {
+      key: "owner/repo#7",
+      state: "open",
+      observedState: patch.observedState === undefined ? "OPEN" : patch.observedState,
+      observedHeadSha,
+      headSha: patch.reviewedHeadSha === undefined ? observedHeadSha : patch.reviewedHeadSha,
+      reviewPosture: patch.reviewPosture === undefined ? "live" : patch.reviewPosture,
+      lastError: null,
+      openFindings,
+      resolvedFindings: 1,
+    } as never,
+    findings: [
+      {
+        id: "historical",
+        prKey: "owner/repo#7",
+        fingerprint: "historical-finding",
+        status: "resolved",
+      },
+      ...Array.from({ length: openFindings }, (_, index) => ({
+        id: `current-${index}`,
+        prKey: "owner/repo#7",
+        fingerprint: `current-${index}`,
+        status: "open" as const,
+      })),
+    ] as never,
+  };
+  return detail;
+}
+
 /** The move's kind and its label, or `null` - the whole answer in one comparable value. */
 const moveOf = (shape: Shape): { kind: string; label: string } | null => {
   const move = runNextMove(detailFor(shape));
@@ -429,8 +502,8 @@ test("the gate waits resolve to the handoff first, then to a recheck", () => {
 /**
  * A gate action must not answer a blocked run.
  *
- * `manager.recheckInspector` accepts ANY non-terminal run that has a gate, so an unscoped
- * lookup would make `Check again` the primary for an Inspector findings block - a button that
+ * The browser and daemon share the evaluator's processable-state boundary, so an unscoped
+ * lookup cannot make `Check again` the primary for an Inspector findings block - a button that
  * re-reads a ledger nobody changed, in place of the sentence pointing at the findings.
  */
 test("a blocked run's own recovery outranks the gate's recheck", () => {
@@ -549,6 +622,51 @@ test("a run out of rounds offers the grant rather than a dead end", () => {
   assert.equal(runNoMoveReason(detail), null, "a move and a no-move sentence cannot both stand");
 });
 
+test("a clean exact current Inspector head contextualizes the existing grant as adoption", () => {
+  const detail = spentInspectorDetail();
+  const move = runNextMove(detail);
+  assert.equal(move?.kind, "grant-rounds");
+  assert.equal(move?.label, "Adopt clean Inspector head");
+  assert.match(move?.path ?? "", /\/grant-rounds$/);
+  assert.equal(move?.body.rounds, 2);
+  assert.match(move?.confirm?.body ?? "", /existing audited path/);
+  assert.match(move?.confirm?.body ?? "", /browser does not pass the gate/);
+  assert.match(move?.confirm?.body ?? "", /immutable Inspector-only submission/);
+  assert.equal(runNoMoveReason(detail), null);
+});
+
+test("dirty, unreviewed, mismatched, closed, non-live, and missing Inspector evidence keep the ordinary grant", () => {
+  const cases: Array<[string, Parameters<typeof spentInspectorDetail>[0]]> = [
+    ["dirty", { openFindings: 1 }],
+    ["unreviewed", { reviewedHeadSha: null }],
+    ["mismatched", { reviewedHeadSha: "older-head" }],
+    ["closed", { observedState: "CLOSED" }],
+    ["non-live", { reviewPosture: "dry-run" }],
+    ["unavailable", { inspection: false }],
+  ];
+  for (const [label, shape] of cases) {
+    const move = runNextMove(spentInspectorDetail(shape));
+    assert.equal(move?.kind, "grant-rounds", label);
+    assert.match(move?.label ?? "", /^Grant \d+ more rounds$/, label);
+  }
+});
+
+test("a spent gate never offers the dead Inspector recheck, while a live wait still does", () => {
+  assert.equal(
+    inspectorGateActions(spentInspectorDetail())
+      .some((action) => action.kind === "recheck-inspector"),
+    false,
+  );
+  assert.equal(
+    inspectorGateActions(detailFor({
+      status: "waiting_for_inspector",
+      policy: "inspector",
+      gate: { waitReason: "review_pending" },
+    })).some((action) => action.kind === "recheck-inspector"),
+    true,
+  );
+});
+
 /*
  * The grant moves ONE number, and the whole design rests on that being enough: every way a
  * blocked run comes back refuses on `round > maxRepairRounds`, so a budget the run can
@@ -578,6 +696,14 @@ test("a run already at the repair ceiling is not offered a grant it cannot take"
     maxRepairRounds: 20,
   }));
   assert.notEqual(move?.kind, "grant-rounds", "a button that can only answer 409");
+});
+
+test("a clean spent gate at the repair ceiling explains current truth instead of historical findings", () => {
+  const detail = spentInspectorDetail({ round: 21, maxRepairRounds: 20 });
+  assert.equal(runNextMove(detail), null);
+  const reason = runNoMoveReason(detail);
+  assert.match(reason?.cause ?? "", /Current Inspector reviewed the exact open pull-request head/);
+  assert.doesNotMatch(reason?.cause ?? "", /findings that have to be resolved/);
 });
 
 /*

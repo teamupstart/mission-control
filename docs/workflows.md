@@ -945,10 +945,14 @@ further down.
 **A run that spent its repair budget is the exception, and it gets a button.** It used to get
 the sentence too, and that was the one dead end on the page: the run had stopped, nothing on
 the dashboard could restart it, and its GitHub Inspector gate went on vetoing its pull request
-forever. Its primary is now **Grant 2 more rounds**. The sentence that used to stand there
-named the binding's `Max repair rounds` as the fix, which was wrong: a run snapshots its
-budget when its row is created, and editing the binding changes what the *next* run may
-spend.
+forever. Its primary is normally **Grant 2 more rounds**. When a spent Inspector-only gate's
+current durable ledger proves that the open pull request was reviewed live at its exact current
+head with no open findings, the same primary reads **Adopt clean Inspector head**. That label
+does not add a route or let the browser pass the gate. It sends the existing confirmed
+`grant-rounds` request, whose audit restores the evaluator-owned path. The sentence that used
+to stand there named the binding's `Max repair rounds` as the fix, which was wrong: a run
+snapshots its budget when its row is created, and editing the binding changes what the *next*
+run may spend.
 
 What the grant does depends on what stopped the run, and the difference is not cosmetic. A
 **parked repair round** needs only the number: the resume move refuses on
@@ -960,7 +964,9 @@ on the next observation, picking up the very head it refused. Without that secon
 grant would flip the merge block from "gave up" to "still working" while nothing was working,
 which is worse than the dead end it replaced. Beside the primary sit at most
 **Copy feedback** and **Open PR**, and **Open PR** appears only when there is an adopted pull
-request to open.
+request to open. The contextual adoption still waits for the ordinary daemon evaluator to
+revalidate an open exact head from the Inspector ledger and create the immutable
+Inspector-only submission. It never completes directly from the browser's current view.
 
 **A finished run can be run again.** A `completed`, `cancelled` or `failed` run used to be the
 end of the road - every control left on it copied, downloaded or navigated, and nothing anywhere
@@ -1273,6 +1279,24 @@ Once the matching head is pinned, the durable GitHub Inspector ledger decides th
 - A completed current-head review with zero findings completes the workflow.
 - Closing or switching the PR blocks instead of accepting old approval.
 
+When an Inspector-only run has already spent its repair budget, run detail keeps two records
+visible. **Last workflow observation** is the immutable reason that run stopped: its failed
+head, observed head, wait reason, observation time, and historical finding fingerprints.
+**Current Inspector** is the mutable ledger the Inspector owns now: its open pull-request
+state, observed and reviewed heads, review posture, current mode, finding tallies, backoff, and
+error. Resolving a finding or reviewing a later head updates only the second record; it never
+rewrites the failed observation into a historical pass.
+
+A clean current record is actionable only when the pull request is open, the observed and
+reviewed heads are identical, both the review and current Inspector posture are live, the
+ledger has no error or open finding, its tallies reconcile, and every historical fingerprint
+is still represented as resolved. Missing or contradictory evidence fails closed. The
+dashboard then says **Clean head ready**, not passed, because the workflow remains blocked and
+Shipping remains vetoed. **Adopt clean Inspector head** grants the existing audited repair
+budget and hands the run back to the same gate evaluator. Only that evaluator may create the
+next immutable Inspector-only submission and complete after exact-head proof. Dirty, stale,
+closed, mismatched, non-live, or unavailable evidence keeps the ordinary grant label.
+
 Findings produce one frozen, bounded, hashed `inspector_feedback` packet through the same Preview
 or safe Live delivery state machine as Persona repair. The published default,
 `restart_workflow`, requires fix, verify, commit, push, and a full resubmission that reruns every
@@ -1294,8 +1318,11 @@ After the handoff turn settles, unchanged repository evidence advances the gate 
 observation without spending another Persona round. If PR preparation changed the head, the normal
 full resubmission requirement still applies. The durable adoption also preserves the workflow's
 Shipping veto across a daemon or SDK-session restart before the gate has pinned the PR key.
-**Recheck GitHub Inspector** only reevaluates the current durable observation and remains waiting until
-GitHub Inspector's normal sweep has seen a new head.
+**Recheck GitHub Inspector** only appears while the run is in a live gate wait that the
+evaluator can process. It reevaluates the current durable observation and remains waiting until
+GitHub Inspector's normal sweep has seen a new head. A spent blocked run has no working recheck,
+so the dashboard omits it and the daemon refuses a direct request without writing a recheck
+audit event.
 
 Gate summaries travel on the existing workflow-run SSE upsert. Finding bodies and full audit
 state stay on the selected run's HTTP detail, so the browser adds no polling. Reset removes the

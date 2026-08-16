@@ -263,7 +263,7 @@ const baseAttempts = (): WorkflowNodeAttempt[] => [
   personaAttempt(LADDER_NODE.intent, PERSONAS.intent),
 ];
 
-export type LadderState = "reviewing" | "changes" | "gate" | "uncertain";
+export type LadderState = "reviewing" | "changes" | "gate" | "spent-clean" | "uncertain";
 
 export function ladderDetail(state: LadderState): WorkflowRunDetail {
   const summary: WorkflowRunSummary = { ...LADDER_SUMMARY };
@@ -336,6 +336,74 @@ export function ladderDetail(state: LadderState): WorkflowRunDetail {
     };
   }
 
+  if (state === "spent-clean") {
+    const failedHead = "failed0000000000000000000000000000000000";
+    const currentHead = "clean00000000000000000000000000000000000";
+    summary.status = "blocked";
+    summary.phase = "round_limit";
+    summary.round = 4;
+    summary.maxRepairRounds = 3;
+    summary.bypassedPersonaReview = true;
+    summary.gate = "blocked";
+    summary.gatePrNumber = 301;
+    summary.gateHeadShort = failedHead;
+    summary.reviewPosture = "live";
+    currentSubmission = submission({
+      round: 4,
+      mode: "inspector_only",
+      prHeadSha: failedHead,
+      status: "completed",
+      completedAt: 10,
+    });
+    inspectorGate = {
+      state: {
+        prKey: "owner/repo#301",
+        prUrl: "https://example.test/pull/301",
+        targetHeadSha: failedHead,
+        failedHeadSha: failedHead,
+        enteredAt: 9,
+        lastObservedAt: 10,
+        observedHeadSha: failedHead,
+        reviewPosture: "live",
+        waitReason: "findings",
+        findingFingerprints: ["historical-finding"],
+      },
+      inspection: {
+        key: "owner/repo#301",
+        url: "https://example.test/pull/301",
+        number: 301,
+        source: "hook",
+        state: "open",
+        observedState: "OPEN",
+        observedHeadSha: currentHead,
+        headSha: currentHead,
+        reviewPosture: "live",
+        round: 5,
+        lastError: null,
+        nextAttemptAt: null,
+        openFindings: 0,
+        resolvedFindings: 1,
+      } as never,
+      findings: [{
+        id: "historical-finding",
+        prKey: "owner/repo#301",
+        fingerprint: "historical-finding",
+        path: "src/workflows.ts",
+        line: 301,
+        title: "Historical finding",
+        body: "The finding that stopped the workflow is now resolved.",
+        severity: "major",
+        round: 4,
+        status: "resolved",
+        replies: 0,
+        answeredCommentId: null,
+        createdAt: 9,
+        updatedAt: 10,
+      }],
+      inspector: { enabled: true, mode: "live", posture: "live" },
+    };
+  }
+
   if (state === "uncertain") {
     summary.uncertainDeliveryCount = 1;
     deliveries = [{
@@ -371,7 +439,7 @@ export function ladderDetail(state: LadderState): WorkflowRunDetail {
       triggerMode: "manual",
       deliveryMode: "preview",
       state: "active",
-      maxRepairRounds: 5,
+      maxRepairRounds: summary.maxRepairRounds,
       createdAt: 1,
       updatedAt: 10,
     },
@@ -382,7 +450,7 @@ export function ladderDetail(state: LadderState): WorkflowRunDetail {
       workflowVersionId: "version",
       status: summary.status,
       currentPhase: summary.phase,
-      maxRepairRounds: 5,
+      maxRepairRounds: summary.maxRepairRounds,
       triggerSource: "manual",
       triggerKey: "manual:binding:run",
       inspectorPrKey: summary.gatePrNumber ? "owner/repo#301" : null,

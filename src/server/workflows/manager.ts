@@ -2528,6 +2528,18 @@ export class WorkflowManager {
         message: "This GitHub Inspector gate is already terminal",
       };
     }
+    const canEvaluate = run.status === "waiting_for_pr"
+      || run.status === "waiting_for_inspector"
+      || run.status === "waiting_for_new_head"
+      || (run.status === "waiting_for_session" && run.currentPhase === "pr_handoff")
+      || (run.status === "blocked" && run.currentPhase === "inspector_disabled");
+    if (!canEvaluate) {
+      return {
+        ok: false,
+        reason: "run_not_waiting",
+        message: "This GitHub Inspector gate is not waiting in a state a recheck can advance",
+      };
+    }
     const repeated = this.store.listEvents(run.id).some((event) =>
       event.kind === "inspector_recheck_requested"
       && event.payload

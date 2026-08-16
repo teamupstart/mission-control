@@ -148,7 +148,13 @@ test("a title left out of the patch is left alone, unlike one sent empty", async
 test("a task that has left the backlog is refused, not half-applied", async () => {
   // Its branch and tmux session are already cut from the title it had.
   for (const status of ["dispatching", "running", "done", "cancelled", "failed"] as const) {
-    const { r, tasks } = setup({ status });
+    // A resource-free dispatching row now proves no agent could have launched and is
+    // intentionally recovered to Backlog at startup. Give this boundary test the
+    // provisioned checkout its premise says already exists.
+    const launchResources = status === "dispatching"
+      ? { worktreePath: "/repo-worktree", provider: "git" as const }
+      : {};
+    const { r, tasks } = setup({ status, ...launchResources });
     const res = await tasks.update("t1", { intent: "too late" });
     assert.equal(res.ok, false, `${status} must be refused`);
     assert.match(res.error!, /not in the backlog/);

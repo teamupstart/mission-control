@@ -123,15 +123,11 @@ export function canonicalPath(p: string): string {
 // ---- the per-repository pool lock ------------------------------------------
 
 /**
- * One promise chain per pool, keyed by the canonical repo root. Entries are dropped when
- * their chain drains, so a daemon that swept a thousand repos does not hold a thousand
- * settled promises forever.
- */
-const chains = new Map<string, Promise<void>>();
-
-/**
  * Hold a pool exclusively for the length of `fn`, so a sequence of treehouse calls sees a
  * pool this process is not concurrently changing.
+ *
+ * One queue exists per canonical repository root. It is dropped when both priority lanes
+ * drain, so a daemon that swept a thousand repos does not retain a thousand empty queues.
  *
  * Holding across a SEQUENCE is the entire point, not a convenience: `reapPool` re-reads
  * status immediately before each return specifically to catch a tree that came alive while
@@ -141,25 +137,66 @@ const chains = new Map<string, Promise<void>>();
  *
  * **Not reentrant.** A `fn` that calls `withPoolLock` again for the same repo deadlocks
  * against itself, so helpers that assume the lock is already held are named `…Locked` and
- * are never exported. A plain FIFO chain is the right shape here because the critical
- * sections are one to three subprocess calls long and contention is between a poller and an
- * occasional dispatch - fairness matters, throughput does not.
+ * are never exported.
+ *
+ * Foreground acquisition is allowed to pass QUEUED background cleanup, but never the
+ * operation already holding the lock. This distinction is what prevents startup from
+ * placing dozens of slow returns in front of a dispatch without pretending a destructive
+ * return can be interrupted halfway through. FIFO order is preserved inside each priority.
  */
-export function withPoolLock<T>(repoRoot: string, fn: () => Promise<T>): Promise<T> {
-  const key = canonicalPath(repoRoot);
-  const prior = chains.get(key) ?? Promise.resolve();
-  const result = prior.then(fn);
-  // The chain must survive `fn` rejecting: a failed return is routine (a busy tree, a
-  // treehouse that exited non-zero), and one of them must not wedge the pool's queue
-  // forever or spill an unhandled rejection into a waiter that never asked.
-  const drained = result.then(
-    () => {},
-    () => {},
-  );
-  chains.set(key, drained);
-  void drained.then(() => {
-    if (chains.get(key) === drained) chains.delete(key);
+export type PoolLockPriority = "foreground" | "background";
+
+interface PoolLockWaiter {
+  run: () => Promise<void>;
+}
+
+interface PoolLockQueue {
+  active: boolean;
+  foreground: PoolLockWaiter[];
+  background: PoolLockWaiter[];
+}
+
+const queues = new Map<string, PoolLockQueue>();
+
+function drainPoolLock(key: string, queue: PoolLockQueue): void {
+  if (queue.active) return;
+  const waiter = queue.foreground.shift() ?? queue.background.shift();
+  if (!waiter) {
+    if (queues.get(key) === queue) queues.delete(key);
+    return;
+  }
+  queue.active = true;
+  void waiter.run().finally(() => {
+    queue.active = false;
+    drainPoolLock(key, queue);
   });
+}
+
+export function withPoolLock<T>(
+  repoRoot: string,
+  fn: () => Promise<T>,
+  priority: PoolLockPriority = "foreground",
+): Promise<T> {
+  const key = canonicalPath(repoRoot);
+  let queue = queues.get(key);
+  if (!queue) {
+    queue = { active: false, foreground: [], background: [] };
+    queues.set(key, queue);
+  }
+  const result = new Promise<T>((resolve, reject) => {
+    queue![priority].push({
+      // Absorb the failure here so the queue always drains. The caller still receives the
+      // original rejection through `reject`; no later waiter inherits it.
+      run: async () => {
+        try {
+          resolve(await fn());
+        } catch (error) {
+          reject(error);
+        }
+      },
+    });
+  });
+  drainPoolLock(key, queue);
   return result;
 }
 

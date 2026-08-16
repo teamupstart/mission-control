@@ -95,6 +95,7 @@ import { stopSession } from "./sdk/control.ts";
 import { renameDriverSession } from "./sdk/rename.ts";
 import { summariseTaskTitle } from "./task-title.ts";
 import { resolveTaskWorkflowId } from "./workflows/config.ts";
+import { canonicalPath } from "./pool-lease.ts";
 
 export interface CreateTaskInput {
   repoRoot: string;
@@ -185,6 +186,97 @@ export interface Ok {
 export class TaskDependencyError extends Error {}
 
 export class TaskStatusConflictError extends Error {}
+
+export const INTERRUPTED_BEFORE_PROVISION_ERROR =
+  "Dispatch was interrupted before a worktree or agent was created. It is back in the backlog and safe to launch again.";
+
+export interface TaskManagerStartupDeps {
+  /** Injectable only so startup cleanup ordering can be exercised without a real pool. */
+  teardown?: typeof teardownWorktree;
+}
+
+interface StartupCleanupJob {
+  taskId: string;
+  repoKeys: readonly string[];
+  run: () => Promise<void>;
+}
+
+/**
+ * Starts at most one reconciliation touching a given repository.
+ *
+ * The pool lock is the final serializer, but bounding work before it reaches that lock is
+ * what prevents startup from enqueuing every historical return ahead of new acquisition.
+ * Jobs touching disjoint repositories may still progress together.
+ */
+class StartupCleanupQueue {
+  private pending: StartupCleanupJob[] = [];
+  private activeRepoKeys = new Set<string>();
+
+  enqueue(job: StartupCleanupJob): void {
+    this.pending.push(job);
+    this.drain();
+  }
+
+  private drain(): void {
+    for (let index = 0; index < this.pending.length;) {
+      const job = this.pending[index]!;
+      if (job.repoKeys.some((key) => this.activeRepoKeys.has(key))) {
+        index += 1;
+        continue;
+      }
+      this.pending.splice(index, 1);
+      for (const key of job.repoKeys) this.activeRepoKeys.add(key);
+      void job.run()
+        .catch((error: unknown) => {
+          console.error(
+            `[tasks] could not reconcile ${job.taskId} during startup:`,
+            error,
+          );
+        })
+        .finally(() => {
+          for (const key of job.repoKeys) this.activeRepoKeys.delete(key);
+          this.drain();
+        });
+    }
+  }
+}
+
+/** Every repository whose cleanup one task can reach, in the pool lock's key space. */
+function startupCleanupRepoKeys(task: Task): string[] {
+  return [...new Set(
+    [task.repoRoot, ...task.extraRepos.map((entry) => entry.repoRoot)].map(canonicalPath),
+  )];
+}
+
+function needsStartupReconcile(task: Task): boolean {
+  return (
+    task.status === "dispatching" ||
+    ((Boolean(task.worktreePath) || Boolean(task.homeName)) &&
+      (task.status === "running" ||
+        task.status === "failed" ||
+        task.status === "done" ||
+        task.status === "cancelled"))
+  );
+}
+
+/**
+ * A restart can only safely re-file the dispatch when no durable launch milestone exists.
+ * `Dispatcher` records all worktrees before it can launch either runtime, so this shape
+ * proves there is no agent whose prompt may already have landed.
+ * Branch and base-SHA fields are descriptive metadata, not launch milestones, so stale or
+ * precomputed values there deliberately do not keep an otherwise resource-free row stranded.
+ */
+function interruptedBeforeProvision(task: Task): boolean {
+  return (
+    task.status === "dispatching" &&
+    task.worktreePath === null &&
+    task.provider === null &&
+    task.homeName === null &&
+    task.terminalResourceId === null &&
+    task.sessionId === null &&
+    task.extraRepos.every((entry) => entry.worktreePath === null && entry.provider === null)
+  );
+}
 
 /**
  * A scout whose durable archive is not ready, refusing its own completion.
@@ -432,6 +524,7 @@ export class TaskManager {
      * this file did before any kind had archives.
      */
     private archives?: TaskArchiveGate,
+    private startupDeps: TaskManagerStartupDeps = {},
   ) {
     this.dispatcher = new Dispatcher(registry, undefined, {
       supervisor,
@@ -440,18 +533,30 @@ export class TaskManager {
     // A restart severs the in-flight dispatch promises but leaves worktrees + terminal
     // homes on disk. Reconcile every task that still holds resources by checking
     // whether its agent's terminal home survived (any backend, resolved by name).
+    const startupCleanup = new StartupCleanupQueue();
     for (const t of registry.listTasks()) {
       // Every `dispatching` task needs reconciling even before it acquired a
       // worktree (a restart mid-provision would otherwise strand it forever);
       // terminal tasks only when they still hold resources to check/reclaim.
-      const needsReconcile =
-        t.status === "dispatching" ||
-        ((Boolean(t.worktreePath) || Boolean(t.homeName)) &&
-          (t.status === "running" ||
-            t.status === "failed" ||
-            t.status === "done" ||
-            t.status === "cancelled"));
-      if (needsReconcile) void this.reconcileOnStartup(t);
+      if (!needsStartupReconcile(t)) continue;
+      // No cleanup exists in this state, so do not make visibility wait behind cleanup.
+      // The async function reaches this branch before its first await.
+      if (interruptedBeforeProvision(t)) {
+        void this.reconcileOnStartup(t);
+        continue;
+      }
+      startupCleanup.enqueue({
+        taskId: t.id,
+        repoKeys: startupCleanupRepoKeys(t),
+        run: async () => {
+          // A queued job can wait minutes. Re-read instead of resurrecting the startup
+          // snapshot after an operator has already reclaimed, removed, or rescheduled it.
+          const current = this.registry.getTask(t.id);
+          if (current && needsStartupReconcile(current)) {
+            await this.reconcileOnStartup(current);
+          }
+        },
+      });
     }
 
     // A bound session can also go away while the daemon is UP: the (k) kill, a terminal
@@ -2950,6 +3055,18 @@ export class TaskManager {
    * knowledge that no home was ever spawned, not a value that might have been lost.)
    */
   private async reconcileOnStartup(t: Task): Promise<void> {
+    if (interruptedBeforeProvision(t)) {
+      const current = this.registry.getTask(t.id);
+      if (!current || !interruptedBeforeProvision(current)) return;
+      this.registry.upsertTask({
+        ...current,
+        status: "backlog",
+        error: INTERRUPTED_BEFORE_PROVISION_ERROR,
+        dispatchedAt: null,
+        updatedAt: Date.now(),
+      });
+      return;
+    }
     // The embedded arm answers first, and it answers `true` or `false` - never the `null`
     // that means "nobody could tell us". `homeAlive`'s uncertainty is about terminal
     // backends, a question an embedded session never poses: the supervisor either holds
@@ -3019,7 +3136,7 @@ export class TaskManager {
       return;
     }
     try {
-      await teardownWorktree(t);
+      await (this.startupDeps.teardown ?? teardownWorktree)(t, undefined, "background");
     } catch (error) {
       const now = Date.now();
       this.registry.upsertTask({

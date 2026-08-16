@@ -40,6 +40,26 @@ Video is off. Recording it cost 16s of every CI shard whether or not anything fa
 showed nothing the trace does not already replay. A failure still leaves a trace and a
 screenshot; open the trace with `npx playwright show-trace`.
 
+### Dispatch restart recovery
+
+`e2e/.artifacts/dispatch-restart-recovery/restart-recovery-backlog.png` shows a dispatch
+interrupted before provisioning back in the Backlog, with the restart explanation and enabled
+launch control visible together. The same run deliberately persists stale branch and base SHA
+metadata to prove those descriptive fields do not hide an otherwise resource-free dispatch.
+Its real command output belongs at
+`e2e/.artifacts/dispatch-restart-recovery/focused-playwright-transcript.txt`.
+
+Regenerate both with:
+
+```sh
+mkdir -p e2e/.artifacts/dispatch-restart-recovery
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/dispatch-restart-recovery.spec.ts \
+  --workers=1 --reporter=list \
+  | tee e2e/.artifacts/dispatch-restart-recovery/focused-playwright-transcript.txt
+```
+
 ### Scout prompt context reader
 
 `e2e/.artifacts/scout-prompt-context/` holds the five frames from the finished-scout flow:

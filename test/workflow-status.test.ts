@@ -99,6 +99,11 @@ test("workflow status is on-demand, structured, bounded, and payload-free", () =
     lastRetentionAt: null,
     lastRetentionError: null,
     retainedRunCount: 1,
+    retainedEvidenceImages: 0,
+    retainedEvidenceImageBytes: 0,
+    prunedEvidenceImages: 0,
+    pendingEvidenceImageCleanup: 0,
+    orphanedEvidenceImages: 0,
     lastRetentionCompacted: 0,
     lastRetentionDeleted: 0,
   });

@@ -13,7 +13,7 @@ const { ReviewManager } = await import("../src/server/reviews.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
 const { QueueManager } = await import("../src/server/queue.ts");
 const { buildApp } = await import("../src/server/routes.ts");
-const { MAX_UPLOAD_BYTES, UPLOADS_DIR } = await import("../src/server/uploads.ts");
+const { MAX_UPLOAD_BYTES, UPLOADS_DIR, UPLOAD_TTL_MS, resolveImageUpload } = await import("../src/server/uploads.ts");
 
 // POST /api/uploads over the real Hono app - the exact request the compose box
 // makes when an image is dropped on it. What comes back is a PATH, because that's
@@ -48,9 +48,12 @@ async function upload(bytes: Buffer, name: string, type = "image/png"): Promise<
 test("POST /api/uploads: stores the image and returns a path that exists", async () => {
   const res = await upload(PNG, "screenshot.png");
   assert.equal(res.status, 200);
-  const body = (await res.json()) as { path: string; name: string; bytes: number };
+  const body = (await res.json()) as { path: string; name: string; uploadId: string; bytes: number };
   assert.ok(body.path.startsWith(UPLOADS_DIR + "/"), body.path);
   assert.equal(body.bytes, PNG.byteLength);
+  assert.equal(body.uploadId, body.name);
+  assert.equal(resolveImageUpload(body.uploadId)?.path, body.path);
+  assert.equal(resolveImageUpload(body.uploadId, Date.now() + UPLOAD_TTL_MS + 1), null);
   // The path is a promise to the agent, so the file had better be behind it.
   assert.ok(existsSync(body.path));
   assert.deepEqual(readFileSync(body.path), PNG);

@@ -109,6 +109,8 @@ import {
   WorkflowConfigSchema,
   WorkflowRunActionSchema,
   SubmitWorkflowSchema,
+  SubmitWorkflowEvidenceSchema,
+  WorkflowRetainedEvidenceLocatorSchema,
   UpdateWorkflowBindingSchema,
   WrapupSchema,
 } from "@shared/protocol.ts";
@@ -261,6 +263,10 @@ import {
   resolveTaskRepoSet,
 } from "./repos.ts";
 import { MAX_UPLOAD_BYTES, saveImageUpload } from "./uploads.ts";
+import {
+  readSubmissionImageBody,
+  WorkflowImageEvidenceError,
+} from "./workflows/images.ts";
 import {
   listSessionFiles,
   MAX_SESSION_EDITOR_BYTES,
@@ -1400,6 +1406,17 @@ export function buildApp(
       current: result.current ?? null,
     }, status);
   };
+  const workflowImageFailure = (
+    c: Context,
+    error: unknown,
+    fallback: string,
+  ) => {
+    const known = error instanceof WorkflowImageEvidenceError ? error : null;
+    return c.json({
+      error: known?.message ?? fallback,
+      code: known?.code ?? "workflow_evidence_failed",
+    }, (known?.status ?? 409) as 400 | 403 | 404 | 409 | 410);
+  };
 
   app.get("/api/workflow-bindings", (c) => {
     const manager = workflowManager();
@@ -1431,18 +1448,52 @@ export function buildApp(
     const result = manager.archiveBinding(c.req.param("id"));
     return result.ok ? c.json(result.value) : workflowRuntimeFailure(c, result);
   });
+  app.get("/api/workflow-bindings/:id/evidence", (c) => {
+    const manager = workflowManager();
+    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+    const staged = manager.stagedEvidence(c.req.param("id"));
+    return staged ? c.json(staged) : c.json({ error: "no such workflow binding" }, 404);
+  });
+  app.delete("/api/workflow-bindings/:id/evidence/:clientItemId", (c) => {
+    const manager = workflowManager();
+    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+    const staged = manager.removeStagedEvidence(
+      c.req.param("id"),
+      c.req.param("clientItemId"),
+    );
+    return staged ? c.json(staged) : c.json({ error: "no such workflow binding" }, 404);
+  });
+  app.post("/api/workflow-bindings/:id/evidence/reattach", async (c) => {
+    const manager = workflowManager();
+    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+    const parsed = await parseBody(c, WorkflowRetainedEvidenceLocatorSchema);
+    if (!parsed.ok) return parsed.res;
+    try {
+      return c.json(manager.reattachRetainedEvidence(c.req.param("id"), parsed.data));
+    } catch (error) {
+      const known = error instanceof WorkflowImageEvidenceError ? error : null;
+      return c.json({
+        error: known?.message ?? "Historical workflow evidence could not be staged",
+        code: known?.code ?? "workflow_evidence_failed",
+      }, (known?.status ?? 409) as 400 | 403 | 404 | 409 | 410);
+    }
+  });
   app.post("/api/workflow-bindings/:id/submit", async (c) => {
     const manager = workflowManager();
     if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
     const parsed = await parseBody(c, SubmitWorkflowSchema);
     if (!parsed.ok) return parsed.res;
-    const result = manager.enqueueSubmit(c.req.param("id"), parsed.data);
-    return result.ok
-      ? c.json(
-          { ...result.value, idempotent: result.idempotent ?? false },
-          result.idempotent ? 200 : 202,
-        )
-      : workflowRuntimeFailure(c, result);
+    try {
+      const result = manager.enqueueSubmit(c.req.param("id"), parsed.data);
+      return result.ok
+        ? c.json(
+            { ...result.value, idempotent: result.idempotent ?? false },
+            result.idempotent ? 200 : 202,
+          )
+        : workflowRuntimeFailure(c, result);
+    } catch (error) {
+      return workflowImageFailure(c, error, "Workflow evidence could not be staged");
+    }
   });
   app.post("/api/sessions/:id/workflow-review", async (c) => {
     const manager = workflowManager();
@@ -1549,15 +1600,42 @@ export function buildApp(
           code: "workflow_run_not_found",
         }, 404);
   });
+  app.get("/api/workflow-runs/:id/images/:imageId", (c) => {
+    const manager = workflowManager();
+    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+    try {
+      const body = readSubmissionImageBody(
+        manager.store,
+        c.req.param("id"),
+        c.req.param("imageId"),
+      );
+      c.header("Content-Type", body.image.mimeType);
+      c.header("Content-Length", String(body.image.bytes));
+      c.header("X-Content-Type-Options", "nosniff");
+      c.header("Content-Security-Policy", "default-src 'none'; sandbox");
+      c.header("Cache-Control", "private, no-store");
+      return c.body(Uint8Array.from(body.data).buffer);
+    } catch (error) {
+      const known = error instanceof WorkflowImageEvidenceError ? error : null;
+      return c.json({
+        error: known?.message ?? "Workflow evidence image could not be read",
+        code: known?.code ?? "workflow_evidence_failed",
+      }, (known?.status ?? 409) as 400 | 403 | 404 | 409 | 410);
+    }
+  });
   app.post("/api/workflow-runs/:id/resubmit", async (c) => {
     const manager = workflowManager();
     if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
     const parsed = await parseBody(c, ResubmitWorkflowSchema);
     if (!parsed.ok) return parsed.res;
-    const result = await manager.resubmit(c.req.param("id"), parsed.data);
-    return result.ok
-      ? c.json({ ...result.value, idempotent: result.idempotent ?? false })
-      : workflowRuntimeFailure(c, result);
+    try {
+      const result = await manager.resubmit(c.req.param("id"), parsed.data);
+      return result.ok
+        ? c.json({ ...result.value, idempotent: result.idempotent ?? false })
+        : workflowRuntimeFailure(c, result);
+    } catch (error) {
+      return workflowImageFailure(c, error, "Workflow evidence could not be staged");
+    }
   });
   app.post("/api/workflow-runs/:id/retry", async (c) => {
     const manager = workflowManager();
@@ -2301,6 +2379,31 @@ export function buildApp(
     if (!parsed.ok) return parsed.res;
     registry.applyStatus(parsed.data.env, parsed.data.sessionId, parsed.data.activity);
     return c.body(null, 204);
+  });
+
+  app.post("/mcp/workflow-evidence", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const manager = workflowManager();
+    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+    const parsed = await parseBody(c, SubmitWorkflowEvidenceSchema);
+    if (!parsed.ok) return parsed.res;
+    const session = registry.findSessionByEnv(
+      parsed.data.env,
+      parsed.data.sessionId,
+      parsed.data.cwd,
+    );
+    if (!session || session.state === "exited") {
+      return c.json({ error: "no matching active session" }, 404);
+    }
+    try {
+      return c.json(await manager.stageAgentEvidence(session.id, parsed.data.images));
+    } catch (error) {
+      const known = error instanceof WorkflowImageEvidenceError ? error : null;
+      return c.json({
+        error: known?.message ?? "Workflow evidence staging failed",
+        code: known?.code ?? "workflow_evidence_failed",
+      }, (known?.status ?? 409) as 400 | 403 | 404 | 409 | 410);
+    }
   });
 
   // --- ensemble member submission (token-guarded MCP; attribution is server-side) ---

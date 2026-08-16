@@ -1395,9 +1395,14 @@ would be reported as such rather than silently skipped.)
 >   `MISSION_MCP_TOOLS` exactly, in either direction.
 
 This registers a stdio MCP server (`src/mcp/server.ts`) that each session launches. It exposes
-six review-channel tools, plus two submission tools a session is given only when its task needs
-one - [`submit_ensemble_result`](ensembles.md#multi-agent-ensembles) for an ensemble member and
-[`submit_scout_artifacts`](archives.md) for a scout:
+six review-channel tools, plus three task-scoped submission tools a session receives only when
+its work needs one: [`submit_ensemble_result`](ensembles.md#multi-agent-ensembles) for an
+ensemble member, [`submit_scout_artifacts`](archives.md) for a scout, and
+`submit_workflow_evidence` for a workflow-bound ship task whose immutable graph contains a
+Persona. The workflow tool registers contained gitignored screenshots by issued repository
+slot or across all applicable repositories before task completion. It never tells the agent
+to commit them, and a ship task without such a workflow keeps its prior launch and prompt
+unchanged:
 
 - `share_plan(title, plan)` - show a markdown plan (non-blocking)
 - `request_plan_decisions(title, plan, decisions)` - show a plan with selectable
@@ -1414,6 +1419,9 @@ one - [`submit_ensemble_result`](ensembles.md#multi-agent-ensembles) for an ense
   `multiSelect`, plus an optional free-text "Other") and can dismiss a stale set without
   submitting it; without them, a text box
 - `report_status(activity)` - update the session's activity line
+- `submit_workflow_evidence(images)` - register bounded gitignored screenshots for the
+  selected Persona workflow with `repositoryScope` set to an issued repository slot or `all`
+  for every applicable repository, plus checkout-relative paths
 
 Because the MCP server is a child of the agent, it inherits the terminal env and
 binds every call to the correct session automatically.

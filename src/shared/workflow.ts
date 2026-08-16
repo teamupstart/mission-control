@@ -1,4 +1,5 @@
-import type { LlmRunnerId, ResolvedLlmRunner } from "./llm.ts";
+import { LLM_IMAGE_LIMITS, type LlmRunnerId, type ResolvedLlmRunner } from "./llm.ts";
+import type { RasterImageMimeType } from "./images.ts";
 import type { InspectorPosture } from "./inspector.ts";
 import type { ModelChoiceSpec, ResolvedModel } from "./model-choice.ts";
 import type {
@@ -165,6 +166,91 @@ export const WORKFLOW_EXECUTION_LIMITS = {
   checkOutput: 4_000,
   checkVerdictOutput: 2_000,
 } as const;
+
+/**
+ * Workflow evidence inherits Phase 1's provider limits and adds bounds for durable metadata.
+ * These are browser-safe because every intake surface and every retained row must agree.
+ */
+export const WORKFLOW_IMAGE_LIMITS = {
+  ...LLM_IMAGE_LIMITS,
+  captionChars: 1_000,
+  displayNameChars: 200,
+  clientItemIdChars: 200,
+  relativePathChars: 4_096,
+  uploadIdChars: 200,
+  locatorJsonBytes: 64 * 1_024,
+} as const;
+
+export type WorkflowEvidenceRepositoryScope = "all" | `repo-${string}`;
+export type WorkflowEvidenceImageAvailability = "retained" | "pruned";
+
+/** Browser-safe audit metadata. Storage and source paths never enter this record. */
+export interface WorkflowEvidenceImage {
+  id: string;
+  ordinal: number;
+  displayName: string;
+  caption: string;
+  repositoryScope: WorkflowEvidenceRepositoryScope;
+  mimeType: RasterImageMimeType;
+  bytes: number;
+  sha256: string;
+  availability: WorkflowEvidenceImageAvailability;
+  prunedAt: number | null;
+  createdAt: number;
+}
+
+/** A staged item visible to a bound session or the Phase 3 evidence composer. */
+export interface WorkflowStagedEvidenceImage {
+  id: string;
+  clientItemId: string;
+  sourceKind: "agent" | "upload" | "retained";
+  displayName: string;
+  caption: string;
+  repositoryScope: WorkflowEvidenceRepositoryScope;
+  mimeType: RasterImageMimeType;
+  bytes: number;
+  sha256: string;
+  generation: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface WorkflowStagedEvidenceList {
+  generation: number;
+  images: WorkflowStagedEvidenceImage[];
+}
+
+export interface WorkflowAgentEvidenceLocator {
+  kind: "agent";
+  clientItemId: string;
+  path: string;
+  caption: string;
+  repositoryScope: WorkflowEvidenceRepositoryScope;
+}
+
+export interface WorkflowUploadEvidenceLocator {
+  kind: "upload";
+  clientItemId: string;
+  uploadId: string;
+  caption: string;
+  repositoryScope: WorkflowEvidenceRepositoryScope;
+}
+
+export type WorkflowEvidenceLocator =
+  | WorkflowAgentEvidenceLocator
+  | WorkflowUploadEvidenceLocator;
+
+export interface WorkflowRetainedEvidenceLocator {
+  imageId: string;
+  clientItemId: string;
+  caption: string;
+  repositoryScope: WorkflowEvidenceRepositoryScope;
+}
+
+export interface WorkflowSubmissionEvidenceImages {
+  submissionId: WorkflowSubmissionId;
+  images: WorkflowEvidenceImage[];
+}
 
 export const WORKFLOW_PERSONA_MODEL_ENV = "WORKFLOW_PERSONA_MODEL";
 export const WORKFLOW_PERSONA_MODEL_SPEC: ModelChoiceSpec = {
@@ -2730,6 +2816,10 @@ export interface WorkflowSubmission {
    * `manualWorkflowTriggerKey` below, which is also the only thing that reads one back apart.
    */
   triggerKey: string;
+  /** One completion boundary shared by sibling repository submissions. */
+  evidenceGroupKey?: string;
+  /** Staged-set generation frozen when this submission reserved its locators. */
+  stagedImageGeneration?: number;
   evidenceFingerprint: string;
   context: WorkflowJson;
   evidence: WorkflowJson;
@@ -2945,6 +3035,10 @@ export interface WorkflowContextSnapshot {
     transcriptTruncated: boolean;
     standards: WorkflowStandardsDocument[];
     standardsTruncated: boolean;
+    /** Defaults to an empty list when reading snapshots written before image evidence. */
+    images?: WorkflowEvidenceImage[];
+    /** Defaults to zero when reading snapshots written before image evidence. */
+    stagedImageGeneration?: number;
     retention?:
       | { state: "full" }
       | {
@@ -2954,6 +3048,8 @@ export interface WorkflowContextSnapshot {
           workingTreeStatusEntries: number;
           transcriptMessages: number;
           standardsDocuments: number;
+          imageCount?: number;
+          imageBytes?: number;
         };
   };
   compaction: {
@@ -2989,6 +3085,7 @@ export const EVIDENCE_REF_KINDS = [
   "goal",
   "decision",
   "check",
+  "image",
 ] as const;
 export type EvidenceRefKind = (typeof EVIDENCE_REF_KINDS)[number];
 
@@ -3183,6 +3280,8 @@ export interface WorkflowRunDetail {
   run: WorkflowRun;
   contextState: "captured" | "not_captured" | "corrupt";
   submissions: WorkflowSubmission[];
+  /** Ordered immutable image metadata grouped by the submission that owns it. */
+  evidenceImages?: WorkflowSubmissionEvidenceImages[];
   attempts: WorkflowNodeAttempt[];
   receipts: WorkflowEdgeReceipt[];
   deliveries: WorkflowDelivery[];
@@ -3250,6 +3349,11 @@ export interface WorkflowStatus {
   deliveredDeliveries: number;
   lastRetentionCompacted: number;
   lastRetentionDeleted: number;
+  retainedEvidenceImages: number;
+  retainedEvidenceImageBytes: number;
+  prunedEvidenceImages: number;
+  pendingEvidenceImageCleanup: number;
+  orphanedEvidenceImages: number;
 }
 
 export interface WorkflowExportEnvelope<T> {

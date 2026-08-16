@@ -426,7 +426,7 @@
       <header class="hero">
         <p class="eyebrow">Mission Control / operator reference / 2026-08-03</p>
         <h1>A field guide to <code>harness.db</code></h1>
-        <p class="lede">The durable memory behind tasks, reviews, automation, workflows, schedules, usage, and ensembles. This guide explains where it lives, how to inspect it safely, and what each of its 49 tables owns.</p>
+        <p class="lede">The durable memory behind tasks, reviews, automation, workflows, schedules, usage, and ensembles. This guide explains where it lives, how to inspect it safely, and what each of its 67 tables owns.</p>
         <div class="launch" aria-label="Database shell command">
           <code>make db</code>
           <span>read-only shell</span>
@@ -434,7 +434,7 @@
       </header>
 
       <div class="metrics" aria-label="Database summary">
-        <div class="metric"><strong>49</strong><span>application tables in the current fresh schema</span></div>
+        <div class="metric"><strong>67</strong><span>application tables in the current fresh schema</span></div>
         <div class="metric"><strong>WAL</strong><span>journal mode selected when the daemon opens the file</span></div>
         <div class="metric"><strong>1 writer</strong><span>the daemon owns every application write</span></div>
       </div>
@@ -571,7 +571,7 @@ LIMIT 20;
             </details>
 
             <details class="family" open>
-              <summary><strong>Workflow definitions and execution</strong><span>14 tables</span></summary>
+              <summary><strong>Workflow definitions and execution</strong><span>20 tables</span></summary>
               <div class="table-list">
                 <div class="table-row"><code>workflow_commands</code><p>The Global Command catalog: one row per built-in workflow slot (test, lint, typecheck, build) holding its optional repository-neutral default argv, revision, and timestamps. Seeded on first open, so all four rows exist before anything is configured.</p></div>
                 <div class="table-row"><code>workflow_command_overrides</code><p>One repository or subdirectory exception to a slot's default command, keyed uniquely by slot and repository root. The longest matching root wins at resolution time, which is how a monorepo package overrides its repository.</p></div>
@@ -580,6 +580,12 @@ LIMIT 20;
                 <div class="table-row"><code>workflow_bindings</code><p>A published version attached to a stable session note key, with frozen compatibility facts, trigger and delivery modes, and repair budget.</p></div>
                 <div class="table-row"><code>workflow_runs</code><p>One execution of a binding: status, phase, trigger identity, Inspector gate state, timestamps, and retention markers.</p></div>
                 <div class="table-row"><code>workflow_submissions</code><p>Immutable evidence snapshots scoped by run, repair round, and continuation segment.</p></div>
+                <div class="table-row"><code>workflow_evidence_owners</code><p>One conversation-owned generation ledger per stable session note key, including the high-water mark for evidence that applies to every repository.</p></div>
+                <div class="table-row"><code>workflow_evidence_scope_generations</code><p>Repository-specific evidence generation high-water marks, keyed by stable session note and resolved source root, so unrelated repositories do not wake each other's workflows.</p></div>
+                <div class="table-row"><code>workflow_evidence_staging</code><p>Mutable screenshot metadata staged by an agent or browser for the next eligible submission. Server-only source locators remain here and never enter model context or API responses.</p></div>
+                <div class="table-row"><code>workflow_evidence_reservations</code><p>The ordered, durable mapping from staged screenshots to each immutable submission that reserved them, written in the submission transaction so capture can resume after interruption.</p></div>
+                <div class="table-row"><code>workflow_submission_images</code><p>Immutable submission-owned image metadata and retained body locators, including digest, order, availability, and pruning state.</p></div>
+                <div class="table-row"><code>workflow_image_cleanup</code><p>A retryable database-first ledger for moving retained image bodies through trash and deletion after pruning, reset, or run removal.</p></div>
                 <div class="table-row"><code>workflow_node_attempts</code><p>Each attempt to execute one graph node against one submission, including frozen Persona or session-action snapshots and its verdict or output.</p></div>
                 <div class="table-row"><code>workflow_edge_receipts</code><p>Deduplicated proof that a source attempt activated one graph edge for a submission.</p></div>
                 <div class="table-row"><code>workflow_deliveries</code><p>Durable packets sent to sessions, including payload hashes and prepared, sending, delivered, uncertain, refused, or cancelled lifecycle.</p></div>

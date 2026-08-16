@@ -470,6 +470,14 @@ Every dispatched task is a durable record (repo, intent, kind, worktree, branch,
 persisted in SQLite, so the backlog and a running agent's intent survive a daemon restart.
 Set `MISSION_CLAUDE_BIN` / `MISSION_CODEX_BIN` if the agent CLI isn't on the daemon's PATH.
 
+A restart can also land between accepting a dispatch and provisioning its first worktree.
+When the persisted row has no worktree, provider, terminal home, terminal resource, or session,
+and every attached repository has neither a worktree nor a provider, Mission Control knows no
+agent could have launched: every worktree is recorded before either runtime starts. That narrow
+state returns to the backlog with a visible explanation and a normal launch control, and its
+next launch starts with a new dispatch timestamp. Once any launch resource exists, recovery
+keeps the conservative behavior below instead of assuming whether an agent or checkout survived.
+
 ### When a task's agent goes away
 
 Kill a session with <kbd>k</kbd>, close its terminal, or let the agent exit by itself, and

@@ -2404,6 +2404,8 @@ export const PromptedWrapupSchema = z.object({
    * stores that write as the same legacy spent guard an upgraded database exposes.
    */
   evidenceMarker: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+  /** Activity boundary observed with the evidence. Optional for worker version skew. */
+  activityAt: z.number().int().nonnegative().optional(),
   // The human-decision path must retire the prompted episode and raise its Ship it?
   // card in one durable write. If that write fails, neither marker lands and the
   // worker can retry the whole verified boundary on its next unhurried tick.
@@ -3462,6 +3464,8 @@ export const WorkflowCheckOutcomeSchema = z.object({
 export const WorkflowCompletionClaimSchema = z.object({
   completionKind: z.enum(WORKFLOW_COMPLETION_KINDS),
   marker: z.string().regex(/^[a-f0-9]{64}$/),
+  /** Prompted session activity observed with this proof. Absent on drain or old-worker claims. */
+  activityAt: z.number().int().nonnegative().nullable().optional().default(null),
   summary: z.string().min(1).max(WORKFLOW_EXECUTION_LIMITS.verdictSummary),
   evidenceFingerprint: z.string().min(1).max(200),
   expectedIntent: z.object({

@@ -228,6 +228,7 @@ function mkQueue(cwd: string, over: Partial<SessionQueue> = {}): SessionQueue {
     wrapupAnswer: null,
     promptedGoal: null,
     promptedEvidence: null,
+    promptedActivityAt: null,
     updatedAt: 0,
     items: [],
     ...over,
@@ -455,6 +456,7 @@ test("a verified prompt submits its existing workflow instead of Straight to PR"
   const repo = tmp("pw-repo-");
   const fake = mkFakeClaude({ fail: false });
   const session = mkSession(repo);
+  const stopAt = Date.now() - 120_000;
   // The row the worker's own `markPromptedWrapup` writes into. Serving it back is what
   // arms the once-per-episode guard, so "fires exactly once" is a real assertion about
   // the re-arm rather than an artefact of a short run.
@@ -468,7 +470,7 @@ test("a verified prompt submits its existing workflow instead of Straight to PR"
     if (p === "/api/foreman/heartbeat") return { status: 200, json: { leader: true } };
     if (p === "/api/sessions") {
       const now = Date.now();
-      return { status: 200, json: [{ ...session, lastSeen: now, lastActivity: now - 120_000 }] };
+      return { status: 200, json: [{ ...session, lastSeen: now, lastActivity: stopAt }] };
     }
     if (p === "/api/reviews") return { status: 200, json: [] };
     if (p === "/api/queues") return { status: 200, json: [] };
@@ -501,11 +503,12 @@ test("a verified prompt submits its existing workflow instead of Straight to PR"
       // The real daemon retires the prompted guard in the same transaction that claims
       // the completion. Mirror that durable effect so later worker ticks see the episode
       // as spent and prove this path does not request a second run.
-      const body = JSON.parse(raw) as { marker: string };
+      const body = JSON.parse(raw) as { marker: string; activityAt: number };
       queue = {
         ...queue,
         promptedGoal: INTENT_KEY,
         promptedEvidence: body.marker,
+        promptedActivityAt: body.activityAt,
         updatedAt: Date.now(),
       };
       return {
@@ -515,11 +518,12 @@ test("a verified prompt submits its existing workflow instead of Straight to PR"
     }
     if (p === "/api/sessions/s1/standards") return { status: 200, json: { docs: [], truncated: false } };
     if (p === "/api/sessions/s1/queue/wrapup/prompted") {
-      const body = JSON.parse(raw) as { goal: string; evidenceMarker: string };
+      const body = JSON.parse(raw) as { goal: string; evidenceMarker: string; activityAt: number };
       queue = {
         ...queue,
         promptedGoal: body.goal,
         promptedEvidence: body.evidenceMarker,
+        promptedActivityAt: body.activityAt,
         updatedAt: Date.now(),
       };
       return { status: 200, json: { ok: true } };
@@ -654,22 +658,24 @@ test("an incomplete prompted hold re-arms on a task-notification turn and claims
     }
     if (p === "/api/sessions/s1/standards") return { status: 200, json: { docs: [], truncated: false } };
     if (p === "/api/sessions/s1/queue/wrapup/prompted") {
-      const body = JSON.parse(raw) as { goal: string; evidenceMarker: string };
+      const body = JSON.parse(raw) as { goal: string; evidenceMarker: string; activityAt: number };
       queue = {
         ...queue,
         promptedGoal: body.goal,
         promptedEvidence: body.evidenceMarker,
+        promptedActivityAt: body.activityAt,
         updatedAt: Date.now(),
       };
       phase = "task-notification";
       return { status: 200, json: queue };
     }
     if (p === "/api/sessions/s1/workflow-completion") {
-      const body = JSON.parse(raw) as { marker: string };
+      const body = JSON.parse(raw) as { marker: string; activityAt: number };
       queue = {
         ...queue,
         promptedGoal: INTENT_KEY,
         promptedEvidence: body.marker,
+        promptedActivityAt: body.activityAt,
         updatedAt: Date.now(),
       };
       claimedAt = Date.now();
@@ -695,6 +701,16 @@ test("an incomplete prompted hold re-arms on a task-notification turn and claims
   const claims = stub.to("POST", "/api/sessions/s1/workflow-completion");
   assert.equal(holds.length, 1, `the incomplete Stop was not retired exactly once\n${out}`);
   assert.equal(claims.length, 1, `the later Stop did not claim exactly one binding\n${out}`);
+  assert.equal(
+    (holds[0]!.body as { activityAt?: number }).activityAt,
+    firstStopAt,
+    "the held guard must watermark the Stop it examined, not its later write time",
+  );
+  assert.equal(
+    (claims[0]!.body as { activityAt?: number }).activityAt,
+    laterStopAt,
+    "the workflow claim must retire the later observed Stop",
+  );
   assert.equal(claudeCalls(fake.log).length, 2, `unchanged evidence re-entered the verifier\n${out}`);
   assert.equal(
     stub.to("GET", "/api/sessions/s1/diff").length,
@@ -722,6 +738,7 @@ test("a Manual binding blocks Straight to PR and a failed card write stays retry
   const repo = tmp("pw-repo-");
   const fake = mkFakeClaude({ fail: false });
   const session = mkSession(repo);
+  const stopAt = Date.now() - 120_000;
   let queue = mkQueue(repo);
   let promptedWrites = 0;
   /** When the retry landed, so the worker can be given a full idle cadence past it. */
@@ -735,7 +752,7 @@ test("a Manual binding blocks Straight to PR and a failed card write stays retry
     if (p === "/api/foreman/heartbeat") return { status: 200, json: { leader: true } };
     if (p === "/api/sessions") {
       const now = Date.now();
-      return { status: 200, json: [{ ...session, lastSeen: now, lastActivity: now - 120_000 }] };
+      return { status: 200, json: [{ ...session, lastSeen: now, lastActivity: stopAt }] };
     }
     if (p === "/api/reviews") return { status: 200, json: [] };
     if (p === "/api/queues") return { status: 200, json: [] };
@@ -772,12 +789,18 @@ test("a Manual binding blocks Straight to PR and a failed card write stays retry
       promptedWrites += 1;
       if (promptedWrites === 1) return { status: 500, json: { error: "temporary write failure" } };
       if (promptedWrites === 2) retriedAt = Date.now();
-      const body = JSON.parse(raw) as { goal: string; evidenceMarker: string; ask?: boolean };
+      const body = JSON.parse(raw) as {
+        goal: string;
+        evidenceMarker: string;
+        activityAt: number;
+        ask?: boolean;
+      };
       assert.equal(body.ask, true, "the guard and Ship it? card must share one write");
       queue = {
         ...queue,
         promptedGoal: body.goal,
         promptedEvidence: body.evidenceMarker,
+        promptedActivityAt: body.activityAt,
         updatedAt: Date.now(),
         wrapupAskedAt: Date.now(),
         wrapupAnswer: null,
@@ -833,6 +856,7 @@ test("a broken verifier gives up after the strike cap, at one strike per unhurri
   const repo = tmp("pw-repo-");
   const fake = mkFakeClaude({ fail: true });
   const session = mkSession(repo);
+  const stopAt = Date.now() - 120_000;
   let queue = mkQueue(repo);
 
   const stub = await startStub((req, url, raw) => {
@@ -841,7 +865,7 @@ test("a broken verifier gives up after the strike cap, at one strike per unhurri
     if (p === "/api/foreman/heartbeat") return { status: 200, json: { leader: true } };
     if (p === "/api/sessions") {
       const now = Date.now();
-      return { status: 200, json: [{ ...session, lastSeen: now, lastActivity: now - 120_000 }] };
+      return { status: 200, json: [{ ...session, lastSeen: now, lastActivity: stopAt }] };
     }
     if (p === "/api/reviews") return { status: 200, json: [] };
     if (p === "/api/queues") return { status: 200, json: [] };
@@ -864,11 +888,12 @@ test("a broken verifier gives up after the strike cap, at one strike per unhurri
     }
     if (p === "/api/sessions/s1/standards") return { status: 200, json: { docs: [], truncated: false } };
     if (p === "/api/sessions/s1/queue/wrapup/prompted") {
-      const body = JSON.parse(raw) as { goal: string; evidenceMarker: string };
+      const body = JSON.parse(raw) as { goal: string; evidenceMarker: string; activityAt: number };
       queue = {
         ...queue,
         promptedGoal: body.goal,
         promptedEvidence: body.evidenceMarker,
+        promptedActivityAt: body.activityAt,
         updatedAt: Date.now(),
       };
       return { status: 200, json: { ok: true } };

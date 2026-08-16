@@ -2423,6 +2423,8 @@ export interface WorkflowCompletionClaim {
   completionKind: WorkflowCompletionKind;
   /** SHA-256 of the worker's proof episode, never raw prompt or diff text. */
   marker: string;
+  /** Prompted session activity observed with this proof; null for drain completions. */
+  activityAt: number | null;
   summary: string;
   evidenceFingerprint: string;
   expectedIntent: SessionIntentGuard | null;

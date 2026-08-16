@@ -1473,6 +1473,7 @@ export function openDb(): DatabaseSync {
       wrapup_answer   TEXT,
       prompted_goal   TEXT,               -- the goal the prompted trigger last fired on
       prompted_evidence TEXT,             -- HEAD + transcript proof handled for that goal
+      prompted_activity_at INTEGER,       -- session activity observed with that proof
       updated_at      INTEGER NOT NULL
     );
 
@@ -2623,6 +2624,13 @@ function migrate(d: DatabaseSync): void {
   // Read it as a spent legacy guard, not as permission to replay a shipping action on
   // upgrade; the next reconciled human intent still re-arms it normally.
   addColumn(d, "foreman_queues", "prompted_evidence", "TEXT");
+
+  // The guard write can land after a slow verifier returns. Its `updated_at` therefore
+  // cannot identify the activity boundary that verifier actually examined: a later Stop
+  // may already have arrived by then. Persist the observed session activity separately so
+  // that later boundary stays armed. NULL is a spent legacy guard, matching the evidence
+  // migration above, because an old worker cannot say which boundary it observed safely.
+  addColumn(d, "foreman_queues", "prompted_activity_at", "INTEGER");
 
   // `decisions`: the structured questions of a `plan-decisions` review, as a JSON
   // array. Added to `reviews` after it shipped, so an upgraded DB only gets it via
@@ -6675,6 +6683,7 @@ interface QueueRow {
   wrapup_answer: string | null;
   prompted_goal: string | null;
   prompted_evidence: string | null;
+  prompted_activity_at: number | null;
   updated_at: number;
 }
 
@@ -6695,6 +6704,7 @@ function toQueueRow(r: QueueRow): Omit<SessionQueue, "items"> {
     wrapupAnswer: r.wrapup_answer,
     promptedGoal: r.prompted_goal,
     promptedEvidence: r.prompted_evidence,
+    promptedActivityAt: r.prompted_activity_at,
     updatedAt: r.updated_at,
   };
 }
@@ -6765,12 +6775,13 @@ export function upsertQueue(q: Omit<SessionQueue, "items">): void {
     .prepare(
       `INSERT INTO foreman_queues
          (note_key, cwd, branch, wrapup_asked_at, wrapup_answer, prompted_goal,
-          prompted_evidence, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          prompted_evidence, prompted_activity_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(note_key) DO UPDATE SET
          cwd=excluded.cwd, branch=excluded.branch, wrapup_asked_at=excluded.wrapup_asked_at,
          wrapup_answer=excluded.wrapup_answer, prompted_goal=excluded.prompted_goal,
          prompted_evidence=excluded.prompted_evidence,
+         prompted_activity_at=excluded.prompted_activity_at,
          updated_at=excluded.updated_at`,
     )
     .run(
@@ -6781,6 +6792,7 @@ export function upsertQueue(q: Omit<SessionQueue, "items">): void {
       q.wrapupAnswer,
       q.promptedGoal,
       q.promptedEvidence,
+      q.promptedActivityAt,
       q.updatedAt,
     );
 }

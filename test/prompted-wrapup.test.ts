@@ -119,6 +119,7 @@ function mkQueue(over: Partial<SessionQueue> = {}): SessionQueue {
     wrapupAnswer: null,
     promptedGoal: null,
     promptedEvidence: null,
+    promptedActivityAt: null,
     updatedAt: 0,
     items: [],
     ...over,
@@ -361,7 +362,10 @@ test("THE RE-ARM: the same human goal waits for durable completion evidence to a
   const queue = mkQueue({
     promptedGoal: "intent:1:1",
     promptedEvidence: handled,
-    updatedAt: NOW - 30_000,
+    promptedActivityAt: NOW - 30_000,
+    // The verifier persisted after the next Stop had already arrived. `updatedAt`
+    // therefore cannot be the re-arm watermark.
+    updatedAt: NOW,
   });
   assert.equal(
     decide({ queue }).kind,
@@ -373,7 +377,11 @@ test("THE RE-ARM: the same human goal waits for durable completion evidence to a
     queue,
     session: mkSession({ lastActivity: NOW - 10_000 }),
   });
-  assert.equal(laterStop.kind, "check", "a task notification does not need to become a human goal");
+  assert.equal(
+    laterStop.kind,
+    "check",
+    "a Stop arriving during verification must remain armed after that verifier writes",
+  );
   if (laterStop.kind !== "check") return;
   assert.equal(laterStop.previousEvidenceMarker, handled);
   assert.equal(
@@ -394,9 +402,23 @@ test("a legacy prompt-only guard stays spent until a human prompt changes", () =
       queue: mkQueue({
         promptedGoal: "intent:1:1",
         promptedEvidence: null,
+        promptedActivityAt: null,
       }),
     }).kind,
     "skip",
+  );
+
+  const markerOnlyFromOlderDaemon = {
+    ...mkQueue({
+      promptedGoal: "intent:1:1",
+      promptedEvidence: "a".repeat(64),
+    }),
+    promptedActivityAt: undefined,
+  } as unknown as SessionQueue;
+  assert.equal(
+    decide({ queue: markerOnlyFromOlderDaemon }).kind,
+    "skip",
+    "a new worker must keep an older daemon's marker-only guard spent",
   );
 });
 

@@ -1629,6 +1629,7 @@ export interface ForemanCompletionStoreInput {
   binding: WorkflowBinding;
   completionKind: "drain" | "prompted";
   marker: string;
+  promptedActivityAt: number | null;
   summary: string;
   evidenceFingerprint: string;
   expectedIntent: SessionIntentGuard | null;
@@ -3838,6 +3839,7 @@ export class WorkflowStore {
               },
               expectedIntent!.episodeKey,
               input.marker,
+              input.promptedActivityAt,
               input.now,
             );
         if (!retired) {
@@ -6385,7 +6387,7 @@ export class WorkflowStore {
    * items - its `EXISTS` clause is what makes "the queue drained again" a true statement.
    * A session driven by a human prompt has no items at all, so before this existed a
    * confirmed repair packet re-armed nothing and the loop depended on a new human prompt.
-   * Clearing `prompted_goal` and its evidence marker is the exact inverse of what
+   * Clearing `prompted_goal` and both evidence boundary fields is the exact inverse of what
    * `retirePromptedGuard` writes, so `decidePromptedWrapup` step 10 stops matching and the
    * episode is armed again.
    *
@@ -6400,7 +6402,8 @@ export class WorkflowStore {
   ): boolean {
     const result = this.db.prepare(
       `UPDATE foreman_queues
-          SET prompted_goal = NULL, prompted_evidence = NULL, updated_at = ?
+          SET prompted_goal = NULL, prompted_evidence = NULL,
+              prompted_activity_at = NULL, updated_at = ?
         WHERE note_key = ? AND prompted_goal IS NOT NULL`,
     ).run(now, delivery.noteKey);
     return Number(result.changes) === 1;
@@ -6437,6 +6440,7 @@ export class WorkflowStore {
     binding: Pick<WorkflowBinding, "noteKey" | "sessionCwd">,
     episodeKey: string,
     evidenceMarker: string,
+    activityAt: number | null,
     now: number,
   ): boolean {
     const existing = this.db.prepare(
@@ -6455,21 +6459,29 @@ export class WorkflowStore {
     if (existing) {
       const result = this.db.prepare(
         `UPDATE foreman_queues
-            SET prompted_goal = ?, prompted_evidence = ?, updated_at = ?
+            SET prompted_goal = ?, prompted_evidence = ?, prompted_activity_at = ?, updated_at = ?
           WHERE note_key = ?
             AND (
               prompted_goal IS NULL OR prompted_goal <> ?
               OR prompted_evidence IS NULL OR prompted_evidence <> ?
             )`,
-      ).run(episodeKey, evidenceMarker, now, binding.noteKey, episodeKey, evidenceMarker);
+      ).run(
+        episodeKey,
+        evidenceMarker,
+        activityAt,
+        now,
+        binding.noteKey,
+        episodeKey,
+        evidenceMarker,
+      );
       return Number(result.changes) === 1;
     }
     const result = this.db.prepare(
       `INSERT INTO foreman_queues (
          note_key, cwd, branch, wrapup_asked_at, wrapup_answer, prompted_goal,
-         prompted_evidence, updated_at
-       ) VALUES (?, ?, NULL, NULL, NULL, ?, ?, ?)`,
-    ).run(binding.noteKey, binding.sessionCwd, episodeKey, evidenceMarker, now);
+         prompted_evidence, prompted_activity_at, updated_at
+       ) VALUES (?, ?, NULL, NULL, NULL, ?, ?, ?, ?)`,
+    ).run(binding.noteKey, binding.sessionCwd, episodeKey, evidenceMarker, activityAt, now);
     return Number(result.changes) === 1;
   }
 

@@ -1121,10 +1121,11 @@ once-only guard in one transaction. A prompted guard includes the human intent e
 HEAD plus transcript anchor Foreman verified. This keeps retries idempotent while allowing a
 later settled turn on the same intent, such as work resumed by a Claude background task
 notification, to claim the existing binding exactly once after that evidence advances. The
-queue update time is the cheap activity watermark before Foreman refetches that proof, so an
-unchanged idle boundary does not incur repeated diff reads. A missing or failed claim endpoint
-fails closed - Foreman
-does not fall through to an unreviewed wrap-up. If no Foreman binding claims the boundary,
+session activity observed with that proof is the cheap watermark before Foreman refetches it,
+so an unchanged idle boundary does not incur repeated diff reads. Because the watermark is the
+observed boundary rather than the later guard write, a Stop arriving during verification remains
+eligible afterward. A missing or failed claim endpoint fails closed - Foreman does not fall
+through to an unreviewed wrap-up. If no Foreman binding claims the boundary,
 the existing wrap-up behavior is unchanged.
 
 #### The repair loop, end to end

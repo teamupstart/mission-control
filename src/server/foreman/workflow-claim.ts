@@ -35,6 +35,7 @@ export function drainCompletionClaim(
   return {
     completionKind: "drain",
     marker: sha256(proof),
+    activityAt: null,
     summary: `Foreman queue drained after ${queue.items.length} terminal item${queue.items.length === 1 ? "" : "s"}.`,
     evidenceFingerprint: sha256({ headSha, transcriptAnchor, items: proof.items }),
     expectedIntent,
@@ -46,11 +47,13 @@ export function promptedCompletionClaim(input: {
   intent: SessionIntentGuard;
   headSha: string | null;
   transcriptAnchor: number | null;
+  activityAt: number;
   summary: string;
 }): WorkflowCompletionClaim {
   return {
     completionKind: "prompted",
     marker: promptedCompletionMarker(input),
+    activityAt: input.activityAt,
     summary: input.summary,
     evidenceFingerprint: sha256({
       headSha: input.headSha,

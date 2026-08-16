@@ -70,6 +70,7 @@ function request(
     body: JSON.stringify({
       completionKind,
       marker,
+      activityAt: completionKind === "prompted" ? 123 : null,
       summary: "Foreman proved the queue complete.",
       evidenceFingerprint: "evidence",
       expectedIntent,
@@ -410,10 +411,16 @@ test("completion HTTP claims server-owned identity once and atomically retires t
   assert.equal(promptedBody.state, "started");
   assert.equal(workflows.store.getRun(promptedBody.runId)?.bindingId, promptedBinding.id);
   const promptedGuard = db.prepare(
-    `SELECT prompted_goal, prompted_evidence FROM foreman_queues WHERE note_key = 'prompted'`,
-  ).get() as { prompted_goal: string | null; prompted_evidence: string | null };
+    `SELECT prompted_goal, prompted_evidence, prompted_activity_at
+       FROM foreman_queues WHERE note_key = 'prompted'`,
+  ).get() as {
+    prompted_goal: string | null;
+    prompted_evidence: string | null;
+    prompted_activity_at: number | null;
+  };
   assert.equal(promptedGuard.prompted_goal, "intent:1:1");
   assert.equal(promptedGuard.prompted_evidence, "e".repeat(64));
+  assert.equal(promptedGuard.prompted_activity_at, 123);
 
   const advancedPrompted = await request(app, "prompted", "9".repeat(64), "prompted");
   assert.equal(advancedPrompted.status, 200, "new evidence on the same intent must re-arm");

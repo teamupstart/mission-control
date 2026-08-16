@@ -195,6 +195,7 @@ function mkFake(
       wrapupAnswer: null,
       promptedGoal: null,
       promptedEvidence: null,
+      promptedActivityAt: null,
       updatedAt: 0,
       items,
     }),

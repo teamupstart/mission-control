@@ -233,21 +233,26 @@ export function decidePromptedWrapup(input: PromptedInput): PromptedCandidate {
   // 10. THE RE-ARM. Human intent and completion evidence are independent axes. A newly
   //     reconciled human prompt always advances the episode key. The same episode can also
   //     resume through harness-owned input, notably Claude's `<task-notification>`, which is
-  //     correctly excluded from goal capture. The queue row's update time is the cheap
-  //     activity watermark: do not gather HEAD + transcript again until a later hook moves
-  //     `lastActivity` past the write that retired the previous boundary. Even then, do not
-  //     spend another verifier call unless the durable evidence marker advanced.
+  //     correctly excluded from goal capture. The activity observed with the evidence is
+  //     the cheap watermark: do not gather HEAD + transcript again until a later hook moves
+  //     `lastActivity` past the boundary the verifier examined. This must not use the guard
+  //     write time because a newer Stop can arrive while the verifier is still running.
+  //     Even then, do not spend another verifier call unless the evidence marker advanced.
   //
-  //     A non-null goal with no evidence marker is a guard written by an older build. Keep
-  //     it spent until the human prompt changes; replaying every historical completion once
-  //     on upgrade would violate the exact-once guarantee this field exists to provide.
-  if (queue?.promptedGoal === episodeKey && !queue.promptedEvidence) {
+  //     A non-null goal missing either evidence axis is a guard written by an older build.
+  //     Keep it spent until the human prompt changes; replaying every historical completion
+  //     once on upgrade would violate the exact-once guarantee these fields provide.
+  if (
+    queue?.promptedGoal === episodeKey
+    && (!queue.promptedEvidence || queue.promptedActivityAt == null)
+  ) {
     return { kind: "skip", why: "already wrapped up this prompt" };
   }
   if (
     queue?.promptedGoal === episodeKey
     && queue.promptedEvidence
-    && (session.lastActivity ?? 0) <= queue.updatedAt
+    && queue.promptedActivityAt != null
+    && (session.lastActivity ?? session.firstSeen) <= queue.promptedActivityAt
   ) {
     return { kind: "skip", why: "no session activity since this completion boundary" };
   }

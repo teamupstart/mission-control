@@ -1082,19 +1082,22 @@ test("the prompted trigger's episode guard round-trips, and is separate from the
 
   const goal = "add retry handling to the uploader";
   const evidenceMarker = "a".repeat(64);
+  const activityAt = 1234;
   const res = await app.request("/api/sessions/sess-1/queue/wrapup/prompted", {
     method: "POST",
     headers: jsonHeaders,
-    body: JSON.stringify({ goal, evidenceMarker }),
+    body: JSON.stringify({ goal, evidenceMarker, activityAt }),
   });
   assert.equal(res.status, 200);
   const q = (await res.json()) as {
     promptedGoal: string | null;
     promptedEvidence: string | null;
+    promptedActivityAt: number | null;
     wrapupAskedAt: number | null;
   };
   assert.equal(q.promptedGoal, goal);
   assert.equal(q.promptedEvidence, evidenceMarker);
+  assert.equal(q.promptedActivityAt, activityAt);
   assert.equal(q.wrapupAskedAt, askedBefore, "retiring a prompted episode never touches the drain ask");
 
   // And it survives a re-read, since it is the thing that stops the trigger re-firing.
@@ -1114,9 +1117,26 @@ test("an old worker can retire a prompted episode without an evidence marker", a
   const queue = (await res.json()) as {
     promptedGoal: string | null;
     promptedEvidence: string | null;
+    promptedActivityAt: number | null;
   };
   assert.equal(queue.promptedGoal, goal);
   assert.equal(queue.promptedEvidence, null, "the version-skew write is a legacy spent guard");
+  assert.equal(queue.promptedActivityAt, null);
+
+  // The immediately preceding worker version knew the evidence marker but not the
+  // observed-activity axis. That upgrade window must remain valid and spent too.
+  const markerOnly = await app.request("/api/sessions/sess-1/queue/wrapup/prompted", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ goal: `${goal} again`, evidenceMarker: "c".repeat(64) }),
+  });
+  assert.equal(markerOnly.status, 200);
+  const markerOnlyQueue = (await markerOnly.json()) as {
+    promptedEvidence: string | null;
+    promptedActivityAt: number | null;
+  };
+  assert.equal(markerOnlyQueue.promptedEvidence, "c".repeat(64));
+  assert.equal(markerOnlyQueue.promptedActivityAt, null, "unknown activity stays a legacy boundary");
 });
 
 test("a prompted human handoff retires its episode and raises the card atomically", async () => {
@@ -1129,20 +1149,23 @@ test("a prompted human handoff retires its episode and raises the card atomicall
 
   const goal = "preserve the existing Manual workflow binding";
   const evidenceMarker = "b".repeat(64);
+  const activityAt = 5678;
   const res = await app.request("/api/sessions/sess-1/queue/wrapup/prompted", {
     method: "POST",
     headers: jsonHeaders,
-    body: JSON.stringify({ goal, evidenceMarker, ask: true }),
+    body: JSON.stringify({ goal, evidenceMarker, activityAt, ask: true }),
   });
   assert.equal(res.status, 200);
   const queue = (await res.json()) as {
     promptedGoal: string | null;
     promptedEvidence: string | null;
+    promptedActivityAt: number | null;
     wrapupAskedAt: number | null;
     wrapupAnswer: string | null;
   };
   assert.equal(queue.promptedGoal, goal);
   assert.equal(queue.promptedEvidence, evidenceMarker);
+  assert.equal(queue.promptedActivityAt, activityAt);
   assert.ok(queue.wrapupAskedAt, "the Ship it? card is raised with the episode guard");
   assert.equal(queue.wrapupAnswer, null, "the previous episode's answer cannot hide the new card");
 });

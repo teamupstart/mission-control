@@ -198,7 +198,13 @@ async function retirePromptedEpisode(
   opts?: { ask?: boolean },
 ): Promise<boolean> {
   try {
-    await client.markPromptedWrapup(session.id, goal, evidenceMarker, opts);
+    await client.markPromptedWrapup(
+      session.id,
+      goal,
+      evidenceMarker,
+      session.lastActivity ?? session.firstSeen,
+      opts,
+    );
     promptedFailures.onRetired(session.id);
     return true;
   } catch (err) {
@@ -1213,7 +1219,7 @@ function promptedConfig(cfg: ForemanConfig): PromptedConfig {
  * the write that RETIRES the episode lands BEFORE the shipping instruction, so a crash
  * between "typed" and "recorded that we typed" must leave the trigger disarmed. Concretely:
  *
- *   verify -> stamp `promptedGoal` + `promptedEvidence` -> type -> record the answer
+ *   verify -> stamp goal + evidence + observed activity -> type -> record the answer
  *
  * Every failure degrades toward the human: a stamp that fails aborts before typing
  * (nothing happened, we retry next tick, and only so many times - see
@@ -1450,6 +1456,7 @@ async function processPromptedWrapup(
         intent: intentGuard,
         headSha: diff.headSha,
         transcriptAnchor,
+        activityAt: session.lastActivity ?? session.firstSeen,
         summary: result.verdict.summary,
       }),
     );

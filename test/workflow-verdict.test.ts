@@ -231,6 +231,7 @@ test("Persona prompts expose immutable Check outcomes and exact text artifacts a
     "txt_focused",
     artifactContent,
     '"check"|"image"|"artifact"',
+    "For Check evidence, path MUST be the immutable attemptId",
     "Evidence-only logs do not need to be committed.",
     "Pull-request checks, remote CI, and Inspector findings may be later workflow stages",
   ]) {

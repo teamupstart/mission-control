@@ -6,6 +6,9 @@
 - [review-evidence-needs-the-pr](review-evidence-needs-the-pr.md) - a review round cannot see
   output pasted into a reply, so evidence has to reach the pull request; imagery is not an
   exception, and a binary attaches through the signed-in browser rather than being committed.
+- [workflow-evidence-needs-live-artifacts](workflow-evidence-needs-live-artifacts.md) -
+  No-Mistakes snapshots do not import PR comments; render UI evidence and completed command
+  output in the current turn as well as attaching it to the PR.
 - [merged-pr-cannot-take-repairs](merged-pr-cannot-take-repairs.md) - merging before the
   no-mistakes run finishes makes every later repair round impossible to answer; let the rounds
   finish, then merge.

@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Plan for reconciling stale spent workflow Inspector gates">
+  <title>Spent Inspector Gate Reconciliation</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --paper: #edf3f5;
+      --sheet: #fbfdfd;
+      --ink: #132a3a;
+      --muted: #586b76;
+      --line: #b9cbd1;
+      --blue: #1f607d;
+      --deep: #17465c;
+      --aqua: #66b8b4;
+      --amber: #b86f1e;
+      --amber-pale: #f6e5c9;
+      --green: #27704a;
+      --green-pale: #dceee4;
+      --red: #9b3d37;
+      --red-pale: #f5dfdc;
+      --code: #e4edef;
+      --shadow: 0 18px 54px rgba(19, 42, 58, 0.12);
+      --display: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+      --body: "Avenir Next", Avenir, "Segoe UI", sans-serif;
+      --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --paper: #0e171b;
+        --sheet: #172329;
+        --ink: #eaf2f4;
+        --muted: #a9b8be;
+        --line: #3b4d55;
+        --blue: #78c5df;
+        --deep: #9cd8e9;
+        --aqua: #74cfca;
+        --amber: #f0b668;
+        --amber-pale: #3c3021;
+        --green: #8bd3a6;
+        --green-pale: #1d3829;
+        --red: #efa097;
+        --red-pale: #3f2927;
+        --code: #223037;
+        --shadow: 0 18px 54px rgba(0, 0, 0, 0.27);
+      }
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        linear-gradient(color-mix(in srgb, var(--blue) 5%, transparent) 1px, transparent 1px),
+        linear-gradient(90deg, color-mix(in srgb, var(--blue) 5%, transparent) 1px, transparent 1px),
+        var(--paper);
+      background-size: 24px 24px;
+      font: 16px/1.62 var(--body);
+    }
+    .shell { width: min(1180px, calc(100% - 32px)); margin: 24px auto 72px; display: grid; grid-template-columns: 224px minmax(0, 1fr); gap: 24px; align-items: start; }
+    aside { position: sticky; top: 24px; padding: 19px; color: #eaf5f6; background: #132a3a; border-top: 5px solid #66b8b4; box-shadow: var(--shadow); }
+    aside strong { display: block; margin-bottom: 14px; color: #9dd9d4; font: 750 0.72rem var(--mono); letter-spacing: 0.15em; text-transform: uppercase; }
+    aside nav { display: grid; gap: 3px; }
+    aside a { padding: 6px 8px; color: #d8e5e8; border-left: 2px solid transparent; text-decoration: none; font-size: 0.84rem; line-height: 1.25; }
+    aside a:hover { color: white; border-color: var(--amber); }
+    main { min-width: 0; background: var(--sheet); border-top: 5px solid var(--blue); box-shadow: var(--shadow); }
+    header { padding: clamp(42px, 7vw, 84px); color: #eef8f9; background: #17465c; }
+    .eyebrow, code, pre, th, .tag { font-family: var(--mono); }
+    .eyebrow { margin-bottom: 20px; color: #9dd9d4; font-size: 0.73rem; font-weight: 750; letter-spacing: 0.16em; text-transform: uppercase; }
+    h1, h2, h3 { font-family: var(--display); font-weight: 600; line-height: 1.08; }
+    h1 { max-width: 880px; margin: 0; font-size: clamp(2.9rem, 7vw, 6.2rem); letter-spacing: -0.048em; }
+    header p { max-width: 750px; margin: 29px 0 0; color: #d9e8eb; font-size: 1.17rem; }
+    .content { padding: clamp(24px, 6vw, 68px); }
+    section { margin-top: 68px; scroll-margin-top: 24px; }
+    section:first-child { margin-top: 0; }
+    h2 { margin: 0 0 18px; color: var(--deep); font-size: clamp(1.9rem, 4vw, 3rem); letter-spacing: -0.03em; }
+    h3 { margin: 0 0 9px; font-size: 1.32rem; }
+    p { max-width: 80ch; }
+    a { color: var(--deep); text-underline-offset: 3px; }
+    code { padding: 0.11em 0.34em; border-radius: 4px; background: var(--code); font-size: 0.89em; }
+    .recommendation { margin: -28px 0 0; padding: 24px 26px; border: 1px solid var(--line); border-left: 6px solid var(--green); background: var(--sheet); box-shadow: 0 10px 28px rgba(19,42,58,.1); }
+    .recommendation strong { display: block; margin-bottom: 7px; color: var(--green); font: 750 0.77rem var(--mono); letter-spacing: .1em; text-transform: uppercase; }
+    .recommendation p { margin: 0; font-size: 1.13rem; font-weight: 650; }
+    .options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+    .option { padding: 20px; border: 1px solid var(--line); background: color-mix(in srgb, var(--sheet) 84%, var(--paper)); }
+    .option.recommended { border-top: 5px solid var(--green); }
+    .tag { display: inline-block; margin-bottom: 12px; color: var(--muted); font-size: .71rem; font-weight: 750; letter-spacing: .08em; text-transform: uppercase; }
+    .recommended .tag { color: var(--green); }
+    .table-wrap, .flow { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: .92rem; }
+    th, td { padding: 13px 12px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { color: var(--muted); font-size: .72rem; letter-spacing: .08em; text-transform: uppercase; }
+    tr:last-child td { border-bottom: 0; }
+    ul, ol { padding-left: 22px; }
+    li + li { margin-top: 8px; }
+    .callout { margin: 24px 0; padding: 19px 21px; border-left: 5px solid var(--amber); background: var(--amber-pale); }
+    .flow { padding: 16px; border: 1px solid var(--line); background: color-mix(in srgb, var(--paper) 65%, var(--sheet)); }
+    .flow svg { min-width: 850px; width: 100%; height: auto; }
+    .checklist li { margin-top: 9px; }
+    .source { margin-top: 44px; color: var(--muted); font-size: .8rem; }
+    @media (max-width: 880px) {
+      .shell { width: min(100% - 20px, 1180px); grid-template-columns: 1fr; margin-top: 10px; }
+      aside { position: static; }
+      aside nav { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .options { grid-template-columns: 1fr; }
+      header { padding: 38px 24px 58px; }
+      .content { padding: 22px; }
+    }
+  </style>
+</head>
+<body>
+<div class="shell">
+  <aside>
+    <strong>Plan contents</strong>
+    <nav>
+      <a href="#goal">Goal</a>
+      <a href="#evidence">Evidence</a>
+      <a href="#constraints">Constraints</a>
+      <a href="#decisions">Approved decisions</a>
+      <a href="#options">Selected solution</a>
+      <a href="#recommendation">Decision rationale</a>
+      <a href="#implementation">Implementation</a>
+      <a href="#flow">State flow</a>
+      <a href="#acceptance">Acceptance</a>
+      <a href="#verification">Verification</a>
+      <a href="#scope">Out of scope</a>
+    </nav>
+  </aside>
+  <main>
+    <header>
+      <div class="eyebrow">Approved follow-up plan</div>
+      <h1>Spent Inspector Gate Reconciliation</h1>
+      <p>Make a stopped gate distinguish historical failure from current Inspector truth, then reuse the narrowest safe recovery path.</p>
+    </header>
+    <div class="content">
+      <section id="goal">
+        <div class="recommendation">
+          <strong>Approved approach</strong>
+          <p>Truthful state plus the existing grant path. No schema, no Shipping change, no second budget, and no silent completion after an operator-set limit.</p>
+        </div>
+        <h2 style="margin-top:54px">Goal</h2>
+        <p>Make a spent workflow Inspector gate tell the truth when the current pull-request head has since been reviewed clean, and give the operator one clear, safe path to let that workflow adopt the clean head.</p>
+        <p>The follow-up preserves exact-head Inspector proof, durable workflow ownership, immutable Inspector-only repair audit, and the rule that Shipping never merges around an active workflow gate.</p>
+      </section>
+
+      <section id="decisions">
+        <h2>Approved decisions</h2>
+        <ul>
+          <li>Implement truthful state plus the existing grant path, including the contextual <strong>Adopt clean Inspector head</strong> action.</li>
+          <li>Create a phased implementation plan and schedule its implementation task or tasks after publishing the plan artifacts.</li>
+        </ul>
+      </section>
+
+      <section id="evidence">
+        <h2>Evidence summary</h2>
+        <p>PR #591 demonstrated two records that diverged. The workflow gate is frozen on <code>54d0bd2d</code> with four finding fingerprints. The current Inspector ledger is on <code>fbba204b</code> with zero open findings, and all four historical fingerprints are resolved.</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Existing seam</th><th>Finding</th></tr></thead>
+            <tbody>
+              <tr><td>Run detail</td><td>Already returns both the historical gate and current Inspector records.</td></tr>
+              <tr><td>Evaluation</td><td>Inspector updates are scheduled, but the blocked-run guard returns before refresh.</td></tr>
+              <tr><td>Recheck</td><td>Reports success and schedules the same evaluator, so it no-ops on a spent run.</td></tr>
+              <tr><td>Presentation</td><td>Reads the historical <code>waitReason</code> without qualifying it against current evidence.</td></tr>
+              <tr><td>Recovery</td><td>The existing grant route already restores safe, audited exact-head evaluation.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="constraints">
+        <h2>Constraints</h2>
+        <ul>
+          <li>Do not release Shipping merely because historical rows are resolved.</li>
+          <li>Do not complete from a stale or non-current Inspector head.</li>
+          <li>Do not let the browser decide that a gate passed.</li>
+          <li>Do not create a second source of Inspector truth.</li>
+          <li>Keep the failed head and findings visible as history.</li>
+          <li>Preserve the repair budget as an operator boundary unless the selected option explicitly changes it.</li>
+          <li>Cover every visible change with Playwright.</li>
+        </ul>
+      </section>
+
+      <section id="options">
+        <h2>Selected solution</h2>
+        <div class="options">
+          <article class="option recommended">
+            <div class="tag">Approved</div>
+            <h3>Truthful state plus existing grant</h3>
+            <p>Show historical and current Inspector state separately. When the current exact head is clean, label the existing grant move <strong>Adopt clean Inspector head</strong>. The existing daemon path then revalidates and completes.</p>
+            <p>No schema, endpoint, Shipping, or budget-policy change.</p>
+          </article>
+        </div>
+      </section>
+
+      <section id="recommendation">
+        <h2>Decision rationale</h2>
+        <p>The selected approach fixes the false statement and dead action at their source, uses current data already on the wire, and reuses the recovery path whose compare-and-swap, round grant, immutable Inspector-only submission, and exact-head checks already exist.</p>
+      </section>
+
+      <section id="implementation">
+        <h2>Proposed implementation</h2>
+        <ol>
+          <li>Add one shared browser-safe derivation for historical findings, current review freshness, exact-head cleanliness, and unavailable evidence.</li>
+          <li>Use it in run detail, the workflow ladder, compact preview, next-move descriptor, and no-move sentence.</li>
+          <li>Keep historical state in the facts and audit packet. Never rewrite it from browser state.</li>
+          <li>For a spent gate with a clean current head, reuse <code>grant-rounds</code> and label it <strong>Adopt clean Inspector head</strong>.</li>
+          <li>Remove <strong>Recheck GitHub Inspector</strong> from spent blocked gates; keep it where the evaluator can act.</li>
+          <li>Update the Workflows guide with the historical versus current distinction and contextual recovery label.</li>
+        </ol>
+      </section>
+
+      <section id="flow">
+        <h2>Recommended state flow</h2>
+        <div class="flow">
+          <svg viewBox="0 0 980 250" role="img" aria-labelledby="flow-title flow-description">
+            <title id="flow-title">Recommended spent gate recovery flow</title>
+            <desc id="flow-description">Run detail combines historical workflow state and current Inspector evidence. A shared derivation presents both. The operator chooses to adopt a clean head through the existing grant route. The daemon then creates its normal Inspector-only audit and completes only after exact-head proof.</desc>
+            <defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="currentColor"/></marker></defs>
+            <g fill="none" stroke="currentColor" stroke-width="2" marker-end="url(#arrow)" opacity="0.55">
+              <path d="M190 88 H235"/><path d="M395 88 H440"/><path d="M600 88 H645"/><path d="M805 88 H850"/>
+            </g>
+            <g font-family="ui-sans-serif, system-ui, sans-serif">
+              <rect x="20" y="47" width="170" height="82" rx="12" fill="var(--sheet)" stroke="var(--line)"/>
+              <text x="105" y="78" text-anchor="middle" fill="var(--ink)" font-size="15" font-weight="750">Run detail</text>
+              <text x="105" y="103" text-anchor="middle" fill="var(--muted)" font-size="12">history + current ledger</text>
+              <rect x="235" y="47" width="160" height="82" rx="12" fill="var(--green-pale)" stroke="var(--green)"/>
+              <text x="315" y="78" text-anchor="middle" fill="var(--green)" font-size="15" font-weight="750">Shared derivation</text>
+              <text x="315" y="103" text-anchor="middle" fill="var(--green)" font-size="12">current exact head clean</text>
+              <rect x="440" y="47" width="160" height="82" rx="12" fill="var(--amber-pale)" stroke="var(--amber)"/>
+              <text x="520" y="78" text-anchor="middle" fill="var(--ink)" font-size="15" font-weight="750">Operator action</text>
+              <text x="520" y="103" text-anchor="middle" fill="var(--muted)" font-size="12">adopt clean head</text>
+              <rect x="645" y="47" width="160" height="82" rx="12" fill="var(--sheet)" stroke="var(--line)"/>
+              <text x="725" y="78" text-anchor="middle" fill="var(--ink)" font-size="15" font-weight="750">Existing daemon path</text>
+              <text x="725" y="103" text-anchor="middle" fill="var(--muted)" font-size="12">grant + exact-head audit</text>
+              <rect x="850" y="47" width="110" height="82" rx="12" fill="var(--green-pale)" stroke="var(--green)"/>
+              <text x="905" y="78" text-anchor="middle" fill="var(--green)" font-size="15" font-weight="750">Complete</text>
+              <text x="905" y="103" text-anchor="middle" fill="var(--green)" font-size="12">Shipping retries</text>
+            </g>
+          </svg>
+        </div>
+      </section>
+
+      <section id="acceptance">
+        <h2>Acceptance criteria</h2>
+        <ul class="checklist">
+          <li>A spent gate never claims its retained findings remain unresolved when they are resolved.</li>
+          <li>Run detail separates last workflow observation from current Inspector status.</li>
+          <li>A clean current Inspector head yields one primary action named <strong>Adopt clean Inspector head</strong>.</li>
+          <li>The action uses the existing grant route and cannot directly complete the workflow.</li>
+          <li>The daemon still proves an adopted open PR, exact current head, live review, and zero findings.</li>
+          <li>Dirty, unreviewed, mismatched, closed, and unavailable evidence cannot produce the clean-head action.</li>
+          <li>A spent blocked gate does not offer a recheck action that can only no-op.</li>
+          <li>Ordinary grant and cancel recovery remain available where current evidence is not clean.</li>
+          <li>Shipping behavior and historical audit remain unchanged.</li>
+        </ul>
+      </section>
+
+      <section id="verification">
+        <h2>Verification</h2>
+        <ul>
+          <li>Focused <code>node:test</code> coverage with the required <code>test/setup-state.mjs</code> preload.</li>
+          <li>Workflow manager coverage for adoption of a later clean exact head and refusal of inconsistent evidence.</li>
+          <li>Rendering tests for run detail and ladder copy.</li>
+          <li>A Playwright specification for the spent historical gate and clean current Inspector recovery.</li>
+          <li><code>npm run typecheck</code>, <code>npm run lint</code>, <code>npm run build</code>, then <code>npm run test:e2e</code>.</li>
+        </ul>
+      </section>
+
+      <section id="scope">
+        <h2>Out of scope</h2>
+        <ul>
+          <li>Changing Shipping's merge gate order.</li>
+          <li>Automatically retiring or completing spent runs.</li>
+          <li>Adding a new Inspector budget or workflow setting.</li>
+          <li>Rewriting historical gate snapshots.</li>
+          <li>Recovering PR #591 during implementation verification.</li>
+        </ul>
+      </section>
+
+      <p class="source">Rendered from <code>docs/plans/spent-inspector-gate-reconciliation/plan.md</code>. Approved for phased implementation.</p>
+    </div>
+  </main>
+</div>
+</body>
+</html>

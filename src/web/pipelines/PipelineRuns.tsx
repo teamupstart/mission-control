@@ -1,8 +1,17 @@
 import { Fragment, useMemo } from "react";
-import { pipelineRunKeyOf, type PipelineRun } from "@shared/pipeline.ts";
+import {
+  PIPELINE_DAEMON_ACTIONS,
+  pipelineGrantAllowed,
+  pipelineRepoKey,
+  pipelineRunKeyOf,
+  type PipelineAction,
+  type PipelineConsole,
+  type PipelineRun,
+} from "@shared/pipeline.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
 import { repoLeaf } from "../lib/format.ts";
 import type { PipelineRunAddress } from "../workflows/useWorkflowRoute.ts";
+import { PipelineActions } from "./PipelineActions.tsx";
 import { PipelineRunView } from "./PipelineRunView.tsx";
 import {
   PIPELINE_DAEMON_LABELS,
@@ -43,7 +52,7 @@ export function PipelineRuns({
 }): React.JSX.Element {
   // Mounted only when the tab is showing, so the poll's `active` is unconditional here: the
   // tab itself is what gates it, and it does not exist for an operator observing nothing.
-  const repos = usePipelineRepos(true);
+  const { repos, refresh } = usePipelineRepos(true);
   const sections = useMemo(() => pipelineRail(runs, repos ?? []), [runs, repos]);
 
   const addressed = findPipelineRun(runs, selected);
@@ -58,6 +67,40 @@ export function PipelineRuns({
     run?.slug ?? null,
     run?.updatedAt ?? 0,
   );
+  // The daemon verbs on offer follow the daemon this run's own repository reports, which is
+  // the rail's chip: three of the four are no-ops at any moment, and offering the one that
+  // does nothing is what teaches an operator to stop trusting the row. `unknown` when the
+  // rail has not answered yet, which offers both ends rather than guessing.
+  const daemon =
+    run && repos
+      ? (repos.find((repo) => pipelineRepoKey(repo.provider, repo.repoRoot) === pipelineRepoKey(run.provider, run.repoRoot))
+          ?.daemon ?? "unknown")
+      : "unknown";
+  // A FINISHED feature offers no feature verbs, by the same rule: the engine would accept a
+  // park or a grant on a slug it has already processed and print a success line for it, and a
+  // verb whose only effect is that sentence is one an operator learns to distrust. The daemon
+  // verbs stay, because they are about the repository rather than about this run.
+  //
+  // Park and unpark apply to any live feature - parking is how an operator takes one out of
+  // the engine's hands, halted or not. A GRANT does not: it is the answer to a refusal, and
+  // `pipelineGrantAllowed` reads that off the same halt-class table the attention inbox draws
+  // its verbs from, so the two surfaces cannot come to different conclusions about when a
+  // DECIDE re-entry is a thing to offer.
+  const runVerbs: PipelineAction[] =
+    !run || run.group === "processed"
+      ? []
+      : [
+          run.group === "parked" ? "unpark" : "park",
+          ...(pipelineGrantAllowed(run.halt) ? (["grant"] as const) : []),
+        ];
+  const runActions: PipelineAction[] = run
+    ? [...PIPELINE_DAEMON_ACTIONS[daemon], ...runVerbs]
+    : [];
+  // The reseal ceremony is offered where it applies rather than always: it is the way out of
+  // one halt class, and a permanent button for breaking a seal invites breaking one.
+  const runConsoles: PipelineConsole[] =
+    run?.halt?.class === "protected-artifact" ? ["daemon", "reseal"] : ["daemon"];
+
   // Through the shared helper rather than joined here: a repository root and a slug
   // concatenated with nothing between them are ambiguous, so `("/repo/foo", "1-fix")` and
   // `("/repo/foo1", "-fix")` would produce one key - two different runs sharing one React key
@@ -143,7 +186,18 @@ export function PipelineRuns({
       </aside>
       <div className="pipelines-reader">
         {run ? (
-          <PipelineRunView run={run} detail={detail} />
+          <PipelineRunView
+            run={run}
+            detail={detail}
+            actions={
+              <PipelineActions
+                run={run}
+                actions={runActions}
+                consoles={runConsoles}
+                onRefresh={refresh}
+              />
+            }
+          />
         ) : (
           <div className="workflow-empty">
             <span className="workflow-empty-mark" aria-hidden>

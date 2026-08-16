@@ -59,6 +59,11 @@ on unresolved comments or a red CI - tracks each pull request separately, so one
 feedback is never mistaken for another's or lost behind it. They share the pane, so they take
 turns in it: one instruction at a time, never two in a turn expecting neither.
 
+The daemon also carries the durable state and conservative restart reconciliation needed for
+Mission Control's native worktree pools. No dispatch or workflow-check acquisition path selects
+that allocator yet: current sessions and checks continue to use their existing treehouse or
+plain Git behavior until the later consumer cutover.
+
 ![Mission Control dispatch](docs/images/dispatch.png)
 
 ## Build the operating system around the work
@@ -109,6 +114,13 @@ typed at it. Its Workflows tab draws the feature's ladder. And when the engine *
 feature for a human, that halt is a row in the [attention inbox](docs/attention-and-alerts.md)
 with its class, what stopped it, and the runbook that clears it - the one thing waiting on you
 that has no session behind it.
+
+You can act on a pipeline from there, not only read it: start, stop, pause and resume the
+engine's daemon, park and unpark a feature, authorize one DECIDE re-entry with your own
+rationale, watch the daemon's console, and run the re-seal ceremony in a hosted terminal.
+Every verb spawns the engine's own CLI and is judged by what it printed, never by an exit code
+- and what a shipped feature cost lands in the [spend strip](docs/cost-and-usage.md) as
+automation, under the engine's own figures.
 
 ## Quick start
 

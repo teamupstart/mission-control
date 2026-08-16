@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Spent Inspector Gate Reconciliation: Phased Plan</title>
+  <meta name="description" content="Merge-aware implementation plan for truthful spent Inspector gate recovery">
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f3f0e8;
+      --paper: #fffdf7;
+      --ink: #1e2732;
+      --muted: #66717d;
+      --line: #d8d2c4;
+      --accent: #116466;
+      --accent-soft: #dcefed;
+      --warm: #9a5a16;
+      --warm-soft: #f8e8cf;
+      --code: #f1eee6;
+      --shadow: 0 22px 60px rgba(38, 45, 50, .12);
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #111820;
+        --paper: #18222c;
+        --ink: #edf3f5;
+        --muted: #aab8c2;
+        --line: #334453;
+        --accent: #75d6d2;
+        --accent-soft: #173a3e;
+        --warm: #ffc06f;
+        --warm-soft: #3d2c1a;
+        --code: #202c36;
+        --shadow: 0 24px 70px rgba(0, 0, 0, .35);
+      }
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background:
+        radial-gradient(circle at 16% 4%, color-mix(in srgb, var(--accent) 14%, transparent), transparent 32rem),
+        var(--bg);
+      color: var(--ink);
+      font: 16px/1.62 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    .shell { width: min(1120px, calc(100% - 32px)); margin: 28px auto 64px; }
+    header.hero {
+      padding: 48px clamp(24px, 5vw, 68px);
+      border: 1px solid var(--line);
+      border-bottom: 5px solid var(--accent);
+      border-radius: 20px 20px 8px 8px;
+      background: var(--paper);
+      box-shadow: var(--shadow);
+    }
+    .eyebrow { color: var(--accent); font-size: .8rem; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; }
+    h1 { max-width: 850px; margin: 10px 0 14px; font: 800 clamp(2rem, 5vw, 4rem)/1.02 ui-serif, Georgia, serif; letter-spacing: -.035em; }
+    .lede { max-width: 780px; margin: 0; color: var(--muted); font-size: 1.12rem; }
+    nav { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 26px; }
+    nav a { padding: 7px 11px; border: 1px solid var(--line); border-radius: 999px; color: var(--ink); text-decoration: none; font-size: .86rem; }
+    main { padding: 12px clamp(4px, 3vw, 32px) 0; }
+    section { padding: 34px 0; border-bottom: 1px solid var(--line); }
+    h2 { margin: 0 0 14px; font: 750 clamp(1.45rem, 3vw, 2rem)/1.18 ui-serif, Georgia, serif; }
+    h3 { margin: 24px 0 8px; }
+    p, ul, ol { max-width: 880px; }
+    li + li { margin-top: 7px; }
+    code { padding: .08em .32em; border-radius: 5px; background: var(--code); font-size: .92em; }
+    .decision, .phase {
+      padding: 20px 22px;
+      border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--line));
+      border-radius: 12px;
+      background: var(--accent-soft);
+    }
+    .decision strong, .phase strong { color: var(--accent); }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .card { padding: 18px; border: 1px solid var(--line); border-radius: 10px; background: var(--paper); }
+    .card b { display: block; margin-bottom: 4px; }
+    .scroll { max-width: 100%; overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--paper); }
+    table { width: 100%; min-width: 720px; border-collapse: collapse; }
+    th, td { padding: 13px 15px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { color: var(--muted); font-size: .78rem; letter-spacing: .08em; text-transform: uppercase; }
+    .flow { max-width: 100%; overflow-x: auto; padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--paper); }
+    .flow svg { width: 100%; min-width: 830px; height: auto; }
+    .foot { margin-top: 28px; color: var(--muted); font-size: .84rem; }
+    a { color: var(--accent); }
+    @media (max-width: 720px) { .grid { grid-template-columns: 1fr; } .shell { width: min(100% - 18px, 1120px); margin-top: 9px; } }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header class="hero">
+      <div class="eyebrow">Approved phased implementation plan</div>
+      <h1>Spent Inspector Gate Reconciliation</h1>
+      <p class="lede">One vertical slice makes every workflow surface distinguish historical gate failure from current Inspector truth, then reuses the audited grant path to adopt a clean exact head.</p>
+      <nav aria-label="Plan contents">
+        <a href="#decisions">Decisions</a>
+        <a href="#findings">Findings</a>
+        <a href="#size">Sizing</a>
+        <a href="#phase">Phase</a>
+        <a href="#flow">Flow</a>
+        <a href="#contracts">Contracts</a>
+        <a href="#verification">Verification</a>
+      </nav>
+    </header>
+    <main>
+      <section id="decisions">
+        <h2>Source and approved decisions</h2>
+        <div class="decision">
+          <strong>Truthful state plus the existing grant path</strong>
+          <p>Keep the durable spent state and Shipping veto. Show historical workflow observation separately from current Inspector truth. When the exact current head is reviewed clean, present <b>Adopt clean Inspector head</b> and POST to the existing <code>grant-rounds</code> route.</p>
+        </div>
+        <p>Source plan: <a href="plan.html">rendered product plan</a> and <a href="plan.md">Markdown source</a>.</p>
+      </section>
+
+      <section id="findings">
+        <h2>Repository findings</h2>
+        <div class="grid">
+          <article class="card"><b>Both records are already on detail</b><span>The browser receives the historical gate state, current Inspector inspection, and all finding rows. No schema, migration, route, or poller is needed.</span></article>
+          <article class="card"><b>The safe mutation already exists</b><span><code>grantRepairRounds</code> restores <code>waiting_for_new_head</code>, audits the grant, and lets the normal evaluator create the immutable bypass submission.</span></article>
+          <article class="card"><b>The dead Recheck is real</b><span><code>recheckInspector</code> accepts a blocked spent run, records success, then schedules an evaluator whose blocked-run guard returns immediately.</span></article>
+          <article class="card"><b>Presentation has one stale source</b><span><code>gateWaitSentence</code> renders historical <code>waitReason</code> as current truth across run detail, ladder, compact preview, and recovery copy.</span></article>
+        </div>
+      </section>
+
+      <section id="size">
+        <h2>Size and phase count</h2>
+        <p><strong>Estimated non-test implementation: 140 to 200 lines.</strong> That includes one detail-level derivation, its use across the existing UI consumers, a narrow server guard, scoped styling, and documentation-supporting structure.</p>
+        <p>The repository rubric therefore requires exactly one phase. Splitting server truthfulness, presentation, and browser proof would leave an incomplete merge unit.</p>
+      </section>
+
+      <section id="phase">
+        <h2>Phase table</h2>
+        <div class="scroll">
+          <table>
+            <thead><tr><th>Phase</th><th>Outcome</th><th>Prerequisite</th><th>Merge unit</th></tr></thead>
+            <tbody><tr><td>1. Truthful spent-gate recovery</td><td>Every surface separates history from current Inspector state, clean exact heads expose the audited adoption action, and dead Recheck calls are refused.</td><td>This planning PR</td><td>One Mission Control PR</td></tr></tbody>
+          </table>
+        </div>
+        <p class="phase"><strong>Detailed implementation source:</strong> <a href="phase-1-truthful-spent-gate-recovery.md">phase-1-truthful-spent-gate-recovery.md</a></p>
+      </section>
+
+      <section id="flow">
+        <h2>Implementation flow</h2>
+        <div class="flow">
+          <svg viewBox="0 0 930 190" role="img" aria-labelledby="flow-title flow-desc">
+            <title id="flow-title">Truthful spent Inspector gate recovery flow</title>
+            <desc id="flow-desc">Current Inspector detail is interpreted by one browser derivation. The UI presents history and current truth. An operator grants adoption. The existing daemon evaluator creates exact-head audit and completes only when clean.</desc>
+            <defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="currentColor"/></marker></defs>
+            <g fill="none" stroke="currentColor" stroke-width="2" marker-end="url(#arrow)" opacity=".55"><path d="M175 85 H225"/><path d="M395 85 H445"/><path d="M615 85 H665"/><path d="M835 85 H875"/></g>
+            <g font-family="ui-sans-serif, system-ui, sans-serif">
+              <rect x="15" y="43" width="160" height="84" rx="12" fill="var(--paper)" stroke="var(--line)"/><text x="95" y="75" text-anchor="middle" fill="var(--ink)" font-size="14" font-weight="750">Run detail</text><text x="95" y="99" text-anchor="middle" fill="var(--muted)" font-size="11">history + live ledger</text>
+              <rect x="225" y="43" width="170" height="84" rx="12" fill="var(--accent-soft)" stroke="var(--accent)"/><text x="310" y="75" text-anchor="middle" fill="var(--accent)" font-size="14" font-weight="750">One derivation</text><text x="310" y="99" text-anchor="middle" fill="var(--accent)" font-size="11">fail closed on mismatch</text>
+              <rect x="445" y="43" width="170" height="84" rx="12" fill="var(--warm-soft)" stroke="var(--warm)"/><text x="530" y="75" text-anchor="middle" fill="var(--ink)" font-size="14" font-weight="750">Operator adopts</text><text x="530" y="99" text-anchor="middle" fill="var(--muted)" font-size="11">existing grant route</text>
+              <rect x="665" y="43" width="170" height="84" rx="12" fill="var(--paper)" stroke="var(--line)"/><text x="750" y="75" text-anchor="middle" fill="var(--ink)" font-size="14" font-weight="750">Daemon evaluator</text><text x="750" y="99" text-anchor="middle" fill="var(--muted)" font-size="11">immutable exact-head proof</text>
+              <rect x="875" y="43" width="45" height="84" rx="12" fill="var(--accent-soft)" stroke="var(--accent)"/><text x="898" y="80" text-anchor="middle" fill="var(--accent)" font-size="12" font-weight="800">OK</text><text x="898" y="99" text-anchor="middle" fill="var(--accent)" font-size="9">clean</text>
+            </g>
+          </svg>
+        </div>
+      </section>
+
+      <section id="contracts">
+        <h2>Cross-phase contracts</h2>
+        <ul>
+          <li>The spent state and Shipping veto remain until explicit operator grant or cancellation.</li>
+          <li>The Inspector ledger stays the only current PR truth; workflow gate state stays historical audit.</li>
+          <li><code>grant-rounds</code> remains the only adoption mutation, and the browser cannot complete a run.</li>
+          <li>Cleanliness fails closed for missing, closed, stale, mismatched, non-live, open-finding, or inconsistent evidence.</li>
+          <li>No persisted identifier, schema, route, SSE payload, Inspector poller, or Shipping rule changes.</li>
+        </ul>
+      </section>
+
+      <section id="verification">
+        <h2>Verification</h2>
+        <ul>
+          <li>Focused model, action, rendering, ladder, manager, and exact-head regression tests.</li>
+          <li>Playwright coverage extending <code>workflow-round-limit-grant.spec.ts</code>, using fake agents and accessible selectors.</li>
+          <li><code>npm run typecheck</code>, <code>npm run lint</code>, <code>npm test</code>, <code>npm run build</code>, <code>npm run test:e2e</code>, and <code>npm run smoke</code>.</li>
+        </ul>
+        <p>The single implementation task depends directly on this planning session and remains backlogged until this plan PR merges.</p>
+      </section>
+
+      <p class="foot">Rendered from <code>docs/plans/spent-inspector-gate-reconciliation/phased-plan.md</code>. No JavaScript or external resources.</p>
+    </main>
+  </div>
+</body>
+</html>

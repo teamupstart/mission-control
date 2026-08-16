@@ -72,7 +72,8 @@ Persisted ID tuples are append-only. Never rename, reorder, or reuse values. Thi
 - LLM job IDs
 - LLM spend roles (`LLM_SPEND_ROLES`) - these are written into `usage_ledger.note_key` and
   queried back by exact value, so a rename orphans every historical row it wrote
-- Usage ledger writer names (`usage_ledger.writer`: `otel`, `driver`, `rollout`, `report`) -
+- Usage ledger writer names (`usage_ledger.writer`: `otel`, `driver`, `rollout`, `report`,
+  `conductor`) -
   which ingest produced a row, and the only thing that tells Claude's two session writers apart,
   since both are `spend_kind = 'session'` with `cost_basis = 'reported'`. One place queries it by
   exact value and must not be allowed to drift: `sdkOwnedNoteKey` in `src/server/db.ts`, whose
@@ -85,6 +86,16 @@ Persisted ID tuples are append-only. Never rename, reorder, or reuse values. Thi
   `exporterSilentWhileActive` in `src/server/cost.ts`), because rows are the wrong evidence in
   both directions - a driven session's datapoints are deliberately dropped, so a healthy exporter
   may write none, and rows outlive an exporter that stopped by up to the 180-day retention
+
+  Each pipeline provider names its writer id once, in `PIPELINE_SPEND_WRITERS`
+  (`src/shared/pipeline.ts`), beside the role it writes into `note_key` - a second engine
+  gets its own id rather than borrowing this one, because "which program wrote this" is the
+  only question the column answers. `conductor` is the one writer whose rows are REPLACED
+  rather than appended: an external engine's per-feature cost record is re-read on every
+  projection pass, so the row is keyed on the feature (`pipelineRunKey` in `window_end_ns`)
+  and upserted. That is what makes a cache of another program's files safe to hang a ledger
+  write off. It also has no backfill arm and never will - the figures come from records the
+  engine commits in feature worktrees, which are gone by the time a merge lands
 - Schedule enum values
 - Foreman invite sources (`FOREMAN_INVITES` in `src/shared/types.ts`, plus the persisted
   `foreman_invites.source` domain, which additionally contains `'withdrawn'`) - the stored
@@ -544,6 +555,13 @@ approved plan forbids this integration from changing the workflow surface at all
   whether any run happens to exist. Zero means no tab strip, no pipelines surface, and
   nothing on the page reading a pipelines route. Later phases must not add a second entry
   point that bypasses it.
+- **The controls are one component with two hosts.** `PipelineActions` fills the run header's
+  `actions` slot and each halted attention row, and the HOSTS decide which verbs to pass -
+  the header from the run's own state, the inbox from `PIPELINE_HALT_ACTIONS` and
+  `PIPELINE_HALT_CONSOLES`. A second copy of the grant form is a second place to get an audit
+  trail wrong. Everything a verb needs is declared once in `PIPELINE_ACTION_INFO`, and the
+  route's Zod schema checks against that record rather than against a hand-written list, so
+  the button that is drawn and the request that is accepted cannot disagree.
 - **A kind tab is a statement about which surface is showing, not a reset button.**
   `RunsKindTabs` swallows a click on the already-selected tab, because the address the caller
   builds for a genuine switch is the BARE one - so firing it while a run is open drops that

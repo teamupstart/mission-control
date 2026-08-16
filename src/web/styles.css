@@ -12501,6 +12501,150 @@ a.pipelines-chip.is-link:focus-visible {
   font-weight: 600;
 }
 
+/* ---- the verbs, and the two things that need a terminal ----
+
+   One cluster, drawn in two hosts: the run header's trailing slot and an attention row. It
+   aligns LEFT by default, because that is what a row in the inbox wants, and the header
+   overrides it below - the component owns what the controls are, and each host owns where
+   they sit. Nothing here is a new control shape: the buttons are the app's `.btn`, the
+   backend chooser is the session launchers' own `.launch-pop`, and the forms borrow the
+   settings inputs' proportions rather than a fourth spelling of a text field. */
+.pipelines-actions {
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+  min-width: 0;
+}
+.pipelines-action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.pipelines-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+/* Right-aligned in the header, where the cluster is the trailing item of a flex row that
+   begins with the run's identity. In the inbox it stays left, under the sentence it acts on. */
+.pipelines-run-head .pipelines-actions {
+  justify-items: end;
+}
+.pipelines-run-head .pipelines-action-row,
+.pipelines-run-head .pipelines-form-foot {
+  justify-content: flex-end;
+}
+.pipelines-run-head .pipelines-flash {
+  text-align: right;
+}
+/* Except a failure, which is a block to read rather than a line to glance at: the sentence
+   above the transcript wraps to several lines, and ragged-left prose sitting on top of a
+   left-aligned transcript reads as two things that came from different places. The block
+   itself stays pinned to the right, under the cluster it answers. */
+.pipelines-run-head .pipelines-flash.is-error {
+  text-align: left;
+}
+.pipelines-form {
+  display: grid;
+  gap: 9px;
+  width: min(380px, 100%);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel-2);
+  padding: 11px 12px;
+  text-align: left;
+}
+.pipelines-field {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 10.5px;
+}
+.pipelines-field input,
+.pipelines-field select,
+.pipelines-field textarea {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--panel);
+  color: var(--fg);
+  font: inherit;
+  font-size: 11.5px;
+  padding: 6px 8px;
+}
+.pipelines-field textarea {
+  font-family: var(--mono);
+  line-height: 1.5;
+  resize: vertical;
+}
+.pipelines-check {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.pipelines-form-foot {
+  display: flex;
+  gap: 6px;
+}
+/* The engine's own refusal, in the tone the app reserves for something that needs reading
+   rather than something that broke: nothing has failed here, and a step that can never be
+   granted is a fact about the engine rather than an error in the form. */
+.pipelines-note.is-refusal {
+  color: var(--attention);
+}
+.pipelines-flash {
+  display: grid;
+  gap: 7px;
+  justify-items: start;
+  margin: 0;
+  max-width: min(520px, 100%);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+  overflow-wrap: break-word;
+}
+.pipelines-run-head .pipelines-flash {
+  justify-items: end;
+  justify-self: end;
+}
+.pipelines-flash-line {
+  margin: 0;
+}
+.pipelines-flash.is-error {
+  color: var(--danger);
+}
+/* What the engine printed, verbatim. Bounded in BOTH directions rather than allowed to
+   grow: the daemon clips the text at 4000 characters, and this holds it to a block that
+   scrolls inside itself so a refusal with a stack trace in it cannot push the diagram it
+   sits above off the screen. Monospaced because it is a transcript of a terminal. */
+.pipelines-transcript {
+  margin: 0;
+  width: 100%;
+  max-height: 168px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 7px 9px;
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  line-height: 1.5;
+  text-align: left;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+/* The command sits above the output and reads as the thing that produced it, so it is
+   dimmer and never scrolls: it is one line, and wrapping it is what makes it copyable. */
+.pipelines-transcript.is-command {
+  max-height: none;
+  overflow: visible;
+  color: var(--muted);
+}
+
 .pipelines-attempts,
 .pipelines-section {
   display: grid;

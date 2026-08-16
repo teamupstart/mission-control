@@ -314,26 +314,130 @@ export function tailConductorEvents(
 }
 
 /**
- * Total tokens the engine attributed to the steps in this batch.
+ * The token-bearing fields of the engine's `tokenUsage`, and ONLY those.
  *
- * Null when the batch mentions none, which is different from zero: a run whose ledger has
- * not reached a `step_completed` yet has an unknown spend, and a chip reading `0 tokens`
- * would be a claim nobody made. Every numeric leaf of a `tokenUsage` object is summed
- * rather than named field by field, because the engine's usage shape varies by provider
- * and a reader that named `input`/`output` would silently under-count a third one.
+ * Named rather than summed over every numeric leaf, which is what this reader used to do.
+ * That was wrong in a way no test caught and no chip made obvious: the engine's `TokenUsage`
+ * carries `costUsd`, `numTurns` and `durationMs` in the same object as its five token tiers,
+ * so a step that took two minutes and cost forty cents contributed `120000.4` to what the
+ * dashboard called a token count. Summing everything looked like tolerance of a shape that
+ * varies by provider; it was actually a promise to add any future field of any meaning.
+ *
+ * The tolerance that summing was reaching for is still here, pointed the other way: a tier
+ * this table names and a record omits contributes nothing, and a field the engine adds that
+ * this table has not learned is IGNORED until somebody decides what it is. An engine release
+ * that adds a sixth tier under-reports by that tier for one Mission Control release, which is
+ * a figure that is low and legible rather than one silently inflated by a duration in
+ * milliseconds.
+ *
+ * Copied from `TokenUsage` in ai-conductor `src/conductor/src/execution/llm-provider.ts` at
+ * `8b51392d`. `cacheCreation` is the engine's name for what this ledger calls a cache WRITE.
  */
-export function tokensIn(records: readonly ConductorEventRecord[]): number | null {
-  let total = 0;
-  let saw = false;
+const USAGE_TIERS = {
+  input: "input",
+  output: "output",
+  reasoningOutput: "reasoningOutput",
+  cacheRead: "cacheRead",
+  cacheCreation: "cacheWrite",
+} as const satisfies Record<string, keyof ConductorUsage>;
+
+/** Tokens by tier, in this ledger's own vocabulary rather than the engine's. */
+export interface ConductorUsage {
+  input: number;
+  output: number;
+  reasoningOutput: number;
+  cacheRead: number;
+  cacheWrite: number;
+}
+
+/** An empty tally, so a caller never has to spell the five fields. */
+export function emptyConductorUsage(): ConductorUsage {
+  return { input: 0, output: 0, reasoningOutput: 0, cacheRead: 0, cacheWrite: 0 };
+}
+
+/** Every tier added up - what a chip shows when it says "tokens". */
+export function conductorUsageTotal(usage: ConductorUsage): number {
+  return usage.input + usage.output + usage.reasoningOutput + usage.cacheRead + usage.cacheWrite;
+}
+
+/**
+ * Whether this record is a dispatch whose usage should be counted ONCE.
+ *
+ * The engine emits two records that can carry the same dispatch's `tokenUsage`: the
+ * `provider_attempt` that ran it, and the `step_completed` that reports the step it
+ * satisfied. Its own rollup (`engine/cost-rollup.ts`) counts every invoked attempt and then
+ * SKIPS a completion that has a matching successful attempt for the same step and provider -
+ * so a reader that took both would double every metered step. This one used to.
+ *
+ * The engine can hold that state because it folds a whole file in one pass. This reader is
+ * incremental by byte offset and an attempt can land in one pass with its completion in the
+ * next, so the same bookkeeping here would be state that has to survive a daemon restart to
+ * stay correct - and would silently double a step when it did not.
+ *
+ * The stateless equivalent: `actualProvider` on a completion is the engine saying this step
+ * went through the provider-attempt path, which is the path that emits the attempt record.
+ * So an attempt is always counted, and a completion is counted only when it names no
+ * provider. Where the two rules differ - a completion whose attempt was never persisted, or
+ * whose outcome was not success - this one counts nothing where the engine counts once. It
+ * under-reports in a case that needs a missing record, and can never double-report, which is
+ * the direction to be wrong in for a figure that reaches a spend ledger.
+ */
+function countsAsDispatch(record: ConductorEventRecord): boolean {
+  if (record.type === "provider_attempt") return record.body.invoked === true;
+  if (record.type === "step_completed") return typeof record.body.actualProvider !== "string";
+  return false;
+}
+
+/** A finite, non-negative number, or null for anything else in the field. */
+function tally(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+/** What one batch of records said about spend. */
+export interface ConductorUsageReading {
+  usage: ConductorUsage;
+  /**
+   * The batch mentioned a spend at all.
+   *
+   * Distinct from a zero total, and the distinction is the chip's: a run whose ledger has
+   * not reached its first dispatch has an UNKNOWN spend, and `0 tokens` would be a claim
+   * nobody made.
+   */
+  seen: boolean;
+}
+
+/**
+ * Tokens the engine attributed to the dispatches in this batch, by tier.
+ *
+ * Counts each dispatch once - see `countsAsDispatch` - and reads only the fields that are
+ * tokens - see `USAGE_TIERS`.
+ */
+export function usageIn(records: readonly ConductorEventRecord[]): ConductorUsageReading {
+  const usage = emptyConductorUsage();
+  let seen = false;
   for (const record of records) {
-    const usage = record.body.tokenUsage;
-    if (typeof usage !== "object" || usage === null) continue;
-    for (const value of Object.values(usage as Record<string, unknown>)) {
-      if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
-        total += value;
-        saw = true;
-      }
+    if (!countsAsDispatch(record)) continue;
+    const raw = record.body.tokenUsage;
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) continue;
+    const fields = raw as Record<string, unknown>;
+    for (const [engineField, tier] of Object.entries(USAGE_TIERS)) {
+      const value = tally(fields[engineField]);
+      if (value === null) continue;
+      usage[tier] += value;
+      seen = true;
     }
   }
-  return saw ? total : null;
+  return { usage, seen };
+}
+
+/**
+ * Total tokens in this batch, or null when it mentions none.
+ *
+ * The lump the projection carries. Kept as its own function rather than folded into the
+ * caller because "no spend recorded" and "a spend of zero" are different answers and the
+ * null is what carries the difference across the module boundary.
+ */
+export function tokensIn(records: readonly ConductorEventRecord[]): number | null {
+  const reading = usageIn(records);
+  return reading.seen ? conductorUsageTotal(reading.usage) : null;
 }

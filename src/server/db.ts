@@ -837,6 +837,67 @@ export function openDb(): DatabaseSync {
       value TEXT NOT NULL
     );
 
+    -- Operational identity for daemon-owned native worktree pools. Policy does not live
+    -- here: app_config.worktrees is the sole source for enablement, capacity and setup argv.
+    -- The physical Git common directory is the pool identity, not a remote URL, so two local
+    -- clones of one remote can never share Git worktree bookkeeping.
+    CREATE TABLE IF NOT EXISTS worktree_pools (
+      id                     TEXT    NOT NULL PRIMARY KEY,
+      git_common_dir         TEXT    NOT NULL,
+      main_checkout_root     TEXT    NOT NULL,
+      pool_path              TEXT    NOT NULL,
+      ordinal_high_water     INTEGER NOT NULL DEFAULT 0,
+      last_reconciled_at     INTEGER,
+      reconciliation_error  TEXT,
+      created_at             INTEGER NOT NULL,
+      updated_at             INTEGER NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_worktree_pools_common_dir
+      ON worktree_pools(git_common_dir);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_worktree_pools_path
+      ON worktree_pools(pool_path);
+
+    -- One durable native slot. State identifiers are intentionally unconstrained TEXT:
+    -- their vocabulary is append-only, and adding a later state must not require rebuilding
+    -- an operational table while worktrees are live.
+    --
+    -- Every filesystem mutation is preceded by provisioning/returning/pruning. The version
+    -- rises on every state transition and is part of the release compare-and-swap. Active
+    -- identity is cleared only after a proven return; last-released identity closes the
+    -- crash window before a domain owner clears its own row.
+    CREATE TABLE IF NOT EXISTS worktree_slots (
+      id                        TEXT    NOT NULL PRIMARY KEY,
+      pool_id                   TEXT    NOT NULL,
+      ordinal                   INTEGER NOT NULL,
+      path                      TEXT    NOT NULL,
+      state                     TEXT    NOT NULL,
+      version                   INTEGER NOT NULL,
+      requested_head_sha        TEXT,
+      current_head_sha          TEXT,
+      active_lease_id           TEXT,
+      active_owner_kind         TEXT,
+      active_owner_key          TEXT,
+      leased_at                 INTEGER,
+      last_released_lease_id    TEXT,
+      last_released_owner_kind  TEXT,
+      last_released_owner_key   TEXT,
+      last_used_at              INTEGER,
+      quarantine_reason         TEXT,
+      last_error                TEXT,
+      created_at                INTEGER NOT NULL,
+      updated_at                INTEGER NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_worktree_slots_pool_ordinal
+      ON worktree_slots(pool_id, ordinal);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_worktree_slots_path
+      ON worktree_slots(path);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_worktree_slots_active_lease
+      ON worktree_slots(active_lease_id) WHERE active_lease_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_worktree_slots_pool_state
+      ON worktree_slots(pool_id, state, ordinal);
+    CREATE INDEX IF NOT EXISTS idx_worktree_slots_last_release
+      ON worktree_slots(last_released_lease_id);
+
     -- Reusable workflow judges. guidance_md is exact operator-authored Markdown: no
     -- normalized copy exists and every write names this column directly.
     --
@@ -1480,9 +1541,16 @@ export function openDb(): DatabaseSync {
       -- codex's thread_id) rather than an export window, which is what makes a retried
       -- report idempotent and what lets SESSION_SPEND_ONLY find a claude run's OTel twin.
       spend_kind    TEXT NOT NULL DEFAULT 'session',
-      -- Which ingest wrote the row: 'otel' | 'driver' | 'rollout' | 'report'. See the
-      -- addColumn in migrate() for why this cannot be derived from the columns beside it,
-      -- and why '' (the upgrade default) means "predates the column" and nothing else.
+      -- Which ingest wrote the row: 'otel' | 'driver' | 'rollout' | 'report' | 'conductor'.
+      -- See the addColumn in migrate() for why this cannot be derived from the columns
+      -- beside it, and why '' (the upgrade default) means "predates the column" and nothing
+      -- else. APPEND-ONLY - see the persisted-identifier contract.
+      --
+      -- 'conductor' is the one writer whose subject is not this app: an observed external
+      -- pipeline engine, whose per-feature totals are automation spend under nobody's card.
+      -- It deliberately has NO backfill arm in migrate(), because the arm above it already
+      -- claims every legacy automation row for 'report' and a second claim on the same rows
+      -- would relabel history that 'report' did write.
       writer        TEXT NOT NULL DEFAULT '',
       cost_usd      REAL NOT NULL DEFAULT 0,
       cost_basis    TEXT NOT NULL DEFAULT 'reported',
@@ -2532,6 +2600,8 @@ function inFlightIndexSql(): string {
  * idempotent - this block runs on every start, not just on an upgrade.
  */
 function migrate(d: DatabaseSync): void {
+  migrateWorktreeOrdinalHighWater(d);
+
   // Which file each pipeline run's events offset indexes into. Added after `pipeline_runs`
   // shipped, so an existing row carries the empty-string default - which is exact: those
   // rows were written by a build that recorded no identity. The tail treats an empty
@@ -3215,6 +3285,35 @@ function rebuildInFlightIndexIfStale(d: DatabaseSync): void {
       "[db] could not rebuild one_inflight_per_queue (rows may already violate " +
         `single-flight); keeping the previous index: ${String(err)}`,
     );
+  }
+}
+
+/**
+ * Preserve every native slot ordinal ever issued, including after its row is pruned.
+ *
+ * The backfill is intentionally idempotent rather than conditional on ADD COLUMN. A build
+ * interrupted between an older branch adding the column and filling it can therefore recover,
+ * while MAX never lowers a high-water mark after the highest live row has been deleted.
+ */
+function migrateWorktreeOrdinalHighWater(d: DatabaseSync): void {
+  d.exec("BEGIN IMMEDIATE;");
+  try {
+    addColumn(d, "worktree_pools", "ordinal_high_water", "INTEGER NOT NULL DEFAULT 0");
+    d.exec(`
+      UPDATE worktree_pools
+         SET ordinal_high_water = MAX(
+           ordinal_high_water,
+           COALESCE((
+             SELECT MAX(s.ordinal) FROM worktree_slots s WHERE s.pool_id = worktree_pools.id
+           ), 0)
+         );
+    `);
+    d.exec("COMMIT;");
+  } catch (error) {
+    try {
+      d.exec("ROLLBACK;");
+    } catch {}
+    throw error;
   }
 }
 
@@ -6555,6 +6654,93 @@ export function recordDriverSessionUsage(input: {
     try { d.exec("ROLLBACK;"); } catch {}
     throw err;
   }
+}
+
+/**
+ * Record what one feature of an external pipeline engine cost.
+ *
+ * The FIFTH ledger writer, and the first whose subject is not this app. An observed engine
+ * spends on its own schedule, in its own worktrees, under no card and no dispatch of ours -
+ * which is exactly the property `spend_kind = 'automation'` selects for, so these rows fold
+ * into the automation strip beside the Foreman's and stay out of fleet session spend without
+ * any query learning that pipelines exist.
+ *
+ * **The row is REPLACED, not summed, and that is the whole idempotency story.** `window_end_ns`
+ * holds the feature's own key, and the value written is the engine's own whole-feature total
+ * as it committed it - so a re-projection re-reads the same record and writes the same row.
+ * The other three automation-shaped writers can use DO NOTHING because their subject is one
+ * finished run whose numbers never move again; a feature's committed record CAN be rewritten
+ * by the engine (a re-ship, a repair), and DO NOTHING would pin the first figure for ever
+ * while DO UPDATE with addition would double it on the next rebuild of a cache this database
+ * is allowed to lose at any time.
+ *
+ * `ts` is when the ENGINE wrote the record rather than when we read it, which is what keeps a
+ * feature that shipped last week out of today's automation figure after a daemon restart
+ * re-reads it.
+ *
+ * `model_id` and `query_source` are empty strings rather than null, for the reason stated on
+ * the table: they are in the UNIQUE index this upsert targets, and SQLite treats NULLs there
+ * as distinct - one nullable half turns every upsert into an insert.
+ */
+export function recordPipelineUsage(input: {
+  /** The spend role, from `PIPELINE_SPEND_ROLES`. Lands in `note_key`. */
+  role: string;
+  /**
+   * The engine's own writer id, from `PIPELINE_SPEND_WRITERS` - `conductor` today.
+   * Passed rather than hardcoded here so that appending a second engine cannot silently
+   * file its rows under the first one's provenance.
+   */
+  writer: string;
+  /** The feature's own key - `pipelineRunKey`. The dedup key, in `window_end_ns`. */
+  featureKey: string;
+  /** Which engine, for the `agent` column. */
+  agent: string;
+  ts: number;
+  costUsd: number;
+  /** Every dispatch behind `costUsd` was priced. False stores it as unpriced. */
+  costKnown: boolean;
+  input: number;
+  output: number;
+  reasoningOutput: number;
+  cacheRead: number;
+  cacheWrite: number;
+}): void {
+  openDb()
+    .prepare(
+      `INSERT INTO usage_ledger
+         (note_key, session_id, agent, model_id, query_source, window_end_ns, ts,
+          cost_usd, cost_basis, cost_known, pricing_version, input, output,
+          reasoning_output, cache_read, cache_write, spend_kind, writer)
+       VALUES (?, NULL, ?, '', '', ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, 'automation', ?)
+       ON CONFLICT(note_key, model_id, query_source, window_end_ns) DO UPDATE SET
+         ts=excluded.ts,
+         cost_usd=excluded.cost_usd,
+         cost_basis=excluded.cost_basis,
+         cost_known=excluded.cost_known,
+         input=excluded.input,
+         output=excluded.output,
+         reasoning_output=excluded.reasoning_output,
+         cache_read=excluded.cache_read,
+         cache_write=excluded.cache_write`,
+    )
+    .run(
+      input.role,
+      input.agent,
+      input.featureKey,
+      input.ts,
+      input.costKnown ? input.costUsd : 0,
+      // 'reported' because the engine's own provider priced it - the same provenance a
+      // driver row has, and for the same reason: the arithmetic was done by the CLI that
+      // holds the account's rates, not by a price snapshot in this repository.
+      input.costKnown ? "reported" : "unpriced",
+      input.costKnown ? 1 : 0,
+      input.input,
+      input.output,
+      input.reasoningOutput,
+      input.cacheRead,
+      input.cacheWrite,
+      input.writer,
+    );
 }
 
 /**

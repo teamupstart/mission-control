@@ -1,8 +1,15 @@
 import {
   PIPELINE_PROVIDER_IDS,
+  PIPELINE_SPEND_ROLES,
+  PIPELINE_SPEND_WRITERS,
   activePipelineRepos,
+  pipelineConsoleAllowed,
+  pipelineGrantAllowed,
   pipelineRepoKey,
   pipelineRunKey,
+  type PipelineAction,
+  type PipelineActionResult,
+  type PipelineConsole,
   type PipelineProbe,
   type PipelineProviderId,
   type PipelineRepoStatus,
@@ -22,6 +29,7 @@ import {
   pipelineEventCursors,
   pipelineEventSlugs,
   pipelineStoredRepos,
+  recordPipelineUsage,
   upsertPipelineRunRow,
 } from "../db.ts";
 import { unref } from "../util/timers.ts";
@@ -34,7 +42,12 @@ import {
   type PipelineIngestTouch,
 } from "./ingest.ts";
 import { PIPELINE_PROVIDERS } from "./providers.ts";
-import type { PipelineReadOptions } from "./types.ts";
+import type {
+  PipelineConsoleTarget,
+  PipelineControlTarget,
+  PipelineFeatureUsage,
+  PipelineReadOptions,
+} from "./types.ts";
 
 // The pipeline provider registry, and the loop that keeps the projection current.
 //
@@ -103,6 +116,21 @@ const probes = new Map<PipelineProviderId, PipelineProbe>();
 
 /** Running token totals per run, so a quiet ledger does not retract a spend already read. */
 const costTotals = new Map<string, number>();
+
+/**
+ * What was last written to the spend ledger for each feature, as one comparable string.
+ *
+ * Not a cache of the FIGURE - the ledger holds that, durably - but of the write, so a
+ * repository of shipped features does not re-run one idempotent UPSERT per feature per tick
+ * for ever. Process-local and safe to lose: an empty map costs one write per shipped feature
+ * on the next pass, and every one of those writes lands on the row it would have replaced
+ * with the same values.
+ *
+ * Bounded by the runs that still exist, through `forgetRunState`: a feature whose worktree
+ * is gone has nothing left to suppress, and holding its fingerprint would make this map the
+ * one thing in the daemon that grows with every feature a repository has ever shipped.
+ */
+const ledgered = new Map<string, string>();
 
 /**
  * What the panel reads: one status per consented repository, in config order.
@@ -231,6 +259,187 @@ function isPipelineRepoConsented(provider: PipelineProviderId, repoRoot: string)
   );
 }
 
+/**
+ * Whether this operator has said Mission Control may act in this repository.
+ *
+ * The same consent that makes a repository READABLE is what makes it actable, and nothing
+ * finer: enabling a repository is enabling the integration in it, and a second switch for
+ * "observe but do not control" would be a control an operator has to find before the button
+ * they can already see stops failing.
+ *
+ * Checked here rather than in the route for `readPipelineRunDetail`'s reason, which is
+ * sharper for a verb than for a read: the repository path arrives off a request body, so
+ * without this the loopback API would spawn an engine CLI with a `cwd` of anywhere on the
+ * machine. Consent is what turns a path into one this daemon may run something in.
+ */
+function consented(provider: PipelineProviderId, repoRoot: string): boolean {
+  return activePipelineRepos(getPipelinesConfig()).some(
+    (repo) => repo.provider === provider && repo.repoRoot === repoRoot,
+  );
+}
+
+/**
+ * Whether the projection holds this run, for a verb that names one.
+ *
+ * A slug off a request body is a path component the provider will join onto a repository
+ * root, so it is checked against the runs this daemon is actually projecting rather than
+ * merely validated for shape. That makes `..` and every other traversal a 404 for the
+ * reason it should be - no such run - without this file having to reason about paths at all.
+ */
+function projecting(provider: PipelineProviderId, repoRoot: string, slug: string): boolean {
+  return projectedRun(provider, repoRoot, slug) !== null;
+}
+
+/** The projected run a verb names, or null when this daemon is not holding one. */
+function projectedRun(
+  provider: PipelineProviderId,
+  repoRoot: string,
+  slug: string,
+): PipelineRun | null {
+  const found = loadPipelineRuns().find(
+    (row) =>
+      row.run.provider === provider && row.run.repoRoot === repoRoot && row.run.slug === slug,
+  );
+  return found?.run ?? null;
+}
+
+/**
+ * Why a control request cannot be served at all.
+ *
+ * `ok: false` rather than a nullable field, because that is the shape a caller has to be able
+ * to narrow on: `parseBody` answers this way, and a discriminant a route can switch on beats
+ * two fields that are only ever set in opposite pairs.
+ */
+export interface PipelineControlRefused {
+  ok: false;
+  status: 400 | 404 | 409;
+  error: string;
+}
+
+/** The consent and identity checks both control routes share. */
+function refuseControl(
+  provider: PipelineProviderId,
+  repoRoot: string,
+  slug: string | null,
+): PipelineControlRefused | null {
+  // 404 rather than 403, and the same sentence for both: an unconsented repository and a
+  // repository that does not exist must answer identically, or the loopback API answers
+  // questions about the operator's filesystem for anything that can reach it. The same rule
+  // `GET /api/pipelines/run` states.
+  if (!consented(provider, repoRoot)) {
+    return { ok: false, status: 404, error: "no such pipeline repository" };
+  }
+  if (slug !== null && !projecting(provider, repoRoot, slug)) {
+    return { ok: false, status: 404, error: "no such pipeline run" };
+  }
+  return null;
+}
+
+/**
+ * Ask the engine to do one thing, then re-read the repository so the answer is visible.
+ *
+ * The re-projection is the half that makes this feel like a control rather than a request.
+ * Every verb changes something the projection reads FROM FILES - a park marker, the pause
+ * marker, a grant, the pidfile - so a pass immediately afterwards turns the change into the
+ * `pipeline_upsert` every open dashboard is already listening for. Without it the operator
+ * presses Park and watches an unchanged row until the next tick, which reads as a button
+ * that did nothing.
+ *
+ * It runs even when the verb FAILED, and that is deliberate rather than tidy: a verb that
+ * reported no confirmation may still have done part of its work - conductor prints its park
+ * success line before the counter reset that can throw - so the projection has to be re-read
+ * to find out what is actually true, not told what we hoped.
+ *
+ * `refreshPipelineRepo` already suppresses an emit when nothing a human could see moved, so
+ * a verb that changed nothing costs one pass and no frame.
+ */
+export async function runPipelineAction(
+  sink: PipelineProjectionSink,
+  action: PipelineAction,
+  target: PipelineControlTarget & { provider: PipelineProviderId },
+): Promise<{ ok: true; result: PipelineActionResult } | PipelineControlRefused> {
+  const refused = refuseControl(target.provider, target.repoRoot, target.slug);
+  if (refused) return refused;
+  // The one verb whose ELIGIBILITY is a fact about the run rather than about the request, and
+  // the daemon decides it rather than trusting the surface to have hidden the button. A grant
+  // is a standing authorization for the engine to re-enter a DECIDE step unattended, so a
+  // request for one on a run that never stopped at a gate is the gate's whole purpose spent in
+  // advance - and "the browser would not have offered it" is not a check, it is a hope about
+  // who is calling. Same posture as the `plan` refusal in the provider: stated on both sides.
+  if (action === "grant") {
+    const run = projectedRun(target.provider, target.repoRoot, target.slug ?? "");
+    if (!pipelineGrantAllowed(run?.halt ?? null)) {
+      return {
+        ok: false,
+        // The request is well-formed and the run exists; its STATE is what refuses this.
+        status: 409,
+        error: "a DECIDE grant answers a halt that asked for one, and this run has no such halt",
+      };
+    }
+  }
+  const result = await PIPELINE_PROVIDERS[target.provider].control(action, target);
+  try {
+    await refreshPipelineRepo(sink, target.provider, target.repoRoot);
+  } catch (err) {
+    // The verb's own answer is what the operator asked for and it is already in hand; a
+    // failed re-read delays the row by one tick rather than losing the action.
+    console.warn(`[pipelines] could not re-read ${target.repoRoot} after ${action}:`, err);
+  }
+  return { ok: true, result };
+}
+
+/**
+ * What to run in a hosted terminal for one console, behind the same consent.
+ *
+ * Returns argv rather than opening anything, because WHERE it opens is the terminal layer's
+ * question and the operator's: they pick the backend, and this module has no business
+ * knowing that multiplexers and emulators are different shapes.
+ */
+export function pipelineConsoleLaunch(
+  console_: PipelineConsole,
+  target: PipelineConsoleTarget & { provider: PipelineProviderId },
+): { ok: true; argv: string[]; cwd: string } | PipelineControlRefused {
+  const refused = refuseControl(target.provider, target.repoRoot, target.slug);
+  if (refused) return refused;
+  // A run console is the answer to a particular halt, so its eligibility is a fact about
+  // the projected run rather than about a well-formed request. The browser reads the same
+  // table to decide whether to offer this control, but the loopback route is the authority
+  // boundary: a hidden button cannot be the only thing stopping another caller opening a
+  // terminal that breaks a seal and optionally clears its halt.
+  if (target.slug !== null) {
+    const run = projectedRun(target.provider, target.repoRoot, target.slug);
+    if (!pipelineConsoleAllowed(console_, run?.halt ?? null)) {
+      return {
+        ok: false,
+        status: 409,
+        error: "the reseal ceremony answers a protected-artifact halt, and this run has no such halt",
+      };
+    }
+  }
+  const launch = PIPELINE_PROVIDERS[target.provider].consoleArgv(console_, target);
+  // The provider's own refusal, carried out as a 400 rather than as an opened terminal that
+  // prints one. It is a statement about the REQUEST - a reseal with no feature named - so it
+  // belongs with the malformed body rather than with the missing repository above.
+  if ("refused" in launch) return { ok: false, status: 400, error: launch.refused };
+  return { ok: true, argv: launch.argv, cwd: launch.cwd };
+}
+
+/**
+ * What to call the terminal a console opens in.
+ *
+ * A window title an operator can recognise among a dozen others, and - on a multiplexer
+ * backend - a session name, which is why it is plain: the backend's own `NameRules` sanitize
+ * it, and a name built from the two facts that tell two of these windows apart survives that
+ * sanitization intact.
+ */
+export function pipelineConsoleName(
+  provider: PipelineProviderId,
+  console_: PipelineConsole,
+  slug: string | null,
+): string {
+  return [provider, console_, slug].filter((part) => part !== null && part !== "").join(" ");
+}
+
 /** Probes already running, so a burst of polls cannot become a burst of subprocesses. */
 const probesInFlight = new Map<PipelineProviderId, Promise<void>>();
 
@@ -314,6 +523,18 @@ export interface PipelineProjectionSink {
   initializePipelineRuns(runs: readonly PipelineRun[]): void;
   upsertPipelineRun(run: PipelineRun): void;
   removePipelineRun(provider: PipelineProviderId, repoRoot: string, slug: string): void;
+  /**
+   * A pass put an engine's spend into the ledger; refresh the fleet's cost surfaces.
+   *
+   * The same call the headless-report route and the spend reporter make, and it belongs
+   * here for the same reason: `recordPipelineUsage` writes a row that nothing on screen
+   * is watching, so without this the spend chip carries the engine's figure only after
+   * whatever unrelated event next recomputes - which for a fleet with no live session at
+   * all is the idle sweep, minutes later. That is precisely the case this feature exists
+   * for. It is `applyAutomationUsage` rather than the session sync because a pipeline's
+   * note key is a ROLE, which no session can hold.
+   */
+  applyAutomationUsage(): void;
 }
 
 /**
@@ -331,6 +552,7 @@ export function restorePipelineProjection(sink: PipelineProjectionSink): void {
   // and what lets a test simulate a restart honestly instead of measuring carried-over state.
   statuses.clear();
   costTotals.clear();
+  ledgered.clear();
   probes.clear();
   lastSweptAt.clear();
   // Liveness is a claim about a plugin that is pushing to THIS process. Nothing has pushed
@@ -351,6 +573,51 @@ export function restorePipelineProjection(sink: PipelineProjectionSink): void {
     }
   }
   sink.initializePipelineRuns(rows.map((row) => row.run));
+}
+
+/**
+ * Put one finished feature's spend into the ledger, unless it is already the row there.
+ *
+ * The whole cost roll-in, and it is this small because the hard parts are decided elsewhere:
+ * the provider reads the engine's own committed per-feature record rather than re-deriving
+ * one, and `recordPipelineUsage` replaces the row rather than adding to it. So this is a
+ * write nothing here has to make idempotent - it already is - guarded only against being
+ * pointless.
+ *
+ * The guard compares the VALUES, not just the key, so an engine that rewrites a feature's
+ * record after a repair is picked up on the next pass rather than held out by a cache.
+ */
+function recordFeatureSpend(
+  provider: PipelineProviderId,
+  featureKey: string,
+  usage: PipelineFeatureUsage,
+): boolean {
+  const fingerprint = JSON.stringify(usage);
+  if (ledgered.get(featureKey) === fingerprint) return false;
+  try {
+    recordPipelineUsage({
+      role: PIPELINE_SPEND_ROLES[provider],
+      writer: PIPELINE_SPEND_WRITERS[provider],
+      featureKey,
+      agent: provider,
+      ts: usage.ts,
+      costUsd: usage.costUsd,
+      costKnown: usage.costKnown,
+      input: usage.input,
+      output: usage.output,
+      reasoningOutput: usage.reasoningOutput,
+      cacheRead: usage.cacheRead,
+      cacheWrite: usage.cacheWrite,
+    });
+    ledgered.set(featureKey, fingerprint);
+    return true;
+  } catch (err) {
+    // A ledger row is an accounting nicety beside a projection somebody is looking at, so a
+    // failed write is logged and dropped rather than allowed to take the pass down with it.
+    // Not marked as written, so the next pass tries again.
+    console.warn(`[pipelines] could not record spend for ${featureKey}:`, err);
+    return false;
+  }
 }
 
 /**
@@ -409,6 +676,29 @@ const passes = new Map<string, Promise<void>>();
 
 /** When each run's ledger was last read in full, for the backfill sweep. */
 const lastSweptAt = new Map<string, number>();
+
+/**
+ * Drop every process-local trace of one run, at the moment the run itself is retired.
+ *
+ * One function rather than three deletes at each of the two retirement sites, because the
+ * omission it prevents is the one that already happened: each of these maps is keyed by run
+ * and each is bounded only by somebody remembering to prune it here. A daemon watching a
+ * repository that ships and tears down worktrees all day retires runs continuously, so a map
+ * that is only cleared on a full projection restore is a map that grows for the life of the
+ * process - one entry per feature that ever existed, held to suppress an idempotent rewrite
+ * no absent run can request.
+ *
+ * The projection and event rows are deleted by the caller. The spend row deliberately stays
+ * in the retention-managed usage ledger; only the process-local suppression of its next
+ * idempotent write goes away. Losing any state here costs at most one redundant read or one
+ * idempotent write.
+ */
+function forgetRunState(provider: PipelineProviderId, repoRoot: string, slug: string): void {
+  const key = pipelineRunKey(provider, repoRoot, slug);
+  costTotals.delete(key);
+  lastSweptAt.delete(key);
+  ledgered.delete(key);
+}
 
 /**
  * Whether this pass should read one run's event ledger.
@@ -471,6 +761,7 @@ async function runPipelineRepoPass(
 
   const seen = new Set<string>();
   let halted = 0;
+  let spent = false;
   for (const run of reading.runs) {
     seen.add(run.slug);
     if (run.halt !== null) halted += 1;
@@ -504,9 +795,19 @@ async function runPipelineRepoPass(
       appendPipelineEvents(provider, repoRoot, run.slug, "tail", observed);
     }
     const carried = costTotals.get(key) ?? null;
-    const total =
+    const accumulated =
       run.costTokens === null ? carried : (carried ?? 0) + run.costTokens;
-    if (total !== null) costTotals.set(key, total);
+    if (accumulated !== null) costTotals.set(key, accumulated);
+    // The engine's own committed figure OUTRANKS the accumulation, once it has written one.
+    // The accumulation is a running estimate assembled from a ledger read in pieces across
+    // passes and daemon lifetimes; the record is the engine's arithmetic over the whole of
+    // that ledger, done once, at the end. Preferring it is what makes a shipped feature's
+    // token figure exact rather than approximately right, and it is the same figure the
+    // spend ledger takes - so the run detail and the spend strip cannot disagree.
+    const settled = reading.usage.get(run.slug);
+    const total = settled
+      ? settled.input + settled.output + settled.reasoningOutput + settled.cacheRead + settled.cacheWrite
+      : accumulated;
     const projected: PipelineRun = { ...run, costTokens: total };
     // Durable first, then the notify - an SSE emission cannot be rolled back, and the
     // schedule catalog holds the same order for the same reason.
@@ -516,8 +817,13 @@ async function runPipelineRepoPass(
       eventsOffset: cursor?.offset ?? 0,
       eventsIdentity: cursor?.identity ?? "",
     });
+    if (settled && recordFeatureSpend(provider, key, settled)) spent = true;
     sink.upsertPipelineRun(projected);
   }
+  // Once per pass rather than once per feature: a repository that shipped four features
+  // while the daemon was down would otherwise recompute the whole fleet's cost four times
+  // over on the first sweep that reads them, for one figure.
+  if (spent) sink.applyAutomationUsage();
 
   // Whatever the projection still holds for this repository and the engine no longer does:
   // a worktree that was torn down, or a slug that was renamed.
@@ -541,8 +847,7 @@ async function runPipelineRepoPass(
       // the ledger's retention policy: the table is bounded by the runs that still exist,
       // not by how long this daemon has been up.
       deletePipelineEventsForRun(provider, repoRoot, slug);
-      costTotals.delete(pipelineRunKey(provider, repoRoot, slug));
-      lastSweptAt.delete(pipelineRunKey(provider, repoRoot, slug));
+      forgetRunState(provider, repoRoot, slug);
       sink.removePipelineRun(provider, repoRoot, slug);
     }
   }
@@ -659,8 +964,7 @@ export function forgetPipelineRepo(
   repoRoot: string,
 ): void {
   for (const slug of deletePipelineRunsForRepo(provider, repoRoot)) {
-    costTotals.delete(pipelineRunKey(provider, repoRoot, slug));
-    lastSweptAt.delete(pipelineRunKey(provider, repoRoot, slug));
+    forgetRunState(provider, repoRoot, slug);
     sink.removePipelineRun(provider, repoRoot, slug);
   }
   // The observed history goes too, and it goes for the same reason the projection does: an

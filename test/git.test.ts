@@ -1,9 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, mkdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { gitInfo, mainRepoRoot } from "../src/server/util/git.ts";
+import { gitInfo, mainRepoRoot, worktreeRepositoryIdentity } from "../src/server/util/git.ts";
+import {
+  ensureWorktreePoolMarker,
+  findWorktreePoolMarker,
+} from "../src/server/worktrees/marker.ts";
+import { gitIn, mkLinkedWorktree, mkOriginAndClone } from "./helpers/git-fixture.ts";
 
 /**
  * Build a repo whose main checkout has a `.git` dir and a linked worktree whose
@@ -121,4 +127,65 @@ test("gitInfo reports a bare repo as its own root, never its parent directory", 
   assert.equal(info.branch, "feature");
   assert.equal(info.repoRoot, bare, "the bare repo itself");
   assert.notEqual(info.repoRoot, root, "NOT the dir that merely contains it");
+});
+
+test("native identity joins a main checkout and linked worktree by physical common dir", () => {
+  const { root, clone } = mkOriginAndClone("mission-native-identity-");
+  const linked = mkLinkedWorktree(clone, "linked", join(root, "linked"));
+  const pools = join(root, "pools");
+  const main = worktreeRepositoryIdentity(clone, pools);
+  const fromLinked = worktreeRepositoryIdentity(linked, pools);
+  assert.ok(main);
+  assert.deepEqual(fromLinked, main);
+  assert.equal(main.gitCommonDirectory, realpathSync(join(clone, ".git")));
+});
+
+test("two clones of one remote never share native pool identity", () => {
+  const { root, origin, clone } = mkOriginAndClone("mission-native-clones-");
+  const second = join(root, "second");
+  execFileSync("git", ["clone", "-q", origin, second]);
+  const pools = join(root, "pools");
+  const firstIdentity = worktreeRepositoryIdentity(clone, pools);
+  const secondIdentity = worktreeRepositoryIdentity(second, pools);
+  assert.ok(firstIdentity);
+  assert.ok(secondIdentity);
+  assert.notEqual(firstIdentity.gitCommonDirectory, secondIdentity.gitCommonDirectory);
+  assert.notEqual(firstIdentity.poolPath, secondIdentity.poolPath);
+  // The remote is identical, proving it did not participate in the key.
+  assert.equal(gitIn(clone, "remote", "get-url", "origin"), gitIn(second, "remote", "get-url", "origin"));
+});
+
+test("native identity refuses a bare repository", () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "mission-native-bare-")));
+  const bare = join(root, "repo.git");
+  execFileSync("git", ["init", "-q", "--bare", bare]);
+  assert.equal(worktreeRepositoryIdentity(bare, join(root, "pools")), null);
+});
+
+test("the native pool marker is discoverable from a checkout path without SQLite", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "mission-native-marker-")));
+  const pool = join(root, "pool");
+  const checkout = join(pool, "1", "repo", "packages", "app");
+  mkdirSync(checkout, { recursive: true });
+  await ensureWorktreePoolMarker(pool, "pool-identity-1");
+  assert.deepEqual(await findWorktreePoolMarker(checkout), {
+    poolPath: pool,
+    marker: { schemaVersion: 1, poolId: "pool-identity-1" },
+  });
+  await assert.rejects(
+    () => ensureWorktreePoolMarker(pool, "another-pool"),
+    /belongs to another pool/,
+  );
+});
+
+test("the native pool marker refuses a symlinked pool root", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "mission-native-marker-link-")));
+  const target = join(root, "somebody-elses-directory");
+  const pool = join(root, "pool");
+  mkdirSync(target);
+  symlinkSync(target, pool);
+  await assert.rejects(
+    () => ensureWorktreePoolMarker(pool, "pool-identity-1"),
+    /not an exact physical directory/,
+  );
 });

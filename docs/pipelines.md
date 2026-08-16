@@ -6,7 +6,9 @@ its own agents, keeps its own state on disk, and stops for a human when a gate r
 
 Mission Control does not replace such an engine and does not merge with one. It **observes**:
 for the repositories an operator has consented to, it reads the engine's own state files and
-projects what it finds, so pipeline work is visible beside everything else on the fleet.
+projects what it finds, so pipeline work is visible beside everything else on the fleet. It
+also **acts through the engine's own CLI** - see [control verbs](#control-verbs) - which is a
+different thing from writing the engine's files, and deliberately so.
 
 One engine is supported today, [ai-conductor](#ai-conductor), and the integration is built as
 a provider axis (`PIPELINE_PROVIDER_IDS` in [`src/shared/pipeline.ts`](../src/shared/pipeline.ts))
@@ -16,10 +18,12 @@ so a second one is an append rather than a rewrite.
 
 Three rules, and each of them is load-bearing rather than cautious:
 
-- **Read only.** Nothing in `src/server/pipelines/` writes a file the engine owns. Engine
-  state is lease- and CAS-guarded by the engine itself, and its CLI is the only sanctioned
-  way to change it. Control verbs - pause, park, grant, resume - arrive in a later phase and
-  will spawn that CLI rather than edit its files.
+- **Never a second writer.** Nothing in `src/server/pipelines/` writes a file the engine owns.
+  Engine state is lease- and CAS-guarded by the engine itself, and its CLI is the only
+  sanctioned way to change it - so every [control verb](#control-verbs) spawns that CLI and
+  reads what it printed. The park marker, the grant record and the pause marker are all
+  written by the engine, in response, exactly as they are when a person types the same thing.
+  A second program racing its atomic renames corrupts a feature; it does not merge with it.
 - **Absent by default, then off by default.** An operator with no engine installed and
   nothing configured sees **no Conductor UI at all** - no Settings row, no panel, no
   command-palette entry, and `#/settings/conductor` falls back the way an unknown category
@@ -89,7 +93,8 @@ Verified against ai-conductor `8b51392d`. Mission Control reads, per consented r
 | `.worktrees/<slug>/.pipeline/gates/<step>.json` | One gate's verdict. A `skipped: ` reason prefix marks a step that was skipped rather than one whose evidence passed. |
 | `.worktrees/<slug>/.pipeline/HALT`, `HALT.class` | Why it stopped. The first non-empty line of `HALT` is the reason; an absent or unrecognised class reads as `unclassified`. |
 | `.worktrees/<slug>/.pipeline/DONE` | The engine's converged marker. |
-| `.worktrees/<slug>/.pipeline/events.jsonl` | The engine's event ledger, tailed incrementally by byte offset. It contributes the token spend per step; halts and gate verdicts come from the files above, because the engine does not persist those events. |
+| `.worktrees/<slug>/.pipeline/events.jsonl` | The engine's event ledger, tailed incrementally by byte offset. It contributes the running token spend of a feature in flight; halts and gate verdicts come from the files above, because the engine does not persist those events. |
+| `.worktrees/<slug>/.docs/shipped/<slug>.md` | What the feature COST, as the engine's own rollup committed it when the feature shipped. Read only once a run is finished, and only then. See [cost](#what-a-feature-cost). |
 | `.daemon/` | At the **repository** root, not inside a worktree: the pidfile, `PAUSED`, `parked/`, `grants/` and `processed/`, all shared by every feature in that repository. |
 
 Mission Control ships a **frozen copy** of the engine's 22-step sequence and its four
@@ -173,6 +178,136 @@ Steps this build has never heard of are drawn after every step it knows, in the 
 engine reported, under an **Unknown steps** card. That is the frozen step table's tolerance
 rule made visible: a conductor release that adds a step degrades this display and never
 breaks the page.
+
+## Control verbs
+
+The run detail's header and each halted [inbox row](#a-halted-pipeline-in-the-inbox) carry the
+verbs the engine offers. **Every one of them spawns the engine's own CLI**, in the consented
+repository root, and is judged by what that CLI PRINTED:
+
+| Verb | What it runs | Scope |
+| --- | --- | --- |
+| Start daemon | `daemon start -D` | repository |
+| Stop daemon | `daemon stop` | repository |
+| Pause daemon | `daemon pause` | repository |
+| Resume daemon | `daemon resume` | repository |
+| Park | `daemon park <slug>` | one feature |
+| Unpark | `daemon unpark <slug>` | one feature |
+| Grant DECIDE re-entry | `decide-grant --slug <slug> --step <step> --reason <why>` | one feature |
+
+**The exit code is not the answer.** ai-conductor's `engineer` verbs print a usage guide and
+exit 0 for a missing required flag - its own CLI reference calls that out - and a malformed
+`decide-grant`, a malformed `reseal` and a slug-less `daemon park` are rejected by its argv
+detectors *before* the verb runs, so what prints is a generic refusal that never mentions what
+was asked for. Every verb therefore carries a predicate over the engine's output, and a clean
+exit with no confirmation is reported as a failure with the engine's own words attached
+(`src/server/pipelines/conductor/control.ts`). `daemon stop` is the interesting one: it prints
+nothing when it works and prints its failures to *stdout*, so silence is its confirmation.
+
+A failure shows that transcript where you pressed the button: **the exact command the daemon
+spawned, and what the engine printed**, clipped to 4000 characters and scrolled inside its own
+block. Without them the sentence would be "it exited cleanly without confirming this", which is
+true and reads identically for a version skew, a wrong working directory and a feature the
+engine has never heard of - the engine's own line about a subcommand nobody asked for is what
+tells them apart. A confirmation clears itself after a few seconds; a failure stays until you
+dismiss it, because a transcript on a timer is one you race rather than read.
+
+Five things follow that are worth knowing before pressing anything:
+
+- **Only useful verbs are offered.** The daemon verbs shown are the ones the daemon's observed
+  state makes meaningful - a running daemon offers Pause and Stop, never Start. The engine
+  tolerates all four regardless (`pause` on a paused daemon prints `already paused`, and that
+  is treated as a success), so this decides what is useful rather than what is permitted. The
+  same rule takes the feature verbs off a feature the engine has already processed: it would
+  accept a park or a grant on one and print a success line, and a button whose only effect is
+  that sentence is one an operator learns to distrust.
+- **A grant is licensed by the halt it answers.** Park and unpark apply to any live feature -
+  parking is how you take one out of the engine's hands, halted or not. A DECIDE re-entry grant
+  is offered only where the halt class asks for one, which today means `needs-human`: it is a
+  standing authorization for the engine to walk through a decision gate unattended, and on a
+  run that never stopped at one it spends that gate before it is reached. The run header and
+  the inbox read the same halt-class table, and **the daemon holds the rule too** - a grant for
+  a run with no such halt is `409` from `POST /api/pipelines/action`, because hiding a button
+  decides what an operator is offered, not what the loopback API accepts.
+- **`plan` can never be granted, and Mission Control says so rather than relaying a refusal.**
+  The picker lists every DECIDE step *except* `plan`, with the reason printed under it. A
+  re-planning pass would rewrite an approved decision with nobody at the gate, which is the
+  failure the re-entry gate exists to prevent; the engine refuses it in four independent
+  places, and nothing is spawned to be told that.
+- **A grant records why you allowed it, in your words.** The engine stores the rationale with
+  `grantedBy: operator`, and that is the whole audit trail of an autonomous DECIDE re-entry -
+  so the form asks, and the button cannot be pressed until it is answered. Mission Control
+  never supplies a default sentence.
+- **A verb re-reads the repository immediately.** Every verb changes something the projection
+  reads from files, so the pass runs in the same request and the row, the rail's daemon chip
+  and the inbox all move without a reload. It runs even when the verb *failed*, on both sides -
+  the daemon re-projects and the surface re-reads the daemon chip it polls - because a verb
+  that reported no confirmation may still have done part of its work. A failure that left the
+  chip on the old state until its next poll would be the surface disagreeing with the
+  projection the same request just wrote.
+
+An inbox row offers only what its halt's class calls for - a grant and an unpark for
+`needs-human`, an unpark for `mechanical`, the reseal ceremony for `protected-artifact` - and
+never the repository-wide daemon verbs, because a row about one feature must not be able to
+stop every feature in the checkout. That table is `PIPELINE_HALT_ACTIONS`, and it is the one
+the run header consults as well: two surfaces deciding separately which verbs a run deserves
+agree only until somebody edits one of them.
+
+### Hosted consoles
+
+Two things are not requests with answers, and both open a **terminal Mission Control hosts**,
+on whichever backend you pick from the same chooser the session launchers use:
+
+- **Open daemon console** runs `daemon connect`, which attaches to the engine daemon's own
+  session read-only. Deliberately not `daemon connect --attach-into <tmux target>`: that flag
+  sends an attach into a tmux pane that already exists, and hosting the terminal here means
+  there is no target to mint - and no tmux, on the emulator backends.
+- **Open reseal terminal** runs `reseal --slug … --path … --reason …`, optionally with
+  `--clear-halt`. The engine **refuses to re-seal without a TTY** - a deliberate guard, since
+  its providers feed their children through stdin, so a build agent cannot re-seal the artifact
+  it was told not to touch. The ceremony therefore happens where a person can read it. It is
+  offered on a run whose halt is `protected-artifact`, not permanently: a standing button for
+  breaking a seal invites breaking one.
+
+**Every `--path` must resolve inside the feature's own worktree**, and one that does not is
+refused before any argv is composed - no terminal opens. This is a containment check rather
+than tidying: `reseal` breaks a cryptographic seal and can be told to clear the halt that seal
+raised, so a path is refused if it is absolute, if it resolves outside the worktree once `..`
+segments collapse, or if a symlink in its existing prefix lands outside. What reaches the
+engine is the relative path that check verified, not the string that arrived.
+
+Both windows are held open after the command exits (`press enter to close`), because both print
+their outcome and return - including the refusal an operator most needs to read.
+
+## What a feature cost
+
+A run in flight shows the **running total** its event ledger has reported so far, tailed by
+byte offset across passes and daemon restarts. When the feature ships, that estimate is
+replaced by the engine's own committed figure from `.docs/shipped/<slug>.md`, and the same
+figure enters Mission Control's [spend ledger](cost-and-usage.md) as **automation** spend under
+the role `ai-conductor pipelines`.
+
+Three decisions behind that, each of which had a plausible alternative:
+
+- **The engine's arithmetic, not ours.** Its rollup counts each dispatch once by matching a
+  `provider_attempt` against the `step_completed` that followed it. A second implementation of
+  that matching - incremental, in another program, over a file being appended to - is a copy of
+  the engine's arithmetic that would quietly disagree with it.
+- **One row per feature, replaced rather than appended.** The ledger row is keyed on the
+  feature, so re-reading the same repository every few seconds - or rebuilding the projection
+  from scratch - cannot double-count anything.
+- **An incomplete figure is stored as unpriced, and so is a missing one.** If the engine could
+  not meter every dispatch, or metered some without a price, the dollars are a subtotal. If its
+  record carries no `cost_usd` line at all - an older release, a rollup that priced nothing, a
+  value that does not parse - there is no figure to carry. All three record the tokens and say
+  `unpriced` on the spend strip. A missing price is never read as `$0.00`: on every surface that
+  is indistinguishable from a feature that genuinely cost nothing, and only one of the two is a
+  claim anybody made. Every other missing line is a count, where absent and zero do mean the
+  same thing, and those default to zero.
+
+The writer id is `conductor`, appended to the ledger's writer vocabulary
+([change contracts](agent-guides/change-contracts.md)); a run that has not shipped contributes
+no row at all, which is a different claim from a row of zeroes.
 
 ### Links
 
@@ -258,9 +393,14 @@ and the runbook section that owns that class:
 The class comes from the engine's own `HALT.class` sidecar; the readings and the runbook
 pointers are Mission Control's, and live in
 [`src/shared/pipeline.ts`](../src/shared/pipeline.ts) beside the halt-class tuple so a class
-added to the vocabulary cannot ship without one. The row is **read-only**: clearing a halt is
-the engine's CLI, and those verbs arrive with the rest of the control surface. Its **Open run**
-link is a real address, so a halted run opens in a second window without losing the inbox.
+added to the vocabulary cannot ship without one. Its **Open run** link is a real address, so a
+halted run opens in a second window without losing the inbox.
+
+The row is answered **in place**, with the [verbs](#control-verbs) its own class calls for and
+nothing wider. It does not disappear when a verb succeeds: unparking lets the engine dispatch
+again, and it is the engine clearing the halt that resolves the row - through the projection's
+own event, so what leaves the inbox is a row the daemon agrees is finished rather than one the
+browser hid on its own.
 
 ## Live events
 
@@ -449,6 +589,7 @@ the Foreman, Skills, Harnesses, Task sources, Models and GitHub Inspector settin
 
 This page describes what has landed. The
 [integration plan](plans/conductor-sdlc-integration/plan.md) and its
-[phase split](plans/conductor-sdlc-integration/phased-plan.md) describe the rest: control verbs
-(the run detail's header and the inbox row both keep a slot for them), live event ingest, and
-dispatch.
+[phase split](plans/conductor-sdlc-integration/phased-plan.md) describe the rest: dispatching a
+feature into an engine from Mission Control's backlog, with the Foreman and the GitHub
+Inspector reaching the verbs above through the same routes an operator does, never through a
+second control path.

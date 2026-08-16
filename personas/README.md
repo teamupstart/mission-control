@@ -23,8 +23,10 @@ the point of them being Markdown is that they can be read and edited without a r
 - `FOREMAN.md` is the seed for Foreman's standing instructions. The daemon resolves it
   through `foremanInstructionsPath()` in `src/server/config.ts`, which finds it at the repo
   root in dev and at the app root in a packaged build; `electron-builder.yml` ships this one
-  file for that reason. Once an operator saves their own text in **Settings → Foreman** the
-  stored value wins and this file is only what "Reset to default" restores.
+  file for that reason. Operators edit the exact document in
+  **Library → Personas → Foreman** (`#/library/personas/foreman`). Once an operator saves
+  custom text, the stored value wins and this file is only what **Reset to built-in default**
+  restores. Clearing and saving is an intentional no-guidance state, not a reset.
 - `INSPECTOR.md` is this repository's brief for the GitHub Inspector. The GitHub Inspector resolves the
   brief against the *reviewed* repository, preferring `personas/INSPECTOR.md` and falling
   back to a root `INSPECTOR.md`, so this copy is what Mission Control's own pull requests

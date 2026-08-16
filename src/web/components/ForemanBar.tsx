@@ -222,15 +222,25 @@ export function NumberSetting({
 export function ForemanBar({
   state,
   onOpenSettings,
+  openRequest = 0,
 }: {
   state: ForemanState;
   /** Open Settings on the Foreman category, where the cheap tier, completion safeguards,
    *  and trusted-repo list now live. The popover keeps only the in-the-moment knobs. */
   onOpenSettings: () => void;
+  /** A changed value opens this existing control without moving ownership out of the bar. */
+  openRequest?: number;
 }): React.JSX.Element {
   const { config, status } = state;
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const handledOpenRequest = useRef(openRequest);
+
+  useEffect(() => {
+    if (openRequest === handledOpenRequest.current) return;
+    handledOpenRequest.current = openRequest;
+    setOpen(true);
+  }, [openRequest]);
 
   useEffect(() => {
     function onDoc(e: MouseEvent): void {

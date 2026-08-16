@@ -1759,6 +1759,11 @@ test("the foreman instructions route is exact, source-aware, CAS-protected, and 
       headers,
       body: JSON.stringify(body),
     });
+  const personasBefore = structuredClone(registry.snapshot().personas);
+  const personaEvents: unknown[] = [];
+  const unsubscribe = registry.subscribe((event) => {
+    if (event.type === "persona_upsert") personaEvents.push(event);
+  });
 
   const read = await app.request("/api/foreman/instructions", { headers: LOOPBACK });
   assert.equal(read.status, 200);
@@ -1871,6 +1876,10 @@ test("the foreman instructions route is exact, source-aware, CAS-protected, and 
     assert.equal(rebound.status, 403, `${method} must be loopback-gated`);
   }
   assert.deepEqual(await readView(), restored, "non-loopback requests perform no write");
+
+  unsubscribe();
+  assert.deepEqual(registry.snapshot().personas, personasBefore);
+  assert.deepEqual(personaEvents, [], "standing-guidance writes emit no Persona SSE event");
 });
 
 test("a reorder moves the queue's change token, so a second tab learns about it", async () => {

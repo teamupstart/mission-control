@@ -72,6 +72,11 @@ The Library keeps reusable workflows, personas, session actions, ensemble strate
 sources, and the commands behind each standard gate together rather than burying them in
 individual terminals.
 
+**Library → Personas → Foreman** is the fixed System profile for Foreman's exact standing
+guidance. Its name, policy, safeguards, models, and authority remain owned by Mission Control
+and their existing Settings controls. Only the Markdown guidance is editable here, and the
+System profile is never offered to workflows or ensembles as a Persona.
+
 ![Mission Control Library](docs/images/library.png)
 
 ## Design reusable review workflows

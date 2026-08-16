@@ -147,6 +147,12 @@ test("archived Personas are not offered as new reviewers", () => {
   assert.doesNotMatch(html, /Retired reviewer/);
 });
 
+test("the fixed Foreman System profile is not invented as a workflow reviewer", () => {
+  const html = editor(EMPTY);
+  assert.doesNotMatch(html, /<option[^>]*value="foreman"/);
+  assert.doesNotMatch(html, />Foreman<\/option>/);
+});
+
 test("the pipeline rail states validation as a sentence, with no diagnostic codes", () => {
   const workflow: WorkflowDefinition = {
     id: "w",

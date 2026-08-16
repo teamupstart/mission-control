@@ -118,8 +118,8 @@ export function inspectorGateActions(detail: WorkflowRunDetail): GateAction[] {
     actions.push({
       id: "recheck-inspector",
       kind: "recheck-inspector",
-      label: "Recheck Inspector",
-      tooltip: "Evaluate the gate again from Inspector's current durable ledger",
+      label: "Recheck GitHub Inspector",
+      tooltip: "Evaluate the gate again from GitHub Inspector's current durable ledger",
       disabled: false,
     });
   }
@@ -694,23 +694,23 @@ const NO_MOVE_SENTENCES: Record<string, RunNoMoveReason> = {
       + " Cancelling clears the run and keeps its history.",
   },
   inspector_round_limit: {
-    cause: "This run has used every Inspector round it was given,",
+    cause: "This run has used every GitHub Inspector round it was given,",
     consequence: "and the rest of its state means nothing here can open another one."
       + " Cancelling clears the run and keeps its history.",
   },
   inspector_findings: {
-    cause: "Inspector left findings that have to be resolved.",
-    consequence: "Fix them in the session and push - they are listed under Inspector final gate"
+    cause: "GitHub Inspector left findings that have to be resolved.",
+    consequence: "Fix them in the session and push - they are listed under GitHub Inspector final gate"
       + " below, and no button up here can settle them.",
   },
   inspector_pr_closed: {
     cause: "The adopted pull request was closed or switched.",
-    consequence: "Reopen it or adopt the replacement; Inspector final gate below carries the"
+    consequence: "Reopen it or adopt the replacement; GitHub Inspector final gate below carries the"
       + " pull request this run was pinned to.",
   },
   inspector_disabled: {
-    cause: "Inspector is switched off, so the gate cannot be evaluated.",
-    consequence: "Turn it back on from Open Inspector settings, in Inspector final gate below.",
+    cause: "GitHub Inspector is switched off, so the gate cannot be evaluated.",
+    consequence: "Turn it back on from Open GitHub Inspector settings, in GitHub Inspector final gate below.",
   },
   delivery_uncertain: {
     cause: "A repair packet may or may not have reached the session.",
@@ -824,7 +824,7 @@ export function runNoMoveReason(detail: WorkflowRunDetail): RunNoMoveReason | nu
   // picks the wrong one. That control is in the danger group, so the sentence names it.
   if (liveInspectorRepair(detail)) {
     return {
-      cause: "This round is an Inspector-only repair,",
+      cause: "This round is a GitHub Inspector-only repair,",
       consequence: status === "waiting_for_new_head"
         ? "so it resumes on the next pushed head. Restart full workflow reruns every reviewer"
           + " from freshly captured evidence instead."
@@ -857,7 +857,7 @@ export function runNoMoveReason(detail: WorkflowRunDetail): RunNoMoveReason | nu
   ) {
     return {
       cause: gateWaitSentence(detail.inspectorGate?.state.waitReason ?? null),
-      consequence: "Inspector final gate below carries the heads and the review round.",
+      consequence: "GitHub Inspector final gate below carries the heads and the review round.",
     };
   }
 

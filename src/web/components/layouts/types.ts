@@ -6,6 +6,7 @@ import type { SessionFilesController } from "../../lib/sessionFiles.ts";
 import type { WorkspaceLinkHandler } from "../Markdown.tsx";
 import type { WorkflowBindingSummary, WorkflowRunSummary } from "@shared/workflow.ts";
 import type { EnsembleSummary } from "@shared/ensemble.ts";
+import type { PipelineRun, SessionPipelineLink } from "@shared/pipeline.ts";
 import { newestSessionRun } from "../../lib/held.ts";
 
 /** The Board card's in-place workflow disclosure, registered for App's global shortcut. */
@@ -189,6 +190,25 @@ export interface SessionViewProps {
    * SSE summary does, and every consumer falls back to what the link alone can say.
    */
   ensembleSummaryByRun?: ReadonlyMap<string, EnsembleSummary>;
+  /**
+   * Open the pipeline run a correlated session is doing the work of.
+   *
+   * Takes the LINK rather than a run key, because the address is assembled in one place
+   * (`pipelineRunRoute`) and a renderer that passed a key would have to know that the
+   * repository half of it is a composite. Every renderer already holds the link: it is on
+   * the session.
+   */
+  onOpenPipelineRun?: (link: SessionPipelineLink) => void;
+  /**
+   * The live pipeline runs by `pipelineRunKey`, for the facts about the RUN rather than the
+   * session: the cluster header's group word and current step.
+   *
+   * `ensembleSummaryByRun`'s twin, and absent entries are first-class for the same reason -
+   * a session's link rides its own frame and the run's projection is a separate collection
+   * that can land a tick later. Every consumer falls back to what the link alone can say,
+   * which is the slug.
+   */
+  pipelineRunByKey?: ReadonlyMap<string, PipelineRun>;
 }
 
 /**
@@ -237,6 +257,7 @@ export function cardProps(p: SessionViewProps, s: Session) {
     scheduleNameById: p.scheduleNameById,
     onOpenEnsemble: p.onOpenEnsemble,
     ensembleSummary: ensembleSummaryFor(p, s),
+    onOpenPipelineRun: p.onOpenPipelineRun,
   };
 }
 

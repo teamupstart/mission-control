@@ -108,7 +108,7 @@ export const INSPECTOR_MODEL_SPEC: ModelChoiceSpec = {
   envVar: `MISSION_${INSPECTOR_MODEL_ENV}`,
   fallback: "claude-sonnet-5",
   label: "Review model",
-  blurb: "Reviews each push and answers follow-ups in the Inspector's own threads.",
+  blurb: "Reviews each push and answers follow-ups in GitHub Inspector's own threads.",
 };
 
 /**

@@ -25,12 +25,18 @@ import {
 } from "./harnesses.ts";
 import { harnessFor } from "./harness/index.ts";
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
-import { poolAvailableFor, poolPins, reapPool, type PoolPins } from "./pool.ts";
+import {
+  poolAvailableFor,
+  poolPins,
+  recoverDryPoolCapacity,
+  type PoolPins,
+} from "./pool.ts";
 import {
   acquireLease,
   defaultTreehouseCli,
   settleLease,
   withPoolLock,
+  type PoolLockPriority,
   type TreehouseCli,
 } from "./pool-lease.ts";
 import { heldHomeNames, homeAlive, homeNameRules, killHome, launchHome } from "./terminal/home.ts";
@@ -1128,22 +1134,27 @@ export async function provisionWorktree(
   // (`treehouseInstalled`); this is the full gate, opt-in included.
   if (await poolAvailableFor(repoRoot)) {
     // Each acquisition takes the pool lock on its own rather than one held across the
-    // whole arm: `reapPool` below takes the same lock per candidate, and this lock is
-    // deliberately not reentrant, so holding it here would deadlock against the reap that
-    // is this branch's whole recovery strategy.
+    // whole arm: dry-pool recovery below takes the same lock per candidate, and this lock
+    // is deliberately not reentrant, so holding it here would deadlock against the return
+    // that is this branch's whole recovery strategy.
     let lease = await withPoolLock(repoRoot, () => acquireLease(repoRoot));
     // A dry pool is usually a LEAKED pool: leases are durable, so every agent that
     // went away without returning its tree still holds a slot, and at `max_trees`
     // the pool has nothing left to give. Collect those and ask once more - the
     // alternative (below) is silently abandoning the pool for this dispatch.
     if (!lease.path) {
-      const { reaped } = await reapPool(repoRoot, pins);
+      const { reaped, capacityAvailable } = await recoverDryPoolCapacity(repoRoot, pins);
       if (reaped.length > 0) {
         console.log(
           `[mission-control] pool was dry; returned ${reaped.length} leaked lease(s): ${reaped
             .map((t) => t.name)
             .join(", ")}`,
         );
+      }
+      // Retry once when the recovery returned one safe lease OR observed that another
+      // cleanup had already made a slot available. It stops at that capacity boundary;
+      // dispatch does not wait for an exhaustive maintenance sweep.
+      if (capacityAvailable) {
         lease = await withPoolLock(repoRoot, () => acquireLease(repoRoot));
       }
     }
@@ -1329,6 +1340,8 @@ export async function teardownWorktree(
    * that is only provable by watching what this function actually asks for.
    */
   cli: TreehouseCli = defaultTreehouseCli,
+  /** Startup reconciliation is background work; direct lifecycle actions stay foreground. */
+  poolLockPriority: PoolLockPriority = "foreground",
 ): Promise<void> {
   if (task.homeName) {
     const killed = await killHome(task.homeName);
@@ -1364,7 +1377,7 @@ export async function teardownWorktree(
   const failures: string[] = [];
   const reclaimed: string[] = [];
   for (const tree of trees) {
-    await teardownOneWorktree(tree, cli).then(
+    await teardownOneWorktree(tree, cli, poolLockPriority).then(
       () => {
         if (tree.worktreePath) reclaimed.push(tree.worktreePath);
       },
@@ -1447,6 +1460,7 @@ async function teardownOneWorktree(
     provider: WorktreeProvider | null;
   },
   cli: TreehouseCli,
+  poolLockPriority: PoolLockPriority,
 ): Promise<void> {
   if (!task.worktreePath) return;
   // Read once, so the return below keeps its narrowing inside the closure the pool lock
@@ -1457,7 +1471,11 @@ async function teardownOneWorktree(
     // Hand the lease back to the pool. Never fall back to `git worktree remove` for
     // a pooled checkout - that would delete a tree behind treehouse's bookkeeping
     // and leak the lease. If return fails, leave it for the pool to reconcile.
-    const returned = await withPoolLock(task.repoRoot, () => returnLease(worktreePath, cli));
+    const returned = await withPoolLock(
+      task.repoRoot,
+      () => returnLease(worktreePath, cli),
+      poolLockPriority,
+    );
     if (returned.code !== 0) {
       throw new Error(`treehouse return failed: ${returned.stderr.trim() || `exit ${returned.code}`}`);
     }

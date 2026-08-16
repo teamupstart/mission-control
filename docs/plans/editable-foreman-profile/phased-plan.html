@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Editable Foreman profile: phased implementation</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f3f0e9;
+      --paper: #fffdf8;
+      --ink: #211f1b;
+      --muted: #69635a;
+      --line: #ded7cb;
+      --accent: #6e43d6;
+      --accent-soft: #eee7ff;
+      --good: #176b4d;
+      --good-soft: #e5f5ed;
+      --warn: #8a5315;
+      --warn-soft: #fff2da;
+      --code: #f0ece4;
+      --shadow: 0 16px 44px rgba(45, 36, 24, .11), 0 2px 8px rgba(45, 36, 24, .07);
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #151412;
+        --paper: #201e1a;
+        --ink: #f4f0e7;
+        --muted: #b8b0a3;
+        --line: #3d3932;
+        --accent: #b79aff;
+        --accent-soft: #342a50;
+        --good: #72d6ae;
+        --good-soft: #173c31;
+        --warn: #efbc73;
+        --warn-soft: #3d2e1a;
+        --code: #2b2823;
+        --shadow: 0 18px 46px rgba(0, 0, 0, .32);
+      }
+    }
+    * { box-sizing: border-box; }
+    html { background: var(--bg); }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 10% 0%, color-mix(in srgb, var(--accent) 8%, transparent), transparent 34rem),
+        var(--bg);
+      font: 16px/1.56 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main {
+      width: min(1120px, calc(100% - 32px));
+      margin: 34px auto 54px;
+      padding: clamp(24px, 4vw, 54px);
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+    h1, h2, h3 { line-height: 1.16; letter-spacing: -.025em; }
+    h1 { margin: 10px 0 10px; font-size: clamp(2rem, 5vw, 3.8rem); }
+    h2 { margin: 38px 0 13px; font-size: clamp(1.35rem, 2.8vw, 2rem); }
+    h3 { margin: 24px 0 8px; font-size: 1.08rem; }
+    p { margin: 9px 0; }
+    ul, ol { padding-left: 1.4rem; }
+    li + li { margin-top: 5px; }
+    a { color: var(--accent); text-underline-offset: 3px; }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    code { padding: .08em .32em; background: var(--code); border-radius: 5px; }
+    pre {
+      margin: 12px 0;
+      padding: 16px;
+      background: var(--code);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      overflow: auto;
+    }
+    .eyebrow { color: var(--accent); font-size: .76rem; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; }
+    .lede { max-width: 820px; color: var(--muted); font-size: 1.08rem; }
+    .pills { display: flex; flex-wrap: wrap; gap: 8px; margin: 18px 0 4px; }
+    .pill { padding: 5px 10px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: .82rem; }
+    .pill.good { color: var(--good); background: var(--good-soft); border-color: color-mix(in srgb, var(--good) 30%, var(--line)); }
+    .callout { margin: 18px 0; padding: 15px 17px; border-left: 4px solid var(--accent); background: var(--accent-soft); border-radius: 8px; }
+    .callout.warn { border-color: var(--warn); background: var(--warn-soft); }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .card { padding: 16px; border: 1px solid var(--line); border-radius: 10px; background: color-mix(in srgb, var(--paper) 92%, var(--accent-soft)); }
+    .card h3 { margin-top: 0; }
+    .table-wrap { width: 100%; overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; }
+    table { width: 100%; border-collapse: collapse; min-width: 760px; }
+    th, td { padding: 11px 13px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { color: var(--muted); font-size: .78rem; letter-spacing: .07em; text-transform: uppercase; background: var(--code); }
+    tr:last-child td { border-bottom: 0; }
+    .diagram { width: 100%; overflow-x: auto; padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: color-mix(in srgb, var(--paper) 96%, var(--accent-soft)); }
+    .diagram svg { display: block; min-width: 760px; width: 100%; height: auto; }
+    .small { color: var(--muted); font-size: .9rem; }
+    footer { margin-top: 42px; padding-top: 16px; border-top: 1px solid var(--line); color: var(--muted); font-size: .85rem; }
+    @media (max-width: 760px) {
+      main { width: min(100% - 18px, 1120px); margin-top: 9px; padding: 22px 17px; border-radius: 11px; }
+      .grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="eyebrow">Mission Control phased plan</div>
+    <h1>Editable Foreman profile</h1>
+    <p class="lede">Two merge-aware implementation units preserve Foreman's existing storage and
+      worker safety boundary, then add one fixed System profile to the Library without admitting it
+      to workflows or ensembles.</p>
+    <div class="pills">
+      <span class="pill good">Approved</span>
+      <span class="pill">2 serial phases</span>
+      <span class="pill">570 to 880 production lines</span>
+      <span class="pill">Codex gpt-5.6-sol</span>
+      <span class="pill">xhigh</span>
+      <span class="pill">Tasks disabled</span>
+    </div>
+  </header>
+
+  <section>
+    <h2>Source and approved decisions</h2>
+    <p>Authoritative source: <a href="plan.html"><code>docs/plans/editable-foreman-profile/plan.md</code></a>.</p>
+    <ul>
+      <li>Foreman is a fixed System guidance profile in <strong>Library -&gt; Personas</strong>, not a workflow Persona.</li>
+      <li>One current exact-text document uses compare-and-swap saves, with no history or activation step.</li>
+      <li>Guidance stays on the current triage, review, queued verification, and prompted completion surfaces.</li>
+      <li>Typed model, posture, operational, and Trust controls keep their current owners.</li>
+      <li>Every implementation task is disabled and pinned to Codex <code>gpt-5.6-sol</code> at <code>xhigh</code>.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Repository findings</h2>
+    <div class="grid">
+      <article class="card"><h3>Storage already fits</h3><p>The existing app-config value preserves built-in, custom, and intentional empty states. No migration or Persona row is needed.</p></article>
+      <article class="card"><h3>The write contract is missing CAS</h3><p>The current route has no revision guard and no stream body limit. Phase 1 owns strict operations, ETags, conflicts, and a schema-shaped limit.</p></article>
+      <article class="card"><h3>The worker stays simple</h3><p>It projects only <code>text</code> and already captures one value per evaluation. Expanded response metadata does not change prompt behavior.</p></article>
+      <article class="card"><h3>Status already owns summaries</h3><p>Resolved provider and four model roles are already polled. Only the guidance source joins status; document bytes stay out.</p></article>
+      <article class="card"><h3>The route grammar already works</h3><p>Persona asset ids are opaque, so <code>foreman</code> round-trips today. The Library selection model, not the router, needs the local branch.</p></article>
+      <article class="card"><h3>Catalog separation is the eligibility rule</h3><p>Workflow and ensemble consumers see only <code>PersonaView[]</code>. The System row is composed locally and never filtered back out downstream.</p></article>
+      <article class="card"><h3>Owner links need explicit callbacks</h3><p>App already owns transient Settings anchors, while <code>ForemanBar</code> owns its open state. Phase 2 adds one-shot navigation requests rather than duplicate controls.</p></article>
+    </div>
+    <div class="callout warn"><strong>Scheduling reconciliation.</strong> The plan tool creates an enabled Claude task by default. Mission Control normalized the session edge to the existing planning task and reported it already satisfied while this PR was open, so each task was updated and read back as disabled, Codex <code>gpt-5.6-sol</code>, and <code>xhigh</code>. Disabled state is the effective pre-merge gate.</div>
+  </section>
+
+  <section>
+    <h2>Sizing and phase count</h2>
+    <p>Estimated non-test production change: <strong>570 to 880 lines</strong>. Phase 1 accounts for
+      roughly 150 to 230 lines across shared and server contracts. Phase 2 accounts for 420 to 650
+      lines across the editor, Library composition, navigation, Settings summary, and styling.</p>
+    <p>Two phases keep the independently operable API boundary reviewable before the broad visible
+      surface consumes it. A third phase would separate documentation or a partial UI from the
+      behavior it supports and is not justified.</p>
+  </section>
+
+  <section>
+    <h2>Dependency graph</h2>
+    <div class="diagram" role="img" aria-label="Planning pull request precedes Phase 1, which precedes Phase 2. Both tasks stay disabled after dependencies clear.">
+      <svg viewBox="0 0 920 260" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="var(--accent)"/></marker>
+        </defs>
+        <rect x="22" y="72" width="240" height="100" rx="14" fill="var(--accent-soft)" stroke="var(--accent)"/>
+        <text x="142" y="106" text-anchor="middle" fill="var(--ink)" font-size="17" font-weight="700">Planning PR</text>
+        <text x="142" y="132" text-anchor="middle" fill="var(--muted)" font-size="13">publishes every named path</text>
+        <text x="142" y="153" text-anchor="middle" fill="var(--muted)" font-size="13">tasks remain disabled</text>
+        <line x1="263" y1="122" x2="336" y2="122" stroke="var(--accent)" stroke-width="3" marker-end="url(#arrow)"/>
+        <rect x="346" y="52" width="250" height="140" rx="14" fill="var(--good-soft)" stroke="var(--good)"/>
+        <text x="471" y="87" text-anchor="middle" fill="var(--ink)" font-size="17" font-weight="700">Phase 1</text>
+        <text x="471" y="113" text-anchor="middle" fill="var(--muted)" font-size="13">CAS document contract</text>
+        <text x="471" y="135" text-anchor="middle" fill="var(--muted)" font-size="13">body limit + source status</text>
+        <text x="471" y="166" text-anchor="middle" fill="var(--warn)" font-size="13" font-weight="700">disabled until a human enables</text>
+        <line x1="597" y1="122" x2="670" y2="122" stroke="var(--accent)" stroke-width="3" marker-end="url(#arrow)"/>
+        <rect x="680" y="52" width="218" height="140" rx="14" fill="var(--accent-soft)" stroke="var(--accent)"/>
+        <text x="789" y="87" text-anchor="middle" fill="var(--ink)" font-size="17" font-weight="700">Phase 2</text>
+        <text x="789" y="113" text-anchor="middle" fill="var(--muted)" font-size="13">System profile UI</text>
+        <text x="789" y="135" text-anchor="middle" fill="var(--muted)" font-size="13">owner links + browser proof</text>
+        <text x="789" y="166" text-anchor="middle" fill="var(--warn)" font-size="13" font-weight="700">disabled until a human enables</text>
+        <text x="460" y="232" text-anchor="middle" fill="var(--muted)" font-size="13">No concurrency group: Phase 2 imports and relies on Phase 1's merged contract.</text>
+      </svg>
+    </div>
+  </section>
+
+  <section>
+    <h2>Phase table</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Phase</th><th>Outcome</th><th>Direct prerequisites</th><th>Estimate</th><th>Concurrency</th></tr></thead>
+        <tbody>
+          <tr><td><a href="phase-1-conflict-safe-guidance-contract.md">1. Conflict-safe guidance contract</a></td><td>Source-aware exact reads, CAS writes, bounded bodies, source-only status metadata, unchanged worker capture.</td><td>Planning session</td><td>150 to 230</td><td>None</td></tr>
+          <tr><td><a href="phase-2-system-profile-ui.md">2. System profile UI and owner cross-links</a></td><td>Editable fixed Library profile, Settings summary, owner links, exclusion regressions, docs, and browser proof.</td><td>Phase 1; planning session</td><td>420 to 650</td><td>None</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>Merge order</h2>
+    <ol>
+      <li>This planning PR publishes every source, render, index, and phase file. Both phase tasks stay disabled through merge because their normalized planning-task edges were already satisfied.</li>
+      <li>A human enables Phase 1. It merges the shared/server contract after focused and full unit gates pass.</li>
+      <li>A human enables Phase 2 after Phase 1 merges. It delivers the full UI after unit, build, smoke, browser, evidence, and documentation gates pass.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Cross-phase contracts</h2>
+    <ul>
+      <li>Phase 1 owns one shared view/update schema, source enum, opaque ETag, 409 body, body limit, and status source field. Phase 2 only consumes them.</li>
+      <li>The existing app-config key remains the sole durable source. Built-in, custom, and none stay distinct.</li>
+      <li>Exact bytes drive storage and ETags; prompt rendering keeps its existing trim behavior.</li>
+      <li>The 64,000-character editor meter follows the instruction schema, not the Persona editor's UTF-8 byte contract.</li>
+      <li>Document bytes stay out of SSE and status. The worker keeps one captured string per evaluation.</li>
+      <li>Foreman never enters <code>PersonaView[]</code>, Persona APIs/events, workflow validation, published snapshots, or ensemble choices.</li>
+      <li>Settings and Trust remain the only typed configuration writers.</li>
+      <li>The authority summary opens the existing top-bar Foreman control and links to the existing Settings and Trust anchors.</li>
+      <li>A dirty conflict is never overwritten automatically. Reload adopts remote; Keep editing deliberately rebases the local draft onto the returned ETag.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Verification strategy</h2>
+    <div class="grid">
+      <article class="card"><h3>Phase 1</h3><p>Focused storage, route, worker-client, status, and prompt tests, then typecheck, lint, and the full unit suite.</p></article>
+      <article class="card"><h3>Phase 2</h3><p>Focused render/routing/exclusion tests, typecheck, lint, full unit, build, smoke, a dedicated Playwright journey, and light/dark visual evidence attached to its PR.</p></article>
+    </div>
+    <p>The final browser journey covers canonical routing, fixed identity, edit and preview, exact save and reload, the existing top-bar Foreman control, Models and Trust navigation, intentional empty guidance, and reset to the built-in default. Evidence stays in <code>e2e/.artifacts/</code> and is never committed.</p>
+  </section>
+
+  <section>
+    <h2>Scheduled task map</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Phase</th><th>Task id</th><th>Stored execution</th><th>Direct task dependencies</th><th>Planning edge</th></tr></thead>
+        <tbody>
+          <tr><td>1</td><td><code>d95866f4-9ab6-4a62-bb49-f2a081709b1d</code></td><td>Backlog, disabled, Codex <code>gpt-5.6-sol</code>, <code>xhigh</code></td><td>None</td><td>Planning task <code>ad501cee-88dd-4160-9a99-f9edeee6d2ab</code>, already satisfied</td></tr>
+          <tr><td>2</td><td><code>ddd15955-74c3-42bc-82c0-59ef1a0b9986</code></td><td>Backlog, disabled, Codex <code>gpt-5.6-sol</code>, <code>xhigh</code></td><td>Phase 1</td><td>Planning task <code>ad501cee-88dd-4160-9a99-f9edeee6d2ab</code>, already satisfied</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="small">Both tasks were created only after all six artifact paths resolved in the pushed commit. Phase 2's edge to Phase 1 remains unsatisfied. Neither disabled task may be enabled before this PR merges and the paths resolve on the default branch.</p>
+  </section>
+
+  <section>
+    <h2>Cross-phase audit</h2>
+    <ul>
+      <li>All persistence and runtime requirements belong to Phase 1; all visible behavior, owner links, exclusion proof, docs, and evidence belong to Phase 2.</li>
+      <li>The API boundary is independently useful, while no smaller UI or cleanup merge unit is warranted.</li>
+      <li>Phase 2 directly consumes Phase 1, so the serial dependency is real and there is no false concurrency claim.</li>
+      <li>Storage remains downgrade-readable, the worker still projects text, and the browser adds no Persona catalog member.</li>
+      <li>The already-satisfied planning-task edge is recorded honestly; verified disabled state prevents early execution, and Phase 2 still waits directly on Phase 1.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Detailed phase documents</h2>
+    <ul>
+      <li><a href="phase-1-conflict-safe-guidance-contract.md">Phase 1: Conflict-safe guidance contract</a></li>
+      <li><a href="phase-2-system-profile-ui.md">Phase 2: System profile UI and owner cross-links</a></li>
+    </ul>
+  </section>
+
+  <footer>Rendered from <code>docs/plans/editable-foreman-profile/phased-plan.md</code>. The Markdown remains authoritative.</footer>
+</main>
+</body>
+</html>

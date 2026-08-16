@@ -19,6 +19,7 @@ import { WorkflowCanvas } from "../src/web/workflows/WorkflowCanvas.tsx";
 import { WorkflowProperties } from "../src/web/workflows/WorkflowProperties.tsx";
 import { WorkflowVersionDetail } from "../src/web/workflows/WorkflowVersionHistory.tsx";
 import { workflowPublishBlocked } from "../src/web/workflows/useWorkflowDraft.ts";
+import { BUILTIN_PERSONAS } from "../src/server/workflows/builtin-personas.ts";
 
 const persona = (
   id: string,
@@ -208,4 +209,23 @@ test("published built-in snapshots compare shipped guidance instead of revision"
   }));
   assert.match(unavailableHtml, /source unavailable/);
   assert.doesNotMatch(unavailableHtml, /outdated/);
+});
+
+test("the built-in Persona library displays Code Quality Judge", () => {
+  const library = renderToStaticMarkup(createElement(PersonaLibrary, {
+    personas: BUILTIN_PERSONAS.map((persona) => ({
+      ...persona,
+      execution: {
+        runner: { id: "claude" as const, source: "default" as const, unknown: null },
+        model: { id: "claude-haiku-4-5", source: "default" as const },
+      },
+    })),
+    providers: [],
+    defaults: null,
+    isOverlayOpen: () => false,
+    onLeave: () => {},
+    onDirtyChange: () => {},
+  }));
+  assert.match(library, />Code Quality Judge</);
+  assert.match(library, /Judge whether the submitted local change is safe, correct, and ready/);
 });

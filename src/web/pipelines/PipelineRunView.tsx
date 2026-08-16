@@ -1,9 +1,9 @@
 import type { ReactNode } from "react";
 import {
+  PIPELINE_HALT_CLASS_INFO,
   PIPELINE_PROVIDER_INFO,
   pipelineStepInfo,
   type PipelineGateVerdict,
-  type PipelineHaltClass,
   type PipelinePhase,
   type PipelineRun,
 } from "@shared/pipeline.ts";
@@ -49,15 +49,6 @@ import type { PipelineRunDetailState } from "./usePipelineRunDetail.ts";
  * because sharing those classes would make a later change to this surface a change to the
  * workflow run page - which is the one thing this phase promises never to do.
  */
-
-/** What each halt class is called, in the vocabulary an operator can act on. */
-const HALT_CLASS_LABELS: Record<PipelineHaltClass, string> = {
-  "needs-human": "Needs a human",
-  mechanical: "Mechanical",
-  "protected-artifact": "Protected artifact",
-  legacy: "Legacy",
-  unclassified: "Unclassified",
-};
 
 /**
  * What each wire between two cards crosses.
@@ -271,7 +262,7 @@ export function PipelineRunView({
 
       {run.halt && (
         <p className="pipelines-run-halt" role="status">
-          <b>{HALT_CLASS_LABELS[run.halt.class]}</b> {run.halt.reason}
+          <b>{PIPELINE_HALT_CLASS_INFO[run.halt.class].label}</b> {run.halt.reason}
         </p>
       )}
 

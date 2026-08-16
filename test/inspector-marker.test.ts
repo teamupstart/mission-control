@@ -11,6 +11,7 @@ import {
 import {
   allOwnedThreadsResolved,
   cleanReviewExists,
+  hasBodyOnlyFindings,
   ourThreads,
   renderCleanReview,
 } from "../src/server/inspector/github.ts";
@@ -61,9 +62,35 @@ test("a clean review says no further issues were found and declares the PR merge
     formatMarker({ id: "clean-1", fingerprint: CLEAN_REVIEW_FINGERPRINT, round: 3 }),
     3,
   );
+  assert.match(body, /^\*\*⌕ GitHub Inspector\*\*/m);
   assert.match(body, /No further issues found\./);
   assert.match(body, /safe to merge/i);
   assert.ok(isCleanReview({ body, author: US, headSha: "head-3" }, US, "head-3"));
+});
+
+test("body-only recovery accepts both historical and GitHub Inspector review headers", async () => {
+  for (const header of [
+    "**⌕ Inspector** · round 2",
+    "**⌕ GitHub Inspector** · round 3",
+  ]) {
+    const found = await hasBodyOnlyFindings({
+      cwd: null,
+      owner: "mission",
+      repo: "control",
+      number: 7,
+      snapshot: {
+        reviews: [{
+          body: `${header}\n\nReview summary\n\n---\nOne body-only finding`,
+          author: US,
+          headSha: "head",
+        }],
+        reviewsPageInfo: { hasPreviousPage: false, startCursor: null },
+      },
+      login: US,
+      headSha: "head",
+    });
+    assert.deepEqual(found, { ok: true, value: true }, `${header} stopped being recoverable`);
+  }
 });
 
 test("clean review recovery traverses older pages until the matching head is found", async () => {

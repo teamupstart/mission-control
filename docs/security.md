@@ -4,16 +4,25 @@ The daemon binds to loopback only, and every data endpoint (`/api/*`, `/events`)
 additionally requires a loopback `Host` header so a web page you visit can't reach
 it via DNS-rebinding - a defense that matters now that dispatch can launch agents
 (effectively RCE) and reads leak task prompts, repo paths, and transcripts. Hook,
-statusLine, OTLP metrics (`/v1/metrics`) and MCP ingress are authenticated with a
+statusLine, OTLP metrics (`/v1/metrics`), pipeline events (`/ingest/conductor`) and MCP
+ingress are authenticated with a
 per-machine token in `~/.mission-control/token` so other local processes can't spoof
-session, task, or cost-estimate state. Cost datapoints arrive carrying `user.email`,
+session, task, or cost-estimate state. Pipeline ingest carries a second gate on top of the
+token, because its producer is a plugin running inside another program: a pushed event
+naming a repository the operator has not switched on in Settings is counted and dropped
+rather than stored, so the push path cannot start observing a checkout that consent did not
+already cover. Within a consented repository it may only address runs that exist: a pushed
+`slug` is checked against the worktrees the engine is actually driving, because the event
+ledger is bounded by retiring rows with the runs a pass enumerates, and rows filed under a
+slug no pass can produce are rows nothing would retire. See
+[Pipelines](pipelines.md#the-route). Cost datapoints arrive carrying `user.email`,
 `user.account_uuid`, `user.account_id` and `organization.id`; the ingest reads four
 attributes and discards the rest before anything is written, so none of it reaches the
 database. Session and task
 actions (send / rename / focus / kill, dispatch / cancel / complete) are localhost-only.
 
 Two subsystems act outside this machine, and both are off until you separately arm them
-and name the repositories they may act in: the [Inspector](inspector-and-shipping.md#inspector-automated-pr-review),
+and name the repositories they may act in: the [GitHub Inspector](inspector-and-shipping.md#inspector-automated-pr-review),
 which comments on pull requests under your GitHub account, and
 [YOLO mode](inspector-and-shipping.md#shipping-yolo-mode), which merges them. Their allowlists are deliberately
 separate - trusting an automated reviewer to comment in a repo is not the same act as

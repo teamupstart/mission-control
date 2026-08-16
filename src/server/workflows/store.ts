@@ -1508,7 +1508,7 @@ function runContextState(
         diagnose(new WorkflowRowError(
           "workflow_submissions",
           submission.id,
-          "context_json is not a valid Inspector-only context",
+          "context_json is not a valid GitHub Inspector-only context",
         ));
         return "corrupt";
       }
@@ -4767,7 +4767,7 @@ export class WorkflowStore {
         input.runId,
       );
       if (Number(runChanged.changes) !== 1) {
-        throw new Error(`Workflow run ${input.runId} cannot enter its Inspector gate`);
+        throw new Error(`Workflow run ${input.runId} cannot enter its GitHub Inspector gate`);
       }
       this.appendEvent(input.runId, "inspector_gate_entered", {
         submissionId: input.submissionId,
@@ -4919,7 +4919,7 @@ export class WorkflowStore {
         JSON.stringify(input.expectedState),
       );
       if (Number(changed.changes) !== 1) {
-        throw new Error(`Workflow run ${run.id} changed while creating an Inspector-only submission`);
+        throw new Error(`Workflow run ${run.id} changed while creating a GitHub Inspector-only submission`);
       }
       this.appendEvent(run.id, "inspector_persona_bypass_used", {
         submissionId: input.id,

@@ -936,7 +936,7 @@ test("auto: parked inspector_findings under restart_workflow resumes itself", as
 });
 
 test("inspector_only findings park in waiting_for_new_head, which the observer NEVER touches", async () => {
-  // The load-bearing counter-example. That policy is resolved by pushing a head the Inspector
+  // The load-bearing counter-example. That policy is resolved by pushing a head the GitHub Inspector
   // poller observes; resubmitting there would rerun a review that already passed against a
   // pull request the Inspector has not looked at again. It also keeps its own instruction,
   // which is still literally true.
@@ -948,7 +948,7 @@ test("inspector_only findings park in waiting_for_new_head, which the observer N
     "inspector_only",
   );
   assert.equal(h.store.getRun(h.runId)?.status, "waiting_for_new_head");
-  assert.match(h.injected[0]!, /wait for Inspector to review that new head\.$/);
+  assert.match(h.injected[0]!, /wait for GitHub Inspector to review that new head\.$/);
 
   h.head.sha = "head-2";
   reportIdle(h, "only-inspector", h.agentSessionId, h.paneId);

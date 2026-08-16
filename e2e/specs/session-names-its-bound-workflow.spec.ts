@@ -411,19 +411,19 @@ test("a session bound to a superseded version still gets its defaults hint", asy
   /*
    * `selectedWorkflowId` keyed off `currentVersionId` equality, which only holds while a
    * version is the newest. Hydration makes the other case reachable by design - it selects
-   * whatever the session is actually bound to - so a session on `@7` after `@8` ships resolved
+   * whatever the session is actually bound to - so a session on `@8` after `@10` ships resolved
    * to no workflow at all, the detail fetch never fired, and "This version defaults to …"
    * silently never rendered. The select is perfectly happy to display that version; only the
    * lookup beside it disagreed about which versions it recognises.
    *
-   * The built-in ships eight versions, so `@7` is a real published version to bind rather than
+   * The built-in ships ten versions, so `@8` is a real published version to bind rather than
    * a fixture invented for this test.
    */
   await armWorkflowPrerequisites(daemon);
   await page.goto(daemon.baseURL);
   const sessionId = await dispatchWithoutWorkflow(page, daemon, "bound to a superseded version");
 
-  const supersededVersion = "builtin-workflow:no-mistakes-review@7";
+  const supersededVersion = "builtin-workflow:no-mistakes-review@8";
   await api(daemon, "/api/workflow-bindings", {
     workflowVersionId: supersededVersion,
     sessionId,
@@ -432,15 +432,15 @@ test("a session bound to a superseded version still gets its defaults hint", asy
   });
 
   await page.reload();
-  await page.getByRole("button", { name: /No-Mistakes Review v7/ }).first().click();
+  await page.getByRole("button", { name: /No-Mistakes Review v8/ }).first().click();
   const bind = page.getByRole("dialog", { name: "Bind workflow" });
   await expect(bind).toBeVisible();
 
   const published = bind.getByRole("combobox", { name: "Published workflow", exact: true });
-  await expect.poll(() => selectedLabel(published)).toBe("No-Mistakes Review · v7");
+  await expect.poll(() => selectedLabel(published)).toBe("No-Mistakes Review · v8");
 
   // The hint the broken lookup silently withheld. Its presence is the assertion; the exact
-  // words belong to v7's own published defaults, which this test does not get to choose.
+  // words belong to v8's own published defaults, which this test does not get to choose.
   const hint = bind.getByText(/^This version defaults to /);
   await expect(hint).toBeVisible();
   seen("dialog > superseded version selected", await selectedLabel(published));

@@ -2,6 +2,7 @@ import { useCallback, useRef, useState } from "react";
 import type { ReviewItem, Session, SessionQueueSummary } from "@shared/types.ts";
 import type { WorkflowBindingSummary, WorkflowRunSummary } from "@shared/workflow.ts";
 import type { EnsembleSummary } from "@shared/ensemble.ts";
+import type { SessionPipelineLink } from "@shared/pipeline.ts";
 import { foremanAllowlisted } from "@shared/foreman.ts";
 import { activePaneDialog } from "@shared/session.ts";
 import { foremanNoteCompanionsOpenAsk } from "../lib/foreman-review.ts";
@@ -40,6 +41,7 @@ import {
   TaskRepoPrs,
   WorkflowChips,
   EnsembleChip,
+  PipelineChip,
   SessionWhere,
 } from "./session-bits.tsx";
 
@@ -138,6 +140,7 @@ export function SessionCard({
   scheduleNameById,
   onOpenEnsemble,
   ensembleSummary = null,
+  onOpenPipelineRun,
 }: {
   session: Session;
   onOpenReviews?: () => void;
@@ -217,6 +220,8 @@ export function SessionCard({
   onOpenEnsemble?: (runId: string) => void;
   /** That run's live summary, when App has one: the chip's `n/m in` progress suffix. */
   ensembleSummary?: EnsembleSummary | null;
+  /** Open the pipeline run this session is doing the work of (read off `session.pipeline`). */
+  onOpenPipelineRun?: (link: SessionPipelineLink) => void;
 }): React.JSX.Element {
   const st = stateDisplay(session);
   const attention = st.tone === "attention";
@@ -308,6 +313,12 @@ export function SessionCard({
               ? () => onOpenEnsemble?.(session.task!.ensemble!.runId)
               : undefined
           }
+        />
+        {/* Renders nothing on an uncorrelated session, which is every session on a fleet
+            observing no engine - so this head is byte-identical to what it was there. */}
+        <PipelineChip
+          link={session.pipeline}
+          onOpen={session.pipeline ? () => onOpenPipelineRun?.(session.pipeline!) : undefined}
         />
         {/* Not `!workflowRun`: a finished run leaves its outcome chip standing beside this one,
             because the outcome is history and this is the next move. `sessionCanBindWorkflow`

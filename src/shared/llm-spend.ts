@@ -58,8 +58,8 @@ export const LLM_SPEND_ROLE_LABELS: Record<LlmSpendRole, string> = {
   "foreman:review": "Foreman review",
   "foreman:verify": "Foreman verify",
   "foreman:backlog": "Foreman backlog",
-  "inspector:review": "Inspector review",
-  "inspector:reply": "Inspector reply",
+  "inspector:review": "GitHub Inspector review",
+  "inspector:reply": "GitHub Inspector reply",
 };
 
 /**

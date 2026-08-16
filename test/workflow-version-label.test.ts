@@ -19,8 +19,8 @@ import {
 const NO_MISTAKES: WorkflowNamingSource = {
   id: NO_MISTAKES_REVIEW_WORKFLOW_ID,
   name: "No-Mistakes Review",
-  currentVersionId: builtinWorkflowVersionId("no-mistakes-review", 8),
-  publishedVersion: 8,
+  currentVersionId: builtinWorkflowVersionId("no-mistakes-review", 10),
+  publishedVersion: 10,
 };
 
 const OPERATOR: WorkflowNamingSource = {
@@ -40,7 +40,7 @@ test("parses the workflow and number out of a built-in version id", () => {
 });
 
 test("round-trips whatever builtinWorkflowVersionId produces", () => {
-  for (const version of [1, 7, 8, 12]) {
+  for (const version of [1, 7, 8, 9, 12]) {
     const id = builtinWorkflowVersionId("no-mistakes-review", version);
     assert.deepEqual(parseBuiltinWorkflowVersionId(id), {
       workflowId: NO_MISTAKES_REVIEW_WORKFLOW_ID,
@@ -63,7 +63,7 @@ test("refuses ids that are not built-in version ids", () => {
 
 test("names the built-in every dispatch arms, rather than truncating its id", () => {
   const label = workflowVersionLabel(NO_MISTAKES.currentVersionId!, CATALOG);
-  assert.equal(label, "No-Mistakes Review · v8");
+  assert.equal(label, "No-Mistakes Review · v10");
   // The regression this exists to prevent.
   assert.notEqual(label, "builtin-");
 });
@@ -73,11 +73,11 @@ test("names an operator workflow from its catalog entry", () => {
 });
 
 test("keeps naming a superseded built-in version after a newer one ships", () => {
-  // A session bound to v7 while v8 is current is exactly the case the dialog exists to show,
-  // and the catalog holds only v8 - so the id's own structure has to carry the answer.
+  // A session bound to v8 while v10 is current is exactly the case the dialog exists to show,
+  // and the catalog holds only v10, so the id's own structure has to carry the answer.
   assert.equal(
-    workflowVersionLabel(builtinWorkflowVersionId("no-mistakes-review", 7), CATALOG),
-    "No-Mistakes Review · v7",
+    workflowVersionLabel(builtinWorkflowVersionId("no-mistakes-review", 8), CATALOG),
+    "No-Mistakes Review · v8",
   );
 });
 
@@ -90,11 +90,11 @@ test("falls back to the id rather than inventing a name", () => {
 
 test("resolves the owning workflow for a superseded built-in version", () => {
   // The case `currentVersionId` equality misses, and the reason this resolver exists: a session
-  // bound to @7 while @8 ships. Keying off equality alone returned null, so the dialog's
+  // bound to @8 while @10 ships. Keying off equality alone returned null, so the dialog's
   // "/api/workflows/{id}" fetch never fired and its version-defaults hint silently never
   // rendered - for a version the select is perfectly happy to display.
   assert.equal(
-    workflowIdForVersion(builtinWorkflowVersionId("no-mistakes-review", 7), CATALOG),
+    workflowIdForVersion(builtinWorkflowVersionId("no-mistakes-review", 8), CATALOG),
     NO_MISTAKES_REVIEW_WORKFLOW_ID,
   );
   // The current version still resolves, by the first branch.

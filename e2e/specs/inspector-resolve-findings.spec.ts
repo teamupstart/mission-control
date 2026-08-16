@@ -108,7 +108,7 @@ const ledgerRow = (page: Page, name: string) =>
   page.locator(".sc-row").filter({ hasText: name });
 
 const resolveButton = (page: Page, number: number) =>
-  page.getByRole("button", { name: `Resolve the Inspector's findings on repo#${number}` });
+  page.getByRole("button", { name: `Resolve GitHub Inspector's findings on repo#${number}` });
 
 test("an operator resolves a stuck finding from the Inspector ledger", async ({
   dashboard,

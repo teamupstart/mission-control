@@ -227,7 +227,7 @@ test("the compact pipeline is drawn from what a summary can actually prove", () 
   // An Inspector gate earns the fourth.
   const gated = runTriageSteps(run({ gate: "waiting_inspector", activePersonaNames: [] }));
   assert.deepEqual(gated.map((s) => s.key), ["evidence", "reviewers", "inspector"]);
-  assert.equal(gated.at(-1)!.status.label, "Waiting for Inspector");
+  assert.equal(gated.at(-1)!.status.label, "Waiting for GitHub Inspector");
 });
 
 test("a skipped review round is green and degraded, never plain green", () => {
@@ -652,7 +652,7 @@ test("a bar with no argument-free remedy carries no control, and still says why"
     phase: "inspector_findings",
     activePersonaNames: [],
   })));
-  assert.match(findings, /<strong>5 runs · Inspector findings<\/strong>/);
+  assert.match(findings, /<strong>5 runs · GitHub Inspector findings<\/strong>/);
   assert.doesNotMatch(findings, /Dismiss all/);
 });
 

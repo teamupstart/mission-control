@@ -338,7 +338,7 @@ test("a session nobody corrected is never offered a retro, however clean its rev
   // predicate exactly that way: without this line the case stayed green. The chip carries the
   // same push the offer would have ridden, so once it is on screen the absence is a refusal.
   await expect(
-    card.getByRole("link", { name: "Inspector: reviewed, nothing outstanding" }),
+    card.getByRole("link", { name: "GitHub Inspector: reviewed, nothing outstanding" }),
   ).toBeVisible({ timeout: 30_000 });
   await expectNoRetroOffer(card);
   // The Complete backstop is conditioned on the same worthiness, so it is absent too - the

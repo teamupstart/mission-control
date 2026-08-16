@@ -199,6 +199,8 @@ import {
   pipelineRepoKey,
   type PipelinesView,
 } from "@shared/pipeline.ts";
+import { schedulePipelineRefresh } from "./pipelines/index.ts";
+import { ingestConductorEvents, MAX_INGEST_BYTES } from "./pipelines/ingest.ts";
 import { setUiConfig, uiConfigView } from "./ui-config.ts";
 import { environmentCheckViews } from "./environment/index.ts";
 import type { EnvironmentChecksView } from "@shared/environment-checks.ts";
@@ -2290,6 +2292,55 @@ export function buildApp(
     if (!parsed.ok) return parsed.res;
     registry.applyStatusLine(parsed.data);
     return c.body(null, 204);
+  });
+
+  // --- pipeline event ingest (token-guarded): an external SDLC engine's own events,
+  // pushed by the Mission Control visualizer plugin that ships from
+  // `integrations/ai-conductor/mission-control/`.
+  //
+  // In the ingest family and guarded like the rest of it - `x-harness-token` on the first
+  // line, no loopback check. That is the family's shape rather than a relaxation: these are
+  // the routes a cooperating LOCAL process posts to, and the token is what separates one
+  // from any other process on the machine. `requireLoopback` covers `/api/*` and `/events`.
+  //
+  // NDJSON rather than a JSON array, because the producer is a visualizer inside somebody
+  // else's event loop: it appends a line per event and flushes whatever it has, and a line
+  // that fails to parse costs that line. A batch is a stream of independent observations,
+  // so one bad line never fails the POST - the counts say what happened, and the file tail
+  // still covers whatever was dropped.
+  app.post("/ingest/conductor", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const tooLarge = () =>
+      c.json({ error: `batch too large; the limit is ${MAX_INGEST_BYTES} bytes` }, 413);
+    // Refused on the DECLARED length first, so an oversized batch is turned away before it
+    // is read into this single-threaded process at all. The producer runs unattended inside
+    // another program, and a body without a ceiling is one bug upstream from a JSON.parse
+    // that owns the event loop.
+    const declared = Number(c.req.header("content-length"));
+    if (Number.isFinite(declared) && declared > MAX_INGEST_BYTES) return tooLarge();
+    // A body that could not be READ is refused, and it is worth being exact about why this
+    // one line is not a swallowed error. The producer treats any 2xx as delivered and drops
+    // the batch from its buffer; a dropped connection, a stream error or the plugin's own
+    // shutdown abort would otherwise arrive here as the empty string, be counted as a batch
+    // of nothing, and answer 200 - so a TRANSPORT failure would destroy exactly the events
+    // no file records. 5xx is what the plugin retries, and retrying is the whole posture the
+    // unpersisted kinds depend on.
+    let body: string;
+    try {
+      body = await c.req.text();
+    } catch {
+      return c.json({ error: "could not read the batch body" }, 503);
+    }
+    // Then on the MEASURED length, because the header is the producer's claim rather than a
+    // fact - it can be absent entirely under chunked encoding, and wrong otherwise. Measured
+    // in BYTES: a JavaScript string is counted in UTF-16 code units, so a body of three-byte
+    // characters costs up to three times what `String.length` reports, and non-ASCII is
+    // ordinary here (step names, branch names, commit subjects all reach this stream).
+    if (Buffer.byteLength(body, "utf8") > MAX_INGEST_BYTES) return tooLarge();
+    const { counts, touched } = ingestConductorEvents(body);
+    // Then fold the repositories it named, a tick early. See `schedulePipelineRefresh`.
+    if (touched.length > 0) schedulePipelineRefresh(registry, touched);
+    return c.json(counts);
   });
 
   // --- OTLP metrics ingest (token-guarded): Claude Code's own API-equivalent cost

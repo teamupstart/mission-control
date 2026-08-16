@@ -12,11 +12,19 @@ obligation:
    modal draws, diff/plan/question and option menus included. A member of an ensemble carries
    its run context on the header line - *Best of N "Fix the parser" - candidate 3 of 5* - so
    whoever answers can tell they are steering one competitor of a comparison.
-3. **Members parked on a menu** - an ensemble member sitting on a terminal
+3. **Parked on a menu** - a session sitting on a terminal
    [option menu](sessions.md#answer-a-sessions-menu-from-the-dashboard). Listed, not answered in the
-   inbox: it deep-links to the session card, while the member's live lane in the run detail
-   also renders the verified pane dialog in place.
-4. **Stuck finalizations** - a promotion that stopped on an error.
+   inbox: it deep-links to the session card, while an ensemble member's live lane in the run
+   detail also renders the verified pane dialog in place.
+4. **Pipeline halts** - a [pipeline](pipelines.md) an external SDLC engine stopped and will not
+   resume on its own. Each row names the feature, the [halt class](pipelines.md#a-halted-pipeline-in-the-inbox)
+   and what the engine said stopped it, points at the provider's runbook section for that class,
+   and links to the run's own detail. This is the only section with no session behind it: the
+   engine stops dispatching at a halt, so the agent that hit the gate has usually exited by the
+   time anybody looks. Read-only here - clearing a halt is the engine's own CLI.
+5. **Waiting on you** - the backstop: a session the fleet paints amber that no section above
+   already accounts for. It deep-links to the card, because the answer goes to the agent.
+6. **Stuck finalizations** - a promotion that stopped on an error.
 
 The count is **answers owed**, not rows: a session holding three questions is one row and
 three. It is a rendering of state the dashboard already has - it subscribes to nothing, decides
@@ -76,7 +84,7 @@ waiting in `waiting_for_session` or `waiting_for_new_head` is waiting on *that s
 next turn*, so a session that took the repair packet, made the fix and went idle has
 work outstanding against it even though its task is done and its queue is empty. The
 alert names the missing step rather than the silence - "repair round 2 never reopened",
-or "waiting for a pushed head" for the Inspector findings that clear only when the
+or "waiting for a pushed head" for the GitHub Inspector findings that clear only when the
 poller sees a new head **on the remote**.
 
 It deep-links to the **run** rather than to the session, because the run is where that
@@ -94,7 +102,7 @@ same distinction the Line uses to decide whether the run is counted as yours:
   manual resubmit is still available; it is simply not the expected move.
 - **`waiting_for_new_head`** has no such control at all, under any posture. Nothing on
   this page - or anywhere else in the app - restarts it: it clears only when the
-  Inspector poller observes a new head that the bound session has **pushed**. The deep
+  GitHub Inspector poller observes a new head that the bound session has **pushed**. The deep
   link is context rather than a remedy, and the useful next move is to get that branch
   pushed.
 
@@ -106,7 +114,7 @@ the difference between a session that fixed the findings and forgot the last ste
 that did nothing at all, which is otherwise invisible from the daemon's side.
 
 The comparison is the branch's **configured upstream** - `@{upstream}..HEAD`, the commits
-the branch it tracks has not received. That is the ref the Inspector is watching, because
+the branch it tracks has not received. That is the ref the GitHub Inspector is watching, because
 it is the one the pull request points at, so commits that reached some other branch or
 some other remote have not reached the thing being waited on.
 
@@ -119,7 +127,7 @@ plain wait. A branch that tracks no remote, a detached HEAD, and a git call that
 are all *unknown* rather than *not pushed* - being told you forgot to push a branch that
 was never meant to be pushed sends you looking for a mistake you did not make. A checkout
 level with its upstream is also silent, for a subtler reason: that only proves a push is
-not the missing step, not that the head the Inspector wants exists.
+not the missing step, not that the head the GitHub Inspector wants exists.
 
 ![The run a stuck parked-run notification opens, showing the parked round and its state](images/line-review-parked-toast-run.png)
 

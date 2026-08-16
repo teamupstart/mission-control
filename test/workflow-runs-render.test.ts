@@ -802,8 +802,8 @@ test("an Inspector-disabled block has no primary and names the gate section inst
     run: { ...base.run, status: "blocked", currentPhase: "inspector_disabled" },
   });
   const header = headerOf(html);
-  assert.match(header, /<b>Inspector is switched off, so the gate cannot be evaluated\.<\/b>/);
-  assert.match(header, /Turn it back on from Open Inspector settings, in Inspector final gate below/);
+  assert.match(header, /<b>GitHub Inspector is switched off, so the gate cannot be evaluated\.<\/b>/);
+  assert.match(header, /Turn it back on from Open GitHub Inspector settings, in GitHub Inspector final gate below/);
   assert.doesNotMatch(header, /btn-primary/);
   assert.doesNotMatch(header, /Turn Inspector on/);
 });
@@ -1168,8 +1168,8 @@ test("the Inspector gate keeps its state, findings, actions, and bypass audit", 
       }],
     },
   } as WorkflowRunDetail);
-  assert.match(html, /Inspector final gate/);
-  assert.match(html, /Inspector left findings that have to be resolved/);
+  assert.match(html, /GitHub Inspector final gate/);
+  assert.match(html, /GitHub Inspector left findings that have to be resolved/);
   assert.match(html, /#91/);
   assert.match(html, /legacy import/);
   assert.match(html, /Target head/);
@@ -1179,13 +1179,13 @@ test("the Inspector gate keeps its state, findings, actions, and bypass audit", 
   assert.match(html, /offer prepare pr/);
   assert.match(html, /Preserve provenance/);
   assert.match(html, /Legacy finding: detail was not persisted/);
-  assert.match(html, /Persona review bypassed for Inspector repair/);
+  assert.match(html, /Persona review bypassed for GitHub Inspector repair/);
   assert.match(html, /moved from oldhead01234 to newhead01234/);
   // The gate's recheck IS this run's next move, so it is the header's primary and wears the
   // imperative a reader can act on rather than the route's own name.
   assert.match(headerOf(html), /class="btn btn-primary"[^>]*>Check again</);
   assert.match(html, /Restart full workflow/);
-  assert.match(html, /Open Inspector settings/);
+  assert.match(html, /Open GitHub Inspector settings/);
   // This gate has an adopted pull request, so Open PR is present, enabled, and a real link.
   assert.match(headerOf(html), /<a class="btn btn-ghost" href="https:\/\/github.com\/owner\/repo\/pull\/91"/);
   assert.match(html, /Open PR/);
@@ -2318,7 +2318,7 @@ test("every empty arm the old verdict list had still has its sentence", () => {
   bypassed.submissions = bypassed.submissions.map((entry) =>
     entry.round === 2 ? { ...entry, mode: "inspector_only" as const } : entry);
   const html = render(bypassed);
-  assert.match(html, /This Inspector repair round ran no Personas/);
+  assert.match(html, /This GitHub Inspector repair round ran no Personas/);
   assert.doesNotMatch(html, /No reviewer has been activated/);
 
   // A round whose reviewers simply have not started. "Not yet" is a promise this arm can keep.

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { AssignResetConfirm, Session } from "@shared/types.ts";
+import type { PipelineRun } from "@shared/pipeline.ts";
 import { stateDisplay, type Tone } from "../../lib/format.ts";
 import { boardColumnModes } from "../../lib/tone.ts";
 import {
@@ -22,8 +23,27 @@ import {
   EnsembleClusterHead,
   EnsembleRailGroup,
   FleetSectionHead,
+  PipelineClusterHead,
 } from "../session-bits.tsx";
 import { Tooltip } from "../Tooltip.tsx";
+
+/**
+ * Whether a cluster frame is one an operator has to do something about.
+ *
+ * An ensemble frame asks its members (each carries `needsInput` on its own link); a pipeline
+ * frame asks the RUN, because a halt is a fact about the run and not about the agent - the
+ * engine stops dispatching and there may be no live session in the frame at all by the time
+ * anyone looks. Two questions, one answer, so the tone on the frame and the word in its
+ * header cannot disagree.
+ */
+function clusterNeedsYou(
+  block: Extract<FleetBlock, { kind: "cluster" }>,
+  runs: ReadonlyMap<string, PipelineRun> | undefined,
+): boolean {
+  return block.cluster === "pipeline"
+    ? Boolean(runs?.get(block.runId)?.halt)
+    : blockedMembersIn(block.sessions) > 0;
+}
 
 /** A drop waiting on the operator's yes: which task, onto which agent, and what it costs. */
 interface PendingDrop {
@@ -324,12 +344,21 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
                       // `block.key`, not the runId: a run split across the free/held boundary
                       // frames once per side, and two frames keyed by one run collide.
                       <div className="rail-cluster" key={block.key}>
-                        <EnsembleRailGroup
-                          summary={props.ensembleSummaryByRun?.get(block.runId) ?? null}
-                          fallbackLabel={clusterFallbackLabel(block.sessions[0]!)}
-                          blockedHere={blockedMembersIn(block.sessions)}
-                          onOpen={() => props.onOpenEnsemble?.(block.runId)}
-                        />
+                        {block.cluster === "pipeline" ? (
+                          <PipelineClusterHead
+                            run={props.pipelineRunByKey?.get(block.runId) ?? null}
+                            slug={block.sessions[0]!.pipeline!.slug}
+                            variant="rail"
+                            onOpen={() => props.onOpenPipelineRun?.(block.sessions[0]!.pipeline!)}
+                          />
+                        ) : (
+                          <EnsembleRailGroup
+                            summary={props.ensembleSummaryByRun?.get(block.runId) ?? null}
+                            fallbackLabel={clusterFallbackLabel(block.sessions[0]!)}
+                            blockedHere={blockedMembersIn(block.sessions)}
+                            onOpen={() => props.onOpenEnsemble?.(block.runId)}
+                          />
+                        )}
                         {block.sessions.map(railRow)}
                       </div>
                     ),
@@ -345,17 +374,26 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
                     ) : (
                       <div
                         className={`board-cluster${
-                          blockedMembersIn(block.sessions) > 0 ? " needs-you" : ""
+                          clusterNeedsYou(block, props.pipelineRunByKey) ? " needs-you" : ""
                         }`}
                         // `block.key`, not the runId - see the rail cluster above.
                         key={block.key}
                       >
-                        <EnsembleClusterHead
-                          summary={props.ensembleSummaryByRun?.get(block.runId) ?? null}
-                          fallbackLabel={clusterFallbackLabel(block.sessions[0]!)}
-                          blockedHere={blockedMembersIn(block.sessions)}
-                          onOpen={() => props.onOpenEnsemble?.(block.runId)}
-                        />
+                        {block.cluster === "pipeline" ? (
+                          <PipelineClusterHead
+                            run={props.pipelineRunByKey?.get(block.runId) ?? null}
+                            slug={block.sessions[0]!.pipeline!.slug}
+                            variant="board"
+                            onOpen={() => props.onOpenPipelineRun?.(block.sessions[0]!.pipeline!)}
+                          />
+                        ) : (
+                          <EnsembleClusterHead
+                            summary={props.ensembleSummaryByRun?.get(block.runId) ?? null}
+                            fallbackLabel={clusterFallbackLabel(block.sessions[0]!)}
+                            blockedHere={blockedMembersIn(block.sessions)}
+                            onOpen={() => props.onOpenEnsemble?.(block.runId)}
+                          />
+                        )}
                         {block.sessions.map(tile)}
                       </div>
                     ),

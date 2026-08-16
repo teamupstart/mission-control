@@ -38,7 +38,11 @@ async function api<T>(daemon: DaemonHandle, path: string, body?: unknown, method
   return (await response.json()) as T;
 }
 
-async function shoot(page: Page, name: string): Promise<void> {
+async function shoot(
+  page: Page,
+  name: string,
+  options: { beforeEach?: () => Promise<void> } = {},
+): Promise<void> {
   mkdirSync(EVIDENCE, { recursive: true });
   // Off every control first. `Tooltip` portals a visible bubble on hover, and a capture taken
   // with the pointer resting where the last click left it covers the thing being photographed.
@@ -47,6 +51,7 @@ async function shoot(page: Page, name: string): Promise<void> {
     await page.setViewportSize({ width, height: 900 });
     // One frame for the layout to settle after the resize; the strip re-measures its scroll.
     await page.waitForTimeout(300);
+    await options.beforeEach?.();
     await page.screenshot({ path: `${EVIDENCE}${name}-${suffix}.png` });
   }
   await page.setViewportSize({ width: 1440, height: 900 });
@@ -127,7 +132,7 @@ test("capture the authoring and run surfaces", async ({ dashboard, daemon }) => 
   });
 
   // 2. The pipeline, at both ends of a strip too wide for one screen: the action stage among
-  //    its neighbours, and the fixed Inspector footer past End.
+  //    its neighbours, and the fixed GitHub Inspector footer past End.
   await dashboard.goto(`${daemon.baseURL}/#/workflows`);
   await dashboard.getByRole("button", { name: /Ship it/ }).click();
   await expect(dashboard.locator(".wf-pipeline-strip")).toBeVisible();
@@ -331,17 +336,71 @@ test("capture a completed continuation", async ({ dashboard, daemon }) => {
   await expect(dashboard.locator(".wf-state.builtin")).toBeVisible();
   await shoot(dashboard, "09-builtin-pull-request-action");
 
-  // 10. No-Mistakes Review v8, scrolled to where its claim lives.
+  // 10. No-Mistakes Review v10, scrolled to where its new stage order lives.
   //
-  //     The Pull Request stage, then End, then the fixed Inspector footer, in that order. That
-  //     ordering IS the feature: the action opens the pull request and reaches End, and the
-  //     Inspector reviews it afterwards. A capture that showed the footer looking finished the
-  //     moment the action completed would be the misreading to catch.
+  //     Code Risk Reviewer and Code Quality Judge share stage 3. Test Evidence Auditor and
+  //     Documentation Steward share stage 4, followed by Pull Request and End with no fixed
+  //     footer afterwards. GitHub Inspector remains available to observe the resulting pull
+  //     request, but v10 does not wait for that optional remote pass.
   await dashboard.goto(`${daemon.baseURL}/#/workflows`);
   await dashboard.getByRole("button", { name: /No-Mistakes Review/ }).click();
-  await expect(dashboard.locator(".wf-pipeline-strip")).toBeVisible();
-  await dashboard.locator(".wf-pipeline-strip").evaluate((el) => { el.scrollLeft = el.scrollWidth; });
-  await expect(dashboard.locator("li.wf-pipeline-reviewer").filter({ hasText: "Pull Request" }))
-    .toBeVisible();
-  await shoot(dashboard, "10-no-mistakes-v8-pull-request-stage");
+  const shipped = dashboard.locator(".wf-pipeline-strip");
+  await expect(shipped).toBeVisible();
+  const stages = shipped.locator("section.wf-pipeline-stage");
+  await expect(stages).toHaveCount(5);
+  const codeReview = stages.nth(2);
+  const evidenceAndDocs = stages.nth(3);
+  await expect(codeReview.locator(".wf-pipeline-stage-name")).toHaveText("Stage 3");
+  await expect(codeReview.locator(".wf-pipeline-reviewer-name")).toHaveText([
+    "Code Risk Reviewer",
+    "Code Quality Judge",
+  ]);
+  await expect(evidenceAndDocs.locator(".wf-pipeline-stage-name")).toHaveText("Stage 4");
+  await expect(evidenceAndDocs.locator(".wf-pipeline-reviewer-name")).toHaveText([
+    "Test Evidence Auditor",
+    "Documentation Steward",
+  ]);
+  const pullRequest = shipped.locator("li.wf-pipeline-reviewer")
+    .filter({ hasText: "Pull Request" });
+  const end = shipped.locator(".wf-pipeline-terminus").filter({ hasText: "Complete" });
+  await expect(pullRequest).toHaveCount(1);
+  await expect(end).toHaveCount(1);
+  await expect(shipped.locator(".wf-pipeline-inspector")).toHaveCount(0);
+  const order = await shipped.locator("li.wf-pipeline-reviewer").allTextContents();
+  expect(order.findIndex((text) => text.includes("Documentation Steward")))
+    .toBeLessThan(order.findIndex((text) => text.includes("Pull Request")));
+  const entirelyInsideStrip = async (item: typeof codeReview): Promise<boolean> => item.evaluate((element) => {
+    const strip = element.closest(".wf-pipeline-strip");
+    if (!(strip instanceof HTMLElement)) throw new Error("Pipeline item left its strip");
+    const itemRect = element.getBoundingClientRect();
+    const stripRect = strip.getBoundingClientRect();
+    return itemRect.left >= stripRect.left && itemRect.right <= stripRect.right;
+  });
+  await shoot(dashboard, "10a-no-mistakes-v10-code-review-stage-3", {
+    beforeEach: async () => {
+      await codeReview.evaluate((element) => {
+        const strip = element.closest(".wf-pipeline-strip");
+        if (!(strip instanceof HTMLElement)) throw new Error("Stage 3 left its pipeline strip");
+        strip.scrollLeft += element.getBoundingClientRect().left - strip.getBoundingClientRect().left;
+      });
+      if ((dashboard.viewportSize()?.width ?? 0) > 900) {
+        expect(await entirelyInsideStrip(codeReview)).toBe(true);
+        expect(await entirelyInsideStrip(evidenceAndDocs)).toBe(true);
+      }
+    },
+  });
+  await shoot(dashboard, "10b-no-mistakes-v10-stage-4-before-pull-request", {
+    beforeEach: async () => {
+      await evidenceAndDocs.evaluate((element) => {
+        const strip = element.closest(".wf-pipeline-strip");
+        if (!(strip instanceof HTMLElement)) throw new Error("Stage 4 left its pipeline strip");
+        strip.scrollLeft += element.getBoundingClientRect().left - strip.getBoundingClientRect().left;
+      });
+      if ((dashboard.viewportSize()?.width ?? 0) > 900) {
+        expect(await entirelyInsideStrip(evidenceAndDocs)).toBe(true);
+        expect(await entirelyInsideStrip(pullRequest)).toBe(true);
+        expect(await entirelyInsideStrip(end)).toBe(true);
+      }
+    },
+  });
 });

@@ -354,8 +354,8 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
   },
   {
     id: "inspector-enabled",
-    label: "Run the Inspector",
-    description: "Whether the Inspector reviews the pull requests we open.",
+    label: "Run GitHub Inspector",
+    description: "Whether GitHub Inspector reviews the pull requests we open remotely.",
     category: "inspector",
     anchor: "inspector/enabled",
     keywords: ["review", "pull request", "pr", "enable"],
@@ -364,7 +364,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
   },
   {
     id: "inspector-mode",
-    label: "Inspector mode",
+    label: "GitHub Inspector mode",
     description: "Dry run - record findings and post nothing - or live, posting review comments.",
     category: "inspector",
     anchor: "inspector/mode",
@@ -375,7 +375,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
   {
     id: "review-model",
     label: "Review model",
-    description: "The provider and model the Inspector reviews with.",
+    description: "The provider and model GitHub Inspector reviews with.",
     category: "inspector",
     anchor: "inspector/provider",
     keywords: ["model", "provider", "runner", "review"],

@@ -356,7 +356,10 @@ test("an operator can resolve a finding no review round is left to close", async
   // THEN the operator resolves it - the same writer `/api/inspector/resolve-findings`
   // calls - while the loop keeps running, and the next sweep lands the pull request.
   assert.equal(resolveInspectorFindings(key, Date.now()), 1, "one finding closed");
-  await waitFor("the pull request to merge on the next sweep", () => readGithubState().merged);
+  await waitFor(
+    "the pull request and its durable ledger record to merge on the next sweep",
+    () => readGithubState().merged && getInspectorPr(key)?.mergedAt !== null,
+  );
   await stopAndSettle(stop);
 
   assert.equal(loadInspectorComments(key)[0]!.status, "resolved");
@@ -421,7 +424,10 @@ test("a finding the Inspector drops in conversation closes its thread, its row, 
   // Every other gate in this fixture is green, so the finding was the only thing left. The
   // pull request landing on its own is the end-to-end proof the dead end is gone: this is
   // the PR that previously had to be merged by hand.
-  await waitFor("the pull request to merge itself", () => readGithubState().merged);
+  await waitFor(
+    "the pull request to merge itself and record that merge",
+    () => readGithubState().merged && getInspectorPr(key)?.mergedAt !== null,
+  );
   await stopAndSettle(stop);
 
   const state = readGithubState();

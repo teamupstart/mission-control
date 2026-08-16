@@ -26,7 +26,7 @@ const home = mkdtempSync(join(tmpdir(), "mission-pipeline-correlation-"));
 process.env.MISSION_HOME = home;
 
 const { openDb } = await import("../src/server/db.ts");
-const { Registry } = await import("../src/server/registry.ts");
+const { Registry, pipelineRunDisplayEqual } = await import("../src/server/registry.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -186,6 +186,53 @@ test("a retired run gives its sessions back", () => {
 
   registry.removePipelineRun("ai-conductor", REPO, "add-widgets");
   assert.equal(registry.getSession("retired")?.pipeline, null);
+});
+
+test("a run whose worktree MOVES hands one session back and claims the other", () => {
+  // The engine re-cut the feature's worktree somewhere else. Two populations move in opposite
+  // directions in the same update, and getting either wrong is invisible until somebody tries
+  // to type: the agent left behind in the old path would keep a chip and a suppressed composer
+  // pointing at a directory the run no longer owns, and the agent in the new path would go on
+  // looking like an ordinary session anybody may interrupt.
+  //
+  // Both are covered by ONE pass because the candidate set is `named OR inside` rather than
+  // `inside`: the session in the old worktree still NAMES this run, which is the same property
+  // that lets a retired run give its sessions back. Pinned here as its own case because the two
+  // reach that set through different halves of the condition.
+  const registry = new Registry();
+  registry.initializePipelineRuns([mkRun()]);
+  registry.applyDiscovery([
+    mkDiscovered({ syntheticId: "was-here", cwd: `${REPO}/.worktrees/add-widgets`, tty: "ttys1" }),
+    mkDiscovered({ syntheticId: "now-here", cwd: `${REPO}/.worktrees/add-widgets-v2`, tty: "ttys2", pid: 2 }),
+  ]);
+  assert.equal(registry.getSession("was-here")?.pipeline?.slug, "add-widgets");
+  assert.equal(registry.getSession("now-here")?.pipeline, null);
+
+  registry.upsertPipelineRun(
+    mkRun({ worktree: `${REPO}/.worktrees/add-widgets-v2`, updatedAt: 2000 }),
+  );
+
+  assert.equal(registry.getSession("was-here")?.pipeline, null, "the old path is handed back");
+  assert.equal(registry.getSession("now-here")?.pipeline?.slug, "add-widgets", "the new one is claimed");
+  assert.equal(canMessage(registry.getSession("was-here")!), true);
+  assert.equal(canMessage(registry.getSession("now-here")!), false);
+});
+
+test("a moved worktree is never suppressed as a no-op update", () => {
+  // The guard the case above depends on, asserted directly rather than through its effect.
+  // `upsertPipelineRun` returns early when nothing a human could see moved, and that check is
+  // the only thing standing between a worktree change and the re-stamp - so `worktree` being
+  // one of the fields it compares is load-bearing for correlation, not just for the rail.
+  // A future edit that trimmed the comparison to "what the Runs page draws" would take this
+  // out, and every symptom would appear somewhere else entirely.
+  const before = mkRun();
+  assert.equal(pipelineRunDisplayEqual(before, mkRun({ updatedAt: 9999 })), true);
+  assert.equal(
+    pipelineRunDisplayEqual(before, mkRun({ worktree: `${REPO}/.worktrees/somewhere-else` })),
+    false,
+    "a worktree change has to reach the sessions that follow it",
+  );
+  assert.equal(pipelineRunDisplayEqual(before, mkRun({ worktree: null })), false);
 });
 
 test("a run somebody else's session is inside does not disturb this one", () => {

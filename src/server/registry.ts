@@ -7021,7 +7021,7 @@ export const SESSION_FIELD_COMPARATORS: SessionFieldComparators = {
 };
 
 /**
- * Whether two projections of one pipeline run would draw the same thing.
+ * Whether two projections of one pipeline run would draw the same thing, or move a session.
  *
  * `updatedAt` is deliberately excluded: it is the projection's own clock rather than a
  * fact about the run, and every re-derivation moves it, so including it would make this
@@ -7031,6 +7031,18 @@ export const SESSION_FIELD_COMPARATORS: SessionFieldComparators = {
  * keys are written out. Written out rather than spread-and-delete so that a field added
  * to `PipelineRun` has to be considered here - a new field silently omitted would be one
  * the browser never sees move.
+ *
+ * **`worktree` is in here and is not drawn anywhere.** It is the one field whose comparison
+ * is about CORRELATION rather than about pixels: `upsertPipelineRun` returns early when this
+ * says nothing moved, and that early return is all that stands between an engine re-cutting a
+ * feature's worktree and `syncSessionsForPipelineRun` following it. Drop it as dead weight -
+ * which is what "would draw the same thing" alone invites, since no surface renders a
+ * worktree path - and the symptom appears nowhere near here: the agent left in the old path
+ * keeps a chip and a suppressed composer for a directory the run no longer owns, and the
+ * agent in the new one goes on looking like an ordinary session anybody may interrupt, both
+ * until some unrelated change happens to shake the run loose. `pipeline-correlation.test.ts`
+ * pins that update and this comparison separately, so removing the field fails a test that
+ * names the reason rather than one about a rail.
  */
 export function pipelineRunDisplayEqual(a: PipelineRun, b: PipelineRun): boolean {
   const display = (run: PipelineRun): string =>

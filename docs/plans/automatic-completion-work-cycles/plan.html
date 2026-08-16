@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Durable work-cycle completion plan</title>
+  <style>
+    :root { --bg:#f5f7fb; --panel:#fff; --ink:#182235; --muted:#607087; --line:#dce3ed; --accent:#136f79; --accent2:#325cc8; --good:#176941; --code:#eef2f7; }
+    @media (prefers-color-scheme: dark) { :root { --bg:#090e16; --panel:#111925; --ink:#edf3ff; --muted:#9aa9bd; --line:#2a374a; --accent:#70d7df; --accent2:#8caaff; --good:#82d9ad; --code:#182231; } }
+    *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.58 Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif} main{width:min(1040px,calc(100% - 28px));margin:auto;padding:42px 0 70px} header{padding-bottom:28px;border-bottom:1px solid var(--line)} .eyebrow{color:var(--accent);font-size:.76rem;font-weight:800;letter-spacing:.15em;text-transform:uppercase} h1{max-width:800px;margin:8px 0 14px;font-size:clamp(2.25rem,6vw,4.2rem);line-height:1.03;letter-spacing:-.045em} h2{margin:38px 0 14px;font-size:1.55rem;line-height:1.18} h3{margin:22px 0 8px;font-size:1.08rem} p{margin:0 0 14px} .lede{max-width:850px;color:var(--muted);font-size:1.12rem}.status{display:inline-block;margin-top:12px;padding:5px 10px;border:1px solid var(--line);border-radius:999px;color:var(--good);font-size:.8rem;font-weight:700}.card{margin-top:22px;padding:20px;background:var(--panel);border:1px solid var(--line);border-radius:15px}.decision{border-color:color-mix(in srgb,var(--good) 55%,var(--line));background:color-mix(in srgb,var(--panel) 92%,var(--good))}.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:18px}.grid .card{margin:0} ul{padding-left:22px}li{margin:8px 0}li::marker{color:var(--accent)}code{padding:.12em .35em;background:var(--code);border-radius:5px;font: .9em "SFMono-Regular",Consolas,monospace;overflow-wrap:anywhere}.diagram{margin-top:20px;padding:18px;overflow-x:auto;background:var(--panel);border:1px solid var(--line);border-radius:15px}.diagram svg{display:block;min-width:800px;width:100%;height:auto}.flow{counter-reset:flow;display:grid;gap:10px;padding:0;list-style:none}.flow li{counter-increment:flow;padding:13px 14px 13px 48px;position:relative;background:var(--panel);border:1px solid var(--line);border-radius:11px}.flow li::before{content:counter(flow);position:absolute;left:14px;top:13px;width:23px;height:23px;display:grid;place-items:center;color:var(--bg);background:var(--accent);border-radius:99px;font-size:.75rem;font-weight:800}.scroll{overflow-x:auto}table{width:100%;min-width:700px;border-collapse:collapse;background:var(--panel);border:1px solid var(--line)}th,td{padding:12px 14px;text-align:left;vertical-align:top;border-bottom:1px solid var(--line)}th{color:var(--muted);font-size:.75rem;letter-spacing:.08em;text-transform:uppercase}footer{margin-top:46px;padding-top:18px;border-top:1px solid var(--line);color:var(--muted);font-size:.82rem}@media(max-width:720px){main{padding-top:24px}.grid{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="eyebrow">Approved engineering plan</div>
+    <h1>Durable work-cycle completion</h1>
+    <p class="lede">Make prompted automatic completion react once to each genuine completed agent work cycle, including background continuations under unchanged human intent, without replacing the verifier or the surrounding safety system.</p>
+    <span class="status">Approved for phased implementation</span>
+  </header>
+
+  <section class="card decision">
+    <h2 style="margin-top:0">Decision</h2>
+    <p><strong>Replace the prompted intent-revision re-arm with one daemon-owned, durable work-cycle generation.</strong> This is not a permanent fallback layered beside the existing mechanism.</p>
+    <p>Intent remains the objective and staleness guard. Evidence remains proof and idempotency material. A completed work cycle is the missing lifecycle identity.</p>
+  </section>
+
+  <h2>Problem</h2>
+  <p>Mission Control durably models intent episodes, task and pull-request work episodes, and review evidence. Prompted completion currently borrows the intent episode to mean that another agent turn finished. After an incomplete verdict it assumes nothing relevant changes until another human prompt is reconciled.</p>
+  <p>Claude background-task notifications correctly drive the working lifecycle without becoming human intent. A later <code>Stop</code> can therefore be a new completion opportunity while the intent revision stays unchanged. The current guard suppresses it. The worker also rechecks intent after verification but does not prove that the same completed turn remains current and idle.</p>
+
+  <h2>Approved design</h2>
+  <div class="grid">
+    <article class="card"><h3>Normalize</h3><p>Harness adapters translate terminal activity and turn-end hooks, plus SDK working and <code>turn_done</code>, into one generic work-cycle contract. Consumers never branch on agent names or raw events.</p></article>
+    <article class="card"><h3>Persist</h3><p>The daemon stores the latest generation and completion time per logical session key. It keeps current state, not an unbounded event backlog, and survives daemon and worker restarts.</p></article>
+    <article class="card"><h3>Consume once</h3><p>Prompted completion checks only an unconsumed, settled generation. Empty diff, hold, Ask, workflow claim, and direct wrap-up each consume it exactly once.</p></article>
+    <article class="card"><h3>Recheck currency</h3><p>After verification, Foreman requires the same note key, completion generation, resolved intent, and settled idle state before any action.</p></article>
+  </div>
+
+  <div class="diagram">
+    <svg viewBox="0 0 980 300" role="img" aria-labelledby="d-title d-desc">
+      <title id="d-title">Work-cycle completion request flow</title>
+      <desc id="d-desc">Terminal hooks and SDK lifecycle normalize in Registry, update durable work-cycle state, and gate Foreman verification before atomic workflow or wrap-up action.</desc>
+      <defs><marker id="a" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto"><path d="M0 0L0 6L9 3z" fill="#71839c"/></marker></defs>
+      <g font-family="Inter,system-ui,sans-serif">
+        <rect x="20" y="35" width="180" height="62" rx="12" fill="#19263a" stroke="#71839c"/><text x="40" y="62" fill="#eef4ff" font-size="15" font-weight="700">Terminal hooks</text><text x="40" y="82" fill="#aebbd0" font-size="12">work / turn end</text>
+        <rect x="20" y="125" width="180" height="62" rx="12" fill="#19263a" stroke="#71839c"/><text x="40" y="152" fill="#eef4ff" font-size="15" font-weight="700">SDK lifecycle</text><text x="40" y="172" fill="#aebbd0" font-size="12">working / turn_done</text>
+        <rect x="265" y="78" width="180" height="72" rx="12" fill="#15313a" stroke="#70d7df"/><text x="286" y="107" fill="#cdf7f3" font-size="15" font-weight="700">Registry</text><text x="286" y="129" fill="#aed0d2" font-size="12">normalize work cycle</text>
+        <rect x="510" y="78" width="190" height="72" rx="12" fill="#17352a" stroke="#82d9ad"/><text x="531" y="107" fill="#d6f7e2" font-size="15" font-weight="700">Durable generation</text><text x="531" y="129" fill="#b7d2c1" font-size="12">latest unconsumed turn</text>
+        <rect x="765" y="78" width="195" height="72" rx="12" fill="#202b45" stroke="#8caaff"/><text x="786" y="107" fill="#dce5ff" font-size="15" font-weight="700">Foreman verify</text><text x="786" y="129" fill="#b9c5df" font-size="12">intent + evidence</text>
+        <rect x="622" y="212" width="260" height="62" rx="12" fill="#342d1d" stroke="#e5b968"/><text x="644" y="239" fill="#ffe3b4" font-size="15" font-weight="700">Atomic consume + action</text><text x="644" y="259" fill="#d2c3a7" font-size="12">workflow / Ask / direct / hold</text>
+        <line x1="200" y1="66" x2="264" y2="100" stroke="#71839c" stroke-width="2" marker-end="url(#a)"/><line x1="200" y1="156" x2="264" y2="128" stroke="#71839c" stroke-width="2" marker-end="url(#a)"/><line x1="445" y1="114" x2="509" y2="114" stroke="#71839c" stroke-width="2" marker-end="url(#a)"/><line x1="700" y1="114" x2="764" y2="114" stroke="#71839c" stroke-width="2" marker-end="url(#a)"/><path d="M862 150C862 188 804 196 790 211" fill="none" stroke="#71839c" stroke-width="2" marker-end="url(#a)"/>
+      </g>
+    </svg>
+  </div>
+
+  <h2>Flow</h2>
+  <ol class="flow">
+    <li>A terminal hook adapter or SDK driver reports work activity to Registry.</li>
+    <li>The adapter normalizes a completed turn without exposing raw event vocabulary.</li>
+    <li>The daemon advances and persists the logical session's work-cycle generation.</li>
+    <li>Foreman observes a new settled generation and gathers current evidence and intent.</li>
+    <li>The existing verifier decides completion.</li>
+    <li>Foreman rechecks work-cycle, intent, and idle currency.</li>
+    <li>The daemon atomically consumes the generation with the resulting action or hold.</li>
+  </ol>
+
+  <h2>Compatibility</h2>
+  <ul>
+    <li>Use additive migrations and keep historical databases opening safely.</li>
+    <li>Keep lifecycle state separate from <code>session_events</code> and task-level <code>session_work_episodes</code>.</li>
+    <li>Preserve <code>prompted_goal</code> for schema compatibility but stop using it as the active completion key.</li>
+    <li>Translate a matching legacy prompted guard into an initially consumed current generation to prevent upgrade replay.</li>
+    <li>Fail closed on missing or inconsistent work-cycle state instead of retaining a permanent legacy trigger.</li>
+    <li>Keep the direct-wrap-up payload loop guard until injection authorship is durable.</li>
+  </ul>
+
+  <h2>Scope boundaries</h2>
+  <div class="grid">
+    <article class="card"><h3>In scope</h3><ul><li>Terminal and SDK normalization</li><li>Durable current work-cycle state</li><li>Prompted selection and consumption</li><li>Post-verifier currency checks</li><li>Workflow claim integration</li><li>Regression and migration coverage</li></ul></article>
+    <article class="card"><h3>Out of scope</h3><ul><li>Replacing queue drain</li><li>Forcing tasks into queues</li><li>Merging policy state machines</li><li>Agent-required done calls</li><li>Reviewer or workflow graph changes</li><li>New dashboard UI</li></ul></article>
+  </div>
+
+  <h2>Delivery decision</h2>
+  <p>The running tactical task <code>5439ebd4-e346-4d57-b778-ecb2ebec8e67</code> may land first. The durable implementation rebases on it, keeps valid regression coverage, and replaces any evidence- or intent-based re-arm as the final mechanism.</p>
+  <p>Implementation tasks are intentionally disabled, low priority, and pinned to Codex <code>gpt-5.6-sol</code> at <code>xhigh</code> effort. A human must explicitly enable them.</p>
+
+  <footer>Rendered from <code>docs/plans/automatic-completion-work-cycles/plan.md</code>. The Markdown remains authoritative.</footer>
+</main>
+</body>
+</html>

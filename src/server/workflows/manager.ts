@@ -2973,6 +2973,7 @@ export class WorkflowManager {
         binding,
         completionKind: claim.completionKind,
         marker: claim.marker,
+        promptedActivityAt: claim.activityAt,
         summary: claim.summary,
         evidenceFingerprint: claim.evidenceFingerprint,
         evidenceGroupKey: `foreman:${binding.noteKey}:${claim.completionKind}:${claim.marker}`,

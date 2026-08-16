@@ -1215,6 +1215,21 @@ export interface SessionQueue {
    * reverse) on a checkout that later gets a work queue.
    */
   promptedGoal: string | null;
+  /**
+   * SHA-256 proof marker for the completion boundary recorded with `promptedGoal`.
+   * A later settled turn may reuse the same human intent episode, so this second axis
+   * is what lets Foreman re-check only after HEAD or the transcript anchor advances.
+   * Null beside a non-null goal, or beside a null activity boundary, is a legacy
+   * spent guard and stays spent until the human intent changes.
+   */
+  promptedEvidence: string | null;
+  /**
+   * Session activity timestamp observed with `promptedEvidence`.
+   * This is the cheap re-arm watermark. It records the completion boundary Foreman
+   * examined, rather than the later time when its verifier result was persisted.
+   * Null beside a prompted guard is a legacy spent guard.
+   */
+  promptedActivityAt: number | null;
   updatedAt: number;
   items: WorkItem[];
 }

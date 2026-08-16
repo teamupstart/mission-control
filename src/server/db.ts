@@ -1562,6 +1562,8 @@ export function openDb(): DatabaseSync {
       wrapup_asked_at INTEGER,            -- the drain ask fires exactly once
       wrapup_answer   TEXT,
       prompted_goal   TEXT,               -- the goal the prompted trigger last fired on
+      prompted_evidence TEXT,             -- HEAD + transcript proof handled for that goal
+      prompted_activity_at INTEGER,       -- session activity observed with that proof
       updated_at      INTEGER NOT NULL
     );
 
@@ -2708,6 +2710,24 @@ function migrate(d: DatabaseSync): void {
   // ARMED on those checkouts, which is right - the whole point is to fire once the
   // human turns it on - and the verify step still has to agree before anything types.
   addColumn(d, "foreman_queues", "prompted_goal", "TEXT");
+
+  // `prompted_evidence`: the durable completion proof handled alongside
+  // `prompted_goal`. A Claude background task notification is not a human prompt and
+  // correctly leaves the intent episode unchanged, but the work it resumes can end at
+  // a later Stop with a newer transcript anchor. Keeping that proof separately lets
+  // the worker reverify the later boundary without polling the same settled Stop.
+  //
+  // NULL beside an existing `prompted_goal` means the row predates this proof axis.
+  // Read it as a spent legacy guard, not as permission to replay a shipping action on
+  // upgrade; the next reconciled human intent still re-arms it normally.
+  addColumn(d, "foreman_queues", "prompted_evidence", "TEXT");
+
+  // The guard write can land after a slow verifier returns. Its `updated_at` therefore
+  // cannot identify the activity boundary that verifier actually examined: a later Stop
+  // may already have arrived by then. Persist the observed session activity separately so
+  // that later boundary stays armed. NULL is a spent legacy guard, matching the evidence
+  // migration above, because an old worker cannot say which boundary it observed safely.
+  addColumn(d, "foreman_queues", "prompted_activity_at", "INTEGER");
 
   // `decisions`: the structured questions of a `plan-decisions` review, as a JSON
   // array. Added to `reviews` after it shipped, so an upgraded DB only gets it via
@@ -6759,6 +6779,8 @@ interface QueueRow {
   wrapup_asked_at: number | null;
   wrapup_answer: string | null;
   prompted_goal: string | null;
+  prompted_evidence: string | null;
+  prompted_activity_at: number | null;
   updated_at: number;
 }
 
@@ -6778,6 +6800,8 @@ function toQueueRow(r: QueueRow): Omit<SessionQueue, "items"> {
     wrapupAskedAt: r.wrapup_asked_at,
     wrapupAnswer: r.wrapup_answer,
     promptedGoal: r.prompted_goal,
+    promptedEvidence: r.prompted_evidence,
+    promptedActivityAt: r.prompted_activity_at,
     updatedAt: r.updated_at,
   };
 }
@@ -6847,14 +6871,27 @@ export function upsertQueue(q: Omit<SessionQueue, "items">): void {
   openDb()
     .prepare(
       `INSERT INTO foreman_queues
-         (note_key, cwd, branch, wrapup_asked_at, wrapup_answer, prompted_goal, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
+         (note_key, cwd, branch, wrapup_asked_at, wrapup_answer, prompted_goal,
+          prompted_evidence, prompted_activity_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(note_key) DO UPDATE SET
          cwd=excluded.cwd, branch=excluded.branch, wrapup_asked_at=excluded.wrapup_asked_at,
          wrapup_answer=excluded.wrapup_answer, prompted_goal=excluded.prompted_goal,
+         prompted_evidence=excluded.prompted_evidence,
+         prompted_activity_at=excluded.prompted_activity_at,
          updated_at=excluded.updated_at`,
     )
-    .run(q.noteKey, q.cwd, q.branch, q.wrapupAskedAt, q.wrapupAnswer, q.promptedGoal, q.updatedAt);
+    .run(
+      q.noteKey,
+      q.cwd,
+      q.branch,
+      q.wrapupAskedAt,
+      q.wrapupAnswer,
+      q.promptedGoal,
+      q.promptedEvidence,
+      q.promptedActivityAt,
+      q.updatedAt,
+    );
 }
 
 export function getQueueRow(noteKey: string): Omit<SessionQueue, "items"> | undefined {
@@ -6921,7 +6958,7 @@ export function countOpenQueueItems(noteKey: string): number {
  * nothing has touched since `cutoff`.
  *
  * The second branch collects rows that hold NOTHING - no items at all, and none of the
- * three wrap-up fields set - regardless of age. `ensureQueue` mints a row for any
+ * four wrap-up fields set - regardless of age. `ensureQueue` mints a row for any
  * session whose wrap-up state is merely touched, and the `prompted` trigger touches
  * every session it ever considers, so this is now the common shape of a row rather than
  * a rarity. Waiting out `cutoff` for a row with nothing in it buys no safety: there is
@@ -6948,6 +6985,7 @@ export function pruneDeadQueues(liveKeys: Set<string>, cutoff: number): number {
                 q.wrapup_asked_at IS NULL
                 AND q.wrapup_answer IS NULL
                 AND q.prompted_goal IS NULL
+                AND q.prompted_evidence IS NULL
                 AND NOT EXISTS (
                   SELECT 1 FROM foreman_queue_items i WHERE i.note_key = q.note_key
                 )

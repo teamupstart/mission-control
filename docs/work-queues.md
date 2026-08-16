@@ -98,8 +98,15 @@ the same verifier queued items get - a fresh tool-less model call reading the br
 against the reconciled durable objective - and acts only on a **complete** verdict; an empty diff
 decides itself without a model call. A session that still needs you is left alone, and a
 checkout that *has* a work queue belongs to the drain trigger, which wins. It fires once
-per resolved instruction: a new prompt from you re-arms it after intent reconciliation, and
-so does a confirmed workflow repair packet -
+per resolved instruction and durable completion boundary. The guard records both the intent
+episode and the HEAD plus transcript anchor it judged, so repeated ticks at the same settled
+Stop stay quiet without refetching that evidence. The guard stores the session activity
+observed with that proof, so a later hook must first advance past that boundary. Activity
+that leaves HEAD and transcript unchanged is restamped without another verifier call. A new
+prompt from you re-arms it after intent reconciliation. If Claude resumes the same objective
+from a background task notification, that notification remains excluded from the human Goal,
+but a later settled Stop re-arms verification once its durable
+completion evidence advances. A confirmed workflow repair packet also re-arms it -
 which is what lets [the repair loop](workflows.md#the-repair-loop-end-to-end) run for a session that has no
 queue to drain. An incomplete verdict retires the episode rather than sending the agent back -
 Foreman didn't commission that work. Untick both triggers and Foreman never wraps up on its own.

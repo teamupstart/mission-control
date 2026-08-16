@@ -35,6 +35,7 @@ export function drainCompletionClaim(
   return {
     completionKind: "drain",
     marker: sha256(proof),
+    activityAt: null,
     summary: `Foreman queue drained after ${queue.items.length} terminal item${queue.items.length === 1 ? "" : "s"}.`,
     evidenceFingerprint: sha256({ headSha, transcriptAnchor, items: proof.items }),
     expectedIntent,
@@ -46,16 +47,13 @@ export function promptedCompletionClaim(input: {
   intent: SessionIntentGuard;
   headSha: string | null;
   transcriptAnchor: number | null;
+  activityAt: number;
   summary: string;
 }): WorkflowCompletionClaim {
   return {
     completionKind: "prompted",
-    marker: sha256({
-      noteKey: input.noteKey,
-      intent: input.intent,
-      headSha: input.headSha,
-      transcriptAnchor: input.transcriptAnchor,
-    }),
+    marker: promptedCompletionMarker(input),
+    activityAt: input.activityAt,
     summary: input.summary,
     evidenceFingerprint: sha256({
       headSha: input.headSha,
@@ -64,6 +62,28 @@ export function promptedCompletionClaim(input: {
     }),
     expectedIntent: input.intent,
   };
+}
+
+/**
+ * Durable identity of one prompted completion boundary.
+ *
+ * Kept separate from `promptedCompletionClaim` so an incomplete verifier result can
+ * retire the same evidence without pretending it was a workflow claim. A background
+ * task notification leaves the human intent alone; its later work advances HEAD or the
+ * transcript anchor, which is what makes the next settled Stop a different boundary.
+ */
+export function promptedCompletionMarker(input: {
+  noteKey: string;
+  intent: SessionIntentGuard;
+  headSha: string | null;
+  transcriptAnchor: number | null;
+}): string {
+  return sha256({
+    noteKey: input.noteKey,
+    intent: input.intent,
+    headSha: input.headSha,
+    transcriptAnchor: input.transcriptAnchor,
+  });
 }
 
 /** Non-throwing seam: a failed HTTP call is distinct from an explicit unclaimed answer. */

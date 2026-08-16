@@ -73,7 +73,14 @@ export type PromptedCandidate =
   /** Not a candidate. `why` is for the log - every skip is explicable. */
   | { kind: "skip"; why: string }
   /** A finished non-shipping episode to retire without verification or a wrap-up action. */
-  | { kind: "retire"; episodeKey: string; why: string }
+  | {
+      kind: "retire";
+      episodeKey: string;
+      objective: string;
+      objectiveVersion: number;
+      promptRevision: number;
+      why: string;
+    }
   /**
    * Worth verifying. Carries the goal both as the verifier's `intent` and as the
    * episode key the result gets stamped under, so the two cannot come from different
@@ -89,11 +96,22 @@ export type PromptedCandidate =
       focus: string | null;
       objectiveVersion: number;
       promptRevision: number;
+      /** Proof already handled for this intent, or null when the intent itself re-armed. */
+      previousEvidenceMarker: string | null;
     };
 
 export function promptedIntentKey(intent: SessionGoal): string {
   return resolvedSessionIntent(intent)?.episodeKey ??
     `intent:${intent.objectiveVersion}:${intent.promptRevision}`;
+}
+
+/** Whether this settled boundary is new enough to justify another verifier call. */
+export function promptedEvidenceAdvanced(
+  candidate: Extract<PromptedCandidate, { kind: "check" }>,
+  currentEvidenceMarker: string,
+): boolean {
+  return candidate.previousEvidenceMarker === null
+    || candidate.previousEvidenceMarker !== currentEvidenceMarker;
 }
 
 /**
@@ -187,16 +205,7 @@ export function decidePromptedWrapup(input: PromptedInput): PromptedCandidate {
     return { kind: "skip", why: "the last prompt was Foreman's own wrap-up" };
   }
 
-  // 10. THE RE-ARM. This episode has already been decided - fired, or verified and
-  //     held - and nothing has changed since: the session is idle, so the goal is the
-  //     same goal, and re-verifying would spend a `claude -p` per tick to re-learn an
-  //     unchanged answer. A newly reconciled human prompt advances the intent key and
-  //     re-arms this.
   const episodeKey = resolvedIntent.episodeKey;
-  if (queue?.promptedGoal === episodeKey) {
-    return { kind: "skip", why: "already wrapped up this prompt" };
-  }
-
   // A scout or an explicit review-artifact objective is complete when its report or design
   // output is ready, not when it has become a PR. Retire the episode without spending a
   // verifier call: no verdict can make an ineligible completion safe to hand to a Workflow
@@ -207,7 +216,46 @@ export function decidePromptedWrapup(input: PromptedInput): PromptedCandidate {
     skipScoutWrapup: cfg.skipScoutWrapup,
     skipReviewArtifactWrapup: cfg.skipReviewArtifactWrapup,
   });
-  if (block) return { kind: "retire", episodeKey, why: block.reason };
+  if (block) {
+    if (queue?.promptedGoal === episodeKey) {
+      return { kind: "skip", why: "already retired this non-shipping prompt" };
+    }
+    return {
+      kind: "retire",
+      episodeKey,
+      objective,
+      objectiveVersion: resolvedIntent.objectiveVersion,
+      promptRevision: resolvedIntent.promptRevision,
+      why: block.reason,
+    };
+  }
+
+  // 10. THE RE-ARM. Human intent and completion evidence are independent axes. A newly
+  //     reconciled human prompt always advances the episode key. The same episode can also
+  //     resume through harness-owned input, notably Claude's `<task-notification>`, which is
+  //     correctly excluded from goal capture. The activity observed with the evidence is
+  //     the cheap watermark: do not gather HEAD + transcript again until a later hook moves
+  //     `lastActivity` past the boundary the verifier examined. This must not use the guard
+  //     write time because a newer Stop can arrive while the verifier is still running.
+  //     Even then, do not spend another verifier call unless the evidence marker advanced.
+  //
+  //     A non-null goal missing either evidence axis is a guard written by an older build.
+  //     Keep it spent until the human prompt changes; replaying every historical completion
+  //     once on upgrade would violate the exact-once guarantee these fields provide.
+  if (
+    queue?.promptedGoal === episodeKey
+    && (!queue.promptedEvidence || queue.promptedActivityAt == null)
+  ) {
+    return { kind: "skip", why: "already wrapped up this prompt" };
+  }
+  if (
+    queue?.promptedGoal === episodeKey
+    && queue.promptedEvidence
+    && queue.promptedActivityAt != null
+    && (session.lastActivity ?? session.firstSeen) <= queue.promptedActivityAt
+  ) {
+    return { kind: "skip", why: "no session activity since this completion boundary" };
+  }
 
   return {
     kind: "check",
@@ -216,6 +264,8 @@ export function decidePromptedWrapup(input: PromptedInput): PromptedCandidate {
     focus: intent.prompt,
     objectiveVersion: resolvedIntent.objectiveVersion,
     promptRevision: resolvedIntent.promptRevision,
+    previousEvidenceMarker:
+      queue?.promptedGoal === episodeKey ? queue.promptedEvidence : null,
   };
 }
 
@@ -238,10 +288,11 @@ export type PromptedPlan =
  * the way. Sending gap text into a session whose human is mid-thought would be Foreman
  * interrupting to relay a critique nobody asked for.
  *
- * `hold` still RETIRES the episode (the caller stamps `promptedGoal` for it, same as a
- * fire). The alternative is re-verifying an idle session every tick forever: nothing
- * about it will change until the human prompts again, and once that instruction is
- * reconciled its new intent episode re-arms this from the top.
+ * `hold` still RETIRES the observed completion boundary (the caller stamps both
+ * `promptedGoal` and `promptedEvidence`, same as a fire). The alternative is re-verifying
+ * an idle session every tick forever. A later settled Stop for the same human intent first
+ * crosses the cheap session-activity watermark and is eligible only when its HEAD +
+ * transcript marker advances.
  */
 export function planPromptedWrapup(
   goal: string,

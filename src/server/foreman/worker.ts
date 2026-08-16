@@ -45,6 +45,7 @@ import type { QueueConfig } from "./queue-machine.ts";
 import {
   PromptedFailureTracker,
   decidePromptedWrapup,
+  promptedEvidenceAdvanced,
   planPromptedWrapup,
 } from "./prompted-wrapup.ts";
 import type { PromptedConfig } from "./prompted-wrapup.ts";
@@ -76,6 +77,7 @@ import { installForemanShutdown } from "./shutdown.ts";
 import {
   drainCompletionClaim,
   promptedCompletionClaim,
+  promptedCompletionMarker,
   tryWorkflowCompletionClaim,
 } from "./workflow-claim.ts";
 import { automaticWrapupBlock } from "./wrapup-eligibility.ts";
@@ -192,10 +194,17 @@ async function retirePromptedEpisode(
   client: ForemanClient,
   session: Session,
   goal: string,
+  evidenceMarker: string,
   opts?: { ask?: boolean },
 ): Promise<boolean> {
   try {
-    await client.markPromptedWrapup(session.id, goal, opts);
+    await client.markPromptedWrapup(
+      session.id,
+      goal,
+      evidenceMarker,
+      session.lastActivity ?? session.firstSeen,
+      opts,
+    );
     promptedFailures.onRetired(session.id);
     return true;
   } catch (err) {
@@ -1210,7 +1219,7 @@ function promptedConfig(cfg: ForemanConfig): PromptedConfig {
  * the write that RETIRES the episode lands BEFORE the shipping instruction, so a crash
  * between "typed" and "recorded that we typed" must leave the trigger disarmed. Concretely:
  *
- *   verify -> stamp `promptedGoal` -> type -> record the answer
+ *   verify -> stamp goal + evidence + observed activity -> type -> record the answer
  *
  * Every failure degrades toward the human: a stamp that fails aborts before typing
  * (nothing happened, we retry next tick, and only so many times - see
@@ -1248,7 +1257,23 @@ async function processPromptedWrapup(
   });
   if (candidate.kind === "skip") return false;
   if (candidate.kind === "retire") {
-    if (!(await retirePromptedEpisode(client, session, candidate.episodeKey))) return false;
+    const evidenceMarker = promptedCompletionMarker({
+      noteKey: noteKeyOf(session),
+      intent: {
+        objective: candidate.objective,
+        objectiveVersion: candidate.objectiveVersion,
+        promptRevision: candidate.promptRevision,
+        episodeKey: candidate.episodeKey,
+      },
+      headSha: null,
+      transcriptAnchor: null,
+    });
+    if (!(await retirePromptedEpisode(
+      client,
+      session,
+      candidate.episodeKey,
+      evidenceMarker,
+    ))) return false;
     log(`${session.name}: prompted automatic wrap-up skipped - ${candidate.why}`);
     return true;
   }
@@ -1268,10 +1293,49 @@ async function processPromptedWrapup(
   // No base sha: the whole branch since it diverged is the unit of work, because a
   // pane-typed session has no per-item scope to anchor to. That is also why
   // `diffMayIncludeOtherWork` is true below - it always may.
-  const diff = await client.diff(session.id).catch(() => null);
+  const [diff, transcriptRead] = await Promise.all([
+    client.diff(session.id).catch(() => null),
+    client.transcriptSize(session.id).then(
+      (value) => ({ ok: true as const, value }),
+      () => ({ ok: false as const, value: null }),
+    ),
+  ]);
   if (!diff || !diff.ok) {
     log(`${session.name}: prompted wrap-up held - could not read the diff`);
     return false;
+  }
+  if (!transcriptRead.ok) {
+    log(`${session.name}: prompted wrap-up held - could not read the transcript anchor`);
+    return false;
+  }
+  const transcriptAnchor = transcriptRead.value;
+
+  const intentGuard = {
+    objective: candidate.objective,
+    objectiveVersion: candidate.objectiveVersion,
+    promptRevision: candidate.promptRevision,
+    episodeKey: candidate.episodeKey,
+  };
+  const evidenceMarker = promptedCompletionMarker({
+    noteKey: noteKeyOf(session),
+    intent: intentGuard,
+    headSha: diff.headSha,
+    transcriptAnchor,
+  });
+
+  // Step 10 already kept an unchanged `lastActivity` above this evidence gather. If a
+  // later hook moved activity but HEAD + transcript did not, restamp the SAME marker: that
+  // retires this false-positive activity boundary so every later idle tick is cheap again.
+  // It never reaches the verifier. Claude task notifications leave human intent alone, but
+  // the work they resume advances the transcript before a later Stop and therefore crosses
+  // both gates exactly once.
+  if (!promptedEvidenceAdvanced(candidate, evidenceMarker)) {
+    return await retirePromptedEpisode(
+      client,
+      session,
+      candidate.episodeKey,
+      evidenceMarker,
+    );
   }
 
   // An empty diff decides itself, and decides it WITHOUT a model call: the session
@@ -1285,7 +1349,12 @@ async function processPromptedWrapup(
     // it and claiming progress anyway would re-process this session every BETWEEN_MS -
     // four loopback reads a pass against the daemon's single synchronous handle, which
     // also serves hook ingest and SSE - for as long as the write stays broken.
-    if (!(await retirePromptedEpisode(client, session, candidate.episodeKey))) return false;
+    if (!(await retirePromptedEpisode(
+      client,
+      session,
+      candidate.episodeKey,
+      evidenceMarker,
+    ))) return false;
     log(`${session.name}: prompted wrap-up held - the session changed nothing`);
     return true;
   }
@@ -1302,7 +1371,12 @@ async function processPromptedWrapup(
     skipReviewArtifactWrapup: cfg.skipReviewArtifactWrapup,
   });
   if (block) {
-    if (!(await retirePromptedEpisode(client, session, candidate.episodeKey))) return false;
+    if (!(await retirePromptedEpisode(
+      client,
+      session,
+      candidate.episodeKey,
+      evidenceMarker,
+    ))) return false;
     log(`${session.name}: prompted automatic wrap-up skipped - ${block.reason}`);
     return true;
   }
@@ -1346,7 +1420,7 @@ async function processPromptedWrapup(
     // that's broken.
     const failures = promptedFailures.onFailure(session.id, candidate.episodeKey);
     if (failures >= VERIFY_FAILURE_CAP) {
-      await retirePromptedEpisode(client, session, candidate.episodeKey);
+      await retirePromptedEpisode(client, session, candidate.episodeKey, evidenceMarker);
       log(
         `${session.name}: prompted wrap-up gave up - verify failed ${failures}x (${result.reason})`,
       );
@@ -1368,19 +1442,12 @@ async function processPromptedWrapup(
   const currentGoal = currentSession && currentSession.id === session.id
     ? await client.goal(currentSession.id).catch(() => null)
     : null;
-  const intentGuard = {
-    objective: candidate.objective,
-    objectiveVersion: candidate.objectiveVersion,
-    promptRevision: candidate.promptRevision,
-    episodeKey: candidate.episodeKey,
-  };
   if (!sessionIntentMatches(currentGoal, intentGuard)) return false;
 
   if (
     result.verdict.complete
     && !result.verdict.gaps.some((gap) => gap.severity === "blocking")
   ) {
-    const transcriptAnchor = await client.transcriptSize(session.id).catch(() => null);
     const claim = await tryWorkflowCompletionClaim(
       client,
       session.id,
@@ -1389,6 +1456,7 @@ async function processPromptedWrapup(
         intent: intentGuard,
         headSha: diff.headSha,
         transcriptAnchor,
+        activityAt: session.lastActivity ?? session.firstSeen,
         summary: result.verdict.summary,
       }),
     );
@@ -1413,7 +1481,13 @@ async function processPromptedWrapup(
       // Retire the verified episode and raise its card in ONE daemon write. If that
       // write fails, neither marker lands, this returns not-advanced, and a later tick
       // retries instead of losing the only human-visible completion handoff.
-      if (!(await retirePromptedEpisode(client, session, plan.goal, { ask: true }))) return false;
+      if (!(await retirePromptedEpisode(
+        client,
+        session,
+        plan.goal,
+        evidenceMarker,
+        { ask: true },
+      ))) return false;
       log(`${session.name}: existing workflow is Manual - asked about wrapping up`);
       return true;
     }
@@ -1428,7 +1502,13 @@ async function processPromptedWrapup(
   if (plan.kind === "ask-wrapup") {
     // The card and prompted guard are one durable fact: a failure must leave both
     // absent so this verified boundary remains retryable.
-    if (!(await retirePromptedEpisode(client, session, plan.goal, { ask: true }))) return false;
+    if (!(await retirePromptedEpisode(
+      client,
+      session,
+      plan.goal,
+      evidenceMarker,
+      { ask: true },
+    ))) return false;
     log(`${session.name}: prompted work looks complete - asked about wrapping up`);
     return true;
   }
@@ -1439,7 +1519,7 @@ async function processPromptedWrapup(
   // as NOT advanced, and counts a strike: nothing was written, and the episode is still
   // armed, so claiming progress would spend a full evidence gather plus a model call
   // per BETWEEN_MS against a session whose only broken part is one endpoint.
-  if (!(await retirePromptedEpisode(client, session, plan.goal))) return false;
+  if (!(await retirePromptedEpisode(client, session, plan.goal, evidenceMarker))) return false;
 
   if (plan.kind === "hold") {
     log(`${session.name}: prompted wrap-up held - ${oneLine(plan.why)}`);
@@ -1463,8 +1543,8 @@ async function processPromptedWrapup(
   // fails - in which the card offers to send an instruction the agent has already been
   // given. On the drain path that window is accepted because `wrapupAskedAt` is also
   // that trigger's once-only guard and has to be written. This trigger's guard is
-  // `promptedGoal`, already stamped above, so there is nothing forcing the same
-  // trade-off: leaving the ask unstamped means no card can ever double-offer.
+  // `promptedGoal` + `promptedEvidence`, already stamped above, so there is nothing
+  // forcing the same trade-off: leaving the ask unstamped means no card can ever double-offer.
   await client.setWrapupAnswer(session.id, plan.payload).catch(() => {});
   log(`${session.name}: prompted work complete - sent "${plan.payload}"`);
   return true;

@@ -6201,6 +6201,8 @@ export class Registry extends EventEmitter {
       wrapupAskedAt: row?.wrapupAskedAt ?? null,
       wrapupAnswer: row?.wrapupAnswer ?? null,
       promptedGoal: row?.promptedGoal ?? null,
+      promptedEvidence: row?.promptedEvidence ?? null,
+      promptedActivityAt: row?.promptedActivityAt ?? null,
       updatedAt: row?.updatedAt ?? 0,
       items,
     };
@@ -6288,6 +6290,8 @@ export class Registry extends EventEmitter {
       wrapupAskedAt: prev?.wrapupAskedAt ?? null,
       wrapupAnswer: prev?.wrapupAnswer ?? null,
       promptedGoal: prev?.promptedGoal ?? null,
+      promptedEvidence: prev?.promptedEvidence ?? null,
+      promptedActivityAt: prev?.promptedActivityAt ?? null,
       updatedAt: now,
     });
     return key;
@@ -6300,6 +6304,8 @@ export class Registry extends EventEmitter {
       wrapupAskedAt?: number | null;
       wrapupAnswer?: string | null;
       promptedGoal?: string | null;
+      promptedEvidence?: string | null;
+      promptedActivityAt?: number | null;
     },
     now = Date.now(),
   ): void {
@@ -6310,6 +6316,18 @@ export class Registry extends EventEmitter {
       wrapupAskedAt: patch.wrapupAskedAt !== undefined ? patch.wrapupAskedAt : prev.wrapupAskedAt,
       wrapupAnswer: patch.wrapupAnswer !== undefined ? patch.wrapupAnswer : prev.wrapupAnswer,
       promptedGoal: patch.promptedGoal !== undefined ? patch.promptedGoal : prev.promptedGoal,
+      promptedEvidence:
+        patch.promptedEvidence !== undefined
+          ? patch.promptedEvidence
+          : patch.promptedGoal === null
+            ? null
+            : prev.promptedEvidence,
+      promptedActivityAt:
+        patch.promptedActivityAt !== undefined
+          ? patch.promptedActivityAt
+          : patch.promptedGoal === null
+            ? null
+            : prev.promptedActivityAt,
       updatedAt: now,
     });
     this.syncSessionsForQueue(key);
@@ -6479,6 +6497,8 @@ export class Registry extends EventEmitter {
         wrapupAskedAt: row.wrapupAskedAt,
         wrapupAnswer: row.wrapupAnswer,
         promptedGoal: row.promptedGoal,
+        promptedEvidence: row.promptedEvidence,
+        promptedActivityAt: row.promptedActivityAt,
         updatedAt: now,
       },
       items.map((i, n) => ({ ...i, noteKey: toKey, seq: base + n, updatedAt: now })),

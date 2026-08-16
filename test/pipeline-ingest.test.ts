@@ -355,6 +355,31 @@ test("a push for a repository that lost consent mid-debounce is not folded back"
   assert.equal(countPipelineEvents("ai-conductor", repo, "a-feature"), 0);
 });
 
+test("a pass already under way when consent is withdrawn writes nothing", async () => {
+  const { registry } = fixture();
+  seedConductorRun(repo, "a-feature", { steps: { build: "in_progress" } });
+
+  // The third door onto the same window, and the one neither queue check can see: this pass
+  // is past the drain and is not in the pending map, so nothing between here and its first
+  // write consults the operator at all. A tick's pass reads a repository's files on every
+  // cadence, so this is not an exotic interleaving - it is the ordinary one.
+  const pass = refreshPipelineRepo(registry, "ai-conductor", repo);
+  setPipelinesConfig({ enabled: true, repos: [] });
+  await pass;
+
+  // Everything below the read in a pass is durable and emitted, so a pass that ignored this
+  // would put back exactly what withdrawing consent had just deleted - rows, ledger, health
+  // line and an SSE upsert - and the operator would watch a repository they switched off
+  // draw itself back onto the page.
+  assert.equal(registry.listPipelineRuns().length, 0, "no run rows");
+  assert.equal(countPipelineEvents("ai-conductor", repo, "a-feature"), 0, "no ledger rows");
+  assert.equal(
+    pipelineRepoStatuses().some((status) => status.repoRoot === repo),
+    false,
+    "and no health line for a repository nobody is observing",
+  );
+});
+
 test("a body that cannot be read is refused, not counted as an empty batch", async () => {
   const { push: _push, request } = fixture();
   seedConductorRun(repo, "a-feature", { steps: { build: "in_progress" } });

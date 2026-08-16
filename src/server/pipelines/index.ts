@@ -213,11 +213,22 @@ export async function readPipelineRunDetail(
   repoRoot: string,
   slug: string,
 ): Promise<PipelineRunDetail | null> {
-  const consented = activePipelineRepos(getPipelinesConfig()).some(
+  if (!isPipelineRepoConsented(provider, repoRoot)) return null;
+  return PIPELINE_PROVIDERS[provider].readRunDetail(repoRoot, slug);
+}
+
+/**
+ * Whether the operator consents to this repository being observed, right now.
+ *
+ * Read from the config on every call rather than cached, which is the whole point: every
+ * caller is asking across an await or a timer, at the far side of a window in which the
+ * answer can have changed. A snapshot taken when the work was scheduled is the bug this
+ * predicate exists to stop, so there is deliberately nothing here to hold onto.
+ */
+function isPipelineRepoConsented(provider: PipelineProviderId, repoRoot: string): boolean {
+  return activePipelineRepos(getPipelinesConfig()).some(
     (repo) => repo.provider === provider && repo.repoRoot === repoRoot,
   );
-  if (!consented) return null;
-  return PIPELINE_PROVIDERS[provider].readRunDetail(repoRoot, slug);
 }
 
 /** Probes already running, so a burst of polls cannot become a burst of subprocesses. */
@@ -445,6 +456,18 @@ async function runPipelineRepoPass(
     shouldTail: tailPolicy(provider, repoRoot, now),
   };
   const reading = await PIPELINE_PROVIDERS[provider].readRepo(repoRoot, cursors, readOptions);
+  // Consent is re-read after the read and before the first write, because the read is the
+  // only await in this function and therefore the only place the operator can get a word in.
+  // Everything below is durable and emitted - rows, ledger rows, a health line, an SSE upsert
+  // - so a pass that started under consent and finished after it was withdrawn would put back
+  // exactly what `forgetPipelineRepo` had just deleted, and the page would show a repository
+  // the operator switched off.
+  //
+  // The third of three doors onto one window, and they close different halves: the drain
+  // checks what it is about to START, `forgetPipelineRepo` clears what is QUEUED, and this
+  // catches the pass that was already past both. A tick's pass is the case neither of the
+  // others can see.
+  if (!isPipelineRepoConsented(provider, repoRoot)) return;
 
   const seen = new Set<string>();
   let halted = 0;

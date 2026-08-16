@@ -2125,19 +2125,54 @@ export type OtlpMetrics = z.infer<typeof OtlpMetricsSchema>;
  * would be to refuse the events of a conductor release newer than this build. What arrives
  * is stored verbatim and read for two fields (`type`, `ts`) it may not carry.
  *
- * - `repo` addresses a repository the operator consented to. An event for one they did not
- *   is counted and dropped: consent is what this whole integration is downstream of, and a
- *   push is not a way around it.
- * - `worktree` and `slug` address one run. The slug is the engine's own canonical key.
+ * Every field below is validated for SHAPE and nothing more - a non-empty string is a
+ * non-empty string. That is deliberate, and it is why the addressing fields are checked
+ * against the world instead of against a pattern:
+ *
+ * - `repo` addresses a repository the operator consented to, and is matched against the
+ *   consented roots through `realpath`. An event for one they did not consent to is counted
+ *   and dropped: consent is what this whole integration is downstream of, and a push is not
+ *   a way around it.
+ * - `slug` addresses one run, and must name a worktree the provider is actually driving;
+ *   anything else is counted `malformed`. It is the engine's own canonical key.
+ * - `worktree` is descriptive. Nothing reads it.
  * - `seq` is the PRODUCER's ordering coordinate, kept as evidence and never as a key. See
  *   `pipeline_events.seq` in `src/server/db.ts` for why the ledger assigns its own.
  */
 export const ConductorIngestEnvelopeSchema = z.object({
-  /** Absolute path of the repository root the run belongs to. */
+  /**
+   * The repository root this run belongs to, as the producer spells it.
+   *
+   * Any non-empty string, which is what the schema says and therefore what this comment has
+   * to say. A producer is expected to send an absolute path, but nothing here enforces one
+   * and nothing should: narrowing a field of a frozen envelope drops every event from an
+   * installation that has not been re-copied, which is the failure this contract exists to
+   * prevent.
+   *
+   * It is safe to leave open because the value is never used as a path. It is matched, via
+   * `realpath` on both sides, against the roots the operator consented to; anything that
+   * does not match one - a relative path, a typo, a fabrication - is counted `unconsented`
+   * and stored nowhere.
+   */
   repo: z.string().min(1),
-  /** Absolute path of the run's own worktree. */
+  /**
+   * The run's own worktree, as the producer spells it.
+   *
+   * Descriptive, and read by nothing. `slug` is the engine's canonical key and the ledger's,
+   * so it is the field that decides what a push may address; deriving a second constraint
+   * from this path would refuse correct plugins on a symlinked checkout or a non-default
+   * worktrees directory while bounding nothing `slug` does not already bound. Kept in the
+   * envelope because it is what a human reads first when diagnosing an install.
+   */
   worktree: z.string().min(1),
-  /** The engine's canonical key for the feature - the plan stem. */
+  /**
+   * The engine's canonical key for the feature - the plan stem.
+   *
+   * The one addressing field the route checks against reality: it must name a worktree the
+   * provider is actually driving, or the line is counted `malformed` and stored nowhere.
+   * That check is what keeps the event ledger bounded, since rows are retired by pairing
+   * them with the runs a pass enumerates.
+   */
   slug: z.string().min(1),
   /** The producer's own monotonic coordinate for this event within the run. */
   seq: z.number().int().nonnegative(),

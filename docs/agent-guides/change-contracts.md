@@ -159,7 +159,12 @@ Persisted ID tuples are append-only. Never rename, reorder, or reuse values. Thi
   ships into `~/.ai-conductor/plugins/mission-control/`, installed by hand and upgraded on
   nobody's schedule, so an operator can be running a plugin copied from a build months older
   than the daemon serving it - a renamed or narrowed field silently drops every event from an
-  installation nobody re-copied. `event` is deliberately unvalidated beyond being an object.
+  installation nobody re-copied. `event` is deliberately unvalidated beyond being an object,
+  and so are the addressing fields: every one of them is a non-empty string and nothing more.
+  They are checked against the WORLD rather than against a pattern - `repo` must `realpath` to
+  a consented root, `slug` must name a worktree the provider is driving - which is what lets
+  the schema stay wide enough to survive a plugin nobody re-copied. Do not add a format
+  constraint to any of them; that is the narrowing this entry exists to forbid.
   See [Pipelines](../pipelines.md#the-route)
 - Scout prompt origins (`SCOUT_PROMPT_ORIGINS` in `src/server/scouts/prompt-context.ts`) -
   written into `scout_prompt_turns.origin` and read back by exact value through

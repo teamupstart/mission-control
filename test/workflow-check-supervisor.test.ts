@@ -283,16 +283,34 @@ test("a command that EXITS leaving a background process still has its group torn
   assert.deepEqual(cleared, ["attempt-background-survivor"]);
 });
 
+/**
+ * One name each, because these two numbers are also the floor the elapsed-time assertion
+ * checks. Spelled twice, they drift, and a `700 + 400` that no longer matches the run is a
+ * green test asserting nothing.
+ */
+const STUBBORN_TIMEOUT_MS = 1_200;
+const STUBBORN_GRACE_MS = 400;
+
 test("a grandchild ignoring SIGTERM is SIGKILLed after the grace", async () => {
   const dir = workspace();
   const pidFile = join(dir, "stubborn.pid");
+  // The grandchild has to be RUNNING before STUBBORN_TIMEOUT_MS starts tearing the group
+  // down, or there is no stubborn process for the escalation to act on and the case proves
+  // nothing. There is no way to synchronise with the supervisor's internal timer, so the only
+  // lever is margin, and both halves of it are deliberate. Measured on an idle machine: the
+  // pid file landed at ~145ms with a node grandchild and ~84ms with this one, the residual
+  // being the supervisor's own shim, which is the thing under test and cannot be avoided. So
+  // shell removes the ~60ms that was avoidable, and the budget carries the rest. A full suite
+  // at MISSION_TEST_CONCURRENCY=6 once stretched the old ~4.8x margin past breaking, and it
+  // surfaced as a bare ENOENT on this pid file - a symptom naming nothing about signals.
   writeFileSync(
-    join(dir, "stubborn.mjs"),
+    join(dir, "stubborn.sh"),
     [
-      "import { writeFileSync } from 'node:fs';",
-      "writeFileSync(process.argv[2], String(process.pid));",
-      "process.on('SIGTERM', () => {});",
-      "setInterval(() => {}, 1000);",
+      // SIG_IGN for TERM - the wedged-build-tool shape this case exists for. Nothing but
+      // SIGKILL ends it, which is precisely what the assertions below are owed.
+      "trap '' TERM",
+      'echo $$ > "$1"',
+      "while :; do sleep 0.05; done",
     ].join("\n"),
   );
   const { registry } = recordingRegistry();
@@ -301,20 +319,30 @@ test("a grandchild ignoring SIGTERM is SIGKILLed after the grace", async () => {
   const outcome = await runSupervisedCheck(
     {
       attemptId: "attempt-stubborn",
-      command: ["sh", "-c", '"$1" ./stubborn.mjs "$2" & wait', "sh", NODE, pidFile],
+      command: ["sh", "-c", 'sh ./stubborn.sh "$1" & wait', "sh", pidFile],
       leasePath: dir,
       workingSubpath: "",
-      timeoutMs: 700,
+      timeoutMs: STUBBORN_TIMEOUT_MS,
     },
-    { registry, daemonToken: "", teardown: { graceMs: 400, confirmMs: 5_000, pollMs: 25 } },
+    {
+      registry,
+      daemonToken: "",
+      teardown: { graceMs: STUBBORN_GRACE_MS, confirmMs: 5_000, pollMs: 25 },
+    },
   );
 
+  // Said as its own assertion because the alternative is a bare ENOENT from the read below,
+  // which reports the symptom in a vocabulary that has nothing to do with what broke.
+  assert.ok(
+    existsSync(pidFile),
+    "the stubborn grandchild never recorded its pid, so the escalation had nothing to kill",
+  );
   const stubborn = Number(readFileSync(pidFile, "utf8").trim());
   assert.ok(stubborn > 1);
   assert.equal(outcome.emptiness, "empty", "the escalation to SIGKILL is what finishes this");
   assert.equal(pidAlive(stubborn), false);
   assert.ok(
-    Date.now() - started >= 700 + 400,
+    Date.now() - started >= STUBBORN_TIMEOUT_MS + STUBBORN_GRACE_MS,
     "the grace period must actually be waited out before escalating",
   );
 });

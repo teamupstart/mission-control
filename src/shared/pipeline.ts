@@ -531,6 +531,26 @@ export const PIPELINE_SPEND_WRITERS: Record<PipelineProviderId, string> = {
 export type PipelineDaemonState = "running" | "paused" | "stopped" | "unknown";
 
 /**
+ * How observation is arriving for one repository - by push, or by reading files.
+ *
+ * Mission Control observes a pipeline engine two ways at once. Reading the engine's files on
+ * a cadence always works and needs nothing installed; a visualizer plugin pushing events to
+ * `POST /ingest/conductor` is faster but needs the operator to have installed it AND the
+ * engine to start it. So this is the answer to "is my plugin working", and it has to
+ * distinguish three things an operator would otherwise have to guess between:
+ *
+ * - `never` - nothing has ever been pushed for this repository. The shipped state, and the
+ *   permanent one for anyone who has not installed the plugin. The file tail is observation.
+ * - `live` - events are arriving now, so the tail has relaxed to a backfill sweep.
+ * - `quiet` - the plugin has delivered here before and has stopped. The tail is primary
+ *   again, so nothing is lost - but this is also exactly what a revoked token or a crashed
+ *   engine looks like, and it must not read as `never`.
+ *
+ * Never a reason to stop reading files. The tail's cadence changes; its authority does not.
+ */
+export type PipelineIngestState = "never" | "live" | "quiet";
+
+/**
  * What the last pass over one consented repository saw - the panel's health line.
  *
  * Derived and never persisted, like `TaskSourceStatus`: every figure is re-derived by the
@@ -554,6 +574,14 @@ export interface PipelineRepoStatus {
   lastReadAt: number | null;
   /** Why the last pass saw less than it should have, or null. */
   error: string | null;
+  /**
+   * Whether a visualizer plugin is pushing events for this repository.
+   *
+   * Optional so a status assembled by an older build, or by a test that predates ingest,
+   * still typechecks and renders - it reads as `never`, which is the honest answer for a
+   * daemon that has no ingest at all.
+   */
+  ingest?: PipelineIngestState;
 }
 
 /** The whole Conductor panel in one read: consent, detection, and health. */

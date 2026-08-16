@@ -9,6 +9,8 @@ import type {
   PipelineRunDetail,
 } from "@shared/pipeline.ts";
 
+import type { PipelineEventInput } from "../db.ts";
+
 // The server-side half of the pipeline provider axis: what a provider DOES, as against
 // `@shared/pipeline.ts`, which says what one IS and what crosses the wire. The same split
 // `HARNESSES` makes against `HARNESS_CAPABILITIES` and `TASK_SOURCES` makes against
@@ -75,6 +77,19 @@ export interface PipelineRepoReading {
    * the replacement; only the thing holding the total can act on it.
    */
   restarted: Set<string>;
+  /**
+   * What each run's event ledger yielded THIS pass, keyed by slug, for the append-only
+   * `pipeline_events` ledger.
+   *
+   * Provider-neutral rather than the provider's own record type, because the ledger is one
+   * table shared by every provider - and because what it stores is the producer's record
+   * verbatim, which is a shape no provider needs to describe to get right.
+   *
+   * A run whose ledger this pass DECLINED to read (see `shouldTail`) is absent rather than
+   * present-and-empty. The two mean different things to a caller: nothing new, versus we
+   * did not look.
+   */
+  events: Map<string, PipelineEventInput[]>;
   daemon: PipelineDaemonState;
   /**
    * A bounded sentence about why this pass saw less than it should have, or null.
@@ -85,6 +100,26 @@ export interface PipelineRepoReading {
    * the same page.
    */
   error: string | null;
+}
+
+/** What one pass may be told about how much work to do. */
+export interface PipelineReadOptions {
+  /**
+   * Whether this pass should read one run's event ledger at all.
+   *
+   * The demotion contract, expressed as one predicate the CALLER owns. A provider has no way
+   * to know whether a visualizer plugin is pushing this run's events - that is a fact about
+   * Mission Control's ingest route, not about the engine - so the policy lives with the
+   * watcher and the provider only obeys it.
+   *
+   * Absent means read everything, which is what every caller that has not thought about it
+   * gets: the file tail is the primary reader and staying primary is its default.
+   *
+   * It governs the EVENT LEDGER only. State files - the step statuses, the halt marker, the
+   * DONE marker, `.daemon/` - are read on every pass whatever this says. Those are the
+   * source of truth, and no amount of pushed events makes reading them optional.
+   */
+  shouldTail?: (slug: string) => boolean;
 }
 
 /**
@@ -119,7 +154,36 @@ export interface PipelineProvider {
   readRepo(
     repoRoot: string,
     cursors: Map<string, { offset: number; identity: string }>,
+    options?: PipelineReadOptions,
   ): Promise<PipelineRepoReading>;
+  /**
+   * The slugs this provider is actually driving in `repoRoot`, or null when it could not
+   * look.
+   *
+   * This is what makes a PUSHED event addressable. The tail can only ever report runs it
+   * found on disk, but ingest is told which run an event belongs to, and a slug that names
+   * no run is not merely useless: the ledger is retired by pairing rows with the runs a pass
+   * enumerates, so a row under a slug no pass will ever produce is a row nothing retires.
+   * Accepting one would trade this table's bounded retention for whatever a token holder
+   * cared to post.
+   *
+   * Same definition of "a run" as `readRepo`, deliberately - one source of truth, so the key
+   * space ingest may write into is exactly the key space retirement walks. A provider that
+   * answered a looser question here would reopen the hole in a way no test of `readRepo`
+   * could see.
+   *
+   * NULL IS NOT AN EMPTY SET, and the caller's response differs from `readRepo`'s. There,
+   * "could not look" must not retire a projection. Here, on a door, it refuses: an
+   * unreadable directory cannot license a durable write, and the file tail still backfills
+   * whatever was turned away.
+   *
+   * A provider that saw only PART of the truth still answers with the part it saw, rather
+   * than with null. The two are different claims and only one of them is "I cannot look at
+   * this repository": a listing cut short by a cap knows perfectly well that the runs in it
+   * exist, and refusing their events because some other run might have been cut off spends
+   * the events of every run to protect the retention of one.
+   */
+  knownRunSlugs(repoRoot: string): ReadonlySet<string> | null;
   /**
    * Read the gate evidence for ONE run, for the surface that has it open.
    *

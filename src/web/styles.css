@@ -22217,6 +22217,11 @@ span.line-run-prov {
 .bl-added {
   margin-left: auto;
 }
+.bl-recovery {
+  color: var(--attention);
+  font-size: 10.5px;
+  line-height: 1.45;
+}
 .bl-launch {
   align-self: flex-start;
   padding: 2px 7px;

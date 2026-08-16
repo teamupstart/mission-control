@@ -100,7 +100,7 @@ function seedPreFeatureDb(): void {
 
 seedPreFeatureDb();
 
-const { openDb, loadPipelineRuns, pipelineProjectedRepos } = await import("../src/server/db.ts");
+const { openDb, loadPipelineRuns, pipelineStoredRepos } = await import("../src/server/db.ts");
 const { getPipelinesConfig } = await import("../src/server/pipelines/config.ts");
 
 test("a database from before this feature opens, and keeps its settings", () => {
@@ -135,7 +135,7 @@ test("a projection row written before file identity existed survives, with no id
   assert.equal(rows[0]?.run.costTokens, 4242, "the accumulated spend is not reset by an upgrade");
   assert.equal(rows[0]?.eventsOffset, 512, "and neither is the resume point");
   assert.equal(rows[0]?.eventsIdentity, "", "no identity was recorded, and none is invented");
-  assert.deepEqual(pipelineProjectedRepos(), [
+  assert.deepEqual(pipelineStoredRepos(), [
     { provider: "ai-conductor", repoRoot: "/w/demo" },
   ]);
 });

@@ -35,7 +35,8 @@ Three rules, and each of them is load-bearing rather than cautious:
 - **The engine's files are the source of truth.** The `pipeline_runs` table is a cache, in
   the same family as the archive index: every column is derived from files still on disk, so
   deleting it costs one refresh pass. Nothing may be stored there that is not already under
-  the engine's control - a note or a label of your own belongs on a task.
+  the engine's control - a note or a label of your own belongs on a task. This holds when
+  events are being *pushed* too: see [Live events](#live-events).
 
 ## Settings → Conductor
 
@@ -368,6 +369,174 @@ again, and it is the engine clearing the halt that resolves the row - through th
 own event, so what leaves the inbox is a row the daemon agrees is finished rather than one the
 browser hid on its own.
 
+## Live events
+
+Reading files on a cadence always works and needs nothing installed. It also means Mission
+Control finds out that a step finished up to one tick after it did. A **visualizer plugin**
+closes that gap: the engine tells Mission Control what happened, as it happens.
+
+The plugin ships from this repository, under
+[`integrations/ai-conductor/mission-control/`](../integrations/ai-conductor/mission-control/) -
+a directory of artifacts Mission Control ships *into other tools*, which is why it is not
+under `dist/` (not a build output) and not under `skills/` (not something an agent reads).
+
+**Installing it changes nothing about what is true, only about when it is known.** With the
+plugin installed, uninstalled, misconfigured or crashed, the projection is folded from the
+same files by the same code. That is not a safety margin - it is the design, and the reasons
+are in the engine rather than in caution:
+
+- ai-conductor does not persist every event it emits. Its halts, its gate verdicts and its
+  `halt_cleared` never reach `events.jsonl` at all, so a reader that took them from events
+  would never see one. They come from state files, on every pass, whatever the plugin is
+  doing.
+- Its event bus has no wildcard subscription, so the plugin subscribes to an enumerated list
+  built when it was copied. A conductor release that adds an event kind emits something the
+  installed plugin never asked for - and that event still reaches `events.jsonl`.
+
+So the file tail is never switched off. What live ingest changes is its **cadence**: while
+events are arriving for a run, its event ledger is read on a slow backfill sweep instead of
+on every tick. Everything else - the step statuses, the `HALT` marker, `DONE`, `.daemon/` -
+is read on every pass regardless.
+
+A push does not lift that. It schedules a **pass**, so the state files are folded a tick
+early and the dashboard moves at once; whether that pass also reads the run's `events.jsonl`
+is the demotion policy's call and nobody else's. Two reasons, and the second is the one that
+matters: the pushed events are already in the ledger, written by the route before the pass
+was scheduled, so tailing on their account would re-read a file to find what the daemon is
+already holding - and the plugin flushes every 250ms, so "read the ledger of whatever was
+just pushed" is "read it several times a second", which is a *faster* cadence than the tick
+this was meant to relax, on precisely the runs it was relaxed for.
+
+### The route
+
+`POST /ingest/conductor`, in the same token-guarded ingest family as `/hooks/:event` and
+`/v1/metrics`: `x-harness-token` on the first line, no loopback check.
+
+The body is NDJSON - one envelope per line - because the producer is a visualizer inside
+somebody else's event loop, appending a line per event and flushing what it has:
+
+```json
+{ "repo": "/w/demo", "worktree": "/w/demo/.worktrees/a-feature", "slug": "a-feature", "seq": 12, "event": { "type": "step_completed", "step": "build" } }
+```
+
+`event` is stored verbatim and read for two fields it may not carry (`type`, `ts`). Nothing
+validates its shape: conductor's event union is TypeScript-only, unversioned and seventy-odd
+members long, so a schema here would be a second copy of a contract with no first copy, and
+its first effect would be to refuse the events of a conductor release newer than this build.
+A record naming no `type` is stored under the kind `unknown`.
+
+The route answers `200` with counts rather than `204`, because the plugin's whole failure
+posture is to swallow transport errors quietly - so posting a batch by hand and reading these
+back is how an operator finds out whether their install works:
+
+| Count | Means |
+| --- | --- |
+| `received` | Lines the batch contained. |
+| `stored` | Events new to the ledger. |
+| `duplicate` | Already observed, by an earlier push or by the file tail. |
+| `malformed` | Not a valid envelope, or naming a `slug` this repository is not driving. Counted and dropped; one bad line never fails the batch. |
+| `unconsented` | For a repository this operator has not switched on. Stored nowhere. |
+
+That last row is the one worth stating plainly: **ingest is downstream of consent.** A push
+naming a repository nobody enabled is dropped, and leaves no trace on the health line. The
+push path is not a second way to start observing a checkout.
+
+**A slug has to name a run that exists.** The `slug` is checked against the worktrees the
+provider is actually driving - the same listing, with the same `.pipeline/` requirement, that
+the file tail builds runs from - and a push naming anything else is counted as `malformed` and
+stored nowhere. This is a retention rule rather than an authenticity one: the ledger is
+bounded by retiring rows alongside the runs a pass enumerates, so a row under a slug no pass
+can ever produce is a row nothing would retire. When the worktrees cannot be listed at all,
+the push is refused rather than trusted, and the file tail backfills whatever was turned away.
+That is the opposite of the call the projection makes on the same unreadable directory, where
+"we could not look" must not retire anything - and both follow from one rule: an unreadable
+directory is not evidence for the durable act in front of you.
+
+A batch over 4 MB is refused with `413`. The declared `Content-Length` is checked first, so an
+oversized batch is turned away before it is read at all; the body is then measured in **bytes**
+rather than JavaScript string length, because a body of multi-byte characters costs up to three
+times what `String.length` reports. The producer runs unattended inside another program, and
+the daemon is single-threaded.
+
+### The ledger
+
+`pipeline_events` records every engine event Mission Control has observed, from whichever
+path observed it first. It is append-only: a row's identity, its ordinal and its body are
+written once and never rewritten. The single mutation is convergence - the second path to see
+an event stamps its own coordinate into `also_seq`, null to a value, once - which records an
+observation rather than editing an event.
+
+It is the only thing this integration stores that is *not* re-derivable from the engine's
+files, and that is exactly why it exists - conductor's daemon-scope events reach `daemon.log`
+as text and nowhere else, so for those the push is the only durable record there is.
+
+Two details are worth knowing before reading the table:
+
+- **The key is `(provider, repo_root, slug, seq)`, and `seq` is Mission Control's own.** The
+  two paths see the same events by two unrelated coordinates: the tail's is a byte offset
+  into `events.jsonl`, the plugin's is a counter of its own, and conductor stamps no sequence
+  number on anything. Keying on a producer's number would mean one space where two unrelated
+  ones were being written - so a pushed event whose counter happened to equal an old byte
+  offset would be dropped as a duplicate. What each producer said is kept beside the row.
+- **Convergence is by event, not by number - and it is claimed, not compared.** A
+  `fingerprint` over the event's CONTENT is what lets two paths recognise one event:
+  canonicalized by sorting keys at every level, and with the fields a *writer* adds stripped
+  out first - `ts`, `activeInterval` and `observedIntervals`, listed as
+  `OBSERVATION_ONLY_FIELDS` in [`src/server/db.ts`](../src/server/db.ts). Those three are not
+  an implementation detail of the hash - they are what make it possible at all: conductor's
+  `EventPersister` writes `{ ...event, activeInterval?, observedIntervals?, ts }`, so the
+  record in `events.jsonl` and the record the plugin sends are different objects describing
+  one event, and a hash over either one whole could never match the other. What the engine
+  emitted is the event's identity; when it was written down, and how long the writer held it,
+  are facts about the observation.
+  It cannot be the whole answer even so, because conductor stamps no sequence number: a step
+  that is retried emits a record byte-identical to its first attempt, so "same fingerprint"
+  and "same event" are not the same question. An arriving event therefore converges onto the
+  oldest row with its fingerprint that the *other* path wrote and this one has not claimed;
+  when there is none, it is a new occurrence and gets its own row. Both paths see occurrences
+  in order, so the Nth from one lands on the Nth from the other however they interleave.
+  What this gives up is named: a path re-offering an event under a *new* coordinate - a
+  rewritten `events.jsonl` whose lines shifted - stores a second row for one event. A
+  duplicate row costs nothing, because nothing in the projection is derived from this table;
+  a dropped event is the one thing that cannot be recovered, and for the 30 kinds conductor
+  never writes down there is nowhere to recover it from.
+
+Retention: a run's events are retired with the run - a worktree the engine tore down, or a
+repository whose consent was withdrawn - plus a cap of 2000 events per run, newest kept. The
+table is bounded by the runs that still exist rather than by how long the daemon has been up.
+
+### Installing the plugin
+
+Copy or link the directory into conductor's plugin home, and give it this daemon's URL and
+token:
+
+```sh
+cp -R integrations/ai-conductor/mission-control ~/.ai-conductor/plugins/mission-control
+```
+
+Configuration is by environment, never by a committed file. The token is read from Mission
+Control's own state directory by default, so on the usual single-machine setup there is
+nothing to copy:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `MISSION_CONTROL_URL` | `http://127.0.0.1:7317` | The daemon to post to. |
+| `MISSION_CONTROL_TOKEN` | read from `~/.mission-control/token` | The shared secret. Set it explicitly when the engine runs as another user or on another machine. |
+
+**Until ai-conductor starts the visualizer plugins its registry already discovers, this
+plugin is dormant** - it is found, its manifest is read, and nothing calls `start()`. That
+wiring is a separate change in the ai-conductor repository. Installing the plugin before it
+lands is harmless and does nothing; the file tail carries observation exactly as it does
+today.
+
+The Settings health line says which of the three states a repository is in:
+
+| Clause | Means |
+| --- | --- |
+| `· file tail` | No plugin has ever pushed here. The shipped state, and the permanent one for anyone who has not installed it. |
+| `· live events` | Events are arriving now, so the tail has relaxed to its backfill sweep. |
+| `· file tail (plugin quiet)` | The plugin has delivered here before and has stopped. The tail is back on its ordinary cadence and picks up everything conductor wrote down - which is 44 of its 74 event kinds; anything the plugin did not deliver from the other 30 was never written anywhere and is not recoverable. This is also what a revoked token or a crashed engine looks like, which is why it does not read as "never". |
+
 ## Configuration
 
 | Variable | Default | Meaning |
@@ -375,6 +544,9 @@ browser hid on its own.
 | `MISSION_CONDUCTOR_BIN` | `conduct-ts` | The engine binary the probe resolves. Follows the usual `MISSION_` / `FLEET_` / `HARNESS_` chain. |
 | `MISSION_PIPELINE_TICK_MS` | `5000` | How often consented repositories are re-read. Floored at `1000`. |
 | `MISSION_PIPELINE_PROBE_TTL_MS` | `30000` | How long a cached engine probe answers the Settings route before it is re-run. Floored at `1000`. |
+| `MISSION_PIPELINE_INGEST_LIVE_MS` | `600000` | How long after a pushed event a run still counts as live. Ten minutes because conductor emits at step boundaries and a build or a test suite runs for many of them - a shorter window would read every long step as "the plugin stopped". Floored at `1000`. |
+| `MISSION_PIPELINE_BACKFILL_MS` | `60000` | How long a live run may go without a full event-ledger read. The backstop that makes demotion safe: it is what picks up events the installed plugin never subscribed to. Floored at `1000`. |
+| `MISSION_PIPELINE_INGEST_REFRESH_MS` | `150` | How long a burst of pushed events coalesces before the repositories it named have their state files folded. |
 | `AI_CONDUCTOR_REGISTRY` | `~/.ai-conductor/registry.json` | Read **bare**, without a `MISSION_` prefix, because it is the variable the engine itself reads - a machine already configured for conductor needs nothing new. Names the file, not its directory. |
 
 Consent itself is stored in the daemon's database (`app_config`, key `pipelines`), alongside
@@ -384,7 +556,7 @@ the Foreman, Skills, Harnesses, Task sources, Models and GitHub Inspector settin
 
 This page describes what has landed. The
 [integration plan](plans/conductor-sdlc-integration/plan.md) and its
-[phase split](plans/conductor-sdlc-integration/phased-plan.md) describe the rest: live event
-ingest through the daemon's own route, and dispatching a feature into an engine from Mission
-Control's backlog - with the Foreman and the GitHub Inspector reaching the verbs above through
-the same routes an operator does, never through a second control path.
+[phase split](plans/conductor-sdlc-integration/phased-plan.md) describe the rest: dispatching a
+feature into an engine from Mission Control's backlog, with the Foreman and the GitHub
+Inspector reaching the verbs above through the same routes an operator does, never through a
+second control path.

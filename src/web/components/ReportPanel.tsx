@@ -130,6 +130,11 @@ function BacklogReportRow({
             onOpen={onOpenSchedule}
           />
         </span>
+        {task.error && (
+          <span className="report-line report-line-sub report-task-error" role="status">
+            {task.error}
+          </span>
+        )}
         {blockers.length > 0 && (
           <span className="report-line report-line-sub">
             Waiting for{" "}

@@ -2127,6 +2127,101 @@ export const OtlpMetricsSchema = z.object({
 export type OtlpMetrics = z.infer<typeof OtlpMetricsSchema>;
 
 /**
+ * One pushed pipeline event, as the visualizer plugin posts it to `POST /ingest/conductor`.
+ *
+ * **This shape is frozen.** It is the wire contract between Mission Control's ingest route
+ * and an artifact that runs inside somebody else's process, installed by hand into
+ * `~/.ai-conductor/plugins/mission-control/` and upgraded on nobody's schedule. An operator
+ * can be running a plugin copied from a build months older than the daemon serving it, so
+ * this evolves by APPENDING optional fields and in no other way - a renamed or narrowed
+ * field silently drops every event from an installation that has not been re-copied.
+ *
+ * The envelope is deliberately thin, and the thinness is the point: four addressing fields
+ * that Mission Control has to be able to read, wrapped around an `event` it reads almost
+ * nothing of. `event` is `unknown`-valued on purpose. ai-conductor's event union is
+ * TypeScript-only, unversioned and seventy-odd members long, so a schema that described its
+ * members would be a second copy of a contract with no first copy - and its first effect
+ * would be to refuse the events of a conductor release newer than this build. What arrives
+ * is stored verbatim and read for two fields (`type`, `ts`) it may not carry.
+ *
+ * Every field below is validated for SHAPE and nothing more - a non-empty string is a
+ * non-empty string. That is deliberate, and it is why the addressing fields are checked
+ * against the world instead of against a pattern:
+ *
+ * - `repo` addresses a repository the operator consented to, and is matched against the
+ *   consented roots through `realpath`. An event for one they did not consent to is counted
+ *   and dropped: consent is what this whole integration is downstream of, and a push is not
+ *   a way around it.
+ * - `slug` addresses one run, and must name a worktree the provider is actually driving;
+ *   anything else is counted `malformed`. It is the engine's own canonical key.
+ * - `worktree` is descriptive. Nothing reads it.
+ * - `seq` is the PRODUCER's ordering coordinate, kept as evidence and never as a key. See
+ *   `pipeline_events.seq` in `src/server/db.ts` for why the ledger assigns its own.
+ */
+export const ConductorIngestEnvelopeSchema = z.object({
+  /**
+   * The repository root this run belongs to, as the producer spells it.
+   *
+   * Any non-empty string, which is what the schema says and therefore what this comment has
+   * to say. A producer is expected to send an absolute path, but nothing here enforces one
+   * and nothing should: narrowing a field of a frozen envelope drops every event from an
+   * installation that has not been re-copied, which is the failure this contract exists to
+   * prevent.
+   *
+   * It is safe to leave open because the value is never used as a path. It is matched, via
+   * `realpath` on both sides, against the roots the operator consented to; anything that
+   * does not match one - a relative path, a typo, a fabrication - is counted `unconsented`
+   * and stored nowhere.
+   */
+  repo: z.string().min(1),
+  /**
+   * The run's own worktree, as the producer spells it.
+   *
+   * Descriptive, and read by nothing. `slug` is the engine's canonical key and the ledger's,
+   * so it is the field that decides what a push may address; deriving a second constraint
+   * from this path would refuse correct plugins on a symlinked checkout or a non-default
+   * worktrees directory while bounding nothing `slug` does not already bound. Kept in the
+   * envelope because it is what a human reads first when diagnosing an install.
+   */
+  worktree: z.string().min(1),
+  /**
+   * The engine's canonical key for the feature - the plan stem.
+   *
+   * The one addressing field the route checks against reality: it must name a worktree the
+   * provider is actually driving, or the line is counted `malformed` and stored nowhere.
+   * That check is what keeps the event ledger bounded, since rows are retired by pairing
+   * them with the runs a pass enumerates.
+   */
+  slug: z.string().min(1),
+  /** The producer's own monotonic coordinate for this event within the run. */
+  seq: z.number().int().nonnegative(),
+  /** The engine's event record, verbatim and unread. */
+  event: z.record(z.unknown()),
+});
+export type ConductorIngestEnvelope = z.infer<typeof ConductorIngestEnvelopeSchema>;
+
+/**
+ * What one ingest batch did, as the route answers it.
+ *
+ * Counts rather than a bare 204, because the plugin's whole failure posture is to swallow
+ * transport errors quietly - so the only way an operator can find out whether their install
+ * is working is to post a batch by hand and read this back. Every line of a batch lands in
+ * exactly one of these five.
+ */
+export interface ConductorIngestOutcome {
+  /** Lines the batch contained. */
+  received: number;
+  /** Events new to the ledger. */
+  stored: number;
+  /** Events already observed - by an earlier push, or by the file tail. */
+  duplicate: number;
+  /** Lines that were not a valid envelope. Counted, dropped, never fatal to the batch. */
+  malformed: number;
+  /** Events for a repository this operator has not consented to. */
+  unconsented: number;
+}
+
+/**
  * One finished headless run, as the Foreman worker reports it to the daemon.
  *
  * The worker is a separate process and never opens the database, so its share of the app's

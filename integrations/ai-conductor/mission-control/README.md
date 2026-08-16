@@ -83,7 +83,9 @@ Control controls. So:
   by conductor's shutdown path, so the whole drain runs under a 2s deadline and the in-flight
   request is aborted when it expires. A daemon that accepts a connection and never answers
   costs the engine two seconds, not its exit. Inside the deadline a failed batch is put back
-  and retried exactly as it would be at any other time. **When the deadline expires there is
+  and retried until the budget is gone, with a short growing pause between attempts that made
+  no progress - a daemon being restarted refuses instantly and is usually back well inside two
+  seconds, so the first refusal is not the answer. **When the deadline expires there is
   no later.** `stop()` returns, conductor exits, and whatever is still buffered goes with the
   process - the batch is in memory rather than on a retry schedule, and this plugin writes
   nothing to disk. `stats().buffered` is the count that was lost. For the 44 kinds conductor

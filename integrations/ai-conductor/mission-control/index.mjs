@@ -92,6 +92,21 @@ const MAX_RETRY_MS = 30_000;
 const SHUTDOWN_MS = 2_000;
 
 /**
+ * How long the shutdown drain waits after an attempt that changed nothing.
+ *
+ * The drain is bounded by `SHUTDOWN_MS` and by nothing else, so an attempt that made no
+ * progress must not END it - a daemon being restarted refuses instantly, and giving up on the
+ * first refusal spends none of a budget that was allocated precisely for this. It must not
+ * spin on it either: a refused connection returns in microseconds, so an immediate retry is
+ * thousands of attempts and a busy core on the engine's exit path.
+ *
+ * So: pause, and grow the pause each time, which fits several honest attempts into two seconds
+ * while leaving the loop cheap. Deliberately much shorter than `MAX_RETRY_MS`, because that
+ * backoff is tuned for a plugin that may retry for hours and this one has two seconds in total.
+ */
+const SHUTDOWN_RETRY_MS = 50;
+
+/**
  * The event kinds this build forwards, frozen at ai-conductor 8b51392d.
  *
  * Enumerated because conductor's bus has no wildcard: `.on()` takes one type. So this list
@@ -680,12 +695,19 @@ export function createMissionControlVisualizer(options = {}) {
       const deadline = Date.now() + SHUTDOWN_MS;
       const remaining = () => deadline - Date.now();
       if (inFlight) await settleWithin(inFlight, remaining());
-      // Give up when an attempt changed NOTHING - neither the backlog nor the strategy for
-      // sending it. A failed batch is put back, so buffer length alone would call a 413 no
-      // progress and abandon events the very next (smaller) attempt would have delivered;
-      // `sendLimit` is what makes that attempt different. Both together still terminate,
-      // because `sendLimit` strictly decreases toward 1 and at 1 a refusal shortens the
-      // buffer instead.
+      // The DEADLINE ends this loop, and nothing else does. An attempt that changed nothing -
+      // neither the backlog nor the strategy for sending it - is a reason to wait before
+      // trying again, not a reason to stop: the commonest way to get one is a daemon being
+      // restarted, which refuses instantly and is back within a second, well inside a budget
+      // that exists for exactly this. Treating that first refusal as terminal threw away
+      // events while holding two unspent seconds, and for the 30 kinds conductor does not
+      // persist there is nothing to recover them from.
+      //
+      // The pause is what keeps the retry honest rather than hot: a refused connection returns
+      // in microseconds, so retrying immediately would be thousands of attempts and a busy
+      // core on the engine's exit path. It grows with each fruitless attempt, and is clamped
+      // to what is left so the wait itself cannot outlive the deadline.
+      let idle = 0;
       while (buffer.length > 0 && remaining() > 0) {
         const before = buffer.length;
         const limitBefore = sendLimit;
@@ -693,7 +715,17 @@ export function createMissionControlVisualizer(options = {}) {
         // every request, so bounding only the one that was already open would move the
         // unbounded wait one line down rather than remove it.
         await settleWithin(flush(), remaining());
-        if (buffer.length >= before && sendLimit === limitBefore) break;
+        // Progress, of either kind. A failed batch is put back, so buffer length alone would
+        // call a 413 no progress and abandon events the very next (smaller) attempt would
+        // have delivered; `sendLimit` is what makes that attempt different.
+        if (buffer.length < before || sendLimit !== limitBefore) {
+          idle = 0;
+          continue;
+        }
+        idle += 1;
+        const wait = Math.min(SHUTDOWN_RETRY_MS * idle, remaining());
+        if (wait <= 0) break;
+        await sleep(wait);
       }
     },
 

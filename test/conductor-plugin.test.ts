@@ -225,6 +225,41 @@ test("a batch the daemon could not take is retried, not dropped", async () => {
   assert.equal(plugin.stats().buffered, 0);
 });
 
+test("a daemon that comes back inside the shutdown deadline still gets the events", async () => {
+  // The shutdown budget is two seconds because a daemon that is restarting comes back inside
+  // one. Giving up on the first refusal spent none of it - and this is the path where "the
+  // file tail will backfill it" stops being true, because `stop()` returns into a conductor
+  // that is exiting and nothing here writes to disk.
+  let attempts = 0;
+  const delivered: Record<string, unknown>[] = [];
+  const fetchImpl = (async (_url: unknown, init: unknown) => {
+    attempts += 1;
+    // Down for the first two attempts, back for the third - a daemon being restarted, which
+    // refuses instantly rather than hanging, so the drain is not waiting on a socket.
+    if (attempts <= 2) throw new Error("ECONNREFUSED");
+    const request = init as { body: string };
+    for (const raw of request.body.split("\n").filter((l) => l.trim() !== "")) {
+      delivered.push(JSON.parse(raw) as Record<string, unknown>);
+    }
+    return { ok: true, status: 200 } as Response;
+  }) as unknown as typeof fetch;
+
+  const bus = stubBus();
+  const plugin = createMissionControlVisualizer({
+    worktree: WORKTREE,
+    token: "t",
+    fetchImpl,
+    warn: () => {},
+  });
+  plugin.start(bus);
+  bus.emit({ type: "gate_verdict", step: "build", verdict: "pass" });
+  await plugin.stop();
+
+  assert.ok(attempts >= 3, `the drain must keep trying inside its deadline, made ${attempts}`);
+  assert.equal(delivered.length, 1, "the event reached the daemon that came back");
+  assert.equal(plugin.stats().buffered, 0, "and nothing is left to be lost with the process");
+});
+
 test("a batch refused as too large is split, not discarded", async () => {
   // 413 says the BATCH is too big, not that the events are unwanted. Discarding it would
   // lose the unpersisted kinds outright, and resending the same bytes would park an

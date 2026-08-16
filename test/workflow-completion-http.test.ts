@@ -47,6 +47,7 @@ function discovered(id: string): DiscoveredSession {
     gitBranch: "feature",
     gitRoot: "/repo",
     repoRoot: "/repo",
+    agentSessionId: id,
     pid: id.length,
     tty: `tty-${id}`,
     terminals: [],
@@ -70,7 +71,9 @@ function request(
     body: JSON.stringify({
       completionKind,
       marker,
-      activityAt: completionKind === "prompted" ? 123 : null,
+      expectedWorkCycle: completionKind === "prompted"
+        ? { logicalKey: sessionId, generation: 1 }
+        : null,
       summary: "Foreman proved the queue complete.",
       evidenceFingerprint: "evidence",
       expectedIntent,
@@ -258,6 +261,25 @@ test("completion HTTP claims server-owned identity once and atomically retires t
     pendingPrompts: [],
     source: "heuristic",
   }, 5);
+  registry.applyHook({
+    agent: "claude",
+    event: "PreToolUse",
+    sessionId: "prompted",
+    cwd: "/repo",
+    transcriptPath: null,
+    env: {},
+    toolName: "Edit",
+    ts: 6,
+  });
+  registry.applyHook({
+    agent: "claude",
+    event: "Stop",
+    sessionId: "prompted",
+    cwd: "/repo",
+    transcriptPath: null,
+    env: {},
+    ts: 7,
+  });
   const db = openDb();
   db.prepare(
     `INSERT INTO foreman_queues (
@@ -377,17 +399,44 @@ test("completion HTTP claims server-owned identity once and atomically retires t
   assert.equal(workflows.store.listSubmissions(concurrentRun).length, 1);
 
   const heldPrompted = await request(app, "prompted", "e".repeat(64), "prompted");
-  assert.equal(heldPrompted.status, 409);
+  const heldError = await heldPrompted.json();
+  assert.equal(heldPrompted.status, 409, JSON.stringify({ heldError, cycle: registry.getSession("prompted")?.workCycle }));
   assert.equal(workflows.store.latestRunForBinding(promptedBinding.id), null);
-  // Re-arm the prompted episode through the Registry's own wrap-up writer rather than the
-  // column, so the next case is set up the way the daemon would set it up.
-  registry.setQueueWrapup("prompted", { promptedGoal: null });
+  const legacyBootstrap = db.prepare(
+    `SELECT prompted_consumed_generation AS generation
+       FROM foreman_queues WHERE note_key = 'prompted'`,
+  ).get() as { generation: number | null } | undefined;
+  assert.equal(
+    legacyBootstrap?.generation,
+    1,
+    "the matching legacy guard bootstraps generation 1 as spent",
+  );
+  registry.applyHook({
+    agent: "claude",
+    event: "PreToolUse",
+    sessionId: "prompted",
+    cwd: "/repo",
+    transcriptPath: null,
+    env: {},
+    toolName: "Edit",
+    ts: 8,
+  });
+  registry.applyHook({
+    agent: "claude",
+    event: "Stop",
+    sessionId: "prompted",
+    cwd: "/repo",
+    transcriptPath: null,
+    env: {},
+    ts: 9,
+  });
   const stalePrompted = await request(
     app,
     "prompted",
     "d".repeat(64),
     "prompted",
     { ...PROMPTED_INTENT, objective: "The prompt the verifier actually judged" },
+    { expectedWorkCycle: { logicalKey: "prompted", generation: 2 } },
   );
   assert.equal(stalePrompted.status, 409);
   assert.equal(workflows.store.latestRunForBinding(promptedBinding.id), null);
@@ -397,33 +446,75 @@ test("completion HTTP claims server-owned identity once and atomically retires t
     "c".repeat(64),
     "prompted",
     { ...PROMPTED_INTENT, promptRevision: 2, episodeKey: "intent:1:2" },
+    { expectedWorkCycle: { logicalKey: "prompted", generation: 2 } },
   );
   assert.equal(staleRevision.status, 409);
   assert.equal(workflows.store.latestRunForBinding(promptedBinding.id), null);
-  const stalePromptedGuard = db.prepare(
-    `SELECT prompted_goal FROM foreman_queues WHERE note_key = 'prompted'`,
-  ).get() as { prompted_goal: string | null };
-  assert.equal(stalePromptedGuard.prompted_goal, null);
-  const retriedPrompted = await request(app, "prompted", "e".repeat(64), "prompted");
+  const retriedPrompted = await request(
+    app,
+    "prompted",
+    "e".repeat(64),
+    "prompted",
+    PROMPTED_INTENT,
+    { expectedWorkCycle: { logicalKey: "prompted", generation: 2 } },
+  );
   assert.equal(retriedPrompted.status, 200);
   const promptedBody = await retriedPrompted.json() as { claimed: boolean; runId: string; state: string };
   assert.equal(promptedBody.claimed, true);
   assert.equal(promptedBody.state, "started");
   assert.equal(workflows.store.getRun(promptedBody.runId)?.bindingId, promptedBinding.id);
   const promptedGuard = db.prepare(
-    `SELECT prompted_goal, prompted_evidence, prompted_activity_at
+    `SELECT prompted_goal, prompted_evidence, prompted_activity_at,
+            prompted_consumed_generation
        FROM foreman_queues WHERE note_key = 'prompted'`,
   ).get() as {
     prompted_goal: string | null;
     prompted_evidence: string | null;
     prompted_activity_at: number | null;
+    prompted_consumed_generation: number | null;
   };
   assert.equal(promptedGuard.prompted_goal, "intent:1:1");
-  assert.equal(promptedGuard.prompted_evidence, "e".repeat(64));
-  assert.equal(promptedGuard.prompted_activity_at, 123);
+  assert.equal(promptedGuard.prompted_evidence, null, "evidence remains proof, not lifecycle state");
+  assert.equal(promptedGuard.prompted_activity_at, null);
+  assert.equal(promptedGuard.prompted_consumed_generation, 2);
 
-  const advancedPrompted = await request(app, "prompted", "9".repeat(64), "prompted");
-  assert.equal(advancedPrompted.status, 200, "new evidence on the same intent must re-arm");
+  const evidenceOnly = await request(
+    app,
+    "prompted",
+    "9".repeat(64),
+    "prompted",
+    PROMPTED_INTENT,
+    { expectedWorkCycle: { logicalKey: "prompted", generation: 2 } },
+  );
+  assert.equal(evidenceOnly.status, 409, "new evidence cannot re-arm a consumed generation");
+  registry.applyHook({
+    agent: "claude",
+    event: "PreToolUse",
+    sessionId: "prompted",
+    cwd: "/repo",
+    transcriptPath: null,
+    env: {},
+    toolName: "Edit",
+    ts: 10,
+  });
+  registry.applyHook({
+    agent: "claude",
+    event: "Stop",
+    sessionId: "prompted",
+    cwd: "/repo",
+    transcriptPath: null,
+    env: {},
+    ts: 11,
+  });
+  const advancedPrompted = await request(
+    app,
+    "prompted",
+    "9".repeat(64),
+    "prompted",
+    PROMPTED_INTENT,
+    { expectedWorkCycle: { logicalKey: "prompted", generation: 3 } },
+  );
+  assert.equal(advancedPrompted.status, 200, "a later completed generation re-arms unchanged intent");
   const advancedBody = await advancedPrompted.json() as {
     claimed: boolean;
     runId: string;
@@ -431,7 +522,14 @@ test("completion HTTP claims server-owned identity once and atomically retires t
   };
   assert.equal(advancedBody.claimed, true);
   assert.notEqual(advancedBody.runId, promptedBody.runId);
-  const replayPrompted = await request(app, "prompted", "9".repeat(64), "prompted");
+  const replayPrompted = await request(
+    app,
+    "prompted",
+    "9".repeat(64),
+    "prompted",
+    PROMPTED_INTENT,
+    { expectedWorkCycle: { logicalKey: "prompted", generation: 3 } },
+  );
   assert.equal(replayPrompted.status, 200);
   const replayBody = await replayPrompted.json() as {
     claimed: boolean;

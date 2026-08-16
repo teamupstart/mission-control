@@ -29,6 +29,10 @@ const {
   countOpenQueueItems,
   pruneDeadQueues,
   clearQueue,
+  markWorkCycleActive,
+  completeWorkCycle,
+  bootstrapPromptedConsumedGeneration,
+  consumePromptedGeneration,
 } = await import("../src/server/db.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
@@ -74,6 +78,7 @@ test("a queue row round-trips and upserts in place", () => {
     promptedGoal: null,
     promptedEvidence: null,
     promptedActivityAt: null,
+    promptedConsumedGeneration: null,
     updatedAt: 1,
   });
   assert.equal(getQueueRow("k1")?.cwd, "/repo");
@@ -87,6 +92,7 @@ test("a queue row round-trips and upserts in place", () => {
     promptedGoal: null,
     promptedEvidence: null,
     promptedActivityAt: null,
+    promptedConsumedGeneration: null,
     updatedAt: 2,
   });
   const r = getQueueRow("k1");
@@ -95,7 +101,7 @@ test("a queue row round-trips and upserts in place", () => {
   assert.equal(listQueueRows().filter((q) => q.noteKey === "k1").length, 1, "no duplicate row");
 });
 
-test("a prompt-only queue guard upgrades as spent and accepts later evidence boundaries", () => {
+test("a matching legacy prompted guard bootstraps the current generation as consumed", () => {
   const legacy = mkdtempSync(join(tmpdir(), "mission-prompted-evidence-upgrade-"));
   const env = { ...process.env, MISSION_HOME: legacy };
   execFileSync(
@@ -109,7 +115,9 @@ test("a prompt-only queue guard upgrades as spent and accepts later evidence bou
        mkdirSync(process.env.MISSION_HOME, { recursive: true });
        const d = new DatabaseSync(join(process.env.MISSION_HOME, "harness.db"));
        d.exec("CREATE TABLE foreman_queues (note_key TEXT PRIMARY KEY, cwd TEXT, branch TEXT, wrapup_asked_at INTEGER, wrapup_answer TEXT, prompted_goal TEXT, updated_at INTEGER NOT NULL)");
-       d.prepare("INSERT INTO foreman_queues VALUES (?, ?, ?, ?, ?, ?, ?)").run("legacy", "/repo", "feature", null, null, "intent:1:1", 10);
+       const insert = d.prepare("INSERT INTO foreman_queues VALUES (?, ?, ?, ?, ?, ?, ?)");
+       insert.run("legacy", "/repo", "feature", null, null, "intent:1:1", 10);
+       insert.run("legacy-null", "/repo", "feature", null, null, null, 10);
        d.close();`,
     ],
     { env, cwd: process.cwd(), encoding: "utf8" },
@@ -124,30 +132,118 @@ test("a prompt-only queue guard upgrades as spent and accepts later evidence bou
       "-e",
       `const db = await import("./src/server/db.ts");
        db.openDb();
-       const before = db.getQueueRow("legacy");
-       db.upsertQueue({ ...before, promptedEvidence: "a".repeat(64), promptedActivityAt: 10, updatedAt: 11 });
-       console.log(JSON.stringify({ before, after: db.getQueueRow("legacy") }));`,
+       db.markWorkCycleActive("legacy", 20);
+       db.completeWorkCycle("legacy", 21, 21);
+       db.markWorkCycleActive("legacy-null", 20);
+       db.completeWorkCycle("legacy-null", 21, 21);
+       const matched = db.bootstrapPromptedConsumedGeneration("legacy", "intent:1:1");
+       const repeated = db.bootstrapPromptedConsumedGeneration("legacy", "intent:1:1");
+       const unguarded = db.bootstrapPromptedConsumedGeneration("legacy-null", "intent:1:1");
+       console.log(JSON.stringify({ matched, repeated, unguarded, legacy: db.getQueueRow("legacy"), legacyNull: db.getQueueRow("legacy-null") }));`,
     ],
     { env, cwd: process.cwd(), encoding: "utf8" },
   ).trim();
   const result = JSON.parse(read.split("\n").at(-1)!) as {
-    before: {
-      promptedGoal: string | null;
-      promptedEvidence: string | null;
-      promptedActivityAt: number | null;
-    };
-    after: {
-      promptedGoal: string | null;
-      promptedEvidence: string | null;
-      promptedActivityAt: number | null;
-    };
+    matched: boolean;
+    repeated: boolean;
+    unguarded: boolean;
+    legacy: { promptedGoal: string | null; promptedConsumedGeneration: number | null };
+    legacyNull: { promptedGoal: string | null; promptedConsumedGeneration: number | null };
   };
-  assert.equal(result.before.promptedGoal, "intent:1:1");
-  assert.equal(result.before.promptedEvidence, null, "an upgrade must not replay a legacy guard");
-  assert.equal(result.before.promptedActivityAt, null);
-  assert.equal(result.after.promptedEvidence, "a".repeat(64));
-  assert.equal(result.after.promptedActivityAt, 10);
+  assert.equal(result.matched, true);
+  assert.equal(result.repeated, false, "bootstrap is idempotent");
+  assert.equal(result.unguarded, false, "a null legacy guard stays eligible");
+  assert.equal(result.legacy.promptedGoal, "intent:1:1", "legacy data remains readable");
+  assert.equal(result.legacy.promptedConsumedGeneration, 1);
+  assert.equal(result.legacyNull.promptedConsumedGeneration, null);
+  const restarted = execFileSync(
+    process.execPath,
+    [
+      "--import",
+      "tsx",
+      "--input-type=module",
+      "-e",
+      `const db = await import("./src/server/db.ts");
+       console.log(JSON.stringify(db.getQueueRow("legacy")));`,
+    ],
+    { env, cwd: process.cwd(), encoding: "utf8" },
+  ).trim();
+  const afterRestart = JSON.parse(restarted.split("\n").at(-1)!) as {
+    promptedConsumedGeneration: number | null;
+  };
+  assert.equal(afterRestart.promptedConsumedGeneration, 1, "restart preserves the consumed generation");
   rmSync(legacy, { recursive: true, force: true });
+});
+
+test("prompted consumption is an exact-generation compare-and-set with an atomic ask", () => {
+  const key = "prompted-cas";
+  markWorkCycleActive(key, 10);
+  completeWorkCycle(key, 11, 11);
+
+  assert.equal(
+    consumePromptedGeneration({ noteKey: key, sessionCwd: "/repo", generation: 1, ask: false, now: 12 }),
+    true,
+  );
+  assert.equal(getQueueRow(key)?.promptedConsumedGeneration, 1);
+  assert.equal(
+    consumePromptedGeneration({ noteKey: key, sessionCwd: "/repo", generation: 1, ask: false, now: 13 }),
+    false,
+    "the same generation cannot be consumed twice",
+  );
+
+  markWorkCycleActive(key, 14);
+  assert.equal(
+    consumePromptedGeneration({ noteKey: key, sessionCwd: "/repo", generation: 1, ask: true, now: 15 }),
+    false,
+    "a stale result cannot consume while newer work is active",
+  );
+  completeWorkCycle(key, 16, 16);
+  assert.equal(
+    consumePromptedGeneration({ noteKey: key, sessionCwd: "/repo", generation: 2, ask: true, now: 17 }),
+    true,
+  );
+  assert.equal(getQueueRow(key)?.promptedConsumedGeneration, 2);
+  assert.equal(getQueueRow(key)?.wrapupAskedAt, 17, "the ask and generation share one write");
+
+  markWorkCycleActive(key, 18);
+  completeWorkCycle(key, 19, 19);
+  upsertQueueItem(mkItem({ id: "prompted-queued", noteKey: key }));
+  assert.equal(
+    consumePromptedGeneration({ noteKey: key, sessionCwd: "/repo", generation: 3, ask: false, now: 20 }),
+    false,
+    "queued work keeps drain precedence at the write boundary",
+  );
+  assert.equal(getQueueRow(key)?.promptedConsumedGeneration, 2);
+
+  assert.equal(
+    bootstrapPromptedConsumedGeneration(key, "intent:1:1"),
+    false,
+    "the legacy bootstrap cannot overwrite a consumed generation",
+  );
+});
+
+test("prompted consumption never moves a consumed generation backward", () => {
+  const key = "prompted-monotonic";
+  markWorkCycleActive(key, 10);
+  completeWorkCycle(key, 11, 11);
+  upsertQueue({
+    noteKey: key,
+    cwd: "/repo",
+    branch: "feature",
+    wrapupAskedAt: null,
+    wrapupAnswer: null,
+    promptedGoal: null,
+    promptedEvidence: null,
+    promptedActivityAt: null,
+    promptedConsumedGeneration: 2,
+    updatedAt: 12,
+  });
+
+  assert.equal(
+    consumePromptedGeneration({ noteKey: key, sessionCwd: "/repo", generation: 1, ask: false, now: 13 }),
+    false,
+  );
+  assert.equal(getQueueRow(key)?.promptedConsumedGeneration, 2);
 });
 
 test("an item round-trips with its gaps, and upsert updates in place", () => {
@@ -358,6 +454,7 @@ test("deleting an item and a queue row leaves nothing behind", () => {
     promptedGoal: null,
     promptedEvidence: null,
     promptedActivityAt: null,
+    promptedConsumedGeneration: null,
     updatedAt: 1,
   });
   upsertQueueItem(mkItem({ id: "doomed", noteKey: "gone" }));
@@ -403,7 +500,7 @@ test("the single-flight index is rebuilt when its predicate drifts from the shar
   // `verifying` item in one queue is rejected by the db, not merely by hope.
   const guard = run(`const db = await import("./src/server/db.ts");
     db.openDb();
-    db.upsertQueue({ noteKey: "drift", cwd: null, branch: null, wrapupAskedAt: null, wrapupAnswer: null, promptedGoal: null, promptedEvidence: null, promptedActivityAt: null, updatedAt: 0 });
+    db.upsertQueue({ noteKey: "drift", cwd: null, branch: null, wrapupAskedAt: null, wrapupAnswer: null, promptedGoal: null, promptedEvidence: null, promptedActivityAt: null, promptedConsumedGeneration: null, updatedAt: 0 });
     const mk = (id, seq) => ({ id, noteKey: "drift", seq, intent: "i", state: "verifying", round: 0,
       baseSha: null, transcriptAnchor: null, gaps: [], sendAttempts: 0, verifyFailures: 0,
       escalationReason: null, lastVerdict: null, approvedAt: null, proposedPayload: null,
@@ -450,7 +547,7 @@ test("a single-flight rebuild that CANNOT succeed keeps the old index and still 
     const d = db.openDb();
     d.exec("DROP INDEX one_inflight_per_queue;");
     d.exec("CREATE UNIQUE INDEX one_inflight_per_queue ON foreman_queue_items(note_key) WHERE state IN ('sending','awaiting_pickup','in_progress');");
-    db.upsertQueue({ noteKey: "stuck", cwd: null, branch: null, wrapupAskedAt: null, wrapupAnswer: null, promptedGoal: null, promptedEvidence: null, promptedActivityAt: null, updatedAt: 0 });
+    db.upsertQueue({ noteKey: "stuck", cwd: null, branch: null, wrapupAskedAt: null, wrapupAnswer: null, promptedGoal: null, promptedEvidence: null, promptedActivityAt: null, promptedConsumedGeneration: null, updatedAt: 0 });
     const mk = (id, seq) => ({ id, noteKey: "stuck", seq, intent: "i", state: "verifying", round: 0,
       baseSha: null, transcriptAnchor: null, gaps: [], sendAttempts: 0, verifyFailures: 0,
       escalationReason: null, lastVerdict: null, approvedAt: null, proposedPayload: null,
@@ -475,7 +572,7 @@ test("a single-flight rebuild that CANNOT succeed keeps the old index and still 
 });
 
 test("rekeyQueue moves a whole queue onto a new key", () => {
-  upsertQueue({ noteKey: "rk-from", cwd: "/r", branch: "b", wrapupAskedAt: 7, wrapupAnswer: null, promptedGoal: null, promptedEvidence: null, promptedActivityAt: null, updatedAt: 1 });
+  upsertQueue({ noteKey: "rk-from", cwd: "/r", branch: "b", wrapupAskedAt: 7, wrapupAnswer: null, promptedGoal: null, promptedEvidence: null, promptedActivityAt: null, promptedConsumedGeneration: null, updatedAt: 1 });
   const a = mkItem({ noteKey: "rk-from", seq: 0, intent: "first" });
   const b = mkItem({ noteKey: "rk-from", seq: 1, intent: "second" });
   upsertQueueItem(a);
@@ -483,7 +580,7 @@ test("rekeyQueue moves a whole queue onto a new key", () => {
 
   rekeyQueue(
     "rk-from",
-    { noteKey: "rk-to", cwd: "/r", branch: "b", wrapupAskedAt: 7, wrapupAnswer: null, promptedGoal: null, promptedEvidence: null, promptedActivityAt: null, updatedAt: 2 },
+    { noteKey: "rk-to", cwd: "/r", branch: "b", wrapupAskedAt: 7, wrapupAnswer: null, promptedGoal: null, promptedEvidence: null, promptedActivityAt: null, promptedConsumedGeneration: null, updatedAt: 2 },
     [
       { ...a, noteKey: "rk-to", seq: 0 },
       { ...b, noteKey: "rk-to", seq: 1 },
@@ -504,7 +601,7 @@ test("rekeyQueue ROLLS BACK a half-applied move - the batch is never split", () 
   // leaves some items re-keyed under a queue row that may already be deleted and the
   // rest on the old key: a split no reader models, and one the re-attach button can't
   // repair, since the hint it keys off is computed from the very rows that got moved.
-  upsertQueue({ noteKey: "rb-from", cwd: "/r", branch: "b", wrapupAskedAt: null, wrapupAnswer: null, promptedGoal: null, promptedEvidence: null, promptedActivityAt: null, updatedAt: 1 });
+  upsertQueue({ noteKey: "rb-from", cwd: "/r", branch: "b", wrapupAskedAt: null, wrapupAnswer: null, promptedGoal: null, promptedEvidence: null, promptedActivityAt: null, promptedConsumedGeneration: null, updatedAt: 1 });
   const good = mkItem({ noteKey: "rb-from", seq: 0, intent: "keep me" });
   const also = mkItem({ noteKey: "rb-from", seq: 1, intent: "and me" });
   upsertQueueItem(good);
@@ -515,7 +612,7 @@ test("rekeyQueue ROLLS BACK a half-applied move - the batch is never split", () 
   assert.throws(() =>
     rekeyQueue(
       "rb-from",
-      { noteKey: "rb-to", cwd: "/r", branch: "b", wrapupAskedAt: null, wrapupAnswer: null, promptedGoal: null, promptedEvidence: null, promptedActivityAt: null, updatedAt: 2 },
+      { noteKey: "rb-to", cwd: "/r", branch: "b", wrapupAskedAt: null, wrapupAnswer: null, promptedGoal: null, promptedEvidence: null, promptedActivityAt: null, promptedConsumedGeneration: null, updatedAt: 2 },
       [
         { ...good, noteKey: "rb-to", seq: 0 },
         { ...also, noteKey: "rb-to", seq: 1, intent: null as unknown as string },
@@ -541,7 +638,7 @@ test("rekeyQueue ROLLS BACK a half-applied move - the batch is never split", () 
 // ingest and SSE, so the floor rose with use and never came back down.
 
 function seedRow(key: string, cwd: string, updatedAt: number): void {
-  upsertQueue({ noteKey: key, cwd, branch: "b", wrapupAskedAt: null, wrapupAnswer: null, promptedGoal: null, promptedEvidence: null, promptedActivityAt: null, updatedAt });
+  upsertQueue({ noteKey: key, cwd, branch: "b", wrapupAskedAt: null, wrapupAnswer: null, promptedGoal: null, promptedEvidence: null, promptedActivityAt: null, promptedConsumedGeneration: null, updatedAt });
 }
 
 test("listQueueRowsForCwd returns only that cwd's queues", () => {
@@ -628,9 +725,9 @@ test("pruneDeadQueues collects an EMPTY row at any age, but keeps one holding wr
   // ...but each of the three fields alone is state worth keeping: an unanswered Ship it?
   // card, a human's answer, and the once-per-episode guard that stops the prompted
   // trigger re-verifying an idle session every tick.
-  upsertQueue({ noteKey: "keep-ask", cwd: "/k", branch: "b", wrapupAskedAt: 500, wrapupAnswer: null, promptedGoal: null, promptedEvidence: null, promptedActivityAt: null, updatedAt: Date.now() });
-  upsertQueue({ noteKey: "keep-answer", cwd: "/k", branch: "b", wrapupAskedAt: null, wrapupAnswer: "ship directly", promptedGoal: null, promptedEvidence: null, promptedActivityAt: null, updatedAt: Date.now() });
-  upsertQueue({ noteKey: "keep-goal", cwd: "/k", branch: "b", wrapupAskedAt: null, wrapupAnswer: null, promptedGoal: "ship the uploader", promptedEvidence: null, promptedActivityAt: null, updatedAt: Date.now() });
+  upsertQueue({ noteKey: "keep-ask", cwd: "/k", branch: "b", wrapupAskedAt: 500, wrapupAnswer: null, promptedGoal: null, promptedEvidence: null, promptedActivityAt: null, promptedConsumedGeneration: null, updatedAt: Date.now() });
+  upsertQueue({ noteKey: "keep-answer", cwd: "/k", branch: "b", wrapupAskedAt: null, wrapupAnswer: "ship directly", promptedGoal: null, promptedEvidence: null, promptedActivityAt: null, promptedConsumedGeneration: null, updatedAt: Date.now() });
+  upsertQueue({ noteKey: "keep-goal", cwd: "/k", branch: "b", wrapupAskedAt: null, wrapupAnswer: null, promptedGoal: "ship the uploader", promptedEvidence: null, promptedActivityAt: null, promptedConsumedGeneration: null, updatedAt: Date.now() });
 
   pruneDeadQueues(new Set(), 1);
   assert.ok(getQueueRow("keep-ask"), "an unanswered ask still has to render");

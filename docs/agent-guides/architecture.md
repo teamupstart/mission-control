@@ -107,6 +107,15 @@ selects the new key's state instead of carrying a generation across conversation
 monotonic only within one logical key and advance only when a normalized completion follows
 observed work. Idle notifications and duplicate turn ends do not advance them.
 
+Prompted automatic completion stores the last consumed generation on the Foreman queue row. The
+daemon compares the submitted logical key and generation with `session_work_cycles` in the same
+write that consumes it; queue items retain drain precedence. Reconciled intent is checked
+separately for staleness, while evidence fingerprints remain proof and workflow idempotency rather
+than lifecycle identity. Historical `prompted_goal` values are read only for an idempotent upgrade
+bootstrap: a value matching the current resolved intent marks the current completed generation as
+consumed, while a null or mismatched value leaves it eligible. New decisions never use the legacy
+intent/evidence columns as a fallback trigger.
+
 ## GitHub Inspector and PR provenance
 
 The workflow's Code Quality Judge and GitHub Inspector have different owners. Code Quality Judge

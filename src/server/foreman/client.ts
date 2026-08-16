@@ -38,6 +38,7 @@ import type {
   Session,
   SessionDiff,
   SessionGoal,
+  SessionIntentGuard,
   SessionNote,
   SessionQueue,
   Task,
@@ -1295,25 +1296,21 @@ export class ForemanClient implements ForemanActions {
     if (!res.ok) throw new Error(`setWrapupAnswer ${sessionId} -> ${res.status}`);
   }
 
-  /**
-   * Retire one episode of the `prompted` trigger. Throws on failure, and the caller
-   * must treat that as fatal to the episode: this write is what stops the trigger
-   * re-firing, so proceeding to type after it failed is the double-push.
-   */
-  async markPromptedWrapup(
+  /** Consume one expected completed work-cycle generation, optionally raising its ask. */
+  async consumePromptedGeneration(
     sessionId: string,
-    goal: string,
-    evidenceMarker: string,
-    activityAt: number,
+    logicalKey: string,
+    generation: number,
+    expectedIntent: SessionIntentGuard,
     opts?: { ask?: boolean },
   ): Promise<void> {
     const res = await send("POST", `/api/sessions/${enc(sessionId)}/queue/wrapup/prompted`, {
-      goal,
-      evidenceMarker,
-      activityAt,
+      logicalKey,
+      generation,
+      expectedIntent,
       ...(opts?.ask ? { ask: true } : {}),
     });
-    if (!res.ok) throw new Error(`markPromptedWrapup ${sessionId} -> ${res.status}`);
+    if (!res.ok) throw new Error(`consumePromptedGeneration ${sessionId} -> ${res.status}`);
   }
 
   /** The full reconciled intent, whose objective and raw prompt the card summary omits. */

@@ -18,6 +18,7 @@ const queue: SessionQueue = {
   promptedGoal: null,
   promptedEvidence: null,
   promptedActivityAt: null,
+  promptedConsumedGeneration: null,
   updatedAt: 42,
   items: [{
     id: "item",
@@ -53,6 +54,7 @@ test("drain and prompted markers are stable proof hashes and change with a re-ar
   );
   const prompted = promptedCompletionClaim({
     noteKey: "note",
+    workCycle: { logicalKey: "note", generation: 2 },
     intent: {
       objective: "repair",
       objectiveVersion: 2,
@@ -61,11 +63,10 @@ test("drain and prompted markers are stable proof hashes and change with a re-ar
     },
     headSha: "head",
     transcriptAnchor: 100,
-    activityAt: 99,
     summary: "complete",
   });
   assert.equal(prompted.completionKind, "prompted");
-  assert.equal(prompted.activityAt, 99);
+  assert.deepEqual(prompted.expectedWorkCycle, { logicalKey: "note", generation: 2 });
   assert.equal(prompted.marker.length, 64);
   assert.deepEqual(prompted.expectedIntent, {
     objective: "repair",
@@ -74,16 +75,16 @@ test("drain and prompted markers are stable proof hashes and change with a re-ar
     episodeKey: "intent:2:3",
   });
   assert.equal(drain.expectedIntent, null);
-  assert.equal(drain.activityAt, null);
+  assert.equal(drain.expectedWorkCycle, null);
   // A claim is a proof, not a request for a workflow. Pin the whole key set so no future
   // field can smuggle workflow identity back onto the wire and let the worker start a
   // second PR-producing path beside whatever is already bound.
   for (const claim of [drain, prompted]) {
     assert.deepEqual(Object.keys(claim).sort(), [
-      "activityAt",
       "completionKind",
       "evidenceFingerprint",
       "expectedIntent",
+      "expectedWorkCycle",
       "marker",
       "summary",
     ]);

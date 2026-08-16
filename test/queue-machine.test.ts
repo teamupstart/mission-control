@@ -148,6 +148,7 @@ function mkQueue(items: WorkItem[], over: Partial<SessionQueue> = {}): SessionQu
     promptedGoal: null,
     promptedEvidence: null,
     promptedActivityAt: null,
+    promptedConsumedGeneration: null,
     updatedAt: 0,
     items,
     ...over,
@@ -504,8 +505,26 @@ test("tickTargets skips an uninvited PROMPTED wrap-up candidate", () => {
     foremanInvite: null,
     queue: null,
     goal: mkIntent(),
+    workCycle: {
+      logicalKey: "agent-1",
+      generation: 1,
+      active: false,
+      completedAt: NOW - 60_000,
+      updatedAt: NOW - 60_000,
+    },
   });
-  const twin = mkSession({ id: "ours-prompted", queue: null, goal: mkIntent() });
+  const twin = mkSession({
+    id: "ours-prompted",
+    queue: null,
+    goal: mkIntent(),
+    workCycle: {
+      logicalKey: "agent-1",
+      generation: 1,
+      active: false,
+      completedAt: NOW - 60_000,
+      updatedAt: NOW - 60_000,
+    },
+  });
   assert.deepEqual(
     tickTargets([s, twin], ["prompted"]).map((t) => t.id),
     ["ours-prompted"],

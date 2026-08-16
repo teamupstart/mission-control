@@ -22,6 +22,7 @@ import type {
   SessionCost,
   SessionMeta,
   SessionGoal,
+  SessionIntentGuard,
   SessionGoalSummary,
   SessionNote,
   SessionNoteSummary,
@@ -60,7 +61,8 @@ import type {
 } from "@shared/protocol.ts";
 import { inFlightItem as inFlightItemOf, isTerminalState } from "@shared/queue.ts";
 import { noteAwaitsYou } from "@shared/foreman.ts";
-import { goalLine } from "@shared/goal.ts";
+import { reportBucket } from "@shared/session.ts";
+import { goalLine, resolvedSessionIntent, sessionIntentMatches } from "@shared/goal.ts";
 import { fullTaskTitle } from "@shared/title.ts";
 import { taskRepoPrSummaries, taskRepoRefs } from "@shared/task-repos.ts";
 import { capabilitiesFor, workQueueBlockedReason } from "@shared/harness-capabilities.ts";
@@ -142,6 +144,8 @@ import {
   logEvent,
   markWorkCycleActive,
   completeWorkCycle,
+  bootstrapPromptedConsumedGeneration,
+  consumePromptedGeneration as dbConsumePromptedGeneration,
   recordAgentBinding,
   rekeyQueue,
   listQueueRowsForCwd,
@@ -6389,7 +6393,10 @@ export class Registry extends EventEmitter {
   getQueue(id: string): SessionQueue | null {
     const s = this.sessions.get(id);
     if (!s) return null;
-    return this.getQueueByKey(noteKeyFor(s));
+    const key = noteKeyFor(s);
+    const intent = resolvedSessionIntent(this.getGoal(s.id));
+    if (intent) bootstrapPromptedConsumedGeneration(key, intent.episodeKey);
+    return this.getQueueByKey(key);
   }
 
   /** Full queue by note key - the orphan path, where no live session resolves it. */
@@ -6406,6 +6413,7 @@ export class Registry extends EventEmitter {
       promptedGoal: row?.promptedGoal ?? null,
       promptedEvidence: row?.promptedEvidence ?? null,
       promptedActivityAt: row?.promptedActivityAt ?? null,
+      promptedConsumedGeneration: row?.promptedConsumedGeneration ?? null,
       updatedAt: row?.updatedAt ?? 0,
       items,
     };
@@ -6495,6 +6503,7 @@ export class Registry extends EventEmitter {
       promptedGoal: prev?.promptedGoal ?? null,
       promptedEvidence: prev?.promptedEvidence ?? null,
       promptedActivityAt: prev?.promptedActivityAt ?? null,
+      promptedConsumedGeneration: prev?.promptedConsumedGeneration ?? null,
       updatedAt: now,
     });
     return key;
@@ -6509,6 +6518,7 @@ export class Registry extends EventEmitter {
       promptedGoal?: string | null;
       promptedEvidence?: string | null;
       promptedActivityAt?: number | null;
+      promptedConsumedGeneration?: number | null;
     },
     now = Date.now(),
   ): void {
@@ -6531,6 +6541,10 @@ export class Registry extends EventEmitter {
           : patch.promptedGoal === null
             ? null
             : prev.promptedActivityAt,
+      promptedConsumedGeneration:
+        patch.promptedConsumedGeneration !== undefined
+          ? patch.promptedConsumedGeneration
+          : prev.promptedConsumedGeneration,
       updatedAt: now,
     });
     this.syncSessionsForQueue(key);
@@ -6539,6 +6553,49 @@ export class Registry extends EventEmitter {
   /** Re-read a queue after another daemon-owned transaction updated its guard columns. */
   refreshQueue(key: string): void {
     this.syncSessionsForQueue(key);
+  }
+
+  /** Atomically consume the expected settled generation for one live logical session. */
+  consumePromptedGeneration(
+    id: string,
+    input: {
+      logicalKey: string;
+      generation: number;
+      expectedIntent: SessionIntentGuard;
+      ask: boolean;
+    },
+    now = Date.now(),
+  ): boolean {
+    const session = this.sessions.get(id);
+    if (!session || session.state === "exited" || workQueueBlockedReason(session)) return false;
+    if (noteKeyFor(session) !== input.logicalKey) return false;
+    if (session.state !== "idle" || reportBucket(session, [...this.sessions.values()]) === "needs-you") {
+      return false;
+    }
+    if (listQueueItems(input.logicalKey).length > 0) return false;
+    if (!sessionIntentMatches(this.getGoal(id), input.expectedIntent)) return false;
+    const cycle = session.workCycle;
+    if (
+      !cycle ||
+      cycle.logicalKey !== input.logicalKey ||
+      cycle.generation !== input.generation ||
+      cycle.generation < 1 ||
+      cycle.active ||
+      cycle.completedAt === null
+    ) return false;
+    // Upgrade compatibility is resolved at the daemon mutation boundary too, not
+    // only when the worker happened to read the queue first. A matching historical
+    // guard must remain spent even for a direct HTTP consumer.
+    bootstrapPromptedConsumedGeneration(input.logicalKey, input.expectedIntent.episodeKey);
+    const consumed = dbConsumePromptedGeneration({
+      noteKey: input.logicalKey,
+      sessionCwd: session.cwd,
+      generation: input.generation,
+      ask: input.ask,
+      now,
+    });
+    if (consumed) this.syncSessionsForQueue(input.logicalKey);
+    return consumed;
   }
 
   /**
@@ -6702,6 +6759,7 @@ export class Registry extends EventEmitter {
         promptedGoal: row.promptedGoal,
         promptedEvidence: row.promptedEvidence,
         promptedActivityAt: row.promptedActivityAt,
+        promptedConsumedGeneration: row.promptedConsumedGeneration,
         updatedAt: now,
       },
       items.map((i, n) => ({ ...i, noteKey: toKey, seq: base + n, updatedAt: now })),

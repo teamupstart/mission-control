@@ -107,7 +107,7 @@ test("the offer explains itself, naming the reason it is being made", () => {
   assert.match(both!.tooltip, /nothing is written or committed until you do/);
   assert.match(
     both!.tooltip,
-    /Offered because you corrected it during the work, and the Inspector raised findings/,
+    /Offered because you corrected it during the work, and GitHub Inspector raised findings/,
   );
 });
 

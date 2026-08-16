@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Durable work-cycle completion: phased implementation</title>
+  <style>
+    :root{--bg:#f4f7fb;--panel:#fff;--panel2:#edf3f8;--ink:#162237;--muted:#607087;--line:#d8e1ec;--cyan:#116d78;--blue:#365fc6;--green:#166940;--amber:#9a6411;--code:#edf2f7;--shadow:0 16px 45px rgba(25,43,69,.08)}
+    @media(prefers-color-scheme:dark){:root{--bg:#090e16;--panel:#111925;--panel2:#172231;--ink:#edf3ff;--muted:#9aa9bd;--line:#2a374a;--cyan:#70d7df;--blue:#91adff;--green:#82d9ad;--amber:#edbe6f;--code:#1a2534;--shadow:0 20px 60px rgba(0,0,0,.25)}}
+    *{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 85% 0,color-mix(in srgb,var(--cyan) 8%,transparent),transparent 30rem),var(--bg);color:var(--ink);font:16px/1.58 Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}main{width:min(1120px,calc(100% - 28px));margin:auto;padding:42px 0 72px}header{padding-bottom:30px;border-bottom:1px solid var(--line)}.eyebrow{color:var(--cyan);font-size:.76rem;font-weight:800;letter-spacing:.15em;text-transform:uppercase}h1{max-width:900px;margin:8px 0 16px;font-size:clamp(2.25rem,6vw,4.25rem);line-height:1.03;letter-spacing:-.045em}h2{margin:40px 0 14px;font-size:1.55rem;line-height:1.2}h3{margin:0 0 9px;font-size:1.05rem}p{margin:0 0 14px}.lede{max-width:870px;color:var(--muted);font-size:1.12rem}.pills{display:flex;flex-wrap:wrap;gap:8px;margin-top:17px}.pill{padding:5px 10px;border:1px solid var(--line);border-radius:999px;color:var(--muted);font-size:.8rem}.pill.good{color:var(--green)}.card{padding:20px;background:var(--panel);border:1px solid var(--line);border-radius:15px;box-shadow:var(--shadow)}.decision{margin-top:24px;border-color:color-mix(in srgb,var(--green) 48%,var(--line))}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-top:18px}.grid .card{box-shadow:none}.findings{counter-reset:finding;display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:0;list-style:none}.findings li{counter-increment:finding;position:relative;margin:0;padding:14px 14px 14px 48px;background:var(--panel);border:1px solid var(--line);border-radius:11px}.findings li::before{content:counter(finding);position:absolute;left:14px;top:14px;width:23px;height:23px;display:grid;place-items:center;color:var(--bg);background:var(--cyan);border-radius:99px;font-size:.72rem;font-weight:800}code{padding:.11em .34em;background:var(--code);border-radius:5px;font:.9em "SFMono-Regular",Consolas,monospace;overflow-wrap:anywhere}ul{padding-left:22px}li{margin:8px 0}li::marker{color:var(--cyan)}.estimate{display:grid;grid-template-columns:.7fr 1.3fr;gap:16px;margin-top:18px}.number{display:grid;place-items:center;min-height:170px;text-align:center;background:color-mix(in srgb,var(--panel) 92%,var(--cyan));border:1px solid color-mix(in srgb,var(--cyan) 48%,var(--line));border-radius:15px}.number strong{display:block;color:var(--cyan);font-size:2.8rem;line-height:1}.number span{color:var(--muted);font-size:.82rem}.diagram{margin-top:20px;padding:18px;overflow-x:auto;background:var(--panel);border:1px solid var(--line);border-radius:15px;box-shadow:var(--shadow)}.diagram svg{display:block;width:100%;min-width:780px;height:auto}.scroll{overflow-x:auto;margin-top:18px;border:1px solid var(--line);border-radius:14px}table{width:100%;min-width:850px;border-collapse:collapse;background:var(--panel)}th,td{padding:14px;text-align:left;vertical-align:top;border-bottom:1px solid var(--line)}th{color:var(--muted);background:var(--panel2);font-size:.74rem;letter-spacing:.08em;text-transform:uppercase}tbody tr:last-child td{border-bottom:0}.phase{display:grid;grid-template-columns:auto 1fr auto;gap:15px;align-items:center;margin-top:13px;padding:18px;background:var(--panel);border:1px solid var(--line);border-radius:14px}.phase .n{width:42px;height:42px;display:grid;place-items:center;color:var(--bg);background:var(--cyan);border-radius:12px;font-weight:850}.phase .meta{color:var(--muted);font-size:.82rem}.phase a{color:var(--blue);font-weight:700}.arrow{text-align:center;color:var(--muted);font-size:1.5rem}.audit{border-left:3px solid var(--amber)}a{color:var(--blue)}footer{margin-top:46px;padding-top:18px;border-top:1px solid var(--line);color:var(--muted);font-size:.82rem}@media(max-width:760px){main{padding-top:24px}.grid,.findings,.estimate{grid-template-columns:1fr}.phase{grid-template-columns:auto 1fr}.phase .meta{grid-column:2}}
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="eyebrow">Merge-aware implementation index</div>
+    <h1>Durable work-cycle completion</h1>
+    <p class="lede">Two disabled, dependency-linked phases establish a durable cross-harness turn identity and then replace prompted intent/evidence re-arming without introducing a permanent fallback.</p>
+    <div class="pills"><span class="pill good">Approved</span><span class="pill">2 phases</span><span class="pill">No concurrency</span><span class="pill">420 to 650 production lines</span><span class="pill">Codex gpt-5.6-sol / xhigh / low / disabled</span></div>
+  </header>
+
+  <section class="card decision">
+    <h2 style="margin-top:0">Source and approved decisions</h2>
+    <p>Authoritative source: <a href="plan.html"><code>docs/plans/automatic-completion-work-cycles/plan.md</code></a>.</p>
+    <ul>
+      <li>Replace prompted intent-revision re-arming rather than keep a permanent parallel fallback.</li>
+      <li>Retain intent, evidence, verification, settled idle, queue drain, workflow claims, Ask, direct wrap-up, and fail-closed behavior.</li>
+      <li>Let the running tactical incident task land first, then preserve its valid coverage while replacing its narrower mechanism.</li>
+      <li>Schedule every phase disabled and low priority on Codex <code>gpt-5.6-sol</code> with <code>xhigh</code> effort.</li>
+    </ul>
+    <p>There are no unresolved product choices.</p>
+  </section>
+
+  <h2>Repository findings</h2>
+  <ol class="findings">
+    <li>The prompted guard and incomplete hold are keyed to resolved intent, with an assumption background continuations disprove.</li>
+    <li>Claude task notifications are correctly filtered from human intent and must remain lifecycle-only signals.</li>
+    <li>Terminal <code>Stop</code> and SDK <code>turn_done</code> already express the same idle fact, but lack a durable generic identity.</li>
+    <li><code>settledIdle</code> remains the shared late-hook and multi-turn ordering guard.</li>
+    <li><code>session_events</code> is hook-only by contract because any row currently means hooks were seen.</li>
+    <li><code>session_work_episodes</code> owns task, branch, agent, and pull-request provenance rather than individual turns.</li>
+    <li>Workflow completion claims already retire a Foreman guard atomically with run creation or resumption.</li>
+    <li>The worker rechecks intent after verification but not idle or completed-turn currency.</li>
+    <li>Workflow resumption already follows daemon-observed state and evidence; prompted delivery still clears its legacy guard manually.</li>
+    <li>Tactical task <code>5439ebd4-e346-4d57-b778-ecb2ebec8e67</code> is already running and must land or be explicitly superseded first.</li>
+  </ol>
+
+  <h2>Sizing and phase count</h2>
+  <div class="estimate">
+    <div class="number"><div><strong>420-650</strong><span>estimated non-test implementation lines</span></div></div>
+    <div class="card">
+      <p>The estimate includes shared lifecycle types, harness normalization, additive SQLite state, Registry transitions and projection, prompted selection and consumption, workflow claim changes, cleanup, and documentation.</p>
+      <p><strong>Why two phases:</strong> one change should not simultaneously invent a cross-harness durable lifecycle contract and replace a high-risk shipping trigger after rebasing an in-flight incident fix. Phase 1 is independently testable and behavior-neutral. Phase 2 consumes its fixed contract and performs migration plus cutover together.</p>
+      <p><strong>Why not three:</strong> a separate cleanup phase would leave two prompted trigger identities active in a merged state, which violates the approved replacement decision.</p>
+    </div>
+  </div>
+
+  <h2>Dependency graph</h2>
+  <div class="diagram">
+    <svg viewBox="0 0 940 260" role="img" aria-labelledby="g-title g-desc">
+      <title id="g-title">Two-phase dependency graph</title>
+      <desc id="g-desc">The running tactical fix precedes Phase 1, which precedes Phase 2. The planning session is also a direct dependency of both phases.</desc>
+      <defs><marker id="arr" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0 0L0 6L9 3z" fill="#71839c"/></marker></defs>
+      <g font-family="Inter,system-ui,sans-serif">
+        <rect x="25" y="75" width="230" height="85" rx="14" fill="#322b1d" stroke="#edbe6f"/><text x="47" y="106" fill="#ffe4b8" font-size="16" font-weight="700">Running tactical fix</text><text x="47" y="132" fill="#d2c3a7" font-size="12">5439ebd4...e67</text><text x="47" y="151" fill="#d2c3a7" font-size="12">merge or supersede explicitly</text>
+        <rect x="355" y="65" width="235" height="105" rx="14" fill="#15313a" stroke="#70d7df"/><text x="378" y="99" fill="#d2f7f4" font-size="16" font-weight="700">Phase 1</text><text x="378" y="125" fill="#b6d4d7" font-size="13">durable work-cycle foundation</text><text x="378" y="149" fill="#b6d4d7" font-size="12">240 to 390 lines</text>
+        <rect x="685" y="65" width="230" height="105" rx="14" fill="#202b45" stroke="#91adff"/><text x="708" y="99" fill="#dfe7ff" font-size="16" font-weight="700">Phase 2</text><text x="708" y="125" fill="#bec9e2" font-size="13">prompted completion cutover</text><text x="708" y="149" fill="#bec9e2" font-size="12">180 to 300 lines</text>
+        <rect x="354" y="205" width="562" height="38" rx="10" fill="#172231" stroke="#71839c"/><text x="466" y="229" fill="#aebbd0" font-size="12">planning-session dependency gates both tasks until these artifacts merge</text>
+        <line x1="255" y1="117" x2="353" y2="117" stroke="#71839c" stroke-width="2" marker-end="url(#arr)"/><line x1="590" y1="117" x2="683" y2="117" stroke="#71839c" stroke-width="2" marker-end="url(#arr)"/><line x1="473" y1="205" x2="473" y2="172" stroke="#71839c" stroke-width="2" marker-end="url(#arr)"/><line x1="799" y1="205" x2="799" y2="172" stroke="#71839c" stroke-width="2" marker-end="url(#arr)"/>
+      </g>
+    </svg>
+  </div>
+
+  <h2>Phase table</h2>
+  <div class="scroll"><table><thead><tr><th>Phase</th><th>Outcome</th><th>Direct prerequisite</th><th>Estimate</th><th>Concurrency</th></tr></thead><tbody><tr><td><strong>1. Durable foundation</strong></td><td>Persist and expose a generic completed-turn generation for terminal and SDK sessions without changing Foreman behavior.</td><td>Tactical fix; planning session</td><td>240 to 390</td><td>None</td></tr><tr><td><strong>2. Prompted cutover</strong></td><td>Replace intent/evidence re-arming with generation consumption and remove the prompted workflow reset.</td><td>Phase 1; planning session</td><td>180 to 300</td><td>None</td></tr></tbody></table></div>
+
+  <h2>Phase documents</h2>
+  <div class="phase"><div class="n">1</div><div><h3>Durable work-cycle foundation</h3><p>Shared normalization, durable current state, Registry transitions, restart recovery, and read projection. Prompted behavior remains unchanged.</p><a href="phase-1-durable-work-cycle-foundation.md">Open detailed Phase 1 Markdown</a></div><div class="meta">Depends on tactical fix</div></div>
+  <div class="arrow">↓</div>
+  <div class="phase"><div class="n">2</div><div><h3>Prompted completion cutover</h3><p>Consumed-generation migration, candidate and worker currency checks, atomic workflow/direct action, natural delivery re-arm, legacy-trigger removal, and documentation.</p><a href="phase-2-prompted-completion-cutover.md">Open detailed Phase 2 Markdown</a></div><div class="meta">Depends on Phase 1</div></div>
+
+  <h2>Cross-phase contracts</h2>
+  <div class="grid">
+    <div class="card"><h3>Phase 1 owns</h3><ul><li>Generic work-cycle vocabulary</li><li>Persistence and migration</li><li>Registry transition rules</li><li>Logical key and generation projection</li><li>Duplicate, restart, and rotation semantics</li></ul></div>
+    <div class="card"><h3>Phase 2 owns</h3><ul><li>Consumed-generation guard migration</li><li>Prompted selection and failure keying</li><li>Post-verifier currency checks</li><li>Atomic workflow and direct consumption</li><li>Delivery reset removal and docs</li></ul></div>
+  </div>
+  <ul>
+    <li>Raw harness strings stay inside adapters.</li>
+    <li>Queue drain remains authoritative when queue items exist.</li>
+    <li>Evidence fingerprints remain proof and idempotency, not turn identity.</li>
+    <li>Phase 1 changes no prompted behavior.</li>
+    <li>Phase 2 leaves no permanent legacy or evidence-fingerprint trigger active.</li>
+  </ul>
+
+  <h2>Merge order and verification</h2>
+  <ol>
+    <li>The tactical fix merges or is explicitly superseded.</li>
+    <li>Phase 1 rebases, verifies lifecycle and migration behavior, and merges green.</li>
+    <li>Phase 2 begins from the merged foundation, performs migration plus cutover, and merges green.</li>
+  </ol>
+  <p>Each phase runs focused tests with the required preload, then typecheck and lint. Phase 1 includes database migration and isolation coverage. Phase 2 runs the real prompted worker integration, workflow claim and repair-cycle suites, the full unit suite, build, and smoke. No UI is planned; any visible change triggers the repository's Playwright requirement.</p>
+
+  <h2>Final behavior audit</h2>
+  <ul>
+    <li>A background continuation under unchanged intent produces one later verification and no duplicate claim.</li>
+    <li>Idle noise and duplicate turn ends do not re-arm.</li>
+    <li>Work beginning during verification discards the stale result.</li>
+    <li>Consumed and unconsumed generations recover correctly across restarts.</li>
+    <li>Terminal Claude, terminal Codex, and SDK follow one generic contract.</li>
+    <li>Queue-backed sessions remain drain-owned.</li>
+    <li>Workflow delivery naturally re-arms through the later completed turn.</li>
+    <li>Empty diff and verifier failure paths keep their cost and no-hot-loop properties.</li>
+  </ul>
+
+  <section class="card audit">
+    <h2 style="margin-top:0">Cross-phase audit record</h2>
+    <ul>
+      <li>Every approved source requirement is assigned exactly once. No cleanup is undocumented.</li>
+      <li>Phase 2 consumes Phase 1 directly and cannot run concurrently. The graph is acyclic.</li>
+      <li>Phase 1 alone is operable because no consumer switches early.</li>
+      <li>Phase 2 performs migration and cutover together, so no merged state has two active prompted triggers.</li>
+      <li>Both tasks depend on this planning session; Phase 1 also depends on the tactical fix; Phase 2 depends on Phase 1.</li>
+      <li>Every scheduled task must be verified disabled, low priority, Codex <code>gpt-5.6-sol</code>, and <code>xhigh</code>.</li>
+    </ul>
+  </section>
+
+  <footer>Rendered from <code>docs/plans/automatic-completion-work-cycles/phased-plan.md</code>. The Markdown remains authoritative.</footer>
+</main>
+</body>
+</html>

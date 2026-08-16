@@ -23,7 +23,7 @@ function status(over: Partial<SettingsStatus> = {}): SettingsStatus {
     taskSources: { failing: 0 },
     // Present by default so the tests that are about OTHER categories keep seeing the whole
     // rail; the ones about Conductor's conditional row override it.
-    pipelines: { present: true },
+    pipelines: { present: true, observing: 0 },
     ...over,
   };
 }

@@ -62,7 +62,7 @@ const COLUMNS = [
   },
   {
     key: "inspector",
-    label: "Inspector posts reviews",
+    label: "GitHub Inspector posts reviews",
     title: "Publishes review comments on this repo's PRs under your GitHub account.",
   },
   {
@@ -192,7 +192,7 @@ export function TrustPanel({
   const unknown = [
     !foreman.config && "Foreman",
     !workflows.config && "Workflows",
-    !inspector.config && "the Inspector",
+    !inspector.config && "GitHub Inspector",
     !shipping.config && "Shipping",
   ].filter((x): x is string => Boolean(x));
 
@@ -370,7 +370,7 @@ export function TrustPanel({
       <p className="settings-hint">
         Every grant that lets Mission Control act outside this app, in one table. Each column
         is its subsystem's own allowlist - clicking a cell writes there, and the Foreman,
-        Workflows, Inspector and Shipping panels keep working against the same lists.
+        Workflows, GitHub Inspector and Shipping panels keep working against the same lists.
         Worktrees of a trusted repo count too, wherever they live on disk.
       </p>
 
@@ -420,10 +420,10 @@ export function TrustPanel({
 
       {blindSpots.length > 0 && (
         <p className="settings-warn trust-trap-note">
-          † YOLO may merge in <WarningRepositoryList repos={blindRepos} />, but the Inspector
+          † YOLO may merge in <WarningRepositoryList repos={blindRepos} />, but GitHub Inspector
           may not review there
           - so no pull request will ever qualify.{" "}
-          <Tooltip label="Add these repos to the Inspector's allowlist">
+          <Tooltip label="Add these repos to GitHub Inspector's allowlist">
             <button type="button" className="settings-link" onClick={grantReview}>
               Grant the review
             </button>

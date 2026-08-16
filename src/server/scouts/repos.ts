@@ -3,6 +3,8 @@ import { archiveRepoSlot } from "@shared/archives.ts";
 import type { Task } from "@shared/types.ts";
 import type { ArchiveRepoSlot } from "../archives/capture-store.ts";
 
+export type ScoutRepoTask = Pick<Task, "repoRoot" | "worktreePath" | "baseSha" | "extraRepos">;
+
 /**
  * The generated repository slots one scout task works across.
  *
@@ -36,7 +38,10 @@ import type { ArchiveRepoSlot } from "../archives/capture-store.ts";
  * multi-repo task, so an assignment always resolves to exactly one slot, and using the live
  * session's checkout is the only reading that can be true there.
  */
-export function scoutRepoSlots(task: Task, fallbackRoot: string | null = null): ArchiveRepoSlot[] {
+export function scoutRepoSlots(
+  task: ScoutRepoTask,
+  fallbackRoot: string | null = null,
+): ArchiveRepoSlot[] {
   const slots: ArchiveRepoSlot[] = [
     {
       slot: archiveRepoSlot(1),

@@ -126,7 +126,7 @@ export function workflowLadderPeekView(
         : null,
     ].filter((fact): fact is string => fact !== null);
     return {
-      name: "Inspector gate",
+      name: "GitHub Inspector gate",
       sub: facts.join(" · ") || null,
       status: gateSummaryStatus(summary.gate),
       members: [],
@@ -158,7 +158,7 @@ export function workflowLadderPeekView(
   if (submission.mode === "inspector_only") {
     return {
       name: "Session",
-      sub: "Inspector-only round",
+      sub: "GitHub Inspector-only round",
       status: submissionStatus(submission, changesRequested),
       members: [],
       sentence: null,

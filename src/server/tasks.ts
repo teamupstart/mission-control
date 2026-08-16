@@ -56,6 +56,7 @@ import { isPlanTask } from "./plans/prompt.ts";
 import { planDispatchBlock, planSkillsForSession } from "./plans/skills.ts";
 import { provisionScoutSubmissionCredential } from "./scouts/submission-auth.ts";
 import { SUBMIT_SCOUT_ARTIFACTS_TOOL } from "./scouts/submission-tool.ts";
+import { SUBMIT_WORKFLOW_EVIDENCE_TOOL } from "./workflows/evidence-tool.ts";
 import {
   discardScoutPromptBoundary,
   freezeScoutPromptBoundary,
@@ -404,6 +405,9 @@ export class TaskManager {
   /** Re-entrancy guard for `reconcileMergedTasks`, which its own completions can re-enter. */
   private reconcilingMergedTasks = false;
   private completedInitialSessionSweep = false;
+  private workflowEvidenceEnabledForTask: (
+    task: Pick<Task, "kind" | "workflowId">,
+  ) => boolean = () => false;
   constructor(
     private registry: Registry,
     private closeMergedSessionDeps: CloseMergedSessionDeps = defaultCloseMergedSessionDeps,
@@ -429,7 +433,10 @@ export class TaskManager {
      */
     private archives?: TaskArchiveGate,
   ) {
-    this.dispatcher = new Dispatcher(registry, undefined, { supervisor });
+    this.dispatcher = new Dispatcher(registry, undefined, {
+      supervisor,
+      workflowEvidenceEnabled: (task) => this.workflowEvidenceEnabledForTask(task),
+    });
     // A restart severs the in-flight dispatch promises but leaves worktrees + terminal
     // homes on disk. Reconcile every task that still holds resources by checking
     // whether its agent's terminal home survived (any backend, resolved by name).
@@ -499,6 +506,13 @@ export class TaskManager {
     // And the periodic backstop for the tasks that announcement cannot reach: whatever the
     // by-URL poller recorded this tick. No timer of its own - the poller's tick is it.
     registry.onPrMergesRecorded(() => this.reconcileMergedTasks());
+  }
+
+  /** Install the daemon's immutable workflow-graph eligibility reader after both owners exist. */
+  registerWorkflowEvidenceEligibility(
+    resolve: (task: Pick<Task, "kind" | "workflowId">) => boolean,
+  ): void {
+    this.workflowEvidenceEnabledForTask = resolve;
   }
 
   /**
@@ -1960,14 +1974,18 @@ export class TaskManager {
     // reaches the same server through `claude mcp add` if they installed the integration. The
     // agent's own submission failure is the backstop for the remaining case, and it happens
     // with the checkout intact rather than after it was reset.
-    const mcpDescriptor =
-      t.kind === "scout" ? await (opts.missionMcpDescriptor ?? missionMcpDescriptor)() : null;
-    if (t.kind === "scout" && !mcpDescriptor) {
+    const workflowEvidence = this.workflowEvidenceEnabledForTask(t);
+    const requiresSubmissionTool = t.kind === "scout" || workflowEvidence;
+    const mcpDescriptor = requiresSubmissionTool
+      ? await (opts.missionMcpDescriptor ?? missionMcpDescriptor)()
+      : null;
+    if (requiresSubmissionTool && !mcpDescriptor) {
       return {
         ok: false,
-        error:
-          "this is a scout, and Mission Control's MCP server is not built on this machine, so " +
-          "the agent could not submit the report the task needs to finish",
+        error: t.kind === "scout"
+          ? "this is a scout, and Mission Control's MCP server is not built on this machine, so "
+            + "the agent could not submit the report the task needs to finish"
+          : "this workflow accepts image evidence, but Mission Control's MCP server is not built on this machine",
         scope: "task",
       };
     }
@@ -1983,16 +2001,22 @@ export class TaskManager {
     // MCP server is a child it spawned at launch, so the file on disk only speaks for it while
     // the two are the same build - see `verifyMissionMcpToolsForRunningSession`. Interrogating
     // the current file after a rebuild would report on a process this agent is not using.
-    if (t.kind === "scout") {
+    if (requiresSubmissionTool) {
       // Handed the descriptor resolved just above rather than a second resolution of it, so
       // this reports on the very bundle the check above admitted.
       const published = await (
         opts.verifyMissionMcpToolsForRunningSession ?? verifyMissionMcpToolsForRunningSession
-      )([SUBMIT_SCOUT_ARTIFACTS_TOOL], s.startedAt, mcpDescriptor);
+      )(
+        [t.kind === "scout" ? SUBMIT_SCOUT_ARTIFACTS_TOOL : SUBMIT_WORKFLOW_EVIDENCE_TOOL],
+        s.startedAt,
+        mcpDescriptor,
+      );
       if (!published.ok) {
         return {
           ok: false,
-          error: `this is a scout, and ${published.reason}, so the agent could not submit the report the task needs to finish`,
+          error: t.kind === "scout"
+            ? `this is a scout, and ${published.reason}, so the agent could not submit the report the task needs to finish`
+            : `this workflow accepts image evidence, and ${published.reason}`,
           scope: "task",
         };
       }
@@ -2175,6 +2199,7 @@ export class TaskManager {
         withTaskKindContract(ready, ready.intent, {
           fallbackRoot: s.cwd,
           planSkills: planSkills?.ok ? planSkills.commands : null,
+          workflowEvidence,
         }),
         undefined,
         () => this.registry.promptResourceBlockerForSession(s.id),

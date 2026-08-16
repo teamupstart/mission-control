@@ -360,8 +360,8 @@ export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
     ) {
       transition = {
         className: "inspector-enablement",
-        title: `${run.workflowName} needs Inspector enabled`,
-        body: "Enable Inspector for the repository to continue.",
+        title: `${run.workflowName} needs GitHub Inspector enabled`,
+        body: "Enable GitHub Inspector for the repository to continue.",
         severity: "attention",
       };
     } else if (

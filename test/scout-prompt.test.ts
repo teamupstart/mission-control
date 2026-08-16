@@ -14,6 +14,8 @@ import {
 } from "../src/server/scouts/prompt.ts";
 import { scoutRepoSlots } from "../src/server/scouts/repos.ts";
 import { withTaskKindContract } from "../src/server/task-contract.ts";
+import { SUBMIT_WORKFLOW_EVIDENCE_TOOL } from "../src/server/workflows/evidence-tool.ts";
+import { NO_MISTAKES_REVIEW_WORKFLOW_ID } from "../src/shared/builtin-workflow.ts";
 import { SUBMIT_SCOUT_ARTIFACTS_TOOL } from "../src/server/scouts/submission-tool.ts";
 import { SubmitScoutArtifactsSchema } from "../src/shared/protocol.ts";
 import type { Task } from "../src/shared/types.ts";
@@ -90,6 +92,16 @@ test("a ship task's intent is byte-identical to what it was", () => {
   const task = mkTask({ kind: "ship" });
   assert.equal(withTaskKindContract(task, task.intent), task.intent);
   assert.equal(isScoutTask(task), false);
+});
+
+test("only a ship task whose selected graph runs Personas receives workflow evidence", () => {
+  const task = mkTask({ kind: "ship", workflowId: NO_MISTAKES_REVIEW_WORKFLOW_ID });
+  const delivered = withTaskKindContract(task, task.intent, { workflowEvidence: true });
+  assert.match(delivered, new RegExp(SUBMIT_WORKFLOW_EVIDENCE_TOOL));
+  assert.match(delivered, /gitignored/);
+  assert.match(delivered, /Do not commit/);
+  const required = kindMissionMcpRequirement(task, null, true);
+  assert.deepEqual(required?.tools, [SUBMIT_WORKFLOW_EVIDENCE_TOOL]);
 });
 
 test("the contract names the path, the rules, the tool, and the no-pull-request rule", () => {

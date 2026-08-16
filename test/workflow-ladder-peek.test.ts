@@ -62,7 +62,7 @@ test("the Board peek keeps the exact first objection visible", () => {
 test("the Inspector gate outranks already-passed stages in the Board peek", () => {
   const detail = ladderDetail("gate");
   const view = workflowLadderPeekView(detail.summary, detail);
-  assert.equal(view?.name, "Inspector gate");
+  assert.equal(view?.name, "GitHub Inspector gate");
   assert.equal(view?.sub, "PR #301 · head 4f2ab19c");
   assert.equal(view?.sentence, gateWaitSentence("review_pending"));
 

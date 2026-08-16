@@ -385,14 +385,14 @@ test("the merge queue tells a spent gate apart from a working one", async ({
   const working = ledger.locator(".sc-scroll .sc-row").filter({ hasText: "#487" });
 
   // The gate that is still reviewing keeps the sentence it always had: waiting is correct.
-  await expect(working).toContainText("an active workflow still owns the Inspector final gate");
+  await expect(working).toContainText("an active workflow still owns the GitHub Inspector final gate");
 
   /*
    * The gate that gave up does not, and that difference is the fix. It has to say the stop
    * is permanent - no further push clears it, because the gate re-tests the budget on every
    * new head - and it has to name the way out, because there is no other one.
    */
-  await expect(spent).not.toContainText("an active workflow still owns the Inspector final gate");
+  await expect(spent).not.toContainText("an active workflow still owns the GitHub Inspector final gate");
   await expect(spent).toContainText("gave up");
   await expect(spent).toContainText(/grant|retire/i);
 

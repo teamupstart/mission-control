@@ -114,6 +114,74 @@ The last two look identical in the state file and differ only by what `.daemon/`
 is the distinction an operator acts on: one means "give it a moment" and the other means
 "your engine daemon is not running".
 
+## Runs → Pipelines
+
+The [Runs page](workflows.md#watching-a-run) gains a page-level kind tab once a repository is
+being observed: **Workflows** is the page it always was, and **Pipelines** is what the engine
+is driving. Both tabs carry a count.
+
+**The tab has to be earned, and by a different fact from the Settings row.** That row is keyed
+on the engine being *installed*; this tab is keyed on a repository being *read* - master switch
+on, repository switched on. With nothing switched on there is no tab strip at all, the Runs
+page is byte for byte the one that shipped before this feature, and nothing on it asks the
+daemon anything about pipelines. Turning a repository on makes the tab appear without a
+reload, and turning the last one off takes it away again in the same request.
+
+The rail groups **per repository**, under a chip naming what the engine's own daemon is doing
+there. That chip is not decoration: `waiting` and `eligible` look identical in the engine's
+state file and differ only by whether anything is alive to advance the run, so the chip is
+what separates "give it a moment" from "your engine daemon is not running". Within a
+repository, runs are grouped by [where they sit](#where-a-run-sits) with halted first - the
+only group waiting on a person - and sorted by slug inside each group, so a finishing step
+never moves the row you were reaching for.
+
+Opened without naming a run, the tab lands on **the most urgent run on the fleet**, which is
+not the same as the first row of the rail. The rail is grouped per repository because that is
+how it is read, but urgency does not stop at a repository boundary: a halted run in the second
+repository outranks a merely building one in the first. Repository order breaks a tie inside a
+group, and slug order inside that.
+
+### One run
+
+The detail is drawn in the **workflow run diagram's own grammar**, from the same components -
+the same cards, the same seams, the same status tones - because it is deliberately the same
+picture rather than a lookalike:
+
+- a header with the live eyebrow (`DECIDE · Plan · step 10 of 22`), the engine's own key for
+  the feature as the title, and chips for tier, track, where it sits, and its pull request;
+- **attempt cards** where a workflow run shows its round tabs. An attempt IS a recorded
+  kickback: a run with none has one attempt and draws no cards at all, and one refusal that
+  re-opened several gates is one attempt rather than several;
+- a horizontal **Spec → SETUP → UNDERSTAND → DECIDE → BUILD → SHIP → Pull request** strip, one
+  card per phase, each step a row carrying its state and its gate's verdict. A step the run's
+  tier or track skipped is drawn dashed like a disabled command rather than hidden - it still
+  occupies a slot in the engine's state - and so is the engine's one retained no-op;
+- labelled wires between the cards, and the **kickback rule** stated once underneath rather
+  than drawn as four return edges nobody can read;
+- **Gate verdicts** below the strip: one row per answer, with its reason and the step that
+  re-opened it. A gate the engine recorded as a *skip* is never drawn as a pass, though the
+  engine writes both as `satisfied: true`.
+
+Gate verdicts are fetched for the run you have open rather than carried on the projection.
+The projection rides every reconnect for every run on the fleet and is held under a per-run
+wire budget (`test/pipeline-sse.test.ts`), so evidence travels with the one surface that
+draws it and a fleet where nobody has a pipeline open pays nothing for the fact that it
+exists.
+
+Steps this build has never heard of are drawn after every step it knows, in the state the
+engine reported, under an **Unknown steps** card. That is the frozen step table's tolerance
+rule made visible: a conductor release that adds a step degrades this display and never
+breaks the page.
+
+### Links
+
+`#/runs` and `#/runs/<run-id>` keep meaning a workflow run, exactly as before.
+`#/runs/pipeline` opens the Pipelines tab, and `#/runs/pipeline/<repo>/<slug>` opens one
+feature - where `<repo>` carries the provider together with the repository root, so two
+engines observing one checkout cannot share a link. A link to a feature that is no longer
+being observed says so and offers the Settings panel, rather than falling back to a blank
+pane.
+
 ## Configuration
 
 | Variable | Default | Meaning |
@@ -124,12 +192,12 @@ is the distinction an operator acts on: one means "give it a moment" and the oth
 | `AI_CONDUCTOR_REGISTRY` | `~/.ai-conductor/registry.json` | Read **bare**, without a `MISSION_` prefix, because it is the variable the engine itself reads - a machine already configured for conductor needs nothing new. Names the file, not its directory. |
 
 Consent itself is stored in the daemon's database (`app_config`, key `pipelines`), alongside
-the Foreman, Skills, Harnesses, Task sources, Models and Inspector settings.
+the Foreman, Skills, Harnesses, Task sources, Models and GitHub Inspector settings.
 
 ## Where this is going
 
 This page describes what has landed. The
 [integration plan](plans/conductor-sdlc-integration/plan.md) and its
-[phase split](plans/conductor-sdlc-integration/phased-plan.md) describe the rest: a Pipelines
-tab on the Runs page with its own diagram, recognition of engine-driven sessions on the fleet,
-halts as attention items, control verbs, live event ingest, and dispatch.
+[phase split](plans/conductor-sdlc-integration/phased-plan.md) describe the rest: recognition
+of engine-driven sessions on the fleet, halts as attention items, control verbs (the run
+detail's header keeps a slot for them), live event ingest, and dispatch.

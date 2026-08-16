@@ -98,16 +98,16 @@ export function WorkflowSettingsFields({
       <label>Final gate
         <Tooltip label="An extra approval this workflow must clear before it completes">
           <select disabled={readOnly} value={workflow.completionPolicy.kind} onChange={(event) => onUpdate({ completionPolicy: event.target.value === "none" ? { kind: "none" } : { kind: "inspector", onFindings: "restart_workflow", missingPrAction: "wait" } })}>
-            <option value="none">None</option><option value="inspector">Inspector approval</option>
+            <option value="none">None</option><option value="inspector">GitHub Inspector approval</option>
           </select>
         </Tooltip>
       </label>
       {workflow.completionPolicy.kind === "inspector" && (
         <>
           <label>After findings
-            <Tooltip label="What re-runs when the Inspector reports findings">
+            <Tooltip label="What re-runs when GitHub Inspector reports findings">
               <select disabled={readOnly} value={workflow.completionPolicy.onFindings} onChange={(event) => workflow.completionPolicy.kind === "inspector" && onUpdate({ completionPolicy: { ...workflow.completionPolicy, onFindings: event.target.value as "restart_workflow" | "inspector_only" } })}>
-                <option value="restart_workflow">Restart all Personas</option><option value="inspector_only">Repush and recheck Inspector only</option>
+                <option value="restart_workflow">Restart all Personas</option><option value="inspector_only">Repush and recheck GitHub Inspector only</option>
               </select>
             </Tooltip>
           </label>

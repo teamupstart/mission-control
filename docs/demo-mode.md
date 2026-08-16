@@ -104,11 +104,11 @@ the `~/.mission-control-demo*` roots that `--check` already uses.
   anything less (`reviewOutcome`), because "a completed run" and "a run that reviewed something and
   agreed" are not the same claim.
 
-  **The one stage it does not carry is the Inspector completion gate**, and that is a property of
+  **The one stage it does not carry is the GitHub Inspector completion gate**, and that is a property of
   the machine rather than a shortcut. `WorkflowManager.enterInspectorGate` records a gate entered
-  with the Inspector off as `blocked` - and the Inspector is off by default - so a run bound to the
+  with the GitHub Inspector off as `blocked` - and the GitHub Inspector is off by default - so a run bound to the
   built-in itself would put "Workflow blocked" on the demo's showcase card. Armed, the gate then
-  needs a pull request adopted into the Inspector's store and a fresh observation of its head, and
+  needs a pull request adopted into the GitHub Inspector's store and a fresh observation of its head, and
   every read of that goes through `gh` against a real GitHub: nine call sites in
   `src/server/inspector/github.ts`, no env override, while this demo reaches no network and its
   repositories are local `git init` directories with no remote. `dry-run` mode does not change it -
@@ -119,7 +119,7 @@ the `~/.mission-control-demo*` roots that `--check` already uses.
   usage its scripted CLI reports on every finished turn's `result` frame - the same figure
   `claudeTurnUsage` reads off a real embedded session, written by the same driver path - so the
   per-card figures and the topbar agree because they are the same rows. Behind them: spend from
-  earlier today, several days of history, and the automation line the Foreman and Inspector loops
+  earlier today, several days of history, and the automation line the Foreman and GitHub Inspector loops
   populate. Seeded spend cannot be attributed to a card through `/v1/metrics` at all, and that is
   not a limitation of the seeder: Claude session spend has one writer per conversation, the driver
   wins for an embedded session, and the OTLP ingest deliberately drops every datapoint naming a
@@ -159,7 +159,7 @@ can only contain what the daemon durably stores:
   seeding one would simply be undone by the seeder's own shutdown. The chip still appears and
   still opens - it has the money and token rows, just no forward-looking one until a live
   session reports its windows.
-- **No pull-request or Inspector history.** Out of scope for demo mode - both act outside the
+- **No pull-request or GitHub Inspector history.** Out of scope for demo mode - both act outside the
   machine against real repositories, which is also what keeps the seeded run's graph one stage
   short of the built-in it copies (see the Workflow bullet above).
 

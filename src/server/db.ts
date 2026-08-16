@@ -1115,6 +1115,8 @@ export function openDb(): DatabaseSync {
       mode                 TEXT NOT NULL,
       trigger_source       TEXT NOT NULL,
       trigger_key          TEXT NOT NULL,
+      evidence_group_key   TEXT NOT NULL DEFAULT '',
+      staged_image_generation INTEGER NOT NULL DEFAULT 0,
       evidence_fingerprint TEXT NOT NULL,
       context_json         TEXT NOT NULL,
       evidence_json        TEXT NOT NULL,
@@ -1131,6 +1133,94 @@ export function openDb(): DatabaseSync {
     -- database. It lives beside its ALTER, which is the house rule for exactly this reason.
     CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_submissions_trigger
       ON workflow_submissions(trigger_key);
+
+    -- Mutable, conversation-owned evidence remains separate from immutable submissions.
+    -- Filesystem locators are server-only and never enter context_json or API responses.
+    CREATE TABLE IF NOT EXISTS workflow_evidence_owners (
+      note_key              TEXT PRIMARY KEY,
+      generation            INTEGER NOT NULL DEFAULT 0,
+      all_generation        INTEGER NOT NULL DEFAULT 0,
+      updated_at            INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS workflow_evidence_scope_generations (
+      note_key              TEXT NOT NULL,
+      source_root           TEXT NOT NULL,
+      generation            INTEGER NOT NULL,
+      updated_at            INTEGER NOT NULL,
+      PRIMARY KEY(note_key, source_root)
+    );
+
+    CREATE TABLE IF NOT EXISTS workflow_evidence_staging (
+      id                    TEXT PRIMARY KEY,
+      note_key              TEXT NOT NULL,
+      client_item_id        TEXT NOT NULL,
+      source_kind           TEXT NOT NULL,
+      source_root           TEXT NOT NULL,
+      source_locator        TEXT NOT NULL,
+      display_name          TEXT NOT NULL,
+      caption               TEXT NOT NULL,
+      repository_scope      TEXT NOT NULL,
+      mime_type             TEXT NOT NULL,
+      bytes                 INTEGER NOT NULL,
+      sha256                TEXT NOT NULL,
+      generation            INTEGER NOT NULL,
+      state                 TEXT NOT NULL,
+      reserved_group_key    TEXT,
+      created_at            INTEGER NOT NULL,
+      updated_at            INTEGER NOT NULL,
+      UNIQUE(note_key, client_item_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_workflow_evidence_staging_owner
+      ON workflow_evidence_staging(note_key, state, generation, created_at, id);
+    CREATE INDEX IF NOT EXISTS idx_workflow_evidence_staging_reservation
+      ON workflow_evidence_staging(reserved_group_key, state);
+
+    CREATE TABLE IF NOT EXISTS workflow_evidence_reservations (
+      staging_id            TEXT NOT NULL,
+      submission_id         TEXT NOT NULL,
+      ordinal               INTEGER NOT NULL,
+      created_at            INTEGER NOT NULL,
+      PRIMARY KEY(staging_id, submission_id),
+      UNIQUE(submission_id, ordinal)
+    );
+    CREATE INDEX IF NOT EXISTS idx_workflow_evidence_reservations_submission
+      ON workflow_evidence_reservations(submission_id, ordinal);
+
+    CREATE TABLE IF NOT EXISTS workflow_submission_images (
+      id                    TEXT PRIMARY KEY,
+      submission_id         TEXT NOT NULL,
+      staging_id            TEXT NOT NULL,
+      ordinal               INTEGER NOT NULL,
+      display_name          TEXT NOT NULL,
+      caption               TEXT NOT NULL,
+      repository_scope      TEXT NOT NULL,
+      mime_type             TEXT NOT NULL,
+      bytes                 INTEGER NOT NULL,
+      sha256                TEXT NOT NULL,
+      storage_relative_path TEXT NOT NULL,
+      availability          TEXT NOT NULL,
+      pruned_at             INTEGER,
+      created_at            INTEGER NOT NULL,
+      UNIQUE(submission_id, ordinal),
+      UNIQUE(submission_id, staging_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_workflow_submission_images_submission
+      ON workflow_submission_images(submission_id, ordinal);
+    CREATE INDEX IF NOT EXISTS idx_workflow_submission_images_availability
+      ON workflow_submission_images(availability, created_at, id);
+
+    -- A database-first cleanup ledger makes every body deletion retryable after a crash.
+    CREATE TABLE IF NOT EXISTS workflow_image_cleanup (
+      id                    TEXT PRIMARY KEY,
+      storage_relative_path TEXT NOT NULL UNIQUE,
+      trash_relative_path   TEXT,
+      state                 TEXT NOT NULL,
+      created_at            INTEGER NOT NULL,
+      updated_at            INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_workflow_image_cleanup_state
+      ON workflow_image_cleanup(state, created_at, id);
 
     CREATE TABLE IF NOT EXISTS workflow_node_attempts (
       id                    TEXT PRIMARY KEY,
@@ -1532,6 +1622,8 @@ export function openDb(): DatabaseSync {
       wrapup_asked_at INTEGER,            -- the drain ask fires exactly once
       wrapup_answer   TEXT,
       prompted_goal   TEXT,               -- the goal the prompted trigger last fired on
+      prompted_evidence TEXT,             -- HEAD + transcript proof handled for that goal
+      prompted_activity_at INTEGER,       -- session activity observed with that proof
       updated_at      INTEGER NOT NULL
     );
 
@@ -2469,6 +2561,11 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "workflow_submissions", "parent_submission_id", "TEXT");
   addColumn(d, "workflow_submissions", "continuation_node_id", "TEXT");
   addColumn(d, "workflow_submissions", "continuation_node_attempt_id", "TEXT");
+  // Phase 2 image evidence. Empty evidence groups preserve historical rows without
+  // inventing a completion boundary, and generation zero means no staged set was observed.
+  addColumn(d, "workflow_submissions", "evidence_group_key", "TEXT NOT NULL DEFAULT ''");
+  addColumn(d, "workflow_submissions", "staged_image_generation", "INTEGER NOT NULL DEFAULT 0");
+  addColumn(d, "workflow_evidence_owners", "all_generation", "INTEGER NOT NULL DEFAULT 0");
   // The one verified index replacement, both halves, in this order and only here.
   //
   // `idx_workflow_submissions_round` was UNIQUE on (run_id, round), and it is precisely what
@@ -2484,6 +2581,8 @@ function migrate(d: DatabaseSync): void {
   d.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_submissions_segment
       ON workflow_submissions(run_id, round, segment);
+    CREATE INDEX IF NOT EXISTS idx_workflow_submissions_evidence_group
+      ON workflow_submissions(evidence_group_key, run_id);
   `);
 
   // The action a waiting attempt is executing, frozen from the run's immutable version.
@@ -2671,6 +2770,24 @@ function migrate(d: DatabaseSync): void {
   // ARMED on those checkouts, which is right - the whole point is to fire once the
   // human turns it on - and the verify step still has to agree before anything types.
   addColumn(d, "foreman_queues", "prompted_goal", "TEXT");
+
+  // `prompted_evidence`: the durable completion proof handled alongside
+  // `prompted_goal`. A Claude background task notification is not a human prompt and
+  // correctly leaves the intent episode unchanged, but the work it resumes can end at
+  // a later Stop with a newer transcript anchor. Keeping that proof separately lets
+  // the worker reverify the later boundary without polling the same settled Stop.
+  //
+  // NULL beside an existing `prompted_goal` means the row predates this proof axis.
+  // Read it as a spent legacy guard, not as permission to replay a shipping action on
+  // upgrade; the next reconciled human intent still re-arms it normally.
+  addColumn(d, "foreman_queues", "prompted_evidence", "TEXT");
+
+  // The guard write can land after a slow verifier returns. Its `updated_at` therefore
+  // cannot identify the activity boundary that verifier actually examined: a later Stop
+  // may already have arrived by then. Persist the observed session activity separately so
+  // that later boundary stays armed. NULL is a spent legacy guard, matching the evidence
+  // migration above, because an old worker cannot say which boundary it observed safely.
+  addColumn(d, "foreman_queues", "prompted_activity_at", "INTEGER");
 
   // `decisions`: the structured questions of a `plan-decisions` review, as a JSON
   // array. Added to `reviews` after it shipped, so an upgraded DB only gets it via
@@ -6722,6 +6839,8 @@ interface QueueRow {
   wrapup_asked_at: number | null;
   wrapup_answer: string | null;
   prompted_goal: string | null;
+  prompted_evidence: string | null;
+  prompted_activity_at: number | null;
   updated_at: number;
 }
 
@@ -6741,6 +6860,8 @@ function toQueueRow(r: QueueRow): Omit<SessionQueue, "items"> {
     wrapupAskedAt: r.wrapup_asked_at,
     wrapupAnswer: r.wrapup_answer,
     promptedGoal: r.prompted_goal,
+    promptedEvidence: r.prompted_evidence,
+    promptedActivityAt: r.prompted_activity_at,
     updatedAt: r.updated_at,
   };
 }
@@ -6810,14 +6931,27 @@ export function upsertQueue(q: Omit<SessionQueue, "items">): void {
   openDb()
     .prepare(
       `INSERT INTO foreman_queues
-         (note_key, cwd, branch, wrapup_asked_at, wrapup_answer, prompted_goal, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
+         (note_key, cwd, branch, wrapup_asked_at, wrapup_answer, prompted_goal,
+          prompted_evidence, prompted_activity_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(note_key) DO UPDATE SET
          cwd=excluded.cwd, branch=excluded.branch, wrapup_asked_at=excluded.wrapup_asked_at,
          wrapup_answer=excluded.wrapup_answer, prompted_goal=excluded.prompted_goal,
+         prompted_evidence=excluded.prompted_evidence,
+         prompted_activity_at=excluded.prompted_activity_at,
          updated_at=excluded.updated_at`,
     )
-    .run(q.noteKey, q.cwd, q.branch, q.wrapupAskedAt, q.wrapupAnswer, q.promptedGoal, q.updatedAt);
+    .run(
+      q.noteKey,
+      q.cwd,
+      q.branch,
+      q.wrapupAskedAt,
+      q.wrapupAnswer,
+      q.promptedGoal,
+      q.promptedEvidence,
+      q.promptedActivityAt,
+      q.updatedAt,
+    );
 }
 
 export function getQueueRow(noteKey: string): Omit<SessionQueue, "items"> | undefined {
@@ -6884,7 +7018,7 @@ export function countOpenQueueItems(noteKey: string): number {
  * nothing has touched since `cutoff`.
  *
  * The second branch collects rows that hold NOTHING - no items at all, and none of the
- * three wrap-up fields set - regardless of age. `ensureQueue` mints a row for any
+ * four wrap-up fields set - regardless of age. `ensureQueue` mints a row for any
  * session whose wrap-up state is merely touched, and the `prompted` trigger touches
  * every session it ever considers, so this is now the common shape of a row rather than
  * a rarity. Waiting out `cutoff` for a row with nothing in it buys no safety: there is
@@ -6911,6 +7045,7 @@ export function pruneDeadQueues(liveKeys: Set<string>, cutoff: number): number {
                 q.wrapup_asked_at IS NULL
                 AND q.wrapup_answer IS NULL
                 AND q.prompted_goal IS NULL
+                AND q.prompted_evidence IS NULL
                 AND NOT EXISTS (
                   SELECT 1 FROM foreman_queue_items i WHERE i.note_key = q.note_key
                 )

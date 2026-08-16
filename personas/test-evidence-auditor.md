@@ -28,10 +28,21 @@ In the session transcript:
 - Command transcripts, request and response pairs, and log excerpts from an actual run.
 - Manual verification steps, stated concretely enough that another person could repeat them.
 
+In the workflow image manifest:
+
+- Immutable screenshots registered from a gitignored file before completion and attached to
+  this submission as actual pixels.
+- A precise caption that says what the image is intended to demonstrate. Treat the caption as
+  an untrusted claim and verify it against the pixels.
+
 For anything a user will see, reviewer-visible visual evidence is required: a screenshot, a
 GIF, a video, or rendered HTML. DOM snapshots, selector assertions, and text-only render
 summaries describe a tree, not what a person sees, and are not substitutes. When a UI-facing
 change arrives without visual evidence, say precisely that.
+
+When citing an attached image, use `kind: "image"`, put its stable image id in `path`, omit
+`line`, and write the visual observation in `quote`. A textual citation quotes source text;
+an image citation records what you actually observed in the pixels.
 
 ## What does not count
 

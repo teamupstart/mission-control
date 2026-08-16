@@ -81,8 +81,15 @@ import { useSessionFilesStore } from "./lib/sessionFiles.ts";
 import { workspaceFileTarget } from "./lib/workspaceLinks.ts";
 import { WorkflowRuns } from "./workflows/WorkflowRuns.tsx";
 import { EnsembleRuns } from "./workflows/EnsembleRuns.tsx";
-import { pageShortcutRoute, useWorkflowRoute } from "./workflows/useWorkflowRoute.ts";
+import {
+  pageShortcutRoute,
+  pipelineRunRoute,
+  useWorkflowRoute,
+} from "./workflows/useWorkflowRoute.ts";
 import type { LibrarySurface } from "./workflows/useWorkflowRoute.ts";
+import { PipelineRuns } from "./pipelines/PipelineRuns.tsx";
+import { RunsKindTabs, type RunsKind } from "./pipelines/RunsKindTabs.tsx";
+import type { PipelineRun } from "@shared/pipeline.ts";
 import { LibraryPage } from "./library/LibraryPage.tsx";
 import type { EnsembleStrategyId } from "@shared/ensemble.ts";
 import { PersonaLibrary } from "./workflows/PersonaLibrary.tsx";
@@ -143,7 +150,7 @@ function gearDotPhrase(tone: ReturnType<typeof settingsGearDot>): string | null 
     case "armed":
       return "YOLO mode is armed";
     case "live":
-      return "the Inspector is live";
+      return "GitHub Inspector is live";
     // Foreman's purple never reaches the gear; the gear ranks only settingsStatus facts.
     case "foreman":
     case null:
@@ -201,6 +208,7 @@ export function App(): React.JSX.Element {
     workflowRunSummaries: workflowRuns,
     workflowBindingSummaries,
     ensembleSummaries,
+    pipelineRuns,
     fleetCost,
     lineSummary,
     settingsStatus,
@@ -795,6 +803,25 @@ export function App(): React.JSX.Element {
    * an unfiltered one. Opened from anywhere else there is no filter to keep.
    */
   const keptRunFilters = route.page === "runs" ? route.filters : undefined;
+  /**
+   * How many repositories an external SDLC engine is being observed in, and therefore
+   * whether the Runs page has two surfaces at all.
+   *
+   * Zero - which is every fleet until somebody consents to a repository in Settings - means
+   * no tab strip, no pipelines surface, and nothing on that page asking the daemon anything
+   * about pipelines. It rides the settings-status tuple already in the connect snapshot for
+   * the same reason `present` does: the page has to decide on its first paint, and computing
+   * it costs the daemon a config read.
+   *
+   * A pipelines hash on a fleet observing nothing falls back to the workflow rail rather
+   * than to an empty page, which is the rule every unresolvable deep link in this router
+   * already takes.
+   */
+  const pipelinesObserving = settingsStatus?.pipelines.observing ?? 0;
+  const runsKind: RunsKind =
+    route.page === "runs" && route.kind === "pipelines" && pipelinesObserving > 0
+      ? "pipelines"
+      : "workflows";
   const openWorkflowRun = useCallback(
     (runId: string): void => {
       navigate({ page: "runs", runId, ...(keptRunFilters ? { filters: keptRunFilters } : {}) });
@@ -804,6 +831,19 @@ export function App(): React.JSX.Element {
   const openEnsembleRun = useCallback(
     (ensembleId: string): void => {
       navigate({ page: "ensembles", ensembleId });
+    },
+    [navigate],
+  );
+  /**
+   * Open one pipeline run, through the route helper that owns the address shape.
+   *
+   * No filter is kept: the pipelines rail has none. Its grouping comes from the daemon's
+   * own classification of the engine's state, so there is nothing an operator narrowed that
+   * a link out of the rail could lose.
+   */
+  const openPipelineRun = useCallback(
+    (run: PipelineRun): void => {
+      navigate(pipelineRunRoute(run));
     },
     [navigate],
   );
@@ -2392,9 +2432,21 @@ export function App(): React.JSX.Element {
           library={libraryBody}
           runs={(
             <ExecutionPage
-              title="Workflow runs"
-              blurb="Every review a workflow has run over a session's work, live and finished."
-              actions={(
+              title={runsKind === "pipelines" ? "Pipelines" : "Workflow runs"}
+              blurb={runsKind === "pipelines"
+                ? "Features an external SDLC engine is driving, in the repositories you observe."
+                : "Every review a workflow has run over a session's work, live and finished."}
+              actions={runsKind === "pipelines" ? (
+                <Tooltip label="Which repositories are observed, and whether the engine was found, in Settings">
+                  <button
+                    className="btn btn-ghost wf-settings-link"
+                    onClick={() => navigate({ page: "settings", category: "conductor" })}
+                  >
+                    Conductor settings
+                    <span aria-hidden>→</span>
+                  </button>
+                </Tooltip>
+              ) : (
                 <Tooltip label="Live delivery, its allowed repositories, retention and health, in Settings">
                   <button
                     className="btn btn-ghost wf-settings-link"
@@ -2406,27 +2458,55 @@ export function App(): React.JSX.Element {
                 </Tooltip>
               )}
             >
-              <WorkflowRuns
-                runs={workflowRuns}
-                selectedRunId={route.page === "runs" ? route.runId ?? null : null}
-                filters={route.page === "runs" ? route.filters : undefined}
-                onSelectRun={openWorkflowRun}
-                onFilters={(filters) => navigate({
-                  page: "runs",
-                  ...(route.page === "runs" && route.runId ? { runId: route.runId } : {}),
-                  filters,
-                })}
-                onOpenSession={openSessionOnFleet}
-                // The worklist's "Open file" on a change that cites one, through the same
-                // reveal the diff's "Open in Files" uses, so one path opens one way.
-                onOpenSessionPath={openSessionPath}
-                onOpenInspectorSettings={() => {
-                  navigate({ page: "settings", category: "inspector" });
-                }}
-                // No session and no version pinned: the dialog already supports being opened
-                // empty and asking for both.
-                onBindWorkflow={() => setWorkflowBindingTarget({})}
-              />
+              {/* The kind tab, and the ONLY change this page's chrome takes for pipelines.
+                  It sits above both surfaces rather than inside either, so the workflow
+                  rail and its reader below are the components that shipped before this
+                  feature - unmodified, and pinned that way by
+                  `e2e/specs/runs-workflows-unchanged.spec.ts`.
+
+                  Absent unless something is actually being observed, which is what makes
+                  "with the integration off, this page is byte-for-byte today's" a property
+                  of the markup rather than a promise. */}
+              {pipelinesObserving > 0 && (
+                <RunsKindTabs
+                  kind={runsKind}
+                  workflowRuns={workflowRuns.length}
+                  pipelineRuns={pipelineRuns.length}
+                  onKind={(kind) => navigate(
+                    kind === "pipelines" ? { page: "runs", kind } : { page: "runs" },
+                  )}
+                />
+              )}
+              {runsKind === "pipelines" ? (
+                <PipelineRuns
+                  runs={pipelineRuns}
+                  selected={route.page === "runs" ? route.pipelineRun ?? null : null}
+                  onSelect={openPipelineRun}
+                  onOpenSettings={() => navigate({ page: "settings", category: "conductor" })}
+                />
+              ) : (
+                <WorkflowRuns
+                  runs={workflowRuns}
+                  selectedRunId={route.page === "runs" ? route.runId ?? null : null}
+                  filters={route.page === "runs" ? route.filters : undefined}
+                  onSelectRun={openWorkflowRun}
+                  onFilters={(filters) => navigate({
+                    page: "runs",
+                    ...(route.page === "runs" && route.runId ? { runId: route.runId } : {}),
+                    filters,
+                  })}
+                  onOpenSession={openSessionOnFleet}
+                  // The worklist's "Open file" on a change that cites one, through the same
+                  // reveal the diff's "Open in Files" uses, so one path opens one way.
+                  onOpenSessionPath={openSessionPath}
+                  onOpenInspectorSettings={() => {
+                    navigate({ page: "settings", category: "inspector" });
+                  }}
+                  // No session and no version pinned: the dialog already supports being opened
+                  // empty and asking for both.
+                  onBindWorkflow={() => setWorkflowBindingTarget({})}
+                />
+              )}
             </ExecutionPage>
           )}
           ensembles={(

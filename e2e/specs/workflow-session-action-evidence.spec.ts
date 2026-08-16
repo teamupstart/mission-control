@@ -38,7 +38,11 @@ async function api<T>(daemon: DaemonHandle, path: string, body?: unknown, method
   return (await response.json()) as T;
 }
 
-async function shoot(page: Page, name: string): Promise<void> {
+async function shoot(
+  page: Page,
+  name: string,
+  options: { beforeEach?: () => Promise<void> } = {},
+): Promise<void> {
   mkdirSync(EVIDENCE, { recursive: true });
   // Off every control first. `Tooltip` portals a visible bubble on hover, and a capture taken
   // with the pointer resting where the last click left it covers the thing being photographed.
@@ -47,6 +51,7 @@ async function shoot(page: Page, name: string): Promise<void> {
     await page.setViewportSize({ width, height: 900 });
     // One frame for the layout to settle after the resize; the strip re-measures its scroll.
     await page.waitForTimeout(300);
+    await options.beforeEach?.();
     await page.screenshot({ path: `${EVIDENCE}${name}-${suffix}.png` });
   }
   await page.setViewportSize({ width: 1440, height: 900 });
@@ -127,7 +132,7 @@ test("capture the authoring and run surfaces", async ({ dashboard, daemon }) => 
   });
 
   // 2. The pipeline, at both ends of a strip too wide for one screen: the action stage among
-  //    its neighbours, and the fixed Inspector footer past End.
+  //    its neighbours, and the fixed GitHub Inspector footer past End.
   await dashboard.goto(`${daemon.baseURL}/#/workflows`);
   await dashboard.getByRole("button", { name: /Ship it/ }).click();
   await expect(dashboard.locator(".wf-pipeline-strip")).toBeVisible();
@@ -331,17 +336,54 @@ test("capture a completed continuation", async ({ dashboard, daemon }) => {
   await expect(dashboard.locator(".wf-state.builtin")).toBeVisible();
   await shoot(dashboard, "09-builtin-pull-request-action");
 
-  // 10. No-Mistakes Review v8, scrolled to where its claim lives.
+  // 10. No-Mistakes Review v9, scrolled to where its new claim lives.
   //
-  //     The Pull Request stage, then End, then the fixed Inspector footer, in that order. That
-  //     ordering IS the feature: the action opens the pull request and reaches End, and the
-  //     Inspector reviews it afterwards. A capture that showed the footer looking finished the
-  //     moment the action completed would be the misreading to catch.
+  //     Code Quality Judge, then Pull Request, then End, with no fixed footer afterwards. The
+  //     local judge is the gate before publication; GitHub Inspector remains available to
+  //     observe the resulting pull request, but v9 does not wait for that optional remote pass.
   await dashboard.goto(`${daemon.baseURL}/#/workflows`);
   await dashboard.getByRole("button", { name: /No-Mistakes Review/ }).click();
-  await expect(dashboard.locator(".wf-pipeline-strip")).toBeVisible();
-  await dashboard.locator(".wf-pipeline-strip").evaluate((el) => { el.scrollLeft = el.scrollWidth; });
-  await expect(dashboard.locator("li.wf-pipeline-reviewer").filter({ hasText: "Pull Request" }))
-    .toBeVisible();
-  await shoot(dashboard, "10-no-mistakes-v8-pull-request-stage");
+  const shipped = dashboard.locator(".wf-pipeline-strip");
+  await expect(shipped).toBeVisible();
+  const quality = shipped.locator("li.wf-pipeline-reviewer")
+    .filter({ hasText: "Code Quality Judge" });
+  const pullRequest = shipped.locator("li.wf-pipeline-reviewer")
+    .filter({ hasText: "Pull Request" });
+  const end = shipped.locator(".wf-pipeline-terminus").filter({ hasText: "Complete" });
+  await expect(quality).toHaveCount(1);
+  await expect(pullRequest).toHaveCount(1);
+  await expect(end).toHaveCount(1);
+  await expect(shipped.locator(".wf-pipeline-inspector")).toHaveCount(0);
+  const order = await shipped.locator("li.wf-pipeline-reviewer").allTextContents();
+  expect(order.findIndex((text) => text.includes("Code Quality Judge")))
+    .toBeLessThan(order.findIndex((text) => text.includes("Pull Request")));
+  const entirelyInsideStrip = async (item: typeof quality): Promise<boolean> => item.evaluate((element) => {
+    const strip = element.closest(".wf-pipeline-strip");
+    if (!(strip instanceof HTMLElement)) throw new Error("Pipeline item left its strip");
+    const itemRect = element.getBoundingClientRect();
+    const stripRect = strip.getBoundingClientRect();
+    return itemRect.left >= stripRect.left && itemRect.right <= stripRect.right;
+  });
+  await shoot(dashboard, "10a-no-mistakes-v9-code-quality-before-pull-request", {
+    beforeEach: async () => {
+      await quality.evaluate((element) => {
+        const strip = element.closest(".wf-pipeline-strip");
+        if (!(strip instanceof HTMLElement)) throw new Error("Code Quality Judge left its strip");
+        strip.scrollLeft += element.getBoundingClientRect().left - strip.getBoundingClientRect().left;
+      });
+      if ((dashboard.viewportSize()?.width ?? 0) > 900) {
+        expect(await entirelyInsideStrip(quality)).toBe(true);
+        expect(await entirelyInsideStrip(pullRequest)).toBe(true);
+      }
+    },
+  });
+  await shoot(dashboard, "10b-no-mistakes-v9-pull-request-to-end", {
+    beforeEach: async () => {
+      await shipped.evaluate((element) => { element.scrollLeft = element.scrollWidth; });
+      if ((dashboard.viewportSize()?.width ?? 0) > 900) {
+        expect(await entirelyInsideStrip(pullRequest)).toBe(true);
+        expect(await entirelyInsideStrip(end)).toBe(true);
+      }
+    },
+  });
 });

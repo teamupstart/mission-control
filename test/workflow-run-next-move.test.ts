@@ -501,9 +501,9 @@ test("a blocked fault that a fresh capture can clear still offers the resubmissi
 
 test("a block whose recovery is a decision offers no move and names the owner", () => {
   const rows: [string, string][] = [
-    ["inspector_findings", "they are listed under Inspector final gate below"],
-    ["inspector_pr_closed", "Inspector final gate below carries the pull request"],
-    ["inspector_disabled", "Turn it back on from Open Inspector settings, in Inspector final gate below."],
+    ["inspector_findings", "they are listed under GitHub Inspector final gate below"],
+    ["inspector_pr_closed", "GitHub Inspector final gate below carries the pull request"],
+    ["inspector_disabled", "Turn it back on from Open GitHub Inspector settings, in GitHub Inspector final gate below."],
     ["delivery_uncertain", "Confirm or discard it in Deliveries below"],
     ["delivery_refused", "Retry or resolve it in Deliveries below"],
     ["delivery_blocked", "Deliveries below carries the packet and why it is held."],

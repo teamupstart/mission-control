@@ -6,6 +6,7 @@ import { TaskSourcesConfigSchema } from "./task-source.ts";
 import { CHEAP_ACTIONS, DIVERGENCE_KINDS, SKIP_REASONS } from "./foreman.ts";
 import { LLM_JOB_IDS } from "./llm-jobs.ts";
 import { CLAUDE_TRANSPORTS, LLM_RUNNER_IDS } from "./llm.ts";
+import { RASTER_IMAGE_MIME_TYPES } from "./images.ts";
 import { LLM_SPEND_ROLES } from "./llm-spend.ts";
 import { OPEN_TARGET_IDS } from "./open-targets.ts";
 import {
@@ -38,6 +39,7 @@ import {
   WORKFLOW_COMPLETION_KINDS,
   WORKFLOW_DELIVERY_MODES,
   WORKFLOW_LIMITS,
+  WORKFLOW_IMAGE_LIMITS,
   WORKFLOW_MISSING_PR_ACTIONS,
   WORKFLOW_EXECUTION_LIMITS,
   WORKFLOW_GATE_WAIT_REASONS,
@@ -52,7 +54,7 @@ import {
   WORKFLOW_TRIGGER_SOURCES,
   WORKFLOW_EXTERNAL_SOURCE_KINDS,
 } from "./workflow.ts";
-import type { WorkflowJson } from "./workflow.ts";
+import type { WorkflowEvidenceRepositoryScope, WorkflowJson } from "./workflow.ts";
 import {
   ENSEMBLE_ARTIFACT_KINDS,
   ENSEMBLE_ARTIFACT_STATUSES,
@@ -2507,6 +2509,14 @@ export type WrapupAsked = z.infer<typeof WrapupAskedSchema>;
  */
 export const PromptedWrapupSchema = z.object({
   goal: z.string().min(1).max(INTENT_MAX),
+  /**
+   * SHA-256 marker of the HEAD + transcript completion evidence just decided.
+   * Optional only for an old worker talking to a newly upgraded daemon. The route
+   * stores that write as the same legacy spent guard an upgraded database exposes.
+   */
+  evidenceMarker: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+  /** Activity boundary observed with the evidence. Optional for worker version skew. */
+  activityAt: z.number().int().nonnegative().optional(),
   // The human-decision path must retire the prompted episode and raise its Ship it?
   // card in one durable write. If that write fails, neither marker lands and the
   // worker can retry the whole verified boundary on its next unhurried tick.
@@ -3093,7 +3103,109 @@ export const WorkflowEvidenceRefSchema = z.object({
   quote: WorkflowVerdictTextSchema.max(WORKFLOW_EXECUTION_LIMITS.verdictReason),
   path: z.string().max(WORKFLOW_EXECUTION_LIMITS.verdictPath).optional(),
   line: z.number().int().min(1).max(WORKFLOW_EXECUTION_LIMITS.verdictLine).optional(),
+}).superRefine((value, ctx) => {
+  if (value.kind !== "image") return;
+  if (!value.path) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["path"], message: "Image evidence requires an image id" });
+  }
+  if (value.line !== undefined) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["line"], message: "Image evidence has no line number" });
+  }
 });
+
+export const WorkflowEvidenceRepositoryScopeSchema: z.ZodType<WorkflowEvidenceRepositoryScope> =
+  z.custom<WorkflowEvidenceRepositoryScope>(
+    (value) => value === "all" || (typeof value === "string" && /^repo-\d{2}$/.test(value)),
+    "Repository scope must be an issued repo slot",
+  );
+
+export const WorkflowEvidenceImageSchema = z.object({
+  id: z.string().min(1).max(200),
+  ordinal: z.number().int().nonnegative(),
+  displayName: z.string().min(1).max(WORKFLOW_IMAGE_LIMITS.displayNameChars),
+  caption: z.string().trim().min(1).max(WORKFLOW_IMAGE_LIMITS.captionChars),
+  repositoryScope: WorkflowEvidenceRepositoryScopeSchema,
+  mimeType: z.enum(RASTER_IMAGE_MIME_TYPES),
+  bytes: z.number().int().positive().max(WORKFLOW_IMAGE_LIMITS.maxBytesPerImage),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/),
+  availability: z.enum(["retained", "pruned"]),
+  prunedAt: z.number().int().nonnegative().nullable(),
+  createdAt: z.number().int().nonnegative(),
+}).superRefine((image, ctx) => {
+  if ((image.availability === "retained") !== (image.prunedAt === null)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["prunedAt"],
+      message: "Pruned image availability and timestamp must be present together",
+    });
+  }
+});
+
+const WorkflowEvidenceLocatorFields = {
+  clientItemId: z.string().min(1).max(WORKFLOW_IMAGE_LIMITS.clientItemIdChars),
+  caption: z.string().trim().min(1).max(WORKFLOW_IMAGE_LIMITS.captionChars),
+  repositoryScope: WorkflowEvidenceRepositoryScopeSchema,
+};
+
+export const WorkflowAgentEvidenceLocatorSchema = z.object({
+  kind: z.literal("agent"),
+  ...WorkflowEvidenceLocatorFields,
+  path: z.string().min(1).max(WORKFLOW_IMAGE_LIMITS.relativePathChars),
+});
+
+export const WorkflowUploadEvidenceLocatorSchema = z.object({
+  kind: z.literal("upload"),
+  ...WorkflowEvidenceLocatorFields,
+  uploadId: z.string().min(1).max(WORKFLOW_IMAGE_LIMITS.uploadIdChars),
+});
+
+export const WorkflowEvidenceLocatorSchema = z.discriminatedUnion("kind", [
+  WorkflowAgentEvidenceLocatorSchema,
+  WorkflowUploadEvidenceLocatorSchema,
+]);
+
+export const WorkflowRetainedEvidenceLocatorSchema = z.object({
+  imageId: z.string().min(1).max(200),
+  clientItemId: WorkflowEvidenceLocatorFields.clientItemId,
+  caption: WorkflowEvidenceLocatorFields.caption,
+  repositoryScope: WorkflowEvidenceRepositoryScopeSchema,
+});
+export type WorkflowRetainedEvidenceLocator = z.infer<typeof WorkflowRetainedEvidenceLocatorSchema>;
+
+export const WorkflowEvidenceLocatorsSchema = z
+  .array(WorkflowEvidenceLocatorSchema)
+  .max(WORKFLOW_IMAGE_LIMITS.maxCount)
+  .refine((value) => new Set(value.map((item) => item.clientItemId)).size === value.length, {
+    message: "Workflow evidence client item ids must be unique",
+  })
+  .refine((value) => jsonAtMost(value, WORKFLOW_IMAGE_LIMITS.locatorJsonBytes), {
+    message: `Workflow evidence locators exceed ${WORKFLOW_IMAGE_LIMITS.locatorJsonBytes} UTF-8 bytes`,
+  });
+
+export const WorkflowUploadEvidenceLocatorsSchema = z
+  .array(WorkflowUploadEvidenceLocatorSchema)
+  .max(WORKFLOW_IMAGE_LIMITS.maxCount)
+  .refine((value) => new Set(value.map((item) => item.clientItemId)).size === value.length, {
+    message: "Workflow evidence client item ids must be unique",
+  })
+  .refine((value) => jsonAtMost(value, WORKFLOW_IMAGE_LIMITS.locatorJsonBytes), {
+    message: `Workflow evidence locators exceed ${WORKFLOW_IMAGE_LIMITS.locatorJsonBytes} UTF-8 bytes`,
+  });
+
+export const SubmitWorkflowEvidenceSchema = z.object({
+  env: EnvSchema,
+  sessionId: z.string().nullable().optional().default(null),
+  cwd: z.string().nullable().optional().default(null),
+  images: z.array(WorkflowAgentEvidenceLocatorSchema)
+    .min(1)
+    .max(WORKFLOW_IMAGE_LIMITS.maxCount)
+    .refine((value) => new Set(value.map((item) => item.clientItemId)).size === value.length, {
+      message: "Workflow evidence client item ids must be unique",
+    }),
+}).refine((value) => jsonAtMost(value.images, WORKFLOW_IMAGE_LIMITS.locatorJsonBytes), {
+  message: `Workflow evidence locators exceed ${WORKFLOW_IMAGE_LIMITS.locatorJsonBytes} UTF-8 bytes`,
+});
+export type SubmitWorkflowEvidence = z.infer<typeof SubmitWorkflowEvidenceSchema>;
 
 export const WorkflowRequestedChangeSchema = z.object({
   title: WorkflowVerdictTextSchema.max(WORKFLOW_EXECUTION_LIMITS.verdictSummary),
@@ -3182,6 +3294,8 @@ export const WorkflowContextSnapshotSchema = z.object({
       fingerprint: z.string().min(1).max(200),
     })).max(200),
     standardsTruncated: z.boolean(),
+    images: z.array(WorkflowEvidenceImageSchema).max(WORKFLOW_IMAGE_LIMITS.maxCount).default([]),
+    stagedImageGeneration: z.number().int().nonnegative().default(0),
     retention: z.discriminatedUnion("state", [
       z.object({ state: z.literal("full") }),
       z.object({
@@ -3191,6 +3305,8 @@ export const WorkflowContextSnapshotSchema = z.object({
         workingTreeStatusEntries: z.number().int().nonnegative(),
         transcriptMessages: z.number().int().nonnegative(),
         standardsDocuments: z.number().int().nonnegative(),
+        imageCount: z.number().int().nonnegative().default(0),
+        imageBytes: z.number().int().nonnegative().default(0),
       }),
     ]).default({ state: "full" }),
   }),
@@ -3210,7 +3326,7 @@ export const WorkflowInspectorOnlyContextSchema = z.object({
   newHeadSha: z.string().min(1).max(100),
   priorFindingFingerprints: z.array(z.string().min(1).max(200)).max(10_000),
 }).refine((value) => jsonAtMost(value, WORKFLOW_EXECUTION_LIMITS.contextJsonBytes), {
-  message: `Inspector-only context exceeds ${WORKFLOW_EXECUTION_LIMITS.contextJsonBytes} UTF-8 bytes`,
+  message: `GitHub Inspector-only context exceeds ${WORKFLOW_EXECUTION_LIMITS.contextJsonBytes} UTF-8 bytes`,
 });
 
 export const CreateWorkflowSchema = z.object({
@@ -3300,15 +3416,21 @@ export type ReattachWorkflowBinding = z.infer<typeof ReattachWorkflowBindingSche
 
 export const SubmitWorkflowSchema = z.object({
   requestId: z.string().min(1).max(200),
+  evidence: WorkflowUploadEvidenceLocatorsSchema
+    .optional()
+    .default([]),
 });
-export type SubmitWorkflow = z.infer<typeof SubmitWorkflowSchema>;
+export type SubmitWorkflow = z.input<typeof SubmitWorkflowSchema>;
 export const ManualWorkflowSubmitSchema = SubmitWorkflowSchema;
 
 export const ResubmitWorkflowSchema = z.object({
   requestId: z.string().min(1).max(200),
   resubmitUnchanged: z.boolean().optional().default(false),
+  evidence: WorkflowUploadEvidenceLocatorsSchema
+    .optional()
+    .default([]),
 });
-export type ResubmitWorkflow = z.infer<typeof ResubmitWorkflowSchema>;
+export type ResubmitWorkflow = z.input<typeof ResubmitWorkflowSchema>;
 
 /**
  * How many EXTRA repair rounds to add to a run that spent its budget.
@@ -3565,6 +3687,8 @@ export const WorkflowCheckOutcomeSchema = z.object({
 export const WorkflowCompletionClaimSchema = z.object({
   completionKind: z.enum(WORKFLOW_COMPLETION_KINDS),
   marker: z.string().regex(/^[a-f0-9]{64}$/),
+  /** Prompted session activity observed with this proof. Absent on drain or old-worker claims. */
+  activityAt: z.number().int().nonnegative().nullable().optional().default(null),
   summary: z.string().min(1).max(WORKFLOW_EXECUTION_LIMITS.verdictSummary),
   evidenceFingerprint: z.string().min(1).max(200),
   expectedIntent: z.object({

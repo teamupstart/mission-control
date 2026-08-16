@@ -322,7 +322,7 @@ test("the shipped workflow is readable through the existing workflow routes", as
   const shipped = summaries.find((item) => item.id === BUILTIN_ID);
   assert.ok(shipped, "a fresh database lists the built-in with no operator gesture");
   assert.equal(shipped.builtin, true);
-  assert.equal(shipped.publishedVersion, 8, "the newest shipped version is the current one");
+  assert.equal(shipped.publishedVersion, 9, "the newest shipped version is the current one");
 
   const detail = await request(`/api/workflows/${BUILTIN_ID}`);
   assert.equal(detail.status, 200);
@@ -331,18 +331,18 @@ test("the shipped workflow is readable through the existing workflow routes", as
     versions: Array<{ version: number }>;
   };
   assert.equal(detailBody.workflow.builtin, true);
-  assert.equal(detailBody.workflow.currentVersionId, `${BUILTIN_ID}@8`);
+  assert.equal(detailBody.workflow.currentVersionId, `${BUILTIN_ID}@9`);
   // Newest first, and prior versions are STILL served: bindings pinned to them resolve
   // through the same route after the catalog gained version 8.
-  assert.deepEqual(detailBody.versions.map((version) => version.version), [8, 7, 6, 5, 4, 3, 2, 1]);
+  assert.deepEqual(detailBody.versions.map((version) => version.version), [9, 8, 7, 6, 5, 4, 3, 2, 1]);
 
   const versions = await request(`/api/workflows/${BUILTIN_ID}/versions`);
   assert.equal(versions.status, 200);
   assert.deepEqual(
     ((await versions.json()) as Array<{ version: number }>).map((version) => version.version),
-    [8, 7, 6, 5, 4, 3, 2, 1],
+    [9, 8, 7, 6, 5, 4, 3, 2, 1],
   );
-  for (const number of [1, 2, 3, 4, 5, 6, 7, 8]) {
+  for (const number of [1, 2, 3, 4, 5, 6, 7, 8, 9]) {
     const version = await request(`/api/workflows/${BUILTIN_ID}/versions/${number}`);
     assert.equal(version.status, 200, `version ${number} is no longer served`);
     const versionBody = await version.json() as {
@@ -395,7 +395,15 @@ test("the shipped workflow is readable through the existing workflow routes", as
     // must wait rather than type a second handoff asking for one the run already has.
     missingPrAction: "wait",
   });
-  assert.equal((await request(`/api/workflows/${BUILTIN_ID}/versions/9`)).status, 404);
+  const localVersion = await (await request(`/api/workflows/${BUILTIN_ID}/versions/9`)).json() as {
+    resumptionPolicy: string;
+    completionPolicy: { kind: string };
+    graph: { nodes: Array<{ id: string; kind: string }> };
+  };
+  assert.equal(localVersion.resumptionPolicy, "auto");
+  assert.deepEqual(localVersion.completionPolicy, { kind: "none" });
+  assert.equal(localVersion.graph.nodes.some((node) => node.id === "nmr-code-quality-judge"), true);
+  assert.equal((await request(`/api/workflows/${BUILTIN_ID}/versions/10`)).status, 404);
 });
 
 test("the shipped workflow duplicates through the same create boundary as the dashboard", async () => {

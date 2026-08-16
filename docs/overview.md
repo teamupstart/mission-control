@@ -71,7 +71,7 @@ and get your decision back.
 - **Tracks fleet economics**: a badge on every priced card and a topbar cost chip whose
   popover carries the sessions' Claude + Codex API-equivalent estimate, tokens, estimated
   cost per pull request, and rate-limit runway. A separate automation figure attributes the
-  Foreman's and Inspector's own model spend by role. See [Cost telemetry](sessions.md#cost-telemetry).
+  Foreman's and GitHub Inspector's own model spend by role. See [Cost telemetry](sessions.md#cost-telemetry).
 - **Says what each prompt-reporting session is for**: its card carries a one-sentence
   **Goal** - what that session is currently trying to solve - derived from your own
   prompts and refreshed as you steer it. No API key: it runs the configured local
@@ -87,7 +87,7 @@ and get your decision back.
   published version to a session and start a manual **Preview** to run concurrent, read-only
   Persona reviews against one immutable evidence snapshot. A session action stage instead
   *sends* one authored instruction to the bound session, waits for that turn, and captures
-  fresh evidence for everything below it. A published Inspector final gate can then require
+  fresh evidence for everything below it. A published GitHub Inspector final gate can then require
   the exact clean PR head to pass before the workflow completes.
 - **Equips** every session with [skills](skills-and-settings.md#skills-every-session-mixed-reload-behavior): switch
   a skill on in Settings and it is linked into each harness's own skills directory, including
@@ -95,9 +95,9 @@ and get your decision back.
   dispatched identity-bound Pi sessions reload when idle, and operator-started Pi sessions
   pick changes up on their next launch or restart.
 - **Lands the clean ones**, if you let it: [YOLO mode](inspector-and-shipping.md#shipping-yolo-mode) merges a pull
-  request Mission Control opened once the Inspector has reviewed and **published** on the
+  request Mission Control opened once the GitHub Inspector has reviewed and **published** on the
   current push with nothing outstanding, CI is green, no thread is unresolved, and it has
-  been open for a soak window you set. Needs the Inspector on **and** live; dry run merges
+  been open for a soak window you set. Needs the GitHub Inspector on **and** live; dry run merges
   nothing. Ships off, trusting no repositories.
 
 ## Quick start

@@ -80,7 +80,10 @@ function requestedChange(value: z.infer<typeof RequestedChangeInputSchema>): Req
 }
 
 /** Normalize bounded scalar/array values while preserving the strict pass/fail union. */
-export function normalizePersonaVerdict(value: unknown): PersonaVerdict | null {
+export function normalizePersonaVerdict(
+  value: unknown,
+  currentImageIds: ReadonlySet<string> = new Set(),
+): PersonaVerdict | null {
   const parsed = PersonaVerdictInputSchema.safeParse(value);
   if (!parsed.success) return null;
   const confidence = Math.max(0, Math.min(1, parsed.data.confidence));
@@ -105,13 +108,23 @@ export function normalizePersonaVerdict(value: unknown): PersonaVerdict | null {
         confidence,
       };
   const strict = PersonaVerdictSchema.safeParse(normalized);
-  return strict.success ? strict.data : null;
+  if (!strict.success) return null;
+  const refs = strict.data.verdict === "pass"
+    ? strict.data.approvalDetails.evidence
+    : strict.data.requestedChanges.flatMap((change) => change.evidence);
+  if (refs.some((ref) => ref.kind === "image" && (!ref.path || !currentImageIds.has(ref.path)))) {
+    return null;
+  }
+  return strict.data;
 }
 
 /** Extract and validate model JSON. Null is an infrastructure parse failure, never a fail. */
-export function parsePersonaVerdict(raw: string): PersonaVerdict | null {
+export function parsePersonaVerdict(
+  raw: string,
+  currentImageIds: ReadonlySet<string> = new Set(),
+): PersonaVerdict | null {
   const input = parseModelJson(raw, PersonaVerdictInputSchema);
-  return input ? normalizePersonaVerdict(input) : null;
+  return input ? normalizePersonaVerdict(input, currentImageIds) : null;
 }
 
 export function verdictRequestedChanges(verdict: PersonaVerdict): RequestedChange[] {

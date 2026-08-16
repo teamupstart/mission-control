@@ -182,6 +182,8 @@ test("version and run exports are versioned, complete, and preserve immutable sn
     workingTreeStatusEntries: 0,
     transcriptMessages: 0,
     standardsDocuments: 0,
+    imageCount: 0,
+    imageBytes: 0,
   });
   assert.equal(prunedExport.data.deliveries[0]?.payload, "");
   assert.equal(prunedExport.data.deliveries[0]?.payloadPrunedAt, 20);

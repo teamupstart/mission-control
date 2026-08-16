@@ -1303,10 +1303,14 @@ export class ForemanClient implements ForemanActions {
   async markPromptedWrapup(
     sessionId: string,
     goal: string,
+    evidenceMarker: string,
+    activityAt: number,
     opts?: { ask?: boolean },
   ): Promise<void> {
     const res = await send("POST", `/api/sessions/${enc(sessionId)}/queue/wrapup/prompted`, {
       goal,
+      evidenceMarker,
+      activityAt,
       ...(opts?.ask ? { ask: true } : {}),
     });
     if (!res.ok) throw new Error(`markPromptedWrapup ${sessionId} -> ${res.status}`);

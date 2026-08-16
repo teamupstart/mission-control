@@ -70,6 +70,7 @@ function request(
     body: JSON.stringify({
       completionKind,
       marker,
+      activityAt: completionKind === "prompted" ? 123 : null,
       summary: "Foreman proved the queue complete.",
       evidenceFingerprint: "evidence",
       expectedIntent,
@@ -410,9 +411,35 @@ test("completion HTTP claims server-owned identity once and atomically retires t
   assert.equal(promptedBody.state, "started");
   assert.equal(workflows.store.getRun(promptedBody.runId)?.bindingId, promptedBinding.id);
   const promptedGuard = db.prepare(
-    `SELECT prompted_goal FROM foreman_queues WHERE note_key = 'prompted'`,
-  ).get() as { prompted_goal: string | null };
+    `SELECT prompted_goal, prompted_evidence, prompted_activity_at
+       FROM foreman_queues WHERE note_key = 'prompted'`,
+  ).get() as {
+    prompted_goal: string | null;
+    prompted_evidence: string | null;
+    prompted_activity_at: number | null;
+  };
   assert.equal(promptedGuard.prompted_goal, "intent:1:1");
+  assert.equal(promptedGuard.prompted_evidence, "e".repeat(64));
+  assert.equal(promptedGuard.prompted_activity_at, 123);
+
+  const advancedPrompted = await request(app, "prompted", "9".repeat(64), "prompted");
+  assert.equal(advancedPrompted.status, 200, "new evidence on the same intent must re-arm");
+  const advancedBody = await advancedPrompted.json() as {
+    claimed: boolean;
+    runId: string;
+    state: string;
+  };
+  assert.equal(advancedBody.claimed, true);
+  assert.notEqual(advancedBody.runId, promptedBody.runId);
+  const replayPrompted = await request(app, "prompted", "9".repeat(64), "prompted");
+  assert.equal(replayPrompted.status, 200);
+  const replayBody = await replayPrompted.json() as {
+    claimed: boolean;
+    runId: string;
+    state: string;
+  };
+  assert.equal(replayBody.runId, advancedBody.runId, "one proof may claim the binding only once");
+  assert.equal(replayBody.state, "already_claimed");
 
   const first = await request(app, "claimed", "2".repeat(64));
   assert.equal(first.status, 200);

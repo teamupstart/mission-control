@@ -66,7 +66,7 @@ const EVERY_CATEGORY: SettingsStatus = {
   inspector: { enabled: false, mode: "dry-run" },
   shipping: { autoMerge: false },
   taskSources: { failing: 0 },
-  pipelines: { present: true },
+  pipelines: { present: true, observing: 0 },
 };
 
 function renderCategory(category: SettingsCategoryId): string {

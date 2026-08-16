@@ -251,7 +251,7 @@ the Trust grant and the compare-and-swap save are exactly as described above.
 
 ### The Ship log
 
-`#/shipped` is the cross-repo record of what the fleet landed: the Inspector's adoption
+`#/shipped` is the cross-repo record of what the fleet landed: the GitHub Inspector's adoption
 ledger, read as a page rather than counted. Every row is one pull request Mission Control can
 prove one of its agents opened, tagged with the repository it belongs to - which is what makes
 this the surface that answers "what shipped, across everything we touched".
@@ -273,7 +273,7 @@ The page has three parts.
 Three details are worth knowing.
 
 **Titles arrive late, and rows are named by what is known.** The adoption signal is a hook
-catching `gh pr create` and carries only a URL, so the title is written by the Inspector's
+catching `gh pr create` and carries only a URL, so the title is written by the GitHub Inspector's
 first poll afterwards. A row falls back to its branch name until then, and to its number when
 even the branch has not been observed. A row adopted before this build and already closed may
 keep its branch name for ever - the poll retires merged and closed rows and never looks again.

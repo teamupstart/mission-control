@@ -845,8 +845,15 @@ export class Registry extends EventEmitter {
    * The suppression mirrors `recomputeFleetCost`: `publishSettingsStatus` recomposes on
    * every config write and after every sweep, so without this an operator toggling one
    * source's interval would push an identical tuple to every open dashboard. The compare
-   * is a shallow field walk - the shape is three small scalars, so `byJson` would be the
-   * same answer at more cost.
+   * is a shallow field walk - the shape is a handful of small scalars, so `byJson` would be
+   * the same answer at more cost.
+   *
+   * **Every field of the tuple has to appear below.** A field left out is not merely
+   * compared loosely: it is a field whose CHANGE is silently dropped, because a tuple that
+   * moved only there compares equal and no frame is sent. The `pipelines` pair was missing
+   * when it arrived, which meant the promise that installing the engine makes the Conductor
+   * row appear "while you are still looking for it" was answered by a frame this method
+   * threw away - and the row waited for whatever unrelated setting moved next.
    */
   emitSettingsStatus(status: SettingsStatus): void {
     const prev = this.lastSettingsStatus;
@@ -855,7 +862,9 @@ export class Registry extends EventEmitter {
       prev.inspector.enabled === status.inspector.enabled &&
       prev.inspector.mode === status.inspector.mode &&
       prev.shipping.autoMerge === status.shipping.autoMerge &&
-      prev.taskSources.failing === status.taskSources.failing;
+      prev.taskSources.failing === status.taskSources.failing &&
+      prev.pipelines.present === status.pipelines.present &&
+      prev.pipelines.observing === status.pipelines.observing;
     this.lastSettingsStatus = status;
     if (same) return;
     this.emitEvent({ type: "settings_status", status });
@@ -6192,6 +6201,8 @@ export class Registry extends EventEmitter {
       wrapupAskedAt: row?.wrapupAskedAt ?? null,
       wrapupAnswer: row?.wrapupAnswer ?? null,
       promptedGoal: row?.promptedGoal ?? null,
+      promptedEvidence: row?.promptedEvidence ?? null,
+      promptedActivityAt: row?.promptedActivityAt ?? null,
       updatedAt: row?.updatedAt ?? 0,
       items,
     };
@@ -6279,6 +6290,8 @@ export class Registry extends EventEmitter {
       wrapupAskedAt: prev?.wrapupAskedAt ?? null,
       wrapupAnswer: prev?.wrapupAnswer ?? null,
       promptedGoal: prev?.promptedGoal ?? null,
+      promptedEvidence: prev?.promptedEvidence ?? null,
+      promptedActivityAt: prev?.promptedActivityAt ?? null,
       updatedAt: now,
     });
     return key;
@@ -6291,6 +6304,8 @@ export class Registry extends EventEmitter {
       wrapupAskedAt?: number | null;
       wrapupAnswer?: string | null;
       promptedGoal?: string | null;
+      promptedEvidence?: string | null;
+      promptedActivityAt?: number | null;
     },
     now = Date.now(),
   ): void {
@@ -6301,6 +6316,18 @@ export class Registry extends EventEmitter {
       wrapupAskedAt: patch.wrapupAskedAt !== undefined ? patch.wrapupAskedAt : prev.wrapupAskedAt,
       wrapupAnswer: patch.wrapupAnswer !== undefined ? patch.wrapupAnswer : prev.wrapupAnswer,
       promptedGoal: patch.promptedGoal !== undefined ? patch.promptedGoal : prev.promptedGoal,
+      promptedEvidence:
+        patch.promptedEvidence !== undefined
+          ? patch.promptedEvidence
+          : patch.promptedGoal === null
+            ? null
+            : prev.promptedEvidence,
+      promptedActivityAt:
+        patch.promptedActivityAt !== undefined
+          ? patch.promptedActivityAt
+          : patch.promptedGoal === null
+            ? null
+            : prev.promptedActivityAt,
       updatedAt: now,
     });
     this.syncSessionsForQueue(key);
@@ -6470,6 +6497,8 @@ export class Registry extends EventEmitter {
         wrapupAskedAt: row.wrapupAskedAt,
         wrapupAnswer: row.wrapupAnswer,
         promptedGoal: row.promptedGoal,
+        promptedEvidence: row.promptedEvidence,
+        promptedActivityAt: row.promptedActivityAt,
         updatedAt: now,
       },
       items.map((i, n) => ({ ...i, noteKey: toKey, seq: base + n, updatedAt: now })),

@@ -134,7 +134,7 @@ test("rounds are listed in execution order and a repair round is marked", () => 
   assert.deepEqual(rounds.map((round) => round.label), [
     "Round 1",
     "Round 2",
-    "Round 3 · Inspector",
+    "Round 3 · GitHub Inspector",
   ]);
   // The submission status alone would leave every healthy repair round unmarked, which is
   // the one round the mark exists for.

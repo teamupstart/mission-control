@@ -93,7 +93,7 @@ function dotLabel(
 ): string {
   switch (tone) {
     case "live":
-      return "Inspector is live - reviews post to GitHub";
+      return "GitHub Inspector is live - reviews post to GitHub";
     case "armed":
       return category === "trust"
         ? "Trust needs a look - a repository grant is armed"

@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import {
   existsSync,
   mkdirSync,
+  renameSync,
   symlinkSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
@@ -177,6 +179,10 @@ test("native Git operations fail closed when a subprocess outcome is unknown", a
   ).fetchDefaultSha(identity);
   assertUnknown(resolved, /git rev-parse origin\//);
 
+  const observed = await new NativeWorktreeGit(async () => unknown(`${sha}\n`))
+    .observedDefaultSha(identity);
+  assertUnknown(observed, /git rev-parse origin\//);
+
   const merged = await new NativeWorktreeGit(async () => unknown()).mergedInto(clone, sha);
   assertUnknown(merged, /git merge-base --is-ancestor/);
 });
@@ -201,6 +207,76 @@ test("concurrent acquires receive different exact slots and respect capacity", a
     await m.release(result.lease);
   }
 });
+
+test(
+  "a slow release fetch does not block another slot acquisition or release",
+  { timeout: 10_000 },
+  async () => {
+    const { clone, sha } = repository("mission-native-slot-concurrency-");
+    let fetchCalls = 0;
+    let announceSlowFetch!: () => void;
+    let finishSlowFetch!: () => void;
+    const slowFetchStarted = new Promise<void>((resolve) => {
+      announceSlowFetch = resolve;
+    });
+    const slowFetchGate = new Promise<void>((resolve) => {
+      finishSlowFetch = resolve;
+    });
+    class SlowFirstFetchGit extends NativeWorktreeGit {
+      override async fetchDefaultSha(): Promise<GitResult<string>> {
+        fetchCalls++;
+        if (fetchCalls === 1) {
+          announceSlowFetch();
+          await slowFetchGate;
+        }
+        return { ok: true, value: sha };
+      }
+    }
+    const m = manager({
+      git: new SlowFirstFetchGit(),
+      resolvePolicy: () => ({ enabled: true, maxSlots: 3, setupArgv: null }),
+    });
+    const first = lease(await acquire(m, clone, sha, "task-slow-release"));
+    const second = lease(await acquire(m, clone, sha, "task-parallel-release"));
+    const firstRelease = m.release(first);
+    await slowFetchStarted;
+
+    const thirdAcquire = acquire(m, clone, sha, "task-parallel-acquire");
+    const secondRelease = m.release(second);
+    const settlesBefore = <T>(promise: Promise<T>, timeoutMs: number): Promise<boolean> =>
+      new Promise((resolve) => {
+        const timer = setTimeout(() => resolve(false), timeoutMs);
+        timer.unref();
+        void promise.then(
+          () => {
+            clearTimeout(timer);
+            resolve(true);
+          },
+          () => {
+            clearTimeout(timer);
+            resolve(true);
+          },
+        );
+      });
+    const [acquireProgressed, releaseProgressed] = await Promise.all([
+      settlesBefore(thirdAcquire, 1_000),
+      settlesBefore(secondRelease, 1_000),
+    ]);
+    finishSlowFetch();
+
+    const [firstReleased, thirdResult, secondReleased] = await Promise.all([
+      firstRelease,
+      thirdAcquire,
+      secondRelease,
+    ]);
+    assert.equal(acquireProgressed, true, "a different slot acquisition must not wait for the fetch");
+    assert.equal(releaseProgressed, true, "a different slot release must not wait for the fetch");
+    assert.equal(firstReleased.outcome, "released");
+    assert.equal(secondReleased.outcome, "released");
+    const third = lease(thirdResult);
+    assert.equal((await m.release(third)).outcome, "released");
+  },
+);
 
 test("conditional release is idempotent and stale identity cannot release a re-lease", async () => {
   const { clone, sha } = repository("mission-native-release-");
@@ -247,7 +323,7 @@ test("reset removes nonignored work while preserving ignored warm caches", async
   await m.release(second);
 });
 
-test("operator setup runs only for a new slot and setup failure quarantines it", async () => {
+test("operator setup runs only for a new slot and failure or uncertainty quarantines it", async () => {
   const successRepo = repository("mission-native-setup-ok-");
   const setupCalls: Array<{ argv: readonly string[]; cwd: string }> = [];
   const success = manager({
@@ -273,6 +349,23 @@ test("operator setup runs only for a new slot and setup failure quarantines it",
   const result = await acquire(failed, failedRepo.clone, failedRepo.sha, "task-setup-fail");
   assert.deepEqual(result, { outcome: "outcomeUnknown", reason: "setup refused" });
   assert.equal(failed.store.slots().some((slot) => slot.state === "quarantined"), true);
+
+  const unknownRepo = repository("mission-native-setup-unknown-");
+  const unknown = manager({
+    resolvePolicy: () => ({ enabled: true, maxSlots: 1, setupArgv: ["unknown"] }),
+    runSetup: async () => ({ ok: true, reason: null, outcomeUnknown: true }),
+  });
+  const unknownResult = await acquire(
+    unknown,
+    unknownRepo.clone,
+    unknownRepo.sha,
+    "task-setup-unknown",
+  );
+  assert.deepEqual(unknownResult, {
+    outcome: "outcomeUnknown",
+    reason: "setup outcome could not be proven",
+  });
+  assert.equal(unknown.store.slots().some((slot) => slot.state === "quarantined"), true);
 });
 
 test("repository files cannot opt a native slot into setup execution", async () => {
@@ -362,6 +455,44 @@ test("release refuses a corrupted slot path without resetting that checkout", as
   assert.equal(released.outcome, "refused");
   assert.equal(existsSync(scratch), true, "an unmarked checkout must never be reset");
   assert.equal(m.store.slot(held.slotId)?.state, "leased");
+});
+
+test("release revalidates a physical registered slot after fetch before reset", async () => {
+  const { clone, sha } = repository("mission-native-release-link-race-");
+  const scratch = join(clone, "operator-work.txt");
+  writeFileSync(scratch, "preserve me\n");
+  class SwapAfterFetchGit extends NativeWorktreeGit {
+    slotPath = "";
+    resetCalls = 0;
+
+    override async fetchDefaultSha(identity: NonNullable<ReturnType<typeof worktreeRepositoryIdentity>>) {
+      const result = await super.fetchDefaultSha(identity);
+      if (result.ok) {
+        renameSync(this.slotPath, `${this.slotPath}-registered`);
+        symlinkSync(clone, this.slotPath, "dir");
+      }
+      return result;
+    }
+
+    override async reset(path: string, commit: string) {
+      this.resetCalls++;
+      return super.reset(path, commit);
+    }
+  }
+  const git = new SwapAfterFetchGit();
+  const m = manager({ git });
+  const held = lease(await acquire(m, clone, sha, "task-path-race"));
+  git.slotPath = held.path;
+
+  const released = await m.release(held);
+  assert.equal(released.outcome, "refused");
+  if (released.outcome === "refused") assert.match(released.reason, /physical directory/);
+  assert.equal(git.resetCalls, 0);
+  assert.equal(existsSync(scratch), true, "a symlink target must never be reset");
+  assert.equal(m.store.slot(held.slotId)?.state, "leased");
+
+  unlinkSync(held.path);
+  renameSync(`${held.path}-registered`, held.path);
 });
 
 test("acquisition refuses a symlinked slot parent before Git writes through it", async () => {

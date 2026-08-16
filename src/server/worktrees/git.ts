@@ -33,6 +33,7 @@ export interface WorktreeGit {
   inspect(path: string): Promise<GitResult<WorktreeInspection>>;
   add(identity: WorktreeRepositoryIdentity, path: string, commit: string): Promise<GitResult<void>>;
   reset(path: string, commit: string): Promise<GitResult<void>>;
+  observedDefaultSha(identity: WorktreeRepositoryIdentity): Promise<GitResult<string>>;
   fetchDefaultSha(identity: WorktreeRepositoryIdentity): Promise<GitResult<string>>;
   mergedInto(path: string, targetSha: string): Promise<GitResult<boolean>>;
 }
@@ -150,6 +151,22 @@ export class NativeWorktreeGit implements WorktreeGit {
 
   async reset(path: string, commit: string): Promise<GitResult<void>> {
     try {
+      const [stat, physical] = await Promise.all([lstat(path), realpath(path)]);
+      if (!stat.isDirectory() || stat.isSymbolicLink() || physical !== resolve(path)) {
+        return {
+          ok: false,
+          reason: `worktree ${path} is not an exact physical directory`,
+          outcomeUnknown: false,
+        };
+      }
+    } catch (error) {
+      return {
+        ok: false,
+        reason: `worktree ${path} could not be physically verified: ${String(error)}`,
+        outcomeUnknown: false,
+      };
+    }
+    try {
       // The shared helper is the one owner of reset --hard plus clean -fd and exact HEAD.
       await resetWorktreeToCommit(path, commit);
       return { ok: true, value: undefined };
@@ -161,11 +178,7 @@ export class NativeWorktreeGit implements WorktreeGit {
     }
   }
 
-  async fetchDefaultSha(identity: WorktreeRepositoryIdentity): Promise<GitResult<string>> {
-    const fetched = await this.execute("git", ["-C", identity.mainCheckoutRoot, "fetch", "origin"], {
-      timeoutMs: 30_000,
-    });
-    if (commandFailed(fetched)) return failure("git fetch origin", fetched);
+  async observedDefaultSha(identity: WorktreeRepositoryIdentity): Promise<GitResult<string>> {
     const target = await remoteDefaultRef(identity.mainCheckoutRoot);
     if (!target) {
       return { ok: false, reason: "no remote default branch is available", outcomeUnknown: false };
@@ -181,6 +194,14 @@ export class NativeWorktreeGit implements WorktreeGit {
       return { ok: false, reason: `${target} did not resolve to a full commit id`, outcomeUnknown: false };
     }
     return { ok: true, value: sha };
+  }
+
+  async fetchDefaultSha(identity: WorktreeRepositoryIdentity): Promise<GitResult<string>> {
+    const fetched = await this.execute("git", ["-C", identity.mainCheckoutRoot, "fetch", "origin"], {
+      timeoutMs: 30_000,
+    });
+    if (commandFailed(fetched)) return failure("git fetch origin", fetched);
+    return this.observedDefaultSha(identity);
   }
 
   async mergedInto(path: string, targetSha: string): Promise<GitResult<boolean>> {

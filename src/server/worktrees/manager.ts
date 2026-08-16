@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { lstat, realpath } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import type { WorktreeProvider } from "@shared/types.ts";
 import { WORKTREE_POOLS_DIR, envVar } from "../config.ts";
@@ -12,7 +13,12 @@ import {
   type WorktreeRepositoryIdentity,
 } from "../util/git.ts";
 import { resolveWorktreePolicy, type WorktreePolicy } from "./config.ts";
-import { NativeWorktreeGit, type WorktreeGit, type WorktreeRegistration } from "./git.ts";
+import {
+  NativeWorktreeGit,
+  type GitResult,
+  type WorktreeGit,
+  type WorktreeRegistration,
+} from "./git.ts";
 import { ensureWorktreePoolMarker, readWorktreePoolMarker } from "./marker.ts";
 import {
   inspectWorktreeOccupancy,
@@ -126,11 +132,12 @@ const DEFAULT_DEPS: WorktreeManagerDeps = {
       timeoutMs: 120_000,
       maxBuffer: 64 * 1024,
     });
-    return result.code === 0 && !result.overflowed
+    return result.code === 0 && !result.outcomeUnknown && !result.overflowed
       ? { ok: true, reason: null, outcomeUnknown: false }
       : {
           ok: false,
-          reason: result.stderr.trim() || `setup exited ${result.code}`,
+          reason: result.stderr.trim() ||
+            (result.outcomeUnknown ? "setup outcome could not be proven" : `setup exited ${result.code}`),
           outcomeUnknown: result.outcomeUnknown,
         };
   },
@@ -219,8 +226,8 @@ export function worktreeSweepIntervalMs(raw = envVar("WORKTREE_SWEEP_MS")): numb
 
 /**
  * The daemon's single allocator authority for native pooled worktrees. Database state changes
- * are short and synchronous; every Git/process operation runs outside a transaction while a
- * durable intent state keeps the slot unavailable to another caller.
+ * are short and synchronous. Pool reservation locks cover only candidate CAS/allocation, while
+ * per-slot locks and durable intent states isolate Git/process work to the exact slot.
  */
 export class WorktreeManager {
   readonly store: WorktreeStore;
@@ -236,21 +243,43 @@ export class WorktreeManager {
     this.deps = { ...DEFAULT_DEPS, ...deps };
   }
 
-  private async withPool<T>(commonDirectory: string, operation: () => Promise<T>): Promise<T> {
-    const prior = this.queues.get(commonDirectory) ?? Promise.resolve();
-    let release!: () => void;
+  private async acquireLock(key: string): Promise<() => void> {
+    const prior = this.queues.get(key) ?? Promise.resolve();
+    let releaseHold!: () => void;
     const hold = new Promise<void>((resolve) => {
-      release = resolve;
+      releaseHold = resolve;
     });
     const tail = prior.catch(() => {}).then(() => hold);
-    this.queues.set(commonDirectory, tail);
+    this.queues.set(key, tail);
     await prior.catch(() => {});
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      releaseHold();
+      if (this.queues.get(key) === tail) this.queues.delete(key);
+    };
+  }
+
+  private async withLock<T>(key: string, operation: () => Promise<T>): Promise<T> {
+    const release = await this.acquireLock(key);
     try {
       return await operation();
     } finally {
       release();
-      if (this.queues.get(commonDirectory) === tail) this.queues.delete(commonDirectory);
     }
+  }
+
+  private withPoolReservation<T>(commonDirectory: string, operation: () => Promise<T>): Promise<T> {
+    return this.withLock(`pool:${commonDirectory}`, operation);
+  }
+
+  private withSlot<T>(slotId: string, operation: () => Promise<T>): Promise<T> {
+    return this.withLock(`slot:${slotId}`, operation);
+  }
+
+  private acquireSlotLock(slotId: string): Promise<() => void> {
+    return this.acquireLock(`slot:${slotId}`);
   }
 
   private publish(): void {
@@ -309,6 +338,72 @@ export class WorktreeManager {
       : null;
   }
 
+  private async validateResetTarget(
+    pool: WorktreePoolRow,
+    identity: WorktreeRepositoryIdentity,
+    slot: WorktreeSlotRow,
+  ): Promise<GitResult<void>> {
+    try {
+      const [stat, physical] = await Promise.all([lstat(slot.path), realpath(slot.path)]);
+      if (!stat.isDirectory() || stat.isSymbolicLink() || physical !== resolve(slot.path)) {
+        return {
+          ok: false,
+          reason: "slot path is not an exact physical directory",
+          outcomeUnknown: false,
+        };
+      }
+    } catch (error) {
+      return {
+        ok: false,
+        reason: `slot path could not be physically verified: ${bounded(String(error))}`,
+        outcomeUnknown: false,
+      };
+    }
+
+    let listed: Awaited<ReturnType<WorktreeGit["list"]>>;
+    try {
+      listed = await this.deps.git.list(identity);
+    } catch (error) {
+      return {
+        ok: false,
+        reason: `Git worktree registrations could not be read: ${bounded(String(error))}`,
+        outcomeUnknown: true,
+      };
+    }
+    if (!listed.ok) return listed;
+    const registration = registrationFor(listed.value, slot.path);
+    if (!registration || registration.bare || registration.locked || registration.prunable) {
+      return {
+        ok: false,
+        reason: "slot has no safe Git worktree registration",
+        outcomeUnknown: false,
+      };
+    }
+
+    let inspected: Awaited<ReturnType<WorktreeGit["inspect"]>>;
+    try {
+      inspected = await this.deps.git.inspect(slot.path);
+    } catch (error) {
+      return {
+        ok: false,
+        reason: `slot Git state could not be inspected: ${bounded(String(error))}`,
+        outcomeUnknown: true,
+      };
+    }
+    if (!inspected.ok) return inspected;
+    if (
+      inspected.value.path !== slot.path ||
+      inspected.value.commonDirectory !== pool.gitCommonDirectory
+    ) {
+      return {
+        ok: false,
+        reason: "slot is not the registered worktree owned by its native pool",
+        outcomeUnknown: false,
+      };
+    }
+    return { ok: true, value: undefined };
+  }
+
   async acquire(input: {
     repositoryPath: string;
     baseSha: string;
@@ -332,157 +427,159 @@ export class WorktreeManager {
     }
     if (!policy.enabled) return { outcome: "notAcquired", reason: "native worktrees are disabled for this repository" };
 
-    return this.withPool(identity.gitCommonDirectory, async () => {
-      const now = this.deps.now();
-      let pool: WorktreePoolRow;
-      try {
-        pool = this.store.ensurePool({
-          id: this.deps.randomId(),
-          gitCommonDirectory: identity.gitCommonDirectory,
-          mainCheckoutRoot: identity.mainCheckoutRoot,
-          poolPath: identity.poolPath,
-          now,
-        });
-        await ensureWorktreePoolMarker(pool.poolPath, pool.id);
-      } catch (error) {
-        return { outcome: "notAcquired", reason: bounded(String(error)) };
-      }
+    const now = this.deps.now();
+    let pool: WorktreePoolRow;
+    try {
+      pool = this.store.ensurePool({
+        id: this.deps.randomId(),
+        gitCommonDirectory: identity.gitCommonDirectory,
+        mainCheckoutRoot: identity.mainCheckoutRoot,
+        poolPath: identity.poolPath,
+        now,
+      });
+      await ensureWorktreePoolMarker(pool.poolPath, pool.id);
+    } catch (error) {
+      return { outcome: "notAcquired", reason: bounded(String(error)) };
+    }
 
-      const available = this.store.slots(pool.id).filter((slot) => slot.state === "available");
-      let registrations: Awaited<ReturnType<WorktreeGit["list"]>> | null = null;
-      try {
-        registrations = available.length > 0 ? await this.deps.git.list(identity) : null;
-      } catch (error) {
-        const reason = `Git registrations could not be read: ${bounded(String(error))}`;
-        for (const slot of available) this.quarantine(slot, "Git registrations could not be read", reason);
-        return { outcome: "notAcquired", reason };
-      }
-      const occupancy = available.length > 0
-        ? await this.occupancy(available.map((slot) => slot.path))
-        : new Map<string, WorktreeOccupancy>();
-      let selected: WorktreeSlotRow | null = null;
+    const available = this.store.slots(pool.id).filter((slot) => slot.state === "available");
+    let registrations: Awaited<ReturnType<WorktreeGit["list"]>> | null = null;
+    try {
+      registrations = available.length > 0 ? await this.deps.git.list(identity) : null;
+    } catch (error) {
+      const reason = `Git registrations could not be read: ${bounded(String(error))}`;
+      for (const slot of available) this.quarantine(slot, "Git registrations could not be read", reason);
+      return { outcome: "notAcquired", reason };
+    }
+    const occupancy = available.length > 0
+      ? await this.occupancy(available.map((slot) => slot.path))
+      : new Map<string, WorktreeOccupancy>();
+    const eligible: WorktreeSlotRow[] = [];
 
-      if (registrations?.ok === true) {
-        for (const slot of available) {
-          if (!exactSlotPath(pool, identity, slot)) {
-            this.quarantine(slot, "slot path is not the exact path owned by its native pool");
-            continue;
-          }
-          const active = activeReference(slot);
-          if (active !== null) {
-            this.quarantine(
-              slot,
-              active === "invalid"
-                ? "available slot has incomplete active lease identity"
-                : "available slot still carries active lease identity",
-            );
-            continue;
-          }
-          const priorReference = lastReference(slot);
-          if (priorReference === "invalid") {
-            this.quarantine(slot, "last-released lease identity is incomplete");
-            continue;
-          }
-          if (priorReference) {
-            try {
-              if (await this.deps.ownerReferenced(priorReference)) {
-                // This is the recoverable release/domain-row crash window. Keep the slot
-                // available but ineligible until the exact owner clears its durable row.
-                continue;
-              }
-            } catch (error) {
-              this.quarantine(slot, "last-released domain ownership could not be read", String(error));
+    if (registrations?.ok === true) {
+      for (const slot of available) {
+        if (!exactSlotPath(pool, identity, slot)) {
+          this.quarantine(slot, "slot path is not the exact path owned by its native pool");
+          continue;
+        }
+        const active = activeReference(slot);
+        if (active !== null) {
+          this.quarantine(
+            slot,
+            active === "invalid"
+              ? "available slot has incomplete active lease identity"
+              : "available slot still carries active lease identity",
+          );
+          continue;
+        }
+        const priorReference = lastReference(slot);
+        if (priorReference === "invalid") {
+          this.quarantine(slot, "last-released lease identity is incomplete");
+          continue;
+        }
+        if (priorReference) {
+          try {
+            if (await this.deps.ownerReferenced(priorReference)) {
+              // This is the recoverable release/domain-row crash window. Keep the slot
+              // available but ineligible until the exact owner clears its durable row.
               continue;
             }
-          }
-          const observedOccupancy = occupancy.get(slot.path);
-          if (!observedOccupancy || observedOccupancy.status === "unknown") {
-            this.quarantine(
-              slot,
-              "slot occupancy is unknown",
-              observedOccupancy?.status === "unknown" ? observedOccupancy.reason : null,
-            );
-            continue;
-          }
-          if (observedOccupancy.occupants.length > 0) {
-            this.quarantine(slot, "an available slot has process occupancy");
-            continue;
-          }
-          const registration = registrationFor(registrations.value, slot.path);
-          if (!registration || registration.bare || registration.locked || registration.prunable) {
-            this.quarantine(slot, "slot has no safe Git worktree registration");
-            continue;
-          }
-          let inspection: Awaited<ReturnType<WorktreeGit["inspect"]>>;
-          try {
-            inspection = await this.deps.git.inspect(slot.path);
           } catch (error) {
-            this.quarantine(slot, "slot Git state could not be inspected", String(error));
+            this.quarantine(slot, "last-released domain ownership could not be read", String(error));
             continue;
           }
-          if (!inspection.ok) {
-            this.quarantine(slot, "slot Git state could not be inspected", inspection.reason);
-            continue;
-          }
-          if (
-            inspection.value.path !== slot.path ||
-            inspection.value.commonDirectory !== identity.gitCommonDirectory
-          ) {
-            this.quarantine(slot, "slot belongs to a different Git common directory");
-            continue;
-          }
-          if (inspection.value.dirty) {
-            this.quarantine(slot, "available slot has dirty or untracked work");
-            continue;
-          }
-          selected = slot;
-          break;
         }
-      } else if (registrations && !registrations.ok) {
-        for (const slot of available) this.quarantine(slot, "Git registrations could not be read", registrations.reason);
-        return {
-          outcome: "notAcquired",
-          reason: `Git registrations could not be read: ${registrations.reason}`,
-        };
+        const observedOccupancy = occupancy.get(slot.path);
+        if (!observedOccupancy || observedOccupancy.status === "unknown") {
+          this.quarantine(
+            slot,
+            "slot occupancy is unknown",
+            observedOccupancy?.status === "unknown" ? observedOccupancy.reason : null,
+          );
+          continue;
+        }
+        if (observedOccupancy.occupants.length > 0) {
+          this.quarantine(slot, "an available slot has process occupancy");
+          continue;
+        }
+        const registration = registrationFor(registrations.value, slot.path);
+        if (!registration || registration.bare || registration.locked || registration.prunable) {
+          this.quarantine(slot, "slot has no safe Git worktree registration");
+          continue;
+        }
+        let inspection: Awaited<ReturnType<WorktreeGit["inspect"]>>;
+        try {
+          inspection = await this.deps.git.inspect(slot.path);
+        } catch (error) {
+          this.quarantine(slot, "slot Git state could not be inspected", String(error));
+          continue;
+        }
+        if (!inspection.ok) {
+          this.quarantine(slot, "slot Git state could not be inspected", inspection.reason);
+          continue;
+        }
+        if (
+          inspection.value.path !== slot.path ||
+          inspection.value.commonDirectory !== identity.gitCommonDirectory
+        ) {
+          this.quarantine(slot, "slot belongs to a different Git common directory");
+          continue;
+        }
+        if (inspection.value.dirty) {
+          this.quarantine(slot, "available slot has dirty or untracked work");
+          continue;
+        }
+        eligible.push(slot);
       }
+    } else if (registrations && !registrations.ok) {
+      for (const slot of available) this.quarantine(slot, "Git registrations could not be read", registrations.reason);
+      return {
+        outcome: "notAcquired",
+        reason: `Git registrations could not be read: ${registrations.reason}`,
+      };
+    }
 
-      const leaseId = this.deps.randomId();
-      let reservation: WorktreeSlotRow | null;
-      let created = false;
-      try {
-        if (selected) {
+    const leaseId = this.deps.randomId();
+    let allocation: { reservation: WorktreeSlotRow | null; created: boolean };
+    try {
+      allocation = await this.withPoolReservation(identity.gitCommonDirectory, async () => {
+        let reservation: WorktreeSlotRow | null = null;
+        for (const candidate of eligible) {
           reservation = this.store.reserveAvailable({
-            slotId: selected.id,
-            version: selected.version,
+            slotId: candidate.id,
+            version: candidate.version,
             leaseId,
             ownerKind: input.owner.kind,
             ownerKey: input.owner.key,
             requestedHeadSha: input.baseSha,
             now: this.deps.now(),
           });
-        } else {
-          const slotId = this.deps.randomId();
-          reservation = this.store.reserveNew({
-            poolId: pool.id,
-            maxSlots: policy.maxSlots,
-            id: slotId,
-            pathForOrdinal: (ordinal) => join(pool.poolPath, String(ordinal), identity.repositoryName),
-            leaseId,
-            ownerKind: input.owner.kind,
-            ownerKey: input.owner.key,
-            requestedHeadSha: input.baseSha,
-            now: this.deps.now(),
-          });
-          created = reservation !== null;
+          if (reservation) return { reservation, created: false };
         }
-      } catch (error) {
-        return { outcome: "outcomeUnknown", reason: bounded(String(error)) };
-      }
-      if (!reservation) {
-        return { outcome: "notAcquired", reason: `native pool capacity ${policy.maxSlots} is exhausted` };
-      }
-      this.publish();
+        const slotId = this.deps.randomId();
+        reservation = this.store.reserveNew({
+          poolId: pool.id,
+          maxSlots: policy.maxSlots,
+          id: slotId,
+          pathForOrdinal: (ordinal) => join(pool.poolPath, String(ordinal), identity.repositoryName),
+          leaseId,
+          ownerKind: input.owner.kind,
+          ownerKey: input.owner.key,
+          requestedHeadSha: input.baseSha,
+          now: this.deps.now(),
+        });
+        return { reservation, created: reservation !== null };
+      });
+    } catch (error) {
+      return { outcome: "outcomeUnknown", reason: bounded(String(error)) };
+    }
+    const { reservation, created } = allocation;
+    if (!reservation) {
+      return { outcome: "notAcquired", reason: `native pool capacity ${policy.maxSlots} is exhausted` };
+    }
+    this.publish();
 
+    return this.withSlot(reservation.id, async () => {
       try {
         if (!created) {
           const freshOccupancy = (await this.occupancy([reservation.path])).get(reservation.path);
@@ -514,9 +611,16 @@ export class WorktreeManager {
 
         if (created && policy.setupArgv) {
           const setup = await this.deps.runSetup(policy.setupArgv, reservation.path);
-          if (!setup.ok) {
-            const reason = setup.reason ?? "setup failed";
-            this.quarantine(reservation, "operator-authored setup command failed", reason);
+          if (!setup.ok || setup.outcomeUnknown) {
+            const reason = setup.reason ??
+              (setup.outcomeUnknown ? "setup outcome could not be proven" : "setup failed");
+            this.quarantine(
+              reservation,
+              setup.outcomeUnknown
+                ? "operator-authored setup command outcome is unknown"
+                : "operator-authored setup command failed",
+              reason,
+            );
             return { outcome: "outcomeUnknown", reason };
           }
         }
@@ -572,7 +676,7 @@ export class WorktreeManager {
     if (lease.provider !== "mission") return { outcome: "refused", reason: "lease provider is not mission" };
     const pool = this.store.poolForSlot(lease.slotId);
     if (!pool) return { outcome: "refused", reason: "native slot no longer exists" };
-    return this.withPool(pool.gitCommonDirectory, async () => {
+    return this.withSlot(lease.slotId, async () => {
       const slot = this.store.slot(lease.slotId);
       if (!slot) return { outcome: "refused", reason: "native slot no longer exists" };
       if (
@@ -621,6 +725,12 @@ export class WorktreeManager {
       // both immediately before persisting the destructive reset intent.
       const freshBlocker = await this.releaseBlocker(reference, slot.path);
       if (freshBlocker) return { outcome: "refused", reason: freshBlocker };
+      const resetTarget = await this.validateResetTarget(pool, identity, slot);
+      if (!resetTarget.ok) {
+        return resetTarget.outcomeUnknown
+          ? { outcome: "outcomeUnknown", reason: resetTarget.reason }
+          : { outcome: "refused", reason: resetTarget.reason };
+      }
       let returning: WorktreeSlotRow | null;
       try {
         returning = this.store.markReturning(slot.id, slot.version, target.value, this.deps.now());
@@ -679,7 +789,7 @@ export class WorktreeManager {
 
   async reconcile(): Promise<void> {
     for (const pool of this.store.pools()) {
-      await this.withPool(pool.gitCommonDirectory, () => this.reconcilePool(pool));
+      await this.reconcilePool(pool);
     }
   }
 
@@ -687,9 +797,17 @@ export class WorktreeManager {
     const now = this.deps.now();
     const identity = this.identity(pool.mainCheckoutRoot);
     const slots = this.store.slots(pool.id);
-    const failPool = (reason: string) => {
-      for (const slot of slots) {
-        if (slot.state !== "quarantined") this.quarantine(slot, reason);
+    const failPool = async (reason: string) => {
+      for (const original of slots) {
+        const releaseSlot = await this.acquireSlotLock(original.id);
+        try {
+          const slot = this.store.slot(original.id);
+          if (slot?.version === original.version && slot.state !== "quarantined") {
+            this.quarantine(slot, reason);
+          }
+        } finally {
+          releaseSlot();
+        }
       }
       this.store.recordReconciliation(pool.id, now, bounded(reason));
     };
@@ -698,23 +816,23 @@ export class WorktreeManager {
       identity.gitCommonDirectory !== pool.gitCommonDirectory ||
       identity.poolPath !== pool.poolPath
     ) {
-      failPool("pool repository identity no longer matches its durable row");
+      await failPool("pool repository identity no longer matches its durable row");
       return;
     }
     const marker = await readWorktreePoolMarker(pool.poolPath);
     if (marker?.poolId !== pool.id) {
-      failPool("pool marker is missing, unreadable, or belongs to another pool");
+      await failPool("pool marker is missing, unreadable, or belongs to another pool");
       return;
     }
     let listed: Awaited<ReturnType<WorktreeGit["list"]>>;
     try {
       listed = await this.deps.git.list(identity);
     } catch (error) {
-      failPool(`Git worktree registrations are unknown: ${bounded(String(error))}`);
+      await failPool(`Git worktree registrations are unknown: ${bounded(String(error))}`);
       return;
     }
     if (!listed.ok) {
-      failPool(`Git worktree registrations are unknown: ${listed.reason}`);
+      await failPool(`Git worktree registrations are unknown: ${listed.reason}`);
       return;
     }
     const occupancy = await this.occupancy(
@@ -722,147 +840,154 @@ export class WorktreeManager {
     );
     const errors: string[] = [];
     for (const original of slots) {
-      let slot = this.store.slot(original.id) ?? original;
-      const reject = (reason: string, detail: string | null = null) => {
-        if (slot.state !== "quarantined") this.quarantine(slot, reason, detail);
-        errors.push(`slot ${slot.ordinal}: ${reason}`);
-      };
-      if (!WORKTREE_SLOT_STATES.includes(slot.state as (typeof WORKTREE_SLOT_STATES)[number])) {
-        reject(`unknown append-only slot state ${JSON.stringify(slot.state)}`);
-        continue;
-      }
-      if (!exactSlotPath(pool, identity, slot)) {
-        reject("slot path is not the exact path owned by its native pool");
-        continue;
-      }
-      const registration = registrationFor(listed.value, slot.path);
-      if (slot.state === "pruning" && !existsSync(slot.path) && !registration) {
-        if (!this.store.removePruned(slot.id, slot.version)) errors.push(`slot ${slot.ordinal}: prune completion raced`);
-        else this.publish();
-        continue;
-      }
-      if (!existsSync(slot.path) || !registration) {
-        reject("slot path or Git registration is missing");
-        continue;
-      }
-      if (registration.bare || registration.locked || registration.prunable) {
-        reject("slot Git registration is bare, locked, or prunable");
-        continue;
-      }
-      let inspection: Awaited<ReturnType<WorktreeGit["inspect"]>>;
+      const releaseSlot = await this.acquireSlotLock(original.id);
       try {
-        inspection = await this.deps.git.inspect(slot.path);
-      } catch (error) {
-        reject("slot Git state is unknown", String(error));
-        continue;
-      }
-      if (!inspection.ok) {
-        reject("slot Git state is unknown", inspection.reason);
-        continue;
-      }
-      if (
-        inspection.value.path !== slot.path ||
-        inspection.value.commonDirectory !== pool.gitCommonDirectory
-      ) {
-        reject("slot belongs to a different Git common directory");
-        continue;
-      }
-      const observedOccupancy = occupancy.get(slot.path) ?? {
-        status: "unknown" as const,
-        reason: "slot occupancy was not observed",
-      };
-      if (observedOccupancy.status === "unknown") {
-        reject("slot process occupancy is unknown", observedOccupancy.reason);
-        continue;
-      }
+        const current = this.store.slot(original.id);
+        if (!current || current.version !== original.version) continue;
+        const slot = current;
+        const reject = (reason: string, detail: string | null = null) => {
+          if (slot.state !== "quarantined") this.quarantine(slot, reason, detail);
+          errors.push(`slot ${slot.ordinal}: ${reason}`);
+        };
+        if (!WORKTREE_SLOT_STATES.includes(slot.state as (typeof WORKTREE_SLOT_STATES)[number])) {
+          reject(`unknown append-only slot state ${JSON.stringify(slot.state)}`);
+          continue;
+        }
+        if (!exactSlotPath(pool, identity, slot)) {
+          reject("slot path is not the exact path owned by its native pool");
+          continue;
+        }
+        const registration = registrationFor(listed.value, slot.path);
+        if (slot.state === "pruning" && !existsSync(slot.path) && !registration) {
+          if (!this.store.removePruned(slot.id, slot.version)) errors.push(`slot ${slot.ordinal}: prune completion raced`);
+          else this.publish();
+          continue;
+        }
+        if (!existsSync(slot.path) || !registration) {
+          reject("slot path or Git registration is missing");
+          continue;
+        }
+        if (registration.bare || registration.locked || registration.prunable) {
+          reject("slot Git registration is bare, locked, or prunable");
+          continue;
+        }
+        let inspection: Awaited<ReturnType<WorktreeGit["inspect"]>>;
+        try {
+          inspection = await this.deps.git.inspect(slot.path);
+        } catch (error) {
+          reject("slot Git state is unknown", String(error));
+          continue;
+        }
+        if (!inspection.ok) {
+          reject("slot Git state is unknown", inspection.reason);
+          continue;
+        }
+        if (
+          inspection.value.path !== slot.path ||
+          inspection.value.commonDirectory !== pool.gitCommonDirectory
+        ) {
+          reject("slot belongs to a different Git common directory");
+          continue;
+        }
+        const observedOccupancy = occupancy.get(slot.path) ?? {
+          status: "unknown" as const,
+          reason: "slot occupancy was not observed",
+        };
+        if (observedOccupancy.status === "unknown") {
+          reject("slot process occupancy is unknown", observedOccupancy.reason);
+          continue;
+        }
 
-      if (slot.state === "quarantined") {
-        this.store.updateObserved(slot.id, inspection.value.head, slot.lastError, now);
-        continue;
-      }
-      if (slot.state === "provisioning") {
-        reject("startup found an interrupted provisioning intent");
-        continue;
-      }
-      if (slot.state === "pruning") {
-        reject("startup found an interrupted prune with filesystem state still present");
-        continue;
-      }
-      if (slot.state === "returning") {
-        const returningReference = activeReference(slot);
-        if (!returningReference || returningReference === "invalid") {
-          reject("interrupted return has incomplete active lease identity");
+        if (slot.state === "quarantined") {
+          this.store.updateObserved(slot.id, inspection.value.head, slot.lastError, now);
           continue;
         }
-        if (observedOccupancy.occupants.length > 0 || inspection.value.dirty) {
-          reject("interrupted return is occupied or dirty");
+        if (slot.state === "provisioning") {
+          reject("startup found an interrupted provisioning intent");
           continue;
         }
-        if (!slot.requestedHeadSha || inspection.value.head !== slot.requestedHeadSha) {
-          reject("interrupted return did not reach its requested exact HEAD");
+        if (slot.state === "pruning") {
+          reject("startup found an interrupted prune with filesystem state still present");
           continue;
         }
-        const completed = this.store.completeRelease(slot.id, slot.version, inspection.value.head, now);
-        if (!completed) errors.push(`slot ${slot.ordinal}: proven return completion raced`);
-        else this.publish();
-        continue;
-      }
-      if (slot.state === "available") {
+        if (slot.state === "returning") {
+          const returningReference = activeReference(slot);
+          if (!returningReference || returningReference === "invalid") {
+            reject("interrupted return has incomplete active lease identity");
+            continue;
+          }
+          if (observedOccupancy.occupants.length > 0 || inspection.value.dirty) {
+            reject("interrupted return is occupied or dirty");
+            continue;
+          }
+          if (!slot.requestedHeadSha || inspection.value.head !== slot.requestedHeadSha) {
+            reject("interrupted return did not reach its requested exact HEAD");
+            continue;
+          }
+          const completed = this.store.completeRelease(slot.id, slot.version, inspection.value.head, now);
+          if (!completed) errors.push(`slot ${slot.ordinal}: proven return completion raced`);
+          else this.publish();
+          continue;
+        }
+        if (slot.state === "available") {
+          const active = activeReference(slot);
+          if (active !== null) {
+            reject(
+              active === "invalid"
+                ? "available slot has incomplete active lease identity"
+                : "available slot still carries active lease identity",
+            );
+            continue;
+          }
+          if (observedOccupancy.occupants.length > 0 || inspection.value.dirty) {
+            reject("available slot is occupied or dirty");
+            continue;
+          }
+          if (slot.currentHeadSha && slot.currentHeadSha !== inspection.value.head) {
+            reject("available slot HEAD moved outside an allocator transition");
+            continue;
+          }
+          const prior = lastReference(slot);
+          if (prior === "invalid") {
+            reject("last-released lease identity is incomplete");
+            continue;
+          }
+          try {
+            if (prior && (await this.deps.ownerReferenced(prior))) {
+              // Release completed before the domain row cleared. Preserve this exact,
+              // idempotently releasable state while keeping it unavailable to acquisition.
+              this.store.updateObserved(slot.id, inspection.value.head, null, now);
+              continue;
+            }
+          } catch (error) {
+            reject("last-released domain ownership is unknown", String(error));
+            continue;
+          }
+          this.store.updateObserved(slot.id, inspection.value.head, null, now);
+          continue;
+        }
+
+        // A valid active lease can legitimately be dirty and occupied after restart. Exact
+        // durable owner identity keeps it leased; only an unknown scan or stale reference is
+        // quarantined. This preserves live work while still preventing reuse.
         const active = activeReference(slot);
-        if (active !== null) {
-          reject(
-            active === "invalid"
-              ? "available slot has incomplete active lease identity"
-              : "available slot still carries active lease identity",
-          );
-          continue;
-        }
-        if (observedOccupancy.occupants.length > 0 || inspection.value.dirty) {
-          reject("available slot is occupied or dirty");
-          continue;
-        }
-        if (slot.currentHeadSha && slot.currentHeadSha !== inspection.value.head) {
-          reject("available slot HEAD moved outside an allocator transition");
-          continue;
-        }
-        const prior = lastReference(slot);
-        if (prior === "invalid") {
-          reject("last-released lease identity is incomplete");
+        if (!active || active === "invalid") {
+          reject("leased slot has incomplete active identity");
           continue;
         }
         try {
-          if (prior && (await this.deps.ownerReferenced(prior))) {
-            // Release completed before the domain row cleared. Preserve this exact,
-            // idempotently releasable state while keeping it unavailable to acquisition.
-            this.store.updateObserved(slot.id, inspection.value.head, null, now);
+          if (!(await this.deps.ownerReferenced(active))) {
+            reject("leased slot has no matching domain owner reference");
             continue;
           }
         } catch (error) {
-          reject("last-released domain ownership is unknown", String(error));
+          reject("leased domain ownership is unknown", String(error));
           continue;
         }
         this.store.updateObserved(slot.id, inspection.value.head, null, now);
-        continue;
+      } finally {
+        releaseSlot();
       }
-
-      // A valid active lease can legitimately be dirty and occupied after restart. Exact
-      // durable owner identity keeps it leased; only an unknown scan or stale reference is
-      // quarantined. This preserves live work while still preventing reuse.
-      const active = activeReference(slot);
-      if (!active || active === "invalid") {
-        reject("leased slot has incomplete active identity");
-        continue;
-      }
-      try {
-        if (!(await this.deps.ownerReferenced(active))) {
-          reject("leased slot has no matching domain owner reference");
-          continue;
-        }
-      } catch (error) {
-        reject("leased domain ownership is unknown", String(error));
-        continue;
-      }
-      this.store.updateObserved(slot.id, inspection.value.head, null, now);
     }
     this.store.recordReconciliation(pool.id, now, errors.length > 0 ? bounded(errors.join("; ")) : null);
   }
@@ -951,10 +1076,10 @@ export class WorktreeManager {
     const candidates: NativeMaintenanceCandidate[] = [];
     for (const poolStatus of status) {
       const identity = this.identity(poolStatus.pool.mainCheckoutRoot);
-      let target: Awaited<ReturnType<WorktreeGit["fetchDefaultSha"]>> | null = null;
+      let target: Awaited<ReturnType<WorktreeGit["observedDefaultSha"]>> | null = null;
       if (identity && poolStatus.identityValid && poolStatus.markerValid) {
         try {
-          target = await this.deps.git.fetchDefaultSha(identity);
+          target = await this.deps.git.observedDefaultSha(identity);
         } catch (error) {
           target = { ok: false, reason: bounded(String(error)), outcomeUnknown: true };
         }
@@ -983,7 +1108,7 @@ export class WorktreeManager {
           try {
             const merged = await this.deps.git.mergedInto(entry.slot.path, target.value);
             if (!merged.ok) reason = merged.reason;
-            else if (!merged.value) reason = "slot HEAD is not merged into the fetched remote default";
+            else if (!merged.value) reason = "slot HEAD is not merged into the observed remote default";
           } catch (error) {
             reason = bounded(String(error));
           }

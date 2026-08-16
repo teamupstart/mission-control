@@ -7,6 +7,7 @@ import {
   type NativeWorktreeLease,
   type WorktreeManagerDeps,
 } from "../src/server/worktrees/manager.ts";
+import { NativeWorktreeGit, type WorktreeGit } from "../src/server/worktrees/git.ts";
 import type { WorktreeOccupancy } from "../src/server/worktrees/occupancy.ts";
 import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
 
@@ -32,6 +33,7 @@ function harness(options: {
   referenced?: Set<string>;
   occupancy?: Map<string, WorktreeOccupancy>;
   policy?: () => { enabled: boolean; maxSlots: number; setupArgv: readonly string[] | null };
+  git?: WorktreeGit;
 } = {}): WorktreeManager {
   const referenced = options.referenced ?? new Set<string>();
   const deps: Partial<WorktreeManagerDeps> = {
@@ -44,6 +46,7 @@ function harness(options: {
           options.occupancy?.get(path) ?? { status: "known" as const, occupants: [] },
         ]),
       ),
+    ...(options.git ? { git: options.git } : {}),
   };
   return new WorktreeManager(db, deps);
 }
@@ -265,6 +268,41 @@ test("maintenance planning requires the exact native pool marker", async () => {
   const plan = await manager.planMaintenance();
   assert.equal(plan[0]?.safe, false);
   assert.match(plan[0]?.reason ?? "", /marker/);
+});
+
+test("maintenance planning reads the observed remote default without fetching", async () => {
+  const repository = repo("mission-maintenance-read-only-");
+  class TrackingGit extends NativeWorktreeGit {
+    fetchCalls = 0;
+    observedCalls = 0;
+
+    override async fetchDefaultSha(identity: Parameters<WorktreeGit["fetchDefaultSha"]>[0]) {
+      this.fetchCalls++;
+      return super.fetchDefaultSha(identity);
+    }
+
+    override async observedDefaultSha(identity: Parameters<WorktreeGit["observedDefaultSha"]>[0]) {
+      this.observedCalls++;
+      return super.observedDefaultSha(identity);
+    }
+  }
+  const git = new TrackingGit();
+  const manager = harness({ git });
+  const lease = acquired(
+    await manager.acquire({
+      repositoryPath: repository.clone,
+      baseSha: repository.sha,
+      owner: { kind: "task", key: "task-read-only-plan" },
+    }),
+  );
+  assert.equal((await manager.release(lease)).outcome, "released");
+  const fetchCallsBeforePlan = git.fetchCalls;
+  const observedCallsBeforePlan = git.observedCalls;
+
+  const plan = await manager.planMaintenance();
+  assert.equal(plan[0]?.safe, true);
+  assert.equal(git.fetchCalls, fetchCallsBeforePlan, "preview planning must not fetch");
+  assert.equal(git.observedCalls, observedCallsBeforePlan + 1);
 });
 
 test("maintenance planning refuses every unsafe class and identifies safe right-size work", async () => {

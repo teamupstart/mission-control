@@ -82,6 +82,55 @@ interface InspectedTextArtifact {
 // so its encoded bytes still match the immutable source byte count and digest.
 const strictUtf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
+// Darwin exposes this open(2) flag but Node does not currently publish it in fs.constants.
+// Unlike O_NOFOLLOW, it rejects a symlink in any path component atomically with the open.
+const DARWIN_O_NOFOLLOW_ANY = 0x20000000;
+
+function checkoutOpenFlags(checkoutRoot: string | undefined): number {
+  const noFollow = checkoutRoot && process.platform === "darwin"
+    ? DARWIN_O_NOFOLLOW_ANY
+    : (constants.O_NOFOLLOW ?? 0);
+  return constants.O_RDONLY | noFollow;
+}
+
+function assertOpenedInsideCheckout(
+  fd: number,
+  path: string,
+  checkoutRoot: string,
+  kind: "image" | "artifact",
+): void {
+  const label = kind === "image" ? "Evidence image" : "Text evidence";
+  if (!isInside(checkoutRoot, path)) {
+    throw new WorkflowImageEvidenceError(`${kind}_path`, `${label} left its issued checkout`);
+  }
+  if (process.platform === "darwin") {
+    // O_NOFOLLOW_ANY already made path resolution and the open one atomic operation.
+    return;
+  }
+  if (process.platform === "linux") {
+    let openedPath: string;
+    try {
+      openedPath = realpathSync(`/proc/self/fd/${fd}`);
+    } catch {
+      throw new WorkflowImageEvidenceError(
+        `${kind}_path`,
+        `${label} opened without a verifiable checkout target`,
+      );
+    }
+    if (!isInside(checkoutRoot, openedPath)) {
+      throw new WorkflowImageEvidenceError(
+        `${kind}_path`,
+        `${label} escaped its issued checkout while it was opened`,
+      );
+    }
+    return;
+  }
+  throw new WorkflowImageEvidenceError(
+    `${kind}_path`,
+    `${label} cannot be opened safely on this platform`,
+  );
+}
+
 function cleanDisplayName(value: string): string {
   const printable = [...value].map((character) => {
     const code = character.charCodeAt(0);
@@ -93,17 +142,18 @@ function cleanDisplayName(value: string): string {
 function inspectOpenTextFile(path: string, expected?: {
   bytes: number;
   sha256: string;
-}): InspectedTextArtifact {
+}, checkoutRoot?: string): InspectedTextArtifact {
   let fd: number | null = null;
   try {
     if (lstatSync(path).isSymbolicLink()) {
       throw new WorkflowImageEvidenceError("artifact_symlink", "Text evidence cannot be a symbolic link");
     }
-    fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    fd = openSync(path, checkoutOpenFlags(checkoutRoot));
     const before = fstatSync(fd);
     if (!before.isFile()) {
       throw new WorkflowImageEvidenceError("artifact_not_file", "Text evidence is not an ordinary file");
     }
+    if (checkoutRoot) assertOpenedInsideCheckout(fd, path, checkoutRoot, "artifact");
     if (before.size <= 0 || before.size > WORKFLOW_TEXT_EVIDENCE_LIMITS.maxBytesPerArtifact) {
       throw new WorkflowImageEvidenceError(
         "artifact_size",
@@ -155,17 +205,18 @@ function inspectOpenFile(path: string, expected?: {
   bytes: number;
   mimeType: WorkflowEvidenceImage["mimeType"];
   sha256: string;
-}): InspectedImage {
+}, checkoutRoot?: string): InspectedImage {
   let fd: number | null = null;
   try {
     if (lstatSync(path).isSymbolicLink()) {
       throw new WorkflowImageEvidenceError("image_symlink", "Evidence images cannot be symbolic links");
     }
-    fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    fd = openSync(path, checkoutOpenFlags(checkoutRoot));
     const before = fstatSync(fd);
     if (!before.isFile()) {
       throw new WorkflowImageEvidenceError("image_not_file", "Evidence image is not an ordinary file");
     }
+    if (checkoutRoot) assertOpenedInsideCheckout(fd, path, checkoutRoot, "image");
     if (before.size <= 0 || before.size > WORKFLOW_IMAGE_LIMITS.maxBytesPerImage) {
       throw new WorkflowImageEvidenceError(
         "image_size",
@@ -223,7 +274,7 @@ async function inspectCheckoutImage(root: string, locator: string): Promise<Insp
   if (!resolved.ok) {
     throw new WorkflowImageEvidenceError("image_path", `Evidence path ${resolved.reason}`);
   }
-  const inspected = inspectOpenFile(resolved.path);
+  const inspected = inspectOpenFile(resolved.path, undefined, root);
   if (inspected.bytes !== resolved.bytes) {
     throw new WorkflowImageEvidenceError("image_changed", "Evidence image changed while it was resolved");
   }
@@ -235,7 +286,7 @@ async function inspectCheckoutTextArtifact(root: string, locator: string): Promi
   if (!resolved.ok) {
     throw new WorkflowImageEvidenceError("artifact_path", `Text evidence path ${resolved.reason}`);
   }
-  const inspected = inspectOpenTextFile(resolved.path);
+  const inspected = inspectOpenTextFile(resolved.path, undefined, root);
   if (inspected.bytes !== resolved.bytes) {
     throw new WorkflowImageEvidenceError("artifact_changed", "Text evidence changed while it was resolved");
   }
@@ -480,7 +531,7 @@ async function inspectReservedSource(item: WorkflowReservedEvidence): Promise<In
     if (!resolved.ok) {
       throw new WorkflowImageEvidenceError("image_path", `Reserved evidence path ${resolved.reason}`);
     }
-    return inspectOpenFile(resolved.path, expected);
+    return inspectOpenFile(resolved.path, expected, item.sourceRoot);
   }
   if (item.sourceKind === "upload") {
     const upload = resolveImageUpload(item.sourceLocator);
@@ -589,7 +640,11 @@ export async function captureSubmissionTextArtifacts(
     if (!resolved.ok) {
       throw new WorkflowImageEvidenceError("artifact_path", `Reserved text evidence path ${resolved.reason}`);
     }
-    const inspected = inspectOpenTextFile(resolved.path, { bytes: item.bytes, sha256: item.sha256 });
+    const inspected = inspectOpenTextFile(
+      resolved.path,
+      { bytes: item.bytes, sha256: item.sha256 },
+      item.sourceRoot,
+    );
     aggregate += inspected.bytes;
     if (aggregate > WORKFLOW_TEXT_EVIDENCE_LIMITS.maxAggregateBytes) {
       throw new WorkflowImageEvidenceError(

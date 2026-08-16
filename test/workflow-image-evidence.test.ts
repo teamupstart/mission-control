@@ -1,11 +1,13 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import {
   existsSync,
   mkdtempSync,
   mkdirSync,
   realpathSync,
+  renameSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -54,6 +56,39 @@ const PNG = Buffer.from(
   "base64",
 );
 const IMAGE_WORKFLOW_VERSION_ID = BUILTIN_WORKFLOWS[0]!.definition.currentVersionId!;
+const mutableFs = createRequire(import.meta.url)("node:fs") as {
+  openSync: typeof import("node:fs").openSync;
+};
+
+async function withParentDirectorySwap<T>(input: {
+  targetPath: string;
+  parentPath: string;
+  outsidePath: string;
+  action: () => Promise<T>;
+}): Promise<T> {
+  const parkedPath = `${input.parentPath}-inside`;
+  const originalOpenSync = mutableFs.openSync;
+  let swapped = false;
+  mutableFs.openSync = ((...args: unknown[]) => {
+    if (!swapped && args[0] === input.targetPath) {
+      renameSync(input.parentPath, parkedPath);
+      symlinkSync(input.outsidePath, input.parentPath);
+      swapped = true;
+    }
+    return Reflect.apply(originalOpenSync, mutableFs, args);
+  }) as typeof import("node:fs").openSync;
+  syncBuiltinESMExports();
+  try {
+    return await input.action();
+  } finally {
+    mutableFs.openSync = originalOpenSync;
+    syncBuiltinESMExports();
+    if (swapped) {
+      rmSync(input.parentPath, { force: true });
+      renameSync(parkedPath, input.parentPath);
+    }
+  }
+}
 
 function taskAt(primary: string, extras: string[] = []): ScoutRepoTask {
   return {
@@ -284,6 +319,131 @@ test("gitignored UTF-8 logs preserve BOM bytes when digest-bound and submission-
     assert.deepEqual(store.listWorkflowEvidence("text-note").artifacts, []);
   } finally {
     rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test("parent-directory swaps cannot escape the issued checkout during staging or capture", async () => {
+  const repo = realpathSync(mkdtempSync(join(tmpdir(), "mission-workflow-parent-race-repo-")));
+  const outside = realpathSync(mkdtempSync(join(tmpdir(), "mission-workflow-parent-race-outside-")));
+  const evidenceDirectory = join(repo, "evidence");
+  const targetPath = join(evidenceDirectory, "focused.log");
+  const imageTargetPath = join(evidenceDirectory, "screen.png");
+  const outsideContent = "outside checkout evidence\n";
+  try {
+    execFileSync("git", ["init", "-q", repo]);
+    writeFileSync(join(repo, ".gitignore"), "evidence/\n");
+    mkdirSync(evidenceDirectory);
+    writeFileSync(targetPath, "inside checkout evidence\n");
+    writeFileSync(imageTargetPath, PNG);
+    writeFileSync(join(outside, "focused.log"), outsideContent);
+    writeFileSync(join(outside, "screen.png"), PNG);
+    const store = new WorkflowStore();
+
+    await assert.rejects(
+      () => withParentDirectorySwap({
+        targetPath,
+        parentPath: evidenceDirectory,
+        outsidePath: outside,
+        action: () => stageAgentWorkflowEvidence({
+          store,
+          noteKey: "parent-race-stage",
+          task: taskAt(repo),
+          fallbackRoot: repo,
+          images: [],
+          artifacts: [{
+            kind: "text",
+            clientItemId: "parent-race-stage",
+            path: "evidence/focused.log",
+            caption: "Focused output",
+            repositoryScope: "repo-01",
+          }],
+          now: 1,
+        }),
+      }),
+      WorkflowImageEvidenceError,
+    );
+    assert.deepEqual(store.listWorkflowEvidence("parent-race-stage").artifacts, []);
+
+    await assert.rejects(
+      () => withParentDirectorySwap({
+        targetPath: imageTargetPath,
+        parentPath: evidenceDirectory,
+        outsidePath: outside,
+        action: () => stageAgentWorkflowEvidence({
+          store,
+          noteKey: "parent-race-image-stage",
+          task: taskAt(repo),
+          fallbackRoot: repo,
+          images: [{
+            kind: "agent",
+            clientItemId: "parent-race-image-stage",
+            path: "evidence/screen.png",
+            caption: "Focused screenshot",
+            repositoryScope: "repo-01",
+          }],
+          now: 1,
+        }),
+      }),
+      WorkflowImageEvidenceError,
+    );
+    assert.deepEqual(store.listWorkflowEvidence("parent-race-image-stage").images, []);
+
+    const sha256 = (await import("node:crypto")).createHash("sha256")
+      .update(outsideContent)
+      .digest("hex");
+    store.stageWorkflowEvidence("parent-race-capture", [{
+      id: "parent-race-artifact",
+      clientItemId: "parent-race-capture",
+      sourceKind: "agent",
+      evidenceKind: "text",
+      sourceRoot: repo,
+      sourceLocator: "evidence/focused.log",
+      displayName: "focused.log",
+      caption: "Focused output",
+      repositoryScope: "repo-01",
+      mimeType: "text/plain",
+      bytes: Buffer.byteLength(outsideContent),
+      sha256,
+    }], 2);
+    const binding = store.insertBinding({
+      id: "parent-race-binding",
+      workflowVersionId: IMAGE_WORKFLOW_VERSION_ID,
+      noteKey: "parent-race-capture",
+      sessionId: "parent-race-session",
+      sessionAgent: "codex",
+      sessionName: "parent race",
+      sessionCwd: repo,
+      sessionRepoRoot: repo,
+      triggerMode: "manual",
+      deliveryMode: "preview",
+      maxRepairRounds: 5,
+      now: 3,
+    });
+    const created = store.createInitialSubmission(
+      { id: "parent-race-run", binding, triggerSource: "manual", triggerKey: "parent-race", now: 4 },
+      {
+        id: "parent-race-submission",
+        triggerSource: "manual",
+        triggerKey: "parent-race",
+        evidenceGroupKey: "manual:parent-race-capture:parent-race",
+        context: {},
+        evidence: {},
+        now: 4,
+      },
+    );
+    await assert.rejects(
+      () => withParentDirectorySwap({
+        targetPath,
+        parentPath: evidenceDirectory,
+        outsidePath: outside,
+        action: () => captureSubmissionTextArtifacts(store, created.submission.id, 5),
+      }),
+      WorkflowImageEvidenceError,
+    );
+    assert.deepEqual(store.listSubmissionTextArtifacts(created.submission.id), []);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
   }
 });
 

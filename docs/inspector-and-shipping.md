@@ -3,10 +3,12 @@
 # GitHub Inspector (automated PR review)
 
 GitHub Inspector is the optional remote reviewer. It is separate from the built-in
-[Code Quality Judge](workflows.md#built-in-personas), which No-Mistakes Review v9 runs locally
-before its verified Pull Request action. A v9 workflow completes after verified publication and
-does not wait for GitHub Inspector. Enabling this service adds review of pushed heads on GitHub;
-it does not enable or skip the local Persona.
+[Code Quality Judge](workflows.md#built-in-personas), which No-Mistakes Review runs locally before
+its verified Pull Request action. Version 9 introduced the judge as a singleton stage; current
+version 10 runs it alongside Code Risk Reviewer in stage 3, followed by Test Evidence Auditor and
+Documentation Steward in stage 4. Versions 9 and 10 complete after verified publication and do not
+wait for GitHub Inspector. Enabling this service adds review of pushed heads on GitHub; it does not
+enable or skip the local Persona.
 
 The GitHub Inspector reviews the pull requests **Mission Control opened** - and only those -
 against the reviewed repo's [`INSPECTOR.md`](#inspectormd), leaves inline review comments for what it finds,

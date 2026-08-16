@@ -411,12 +411,12 @@ test("a session bound to a superseded version still gets its defaults hint", asy
   /*
    * `selectedWorkflowId` keyed off `currentVersionId` equality, which only holds while a
    * version is the newest. Hydration makes the other case reachable by design - it selects
-   * whatever the session is actually bound to - so a session on `@8` after `@9` ships resolved
+   * whatever the session is actually bound to - so a session on `@8` after `@10` ships resolved
    * to no workflow at all, the detail fetch never fired, and "This version defaults to …"
    * silently never rendered. The select is perfectly happy to display that version; only the
    * lookup beside it disagreed about which versions it recognises.
    *
-   * The built-in ships nine versions, so `@8` is a real published version to bind rather than
+   * The built-in ships ten versions, so `@8` is a real published version to bind rather than
    * a fixture invented for this test.
    */
   await armWorkflowPrerequisites(daemon);

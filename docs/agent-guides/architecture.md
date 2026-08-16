@@ -91,9 +91,11 @@ Terminal vendors are hidden behind `MULTIPLEXERS`, `EMULATORS`, and `bindPane`. 
 ## GitHub Inspector and PR provenance
 
 The workflow's Code Quality Judge and GitHub Inspector have different owners. Code Quality Judge
-is a normal tool-less Persona frozen into No-Mistakes Review v9 and participates in the local
-repair loop before the Pull Request action. GitHub Inspector is the optional daemon service below;
-its durable remote observation and review provenance remain the input Shipping trusts.
+is a normal tool-less Persona introduced in the frozen No-Mistakes Review v9 graph. The current
+v10 graph runs it alongside Code Risk Reviewer in stage 3, followed by Test Evidence Auditor and
+Documentation Steward in stage 4, all inside the local repair loop before the Pull Request action.
+GitHub Inspector is the optional daemon service below; its durable remote observation and review
+provenance remain the input Shipping trusts.
 
 The GitHub Inspector stays in the daemon so it is present in packaged Electron builds and its state survives restarts.
 

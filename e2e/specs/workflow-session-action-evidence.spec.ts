@@ -336,51 +336,68 @@ test("capture a completed continuation", async ({ dashboard, daemon }) => {
   await expect(dashboard.locator(".wf-state.builtin")).toBeVisible();
   await shoot(dashboard, "09-builtin-pull-request-action");
 
-  // 10. No-Mistakes Review v9, scrolled to where its new claim lives.
+  // 10. No-Mistakes Review v10, scrolled to where its new stage order lives.
   //
-  //     Code Quality Judge, then Pull Request, then End, with no fixed footer afterwards. The
-  //     local judge is the gate before publication; GitHub Inspector remains available to
-  //     observe the resulting pull request, but v9 does not wait for that optional remote pass.
+  //     Code Risk Reviewer and Code Quality Judge share stage 3. Test Evidence Auditor and
+  //     Documentation Steward share stage 4, followed by Pull Request and End with no fixed
+  //     footer afterwards. GitHub Inspector remains available to observe the resulting pull
+  //     request, but v10 does not wait for that optional remote pass.
   await dashboard.goto(`${daemon.baseURL}/#/workflows`);
   await dashboard.getByRole("button", { name: /No-Mistakes Review/ }).click();
   const shipped = dashboard.locator(".wf-pipeline-strip");
   await expect(shipped).toBeVisible();
-  const quality = shipped.locator("li.wf-pipeline-reviewer")
-    .filter({ hasText: "Code Quality Judge" });
+  const stages = shipped.locator("section.wf-pipeline-stage");
+  await expect(stages).toHaveCount(5);
+  const codeReview = stages.nth(2);
+  const evidenceAndDocs = stages.nth(3);
+  await expect(codeReview.locator(".wf-pipeline-stage-name")).toHaveText("Stage 3");
+  await expect(codeReview.locator(".wf-pipeline-reviewer-name")).toHaveText([
+    "Code Risk Reviewer",
+    "Code Quality Judge",
+  ]);
+  await expect(evidenceAndDocs.locator(".wf-pipeline-stage-name")).toHaveText("Stage 4");
+  await expect(evidenceAndDocs.locator(".wf-pipeline-reviewer-name")).toHaveText([
+    "Test Evidence Auditor",
+    "Documentation Steward",
+  ]);
   const pullRequest = shipped.locator("li.wf-pipeline-reviewer")
     .filter({ hasText: "Pull Request" });
   const end = shipped.locator(".wf-pipeline-terminus").filter({ hasText: "Complete" });
-  await expect(quality).toHaveCount(1);
   await expect(pullRequest).toHaveCount(1);
   await expect(end).toHaveCount(1);
   await expect(shipped.locator(".wf-pipeline-inspector")).toHaveCount(0);
   const order = await shipped.locator("li.wf-pipeline-reviewer").allTextContents();
-  expect(order.findIndex((text) => text.includes("Code Quality Judge")))
+  expect(order.findIndex((text) => text.includes("Documentation Steward")))
     .toBeLessThan(order.findIndex((text) => text.includes("Pull Request")));
-  const entirelyInsideStrip = async (item: typeof quality): Promise<boolean> => item.evaluate((element) => {
+  const entirelyInsideStrip = async (item: typeof codeReview): Promise<boolean> => item.evaluate((element) => {
     const strip = element.closest(".wf-pipeline-strip");
     if (!(strip instanceof HTMLElement)) throw new Error("Pipeline item left its strip");
     const itemRect = element.getBoundingClientRect();
     const stripRect = strip.getBoundingClientRect();
     return itemRect.left >= stripRect.left && itemRect.right <= stripRect.right;
   });
-  await shoot(dashboard, "10a-no-mistakes-v9-code-quality-before-pull-request", {
+  await shoot(dashboard, "10a-no-mistakes-v10-code-review-stage-3", {
     beforeEach: async () => {
-      await quality.evaluate((element) => {
+      await codeReview.evaluate((element) => {
         const strip = element.closest(".wf-pipeline-strip");
-        if (!(strip instanceof HTMLElement)) throw new Error("Code Quality Judge left its strip");
+        if (!(strip instanceof HTMLElement)) throw new Error("Stage 3 left its pipeline strip");
         strip.scrollLeft += element.getBoundingClientRect().left - strip.getBoundingClientRect().left;
       });
       if ((dashboard.viewportSize()?.width ?? 0) > 900) {
-        expect(await entirelyInsideStrip(quality)).toBe(true);
-        expect(await entirelyInsideStrip(pullRequest)).toBe(true);
+        expect(await entirelyInsideStrip(codeReview)).toBe(true);
+        expect(await entirelyInsideStrip(evidenceAndDocs)).toBe(true);
       }
     },
   });
-  await shoot(dashboard, "10b-no-mistakes-v9-pull-request-to-end", {
+  await shoot(dashboard, "10b-no-mistakes-v10-stage-4-before-pull-request", {
     beforeEach: async () => {
-      await shipped.evaluate((element) => { element.scrollLeft = element.scrollWidth; });
+      await evidenceAndDocs.evaluate((element) => {
+        const strip = element.closest(".wf-pipeline-strip");
+        if (!(strip instanceof HTMLElement)) throw new Error("Stage 4 left its pipeline strip");
+        strip.scrollLeft += element.getBoundingClientRect().left - strip.getBoundingClientRect().left;
+      });
       if ((dashboard.viewportSize()?.width ?? 0) > 900) {
+        expect(await entirelyInsideStrip(evidenceAndDocs)).toBe(true);
         expect(await entirelyInsideStrip(pullRequest)).toBe(true);
         expect(await entirelyInsideStrip(end)).toBe(true);
       }

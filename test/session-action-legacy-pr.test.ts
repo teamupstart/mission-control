@@ -1,11 +1,11 @@
 /**
- * What is at stake: nine built-in versions now open a pull request two different ways, and
- * eight of them may be pinned by bindings on operators' machines.
+ * What is at stake: ten built-in versions now open a pull request two different ways, and
+ * nine of them may be pinned by bindings on operators' machines.
  *
  * Versions 5 through 7 reach End and then have the completion policy TYPE a handoff, recorded
- * as a `pr_handoff` delivery. Versions 8 and 9 open the pull request as an authored stage before
- * End, recorded as a `session_action` delivery linked to a node attempt. Version 8 retains its
- * Inspector gate; version 9 completes locally after the verified action.
+ * as a `pr_handoff` delivery. Versions 8 through 10 open the pull request as an authored stage
+ * before End, recorded as a `session_action` delivery linked to a node attempt. Version 8 retains
+ * its Inspector gate; versions 9 and 10 complete locally after the verified action.
  *
  * The failure this file exists to catch is the quiet one: shared extraction that routes a
  * legacy version through the new path. It would look correct - a pull request still gets
@@ -28,7 +28,7 @@ const { WORKFLOW_DELIVERY_KINDS } = await import("../src/shared/workflow.ts");
 const noMistakes = () => BUILTIN_WORKFLOWS.find((item) => item.definition.name === "No-Mistakes Review")!;
 
 before(() => {
-  assert.equal(noMistakes().versions.length, 9, "this file is written against nine versions");
+  assert.equal(noMistakes().versions.length, 10, "this file is written against ten versions");
 });
 
 test("both delivery kinds remain in the durable vocabulary, and neither replaced the other", () => {
@@ -39,7 +39,7 @@ test("both delivery kinds remain in the durable vocabulary, and neither replaced
   assert.ok(WORKFLOW_DELIVERY_KINDS.includes("session_action"));
 });
 
-test("legacy versions keep their post-End handoff policies while version 9 needs none", () => {
+test("legacy versions keep their post-End handoff policies while versions 9 and 10 need none", () => {
   // The split stated once, across all eight. A legacy version set to `wait` would reach End
   // with no pull request and no way to ask for one; version 8 set to `prepare_pr` would type a
   // second handoff asking for the pull request its own stage had just proven.
@@ -54,6 +54,7 @@ test("legacy versions keep their post-End handoff policies while version 9 needs
     "prepare_pr",
     "prepare_pr",
     "wait",
+    null,
     null,
   ]);
 });
@@ -72,9 +73,10 @@ test("GitHub Inspector remains versions 1 through 8's policy and never becomes a
     );
   }
   assert.deepEqual(noMistakes().versions[8]!.completionPolicy, { kind: "none" });
+  assert.deepEqual(noMistakes().versions[9]!.completionPolicy, { kind: "none" });
 });
 
-test("versions 8 and 9 author the pull request and reach End only through it", () => {
+test("versions 8 through 10 author the pull request and reach End only through it", () => {
   const versions = noMistakes().versions;
   for (const [index, version] of versions.slice(0, 7).entries()) {
     // No action node, and End is reached from an evaluation join or reviewer exactly as it
@@ -102,7 +104,7 @@ test("versions 8 and 9 author the pull request and reach End only through it", (
   }
 });
 
-test("the shipped action's prompt is frozen into versions 8 and 9, not referenced from them", () => {
+test("the shipped action's prompt is frozen into versions 8 through 10, not referenced from them", () => {
   // A published version carries its own copy. Editing the shipped Markdown must not change
   // what a run already pinned to this version types - which is exactly what a reference,
   // resolved at run time, would do.

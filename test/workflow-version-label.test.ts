@@ -19,8 +19,8 @@ import {
 const NO_MISTAKES: WorkflowNamingSource = {
   id: NO_MISTAKES_REVIEW_WORKFLOW_ID,
   name: "No-Mistakes Review",
-  currentVersionId: builtinWorkflowVersionId("no-mistakes-review", 9),
-  publishedVersion: 9,
+  currentVersionId: builtinWorkflowVersionId("no-mistakes-review", 10),
+  publishedVersion: 10,
 };
 
 const OPERATOR: WorkflowNamingSource = {
@@ -63,7 +63,7 @@ test("refuses ids that are not built-in version ids", () => {
 
 test("names the built-in every dispatch arms, rather than truncating its id", () => {
   const label = workflowVersionLabel(NO_MISTAKES.currentVersionId!, CATALOG);
-  assert.equal(label, "No-Mistakes Review · v9");
+  assert.equal(label, "No-Mistakes Review · v10");
   // The regression this exists to prevent.
   assert.notEqual(label, "builtin-");
 });
@@ -73,8 +73,8 @@ test("names an operator workflow from its catalog entry", () => {
 });
 
 test("keeps naming a superseded built-in version after a newer one ships", () => {
-  // A session bound to v8 while v9 is current is exactly the case the dialog exists to show,
-  // and the catalog holds only v9 - so the id's own structure has to carry the answer.
+  // A session bound to v8 while v10 is current is exactly the case the dialog exists to show,
+  // and the catalog holds only v10, so the id's own structure has to carry the answer.
   assert.equal(
     workflowVersionLabel(builtinWorkflowVersionId("no-mistakes-review", 8), CATALOG),
     "No-Mistakes Review · v8",
@@ -90,7 +90,7 @@ test("falls back to the id rather than inventing a name", () => {
 
 test("resolves the owning workflow for a superseded built-in version", () => {
   // The case `currentVersionId` equality misses, and the reason this resolver exists: a session
-  // bound to @8 while @9 ships. Keying off equality alone returned null, so the dialog's
+  // bound to @8 while @10 ships. Keying off equality alone returned null, so the dialog's
   // "/api/workflows/{id}" fetch never fired and its version-defaults hint silently never
   // rendered - for a version the select is perfectly happy to display.
   assert.equal(

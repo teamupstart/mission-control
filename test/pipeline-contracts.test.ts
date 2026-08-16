@@ -29,6 +29,7 @@ import {
   isPipelineHaltClass,
   isPipelineProviderId,
   isPipelineStepState,
+  pipelineConsoleAllowed,
   pipelineGrantAllowed,
   pipelineGrantRefusal,
   pipelineGrantableSteps,
@@ -335,6 +336,15 @@ test("what a halt offers, and what a daemon state offers, is decided once", () =
     assert.ok(ways > 0, `${haltClass} needs at least one way out`);
   }
   assert.deepEqual([...PIPELINE_HALT_CONSOLES["protected-artifact"]], ["reseal"]);
+  assert.deepEqual(
+    PIPELINE_HALT_CLASSES.filter((haltClass) =>
+      pipelineConsoleAllowed("reseal", { class: haltClass }),
+    ),
+    ["protected-artifact"],
+    "a reseal is licensed only by the halt it answers",
+  );
+  assert.equal(pipelineConsoleAllowed("reseal", null), false);
+  assert.equal(pipelineConsoleAllowed("daemon", null), true, "a repository console answers no halt");
 
   for (const state of ["running", "paused", "stopped", "unknown"] as const) {
     const offered = PIPELINE_DAEMON_ACTIONS[state];

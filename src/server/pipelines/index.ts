@@ -3,6 +3,7 @@ import {
   PIPELINE_SPEND_ROLES,
   PIPELINE_SPEND_WRITERS,
   activePipelineRepos,
+  pipelineConsoleAllowed,
   pipelineGrantAllowed,
   pipelineRepoKey,
   pipelineRunKey,
@@ -400,6 +401,21 @@ export function pipelineConsoleLaunch(
 ): { ok: true; argv: string[]; cwd: string } | PipelineControlRefused {
   const refused = refuseControl(target.provider, target.repoRoot, target.slug);
   if (refused) return refused;
+  // A run console is the answer to a particular halt, so its eligibility is a fact about
+  // the projected run rather than about a well-formed request. The browser reads the same
+  // table to decide whether to offer this control, but the loopback route is the authority
+  // boundary: a hidden button cannot be the only thing stopping another caller opening a
+  // terminal that breaks a seal and optionally clears its halt.
+  if (target.slug !== null) {
+    const run = projectedRun(target.provider, target.repoRoot, target.slug);
+    if (!pipelineConsoleAllowed(console_, run?.halt ?? null)) {
+      return {
+        ok: false,
+        status: 409,
+        error: "the reseal ceremony answers a protected-artifact halt, and this run has no such halt",
+      };
+    }
+  }
   const launch = PIPELINE_PROVIDERS[target.provider].consoleArgv(console_, target);
   // The provider's own refusal, carried out as a 400 rather than as an opened terminal that
   // prints one. It is a statement about the REQUEST - a reseal with no feature named - so it

@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
+  PipelineHaltClass,
   PipelineRepoStatus,
   PipelineRunDetail,
   PipelinesView,
@@ -494,15 +495,20 @@ function verbsAsked(): string[][] {
 }
 
 /** A repository with one halted run, consented to and projected. */
-async function actable(name: string, registry: Registry, request: ReturnType<typeof fixture>["request"]) {
+async function actable(
+  name: string,
+  registry: Registry,
+  request: ReturnType<typeof fixture>["request"],
+  haltClass: PipelineHaltClass = "needs-human",
+) {
   const repo = gitRepo(name);
-  // `needs-human`, because that is the halt these cases are about: it is the class a refused
-  // DECIDE gate raises, and the only one a grant is licensed by. A halt with no class file
-  // reads as `unclassified`, which the route now refuses a grant for - see the case below.
+  // `needs-human` by default, because that is the halt most action cases are about: it is the
+  // class a refused DECIDE gate raises, and the only one a grant is licensed by. The console
+  // case asks for `protected-artifact`, because the reseal ceremony is licensed the same way.
   seedConductorRun(repo, "feat", {
     steps: { build: "done" },
-    halt: "a gate refused",
-    haltClass: "needs-human",
+    halt: haltClass === "protected-artifact" ? "a sealed decision changed" : "a gate refused",
+    haltClass,
   });
   seedConductorDaemon(repo, { pid: process.pid });
   await request("/api/pipelines/config", {
@@ -774,11 +780,56 @@ test("a verb addressed at the wrong scope is refused by the schema, not by the e
   });
 });
 
+test("a reseal terminal is refused for a run whose halt did not ask for one", async () => {
+  // The dashboard already hides this ceremony everywhere except a protected-artifact halt.
+  // The route holds the same rule because it is the authority boundary: a direct loopback
+  // caller must not be able to break a seal, or clear its halt, on an unrelated run.
+  const opened: FakeLaunch[] = [];
+  const { registry, request } = fixture(opened);
+  await withEngine(async () => {
+    const repo = gitRepo("act-reseal-class");
+    seedConductorRun(repo, "running", { steps: { build: "in_progress" } });
+    seedConductorRun(repo, "asked", {
+      steps: { build: "done" },
+      halt: "a DECIDE gate refused another entry",
+      haltClass: "needs-human",
+    });
+    seedConductorDaemon(repo, { pid: process.pid });
+    await request("/api/pipelines/config", {
+      method: "PUT",
+      body: JSON.stringify({
+        enabled: true,
+        repos: [{ provider: "ai-conductor", repoRoot: repo, enabled: true }],
+      }),
+    });
+    await refreshPipelineRepo(registry, "ai-conductor", repo);
+
+    for (const slug of ["running", "asked"]) {
+      const refused = await request("/api/pipelines/console", {
+        method: "POST",
+        body: JSON.stringify({
+          provider: "ai-conductor",
+          repoRoot: repo,
+          slug,
+          console: "reseal",
+          paths: [".docs/decisions/feature.md"],
+          reason: "a direct caller supplied this",
+          clearHalt: true,
+          backend: "cmux",
+        }),
+      });
+      assert.equal(refused.status, 409, slug);
+      assert.match(await refused.text(), /answers a protected-artifact halt/, slug);
+    }
+    assert.equal(opened.length, 0, "an ineligible ceremony opens no terminal");
+  });
+});
+
 test("a console opens a hosted terminal running the engine's own command", async () => {
   const opened: FakeLaunch[] = [];
   const { registry, request } = fixture(opened);
   await withEngine(async () => {
-    const repo = await actable("act-console", registry, request);
+    const repo = await actable("act-console", registry, request, "protected-artifact");
 
     const daemonConsole = await request("/api/pipelines/console", {
       method: "POST",

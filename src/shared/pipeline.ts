@@ -1105,6 +1105,23 @@ export const PIPELINE_HALT_CONSOLES: Record<PipelineHaltClass, readonly Pipeline
 };
 
 /**
+ * Whether one console is licensed by the run state the daemon is holding.
+ *
+ * Repository consoles do not answer a halt and are always eligible once repository consent
+ * has passed. A run console does: hiding its button decides what the dashboard offers, while
+ * this predicate also lets the route decide what the loopback API accepts from any caller.
+ */
+export function pipelineConsoleAllowed(
+  console_: PipelineConsole,
+  halt: { class: PipelineHaltClass } | null,
+): boolean {
+  return (
+    PIPELINE_CONSOLE_INFO[console_].scope === "repo" ||
+    (halt !== null && PIPELINE_HALT_CONSOLES[halt.class].includes(console_))
+  );
+}
+
+/**
  * What a control request may carry: how many artifact paths one reseal may name, how long
  * each may be, and how long a rationale may be - a grant's as well as a reseal's.
  *

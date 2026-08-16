@@ -552,6 +552,12 @@ export class WorktreeOperationsService {
       return;
     }
     if (request.action === "legacyReturn") {
+      // TaskManager owns agent quiescence, archive capture, durable task fields, and the
+      // provider-aware teardown. Its daemon instance receives this same legacy service, so
+      // reclaim reaches the exact conditional adapter once and clears task ownership only
+      // after Treehouse confirms the path disappeared. Calling executeReturn here as well
+      // would run after the durable owner was cleared and would turn success into a false
+      // conflict. Check recovery owns the equivalent ordering for check leases.
       if (request.owner.kind === "task") await this.reclaimTask(request.owner.id);
       else await this.recoverCheck(request.owner.id);
       return;

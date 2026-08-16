@@ -152,7 +152,16 @@ const archives = new ArchiveManager({
 // row, its task binding and its worktree paths can all still be derived - which is precisely
 // what a capture needs and precisely what `session_remove` no longer has.
 registry.onSessionExit((session) => archives.reserveOnExit(session));
-const tasks = new TaskManager(registry, undefined, sdkSessions, pendingTurns, archives, {}, worktrees);
+const tasks = new TaskManager(
+  registry,
+  undefined,
+  sdkSessions,
+  pendingTurns,
+  archives,
+  {},
+  worktrees,
+  legacyWorktrees,
+);
 const queues = new QueueManager(registry);
 const personas = new PersonaManager(registry);
 // Shares the Persona manager's store handle, so both catalogs and the workflow family are

@@ -3,12 +3,21 @@ import assert from "node:assert/strict";
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { openDb } from "../src/server/db.ts";
+import { Registry } from "../src/server/registry.ts";
+import { TaskManager } from "../src/server/tasks.ts";
+import { stubRun } from "../src/server/util/exec.ts";
 import { WorktreeManager } from "../src/server/worktrees/manager.ts";
 import { WorktreeOperationsService } from "../src/server/worktrees/operations.ts";
 import { CheckLeaseManager } from "../src/server/workflows/check-lease.ts";
-import { LegacyTreehouseService } from "../src/server/worktrees/legacy-treehouse.ts";
+import {
+  LegacyTreehouseAdapter,
+  LegacyTreehouseService,
+} from "../src/server/worktrees/legacy-treehouse.ts";
 import type { WorktreeOccupancy } from "../src/server/worktrees/occupancy.ts";
 import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
+import { mkTask } from "./helpers/session-fixture.ts";
+
+type Run = typeof import("../src/server/util/exec.ts").run;
 
 const db = openDb();
 const changed: number[] = [];
@@ -29,7 +38,7 @@ const operations = new WorktreeOperationsService(manager, {
   diskBytes: async () => 1024,
 });
 
-after(() => db.exec("DELETE FROM worktree_slots; DELETE FROM worktree_pools; DELETE FROM app_config WHERE key = 'worktrees';"));
+after(() => db.exec("DELETE FROM task_repos; DELETE FROM tasks; DELETE FROM worktree_slots; DELETE FROM worktree_pools; DELETE FROM app_config WHERE key = 'worktrees';"));
 
 test("preview tokens bind exact state, require acknowledgements, and are single use", async () => {
   const { clone } = mkOriginAndClone("mission-worktree-action-");
@@ -44,7 +53,7 @@ test("preview tokens bind exact state, require acknowledgements, and are single 
   const dirtyPath = join(acquired.lease.path, "keep-me.txt");
   writeFileSync(dirtyPath, "uncommitted\n");
   const preview = await operations.preview({ action: "return", slotId: acquired.lease.slotId });
-  assert.equal(preview.allowed, true);
+  assert.equal(preview.allowed, true, preview.blockers.join("; "));
   assert.deepEqual(preview.requiredAcknowledgements, ["dirty"]);
   await assert.rejects(
     operations.execute(preview.token, []),
@@ -183,4 +192,107 @@ test("task and check slots delegate cleanup to their domain owners", async () =>
   assert.equal(recoverable.allowed, true);
   await delegated.execute(recoverable.token, []);
   assert.equal(checks.unresolvedLeaseForNode("submission-settings", "node-settings"), false);
+});
+
+test("legacy task Return reaches the exact conditional adapter through TaskManager", async () => {
+  const registry = new Registry();
+  const repoRoot = "/repo/settings-legacy-task";
+  const path = "/treehouse/settings-legacy-task/repo";
+  const leaseId = "settings-legacy-lease";
+  const calls: string[][] = [];
+  let returned = false;
+  const execute: Run = async (_bin, args) => {
+    calls.push([...args]);
+    if (args[0] === "--version") {
+      return stubRun({ stdout: "v2.1.1\n", stderr: "", code: 0 });
+    }
+    if (args[0] === "status" && args[1] === "--json") {
+      return stubRun({
+        stdout: JSON.stringify(returned ? [] : [{
+          name: "1",
+          path,
+          status: "leased",
+          lease_id: leaseId,
+          lease_holder: "mission-control",
+          leased_at: "2026-08-16T12:00:00Z",
+          processes: [],
+        }]),
+        stderr: "",
+        code: 0,
+      });
+    }
+    if (args[0] === "return") {
+      returned = true;
+      return stubRun({ stdout: "", stderr: "", code: 0 });
+    }
+    assert.fail(`unexpected Treehouse command: ${args.join(" ")}`);
+  };
+  const legacy = new LegacyTreehouseService(db, {
+    adapter: new LegacyTreehouseAdapter({ execute, present: () => true }),
+    occupancy,
+    git: {
+      inspect: async (target) => ({
+        ok: true as const,
+        value: {
+          path: target,
+          head: "a".repeat(40),
+          dirty: false,
+          commonDirectory: repoRoot,
+        },
+      }),
+    },
+  });
+  const tasks = new TaskManager(
+    registry,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    {},
+    manager,
+    legacy,
+  );
+  registry.upsertTask(mkTask({
+    id: "settings-legacy-task",
+    title: "Drain the exact legacy task",
+    repoRoot,
+    status: "done",
+    provider: "treehouse",
+    worktreePath: path,
+    worktreeLeaseId: leaseId,
+    completedAt: 1,
+  }));
+  const delegated = new WorktreeOperationsService(manager, {
+    legacy,
+    tasks: {
+      get: (id) => {
+        const task = registry.getTask(id);
+        return task ? { id: task.id, title: task.title } : null;
+      },
+      reclaim: (id) => tasks.reclaim(id),
+    },
+    checks,
+    checkRecovery: async () => "unknown",
+    notifyChanged: () => changed.push(Date.now()),
+    diskBytes: async () => 0,
+  });
+
+  const preview = await delegated.preview({
+    action: "legacyReturn",
+    owner: { kind: "task", id: "settings-legacy-task", position: 0 },
+  });
+  assert.equal(preview.allowed, true, preview.blockers.join("; "));
+  assert.deepEqual(await delegated.execute(preview.token, []), {
+    ok: true,
+    action: "legacyReturn",
+    message: "Exact legacy lease returned through its domain owner.",
+  });
+  assert.deepEqual(
+    calls.find((args) => args[0] === "return"),
+    ["return", "--force", "--if-lease-id", leaseId, "--if-lease-holder", "mission-control", path],
+  );
+  assert.equal(calls.filter((args) => args[0] === "return").length, 1);
+  assert.equal(registry.getTask("settings-legacy-task")?.provider, null);
+  assert.equal(registry.getTask("settings-legacy-task")?.worktreePath, null);
+  assert.equal(registry.getTask("settings-legacy-task")?.worktreeLeaseId, null);
 });

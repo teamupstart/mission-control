@@ -67,7 +67,7 @@ async function post(path: string, body: unknown): Promise<Response> {
   });
 }
 
-test("manual routes acquire, protect dirty work, return exactly, and retain the warm slot", async () => {
+test("manual routes bind returns to the original durable lease while retaining the warm slot", async () => {
   const { clone } = mkOriginAndClone("mission-manual-http-");
   const head = gitIn(clone, "rev-parse", "HEAD");
 
@@ -109,8 +109,18 @@ test("manual routes acquire, protect dirty work, return exactly, and retain the 
   const next = await reacquired.json() as { path: string; leaseId: string };
   assert.equal(next.path, lease.path);
   assert.notEqual(next.leaseId, lease.leaseId);
-  const byPath = await post("/api/worktrees/manual/return", { path: next.path });
-  assert.equal(byPath.status, 200);
+
+  const stalePath = await post("/api/worktrees/manual/return", { path: next.path });
+  assert.equal(stalePath.status, 400, "a reusable slot path must never authorize a return");
+  const stalePathAsLeaseId = await post("/api/worktrees/manual/return", { leaseId: next.path });
+  assert.equal(stalePathAsLeaseId.status, 404, "the CLI cannot reinterpret an old path as authority");
+  const staleLease = await post("/api/worktrees/manual/return", { leaseId: lease.leaseId });
+  assert.equal(staleLease.status, 404);
+  assert.equal(worktrees.lookupLease({ leaseId: next.leaseId }).state, "active");
+
+  const nextReturned = await post("/api/worktrees/manual/return", { leaseId: next.leaseId });
+  assert.equal(nextReturned.status, 200);
+  assert.deepEqual(await nextReturned.json(), { ok: true, alreadyReleased: false });
 });
 
 test("manual return refuses a native lease owned by a task", async () => {

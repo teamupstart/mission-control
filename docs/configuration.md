@@ -123,7 +123,7 @@ startup and the Cost panel says so on screen.
 ```sh
 make init              # one-time bootstrap (deps, build, hooks, treehouse)
 make session           # ask the running daemon for a durable manual worktree lease
-make session ARGS="--return /absolute/path" # return a clean manual lease by path
+make session ARGS="--return <lease-id>" # return a clean manual lease by durable ID
 npm run dev            # daemon + web (dev)
 npm start              # daemon serving built UI
 npm run foreman        # Foreman worker (needs-you queue, work queues, PR follow-up, backlog autopilot)

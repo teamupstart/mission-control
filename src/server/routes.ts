@@ -855,7 +855,7 @@ export function buildApp(
     if (!worktrees) return c.json({ error: "native worktree manager unavailable" }, 503);
     const parsed = await parseBody(c, ManualWorktreeReturnSchema);
     if (!parsed.ok) return parsed.res;
-    const found = worktrees.lookupLease(parsed.data);
+    const found = worktrees.lookupLease({ leaseId: parsed.data.leaseId });
     if (found.state === "missing") return c.json({ error: "manual lease was not found" }, 404);
     if (found.state === "mismatch") return c.json({ error: found.reason }, 409);
     if (found.lease.owner.kind !== "manual") {

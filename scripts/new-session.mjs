@@ -3,7 +3,7 @@
 //
 // Usage:
 //   node scripts/new-session.mjs [--label <text>] [-- <command...>]
-//   node scripts/new-session.mjs --return <path>
+//   node scripts/new-session.mjs --return <lease-id>
 //   node scripts/new-session.mjs --return-lease <id>
 
 import { dirname, join } from "node:path";
@@ -14,8 +14,8 @@ import { BASE_URL } from "../src/shared/harness-runtime.mjs";
 const repo = join(dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
 let label;
-let returnPath;
 let returnLeaseId;
+let returnOption;
 let command = [];
 
 for (let i = 0; i < args.length; i++) {
@@ -33,14 +33,24 @@ for (let i = 0; i < args.length; i++) {
     continue;
   }
   if (arg === "--return") {
-    returnPath = args[++i];
-    if (!returnPath) {
-      console.error("--return requires a worktree path");
+    if (returnOption) {
+      console.error("choose either --return or --return-lease");
+      process.exit(2);
+    }
+    returnOption = arg;
+    returnLeaseId = args[++i];
+    if (!returnLeaseId) {
+      console.error("--return requires a lease ID");
       process.exit(2);
     }
     continue;
   }
   if (arg === "--return-lease") {
+    if (returnOption) {
+      console.error("choose either --return or --return-lease");
+      process.exit(2);
+    }
+    returnOption = arg;
     returnLeaseId = args[++i];
     if (!returnLeaseId) {
       console.error("--return-lease requires a lease ID");
@@ -52,11 +62,7 @@ for (let i = 0; i < args.length; i++) {
   process.exit(2);
 }
 
-if (returnPath && returnLeaseId) {
-  console.error("choose either --return or --return-lease");
-  process.exit(2);
-}
-if ((returnPath || returnLeaseId) && (label || command.length > 0)) {
+if (returnLeaseId && (label || command.length > 0)) {
   console.error("return actions cannot also launch a session");
   process.exit(2);
 }
@@ -81,10 +87,8 @@ async function post(path, body) {
   return payload;
 }
 
-if (returnPath || returnLeaseId) {
-  const result = await post("/api/worktrees/manual/return", returnPath
-    ? { path: returnPath }
-    : { leaseId: returnLeaseId });
+if (returnLeaseId) {
+  const result = await post("/api/worktrees/manual/return", { leaseId: returnLeaseId });
   console.error(result.alreadyReleased ? "🌳 lease was already returned" : "🌳 worktree returned");
   process.exit(0);
 }

@@ -1806,16 +1806,12 @@ export const ManualWorktreeAcquireSchema = z
   .strict();
 export type ManualWorktreeAcquire = z.infer<typeof ManualWorktreeAcquireSchema>;
 
-/** Return one exact manual lease, either by durable ID or by an explicit current path. */
+/** Return one exact manual lease by its unguessable durable identity. */
 export const ManualWorktreeReturnSchema = z
   .object({
-    leaseId: z.string().min(1).max(512).optional(),
-    path: z.string().min(1).max(4096).optional(),
+    leaseId: z.string().min(1).max(512),
   })
-  .strict()
-  .refine((value) => Number(value.leaseId !== undefined) + Number(value.path !== undefined) === 1, {
-    message: "provide exactly one of leaseId or path",
-  });
+  .strict();
 export type ManualWorktreeReturn = z.infer<typeof ManualWorktreeReturnSchema>;
 
 /**

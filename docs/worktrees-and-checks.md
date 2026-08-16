@@ -32,8 +32,8 @@ process occupancy cannot be proved empty. Startup reconciliation uses the same f
 ```sh
 make session                                  # acquire, warm, and open your shell
 make session ARGS="--label review -- claude" # label it and launch a command
-make session ARGS="--return /absolute/path"  # return the current manual lease at a path
-make session ARGS="--return-lease <id>"       # return one exact durable lease
+make session ARGS="--return <lease-id>"       # return one exact durable lease
+make session ARGS="--return-lease <lease-id>" # explicit spelling of the same action
 ```
 
 Under the hood (`scripts/new-session.mjs`):
@@ -43,9 +43,11 @@ Under the hood (`scripts/new-session.mjs`):
 3. **Hand it over** with `MISSION_WORKTREE` and `MISSION_WORKTREE_LEASE_ID` set, opening your
    `$SHELL` or the command after `--` in the tree.
 
-The lease stays durable after the shell exits. Return it explicitly with either command above.
-If the daemon is unavailable, `make session` tells you to start it and exits without allocating a
-standalone worktree. The future Settings > Worktrees surface will operate on the same inventory.
+The lease stays durable after the shell exits. Return it explicitly with either command above,
+using the lease ID printed by `make session` or exported as `MISSION_WORKTREE_LEASE_ID`. A slot path
+is reusable and never authorizes a return. If the daemon is unavailable, `make session` tells you
+to start it and exits without allocating a standalone worktree. The future Settings > Worktrees
+surface will operate on the same inventory.
 
 Native capacity and enablement are configuration policy. The shipped policy is enabled with 16
 slots per physical repository. A repository override affects its next acquisition, never an

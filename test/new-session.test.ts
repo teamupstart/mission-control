@@ -106,7 +106,7 @@ test("make session acquires, warms, exports native identity, and leaves the leas
   }
 });
 
-test("make session returns an exact manual lease by path or durable ID", async () => {
+test("make session returns an exact manual lease by durable ID through either CLI spelling", async () => {
   const requests: Array<{ path: string; body: Record<string, unknown> }> = [];
   const server = createServer((request, response) => {
     let body = "";
@@ -120,10 +120,10 @@ test("make session returns an exact manual lease by path or durable ID", async (
   });
   const port = await listen(server);
   try {
-    assert.equal((await runScript(["--return", "/tmp/exact-manual-tree"], port)).code, 0);
+    assert.equal((await runScript(["--return", "manual-lease-2"], port)).code, 0);
     assert.equal((await runScript(["--return-lease", "manual-lease-2"], port)).code, 0);
     assert.deepEqual(requests, [
-      { path: "/api/worktrees/manual/return", body: { path: "/tmp/exact-manual-tree" } },
+      { path: "/api/worktrees/manual/return", body: { leaseId: "manual-lease-2" } },
       { path: "/api/worktrees/manual/return", body: { leaseId: "manual-lease-2" } },
     ]);
   } finally {

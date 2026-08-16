@@ -366,6 +366,9 @@ export interface HookReading {
   activity: string | null;
 }
 
+/** Generic lifecycle edge produced by a hook adapter or an SDK driver event. */
+export type WorkCycleSignal = "work_started" | "turn_completed";
+
 /**
  * PUSH instrumentation: an agent that runs a script of ours on its own lifecycle events.
  *
@@ -412,6 +415,11 @@ export interface HookSpec {
    * field - is this agent's, version by version.
    */
   toState(evt: HookIngest): HookReading;
+  /**
+   * Translate this harness's raw hook vocabulary into the Registry's lifecycle contract.
+   * Null means the event neither arms nor completes a work cycle.
+   */
+  workCycleSignal(evt: HookIngest): WorkCycleSignal | null;
   /**
    * The human's own ask, if this event carries one; null for every event that does not,
    * which is the COMMON case (see `substantivePrompt` for how much of what arrives on a

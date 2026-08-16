@@ -183,6 +183,39 @@ test("only the prompt event yields prompt text", () => {
   assert.equal(claudeHooks.promptText({ event: "PostToolUse", prompt: ask } as never), null);
 });
 
+test("hook adapters normalize work activity and completed turns without leaking raw names", () => {
+  const taskNotification =
+    "<task-notification><task-id>bg-1</task-id><status>completed</status></task-notification>";
+
+  assert.equal(
+    claudeHooks.workCycleSignal({ event: "UserPromptSubmit", prompt: taskNotification } as never),
+    "work_started",
+    "a machine continuation is lifecycle work even though it is not human intent",
+  );
+  assert.equal(
+    claudeHooks.workCycleSignal({ event: "PreToolUse", toolName: "Bash" } as never),
+    "work_started",
+  );
+  assert.equal(claudeHooks.workCycleSignal({ event: "Stop" } as never), "turn_completed");
+  assert.equal(
+    claudeHooks.workCycleSignal({ event: "Notification", message: "Claude is waiting for your input" } as never),
+    null,
+    "idle notification noise is not a completed turn",
+  );
+
+  assert.equal(
+    codexHooks.workCycleSignal({ event: "UserPromptSubmit", prompt: "ship it" } as never),
+    "work_started",
+  );
+  assert.equal(codexHooks.workCycleSignal({ event: "PostToolUse" } as never), "work_started");
+  assert.equal(codexHooks.workCycleSignal({ event: "Stop" } as never), "turn_completed");
+  assert.equal(
+    codexHooks.workCycleSignal({ event: "PermissionRequest" } as never),
+    null,
+    "waiting for human attention does not complete a cycle",
+  );
+});
+
 // ---- the drift the installers used to carry ------------------------------------
 
 test("neither installer keeps its own copy of the event vocabulary", () => {

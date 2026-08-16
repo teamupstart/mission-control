@@ -378,6 +378,23 @@ export interface FleetAutomationCost {
   roles: AutomationRoleCost[];
 }
 
+/**
+ * Registry-owned identity for one logical conversation's completed work cycles.
+ *
+ * The logical key is the same durable identity used by the session note and goal. A
+ * generation is meaningful only within that key: clearing or rebinding a conversation
+ * selects a different row and starts from fresh state. `active` means work has been
+ * observed since the last completion; it is persisted so a daemon restart between work
+ * and the turn-end signal does not lose the completion opportunity.
+ */
+export interface WorkCycleSummary {
+  logicalKey: string;
+  generation: number;
+  active: boolean;
+  completedAt: number | null;
+  updatedAt: number;
+}
+
 export interface Session {
   /**
    * Stable identity and Registry map key for the life of this entry. Discovery mints
@@ -522,6 +539,13 @@ export interface Session {
   firstSeen: number; // epoch ms
   lastSeen: number; // epoch ms (last discovery observation; registration time for SDK)
   lastActivity: number | null; // epoch ms of last hook/report/driver event
+  /**
+   * Latest durable work-cycle state for this logical conversation.
+   *
+   * Optional for mixed daemon/worker startup compatibility. Absence means no lifecycle
+   * activity has been persisted for the current logical key, and consumers must fail closed.
+   */
+  workCycle?: WorkCycleSummary;
   /** Count of pending review items for this session (denormalized for the card). */
   pendingReviews: number;
   /**

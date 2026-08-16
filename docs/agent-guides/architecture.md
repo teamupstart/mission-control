@@ -88,6 +88,25 @@ Terminal vendors are hidden behind `MULTIPLEXERS`, `EMULATORS`, and `bindPane`. 
 - `canMessage` for any reachable conversation, including SDK.
 - `paneToken` for pane-scoped maps.
 
+### Work-cycle lifecycle
+
+The Registry is the sole owner of normalized work-cycle state. Terminal hook adapters translate
+their raw event vocabulary into `work_started` and `turn_completed`; SDK driver state reaches the
+same Registry transition path. Generic Registry, Foreman, Workflow, and task code must not inspect
+raw hook event names to identify a completed turn.
+
+`session_work_cycles` stores one current projection per logical conversation key: generation,
+active state, completion time, and update time. It is separate from `session_events`, whose any-row
+query remains proof that terminal hooks were seen, and from `session_work_episodes`, which owns task,
+branch, agent identity, and pull-request provenance. The active bit is durable so work observed
+before a daemon restart can still be completed by a later turn-end signal.
+
+`Session.workCycle` is an optional wire projection. Missing state means no lifecycle activity is
+known for the current logical key and consumers must fail closed. A context clear or driver rebind
+selects the new key's state instead of carrying a generation across conversations. Generations are
+monotonic only within one logical key and advance only when a normalized completion follows
+observed work. Idle notifications and duplicate turn ends do not advance them.
+
 ## GitHub Inspector and PR provenance
 
 The workflow's Code Quality Judge and GitHub Inspector have different owners. Code Quality Judge

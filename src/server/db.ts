@@ -44,6 +44,7 @@ import type {
   TrackedGap,
   WorkItem,
   WorkItemState,
+  WorkCycleSummary,
   WorktreeProvider,
 } from "@shared/types.ts";
 import { DEFAULT_TASK_KIND, TASK_KINDS } from "@shared/types.ts";
@@ -59,7 +60,8 @@ import { normalizeLabels } from "@shared/task.ts";
  * Durable state. Live sessions are intentionally NOT persisted - they're rebuilt
  * from the OS on every poll. What survives a restart is state the OS can't rebuild:
  * pending review items (a human decision may be waiting), dispatched tasks (their
- * backlog, running intent, and recent outcomes), and the session event log.
+ * backlog, running intent, and recent outcomes), current work-cycle projections, and the
+ * session event log.
  */
 let db: DatabaseSync;
 
@@ -545,6 +547,21 @@ export function openDb(): DatabaseSync {
       session_id       TEXT PRIMARY KEY,  -- the synthetic id (tty+pid+start)
       agent_session_id TEXT NOT NULL,     -- what the agent calls itself: the note/queue key
       updated_at       INTEGER NOT NULL
+    );
+
+    -- Current lifecycle projection for one logical conversation. This is deliberately
+    -- separate from session_events: that table is hook-only evidence and its any-row query
+    -- drives Session.hooksSeen. It is also separate from session_work_episodes, whose rows
+    -- own task and pull-request provenance rather than individual agent turns.
+    --
+    -- One row per logical key keeps restart state bounded by conversations, not turns.
+    -- The active bit survives a daemon restart so a later turn end can advance exactly once.
+    CREATE TABLE IF NOT EXISTS session_work_cycles (
+      logical_key  TEXT PRIMARY KEY,                 -- noteKeyFor(session)
+      generation  INTEGER NOT NULL DEFAULT 0 CHECK (generation >= 0),
+      active       INTEGER NOT NULL DEFAULT 0 CHECK (active IN (0, 1)),
+      completed_at INTEGER,
+      updated_at   INTEGER NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS tasks (
@@ -3517,6 +3534,76 @@ export function logEvent(sessionId: string, ts: number, kind: string, payload: u
   openDb()
     .prepare(`INSERT INTO session_events (session_id, ts, kind, payload) VALUES (?, ?, ?, ?)`)
     .run(sessionId, ts, kind, payload === undefined ? null : JSON.stringify(payload));
+}
+
+interface WorkCycleRow {
+  logical_key: string;
+  generation: number;
+  active: number;
+  completed_at: number | null;
+  updated_at: number;
+}
+
+function rowToWorkCycle(row: WorkCycleRow): WorkCycleSummary {
+  return {
+    logicalKey: row.logical_key,
+    generation: row.generation,
+    active: row.active === 1,
+    completedAt: row.completed_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+/** Latest durable lifecycle state for one logical conversation, if any was observed. */
+export function workCycleFor(logicalKey: string): WorkCycleSummary | null {
+  const row = openDb()
+    .prepare(`SELECT * FROM session_work_cycles WHERE logical_key = ?`)
+    .get(logicalKey) as unknown as WorkCycleRow | undefined;
+  return row ? rowToWorkCycle(row) : null;
+}
+
+/**
+ * Arm a logical conversation after normalized work activity.
+ *
+ * Repeated activity keeps the same generation. The write time still moves because it is
+ * the current-state projection's latest observation, not a completion identity.
+ */
+export function markWorkCycleActive(logicalKey: string, updatedAt: number): WorkCycleSummary {
+  openDb()
+    .prepare(
+      `INSERT INTO session_work_cycles
+         (logical_key, generation, active, completed_at, updated_at)
+       VALUES (?, 0, 1, NULL, ?)
+       ON CONFLICT(logical_key) DO UPDATE SET
+         active = 1,
+         updated_at = excluded.updated_at`,
+    )
+    .run(logicalKey, updatedAt);
+  return workCycleFor(logicalKey)!;
+}
+
+/**
+ * Complete an armed cycle, advancing its generation once.
+ *
+ * A turn end with no prior work is a no-op. No row is created for idle/end noise, and an
+ * existing inactive row is returned unchanged so duplicate turn ends stay on one generation.
+ */
+export function completeWorkCycle(
+  logicalKey: string,
+  completedAt: number,
+  updatedAt: number,
+): WorkCycleSummary | null {
+  openDb()
+    .prepare(
+      `UPDATE session_work_cycles
+          SET generation = generation + 1,
+              active = 0,
+              completed_at = ?,
+              updated_at = ?
+        WHERE logical_key = ? AND active = 1`,
+    )
+    .run(completedAt, updatedAt, logicalKey);
+  return workCycleFor(logicalKey);
 }
 
 /**

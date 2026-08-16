@@ -81,7 +81,13 @@ import {
   parseContextWindowSize,
 } from "@shared/model.ts";
 import type { DiscoveredSession } from "./discovery/correlate.ts";
-import type { RuntimeMetaRead, SdkEvent, SdkUsage, SessionActivityRead } from "./harness/types.ts";
+import type {
+  RuntimeMetaRead,
+  SdkEvent,
+  SdkUsage,
+  SessionActivityRead,
+  WorkCycleSignal,
+} from "./harness/types.ts";
 // The one projection of a driver request into the dialog shape every surface already
 // renders. Pure and its own module - see `sdk/dialog.ts`.
 import { driverDialog } from "./sdk/dialog.ts";
@@ -134,6 +140,8 @@ import {
   hooksEverSeen,
   lastAgentBinding,
   logEvent,
+  markWorkCycleActive,
+  completeWorkCycle,
   recordAgentBinding,
   rekeyQueue,
   listQueueRowsForCwd,
@@ -178,6 +186,7 @@ import {
   taskReposFor,
   workEpisodeRepoPr,
   workEpisodeRepoPrsForTask,
+  workCycleFor as dbWorkCycleFor,
   upsertQueue,
   upsertQueueItem,
   upsertSessionGoal,
@@ -1558,6 +1567,7 @@ export class Registry extends EventEmitter {
       firstSeen: prev?.firstSeen ?? now,
       lastSeen: now,
       lastActivity: prev?.lastActivity ?? null,
+      workCycle: undefined,
       pendingReviews: this.countPending(d.syntheticId),
       task: this.taskSummaryFor(d.syntheticId, d.cwd),
       // Carried forward like the PR fields for the same reason: discovery cannot see it.
@@ -1612,6 +1622,13 @@ export class Registry extends EventEmitter {
         base.lastActivity = passive.lastActivity;
       }
     }
+    // Work-cycle state follows the logical conversation key, not the pane-backed map key.
+    // Read SQLite only on first sight or rotation; otherwise the in-memory projection is the
+    // freshest value and avoids adding one synchronous query to every discovery poll.
+    base.workCycle =
+      prev && noteKeyFor(prev) === noteKeyFor(base)
+        ? prev.workCycle
+        : (dbWorkCycleFor(noteKeyFor(base)) ?? undefined);
     // The overlay may have just supplied a binding nothing has persisted yet, and
     // that is the ORDINARY case at launch, not an edge: a hook whose session hasn't
     // been discovered yet has no live session to apply to, so it only ever reaches
@@ -1744,6 +1761,7 @@ export class Registry extends EventEmitter {
       firstSeen: now,
       lastSeen: now,
       lastActivity: null,
+      workCycle: undefined,
       pendingReviews: this.countPending(input.id),
       task: null,
       prUrl: null,
@@ -1772,6 +1790,7 @@ export class Registry extends EventEmitter {
     s.cost = sessionCostFor(noteKeyFor(s));
     s.queue = this.queueSummaryFor(s);
     s.pendingTurns = this.pendingTurnsFor(s);
+    s.workCycle = dbWorkCycleFor(noteKeyFor(s)) ?? undefined;
     this.resolveInspectionSummaries(s);
     this.sessions.set(s.id, s);
     this.emitSession(s);
@@ -1796,6 +1815,40 @@ export class Registry extends EventEmitter {
   }
 
   /**
+   * Persist one normalized lifecycle signal, then return the matching session projection.
+   *
+   * The database write comes first so an emitted session can never advertise a generation
+   * that a daemon restart would lose. A completion without an armed row returns no summary,
+   * which is the fail-closed meaning of idle/end noise on a conversation with no work.
+   */
+  private withWorkCycleSignal(
+    s: Session,
+    signal: WorkCycleSignal,
+    occurredAt: number,
+    updatedAt: number,
+  ): Session {
+    const logicalKey = noteKeyFor(s);
+    const workCycle = signal === "work_started"
+      ? markWorkCycleActive(logicalKey, updatedAt)
+      : completeWorkCycle(logicalKey, occurredAt, updatedAt);
+    const projected = workCycle ?? undefined;
+    if (JSON.stringify(s.workCycle) === JSON.stringify(projected)) return s;
+    return { ...s, workCycle: projected };
+  }
+
+  /** Persist and emit a lifecycle-only change, used when an SDK completion stays busy. */
+  private applyWorkCycleOnly(
+    s: Session,
+    signal: WorkCycleSignal,
+    occurredAt: number,
+    updatedAt: number,
+  ): void {
+    const next = this.withWorkCycleSignal(s, signal, occurredAt, updatedAt);
+    this.sessions.set(next.id, next);
+    if (!sessionEqual(s, next)) this.emitSession(next);
+  }
+
+  /**
    * Ingest one event from a session's driver - the first-class sibling of `applyHook`.
    *
    * Refuses anything about a session that is not driver-run, which is the same shape of
@@ -1815,7 +1868,13 @@ export class Registry extends EventEmitter {
         this.applyDriverBinding(s, evt, now);
         return;
       case "state":
-        this.applyDriverState(s, evt.state, evt.activity, now);
+        this.applyDriverState(
+          s,
+          evt.state,
+          evt.activity,
+          now,
+          evt.state === "working" ? "work_started" : null,
+        );
         return;
       case "turn_done":
         // The turn ended, so the session is idle - the same fact a `Stop` hook carries -
@@ -1840,7 +1899,13 @@ export class Registry extends EventEmitter {
         // the session first is silently reverted by it - the ledger row survives, the card's
         // own figure does not, and the fleet total then disagrees with every chip on it.
         // Recording last means `applyDurableUsage` re-reads the session it is updating.
-        if (!options.deferIdle) this.applyDriverState(s, "idle", null, now);
+        if (!options.deferIdle) {
+          this.applyDriverState(s, "idle", null, now, "turn_completed");
+        } else {
+          // The next accepted turn keeps the card working, but the cycle that just ended
+          // still advances. Emit only that durable projection instead of a transient idle.
+          this.applyWorkCycleOnly(s, "turn_completed", now, now);
+        }
         this.recordDriverTurnUsage(s, evt.usage, now);
         return;
       case "rate_limits":
@@ -1929,6 +1994,9 @@ export class Registry extends EventEmitter {
     if (this.clearEffortTrackingOnRebind(s, next) && next.meta) {
       next.meta = { ...next.meta, thinkingLevel: null };
     }
+    if (noteKeyFor(next) !== noteKeyFor(s)) {
+      next.workCycle = dbWorkCycleFor(noteKeyFor(next)) ?? undefined;
+    }
     // Binding changes the note key, so everything keyed on it is re-resolved NOW rather
     // than on some later event, exactly as `applyHook` does and for the same reason: until
     // it is, the card shows the synthetic id's (empty) note, queue and goal.
@@ -1968,12 +2036,16 @@ export class Registry extends EventEmitter {
     state: "working" | "idle",
     activity: string | null,
     now: number,
+    workCycleSignal: WorkCycleSignal | null = null,
   ): void {
     // A final result/state frame may race an operator stop. It can update the durable turn
     // mirror in the supervisor, but it must not make this card actionable again after the
     // supervisor has closed delivery and acknowledged that fact to the browser.
-    if (s.state === "stopping") return;
-    const next: Session = {
+    if (s.state === "stopping") {
+      if (workCycleSignal) this.applyWorkCycleOnly(s, workCycleSignal, now, now);
+      return;
+    }
+    let next: Session = {
       ...s,
       state,
       activity,
@@ -1985,6 +2057,7 @@ export class Registry extends EventEmitter {
       stateConfirmed: true,
       lastActivity: now,
     };
+    if (workCycleSignal) next = this.withWorkCycleSignal(next, workCycleSignal, now, now);
     this.sessions.set(next.id, next);
     if (!sessionEqual(s, next) || s.lastActivity !== now) this.emitSession(next);
   }
@@ -2086,6 +2159,7 @@ export class Registry extends EventEmitter {
     const ts = evt.ts ?? now;
     const key = overlayKeyFromEnv(evt.env);
     const { state, activity } = spec.toState(evt);
+    const workCycleSignal = spec.workCycleSignal(evt);
     const target = this.findSessionForHook(evt, key);
 
     // Passive PID/open-file identity is exact. A conflicting hook belongs to another
@@ -2145,7 +2219,7 @@ export class Registry extends EventEmitter {
       const transcriptPath = agentRebound && evt.transcriptPath === target.transcriptPath
         ? null
         : evt.transcriptPath ?? (agentRebound ? null : target.transcriptPath);
-      const next: Session = {
+      let next: Session = {
         ...target,
         ...pr,
         instrumented: true,
@@ -2158,6 +2232,12 @@ export class Registry extends EventEmitter {
         agentSessionId,
         transcriptPath,
       };
+      if (noteKeyFor(next) !== noteKeyFor(target)) {
+        next.workCycle = dbWorkCycleFor(noteKeyFor(next)) ?? undefined;
+      }
+      if (workCycleSignal) {
+        next = this.withWorkCycleSignal(next, workCycleSignal, ts, now);
+      }
       if (this.clearEffortTrackingOnRebind(target, next) && next.meta) {
         next.meta = { ...next.meta, thinkingLevel: null };
       }
@@ -2229,6 +2309,13 @@ export class Registry extends EventEmitter {
           this.announcePrOpened(next, url);
         }
       }
+    } else if (workCycleSignal && evt.sessionId) {
+      // Hooks can beat process discovery during launch. The harness session id is already
+      // the logical key, so persist the lifecycle edge now and let the first discovery
+      // projection read it back. Without this branch the first prompt of a new session can
+      // be the one cycle whose active bit disappears on a daemon restart.
+      if (workCycleSignal === "work_started") markWorkCycleActive(evt.sessionId, now);
+      else completeWorkCycle(evt.sessionId, ts, now);
     }
     this.pruneOverlays(now);
   }
@@ -2322,6 +2409,7 @@ export class Registry extends EventEmitter {
       ...s,
       agentSessionId,
       transcriptPath: null,
+      workCycle: dbWorkCycleFor(agentSessionId) ?? undefined,
     };
     if (this.clearEffortTrackingOnRebind(s, next) && next.meta) {
       next.meta = { ...next.meta, thinkingLevel: null };
@@ -4221,6 +4309,7 @@ export class Registry extends EventEmitter {
       // the note key like any other binding - and the invite moves with the key.
       this.moveForemanInviteKey(noteKeyFor(s), noteKeyFor(next));
       next.foremanInvite = this.foremanInviteFor(next);
+      next.workCycle = dbWorkCycleFor(noteKeyFor(next)) ?? undefined;
     }
     this.rememberAgentSession(next, s.agentSessionId);
     this.sessions.set(next.id, next);
@@ -4316,6 +4405,7 @@ export class Registry extends EventEmitter {
       // Inside the rotation guard for the same per-render economy the cost re-read is.
       this.moveForemanInviteKey(noteKeyFor(s), key);
       next.foremanInvite = this.foremanInviteFor(next);
+      next.workCycle = dbWorkCycleFor(key) ?? undefined;
     }
     this.rememberAgentSession(next, s.agentSessionId);
     this.sessions.set(s.id, next);
@@ -6985,6 +7075,9 @@ export const SESSION_FIELD_COMPARATORS: SessionFieldComparators = {
   // its call site when it needs the timestamp to force an emit.
   lastSeen: alwaysEqual,
   lastActivity: alwaysEqual,
+  // Small durable projection. A generation or active edge can be the only change on an
+  // SDK session whose next accepted turn suppresses the transient idle state.
+  workCycle: byJson,
   pendingReviews: byValue,
   task: byJson,
   prUrl: byValue,

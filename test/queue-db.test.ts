@@ -116,8 +116,8 @@ test("a matching legacy prompted guard bootstraps the current generation as cons
        const d = new DatabaseSync(join(process.env.MISSION_HOME, "harness.db"));
        d.exec("CREATE TABLE foreman_queues (note_key TEXT PRIMARY KEY, cwd TEXT, branch TEXT, wrapup_asked_at INTEGER, wrapup_answer TEXT, prompted_goal TEXT, updated_at INTEGER NOT NULL)");
        const insert = d.prepare("INSERT INTO foreman_queues VALUES (?, ?, ?, ?, ?, ?, ?)");
-       insert.run("legacy", "/repo", "feature", null, null, "intent:1:1", 10);
-       insert.run("legacy-null", "/repo", "feature", null, null, null, 10);
+       insert.run("legacy", "/repo", "feature", null, null, "intent:1:1", 30);
+       insert.run("legacy-null", "/repo", "feature", null, null, null, 30);
        d.close();`,
     ],
     { env, cwd: process.cwd(), encoding: "utf8" },
@@ -247,6 +247,40 @@ test("legacy prompted bootstrap refuses an active work cycle with an older compl
     getQueueRow(key)?.promptedConsumedGeneration,
     null,
     "an older completedAt cannot make in-progress work look consumed",
+  );
+});
+
+test("legacy prompted bootstrap does not consume a completion newer than its boundary", () => {
+  const key = "prompted-newer-bootstrap";
+  markWorkCycleActive(key, 20);
+  completeWorkCycle(key, 21, 21);
+  upsertQueue({
+    noteKey: key,
+    cwd: "/repo",
+    branch: "feature",
+    wrapupAskedAt: null,
+    wrapupAnswer: null,
+    promptedGoal: "intent:1:1",
+    promptedEvidence: "generation-1-proof",
+    promptedActivityAt: 21,
+    promptedConsumedGeneration: null,
+    updatedAt: 22,
+  });
+  markWorkCycleActive(key, 23);
+  completeWorkCycle(key, 24, 24);
+
+  assert.equal(bootstrapPromptedConsumedGeneration(key, "intent:1:1"), false);
+  assert.equal(getQueueRow(key)?.promptedConsumedGeneration, null);
+  assert.equal(
+    consumePromptedGeneration({
+      noteKey: key,
+      sessionCwd: "/repo",
+      generation: 2,
+      ask: false,
+      now: 25,
+    }),
+    true,
+    "the newer completion remains eligible for normal generation consumption",
   );
 });
 

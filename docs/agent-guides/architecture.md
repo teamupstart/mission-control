@@ -113,7 +113,9 @@ write that consumes it; queue items retain drain precedence. Reconciled intent i
 separately for staleness, while evidence fingerprints remain proof and workflow idempotency rather
 than lifecycle identity. Historical `prompted_goal` values are read only for an idempotent upgrade
 bootstrap: a value matching the current resolved intent marks the current completed generation as
-consumed, while a null or mismatched value leaves it eligible. New decisions never use the legacy
+consumed only when the cycle is inactive and its completion does not postdate the legacy activity
+watermark, or the queue write time for rows from before that watermark existed. A null or mismatched
+guard, active cycle, or newer completion stays eligible. New decisions never use the legacy
 intent/evidence columns as a fallback trigger.
 
 ## GitHub Inspector and PR provenance

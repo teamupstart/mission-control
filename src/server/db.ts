@@ -7675,6 +7675,9 @@ export function getQueueRow(noteKey: string): Omit<SessionQueue, "items"> | unde
  * the current reader can fail closed and try the bootstrap again after state is known. An
  * active row is not a completed cutover boundary even when it retains an older completion
  * timestamp, so compatibility must not consume its generation while work is in progress.
+ * The historical activity watermark associates the guard with the completion it examined;
+ * rows from before that watermark existed fall back to the queue write time. A later completed
+ * cycle stays unconsumed instead of letting an old intent guard advance onto new work.
  */
 export function bootstrapPromptedConsumedGeneration(
   noteKey: string,
@@ -7689,6 +7692,10 @@ export function bootstrapPromptedConsumedGeneration(
              AND generation > 0
              AND active = 0
              AND completed_at IS NOT NULL
+             AND completed_at <= COALESCE(
+               foreman_queues.prompted_activity_at,
+               foreman_queues.updated_at
+             )
         )
       WHERE note_key = ?
         AND prompted_consumed_generation IS NULL
@@ -7699,6 +7706,10 @@ export function bootstrapPromptedConsumedGeneration(
              AND generation > 0
              AND active = 0
              AND completed_at IS NOT NULL
+             AND completed_at <= COALESCE(
+               foreman_queues.prompted_activity_at,
+               foreman_queues.updated_at
+             )
         )`,
   ).run(noteKey, resolvedEpisodeKey);
   return Number(result.changes) === 1;

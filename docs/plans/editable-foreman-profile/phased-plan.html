@@ -142,7 +142,7 @@
       <article class="card"><h3>Catalog separation is the eligibility rule</h3><p>Workflow and ensemble consumers see only <code>PersonaView[]</code>. The System row is composed locally and never filtered back out downstream.</p></article>
       <article class="card"><h3>Owner links need explicit callbacks</h3><p>App already owns transient Settings anchors, while <code>ForemanBar</code> owns its open state. Phase 2 adds one-shot navigation requests rather than duplicate controls.</p></article>
     </div>
-    <div class="callout warn"><strong>Scheduling reconciliation.</strong> The plan tool creates an enabled Claude task by default. The planning-session dependency blocks dispatch while each created task is updated and verified as disabled, Codex <code>gpt-5.6-sol</code>, and <code>xhigh</code>.</div>
+    <div class="callout warn"><strong>Scheduling reconciliation.</strong> The plan tool creates an enabled Claude task by default. Mission Control normalized the session edge to the existing planning task and reported it already satisfied while this PR was open, so each task was updated and read back as disabled, Codex <code>gpt-5.6-sol</code>, and <code>xhigh</code>. Disabled state is the effective pre-merge gate.</div>
   </section>
 
   <section>
@@ -165,7 +165,7 @@
         <rect x="22" y="72" width="240" height="100" rx="14" fill="var(--accent-soft)" stroke="var(--accent)"/>
         <text x="142" y="106" text-anchor="middle" fill="var(--ink)" font-size="17" font-weight="700">Planning PR</text>
         <text x="142" y="132" text-anchor="middle" fill="var(--muted)" font-size="13">publishes every named path</text>
-        <text x="142" y="153" text-anchor="middle" fill="var(--muted)" font-size="13">satisfies session dependencies</text>
+        <text x="142" y="153" text-anchor="middle" fill="var(--muted)" font-size="13">tasks remain disabled</text>
         <line x1="263" y1="122" x2="336" y2="122" stroke="var(--accent)" stroke-width="3" marker-end="url(#arrow)"/>
         <rect x="346" y="52" width="250" height="140" rx="14" fill="var(--good-soft)" stroke="var(--good)"/>
         <text x="471" y="87" text-anchor="middle" fill="var(--ink)" font-size="17" font-weight="700">Phase 1</text>
@@ -199,7 +199,7 @@
   <section>
     <h2>Merge order</h2>
     <ol>
-      <li>This planning PR publishes every source, render, index, and phase file. Its merge satisfies the session edges, but both phase tasks remain disabled.</li>
+      <li>This planning PR publishes every source, render, index, and phase file. Both phase tasks stay disabled through merge because their normalized planning-task edges were already satisfied.</li>
       <li>A human enables Phase 1. It merges the shared/server contract after focused and full unit gates pass.</li>
       <li>A human enables Phase 2 after Phase 1 merges. It delivers the full UI after unit, build, smoke, browser, evidence, and documentation gates pass.</li>
     </ol>
@@ -231,7 +231,16 @@
 
   <section>
     <h2>Scheduled task map</h2>
-    <div class="callout">Task ids are inserted after every artifact is committed and pushed. Each task is then read back as disabled, Codex <code>gpt-5.6-sol</code>, and <code>xhigh</code> before this planning PR may merge.</div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Phase</th><th>Task id</th><th>Stored execution</th><th>Direct task dependencies</th><th>Planning edge</th></tr></thead>
+        <tbody>
+          <tr><td>1</td><td><code>d95866f4-9ab6-4a62-bb49-f2a081709b1d</code></td><td>Backlog, disabled, Codex <code>gpt-5.6-sol</code>, <code>xhigh</code></td><td>None</td><td>Planning task <code>ad501cee-88dd-4160-9a99-f9edeee6d2ab</code>, already satisfied</td></tr>
+          <tr><td>2</td><td><code>ddd15955-74c3-42bc-82c0-59ef1a0b9986</code></td><td>Backlog, disabled, Codex <code>gpt-5.6-sol</code>, <code>xhigh</code></td><td>Phase 1</td><td>Planning task <code>ad501cee-88dd-4160-9a99-f9edeee6d2ab</code>, already satisfied</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="small">Both tasks were created only after all six artifact paths resolved in the pushed commit. Phase 2's edge to Phase 1 remains unsatisfied. Neither disabled task may be enabled before this PR merges and the paths resolve on the default branch.</p>
   </section>
 
   <section>
@@ -241,7 +250,7 @@
       <li>The API boundary is independently useful, while no smaller UI or cleanup merge unit is warranted.</li>
       <li>Phase 2 directly consumes Phase 1, so the serial dependency is real and there is no false concurrency claim.</li>
       <li>Storage remains downgrade-readable, the worker still projects text, and the browser adds no Persona catalog member.</li>
-      <li>The planning-session edge blocks early execution while task scheduling overrides are applied and verified.</li>
+      <li>The already-satisfied planning-task edge is recorded honestly; verified disabled state prevents early execution, and Phase 2 still waits directly on Phase 1.</li>
     </ul>
   </section>
 

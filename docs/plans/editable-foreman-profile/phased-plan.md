@@ -67,10 +67,11 @@ There are no unresolved product choices in this phased plan.
     Registry/SSE, and `/api/personas`. Keeping Foreman local to the Library means no eligibility flag,
     graph migration, publish change, ensemble schema change, or catalog event is required.
 14. The Mission Control `create_task` tool deliberately creates enabled Claude tasks with default
-    model settings. The planning-session dependency prevents those tasks from dispatching before this
-    plan merges. After creation, each task must be updated while still backlogged to `agent: codex`,
-    `model: gpt-5.6-sol`, `effort: xhigh`, and `enabled: false`, then read back and verified before the
-    planning pull request may merge.
+    model settings. It normalized `dependsOnCurrentSession` to planning task
+    `ad501cee-88dd-4160-9a99-f9edeee6d2ab`, whose edge was already marked satisfied while this pull
+    request was still open. The requested disabled state is therefore the effective pre-merge
+    dispatch gate. Each task was updated while still backlogged to `agent: codex`,
+    `model: gpt-5.6-sol`, `effort: xhigh`, and `enabled: false`, then read back before merge.
 
 ## Sizing estimate and phase-count rationale
 
@@ -103,15 +104,15 @@ leave a merged UI that is knowingly incomplete without creating an independently
 ## Phase graph
 
 ```text
-Planning PR and active planning-session dependency
-                       |
-                       v
+Planning PR publishes every task path
+                |
+                v
 Phase 1: Conflict-safe guidance contract
-                       |
-                       v
+                |
+                v
 Phase 2: System profile UI and owner cross-links
 
-Both phase tasks remain disabled after their dependencies are satisfied.
+Both phase tasks remain disabled before and after their dependencies are satisfied.
 ```
 
 ## Phase table
@@ -124,8 +125,9 @@ Both phase tasks remain disabled after their dependencies are satisfied.
 ## Dependency and merge order
 
 1. This planning pull request merges every source, index, render, and phase file to the default
-   branch. That merge satisfies the planning-session dependency on both implementation tasks, but
-   their disabled state continues to prevent dispatch.
+   branch. The normalized planning-task edge on both implementation tasks was already satisfied, so
+   publication does not rely on it. Both tasks are verified disabled and must stay disabled through
+   the merge.
 2. A human enables Phase 1 when implementation should begin. Its pull request establishes the shared
    view/update schema and server contract without adding a dashboard surface, and merges only after
    its focused and full unit gates pass.
@@ -184,13 +186,21 @@ The final audit must prove:
 - every task path resolves on the pushed branch before scheduling and on the default branch before a
   disabled task is enabled;
 - every scheduled task is read back as disabled, Codex `gpt-5.6-sol`, and `xhigh` before this planning
-  pull request merges.
+  pull request merges;
+- the already-satisfied planning-task edge is reported honestly and no task is enabled before all
+  named paths resolve on the default branch.
 
 ## Scheduled task map
 
-The task ids are added here after the publication gate: all artifacts must first be committed and
-pushed, then each task is created through `create_task`, updated to the approved execution settings,
-and read back before merge.
+| Phase | Task id | Stored execution | Direct task dependencies | Planning-session edge |
+| --- | --- | --- | --- | --- |
+| 1. Conflict-safe guidance contract | `d95866f4-9ab6-4a62-bb49-f2a081709b1d` | Backlog, disabled, Codex `gpt-5.6-sol`, `xhigh` | None | Present through planning task `ad501cee-88dd-4160-9a99-f9edeee6d2ab`; already satisfied |
+| 2. System profile UI and owner cross-links | `ddd15955-74c3-42bc-82c0-59ef1a0b9986` | Backlog, disabled, Codex `gpt-5.6-sol`, `xhigh` | Phase 1 task | Present through planning task `ad501cee-88dd-4160-9a99-f9edeee6d2ab`; already satisfied |
+
+Both tasks were created through `create_task` only after the six artifact paths resolved in the
+pushed commit. Phase 2's edge to Phase 1 is unsatisfied. Because the planning-task edge had already
+been satisfied, disabled state is the effective publication and dispatch gate: neither task may be
+enabled until this planning pull request has merged and its paths resolve on the default branch.
 
 ## Cross-phase audit record
 
@@ -204,9 +214,11 @@ and read back before merge.
 - **Compatibility audit:** the storage row remains downgrade-readable; the worker still projects
   `text`; the route change has no current dashboard consumer; and the browser adds no Persona catalog
   member.
-- **Scheduling audit:** task creation occurs only after a pushed artifact commit. The session edge
-  blocks early execution while the requested disabled setting, agent, model, and effort are applied
-  and verified through the task update contract.
+- **Scheduling audit:** task creation occurred only after a pushed artifact commit. The daemon
+  normalized the session edge to the existing planning task and reported it already satisfied. Both
+  task rows were therefore updated and read back as disabled, Codex `gpt-5.6-sol`, and `xhigh`; that
+  disabled state is the gate that prevents early execution. Phase 2's direct Phase 1 edge remains
+  unsatisfied.
 - **Final full-set audit:** Phase 1 and Phase 2 use one source vocabulary, one ETag contract, one fixed
   route, and one local composition rule. Empty versus reset, dirty conflicts, in-flight capture,
   owner separation, and workflow/ensemble exclusion each have one owner and no contradictory later

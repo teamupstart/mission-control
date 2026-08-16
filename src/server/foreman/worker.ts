@@ -1109,6 +1109,7 @@ async function processTarget(
       // existing Foreman-complete binding before it would render the card.
       const block = automaticWrapupBlock({
         taskKind: fresh.task?.kind ?? null,
+        workflowId: fresh.task?.workflowId ?? null,
         objective: completionIntent.objective,
         // A truncated patch is not a complete file list. Treating its visible prefix as
         // exhaustive could hide a later source file and incorrectly classify a mixed change.
@@ -1365,6 +1366,7 @@ async function processPromptedWrapup(
   // the result cannot become eligible for automatic shipping later in this same episode.
   const block = automaticWrapupBlock({
     taskKind: session.task?.kind ?? null,
+    workflowId: session.task?.workflowId ?? null,
     objective: candidate.objective,
     changedPaths: diff.truncated ? null : changedPaths(diff.patch),
     skipScoutWrapup: cfg.skipScoutWrapup,

@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { VERIFY_FAILURE_CAP } from "../src/server/foreman/queue-machine.ts";
 import type { Session, SessionQueue } from "../src/shared/types.ts";
-import { mkMuxHandle } from "./helpers/session-fixture.ts";
+import { mkMuxHandle, mkTaskSummary } from "./helpers/session-fixture.ts";
 
 // The `prompted` wrap-up trigger, driven END TO END: the real worker binary, a stub
 // daemon, and a fake `claude`.
@@ -452,10 +452,84 @@ test("a daemon blip on the queue read never double-fires a wrap-up, and never st
   );
 });
 
-test("a verified prompt submits its existing workflow instead of Straight to PR", async () => {
+test("a changed-file chat retires before verification or shipping", async () => {
+  const repo = tmp("pw-chat-repo-");
+  const fake = mkFakeClaude({ fail: false });
+  const session = mkSession(repo, {
+    task: mkTaskSummary({ kind: "chat", workflowId: null }),
+  });
+  let queue = mkQueue(repo);
+  let retired = false;
+
+  const stub = await startStub((_req, url, raw) => {
+    const p = url.pathname;
+    if (p === "/api/foreman/config") {
+      return { status: 200, json: cfg({ mode: "live", repoAllowlist: [repo], wrapup: "pr" }) };
+    }
+    if (p === "/api/foreman/heartbeat") return { status: 200, json: { leader: true } };
+    if (p === "/api/sessions") {
+      const now = Date.now();
+      return {
+        status: 200,
+        json: [{ ...session, lastSeen: now, lastActivity: now - 120_000 }],
+      };
+    }
+    if (p === "/api/reviews") return { status: 200, json: [] };
+    if (p === "/api/queues") return { status: 200, json: [] };
+    if (p === "/api/sessions/s1/queue") return { status: 200, json: queue };
+    if (p === "/api/sessions/s1/goal") return { status: 200, json: goalRecord };
+    if (p === "/api/sessions/s1/diff") {
+      return {
+        status: 200,
+        json: {
+          ok: true,
+          patch: "diff --git a/notes.txt b/notes.txt\n+conversation note\n",
+          truncated: false,
+          headSha: "chat-head",
+        },
+      };
+    }
+    if (p === "/api/sessions/s1/queue/wrapup/prompted") {
+      const body = JSON.parse(raw) as {
+        goal: string;
+        evidenceMarker: string;
+        activityAt: number;
+      };
+      queue = {
+        ...queue,
+        promptedGoal: body.goal,
+        promptedEvidence: body.evidenceMarker,
+        promptedActivityAt: body.activityAt,
+        updatedAt: Date.now(),
+      };
+      retired = true;
+      return { status: 200, json: { ok: true } };
+    }
+    return { status: 200, json: null };
+  });
+
+  const out = await runWorker({
+    port: stub.port,
+    claudeBin: fake.bin,
+    claudeLog: fake.log,
+    ms: 5_000,
+    until: () => retired,
+  });
+  await stub.close();
+
+  assert.equal(retired, true, out);
+  assert.equal(stub.to("GET", "/api/sessions/s1/diff").length, 0, out);
+  assert.equal(stub.to("POST", "/api/sessions/s1/workflow-completion").length, 0, out);
+  assert.equal(stub.to("POST", "/api/sessions/s1/inject").length, 0, out);
+  assert.equal(claudeCalls(fake.log).length, 0, out);
+});
+
+test("an explicit chat Workflow reaches ordinary verification and claims that Workflow", async () => {
   const repo = tmp("pw-repo-");
   const fake = mkFakeClaude({ fail: false });
-  const session = mkSession(repo);
+  const session = mkSession(repo, {
+    task: mkTaskSummary({ kind: "chat", workflowId: "workflow-review" }),
+  });
   const stopAt = Date.now() - 120_000;
   // The row the worker's own `markPromptedWrapup` writes into. Serving it back is what
   // arms the once-per-episode guard, so "fires exactly once" is a real assertion about

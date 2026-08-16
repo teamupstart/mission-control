@@ -188,6 +188,12 @@ finished work never reaches an automatic completion action:
 The safeguards are independent. A task matching either one is retired while that switch is
 on; turn a switch off to let that class of work use the ordinary **Trigger on → Then** action.
 
+**A `chat` task with no explicit Workflow always stays human-ended.** Foreman may recognize
+its completion boundary, but it retires that automatic pass without offering or sending a
+shipping action. The agent remains available for another conversational turn until you choose
+**Complete**. Explicitly selecting a Workflow in Dispatch opts that chat into the ordinary
+completion path, including the review-artifact safeguard above.
+
 **A `plan` task is exempt from the second safeguard**, and only from that one. Its objective
 says "write a plan" and its diff lands entirely under `docs/plans/`, so it would match both
 halves of the review-artifact test and be retired - which is the wrong answer for this kind. A

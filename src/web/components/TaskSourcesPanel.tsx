@@ -1,13 +1,17 @@
 import { useEffect, useRef, useState } from "react";
 import {
   AGENT_TYPES,
-  TASK_KINDS,
   type AgentType,
   type TaskKind,
   type TaskPriority,
 } from "@shared/types.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
-import { PRIORITY_LABELS, TASK_KIND_INFO, TASK_PRIORITIES } from "@shared/task.ts";
+import {
+  BACKLOG_TASK_KINDS,
+  PRIORITY_LABELS,
+  TASK_KIND_INFO,
+  TASK_PRIORITIES,
+} from "@shared/task.ts";
 import {
   DEFAULT_SWEEP_INTERVAL_MS,
   DEFAULT_MAX_PER_SWEEP,
@@ -417,7 +421,7 @@ function JiraFields({
 }
 
 /** One configured source's editor. The overview chooses which source reaches this surface. */
-function SourceCard({
+export function SourceCard({
   src,
   kindLabel,
   status,
@@ -618,7 +622,7 @@ function SourceCard({
                     hand-written list silently stops offering a kind rather than failing
                     to compile when one is added. Sentence case is gone with them - the
                     labels are the lowercase words the task itself carries. */}
-                {TASK_KINDS.map((kind) => (
+                {BACKLOG_TASK_KINDS.map((kind) => (
                   <option key={kind} value={kind}>
                     {`${TASK_KIND_INFO[kind].label} - ${TASK_KIND_INFO[kind].purpose}`}
                   </option>

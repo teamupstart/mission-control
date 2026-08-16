@@ -1,6 +1,12 @@
 import { z } from "zod";
 import { WRAPUP_MODES, WRAPUP_TRIGGERS } from "./queue.ts";
-import { MAX_LABELS, TASK_PRIORITIES, normalizeLabels } from "./task.ts";
+import {
+  MAX_LABELS,
+  TASK_KIND_BACKLOG_REFUSAL,
+  TASK_PRIORITIES,
+  normalizeLabels,
+  taskKindAllowsBacklog,
+} from "./task.ts";
 import {
   PipelineActionRequestSchema,
   PipelineConsoleRequestSchema,
@@ -646,6 +652,23 @@ export const DispatchSchema = z
   .refine((o) => o.effort === undefined || supportsEffort(o.agent, o.effort), {
     path: ["effort"],
     message: "reasoning effort is not supported by this harness",
+  })
+  .superRefine((o, ctx) => {
+    if (taskKindAllowsBacklog(o.kind)) return;
+    if (o.backlog) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["backlog"],
+        message: TASK_KIND_BACKLOG_REFUSAL,
+      });
+    }
+    if (o.dependencies.length > 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["dependencies"],
+        message: TASK_KIND_BACKLOG_REFUSAL,
+      });
+    }
   });
 export type Dispatch = z.infer<typeof DispatchSchema>;
 
@@ -779,7 +802,10 @@ export const UpdateTaskSchema = z
     extraRepoRoots: z.array(z.string().min(1)).max(8).optional(),
     intent: z.string().min(1).optional(),
     title: z.string().optional(),
-    kind: z.enum(TASK_KINDS).optional(),
+    kind: z
+      .enum(TASK_KINDS)
+      .refine(taskKindAllowsBacklog, TASK_KIND_BACKLOG_REFUSAL)
+      .optional(),
     agent: z.enum(AGENT_TYPES).optional(),
     enabled: z.boolean().optional(),
     priority: z.enum(TASK_PRIORITIES).nullable().optional(),
@@ -4877,7 +4903,10 @@ const ScheduleTemplateSchema = z
     title: z.string().trim().min(1).max(200),
     intent: z.string().trim().min(1),
     repoRoot: z.string().min(1),
-    kind: z.enum(TASK_KINDS).default("ship"),
+    kind: z
+      .enum(TASK_KINDS)
+      .refine(taskKindAllowsBacklog, TASK_KIND_BACKLOG_REFUSAL)
+      .default("ship"),
     agent: z.enum(AGENT_TYPES).default("claude"),
     priority: z.enum(TASK_PRIORITIES).nullable().default(null),
     labels: z.array(z.string()).max(MAX_LABELS).default([]).transform(normalizeLabels),

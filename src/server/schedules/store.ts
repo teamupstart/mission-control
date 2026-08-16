@@ -1,7 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { openDb } from "../db.ts";
 import { AGENT_TYPES, TASK_KINDS, THINKING_LEVELS } from "@shared/types.ts";
-import { TASK_PRIORITIES, normalizeLabels } from "@shared/task.ts";
+import { TASK_PRIORITIES, normalizeLabels, taskKindAllowsBacklog } from "@shared/task.ts";
 import {
   SCHEDULE_DECISION_KINDS,
   SCHEDULE_EXECUTION_MODES,
@@ -123,7 +123,7 @@ function parseTemplate(raw: string): ScheduleTemplate | null {
   if (typeof t.intent !== "string") return null;
   if (typeof t.repoRoot !== "string" || t.repoRoot === "") return null;
   const kind = readPersistedEnum(TASK_KINDS, typeof t.kind === "string" ? t.kind : null);
-  if (kind === null) return null;
+  if (kind === null || !taskKindAllowsBacklog(kind)) return null;
   const agent = readPersistedEnum(AGENT_TYPES, typeof t.agent === "string" ? t.agent : null);
   if (agent === null) return null;
   // ABSENT and UNREADABLE are different answers, and collapsing them is a real data loss.

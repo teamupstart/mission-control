@@ -22252,6 +22252,9 @@ span.line-run-prov {
 .bl-kind-plan {
   color: var(--purple);
 }
+.bl-kind-chat {
+  color: var(--syntax-type);
+}
 /* "N repos" on a multi-repo backlog card. Same pill as the kind/agent chips beside it -
    it is one more fact about what this task IS, not a warning - and it sits before
    `.bl-added`, whose `margin-left: auto` keeps the timestamp on the right. */

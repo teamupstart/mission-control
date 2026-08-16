@@ -408,6 +408,23 @@ test("a template priority or effort from a newer build fails closed, it does not
   }
 });
 
+test("a persisted chat template is unreadable because schedules only produce backlog work", () => {
+  const s = mkSchedule();
+  const row = db
+    .openDb()
+    .prepare(`SELECT template_json AS t FROM mission_schedule_revisions WHERE schedule_id = ?`)
+    .get(s.id) as { t: string };
+  const template = { ...(JSON.parse(row.t) as Record<string, unknown>), kind: "chat" };
+  db.openDb()
+    .prepare(`UPDATE mission_schedule_revisions SET template_json = ? WHERE schedule_id = ?`)
+    .run(JSON.stringify(template), s.id);
+
+  const back = store.getSchedule(s.id, T0)!;
+  assert.equal(back.template, null);
+  assert.deepEqual(back.unreadable?.fields, ["template"]);
+  assert.equal(scheduleIsRunnable(back), false);
+});
+
 test("a template that simply set no priority or effort is ordinary, not unreadable", () => {
   // The other side of the same coin: absent must stay null, or every schedule created
   // without a priority would sit in attention for having answered the question honestly.

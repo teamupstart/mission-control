@@ -166,6 +166,9 @@ test("the editor distinguishes Save paused from Save & enable, and only offers l
   assert.match(html, /Future/);
   // The availability copy never promises on-time or asleep execution.
   assert.match(html, /No work runs while this laptop is asleep or powered off/);
+  assert.match(html, /<option value="ship" selected="">ship - deliver a change<\/option>/);
+  assert.match(html, /<option value="plan">plan - produce a reviewed plan<\/option>/);
+  assert.doesNotMatch(html, /<option value="chat"/);
 });
 
 test("editing sequences enable/pause to the safe side, and rolls back a failed save", () => {

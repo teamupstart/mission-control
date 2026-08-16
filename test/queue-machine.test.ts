@@ -722,6 +722,23 @@ test("5. a scout drain retires without a Straight-to-PR action", () => {
   assert.match(action.kind === "skip-wrapup" ? action.reason : "", /scout/);
 });
 
+test("5. a chat drain stays human-ended unless the task selected a Workflow", () => {
+  const chat = tick({
+    session: { task: mkTaskSummary({ kind: "chat", workflowId: null }) },
+    items: DRAINED(),
+    cfg: { wrapup: "pr", skipScoutWrapup: false, skipReviewArtifactWrapup: false },
+  });
+  assert.equal(chat.kind, "skip-wrapup");
+  assert.match(chat.kind === "skip-wrapup" ? chat.reason : "", /chat/);
+
+  const withWorkflow = tick({
+    session: { task: mkTaskSummary({ kind: "chat", workflowId: "workflow-review" }) },
+    items: DRAINED(),
+    cfg: { wrapup: "pr" },
+  });
+  assert.equal(withWorkflow.kind, "auto-wrapup");
+});
+
 test("5. disabled completion safeguards restore the configured queue action", () => {
   const scout = tick({
     session: { task: mkTaskSummary({ kind: "scout" }) },
@@ -762,6 +779,16 @@ test("5. blocked drains still wait for the session to settle before retiring", (
     cfg: { wrapup: "ask" },
   });
   assert.equal(artifactAction.kind, "none", "review-artifact outputs wait too");
+
+  const chatAction = tick({
+    session: {
+      task: mkTaskSummary({ kind: "chat", workflowId: null }),
+      lastActivity: NOW - 1,
+    },
+    items: DRAINED(),
+    cfg: { wrapup: "pr" },
+  });
+  assert.equal(chatAction.kind, "none", "chat retirement waits for settled idle too");
 });
 
 test("5. a review-artifact objective retires before even ask mode can claim a Workflow", () => {

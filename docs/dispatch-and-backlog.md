@@ -39,7 +39,7 @@ then hands over the ordinary form with the answers set and the caret in the task
 | Step | Choices | Keys |
 |---|---|---|
 | **Repo** | every repository in the workspace, seeded from the last dispatch | type to filter by repository name, <kbd>↑</kbd><kbd>↓</kbd> to move, <kbd>↵</kbd> to take the highlighted repository |
-| **Kind** | ship, scout, plan | <kbd>p</kbd>, <kbd>t</kbd>, <kbd>l</kbd>, arrows plus <kbd>↵</kbd>, or a position digit |
+| **Kind** | ship, scout, plan, chat | <kbd>p</kbd>, <kbd>t</kbd>, <kbd>l</kbd>, <kbd>c</kbd>, arrows plus <kbd>↵</kbd>, or a position digit |
 | **Harness** | Claude Code, Codex, Pi | <kbd>c</kbd>, <kbd>x</kbd>, <kbd>i</kbd>, arrows plus <kbd>↵</kbd>, or a position digit |
 | **After work** | dispatch default, None, or any active published Workflow | <kbd>d</kbd>, <kbd>n</kbd>, the printed Workflow letter, arrows plus <kbd>↵</kbd>, or a position digit |
 
@@ -83,7 +83,7 @@ successful **Dispatch now** or **Add to backlog** starts the next task with a fr
 **It is a different way to fill the form, never a second opinion about what a dispatch
 means.** Every answer is written through the same control the form offers, so the rules below
 still apply exactly as they are written - including the kind-to-after-work rule, which is why
-Kind is asked before After work: by the time that question is on screen a scout or a plan has
+Kind is asked before After work: by the time that question is on screen a scout, plan, or chat has
 already moved the selection to **None**, and the question says so - naming the kind you just
 chose - rather than silently landing there.
 
@@ -202,14 +202,26 @@ each new binding takes the newest immutable version shipped at the time (see
 form can override that choice for one task, including an explicit **None** that finishes
 without a Workflow.
 
-Choosing **scout** or **plan** under **Kind** moves that selection to **None** for you,
-because neither sets out to deliver a change and so neither has a diff for a review Workflow
+Choosing **scout**, **plan**, or **chat** under **Kind** moves that selection to **None** for
+you, because none sets out to deliver a change and so none has a diff for a review Workflow
 to run over. Switching back to **ship** hands back the exact choice the switch put aside, so
-the reversal loses nothing - including through both diffless kinds in a row, where the
+the reversal loses nothing, including through several diffless kinds in a row where the
 selection you started with is what comes back. It is a default rather than a lock: pick a
-Workflow after choosing scout or plan and it sticks, and a choice you make by hand is never
+Workflow after choosing one of those kinds and it sticks, and a choice you make by hand is never
 reverted by a later kind switch. This is a behavior of the dispatch form, so it applies to
 the kind you pick there and not to the inheriting paths below.
+
+**chat** starts a conversation rather than a delivery. The task box becomes **What would you
+like to talk about?**, and that opener is required and delivered exactly as written. A chat
+launches immediately from the manual single-agent Dispatch form. It cannot be added to the
+backlog, carry dependencies, be created by a Recurring Mission or task source, or be selected
+for an Ensemble member. Mission Control adds no task-kind prompt appendix, Mission MCP tool,
+artifact, or archive contract.
+
+With **After work** left at **None**, chat completion stays human-ended. Foreman can recognize
+that the agent has answered, but it does not offer or send an automatic completion action; the
+session stays live for later turns until you choose **Complete**. If you explicitly select a
+Workflow, that Workflow follows the same completion boundary and safeguards as other work.
 
 **scout** also changes what "finished" means for that task: a scout is asked, in its own
 prompt, to write one self-contained static page at `docs/reports/<slug>/report.html`
@@ -252,8 +264,8 @@ than holding it.
 
 Once the task has a session, this selection is frozen so the task row and
 the already-armed Workflow cannot disagree. MCP-created tasks, task-source sweeps, and
-Recurring Missions inherit the same machine default when they create an ordinary task,
-whatever their kind.
+Recurring Missions inherit the same machine default when they create an ordinary task of a
+kind those surfaces support.
 Internal Ensemble member and replacement tasks opt out because an Ensemble's optional
 Workflow belongs only at its final N-to-one handoff.
 
@@ -282,7 +294,7 @@ The new session then shows up on the grid like any other, with an **intent chip*
 task it is running. A terminal-runtime session stays out of the way until you click
 **Focus**; an Agent SDK session has no tab and offers **Continue in terminal** instead.
 Choose **Add to backlog** instead of **Dispatch now** to shelve a task without launching
-it yet.
+it yet. Chat is the exception: only **Dispatch now** is offered.
 
 That chip states only what the session's own name does not. A dispatch names the session
 after its task, so the title is usually already the heading above the chip and is not
@@ -290,7 +302,7 @@ repeated inside it; you see it there when the two differ, which is what an agent
 finished one task and taken another looks like. The **kind** is drawn for every kind except
 **ship** - `ship` is the default every dispatch, sweep, Recurring Mission and MCP call
 takes, so a badge on every card said nothing, and no badge now means `ship`. A kind you
-chose on purpose - **scout** or **plan** - is worth reading, so it is drawn.
+chose on purpose, including **scout**, **plan**, or **chat**, is worth reading, so it is drawn.
 
 Which means the chip is often not drawn at all, and that is the point rather than an
 omission: an ordinary running ship task on the session it named has nothing to add to the
@@ -309,7 +321,8 @@ you edit a shelved task or the draft already holds one of them. Dependencies are
 with a grouped **+ Add dependency** picker rather than a multi-select listbox, and an
 unmet dependency raises an amber note beside them as well as renaming the primary button.
 The **Single agent / Ensemble** toggle sits in the modal header, since it reshapes the
-whole dialog.
+whole dialog. Chat calls the fold **Task details** and omits dependencies because they would
+turn an immediate conversation into backlog work.
 
 **Dependencies** can be selected from tasks already in the backlog and from active
 sessions. They are durable scheduling constraints, not notes: if any selected dependency

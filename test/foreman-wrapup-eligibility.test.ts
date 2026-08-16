@@ -6,6 +6,7 @@ import { automaticWrapupBlock } from "../src/server/foreman/wrapup-eligibility.t
 function block(over: Partial<Parameters<typeof automaticWrapupBlock>[0]> = {}) {
   return automaticWrapupBlock({
     taskKind: "ship",
+    workflowId: null,
     objective: "Implement retry handling in the uploader.",
     changedPaths: null,
     skipScoutWrapup: true,
@@ -22,6 +23,24 @@ test("scout is an absolute automatic-wrap-up block", () => {
   });
 
   assert.equal(result?.kind, "scout");
+});
+
+test("chat stays human-ended unless an explicit Workflow is selected", () => {
+  assert.equal(block({ taskKind: "chat", workflowId: null })?.kind, "chat");
+  assert.equal(
+    block({ taskKind: "chat", workflowId: "workflow-review" }),
+    null,
+    "an explicitly selected Workflow follows ordinary completion policy",
+  );
+  assert.equal(
+    block({
+      taskKind: "chat",
+      workflowId: "workflow-review",
+      objective: "Output: mockups",
+    })?.kind,
+    "review_artifact",
+    "the Workflow opt-in still passes through the ordinary artifact safeguard",
+  );
 });
 
 test("the scout and review-artifact safeguards can be disabled independently", () => {

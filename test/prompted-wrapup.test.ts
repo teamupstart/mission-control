@@ -187,6 +187,22 @@ test("a prompted scout episode retires without verification or automatic shippin
   assert.match(r.kind === "retire" ? r.why : "", /scout/);
 });
 
+test("a prompted chat retires before verification unless it selected a Workflow", () => {
+  const chat = decide({
+    session: mkSession({ task: mkTaskSummary({ kind: "chat", workflowId: null }) }),
+    cfg: { ...CFG, skipScoutWrapup: false, skipReviewArtifactWrapup: false },
+  });
+  assert.equal(chat.kind, "retire");
+  assert.match(chat.kind === "retire" ? chat.why : "", /chat/);
+
+  const withWorkflow = decide({
+    session: mkSession({
+      task: mkTaskSummary({ kind: "chat", workflowId: "workflow-review" }),
+    }),
+  });
+  assert.equal(withWorkflow.kind, "check");
+});
+
 test("a prompted mockup output retires without a Workflow or PR action", () => {
   const objective = "Explore the navigation layout.\n\nOutput: mockups";
   const r = decide({ intent: mkIntent({ objective }) });

@@ -58,13 +58,14 @@ export interface TaskContractInputs {
 /**
  * The appendix each kind contributes, or null when it contributes none.
  *
- * `Record<TaskKind, …>` is the enforcement, matching `TASK_KIND_INFO`: a fourth kind does not
+ * `Record<TaskKind, …>` is the enforcement, matching `TASK_KIND_INFO`: a new kind does not
  * compile until it has said what its delivery contract is, including saying it is nothing.
  */
 const KIND_CONTRACT: Record<TaskKind, (task: Task, inputs: TaskContractInputs) => string | null> = {
   ship: () => null,
   scout: (task, inputs) => scoutReportAppendix(scoutRepoSlots(task, inputs.fallbackRoot ?? null)),
   plan: (task, inputs) => planContractAppendix(requirePlanSkills(task, inputs)),
+  chat: () => null,
 };
 
 /**

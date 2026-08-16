@@ -15,8 +15,9 @@ what is active, what needs a decision, and what is ready for the next step.
 
 ## Dispatch with context
 
-Start a task in the right repository, choose its harness and runtime, and leave it attached
-to the backlog and workflow that will carry it through review.
+Start a task in the right repository, choose its harness and runtime, and decide whether the
+agent should ship, investigate, plan, or simply talk through something with you. Backlog and
+review Workflow controls stay available only where that kind of work supports them.
 
 <kbd>+</kbd> starts the guided pass by default. It asks for the repository, kind, harness and
 what runs after the work, then hands over the same dispatch form with those answers set and
@@ -29,6 +30,11 @@ same task without advancing the pass.
 **Guided** in the modal header and **Settings → Dispatch** control the preference, which ⌘K
 also finds by name. See
 [the guided pass](docs/dispatch-and-backlog.md#the-guided-pass).
+
+Choose **chat** for an open-ended conversation. It requires an opening message and launches
+immediately from Dispatch, with no backlog, dependencies, generated artifact, archive, or
+automatic after-work action. The session stays yours to continue and complete unless you
+explicitly choose a Workflow for that chat.
 
 A task can attach more than one repository. Dispatch it and you get **one** agent session
 holding all of them in shared context: its working directory is the primary repo's worktree,

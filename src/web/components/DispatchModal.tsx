@@ -14,11 +14,13 @@ import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import type { HarnessesConfig, TaskDependencyInput } from "@shared/protocol.ts";
 import { withAttachments } from "@shared/attachments.ts";
 import {
+  BACKLOG_TASK_KINDS,
   MAX_LABELS,
   PRIORITY_LABELS,
   TASK_KIND_INFO,
   TASK_PRIORITIES,
   hasReviewableDiff,
+  taskKindAllowsBacklog,
 } from "@shared/task.ts";
 import { modelChoicesFor } from "@shared/model.ts";
 import type { EnvironmentCheckView } from "@shared/environment-checks.ts";
@@ -148,6 +150,7 @@ function repoCollision(d: DispatchDraft): string | null {
  */
 const NO_STASH = Symbol("no-stash");
 type StashedWorkflowId = DispatchDraft["workflowId"] | typeof NO_STASH;
+type StashedDependencies = DispatchDraft["dependencies"] | typeof NO_STASH;
 
 /**
  * True when a draft holds nothing worth keeping - so "Clear" has nothing to do.
@@ -734,6 +737,9 @@ function DispatchModal({
   const editing = mode.kind === "edit" ? mode.task : null;
   // Ensemble mode is a new-dispatch-only concern, and only when the layer wired the state up.
   const ensembleMode = !editing && launchMode === "ensemble" && ensembleDraft !== undefined;
+  const availableTaskKinds =
+    mode.kind === "new" && !ensembleMode ? TASK_KINDS : BACKLOG_TASK_KINDS;
+  const backlogCompatible = taskKindAllowsBacklog(draft.kind);
   const [repos, setRepos] = useState<string[]>([]);
   const [reposLoading, setReposLoading] = useState(true);
   // The attach-a-repo control is a two-step (open, then pick) rather than a combobox that
@@ -1024,15 +1030,16 @@ function DispatchModal({
    * selection alone rather than inventing one.
    */
   const stashedWorkflowId = useRef<StashedWorkflowId>(NO_STASH);
+  const stashedDependencies = useRef<StashedDependencies>(NO_STASH);
 
   /**
    * The after-work choice a kind switch carries with it, as a patch fragment.
    *
    * Kind carries this the same way switching harness carries model and effort: the
-   * dependent choice belongs to the kind now selected, not the one it replaced. A scout
-   * investigates and reports and a plan proposes a route - neither sets out to produce a
-   * delivered change to hand off - so choosing either moves the selection to None, which
-   * would otherwise run a review Workflow over a task that has no diff to review.
+   * dependent choice belongs to the kind now selected, not the one it replaced. Scout,
+   * plan, and chat do not set out to produce a delivered change to hand off, so choosing
+   * any of them moves the selection to None. Otherwise a review Workflow would run over a
+   * task that has no planned diff to review.
    *
    * Switching back HANDS BACK the exact choice that was put aside, rather than recomputing
    * the machine default. That is what keeps the reversal lossless, and it is deliberately
@@ -1068,6 +1075,26 @@ function DispatchModal({
     // chosen for themselves. Leave the selection exactly as it stands rather than
     // inventing one: `taskUpdatePatch` reads an omitted key as "leave it alone".
     return stashed === NO_STASH ? {} : { workflowId: stashed };
+  }
+
+  /** Clear chat's scheduling inputs while preserving a reversible, modal-local copy. */
+  function dependenciesForKind(kind: TaskKind): Partial<DispatchDraft> {
+    if (kind === draft.kind) return {};
+    if (!taskKindAllowsBacklog(kind)) {
+      stashedDependencies.current = draft.dependencies;
+      return { dependencies: [] };
+    }
+    if (!taskKindAllowsBacklog(draft.kind)) {
+      const stashed = stashedDependencies.current;
+      stashedDependencies.current = NO_STASH;
+      return stashed === NO_STASH ? {} : { dependencies: stashed };
+    }
+    return {};
+  }
+
+  function updateDependencies(dependencies: DispatchDraft["dependencies"]): void {
+    stashedDependencies.current = NO_STASH;
+    update({ dependencies });
   }
 
   /**
@@ -1192,15 +1219,18 @@ function DispatchModal({
     // and arrows through it, so a second list here would be a copy of a control the operator is
     // already looking at. See `answeredBy` on the step.
     repo: [],
-    kind: TASK_KINDS.map((k) => ({
+    kind: availableTaskKinds.map((k) => ({
       value: k,
       label: TASK_KIND_INFO[k].label,
       sub: TASK_KIND_INFO[k].blurb,
       hotkey: GUIDED_KIND_KEYS[k],
-      // Byte-identical to the Kind `<select>`'s own handler, `afterWorkForKind` and all.
-      // The diffless-kind-clears-after-work rule has one implementation and the pass
-      // calls it - which is why adding `plan` needed no edit on this side at all.
-      commit: () => update({ kind: k, ...afterWorkForKind(k) }),
+      // Byte-identical to the Kind `<select>`'s own handler, including both reversible
+      // kind-dependent stashes. The pass must never become a second meaning for Kind.
+      commit: () => update({
+        kind: k,
+        ...afterWorkForKind(k),
+        ...dependenciesForKind(k),
+      }),
     })),
     harness: AGENT_TYPES.map((a) => ({
       value: a,
@@ -1748,7 +1778,9 @@ function DispatchModal({
       drop.uploading ||
       repoSetBlocked ||
       (launchesNow && selectedWorkflowBlocked) ||
-      Boolean(editing && dispatchNow && selectedDependenciesUnmet)
+      Boolean(editing && dispatchNow && selectedDependenciesUnmet) ||
+      (!backlogCompatible &&
+        (!dispatchNow || editing !== null || ensembleMode || draft.dependencies.length > 0))
     ) return;
     setPending(dispatchNow ? "dispatch" : "shelve");
     setError(null);
@@ -2034,7 +2066,7 @@ function DispatchModal({
   const taskField = (
     <label className={`field${guidedDim}`}>
       <span className="field-label">
-        Task{" "}
+        {draft.kind === "chat" && !editing ? "What would you like to talk about?" : "Task"}{" "}
         <span className="field-hint">
           {ensembleMode
             ? "every candidate gets this brief - drop or paste images to attach"
@@ -2045,7 +2077,12 @@ function DispatchModal({
         <textarea
           ref={intentRef}
           className="field-input field-textarea"
-          placeholder="What should this agent do?"
+          placeholder={
+            draft.kind === "chat" && !editing
+              ? "Start the conversation"
+              : "What should this agent do?"
+          }
+          required
           rows={5}
           value={draft.intent}
           onChange={(e) => update({ intent: e.target.value })}
@@ -2064,9 +2101,13 @@ function DispatchModal({
     draft.priority ? PRIORITY_LABELS[draft.priority] : "no priority",
     labels.length > 0 ? labels.join(", ") : "no labels",
     draft.title.trim() ? "titled" : "title summarized",
-    dependencyCount > 0
-      ? `${dependencyCount} ${dependencyCount === 1 ? "dependency" : "dependencies"}`
-      : "no dependencies",
+    ...(backlogCompatible
+      ? [
+          dependencyCount > 0
+            ? `${dependencyCount} ${dependencyCount === 1 ? "dependency" : "dependencies"}`
+            : "no dependencies",
+        ]
+      : []),
   ].join(" · ");
 
   /** Dependency choices not already picked, for the add control's grouped options. */
@@ -2312,13 +2353,17 @@ function DispatchModal({
                     onChange={(e) => {
                       const kind = e.target.value as TaskKind;
                       if (guidedTakeValue("kind", kind)) return;
-                      update({ kind, ...afterWorkForKind(kind) });
+                      update({
+                        kind,
+                        ...afterWorkForKind(kind),
+                        ...dependenciesForKind(kind),
+                      });
                     }}
                   >
                     {/* Driven off the tuple for the reason the harness select above it is:
                         a hand-written pair goes stale silently, and the array's order is
                         the order every surface that offers the choice lists it in. */}
-                    {TASK_KINDS.map((k) => (
+                    {availableTaskKinds.map((k) => (
                       <option key={k} value={k}>
                         {TASK_KIND_INFO[k].label}
                       </option>
@@ -2471,8 +2516,12 @@ function DispatchModal({
         {selectedWorkflowBlocked && (
           <span className={`dispatch-workflow-warning${guidedDim}`}>
             {!foremanEnabled
-              ? "You can add this task to the backlog, but turn on Foreman before dispatching it—or choose None."
-              : `You can add this task to the backlog, but ${AGENT_IDENTITY[draft.agent].label} cannot detect the completion boundary; choose another agent or None before dispatching.`}
+              ? backlogCompatible
+                ? "You can add this task to the backlog, but turn on Foreman before dispatching it, or choose None."
+                : "Turn on Foreman before dispatching this chat, or choose None."
+              : backlogCompatible
+                ? `You can add this task to the backlog, but ${AGENT_IDENTITY[draft.agent].label} cannot detect the completion boundary; choose another agent or None before dispatching.`
+                : `${AGENT_IDENTITY[draft.agent].label} cannot detect the completion boundary; choose another agent or None before dispatching this chat.`}
           </span>
         )}
         </>
@@ -2486,8 +2535,10 @@ function DispatchModal({
             <Tooltip
               label={
                 detailsOpen
-                  ? "Collapse the backlog details"
-                  : "Priority, labels, title and dependencies"
+                  ? `Collapse the ${backlogCompatible ? "backlog" : "task"} details`
+                  : backlogCompatible
+                    ? "Priority, labels, title and dependencies"
+                    : "Priority, labels and title"
               }
             >
               <button
@@ -2496,7 +2547,9 @@ function DispatchModal({
                 aria-expanded={detailsOpen}
                 onClick={() => setDetailsOpen((open) => !open)}
               >
-                <span className="dispatch-more-title">Backlog details</span>
+                <span className="dispatch-more-title">
+                  {backlogCompatible ? "Backlog details" : "Task details"}
+                </span>
                 {!detailsOpen && <span className="dispatch-more-summary">{backlogSummary}</span>}
                 <span className="dispatch-more-chev" aria-hidden>
                   {detailsOpen ? "▴" : "▾"}
@@ -2555,7 +2608,7 @@ function DispatchModal({
 
                 {titleField}
 
-                <div className="field">
+                {backlogCompatible && <div className="field">
                   <span className="field-label">
                     Dependencies{" "}
                     <span className="field-hint">each waits for its merged PR</span>
@@ -2576,11 +2629,11 @@ function DispatchModal({
                               className="dep-chip-x"
                               aria-label={`Remove dependency: ${label}`}
                               onClick={() =>
-                                update({
-                                  dependencies: draft.dependencies.filter(
+                                updateDependencies(
+                                  draft.dependencies.filter(
                                     (candidate) => dependencyKey(candidate) !== key,
                                   ),
-                                })
+                                )
                               }
                             >
                               ✕
@@ -2596,7 +2649,9 @@ function DispatchModal({
                         aria-label="Add dependency"
                         onChange={(event) => {
                           const option = dependencyByKey.get(event.target.value);
-                          if (option) update({ dependencies: [...draft.dependencies, option.input] });
+                          if (option) {
+                            updateDependencies([...draft.dependencies, option.input]);
+                          }
                         }}
                       >
                         <option value="">+ Add dependency</option>
@@ -2628,7 +2683,7 @@ function DispatchModal({
                       PRs merge.
                     </span>
                   )}
-                </div>
+                </div>}
               </div>
             )}
           </div>
@@ -2685,7 +2740,7 @@ function DispatchModal({
         )}
         {/* Ensemble launches immediately and owns its own member backlog wave, so "Add to
             backlog" makes no sense there; its Review/Launch control owns the primary slot. */}
-        {!ensembleMode && (
+        {!ensembleMode && backlogCompatible && (
           <Tooltip label={editing ? "Keep it in the backlog" : "Shelve it without launching an agent"}>
             <button
               className="btn btn-ghost"

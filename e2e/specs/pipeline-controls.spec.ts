@@ -23,7 +23,7 @@ import { pipelineRepoKey } from "../../src/shared/pipeline.ts";
  * marker, the projection re-read it and the row change under an operator who never reloaded.
  * That chain is the whole feature, and every link in it belongs to a different program.
  *
- * Seven claims:
+ * Eight claims:
  *
  *  1. A verb pressed in the attention inbox reaches the engine's own CLI, in the argv and the
  *     working directory the engine requires - and the row leaves the inbox when the halt it
@@ -37,6 +37,7 @@ import { pipelineRepoKey } from "../../src/shared/pipeline.ts";
  *  6. A verb the engine did not confirm shows the command that was run and what the engine
  *     printed, and stays on screen until it is dismissed.
  *  7. An artifact path that leaves the feature's worktree is refused, and no terminal opens.
+ *  8. A verb that moved the engine and did not say so still moves the daemon chip, now.
  *
  * No model tokens: nothing here dispatches an agent, and the only engine is the fake
  * `conduct-ts` that `e2e/fixtures/conductor.ts` installs - which writes the same marker files
@@ -440,6 +441,51 @@ test("a verb the engine did not confirm shows the command and its own words, unt
   await expect(flash).toBeVisible();
   await flash.getByRole("button", { name: "Dismiss" }).click();
   await expect(reader.locator(".pipelines-flash")).toHaveCount(0);
+});
+
+test("a verb that moved the engine and did not confirm it still moves the chip, now", async ({
+  dashboard,
+  daemon,
+}) => {
+  seedConductorRun(daemon.repo, "add-widgets", {
+    steps: { worktree: "done", build: "in_progress" },
+    lastStep: "build",
+  });
+  seedConductorDaemon(daemon.repo, { pid: process.pid });
+  await observe(daemon, 1);
+
+  const repoKey = encodeURIComponent(pipelineRepoKey("ai-conductor", daemon.repo));
+  await dashboard.goto(`${daemon.baseURL}/#/runs/pipeline/${repoKey}/add-widgets`);
+  const rail = dashboard.locator("aside.pipelines-rail");
+  const reader = dashboard.locator("div.pipelines-reader");
+  await expect(rail.getByText("daemon running", { exact: true })).toBeVisible();
+
+  // Half a verb: the engine writes PAUSED and then says the wrong thing about it. That is not
+  // a contrived state - a verb's confirmation and its side effect are not one atomic act, and
+  // conductor prints its park line before work that can still throw - and it is the only case
+  // where the daemon's answer and the daemon's own files disagree.
+  writeFileSync(join(daemon.repo, ".daemon", "HALFWAY"), "");
+
+  // Anchored on a poll landing, which is what makes the timing below an assertion rather than
+  // a coincidence: the rail re-reads this route every four seconds, so waiting for one to
+  // arrive puts the next one a full four seconds out. Anything the chip does inside the window
+  // afterwards came from the refresh this verb fired, not from the cadence.
+  await dashboard.waitForResponse(
+    (response) => response.url().includes("/api/pipelines/repos") && response.request().method() === "GET",
+  );
+  await reader.getByRole("button", { name: "Pause daemon" }).click();
+
+  // Reported honestly - nothing here claims the pause worked...
+  await expect(reader.locator(".pipelines-flash.is-error")).toContainText(
+    "exited cleanly without confirming",
+  );
+  // ...and yet it did, which is exactly why the surface cannot stop reading after a failure.
+  expect(existsSync(join(daemon.repo, ".daemon", "PAUSED"))).toBe(true);
+  await expect(rail.getByText("daemon paused", { exact: true })).toBeVisible({ timeout: 2500 });
+  // The verbs move with it: an operator looking at a paused daemon is offered Resume, with the
+  // failure still on screen beside it.
+  await expect(reader.getByRole("button", { name: "Resume daemon" })).toBeVisible({ timeout: 2500 });
+  await expect(reader.locator(".pipelines-flash.is-error")).toBeVisible();
 });
 
 test("an artifact path that leaves the feature's worktree is refused, and opens nothing", async ({

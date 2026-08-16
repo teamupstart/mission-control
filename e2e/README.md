@@ -1193,11 +1193,14 @@ projection pass read it, not because a fixture told the dashboard what to think.
 consoles land in the same cmux record `continue-in-terminal-mode.spec.ts` reads, which is
 where the reseal ceremony's argv and its hold-open wrapper are visible.
 
-It also refuses on demand. Drop a `.daemon/REFUSE` file and every verb answers the way the
-real engine answers an invocation its argv detectors rejected - the generic sentence about the
-`inline` subcommand, on stdout, behind EXIT CODE 0, having done none of the work. That is the
-case the whole stdout posture exists for, so the spec that presses a verb against it is
-asserting on the engine's documented shape rather than on a failure mode the fixture invented.
+It also misbehaves on demand, in the two shapes that matter. Drop a `.daemon/REFUSE` file and
+every verb answers the way the real engine answers an invocation its argv detectors rejected -
+the generic sentence about the `inline` subcommand, on stdout, behind EXIT CODE 0, having done
+none of the work. Drop `.daemon/HALFWAY` instead and a verb DOES its work and then says that
+same wrong thing about it, which is what any verb looks like when its confirmation and its
+side effect are not one atomic act. Both are the engine's documented shape rather than a
+failure mode the fixture invented, and the second is the only way to see the surface re-read a
+repository whose state moved without anyone being told.
 
 `e2e/.artifacts/pipeline-controls/` carries nine frames behind `MC_E2E_EVIDENCE`: the inbox
 row with its verbs and the same row drained, the paused daemon chip, the grant form with

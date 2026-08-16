@@ -201,10 +201,18 @@ export function PipelineActions({
       // our own words, and showing both invites the reader to look for the difference.
       ...(result.ok ? {} : { command: result.command, output: result.output }),
     });
+    // Re-read what the host polls WHATEVER the engine said, and the ordering is the point.
+    // The daemon re-projects the repository on a failed verb too, deliberately: a verb that
+    // reported no confirmation may still have done part of its work - `daemon pause` writes
+    // PAUSED before anything after it can go wrong, and conductor prints its park line before
+    // a counter reset that can throw. Skipping the refresh on failure would leave the chip
+    // disagreeing with the projection that same request just wrote, for up to four seconds.
+    onRefresh?.();
+    // What a failure does NOT do is clear the operator's own words or fold the form away:
+    // both are the input they would have to retype to try again.
     if (!result.ok) return;
     if (info.needsReason) setGrantReason("");
     setForm(null);
-    onRefresh?.();
   }
 
   async function openConsole(console_: PipelineConsole, backend: TerminalBackendId): Promise<void> {

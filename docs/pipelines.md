@@ -232,8 +232,11 @@ Four things follow that are worth knowing before pressing anything:
   never supplies a default sentence.
 - **A verb re-reads the repository immediately.** Every verb changes something the projection
   reads from files, so the pass runs in the same request and the row, the rail's daemon chip
-  and the inbox all move without a reload. It runs even when the verb *failed*, because a verb
-  that reported no confirmation may still have done part of its work.
+  and the inbox all move without a reload. It runs even when the verb *failed*, on both sides -
+  the daemon re-projects and the surface re-reads the daemon chip it polls - because a verb
+  that reported no confirmation may still have done part of its work. A failure that left the
+  chip on the old state until its next poll would be the surface disagreeing with the
+  projection the same request just wrote.
 
 An inbox row offers only what its halt's class calls for - a grant and an unpark for
 `needs-human`, an unpark for `mechanical`, the reseal ceremony for `protected-artifact` - and

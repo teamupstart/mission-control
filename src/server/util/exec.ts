@@ -64,6 +64,8 @@ export interface RunResult {
   stdout: string;
   stderr: string;
   code: number | null;
+  /** PID of the child that produced this completed result, when a child was spawned. */
+  childPid?: number | null;
   /**
    * The child DIED rather than answering, so whether the command had any EFFECT is
    * unknown. A false value covers both a command-reported failure and a positive pre-spawn
@@ -131,6 +133,7 @@ export function run(
 ): Promise<RunResult> {
   return new Promise((resolve) => {
     let child: ReturnType<typeof execFile>;
+    let childPid: number | null = null;
     try {
       child = execFile(
         bin,
@@ -179,11 +182,13 @@ export function run(
               ? (err.message ?? "maxBuffer exceeded")
               : (stderr ?? "") || (spawnRefused ? err.message : ""),
             code,
+            childPid,
             outcomeUnknown,
             overflowed,
           });
         },
       );
+      childPid = child.pid ?? null;
     } catch (err) {
       // `execFile` reports a non-existent binary through the CALLBACK, but an argv the
       // kernel will not take is thrown SYNCHRONOUSLY out of `spawn` - and a throw inside
@@ -205,6 +210,7 @@ export function run(
         stdout: "",
         stderr: err instanceof Error ? err.message : String(err),
         code: 1,
+        childPid: null,
         outcomeUnknown: false,
         overflowed: false,
       });

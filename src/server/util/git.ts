@@ -1,5 +1,7 @@
+import { createHash } from "node:crypto";
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { WORKTREE_POOLS_DIR } from "../config.ts";
 
 export interface GitInfo {
   branch: string | null;
@@ -92,6 +94,53 @@ export function mainRepoRoot(cwd: string | null): string | null {
   // relocated git dir) has no worktree we can name, so don't guess one.
   if (basename(common) !== ".git") return null;
   return realPath(dirname(common));
+}
+
+/** Canonical identity used by the daemon-owned native worktree allocator. */
+export interface WorktreeRepositoryIdentity {
+  /** Physical root of the main checkout that owns the linked-worktree family. */
+  mainCheckoutRoot: string;
+  /** Physical Git common directory. This, and only this, is native pool identity. */
+  gitCommonDirectory: string;
+  /** Human-readable repository name, derived from the main checkout directory. */
+  repositoryName: string;
+  /** Stable native pool directory under WORKTREE_POOLS_DIR. */
+  poolPath: string;
+}
+
+/**
+ * Resolve a path to a provable non-bare main checkout and its physical Git common dir.
+ *
+ * A main checkout and every linked worktree resolve identically. Separate clones of one
+ * remote do not, because their common directories differ. Bare and relocated-Git-dir
+ * repositories return null: neither has the ordinary `<main>/.git` ownership relationship
+ * required before the allocator may create or remove linked worktrees.
+ */
+export function worktreeRepositoryIdentity(
+  cwd: string | null,
+  poolsDirectory = WORKTREE_POOLS_DIR,
+): WorktreeRepositoryIdentity | null {
+  if (!cwd) return null;
+  const found = resolveGitDir(cwd);
+  if (!found) return null;
+  const common = realPath(commonDir(found.gitDir));
+  if (basename(common) !== ".git") return null;
+  const mainCheckoutRoot = realPath(dirname(common));
+  const mainDotGit = realPath(join(mainCheckoutRoot, ".git"));
+  if (mainDotGit !== common) return null;
+  const repositoryName = basename(mainCheckoutRoot);
+  if (!repositoryName) return null;
+  const digest = createHash("sha256").update(common).digest("hex").slice(0, 16);
+  // The leaf need not exist yet, but its state-directory parent does. Physicalize that
+  // parent now so the durable slot path later compares byte-for-byte with realpath and
+  // Git's porcelain output (notably /var versus /private/var on macOS).
+  const physicalPoolsDirectory = join(realPath(dirname(poolsDirectory)), basename(poolsDirectory));
+  return {
+    mainCheckoutRoot,
+    gitCommonDirectory: common,
+    repositoryName,
+    poolPath: join(physicalPoolsDirectory, `${repositoryName}-${digest}`),
+  };
 }
 
 /**

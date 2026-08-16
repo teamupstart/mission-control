@@ -255,12 +255,26 @@ export function daemonOwnedPids(procs: Proc[], daemonPid: number = process.pid):
  * Snapshot every process on the system with pid/ppid/tty/start and full argv.
  *
  * Two `ps` passes because macOS `ps` has no field delimiter: pass A puts the
- * multi-token `lstart` at the tail (pid ppid tty are single tokens before it);
+ * multi-token `lstart` at the tail (uid, pid, ppid, state, and tty are single tokens before it);
  * pass B puts the multi-token `command` at the tail. We join on pid.
  */
-export async function listProcesses(): Promise<Proc[]> {
+export interface ProcessSnapshot {
+  processes: Proc[];
+  /** Non-null when either system-wide ps read did not produce a complete answer. */
+  unknownReason: string | null;
+  /** Non-zombie PIDs owned by the daemon's effective user, whose cwd it can inspect. */
+  cwdScopePids: number[];
+  /** Completed ps helpers that may appear in their own system-wide snapshot. */
+  completedCollectorPids: number[];
+}
+
+/**
+ * The process snapshot plus the health of the two underlying reads. Discovery may use the
+ * partial rows, but destructive worktree decisions must treat `unknownReason` as a refusal.
+ */
+export async function listProcessesSnapshot(): Promise<ProcessSnapshot> {
   const [a, b] = await Promise.all([
-    run("ps", ["-Ao", "pid=,ppid=,tty=,lstart="]),
+    run("ps", ["-Ao", "uid=,pid=,ppid=,state=,tty=,lstart="]),
     run("ps", ["-Ao", "pid=,command="]),
   ]);
 
@@ -272,23 +286,46 @@ export async function listProcesses(): Promise<Proc[]> {
   }
 
   const procs: Proc[] = [];
+  const cwdScopePids: number[] = [];
+  const effectiveUid = typeof process.geteuid === "function" ? process.geteuid() : null;
   for (const line of a.stdout.split("\n")) {
-    // pid ppid tty <lstart: Www Mmm DD HH:MM:SS YYYY>
-    const m = line.match(/^\s*(\d+)\s+(\d+)\s+(\S+)\s+(.*)$/);
+    // uid pid ppid state tty <lstart: Www Mmm DD HH:MM:SS YYYY>
+    const m = line.match(/^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S+)\s+(.*)$/);
     if (!m) continue;
-    const pid = Number(m[1]);
+    const uid = Number(m[1]);
+    const pid = Number(m[2]);
+    const state = m[4] ?? "";
+    if (effectiveUid !== null && uid === effectiveUid && !state.startsWith("Z")) cwdScopePids.push(pid);
     const command = commands.get(pid) ?? "";
     const match = matchAgent(command);
     procs.push({
       pid,
-      ppid: Number(m[2]),
-      tty: normTty(m[3] ?? ""),
-      startRaw: (m[4] ?? "").trim(),
-      startMs: parseStart((m[4] ?? "").trim()),
+      ppid: Number(m[3]),
+      tty: normTty(m[5] ?? ""),
+      startRaw: (m[6] ?? "").trim(),
+      startMs: parseStart((m[6] ?? "").trim()),
       command,
       agent: match?.agent ?? null,
       agentNative: match?.native ?? false,
     });
   }
-  return procs;
+  const failed = [a, b].find(
+    (result) => result.code !== 0 || result.outcomeUnknown || result.overflowed,
+  );
+  return {
+    processes: procs,
+    unknownReason: failed
+      ? `process listing failed: ${failed.stderr.trim() || `exit ${failed.code}`}`
+      : effectiveUid === null
+        ? "process listing failed: effective user identity is unavailable"
+        : null,
+    cwdScopePids,
+    completedCollectorPids: [a.childPid, b.childPid].filter(
+      (pid): pid is number => Number.isInteger(pid) && (pid ?? 0) > 0,
+    ),
+  };
+}
+
+export async function listProcesses(): Promise<Proc[]> {
+  return (await listProcessesSnapshot()).processes;
 }

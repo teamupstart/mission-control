@@ -837,6 +837,67 @@ export function openDb(): DatabaseSync {
       value TEXT NOT NULL
     );
 
+    -- Operational identity for daemon-owned native worktree pools. Policy does not live
+    -- here: app_config.worktrees is the sole source for enablement, capacity and setup argv.
+    -- The physical Git common directory is the pool identity, not a remote URL, so two local
+    -- clones of one remote can never share Git worktree bookkeeping.
+    CREATE TABLE IF NOT EXISTS worktree_pools (
+      id                     TEXT    NOT NULL PRIMARY KEY,
+      git_common_dir         TEXT    NOT NULL,
+      main_checkout_root     TEXT    NOT NULL,
+      pool_path              TEXT    NOT NULL,
+      ordinal_high_water     INTEGER NOT NULL DEFAULT 0,
+      last_reconciled_at     INTEGER,
+      reconciliation_error  TEXT,
+      created_at             INTEGER NOT NULL,
+      updated_at             INTEGER NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_worktree_pools_common_dir
+      ON worktree_pools(git_common_dir);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_worktree_pools_path
+      ON worktree_pools(pool_path);
+
+    -- One durable native slot. State identifiers are intentionally unconstrained TEXT:
+    -- their vocabulary is append-only, and adding a later state must not require rebuilding
+    -- an operational table while worktrees are live.
+    --
+    -- Every filesystem mutation is preceded by provisioning/returning/pruning. The version
+    -- rises on every state transition and is part of the release compare-and-swap. Active
+    -- identity is cleared only after a proven return; last-released identity closes the
+    -- crash window before a domain owner clears its own row.
+    CREATE TABLE IF NOT EXISTS worktree_slots (
+      id                        TEXT    NOT NULL PRIMARY KEY,
+      pool_id                   TEXT    NOT NULL,
+      ordinal                   INTEGER NOT NULL,
+      path                      TEXT    NOT NULL,
+      state                     TEXT    NOT NULL,
+      version                   INTEGER NOT NULL,
+      requested_head_sha        TEXT,
+      current_head_sha          TEXT,
+      active_lease_id           TEXT,
+      active_owner_kind         TEXT,
+      active_owner_key          TEXT,
+      leased_at                 INTEGER,
+      last_released_lease_id    TEXT,
+      last_released_owner_kind  TEXT,
+      last_released_owner_key   TEXT,
+      last_used_at              INTEGER,
+      quarantine_reason         TEXT,
+      last_error                TEXT,
+      created_at                INTEGER NOT NULL,
+      updated_at                INTEGER NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_worktree_slots_pool_ordinal
+      ON worktree_slots(pool_id, ordinal);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_worktree_slots_path
+      ON worktree_slots(path);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_worktree_slots_active_lease
+      ON worktree_slots(active_lease_id) WHERE active_lease_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_worktree_slots_pool_state
+      ON worktree_slots(pool_id, state, ordinal);
+    CREATE INDEX IF NOT EXISTS idx_worktree_slots_last_release
+      ON worktree_slots(last_released_lease_id);
+
     -- Reusable workflow judges. guidance_md is exact operator-authored Markdown: no
     -- normalized copy exists and every write names this column directly.
     --
@@ -2513,6 +2574,8 @@ function inFlightIndexSql(): string {
  * idempotent - this block runs on every start, not just on an upgrade.
  */
 function migrate(d: DatabaseSync): void {
+  migrateWorktreeOrdinalHighWater(d);
+
   // Which file each pipeline run's events offset indexes into. Added after `pipeline_runs`
   // shipped, so an existing row carries the empty-string default - which is exact: those
   // rows were written by a build that recorded no identity. The tail treats an empty
@@ -3192,6 +3255,35 @@ function rebuildInFlightIndexIfStale(d: DatabaseSync): void {
       "[db] could not rebuild one_inflight_per_queue (rows may already violate " +
         `single-flight); keeping the previous index: ${String(err)}`,
     );
+  }
+}
+
+/**
+ * Preserve every native slot ordinal ever issued, including after its row is pruned.
+ *
+ * The backfill is intentionally idempotent rather than conditional on ADD COLUMN. A build
+ * interrupted between an older branch adding the column and filling it can therefore recover,
+ * while MAX never lowers a high-water mark after the highest live row has been deleted.
+ */
+function migrateWorktreeOrdinalHighWater(d: DatabaseSync): void {
+  d.exec("BEGIN IMMEDIATE;");
+  try {
+    addColumn(d, "worktree_pools", "ordinal_high_water", "INTEGER NOT NULL DEFAULT 0");
+    d.exec(`
+      UPDATE worktree_pools
+         SET ordinal_high_water = MAX(
+           ordinal_high_water,
+           COALESCE((
+             SELECT MAX(s.ordinal) FROM worktree_slots s WHERE s.pool_id = worktree_pools.id
+           ), 0)
+         );
+    `);
+    d.exec("COMMIT;");
+  } catch (error) {
+    try {
+      d.exec("ROLLBACK;");
+    } catch {}
+    throw error;
   }
 }
 

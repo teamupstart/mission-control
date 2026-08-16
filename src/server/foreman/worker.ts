@@ -1317,11 +1317,20 @@ async function processPromptedWrapup(
     transcriptAnchor,
   });
 
-  // Every worker tick sees the same settled Stop. Do not read the transcript window,
-  // gather standards or spend a verifier call until its durable proof changes. Claude
-  // task notifications leave human intent alone, but the work they resume advances the
-  // transcript before a later Stop and therefore crosses this gate exactly once.
-  if (!promptedEvidenceAdvanced(candidate, evidenceMarker)) return false;
+  // Step 10 already kept an unchanged `lastActivity` above this evidence gather. If a
+  // later hook moved activity but HEAD + transcript did not, restamp the SAME marker: that
+  // retires this false-positive activity boundary so every later idle tick is cheap again.
+  // It never reaches the verifier. Claude task notifications leave human intent alone, but
+  // the work they resume advances the transcript before a later Stop and therefore crosses
+  // both gates exactly once.
+  if (!promptedEvidenceAdvanced(candidate, evidenceMarker)) {
+    return await retirePromptedEpisode(
+      client,
+      session,
+      candidate.episodeKey,
+      evidenceMarker,
+    );
+  }
 
   // An empty diff decides itself, and decides it WITHOUT a model call: the session
   // changed nothing, so there is nothing to commit, push or open a PR for. This is the

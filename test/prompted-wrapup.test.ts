@@ -358,22 +358,31 @@ test("THE RE-ARM: the same goal is decided once; a new prompt arms it again", ()
 
 test("THE RE-ARM: the same human goal waits for durable completion evidence to advance", () => {
   const handled = "a".repeat(64);
-  const sameIntent = decide({
-    queue: mkQueue({
-      promptedGoal: "intent:1:1",
-      promptedEvidence: handled,
-    }),
+  const queue = mkQueue({
+    promptedGoal: "intent:1:1",
+    promptedEvidence: handled,
+    updatedAt: NOW - 30_000,
   });
-  assert.equal(sameIntent.kind, "check", "a task notification does not need to become a human goal");
-  if (sameIntent.kind !== "check") return;
-  assert.equal(sameIntent.previousEvidenceMarker, handled);
   assert.equal(
-    promptedEvidenceAdvanced(sameIntent, handled),
+    decide({ queue }).kind,
+    "skip",
+    "the already-observed Stop must not gather evidence on every idle tick",
+  );
+
+  const laterStop = decide({
+    queue,
+    session: mkSession({ lastActivity: NOW - 10_000 }),
+  });
+  assert.equal(laterStop.kind, "check", "a task notification does not need to become a human goal");
+  if (laterStop.kind !== "check") return;
+  assert.equal(laterStop.previousEvidenceMarker, handled);
+  assert.equal(
+    promptedEvidenceAdvanced(laterStop, handled),
     false,
-    "the same settled Stop must stay cheap on every later worker tick",
+    "activity alone must not spend another verifier call",
   );
   assert.equal(
-    promptedEvidenceAdvanced(sameIntent, "b".repeat(64)),
+    promptedEvidenceAdvanced(laterStop, "b".repeat(64)),
     true,
     "a later Stop with a newer HEAD or transcript anchor re-arms verification once",
   );

@@ -502,7 +502,12 @@ test("a verified prompt submits its existing workflow instead of Straight to PR"
       // the completion. Mirror that durable effect so later worker ticks see the episode
       // as spent and prove this path does not request a second run.
       const body = JSON.parse(raw) as { marker: string };
-      queue = { ...queue, promptedGoal: INTENT_KEY, promptedEvidence: body.marker };
+      queue = {
+        ...queue,
+        promptedGoal: INTENT_KEY,
+        promptedEvidence: body.marker,
+        updatedAt: Date.now(),
+      };
       return {
         status: 200,
         json: { claimed: true, runId: "run-review", submissionId: "sub-1", state: "started" },
@@ -515,6 +520,7 @@ test("a verified prompt submits its existing workflow instead of Straight to PR"
         ...queue,
         promptedGoal: body.goal,
         promptedEvidence: body.evidenceMarker,
+        updatedAt: Date.now(),
       };
       return { status: 200, json: { ok: true } };
     }
@@ -550,6 +556,16 @@ test("a verified prompt submits its existing workflow instead of Straight to PR"
   // The claimed path raises no Ship it? recovery card: the workflow owns this completion.
   assert.equal(stub.calls.filter((c) => c.path.endsWith("/wrapup/asked")).length, 0, out);
   assert.equal(claudeCalls(fake.log).length, 1, `verified more than once\n${out}`);
+  assert.equal(
+    stub.to("GET", "/api/sessions/s1/diff").length,
+    1,
+    `the retired Stop kept gathering a full diff on idle ticks\n${out}`,
+  );
+  assert.equal(
+    stub.to("GET", "/api/sessions/s1/transcript/size").length,
+    1,
+    `the retired Stop kept gathering transcript evidence on idle ticks\n${out}`,
+  );
 });
 
 test("an incomplete prompted hold re-arms on a task-notification turn and claims one workflow", async () => {
@@ -558,6 +574,8 @@ test("an incomplete prompted hold re-arms on a task-notification turn and claims
   const session = mkSession(repo);
   let queue = mkQueue(repo);
   let phase: "first-stop" | "task-notification" | "later-stop" = "first-stop";
+  const firstStopAt = Date.now() - 120_000;
+  let laterStopAt = 0;
   let claimedAt = 0;
 
   const stub = await startStub((req, url, raw) => {
@@ -572,6 +590,7 @@ test("an incomplete prompted hold re-arms on a task-notification turn and claims
         // Claude reports the background result through UserPromptSubmit, so lifecycle
         // state resumes even though scaffolding.ts correctly rejects it as a human goal.
         phase = "later-stop";
+        laterStopAt = now;
         return {
           status: 200,
           json: [{
@@ -590,7 +609,9 @@ test("an incomplete prompted hold re-arms on a task-notification turn and claims
           state: "idle",
           activity: "idle",
           lastSeen: now,
-          lastActivity: phase === "first-stop" ? now - 120_000 : now - 2_000,
+          // Hook activity is a durable event timestamp, not a sliding clock. Keeping the
+          // later Stop fixed proves the claimed boundary stays quiet on subsequent ticks.
+          lastActivity: phase === "first-stop" ? firstStopAt : laterStopAt,
         }],
       };
     }
@@ -638,6 +659,7 @@ test("an incomplete prompted hold re-arms on a task-notification turn and claims
         ...queue,
         promptedGoal: body.goal,
         promptedEvidence: body.evidenceMarker,
+        updatedAt: Date.now(),
       };
       phase = "task-notification";
       return { status: 200, json: queue };
@@ -648,6 +670,7 @@ test("an incomplete prompted hold re-arms on a task-notification turn and claims
         ...queue,
         promptedGoal: INTENT_KEY,
         promptedEvidence: body.marker,
+        updatedAt: Date.now(),
       };
       claimedAt = Date.now();
       return {
@@ -673,6 +696,16 @@ test("an incomplete prompted hold re-arms on a task-notification turn and claims
   assert.equal(holds.length, 1, `the incomplete Stop was not retired exactly once\n${out}`);
   assert.equal(claims.length, 1, `the later Stop did not claim exactly one binding\n${out}`);
   assert.equal(claudeCalls(fake.log).length, 2, `unchanged evidence re-entered the verifier\n${out}`);
+  assert.equal(
+    stub.to("GET", "/api/sessions/s1/diff").length,
+    2,
+    `idle ticks gathered more than the two settled completion boundaries\n${out}`,
+  );
+  assert.equal(
+    stub.to("GET", "/api/sessions/s1/transcript/size").length,
+    2,
+    `idle ticks gathered extra transcript anchors\n${out}`,
+  );
   assert.notEqual(
     (holds[0]!.body as { evidenceMarker?: string }).evidenceMarker,
     (claims[0]!.body as { marker?: string }).marker,
@@ -745,6 +778,7 @@ test("a Manual binding blocks Straight to PR and a failed card write stays retry
         ...queue,
         promptedGoal: body.goal,
         promptedEvidence: body.evidenceMarker,
+        updatedAt: Date.now(),
         wrapupAskedAt: Date.now(),
         wrapupAnswer: null,
       };
@@ -835,6 +869,7 @@ test("a broken verifier gives up after the strike cap, at one strike per unhurri
         ...queue,
         promptedGoal: body.goal,
         promptedEvidence: body.evidenceMarker,
+        updatedAt: Date.now(),
       };
       return { status: 200, json: { ok: true } };
     }

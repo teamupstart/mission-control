@@ -1120,8 +1120,10 @@ SQLite. The daemon creates or resumes the durable workflow and retires the match
 once-only guard in one transaction. A prompted guard includes the human intent episode and the
 HEAD plus transcript anchor Foreman verified. This keeps retries idempotent while allowing a
 later settled turn on the same intent, such as work resumed by a Claude background task
-notification, to claim the existing binding exactly once after that evidence advances. A
-missing or failed claim endpoint fails closed - Foreman
+notification, to claim the existing binding exactly once after that evidence advances. The
+queue update time is the cheap activity watermark before Foreman refetches that proof, so an
+unchanged idle boundary does not incur repeated diff reads. A missing or failed claim endpoint
+fails closed - Foreman
 does not fall through to an unreviewed wrap-up. If no Foreman binding claims the boundary,
 the existing wrap-up behavior is unchanged.
 

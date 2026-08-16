@@ -100,8 +100,10 @@ decides itself without a model call. A session that still needs you is left alon
 checkout that *has* a work queue belongs to the drain trigger, which wins. It fires once
 per resolved instruction and durable completion boundary. The guard records both the intent
 episode and the HEAD plus transcript anchor it judged, so repeated ticks at the same settled
-Stop stay quiet. A new prompt from you re-arms it after intent reconciliation. If Claude
-resumes the same objective from a background task notification, that notification remains
+Stop stay quiet without refetching that evidence. A later hook must first advance past the
+stored activity watermark; activity that leaves HEAD and transcript unchanged is restamped
+without another verifier call. A new prompt from you re-arms it after intent reconciliation.
+If Claude resumes the same objective from a background task notification, that notification remains
 excluded from the human Goal, but a later settled Stop re-arms verification once its durable
 completion evidence advances. A confirmed workflow repair packet also re-arms it -
 which is what lets [the repair loop](workflows.md#the-repair-loop-end-to-end) run for a session that has no

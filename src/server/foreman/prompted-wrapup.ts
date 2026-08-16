@@ -233,15 +233,23 @@ export function decidePromptedWrapup(input: PromptedInput): PromptedCandidate {
   // 10. THE RE-ARM. Human intent and completion evidence are independent axes. A newly
   //     reconciled human prompt always advances the episode key. The same episode can also
   //     resume through harness-owned input, notably Claude's `<task-notification>`, which is
-  //     correctly excluded from goal capture. In that case the worker may gather the cheap
-  //     HEAD + transcript marker again, but it must not spend another verifier call unless
-  //     that durable evidence advanced.
+  //     correctly excluded from goal capture. The queue row's update time is the cheap
+  //     activity watermark: do not gather HEAD + transcript again until a later hook moves
+  //     `lastActivity` past the write that retired the previous boundary. Even then, do not
+  //     spend another verifier call unless the durable evidence marker advanced.
   //
   //     A non-null goal with no evidence marker is a guard written by an older build. Keep
   //     it spent until the human prompt changes; replaying every historical completion once
   //     on upgrade would violate the exact-once guarantee this field exists to provide.
   if (queue?.promptedGoal === episodeKey && !queue.promptedEvidence) {
     return { kind: "skip", why: "already wrapped up this prompt" };
+  }
+  if (
+    queue?.promptedGoal === episodeKey
+    && queue.promptedEvidence
+    && (session.lastActivity ?? 0) <= queue.updatedAt
+  ) {
+    return { kind: "skip", why: "no session activity since this completion boundary" };
   }
 
   return {
@@ -277,8 +285,9 @@ export type PromptedPlan =
  *
  * `hold` still RETIRES the observed completion boundary (the caller stamps both
  * `promptedGoal` and `promptedEvidence`, same as a fire). The alternative is re-verifying
- * an idle session every tick forever. A later settled Stop for the same human intent is
- * eligible only when its HEAD + transcript marker advances.
+ * an idle session every tick forever. A later settled Stop for the same human intent first
+ * crosses the cheap session-activity watermark and is eligible only when its HEAD +
+ * transcript marker advances.
  */
 export function planPromptedWrapup(
   goal: string,

@@ -416,18 +416,31 @@ test("a domain reference or process occupancy refuses release before reset", asy
   assert.equal((await m.release(held)).outcome, "released");
 });
 
-test("release rechecks occupancy after fetch before it records a reset intent", async () => {
+test("release rechecks occupancy after target validation before recording reset intent", async () => {
   const { clone, sha } = repository("mission-native-release-race-");
-  let occupancyReads = 0;
+  let targetValidationStarted = false;
+  class OccupiedDuringValidationGit extends NativeWorktreeGit {
+    resetCalls = 0;
+
+    override async list(identity: NonNullable<ReturnType<typeof worktreeRepositoryIdentity>>) {
+      targetValidationStarted = true;
+      return super.list(identity);
+    }
+
+    override async reset(path: string, commit: string) {
+      this.resetCalls++;
+      return super.reset(path, commit);
+    }
+  }
+  const git = new OccupiedDuringValidationGit();
   const m = manager({
+    git,
     occupancy: async (paths) => {
-      occupancyReads++;
-      const occupied = occupancyReads === 2;
       return new Map(paths.map((path) => [
         path,
         {
           status: "known" as const,
-          occupants: occupied
+          occupants: targetValidationStarted
             ? [{ pid: 91, ppid: 1, startRaw: "now", startMs: 1, command: "node", cwd: path, knownOwner: null }]
             : [],
         },
@@ -435,11 +448,10 @@ test("release rechecks occupancy after fetch before it records a reset intent", 
     },
   });
   const held = lease(await acquire(m, clone, sha, "task-race"));
-  // Acquisition consumed no occupancy read for a brand-new path. Release reads once,
-  // fetches, then refuses the process that appeared in its fresh destructive check.
   const released = await m.release(held);
   assert.equal(released.outcome, "refused");
   if (released.outcome === "refused") assert.match(released.reason, /occupy/);
+  assert.equal(git.resetCalls, 0);
   assert.equal(m.store.slot(held.slotId)?.state, "leased");
 });
 

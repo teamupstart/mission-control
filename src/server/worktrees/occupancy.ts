@@ -88,7 +88,19 @@ export async function inspectWorktreeOccupancy(
     return result;
   }
 
-  const processes = snapshot.processes.filter((process) => Number.isInteger(process.pid) && process.pid > 0);
+  // Mission Control is a per-user daemon. macOS exposes other users' processes through ps
+  // while withholding their cwd from an unprivileged lsof, so they are outside the process
+  // security boundary the daemon can positively observe. Within that boundary every PID must
+  // resolve, disappear under a fresh stable-identity snapshot, or make occupancy unknown.
+  const cwdScope = new Set(snapshot.cwdScopePids);
+  const completedCollectors = new Set(snapshot.completedCollectorPids);
+  const processes = snapshot.processes.filter(
+    (process) =>
+      Number.isInteger(process.pid) &&
+      process.pid > 0 &&
+      cwdScope.has(process.pid) &&
+      !completedCollectors.has(process.pid),
+  );
   let cwdSnapshot: ProcCwdSnapshot;
   try {
     cwdSnapshot = await d.readCwds(processes.map((process) => process.pid));
@@ -105,12 +117,32 @@ export async function inspectWorktreeOccupancy(
   }
 
   // Treat the dependency result as untrusted evidence: even a reader that reports itself
-  // healthy cannot make omission prove that a ps-listed process exited. This also keeps
-  // injected readers and future implementations behind the same fail-closed boundary.
-  const unresolvedPids = processes
-    .filter((process) => !cwdSnapshot.cwds.has(process.pid))
-    .map((process) => process.pid);
-  if (unresolvedPids.length > 0) {
+  // healthy cannot make omission prove that a ps-listed process exited. Re-list and compare
+  // stable process identity so only independently proven PID churn is ignored.
+  let unresolved = processes.filter((process) => !cwdSnapshot.cwds.has(process.pid));
+  if (unresolved.length > 0) {
+    let confirmation: ProcessSnapshot;
+    try {
+      confirmation = await d.listProcesses();
+    } catch (error) {
+      const reason = `process disappearance check failed: ${String(error)}`;
+      for (const target of targets) result.set(target, { status: "unknown", reason });
+      return result;
+    }
+    if (confirmation.unknownReason) {
+      for (const target of targets) {
+        result.set(target, { status: "unknown", reason: confirmation.unknownReason });
+      }
+      return result;
+    }
+    const confirmed = new Map(confirmation.processes.map((process) => [process.pid, process]));
+    unresolved = unresolved.filter((process) => {
+      const current = confirmed.get(process.pid);
+      return current?.startRaw === process.startRaw;
+    });
+  }
+  if (unresolved.length > 0) {
+    const unresolvedPids = unresolved.map((process) => process.pid);
     const shown = unresolvedPids.slice(0, 8).join(", ");
     const remainder = unresolvedPids.length > 8 ? ` and ${unresolvedPids.length - 8} more` : "";
     const reason =

@@ -46,7 +46,12 @@ test("occupancy batches one process read and one cwd read across every target", 
   const result = await inspectWorktreeOccupancy([one, ten], {
     listProcesses: async () => {
       processReads++;
-      return { processes: [process(10), process(20)], unknownReason: null };
+      return {
+        processes: [process(10), process(20)],
+        unknownReason: null,
+        cwdScopePids: [10, 20],
+        completedCollectorPids: [],
+      };
     },
     readCwds: async (pids) => {
       cwdReads++;
@@ -73,7 +78,12 @@ test("occupancy batches one process read and one cwd read across every target", 
 test("a ps-listed PID omitted by a partial cwd result makes occupancy unknown", async () => {
   const { one } = fixture();
   const result = await inspectWorktreeOccupancy([one], {
-    listProcesses: async () => ({ processes: [process(10), process(20)], unknownReason: null }),
+    listProcesses: async () => ({
+      processes: [process(10), process(20)],
+      unknownReason: null,
+      cwdScopePids: [10, 20],
+      completedCollectorPids: [],
+    }),
     // The cwd reader cannot prove whether PID 20 vanished or was merely omitted.
     readCwds: async () => ({ cwds: new Map([[10, one]]), unknownReason: null }),
   });
@@ -83,15 +93,97 @@ test("a ps-listed PID omitted by a partial cwd result makes occupancy unknown", 
   });
 });
 
+test("a completed ps collector is excluded from cwd completeness", async () => {
+  const { one } = fixture();
+  const result = await inspectWorktreeOccupancy([one], {
+    listProcesses: async () => ({
+      processes: [process(10), process(20)],
+      unknownReason: null,
+      cwdScopePids: [10, 20],
+      completedCollectorPids: [20],
+    }),
+    readCwds: async (pids) => {
+      assert.deepEqual(pids, [10]);
+      return { cwds: new Map([[10, one]]), unknownReason: null };
+    },
+  });
+  const occupancy = result.get(one);
+  assert.equal(occupancy?.status, "known");
+  if (occupancy?.status === "known") {
+    assert.deepEqual(occupancy.occupants.map((entry) => entry.pid), [10]);
+  }
+});
+
+test("a process outside the daemon user scope is not sent to cwd inspection", async () => {
+  const { one } = fixture();
+  const result = await inspectWorktreeOccupancy([one], {
+    listProcesses: async () => ({
+      processes: [process(10), process(20)],
+      unknownReason: null,
+      cwdScopePids: [10],
+      completedCollectorPids: [],
+    }),
+    readCwds: async (pids) => {
+      assert.deepEqual(pids, [10]);
+      return { cwds: new Map([[10, one]]), unknownReason: null };
+    },
+  });
+  const occupancy = result.get(one);
+  assert.equal(occupancy?.status, "known");
+  if (occupancy?.status === "known") {
+    assert.deepEqual(occupancy.occupants.map((entry) => entry.pid), [10]);
+  }
+});
+
+test("an omitted PID is ignored only after a fresh snapshot proves it disappeared", async () => {
+  const { one } = fixture();
+  let processReads = 0;
+  const result = await inspectWorktreeOccupancy([one], {
+    listProcesses: async () => {
+      processReads++;
+      return processReads === 1
+        ? {
+            processes: [process(10), process(20)],
+            unknownReason: null,
+            cwdScopePids: [10, 20],
+            completedCollectorPids: [],
+          }
+        : {
+            processes: [process(10)],
+            unknownReason: null,
+            cwdScopePids: [10],
+            completedCollectorPids: [],
+          };
+    },
+    readCwds: async () => ({ cwds: new Map([[10, one]]), unknownReason: null }),
+  });
+  assert.equal(processReads, 2);
+  const occupancy = result.get(one);
+  assert.equal(occupancy?.status, "known");
+  if (occupancy?.status === "known") {
+    assert.deepEqual(occupancy.occupants.map((entry) => entry.pid), [10]);
+  }
+});
+
 test("a failed or timed-out process read is unknown, never empty", async () => {
   const { one } = fixture();
   const processFailure = await inspectWorktreeOccupancy([one], {
-    listProcesses: async () => ({ processes: [], unknownReason: "ps timed out" }),
+    listProcesses: async () => ({
+      processes: [],
+      unknownReason: "ps timed out",
+      cwdScopePids: [],
+      completedCollectorPids: [],
+    }),
   });
   assert.deepEqual(processFailure.get(one), { status: "unknown", reason: "ps timed out" });
 
   const cwdFailure = await inspectWorktreeOccupancy([one], {
-    listProcesses: async () => ({ processes: [process(10)], unknownReason: null }),
+    listProcesses: async () => ({
+      processes: [process(10)],
+      unknownReason: null,
+      cwdScopePids: [10],
+      completedCollectorPids: [],
+    }),
     readCwds: async () => ({ cwds: new Map(), unknownReason: "lsof failed" }),
   });
   assert.deepEqual(cwdFailure.get(one), { status: "unknown", reason: "lsof failed" });
@@ -103,7 +195,12 @@ test("an oversized occupancy request fails closed without spawning system reads"
   const result = await inspectWorktreeOccupancy(paths, {
     listProcesses: async () => {
       processReads++;
-      return { processes: [], unknownReason: null };
+      return {
+        processes: [],
+        unknownReason: null,
+        cwdScopePids: [],
+        completedCollectorPids: [],
+      };
     },
   });
   assert.equal(processReads, 0);

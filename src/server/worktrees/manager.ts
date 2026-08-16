@@ -721,16 +721,16 @@ export class WorktreeManager {
           ? { outcome: "outcomeUnknown", reason: target.reason }
           : { outcome: "refused", reason: target.reason };
       }
-      // Fetch may take long enough for a process or domain reference to appear. Re-read
-      // both immediately before persisting the destructive reset intent.
-      const freshBlocker = await this.releaseBlocker(reference, slot.path);
-      if (freshBlocker) return { outcome: "refused", reason: freshBlocker };
       const resetTarget = await this.validateResetTarget(pool, identity, slot);
       if (!resetTarget.ok) {
         return resetTarget.outcomeUnknown
           ? { outcome: "outcomeUnknown", reason: resetTarget.reason }
           : { outcome: "refused", reason: resetTarget.reason };
       }
+      // Fetch and target validation may take long enough for a process or domain reference
+      // to appear. Re-read both immediately before persisting the destructive reset intent.
+      const freshBlocker = await this.releaseBlocker(reference, slot.path);
+      if (freshBlocker) return { outcome: "refused", reason: freshBlocker };
       let returning: WorktreeSlotRow | null;
       try {
         returning = this.store.markReturning(slot.id, slot.version, target.value, this.deps.now());

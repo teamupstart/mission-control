@@ -124,6 +124,10 @@ const costTotals = new Map<string, number>();
  * for ever. Process-local and safe to lose: an empty map costs one write per shipped feature
  * on the next pass, and every one of those writes lands on the row it would have replaced
  * with the same values.
+ *
+ * Bounded by the runs that still exist, through `forgetRunState`: a feature whose worktree
+ * is gone has nothing left to suppress, and holding its fingerprint would make this map the
+ * one thing in the daemon that grows with every feature a repository has ever shipped.
  */
 const ledgered = new Map<string, string>();
 
@@ -658,6 +662,29 @@ const passes = new Map<string, Promise<void>>();
 const lastSweptAt = new Map<string, number>();
 
 /**
+ * Drop every process-local trace of one run, at the moment the run itself is retired.
+ *
+ * One function rather than three deletes at each of the two retirement sites, because the
+ * omission it prevents is the one that already happened: each of these maps is keyed by run
+ * and each is bounded only by somebody remembering to prune it here. A daemon watching a
+ * repository that ships and tears down worktrees all day retires runs continuously, so a map
+ * that is only cleared on a full projection restore is a map that grows for the life of the
+ * process - one entry per feature that ever existed, held to suppress an idempotent rewrite
+ * no absent run can request.
+ *
+ * The projection and event rows are deleted by the caller. The spend row deliberately stays
+ * in the retention-managed usage ledger; only the process-local suppression of its next
+ * idempotent write goes away. Losing any state here costs at most one redundant read or one
+ * idempotent write.
+ */
+function forgetRunState(provider: PipelineProviderId, repoRoot: string, slug: string): void {
+  const key = pipelineRunKey(provider, repoRoot, slug);
+  costTotals.delete(key);
+  lastSweptAt.delete(key);
+  ledgered.delete(key);
+}
+
+/**
  * Whether this pass should read one run's event ledger.
  *
  * Two ways to yes, and they are the demotion contract stated as code: no live ingest (the
@@ -804,8 +831,7 @@ async function runPipelineRepoPass(
       // the ledger's retention policy: the table is bounded by the runs that still exist,
       // not by how long this daemon has been up.
       deletePipelineEventsForRun(provider, repoRoot, slug);
-      costTotals.delete(pipelineRunKey(provider, repoRoot, slug));
-      lastSweptAt.delete(pipelineRunKey(provider, repoRoot, slug));
+      forgetRunState(provider, repoRoot, slug);
       sink.removePipelineRun(provider, repoRoot, slug);
     }
   }
@@ -922,8 +948,7 @@ export function forgetPipelineRepo(
   repoRoot: string,
 ): void {
   for (const slug of deletePipelineRunsForRepo(provider, repoRoot)) {
-    costTotals.delete(pipelineRunKey(provider, repoRoot, slug));
-    lastSweptAt.delete(pipelineRunKey(provider, repoRoot, slug));
+    forgetRunState(provider, repoRoot, slug);
     sink.removePipelineRun(provider, repoRoot, slug);
   }
   // The observed history goes too, and it goes for the same reason the projection does: an

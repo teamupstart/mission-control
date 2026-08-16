@@ -689,6 +689,42 @@ test("a shipped feature's cost enters the ledger once, and re-projection never d
   assert.equal(registry.listPipelineRuns()[0]?.costTokens, 1200 + 340 + 90 + 10);
 });
 
+test("retiring a run forgets its spend-write fingerprint", async () => {
+  // The suppression is process-local and belongs only to the run that is still being
+  // projected. If the engine tears that worktree down and later re-cuts the same slug with
+  // the same committed figure, the old fingerprint must not prevent the new run's row from
+  // being restored. Deleting the durable row between the two runs makes that distinction
+  // observable without exposing the cache as a test-only API.
+  reset();
+  db.exec("DELETE FROM usage_ledger");
+  const root = repo("cost-cache-retired");
+  const seed = (): void => {
+    seedConductorRun(root, "feat", {
+      steps: { finish: "done" },
+      done: true,
+      shipped: { input: 120, output: 30, costUsd: 0.04 },
+    });
+  };
+  seed();
+  seedConductorDaemon(root, { pid: process.pid });
+  consentTo(root);
+
+  const registry = new Registry();
+  await refreshPipelineRepo(registry, "ai-conductor", root);
+  assert.equal(conductorRows().length, 1);
+
+  rmSync(join(root, ".worktrees", "feat"), { recursive: true, force: true });
+  await refreshPipelineRepo(registry, "ai-conductor", root);
+  assert.deepEqual(registry.listPipelineRuns(), [], "the first run has been retired");
+
+  db.exec("DELETE FROM usage_ledger");
+  seed();
+  await refreshPipelineRepo(registry, "ai-conductor", root);
+
+  assert.equal(conductorRows().length, 1, "the re-cut run is allowed to restore its spend row");
+  assert.equal(conductorRows()[0]?.input, 120);
+});
+
 test("a rewritten record updates the row it already owns", async () => {
   // The engine re-runs a step after the record was written and commits a bigger figure. The
   // ledger must move to the new number, not add it to the old one.

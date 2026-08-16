@@ -152,6 +152,13 @@ export type CheckLeaseRelease =
   /** The return failed. Row and pin retained in `returning`; reclamation will retry. */
   | { outcome: "retry"; reason: string };
 
+export interface CheckOperatorPreview {
+  found: boolean;
+  allowed: boolean;
+  reason: string | null;
+  row: CheckLeaseRow | null;
+}
+
 // ---- persistence -----------------------------------------------------------
 
 function toRow(r: Record<string, unknown>): CheckLeaseRow {
@@ -1118,6 +1125,75 @@ export class CheckLeaseManager {
           err instanceof Error ? err.message : err,
         );
       }
+    }
+  }
+
+  /**
+   * Non-mutating operator preview through the check domain's own process-group authority.
+   * A check this process still owns, an in-flight transition, and an unproven group all
+   * remain blockers. The infrastructure panel never tries to infer those states itself.
+   */
+  async previewOperatorRecovery(
+    attemptId: string,
+    recovery: CheckGroupRecovery = refusingGroupRecovery,
+  ): Promise<CheckOperatorPreview> {
+    const row = this.store.get(attemptId);
+    if (!row || !LIVE_STATES.includes(row.cleanupState)) {
+      return { found: Boolean(row), allowed: false, reason: "check lease is already resolved", row };
+    }
+    if (this.owned.has(attemptId) || this.busy.has(attemptId)) {
+      return { found: true, allowed: false, reason: "check attempt is still active", row };
+    }
+    if (
+      row.cleanupState === "returning" ||
+      (row.supervisorPid === NO_SUPERVISOR_PID && row.supervisorStartTicks === NO_SUPERVISOR_TICKS)
+    ) {
+      return { found: true, allowed: true, reason: null, row };
+    }
+    const group = await recovery(attemptId);
+    return group === "empty"
+      ? { found: true, allowed: true, reason: null, row }
+      : {
+          found: true,
+          allowed: false,
+          reason: group === "not-empty"
+            ? "check process group is still running"
+            : "check process-group state is unknown",
+          row,
+        };
+  }
+
+  /** Execute the same recovery decision under this manager's single-flight guard. */
+  async recoverForOperator(
+    attemptId: string,
+    recovery: CheckGroupRecovery = refusingGroupRecovery,
+  ): Promise<CheckLeaseRelease | { outcome: "blocked"; reason: string }> {
+    if (this.owned.has(attemptId) || this.busy.has(attemptId)) {
+      return { outcome: "blocked", reason: "check attempt is still active" };
+    }
+    this.busy.add(attemptId);
+    try {
+      const row = this.store.get(attemptId);
+      if (!row || !LIVE_STATES.includes(row.cleanupState)) return { outcome: "returned" };
+      if (
+        row.cleanupState !== "returning" &&
+        !(row.supervisorPid === NO_SUPERVISOR_PID && row.supervisorStartTicks === NO_SUPERVISOR_TICKS)
+      ) {
+        const group = await recovery(attemptId);
+        if (group !== "empty") {
+          return {
+            outcome: "blocked",
+            reason: group === "not-empty"
+              ? "check process group is still running"
+              : "check process-group state is unknown",
+          };
+        }
+      }
+      const provider = this.providerFor(row);
+      return await provider.withLock(row.repoRoot, () => this.resolveLocked(row, provider));
+    } finally {
+      this.busy.delete(attemptId);
+      this.owned.delete(attemptId);
     }
   }
 }

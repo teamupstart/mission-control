@@ -64,6 +64,8 @@ Workflow checks, and approved `make session` work use exact lease identities fro
 by default. A disabled repository or positive capacity refusal degrades to a disposable Git
 worktree for tasks and checks, while ambiguous outcomes fail closed. Treehouse is not required;
 persisted legacy rows keep a narrow, conditional-return-only compatibility path.
+**Settings > Worktrees** exposes future capacity policy, native and legacy inventory, exact path
+actions, and preview-first cleanup without replacing task, check, Git, or process ownership.
 
 ![Mission Control dispatch](docs/images/dispatch.png)
 

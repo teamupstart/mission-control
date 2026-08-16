@@ -66,7 +66,11 @@ import { createFinalizeDeps, resolveEnsembleWorkflowVersion } from "./ensembles/
 import { createReviewScheduler } from "./llm/review-scheduler.ts";
 import { createCheckScheduler } from "./workflows/checks.ts";
 import { WorktreeManager } from "./worktrees/manager.ts";
-import { warnRetiredTreehouseCadence } from "./worktrees/legacy-treehouse.ts";
+import {
+  LegacyTreehouseService,
+  warnRetiredTreehouseCadence,
+} from "./worktrees/legacy-treehouse.ts";
+import { WorktreeOperationsService } from "./worktrees/operations.ts";
 import { nativeWorktreeOwnerReferenced } from "./worktrees/owners.ts";
 
 openDb();
@@ -100,7 +104,9 @@ const registry = new Registry();
 // then shared by task dispatch, checks, manual leases, routes, and recurring maintenance.
 const worktrees = new WorktreeManager(undefined, {
   ownerReferenced: async (reference) => nativeWorktreeOwnerReferenced(reference),
+  publishChanged: () => registry.emitWorktreesChanged(),
 });
+const legacyWorktrees = new LegacyTreehouseService();
 try {
   await worktrees.reconcile();
 } catch (err) {
@@ -146,7 +152,16 @@ const archives = new ArchiveManager({
 // row, its task binding and its worktree paths can all still be derived - which is precisely
 // what a capture needs and precisely what `session_remove` no longer has.
 registry.onSessionExit((session) => archives.reserveOnExit(session));
-const tasks = new TaskManager(registry, undefined, sdkSessions, pendingTurns, archives, {}, worktrees);
+const tasks = new TaskManager(
+  registry,
+  undefined,
+  sdkSessions,
+  pendingTurns,
+  archives,
+  {},
+  worktrees,
+  legacyWorktrees,
+);
 const queues = new QueueManager(registry);
 const personas = new PersonaManager(registry);
 // Shares the Persona manager's store handle, so both catalogs and the workflow family are
@@ -185,13 +200,51 @@ const checkScheduler = createCheckScheduler();
 // Awaited rather than fire-and-forget for the ordering itself, and best-effort because a
 // daemon that refused to start over one unreconcilable lease would be worse than one
 // running without it.
-const checkLeases = new CheckLeaseManager(undefined, { manager: worktrees });
+const checkLeases = new CheckLeaseManager(undefined, {
+  manager: worktrees,
+  legacy: legacyWorktrees,
+});
 const checkRuntime = new CheckRuntime(checkLeases);
 try {
   await checkLeases.reconcileOnStartup(checkRuntime.groupRecovery);
 } catch (err) {
   console.error("[mission-control] could not reconcile check leases:", err);
 }
+const worktreeOperations = new WorktreeOperationsService(worktrees, {
+  legacy: legacyWorktrees,
+  tasks: {
+    get: (id) => {
+      const task = registry.getTask(id);
+      if (!task) return null;
+      return {
+        id: task.id,
+        title: task.title,
+        resources: [
+          {
+            position: 0,
+            repoRoot: task.repoRoot,
+            path: task.worktreePath,
+            provider: task.provider,
+            leaseId: task.worktreeLeaseId,
+            branch: task.branch,
+          },
+          ...task.extraRepos.map((entry, index) => ({
+            position: index + 1,
+            repoRoot: entry.repoRoot,
+            path: entry.worktreePath,
+            provider: entry.provider,
+            leaseId: entry.worktreeLeaseId,
+            branch: entry.branch,
+          })),
+        ].flatMap((resource) => resource.path === null ? [] : [{ ...resource, path: resource.path }]),
+      };
+    },
+    reclaim: (id) => tasks.reclaim(id),
+  },
+  checks: checkLeases,
+  checkRecovery: checkRuntime.groupRecovery,
+  notifyChanged: () => registry.emitWorktreesChanged(),
+});
 // Assigned below. The Workflow binding guard reaches it through this reference, and the reference
 // is safe because the guard fires only at bind time - long after `ensembles` is constructed. This
 // is the two-way seam the plan requires: Workflow asks Ensemble whether a session may be bound,
@@ -420,6 +473,7 @@ const app = buildApp(
   archives,
   workflowCommands,
   worktrees,
+  worktreeOperations,
 );
 
 // In production the daemon serves the built SPA; in dev, Vite serves it and

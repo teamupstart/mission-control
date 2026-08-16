@@ -46,12 +46,60 @@ Under the hood (`scripts/new-session.mjs`):
 The lease stays durable after the shell exits. Return it explicitly with either command above,
 using the lease ID printed by `make session` or exported as `MISSION_WORKTREE_LEASE_ID`. A slot path
 is reusable and never authorizes a return. If the daemon is unavailable, `make session` tells you
-to start it and exits without allocating a standalone worktree. The future Settings > Worktrees
-surface will operate on the same inventory.
+to start it and exits without allocating a standalone worktree. **Settings > Worktrees** reads
+and acts on the same durable lease. The command is useful from a shell; the panel adds the safety
+preview and the surrounding pool, Git, process, and owner state.
 
 Native capacity and enablement are configuration policy. The shipped policy is enabled with 16
 slots per physical repository. A repository override affects its next acquisition, never an
-active lease. The Settings editor for this policy belongs to a later phase.
+active lease.
+
+### Settings > Worktrees
+
+Open **Settings > Worktrees** to configure and inspect the allocator. The page is split into three
+parts:
+
+- **Policy** controls the default enablement and maximum. Expanding a native repository shows its
+  effective override and an optional setup argv. The argv is operator-authored, stored as separate
+  arguments, and runs only when Mission Control creates a new slot. It never runs when a warm slot
+  is leased again. Lowering capacity below the current count marks the difference as **over
+  capacity** and offers a right-size preview; saving policy never deletes a slot.
+- **Native inventory** shows available, leased, quarantined, and over-capacity counts. Each slot
+  carries its exact manager path, observed HEAD, relationship to the remote default, cleanliness,
+  process count, disk estimate, and owner. **Copy path** stays in the browser. **Open terminal**
+  asks the daemon's registered terminal launcher to open a login shell in the manager-known path.
+- **Legacy drain** classifies historical Treehouse resources as exact, unverifiable, foreign, or
+  unreadable. Only an exact durable owner with a clean, process-free checkout offers Return.
+
+All mutations begin with a server preview. The dialog lists the fixed paths, owners, disk estimate,
+risks, blockers, and consequences. Dirty or unlanded exact targets require an explicit
+acknowledgement. Execution consumes the short-lived token once and observes the lease, task or
+check owner, processes, Git state, and slot version again. A changed fact refuses with a stale
+preview message. Unknown process occupancy is never acknowledgeable.
+
+The operations have deliberately narrow meanings:
+
+- **Return** hands an active lease back through its owner. Task Return uses the ordinary task
+  cleanup, including multi-repository accounting and required archive or snapshot capture. Its
+  preview therefore lists every native, legacy, or disposable Git path that task cleanup will
+  touch, even when Return began from one slot. Check Return uses the recorded check provider and
+  process-group recovery. Manual Return uses the exact durable lease. A successful native Return
+  resets to the freshly fetched remote default and keeps the warm slot.
+- **Prune** removes only the clean, merged, process-free, unreferenced available slots enumerated in
+  its preview. Right-size is the same safety rule restricted to capacity above the configured
+  maximum.
+- **Reconcile** re-observes durable state, Git registration, ownership, and processes. It repairs
+  only states whose result is positively proven and keeps uncertainty quarantined.
+- **Destroy** removes one exact manager-owned slot or the fixed slot set enumerated for one pool.
+  It may discard dirty or unlanded work only after those risks are acknowledged. It has no target
+  meaning every pool and cannot override unknown identity, ownership, registration, or process
+  state.
+- **Return legacy lease** delegates to the task or check owner and then the conditional Treehouse
+  adapter. There is no force action for unverifiable or foreign resources.
+
+Inventory is an observation, not a second owner database. Open dashboards receive only a
+content-free change signal and fetch the bounded view again. They do not receive raw process
+commands, Git diffs, environment values, or unbounded errors.
 
 ### Legacy Treehouse compatibility
 
@@ -76,8 +124,8 @@ cleanup of those historical resources. Native allocation continues normally.
 
 To investigate one, run `treehouse status --json` in the recorded repository. Resolve foreign or
 unverifiable leases with Treehouse itself after verifying their current owner. Remove the external
-Treehouse pool and installation only after every Mission Control legacy row and every foreign lease
-has been reviewed. `MISSION_POOL_REAP_MS` is retired and ignored; if it remains set, startup names
+Treehouse pool and installation only after **Settings > Worktrees** reports no durable legacy rows
+and every foreign lease has been reviewed. `MISSION_POOL_REAP_MS` is retired and ignored; if it remains set, startup names
 `MISSION_WORKTREE_SWEEP_MS` as the native maintenance replacement.
 
 ### Check leases

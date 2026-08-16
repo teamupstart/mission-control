@@ -217,6 +217,7 @@ export function App(): React.JSX.Element {
     settingsStatus,
     keepAwakeStatus,
     harnessesRevision,
+    worktreesRevision,
     // One counter, bumped per reconciled batch of archives and once per reconnect. It is
     // how the Scouts page learns to refetch its current window without the browser polling
     // and without unbounded history entering the SSE snapshot.
@@ -2642,6 +2643,7 @@ export function App(): React.JSX.Element {
               onLayoutChange={setLayout}
               settingsStatus={settingsStatus}
               harnessesRevision={harnessesRevision}
+              worktreesRevision={worktreesRevision}
               workflowSummaries={workflowSummaries}
               onOpenPalette={() => setPaletteOpen(true)}
               onOpenForemanProfile={() => navigate({

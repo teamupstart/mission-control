@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { mkTask } from "./helpers/session-fixture.ts";
 import type { TaskRepoEntry } from "@shared/types.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
+import type { WorktreeOccupancy } from "../src/server/worktrees/occupancy.ts";
 
 // Dispatching a task that attaches secondary repositories, and the two rules that make it
 // safe rather than merely working:
@@ -73,6 +74,10 @@ function entry(repoRoot: string): TaskRepoEntry {
   };
 }
 
+function emptyOccupancy(paths: readonly string[]): Promise<Map<string, WorktreeOccupancy>> {
+  return Promise.resolve(new Map(paths.map((path) => [path, { status: "known", occupants: [] }])));
+}
+
 // ---- all-or-nothing --------------------------------------------------------------------
 
 test("a secondary that cannot be provisioned unwinds the primary's tree", async () => {
@@ -92,7 +97,10 @@ test("a secondary that cannot be provisioned unwinds the primary's tree", async 
       extraRepos: [entry(broken)],
     }),
   );
-  const worktrees = new WorktreeManager();
+  // This case proves the all-or-nothing provisioning unwind. Process-snapshot uncertainty
+  // has its own fail-closed coverage and would make a disappearing runner PID an unrelated
+  // reason for this test to retain the lease it expects to return.
+  const worktrees = new WorktreeManager(undefined, { occupancy: emptyOccupancy });
   const dispatcher = new Dispatcher(registry, undefined, { worktrees });
 
   await dispatcher.dispatch("rollback-task");

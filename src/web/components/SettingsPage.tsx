@@ -10,6 +10,7 @@ import { LlmSettingsPanel } from "./LlmSettingsPanel.tsx";
 import { ShippingSettingsPanel } from "./ShippingSettingsPanel.tsx";
 import { useShipping } from "../useShipping.ts";
 import { HarnessesPanel } from "./HarnessesPanel.tsx";
+import { WorktreeSettingsPanel } from "./WorktreeSettingsPanel.tsx";
 import { TaskSourcesPanel } from "./TaskSourcesPanel.tsx";
 import { ConductorPanel } from "./ConductorPanel.tsx";
 import { TrustPanel } from "./TrustPanel.tsx";
@@ -22,6 +23,7 @@ import { ConversationViewPanel } from "./ConversationViewPanel.tsx";
 import { AppearancePanel } from "./AppearancePanel.tsx";
 import { DispatchSettingsPanel } from "./DispatchSettingsPanel.tsx";
 import { useHarnesses } from "../useHarnesses.ts";
+import { useWorktrees } from "../useWorktrees.ts";
 import { useTaskSources } from "../useTaskSources.ts";
 import { useConductor } from "../useConductor.ts";
 import { formatChord, useKeybindingHints, useKeybindings } from "../lib/keybindings.ts";
@@ -169,6 +171,7 @@ export function SettingsPage({
   onLayoutChange,
   settingsStatus,
   harnessesRevision = 0,
+  worktreesRevision = 0,
   workflowSummaries = [],
   onOpenPalette,
   onOpenForemanProfile,
@@ -224,6 +227,8 @@ export function SettingsPage({
    * made in another tab at once instead of at the end of its backstop poll.
    */
   harnessesRevision?: number;
+  /** Content-free invalidation counter for the bounded worktree inventory. */
+  worktreesRevision?: number;
   /** Published Workflow catalog used by the dispatch-default picker. */
   workflowSummaries?: WorkflowSummary[];
   /**
@@ -273,6 +278,7 @@ export function SettingsPage({
   // Owned here rather than by App, like `skills`: nothing outside this page reads the
   // harnesses config, so it polls only while the page is open.
   const harnesses = useHarnesses(harnessesRevision);
+  const worktrees = useWorktrees(worktreesRevision, shown === "worktrees");
   // Owned here rather than by App, like `skills` and `harnesses`: nothing outside this
   // page reads the Inspector config, so it polls only while the page is open.
   const inspector = useInspector();
@@ -533,6 +539,8 @@ export function SettingsPage({
         return <SkillsPanel state={skills} />;
       case "harnesses":
         return <HarnessesPanel state={harnesses} />;
+      case "worktrees":
+        return <WorktreeSettingsPanel state={worktrees} />;
       case "task-sources":
         return <TaskSourcesPanel state={taskSources} />;
       case "conductor":

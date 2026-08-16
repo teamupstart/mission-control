@@ -2671,6 +2671,12 @@ export type ServerEvent =
    */
   | { type: "harnesses_config_changed" }
   /**
+   * Native policy, bounded native inventory, or legacy drain classification changed.
+   * Content-free because the inventory is an expensive bounded HTTP observation and never
+   * belongs in the reconnect snapshot.
+   */
+  | { type: "worktrees_changed" }
+  /**
    * The Keep Awake observation moved - a transition was requested, the OS child spawned
    * or exited, or a transition failed. Carries the whole status so every open dashboard
    * converges without a fetch; emitted only when an observable field changed (see

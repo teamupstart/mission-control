@@ -100,6 +100,7 @@ const KIND_MISSION_MCP_TOOLS: Record<TaskKind, readonly MissionMcpTool[]> = {
   ship: [],
   scout: [SUBMIT_SCOUT_ARTIFACTS_TOOL],
   plan: [PLAN_DECISIONS_TOOL, PLAN_SCHEDULING_TOOL],
+  pipeline: [],
 };
 
 /**

@@ -118,6 +118,10 @@ Persisted ID tuples are append-only. Never rename, reorder, or reuse values. Thi
   attempt) and what the walk makes of it (`stageStatus` in `src/server/ensembles/engine.ts`,
   whose fall-through reads anything unhandled as a stage still running)
 - GitHub Inspector marker versions
+- GitHub Inspector adoption sources (`InspectorSource` in `src/shared/types.ts`) - `hook`,
+  `legacy`, and `pipeline` are written into `inspector_prs.source`. Append only. The source is
+  provenance for one adopted row, not a second Inspector lifecycle, and an upsert never
+  rewrites it.
 - Workflow graph node kinds, source and target ports, and SessionAction completion kinds
   (`SESSION_ACTION_COMPLETION_KINDS`) - these reach draft graphs, immutable published
   versions, and `session_actions.completion_kind`, and a completion kind is read STRICTLY:
@@ -707,7 +711,7 @@ Extend existing registries instead of adding parallel lists:
 - Task sources: `TASK_SOURCE_KIND_INFO` and `TASK_SOURCES`
 - Pipeline providers: `PIPELINE_PROVIDER_INFO` / `PIPELINE_STEPS` (`src/shared/pipeline.ts`)
   and `PIPELINE_PROVIDERS` (`src/server/pipelines/index.ts`)
-- Task kinds: `TASK_KINDS` (`src/shared/types.ts`) for the ids and their picker order, `TASK_KIND_INFO` (`src/shared/task.ts`) for how they are named and what each is for. Append, never reorder - `ship` at index 0 is what `DEFAULT_TASK_KIND` derives from, and it is the kind every automated writer takes and the one an unreadable persisted value degrades to. Anything that enumerates the SET - a `z.enum`, a check over a persisted value, an `<option>` list - reads the tuple. Comparing against one kind (`kind === "scout"`) is ordinary code and needs nothing; a rule that is really about a PROPERTY of the kind is not, and states it as a predicate over the vocabulary instead (`hasReviewableDiff`). Nothing is grandfathered any more: `TaskSourcesPanel.tsx` and `ScheduleEditor.tsx` hand-wrote their `<option>`s until adding a third kind showed what that costs - they compiled cleanly and silently kept offering two - and both now render from the registry. `test/task-kinds.test.ts` compares the offender set exactly against an empty `KNOWN_HAND_WRITTEN`, and its detector flags any TWO ids declared together, so a stale subset fails as loudly as a complete copy
+- Task kinds: `TASK_KINDS` (`src/shared/types.ts`) for the ids and their picker order, `TASK_KIND_INFO` and `TASK_KIND_BEHAVIOR` (`src/shared/task.ts`) for how they are named, where they are available, who owns the launch, and whether backlog autopilot may act. Append, never reorder - `ship` at index 0 is what `DEFAULT_TASK_KIND` derives from, and it is the kind every automated writer takes and the one an unreadable persisted value degrades to. `pipeline` is append-only and fail-closed: it is offered only in an enabled pipeline repository, launches through the provider-owned terminal path, and is never backlog-autopilot work. Anything that enumerates the SET - a `z.enum`, a check over a persisted value, an `<option>` list - reads the tuple. Comparing against one kind (`kind === "scout"`) is ordinary code and needs nothing; a rule that is really about a PROPERTY of the kind is not, and states it as a predicate or behavior record over the vocabulary instead (`hasReviewableDiff`, `allowsBacklogAutopilot`). Nothing is grandfathered any more: `TaskSourcesPanel.tsx` and `ScheduleEditor.tsx` hand-wrote their `<option>`s until adding a third kind showed what that costs - they compiled cleanly and silently kept offering two - and both now render from the registry. `test/task-kinds.test.ts` compares the offender set exactly against an empty `KNOWN_HAND_WRITTEN`, and its detector flags any TWO ids declared together, so a stale subset fails as loudly as a complete copy
 - Ensemble strategies: shared strategy info and server compiler registry
 - Shared model choice: `resolveModelChoice`
 - Shared predicates: keep one implementation in `src/shared`

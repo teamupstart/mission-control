@@ -81,6 +81,7 @@ import {
   tryWorkflowCompletionClaim,
 } from "./workflow-claim.ts";
 import { automaticWrapupBlock } from "./wrapup-eligibility.ts";
+import { runPipelineTriage } from "./pipeline-triage.ts";
 
 /**
  * The menu on a pane, read with that agent's own grammar - or null when this harness draws
@@ -372,6 +373,14 @@ async function main(): Promise<void> {
       log(`backlog autopilot failed (${String(err)})`);
     } finally {
       await publishBacklogPlannerHealth(client);
+    }
+
+    // A fleet-level loop over external engine halts. The Conductor switch is independent of
+    // backlog autopilot, but the worker lease and Foreman's own master switch still gate it.
+    try {
+      if (await runPipelineTriage(client)) advanced = true;
+    } catch (err) {
+      log(`pipeline triage failed (${String(err)})`);
     }
 
     // Also fleet-level, and outside the "no targets" bail for the same reason: a session

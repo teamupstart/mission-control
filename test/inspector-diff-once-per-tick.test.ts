@@ -191,6 +191,7 @@ function readGithubState(): FakeGithubState {
 function registryStub(): Registry {
   return {
     onPrOpened: () => () => {},
+    onPipelineRun: () => () => {},
     refreshInspections: () => {},
     snapshot: () => ({ sessions: [] }),
   } as unknown as Registry;

@@ -127,6 +127,14 @@ const decide = (over: {
     unassignable: over.unassignable,
   });
 
+test("pipeline tasks never enter backlog autopilot", () => {
+  const pipeline = mkTask({ kind: "pipeline" });
+  assert.deepEqual(decide({ tasks: [pipeline], plan: mkPlan([[pipeline.id, []]]) }), {
+    kind: "none",
+    why: "no backlog item allows unattended scheduling",
+  });
+});
+
 // ---- the switch, and the empty cases -------------------------------------------------
 
 test("autopilot off decides nothing, whatever is waiting", () => {

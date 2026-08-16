@@ -1,8 +1,9 @@
 # Dispatch an agent
 
 The dashboard isn't just a mirror - you can launch new agents from it. Click **＋
-Dispatch** or press <kbd>+</kbd> to start the guided pass, answer its four questions (or press
-<kbd>⇥</kbd> to use the ordinary form), describe the task, and the daemon:
+Dispatch** or press <kbd>+</kbd> to start the guided pass, answer its questions (or press
+<kbd>⇥</kbd> to use the ordinary form), and describe the task. For a harness-owned task the
+daemon:
 
 1. provisions an **isolated worktree** for the task (a pooled
    [treehouse](worktrees-and-checks.md#isolated-worktrees-per-session-treehouse) tree when the repo opted in,
@@ -30,6 +31,21 @@ Dispatch** or press <kbd>+</kbd> to start the guided pass, answer its four quest
 If either launch path cannot prove it started as requested, dispatch fails instead of
 calling an unverified task running.
 
+An enabled conductor repository offers one different launch owner: **pipeline**. It creates
+the ordinary durable task row, then opens `conduct-ts engineer --idea "<intent>"` in a real
+terminal rooted at the repository. Mission Control does not provision its own worktree or
+inject a prompt because conductor owns both. The launch removes inherited `CLAUDECODE` before
+the engine starts; conductor refuses nested agent sessions and reads a real stdin. For the
+same reason Agent, Model, Effort, attached repositories, After work, and Agent SDK runtime do
+not apply. Pipeline tasks also stay out of Foreman's backlog autopilot. The provider's later
+agent sessions join the projected run through their worktree, exactly like a pipeline started
+outside Mission Control.
+
+The first child agent observed in that terminal home's projected worktree binds the durable
+task to the provider run. The task remains independent of any one child session, then reaches
+done when the provider projects the run as processed. Its pull request becomes the outcome
+link, while the terminal home stays recorded until standard cleanup releases it.
+
 ## The guided pass
 
 The form has eight controls, and for most dispatches five of them are already right. Guided
@@ -39,7 +55,7 @@ then hands over the ordinary form with the answers set and the caret in the task
 | Step | Choices | Keys |
 |---|---|---|
 | **Repo** | every repository in the workspace, seeded from the last dispatch | type to filter by repository name, <kbd>↑</kbd><kbd>↓</kbd> to move, <kbd>↵</kbd> to take the highlighted repository |
-| **Kind** | ship, scout, plan | <kbd>p</kbd>, <kbd>t</kbd>, <kbd>l</kbd>, arrows plus <kbd>↵</kbd>, or a position digit |
+| **Kind** | ship, scout, plan, plus pipeline in a conductor-enabled repository | <kbd>p</kbd>, <kbd>t</kbd>, <kbd>l</kbd>, <kbd>e</kbd>, arrows plus <kbd>↵</kbd>, or a position digit |
 | **Harness** | Claude Code, Codex, Pi | <kbd>c</kbd>, <kbd>x</kbd>, <kbd>i</kbd>, arrows plus <kbd>↵</kbd>, or a position digit |
 | **After work** | dispatch default, None, or any active published Workflow | <kbd>d</kbd>, <kbd>n</kbd>, the printed Workflow letter, arrows plus <kbd>↵</kbd>, or a position digit |
 
@@ -249,6 +265,19 @@ comes from the task's own diff, so an unrelated plan sitting in the same checkou
 swept up. Unlike a scout, nothing about a plan **waits** on that: the task reaches done on its
 own boundary, and a plan task that wrote no plan at all releases its worktree cleanly rather
 than holding it.
+
+**pipeline** hands the whole run to the enabled external engine. It preselects **None** for
+After work because Mission Control has no task worktree or agent completion boundary to hand
+to a Workflow. In the guided pass, choosing it completes the pass immediately because the
+Harness and After work questions do not apply. A pipeline launch owns one repository, so
+choosing it also clears repositories attached while another kind was selected. Its eventual
+pull request is still adopted by
+[GitHub Inspector](inspector-and-shipping.md#only-our-pull-requests) from the pipeline
+projection and appears in Shipped.
+The same projected run is also the task's completion boundary: the first child agent proves
+the durable task-to-run join, and a processed projection settles the task without assigning it
+to that child session. Opening a pull request concludes the provider run but does not by itself
+satisfy declared task dependencies, which retain their merge-only rule.
 
 Once the task has a session, this selection is frozen so the task row and
 the already-armed Workflow cannot disagree. MCP-created tasks, task-source sweeps, and

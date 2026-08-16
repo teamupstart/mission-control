@@ -20,6 +20,7 @@ import type {
 import { conductorConsoleArgv, runConductorControl } from "./control.ts";
 import { normalizeConductorRun } from "./normalize.ts";
 import { conductorBin, probeConductor } from "./probe.ts";
+import { resolveBinPath } from "../../util/exec.ts";
 import {
   MAX_RUNS_PER_REPO,
   readConductState,
@@ -338,6 +339,22 @@ function conductorConsole(
   };
 }
 
+/** The exact terminal argv for conductor's idea intake, with the nesting guard scrubbed. */
+export function conductorEngineerArgv(bin: string, intent: string): string[] {
+  return ["/usr/bin/env", "-u", "CLAUDECODE", bin, "engineer", "--idea", intent];
+}
+
+/** Resolve conductor before opening a terminal that would otherwise exit immediately. */
+async function conductorTask(
+  intent: string,
+  repoRoot: string,
+): Promise<{ argv: string[]; cwd: string } | { refused: string }> {
+  const configured = conductorBin();
+  const bin = await resolveBinPath(configured);
+  if (!bin) return { refused: `${configured} is not on this daemon's PATH` };
+  return { argv: conductorEngineerArgv(bin, intent), cwd: repoRoot };
+}
+
 export const CONDUCTOR_PROVIDER: PipelineProvider = {
   provider: "ai-conductor",
   binForPresence: conductorBin,
@@ -347,4 +364,5 @@ export const CONDUCTOR_PROVIDER: PipelineProvider = {
   readRunDetail: readConductorRunDetail,
   control: runConductorControl,
   consoleArgv: conductorConsole,
+  taskArgv: conductorTask,
 };

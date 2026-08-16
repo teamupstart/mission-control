@@ -276,8 +276,16 @@ export interface PipelineRun {
   updatedAt: number;
 }
 
+/** The three coordinates that durably address one provider-owned run. */
+export interface PipelineRunLink {
+  provider: PipelineProviderId;
+  /** Absolute repository root, matching `PipelineRun.repoRoot` exactly. */
+  repoRoot: string;
+  slug: string;
+}
+
 /**
- * What one SESSION carries about the run it is doing the work of - `Session.pipeline`.
+ * What one SESSION carries about the run it is doing the work of: `Session.pipeline`.
  *
  * The run's key plus the step that was running when the session was last observed, and
  * nothing else: a whole `PipelineRun` on every session frame would ship 22 step states per
@@ -285,14 +293,10 @@ export interface PipelineRun {
  *
  * The key is all three coordinates because two repositories legitimately hold the same slug
  * (`pipeline-sse.test.ts` pins that case), so a link naming only provider and slug cannot
- * address the run it belongs to - and addressing it is the whole job of the chip, the ladder
- * and the composer's replacement notice.
+ * address the run it belongs to, which is the whole job of the chip, the ladder and the
+ * composer's replacement notice.
  */
-export interface SessionPipelineLink {
-  provider: PipelineProviderId;
-  /** Absolute repository root, matching `PipelineRun.repoRoot` exactly. */
-  repoRoot: string;
-  slug: string;
+export interface SessionPipelineLink extends PipelineRunLink {
   /** The provider's `lastStep` as of the observation, or null before the first one. */
   step: string | null;
 }
@@ -438,6 +442,8 @@ export type PipelineRepo = z.infer<typeof PipelineRepoSchema>;
  */
 export const PipelinesConfigSchema = z.object({
   enabled: z.boolean().default(false),
+  /** Foreman may unpark mechanical halts. Ships off and never widens to another class. */
+  foremanMechanicalTriage: z.boolean().default(false),
   repos: z
     .array(PipelineRepoSchema)
     .max(MAX_PIPELINE_REPOS)
@@ -450,6 +456,7 @@ export const PipelinesConfigSchema = z.object({
     ),
 });
 export type PipelinesConfig = z.infer<typeof PipelinesConfigSchema>;
+export type PipelinesConfigInput = z.input<typeof PipelinesConfigSchema>;
 
 /**
  * The repositories a pass should actually read: consented to, under a live master switch.
@@ -589,6 +596,21 @@ export interface PipelinesView {
   config: PipelinesConfig;
   probes: PipelineProbe[];
   status: PipelineRepoStatus[];
+}
+
+/** One halted run offered to the standalone Foreman worker. */
+export interface PipelineForemanItem {
+  run: PipelineRun;
+  /** Stable identity for this exact halt observation. */
+  marker: string;
+  /** Whether an episode already owns this marker. */
+  handled: boolean;
+}
+
+/** The narrow, no-probe fleet view Foreman polls for pipeline triage. */
+export interface PipelineForemanView {
+  enabled: boolean;
+  items: PipelineForemanItem[];
 }
 
 // ---- the frozen step table -------------------------------------------------------------
@@ -1149,6 +1171,12 @@ export const PipelineActionRequestSchema = z
     /** The feature, for a run-scoped verb. Null, and refused, for a repository one. */
     slug: z.string().min(1).nullable().default(null),
     action: z.enum(PIPELINE_ACTIONS),
+    /**
+     * Present only for the standalone Foreman worker. An absent value is an operator action,
+     * which remains available when Foreman is off; the daemon re-checks both automation
+     * switches for a Foreman-tagged request immediately before it reaches the provider.
+     */
+    requestedBy: z.literal("foreman").optional(),
     /** The DECIDE step a grant names. */
     step: z.string().min(1).nullable().default(null),
     /** The operator's own justification, for a verb that records one. */

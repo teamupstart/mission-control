@@ -30,6 +30,7 @@ import type {
   SpendReportBody,
   SubmitOptions,
 } from "@shared/protocol.ts";
+import type { PipelineActionResult, PipelineForemanView, PipelineRun } from "@shared/pipeline.ts";
 import type {
   AssignRefusalScope,
   BacklogPlan,
@@ -1070,6 +1071,37 @@ export class ForemanClient implements ForemanActions {
       error: body.error ?? `assign -> ${res.status}`,
       scope: body.scope,
     };
+  }
+
+  // ---- external pipeline triage ----
+
+  /** The daemon's current, opt-in halt view. This read never probes the provider. */
+  pipelineForeman(): Promise<PipelineForemanView> {
+    return get<PipelineForemanView>("/api/pipelines/foreman");
+  }
+
+  /** Stamp ownership of an action before the request crosses to the provider. */
+  async recordPipelineEpisode(run: PipelineRun, episode: RecordEpisode): Promise<void> {
+    const res = await send("POST", "/api/pipelines/foreman-episode", {
+      provider: run.provider,
+      repoRoot: run.repoRoot,
+      slug: run.slug,
+      episode,
+    });
+    if (!res.ok) throw new Error(`recordPipelineEpisode -> ${res.status}`);
+  }
+
+  /** Drive the same phase 4 action route the dashboard uses. */
+  async pipelineAction(run: PipelineRun, action: "unpark"): Promise<PipelineActionResult> {
+    const res = await send("POST", "/api/pipelines/action", {
+      provider: run.provider,
+      repoRoot: run.repoRoot,
+      slug: run.slug,
+      action,
+      requestedBy: "foreman",
+    });
+    if (!res.ok) throw new Error(`pipelineAction -> ${res.status}`);
+    return (await res.json()) as PipelineActionResult;
   }
 
   /**

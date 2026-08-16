@@ -522,6 +522,40 @@ test("it forwards nothing rather than guessing which repository an event belongs
   assert.match(warnings[0] ?? "", /not observed at all/);
 });
 
+test("a spent warning budget silences its own kind, and only its own kind", async () => {
+  // The failure a single shared counter produces, written down: the FIRST thing that goes
+  // wrong spends the plugin's whole voice, and everything after it is silent - including the
+  // things an operator has to act on. A misconfigured working directory at startup is the
+  // cheapest possible way to hit that, and a refused transport is the news it would eat.
+  const warnings: string[] = [];
+  const fetchImpl = (async () => {
+    throw new Error("ECONNREFUSED");
+  }) as unknown as typeof fetch;
+  const bus = stubBus();
+  const plugin = createMissionControlVisualizer({
+    env: { MISSION_CONTROL_REPO: REPO },
+    cwd: "/elsewhere",
+    token: "t",
+    fetchImpl,
+    warn: (message) => warnings.push(message),
+  });
+  plugin.start(bus);
+  // Two unaddressable events, which is one KIND. Its own budget still holds.
+  bus.emit({ type: "step_started", step: "build" });
+  bus.emit({ type: "step_started", step: "test" });
+  assert.equal(warnings.length, 1, "one line per kind, not one per event");
+
+  // And now an event that resolves, on a plugin whose budget a triviality already spent.
+  bus.emit({ type: "step_started", step: "build", slug: "a-feature" });
+  await plugin.stop();
+  assert.equal(warnings.length, 2, "a different kind of failure is still owed its one line");
+  assert.match(warnings[0] ?? "", /could not tell which conductor worktree/);
+  assert.match(warnings[1] ?? "", /being retried/);
+  // Six kinds, one line each, is the ceiling for the life of the process - so `warnings` is
+  // still a bounded total rather than a per-kind map a caller would have to sum itself.
+  assert.equal(plugin.stats().warnings, 2);
+});
+
 test("identity resolves from the pin, the working directory, then the event", () => {
   const run = { repo: REPO, worktree: WORKTREE, slug: "a-feature" };
   // 1. The pin wins, and is what a per-feature wiring should set.

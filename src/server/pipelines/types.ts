@@ -137,6 +137,12 @@ export interface PipelineProvider {
    * "could not look" must not retire a projection. Here, on a door, it refuses: an
    * unreadable directory cannot license a durable write, and the file tail still backfills
    * whatever was turned away.
+   *
+   * A provider that saw only PART of the truth still answers with the part it saw, rather
+   * than with null. The two are different claims and only one of them is "I cannot look at
+   * this repository": a listing cut short by a cap knows perfectly well that the runs in it
+   * exist, and refusing their events because some other run might have been cut off spends
+   * the events of every run to protect the retention of one.
    */
   knownRunSlugs(repoRoot: string): ReadonlySet<string> | null;
   /**

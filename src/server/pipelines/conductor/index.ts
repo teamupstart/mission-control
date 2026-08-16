@@ -20,7 +20,7 @@ import {
   readWorktrees,
   type DaemonReading,
 } from "./state.ts";
-import { tailConductorEvents, tokensIn } from "./tail.ts";
+import { ledgerReplaced, tailConductorEvents, tokensIn } from "./tail.ts";
 
 // The ai-conductor provider: one probe, and one file-only pass over a repository.
 //
@@ -87,9 +87,19 @@ async function readConductorRepo(
       // See `PipelineReadOptions.shouldTail` - a run whose events are arriving by push still
       // has its halt marker, its step statuses and its daemon markers read every pass,
       // because those are the source of truth and a push is not.
-      const tail = (options?.shouldTail?.(worktree.slug) ?? true)
-        ? tailConductorEvents(worktree.path, held?.offset ?? 0, held?.identity ?? null)
-        : null;
+      //
+      // A REPLACED ledger overrules the demotion, and that is not a hedge. Both the restart
+      // flag and this pass's own token spend are produced by the read; decline it on a
+      // worktree that was torn down and re-cut under the same slug, and the watcher never
+      // learns to drop the old run's carried total, so the new run is displayed with the
+      // spend of the one it replaced - for up to a whole backfill interval, on the runs that
+      // are live enough to have been demoted in the first place. `ledgerReplaced` is a single
+      // `stat` and answers exactly that case.
+      const wanted = options?.shouldTail?.(worktree.slug) ?? true;
+      const tail =
+        wanted || ledgerReplaced(worktree.path, held?.identity ?? null)
+          ? tailConductorEvents(worktree.path, held?.offset ?? 0, held?.identity ?? null)
+          : null;
       // A declined read carries the held cursor forward UNCHANGED. Writing a zero here
       // instead would make every relaxed tick re-read the whole ledger from the top the
       // moment the run stopped being live, which is the opposite of relaxing it.
@@ -168,14 +178,21 @@ async function readConductorRepo(
  * Which slugs this repository is actually driving, for the ingest door.
  *
  * `readWorktrees` and nothing else, so this cannot drift from what `readConductorRepo`
- * counts as a run: same directory, same `.pipeline/` requirement, same cap. A truncated
- * listing is treated as "could not look", because the slug being asked about may be exactly
- * one of the entries the cap cut off, and answering "no" to it would refuse a real run's
- * events for as long as the repository stayed over the cap.
+ * counts as a run: same directory, same `.pipeline/` requirement, same cap.
+ *
+ * A TRUNCATED listing still answers, with the runs it did see. Returning null there - "could
+ * not look" - was the earlier judgement and it was wrong in the direction that costs events:
+ * a repository over the cap would have had every push refused, including pushes for the runs
+ * this build is actively projecting, because some OTHER slug might have been cut off. The
+ * slugs beyond the cap are still refused, and that is the correct half of the old reasoning:
+ * a run no pass enumerates is a run no retirement walks, so a row under its slug would be a
+ * row nothing ever retires.
+ *
+ * Only an unreadable directory is "could not look", and only that refuses everything.
  */
 function conductorRunSlugs(repoRoot: string): ReadonlySet<string> | null {
   const listing = readWorktrees(repoRoot, INFO.worktreesDir);
-  if (listing === null || listing.truncated) return null;
+  if (listing === null) return null;
   return new Set(listing.worktrees.map((worktree) => worktree.slug));
 }
 

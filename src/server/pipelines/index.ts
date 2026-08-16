@@ -21,7 +21,7 @@ import {
   loadPipelineRuns,
   pipelineEventCursors,
   pipelineEventSlugs,
-  pipelineProjectedRepos,
+  pipelineStoredRepos,
   upsertPipelineRunRow,
 } from "../db.ts";
 import { unref } from "../util/timers.ts";
@@ -328,7 +328,7 @@ export function restorePipelineProjection(sink: PipelineProjectionSink): void {
   const consented = new Set(
     activePipelineRepos(getPipelinesConfig()).map((repo) => pipelineRepoKey(repo.provider, repo.repoRoot)),
   );
-  for (const { provider, repoRoot } of pipelineProjectedRepos()) {
+  for (const { provider, repoRoot } of pipelineStoredRepos()) {
     if (consented.has(pipelineRepoKey(provider, repoRoot))) continue;
     deletePipelineRunsForRepo(provider, repoRoot);
     deletePipelineEventsForRepo(provider, repoRoot);
@@ -599,7 +599,19 @@ export async function drainPipelineRefreshes(sink: PipelineProjectionSink): Prom
   }
   const due = [...pendingIngest.values()];
   pendingIngest.clear();
+  // Consent is re-read HERE, not trusted from when the push was accepted. This queue is a
+  // debounce, so between the POST that filled it and the timer that drains it an operator
+  // can have switched the repository off - and a pass is a durable write plus an emit, so
+  // running one for a repository nobody consents to any more would re-create the very rows
+  // `forgetPipelineRepo` just deleted. It clears this queue as well, which closes the window
+  // from the other side; this is the check that also covers a pass already dequeued.
+  const consented = new Set(
+    activePipelineRepos(getPipelinesConfig()).map((repo) =>
+      pipelineRepoKey(repo.provider, repo.repoRoot),
+    ),
+  );
   for (const { provider, repoRoot } of due) {
+    if (!consented.has(pipelineRepoKey(provider, repoRoot))) continue;
     try {
       await refreshPipelineRepo(sink, provider, repoRoot);
     } catch (err) {
@@ -635,6 +647,12 @@ export function forgetPipelineRepo(
   deletePipelineEventsForRepo(provider, repoRoot);
   forgetPipelineIngest(provider, repoRoot);
   statuses.delete(pipelineRepoKey(provider, repoRoot));
+  // And the pass a push had already queued for it. Without this, withdrawing consent inside
+  // the debounce window deletes the rows and then lets a pass scheduled 150ms ago write them
+  // back - a repository the operator switched off, re-appearing on the page by itself. The
+  // drain re-checks consent for the same reason from the other end; both are cheap and
+  // neither alone closes the window.
+  pendingIngest.delete(pipelineRepoKey(provider, repoRoot));
 }
 
 /**
@@ -648,7 +666,7 @@ export function reconcilePipelineConsent(sink: PipelineProjectionSink): void {
   const consented = new Set(
     activePipelineRepos(getPipelinesConfig()).map((repo) => pipelineRepoKey(repo.provider, repo.repoRoot)),
   );
-  for (const { provider, repoRoot } of pipelineProjectedRepos()) {
+  for (const { provider, repoRoot } of pipelineStoredRepos()) {
     if (consented.has(pipelineRepoKey(provider, repoRoot))) continue;
     forgetPipelineRepo(sink, provider, repoRoot);
   }
@@ -715,8 +733,12 @@ export function startPipelineWatcher(
       const repos = activePipelineRepos(getPipelinesConfig());
       // The whole cost of this feature on a fleet that has enabled nothing: one KV read,
       // plus a handful of `existsSync` calls once a minute. Not even the consent
-      // reconciliation runs, because with no projected repositories there is nothing for it
-      // to find - and `pipelineProjectedRepos()` is a query.
+      // reconciliation runs, because a fleet that has never consented to a repository has
+      // nothing stored for it to find - and `pipelineStoredRepos()` is a query.
+      //
+      // Withdrawal does not rely on this tick reaching it. The config route reconciles on
+      // the write, which is what makes a repository switched off between two ticks lose its
+      // rows at the moment the operator switched it off rather than a minute later.
       if (repos.length > 0 || statuses.size > 0) {
         reconcilePipelineConsent(sink);
         for (const repo of repos) {

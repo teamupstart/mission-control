@@ -17,7 +17,8 @@ import { basename, dirname, join, sep } from "node:path";
 //    the engine's own critical path. Every handler here appends to an array and returns.
 //  - **Nothing throws.** The emitter swallows handler errors, so a throw would be invisible
 //    here and free elsewhere - which is worse than useless. Failures are counted and warned
-//    about once.
+//    about once EACH KIND: one budget across every category would let the first triviality
+//    that went wrong silence the refused token that came after it.
 //  - **The buffer is bounded.** A daemon that is not running must cost a bounded amount of
 //    memory in a process that may run for days, so the buffer drops its oldest entries and
 //    says so once.
@@ -61,7 +62,7 @@ const MAX_BATCH = 500;
  */
 const MAX_BUFFER = 5000;
 
-/** How many times this process will complain about anything. */
+/** How many times this process will complain about each KIND of failure. See `warnOnce`. */
 const MAX_WARNINGS = 1;
 
 /**
@@ -346,7 +347,8 @@ export function createMissionControlVisualizer(options = {}) {
   let timer = null;
   let emitter = null;
   let handlers = [];
-  let warned = 0;
+  /** How many warnings each KIND of failure has spent. See `warnOnce`. */
+  const warned = new Map();
   let dropped = 0;
   let inFlight = null;
   /** Aborts the open request, so a hung daemon cannot hold conductor's shutdown. */
@@ -380,11 +382,23 @@ export function createMissionControlVisualizer(options = {}) {
    * retry policy still owns those events.
    */
   const settleWithin = async (promise, ms) => {
-    if (ms <= 0) inFlightAbort?.abort?.();
+    // Absorbed ONCE, up front, and everything below waits on the absorbed copy. `stop()` is
+    // conductor's shutdown path: a rejection escaping this function fails the engine's exit,
+    // and it would do so precisely when the bounded path was needed. The rejection that could
+    // do it is the one this function causes - the abort below - so it must not be possible to
+    // reach a `race` or a `return` with the raw promise still unhandled. An already-expired
+    // budget is the case that makes this concrete: the abort fires before the race is even
+    // entered, and the rejection can win it.
+    const settled = promise.catch(() => {});
+    if (ms <= 0) {
+      inFlightAbort?.abort?.();
+      await settled;
+      return;
+    }
     let expired = false;
     await Promise.race([
-      promise,
-      sleep(Math.max(0, ms)).then(() => {
+      settled,
+      sleep(ms).then(() => {
         expired = true;
       }),
     ]);
@@ -392,20 +406,37 @@ export function createMissionControlVisualizer(options = {}) {
     inFlightAbort?.abort?.();
     // Let the abort propagate through the catch that requeues, so the batch is not left
     // owned by a request nobody is waiting for.
-    await promise.catch(() => {});
+    await settled;
   };
 
-  /** Complain at most `MAX_WARNINGS` times, about anything, for the life of the process. */
-  const warnOnce = (message) => {
-    if (warned >= MAX_WARNINGS) return;
-    warned += 1;
-    log(`[mission-control] ${message} (further warnings suppressed)`);
+  /**
+   * Complain at most `MAX_WARNINGS` times about each KIND of thing that can go wrong.
+   *
+   * Per kind rather than per instance, and the difference is the whole value of the budget.
+   * One counter across every category means the first thing that ever goes wrong spends it:
+   * a working directory outside a worktree at startup, or one dropped-buffer warning during
+   * a burst, and the operator has now been told everything this plugin will ever tell them -
+   * including, later, that their token is being refused on every retry. Those are not the
+   * same news, and a budget that cannot tell them apart is a budget that silences the
+   * important one on the strength of the trivial one.
+   *
+   * Still one line per kind, for the reason the cap exists at all: this runs inside somebody
+   * else's process, and a plugin that can narrate a failing daemon into their log for hours
+   * is a plugin that has made itself the problem. The kinds are enumerated at the call sites
+   * and there are six of them, so the ceiling is six lines for the life of the process.
+   */
+  const warnOnce = (kind, message) => {
+    const spent = warned.get(kind) ?? 0;
+    if (spent >= MAX_WARNINGS) return;
+    warned.set(kind, spent + 1);
+    log(`[mission-control] ${message} (further ${kind} warnings suppressed)`);
   };
 
   const enqueue = (event) => {
     const run = pinned ?? resolveRun(env, cwd, event);
     if (!run) {
       warnOnce(
+        "identity",
         "could not tell which conductor worktree these events belong to, so none are being " +
           "forwarded; set MISSION_CONTROL_WORKTREE, or MISSION_CONTROL_REPO. Mission " +
           "Control still reads the engine's files, so everything conductor writes down is " +
@@ -429,6 +460,7 @@ export function createMissionControlVisualizer(options = {}) {
       dropped += buffer.length - MAX_BUFFER;
       buffer = buffer.slice(-MAX_BUFFER);
       warnOnce(
+        "buffer",
         `dropped ${dropped} buffered event(s) - is the Mission Control daemon running at ${url}?`,
       );
     }
@@ -478,6 +510,7 @@ export function createMissionControlVisualizer(options = {}) {
       // always queued events and never the batch itself.
       buffer = buffer.slice(0, MAX_BUFFER);
       warnOnce(
+        "buffer",
         `dropped ${dropped} buffered event(s) - is the Mission Control daemon running at ${url}?`,
       );
     }
@@ -529,6 +562,7 @@ export function createMissionControlVisualizer(options = {}) {
             sendLimit = Math.max(1, Math.floor(batch.length / 2));
             requeue(batch);
             warnOnce(
+              "oversize",
               `Mission Control refused a ${batch.length}-event batch as too large (413); ` +
                 `retrying in smaller batches`,
             );
@@ -539,6 +573,7 @@ export function createMissionControlVisualizer(options = {}) {
           // named rather than retried for ever at the head of the queue.
           dropped += 1;
           warnOnce(
+            "oversize",
             `Mission Control refused a single ${body.length}-byte event as too large (413); ` +
               `it cannot be delivered at any batch size and has been dropped`,
           );
@@ -558,6 +593,7 @@ export function createMissionControlVisualizer(options = {}) {
         // Named rather than generic, because the two failures an operator can actually fix
         // look nothing alike from here and the message is the only diagnosis they get.
         warnOnce(
+          res.status === 401 ? "token" : "refused",
           res.status === 401
             ? `Mission Control refused this plugin's token (401). Set MISSION_CONTROL_TOKEN, ` +
                 `or check that ~/.mission-control/token is readable by the user conductor runs as`
@@ -566,6 +602,7 @@ export function createMissionControlVisualizer(options = {}) {
       } catch (err) {
         requeue(batch);
         warnOnce(
+          "transport",
           `could not reach Mission Control at ${url} (${err instanceof Error ? err.message : String(err)}); ` +
             `these events are being retried. Most of them are also in the engine's own ` +
             `events.jsonl, but the daemon-scope ones are not written anywhere else`,
@@ -603,7 +640,10 @@ export function createMissionControlVisualizer(options = {}) {
           } catch (err) {
             // Belt and braces. The emitter swallows handler errors, so a throw here would be
             // invisible - which makes catching it the only way to find out.
-            warnOnce(`failed to buffer an event: ${err instanceof Error ? err.message : String(err)}`);
+            warnOnce(
+              "handler",
+              `failed to buffer an event: ${err instanceof Error ? err.message : String(err)}`,
+            );
           }
         };
         bus.on(type, handler);
@@ -657,9 +697,18 @@ export function createMissionControlVisualizer(options = {}) {
       }
     },
 
-    /** What this instance has seen. For the tests, and for a support question. */
+    /**
+     * What this instance has seen. For the tests, and for a support question.
+     *
+     * `warnings` is the total number of lines printed, summed across the kinds - the answer
+     * to "how much of somebody else's log has this plugin spent", which is the question the
+     * budget exists for. The per-kind split is an implementation detail of which line gets
+     * printed, not something a caller has any use for.
+     */
     stats() {
-      return { buffered: buffer.length, dropped, warnings: warned };
+      let warnings = 0;
+      for (const spent of warned.values()) warnings += spent;
+      return { buffered: buffer.length, dropped, warnings };
     },
   };
 }

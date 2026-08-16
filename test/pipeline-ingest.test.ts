@@ -332,6 +332,54 @@ test("a repository whose runs cannot be listed stores nothing, rather than trust
   assert.equal(pipelineIngestState("ai-conductor", blocked), "never");
 });
 
+test("a push for a repository that lost consent mid-debounce is not folded back", async () => {
+  const { registry, push, request } = fixture();
+  seedConductorRun(repo, "a-feature", { steps: { build: "in_progress" } });
+  await push(line("a-feature", { type: "step_started" }, 1));
+
+  // Withdrawn between the push being accepted and the debounce firing, which is a 150ms
+  // window an operator can absolutely land in - they click the switch while the engine is
+  // mid-step. The route checked consent when the batch arrived; that answer is now stale.
+  const off = await request("/api/pipelines/config", {
+    method: "PUT",
+    body: JSON.stringify({ enabled: true, repos: [] }),
+  });
+  assert.equal(off.status, 200);
+  assert.equal(registry.listPipelineRuns().length, 0, "withdrawal empties the projection");
+
+  // The queued pass must not put it back. A pass is a durable write plus an emit, so a
+  // repository the operator switched off would re-appear on the page by itself - and its
+  // ledger rows with it, written under a consent that no longer exists.
+  await drainPipelineRefreshes(registry);
+  assert.equal(registry.listPipelineRuns().length, 0, "a queued pass must not re-create it");
+  assert.equal(countPipelineEvents("ai-conductor", repo, "a-feature"), 0);
+});
+
+test("a body that cannot be read is refused, not counted as an empty batch", async () => {
+  const { push: _push, request } = fixture();
+  seedConductorRun(repo, "a-feature", { steps: { build: "in_progress" } });
+  // A stream that errors mid-body: a dropped connection, or the plugin's own shutdown abort
+  // ending a request the daemon had already started reading.
+  const body = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode('{"partial":'));
+      controller.error(new Error("connection reset"));
+    },
+  });
+  const res = await request("/ingest/conductor", {
+    method: "POST",
+    body,
+    // @ts-expect-error - `duplex` is required for a streaming body and is not in the DOM lib.
+    duplex: "half",
+    headers: { "content-type": "application/x-ndjson", "x-harness-token": ensureToken() },
+  });
+  // NOT 200. The producer treats any 2xx as delivered and drops the batch, so answering
+  // "received 0" to a read failure would destroy the events rather than lose the request -
+  // and for the kinds conductor never writes down, nothing could ever put them back.
+  assert.equal(res.status, 503);
+  assert.equal(countPipelineEvents("ai-conductor", repo, "a-feature"), 0);
+});
+
 test("a run removed before its FIRST pass does not leave its ledger behind", async () => {
   const { registry, push } = fixture();
   seedConductorRun(repo, "brief", { steps: { build: "in_progress" } });

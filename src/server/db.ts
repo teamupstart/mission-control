@@ -5447,13 +5447,30 @@ export function deletePipelineRunsForRepo(
   return rows.map((r) => r.slug);
 }
 
-/** Every (provider, repoRoot) pair the projection currently holds rows for. */
-export function pipelineProjectedRepos(): Array<{
+/**
+ * Every (provider, repoRoot) pair this daemon holds ANY durable pipeline rows for.
+ *
+ * Both tables, unioned, because this is what consent is reconciled against - and the two
+ * are not written at the same moment. A pushed batch lands in the ledger the instant it is
+ * accepted, while a `pipeline_runs` row appears only once a pass has run; a repository that
+ * was switched on, pushed to, and switched off inside one debounce window therefore has
+ * ledger rows and no projection row at all. Asking only the projection would walk straight
+ * past it and leave those rows behind for good, written under a consent that no longer
+ * exists - the same shape as a run whose slug no pass enumerates, one level up.
+ *
+ * The reverse case is just as real and is why this is a union rather than a swap: a
+ * repository read by a pass that pushed nothing has runs and an empty ledger.
+ */
+export function pipelineStoredRepos(): Array<{
   provider: PipelineProviderId;
   repoRoot: string;
 }> {
   const rows = openDb()
-    .prepare(`SELECT DISTINCT provider, repo_root FROM pipeline_runs`)
+    .prepare(
+      `SELECT provider, repo_root FROM pipeline_runs
+       UNION
+       SELECT provider, repo_root FROM pipeline_events`,
+    )
     .all() as unknown as Array<{ provider: string; repo_root: string }>;
   return rows
     .filter((r): r is { provider: PipelineProviderId; repo_root: string } =>

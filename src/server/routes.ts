@@ -2318,7 +2318,19 @@ export function buildApp(
     // that owns the event loop.
     const declared = Number(c.req.header("content-length"));
     if (Number.isFinite(declared) && declared > MAX_INGEST_BYTES) return tooLarge();
-    const body = await c.req.text().catch(() => "");
+    // A body that could not be READ is refused, and it is worth being exact about why this
+    // one line is not a swallowed error. The producer treats any 2xx as delivered and drops
+    // the batch from its buffer; a dropped connection, a stream error or the plugin's own
+    // shutdown abort would otherwise arrive here as the empty string, be counted as a batch
+    // of nothing, and answer 200 - so a TRANSPORT failure would destroy exactly the events
+    // no file records. 5xx is what the plugin retries, and retrying is the whole posture the
+    // unpersisted kinds depend on.
+    let body: string;
+    try {
+      body = await c.req.text();
+    } catch {
+      return c.json({ error: "could not read the batch body" }, 503);
+    }
     // Then on the MEASURED length, because the header is the producer's claim rather than a
     // fact - it can be absent entirely under chunked encoding, and wrong otherwise. Measured
     // in BYTES: a JavaScript string is counted in UTF-16 code units, so a body of three-byte

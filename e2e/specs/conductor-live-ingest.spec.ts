@@ -118,6 +118,19 @@ test("a pushed batch projects a run the daemon has not polled for", async ({ pag
   await page.goto(`${daemon.baseURL}/#/settings/conductor`);
   await expect(page.getByText(/Installed at .*conduct-ts/)).toBeVisible();
 
+  // The install instruction, read before anything is switched on - which is the whole of
+  // what makes this route reachable by an operator rather than only by a test. Both paths
+  // are asserted verbatim because they ARE the contract: a plugin copied anywhere other than
+  // `~/.ai-conductor/plugins/mission-control/` is a plugin the engine never loads, and this
+  // sentence is the only place the dashboard says where it goes.
+  const hint = page.getByText(
+    /To have the engine push its events instead - the same picture, without the wait - copy integrations\/ai-conductor\/mission-control\/ from the Mission Control checkout into ~\/\.ai-conductor\/plugins\/mission-control\/ and give it this daemon's URL and token\./,
+  );
+  await expect(hint).toBeVisible();
+  // Framed as an option, and it has to stay one: the row below is about to observe this
+  // repository by tailing files with nothing installed at all.
+  await expect(hint).toContainText("Reading files on a cadence needs nothing installed");
+
   // Consent, in two acts, exactly as the operator gives it.
   await page.locator('.sc-card[data-anchor="conductor/enabled"] label.sc-switch').click();
   const repoSwitch = page.getByRole("checkbox", { name: "Observe pipelines in demo-repo" });

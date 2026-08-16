@@ -1400,8 +1400,9 @@ its work needs one: [`submit_ensemble_result`](ensembles.md#multi-agent-ensemble
 ensemble member, [`submit_scout_artifacts`](archives.md) for a scout, and
 `submit_workflow_evidence` for a workflow-bound ship task whose immutable graph contains a
 Persona. The workflow tool registers contained gitignored screenshots by issued repository
-slot before task completion. It never tells the agent to commit them, and a ship task without
-such a workflow keeps its prior launch and prompt unchanged:
+slot or across all applicable repositories before task completion. It never tells the agent
+to commit them, and a ship task without such a workflow keeps its prior launch and prompt
+unchanged:
 
 - `share_plan(title, plan)` - show a markdown plan (non-blocking)
 - `request_plan_decisions(title, plan, decisions)` - show a plan with selectable
@@ -1419,7 +1420,8 @@ such a workflow keeps its prior launch and prompt unchanged:
   submitting it; without them, a text box
 - `report_status(activity)` - update the session's activity line
 - `submit_workflow_evidence(images)` - register bounded gitignored screenshots for the
-  selected Persona workflow using issued repository slots and checkout-relative paths
+  selected Persona workflow with `repositoryScope` set to an issued repository slot or `all`
+  for every applicable repository, plus checkout-relative paths
 
 Because the MCP server is a child of the agent, it inherits the terminal env and
 binds every call to the correct session automatically.

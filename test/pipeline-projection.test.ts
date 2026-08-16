@@ -32,7 +32,9 @@ import type { PipelineRun } from "../src/shared/pipeline.ts";
 const home = mkdtempSync(join(tmpdir(), "mission-pipeline-projection-"));
 process.env.HARNESS_HOME = join(home, "state");
 
-const { openDb, loadPipelineRuns, pipelineEventCursors } = await import("../src/server/db.ts");
+const { automationSpendSince, openDb, loadPipelineRuns, pipelineEventCursors } = await import(
+  "../src/server/db.ts"
+);
 const { Registry } = await import("../src/server/registry.ts");
 const { setPipelinesConfig } = await import("../src/server/pipelines/config.ts");
 const {
@@ -42,7 +44,9 @@ const {
   refreshPipelineRepo,
   restorePipelineProjection,
 } = await import("../src/server/pipelines/index.ts");
-const { seedConductorDaemon, seedConductorRun } = await import("../e2e/fixtures/conductor.ts");
+const { seedConductorDaemon, seedConductorRun, writeShippedRecord } = await import(
+  "../e2e/fixtures/conductor.ts"
+);
 
 const db = openDb();
 after(() => rmSync(home, { recursive: true, force: true }));
@@ -610,4 +614,235 @@ test("a pass that could not look retires nothing", async () => {
   assert.equal(registry.listPipelineRuns().length, 1, "the run must survive a failed look");
   assert.equal(loadPipelineRuns().length, 1, "and so must its row");
   assert.equal(events.length, 0, "nothing is told a run went away");
+});
+
+// ---- what a feature cost, in the fleet's own spend ledger --------------------------------
+//
+// The figure is the ENGINE's, read from the record it commits when a feature ships, and it
+// enters the ledger under the `conductor` writer id. Two properties make that safe to do from
+// a projection that re-reads the same files every tick, and both are asserted below: the row
+// is keyed per feature, so re-projection replaces rather than accumulates; and an incomplete
+// figure is stored as unpriced rather than as a total.
+
+/** Every automation row this engine has written, oldest first. */
+function conductorRows(): Array<{
+  note_key: string;
+  window_end_ns: string;
+  writer: string;
+  agent: string;
+  spend_kind: string;
+  cost_usd: number;
+  cost_basis: string;
+  cost_known: number;
+  input: number;
+  output: number;
+  cache_read: number;
+  cache_write: number;
+  ts: number;
+}> {
+  return db
+    .prepare("SELECT * FROM usage_ledger WHERE writer = 'conductor' ORDER BY rowid")
+    .all() as never;
+}
+
+test("a shipped feature's cost enters the ledger once, and re-projection never doubles it", async () => {
+  reset();
+  db.exec("DELETE FROM usage_ledger");
+  const root = repo("cost-once");
+  seedConductorRun(root, "feat", {
+    steps: { finish: "done" },
+    done: true,
+    shipped: { input: 1200, output: 340, cacheRead: 90, cacheWrite: 10, costUsd: 0.42, dispatches: 6 },
+  });
+  seedConductorDaemon(root, { pid: process.pid });
+  consentTo(root);
+
+  const registry = new Registry();
+  await refreshPipelineRepo(registry, "ai-conductor", root);
+
+  const [row] = conductorRows();
+  assert.equal(conductorRows().length, 1);
+  assert.equal(row?.note_key, "pipeline:ai-conductor", "the role the spend strip groups by");
+  assert.equal(row?.agent, "ai-conductor");
+  assert.equal(row?.spend_kind, "automation");
+  assert.equal(row?.writer, "conductor");
+  // Keyed by the FEATURE, in the column the ledger's uniqueness constraint covers - which is
+  // what makes the write above an upsert rather than an append.
+  assert.match(String(row?.window_end_ns), /ai-conductor.*feat/s);
+  assert.equal(row?.input, 1200);
+  assert.equal(row?.output, 340);
+  assert.equal(row?.cache_read, 90);
+  assert.equal(row?.cache_write, 10);
+  assert.equal(row?.cost_usd, 0.42);
+  assert.equal(row?.cost_known, 1);
+  assert.equal(row?.cost_basis, "reported", "the engine's own provider priced it");
+
+  // The whole hazard of putting a ledger write inside a projection that re-reads on a
+  // cadence: three more passes must not become three more rows, or four times the cost.
+  for (let pass = 0; pass < 3; pass += 1) {
+    await refreshPipelineRepo(registry, "ai-conductor", root);
+  }
+  assert.equal(conductorRows().length, 1, "one feature, one row");
+  assert.equal(conductorRows()[0]?.input, 1200);
+
+  // And the run detail shows the engine's committed figure rather than the running tail.
+  assert.equal(registry.listPipelineRuns()[0]?.costTokens, 1200 + 340 + 90 + 10);
+});
+
+test("a rewritten record updates the row it already owns", async () => {
+  // The engine re-runs a step after the record was written and commits a bigger figure. The
+  // ledger must move to the new number, not add it to the old one.
+  reset();
+  db.exec("DELETE FROM usage_ledger");
+  const root = repo("cost-rewritten");
+  seedConductorRun(root, "feat", {
+    steps: { finish: "done" },
+    done: true,
+    shipped: { input: 100, output: 10, costUsd: 0.01 },
+  });
+  seedConductorDaemon(root, { pid: process.pid });
+  consentTo(root);
+  const registry = new Registry();
+  await refreshPipelineRepo(registry, "ai-conductor", root);
+  assert.equal(conductorRows()[0]?.input, 100);
+
+  writeShippedRecord(join(root, ".worktrees", "feat"), "feat", {
+    input: 500,
+    output: 60,
+    costUsd: 0.09,
+  });
+  await refreshPipelineRepo(registry, "ai-conductor", root);
+  assert.equal(conductorRows().length, 1);
+  assert.equal(conductorRows()[0]?.input, 500);
+  assert.equal(conductorRows()[0]?.cost_usd, 0.09);
+});
+
+test("a partly-metered feature is stored as unpriced, with its tokens intact", async () => {
+  // The rule every other writer holds: a cost summed over the priced dispatches of a
+  // partly-priced feature is a subtotal, and presenting it as a total is the one thing the
+  // ledger's `cost_known` column exists to prevent. The tokens are still real, so they stay.
+  reset();
+  db.exec("DELETE FROM usage_ledger");
+  const root = repo("cost-partial");
+  seedConductorRun(root, "feat", {
+    steps: { finish: "done" },
+    done: true,
+    shipped: { input: 700, output: 90, costUsd: 0.05, costUnmetered: 2 },
+  });
+  seedConductorDaemon(root, { pid: process.pid });
+  consentTo(root);
+  await refreshPipelineRepo(new Registry(), "ai-conductor", root);
+
+  const [row] = conductorRows();
+  assert.equal(row?.cost_known, 0);
+  assert.equal(row?.cost_basis, "unpriced");
+  assert.equal(row?.cost_usd, 0, "an unpriced row carries no dollars to be summed by accident");
+  assert.equal(row?.input, 700);
+  assert.equal(row?.output, 90);
+
+  // And the strip that reads the ledger says so: tokens, and no cost figure at all.
+  const spend = automationSpendSince(0).find((entry) => entry.role === "pipeline:ai-conductor");
+  assert.equal(spend?.tokens, 790);
+  assert.equal(spend?.costUsd, null);
+});
+
+test("a feature still in flight contributes no row at all", async () => {
+  // Not a zero. The engine writes the record when a feature ships, and a row of zeroes for a
+  // run that is spending money right now would be a claim nobody made - the same distinction
+  // the run chip draws between null and 0.
+  reset();
+  db.exec("DELETE FROM usage_ledger");
+  const root = repo("cost-in-flight");
+  seedConductorRun(root, "feat", {
+    steps: { build: "in_progress" },
+    events: [{ type: "step_completed", step: "build", tokenUsage: { input: 40, output: 10 } }],
+  });
+  seedConductorDaemon(root, { pid: process.pid });
+  consentTo(root);
+
+  const registry = new Registry();
+  await refreshPipelineRepo(registry, "ai-conductor", root);
+  assert.deepEqual(conductorRows(), []);
+  // The run detail still shows what the tail has seen, which is the live estimate.
+  assert.equal(registry.listPipelineRuns()[0]?.costTokens, 50);
+});
+
+test("a spend row reaches the fleet's cost surface in the same pass that wrote it", async () => {
+  // The row is written behind every surface's back: no session holds a pipeline's role key,
+  // so nothing about a feature shipping would otherwise recompute the fleet. Left unannounced,
+  // the engine's figure appears on the spend chip only when some unrelated event happens to
+  // recompute - and for a fleet with no live session at all, that is the idle sweep minutes
+  // later, which is exactly the fleet this feature is for.
+  reset();
+  db.exec("DELETE FROM usage_ledger");
+  const root = repo("cost-emits");
+  seedConductorRun(root, "feat", {
+    steps: { finish: "done" },
+    done: true,
+    shipped: { input: 1000, output: 200, costUsd: 0.3 },
+  });
+  seedConductorDaemon(root, { pid: process.pid });
+  consentTo(root);
+
+  const registry = new Registry();
+  const fleet: ServerEvent[] = [];
+  registry.subscribe((event) => {
+    if (event.type === "cost_fleet") fleet.push(event);
+  });
+  await refreshPipelineRepo(registry, "ai-conductor", root);
+
+  const last = fleet.at(-1);
+  assert.equal(last?.type, "cost_fleet");
+  assert.equal(
+    last?.type === "cost_fleet"
+      ? last.fleet.automation?.roles.find((r) => r.role === "pipeline:ai-conductor")?.tokens
+      : null,
+    1200,
+  );
+
+  // And only when something moved: a pass that re-reads the same record must not put another
+  // frame on every open dashboard, which is the suppression `recomputeFleetCost` exists for.
+  const before = fleet.length;
+  await refreshPipelineRepo(registry, "ai-conductor", root);
+  assert.equal(fleet.length, before, "an unchanged pass is silent");
+});
+
+test("two features in one repository are two rows, and two repositories do not collide", async () => {
+  reset();
+  db.exec("DELETE FROM usage_ledger");
+  const one = repo("cost-repo-one");
+  const two = repo("cost-repo-two");
+  for (const root of [one, two]) {
+    // The same slug in both, which is the case the projection key exists for: a feature key
+    // that named only the provider and the slug would make these two features one row.
+    seedConductorRun(root, "shared", {
+      steps: { finish: "done" },
+      done: true,
+      shipped: { input: 10, output: 1, costUsd: 0.001 },
+    });
+    seedConductorDaemon(root, { pid: process.pid });
+  }
+  seedConductorRun(one, "second", {
+    steps: { finish: "done" },
+    done: true,
+    shipped: { input: 20, output: 2, costUsd: 0.002 },
+  });
+  setPipelinesConfig({
+    enabled: true,
+    repos: [
+      { provider: "ai-conductor", repoRoot: one, enabled: true },
+      { provider: "ai-conductor", repoRoot: two, enabled: true },
+    ],
+  });
+
+  const registry = new Registry();
+  await refreshPipelineRepo(registry, "ai-conductor", one);
+  await refreshPipelineRepo(registry, "ai-conductor", two);
+  assert.equal(conductorRows().length, 3);
+  assert.equal(new Set(conductorRows().map((row) => row.window_end_ns)).size, 3);
+
+  // One role, so the spend strip shows the engine as one line rather than one per feature.
+  const spend = automationSpendSince(0).find((entry) => entry.role === "pipeline:ai-conductor");
+  assert.equal(spend?.tokens, 10 + 1 + 10 + 1 + 20 + 2);
+  assert.equal(spend?.runs, 3, "distinct features");
 });

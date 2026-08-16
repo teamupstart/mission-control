@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 /**
@@ -64,19 +64,48 @@ export const FAKE_CONDUCTOR_VERSION = "0.101.1-e2e";
 /**
  * The stand-in engine CLI.
  *
- * It answers exactly one verb, `engineer projects`, with the compact JSON array the real
- * one prints - and nothing else, because nothing else is probed in this phase. Anything
- * unrecognised exits 0 having printed nothing, which is the real engine's own posture
- * (its `engineer` verbs exit 0 even on a malformed invocation) and therefore the case the
- * probe's "parse the stdout, never trust the exit code" rule has to survive.
+ * It answers the verbs Mission Control actually spawns - `engineer projects` for detection,
+ * and the control verbs - and NOTHING else. Anything unrecognised exits 0 having printed
+ * nothing, which is the real engine's own posture (its `engineer` verbs exit 0 even on a
+ * malformed invocation, and its argv detectors reject several others before the verb runs)
+ * and therefore the exact case the "parse the stdout, never trust the exit code" rule exists
+ * to survive.
+ *
+ * The control verbs WRITE the same marker files the real engine writes, and print the same
+ * confirmation sentences. Both halves matter and they prove different things: the sentences
+ * are what `control.ts`'s predicates read, and the markers are what the projection re-reads -
+ * so a spec that presses Park watches the row become parked because a file moved, not because
+ * a fixture told the dashboard what to think.
+ *
+ * `.daemon/` is resolved against the process's own working directory, which is what the real
+ * `daemon park`, `decide-grant` and `reseal` do - none of them runs `git rev-parse` - and it
+ * is why a verb spawned from the wrong directory is a bug this fake can actually reproduce.
+ *
+ * A live pidfile names the PARENT process, which is the Mission Control daemon that spawned
+ * this. The projection's liveness check is `process.kill(pid, 0)`, so a pidfile naming this
+ * short-lived fake would read as a dead daemon the moment it exited.
  *
  * CommonJS `require`, deliberately: the file is extension-less, which Node treats as CJS,
  * and an `import` here would crash at spawn time in a way that reads as a missing engine
  * rather than as a broken fixture.
  */
 const FAKE_CONDUCT_TS = `#!/usr/bin/env node
-const { readFileSync } = require("node:fs");
+const { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } = require("node:fs");
+const { join } = require("node:path");
 const argv = process.argv.slice(2);
+
+const log = process.env.MC_E2E_CONDUCTOR_LOG;
+if (log) {
+  appendFileSync(log, JSON.stringify({ argv, cwd: process.cwd() }) + "\\n");
+}
+
+const daemonDir = join(process.cwd(), ".daemon");
+const say = (line) => process.stdout.write(line + "\\n");
+const flag = (name) => {
+  const at = argv.indexOf("--" + name);
+  return at >= 0 && at + 1 < argv.length ? argv[at + 1] : null;
+};
+
 if (argv[0] === "engineer" && argv[1] === "projects") {
   let projects = [];
   const path = process.env.MC_E2E_CONDUCTOR_PROJECTS;
@@ -87,7 +116,81 @@ if (argv[0] === "engineer" && argv[1] === "projects") {
       projects = [];
     }
   }
-  process.stdout.write(JSON.stringify(projects) + "\\n");
+  say(JSON.stringify(projects));
+} else if (argv[0] === "daemon" && argv[1] === "start") {
+  mkdirSync(daemonDir, { recursive: true });
+  writeFileSync(
+    join(daemonDir, "daemon.pid"),
+    JSON.stringify({ pid: process.ppid, uuid: "00000000-0000-4000-8000-000000000000", startedAt: new Date().toISOString() }),
+  );
+  say("daemon started (session conductor-fake)");
+} else if (argv[0] === "daemon" && argv[1] === "stop") {
+  rmSync(join(daemonDir, "daemon.pid"), { force: true });
+  // Prints NOTHING when it works, and prints its failures to stdout. Silence is the success.
+} else if (argv[0] === "daemon" && argv[1] === "pause") {
+  const at = join(daemonDir, "PAUSED");
+  if (existsSync(at)) {
+    say("already paused");
+  } else {
+    mkdirSync(daemonDir, { recursive: true });
+    writeFileSync(at, JSON.stringify({ pausedAt: new Date().toISOString() }));
+    say("daemon paused");
+  }
+} else if (argv[0] === "daemon" && argv[1] === "resume") {
+  const at = join(daemonDir, "PAUSED");
+  if (existsSync(at)) {
+    rmSync(at, { force: true });
+    say("daemon resumed");
+  } else {
+    say("not paused");
+  }
+} else if (argv[0] === "daemon" && (argv[1] === "park" || argv[1] === "unpark")) {
+  // A BARE POSITIONAL. The real verb has no --slug, and its detector returns null without
+  // one - which falls through to a refusal that never mentions parking.
+  const slug = argv[2];
+  if (!slug || slug.startsWith("--")) {
+    say("the inline SDLC pipeline now runs under the \`inline\` subcommand");
+  } else {
+    const marker = join(daemonDir, "parked", slug);
+    if (argv[1] === "park") {
+      if (existsSync(marker)) {
+        say("'" + slug + "' is already parked");
+      } else {
+        mkdirSync(join(daemonDir, "parked"), { recursive: true });
+        writeFileSync(marker, new Date().toISOString() + "\\nparked by operator\\n");
+        say("Parked '" + slug + "' - no dispatch or re-kick until unparked");
+      }
+    } else if (existsSync(marker)) {
+      rmSync(marker, { force: true });
+      say("Unparked '" + slug + "'");
+    } else {
+      say("'" + slug + "' was not operator-parked");
+    }
+  }
+} else if (argv[0] === "decide-grant") {
+  const slug = flag("slug");
+  const step = flag("step");
+  const reason = flag("reason");
+  if (!slug || !step || !reason) {
+    say("the inline SDLC pipeline now runs under the \`inline\` subcommand");
+  } else if (step === "plan") {
+    process.stderr.write("re-entry to 'plan' is never granted\\n");
+    process.exit(2);
+  } else {
+    mkdirSync(join(daemonDir, "grants"), { recursive: true });
+    writeFileSync(
+      join(daemonDir, "grants", slug + ".json"),
+      JSON.stringify({ version: 1, step, reason, grantedBy: "operator" }) + "\\n",
+    );
+    say("DECIDE grant recorded for '" + step + "' in '" + slug + "'.");
+  }
+} else if (argv[0] === "reseal") {
+  // The ceremony a person watches. It prints what it did and returns; the terminal it runs
+  // in is held open by the daemon's own wrapper, not by this.
+  const slug = flag("slug");
+  say("Re-sealed " + argv.filter((a, i) => argv[i - 1] === "--path").length + " artifact(s) in '" + slug + "'.");
+} else if (argv[0] === "daemon" && argv[1] === "connect") {
+  say("attached to conductor-fake (read-only)");
 }
 `;
 
@@ -100,6 +203,15 @@ export interface FakeConductor {
   projectsPath: string;
   /** A registry file inside the throwaway home, so the fallback cannot read a real one. */
   registryPath: string;
+  /**
+   * Where the fake appends one JSON line per invocation.
+   *
+   * The assertion surface for a control verb: a spec that presses Park can read the argv the
+   * daemon actually spawned and the directory it spawned it in, which is where the two
+   * mistakes this integration can make - the wrong flag shape, and the wrong working
+   * directory - are visible.
+   */
+  logPath: string;
 }
 
 /**
@@ -126,7 +238,31 @@ export function writeFakeConductor(home: string): FakeConductor {
     root,
     projectsPath,
     registryPath: join(home, "fake-ai-conductor-registry.json"),
+    logPath: conductorLogPath(home),
   };
+}
+
+/** Where the fake engine records what it was asked to do, for one daemon. */
+export function conductorLogPath(home: string): string {
+  return join(home, "conductor-invocations.jsonl");
+}
+
+/** One thing the fake engine was asked to do. */
+export interface ConductorInvocation {
+  argv: string[];
+  cwd: string;
+}
+
+/** Every verb the fake engine has been asked for, oldest first. Empty before the first. */
+export function readConductorInvocations(home: string): ConductorInvocation[] {
+  try {
+    return readFileSync(conductorLogPath(home), "utf8")
+      .split("\n")
+      .filter((line) => line.trim() !== "")
+      .map((line) => JSON.parse(line) as ConductorInvocation);
+  } catch {
+    return [];
+  }
 }
 
 // ---- canned state trees ------------------------------------------------------------------
@@ -156,6 +292,28 @@ export interface SeedRunOptions {
   done?: boolean;
   /** Lines to append to `.pipeline/events.jsonl`, each an engine event object. */
   events?: Record<string, unknown>[];
+  /**
+   * The engine's committed cost record, at `<worktree>/.docs/shipped/<slug>.md`.
+   *
+   * In the WORKTREE, because the engine writes and commits it on the feature branch just
+   * before the pull request opens - it reaches the main checkout only when that request
+   * merges, by which time the worktree is usually gone.
+   */
+  shipped?: SeedShippedCost;
+}
+
+/** The figures one shipped record carries, in the engine's own vocabulary. */
+export interface SeedShippedCost {
+  input: number;
+  output: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+  costUsd?: number;
+  dispatches?: number;
+  /** Dispatches with no usage record at all. */
+  unmetered?: number;
+  /** Dispatches that reported tokens but no price. */
+  costUnmetered?: number;
 }
 
 /** Where one seeded run's worktree lives. */
@@ -214,6 +372,7 @@ export function seedConductorRun(
     }
   }
   if (options.done) writeFileSync(join(pipeline, "DONE"), "gate-driven loop converged\n");
+  if (options.shipped) writeShippedRecord(worktree, slug, options.shipped);
   if (options.events) {
     writeFileSync(
       join(pipeline, "events.jsonl"),
@@ -221,6 +380,50 @@ export function seedConductorRun(
     );
   }
   return worktree;
+}
+
+/**
+ * Write one feature's shipped record, in the engine's own rendering of its cost block.
+ *
+ * The shape matters more than the numbers and it is copied rather than invented: bare
+ * `key: value` lines under a `## Cost` heading, `unmetered` carrying two fields on one line,
+ * an INDENTED per-provider breakdown that the reader must skip, and a following `## Time`
+ * section whose own `key: value` lines must not leak into the cost block. A fixture that
+ * omitted any of those would let a parser pass here and misread every real record.
+ */
+export function writeShippedRecord(
+  worktree: string,
+  slug: string,
+  cost: SeedShippedCost,
+): string {
+  const dir = join(worktree, ".docs", "shipped");
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, `${slug}.md`);
+  writeFileSync(
+    path,
+    [
+      `# ${slug}`,
+      "",
+      "## Cost",
+      "",
+      `input: ${cost.input}`,
+      `output: ${cost.output}`,
+      `cache_read: ${cost.cacheRead ?? 0}`,
+      `cache_creation: ${cost.cacheWrite ?? 0}`,
+      `cost_usd: ${(cost.costUsd ?? 0).toFixed(4)}`,
+      `dispatches: ${cost.dispatches ?? 1}`,
+      `unmetered: count: ${cost.unmetered ?? 0}, duration_ms: 0`,
+      `cost_unmetered: count: ${cost.costUnmetered ?? 0}`,
+      "  claude-sonnet: input: 1, output: 1, cost_usd: 0.0001",
+      "",
+      "## Time",
+      "",
+      "wall_ms: 1234",
+      "input: not-a-cost-line",
+      "",
+    ].join("\n"),
+  );
+  return path;
 }
 
 /** What one seeded repository's `.daemon/` should say. */

@@ -328,10 +328,20 @@ test("one run's detail is drawn in the workflow diagram's grammar, from the engi
   await expect(verdicts.getByText(/^answered 1[12]m ago$/)).toBeVisible();
   await shoot(dashboard, "02-run-detail");
 
-  // No control on a read-only surface: the header's action slot is reserved for the verbs a
-  // later phase adds, and a greyed-out button that cannot do anything is worse than none.
+  // The header's action slot, now filled: the verbs this run's state makes useful. What each
+  // one DOES is `pipeline-controls.spec.ts`; what this file pins is that the reading surface
+  // carries them without displacing anything it drew before.
   const reader = dashboard.locator("div.pipelines-reader");
-  await expect(reader.getByRole("button")).toHaveCount(0);
+  await expect(reader.getByRole("button", { name: "Park" })).toBeVisible();
+  await expect(reader.getByRole("button", { name: "Grant DECIDE re-entry" })).toBeVisible();
+  await expect(reader.getByRole("button", { name: "Open daemon console" })).toBeVisible();
+  // The engine's daemon is alive in this repository, so the verbs on offer are the ones that
+  // are not already true - never "Start daemon", which would do nothing.
+  await expect(reader.getByRole("button", { name: "Pause daemon" })).toBeVisible();
+  await expect(reader.getByRole("button", { name: "Start daemon" })).toHaveCount(0);
+  // And the ceremony is not offered on a run with no broken seal: a permanent button for
+  // breaking one invites breaking one.
+  await expect(reader.getByRole("button", { name: "Reseal an artifact" })).toHaveCount(0);
 });
 
 test("a tier-S run draws what it skipped, and an unknown step is drawn rather than dropped", async ({

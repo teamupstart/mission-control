@@ -225,6 +225,9 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     MISSION_CONDUCTOR_BIN: conductor.bin,
     AI_CONDUCTOR_REGISTRY: conductor.registryPath,
     MC_E2E_CONDUCTOR_PROJECTS: conductor.projectsPath,
+    // Where that fake records the verbs it is asked for. Set for every daemon so a spec only
+    // has to read the file; a daemon that never spawns a control verb simply leaves it absent.
+    MC_E2E_CONDUCTOR_LOG: conductor.logPath,
     MC_E2E_RECORD_DIR: recordDir,
     // Where that fake reads its scripted pull requests from. Set for every daemon so a spec
     // only has to write the file; absent content simply means "no pull requests anywhere",

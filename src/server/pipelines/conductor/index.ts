@@ -1,12 +1,19 @@
 import {
   PIPELINE_PROVIDER_INFO,
   sortByPipelineStep,
+  type PipelineConsole,
   type PipelineDaemonState,
   type PipelineRun,
   type PipelineRunDetail,
 } from "@shared/pipeline.ts";
 
-import type { PipelineProvider, PipelineRepoReading } from "../types.ts";
+import type {
+  PipelineConsoleTarget,
+  PipelineFeatureUsage,
+  PipelineProvider,
+  PipelineRepoReading,
+} from "../types.ts";
+import { conductorConsoleArgv, runConductorControl } from "./control.ts";
 import { normalizeConductorRun } from "./normalize.ts";
 import { conductorBin, probeConductor } from "./probe.ts";
 import {
@@ -16,8 +23,10 @@ import {
   readDone,
   readGateVerdicts,
   readHalt,
+  readShippedCost,
   readWorktrees,
   type DaemonReading,
+  type ShippedCostReading,
 } from "./state.ts";
 import { tailConductorEvents, tokensIn } from "./tail.ts";
 
@@ -40,6 +49,34 @@ const INFO = PIPELINE_PROVIDER_INFO["ai-conductor"];
 function daemonState(daemon: DaemonReading): PipelineDaemonState {
   if (daemon.paused) return "paused";
   return daemon.pid !== null ? "running" : "stopped";
+}
+
+/**
+ * One feature's committed cost record, in the shape the ledger takes.
+ *
+ * `costKnown` is the only judgement here and it is a strict one: the engine has to have
+ * metered every dispatch AND priced every one it metered. Either count above zero means the
+ * dollar figure is a subtotal, and the ledger's standing rule - held by every other writer -
+ * is that a subtotal is stored as unpriced rather than presented as a total.
+ *
+ * A record whose engine could price nothing at all still contributes its TOKENS, which is
+ * the case a Codex-backed feature is in: tokens are counted, dollars are not, and the strip
+ * says "unpriced" beside a real token figure rather than dropping the feature entirely.
+ */
+function usageFrom(cost: ShippedCostReading): PipelineFeatureUsage {
+  return {
+    input: cost.input,
+    output: cost.output,
+    // The engine's record has no reasoning tier of its own: its rollup folds the four tiers
+    // it tracks and reasoning output is not one of them. Zero here is the honest reading of
+    // a field the source does not carry, not a claim that no reasoning tokens were spent.
+    reasoningOutput: 0,
+    cacheRead: cost.cacheRead,
+    cacheWrite: cost.cacheWrite,
+    costUsd: cost.costUsd,
+    costKnown: cost.unmetered === 0 && cost.costUnmetered === 0,
+    ts: cost.writtenAt,
+  };
 }
 
 /**
@@ -68,6 +105,7 @@ async function readConductorRepo(
       return {
         runs: [],
         cursors,
+        usage: new Map(),
         restarted: new Set(),
         daemon: daemonState(daemon),
         error: `could not list ${INFO.worktreesDir}/ in this repository`,
@@ -75,9 +113,11 @@ async function readConductorRepo(
     }
     const runs: PipelineRun[] = [];
     const nextCursors = new Map<string, { offset: number; identity: string }>();
+    const usage = new Map<string, PipelineFeatureUsage>();
     const restarted = new Set<string>();
     for (const worktree of listing.worktrees) {
       const state = readConductState(worktree.path);
+      const done = readDone(worktree.path);
       const held = cursors.get(worktree.slug);
       const tail = tailConductorEvents(
         worktree.path,
@@ -86,6 +126,16 @@ async function readConductorRepo(
       );
       nextCursors.set(worktree.slug, { offset: tail.offset, identity: tail.identity });
       if (tail.restarted) restarted.add(worktree.slug);
+      // Only looked for once a feature has finished, which is the only time the engine has
+      // written one - so the ordinary pass over a repository of running features opens no
+      // extra file at all. `prUrl` is in the test because the record is committed on the
+      // feature branch just before the pull request opens, so it can exist while the state
+      // file still says the run is going.
+      const cost =
+        done || state.complete || state.prUrl !== null
+          ? readShippedCost(worktree.path, worktree.slug)
+          : null;
+      if (cost !== null) usage.set(worktree.slug, usageFrom(cost));
       runs.push(
         normalizeConductorRun({
           repoRoot,
@@ -93,7 +143,7 @@ async function readConductorRepo(
           worktree: worktree.path,
           state,
           halt: readHalt(worktree.path),
-          done: readDone(worktree.path),
+          done,
           daemon,
           // Only what THIS pass tailed. The running total is carried forward by the
           // watcher, which is the thing that holds the previous projection - a reader
@@ -107,6 +157,7 @@ async function readConductorRepo(
     return {
       runs,
       cursors: nextCursors,
+      usage,
       restarted,
       daemon: daemonState(daemon),
       // Asked of the reader rather than inferred from the count: a repository sitting at
@@ -123,6 +174,7 @@ async function readConductorRepo(
     return {
       runs: [],
       cursors,
+      usage: new Map(),
       restarted: new Set(),
       daemon: "unknown",
       error: err instanceof Error ? err.message : String(err),
@@ -178,10 +230,38 @@ async function readConductorRunDetail(
   }
 }
 
+/**
+ * What to run in a hosted terminal for one console.
+ *
+ * The reseal refusal is Mission Control's, not a relayed one, and it is here rather than in
+ * the schema because the schema cannot see the run: a reseal names artifacts inside a
+ * feature's worktree, and a console asked for without a feature has nothing to name. The
+ * engine would refuse it too - `unknown feature worktree` - but a terminal that opens purely
+ * to print that is worse than a button that explains itself.
+ */
+function conductorConsole(
+  console_: PipelineConsole,
+  target: PipelineConsoleTarget,
+): { argv: string[]; cwd: string } | { refused: string } {
+  if (console_ === "reseal" && target.slug === null) {
+    return { refused: "a reseal names the feature whose artifacts moved" };
+  }
+  return {
+    argv: conductorConsoleArgv(console_, target),
+    // The MAIN checkout, for both. `daemon connect` resolves the repository itself, but
+    // `reseal` joins `.worktrees/<slug>` onto its own working directory with no git
+    // resolution - so run from anywhere else it looks for a worktree inside a worktree and
+    // refuses a feature that is plainly there.
+    cwd: target.repoRoot,
+  };
+}
+
 export const CONDUCTOR_PROVIDER: PipelineProvider = {
   provider: "ai-conductor",
   binForPresence: conductorBin,
   probe: probeConductor,
   readRepo: readConductorRepo,
   readRunDetail: readConductorRunDetail,
+  control: runConductorControl,
+  consoleArgv: conductorConsole,
 };

@@ -1157,6 +1157,34 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
 
 Attach the generated frames to the pull request; they are never committed.
 
+### Acting on a pipeline
+
+`specs/pipeline-controls.spec.ts` is the other half of that surface: the verbs. It presses
+them where an operator does - the attention inbox and the run header - and then reads what the
+fake `conduct-ts` was actually asked for, out of the invocation log the fixture keeps
+(`readConductorInvocations`). That log is the assertion that matters, because a green flash
+proves only that a predicate matched: `daemon park` takes a BARE POSITIONAL and `decide-grant`
+takes exactly three flags, and the engine answers either mistake with a zero exit and a
+refusal about an unrelated subcommand.
+
+The fake WRITES the markers the real engine writes - the pidfile, `PAUSED`, `parked/<slug>`,
+`grants/<slug>.json` - so the daemon chip and the run's group move because a file moved and a
+projection pass read it, not because a fixture told the dashboard what to think. Both hosted
+consoles land in the same cmux record `continue-in-terminal-mode.spec.ts` reads, which is
+where the reseal ceremony's argv and its hold-open wrapper are visible.
+
+`e2e/.artifacts/pipeline-controls/` carries seven frames behind `MC_E2E_EVIDENCE`: the inbox
+row with its verbs and the same row drained, the paused daemon chip, the grant form with
+`plan` absent and explained, the reseal form, the run's cost chip, and the spend popover
+carrying the engine's line. Regenerate them with:
+
+```sh
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/pipeline-controls.spec.ts \
+  --workers=1 --reporter=list
+```
+
 ## Steering a workflow reviewer
 
 `specs/workflow-run-disable.spec.ts` drives the Runs monitor's per-run disable toggle, and

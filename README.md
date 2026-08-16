@@ -110,6 +110,13 @@ feature for a human, that halt is a row in the [attention inbox](docs/attention-
 with its class, what stopped it, and the runbook that clears it - the one thing waiting on you
 that has no session behind it.
 
+You can act on a pipeline from there, not only read it: start, stop, pause and resume the
+engine's daemon, park and unpark a feature, authorize one DECIDE re-entry with your own
+rationale, watch the daemon's console, and run the re-seal ceremony in a hosted terminal.
+Every verb spawns the engine's own CLI and is judged by what it printed, never by an exit code
+- and what a shipped feature cost lands in the [spend strip](docs/cost-and-usage.md) as
+automation, under the engine's own figures.
+
 ## Quick start
 
 Mission Control needs Node.js 24 or newer.

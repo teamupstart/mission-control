@@ -402,9 +402,13 @@ test.describe("a session an external engine is driving", () => {
     await expect(row.locator("p.inbox-runbook")).toContainText(
       "Stalled or stuck feature - The halt refused a DECIDE entry",
     );
-    // Read-only in this phase: clearing a halt is the engine's own CLI, and those verbs are
-    // next. A greyed-out control that cannot act is worse than none.
-    await expect(row.getByRole("button")).toHaveCount(0);
+    // The verbs this halt's own class calls for, and only those: a `needs-human` halt is
+    // cleared by an operator, so the row offers the grant and the unpark and never a
+    // repository-wide daemon verb, which would stop every feature in the checkout from a row
+    // about one of them. `e2e/specs/pipeline-controls.spec.ts` owns what pressing one does.
+    await expect(row.getByRole("button", { name: "Unpark" })).toBeVisible();
+    await expect(row.getByRole("button", { name: "Grant DECIDE re-entry" })).toBeVisible();
+    await expect(row.getByRole("button")).toHaveCount(2);
     await shoot(dashboard, inbox, "04-halt-in-the-inbox");
 
     // The link lands on the run's own detail, which is where the evidence is - and it closes

@@ -1,7 +1,11 @@
 import { z } from "zod";
 import { WRAPUP_MODES, WRAPUP_TRIGGERS } from "./queue.ts";
 import { MAX_LABELS, TASK_PRIORITIES, normalizeLabels } from "./task.ts";
-import { PipelinesConfigSchema } from "./pipeline.ts";
+import {
+  PipelineActionRequestSchema,
+  PipelineConsoleRequestSchema,
+  PipelinesConfigSchema,
+} from "./pipeline.ts";
 import { TaskSourcesConfigSchema } from "./task-source.ts";
 import { CHEAP_ACTIONS, DIVERGENCE_KINDS, SKIP_REASONS } from "./foreman.ts";
 import { LLM_JOB_IDS } from "./llm-jobs.ts";
@@ -1703,6 +1707,19 @@ export type TaskSourcesConfigPatch = z.infer<typeof TaskSourcesConfigPatchSchema
  */
 export const PipelinesConfigPatchSchema = PipelinesConfigSchema;
 export type PipelinesConfigPatch = z.infer<typeof PipelinesConfigPatchSchema>;
+
+/**
+ * One control verb aimed at an external SDLC engine, and one request for a hosted terminal.
+ *
+ * Aliased here rather than defined here for `PipelinesConfigPatchSchema`'s reason: the cross-
+ * field rules they carry are derived from `PIPELINE_ACTION_INFO`, which lives beside the verbs
+ * it describes, and a copy of those rules in this file would be a second answer to "does this
+ * verb name a feature".
+ */
+export const PipelineActionSchema = PipelineActionRequestSchema;
+export type PipelineActionBody = z.infer<typeof PipelineActionSchema>;
+export const PipelineConsoleSchema = PipelineConsoleRequestSchema;
+export type PipelineConsoleBody = z.infer<typeof PipelineConsoleSchema>;
 
 // ---- dashboard UI preferences ----
 

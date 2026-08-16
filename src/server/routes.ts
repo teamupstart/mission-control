@@ -72,6 +72,8 @@ import {
   PromptedWrapupSchema,
   WrapupAskedSchema,
   PushTaskSchema,
+  PipelineActionSchema,
+  PipelineConsoleSchema,
   PipelinesConfigPatchSchema,
   SkillsConfigPatchSchema,
   TaskSourcesConfigPatchSchema,
@@ -189,16 +191,22 @@ import type { TaskSourcesView } from "@shared/task-source.ts";
 import { getPipelinesConfig, setPipelinesConfig } from "./pipelines/config.ts";
 import {
   activePipelineRepoStatuses,
+  pipelineConsoleLaunch,
+  pipelineConsoleName,
   pipelineRepoStatuses,
   probeAllPipelineProviders,
   readPipelineRunDetail,
   reconcilePipelineConsent,
+  runPipelineAction,
 } from "./pipelines/index.ts";
 import {
   isPipelineProviderId,
   pipelineRepoKey,
+  type PipelineActionResult,
+  type PipelineConsoleResult,
   type PipelinesView,
 } from "@shared/pipeline.ts";
+import { shellCommand } from "./terminal/shell.ts";
 import { setUiConfig, uiConfigView } from "./ui-config.ts";
 import { environmentCheckViews } from "./environment/index.ts";
 import type { EnvironmentChecksView } from "@shared/environment-checks.ts";
@@ -4118,6 +4126,96 @@ export function buildApp(
     // see the surface it produces without wondering whether they mis-clicked.
     publishSettingsStatus(registry);
     return c.json(await pipelinesView(false));
+  });
+
+  /**
+   * Ask the engine to do one thing: start, stop, pause, resume, park, unpark, grant.
+   *
+   * ONE route over a validated verb rather than one route per verb, which is a deviation
+   * from this phase's own sketch and the better shape for the same reason every registry in
+   * this daemon exists: the verbs are a shared tuple with an exhaustive `Record` behind them,
+   * so seven handlers would be seven copies of this body differing only in a string - and the
+   * eighth verb would be added to six of them. Phase 6's Foreman triage calls this one route
+   * with a different verb, which is precisely the surface it was promised.
+   *
+   * ALWAYS 200 when the engine was reached, with `ok` inside. A refusal by conductor is the
+   * ANSWER to "please pause this", not a failure of the request, and the surface has to draw
+   * the engine's own words either way - the shape `POST /api/ensembles/preview` uses. The two
+   * cases that do get a status are the ones with no engine answer to carry: a body that does
+   * not parse, and a repository or run this daemon is not projecting.
+   *
+   * Consent is enforced inside `runPipelineAction`, not here, because the repository path
+   * arrives in the body: without it this route would spawn an engine CLI with a working
+   * directory of anywhere on the machine, for anything that can reach the loopback API.
+   */
+  app.post("/api/pipelines/action", async (c) => {
+    const parsed = await parseBody(c, PipelineActionSchema);
+    if (!parsed.ok) return parsed.res;
+    const { provider, repoRoot, slug, action, step, reason } = parsed.data;
+    const outcome = await runPipelineAction(registry, action, {
+      provider,
+      repoRoot,
+      slug,
+      step,
+      reason,
+    });
+    if (!outcome.ok) return c.json({ error: outcome.error }, outcome.status);
+    return c.json(outcome.result satisfies PipelineActionResult);
+  });
+
+  /**
+   * Open a hosted terminal on the engine: its daemon console, or the reseal ceremony.
+   *
+   * A terminal rather than a verb because neither of these has an answer to parse. The
+   * console ATTACHES for as long as somebody watches it, and reseal refuses to run at all
+   * without a TTY - a guard conductor added so a build agent cannot re-seal the artifact it
+   * was told not to touch, since its providers all feed their children through stdin.
+   *
+   * The daemon composes the argv from the verb and a validated body; nothing the browser
+   * sends becomes a command line. That is the same rule `POST /api/sessions/:id/launch`
+   * holds, and it is why this takes a console name and a path list rather than a command.
+   *
+   * The status echoes the launcher's, including its 504 - the backend that did not report
+   * back. That one is not a refusal: the window may well have opened, so what travels is the
+   * launcher's own "may still be opening" sentence, which the surface shows verbatim rather
+   * than restating as a failure of its own.
+   */
+  app.post("/api/pipelines/console", async (c) => {
+    const parsed = await parseBody(c, PipelineConsoleSchema);
+    if (!parsed.ok) return parsed.res;
+    const body = parsed.data;
+    const launch = pipelineConsoleLaunch(body.console, {
+      provider: body.provider,
+      repoRoot: body.repoRoot,
+      slug: body.slug,
+      step: null,
+      reason: body.reason,
+      paths: body.paths,
+      clearHalt: body.clearHalt,
+    });
+    if (!launch.ok) return c.json({ error: launch.error }, launch.status);
+    // Held open after the command exits, and this is the difference between a console an
+    // operator can use and one that vanishes. Neither verb prompts: `reseal` prints one line
+    // and returns, and a `daemon connect` that cannot find a session prints why and exits 1.
+    // On every backend here the window closes with the process, so the outcome of both -
+    // including the refusal an operator most needs to read - would flash past unread.
+    const hold =
+      `${shellCommand(launch.argv)}\n` +
+      `status=$?\n` +
+      `printf '\\n[%s exited %s] press enter to close ' ${shellCommand([body.console])} "$status"\n` +
+      `read -r _\n`;
+    const result = await terminalLauncher(body.backend, {
+      name: pipelineConsoleName(body.provider, body.console, body.slug),
+      cwd: launch.cwd,
+      argv: [process.env.SHELL || "/bin/sh", "-c", hold],
+    });
+    const answer: PipelineConsoleResult = {
+      ok: result.ok,
+      console: body.console,
+      label: result.label,
+      ...(result.error ? { error: result.error } : {}),
+    };
+    return result.ok ? c.json(answer) : c.json(answer, result.status as 404 | 409 | 502 | 504);
   });
 
   // --- Dashboard UI preferences (localhost only) ---

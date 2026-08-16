@@ -47,50 +47,13 @@ export const HOST = "127.0.0.1";
 export const BASE_URL = `http://${HOST}:${PORT}`;
 
 /**
- * The holder this app records on every treehouse lease it takes.
- *
- * It lives here, on the shared surface, because the code that TAKES a lease spans
- * the build boundary - `scripts/new-session.mjs` runs under bare `node`, the
- * dispatcher is TypeScript - while the code that decides a lease may be RETURNED
- * (the reap gate in src/server/pool.ts) is a third site again. All three have to
- * agree on this string, and disagreement is silent either way: a lease site that
- * drifts stamps a label the gate reads as a stranger's, so the abandoned leases the
- * sweep exists to collect become permanently uncollectable with no error; a gate
- * that drifts points at leases we never took. One import, no drift.
- */
-export const LEASE_HOLDER = "mission-control";
-
-/**
- * Every holder name this app has ever stamped, newest first - what the reap gate
- * matches against, and the reason a rename doesn't strand a pool.
- *
- * A lease records the holder that took it, forever; it is not restamped when the app
- * is renamed. So a gate that only ever matched the CURRENT name would refuse to
- * return every lease taken before the rename, silently and permanently. That isn't a
- * hypothesis: the `ai-harness` -> `fleet-control` rename did exactly this, and the
- * scar is still in the pool - a worktree held by `ai-harness` that no sweep can
- * collect, which the old gate comment wrote off as "a one-time migration, deliberately
- * not encoded here". This is that migration, encoded. At the `fleet-control` ->
- * `mission-control` rename there were six live leases that would have been stranded
- * the same way.
- *
- * Safe because it is exactly the gate's real question. The gate asks "did WE take this
- * lease?", and these names all WERE us - the old comment conceded as much, calling
- * `ai-harness` "the one label that once WAS us". It never widens to a stranger's lease:
- * anything outside this list is still refused.
- *
- * Append here on any future rename; never remove.
- */
-export const LEASE_HOLDERS = [LEASE_HOLDER, "fleet-control", "ai-harness"];
-
-/**
  * State dirs this app has used, newest first - the directory NAMES, relative to `homedir()`.
  * See `stateDir` / `migrateStateDir`.
  *
  * Exported because `db.ts`'s test-runner refusal has to recognise the operator's real state
  * dir under every name it has ever had, and a second hand-written copy of this list is a
  * guard that silently stops covering the name added next. Append here on a rename; never
- * remove, for the reason `LEASE_HOLDERS` gives.
+ * remove, because persisted state can still live under an older name.
  */
 export const STATE_DIRS = [".mission-control", ".fleet-control", ".ai-harness"];
 

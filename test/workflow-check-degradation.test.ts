@@ -19,7 +19,7 @@ process.env.HARNESS_HOME = home;
 const { openDb } = await import("../src/server/db.ts");
 const { CheckLeaseManager, CheckLeaseStore } = await import("../src/server/workflows/check-lease.ts");
 const { CheckRuntime } = await import("../src/server/workflows/check-runtime.ts");
-const { pinLeasedWorktree, provisionWorktree, verifyPinnedBase } =
+const { provisionWorktree, verifyPinnedBase } =
   await import("../src/server/dispatcher.ts");
 const { checkRuntimeSupport } = await import("../src/server/workflows/check-identity.ts");
 const { CHECK_WORKTREES_DIR } = await import("../src/server/config.ts");
@@ -32,8 +32,6 @@ setWorktreesConfig({ enabled: false });
 
 /** A real process is started only by the case that gets that far; the rest are platform-free. */
 const SUPPORTED = checkRuntimeSupport().supported;
-
-const NO_PINS = () => ({ sessionCwds: [], taskWorktrees: [], checkLeasePaths: [] });
 
 const liveRows = (): unknown[] =>
   db
@@ -99,7 +97,6 @@ function runtimeFor(over: {
   platform?: () => { supported: boolean; note: string };
 } = {}) {
   const leases = new CheckLeaseManager(db, {
-    pin: pinLeasedWorktree,
     verifyBase: verifyPinnedBase,
   });
   return new CheckRuntime(leases, {
@@ -124,7 +121,6 @@ test("dispatch keeps isolation when native allocation is disabled", async () => 
     "degrade-task",
     "slug",
     "abc123",
-    NO_PINS,
     head,
     0,
     new WorktreeManager(db),

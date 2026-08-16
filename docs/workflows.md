@@ -495,8 +495,8 @@ the two halves are never stored apart and a second window's save is refused rath
 silently overwriting unsaved typing.
 
 Worktrees of a configured repository count too,
-wherever they live on disk: a dispatched session usually stands in a pooled checkout under
-`~/.treehouse/`, and because a worktree mirrors its repository's layout, a session in that
+wherever they live on disk: a dispatched session usually stands in a native pooled checkout under
+`MISSION_HOME/worktree-pools`, and because a worktree mirrors its repository's layout, a session in that
 checkout's `packages/web` resolves the command configured for the repository's
 `packages/web`. That match is on the exact directory, component by component - a session in
 `examples/packages/web` gets the repository-wide command, not the one configured for
@@ -528,16 +528,12 @@ double dagger on every Workflows cell while the switch is on, names those reposi
 offers **Turn Commands off** in place. A grant with Commands off is not flagged: nothing can
 run, and amber on an inert grant is how a matrix teaches you to stop reading it.
 
-**Commands use the treehouse pool whenever the binary is installed.** Unlike dispatch, a Command
-does not consult `treehouse.toml`; it keeps using the pool for a repository that has no such file.
-Two Commands run at once, and each one holds a pooled worktree for as long as it runs - drawn
-from the same `max_trees` a dispatched session draws from (`treehouse.toml` in the repository;
-this one sets 32). On a repository with a small pool, a long test suite gating a review is a slot
-a dispatch is waiting for. Raise `max_trees` there if dispatch starts queuing behind Commands.
-
-When `treehouse` is not installed, a Command instead uses a throwaway detached `git worktree`
-pinned to the captured commit. The configured argv still runs and its real result still gates the
-workflow; the fallback does not record the gate as passed without running it. Commands also run
+**Commands use the built-in native pool.** Two Commands run at once, and each holds one exact,
+detached lease for as long as it runs. A repository whose native policy is disabled or whose
+allocator positively refuses capacity uses a throwaway detached Git worktree pinned to the
+captured commit. An ambiguous native outcome does not try another provider. The configured argv
+still runs on positive degradation and its real result still gates the workflow; the fallback
+does not record the gate as passed without running it. Commands also run
 through their own small attempt budget, separate from the review budget, so a build never spends
 a Persona's slot.
 

@@ -28,7 +28,7 @@ make init
 ```
 
 `make init` is safe to repeat. It installs npm dependencies, builds the application,
-installs or configures treehouse pooled worktrees, and merges the Claude status hooks
+and merges the Claude status hooks
 into `~/.claude/settings.json` without replacing your other hooks. To validate the
 browser prerequisite as part of bootstrap, run:
 
@@ -38,8 +38,8 @@ make init ARGS="--with-e2e"
 
 The init command checks the Node version before it changes the checkout, and checks
 for Chromium before build and hook setup when `--with-e2e` is requested. Each failed
-check prints the command that fixes it. `make setup` is available when you want only
-dependencies, build, and hooks, without treehouse setup.
+check prints the command that fixes it. `make setup` runs the same dependency, build, and hook
+steps without the prerequisite walkthrough.
 
 ## Run Mission Control
 
@@ -51,7 +51,8 @@ This starts the daemon and Vite dashboard. Open `http://127.0.0.1:5173`. To run 
 desktop shell too, use `npm run dev:desktop`; `npm run dev:start` also starts Foreman.
 
 The daemon's default state directory is `~/.mission-control`. It contains the SQLite
-database, token, logs, dispatch worktrees, and the [archive library](archives.md). Set
+database, token, logs, native worktree pools, disposable worktrees, and the
+[archive library](archives.md). Set
 `MISSION_HOME` to use a separate state root; [configuration.md](configuration.md) documents
 that and the other runtime settings. `make db` opens the active database in a read-only
 shell.

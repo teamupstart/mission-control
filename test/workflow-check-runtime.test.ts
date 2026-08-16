@@ -28,25 +28,24 @@ const home = realpathSync(mkdtempSync(join(tmpdir(), "mission-check-runtime-")))
 process.env.HARNESS_HOME = home;
 
 const { openDb } = await import("../src/server/db.ts");
-const { CheckLeaseManager, CheckLeaseStore, TreehouseCheckTreeProvider } =
+const { CheckLeaseManager, CheckLeaseStore } =
   await import("../src/server/workflows/check-lease.ts");
 const { CheckRuntime } = await import("../src/server/workflows/check-runtime.ts");
 const { WorkflowStore, workflowJson } = await import("../src/server/workflows/store.ts");
 const { WorkflowEngine } = await import("../src/server/workflows/engine.ts");
-const { checkHolderToken, isCheckHolder, installCheckLeasePins } =
-  await import("../src/server/pool-lease.ts");
-const { parsePoolStatus } = await import("../src/server/pool.ts");
-const { pinLeasedWorktree, verifyPinnedBase } = await import("../src/server/dispatcher.ts");
+const { ModeledCheckTreeProvider, checkHolderToken, pinModeledWorktree } =
+  await import("./helpers/modeled-check-provider.ts");
+const { verifyPinnedBase } = await import("../src/server/dispatcher.ts");
 const { processStartIdentity, checkRuntimeSupport } = await import("../src/server/workflows/check-identity.ts");
-const { onPath, stubRun } = await import("../src/server/util/exec.ts");
+const { stubRun } = await import("../src/server/util/exec.ts");
 
-type TreehouseCli = import("../src/server/pool-lease.ts").TreehouseCli;
+type TreehouseCli = import("./helpers/modeled-check-provider.ts").TreehouseCli;
 type CheckSpawnOutcome = import("../src/server/workflows/check-supervisor.ts").CheckSpawnOutcome;
 
 const db = openDb();
 const leaseRows = new CheckLeaseStore(db);
 const modeledProvider = (cli: TreehouseCli) =>
-  new TreehouseCheckTreeProvider(cli, pinLeasedWorktree);
+  new ModeledCheckTreeProvider(cli, pinModeledWorktree);
 
 /**
  * Every case here starts a real process, and a platform that cannot read a process start
@@ -71,21 +70,6 @@ afterEach((t) => {
 
 after(() => {
   assert.deepEqual(liveRows(), [], "the suite ended still holding a check lease");
-  // The other half: the developer's REAL pool. Every case drives a fake subprocess, so a tree
-  // held by a check token there could only come from a call that escaped the fake.
-  if (onPath("treehouse")) {
-    try {
-      const out = execFileSync("treehouse", ["status"], { cwd: process.cwd(), stdio: "pipe" }).toString();
-      assert.deepEqual(
-        parsePoolStatus(out).filter((t) => isCheckHolder(t.holder)),
-        [],
-        "a real pooled worktree is still held by a check token",
-      );
-    } catch {
-      // An unreadable pool is not evidence of anything, either way.
-    }
-  }
-  installCheckLeasePins(null);
   for (const w of worktreesToPrune) {
     try {
       execFileSync("git", ["-C", w.repoRoot, "worktree", "remove", "--force", w.path], { stdio: "pipe" });
@@ -200,10 +184,8 @@ function fixture(over: { slots?: number } = {}): Fixture {
   const { repoRoot, headSha } = gitRepo();
   const pool = fakePool(repoRoot, over.slots ?? 2);
   const leases = new CheckLeaseManager(db, {
-    cli: pool.cli,
     // The REAL pin and the REAL commit verification. This is what makes "pinned to the
     // captured commit" a property of the test rather than a claim in a comment.
-    pin: pinLeasedWorktree,
     verifyBase: verifyPinnedBase,
     acquisitionProvider: modeledProvider(pool.cli),
   });
@@ -579,8 +561,6 @@ test("test commands get sixty minutes while typecheck keeps ten", async () => {
   const { repoRoot, headSha } = gitRepo();
   const pool = fakePool(repoRoot, 1);
   const leases = new CheckLeaseManager(db, {
-    cli: pool.cli,
-    pin: pinLeasedWorktree,
     verifyBase: verifyPinnedBase,
     acquisitionProvider: modeledProvider(pool.cli),
   });
@@ -616,8 +596,6 @@ test("an infrastructure result is not returned until the lease is resolved", asy
   const { repoRoot, headSha } = gitRepo();
   const pool = fakePool(repoRoot, 2);
   const leases = new CheckLeaseManager(db, {
-    cli: pool.cli,
-    pin: pinLeasedWorktree,
     verifyBase: verifyPinnedBase,
     acquisitionProvider: modeledProvider(pool.cli),
   });
@@ -659,8 +637,6 @@ test("a group that cannot be proven empty withholds the verdict and keeps its le
   const { repoRoot, headSha } = gitRepo();
   const pool = fakePool(repoRoot, 2);
   const leases = new CheckLeaseManager(db, {
-    cli: pool.cli,
-    pin: pinLeasedWorktree,
     verifyBase: verifyPinnedBase,
     acquisitionProvider: modeledProvider(pool.cli),
   });
@@ -717,8 +693,6 @@ test("a worktree that could not be handed back withholds the verdict too", async
   // point below is that the retry eventually lands - not that it lands immediately.
   const clock = { now: Date.now() };
   const leases = new CheckLeaseManager(db, {
-    cli: pool.cli,
-    pin: pinLeasedWorktree,
     verifyBase: verifyPinnedBase,
     acquisitionProvider: modeledProvider(pool.cli),
     now: () => clock.now,
@@ -778,9 +752,8 @@ test("startup recovery returns a lease whose group is provably gone", { skip: !S
 
   // A fresh manager over the same table, which is what a restart is.
   const restarted = new CheckLeaseManager(db, {
-    cli: f.pool.cli,
-    pin: pinLeasedWorktree,
     verifyBase: verifyPinnedBase,
+    acquisitionProvider: modeledProvider(f.pool.cli),
   });
   const restartedRuntime = new CheckRuntime(restarted, { leaseStore: leaseRows, teardown: TEARDOWN });
   await restarted.reconcileOnStartup(restartedRuntime.groupRecovery);
@@ -810,9 +783,8 @@ test("startup recovery keeps a lease whose group it may not signal", { skip: !SU
   const before = f.pool.calls.filter((c) => c.cmd === "return").length;
 
   const restarted = new CheckLeaseManager(db, {
-    cli: f.pool.cli,
-    pin: pinLeasedWorktree,
     verifyBase: verifyPinnedBase,
+    acquisitionProvider: modeledProvider(f.pool.cli),
   });
   const restartedRuntime = new CheckRuntime(restarted, { leaseStore: leaseRows, teardown: TEARDOWN });
   await restarted.reconcileOnStartup(restartedRuntime.groupRecovery);
@@ -944,8 +916,6 @@ test("an unresolved lease blocks the retry instead of taking a second tree", asy
   const { repoRoot, headSha } = gitRepo();
   const pool = fakePool(repoRoot, 3);
   const leases = new CheckLeaseManager(db, {
-    cli: pool.cli,
-    pin: pinLeasedWorktree,
     verifyBase: verifyPinnedBase,
     acquisitionProvider: modeledProvider(pool.cli),
   });

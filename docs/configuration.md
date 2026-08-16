@@ -4,10 +4,9 @@
 |-----|---------|---------|
 | `MISSION_PORT` | `7317` | daemon / dashboard port |
 | `MISSION_HOME` | `~/.mission-control` | state dir (db, token, logs, native worktree pools, and disposable Git worktrees) |
-| `MISSION_WORKSPACE_DIRS` | `~/workspace` | colon-separated roots scanned for the dispatch repo picker and for the legacy Treehouse pools the compatibility sweep visits |
+| `MISSION_WORKSPACE_DIRS` | `~/workspace` | colon-separated roots scanned for the dispatch repository picker |
 | `MISSION_POLL_MS` | `1500` | discovery interval |
 | `MISSION_AGENTS_SHADOW_MS` | `0` (off) | how often to take a [shadow reading](sessions.md#shadow-reading-claudes-own-session-state) of `claude agents --json` and log where it disagrees with our own discovery. Diagnostic only - it never feeds the registry. `0` or any non-positive value disables it; anything under `5000` is clamped up, since one reading spawns the full `claude` binary |
-| `MISSION_POOL_REAP_MS` | `300000` | how often to sweep treehouse pools for leaked leases. `0` (or any non-positive value) turns the background sweep off; an unparseable value falls back to the default; anything under `30000` is clamped up to it, and anything over `604800000` (7d) clamped down to it, since past ~24.8d `setTimeout` overflows into a hot loop |
 | `MISSION_WORKTREE_SWEEP_MS` | `300000` | how often the daemon reconciles native worktree slots and reclaims eligible task and check leases. `0` (or any non-positive value) turns recurring reconciliation off; startup reconciliation still runs. An unparseable value falls back to the default, values under `30000` are clamped up, and values over `604800000` (7d) are clamped down |
 | `MISSION_DISPATCH_READY_MS` | `30000` | dispatch: how long to wait for the agent's pane to be discovered before failing |
 | `MISSION_DISPATCH_SETTLE_MS` | `2000` | terminal-runtime dispatch: how long a discovered pane with no usable hook readiness signal must remain live before dispatch continues. This starts immediately for Pi, whose positional launch message needs no pane injection, and after a hook wait times out for a still-live session. An observed exit fails instead. Agent SDK dispatch does not use a settle delay |
@@ -102,9 +101,9 @@ startup and the Cost panel says so on screen.
 > one is set - so a hook or MCP server installed under an older name keeps reporting without
 > being reinstalled. On its first start the daemon renames an existing `~/.fleet-control`
 > (or `~/.ai-harness`) state dir to `~/.mission-control`, keeping your db, token, and
-> uploads; if that move can't happen the old dir keeps working exactly as before. Treehouse
-> leases stamped with the old holder names are still recognised as ours, so a renamed
-> install doesn't strand its worktree pool. Prefer the `MISSION_*` names going forward.
+> uploads; if that move can't happen the old dir keeps working exactly as before. Persisted
+> legacy Treehouse resources keep their recorded provider and fail closed when exact lease
+> identity is unavailable. Prefer the `MISSION_*` names going forward.
 >
 > Dashboard settings (layout, shortcuts, alerts, formatting) are read out of the browser
 > once, under whichever product name last wrote them, and saved into the daemon - after
@@ -121,7 +120,7 @@ startup and the Cost panel says so on screen.
 ## Commands
 
 ```sh
-make init              # one-time bootstrap (deps, build, hooks, treehouse)
+make init              # one-time bootstrap (deps, build, hooks)
 make session           # ask the running daemon for a durable manual worktree lease
 make session ARGS="--return <lease-id>" # return a clean manual lease by durable ID
 npm run dev            # daemon + web (dev)

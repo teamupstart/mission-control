@@ -2340,9 +2340,8 @@ function defaultBranchOf(remoteRef: string): string {
  *
  * Detaching, rather than checking the default branch out, is the only option here:
  * a linked worktree cannot check out `main` while the main checkout holds it, and
- * git refuses rather than sharing. It is also exactly the state treehouse's pool
- * hands a fresh worktree out in, so this returns a reused session to the shape a
- * brand-new one starts in.
+ * git refuses rather than sharing. It is also the detached state the native allocator
+ * hands out, so this returns a reused session to the shape a brand-new one starts in.
  *
  * Called AFTER the reset has landed, never before: the tree matches `target` by
  * then, so this is a pure HEAD move that cannot fail over local edits it would

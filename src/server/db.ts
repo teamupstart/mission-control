@@ -4262,7 +4262,7 @@ function taskReposByTask(): Map<string, TaskRepoEntry[]> {
  *
  * Exists so no caller can write `rows.map(rowToTask)` and silently produce tasks whose
  * `extraRepos` is empty - which for a multi-repo task is not a missing display detail but
- * a set of worktrees the pool reaper would then be free to hard-reset.
+ * a set of worktrees whose durable owners would silently disappear.
  */
 function rowsToTasks(rows: TaskRow[]): Task[] {
   if (rows.length === 0) return [];

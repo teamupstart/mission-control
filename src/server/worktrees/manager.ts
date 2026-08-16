@@ -1248,16 +1248,18 @@ export class WorktreeManager {
   }
 
   private async runMaintenance(): Promise<void> {
+    let hasNativePools = false;
     try {
-      if (this.store.poolCount() === 0) return;
+      hasNativePools = this.store.poolCount() > 0;
     } catch (error) {
       console.error("[worktrees] maintenance could not read native pools:", error);
-      return;
     }
-    try {
-      await this.reconcile();
-    } catch (error) {
-      console.error("[worktrees] maintenance reconciliation failed:", error);
+    if (hasNativePools) {
+      try {
+        await this.reconcile();
+      } catch (error) {
+        console.error("[worktrees] maintenance reconciliation failed:", error);
+      }
     }
     try {
       await this.reclaimDomainLeases();

@@ -1,13 +1,11 @@
 #!/usr/bin/env node
 // Prepare a freshly-provisioned git worktree for an agent session:
-//   1. warm its dependencies, so treehouse's whole promise - not re-paying the
+//   1. warm its dependencies, so a pooled checkout does not repay the
 //      install/build cost every time you start a session - actually holds.
 //
 // Every step is best-effort and idempotent, and the script always exits 0, so
 // it never blocks a worktree from being handed to you. That also makes it safe
-// to wire as a treehouse `post_create` hook in ~/.config/treehouse/config.toml
-// (repo-level hooks are ignored by treehouse for safety), in which case it runs
-// in the new worktree with no arguments.
+// to run when a native pool slot is first created.
 //
 // Usage: node scripts/worktree-setup.mjs [worktree-dir]   (defaults to cwd)
 

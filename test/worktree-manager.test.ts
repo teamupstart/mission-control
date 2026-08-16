@@ -89,6 +89,21 @@ test("native sweep cadence has an off switch and avoids timer overflow", () => {
   assert.equal(worktreeSweepIntervalMs("99999999999"), 604_800_000);
 });
 
+test("maintenance reclaims domain leases even when no native pool exists", async () => {
+  const runtime = manager() as unknown as {
+    reclaimDomainLeases: () => Promise<void>;
+    runMaintenance(): Promise<void>;
+  };
+  let calls = 0;
+  runtime.reclaimDomainLeases = async () => {
+    calls += 1;
+  };
+
+  await runtime.runMaintenance();
+
+  assert.equal(calls, 1);
+});
+
 test("worktree config defaults on, is bounded, and merges repository patches", () => {
   assert.deepEqual(getWorktreesConfig(), { enabled: true, maxSlots: 16, repositories: {} });
   assert.throws(() => WorktreesConfigSchema.parse({ maxSlots: 0 }));
@@ -228,16 +243,14 @@ test("task acquisition uses native identity, degrades at capacity, and reuses a 
   const m = manager({
     resolvePolicy: () => ({ enabled: true, maxSlots: 1, setupArgv: null }),
   });
-  const pins = () => ({ sessionCwds: [], taskWorktrees: [], checkLeasePaths: [] });
-
-  const first = await provisionWorktree(clone, "task-native-1", "native", "native", pins, sha, 0, m);
+  const first = await provisionWorktree(clone, "task-native-1", "native", "native", sha, 0, m);
   assert.equal(first.provider, "mission");
   assert.ok(first.leaseId);
   assert.equal(first.branch, null, "a detached native checkout must not invent a harness branch");
   assert.equal(gitIn(first.path, "rev-parse", "HEAD"), sha);
   m.settleDomainLease(first.leaseId!);
 
-  const fallback = await provisionWorktree(clone, "task-native-2", "fallback", "fallba", pins, sha, 0, m);
+  const fallback = await provisionWorktree(clone, "task-native-2", "fallback", "fallba", sha, 0, m);
   assert.equal(fallback.provider, "git", "a positive capacity refusal should degrade once to Git");
   assert.equal(fallback.leaseId, null);
   assert.equal(gitIn(fallback.path, "rev-parse", "HEAD"), sha);
@@ -270,7 +283,7 @@ test("task acquisition uses native identity, degrades at capacity, and reuses a 
     homeName: null,
   });
 
-  const reused = await provisionWorktree(clone, "task-native-3", "reuse", "reuse1", pins, sha, 0, m);
+  const reused = await provisionWorktree(clone, "task-native-3", "reuse", "reuse1", sha, 0, m);
   assert.equal(reused.provider, "mission");
   assert.equal(reused.path, first.path, "native cleanup should retain and reuse the warm slot");
   await teardownWorktree({
@@ -385,9 +398,8 @@ test("an ambiguous native acquisition never creates a disposable task or check t
       return `unknown-${ids}`;
     },
   });
-  const pins = () => ({ sessionCwds: [], taskWorktrees: [], checkLeasePaths: [] });
   await assert.rejects(
-    () => provisionWorktree(clone, "task-unknown", "unknown", "unknow", pins, sha, 0, unknown),
+    () => provisionWorktree(clone, "task-unknown", "unknown", "unknow", sha, 0, unknown),
     /acquisition outcome is unknown/,
   );
   assert.equal(existsSync(worktreeSlotPath("task-unknown", 0)), false);

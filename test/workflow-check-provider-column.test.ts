@@ -67,12 +67,13 @@ raw.exec(`
 raw.close();
 
 const { openDb } = await import("../src/server/db.ts");
-const { CheckLeaseManager, CheckLeaseStore, TreehouseCheckTreeProvider } =
+const { CheckLeaseManager, CheckLeaseStore } =
   await import("../src/server/workflows/check-lease.ts");
-const { checkHolderToken } = await import("../src/server/pool-lease.ts");
+const { ModeledCheckTreeProvider, checkHolderToken } =
+  await import("./helpers/modeled-check-provider.ts");
 const { stubRun } = await import("../src/server/util/exec.ts");
 
-type TreehouseCli = import("../src/server/pool-lease.ts").TreehouseCli;
+type TreehouseCli = import("./helpers/modeled-check-provider.ts").TreehouseCli;
 
 const db = openDb();
 const store = new CheckLeaseStore(db);
@@ -126,10 +127,8 @@ function mkManager() {
   const dir = mkdtempSync(join(home, `pool-${seq++}-`));
   const pool = fakePool(dir);
   const manager = new CheckLeaseManager(db, {
-    cli: pool.cli,
-    pin: async () => {},
     verifyBase: async (_repoRoot, sha) => sha,
-    acquisitionProvider: new TreehouseCheckTreeProvider(pool.cli, async () => {}),
+    acquisitionProvider: new ModeledCheckTreeProvider(pool.cli, async () => {}),
   });
   return { ...pool, manager, repoRoot: dir };
 }
@@ -256,9 +255,8 @@ test("a treehouse row is released through treehouse when new acquisition default
   });
 
   const restarted = new CheckLeaseManager(db, {
-    cli: m.cli,
-    pin: async () => {},
     verifyBase: async (_r, s) => s,
+    acquisitionProvider: new ModeledCheckTreeProvider(m.cli, async () => {}),
   });
   assert.equal(store.get("att-restart")?.provider, "treehouse");
   assert.deepEqual(await restarted.releaseForAttempt("att-restart"), { outcome: "returned" });
@@ -286,14 +284,13 @@ test("a treehouse row fails closed when the binary vanishes", async () => {
     },
   };
   const restarted = new CheckLeaseManager(db, {
-    cli: missingBinary,
-    pin: async () => {},
     verifyBase: async (_r, s) => s,
+    acquisitionProvider: new ModeledCheckTreeProvider(missingBinary, async () => {}),
   });
 
   const outcome = await restarted.releaseForAttempt("att-vanished");
   assert.equal(outcome.outcome, "retry");
-  assert.match(outcome.outcome === "retry" ? outcome.reason : "", /treehouse status exited 1/);
+  assert.match(outcome.outcome === "retry" ? outcome.reason : "", /status exited 1/);
   assert.equal(statusReads, 1, "the recorded treehouse provider was not asked about ownership");
   assert.equal(store.get("att-vanished")?.cleanupState, "held");
   assert.equal(store.get("att-vanished")?.provider, "treehouse");

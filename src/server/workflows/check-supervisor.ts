@@ -212,10 +212,9 @@ type WorkingDirectory = { ok: true; path: string } | { ok: false; reason: string
  * that could resolve differently a moment later. Anything that cannot be resolved fails closed
  * with a reason, including a subpath that simply is not there.
  *
- * Deliberately not `canonicalPath` from the pool adapter, which falls back to the raw string
- * when `realpath` fails. That is right for its job - comparing two spellings of a tree we
- * already own - and exactly wrong for a containment check, where an unresolvable path must
- * refuse rather than degrade into a string comparison.
+ * Deliberately not `canonicalWorktreePath`, which falls back to a resolved spelling when
+ * `realpath` fails. That is right for comparing persisted paths and exactly wrong for a
+ * containment check, where an unresolvable path must refuse.
  *
  * The residual, stated because it cannot be closed from user space: a component swapped between
  * this check and the `chdir` inside `spawn` is a race no sequence of stat calls can win. What

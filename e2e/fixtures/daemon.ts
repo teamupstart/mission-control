@@ -243,10 +243,6 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     // only has to write the file; absent content simply means "no pull requests anywhere",
     // which is what every spec that does not script one already expects.
     MC_E2E_GH_PRS: ghPullRequestsPath(home),
-    // The pool sweep is NOT scoped to MISSION_HOME - it reaps the shared treehouse
-    // worktree pool, so an isolated daemon will still delete a sibling checkout's work.
-    // 0 switches the sweep off entirely.
-    MISSION_POOL_REAP_MS: "0",
     // Native pools live inside this disposable MISSION_HOME. Keep their maintenance pass
     // deterministic during browser assertions; focused maintenance behavior belongs to the
     // allocator unit suite, while e2e specs drive explicit task cleanup.

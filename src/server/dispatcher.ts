@@ -191,6 +191,9 @@ export class Dispatcher {
       status: "dispatching",
       error: null,
       dispatchedAt: task.dispatchedAt ?? Date.now(),
+      // A retry must prove its new provider run instead of inheriting the prior attempt's
+      // slug and completing against a projection it did not launch.
+      ...(task.kind === "pipeline" ? { pipelineRun: null } : {}),
     });
 
     try {

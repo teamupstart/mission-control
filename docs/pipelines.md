@@ -599,6 +599,12 @@ launcher, with `CLAUDECODE` removed. It never uses the Agent SDK, provisions no 
 worktree, and leaves conductor in charge of agent, model, effort, and stdin. The task is a
 manual dispatch surface only; backlog autopilot does not schedule it.
 
+When the first nested agent appears inside that terminal home's projected worktree, the daemon
+persists the provider, repository, and slug on the task. It does not bind the task to the child
+session because one conductor run may launch several agents. A processed projection settles
+the durable task, records the projected pull request as its outcome when present, and keeps the
+terminal home attached for standard cleanup. The same link is restored after a daemon restart.
+
 When a projected run first reports `pr_url`, Mission Control adopts that pull request into the
 existing GitHub Inspector ledger with source `pipeline`, provided its owner and repository
 match a GitHub remote configured in the projected checkout. No second review or shipping path

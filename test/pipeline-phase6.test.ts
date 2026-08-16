@@ -15,7 +15,10 @@ import {
 import type { RecordEpisode } from "../src/shared/protocol.ts";
 import { Registry } from "../src/server/registry.ts";
 import { Dispatcher } from "../src/server/dispatcher.ts";
-import { mkTask } from "./helpers/session-fixture.ts";
+import { TaskManager } from "../src/server/tasks.ts";
+import { getTask as getDurableTask } from "../src/server/db.ts";
+import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
+import { mkMuxHandle, mkTask } from "./helpers/session-fixture.ts";
 
 function run(haltClass = "mechanical"): PipelineRun {
   return {
@@ -93,6 +96,102 @@ test("a pipeline task launches the provider in its repository without an agent b
   assert.equal(task?.status, "running");
   assert.equal(task?.homeName, "Run conductor");
   assert.equal(task?.sessionId, null);
+});
+
+test("a pipeline child binds its durable run and the processed projection settles the task", () => {
+  const registry = new Registry();
+  new TaskManager(registry);
+  const building: PipelineRun = {
+    ...run(),
+    halt: null,
+    group: "building",
+    steps: [{ name: "build", state: "in_progress" }],
+  };
+  registry.initializePipelineRuns([building]);
+  registry.upsertTask(
+    mkTask({
+      id: "pipeline-lifecycle",
+      kind: "pipeline",
+      repoRoot: building.repoRoot,
+      status: "running",
+      homeName: "Pipeline lifecycle",
+    }),
+  );
+
+  registry.applyDiscovery([{
+    syntheticId: "pipeline-child",
+    agent: "claude",
+    name: "engineer",
+    nameSource: "process",
+    cwd: building.worktree,
+    gitBranch: "feature/phase-six",
+    pid: 42,
+    tty: "ttys42",
+    terminals: [mkMuxHandle({
+      session: "pipeline-home-id",
+      sessionName: "Pipeline lifecycle",
+      paneId: "%42",
+    })],
+    startedAt: 1,
+  } as DiscoveredSession]);
+
+  const link = {
+    provider: building.provider,
+    repoRoot: building.repoRoot,
+    slug: building.slug,
+  };
+  assert.deepEqual(registry.getTask("pipeline-lifecycle")?.pipelineRun, link);
+  assert.deepEqual(getDurableTask("pipeline-lifecycle")?.pipelineRun, link);
+  assert.equal(registry.getSession("pipeline-child")?.task?.id, "pipeline-lifecycle");
+  assert.equal(registry.getSession("pipeline-child")?.task?.status, "running");
+
+  const prUrl = "https://github.com/example/demo/pull/42";
+  registry.upsertPipelineRun({
+    ...building,
+    group: "processed",
+    steps: [{ name: "build", state: "done" }],
+    prUrl,
+    updatedAt: 2,
+  });
+
+  const settled = registry.getTask("pipeline-lifecycle");
+  assert.equal(settled?.status, "done");
+  assert.equal(settled?.outcomeUrl, prUrl);
+  assert.equal(settled?.homeName, "Pipeline lifecycle", "cleanup ownership is retained");
+  assert.equal(registry.getSession("pipeline-child")?.task?.status, "done");
+});
+
+test("a boot-restored processed run settles a persisted pipeline task", () => {
+  const persisted = new Registry();
+  const projected: PipelineRun = {
+    ...run(),
+    slug: "restored-run",
+    halt: null,
+    group: "processed",
+    steps: [{ name: "ship", state: "done" }],
+    lastStep: "ship",
+    prUrl: "https://github.com/example/demo/pull/43",
+  };
+  persisted.upsertTask(
+    mkTask({
+      id: "pipeline-restored",
+      kind: "pipeline",
+      repoRoot: projected.repoRoot,
+      status: "running",
+      pipelineRun: {
+        provider: projected.provider,
+        repoRoot: projected.repoRoot,
+        slug: projected.slug,
+      },
+    }),
+  );
+
+  const restarted = new Registry();
+  new TaskManager(restarted);
+  restarted.initializePipelineRuns([projected]);
+
+  assert.equal(restarted.getTask("pipeline-restored")?.status, "done");
+  assert.equal(restarted.getTask("pipeline-restored")?.outcomeUrl, projected.prUrl);
 });
 
 test("only the exact mechanical halt class is automatable", () => {

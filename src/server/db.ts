@@ -572,6 +572,10 @@ export function openDb(): DatabaseSync {
       external_id   TEXT,
       source_url    TEXT,
       repo_root     TEXT NOT NULL,
+      -- Provider-owned lifecycle key for a pipeline task. repo_root is the third
+      -- coordinate, so only provider and slug need their own nullable columns.
+      pipeline_provider TEXT,
+      pipeline_slug TEXT,
       worktree_path TEXT,
       branch        TEXT,
       provider      TEXT,
@@ -2935,6 +2939,11 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "tasks", "source_id", "TEXT");
   addColumn(d, "tasks", "external_id", "TEXT");
   addColumn(d, "tasks", "source_url", "TEXT");
+  // The provider-run identity learned after a pipeline dispatch's first child agent appears.
+  // Both nullable with no default: old and non-pipeline tasks have no provider lifecycle to
+  // follow, and a half-written pair fails closed when the row is read.
+  addColumn(d, "tasks", "pipeline_provider", "TEXT");
+  addColumn(d, "tasks", "pipeline_slug", "TEXT");
   // The primary repo's baseline for multi-repo tasks. Nullable with no default because
   // that is the honest reading of an existing row: nothing recorded where its branch was
   // cut, and a fabricated value would be indistinguishable from a measured one to every
@@ -3886,6 +3895,8 @@ interface TaskRow {
   external_id: string | null;
   source_url: string | null;
   repo_root: string;
+  pipeline_provider: string | null;
+  pipeline_slug: string | null;
   worktree_path: string | null;
   branch: string | null;
   provider: string | null;
@@ -4161,6 +4172,10 @@ function rowToTask(r: TaskRow, extraRepos: TaskRepoEntry[]): Task {
         ? { sourceId: r.source_id, externalId: r.external_id, url: r.source_url }
         : null,
     repoRoot: r.repo_root,
+    pipelineRun:
+      r.pipeline_provider && isPipelineProviderId(r.pipeline_provider) && r.pipeline_slug
+        ? { provider: r.pipeline_provider, repoRoot: r.repo_root, slug: r.pipeline_slug }
+        : null,
     worktreePath: r.worktree_path,
     branch: r.branch,
     provider: r.provider as WorktreeProvider | null,
@@ -4212,12 +4227,13 @@ export function upsertTask(t: Task): string[] {
     d.prepare(
       `INSERT INTO tasks (
          id, title, intent, kind, agent, priority, labels, dependencies, enabled, model, effort,
-         workflow_id, source_id, external_id, source_url, repo_root, worktree_path, branch,
-         provider, base_sha, home_name, terminal_resource_id, session_id,
+         workflow_id, source_id, external_id, source_url, repo_root,
+         pipeline_provider, pipeline_slug, worktree_path, branch, provider, base_sha,
+         home_name, terminal_resource_id, session_id,
          schedule_id, schedule_occurrence_id, scheduled_for,
          status, outcome, outcome_url, error,
          created_at, updated_at, dispatched_at, completed_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          title=excluded.title, intent=excluded.intent, kind=excluded.kind, agent=excluded.agent,
          priority=excluded.priority, labels=excluded.labels, dependencies=excluded.dependencies,
@@ -4225,7 +4241,9 @@ export function upsertTask(t: Task): string[] {
          workflow_id=excluded.workflow_id,
          source_id=excluded.source_id, external_id=excluded.external_id,
          source_url=excluded.source_url,
-         repo_root=excluded.repo_root, worktree_path=excluded.worktree_path, branch=excluded.branch,
+         repo_root=excluded.repo_root,
+         pipeline_provider=excluded.pipeline_provider, pipeline_slug=excluded.pipeline_slug,
+         worktree_path=excluded.worktree_path, branch=excluded.branch,
          provider=excluded.provider, base_sha=excluded.base_sha, home_name=excluded.home_name,
          terminal_resource_id=excluded.terminal_resource_id, session_id=excluded.session_id,
          schedule_id=excluded.schedule_id,
@@ -4246,7 +4264,8 @@ export function upsertTask(t: Task): string[] {
       t.effort,
       t.workflowId,
       t.source?.sourceId ?? null, t.source?.externalId ?? null, t.source?.url ?? null,
-      t.repoRoot, t.worktreePath, t.branch, t.provider, t.baseSha,
+      t.repoRoot, t.pipelineRun?.provider ?? null, t.pipelineRun?.slug ?? null,
+      t.worktreePath, t.branch, t.provider, t.baseSha,
       t.homeName, t.terminalResourceId, t.sessionId,
       t.scheduleId, t.scheduleOccurrenceId, t.scheduledFor,
       t.status, t.outcome, t.outcomeUrl, t.error, t.createdAt,

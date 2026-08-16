@@ -197,6 +197,7 @@ function mkTask(over: Partial<Task> = {}): Task {
     dispatchedAt: null,
     completedAt: null,
     ...over,
+    pipelineRun: over.pipelineRun ?? null,
     workflowId: over.workflowId ?? null,
   };
 }

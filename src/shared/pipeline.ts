@@ -276,8 +276,16 @@ export interface PipelineRun {
   updatedAt: number;
 }
 
+/** The three coordinates that durably address one provider-owned run. */
+export interface PipelineRunLink {
+  provider: PipelineProviderId;
+  /** Absolute repository root, matching `PipelineRun.repoRoot` exactly. */
+  repoRoot: string;
+  slug: string;
+}
+
 /**
- * What one SESSION carries about the run it is doing the work of - `Session.pipeline`.
+ * What one SESSION carries about the run it is doing the work of: `Session.pipeline`.
  *
  * The run's key plus the step that was running when the session was last observed, and
  * nothing else: a whole `PipelineRun` on every session frame would ship 22 step states per
@@ -285,14 +293,10 @@ export interface PipelineRun {
  *
  * The key is all three coordinates because two repositories legitimately hold the same slug
  * (`pipeline-sse.test.ts` pins that case), so a link naming only provider and slug cannot
- * address the run it belongs to - and addressing it is the whole job of the chip, the ladder
- * and the composer's replacement notice.
+ * address the run it belongs to, which is the whole job of the chip, the ladder and the
+ * composer's replacement notice.
  */
-export interface SessionPipelineLink {
-  provider: PipelineProviderId;
-  /** Absolute repository root, matching `PipelineRun.repoRoot` exactly. */
-  repoRoot: string;
-  slug: string;
+export interface SessionPipelineLink extends PipelineRunLink {
   /** The provider's `lastStep` as of the observation, or null before the first one. */
   step: string | null;
 }

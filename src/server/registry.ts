@@ -5159,6 +5159,11 @@ export class Registry extends EventEmitter {
     this.tasks.set(task.id, task);
     this.emitEvent({ type: "task_upsert", task });
     this.syncSessionsForWorktree(task.worktreePath);
+    // Pipeline tasks deliberately have neither `sessionId` nor a Mission Control worktree.
+    // Their nested agents still need their task card refreshed when the durable provider
+    // lifecycle moves, including when explicit cleanup releases the terminal home.
+    if (previous) this.syncSessionsForTaskResources(previous);
+    this.syncSessionsForTaskResources(task);
     if (previous?.sessionId && previous.sessionId !== task.sessionId) {
       this.resyncSessionTask(previous.sessionId);
     }
@@ -5407,6 +5412,15 @@ export class Registry extends EventEmitter {
       if (!bound || t.updatedAt > bound.updatedAt) bound = t;
     }
     if (bound) return bound;
+    const pipelineTask = this.taskResourceOwnerForSession(
+      sessionId,
+      undefined,
+      (task) =>
+        task.kind === "pipeline" &&
+        task.status !== "backlog" &&
+        task.status !== "cancelled",
+    );
+    if (pipelineTask) return pipelineTask;
     const task = this.activeTaskForCwd(cwd);
     if (!task) return undefined;
     const episode = sessionWorkEpisodeFor(sessionId);
@@ -5550,6 +5564,18 @@ export class Registry extends EventEmitter {
     if (!cwd) return;
     for (const id of this.sessions.keys()) {
       if (this.sessions.get(id)?.cwd === cwd) this.resyncSessionTask(id);
+    }
+  }
+
+  /** Refresh cards sharing a pipeline task's terminal home, without binding its children. */
+  private syncSessionsForTaskResources(task: Pick<Task, "homeName" | "terminalResourceId">): void {
+    if (task.homeName === null && task.terminalResourceId === null) return;
+    for (const session of this.sessions.values()) {
+      const sharesHome = task.homeName !== null && terminalHomeNames(session).has(task.homeName);
+      const sharesResource =
+        task.terminalResourceId !== null &&
+        terminalResourceIds(session).has(task.terminalResourceId);
+      if (sharesHome || sharesResource) this.resyncSessionTask(session.id);
     }
   }
 

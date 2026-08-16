@@ -16,7 +16,12 @@ import type { AutomationRoleCost } from "./llm-spend.ts";
 import type { LineSummary } from "./line.ts";
 import type { ClaudeTransport, LlmRunnerId, ResolvedLlmRunner } from "./llm.ts";
 import type { ResolvedModel } from "./model-choice.ts";
-import type { PipelineProviderId, PipelineRun, SessionPipelineLink } from "./pipeline.ts";
+import type {
+  PipelineProviderId,
+  PipelineRun,
+  PipelineRunLink,
+  SessionPipelineLink,
+} from "./pipeline.ts";
 import type { SkillEnforcement } from "./skills.ts";
 import type { TaskSourceRef } from "./task-source.ts";
 import type { TerminalBackendId, TerminalHandle } from "./terminal.ts";
@@ -1692,6 +1697,14 @@ export interface Task {
    * no-op. A seen row deliberately outlives the task; this field dies with it.
    */
   source: TaskSourceRef | null;
+  /**
+   * The provider run this pipeline dispatch started, once a child agent proves the join.
+   *
+   * Kept separate from `sessionId`: conductor may launch several sequential agents, so no
+   * one child session owns the task lifecycle. The daemon persists this key and settles the
+   * task from the provider projection instead.
+   */
+  pipelineRun: PipelineRunLink | null;
   /** Absolute path of the source repo the worktree is cut from. */
   repoRoot: string;
   /** Isolated worktree the agent runs in (realpath) - the correlation key. Null while in the backlog. */

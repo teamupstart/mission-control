@@ -113,6 +113,14 @@ that has no session behind it.
 You can act on a pipeline from there, not only read it: start, stop, pause and resume the
 engine's daemon, park and unpark a feature, authorize one DECIDE re-entry with your own
 rationale, watch the daemon's console, and run the re-seal ceremony in a hosted terminal.
+
+The same integration starts at Dispatch. An enabled repository offers the **pipeline** task
+kind, which opens `conduct-ts engineer --idea` in a real terminal and lets conductor own the
+worktree, agent, model, and effort. When that run opens a pull request, GitHub Inspector adopts
+it under pipeline provenance and it joins **Shipped**. **Settings → Conductor → Foreman
+triage** can also let Foreman unpark mechanical halts through the same action route the
+dashboard uses. That switch ships off, and every needs-human or unknown halt stays with the
+operator.
 Every verb spawns the engine's own CLI and is judged by what it printed, never by an exit code
 - and what a shipped feature cost lands in the [spend strip](docs/cost-and-usage.md) as
 automation, under the engine's own figures.

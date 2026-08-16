@@ -4,6 +4,7 @@ import { MAX_LABELS, TASK_PRIORITIES, normalizeLabels } from "./task.ts";
 import {
   PipelineActionRequestSchema,
   PipelineConsoleRequestSchema,
+  PIPELINE_PROVIDER_IDS,
   PipelinesConfigSchema,
 } from "./pipeline.ts";
 import { TaskSourcesConfigSchema } from "./task-source.ts";
@@ -922,7 +923,7 @@ export type SetNote = z.infer<typeof SetNoteSchema>;
 export const RecordEpisodeSchema = z.object({
   marker: z.string().min(1),
   situation: z.string().min(1),
-  surface: z.enum(["input-review", "terminal"]),
+  surface: z.enum(["input-review", "terminal", "pipeline"]),
   question: z.string(),
   pane: z.string().nullable().optional(),
   menu: z
@@ -958,6 +959,15 @@ export const RecordEpisodeSchema = z.object({
   sentBy: z.enum(["foreman", "you"]).nullable().optional(),
 });
 export type RecordEpisode = z.infer<typeof RecordEpisodeSchema>;
+
+/** A pipeline-owned episode, addressed without inventing a live agent session. */
+export const PipelineForemanEpisodeSchema = z.object({
+  provider: z.enum(PIPELINE_PROVIDER_IDS),
+  repoRoot: z.string().min(1),
+  slug: z.string().min(1),
+  episode: RecordEpisodeSchema,
+});
+export type PipelineForemanEpisode = z.infer<typeof PipelineForemanEpisodeSchema>;
 
 /**
  * Stamp the human's answer onto an episode Foreman left open.

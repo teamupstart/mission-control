@@ -62,6 +62,7 @@ import {
   freezeScoutPromptBoundary,
 } from "./scouts/prompt-journal.ts";
 import { withTaskKindContract } from "./task-contract.ts";
+import { TASK_KIND_BEHAVIOR } from "@shared/task.ts";
 
 /**
  * What a SATISFIED quorum records as the task's outcome: every pull request that landed, in
@@ -1912,6 +1913,16 @@ export class TaskManager {
     if (!t) return { ok: false, error: "no such task", scope: "task" };
     if (t.status !== "backlog") {
       return { ok: false, error: `task is ${t.status}, not in the backlog`, scope: "task" };
+    }
+    // Provider-owned tasks need the provider's own terminal launch. Handing one to an
+    // existing harness session would bypass that launch and type an engine idea into an
+    // agent, which is a different operation with no engine run behind it.
+    if (TASK_KIND_BEHAVIOR[t.kind].launch !== "harness") {
+      return {
+        ok: false,
+        error: `${t.title} must be dispatched so its pipeline provider can open the terminal session`,
+        scope: "task",
+      };
     }
     // Multi-repo tasks are DISPATCH-ONLY, and this is where that is enforced for every
     // caller - the board's drag, Foreman's autopilot, the HTTP route.

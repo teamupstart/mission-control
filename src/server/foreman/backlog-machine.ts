@@ -4,6 +4,7 @@ import { backlogIndex, blockersIn, plannableBacklog, planStale, readyBacklog } f
 import { cwdAllowlisted, foremanAllowlisted, taskReposAllowlisted } from "@shared/foreman.ts";
 import { hasPane } from "./queue-machine.ts";
 import { settledIdle } from "@shared/session.ts";
+import { allowsBacklogAutopilot } from "@shared/task.ts";
 
 // The backlog autopilot's decision core: given the fleet, the backlog and the stored
 // plan, what should Foreman do THIS tick? Zero I/O, `now` always injected - mirroring
@@ -309,6 +310,10 @@ export function decideBacklogTick(input: BacklogTickInput): BacklogAction {
 
   const backlog = backlogTasks(tasks);
   if (backlog.length === 0) return { kind: "none", why: "the backlog is empty" };
+  const automatableBacklog = backlog.filter((task) => allowsBacklogAutopilot(task.kind));
+  if (automatableBacklog.length === 0) {
+    return { kind: "none", why: "no backlog item allows unattended scheduling" };
+  }
 
   // Step 3. `planExhausted` is the only thing that lets a stale plan through, and what
   // it buys is not "schedule from a stale plan" - `readyBacklog` with a stale plan
@@ -325,7 +330,7 @@ export function decideBacklogTick(input: BacklogTickInput): BacklogAction {
   // it will be cut FROM, which is the exact thing the allowlist names. (The worktree it
   // eventually runs in is covered by the other half of `foremanAllowlisted` once it is a
   // live session.) EVERY repo, not just the primary - see `taskReposAllowlisted`.
-  const allowed = backlog.filter((t) => taskReposAllowlisted(t, cfg.allowlist));
+  const allowed = automatableBacklog.filter((t) => taskReposAllowlisted(t, cfg.allowlist));
 
   // The allowlist is answered BEFORE dependencies, and the order is the whole point: it
   // is the coarser fact, and it is the only one of the two the operator can act on
@@ -338,7 +343,9 @@ export function decideBacklogTick(input: BacklogTickInput): BacklogAction {
     return { kind: "none", why: "no backlog item is in a repo Foreman is trusted to act in" };
   }
 
-  const ready = readyBacklog(tasks, plan).filter((t) => taskReposAllowlisted(t, cfg.allowlist));
+  const ready = readyBacklog(tasks, plan).filter(
+    (t) => allowsBacklogAutopilot(t.kind) && taskReposAllowlisted(t, cfg.allowlist),
+  );
   if (ready.length === 0) {
     // Counted over the ALLOWED items, so the number matches the sentence: an item in an
     // untrusted repo is not "blocked", it is out of scope, and including it would have

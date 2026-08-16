@@ -204,6 +204,31 @@ export function pipelinesObserving(): number {
 }
 
 /**
+ * Compose one pipeline-task launch behind current repository consent.
+ *
+ * A task stores no provider id, so exactly one active provider must own its repository. The
+ * current registry has one provider; making ambiguity a refusal keeps that future extension
+ * from choosing a driver by config order.
+ */
+export async function pipelineTaskLaunch(
+  repoRoot: string,
+  intent: string,
+): Promise<{ ok: true; argv: string[]; cwd: string } | { ok: false; error: string }> {
+  const matches = activePipelineRepos(getPipelinesConfig()).filter(
+    (repo) => repo.repoRoot === repoRoot,
+  );
+  if (matches.length === 0) {
+    return { ok: false, error: "conductor is not enabled for this repository" };
+  }
+  if (matches.length > 1) {
+    return { ok: false, error: "more than one pipeline provider is enabled for this repository" };
+  }
+  const repo = matches[0]!;
+  const launch = await PIPELINE_PROVIDERS[repo.provider].taskArgv(intent, repoRoot);
+  return "refused" in launch ? { ok: false, error: launch.refused } : { ok: true, ...launch };
+}
+
+/**
  * The health of the repositories being READ, for the Pipelines rail's group headers.
  *
  * Narrower than `pipelineRepoStatuses` on purpose. That one answers the Settings panel,
@@ -540,10 +565,12 @@ export interface PipelineProjectionSink {
 /**
  * Seed the live catalog from the durable projection, dropping anything no longer consented.
  *
- * Runs before the daemon serves, so it emits nothing - a dashboard's first snapshot is
- * simply right. The pruning is the half that matters: consent can be withdrawn while the
- * daemon is down, and a row that outlived its consent would come back on the next boot as
- * an SSE frame about a repository the operator switched off.
+ * Runs before the daemon serves, so it emits no browser frame and a dashboard's first
+ * snapshot is simply right. The registry does notify server-owned projection consumers so
+ * Inspector can rebuild pipeline PR adoption on restart. The pruning is the half that
+ * matters: consent can be withdrawn while the daemon is down, and a row that outlived its
+ * consent would come back on the next boot as an SSE frame about a repository the operator
+ * switched off.
  */
 export function restorePipelineProjection(sink: PipelineProjectionSink): void {
   // Establishes this process's in-memory state from the durable rows rather than adding to

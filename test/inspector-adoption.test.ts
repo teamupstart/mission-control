@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 // Type-only, so it is erased rather than resolved before the state-dir preamble below.
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
+import type { PipelineRun } from "../src/shared/pipeline.ts";
 
 // Isolate the state dir BEFORE any value import that can resolve it - static imports are
 // hoisted above this line, so every server module below must load dynamically. Without
@@ -22,7 +23,9 @@ const {
   updateInspectorPr,
   upsertInspectorComment,
 } = await import("../src/server/db.ts");
-const { adoptPr, pushEndsTheWait } = await import("../src/server/inspector/worker.ts");
+const { adoptPipelinePr, adoptPr, pushEndsTheWait } = await import(
+  "../src/server/inspector/worker.ts"
+);
 const { parsePrUrl } = await import("../src/server/inspector/github.ts");
 const { getInspectorConfig, setInspectorConfig } = await import(
   "../src/server/inspector/config.ts"
@@ -156,6 +159,31 @@ test("adopting twice is a no-op, whichever signal gets there second", () => {
   assert.equal(row?.headSha, "abc123", "progress must survive a re-sighting");
   assert.equal(row?.round, 4);
   assert.equal(row?.source, "hook", "provenance is a fact about the past");
+});
+
+test("a projected pipeline PR is adopted once with pipeline provenance", () => {
+  const run: PipelineRun = {
+    provider: "ai-conductor",
+    repoRoot: "/repo/a",
+    slug: "pipeline-pr",
+    worktree: "/repo/a/.worktrees/pipeline-pr",
+    tier: "M",
+    track: "technical",
+    steps: [{ name: "open_pr", state: "done" }],
+    lastStep: "open_pr",
+    halt: null,
+    group: "processed",
+    prUrl: URL_1,
+    costTokens: null,
+    updatedAt: 1000,
+  };
+  assert.equal(adoptPipelinePr(run, 1000), true);
+  assert.equal(adoptPipelinePr(run, 2000), false);
+  const row = getInspectorPr("mancej/ai-harness#56");
+  assert.equal(row?.source, "pipeline");
+  assert.equal(row?.repoRoot, "/repo/a");
+  assert.equal(row?.cwd, "/repo/a/.worktrees/pipeline-pr");
+  assert.equal(row?.sessionId, null);
 });
 
 // The loose `prUrl` sniff matches any PR link in any Bash output - `gh pr view` trips it,

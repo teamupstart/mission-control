@@ -28,6 +28,7 @@ import type {
   InspectorPr,
   InspectorSource,
 } from "@shared/types.ts";
+import type { PipelineRun } from "@shared/pipeline.ts";
 import type { InspectorConfig } from "@shared/protocol.ts";
 import { getInspectorConfig, inspectorModel } from "./config.ts";
 import { readBrief } from "./brief.ts";
@@ -429,6 +430,17 @@ export function adoptPr(
     adoptedAt: now,
     updatedAt: now,
   });
+}
+
+/** Adopt the pull request a projected engine run first reports, if it has one. */
+export function adoptPipelinePr(run: PipelineRun, now = Date.now()): boolean {
+  if (!run.prUrl) return false;
+  return adoptPr(
+    run.prUrl,
+    { sessionId: null, cwd: run.worktree, repoRoot: run.repoRoot },
+    "pipeline",
+    now,
+  );
 }
 
 /** Our open findings on a PR, keyed by fingerprint. */
@@ -1152,6 +1164,17 @@ export function startInspector(registry: Registry, options: InspectorStartOption
       if (parsed) notifyInspection(registry, parsed.key, null, null);
     }
   });
+  const offPipelineRun = registry.onPipelineRun((run) => {
+    try {
+      if (!adoptPipelinePr(run)) return;
+      registry.refreshInspections();
+      const parsed = run.prUrl ? parsePrUrl(run.prUrl) : null;
+      if (parsed) notifyInspection(registry, parsed.key, null, null);
+    } catch (err) {
+      // Projection must stay live even if the local adoption ledger is temporarily unwritable.
+      console.error("[inspector] could not adopt pipeline pull request:", err);
+    }
+  });
 
   const tick = async (): Promise<void> => {
     if (stopped) return;
@@ -1206,6 +1229,7 @@ export function startInspector(registry: Registry, options: InspectorStartOption
   return () => {
     stopped = true;
     offPrOpened();
+    offPipelineRun();
     if (timer) clearTimeout(timer);
   };
 }

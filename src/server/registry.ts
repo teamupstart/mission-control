@@ -1006,6 +1006,12 @@ export class Registry extends EventEmitter {
     return () => this.off("pr_opened", fn);
   }
 
+  /** A projected pipeline moved, including the boot-time projection restore. */
+  onPipelineRun(fn: (run: PipelineRun) => void): () => void {
+    this.on("pipeline_run", fn);
+    return () => this.off("pipeline_run", fn);
+  }
+
   /**
    * Fired ONCE as a session starts being evicted, while its row and its transcript still
    * exist.
@@ -1319,10 +1325,12 @@ export class Registry extends EventEmitter {
 
   /**
    * Boot-time install of the projection read back from SQLite. It precedes serving SSE, so
-   * it emits nothing - the same contract `initializeWorkflowCommands` holds.
+   * it emits no browser frame, the same contract `initializeWorkflowCommands` holds. The
+   * internal event lets server-owned consumers such as Inspector rebuild their projections.
    */
   initializePipelineRuns(runs: readonly PipelineRun[]): void {
     this.pipelineRuns = new Map(runs.map((run) => [pipelineRunKeyOf(run), run]));
+    for (const run of runs) this.emit("pipeline_run", run);
   }
 
   /**
@@ -1341,6 +1349,7 @@ export class Registry extends EventEmitter {
     const prev = this.pipelineRuns.get(key);
     this.pipelineRuns.set(key, run);
     if (prev && pipelineRunDisplayEqual(prev, run)) return;
+    this.emit("pipeline_run", run);
     this.emitEvent({ type: "pipeline_upsert", run });
     // After the frame, and after the map already holds the new run: the sessions this moves
     // are re-derived FROM the projection, so it has to be current before they are asked.

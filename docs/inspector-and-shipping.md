@@ -30,14 +30,21 @@ learns about PRs two loose ways - a URL sniffed out of any `Bash` result, and
 `gh pr list --head <branch>` - and neither can tell a PR you opened from one a colleague
 opened on the same branch. Neither adopts anything.
 
-A PR is adopted for review only when the hook saw the agent run **`gh pr create`**. It is
-matched on the command, not the output, because `gh pr view` prints the same URL.
+A PR is adopted for review when the hook saw the agent run **`gh pr create`**. It is matched
+on the command, not the output, because `gh pr view` prints the same URL. A projected external
+pipeline supplies the other proof: the engine writes `pr_url` into that run's own state, and
+Mission Control adopts it with source `pipeline` on first sight. A repeated projection is an
+idempotent adoption of the same ledger row.
 
 Adopted PRs are recorded durably and stay adopted while they are open, even after the
 session that opened them exits. A PR with no adoption record is never touched. Adoption is
 not consent to post - that is `mode` plus the allowlist - so a PR is recorded whenever the
 proof arrives, including while the GitHub Inspector is switched off. That single local insert is
 the only thing it does while off; it runs no `gh` and no model.
+
+Both sources enter the same ledger. Pipeline pull requests therefore appear in **Shipped** and
+follow the ordinary Inspector and Shipping settings; pipeline provenance grants no review,
+posting, or merge permission of its own.
 
 ### Knowing its own comments
 

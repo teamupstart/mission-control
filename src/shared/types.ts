@@ -862,7 +862,7 @@ export interface ForemanEpisode {
   /** `Pending.marker` - the stable id of this waiting episode. */
   marker: string;
   situation: string;
-  surface: "input-review" | "terminal";
+  surface: "input-review" | "terminal" | "pipeline";
   /** The ask, verbatim: a review body, an activity line, or a framed gate. */
   question: string;
   /** The child's screen when the reviewer read it. Terminal surfaces only. */
@@ -1495,7 +1495,7 @@ export type PrChecks = "passing" | "failing" | "pending";
  * APPEND, never reorder: `ship` at index 0 is the default every automated writer takes,
  * and the read paths that degrade an unknown persisted kind land on it.
  */
-export const TASK_KINDS = ["ship", "scout", "plan"] as const;
+export const TASK_KINDS = ["ship", "scout", "plan", "pipeline"] as const;
 
 export type TaskKind = (typeof TASK_KINDS)[number];
 
@@ -2077,7 +2077,7 @@ export interface MissionReport {
 export type InspectorMode = "dry-run" | "live";
 
 /** How a PR came to be adopted. Older persisted provenance is normalized to `legacy`. */
-export type InspectorSource = "hook" | "legacy";
+export type InspectorSource = "hook" | "legacy" | "pipeline";
 
 /** Whether the PR is still worth polling. Merged and closed-unmerged are both "closed". */
 export type InspectorPrState = "open" | "closed";

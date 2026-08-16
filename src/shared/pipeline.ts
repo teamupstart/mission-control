@@ -438,6 +438,8 @@ export type PipelineRepo = z.infer<typeof PipelineRepoSchema>;
  */
 export const PipelinesConfigSchema = z.object({
   enabled: z.boolean().default(false),
+  /** Foreman may unpark mechanical halts. Ships off and never widens to another class. */
+  foremanMechanicalTriage: z.boolean().default(false),
   repos: z
     .array(PipelineRepoSchema)
     .max(MAX_PIPELINE_REPOS)
@@ -450,6 +452,7 @@ export const PipelinesConfigSchema = z.object({
     ),
 });
 export type PipelinesConfig = z.infer<typeof PipelinesConfigSchema>;
+export type PipelinesConfigInput = z.input<typeof PipelinesConfigSchema>;
 
 /**
  * The repositories a pass should actually read: consented to, under a live master switch.
@@ -589,6 +592,21 @@ export interface PipelinesView {
   config: PipelinesConfig;
   probes: PipelineProbe[];
   status: PipelineRepoStatus[];
+}
+
+/** One halted run offered to the standalone Foreman worker. */
+export interface PipelineForemanItem {
+  run: PipelineRun;
+  /** Stable identity for this exact halt observation. */
+  marker: string;
+  /** Whether an episode already owns this marker. */
+  handled: boolean;
+}
+
+/** The narrow, no-probe fleet view Foreman polls for pipeline triage. */
+export interface PipelineForemanView {
+  enabled: boolean;
+  items: PipelineForemanItem[];
 }
 
 // ---- the frozen step table -------------------------------------------------------------

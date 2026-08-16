@@ -62,6 +62,7 @@ import { mainRepoRoot } from "./util/git.ts";
 import { sleep } from "./util/timers.ts";
 import { prepareCodexLaunch } from "./harness/codex/launch.ts";
 import { preparePiLaunch } from "./harness/pi/launch.ts";
+import { pipelineTaskLaunch } from "./pipelines/index.ts";
 
 /** How long to wait for the dispatched agent's pane to be discovered before failing. */
 const READY_TIMEOUT_MS = Number(envVar("DISPATCH_READY_MS") ?? 30000);
@@ -175,6 +176,10 @@ export class Dispatcher {
       /** Server-owned immutable graph check; kept injectable so this launch layer stays DB-free. */
       workflowEvidenceEnabled?: (task: Pick<Task, "kind" | "workflowId">) => boolean;
       resolveRuntime?: typeof resolveDispatchRuntime;
+      /** Provider-owned terminal argv for a pipeline task. */
+      pipelineLaunch?: typeof pipelineTaskLaunch;
+      /** Terminal-home launch seam for focused pipeline dispatch tests. */
+      spawn?: typeof spawnUniquely;
     } = {},
   ) {}
 
@@ -189,6 +194,10 @@ export class Dispatcher {
     });
 
     try {
+      if (task.kind === "pipeline") {
+        await this.dispatchPipeline(taskId, task);
+        return;
+      }
       const configured = resolveAgentBin(task.agent);
       const agentBin = await resolveBinPath(configured);
       if (!agentBin) throw new Error(`agent binary "${configured}" not found on PATH`);
@@ -578,6 +587,39 @@ export class Dispatcher {
         await this.teardownTaskResources(taskId, cur, message);
       }
     }
+  }
+
+  /** Launch conductor itself, leaving worktree creation and agent prompting to the engine. */
+  private async dispatchPipeline(taskId: string, task: Task): Promise<void> {
+    if (task.extraRepos.length > 0) {
+      throw new Error("a pipeline task owns one enabled conductor repository; detach the other repos");
+    }
+    if (task.workflowId !== null) {
+      throw new Error("a pipeline task cannot hand off to an after-work Workflow");
+    }
+    const launch = await (this.deps.pipelineLaunch ?? pipelineTaskLaunch)(
+      task.repoRoot,
+      task.intent,
+    );
+    if (!launch.ok) throw new Error(launch.error);
+
+    const label = sessionLabel(task.title);
+    const shortId = taskId.slice(0, 6);
+    const [command, ...args] = launch.argv;
+    if (!command) throw new Error("the pipeline provider returned no launch command");
+    const homeName = await (this.deps.spawn ?? spawnUniquely)(
+      label,
+      shortId,
+      launch.cwd,
+      command,
+      args,
+    );
+    this.patch(taskId, { homeName });
+    if (await this.abortIfSettled(taskId)) return;
+
+    // The terminal is conductor's live stdin, not an agent session. Agent sessions appear
+    // later in the engine's worktree and correlate through Registry.pipelineLinkFor.
+    this.patch(taskId, { status: "running", sessionId: null });
   }
 
   /**

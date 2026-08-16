@@ -97,6 +97,16 @@ test("a task that isn't in the backlog is refused", async () => {
   assert.match(res.error!, /not in the backlog/);
 });
 
+test("a pipeline task cannot be typed into an existing harness session", async () => {
+  const { r, tasks, sessionId } = setup();
+  r.upsertTask(mkTask({ kind: "pipeline", title: "Run the release pipeline" }));
+  const res = await tasks.assign("t1", sessionId);
+  assert.equal(res.ok, false);
+  assert.match(res.error!, /must be dispatched.*pipeline provider/);
+  assert.equal(res.scope, "task");
+  assert.equal(r.getTask("t1")?.status, "backlog");
+});
+
 test("an unknown task or session is refused rather than half-applied", async () => {
   const { r, tasks, sessionId } = setup();
   r.upsertTask(mkTask());

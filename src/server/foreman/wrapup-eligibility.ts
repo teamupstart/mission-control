@@ -152,6 +152,7 @@ const KIND_TAKES_REVIEW_ARTIFACT_CLASSIFIER: Record<TaskKind, boolean> = {
   ship: true,
   scout: true,
   plan: false,
+  pipeline: false,
 };
 
 /** A session with no linked task has no kind to exempt it, so it is classified as before. */

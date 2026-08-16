@@ -739,7 +739,7 @@ export function openDb(): DatabaseSync {
       session_id     TEXT NOT NULL,
       marker         TEXT NOT NULL,  -- Pending.marker: this waiting episode's identity
       situation      TEXT NOT NULL,  -- PendingSituation
-      surface        TEXT NOT NULL,  -- input-review | terminal
+      surface        TEXT NOT NULL,  -- input-review | terminal | pipeline
       question       TEXT NOT NULL,  -- the ask, verbatim
       pane           TEXT,           -- the child's screen at decision time (terminal only)
       menu           TEXT,           -- JSON PaneDialog: the rows the model chose among
@@ -3613,7 +3613,8 @@ function episodeFromRow(r: Record<string, unknown>): ForemanEpisode {
     sessionId: String(r.session_id ?? ""),
     marker: String(r.marker ?? ""),
     situation: String(r.situation ?? ""),
-    surface: r.surface === "input-review" ? "input-review" : "terminal",
+    surface:
+      r.surface === "input-review" || r.surface === "pipeline" ? r.surface : "terminal",
     question: String(r.question ?? ""),
     pane: typeof r.pane === "string" ? r.pane : null,
     menu: parseMenu(r.menu),
@@ -3656,6 +3657,15 @@ export function episodesFor(noteKey: string, limit = 100): ForemanEpisode[] {
     )
     .all(noteKey, limit) as unknown as Array<Record<string, unknown>>;
   return rows.map(episodeFromRow);
+}
+
+/** Whether a synthetic or live note key already owns this episode marker. */
+export function foremanEpisodeExists(noteKey: string, marker: string): boolean {
+  return Boolean(
+    openDb()
+      .prepare(`SELECT 1 FROM foreman_episodes WHERE note_key = ? AND marker = ? LIMIT 1`)
+      .get(noteKey, marker),
+  );
 }
 
 /**
@@ -7864,7 +7874,7 @@ function rowToInspectorPr(r: InspectorPrRow): InspectorPr {
     repoRoot: r.repo_root,
     cwd: r.cwd,
     sessionId: r.session_id,
-    source: r.source === "hook" ? "hook" : "legacy",
+    source: r.source === "hook" || r.source === "pipeline" ? r.source : "legacy",
     state: r.state as InspectorPrState,
     headSha: r.head_sha,
     reviewPosture: (r.review_posture as InspectorPr["reviewPosture"]) ?? null,

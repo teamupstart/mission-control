@@ -221,6 +221,7 @@ test("the consent config ships off, and defaults over a blob an older build wrot
   // object is what `getAppConfig` returns for a key nothing has written.
   const shipped = PipelinesConfigSchema.parse({});
   assert.equal(shipped.enabled, false);
+  assert.equal(shipped.foremanMechanicalTriage, false);
   assert.deepEqual(shipped.repos, []);
 
   // A repository arrives OFF even when the caller says nothing: adding is configuration,

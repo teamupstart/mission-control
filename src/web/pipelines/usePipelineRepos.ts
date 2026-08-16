@@ -35,12 +35,27 @@ export function usePipelineRepos(active: boolean): {
   // Held in a ref so an unmounted surface's late answer cannot set state, for both the
   // interval and a refresh fired from a button that is about to go away with it.
   const alive = useRef(true);
+  /**
+   * Which read is the newest one asked for.
+   *
+   * The refresh below is fired the moment a verb returns, and the interval does not stop
+   * while it runs - so a poll that left BEFORE the operator pressed Pause can answer after
+   * the refresh does, carrying the state the engine was in a second ago. Applied in arrival
+   * order, that redraws the chip as running and takes Resume off the row for four seconds,
+   * on a daemon that is paused - which reads as the button having failed.
+   *
+   * So a read applies only while it is still the latest one asked for. `usePipelineRunDetail`
+   * holds the same guard for the same reason: the answer to a question nobody is asking any
+   * more is not an update.
+   */
+  const latest = useRef(0);
 
   const read = useCallback(async (): Promise<void> => {
+    const mine = ++latest.current;
     const answer = await fetchPipelineRepos();
     // A failed read leaves the last answer standing rather than blanking the rail: one
     // dropped request is not evidence that an operator withdrew their consent.
-    if (alive.current && answer) setRepos(answer.repos);
+    if (alive.current && answer && mine === latest.current) setRepos(answer.repos);
   }, []);
 
   useEffect(() => {

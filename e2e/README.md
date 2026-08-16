@@ -1193,6 +1193,13 @@ projection pass read it, not because a fixture told the dashboard what to think.
 consoles land in the same cmux record `continue-in-terminal-mode.spec.ts` reads, which is
 where the reseal ceremony's argv and its hold-open wrapper are visible.
 
+One case in that file is SAMPLED rather than awaited, and the comment there says why: the
+rail heals itself every four seconds, so an auto-retrying `toBeVisible` would sit through the
+wrong state and pass the moment the next poll arrived. Asserting what an operator saw for that
+second means reading the chip outright, over the window the stale answer would have owned. The
+first draft of that test passed against the unfixed code, which is the whole argument for
+running a new regression test against the bug before trusting it.
+
 It also misbehaves on demand, in the two shapes that matter. Drop a `.daemon/REFUSE` file and
 every verb answers the way the real engine answers an invocation its argv detectors rejected -
 the generic sentence about the `inline` subcommand, on stdout, behind EXIT CODE 0, having done

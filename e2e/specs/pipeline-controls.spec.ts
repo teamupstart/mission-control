@@ -23,7 +23,7 @@ import { pipelineRepoKey } from "../../src/shared/pipeline.ts";
  * marker, the projection re-read it and the row change under an operator who never reloaded.
  * That chain is the whole feature, and every link in it belongs to a different program.
  *
- * Nine claims:
+ * Ten claims:
  *
  *  1. A verb pressed in the attention inbox reaches the engine's own CLI, in the argv and the
  *     working directory the engine requires - and the row leaves the inbox when the halt it
@@ -40,6 +40,7 @@ import { pipelineRepoKey } from "../../src/shared/pipeline.ts";
  *  7. An artifact path that leaves the feature's worktree is refused, and no terminal opens.
  *  8. A verb that moved the engine and did not say so still moves the daemon chip, now.
  *  9. A shipped feature the engine could not price reads as unpriced, never as $0.00.
+ * 10. A poll that left before a verb cannot repaint the chip that verb already moved.
  *
  * No model tokens: nothing here dispatches an agent, and the only engine is the fake
  * `conduct-ts` that `e2e/fixtures/conductor.ts` installs - which writes the same marker files
@@ -488,6 +489,67 @@ test("a shipped feature the engine could not price reads as unpriced, not as fre
   await expect(popover.locator(".spend-sub")).toContainText("ai-conductor pipelines unpriced");
   await expect(popover.locator(".spend-sub")).not.toContainText("$0.00");
   await shoot(dashboard, "10-unpriced-feature");
+});
+
+test("a poll that left before the verb cannot redraw the chip it already moved", async ({
+  dashboard,
+  daemon,
+}) => {
+  seedConductorRun(daemon.repo, "add-widgets", {
+    steps: { worktree: "done", build: "in_progress" },
+    lastStep: "build",
+  });
+  seedConductorDaemon(daemon.repo, { pid: process.pid });
+  await observe(daemon, 1);
+
+  const repoKey = encodeURIComponent(pipelineRepoKey("ai-conductor", daemon.repo));
+  await dashboard.goto(`${daemon.baseURL}/#/runs/pipeline/${repoKey}/add-widgets`);
+  const rail = dashboard.locator("aside.pipelines-rail");
+  const reader = dashboard.locator("div.pipelines-reader");
+  await expect(rail.getByText("daemon running", { exact: true })).toBeVisible();
+
+  // Hold the next periodic read on the wire, with the answer the daemon gave it. This is the
+  // race exactly as it happens: the rail polls every four seconds, the operator presses Pause
+  // in between, and the request that left first comes back last - carrying "running", because
+  // that is what was true when it was asked.
+  let stale: (() => Promise<void>) | null = null;
+  let holding = false;
+  await dashboard.route("**/api/pipelines/repos", async (route) => {
+    if (holding) {
+      await route.continue();
+      return;
+    }
+    holding = true;
+    const response = await route.fetch();
+    stale = async () => {
+      await route.fulfill({ response });
+    };
+  });
+  await expect.poll(() => stale !== null, { timeout: 10_000 }).toBe(true);
+
+  await reader.getByRole("button", { name: "Pause daemon" }).click();
+  await expect(rail.getByText("daemon paused", { exact: true })).toBeVisible();
+  await expect(reader.getByRole("button", { name: "Resume daemon" })).toBeVisible();
+
+  // Now let the old answer arrive. Applied in arrival order it repaints the chip as running
+  // and takes Resume off the row, on a daemon that is paused - which reads as the button
+  // having failed rather than as a stale read.
+  await stale!();
+
+  // SAMPLED, not awaited, and that is the difference between this proving something and this
+  // proving nothing. Playwright's assertions retry, and the rail re-reads every four seconds
+  // on its own - so `toBeVisible` would sit through the wrong state and pass the moment the
+  // next poll healed it. What an operator saw for that second is the whole claim, so the chip
+  // is read outright, over the window the stale answer would have owned.
+  const chip = rail.locator(".workflow-chip").first();
+  for (let sample = 0; sample < 10; sample += 1) {
+    expect(await chip.innerText(), "the chip must not flick back to the stale read").toBe(
+      "daemon paused",
+    );
+    expect(await reader.getByRole("button", { name: "Resume daemon" }).count()).toBe(1);
+    await dashboard.waitForTimeout(120);
+  }
+  expect(existsSync(join(daemon.repo, ".daemon", "PAUSED"))).toBe(true);
 });
 
 test("a verb that moved the engine and did not confirm it still moves the chip, now", async ({

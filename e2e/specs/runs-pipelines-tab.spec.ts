@@ -333,8 +333,13 @@ test("one run's detail is drawn in the workflow diagram's grammar, from the engi
   // carries them without displacing anything it drew before.
   const reader = dashboard.locator("div.pipelines-reader");
   await expect(reader.getByRole("button", { name: "Park" })).toBeVisible();
-  await expect(reader.getByRole("button", { name: "Grant DECIDE re-entry" })).toBeVisible();
   await expect(reader.getByRole("button", { name: "Open daemon console" })).toBeVisible();
+  // But no grant. This feature is building, and a grant is the answer to a refusal: it
+  // authorizes the engine to re-enter a DECIDE step unattended, so offering one to a run that
+  // never stopped at a gate spends that gate before it is reached. The header reads the same
+  // halt-class table the attention inbox does - see `pipeline-controls.spec.ts` for the halt
+  // that does license one.
+  await expect(reader.getByRole("button", { name: "Grant DECIDE re-entry" })).toHaveCount(0);
   // The engine's daemon is alive in this repository, so the verbs on offer are the ones that
   // are not already true - never "Start daemon", which would do nothing.
   await expect(reader.getByRole("button", { name: "Pause daemon" })).toBeVisible();

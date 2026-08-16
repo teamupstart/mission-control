@@ -10,6 +10,7 @@ import {
   renameSync,
   rmSync,
   symlinkSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -84,7 +85,7 @@ async function withParentDirectorySwap<T>(input: {
     mutableFs.openSync = originalOpenSync;
     syncBuiltinESMExports();
     if (swapped) {
-      rmSync(input.parentPath, { force: true });
+      unlinkSync(input.parentPath);
       renameSync(parkedPath, input.parentPath);
     }
   }

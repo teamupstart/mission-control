@@ -2,7 +2,7 @@ import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { ghPullRequestsPath, writeFakeAgents } from "./fake-agents.ts";
@@ -157,6 +157,16 @@ export function seedRepo(workspace: string, name: string): string {
   writeFileSync(join(repo, "README.md"), `# ${name}\n`);
   git("add", "-A");
   git("-c", "user.name=e2e", "-c", "user.email=e2e@example.com", "commit", "-qm", "base");
+  // Native return resets to the freshly fetched remote default. Give every fixture repo the
+  // same local bare origin a real developer clone has, kept outside the scanned workspace so
+  // it cannot appear as another dispatch target.
+  const origins = join(dirname(workspace), "origins");
+  const origin = join(origins, `${name}.git`);
+  mkdirSync(origins, { recursive: true });
+  execFileSync("git", ["init", "-q", "--bare", origin], { stdio: "pipe" });
+  git("remote", "add", "origin", origin);
+  git("push", "-qu", "origin", "main");
+  execFileSync("git", ["-C", origin, "symbolic-ref", "HEAD", "refs/heads/main"], { stdio: "pipe" });
   return realpathSync(repo);
 }
 
@@ -237,6 +247,10 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     // worktree pool, so an isolated daemon will still delete a sibling checkout's work.
     // 0 switches the sweep off entirely.
     MISSION_POOL_REAP_MS: "0",
+    // Native pools live inside this disposable MISSION_HOME. Keep their maintenance pass
+    // deterministic during browser assertions; focused maintenance behavior belongs to the
+    // allocator unit suite, while e2e specs drive explicit task cleanup.
+    MISSION_WORKTREE_SWEEP_MS: "0",
     // Neither is terminal discovery. It walks EVERY process on the machine and cards
     // anything that looks like an agent, so on a developer's laptop this daemon adopts
     // their real sessions - non-deterministic against CI, where there are none, and

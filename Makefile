@@ -31,7 +31,7 @@ help: ## List the available commands
 init: ## First-run bootstrap: deps, build, hooks, and treehouse (ARGS="--with-e2e" also checks Chromium)
 	node scripts/init.mjs $(ARGS)
 
-session: ## Start an agent in a fresh worktree (e.g. make session ARGS="-- claude")
+session: ## Ask the running daemon for a manual worktree lease (e.g. make session ARGS="-- claude")
 	node scripts/new-session.mjs $(ARGS)
 
 claude: ## One shot: bootstrap, ensure the daemon, lease a worktree, open Claude in it (harness-ready). Pass flags via ARGS="--resume"

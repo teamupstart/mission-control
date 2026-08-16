@@ -154,6 +154,7 @@ export function mkTask(over: Partial<Task> = {}): Task {
     worktreePath: null,
     branch: null,
     provider: null,
+    worktreeLeaseId: null,
     homeName: null,
     terminalResourceId: null,
     sessionId: null,

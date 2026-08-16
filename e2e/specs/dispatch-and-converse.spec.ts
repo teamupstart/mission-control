@@ -178,7 +178,7 @@ test("dispatching an agent puts a live session on the fleet", async ({ dashboard
   await expect(card).toContainText("Write a Haiku About Flexbox");
   // Running on the SDK runtime, headless, with a worktree of its own.
   await expect(card).toContainText("Agent SDK");
-  await expect(card).toContainText("worktrees/");
+  await expect(card).toContainText("worktree-pools/");
   // The model the fake reported through the SDK's `system/init` frame, proving the card's
   // model line is fed by the driver rather than by a default.
   await expect(card).toContainText("Claude e2e Mock");
@@ -852,5 +852,5 @@ test("the dispatched agent was launched headless, without the daemon's terminal 
   }
 
   // And it ran in the worktree the dispatch cut, not in the repo or the daemon's cwd.
-  expect(record.cwd).toContain("worktrees");
+  expect(record.cwd).toContain(join(daemon.home, "worktree-pools"));
 });

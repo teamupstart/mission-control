@@ -1650,8 +1650,10 @@ export interface TaskRepoEntry {
   worktreePath: string | null;
   /** Branch cut in this repo. Deliberately the SAME name as the primary's. */
   branch: string | null;
-  /** How this repo's worktree was provisioned, so teardown returns a lease vs removing a tree. */
+  /** Persisted provider authority for native return, legacy return, or disposable removal. */
   provider: WorktreeProvider | null;
+  /** Opaque native allocator identity. Present only when `provider` is `mission`. */
+  worktreeLeaseId: string | null;
   /** Full 40-character commit this repo's branch was cut at, recorded at provisioning time. */
   baseSha: string | null;
   /** The pull request this task opened in THIS repository, or null if none yet. */
@@ -1749,8 +1751,10 @@ export interface Task {
   worktreePath: string | null;
   /** Worktree branch, once known - remembered so teardown can drop a throwaway `harness/*` branch by name. */
   branch: string | null;
-  /** How the worktree was provisioned, so teardown returns a treehouse lease vs `git worktree remove`. */
+  /** Persisted provider authority for native return, legacy return, or disposable removal. */
   provider: WorktreeProvider | null;
+  /** Opaque native allocator identity. Present only when `provider` is `mission`. */
+  worktreeLeaseId: string | null;
   /**
    * The full 40-character commit the PRIMARY repo's branch was cut at, or null before
    * dispatch (and on every task dispatched before this column existed).

@@ -123,16 +123,42 @@ async function dispatch(page: Page, daemon: DaemonHandle): Promise<string> {
   await dialog.getByRole("button", { name: "Dispatch now" }).click();
   await expect(dialog).toBeHidden();
 
-  let sessionId = "";
+  let session: {
+    id: string;
+    state: string;
+    cwd: string;
+    agent: string;
+    agentSessionId: string | null;
+    gitBranch: string | null;
+  } | undefined;
   await expect
     .poll(async () => {
-      const sessions = await api<Array<{ id: string; state: string }>>(daemon, "/api/sessions");
-      const live = sessions.find((session) => session.state !== "exited");
-      sessionId = live?.id ?? "";
-      return live?.state ?? "";
+      const sessions = await api<Array<NonNullable<typeof session>>>(daemon, "/api/sessions");
+      session = sessions.find((item) => item.state !== "exited");
+      return session?.state ?? "";
     }, { message: "the dispatched session should settle to idle before evidence capture" })
     .toBe("idle");
-  return sessionId;
+
+  // Native acquisition is detached. Model the branch the working agent creates, then send
+  // the same live hook that lets the daemon observe it without enabling host process scans
+  // in the isolated browser fixture.
+  execFileSync("git", ["-C", session!.cwd, "switch", "-q", "-c", "e2e/pr-mismatch"]);
+  const token = readFileSync(join(daemon.home, "token"), "utf8").trim();
+  const observed = await fetch(`${daemon.baseURL}/hooks/Stop`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-harness-token": token },
+    body: JSON.stringify({
+      agent: session!.agent,
+      sessionId: session!.agentSessionId ?? session!.id,
+      cwd: session!.cwd,
+    }),
+  });
+  if (!observed.ok) throw new Error(`branch observation hook answered ${observed.status}`);
+  await expect.poll(async () =>
+    (await api<Array<{ id: string; gitBranch: string | null }>>(daemon, "/api/sessions"))
+      .find((item) => item.id === session!.id)?.gitBranch ?? null,
+  ).toBe("e2e/pr-mismatch");
+  return session!.id;
 }
 
 const actionWait = async (daemon: DaemonHandle, runId: string): Promise<string | null> =>

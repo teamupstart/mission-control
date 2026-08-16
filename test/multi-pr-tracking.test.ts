@@ -1,5 +1,6 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -85,6 +86,7 @@ function entry(over: Partial<TaskRepoEntry>): TaskRepoEntry {
     worktreePath: null,
     branch: "feat/work",
     provider: "git",
+    worktreeLeaseId: null,
     baseSha: EXTRA_BASE,
     prUrl: null,
     prState: null,
@@ -238,6 +240,30 @@ test("the poller asks about every attached worktree, one gh call per checkout", 
     mine.sort(),
     [["/wt/fanout-0", "feat/work"], ["/wt/fanout-1", "feat/work"], ["/wt/fanout-2", "feat/work"]],
     "the primary and both attached worktrees, each asked once",
+  );
+});
+
+test("a native attached checkout is polled on the branch the agent later created", () => {
+  const f = fixture("native-live-branch");
+  const checkout = join(home, "native-secondary");
+  execFileSync("git", ["init", "-q", "-b", "feat/native-secondary", checkout]);
+  const task = f.registry.getTask(f.taskId)!;
+  f.registry.upsertTask({
+    ...task,
+    extraRepos: [entry({
+      worktreePath: checkout,
+      branch: null,
+      provider: "mission",
+      worktreeLeaseId: "lease-native-secondary",
+    })],
+  });
+
+  const target = f.registry.extraRepoPrPollTargets().find((item) => item.taskId === f.taskId);
+  assert.equal(target?.branch, "feat/native-secondary");
+  assert.equal(
+    f.registry.getTask(f.taskId)?.extraRepos[0]?.branch,
+    null,
+    "observing the later branch must not rewrite the acquisition record",
   );
 });
 

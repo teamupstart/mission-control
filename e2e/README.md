@@ -60,6 +60,25 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   | tee e2e/.artifacts/dispatch-restart-recovery/focused-playwright-transcript.txt
 ```
 
+### Native worktree dispatch and reuse
+
+`e2e/.artifacts/native-worktree-dispatch/` carries the task card before cleanup and after a
+released slot is reused. The spec dispatches a multi-repo task through the dashboard, proves the
+daemon persisted one native lease per repository, keeps a concurrent task on a distinct slot,
+cancels through the visible task action, and proves a later dispatch reuses only the returned
+directories with fresh lease IDs.
+
+Regenerate the frames and transcript with:
+
+```sh
+mkdir -p e2e/.artifacts/native-worktree-dispatch
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/native-worktree-dispatch.spec.ts \
+  --workers=1 --reporter=list \
+  | tee e2e/.artifacts/native-worktree-dispatch/focused-playwright-transcript.txt
+```
+
 ### Scout prompt context reader
 
 `e2e/.artifacts/scout-prompt-context/` holds the five frames from the finished-scout flow:

@@ -73,6 +73,11 @@ export type WorktreeReleaseResult =
   | { outcome: "refused"; reason: string }
   | { outcome: "outcomeUnknown"; reason: string };
 
+export type NativeLeaseLookup =
+  | { state: "active" | "released"; lease: NativeWorktreeLease }
+  | { state: "missing" }
+  | { state: "mismatch"; reason: string };
+
 export interface NativeSlotStatus {
   slot: WorktreeSlotRow;
   nativePath: boolean;
@@ -124,7 +129,8 @@ const DEFAULT_DEPS: WorktreeManagerDeps = {
   git: new NativeWorktreeGit(),
   occupancy: inspectWorktreeOccupancy,
   resolvePolicy: resolveWorktreePolicy,
-  // Phase 1 has no native consumers. Phase 2 replaces this with task/check/manual domain rows.
+  // Focused callers may have no domain tables. Production injects the durable task/check
+  // resolver so reconciliation never treats this permissive test seam as authority.
   ownerReferenced: async () => false,
   runSetup: async (argv, cwd) => {
     const result = await run(argv[0]!, argv.slice(1), {
@@ -237,6 +243,8 @@ export class WorktreeManager {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private maintenance: Promise<void> | null = null;
   private reclaimDomainLeases: () => Promise<void> = async () => {};
+  /** Grants protected until their task/check row durably records the random lease ID. */
+  private readonly pendingDomainLeases = new Set<string>();
 
   constructor(db: DatabaseSync = openDb(), deps: Partial<WorktreeManagerDeps> = {}) {
     this.store = new WorktreeStore(db);
@@ -323,12 +331,16 @@ export class WorktreeManager {
     path: string,
   ): Promise<string | null> {
     try {
-      if (await this.deps.ownerReferenced(reference)) {
+      if (await this.ownerReferenced(reference)) {
         return "domain owner still references this lease";
       }
     } catch (error) {
       return `domain ownership is unknown: ${bounded(String(error))}`;
     }
+    return this.occupancyBlocker(path);
+  }
+
+  private async occupancyBlocker(path: string): Promise<string | null> {
     const occupancy = (await this.occupancy([path])).get(path);
     if (!occupancy || occupancy.status === "unknown") {
       return occupancy?.status === "unknown" ? occupancy.reason : "slot occupancy is unknown";
@@ -336,6 +348,16 @@ export class WorktreeManager {
     return occupancy.occupants.length > 0
       ? "one or more processes still occupy the worktree"
       : null;
+  }
+
+  private ownerReferenced(reference: WorktreeOwnerReference): Promise<boolean> {
+    if (this.pendingDomainLeases.has(reference.leaseId)) return Promise.resolve(true);
+    return this.deps.ownerReferenced(reference);
+  }
+
+  /** Complete the in-memory handoff after a task/check row durably records this lease. */
+  settleDomainLease(leaseId: string): void {
+    this.pendingDomainLeases.delete(leaseId);
   }
 
   private async validateResetTarget(
@@ -408,6 +430,8 @@ export class WorktreeManager {
     repositoryPath: string;
     baseSha: string;
     owner: WorktreeOwner;
+    /** Protect the grant until its task/check row is durably written. */
+    awaitingDomainRecord?: boolean;
   }): Promise<WorktreeAcquireResult> {
     if (!SHA.test(input.baseSha)) {
       return { outcome: "notAcquired", reason: "baseSha must be a full 40-character commit id" };
@@ -479,7 +503,7 @@ export class WorktreeManager {
         }
         if (priorReference) {
           try {
-            if (await this.deps.ownerReferenced(priorReference)) {
+            if (await this.ownerReferenced(priorReference)) {
               // This is the recoverable release/domain-row crash window. Keep the slot
               // available but ineligible until the exact owner clears its durable row.
               continue;
@@ -651,6 +675,7 @@ export class WorktreeManager {
           return { outcome: "outcomeUnknown", reason: "lease commit could not be proven" };
         }
         this.publish();
+        if (input.awaitingDomainRecord) this.pendingDomainLeases.add(leaseId);
         return {
           outcome: "acquired",
           lease: {
@@ -672,7 +697,64 @@ export class WorktreeManager {
     });
   }
 
-  async release(lease: NativeWorktreeLease): Promise<WorktreeReleaseResult> {
+  /**
+   * Resolve durable consumer identity back to the allocator's full compare-and-swap lease.
+   * Task and check rows intentionally persist only the random lease ID; slot/version remain
+   * allocator facts and are re-read immediately before release.
+   */
+  lookupLease(input: {
+    leaseId?: string;
+    path?: string;
+    owner?: WorktreeOwner;
+  }): NativeLeaseLookup {
+    const slot = input.leaseId
+      ? this.store.slotByLeaseId(input.leaseId)
+      : input.path
+        ? this.store.slotByPath(resolve(input.path))
+        : null;
+    if (!slot) return { state: "missing" };
+    if (input.path && slot.path !== resolve(input.path)) {
+      return { state: "mismatch", reason: "lease path no longer matches the native slot" };
+    }
+    const active = activeReference(slot);
+    const released = lastReference(slot);
+    if (active === "invalid" || released === "invalid") {
+      return { state: "mismatch", reason: "native lease identity is incomplete" };
+    }
+    const wanted = input.leaseId ?? active?.leaseId;
+    const match = active?.leaseId === wanted ? active : released?.leaseId === wanted ? released : null;
+    if (!match) return { state: "mismatch", reason: "lease ID is not active or last released" };
+    if (
+      input.owner &&
+      (match.owner.kind !== input.owner.kind || match.owner.key !== input.owner.key)
+    ) {
+      return { state: "mismatch", reason: "native lease owner no longer matches" };
+    }
+    const pool = this.store.poolForSlot(slot.id);
+    if (!pool) return { state: "mismatch", reason: "native lease pool no longer exists" };
+    const baseSha = slot.requestedHeadSha ?? slot.currentHeadSha;
+    if (!baseSha || !SHA.test(baseSha)) {
+      return { state: "mismatch", reason: "native lease exact commit is unavailable" };
+    }
+    return {
+      state: match === active ? "active" : "released",
+      lease: {
+        slotId: slot.id,
+        poolId: pool.id,
+        path: slot.path,
+        provider: "mission",
+        leaseId: match.leaseId,
+        owner: match.owner,
+        baseSha,
+        slotVersion: slot.version,
+      },
+    };
+  }
+
+  async release(
+    lease: NativeWorktreeLease,
+    options: { ownerAuthorized?: boolean; requireClean?: boolean } = {},
+  ): Promise<WorktreeReleaseResult> {
     if (lease.provider !== "mission") return { outcome: "refused", reason: "lease provider is not mission" };
     const pool = this.store.poolForSlot(lease.slotId);
     if (!pool) return { outcome: "refused", reason: "native slot no longer exists" };
@@ -699,7 +781,9 @@ export class WorktreeManager {
       if (!reference || reference === "invalid") {
         return { outcome: "refused", reason: "active lease identity is incomplete or invalid" };
       }
-      const initialBlocker = await this.releaseBlocker(reference, slot.path);
+      const initialBlocker = options.ownerAuthorized
+        ? await this.occupancyBlocker(slot.path)
+        : await this.releaseBlocker(reference, slot.path);
       if (initialBlocker) return { outcome: "refused", reason: initialBlocker };
 
       const identity = this.identity(pool.mainCheckoutRoot);
@@ -729,8 +813,26 @@ export class WorktreeManager {
       }
       // Fetch and target validation may take long enough for a process or domain reference
       // to appear. Re-read both immediately before persisting the destructive reset intent.
-      const freshBlocker = await this.releaseBlocker(reference, slot.path);
+      const freshBlocker = options.ownerAuthorized
+        ? await this.occupancyBlocker(slot.path)
+        : await this.releaseBlocker(reference, slot.path);
       if (freshBlocker) return { outcome: "refused", reason: freshBlocker };
+      if (options.requireClean) {
+        let clean: Awaited<ReturnType<WorktreeGit["inspect"]>>;
+        try {
+          clean = await this.deps.git.inspect(slot.path);
+        } catch (error) {
+          return { outcome: "outcomeUnknown", reason: bounded(String(error)) };
+        }
+        if (!clean.ok) {
+          return clean.outcomeUnknown
+            ? { outcome: "outcomeUnknown", reason: clean.reason }
+            : { outcome: "refused", reason: clean.reason };
+        }
+        if (clean.value.dirty) {
+          return { outcome: "refused", reason: "manual worktree is dirty" };
+        }
+      }
       let returning: WorktreeSlotRow | null;
       try {
         returning = this.store.markReturning(slot.id, slot.version, target.value, this.deps.now());
@@ -953,7 +1055,7 @@ export class WorktreeManager {
             continue;
           }
           try {
-            if (prior && (await this.deps.ownerReferenced(prior))) {
+            if (prior && (await this.ownerReferenced(prior))) {
               // Release completed before the domain row cleared. Preserve this exact,
               // idempotently releasable state while keeping it unavailable to acquisition.
               this.store.updateObserved(slot.id, inspection.value.head, null, now);
@@ -976,7 +1078,7 @@ export class WorktreeManager {
           continue;
         }
         try {
-          if (!(await this.deps.ownerReferenced(active))) {
+          if (!(await this.ownerReferenced(active))) {
             reject("leased slot has no matching domain owner reference");
             continue;
           }
@@ -1033,7 +1135,7 @@ export class WorktreeManager {
         let referenced: boolean | null = invalidReference ? null : false;
         if (reference) {
           try {
-            referenced = await this.deps.ownerReferenced(reference);
+            referenced = await this.ownerReferenced(reference);
           } catch {
             referenced = null;
           }

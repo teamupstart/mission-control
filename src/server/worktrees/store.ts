@@ -164,6 +164,24 @@ export class WorktreeStore {
     return row ? slotRow(row) : null;
   }
 
+  slotByPath(path: string): WorktreeSlotRow | null {
+    const row = this.db.prepare(`SELECT * FROM worktree_slots WHERE path = ?`).get(path) as
+      | Record<string, unknown>
+      | undefined;
+    return row ? slotRow(row) : null;
+  }
+
+  slotByLeaseId(leaseId: string): WorktreeSlotRow | null {
+    const row = this.db
+      .prepare(
+        `SELECT * FROM worktree_slots
+          WHERE active_lease_id = ? OR last_released_lease_id = ?
+          LIMIT 1`,
+      )
+      .get(leaseId, leaseId) as Record<string, unknown> | undefined;
+    return row ? slotRow(row) : null;
+  }
+
   poolForSlot(slotId: string): WorktreePoolRow | null {
     const row = this.db
       .prepare(

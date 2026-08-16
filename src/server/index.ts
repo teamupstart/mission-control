@@ -68,6 +68,7 @@ import { createFinalizeDeps, resolveEnsembleWorkflowVersion } from "./ensembles/
 import { createReviewScheduler } from "./llm/review-scheduler.ts";
 import { createCheckScheduler } from "./workflows/checks.ts";
 import { WorktreeManager } from "./worktrees/manager.ts";
+import { nativeWorktreeOwnerReferenced } from "./worktrees/owners.ts";
 
 openDb();
 // Only the daemon can read app_config. The Foreman imports the same runner in a separate
@@ -96,9 +97,10 @@ try {
 warnIfSessionAttributionDisabled();
 const registry = new Registry();
 // The one daemon-owned native allocator. It is reconciled before Workflow check recovery,
-// and no Phase 1 consumer selects it yet: existing dispatch, check and make-session paths
-// remain provider-byte-identical while the durable state machine is reviewed in isolation.
-const worktrees = new WorktreeManager();
+// then shared by task dispatch, checks, manual leases, routes, and recurring maintenance.
+const worktrees = new WorktreeManager(undefined, {
+  ownerReferenced: async (reference) => nativeWorktreeOwnerReferenced(reference),
+});
 try {
   await worktrees.reconcile();
 } catch (err) {
@@ -144,7 +146,7 @@ const archives = new ArchiveManager({
 // row, its task binding and its worktree paths can all still be derived - which is precisely
 // what a capture needs and precisely what `session_remove` no longer has.
 registry.onSessionExit((session) => archives.reserveOnExit(session));
-const tasks = new TaskManager(registry, undefined, sdkSessions, pendingTurns, archives);
+const tasks = new TaskManager(registry, undefined, sdkSessions, pendingTurns, archives, {}, worktrees);
 const queues = new QueueManager(registry);
 const personas = new PersonaManager(registry);
 // Shares the Persona manager's store handle, so both catalogs and the workflow family are
@@ -188,7 +190,7 @@ const checkScheduler = createCheckScheduler();
 // Awaited rather than fire-and-forget for the ordering itself, and best-effort because a
 // daemon that refused to start over one unreconcilable lease would be worse than one
 // running without it.
-const checkLeases = new CheckLeaseManager();
+const checkLeases = new CheckLeaseManager(undefined, { manager: worktrees });
 const checkRuntime = new CheckRuntime(checkLeases);
 installCheckLeasePins(() => checkLeases.pinnedPaths());
 try {
@@ -358,21 +360,10 @@ const away = startAwayWatcher(registry, undefined, {
   }),
 });
 const stopHeadlessPruner = startHeadlessPruner();
-// The reclamation pass rides the reaper's tick: same cadence, same lock, and it collects
-// what the reaper structurally cannot see. A check lease is held under a token outside
-// LEASE_HOLDERS precisely so the reaper refuses it, which means the reaper can never
-// collect a leaked one either - so this is an obligation that comes with that protection.
-//
-// It gets the SAME group-recovery seam startup reconciliation got, and for the same reason:
-// ownership is not emptiness, and a pass that returned a tree on ownership alone would
-// hard-reset one a build is still writing into. Left uninjected here, every non-sentinel
-// lease would be kept forever - fail closed, but a pool slot per crashed check.
-const stopPoolReaper = startPoolReaper(registry, {
-  reclaimLeases: () => checkLeases.reclaimLeaked(checkRuntime.groupRecovery),
-});
-// A separate native cadence, deliberately not aliased to MISSION_POOL_REAP_MS. It is inert
-// while no native pool rows exist, which is the production shape until Phase 2 cuts over.
-worktrees.startMaintenance();
+// Treehouse keeps its compatibility sweep until Phase 3. Check-domain crash recovery now
+// rides the native manager's cadence, whose slot reconciliation runs first on every pass.
+const stopPoolReaper = startPoolReaper(registry);
+worktrees.startMaintenance(() => checkLeases.reclaimLeaked(checkRuntime.groupRecovery));
 const stopSkillsReloader = startSkillsReloader(registry);
 // Pulls work INTO the backlog from systems that already hold it. In the daemon because
 // ingest writes to the DB and the daemon is the only writer; needs none of the reload
@@ -435,6 +426,7 @@ const app = buildApp(
   keepAwake,
   archives,
   workflowCommands,
+  worktrees,
 );
 
 // In production the daemon serves the built SPA; in dev, Vite serves it and

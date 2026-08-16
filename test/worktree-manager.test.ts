@@ -14,7 +14,7 @@ import {
   WorktreesConfigPatchSchema,
   WorktreesConfigSchema,
 } from "../src/shared/protocol.ts";
-import { openDb } from "../src/server/db.ts";
+import { openDb, upsertTask } from "../src/server/db.ts";
 import {
   getWorktreesConfig,
   resolveWorktreePolicy,
@@ -28,14 +28,29 @@ import {
 } from "../src/server/worktrees/manager.ts";
 import { NativeWorktreeGit, type GitResult } from "../src/server/worktrees/git.ts";
 import type { WorktreeOccupancy } from "../src/server/worktrees/occupancy.ts";
+import { nativeWorktreeOwnerReferenced } from "../src/server/worktrees/owners.ts";
 import type { RunResult } from "../src/server/util/exec.ts";
 import { worktreeRepositoryIdentity } from "../src/server/util/git.ts";
+import {
+  provisionWorktree,
+  teardownWorktree,
+  worktreeSlotPath,
+} from "../src/server/dispatcher.ts";
+import {
+  CheckLeaseManager,
+  CheckLeaseStore,
+} from "../src/server/workflows/check-lease.ts";
 import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
+import { mkTask } from "./helpers/session-fixture.ts";
 
 const db = openDb();
 
 afterEach(() => {
-  db.exec("DELETE FROM worktree_slots; DELETE FROM worktree_pools; DELETE FROM app_config WHERE key = 'worktrees';");
+  db.exec(
+    "DELETE FROM workflow_check_leases; DELETE FROM worktree_slots; " +
+      "DELETE FROM worktree_pools; DELETE FROM task_repos; DELETE FROM tasks; " +
+      "DELETE FROM app_config WHERE key = 'worktrees';",
+  );
 });
 
 function emptyOccupancy(paths: readonly string[]): Promise<Map<string, WorktreeOccupancy>> {
@@ -206,6 +221,198 @@ test("concurrent acquires receive different exact slots and respect capacity", a
     assert.equal(gitIn(result.lease.path, "rev-parse", "HEAD"), sha);
     await m.release(result.lease);
   }
+});
+
+test("task acquisition uses native identity, degrades at capacity, and reuses a released slot", async () => {
+  const { clone, sha } = repository("mission-native-task-consumer-");
+  const m = manager({
+    resolvePolicy: () => ({ enabled: true, maxSlots: 1, setupArgv: null }),
+  });
+  const pins = () => ({ sessionCwds: [], taskWorktrees: [], checkLeasePaths: [] });
+
+  const first = await provisionWorktree(clone, "task-native-1", "native", "native", pins, sha, 0, m);
+  assert.equal(first.provider, "mission");
+  assert.ok(first.leaseId);
+  assert.equal(first.branch, null, "a detached native checkout must not invent a harness branch");
+  assert.equal(gitIn(first.path, "rev-parse", "HEAD"), sha);
+  m.settleDomainLease(first.leaseId!);
+
+  const fallback = await provisionWorktree(clone, "task-native-2", "fallback", "fallba", pins, sha, 0, m);
+  assert.equal(fallback.provider, "git", "a positive capacity refusal should degrade once to Git");
+  assert.equal(fallback.leaseId, null);
+  assert.equal(gitIn(fallback.path, "rev-parse", "HEAD"), sha);
+
+  await teardownWorktree({
+    taskId: "task-native-1",
+    repoRoot: clone,
+    worktreePath: first.path,
+    branch: first.branch,
+    provider: first.provider,
+    worktreeLeaseId: first.leaseId,
+    homeName: null,
+  }, undefined, undefined, m);
+  await teardownWorktree({
+    taskId: "task-native-1",
+    repoRoot: clone,
+    worktreePath: first.path,
+    branch: first.branch,
+    provider: first.provider,
+    worktreeLeaseId: first.leaseId,
+    homeName: null,
+  }, undefined, undefined, m);
+  await teardownWorktree({
+    taskId: "task-native-2",
+    repoRoot: clone,
+    worktreePath: fallback.path,
+    branch: fallback.branch,
+    provider: fallback.provider,
+    worktreeLeaseId: fallback.leaseId,
+    homeName: null,
+  });
+
+  const reused = await provisionWorktree(clone, "task-native-3", "reuse", "reuse1", pins, sha, 0, m);
+  assert.equal(reused.provider, "mission");
+  assert.equal(reused.path, first.path, "native cleanup should retain and reuse the warm slot");
+  await teardownWorktree({
+    taskId: "task-native-3",
+    repoRoot: clone,
+    worktreePath: reused.path,
+    branch: reused.branch,
+    provider: reused.provider,
+    worktreeLeaseId: reused.leaseId,
+    homeName: null,
+  }, undefined, undefined, m);
+});
+
+test("a manual release revalidates cleanliness inside the conditional return", async () => {
+  const { clone, sha } = repository("mission-native-manual-clean-");
+  const m = manager();
+  const result = await m.acquire({
+    repositoryPath: clone,
+    baseSha: sha,
+    owner: { kind: "manual", key: "manual-clean" },
+  });
+  assert.equal(result.outcome, "acquired");
+  if (result.outcome !== "acquired") return;
+
+  const untracked = join(result.lease.path, "manual-change.txt");
+  writeFileSync(untracked, "keep me\n");
+  assert.deepEqual(
+    await m.release(result.lease, { ownerAuthorized: true, requireClean: true }),
+    { outcome: "refused", reason: "manual worktree is dirty" },
+  );
+  assert.equal(m.lookupLease({ leaseId: result.lease.leaseId }).state, "active");
+
+  unlinkSync(untracked);
+  assert.equal(
+    (await m.release(result.lease, { ownerAuthorized: true, requireClean: true })).outcome,
+    "released",
+  );
+});
+
+test("workflow checks persist and reclaim the exact native lease without changing attempt state", async () => {
+  const { clone, sha } = repository("mission-native-check-consumer-");
+  const m = manager({
+    resolvePolicy: () => ({ enabled: true, maxSlots: 1, setupArgv: null }),
+  });
+  const leases = new CheckLeaseManager(db, { manager: m });
+  const rows = new CheckLeaseStore(db);
+  const path = await leases.acquireForAttempt({
+    attemptId: "native-check-1",
+    submissionId: "submission-native",
+    nodeId: "gate",
+    repoRoot: clone,
+    headSha: sha,
+  });
+  const held = rows.get("native-check-1");
+  assert.equal(held?.provider, "mission");
+  assert.ok(held?.leaseId);
+  assert.equal(held?.holderToken, held?.leaseId);
+  assert.equal(gitIn(path, "rev-parse", "HEAD"), sha);
+
+  assert.deepEqual(await leases.releaseForAttempt("native-check-1"), { outcome: "returned" });
+  assert.equal(rows.get("native-check-1")?.cleanupState, "returned");
+  assert.ok(existsSync(path), "native check cleanup should retain the warm slot directory");
+
+  const reused = await leases.acquireForAttempt({
+    attemptId: "native-check-2",
+    submissionId: "submission-native",
+    nodeId: "gate",
+    repoRoot: clone,
+    headSha: sha,
+  });
+  assert.equal(reused, path);
+  assert.notEqual(rows.get("native-check-2")?.leaseId, held?.leaseId);
+  assert.deepEqual(await leases.releaseForAttempt("native-check-2"), { outcome: "returned" });
+});
+
+test("a released slot stays unavailable until its exact task row clears the lease identity", async () => {
+  const { clone, sha } = repository("mission-native-task-reference-");
+  const m = manager({
+    ownerReferenced: async (reference) => nativeWorktreeOwnerReferenced(reference, db),
+    resolvePolicy: () => ({ enabled: true, maxSlots: 1, setupArgv: null }),
+  });
+  const first = lease(await acquire(m, clone, sha, "task-domain-owner:0"));
+  upsertTask(mkTask({
+    id: "task-domain-owner",
+    repoRoot: clone,
+    worktreePath: first.path,
+    provider: "mission",
+    worktreeLeaseId: first.leaseId,
+    baseSha: sha,
+    status: "running",
+  }));
+
+  assert.equal((await m.release(first, { ownerAuthorized: true })).outcome, "released");
+  const blocked = await acquire(m, clone, sha, "task-waiting:0");
+  assert.equal(blocked.outcome, "notAcquired");
+  assert.match(blocked.outcome === "notAcquired" ? blocked.reason : "", /capacity 1/);
+
+  upsertTask(mkTask({ id: "task-domain-owner", repoRoot: clone }));
+  const next = lease(await acquire(m, clone, sha, "task-waiting:0"));
+  assert.equal(next.path, first.path);
+  assert.equal((await m.release(next, { ownerAuthorized: true })).outcome, "released");
+});
+
+test("an ambiguous native acquisition never creates a disposable task or check tree", async () => {
+  const { clone, sha } = repository("mission-native-consumer-unknown-");
+  let ids = 0;
+  const unknown = manager({
+    resolvePolicy: () => ({ enabled: true, maxSlots: 1, setupArgv: null }),
+    randomId: () => {
+      ids++;
+      if (ids === 3) throw new Error("reservation result was lost");
+      return `unknown-${ids}`;
+    },
+  });
+  const pins = () => ({ sessionCwds: [], taskWorktrees: [], checkLeasePaths: [] });
+  await assert.rejects(
+    () => provisionWorktree(clone, "task-unknown", "unknown", "unknow", pins, sha, 0, unknown),
+    /acquisition outcome is unknown/,
+  );
+  assert.equal(existsSync(worktreeSlotPath("task-unknown", 0)), false);
+
+  ids = 0;
+  const checkUnknown = manager({
+    resolvePolicy: () => ({ enabled: true, maxSlots: 1, setupArgv: null }),
+    randomId: () => {
+      ids++;
+      if (ids === 3) throw new Error("reservation result was lost");
+      return `check-unknown-${ids}`;
+    },
+  });
+  const leases = new CheckLeaseManager(db, { manager: checkUnknown });
+  await assert.rejects(
+    () => leases.acquireForAttempt({
+      attemptId: "check-unknown",
+      submissionId: "submission-unknown",
+      nodeId: "gate",
+      repoRoot: clone,
+      headSha: sha,
+    }),
+    /reservation result was lost/,
+  );
+  assert.equal(new CheckLeaseStore(db).get("check-unknown"), null);
 });
 
 test(

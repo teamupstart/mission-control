@@ -26,6 +26,7 @@ import {
   teardownWorktree,
   type TaskDispatchOptions,
 } from "./dispatcher.ts";
+import { WorktreeManager } from "./worktrees/manager.ts";
 import {
   branchReleasedByReset,
   injectPrompt,
@@ -478,6 +479,7 @@ function describeResetLoss(c: AssignResetConfirm): string {
  */
 export class TaskManager {
   private dispatcher: Dispatcher;
+  private readonly worktrees: WorktreeManager;
   /**
    * In-flight titling runs, by task id.
    *
@@ -527,10 +529,13 @@ export class TaskManager {
      */
     private archives?: TaskArchiveGate,
     private startupDeps: TaskManagerStartupDeps = {},
+    worktrees?: WorktreeManager,
   ) {
+    this.worktrees = worktrees ?? new WorktreeManager();
     this.dispatcher = new Dispatcher(registry, undefined, {
       supervisor,
       workflowEvidenceEnabled: (task) => this.workflowEvidenceEnabledForTask(task),
+      worktrees: this.worktrees,
     });
     // A restart severs the in-flight dispatch promises but leaves worktrees + terminal
     // homes on disk. Reconcile every task that still holds resources by checking
@@ -1580,6 +1585,7 @@ export class TaskManager {
       worktreePath: null,
       branch: null,
       provider: null,
+      worktreeLeaseId: null,
       baseSha: null,
       // Already resolved and validated by the caller (the route), exactly as `repoRoot` is.
       // Recorded at creation so a backlog task carries its full repo set before anything is
@@ -1590,6 +1596,7 @@ export class TaskManager {
         worktreePath: null,
         branch: null,
         provider: null,
+        worktreeLeaseId: null,
         baseSha: null,
         prUrl: null,
         prState: null,
@@ -1797,6 +1804,7 @@ export class TaskManager {
             worktreePath: null,
             branch: null,
             provider: null,
+            worktreeLeaseId: null,
             baseSha: null,
             prUrl: null,
             prState: null,
@@ -2636,7 +2644,7 @@ export class TaskManager {
       // created during the stop/capture awaits. teardownWorktree also closes the terminal
       // home if it survived the direct stop above.
       const teardownTarget = this.registry.getTask(id) ?? t;
-      await teardownWorktree(teardownTarget);
+      await teardownWorktree(teardownTarget, undefined, "foreground", this.worktrees);
     } catch (error) {
       teardownError = error instanceof Error ? error.message : String(error);
       reclaimed = reclaimedFrom(error);
@@ -2985,7 +2993,7 @@ export class TaskManager {
       if (t.worktreePath || t.homeName) {
         try {
           const current = this.registry.getTask(id) ?? t;
-          await teardownWorktree(current);
+          await teardownWorktree(current, undefined, "foreground", this.worktrees);
         } catch (error) {
           const partial = this.registry.getTask(id) ?? t;
           this.registry.upsertTask({
@@ -3054,7 +3062,7 @@ export class TaskManager {
     this.autoCompleted.delete(id);
     try {
       const current = this.registry.getTask(id) ?? t;
-      await teardownWorktree(current);
+      await teardownWorktree(current, undefined, "foreground", this.worktrees);
     } catch (error) {
       // A partial reclaim still releases what came back. The refusal stands - the operator
       // is told the reclaim failed, and the trees still standing keep their record so a
@@ -3106,7 +3114,7 @@ export class TaskManager {
     // reclaim it so removing the record never leaks a worktree/lease.
     if (t.worktreePath || t.homeName) {
       try {
-        await teardownWorktree(t);
+        await teardownWorktree(t, undefined, "foreground", this.worktrees);
       } catch (error) {
         // The row survives a failed remove, so the same partial-release rule applies to it.
         const partial = this.registry.getTask(id) ?? t;
@@ -3249,7 +3257,9 @@ export class TaskManager {
       return;
     }
     try {
-      await (this.startupDeps.teardown ?? teardownWorktree)(t, undefined, "background");
+      const teardown = this.startupDeps.teardown ?? ((target, cli, priority) =>
+        teardownWorktree(target, cli, priority, this.worktrees));
+      await teardown(t, undefined, "background");
     } catch (error) {
       const now = Date.now();
       this.registry.upsertTask({

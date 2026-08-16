@@ -3,6 +3,7 @@ import { bodyLimit } from "hono/body-limit";
 import type { Context, MiddlewareHandler } from "hono";
 import type { TypeOf, ZodTypeAny } from "zod";
 import { Readable } from "node:stream";
+import { randomUUID } from "node:crypto";
 import {
   AddWorkItemSchema,
   AssignTaskSchema,
@@ -41,6 +42,8 @@ import {
   InjectPromptSchema,
   KeepAwakeRequestSchema,
   MarkItemSentSchema,
+  ManualWorktreeAcquireSchema,
+  ManualWorktreeReturnSchema,
   OtlpMetricsSchema,
   PendingTurnRevisionSchema,
   ReattachQueueSchema,
@@ -181,6 +184,8 @@ import { summarizeBuffer } from "@shared/away-buffer.ts";
 import type { AwayWatcher } from "./away/watcher.ts";
 import { getHarnessesConfig, setHarnessesConfig } from "./harnesses.ts";
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
+import type { WorktreeManager } from "./worktrees/manager.ts";
+import { run as runCommand } from "./util/exec.ts";
 import type { PendingTurnManager } from "./pending-turns.ts";
 import { driverFormAnswer, driverOptionAnswer, type DriverAnswer } from "./sdk/answer.ts";
 import { dialogMarker } from "./foreman/pending.ts";
@@ -768,6 +773,8 @@ export function buildApp(
    * emitter on one live stream.
    */
   workflowCommands?: WorkflowCommandManager,
+  /** The daemon's singleton native allocator. Manual-session routes return 503 without it. */
+  worktrees?: WorktreeManager,
 ): Hono {
   const app = new Hono();
   const terminalLauncher = launchSessionTerminal ?? launchTerminal;
@@ -811,6 +818,68 @@ export function buildApp(
   app.get("/api/health", (c) =>
     c.json({ ok: true, service: "mission-control", version: VERSION, pid: process.pid }),
   );
+
+  app.post("/api/worktrees/manual/acquire", async (c) => {
+    if (!worktrees) return c.json({ error: "native worktree manager unavailable" }, 503);
+    const parsed = await parseBody(c, ManualWorktreeAcquireSchema);
+    if (!parsed.ok) return parsed.res;
+    const head = await runCommand(
+      "git",
+      ["-C", parsed.data.repositoryPath, "rev-parse", "--verify", "HEAD^{commit}"],
+      { timeoutMs: 15_000 },
+    );
+    const baseSha = head.stdout.trim();
+    if (head.code !== 0 || head.outcomeUnknown || !/^[0-9a-f]{40}$/.test(baseSha)) {
+      return c.json({ error: "repository HEAD could not be resolved to an exact commit" }, 400);
+    }
+    const ownerKey = `${randomUUID()}${parsed.data.label ? `:${parsed.data.label}` : ""}`;
+    const acquired = await worktrees.acquire({
+      repositoryPath: parsed.data.repositoryPath,
+      baseSha,
+      owner: { kind: "manual", key: ownerKey },
+    });
+    if (acquired.outcome === "acquired") {
+      return c.json({
+        path: acquired.lease.path,
+        leaseId: acquired.lease.leaseId,
+        baseSha: acquired.lease.baseSha,
+      }, 201);
+    }
+    return c.json(
+      { error: acquired.reason, outcome: acquired.outcome },
+      acquired.outcome === "outcomeUnknown" ? 503 : 409,
+    );
+  });
+
+  app.post("/api/worktrees/manual/return", async (c) => {
+    if (!worktrees) return c.json({ error: "native worktree manager unavailable" }, 503);
+    const parsed = await parseBody(c, ManualWorktreeReturnSchema);
+    if (!parsed.ok) return parsed.res;
+    const found = worktrees.lookupLease(parsed.data);
+    if (found.state === "missing") return c.json({ error: "manual lease was not found" }, 404);
+    if (found.state === "mismatch") return c.json({ error: found.reason }, 409);
+    if (found.lease.owner.kind !== "manual") {
+      return c.json({ error: "this lease belongs to a task or workflow check" }, 409);
+    }
+    if (found.state === "released") return c.json({ ok: true, alreadyReleased: true });
+
+    const status = await worktrees.status();
+    const slot = status.flatMap((pool) => pool.slots).find((entry) => entry.slot.id === found.lease.slotId);
+    if (!slot || slot.dirty !== false) {
+      return c.json({ error: "manual worktree is dirty or its cleanliness is unknown" }, 409);
+    }
+    const released = await worktrees.release(found.lease, {
+      ownerAuthorized: true,
+      requireClean: true,
+    });
+    if (released.outcome === "released" || released.outcome === "alreadyReleased") {
+      return c.json({ ok: true, alreadyReleased: released.outcome === "alreadyReleased" });
+    }
+    return c.json(
+      { error: released.reason, outcome: released.outcome },
+      released.outcome === "outcomeUnknown" ? 503 : 409,
+    );
+  });
   app.get("/api/sessions", (c) => c.json(registry.snapshot().sessions));
 
   // --- Keep Awake: the transient idle-sleep inhibitor ---

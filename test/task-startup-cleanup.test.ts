@@ -40,6 +40,7 @@ test("a restart returns a resource-free dispatch with stale branch metadata to t
       worktreePath: null,
       branch: "harness/stale-attached-metadata",
       provider: null,
+      worktreeLeaseId: null,
       baseSha: "b".repeat(40),
       prUrl: null,
       prState: null,

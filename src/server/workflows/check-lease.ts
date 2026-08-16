@@ -15,18 +15,18 @@ import {
   withPoolLock,
   type TreehouseCli,
 } from "../pool-lease.ts";
-import { parsePoolStatus, treehouseInstalled } from "../pool.ts";
-import { run, type RunResult } from "../util/exec.ts";
+import { parsePoolStatus } from "../pool.ts";
+import { run, stubRun, type RunResult } from "../util/exec.ts";
+import { WorktreeManager } from "../worktrees/manager.ts";
 
 /**
- * Who owns a pooled worktree while a Workflow check runs in it, and who hands it back.
+ * Who owns an isolated worktree while a Workflow check runs in it, and who hands it back.
  *
- * A check is a build running in a leased tree. It has no session and no task, so every
- * liveness signal the pool reaper trusts reads "idle" on it - and between the lease and the
- * spawn it has no processes either. `treehouse return --force` terminates processes in a
- * tree and hard-resets it, so a reaper that judged such a tree a leak would kill the check
- * and discard the very work it was checking. This module is the ownership model that makes
- * that impossible, and it is deliberately made of four independent parts:
+ * A check is a build running in a leased tree. It has no session and no task, and between
+ * acquisition and spawn it has no processes either. Returning a reusable slot resets it, so
+ * a reclaimer that judged such a tree a leak would kill the check and discard the work it
+ * was checking. Durable rows and process-group recovery make that impossible. Historical
+ * Treehouse rows add two compatibility guards:
  *
  *  1. **A holder token outside `LEASE_HOLDERS`** (`checkHolderToken`), so the shared reaper
  *     structurally cannot return a check lease - it refuses on ownership, with no new logic.
@@ -39,10 +39,10 @@ import { run, type RunResult } from "../util/exec.ts";
  *
  * ## The question this module can answer, and the one it cannot
  *
- * `treehouse status` prints a path, a state and a holder label - no lease id, no timestamp.
- * So path + exact holder token is the whole of the identity available, and it proves exactly
- * one thing: **this tree is ours**. It says nothing about whether anything is still WRITING
- * in it. Those are different questions and they authorise different actions:
+ * Native rows have a random lease ID and exact owner. Historical Treehouse status prints a
+ * path, state, and holder label, with no lease ID or timestamp. Either ownership signal says
+ * nothing about whether anything is still WRITING in the tree. Those are different questions
+ * and they authorise different actions:
  *
  *  - Ownership alone authorises a return only for a row carrying the sentinel pid, because
  *    that sentinel is positive proof the supervisor gate was never released and no branch
@@ -104,6 +104,8 @@ export interface CheckLeaseRow {
    * `providerFor`.
    */
   provider: WorktreeProvider;
+  /** Opaque native allocator identity. Null for disposable Git and historical Treehouse. */
+  leaseId: string | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -178,6 +180,7 @@ function toRow(r: Record<string, unknown>): CheckLeaseRow {
     // rather than coerced to a default here, where the coercion would be invisible and would
     // hand somebody else's tree to the wrong provider.
     provider: String(r.provider) as WorktreeProvider,
+    leaseId: r.lease_id === null || r.lease_id === undefined ? null : String(r.lease_id),
     createdAt: Number(r.created_at),
     updatedAt: Number(r.updated_at),
   };
@@ -202,14 +205,16 @@ export class CheckLeaseStore {
     holderToken: string;
     /** Written at acquisition and read on every release; never re-derived. */
     provider: WorktreeProvider;
+    leaseId?: string | null;
     now: number;
   }): void {
     this.db
       .prepare(
         `INSERT INTO workflow_check_leases
            (attempt_id, submission_id, node_id, repo_root, lease_path, holder_token,
-            cleanup_state, supervisor_pid, supervisor_start_ticks, provider, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'held', ?, ?, ?, ?, ?)`,
+            cleanup_state, supervisor_pid, supervisor_start_ticks, provider, lease_id,
+            created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'held', ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         input.attemptId,
@@ -221,6 +226,7 @@ export class CheckLeaseStore {
         NO_SUPERVISOR_PID,
         NO_SUPERVISOR_TICKS,
         input.provider,
+        input.leaseId ?? null,
         input.now,
         input.now,
       );
@@ -310,9 +316,11 @@ export class CheckLeaseStore {
  * and could not exist - that path is reached precisely when the INSERT failed.
  */
 export interface CheckTreeRef {
+  attemptId: string;
   repoRoot: string;
   leasePath: string;
   holderToken: string;
+  leaseId: string | null;
 }
 
 /** What a provider found when it asked who holds a tree. See `CheckTreeProvider.ownership`. */
@@ -358,7 +366,7 @@ export interface CheckTreeProvider {
     repoRoot: string;
     attemptId: string;
     baseSha: string;
-  }): Promise<{ path: string; holderToken: string }>;
+  }): Promise<{ path: string; holderToken: string; leaseId: string | null }>;
   /** Bring an already-taken tree to `baseSha`, or throw. Called once the row is durable. */
   pin(input: { repoRoot: string; path: string; baseSha: string }): Promise<void>;
   /** Who holds this path now, read from the provider's own bookkeeping. */
@@ -394,7 +402,7 @@ export class TreehouseCheckTreeProvider implements CheckTreeProvider {
   async acquire(input: {
     repoRoot: string;
     attemptId: string;
-  }): Promise<{ path: string; holderToken: string }> {
+  }): Promise<{ path: string; holderToken: string; leaseId: string | null }> {
     const holderToken = checkHolderToken(input.attemptId);
     const lease = await acquireLease(input.repoRoot, holderToken, this.cli);
     if (lease.path === null) {
@@ -404,7 +412,7 @@ export class TreehouseCheckTreeProvider implements CheckTreeProvider {
           (lease.failure.stderr ? ` - treehouse said: ${lease.failure.stderr}` : ""),
       );
     }
-    return { path: canonicalPath(lease.path), holderToken };
+    return { path: canonicalPath(lease.path), holderToken, leaseId: null };
   }
 
   /** A pool tree arrives warm and holding whatever the last user left, so it is reset. */
@@ -447,7 +455,8 @@ const GIT_WORKTREE_ADD_TIMEOUT_MS = 60_000;
 const GIT_WORKTREE_REMOVE_TIMEOUT_MS = 30_000;
 
 /**
- * A one-attempt detached git worktree, used when the treehouse binary is not resolvable.
+ * A one-attempt detached Git worktree, used only after native policy is disabled or the
+ * allocator positively refuses an acquisition.
  *
  * Unlike a pool slot, this path is derived from an attempt id that is unique forever and is
  * never reused. That difference is what lets `ownership` treat registration at the path as
@@ -460,7 +469,7 @@ export class GitCheckTreeProvider implements CheckTreeProvider {
     repoRoot: string;
     attemptId: string;
     baseSha: string;
-  }): Promise<{ path: string; holderToken: string }> {
+  }): Promise<{ path: string; holderToken: string; leaseId: string | null }> {
     mkdirSync(CHECK_WORKTREES_DIR, { recursive: true });
     const path = join(CHECK_WORKTREES_DIR, input.attemptId);
     if (existsSync(path)) {
@@ -486,6 +495,7 @@ export class GitCheckTreeProvider implements CheckTreeProvider {
         // the lifecycle row keeps one shape across providers; `ownership` returns that same
         // token only after proving the unique attempt path is still registered.
         holderToken: checkHolderToken(input.attemptId),
+        leaseId: null,
       };
     } catch (err) {
       // The add succeeded but no row can name this tree yet. Remove it here, before the
@@ -557,6 +567,91 @@ export class GitCheckTreeProvider implements CheckTreeProvider {
   }
 }
 
+class NativeCheckNotAcquiredError extends Error {}
+class NativeCheckOutcomeUnknownError extends Error {}
+
+/** Native pooled checkout mechanism behind the existing check-domain state machine. */
+export class MissionCheckTreeProvider implements CheckTreeProvider {
+  readonly kind: WorktreeProvider = "mission";
+
+  constructor(private readonly manager: WorktreeManager) {}
+
+  async acquire(input: {
+    repoRoot: string;
+    attemptId: string;
+    baseSha: string;
+  }): Promise<{ path: string; holderToken: string; leaseId: string | null }> {
+    const acquired = await this.manager.acquire({
+      repositoryPath: input.repoRoot,
+      baseSha: input.baseSha,
+      owner: { kind: "check", key: input.attemptId },
+      awaitingDomainRecord: true,
+    });
+    if (acquired.outcome === "notAcquired") {
+      throw new NativeCheckNotAcquiredError(acquired.reason);
+    }
+    if (acquired.outcome === "outcomeUnknown") {
+      throw new NativeCheckOutcomeUnknownError(acquired.reason);
+    }
+    return {
+      path: acquired.lease.path,
+      holderToken: acquired.lease.leaseId,
+      leaseId: acquired.lease.leaseId,
+    };
+  }
+
+  async pin(input: { path: string; baseSha: string }): Promise<void> {
+    // Acquisition already reset and verified the exact commit. Keep the check manager's
+    // post-row pin seam as an independent read so its crash/order contract stays unchanged.
+    await verifyHeadIs(input.path, input.baseSha);
+  }
+
+  async ownership(ref: CheckTreeRef): Promise<CheckTreeOwnership> {
+    if (!ref.leaseId) return { state: "unreadable", reason: "native check lease ID is missing" };
+    const found = this.manager.lookupLease({
+      leaseId: ref.leaseId,
+      path: ref.leasePath,
+      owner: { kind: "check", key: ref.attemptId },
+    });
+    if (found.state === "mismatch") {
+      return { state: "unreadable", reason: found.reason };
+    }
+    if (found.state === "missing" || found.state === "released") return { state: "gone" };
+    return { state: "held", holder: ref.leaseId };
+  }
+
+  async handBack(ref: CheckTreeRef): Promise<RunResult> {
+    if (!ref.leaseId) return stubRun({ stdout: "", stderr: "native check lease ID is missing", code: 1 });
+    const found = this.manager.lookupLease({
+      leaseId: ref.leaseId,
+      path: ref.leasePath,
+      owner: { kind: "check", key: ref.attemptId },
+    });
+    if (found.state === "released") {
+      this.manager.settleDomainLease(ref.leaseId);
+      return stubRun({ stdout: "", stderr: "", code: 0 });
+    }
+    if (found.state !== "active" || found.lease.owner.kind !== "check") {
+      const reason = found.state === "mismatch" ? found.reason : "native check lease is unknown";
+      return stubRun({ stdout: "", stderr: reason, code: 1 });
+    }
+    const released = await this.manager.release(found.lease, { ownerAuthorized: true });
+    if (released.outcome === "released" || released.outcome === "alreadyReleased") {
+      this.manager.settleDomainLease(ref.leaseId);
+      return stubRun({ stdout: "", stderr: "", code: 0 });
+    }
+    return stubRun({
+      stdout: "",
+      stderr: `${released.outcome}: ${released.reason}`,
+      code: 1,
+    });
+  }
+
+  withLock<T>(_repoRoot: string, fn: () => Promise<T>): Promise<T> {
+    return fn();
+  }
+}
+
 // ---- the manager -----------------------------------------------------------
 
 export interface CheckLeaseDeps {
@@ -565,8 +660,14 @@ export interface CheckLeaseDeps {
   pin?: (repoRoot: string, leasePath: string, baseSha: string) => Promise<void>;
   /** `verifyPinnedBase` - the existing full-40-hex check, never a second regex. */
   verifyBase?: (repoRoot: string, baseSha: string) => Promise<string>;
-  /** The acquire-time provider probe. Tests inject it alongside a fake treehouse CLI. */
-  treehouseInstalled?: () => Promise<boolean>;
+  /**
+   * State-machine test seam. Production always omits this and acquires from the native
+   * provider; focused lifecycle tests may substitute a modeled provider without creating
+   * real Git worktrees.
+   */
+  acquisitionProvider?: CheckTreeProvider;
+  /** The daemon's singleton native allocator. */
+  manager?: WorktreeManager;
   now?: () => number;
   /** How many leaked rows one reclamation pass may work through. */
   maxReclaimPerPass?: number;
@@ -580,7 +681,6 @@ const RECLAIM_BACKOFF_MAX_MS = 3_600_000;
 export class CheckLeaseManager {
   private readonly store: CheckLeaseStore;
   private readonly verifyBase: (repoRoot: string, baseSha: string) => Promise<string>;
-  private readonly treehouseInstalled: () => Promise<boolean>;
   private readonly now: () => number;
   private readonly maxReclaimPerPass: number;
 
@@ -606,9 +706,12 @@ export class CheckLeaseManager {
   /** Consecutive failed returns per attempt, and when the next one may be tried. */
   private readonly backoff = new Map<string, { failures: number; nextAt: number }>();
 
-  /** The pool fast path, held separately because acquire-time selection names it directly. */
+  /** Legacy adapter retained only for rows that already record the Treehouse provider. */
   private readonly treehouse: CheckTreeProvider;
-  /** The cold, isolated fallback used only when the treehouse binary is unavailable. */
+  /** The default provider for every new check attempt. */
+  private readonly mission: CheckTreeProvider;
+  private readonly missionManager: WorktreeManager;
+  /** The cold, isolated fallback used only after a positive native refusal. */
   private readonly git: CheckTreeProvider;
 
   /**
@@ -625,7 +728,6 @@ export class CheckLeaseManager {
   constructor(db: DatabaseSync = openDb(), deps: CheckLeaseDeps = {}) {
     this.store = new CheckLeaseStore(db);
     this.verifyBase = deps.verifyBase ?? verifyPinnedBase;
-    this.treehouseInstalled = deps.treehouseInstalled ?? treehouseInstalled;
     this.now = deps.now ?? Date.now;
     this.maxReclaimPerPass = deps.maxReclaimPerPass ?? 8;
     // Built from the same injected seams this manager has always exposed, so every existing
@@ -640,9 +742,12 @@ export class CheckLeaseManager {
       deps.cli ?? defaultTreehouseCli,
       deps.pin ?? pinLeasedWorktree,
     );
+    this.missionManager = deps.manager ?? new WorktreeManager(db);
+    this.mission = deps.acquisitionProvider ?? new MissionCheckTreeProvider(this.missionManager);
     this.git = new GitCheckTreeProvider();
     this.providers = new Map([
       [this.treehouse.kind, this.treehouse],
+      [this.mission.kind, this.mission],
       [this.git.kind, this.git],
     ]);
   }
@@ -723,11 +828,10 @@ export class CheckLeaseManager {
   /**
    * Take an isolated worktree for one check attempt and pin it to the captured commit.
    *
-   * Treehouse remains the fast path whenever its binary is resolvable. A machine without
-   * that binary uses a detached git worktree instead, preserving the isolation and exact-
-   * commit invariants so the check still produces a real verdict. A present but dry or
-   * broken pool remains infrastructure; provider selection is not a fallback after an
-   * acquisition failure.
+   * Native allocation is the default. A positive refusal before native reservation uses a
+   * detached Git worktree instead, preserving the isolation and exact-commit invariants so
+   * the check still produces a real verdict. An ambiguous native outcome remains
+   * infrastructure and never attempts a second acquisition.
    *
    * Every failure here is infrastructure and never a verdict.
    */
@@ -769,13 +873,23 @@ export class CheckLeaseManager {
             "refusing to take a second lease for one attempt",
         );
       }
-      // Resolved ONCE per acquisition and recorded on the row below, because the row is what
-      // the release path reads. A check deliberately asks about the BINARY only. It must not
-      // consult `isTreehouseRepo`: repositories without `treehouse.toml` already take pooled
-      // trees for checks, and changing that opt-in rule is a separately filed decision.
-      const provider = (await this.treehouseInstalled()) ? this.treehouse : this.git;
+      // Native is the only pooled provider selected for a new attempt. A positive refusal
+      // before reservation degrades once to disposable Git; an ambiguous native outcome
+      // fails closed so the same attempt cannot acquire twice.
+      let provider = this.mission;
+      let taken: Awaited<ReturnType<CheckTreeProvider["acquire"]>>;
+      try {
+        taken = await provider.acquire({ repoRoot, attemptId, baseSha });
+      } catch (error) {
+        if (!(error instanceof NativeCheckNotAcquiredError)) throw error;
+        provider = this.git;
+        console.warn(
+          `[mission-control] native check worktree in ${repoRoot} was not acquired: ` +
+            `${error.message} - falling back to a throwaway git worktree`,
+        );
+        taken = await provider.acquire({ repoRoot, attemptId, baseSha });
+      }
       return await provider.withLock(repoRoot, async () => {
-        const taken = await provider.acquire({ repoRoot, attemptId, baseSha });
         const path = taken.path;
         // Pinned first and synchronously: from here on the reaper must see this path even
         // though the row below has not been written yet.
@@ -801,9 +915,11 @@ export class CheckLeaseManager {
             leasePath: path,
             holderToken: taken.holderToken,
             provider: provider.kind,
+            leaseId: taken.leaseId,
             now: this.now(),
           });
           inserted = true;
+          if (taken.leaseId) this.missionManager.settleDomainLease(taken.leaseId);
           // AFTER the row, always. Bringing the tree to the commit is the expensive step and
           // the one that can be interrupted, so the record of what we are holding has to
           // exist before it starts - and the unwind below distinguishes "we could not record
@@ -820,9 +936,11 @@ export class CheckLeaseManager {
           // The same hand-back the release path uses, reached with no row to name it by -
           // which is why a provider takes a `CheckTreeRef` rather than a `CheckLeaseRow`.
           const returned = await provider.handBack({
+            attemptId,
             repoRoot,
             leasePath: path,
             holderToken: taken.holderToken,
+            leaseId: taken.leaseId,
           });
           if (returned.code === 0) {
             if (inserted) this.store.delete(attemptId);
@@ -830,7 +948,11 @@ export class CheckLeaseManager {
             throw new Error(cause);
           }
           if (inserted) this.store.setState(attemptId, "returning", this.now());
-          const mechanism = provider.kind === "treehouse" ? "pool lease" : "git worktree";
+          const mechanism = provider.kind === "mission"
+            ? "native lease"
+            : provider.kind === "treehouse"
+              ? "pool lease"
+              : "git worktree";
           throw new Error(
             `${cause} - and the ${mechanism} could not be returned: ` +
               `${returned.stderr.trim() || `exit ${returned.code}`} (${path} is still held` +

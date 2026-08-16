@@ -16,7 +16,14 @@ cp -R integrations/ai-conductor/mission-control ~/.ai-conductor/plugins/mission-
 A symlink works too, and keeps the copy current with your checkout.
 
 Nothing else is needed on the usual setup: the plugin reads the daemon's token from
-`~/.mission-control/token`, which the daemon writes with `0600` permissions on first run.
+`~/.mission-control/token`, which the daemon writes with `0600` permissions on first run. It
+is read on first use rather than at startup, so installing this before Mission Control has
+ever run is fine - and it is read **again** whenever the daemon answers `401`, so a rotated
+secret costs one refused batch rather than every batch after it. Conductor's process outlives
+a daemon restart, and a daemon coming up on a fresh state directory mints a new token; nothing
+tells the plugin, so the refusal is what it learns from. A token passed as
+`MISSION_CONTROL_TOKEN` or to `createMissionControlVisualizer` is never re-read - that one has
+a source this file knows nothing about.
 
 | Variable | Default | When you need it |
 | --- | --- | --- |

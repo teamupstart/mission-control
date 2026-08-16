@@ -19,6 +19,9 @@
  *  5. It refuses to guess which run an event belongs to.
  */
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import {
@@ -411,6 +414,63 @@ test("a refused token says which of the two fixable things is wrong", async () =
   // The only diagnosis an operator gets, from a plugin whose posture is otherwise silence.
   assert.match(warnings[0] ?? "", /MISSION_CONTROL_TOKEN/);
   assert.match(warnings[0] ?? "", /token is readable by the user conductor runs as/);
+});
+
+test("a rotated daemon token is picked up by the attempt after the 401", async () => {
+  // The token is DISCOVERED from disk, and conductor's process outlives Mission Control's:
+  // a daemon coming up on a fresh state directory mints a new secret, and nothing tells this
+  // plugin. Holding the first one it ever read would make the retry loop an infinite retry
+  // of a request that cannot succeed, and the buffer ceiling would then drop the events -
+  // including the kinds conductor never writes to a file, which nothing else records.
+  const home = mkdtempSync(join(tmpdir(), "mission-plugin-home-"));
+  mkdirSync(join(home, ".mission-control"), { recursive: true });
+  writeFileSync(join(home, ".mission-control", "token"), "the-old-secret\n");
+  const realHome = process.env.HOME;
+  // `os.homedir()` reads HOME on POSIX, which is the only seam the plugin's own discovery
+  // offers - and using it means this test drives the real `readToken`, file and all.
+  process.env.HOME = home;
+  try {
+    const sent: string[] = [];
+    const fetchImpl = (async (_url: unknown, init: unknown) => {
+      const token = (init as { headers: Record<string, string> }).headers["x-harness-token"];
+      sent.push(token ?? "");
+      // The daemon refuses the secret it no longer knows, then accepts the one it minted.
+      return token === "the-new-secret"
+        ? ({ ok: true, status: 200 } as Response)
+        : ({ ok: false, status: 401 } as Response);
+    }) as unknown as typeof fetch;
+
+    const bus = stubBus();
+    const plugin = createMissionControlVisualizer({ worktree: WORKTREE, fetchImpl, warn: () => {} });
+    plugin.start(bus);
+    bus.emit({ type: "gate_verdict", step: "build" });
+
+    // Rotated between the first attempt and its retry, which is the sequence an operator
+    // restarting the daemon actually produces.
+    const until = async (predicate: () => boolean, why: string): Promise<void> => {
+      for (let waited = 0; waited < 5000; waited += 25) {
+        if (predicate()) return;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      assert.fail(why);
+    };
+    await until(() => sent.length >= 1, "the plugin never made a first attempt");
+    writeFileSync(join(home, ".mission-control", "token"), "the-new-secret\n");
+    await until(() => sent.length >= 2, "the plugin never retried after the 401");
+
+    assert.deepEqual(
+      sent.slice(0, 2),
+      ["the-old-secret", "the-new-secret"],
+      "the retry must read the token again rather than resend the one that was refused",
+    );
+    await plugin.stop();
+    assert.equal(plugin.stats().buffered, 0, "and the events it was holding are delivered");
+    assert.equal(plugin.stats().dropped, 0);
+  } finally {
+    if (realHome === undefined) delete process.env.HOME;
+    else process.env.HOME = realHome;
+    rmSync(home, { recursive: true, force: true });
+  }
 });
 
 test("the buffer is bounded, and it drops the oldest", async () => {

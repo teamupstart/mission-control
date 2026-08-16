@@ -315,8 +315,27 @@ export function createMissionControlVisualizer(options = {}) {
    * a temporary absence into a permanent 401.
    */
   let token = options.token ?? null;
+  /**
+   * Whether a delivery has contradicted the cached token, so the next attempt reads it again.
+   *
+   * The absent-at-startup case above is only half of it. A token that WAS right can stop
+   * being right: conductor's process outlives a Mission Control restart, and a daemon that
+   * comes up on a fresh state directory - a restored machine, a cleared `~/.mission-control`,
+   * an operator rotating the secret - mints a new one. Nothing tells this plugin, and the
+   * retry loop is built to survive exactly that kind of outage, so without re-reading it
+   * would retry a request that cannot succeed until the buffer ceiling started dropping
+   * events. The events inside that buffer include the kinds conductor never writes to a file,
+   * which is the one loss nothing else can make good.
+   */
+  let stale = false;
   const tokenNow = () => {
-    if (token === null || token === "") token = options.token ?? readToken();
+    // An explicitly supplied token is the caller's to manage, and never re-read: a wiring
+    // that passed one has a source for it that this file knows nothing about.
+    if (options.token) return options.token;
+    if (token === null || token === "" || stale) {
+      token = readToken();
+      stale = false;
+    }
     return token;
   };
 
@@ -526,9 +545,15 @@ export function createMissionControlVisualizer(options = {}) {
           failures = 0;
           return;
         }
-        // Everything else is worth retrying, 401 included: the token is re-read on each
-        // attempt, so an operator fixing ~/.mission-control/token makes the NEXT attempt
-        // succeed and the events that were buffered meanwhile still arrive.
+        // A 401 is the one refusal a DIFFERENT token can fix, so the cached one is dropped
+        // here and the next attempt reads it from disk again. Without this the retry is a
+        // loop over a request that cannot succeed - the events survive the failure and then
+        // die of the buffer ceiling instead, which for the unpersisted kinds is the same
+        // outcome as discarding them at the door.
+        if (res.status === 401) stale = true;
+        // Everything else is worth retrying too: a daemon that is down, restarting, or
+        // answering 5xx says nothing about the token, and the events that were buffered
+        // meanwhile still arrive when it comes back.
         requeue(batch);
         // Named rather than generic, because the two failures an operator can actually fix
         // look nothing alike from here and the message is the only diagnosis they get.

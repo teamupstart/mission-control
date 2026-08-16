@@ -573,7 +573,7 @@ LIMIT 20;
             <details class="family" open>
               <summary><strong>Native worktree pools</strong><span>2 tables</span></summary>
               <div class="table-list">
-                <div class="table-row"><code>worktree_pools</code><p>Daemon-owned pool identity keyed by the repository's physical Git common directory, including its managed root and latest reconciliation outcome.</p></div>
+                <div class="table-row"><code>worktree_pools</code><p>Daemon-owned pool identity keyed by the repository's physical Git common directory, including its managed root, non-reusable slot-ordinal high-water mark, and latest reconciliation outcome.</p></div>
                 <div class="table-row"><code>worktree_slots</code><p>Durable slot lifecycle records with non-reused ordinals, exact active lease owner, last released lease tuple, Git commit state, and quarantine evidence. A record is deleted only after pruning is positively reconciled.</p></div>
               </div>
             </details>

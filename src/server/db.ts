@@ -845,6 +845,7 @@ export function openDb(): DatabaseSync {
       git_common_dir         TEXT    NOT NULL,
       main_checkout_root     TEXT    NOT NULL,
       pool_path              TEXT    NOT NULL,
+      ordinal_high_water     INTEGER NOT NULL DEFAULT 0,
       last_reconciled_at     INTEGER,
       reconciliation_error  TEXT,
       created_at             INTEGER NOT NULL,
@@ -2474,6 +2475,8 @@ function inFlightIndexSql(): string {
  * idempotent - this block runs on every start, not just on an upgrade.
  */
 function migrate(d: DatabaseSync): void {
+  migrateWorktreeOrdinalHighWater(d);
+
   // Which file each pipeline run's events offset indexes into. Added after `pipeline_runs`
   // shipped, so an existing row carries the empty-string default - which is exact: those
   // rows were written by a build that recorded no identity. The tail treats an empty
@@ -3141,6 +3144,35 @@ function rebuildInFlightIndexIfStale(d: DatabaseSync): void {
       "[db] could not rebuild one_inflight_per_queue (rows may already violate " +
         `single-flight); keeping the previous index: ${String(err)}`,
     );
+  }
+}
+
+/**
+ * Preserve every native slot ordinal ever issued, including after its row is pruned.
+ *
+ * The backfill is intentionally idempotent rather than conditional on ADD COLUMN. A build
+ * interrupted between an older branch adding the column and filling it can therefore recover,
+ * while MAX never lowers a high-water mark after the highest live row has been deleted.
+ */
+function migrateWorktreeOrdinalHighWater(d: DatabaseSync): void {
+  d.exec("BEGIN IMMEDIATE;");
+  try {
+    addColumn(d, "worktree_pools", "ordinal_high_water", "INTEGER NOT NULL DEFAULT 0");
+    d.exec(`
+      UPDATE worktree_pools
+         SET ordinal_high_water = MAX(
+           ordinal_high_water,
+           COALESCE((
+             SELECT MAX(s.ordinal) FROM worktree_slots s WHERE s.pool_id = worktree_pools.id
+           ), 0)
+         );
+    `);
+    d.exec("COMMIT;");
+  } catch (error) {
+    try {
+      d.exec("ROLLBACK;");
+    } catch {}
+    throw error;
   }
 }
 

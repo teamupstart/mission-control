@@ -15,6 +15,7 @@ export interface WorktreePoolRow {
   gitCommonDirectory: string;
   mainCheckoutRoot: string;
   poolPath: string;
+  ordinalHighWater: number;
   lastReconciledAt: number | null;
   reconciliationError: string | null;
   createdAt: number;
@@ -51,6 +52,7 @@ function poolRow(row: Record<string, unknown>): WorktreePoolRow {
     gitCommonDirectory: String(row.git_common_dir),
     mainCheckoutRoot: String(row.main_checkout_root),
     poolPath: String(row.pool_path),
+    ordinalHighWater: Number(row.ordinal_high_water),
     lastReconciledAt: row.last_reconciled_at === null ? null : Number(row.last_reconciled_at),
     reconciliationError: row.reconciliation_error === null ? null : String(row.reconciliation_error),
     createdAt: Number(row.created_at),
@@ -192,7 +194,33 @@ export class WorktreeStore {
         this.db.exec("COMMIT;");
         return null;
       }
-      const ordinal = Number(count.max_ordinal) + 1;
+      const pool = this.db
+        .prepare(`SELECT ordinal_high_water FROM worktree_pools WHERE id = ?`)
+        .get(input.poolId) as { ordinal_high_water: number } | undefined;
+      const highWater = Number(pool?.ordinal_high_water);
+      const maxOrdinal = Number(count.max_ordinal);
+      if (
+        !pool ||
+        !Number.isSafeInteger(highWater) ||
+        highWater < 0 ||
+        !Number.isSafeInteger(maxOrdinal) ||
+        maxOrdinal < 0
+      ) {
+        throw new Error("native pool ordinal high-water mark is invalid");
+      }
+      const ordinal = Math.max(highWater, maxOrdinal) + 1;
+      if (!Number.isSafeInteger(ordinal)) {
+        throw new Error("native pool ordinal space is exhausted");
+      }
+      const advanced = this.db
+        .prepare(
+          `UPDATE worktree_pools SET ordinal_high_water = ?, updated_at = ?
+           WHERE id = ? AND ordinal_high_water = ?`,
+        )
+        .run(ordinal, input.now, input.poolId, highWater);
+      if (Number(advanced.changes) !== 1) {
+        throw new Error("native pool ordinal high-water mark could not be advanced");
+      }
       this.db
         .prepare(
           `INSERT INTO worktree_slots

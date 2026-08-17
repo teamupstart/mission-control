@@ -722,6 +722,23 @@ test("the Ship it review route starts the built-in workflow and never replaces a
     workflows,
   );
 
+  const invalidEvidence = await request(
+    app,
+    "/api/sessions/review-session/workflow-review",
+    {
+      requestId: "ship-review-invalid-evidence",
+      evidence: [{
+        kind: "upload",
+        clientItemId: "dashboard-image",
+        uploadId: "opaque.png",
+        caption: " ",
+        repositoryScope: "repo-01",
+      }],
+    },
+  );
+  assert.equal(invalidEvidence.status, 400);
+  assert.match((await invalidEvidence.json() as { error: string }).error, /caption/i);
+
   const started = await request(
     app,
     "/api/sessions/review-session/workflow-review",

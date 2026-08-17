@@ -34,7 +34,8 @@
  * Every notification is matched on `params.threadId` (`isCurrentThread`), so all of them
  * carry it.
  */
-import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
@@ -88,6 +89,96 @@ if (recordDir) {
     join(recordDir, "codex", `invocation-${Date.now()}-${process.pid}.json`),
     JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd() }, null, 2),
   );
+}
+
+function workflowImageManifest(prompt) {
+  const lines = prompt.split("\n");
+  const start = lines.findIndex((line) => /^`{3,}workflow-image-manifest-untrusted$/.test(line));
+  if (start < 0) return [];
+  const fence = lines[start].match(/^`+/)?.[0] ?? "```";
+  const end = lines.indexOf(fence, start + 1);
+  if (end < 0) return [];
+  try {
+    const parsed = JSON.parse(lines.slice(start + 1, end).join("\n"));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function codexWorkflowAnswer(prompt) {
+  if (prompt.includes("E2E_FAIL_VERDICT")) {
+    return JSON.stringify({
+      verdict: "fail",
+      summary: "Deterministic Codex e2e objection",
+      requestedChanges: [{
+        title: "E2E Codex requested change",
+        rationale: "This Codex reviewer is scripted to object",
+        evidence: [{ kind: "goal", quote: "deterministic e2e evidence" }],
+      }],
+      confidence: 0.9,
+    });
+  }
+  if (prompt.includes("E2E_PASS_VERDICT")) {
+    return JSON.stringify({
+      verdict: "pass",
+      summary: "Deterministic Codex e2e approval",
+      approvalDetails: { reason: "This Codex reviewer received native image pixels", evidence: [] },
+      confidence: 0.9,
+    });
+  }
+  return "E2E Codex Mock";
+}
+
+/** The workflow provider path is `codex exec --image ... -`, not the live app-server wire. */
+if (process.argv[2] === "exec") {
+  await new Promise((done) => {
+    const imagePaths = [];
+    for (let index = 3; index < process.argv.length; index++) {
+      if (process.argv[index] === "--image" && process.argv[index + 1]) {
+        imagePaths.push(process.argv[++index]);
+      }
+    }
+    const chunks = [];
+    process.stdin.on("data", (chunk) => chunks.push(chunk));
+    process.stdin.on("end", () => {
+      const prompt = Buffer.concat(chunks).toString("utf8");
+      const manifest = workflowImageManifest(prompt);
+      const observed = imagePaths.map((path) => {
+        const bytes = readFileSync(path);
+        return {
+          bytes: bytes.byteLength,
+          sha256: createHash("sha256").update(bytes).digest("hex"),
+        };
+      });
+      const valid = manifest.length === observed.length && observed.every((image, index) =>
+        image.bytes === manifest[index]?.bytes && image.sha256 === manifest[index]?.sha256);
+      if (recordDir && manifest.length > 0) {
+        writeFileSync(
+          join(recordDir, "codex", `workflow-image-boundary-${Date.now()}-${process.pid}.json`),
+          JSON.stringify({ valid, manifest, observed, imagePathCount: imagePaths.length }, null, 2),
+        );
+      }
+      if (!valid) {
+        process.stderr.write("fake-codex: workflow image bytes did not match --image inputs\n");
+        process.exitCode = 1;
+        done();
+        return;
+      }
+      process.stdout.write(`${JSON.stringify({ type: "thread.started", thread_id: "fake-workflow-codex" })}\n`);
+      process.stdout.write(`${JSON.stringify({
+        type: "item.completed",
+        item: { type: "agent_message", text: codexWorkflowAnswer(prompt) },
+      })}\n`);
+      process.stdout.write(`${JSON.stringify({
+        type: "turn.completed",
+        usage: { input_tokens: 120, cached_input_tokens: 0, output_tokens: 40 },
+      })}\n`);
+      done();
+    });
+    process.stdin.resume();
+  });
+  process.exit(process.exitCode ?? 0);
 }
 
 // `spawnAppServer` is the only caller and it always leads with this word. Failing loudly

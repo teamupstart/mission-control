@@ -40,6 +40,29 @@ Video is off. Recording it cost 16s of every CI shard whether or not anything fa
 showed nothing the trace does not already replay. A failure still leaves a trace and a
 screenshot; open the trace with `npx playwright show-trace`.
 
+### Native workflow image evidence
+
+`e2e/.artifacts/workflow-image-evidence/` records the dashboard intake and audit surfaces for
+one real built-daemon workflow run. The spec attaches a screenshot in the initial binding
+preview, supplies its caption and repository scope, and proves the fake Claude and Codex
+provider boundaries received and decoded the same bytes named by the manifest. It then shows
+the retained thumbnail and audit metadata, submits a replacement image on an unchanged
+repository snapshot, restages retained evidence for the next review, and converts another
+body to a pruned fixture while preserving its digest and metadata.
+
+Both fake providers reject a metadata-only image request. Their accepted-boundary records are
+written inside the isolated Playwright state directory and compare MIME, byte count, and
+sha256 digest against the exact native image input before returning a verdict.
+
+Regenerate the optional dashboard frames with:
+
+```sh
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/workflow-image-evidence.spec.ts \
+  --workers=1 --reporter=list
+```
+
 ### Dispatch restart recovery
 
 `e2e/.artifacts/dispatch-restart-recovery/restart-recovery-backlog.png` shows a dispatch

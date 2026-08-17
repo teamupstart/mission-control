@@ -576,6 +576,61 @@ test("a waiting run offers ONE primary move, the context controls, and cancel", 
   assertNoGraphIds(html);
 });
 
+test("image evidence is an auditable per-submission ledger with retained and pruned states", () => {
+  const base = runningDetail();
+  const html = render({
+    ...base,
+    evidenceImages: [{
+      submissionId: "submission-2",
+      images: [
+        {
+          id: "image-retained",
+          ordinal: 0,
+          displayName: "dashboard.png",
+          caption: "Composer with caption and repository scope",
+          repositoryScope: "repo-01",
+          mimeType: "image/png",
+          bytes: 2048,
+          sha256: "a".repeat(64),
+          availability: "retained",
+          prunedAt: null,
+          createdAt: 8,
+        },
+        {
+          id: "image-pruned",
+          ordinal: 1,
+          displayName: "old-dashboard.webp",
+          caption: "Historical evidence whose body aged out",
+          repositoryScope: "all",
+          mimeType: "image/webp",
+          bytes: 4096,
+          sha256: "b".repeat(64),
+          availability: "pruned",
+          prunedAt: 9,
+          createdAt: 7,
+        },
+      ],
+    }],
+  }, {
+    evidenceScopeOptions: [
+      { value: "all", label: "All repositories" },
+      { value: "repo-01", label: "app (primary)" },
+    ],
+    onRestageImage: async () => {},
+  });
+  assert.match(html, /2 images frozen for this submission/);
+  assert.match(html, /Composer with caption and repository scope/);
+  assert.match(html, /app \(primary\)/);
+  assert.match(html, new RegExp("a{64}"));
+  assert.match(html, /Use in next review/);
+  assert.match(html, /Historical evidence whose body aged out/);
+  assert.match(html, /Raw body pruned/);
+  assert.match(html, /Caption, scope, MIME, size, and SHA-256 remain auditable/);
+  assert.equal((html.match(/Use in next review/g) ?? []).length, 1);
+  // Static rendering never fetches bodies: the authenticated route is reached lazily in view.
+  assert.doesNotMatch(html, /src="\/api\/workflow-runs/);
+});
+
 /**
  * The audit trio, in the one place it belongs.
  *

@@ -188,6 +188,48 @@ if (recordDir) {
   );
 }
 
+function workflowImageManifest(prompt) {
+  const lines = prompt.split("\n");
+  const start = lines.findIndex((line) => /^`{3,}workflow-image-manifest-untrusted$/.test(line));
+  if (start < 0) return [];
+  const fence = lines[start].match(/^`+/)?.[0] ?? "```";
+  const end = lines.indexOf(fence, start + 1);
+  if (end < 0) return [];
+  try {
+    const parsed = JSON.parse(lines.slice(start + 1, end).join("\n"));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Fail the provider boundary unless the native Claude image blocks carry the manifest bytes. */
+function verifyClaudeWorkflowImages(prompt, blocks) {
+  const manifest = workflowImageManifest(prompt);
+  if (manifest.length === 0) return true;
+  const images = blocks.filter((block) => block?.type === "image");
+  const observed = images.map((block) => {
+    const bytes = Buffer.from(block?.source?.data ?? "", "base64");
+    return {
+      mimeType: block?.source?.media_type ?? null,
+      bytes: bytes.byteLength,
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+    };
+  });
+  const valid = observed.length === manifest.length && observed.every((image, index) =>
+    image.sha256 === manifest[index]?.sha256
+    && image.bytes === manifest[index]?.bytes
+    && image.mimeType === manifest[index]?.mimeType);
+  if (recordDir) {
+    writeFileSync(
+      join(recordDir, "claude", `workflow-image-boundary-${Date.now()}-${process.pid}.json`),
+      JSON.stringify({ valid, manifest, observed }, null, 2),
+    );
+  }
+  if (!valid) process.stderr.write("fake-claude: workflow image pixels did not match the manifest\n");
+  return valid;
+}
+
 // --- headless one-shot modes -----------------------------------------------------------
 
 /**
@@ -210,7 +252,20 @@ if (process.argv.includes("--setting-sources=")) {
   const chunks = [];
   process.stdin.on("data", (c) => chunks.push(c));
   process.stdin.on("end", () => {
-    const prompt = Buffer.concat(chunks).toString("utf8");
+    const input = Buffer.concat(chunks).toString("utf8");
+    let prompt = input;
+    let blocks = [];
+    try {
+      const frame = JSON.parse(input);
+      const content = frame?.message?.content;
+      if (Array.isArray(content)) {
+        blocks = content;
+        prompt = content.filter((block) => block?.type === "text").map((block) => block.text).join("\n");
+      }
+    } catch {
+      // Historical text-only print calls write the prompt directly.
+    }
+    if (!verifyClaudeWorkflowImages(prompt, blocks)) process.exit(1);
     const finish = () => {
       process.stdout.write(JSON.stringify({ result: headlessAnswer(prompt) }));
       process.exit(0);
@@ -358,9 +413,10 @@ function runHeadlessSdk() {
     process.stdout.write(`${JSON.stringify(frame)}\n`);
   };
 
-  const finish = (prompt) => {
+  const finish = (prompt, blocks) => {
     if (answered) return;
     answered = true;
+    if (!verifyClaudeWorkflowImages(prompt, blocks)) process.exit(1);
     if (prompt.includes(HELD_REVIEW)) {
       setTimeout(() => process.exit(1), HELD_REVIEW_MS);
       return;
@@ -429,11 +485,11 @@ function runHeadlessSdk() {
       prompt.includes(SLOW_WORKFLOW_CONTEXT)
       && prompt.includes("Compact workflow intent without rewriting it.")
     ) {
-      setTimeout(() => finish(prompt), SLOW_WORKFLOW_CONTEXT_MS);
+      setTimeout(() => finish(prompt, Array.isArray(raw) ? raw : []), SLOW_WORKFLOW_CONTEXT_MS);
     } else if (prompt.includes(SLOW_FAIL_VERDICT)) {
-      setTimeout(() => finish(prompt), SLOW_FAIL_VERDICT_MS);
+      setTimeout(() => finish(prompt, Array.isArray(raw) ? raw : []), SLOW_FAIL_VERDICT_MS);
     } else {
-      finish(prompt);
+      finish(prompt, Array.isArray(raw) ? raw : []);
     }
   });
 }

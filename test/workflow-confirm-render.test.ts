@@ -20,6 +20,10 @@ import {
   type WorkflowConfirmRequest,
 } from "../src/web/workflows/WorkflowConfirmModal.tsx";
 import { withOverlayHost } from "./helpers/overlay-host.ts";
+import {
+  workflowEvidenceSubmission,
+  type WorkflowEvidenceDraftController,
+} from "../src/web/workflows/WorkflowEvidenceComposer.tsx";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -68,6 +72,70 @@ test("an ordinary confirm has no phrase field and is ready to click", () => {
   assert.doesNotMatch(html, /workflow-confirm-phrase/);
   assert.doesNotMatch(html, /<button[^>]*type="submit"[^>]*disabled/);
   assert.match(html, /Abandons the Inspector-only repair/);
+});
+
+const evidenceController = (
+  caption: string,
+  status: "uploading" | "ready" | "error" = "ready",
+): WorkflowEvidenceDraftController => ({
+  draft: {
+    attachments: [{
+      id: "client-image",
+      name: "dashboard.png",
+      previewUrl: "blob:dashboard",
+      status,
+      upload: status === "ready" ? { path: "/private/never-send-this", name: "stored.png" } : undefined,
+      uploadId: status === "ready" ? "stored-opaque.png" : undefined,
+      bytes: status === "ready" ? 2048 : undefined,
+      mimeType: "image/png",
+    }],
+    metadata: { "client-image": { caption, repositoryScope: "repo-01" } },
+  },
+  staged: { generation: 2, images: [], artifacts: [] },
+  stagedLoading: false,
+  stagedError: null,
+  setAttachments: () => {},
+  update: () => {},
+  refreshStaged: () => {},
+  removeStaged: () => {},
+  clear: () => {},
+});
+
+test("fresh workflow confirmations render the shared composer and block incomplete evidence", () => {
+  const html = renderToStaticMarkup(withOverlayHost(createElement(WorkflowConfirmModal, {
+    request: {
+      title: "Preview fresh evidence",
+      body: "Capture a new immutable submission.",
+      confirmLabel: "Preview fresh evidence",
+      confirmHint: "Capture and submit",
+      captureEvidence: true,
+      onConfirm: () => {},
+    },
+    evidence: {
+      controller: evidenceController(""),
+      scopes: [{ value: "repo-01", label: "app (primary)" }],
+    },
+    onClose: () => {},
+  })));
+  assert.match(html, /Show reviewers what the diff cannot/);
+  assert.match(html, /dashboard\.png needs a caption/);
+  assert.match(html, /<button[^>]*type="submit"[^>]*disabled/);
+});
+
+test("workflow evidence serializes only opaque upload ids and frozen metadata", () => {
+  const result = workflowEvidenceSubmission(
+    evidenceController("Rendered dashboard keeps the image ledger visible"),
+    [{ value: "repo-01", label: "app (primary)" }],
+  );
+  assert.equal(result.ready, true);
+  assert.deepEqual(result.locators, [{
+    kind: "upload",
+    clientItemId: "client-image",
+    uploadId: "stored-opaque.png",
+    caption: "Rendered dashboard keeps the image ledger visible",
+    repositoryScope: "repo-01",
+  }]);
+  assert.doesNotMatch(JSON.stringify(result.locators), /private|never-send/);
 });
 
 // The gate the migration's final phase leaves behind, kept as a test rather than a one-off

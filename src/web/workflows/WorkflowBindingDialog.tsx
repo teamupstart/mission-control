@@ -15,6 +15,12 @@ import {
 import { OVERLAY_IDS, Overlay } from "../components/Overlay.tsx";
 import { Tooltip } from "../components/Tooltip.tsx";
 import { workflowRequest } from "./workflowApi.ts";
+import {
+  WorkflowEvidenceComposer,
+  useWorkflowEvidenceDraft,
+  workflowEvidenceScopes,
+  workflowEvidenceSubmission,
+} from "./WorkflowEvidenceComposer.tsx";
 
 export interface WorkflowBindingTarget {
   sessionId?: string;
@@ -228,6 +234,13 @@ export function WorkflowBindingDialog({
     () => workflowBindingSelection(bindings, session, versionId),
     [bindings, session, versionId],
   );
+  const evidenceScopeSet = useMemo(
+    () => workflowEvidenceScopes(session),
+    [session],
+  );
+  const evidenceDraft = useWorkflowEvidenceDraft(existing?.id, evidenceScopeSet.defaultScope);
+  const evidenceSubmission = workflowEvidenceSubmission(evidenceDraft, evidenceScopeSet.options);
+  const previewIntent = useRef<{ key: string; requestId: string } | null>(null);
   /*
    * Resolved the same way the version is NAMED, rather than by `currentVersionId` equality.
    *
@@ -372,6 +385,7 @@ export function WorkflowBindingDialog({
 
   const perform = async (preview: boolean): Promise<void> => {
     if (busy) return;
+    if (preview && !evidenceSubmission.ready) return;
     setBusy(true);
     setError(null);
     try {
@@ -385,9 +399,20 @@ export function WorkflowBindingDialog({
         `/api/workflow-bindings/${binding.id}/submit`,
         {
           method: "POST",
-          body: JSON.stringify({ requestId: crypto.randomUUID() }),
+          body: JSON.stringify({
+            requestId: (() => {
+              const key = `${sessionId}:${versionId}:${triggerMode}:${deliveryMode}:${maxRepairRounds}`;
+              if (previewIntent.current?.key !== key) {
+                previewIntent.current = { key, requestId: crypto.randomUUID() };
+              }
+              return previewIntent.current.requestId;
+            })(),
+            evidence: evidenceSubmission.locators,
+          }),
         },
       );
+      evidenceDraft.clear();
+      previewIntent.current = null;
       onClose();
       onRun(result.run.id);
     } catch (caught) {
@@ -561,6 +586,11 @@ export function WorkflowBindingDialog({
           </div>
         </dl>
       )}
+      <WorkflowEvidenceComposer
+        controller={evidenceDraft}
+        scopes={evidenceScopeSet.options}
+        disabled={busy}
+      />
       {error && <p className="wf-error" role="alert">{error}</p>}
       <footer className="modal-actions">
         <Tooltip label="Attach the workflow to this session without starting a run">
@@ -571,7 +601,7 @@ export function WorkflowBindingDialog({
         <Tooltip label="Attach the workflow and take an evidence snapshot to review now">
           <button
             className="btn"
-            disabled={busy || !canSubmit}
+            disabled={busy || !canSubmit || !evidenceSubmission.ready}
             onClick={() => void perform(true)}
           >
           {busy

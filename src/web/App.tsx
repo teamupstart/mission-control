@@ -2544,6 +2544,7 @@ export function App(): React.JSX.Element {
               ) : (
                 <WorkflowRuns
                   runs={workflowRuns}
+                  sessions={sessions}
                   selectedRunId={route.page === "runs" ? route.runId ?? null : null}
                   filters={route.page === "runs" ? route.filters : undefined}
                   onSelectRun={openWorkflowRun}

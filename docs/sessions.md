@@ -1406,7 +1406,16 @@ ensemble member, [`submit_scout_artifacts`](archives.md) for a scout, and
 Persona. The workflow tool registers contained gitignored screenshots and focused UTF-8 text
 or log artifacts by issued repository slot or across all applicable repositories before task
 completion. It never tells the agent to commit evidence, and a ship task without such a
-workflow keeps its prior launch and prompt unchanged:
+workflow keeps its prior launch and prompt unchanged.
+
+Registered evidence is visible in the session card's shared **Image evidence** composer before
+**Ship it** or the built-in No-Mistakes review starts. A person can remove a stale registration,
+add screenshots by choosing, dropping, or pasting, and assign captions and repository scopes
+without moving the files into git. The composer keeps unfinished uploads and edits across a
+closed confirmation or a failed submission, then clears only after the daemon accepts the
+review request.
+
+The MCP tools are:
 
 - `share_plan(title, plan)` - show a markdown plan (non-blocking)
 - `request_plan_decisions(title, plan, decisions)` - show a plan with selectable

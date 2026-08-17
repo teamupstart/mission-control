@@ -6,6 +6,7 @@ import { withOverlayHost } from "./helpers/overlay-host.ts";
 import {
   AttachmentStrip,
   readyAttachments,
+  revokeAttachments,
   type PendingAttachment,
 } from "../src/web/components/ImageDrop.tsx";
 import { DispatchLayer } from "../src/web/components/DispatchModal.tsx";
@@ -47,6 +48,18 @@ test("readyAttachments: only an uploaded image has a path to cite", () => {
 test("readyAttachments: a failed upload is never cited", () => {
   const failed = att({ status: "error", error: "not a recognised image", upload: undefined });
   assert.deepEqual(readyAttachments([failed]), []);
+});
+
+test("workflow draft owners can revoke every preview URL without a DOM", () => {
+  const revoked: string[] = [];
+  const original = URL.revokeObjectURL;
+  URL.revokeObjectURL = (url) => revoked.push(url);
+  try {
+    revokeAttachments([att({ id: "a", previewUrl: "blob:a" }), att({ id: "b", previewUrl: "blob:b" })]);
+  } finally {
+    URL.revokeObjectURL = original;
+  }
+  assert.deepEqual(revoked, ["blob:a", "blob:b"]);
 });
 
 test("an empty strip renders nothing at all", () => {

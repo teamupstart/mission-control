@@ -289,10 +289,11 @@ test("the health line says how observation is arriving, in all three states", ()
   assert.match(line("live"), /engine daemon running · 1 pipeline · live events/);
 });
 
-test("the panel keeps the optional push path subordinate to file observation", () => {
+test("the panel names where the plugin is installed, without offering a control for it", () => {
   const html = render(answered({}));
-  assert.match(html, /optional visualizer plugin/);
-  assert.match(html, /files remain the source of truth/);
+  assert.match(html, /~\/\.ai-conductor\/plugins\/mission-control\//);
+  assert.match(html, /integrations\/ai-conductor\/mission-control\//);
+  assert.match(html, /needs nothing installed/);
 });
 
 test("a repository the engine has forgotten stays listed while its consent stands", () => {

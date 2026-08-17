@@ -210,6 +210,14 @@ export function ConductorPanel({ state }: { state: ConductorState }): React.JSX.
         </div>
       )}
 
+      <p className="settings-hint conductor-ingest-hint">
+        Reading files on a cadence needs nothing installed, and each row below says so. To have the
+        engine push its events instead - the same picture, without the wait - copy{" "}
+        <code>integrations/ai-conductor/mission-control/</code> from the Mission Control checkout
+        into <code>~/.ai-conductor/plugins/mission-control/</code> and give it this daemon's URL and
+        token. The engine's files stay the source of truth either way.
+      </p>
+
       <div className="sc-controls">
         <ConsoleCard
           title="The engine"
@@ -436,10 +444,6 @@ export function ConductorPanel({ state }: { state: ConductorState }): React.JSX.
         </ConsoleCard>
       </div>
 
-      <p className="settings-hint conductor-ingest-hint">
-        Mission Control reads Conductor's files on a cadence. The optional visualizer plugin can
-        push the same events sooner; the files remain the source of truth either way.
-      </p>
     </section>
   );
 }

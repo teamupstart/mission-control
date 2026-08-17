@@ -189,6 +189,13 @@ export function pipelinesObserving(): number {
   return activePipelineRepos(getPipelinesConfig()).length;
 }
 
+/** Exact active repository identities for cache invalidation across count-preserving swaps. */
+export function pipelineObservedRepoKeys(): string[] {
+  return activePipelineRepos(getPipelinesConfig())
+    .map((repo) => pipelineRepoKey(repo.provider, repo.repoRoot))
+    .sort();
+}
+
 /**
  * Compose one pipeline-task launch behind current repository consent.
  *

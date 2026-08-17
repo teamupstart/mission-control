@@ -2938,7 +2938,11 @@ export function App(): React.JSX.Element {
                 workflowSummaries={workflowSummaries}
                 foremanEnabled={foreman.config?.enabled ?? false}
                 harnessesRevision={harnessesRevision}
-                pipelinesObserving={settingsStatus?.pipelines.observing ?? 0}
+                pipelinesRevision={
+                  settingsStatus?.pipelines.observedRepoKeys
+                    ? JSON.stringify(settingsStatus.pipelines.observedRepoKeys)
+                    : `count:${settingsStatus?.pipelines.observing ?? 0}`
+                }
                 launchIntent={dispatchIntent}
                 onClose={closeDispatch}
                 onOpenSchedule={onOpenSchedule}

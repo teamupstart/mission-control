@@ -345,7 +345,7 @@ export function DispatchLayer({
   workflowSummaries = [],
   foremanEnabled = false,
   harnessesRevision = 0,
-  pipelinesObserving = 0,
+  pipelinesRevision = "count:0",
   launchIntent = null,
   onClose,
   onOpenSchedule,
@@ -369,7 +369,7 @@ export function DispatchLayer({
    */
   harnessesRevision?: number;
   /** Refetch exact active pipeline roots when observation consent changes under an open modal. */
-  pipelinesObserving?: number;
+  pipelinesRevision?: string;
   /**
    * What the caller wants this opening to be, when it is not an ordinary Dispatch.
    *
@@ -625,7 +625,7 @@ export function DispatchLayer({
         workflowSummaries={workflowSummaries}
         foremanEnabled={foremanEnabled}
         harnessesRevision={harnessesRevision}
-        pipelinesObserving={pipelinesObserving}
+        pipelinesRevision={pipelinesRevision}
       />
     );
   }
@@ -652,7 +652,7 @@ export function DispatchLayer({
       workflowSummaries={workflowSummaries}
       foremanEnabled={foremanEnabled}
       harnessesRevision={harnessesRevision}
-      pipelinesObserving={pipelinesObserving}
+      pipelinesRevision={pipelinesRevision}
     />
   );
 }
@@ -696,7 +696,7 @@ function DispatchModal({
   workflowSummaries = [],
   foremanEnabled = false,
   harnessesRevision = 0,
-  pipelinesObserving = 0,
+  pipelinesRevision = "count:0",
 }: {
   mode: DispatchMode;
   tasks: Task[];
@@ -738,7 +738,7 @@ function DispatchModal({
    * defaults change under an open modal, rather than only when the modal is reopened.
    */
   harnessesRevision?: number;
-  pipelinesObserving?: number;
+  pipelinesRevision?: string;
 }): React.JSX.Element {
   const editing = mode.kind === "edit" ? mode.task : null;
   // Ensemble mode is a new-dispatch-only concern, and only when the layer wired the state up.
@@ -1637,8 +1637,8 @@ function DispatchModal({
   }, []);
 
   // Pipeline eligibility is exact-repository consent from the daemon. Re-read it when the
-  // settings status count changes so a modal already open during Register and observe gains
-  // Pipeline only after the consent PUT succeeds, without optimistically widening the gate.
+  // settings status exact-root key changes so a modal already open during Register and observe
+  // gains Pipeline only after the consent PUT succeeds, without optimistically widening the gate.
   useEffect(() => {
     let alive = true;
     void fetchPipelineRepos().then((answer) => {
@@ -1648,7 +1648,7 @@ function DispatchModal({
     return () => {
       alive = false;
     };
-  }, [pipelinesObserving]);
+  }, [pipelinesRevision]);
 
   /**
    * What this task could be filed into, read once when the editor opens.

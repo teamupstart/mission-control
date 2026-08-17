@@ -3,7 +3,11 @@ import { getInspectorConfig } from "./inspector/config.ts";
 import { getShippingConfig } from "./shipping/config.ts";
 import { getTaskSourcesConfig } from "./task-sources/config.ts";
 import { taskSourceStatuses } from "./task-sources/sweeper.ts";
-import { pipelinesObserving, pipelinesPresent } from "./pipelines/index.ts";
+import {
+  pipelineObservedRepoKeys,
+  pipelinesObserving,
+  pipelinesPresent,
+} from "./pipelines/index.ts";
 
 // The one place the Settings status tuple is composed, and the one helper that emits it.
 //
@@ -34,7 +38,11 @@ export function settingsStatus(): SettingsStatus {
     // Keep the append-only `present` compatibility fact for older dashboards. The current
     // dashboard always draws Conductor and uses `observing` alone for the Runs and Dispatch
     // gates. Both values are cheap reads and spawn nothing.
-    pipelines: { present: pipelinesPresent(), observing: pipelinesObserving() },
+    pipelines: {
+      present: pipelinesPresent(),
+      observing: pipelinesObserving(),
+      observedRepoKeys: pipelineObservedRepoKeys(),
+    },
   };
 }
 

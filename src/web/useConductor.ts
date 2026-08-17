@@ -142,13 +142,17 @@ export function useConductor(active: boolean): ConductorState {
         await queued;
         if (!readIsCurrent(seq, editSeq.current)) return true;
         const res = await api.setPipelines(config);
+        // The request may have been current when it left and become stale while it was on the
+        // wire. A later optimistic edit owns the screen now, so this response may invalidate
+        // old polls but must never replace or roll back that newer state.
+        if (res.ok) writeGen.current += 1;
+        if (!readIsCurrent(seq, editSeq.current)) return res.ok;
         if (!res.ok) {
           setError(whyItFailed(res.error));
-          if (readIsCurrent(seq, editSeq.current)) setView(before);
+          setView(before);
           return false;
         }
         setError(null);
-        writeGen.current += 1;
         setView(res.view);
         return true;
       })();

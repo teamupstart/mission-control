@@ -140,6 +140,80 @@ test("an open Dispatch modal changes only after exact observation succeeds", asy
   await repo.fill(daemon.secondRepo);
   await dashboard.keyboard.press("Escape");
   await expect(kind.locator('option[value="pipeline"]')).toHaveCount(0);
+
+  const replacement = await dashboard.request.put(`${daemon.baseURL}/api/pipelines/config`, {
+    data: {
+      enabled: true,
+      foremanMechanicalTriage: false,
+      repos: [{ provider: "ai-conductor", repoRoot: daemon.secondRepo, enabled: true }],
+    },
+  });
+  expect(replacement.ok()).toBe(true);
+  await expect(kind.locator('option[value="pipeline"]')).toHaveCount(1);
+
+  await repo.fill(daemon.repo);
+  await dashboard.keyboard.press("Escape");
+  await expect(kind.locator('option[value="pipeline"]')).toHaveCount(0);
+});
+
+test("a stale consent response never replaces or restores a newer repository edit", async ({
+  page,
+  daemon,
+}) => {
+  for (const repoRoot of [daemon.repo, daemon.secondRepo]) {
+    const registration = await page.request.post(`${daemon.baseURL}/api/pipelines/register`, {
+      data: { provider: "ai-conductor", repoRoot },
+    });
+    expect((await registration.json()).registration.ok).toBe(true);
+  }
+  const seeded = await page.request.put(`${daemon.baseURL}/api/pipelines/config`, {
+    data: {
+      enabled: true,
+      foremanMechanicalTriage: false,
+      repos: [
+        { provider: "ai-conductor", repoRoot: daemon.repo, enabled: false },
+        { provider: "ai-conductor", repoRoot: daemon.secondRepo, enabled: false },
+      ],
+    },
+  });
+  expect(seeded.ok()).toBe(true);
+
+  let writes = 0;
+  await page.route("**/api/pipelines/config", async (route) => {
+    if (route.request().method() !== "PUT") {
+      await route.continue();
+      return;
+    }
+    writes += 1;
+    if (writes === 1) {
+      const response = await route.fetch();
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      await route.fulfill({ response });
+      return;
+    }
+    await route.fulfill({
+      status: 500,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "forced second consent refusal" }),
+    });
+  });
+
+  await openConductor(page, daemon.baseURL);
+  const first = page.getByRole("checkbox", { name: "Observe pipelines in demo-repo" });
+  const second = page.getByRole("checkbox", { name: "Observe pipelines in second-repo" });
+  await expect(first).toBeEnabled();
+  await expect(second).toBeEnabled();
+  await first.click();
+  await second.click();
+
+  await expect(page.getByText(/forced second consent refusal/)).toBeVisible();
+  await expect(first).toBeChecked();
+  await expect(second).not.toBeChecked();
+  const config = await page.request.get(`${daemon.baseURL}/api/pipelines/config`);
+  expect((await config.json()).config.repos).toEqual([
+    { provider: "ai-conductor", repoRoot: daemon.secondRepo, enabled: false },
+    { provider: "ai-conductor", repoRoot: daemon.repo, enabled: true },
+  ]);
 });
 
 test.describe("when the provider does not confirm registration", () => {

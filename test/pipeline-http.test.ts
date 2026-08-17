@@ -4,12 +4,13 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type {
-  PipelineHaltClass,
-  PipelineRepoStatus,
-  PipelineRepoRegistrationResponse,
-  PipelineRunDetail,
-  PipelinesView,
+import {
+  pipelineRepoKey,
+  type PipelineHaltClass,
+  type PipelineRepoStatus,
+  type PipelineRepoRegistrationResponse,
+  type PipelineRunDetail,
+  type PipelinesView,
 } from "../src/shared/pipeline.ts";
 
 // What is at stake: this route is the consent boundary. Everything the integration does is
@@ -1217,9 +1218,15 @@ test("consent moves the settings tuple, so the Runs page's tab appears with it",
   // entitled to see the surface it produces without wondering whether they mis-clicked.
   const { registry, request } = fixture();
   const repo = gitRepo("observing");
-  const seen: number[] = [];
+  const replacement = gitRepo("observing-replacement");
+  const seen: Array<{ observing: number; keys: string[] }> = [];
   const unsubscribe = registry.subscribe((event) => {
-    if (event.type === "settings_status") seen.push(event.status.pipelines.observing);
+    if (event.type === "settings_status") {
+      seen.push({
+        observing: event.status.pipelines.observing,
+        keys: event.status.pipelines.observedRepoKeys ?? [],
+      });
+    }
   });
 
   await request("/api/pipelines/config", {
@@ -1233,10 +1240,21 @@ test("consent moves the settings tuple, so the Runs page's tab appears with it",
     method: "PUT",
     body: JSON.stringify({
       enabled: true,
-      repos: [{ provider: "ai-conductor", repoRoot: repo, enabled: false }],
+      repos: [{ provider: "ai-conductor", repoRoot: replacement, enabled: true }],
+    }),
+  });
+  await request("/api/pipelines/config", {
+    method: "PUT",
+    body: JSON.stringify({
+      enabled: true,
+      repos: [{ provider: "ai-conductor", repoRoot: replacement, enabled: false }],
     }),
   });
   unsubscribe();
 
-  assert.deepEqual(seen, [1, 0], "on and off both reach the browser at the write");
+  assert.deepEqual(seen, [
+    { observing: 1, keys: [pipelineRepoKey("ai-conductor", repo)] },
+    { observing: 1, keys: [pipelineRepoKey("ai-conductor", replacement)] },
+    { observing: 0, keys: [] },
+  ], "on, an exact-root swap, and off all reach the browser at the write");
 });

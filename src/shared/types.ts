@@ -2458,6 +2458,12 @@ export interface SettingsStatus {
      * comes to disagree with Settings.
      */
     observing: number;
+    /**
+     * Exact active provider/repository keys, appended for consumers that must invalidate a
+     * cached exact-root decision even when `observing` stays numerically unchanged.
+     * Optional so an older daemon's SettingsStatus remains readable during a rolling update.
+     */
+    observedRepoKeys?: string[];
   };
 }
 

@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { Markdown, markdownPropsEqual } from "../src/web/components/Markdown.tsx";
+import { FILES_DIAGRAM_RENDERERS } from "../src/web/components/markdownDiagramRegistry.tsx";
 import { rehypeWorkspacePaths } from "../src/web/lib/rehypeWorkspacePaths.ts";
 import { LatestFileRequests } from "../src/web/lib/sessionFiles.ts";
 import { tooltipLabels } from "./helpers/markup.ts";
@@ -277,6 +278,21 @@ test("a turn's markup survives the SSE frames arriving under it", () => {
   assert.equal(markdownPropsEqual(base, { ...base, breaks: false }), false, "breaks toggled");
   assert.equal(markdownPropsEqual(base, { ...base, filePaths: new Set(["a.ts"]) }), false, "new listing");
   assert.equal(markdownPropsEqual(base, { ...base, onLinkClick: undefined }), false, "handler removed");
+  assert.equal(
+    markdownPropsEqual(base, { ...base, diagramRenderers: FILES_DIAGRAM_RENDERERS }),
+    false,
+    "diagram capability enabled",
+  );
+  const withDiagrams = {
+    ...base,
+    diagramRenderers: FILES_DIAGRAM_RENDERERS,
+    diagramDocumentKey: "docs/one.md",
+  };
+  assert.equal(
+    markdownPropsEqual(withDiagrams, { ...withDiagrams, diagramDocumentKey: "docs/two.md" }),
+    false,
+    "new diagram document",
+  );
 });
 
 test("a replaced link handler re-renders, so no anchor is left calling the old one", () => {

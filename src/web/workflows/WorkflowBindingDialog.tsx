@@ -17,6 +17,7 @@ import { Tooltip } from "../components/Tooltip.tsx";
 import { workflowRequest } from "./workflowApi.ts";
 import {
   WorkflowEvidenceComposer,
+  type WorkflowEvidenceDraftController,
   useWorkflowEvidenceDraft,
   workflowEvidenceScopes,
   workflowEvidenceSubmission,
@@ -28,6 +29,69 @@ export interface WorkflowBindingTarget {
   workflowVersionId?: string;
   workflowId?: string;
   bindingDefaults?: WorkflowBindingDefaults;
+}
+
+interface WorkflowBindingDialogSharedProps {
+  sessions: Session[];
+  workflows: WorkflowSummary[];
+  onClose: () => void;
+  onRun: (id: string) => void;
+  foremanEnabled?: boolean;
+  promptedWrapupEnabled?: boolean;
+}
+
+/**
+ * Keep the session-owned browser draft above the transient overlay. The host stays mounted
+ * when the dialog closes, so an accidental close preserves uploads, captions, scopes, and
+ * their object URLs until the daemon accepts them or the selected session changes.
+ */
+export function WorkflowBindingDialogHost({
+  target,
+  sessions,
+  workflows,
+  onClose,
+  onRun,
+  foremanEnabled = false,
+  promptedWrapupEnabled = false,
+}: WorkflowBindingDialogSharedProps & {
+  target: WorkflowBindingTarget | null;
+}): React.JSX.Element | null {
+  const live = useMemo(
+    () => sessions.filter((session) => session.state !== "exited" && session.state !== "stopping"),
+    [sessions],
+  );
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  const selectionStillAvailable = selectedSessionId === ""
+    || live.some((session) => session.id === selectedSessionId);
+  const sessionId = target?.sessionId
+    ?? (selectionStillAvailable ? selectedSessionId! : live[0]?.id ?? "");
+  const ownerSessionId = target ? sessionId : selectionStillAvailable ? selectedSessionId : null;
+  const session = live.find((item) => item.id === ownerSessionId) ?? null;
+  const evidenceScopeSet = useMemo(() => workflowEvidenceScopes(session), [session]);
+  const evidenceDraft = useWorkflowEvidenceDraft(
+    workflowSessionEvidenceOwner(ownerSessionId),
+    evidenceScopeSet.defaultScope,
+  );
+
+  useEffect(() => {
+    if (target && selectedSessionId !== sessionId) setSelectedSessionId(sessionId);
+  }, [selectedSessionId, sessionId, target]);
+
+  if (!target) return null;
+  return (
+    <WorkflowBindingDialog
+      target={target}
+      sessions={sessions}
+      workflows={workflows}
+      sessionId={sessionId}
+      onSessionIdChange={setSelectedSessionId}
+      evidenceDraft={evidenceDraft}
+      onClose={onClose}
+      onRun={onRun}
+      foremanEnabled={foremanEnabled}
+      promptedWrapupEnabled={promptedWrapupEnabled}
+    />
+  );
 }
 
 export function workflowBindingSelection(
@@ -72,18 +136,18 @@ export function WorkflowBindingDialog({
   target,
   sessions,
   workflows,
+  sessionId,
+  onSessionIdChange,
+  evidenceDraft,
   onClose,
   onRun,
   foremanEnabled = false,
   promptedWrapupEnabled = false,
-}: {
+}: WorkflowBindingDialogSharedProps & {
   target: WorkflowBindingTarget;
-  sessions: Session[];
-  workflows: WorkflowSummary[];
-  onClose: () => void;
-  onRun: (id: string) => void;
-  foremanEnabled?: boolean;
-  promptedWrapupEnabled?: boolean;
+  sessionId: string;
+  onSessionIdChange: (sessionId: string) => void;
+  evidenceDraft: WorkflowEvidenceDraftController;
 }): React.JSX.Element {
   const live = useMemo(
     () =>
@@ -96,7 +160,6 @@ export function WorkflowBindingDialog({
     () => workflows.filter((workflow) => workflow.currentVersionId && workflow.archivedAt === null),
     [workflows],
   );
-  const [sessionId, setSessionId] = useState(target.sessionId ?? live[0]?.id ?? "");
   /**
    * Empty until the caller pins a version or this conversation's own binding is known.
    *
@@ -235,17 +298,7 @@ export function WorkflowBindingDialog({
     () => workflowBindingSelection(bindings, session, versionId),
     [bindings, session, versionId],
   );
-  const evidenceScopeSet = useMemo(
-    () => workflowEvidenceScopes(session),
-    [session],
-  );
-  // A binding does not exist yet on the initial path, but staged evidence already belongs to
-  // the live conversation. Keep this dialog session-owned throughout so a late binding-list
-  // response cannot swap owners and discard a draft the operator started while it loaded.
-  const evidenceDraft = useWorkflowEvidenceDraft(
-    workflowSessionEvidenceOwner(sessionId),
-    evidenceScopeSet.defaultScope,
-  );
+  const evidenceScopeSet = useMemo(() => workflowEvidenceScopes(session), [session]);
   const evidenceSubmission = workflowEvidenceSubmission(evidenceDraft, evidenceScopeSet.options);
   const previewIntent = useRef<{ key: string; requestId: string } | null>(null);
   /*
@@ -459,7 +512,7 @@ export function WorkflowBindingDialog({
               // A different conversation has a different answer to "what is bound here", so the
               // previous session's hand-pick stops standing in the way of hydrating this one.
               versionPickedByHand.current = false;
-              setSessionId(event.target.value);
+              onSessionIdChange(event.target.value);
             }}
           >
             <option value="">Choose a live session</option>

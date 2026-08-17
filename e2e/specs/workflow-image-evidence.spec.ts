@@ -208,6 +208,15 @@ test("dashboard evidence reaches both native providers and remains auditable per
   expect((await removedBeforeBinding).status()).toBe(200);
   await expect(bind).not.toContainText(PREBINDING_CAPTION);
   await addEvidence(bind, { name: "initial-proof.png", mimeType: "image/png", buffer: PNG }, INITIAL_CAPTION);
+  // The overlay is transient, but the draft belongs to the selected session. Closing and
+  // reopening must preserve the upload, caption, and scope until the daemon accepts it.
+  await bind.getByRole("button", { name: "Close" }).click();
+  await expect(bind).toBeHidden();
+  await dashboard.getByRole("button", { name: "Bind to a session…" }).click();
+  await expect(bind).toBeVisible();
+  await expect(bind.getByLabel(`Caption for initial-proof.png`)).toHaveValue(INITIAL_CAPTION);
+  await expect(bind.getByLabel(`Repository scope for initial-proof.png`)).toHaveValue("repo-01");
+  await bind.getByLabel("Published workflow").selectOption(published.versionId);
   await expect(bind.getByRole("button", { name: "Bind and submit" })).toBeEnabled();
 
   const accepted = dashboard.waitForResponse((response) =>

@@ -104,7 +104,7 @@ import { AppPageShell } from "./components/AppPageShell.tsx";
 import { ExecutionPage } from "./workflows/ExecutionPage.tsx";
 import { WorkflowConfirmModal } from "./workflows/WorkflowConfirmModal.tsx";
 import {
-  WorkflowBindingDialog,
+  WorkflowBindingDialogHost,
   type WorkflowBindingTarget,
 } from "./workflows/WorkflowBindingDialog.tsx";
 import { Palette } from "./components/Palette.tsx";
@@ -3037,17 +3037,15 @@ export function App(): React.JSX.Element {
                 />
               )}
 
-              {workflowBindingTarget && (
-                <WorkflowBindingDialog
-                  target={workflowBindingTarget}
-                  sessions={sessions}
-                  workflows={workflowSummaries}
-                  foremanEnabled={foreman.config?.enabled ?? false}
-                  promptedWrapupEnabled={foreman.config?.wrapupTriggers.includes("prompted") ?? false}
-                  onClose={() => setWorkflowBindingTarget(null)}
-                  onRun={openWorkflowRun}
-                />
-              )}
+              <WorkflowBindingDialogHost
+                target={workflowBindingTarget}
+                sessions={sessions}
+                workflows={workflowSummaries}
+                foremanEnabled={foreman.config?.enabled ?? false}
+                promptedWrapupEnabled={foreman.config?.wrapupTriggers.includes("prompted") ?? false}
+                onClose={() => setWorkflowBindingTarget(null)}
+                onRun={openWorkflowRun}
+              />
             </>
           )}
         />

@@ -230,6 +230,10 @@ count or a hidden driver queue. Press <kbd>↑</kbd> in an empty composer, or ch
 to remove the newest queued message atomically and put its exact text back in the box. Other
 queued messages stay in FIFO order.
 
+Every multiline text box grows as text wraps or new lines are added. It keeps up to five
+lines visible, including the end of the draft, then scrolls inside the box for longer input.
+The field's original row count remains its empty-state floor.
+
 Delivery begins only after the session positively reports idle and no question is covering
 its input. An Agent SDK driver rechecks that condition at its own acceptance boundary, so a
 message that is still shown as editable never joins a turn that is already running. Both

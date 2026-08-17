@@ -188,11 +188,12 @@ test("dashboard evidence reaches both native providers and remains auditable per
   const initialLedger = dashboard.locator("section.wf-image-evidence");
   await initialLedger.scrollIntoViewIfNeeded();
   await expect(initialLedger).toContainText(INITIAL_CAPTION);
-  const initialImage = initialLedger.getByRole("img", { name: INITIAL_CAPTION });
-  if (await initialImage.count() === 0) {
-    await initialLedger.getByRole("button", { name: "Load image" }).click();
-  }
-  await expect(initialLedger.getByRole("img", { name: INITIAL_CAPTION })).toBeVisible();
+  // Scrolling activates the lazy loader. Do not race its Load image -> Loading image state
+  // transition with a manual click: a contended CI worker can observe the first state, then
+  // wait forever for the button after the observer has already started the request.
+  await expect(initialLedger.getByRole("img", { name: INITIAL_CAPTION })).toBeVisible({
+    timeout: 40_000,
+  });
   await shoot(dashboard, "01-retained-history");
 
   // The repository stays untouched. Only the replacement image changes, and it must still

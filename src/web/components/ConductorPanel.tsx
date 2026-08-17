@@ -395,23 +395,35 @@ export function ConductorPanel({ state }: { state: ConductorState }): React.JSX.
                     </div>
                     <div className="conductor-repo-action">
                       {!repo.registered ? (
-                        <button
-                          type="button"
-                          className="btn btn-primary"
-                          disabled={!engineFound || setupBusy || !config}
-                          onClick={() => void registerAndObserve(repo.provider, repo.repoRoot)}
+                        <Tooltip
+                          label={`Register ${repo.name} with Conductor, then enable Mission Control observation`}
                         >
-                          {busy && setup?.phase === "registering" ? "Registering…" : "Register and observe"}
-                        </button>
+                          <button
+                            type="button"
+                            className="btn btn-primary"
+                            disabled={!engineFound || setupBusy || !config}
+                            onClick={() => void registerAndObserve(repo.provider, repo.repoRoot)}
+                          >
+                            {busy && setup?.phase === "registering"
+                              ? "Registering…"
+                              : "Register and observe"}
+                          </button>
+                        </Tooltip>
                       ) : !observed ? (
-                        <button
-                          type="button"
-                          className="btn btn-primary"
-                          disabled={setupBusy || !config}
-                          onClick={() => void enableObservation(repo.provider, repo.repoRoot)}
+                        <Tooltip
+                          label={`Enable Mission Control observation for registered repository ${repo.name}`}
                         >
-                          {busy && setup?.phase === "observing" ? "Enabling…" : "Enable observation"}
-                        </button>
+                          <button
+                            type="button"
+                            className="btn btn-primary"
+                            disabled={setupBusy || !config}
+                            onClick={() => void enableObservation(repo.provider, repo.repoRoot)}
+                          >
+                            {busy && setup?.phase === "observing"
+                              ? "Enabling…"
+                              : "Enable observation"}
+                          </button>
+                        </Tooltip>
                       ) : (
                         <span className="conductor-ready-mark">Ready</span>
                       )}

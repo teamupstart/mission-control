@@ -19004,8 +19004,8 @@ button.sc-row:focus-visible {
 }
 .conductor-repo-search input:focus {
   outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 2px color-mix(in oklab, var(--accent) 18%, transparent);
+  border-color: var(--working);
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--working) 18%, transparent);
 }
 .conductor-repos {
   display: flex;

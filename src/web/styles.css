@@ -1663,6 +1663,64 @@ button.wf-run-version:focus-visible {
 .wf-run-gate.is-blocked { border-left-color: var(--danger); }
 .wf-run-gate.is-clean { border-left-color: var(--idle); }
 
+/* A spent gate contains two records with different owners. The split is semantic before it is
+   decorative: the dashed historical card is the workflow's immutable stop, while the solid
+   current card is the Inspector ledger an adoption will revalidate. */
+.wf-run-gate-ledgers {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 10px;
+}
+
+.wf-run-gate-ledger {
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--working);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--panel) 76%, transparent);
+}
+
+.wf-run-gate-ledger.is-history {
+  border-left-color: var(--attention);
+  border-left-style: dashed;
+}
+
+.wf-run-gate-ledger h5 {
+  margin: 0 0 9px;
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+
+.wf-run-gate-fingerprints {
+  display: grid;
+  gap: 5px;
+  margin: 10px 0 0;
+  padding: 9px 0 0;
+  border-top: 1px solid var(--border);
+  list-style: none;
+}
+
+.wf-run-gate-fingerprints li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: baseline;
+  color: var(--muted);
+  font-size: 10.5px;
+}
+
+.wf-run-gate-fingerprints code {
+  max-width: 16ch;
+  overflow: hidden;
+  color: var(--dim);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .wf-run-findings,
 .wf-run-recovery {
   display: grid;

@@ -36,9 +36,9 @@ import {
   deliveryStateView,
   disabledStatusFor,
   endStatus,
-  gateWaitSentence,
   inheritedAttempts,
   inheritedPasses,
+  inspectorGateSentence,
   inspectorFooterStatus,
   inspectorOnlyRoundSentence,
   latestAttemptsFor,
@@ -51,6 +51,7 @@ import {
   sessionActionStatus,
   shortSha,
   stageStatus,
+  spentInspectorGateStatus,
   submissionStatus,
   verdictMeta,
   verdictOf,
@@ -235,6 +236,7 @@ export function WorkflowLadder({
   const delivery = uncertain ? deliveryStateView(uncertain.state) : null;
   const feedbackAction = copyFeedbackAction(detail, feedbackCopied);
   const gateActions = inspectorGateActions(detail);
+  const spentGateStatus = spentInspectorGateStatus(detail);
 
   return (
     <section className="wf-ladder-panel" aria-label={`${summary.workflowName} workflow stages`}>
@@ -476,12 +478,12 @@ export function WorkflowLadder({
         {inspectorPolicy && (
           <Rung
             name="GitHub Inspector"
-            status={inspectorFooterStatus(summary.gate)}
+            status={spentGateStatus ?? inspectorFooterStatus(summary.gate)}
             fixed
           >
             <p className="wf-ladder-sentence">
               {gate
-                ? gateWaitSentence(gate.state.waitReason)
+                ? inspectorGateSentence(detail)
                 : "Reviews the finished pull request once the workflow succeeds."}
             </p>
             {/* The FACTS and the buttons stay gated on a live gate, even though the rung no
@@ -497,9 +499,17 @@ export function WorkflowLadder({
                   <dd>{summary.gatePrNumber ? `#${summary.gatePrNumber}` : "not resolved"}</dd>
                 </div>
                 <div>
-                  <dt>target head</dt>
-                  <dd>{shortSha(summary.gateHeadShort) ?? "not pinned"}</dd>
+                  <dt>{spentGateStatus ? "last workflow head" : "target head"}</dt>
+                  <dd>{shortSha(spentGateStatus
+                    ? gate.state.failedHeadSha ?? gate.state.targetHeadSha
+                    : summary.gateHeadShort) ?? "not pinned"}</dd>
                 </div>
+                {spentGateStatus && (
+                  <div>
+                    <dt>current Inspector head</dt>
+                    <dd>{shortSha(gate.inspection?.observedHeadSha) ?? "not observed"}</dd>
+                  </div>
+                )}
                 <div>
                   <dt>posture</dt>
                   <dd>{summary.reviewPosture ?? "unknown"}</dd>

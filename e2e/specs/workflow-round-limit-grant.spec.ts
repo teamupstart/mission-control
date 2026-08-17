@@ -49,9 +49,10 @@ async function api<T>(
   daemon: DaemonHandle,
   path: string,
   body?: unknown,
+  method?: string,
 ): Promise<T> {
   const response = await fetch(`${daemon.baseURL}${path}`, {
-    method: body === undefined ? "GET" : "POST",
+    method: method ?? (body === undefined ? "GET" : "POST"),
     headers: { "content-type": "application/json" },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
@@ -287,6 +288,267 @@ function pinGate(daemon: DaemonHandle, runId: string, prNumber: number): void {
     );
   });
 }
+
+interface SpentInspectorFixture {
+  currentHead: string;
+  failedHead: string;
+  prKey: string;
+  prNumber: number;
+}
+
+/**
+ * Add only the GitHub facts this offline suite cannot produce to a real spent run.
+ *
+ * `seedRoundLimitedRun` owns the run, immutable budget snapshot, and actual grant route.
+ * The direct writes stand in for an adopted pull request and a completed Inspector review,
+ * both of which otherwise require GitHub and a model. Everything after them is production:
+ * detail decoration, current-condition derivation, the confirmation, the grant POST, the
+ * evaluator's immutable Inspector-only submission, and completion.
+ */
+async function seedCleanSpentInspectorGate(
+  daemon: DaemonHandle,
+  runId: string,
+): Promise<SpentInspectorFixture> {
+  const fixture = {
+    currentHead: "c".repeat(40),
+    failedHead: "f".repeat(40),
+    prKey: "owner/repo#612",
+    prNumber: 612,
+  };
+  await api(
+    daemon,
+    "/api/inspector/config",
+    { enabled: true, mode: "live", repoAllowlist: [daemon.repo] },
+    "PUT",
+  );
+  const now = Date.now();
+  withDaemonDb(daemon, (db) => {
+    const run = db.prepare(
+      "SELECT workflow_version_id FROM workflow_runs WHERE id = ?",
+    ).get(runId) as { workflow_version_id: string } | undefined;
+    if (!run) throw new Error(`missing spent run ${runId}`);
+    db.prepare(
+      "UPDATE workflow_versions SET completion_policy_json = ? WHERE id = ?",
+    ).run(
+      JSON.stringify({
+        kind: "inspector",
+        onFindings: "inspector_only",
+        missingPrAction: "offer_prepare_pr",
+      }),
+      run.workflow_version_id,
+    );
+    db.prepare(
+      `UPDATE workflow_submissions
+          SET mode = 'inspector_only', pr_head_sha = ?, status = 'completed',
+              context_json = ?, evidence_json = ?, completed_at = ?, updated_at = ?
+        WHERE id = (
+          SELECT id FROM workflow_submissions
+           WHERE run_id = ? ORDER BY round DESC, segment DESC LIMIT 1
+        )`,
+    ).run(
+      fixture.failedHead,
+      JSON.stringify({
+        bypassReason: "Published GitHub Inspector-only findings policy",
+        failedHeadSha: "e".repeat(40),
+        newHeadSha: fixture.failedHead,
+        priorFindingFingerprints: ["historical-spent-finding"],
+      }),
+      JSON.stringify({
+        prHeadSha: fixture.failedHead,
+        priorFindingFingerprints: ["historical-spent-finding"],
+      }),
+      now,
+      now,
+      runId,
+    );
+    db.prepare(
+      `UPDATE workflow_runs
+          SET inspector_pr_key = ?, inspector_head_sha = ?, gate_state_json = ?, updated_at = ?
+        WHERE id = ?`,
+    ).run(
+      fixture.prKey,
+      fixture.failedHead,
+      JSON.stringify({
+        prKey: fixture.prKey,
+        prUrl: `https://github.example/owner/repo/pull/${fixture.prNumber}`,
+        targetHeadSha: fixture.failedHead,
+        failedHeadSha: fixture.failedHead,
+        enteredAt: now - 10_000,
+        lastObservedAt: now - 8_000,
+        observedHeadSha: fixture.failedHead,
+        reviewPosture: "live",
+        waitReason: "findings",
+        findingFingerprints: ["historical-spent-finding"],
+      }),
+      now,
+      runId,
+    );
+    db.prepare(
+      `INSERT INTO inspector_prs
+         (key, url, owner, repo, number, repo_root, cwd, session_id, source, state,
+          head_sha, review_posture, round, last_reviewed_at, last_error, fail_count,
+          last_fail_kind, next_attempt_at, last_attempt_sha, merged_at, merge_block,
+          observed_head_sha, observed_state, observed_at, head_ref_name, title,
+          adopted_at, updated_at)
+       VALUES (?, ?, 'owner', 'repo', ?, ?, ?, NULL, 'hook', 'open',
+               ?, 'live', 5, ?, NULL, 0, NULL, NULL, ?, NULL, 'workflow-gate-spent',
+               ?, 'OPEN', ?, 'feat/spent-inspector-gate', 'Spent Inspector gate', ?, ?)`,
+    ).run(
+      fixture.prKey,
+      `https://github.example/owner/repo/pull/${fixture.prNumber}`,
+      fixture.prNumber,
+      daemon.repo,
+      daemon.repo,
+      fixture.currentHead,
+      now,
+      fixture.currentHead,
+      fixture.currentHead,
+      now,
+      now - 20_000,
+      now,
+    );
+    db.prepare(
+      `INSERT INTO inspector_comments
+         (id, pr_key, fingerprint, path, line, title, body, severity, round, status,
+          replies, answered_comment_id, created_at, updated_at)
+       VALUES ('historical-spent-finding', ?, 'historical-spent-finding',
+               'src/workflows.ts', 612, 'Historical finding',
+               'This finding stopped the workflow and is resolved in the current ledger.',
+               'major', 4, 'resolved', 0, NULL, ?, ?)`,
+    ).run(fixture.prKey, now - 9_000, now);
+  });
+  return fixture;
+}
+
+/** Stand in for the next normal Inspector observation after the operator grants the path. */
+function observeGrantedHead(
+  daemon: DaemonHandle,
+  runId: string,
+  currentHead: string,
+): void {
+  withDaemonDb(daemon, (db) => {
+    const row = db.prepare(
+      "SELECT gate_state_json FROM workflow_runs WHERE id = ?",
+    ).get(runId) as { gate_state_json: string } | undefined;
+    if (!row) throw new Error(`missing granted run ${runId}`);
+    const state = JSON.parse(row.gate_state_json) as Record<string, unknown>;
+    db.prepare(
+      "UPDATE workflow_runs SET gate_state_json = ?, updated_at = ? WHERE id = ?",
+    ).run(
+      JSON.stringify({
+        ...state,
+        lastObservedAt: Date.now(),
+        observedHeadSha: currentHead,
+      }),
+      Date.now(),
+      runId,
+    );
+  });
+}
+
+test("a clean current Inspector head is adopted through the audited grant evaluator", async ({
+  dashboard,
+  daemon,
+}) => {
+  test.setTimeout(180_000);
+  const runId = await seedRoundLimitedRun(dashboard, daemon);
+  const fixture = await seedCleanSpentInspectorGate(daemon, runId);
+
+  await dashboard.setViewportSize({ width: 1280, height: 1_000 });
+  await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
+  const header = dashboard.locator("header.wf-run-head");
+  const historical = dashboard.getByRole("region", { name: "Last workflow observation" });
+  const current = dashboard.getByRole("region", { name: "Current Inspector", exact: true });
+  await expect(historical).toBeVisible({ timeout: 40_000 });
+  await expect(current).toBeVisible();
+  await expect(historical).toContainText("Failed head");
+  await expect(historical).toContainText(fixture.failedHead.slice(0, 12));
+  await expect(historical).toContainText("Historical finding");
+  await expect(current).toContainText(fixture.currentHead.slice(0, 12));
+  await expect(current.locator("dt", { hasText: "Open findings" }).locator("..")).toContainText("0");
+  await expect(current.locator("dt", { hasText: "Resolved findings" }).locator("..")).toContainText("1");
+  await expect(dashboard.getByText("Clean head ready", { exact: true }).first()).toBeVisible();
+  await expect(header.getByRole("button", { name: "Recheck GitHub Inspector" })).toHaveCount(0);
+
+  const adopt = header.getByRole("button", { name: "Adopt clean Inspector head" });
+  await expect(adopt).toBeVisible();
+  await expect(adopt).toBeEnabled();
+  await dashboard.mouse.move(0, 0);
+  await shoot(header, "06-clean-head-offers-audited-adoption");
+  await shoot(dashboard.locator("section.wf-run-gate"), "07-history-and-current-ledger");
+
+  await adopt.click();
+  const confirm = dashboard.getByRole("dialog", { name: "Adopt the clean Inspector head" });
+  await expect(confirm).toBeVisible();
+  await expect(confirm).toContainText("existing audited path");
+  await expect(confirm).toContainText("browser does not pass the gate");
+  await expect(confirm).toContainText("immutable Inspector-only submission");
+  const requestPromise = dashboard.waitForRequest((request) =>
+    request.method() === "POST"
+    && request.url().endsWith(`/api/workflow-runs/${runId}/grant-rounds`));
+  await confirm.getByRole("button", { name: "Adopt clean head" }).click();
+  const request = await requestPromise;
+  expect(request.postDataJSON()).toMatchObject({ rounds: 2 });
+  await expect(confirm).toBeHidden();
+
+  await expect
+    .poll(async () => statusOf(daemon, runId), {
+      message: "the existing grant route should restore the Inspector evaluator wait",
+      timeout: 20_000,
+    })
+    .toBe("waiting_for_new_head");
+  observeGrantedHead(daemon, runId, fixture.currentHead);
+  // Once the grant has restored a live evaluator wait, the existing recheck route can wake
+  // the daemon. The spent state above did not offer or accept it; this post-grant state does.
+  await api(daemon, `/api/workflow-runs/${runId}/recheck-inspector`, {
+    requestId: "e2e-adopt-clean-head-recheck",
+  });
+  try {
+    await expect
+      .poll(async () => statusOf(daemon, runId), {
+        message: "the ordinary evaluator should complete only after exact-head proof",
+        timeout: 20_000,
+      })
+      .toBe("completed");
+  } catch (caught) {
+    const detail = await api<{
+      summary: { status: string; phase: string };
+      run: { status: string; currentPhase: string; gateState: unknown };
+      events: Array<{ kind: string; payload: unknown }>;
+    }>(daemon, `/api/workflow-runs/${runId}`);
+    // eslint-disable-next-line no-console
+    console.log(`FAILED ADOPTION DETAIL:\n${JSON.stringify({
+      summary: detail.summary,
+      run: detail.run,
+      events: detail.events.slice(-8),
+    }, null, 2)}`);
+    // eslint-disable-next-line no-console
+    console.log(`DAEMON LOG TAIL:\n${daemon.readLog().split("\n").slice(-80).join("\n")}`);
+    throw caught;
+  }
+  await expect(header).toContainText("Completed");
+  await expect(adopt).toHaveCount(0);
+
+  const audit = withDaemonDb(daemon, (db) => ({
+    submission: db.prepare(
+      `SELECT mode, pr_head_sha, context_json FROM workflow_submissions
+        WHERE run_id = ? ORDER BY round DESC, segment DESC LIMIT 1`,
+    ).get(runId) as { mode: string; pr_head_sha: string; context_json: string },
+    grants: (db.prepare(
+      "SELECT COUNT(*) AS count FROM workflow_events WHERE run_id = ? AND event_kind = 'repair_rounds_granted'",
+    ).get(runId) as { count: number }).count,
+    clean: (db.prepare(
+      "SELECT COUNT(*) AS count FROM workflow_events WHERE run_id = ? AND event_kind = 'inspector_gate_clean'",
+    ).get(runId) as { count: number }).count,
+  }));
+  expect(audit.submission.mode).toBe("inspector_only");
+  expect(audit.submission.pr_head_sha).toBe(fixture.currentHead);
+  expect(JSON.parse(audit.submission.context_json)).toMatchObject({
+    priorFindingFingerprints: ["historical-spent-finding"],
+  });
+  expect(audit.grants).toBe(1);
+  expect(audit.clean).toBe(1);
+});
 
 /**
  * The RETIRE half of the two controls that clear a spent gate.

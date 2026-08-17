@@ -73,12 +73,28 @@ export interface WorkflowEvidenceDraftController {
   staged: WorkflowStagedEvidenceList;
   stagedLoading: boolean;
   stagedError: string | null;
+  removingStaged: ReadonlySet<string>;
   refreshStaged: () => void;
   removeStaged: (clientItemId: string) => void;
   clear: () => void;
 }
 
+const EMPTY_DRAFT: WorkflowEvidenceDraft = { attachments: [], metadata: {} };
 const EMPTY_STAGED: WorkflowStagedEvidenceList = { generation: 0, images: [], artifacts: [] };
+const EMPTY_REMOVING = new Set<string>();
+
+export interface OwnedWorkflowEvidenceDraft {
+  bindingId: string | null;
+  draft: WorkflowEvidenceDraft;
+}
+
+/** A new binding sees an empty draft on its first render, before effects have a chance to run. */
+export function workflowEvidenceDraftForBinding(
+  state: OwnedWorkflowEvidenceDraft,
+  bindingId: string | null | undefined,
+): WorkflowEvidenceDraft {
+  return state.bindingId === (bindingId ?? null) ? state.draft : EMPTY_DRAFT;
+}
 
 /**
  * Own one capture draft outside any transient dialog. Closing a confirmation therefore keeps
@@ -88,98 +104,177 @@ export function useWorkflowEvidenceDraft(
   bindingId: string | null | undefined,
   defaultScope: WorkflowEvidenceRepositoryScope,
 ): WorkflowEvidenceDraftController {
-  const [draft, setDraft] = useState<WorkflowEvidenceDraft>({ attachments: [], metadata: {} });
-  const [staged, setStaged] = useState<WorkflowStagedEvidenceList>(EMPTY_STAGED);
-  const [stagedLoading, setStagedLoading] = useState(Boolean(bindingId));
-  const [stagedError, setStagedError] = useState<string | null>(null);
+  const owner = bindingId ?? null;
+  const [draftState, setDraftState] = useState<OwnedWorkflowEvidenceDraft>(() => ({
+    bindingId: owner,
+    draft: EMPTY_DRAFT,
+  }));
+  const draft = workflowEvidenceDraftForBinding(draftState, owner);
+  const [stagedState, setStagedState] = useState<{
+    bindingId: string | null;
+    staged: WorkflowStagedEvidenceList;
+    loading: boolean;
+    error: string | null;
+  }>(() => ({
+    bindingId: owner,
+    staged: EMPTY_STAGED,
+    loading: Boolean(owner),
+    error: null,
+  }));
+  const currentStaged = stagedState.bindingId === owner
+    ? stagedState
+    : { bindingId: owner, staged: EMPTY_STAGED, loading: Boolean(owner), error: null };
+  const [removalState, setRemovalState] = useState<{
+    bindingId: string | null;
+    ids: Set<string>;
+  }>(() => ({ bindingId: owner, ids: new Set() }));
+  const removingStaged = removalState.bindingId === owner
+    ? removalState.ids
+    : EMPTY_REMOVING;
   const generation = useRef(0);
-  const attachmentsRef = useRef(draft.attachments);
-  attachmentsRef.current = draft.attachments;
+  const bindingRef = useRef(owner);
+  bindingRef.current = owner;
+  const draftStateRef = useRef(draftState);
+  draftStateRef.current = draftState;
 
   const loadStaged = useCallback(() => {
     const mine = ++generation.current;
-    if (!bindingId) {
-      setStaged(EMPTY_STAGED);
-      setStagedLoading(false);
-      setStagedError(null);
+    if (!owner) {
+      setStagedState({ bindingId: owner, staged: EMPTY_STAGED, loading: false, error: null });
       return;
     }
-    setStagedLoading(true);
-    setStagedError(null);
+    setStagedState((current) => ({
+      bindingId: owner,
+      staged: current.bindingId === owner ? current.staged : EMPTY_STAGED,
+      loading: true,
+      error: null,
+    }));
     void workflowRequest<WorkflowStagedEvidenceList>(
-      `/api/workflow-bindings/${encodeURIComponent(bindingId)}/evidence`,
+      `/api/workflow-bindings/${encodeURIComponent(owner)}/evidence`,
     ).then(
       (next) => {
-        if (generation.current !== mine) return;
-        setStaged(next);
-        setStagedLoading(false);
+        if (generation.current !== mine || bindingRef.current !== owner) return;
+        setStagedState({ bindingId: owner, staged: next, loading: false, error: null });
       },
       (caught) => {
-        if (generation.current !== mine) return;
-        setStagedError(caught instanceof Error ? caught.message : "Could not load staged evidence");
-        setStagedLoading(false);
+        if (generation.current !== mine || bindingRef.current !== owner) return;
+        setStagedState({
+          bindingId: owner,
+          staged: EMPTY_STAGED,
+          loading: false,
+          error: caught instanceof Error ? caught.message : "Could not load staged evidence",
+        });
       },
     );
-  }, [bindingId]);
+  }, [owner]);
 
   useEffect(() => {
     loadStaged();
     return () => { generation.current++; };
   }, [loadStaged]);
-  useEffect(() => () => revokeAttachments(attachmentsRef.current), []);
+  useEffect(() => {
+    setDraftState((current) => {
+      if (current.bindingId === owner) return current;
+      revokeAttachments(current.draft.attachments);
+      return { bindingId: owner, draft: EMPTY_DRAFT };
+    });
+    setRemovalState((current) => current.bindingId === owner
+      ? current
+      : { bindingId: owner, ids: new Set() });
+  }, [owner]);
+  useEffect(() => () => revokeAttachments(draftStateRef.current.draft.attachments), []);
 
   const setAttachments = useCallback((attachments: PendingAttachment[]) => {
-    setDraft((current) => {
+    setDraftState((current) => {
+      const currentDraft = workflowEvidenceDraftForBinding(current, owner);
+      if (current.bindingId !== owner) revokeAttachments(current.draft.attachments);
       const ids = new Set(attachments.map((item) => item.id));
       const metadata = Object.fromEntries(
-        Object.entries(current.metadata).filter(([id]) => ids.has(id)),
+        Object.entries(currentDraft.metadata).filter(([id]) => ids.has(id)),
       );
       for (const attachment of attachments) {
         metadata[attachment.id] ??= { caption: "", repositoryScope: defaultScope };
       }
-      return { attachments, metadata };
+      return { bindingId: owner, draft: { attachments, metadata } };
     });
-  }, [defaultScope]);
+  }, [defaultScope, owner]);
 
   const update = useCallback((
     id: string,
     patch: Partial<WorkflowEvidenceDraft["metadata"][string]>,
   ) => {
-    setDraft((current) => ({
-      ...current,
-      metadata: {
-        ...current.metadata,
-        [id]: { ...current.metadata[id]!, ...patch },
-      },
-    }));
-  }, []);
+    setDraftState((current) => current.bindingId !== owner
+      ? current
+      : ({
+          ...current,
+          draft: {
+            ...current.draft,
+            metadata: {
+              ...current.draft.metadata,
+              [id]: { ...current.draft.metadata[id]!, ...patch },
+            },
+          },
+        }));
+  }, [owner]);
 
   const clear = useCallback(() => {
-    setDraft((current) => {
-      revokeAttachments(current.attachments);
-      return { attachments: [], metadata: {} };
+    setDraftState((current) => {
+      revokeAttachments(current.draft.attachments);
+      return { bindingId: owner, draft: EMPTY_DRAFT };
     });
     loadStaged();
-  }, [loadStaged]);
+  }, [loadStaged, owner]);
 
   const removeStaged = useCallback((clientItemId: string) => {
-    if (!bindingId) return;
-    setStagedError(null);
-    void workflowRequest(
-      `/api/workflow-bindings/${encodeURIComponent(bindingId)}/evidence/${encodeURIComponent(clientItemId)}`,
-      { method: "DELETE" },
-    ).then(loadStaged, (caught) => {
-      setStagedError(caught instanceof Error ? caught.message : "Could not remove staged evidence");
+    if (!owner || removingStaged.has(clientItemId)) return;
+    setStagedState((current) => ({
+      bindingId: owner,
+      staged: current.bindingId === owner ? current.staged : EMPTY_STAGED,
+      loading: current.bindingId === owner ? current.loading : false,
+      error: null,
+    }));
+    setRemovalState((current) => {
+      const ids = current.bindingId === owner ? new Set(current.ids) : new Set<string>();
+      ids.add(clientItemId);
+      return { bindingId: owner, ids };
     });
-  }, [bindingId, loadStaged]);
+    void workflowRequest(
+      `/api/workflow-bindings/${encodeURIComponent(owner)}/evidence/${encodeURIComponent(clientItemId)}`,
+      { method: "DELETE" },
+    ).then(() => {
+      if (bindingRef.current !== owner) return;
+      loadStaged();
+      setRemovalState((current) => {
+        if (current.bindingId !== owner) return current;
+        const ids = new Set(current.ids);
+        ids.delete(clientItemId);
+        return { ...current, ids };
+      });
+    }, (caught) => {
+      if (bindingRef.current !== owner) return;
+      setStagedState((current) => ({
+        bindingId: owner,
+        staged: current.bindingId === owner ? current.staged : EMPTY_STAGED,
+        loading: false,
+        error: caught instanceof Error ? caught.message : "Could not remove staged evidence",
+      }));
+      setRemovalState((current) => {
+        if (current.bindingId !== owner) return current;
+        const ids = new Set(current.ids);
+        ids.delete(clientItemId);
+        return { ...current, ids };
+      });
+    });
+  }, [loadStaged, owner, removingStaged]);
 
   return {
     draft,
     setAttachments,
     update,
-    staged,
-    stagedLoading,
-    stagedError,
+    staged: currentStaged.staged,
+    stagedLoading: currentStaged.loading || removingStaged.size > 0,
+    stagedError: currentStaged.error,
+    removingStaged,
     refreshStaged: loadStaged,
     removeStaged,
     clear,
@@ -392,26 +487,30 @@ export function WorkflowEvidenceComposer({
               </Tooltip>
             </p>
           )}
-          {controller.staged.images.map((item) => (
-            <div key={item.clientItemId} className="workflow-evidence-registered-item">
-              <span className="workflow-evidence-source">{item.sourceKind}</span>
-              <div>
-                <strong>{item.displayName}</strong>
-                <p>{item.caption}</p>
-                <small>{item.repositoryScope} · {item.mimeType} · {formatBytes(item.bytes)}</small>
+          {controller.staged.images.map((item) => {
+            const removing = controller.removingStaged.has(item.clientItemId);
+            return (
+              <div key={item.clientItemId} className="workflow-evidence-registered-item">
+                <span className="workflow-evidence-source">{item.sourceKind}</span>
+                <div>
+                  <strong>{item.displayName}</strong>
+                  <p>{item.caption}</p>
+                  <small>{item.repositoryScope} · {item.mimeType} · {formatBytes(item.bytes)}</small>
+                </div>
+                <Tooltip label={`Remove ${item.displayName} from the next workflow submission`}>
+                  <button
+                    type="button"
+                    className="icon-btn"
+                    aria-label={`Remove registered image ${item.displayName}`}
+                    disabled={disabled || removing}
+                    onClick={() => controller.removeStaged(item.clientItemId)}
+                  >
+                    {removing ? "…" : "✕"}
+                  </button>
+                </Tooltip>
               </div>
-              <Tooltip label={`Remove ${item.displayName} from the next workflow submission`}>
-                <button
-                  type="button"
-                  className="icon-btn"
-                  aria-label={`Remove registered image ${item.displayName}`}
-                  onClick={() => controller.removeStaged(item.clientItemId)}
-                >
-                  ✕
-                </button>
-              </Tooltip>
-            </div>
-          ))}
+            );
+          })}
           {controller.staged.artifacts.length > 0 && (
             <p className="workflow-evidence-artifacts">
               {controller.staged.artifacts.length} registered text artifact{controller.staged.artifacts.length === 1 ? "" : "s"} will be frozen with this submission.

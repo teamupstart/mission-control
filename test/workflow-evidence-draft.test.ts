@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { WORKFLOW_IMAGE_LIMITS } from "../src/shared/workflow.ts";
 import {
+  workflowEvidenceDraftForBinding,
   workflowEvidenceSubmission,
   type WorkflowEvidenceDraft,
 } from "../src/web/workflows/WorkflowEvidenceComposer.tsx";
@@ -50,6 +51,30 @@ test("ready evidence keeps stable client ids across a request retry", () => {
   assert.deepEqual(retry.locators, first.locators);
   assert.equal(first.locators[0]?.clientItemId, "stable");
   assert.doesNotMatch(JSON.stringify(first.locators), /private\/uploads/);
+});
+
+test("a draft is visible only to the binding that owns it", () => {
+  const draft: WorkflowEvidenceDraft = {
+    attachments: [attachment("binding-one")],
+    metadata: {
+      "binding-one": { caption: "Only binding one", repositoryScope: "repo-01" },
+    },
+  };
+  const owned = { bindingId: "binding-one", draft };
+  assert.equal(workflowEvidenceDraftForBinding(owned, "binding-one"), draft);
+  assert.deepEqual(workflowEvidenceDraftForBinding(owned, "binding-two"), {
+    attachments: [],
+    metadata: {},
+  });
+});
+
+test("a registered-evidence mutation blocks submission until the daemon settles it", () => {
+  const result = workflowEvidenceSubmission(controller(
+    { attachments: [], metadata: {} },
+    { stagedLoading: true },
+  ), scopes);
+  assert.equal(result.ready, false);
+  assert.match(result.errors.join(" "), /Waiting for registered evidence to load/);
 });
 
 test("pending, failed, missing-caption, and invalid-scope drafts cannot capture", () => {

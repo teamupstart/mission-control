@@ -29,6 +29,7 @@ const PNG = Buffer.from(
 const GIF = Buffer.from("R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==", "base64");
 const INITIAL_CAPTION = "Initial dashboard evidence reaches both native provider transports";
 const REPLACEMENT_CAPTION = "Replacement visual evidence without a repository change";
+const SWITCHED_BINDING_CAPTION = "This unsent draft belongs only to the first binding";
 const EVIDENCE = artifactsDir("workflow-image-evidence");
 
 async function api<T>(
@@ -210,6 +211,7 @@ test("dashboard evidence reaches both native providers and remains auditable per
   ).submissions.length, { message: "replacement pixels should create a fresh round", timeout: 120_000 })
     .toBe(2);
   let detail!: {
+    binding: { id: string };
     submissions: Array<{ id: string; context: { evidence?: { headSha?: string } } }>;
     evidenceImages: Array<{ submissionId: string; images: Array<{ id: string; sha256: string }> }>;
   };
@@ -237,6 +239,28 @@ test("dashboard evidence reaches both native providers and remains auditable per
   const staged = dashboard.getByRole("dialog", { name: "Preview fresh evidence" });
   await expect(staged.getByText("Registered by the session")).toBeVisible();
   await expect(staged).toContainText(REPLACEMENT_CAPTION);
+  let releaseDelete!: () => void;
+  let observeDelete!: () => void;
+  const deleteHeld = new Promise<void>((resolve) => { releaseDelete = resolve; });
+  const deleteStarted = new Promise<void>((resolve) => { observeDelete = resolve; });
+  const deletePattern = "**/api/workflow-bindings/*/evidence/*";
+  await dashboard.route(deletePattern, async (route) => {
+    if (route.request().method() !== "DELETE") {
+      await route.continue();
+      return;
+    }
+    observeDelete();
+    await deleteHeld;
+    await route.continue();
+  });
+  const removeRegistered = staged.getByRole("button", { name: /^Remove registered image / });
+  await expect(removeRegistered).toBeVisible();
+  await removeRegistered.click();
+  await deleteStarted;
+  await expect(staged.getByRole("button", { name: "Preview fresh evidence" })).toBeDisabled();
+  releaseDelete();
+  await expect(removeRegistered).toHaveCount(0);
+  await dashboard.unroute(deletePattern);
   await staged.getByRole("button", { name: "Cancel" }).click();
 
   // A retention fixture changes only availability. The body route must answer 410 and the
@@ -256,4 +280,39 @@ test("dashboard evidence reaches both native providers and remains auditable per
   await expect(pruned.getByRole("button", { name: "Use in next review" })).toHaveCount(0);
   await expect(pruned).toContainText(newestImage.sha256);
   await shoot(dashboard, "02-pruned-history");
+
+  // A browser draft survives closing this binding's modal, but cannot cross the mounted Runs
+  // page into another binding. Change only the hash so this exercises the live component rather
+  // than getting a free reset from a page reload.
+  await dashboard.locator("header.wf-run-head").getByRole("button", { name: "Preview fresh evidence" }).click();
+  const firstBindingDraft = dashboard.getByRole("dialog", { name: "Preview fresh evidence" });
+  await addEvidence(
+    firstBindingDraft,
+    { name: "binding-one-only.png", mimeType: "image/png", buffer: PNG },
+    SWITCHED_BINDING_CAPTION,
+  );
+  await firstBindingDraft.getByRole("button", { name: "Cancel" }).click();
+
+  await api(daemon, `/api/workflow-bindings/${detail.binding.id}`, {}, "DELETE");
+  const secondBinding = await api<{ id: string }>(daemon, "/api/workflow-bindings", {
+    workflowVersionId: published.versionId,
+    sessionId,
+    deliveryMode: "preview",
+  });
+  const second = await api<{ run: { id: string } }>(
+    daemon,
+    `/api/workflow-bindings/${secondBinding.id}/submit`,
+    { requestId: "e2e-image-evidence-second-binding" },
+  );
+  await expect.poll(async () => (
+    await api<{ run: { status: string } }>(daemon, `/api/workflow-runs/${second.run.id}`)
+  ).run.status, { message: "the second binding should reach its repair boundary", timeout: 120_000 })
+    .toBe("waiting_for_session");
+  await dashboard.evaluate((runId) => { window.location.hash = `#/runs/${runId}`; }, second.run.id);
+  await expect(dashboard).toHaveURL(new RegExp(`#/runs/${second.run.id}$`));
+  await dashboard.locator("header.wf-run-head").getByRole("button", { name: "Preview fresh evidence" }).click();
+  const secondBindingDraft = dashboard.getByRole("dialog", { name: "Preview fresh evidence" });
+  await expect(secondBindingDraft.getByLabel("Caption for binding-one-only.png")).toHaveCount(0);
+  await expect(secondBindingDraft).not.toContainText(SWITCHED_BINDING_CAPTION);
+  await secondBindingDraft.getByRole("button", { name: "Cancel" }).click();
 });

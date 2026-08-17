@@ -9,7 +9,11 @@ import type {
   WorkflowJson,
 } from "../src/shared/workflow.ts";
 import { WORKFLOW_LIMITS } from "../src/shared/workflow.ts";
-import { renderPrHandoff, renderWorkflowFeedback } from "../src/server/workflows/feedback.ts";
+import {
+  renderPrHandoff,
+  renderUnchangedEvidenceNudge,
+  renderWorkflowFeedback,
+} from "../src/server/workflows/feedback.ts";
 
 const context: WorkflowContextSnapshot = {
   primaryGoal: { rawPrompt: "Keep the original intent", refined: "Do not use me", sourceNoteKey: "note" },
@@ -148,6 +152,10 @@ test("repair feedback is deterministic, graph ordered, intent preserving, and co
   assert.match(first.payload, /Keep the original intent/);
   assert.doesNotMatch(first.payload, /Do not use me/);
   assert.doesNotMatch(first.payload, /[\u0000\u001b]/);
+  assert.match(first.payload, /already authorized you to commit the scoped work/);
+  assert.match(first.payload, /already authorized `submit_workflow_evidence`/);
+  assert.match(first.payload, /do not ask the human to resubmit the workflow/);
+  assert.match(first.payload, /does not authorize merge/);
   assert.equal(first.payloadSha256.length, 64);
 });
 
@@ -168,8 +176,28 @@ test("repair feedback caps fields and total bytes with a stable truncation notic
   });
   assert.ok(Buffer.byteLength(rendered.payload) <= WORKFLOW_LIMITS.feedbackPayloadBytes);
   assert.match(rendered.payload, /Preserve the user's explicit intent\./);
+  assert.match(rendered.payload, /already authorized you to commit the scoped work/);
+  assert.match(rendered.payload, /do not ask the human to resubmit the workflow/);
   assert.match(rendered.payload, /\[Workflow repair packet truncated deterministically\.\]$/);
   assert.equal(rendered.truncated, true);
+});
+
+test("unchanged-evidence nudges retain scoped authorization and engine-owned resubmission", () => {
+  const rendered = renderUnchangedEvidenceNudge({
+    workflowName: "No-Mistakes Review",
+    workflowVersion: 10,
+    runId: "run-1",
+    round: 2,
+    originalGoal: "Ship the safe change",
+    evidenceFingerprint: "1234567890abcdef",
+    priorPacket: "Fix the failing assertion.",
+    nudge: 1,
+    nudgeLimit: 2,
+    workflowEvidence: true,
+  });
+  assert.match(rendered.payload, /already authorized `submit_workflow_evidence`/);
+  assert.match(rendered.payload, /do not ask the human to resubmit the workflow/);
+  assert.match(rendered.payload, /Exactly two responses are acceptable/);
 });
 
 // ---- the PR preparation handoff ----
@@ -186,13 +214,17 @@ test("a handoff for one repository of a multi-repo task names it and scopes the 
     originalGoal: "Rename the shared field",
     skillCommand: "/pull-request",
     repoRoot: "/work/beta",
+    workflowEvidence: true,
   });
   assert.match(rendered.payload, /Repository: \/work\/beta/);
   assert.match(rendered.payload, /the repository named above/);
   assert.match(rendered.payload, /Leave the task's other repositories alone/);
+  assert.match(rendered.payload, /already authorized you to commit the scoped work/);
+  assert.match(rendered.payload, /does not authorize merge/);
+  assert.match(rendered.payload, /do not ask the human to resubmit the workflow/);
 });
 
-test("a handoff on the session's own checkout names no repository and asks as it always did", () => {
+test("a handoff on the session's own checkout names no repository and keeps its scoped ask", () => {
   const rendered = renderPrHandoff({
     workflowName: "No-Mistakes Review",
     workflowVersion: 8,
@@ -200,11 +232,13 @@ test("a handoff on the session's own checkout names no repository and asks as it
     originalGoal: "Rename the shared field",
     skillCommand: "/pull-request",
     repoRoot: null,
+    workflowEvidence: false,
   });
   assert.doesNotMatch(rendered.payload, /Repository:/);
-  assert.doesNotMatch(rendered.payload, /repositor/);
   assert.match(
     rendered.payload,
     /Use the invoked pull-request skill to commit all reviewed work, push it, and open the pull request/,
   );
+  assert.doesNotMatch(rendered.payload, /submit_workflow_evidence/);
+  assert.match(rendered.payload, /do not ask the human to resubmit the workflow/);
 });

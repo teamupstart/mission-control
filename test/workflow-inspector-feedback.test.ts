@@ -29,7 +29,11 @@ function finding(
   };
 }
 
-function render(findings: InspectorComment[], policy: "restart_workflow" | "inspector_only" = "restart_workflow") {
+function render(
+  findings: InspectorComment[],
+  policy: "restart_workflow" | "inspector_only" = "restart_workflow",
+  workflowEvidence = true,
+) {
   return renderInspectorFeedback({
     workflowName: "Release review",
     workflowVersion: 4,
@@ -42,6 +46,7 @@ function render(findings: InspectorComment[], policy: "restart_workflow" | "insp
     reviewPosture: "live",
     policy,
     findings,
+    workflowEvidence,
   });
 }
 
@@ -64,6 +69,9 @@ test("Inspector feedback is severity ordered, fingerprint deduplicated, and stab
   assert.equal(first.payload.match(/Fingerprint: major/g)?.length, 1);
   assert.match(first.payload, /Original user goal:\nShip the safe change/);
   assert.match(first.payload, /Pinned head: a{40}/);
+  assert.match(first.payload, /already authorized you to commit the scoped work/);
+  assert.match(first.payload, /already authorized `submit_workflow_evidence`/);
+  assert.match(first.payload, /do not ask the human to resubmit the workflow/);
 });
 
 test("scrubbed detail and legacy fallback are frozen with published policy wording", () => {
@@ -86,5 +94,12 @@ test("field and packet caps retain a deterministic hash and truncation notice", 
   assert.equal(first.payloadSha256, second.payloadSha256);
   assert.equal(first.payload, second.payload);
   assert.match(first.payload, /Workflow repair packet truncated deterministically/);
+  assert.match(first.payload, /do not ask the human to resubmit the workflow/);
   assert.ok(Buffer.byteLength(first.payload, "utf8") <= 64 * 1024);
+});
+
+test("Inspector feedback omits evidence-tool authority when the pinned graph has no Persona", () => {
+  const packet = render([finding("major", "major")], "restart_workflow", false);
+  assert.doesNotMatch(packet.payload, /submit_workflow_evidence/);
+  assert.match(packet.payload, /do not ask the human to resubmit the workflow/);
 });

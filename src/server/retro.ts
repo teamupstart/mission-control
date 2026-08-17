@@ -134,6 +134,7 @@ export async function runRetro(session: Session, deps: RetroDeps): Promise<Retro
     actionName: action.name,
     promptMarkdown: action.promptMarkdown,
     skillCommand: action.requiredSkillId ? skill.command : null,
+    workflowEvidence: false,
   });
   // Refused whole, never sent as a prefix - the same rule the workflow path applies, and for
   // the same reason. A shipped action cannot reach this, so it is a build-integrity failure.

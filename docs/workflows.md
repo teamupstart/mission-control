@@ -645,6 +645,12 @@ images, and files that are not gitignored. Browser submission continues to accep
 through an opaque upload id; it never accepts the absolute upload path returned for chat
 compatibility and does not upload text artifacts.
 
+The delivered prompt states that this exact scoped registration is already authorized. The
+agent calls the tool directly without asking the human to approve the file, payload, repository
+scope, or Mission Control destination. `repositoryScope: "all"` is authorized only when the task
+received that scope, and every daemon-side validation above still applies. Registration remains
+optional and never replaces code or test evidence.
+
 Submission creation reserves the applicable staged generation. A multi-repository completion
 copies `all` evidence into every sibling submission and keeps slot-scoped evidence in that
 repository's run. Inside the existing conversation capture lock, each reserved source is
@@ -1097,6 +1103,11 @@ itself - fresh evidence, same graph, the round counter and `Max repair rounds` b
 had. Staging a new gitignored screenshot or text artifact therefore re-arms an evidence-only
 repair without requiring an evidence commit.
 
+Every newly rendered workflow continuation also tells the agent to finish the repair, register
+useful new evidence when eligible, and stop. The daemon owns automatic resumption and the Runs
+UI owns manual resubmission, so the agent does not turn resubmission into another permission
+question for the human.
+
 Four things it deliberately does not do:
 
 - **It does not ask the model to signal anything.** The instruction that used to end every
@@ -1211,6 +1222,10 @@ both, and why revoking it stops delivery and checks together.
 When a Persona failure returns to Session, the daemon renders one bounded deterministic repair
 packet in published graph order. The packet preserves the original raw goal, identifies the
 immutable workflow version and evidence fingerprint, and includes only failed Persona findings.
+Its non-truncatable suffix carries Mission Control's scoped execution authorization, including
+the no-resubmission instruction. The same runtime policy wraps SessionAction prompts before the
+immutable authored Markdown, which remains byte-identical and last. Prepared delivery rows keep
+their stored payload; only newly rendered packets receive the policy.
 Preview stores the exact packet and hash without touching the terminal. Live records
 **Prepared**, claims **Sending**, and uses the same pane-locked prompt injection as dispatch and
 the work queue. Confirmed delivery is credited to `workflow` in the transcript. A positive
@@ -1327,6 +1342,9 @@ itself never pushes or opens a pull request. When the run reviews an attached re
 prompt names it and asks for that repository's pull request alone, because a session running
 several reviews receives them all in one pane. The offered action prepares the packet under Preview
 or sends it under Live delivery. Automatic preparation is scheduled only for a Live binding.
+The prompt makes explicit that this requested, repository-scoped commit, push, and pull request
+creation or update is already authorized. It does not authorize merge, a sibling repository, or
+another external write, and it does not change sandbox or Mission MCP enforcement.
 When that handoff opens an already-reviewed clean commit, its durable adoption record pins the PR.
 The record must belong to the bound session, match its exact known repository root, and have been
 adopted after gate entry, so an older PR or one from a nested checkout is never claimed.

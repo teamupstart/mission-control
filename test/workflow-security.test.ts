@@ -157,6 +157,7 @@ test("Inspector packets strip terminal controls and hash the exact persisted byt
     inspectorRound: 1,
     reviewPosture: null,
     policy: "restart_workflow",
+    workflowEvidence: true,
     findings: [{
       id: "finding",
       prKey: "example/repo#1",

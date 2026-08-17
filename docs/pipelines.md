@@ -599,11 +599,20 @@ launcher, with `CLAUDECODE` removed. It never uses the Agent SDK, provisions no 
 worktree, and leaves conductor in charge of agent, model, effort, and stdin. The task is a
 manual dispatch surface only; backlog autopilot does not schedule it.
 
-When the first nested agent appears inside that terminal home's projected worktree, the daemon
-persists the provider, repository, and slug on the task. It does not bind the task to the child
-session because one conductor run may launch several agents. A processed projection settles
-the durable task, records the projected pull request as its outcome when present, and keeps the
-terminal home attached for standard cleanup. The same link is restored after a daemon restart.
+Before the terminal launcher runs, the provider derives the same lowercase, ASCII-alphanumeric,
+hyphenated, 50-character idea slug Engineer uses for its plan and worktree. Mission Control
+refuses an empty result, an unreadable provider run set, an existing worktree with that slug, or
+another live task already owning the same provider, repository, and slug. It then persists the
+complete run link before starting the terminal, closing the interval in which two Mission Control
+dispatches could claim the same future run.
+
+The daemon does not bind the task to a nested child session because one conductor run may launch
+several agents. A processed projection for the exact prebound link settles the durable task,
+records the projected pull request as its outcome when present, and keeps the terminal home
+attached for standard cleanup. The same link is restored after a daemon restart. A task saved by
+an older build with no link still binds through its terminal home when a child appears inside a
+projected worktree. That legacy join may fill a null link or confirm a matching one, but it never
+rewrites a different prebound identity.
 
 When a projected run first reports `pr_url`, Mission Control adopts that pull request into the
 existing GitHub Inspector ledger with source `pipeline`, provided its owner and repository

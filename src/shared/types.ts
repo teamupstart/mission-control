@@ -1742,11 +1742,12 @@ export interface Task {
    */
   source: TaskSourceRef | null;
   /**
-   * The provider run this pipeline dispatch started, once a child agent proves the join.
+   * The provider run this pipeline dispatch owns.
    *
-   * Kept separate from `sessionId`: conductor may launch several sequential agents, so no
-   * one child session owns the task lifecycle. The daemon persists this key and settles the
-   * task from the provider projection instead.
+   * New dispatches persist it before their host starts. Older terminal tasks may still learn
+   * it when a child agent proves the home/worktree join. Kept separate from `sessionId`:
+   * conductor may launch several sequential agents, so no one child session owns the task
+   * lifecycle. The daemon settles the task from the provider projection instead.
    */
   pipelineRun: PipelineRunLink | null;
   /** Absolute path of the source repo the worktree is cut from. */

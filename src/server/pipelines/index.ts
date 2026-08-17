@@ -15,6 +15,7 @@ import {
   type PipelineRepoStatus,
   type PipelineRun,
   type PipelineRunDetail,
+  type PipelineRunLink,
 } from "@shared/pipeline.ts";
 
 import { envVar } from "../config.ts";
@@ -213,7 +214,10 @@ export function pipelinesObserving(): number {
 export async function pipelineTaskLaunch(
   repoRoot: string,
   intent: string,
-): Promise<{ ok: true; argv: string[]; cwd: string } | { ok: false; error: string }> {
+): Promise<
+  | { ok: true; argv: string[]; cwd: string; pipelineRun: PipelineRunLink }
+  | { ok: false; error: string }
+> {
   const matches = activePipelineRepos(getPipelinesConfig()).filter(
     (repo) => repo.repoRoot === repoRoot,
   );
@@ -224,8 +228,27 @@ export async function pipelineTaskLaunch(
     return { ok: false, error: "more than one pipeline provider is enabled for this repository" };
   }
   const repo = matches[0]!;
-  const launch = await PIPELINE_PROVIDERS[repo.provider].taskArgv(intent, repoRoot);
-  return "refused" in launch ? { ok: false, error: launch.refused } : { ok: true, ...launch };
+  const provider = PIPELINE_PROVIDERS[repo.provider];
+  const identity = provider.taskIdentity(intent, repoRoot);
+  if ("refused" in identity) return { ok: false, error: identity.refused };
+
+  // Fail closed before resolving or launching the provider binary. Null means the provider
+  // could not read its key space, not that the repository has no active runs.
+  const known = provider.knownRunSlugs(repoRoot);
+  if (known === null) {
+    return { ok: false, error: "could not read current pipeline runs for this repository" };
+  }
+  if (known.has(identity.slug)) {
+    return {
+      ok: false,
+      error: `pipeline run "${identity.slug}" already exists in this repository`,
+    };
+  }
+
+  const launch = await provider.taskArgv(intent, repoRoot);
+  return "refused" in launch
+    ? { ok: false, error: launch.refused }
+    : { ok: true, ...launch, pipelineRun: identity };
 }
 
 /**

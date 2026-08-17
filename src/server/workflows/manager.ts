@@ -183,6 +183,11 @@ export type WorkflowMutation =
   | { ok: true; workflow: WorkflowDefinition; summary: WorkflowSummary }
   | Exclude<WorkflowStoreWrite, { ok: true }>;
 
+/** Evidence eligibility is a fact of the immutable version already in hand. */
+function versionSupportsWorkflowEvidence(version: WorkflowVersion): boolean {
+  return version.graph.nodes.some((node) => node.kind === "persona");
+}
+
 /** Success carries only the id: there is no row left to summarize. */
 export type WorkflowDeleteMutation =
   | { ok: true; id: string }
@@ -1237,7 +1242,7 @@ export class WorkflowManager {
     const version = workflow?.currentVersionId
       ? this.store.getWorkflowVersionById(workflow.currentVersionId)
       : null;
-    return Boolean(version?.graph.nodes.some((node) => node.kind === "persona"));
+    return Boolean(version && versionSupportsWorkflowEvidence(version));
   }
 
   /** Session-attributed intake used by the bundled Mission MCP tool. */
@@ -2487,6 +2492,7 @@ export class WorkflowManager {
       originalGoal: this.originalGoal(run.id),
       skillCommand: skill.command,
       repoRoot: binding.repoRoot || null,
+      workflowEvidence: versionSupportsWorkflowEvidence(version),
     });
     const prepared = this.store.prepareDelivery({
       id: randomUUID(),
@@ -3945,6 +3951,7 @@ export class WorkflowManager {
       reviewPosture: nextState.reviewPosture,
       policy: version.completionPolicy.onFindings,
       findings,
+      workflowEvidence: versionSupportsWorkflowEvidence(version),
     });
     const deliveryId = randomUUID();
     let prepared: ReturnType<WorkflowStore["transitionInspectorFindingsWithDelivery"]>;
@@ -4242,6 +4249,7 @@ export class WorkflowManager {
       priorPacket: prior?.payload ?? null,
       nudge,
       nudgeLimit: UNCHANGED_EVIDENCE_NUDGE_LIMIT,
+      workflowEvidence: versionSupportsWorkflowEvidence(version),
     });
     const prepared = this.store.prepareDelivery({
       id: randomUUID(),
@@ -4465,6 +4473,7 @@ export class WorkflowManager {
       actionName: snapshot.name,
       promptMarkdown: snapshot.promptMarkdown,
       skillCommand,
+      workflowEvidence: versionSupportsWorkflowEvidence(version),
     });
     // An instruction that cannot be sent WHOLE is not sent at all. `sessionActionPromptBytes`
     // is derived from the packet budget, so an action authored through this build cannot

@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Conductor SDK runtime phases</title>
+  <style>
+    :root{color-scheme:light dark;--bg:#eef2ed;--paper:#fffdf7;--ink:#17211d;--muted:#637068;--line:#d6ddd5;--green:#0b725c;--orange:#b95a32;--soft:#e3f1eb;--warm:#fff0d8;--code:#edf1eb;--shadow:0 18px 48px rgba(31,48,40,.12)}*{box-sizing:border-box}body{margin:0;background:linear-gradient(120deg,#e9f1ec,#f8f0e6);color:var(--ink);font:16px/1.55 ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{width:min(1140px,calc(100% - 32px));margin:32px auto 72px;background:var(--paper);border:1px solid var(--line);box-shadow:var(--shadow)}header{padding:50px 56px 40px;border-bottom:1px solid var(--line);background:radial-gradient(circle at 90% 0,#c9e9dc 0,transparent 40%)}.eyebrow{margin:0 0 10px;color:var(--green);font-size:.76rem;font-weight:800;letter-spacing:.15em;text-transform:uppercase}h1{margin:0;max-width:820px;font:700 clamp(2.4rem,6vw,4.8rem)/.98 ui-serif,Georgia,serif;letter-spacing:-.04em}.lede{max-width:830px;margin:22px 0 0;color:var(--muted);font-size:1.12rem}section{padding:36px 56px;border-bottom:1px solid var(--line)}h2{margin:0 0 18px;font:700 1.55rem/1.15 ui-serif,Georgia,serif}h3{margin:0 0 8px;font-size:1.05rem}.decision-strip{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.decision{padding:16px;border:1px solid var(--line);background:var(--soft)}.decision span{display:block;margin-bottom:5px;color:var(--green);font-size:.72rem;font-weight:800;letter-spacing:.08em;text-transform:uppercase}.phase-grid{display:grid;grid-template-columns:1fr 70px 1fr;align-items:stretch}.phase{padding:24px;border:1px solid var(--line);background:rgba(255,255,255,.3)}.phase .n{display:inline-grid;place-items:center;width:34px;height:34px;margin-bottom:14px;border-radius:50%;background:var(--ink);color:var(--paper);font-weight:800}.arrow{display:grid;place-items:center;color:var(--orange);font-size:2.2rem;font-weight:800}.meta{margin-top:14px;padding-top:12px;border-top:1px solid var(--line);color:var(--muted);font-size:.86rem}.flow{overflow:auto}.flow svg{display:block;width:100%;min-width:790px;height:auto}.contracts{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}.contract{padding:16px;border-left:4px solid var(--green);background:var(--soft)}.contract strong{display:block;margin-bottom:4px}table{width:100%;border-collapse:collapse}th,td{padding:12px;text-align:left;vertical-align:top;border-bottom:1px solid var(--line)}th{color:var(--muted);font-size:.74rem;letter-spacing:.08em;text-transform:uppercase}code{padding:.12em .35em;border-radius:4px;background:var(--code);font:90%/1.4 ui-monospace,SFMono-Regular,Menlo,monospace}ul{padding-left:22px}li+li{margin-top:7px}.note{padding:18px;border-left:5px solid var(--orange);background:var(--warm)}footer{padding:24px 56px;color:var(--muted);font-size:.84rem}@media(max-width:800px){main{width:100%;margin:0;border:0}header,section,footer{padding-left:24px;padding-right:24px}.decision-strip,.contracts{grid-template-columns:1fr}.phase-grid{grid-template-columns:1fr}.arrow{transform:rotate(90deg);min-height:58px}}@media(prefers-color-scheme:dark){:root{--bg:#101713;--paper:#17201b;--ink:#edf2ed;--muted:#a9b5ad;--line:#34443b;--green:#72d5ba;--orange:#f29b73;--soft:#203c32;--warm:#493a23;--code:#253129;--shadow:none}body{background:linear-gradient(120deg,#101713,#211f19)}header{background:radial-gradient(circle at 90% 0,#244d40 0,transparent 40%)}.phase{background:rgba(255,255,255,.025)}}
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <p class="eyebrow">Phased implementation</p>
+    <h1>Conductor SDK launch runtime</h1>
+    <p class="lede">First make provider identity independent of tmux. Then activate the Claude SDK host and its operator controls without changing who owns completion.</p>
+  </header>
+
+  <section>
+    <h2>Decisions carried into implementation</h2>
+    <div class="decision-strip">
+      <div class="decision"><span>Default</span><strong>Claude Agent SDK</strong><br>Old and fresh config parse to SDK.</div>
+      <div class="decision"><span>Failure</span><strong>Fail visibly</strong><br>No silent Terminal fallback.</div>
+      <div class="decision"><span>Completion</span><strong>Provider projection</strong><br>Host state never fabricates completion.</div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Two serial merge units</h2>
+    <div class="phase-grid">
+      <article class="phase"><span class="n">1</span><h3>Deterministic provider identity</h3><p>Copy the provider's canonical slug rule into its adapter, refuse duplicate ownership, persist the exact run link, and keep the terminal launch unchanged.</p><div class="meta">About 140 non-test lines · no UI · no SDK behavior</div></article>
+      <div class="arrow" aria-hidden="true">→</div>
+      <article class="phase"><span class="n">2</span><h3>SDK runtime and controls</h3><p>Add the defaulted config, direct <code>/engineer</code> SDK host, provider-owned lifecycle guards, Settings choice, runtime-aware dispatch, docs, and Playwright coverage.</p><div class="meta">About 290 non-test lines · UI and runtime gate</div></article>
+    </div>
+  </section>
+
+  <section>
+    <h2>Why identity comes first</h2>
+    <div class="flow">
+      <svg viewBox="0 0 1040 280" role="img" aria-labelledby="dep-title dep-desc">
+        <title id="dep-title">Provider identity enables both terminal and SDK hosts</title>
+        <desc id="dep-desc">The task idea becomes a canonical run key, which is stored before either terminal or SDK launch. The provider projection later completes the task.</desc>
+        <defs><marker id="a" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><path d="M0 0L10 4L0 8Z" fill="#6b8178"/></marker></defs>
+        <g fill="none" stroke="#6b8178" stroke-width="2" marker-end="url(#a)"><path d="M170 70H290"/><path d="M475 70H585"/><path d="M770 70H875"/><path d="M680 105V200H790"/><path d="M680 105V200H570"/></g>
+        <g font-family="ui-sans-serif,system-ui" text-anchor="middle">
+          <rect x="20" y="36" width="150" height="68" rx="13" fill="#fff0d8" stroke="#b95a32"/><text x="95" y="65" fill="#54301f" font-weight="700">Task idea</text><text x="95" y="86" fill="#715143" font-size="13">single repo</text>
+          <rect x="290" y="36" width="185" height="68" rx="13" fill="#e3f1eb" stroke="#0b725c"/><text x="382" y="64" fill="#17362d" font-weight="700">Provider adapter</text><text x="382" y="86" fill="#45655b" font-size="13">canonical 50-char slug</text>
+          <rect x="585" y="36" width="185" height="68" rx="13" fill="#e3f1eb" stroke="#0b725c"/><text x="677" y="64" fill="#17362d" font-weight="700">Task.pipelineRun</text><text x="677" y="86" fill="#45655b" font-size="13">persist before host</text>
+          <rect x="875" y="36" width="145" height="68" rx="13" fill="#17201b" stroke="#72d5ba"/><text x="947" y="64" fill="#edf2ed" font-weight="700">Projection</text><text x="947" y="86" fill="#b9c7bf" font-size="13">owns completion</text>
+          <rect x="480" y="198" width="180" height="58" rx="13" fill="#edf1eb" stroke="#6b8178"/><text x="570" y="226" fill="#27352f" font-weight="700">Terminal host</text><text x="570" y="245" fill="#596961" font-size="12">homeName</text>
+          <rect x="700" y="198" width="180" height="58" rx="13" fill="#edf1eb" stroke="#6b8178"/><text x="790" y="226" fill="#27352f" font-weight="700">Claude SDK host</text><text x="790" y="245" fill="#596961" font-size="12">sessionId</text>
+        </g>
+      </svg>
+    </div>
+    <p class="note">An SDK session stays in the primary checkout, so it cannot inherit the terminal home's worktree correlation. Prebinding the provider key removes that accidental dependency before the new host is introduced.</p>
+  </section>
+
+  <section>
+    <h2>Cross-phase contracts</h2>
+    <div class="contracts">
+      <div class="contract"><strong>One provider key</strong>Provider, repository, and canonical idea slug are fixed before launch.</div>
+      <div class="contract"><strong>One live owner</strong>A duplicate task or existing provider worktree refuses a second host.</div>
+      <div class="contract"><strong>Two host shapes</strong>Terminal uses <code>homeName</code>; SDK uses <code>sessionId</code>; both use <code>pipelineRun</code>.</div>
+      <div class="contract"><strong>One completion owner</strong>Only the exact processed provider projection settles either task.</div>
+      <div class="contract"><strong>Legacy remains readable</strong>Old null-link terminal tasks still bind from home and discovered worktree.</div>
+      <div class="contract"><strong>No hidden fallback</strong>SDK errors stay errors until Retry or an explicit Terminal selection.</div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Verification gates</h2>
+    <table>
+      <thead><tr><th>Phase</th><th>Focused proof</th><th>Full gates</th></tr></thead>
+      <tbody>
+        <tr><td>1</td><td>Slug fixtures, duplicate refusal, prebound terminal launch, processed restart, legacy binding</td><td>Typecheck, lint, unit suite</td></tr>
+        <tr><td>2</td><td>Config upgrade, exact SDK prompt, no fallback, lifecycle exclusions, restart, both visible runtime flows</td><td>Typecheck, lint, unit suite, build, smoke, full Playwright</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <footer>Source: <code>docs/plans/conductor-sdk-runtime/phased-plan.md</code>. Phase briefs are adjacent. This page is self-contained and makes no external requests.</footer>
+</main>
+</body>
+</html>

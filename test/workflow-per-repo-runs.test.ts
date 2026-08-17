@@ -51,6 +51,7 @@ function entry(over: Partial<TaskRepoEntry> = {}): TaskRepoEntry {
     worktreePath: null,
     branch: "feat/work",
     provider: "git",
+    worktreeLeaseId: null,
     baseSha: SECOND_BASE,
     prUrl: null,
     prState: null,
@@ -619,7 +620,7 @@ test("one settled turn spends ONE completion episode and starts a run per change
   const result = await f.manager.claimCompletion(f.sessionId, {
     completionKind: "drain",
     marker: "d".repeat(64),
-    activityAt: null,
+    expectedWorkCycle: null,
     summary: "work complete",
     evidenceFingerprint: "fp",
     expectedIntent: null,
@@ -687,7 +688,7 @@ test("the completion boundary answers on the lead alone, never on every repo's c
     f.manager.claimCompletion(f.sessionId, {
       completionKind: "drain",
       marker: "f".repeat(64),
-      activityAt: null,
+      expectedWorkCycle: null,
       summary: "work complete",
       evidenceFingerprint: "fp",
       expectedIntent: null,
@@ -732,7 +733,7 @@ test("a repeated claim on the same proof starts nothing new", async () => {
   const claim = {
     completionKind: "drain" as const,
     marker: "e".repeat(64),
-    activityAt: null,
+    expectedWorkCycle: null,
     summary: "work complete",
     evidenceFingerprint: "fp",
     expectedIntent: null,

@@ -60,6 +60,17 @@ A handoff from SDK to terminal clears the task binding before stopping the drive
 
 Worktree snapshots use a temporary Git index. Never capture through the real index. Reset helpers use `clean -fd`, never `-fdx`, so ignored warm dependencies survive.
 
+The daemon constructs one `WorktreeManager` and injects it into task dispatch, Workflow checks,
+manual lease routes, and maintenance. New task and check acquisitions use native slots by default.
+Only a disabled policy or a positive native refusal may degrade to a disposable Git worktree; an
+unknown native outcome fails closed. Cleanup follows the provider and exact lease identity stored
+on the owning row, never current configuration. Native release remains conditional and
+occupancy-gated, and clearing a task's worktree facts is atomic with recording the successful
+release. Historical rows that name Treehouse retain their provider-specific cleanup path.
+
+Manual development sessions acquire and return native leases through the daemon's loopback API.
+The client does not create an independent inventory, and shell exit does not imply return.
+
 ## Dispatch runtime
 
 Runtime selection has one owner: `resolveDispatchRuntime`, composed with `resolveSessionRuntime`.
@@ -87,6 +98,38 @@ Terminal vendors are hidden behind `MULTIPLEXERS`, `EMULATORS`, and `bindPane`. 
 - `canWriteTo` for a terminal pane operation.
 - `canMessage` for any reachable conversation, including SDK.
 - `paneToken` for pane-scoped maps.
+
+### Work-cycle lifecycle
+
+The Registry is the sole owner of normalized work-cycle state. Terminal hook adapters translate
+their raw event vocabulary into `work_started` and `turn_completed`; SDK driver state reaches the
+same Registry transition path. Generic Registry, Foreman, Workflow, and task code must not inspect
+raw hook event names to identify a completed turn.
+
+`session_work_cycles` stores one current projection per logical conversation key: generation,
+active state, completion time, and update time. It is separate from `session_events`, whose any-row
+query remains proof that terminal hooks were seen, and from `session_work_episodes`, which owns task,
+branch, agent identity, and pull-request provenance. The active bit is durable so work observed
+before a daemon restart can still be completed by a later turn-end signal.
+
+`Session.workCycle` is an optional wire projection. Missing state means no lifecycle activity is
+known for the current logical key and consumers must fail closed. A context clear or driver rebind
+selects the new key's state instead of carrying a generation across conversations. Generations are
+monotonic only within one logical key and advance only when a normalized completion follows
+observed work. Idle notifications and duplicate turn ends do not advance them.
+
+Prompted automatic completion stores the last consumed generation on the Foreman queue row. The
+daemon compares the submitted logical key and generation with `session_work_cycles` in the same
+write that consumes it; queue items retain drain precedence. Reconciled intent is checked
+separately for staleness, while evidence fingerprints remain proof and workflow idempotency rather
+than lifecycle identity. Historical `prompted_goal` values are read only for an idempotent upgrade
+bootstrap: a value matching the current resolved intent marks the current completed generation as
+consumed only when the cycle is inactive and its completion does not postdate the legacy activity
+watermark. A row from before that immutable watermark existed instead records the current settled
+generation as a conservative legacy cutover ceiling: that ambiguous generation cannot be claimed,
+while a later completed generation naturally becomes eligible. A null or mismatched guard, active
+cycle, or completion newer than a known watermark stays eligible. New decisions never use the
+legacy intent/evidence columns as a fallback trigger.
 
 ## GitHub Inspector and PR provenance
 

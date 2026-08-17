@@ -132,6 +132,61 @@ export function parsePrUrl(
   };
 }
 
+export interface GitHubRepositoryIdentity {
+  owner: string;
+  repo: string;
+}
+
+/** Read a GitHub repository identity from one configured git remote URL. */
+export function parseGitHubRemoteUrl(url: string): GitHubRepositoryIdentity | null {
+  const value = url.trim();
+  const scp = /^(?:[^@\s]+@)?github\.com:([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/i.exec(value);
+  if (scp) return { owner: scp[1]!, repo: scp[2]! };
+
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return null;
+  }
+  if (parsed.hostname.toLowerCase() !== "github.com") return null;
+  if (!["git:", "http:", "https:", "ssh:"].includes(parsed.protocol)) return null;
+  const parts = parsed.pathname.replace(/^\/+|\/+$/g, "").split("/");
+  if (parts.length !== 2) return null;
+  const owner = parts[0]!;
+  const repo = parts[1]!.replace(/\.git$/i, "");
+  if (!/^[\w.-]+$/.test(owner) || !/^[\w.-]+$/.test(repo)) return null;
+  return { owner, repo };
+}
+
+/**
+ * The GitHub repositories this checkout's git config names.
+ *
+ * Every configured fetch remote is considered rather than assuming one named `origin`:
+ * forks cloned with `--origin upstream` and checkouts with a separate fork remote are both
+ * ordinary. An unreadable config, a repository with no remotes, and non-GitHub remotes all
+ * answer with an empty set, which makes the adoption caller abstain.
+ */
+export async function configuredGitHubRepositories(
+  repoRoot: string,
+): Promise<GitHubRepositoryIdentity[]> {
+  const result = await run("git", ["config", "--get-regexp", "^remote\\..*\\.url$"], {
+    cwd: repoRoot,
+  });
+  if (result.outcomeUnknown || result.code !== 0) return [];
+
+  const repositories = new Map<string, GitHubRepositoryIdentity>();
+  for (const line of result.stdout.split("\n")) {
+    const separator = line.search(/\s/);
+    if (separator < 0) continue;
+    const identity = parseGitHubRemoteUrl(line.slice(separator).trim());
+    if (!identity) continue;
+    const key = `${identity.owner}/${identity.repo}`.toLowerCase();
+    repositories.set(key, identity);
+  }
+  return [...repositories.values()];
+}
+
 export interface PrSnapshot {
   state: "OPEN" | "CLOSED" | "MERGED";
   headSha: string;

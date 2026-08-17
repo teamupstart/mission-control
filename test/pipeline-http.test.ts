@@ -36,6 +36,7 @@ const { buildApp } = await import("../src/server/routes.ts");
 const { getPipelinesConfig, setPipelinesConfig } = await import(
   "../src/server/pipelines/config.ts"
 );
+const { setForemanConfig } = await import("../src/server/foreman/config.ts");
 const { refreshPipelineRepo, restorePipelineProjection } = await import(
   "../src/server/pipelines/index.ts"
 );
@@ -48,7 +49,10 @@ const {
 type Registry = InstanceType<typeof Registry>;
 
 const db = openDb();
-after(() => rmSync(home, { recursive: true, force: true }));
+// Background probe/refresh promises can finish while the test worker is tearing its home
+// down. Linux may report ENOTEMPTY when one lands between recursive enumeration and removal,
+// so give the standard recursive remover a short bounded retry window.
+after(() => rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }));
 
 /**
  * Poll `read` until it equals `want`, or fail saying what it was.
@@ -93,7 +97,8 @@ interface FakeLaunch {
 /** A fresh daemon: an empty projection, no consent, and nothing yet found out. */
 function fixture(opened?: FakeLaunch[]) {
   db.exec("DELETE FROM pipeline_runs");
-  setPipelinesConfig({ enabled: false, repos: [] });
+  setPipelinesConfig({ enabled: false, foremanMechanicalTriage: false, repos: [] });
+  setForemanConfig({ enabled: true });
   const registry = new Registry();
   // The real boot path, which is also what clears this process's held probe - so a test
   // about the FIRST read of a daemon is about a first read rather than about whichever
@@ -567,6 +572,159 @@ test("a verb reaches the engine, and the run it changed is re-projected in the s
     });
     assert.equal(((await back.json()) as { ok: boolean }).ok, true);
     assert.equal(registry.listPipelineRuns()[0]?.group, "halted");
+  });
+});
+
+test("Foreman's master switch gates its pipeline feed, reservation, and provider action", async () => {
+  const { registry, request } = fixture();
+  await withEngine(async () => {
+    const repo = await actable("foreman-master-switch", registry, request, "mechanical");
+    setPipelinesConfig({ ...getPipelinesConfig(), foremanMechanicalTriage: true });
+    setForemanConfig({ enabled: true });
+
+    const available = (await (await request("/api/pipelines/foreman")).json()) as {
+      enabled: boolean;
+      items: Array<{ marker: string }>;
+    };
+    assert.equal(available.enabled, true);
+    assert.equal(available.items.length, 1);
+    const marker = available.items[0]?.marker;
+    assert.ok(marker);
+
+    setForemanConfig({ enabled: false });
+    const stopped = await request("/api/pipelines/foreman");
+    assert.deepEqual(await stopped.json(), { enabled: false, items: [] });
+
+    const episode = {
+      marker,
+      situation: "pipeline-halt",
+      surface: "pipeline",
+      question: "a gate refused",
+      classification: "mechanical",
+      disposition: "pending",
+    };
+    const reserved = await request("/api/pipelines/foreman-episode", {
+      method: "POST",
+      body: JSON.stringify({
+        provider: "ai-conductor",
+        repoRoot: repo,
+        slug: "feat",
+        episode,
+      }),
+    });
+    assert.equal(reserved.status, 403);
+
+    const before = verbsAsked().length;
+    const automated = await request("/api/pipelines/action", {
+      method: "POST",
+      body: JSON.stringify({
+        provider: "ai-conductor",
+        repoRoot: repo,
+        slug: "feat",
+        action: "unpark",
+        requestedBy: "foreman",
+      }),
+    });
+    assert.equal(automated.status, 403);
+    assert.equal(verbsAsked().length, before, "a disabled Foreman reaches no provider command");
+
+    const operator = await request("/api/pipelines/action", {
+      method: "POST",
+      body: JSON.stringify({
+        provider: "ai-conductor",
+        repoRoot: repo,
+        slug: "feat",
+        action: "unpark",
+      }),
+    });
+    assert.equal(operator.status, 200, "Foreman's switch does not withdraw operator control");
+    assert.equal(((await operator.json()) as { ok: boolean }).ok, true);
+  });
+});
+
+test("Foreman finalizes a reserved triage after Unpark clears the projected halt", async () => {
+  const { registry, request } = fixture();
+  await withEngine(async () => {
+    const repo = await actable("foreman-finalize-after-refresh", registry, request, "mechanical");
+    setPipelinesConfig({ ...getPipelinesConfig(), foremanMechanicalTriage: true });
+    setForemanConfig({ enabled: true });
+
+    const available = (await (await request("/api/pipelines/foreman")).json()) as {
+      items: Array<{ marker: string }>;
+    };
+    const marker = available.items[0]?.marker;
+    assert.ok(marker);
+    const episode = {
+      marker,
+      situation: "pipeline-halt",
+      surface: "pipeline",
+      question: "a mechanical gate refused",
+      classification: "mechanical",
+      disposition: "pending" as const,
+    };
+
+    const unreserved = await request("/api/pipelines/foreman-episode", {
+      method: "POST",
+      body: JSON.stringify({
+        provider: "ai-conductor",
+        repoRoot: repo,
+        slug: "feat",
+        episode: { ...episode, disposition: "answered" },
+      }),
+    });
+    assert.equal(unreserved.status, 409, "an outcome cannot create its own reservation");
+
+    const reserved = await request("/api/pipelines/foreman-episode", {
+      method: "POST",
+      body: JSON.stringify({ provider: "ai-conductor", repoRoot: repo, slug: "feat", episode }),
+    });
+    assert.equal(reserved.status, 200);
+
+    const action = await request("/api/pipelines/action", {
+      method: "POST",
+      body: JSON.stringify({
+        provider: "ai-conductor",
+        repoRoot: repo,
+        slug: "feat",
+        action: "unpark",
+        requestedBy: "foreman",
+      }),
+    });
+    assert.equal(action.status, 200);
+    assert.equal(((await action.json()) as { ok: boolean }).ok, true);
+
+    const projected = registry.listPipelineRuns()[0];
+    assert.ok(projected);
+    registry.upsertPipelineRun({
+      ...projected,
+      halt: null,
+      group: "building",
+      updatedAt: projected.updatedAt + 1,
+    });
+
+    const finalized = await request("/api/pipelines/foreman-episode", {
+      method: "POST",
+      body: JSON.stringify({
+        provider: "ai-conductor",
+        repoRoot: repo,
+        slug: "feat",
+        episode: {
+          ...episode,
+          disposition: "answered",
+          lastAction: "unpark: released",
+        },
+      }),
+    });
+    assert.equal(finalized.status, 200, await finalized.text());
+
+    const ledger = (await (await request("/api/foreman/episodes")).json()) as Array<{
+      marker: string;
+      disposition: string;
+      resolvedBy: string | null;
+    }>;
+    const recorded = ledger.find((entry) => entry.marker === marker);
+    assert.equal(recorded?.disposition, "answered");
+    assert.equal(recorded?.resolvedBy, "foreman");
   });
 });
 

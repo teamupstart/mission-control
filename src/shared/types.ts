@@ -16,7 +16,15 @@ import type { AutomationRoleCost } from "./llm-spend.ts";
 import type { LineSummary } from "./line.ts";
 import type { ClaudeTransport, LlmRunnerId, ResolvedLlmRunner } from "./llm.ts";
 import type { ResolvedModel } from "./model-choice.ts";
-import type { PipelineProviderId, PipelineRun, SessionPipelineLink } from "./pipeline.ts";
+import type {
+  PipelineProviderId,
+  PipelineRun,
+  PipelineRunLink,
+  SessionPipelineLink,
+} from "./pipeline.ts";
+// Type-only in the opposite direction from protocol.ts's runtime schema imports, so the wire
+// status can reuse the document contract without introducing an emitted module cycle.
+import type { ForemanInstructionsSource } from "./protocol.ts";
 import type { SkillEnforcement } from "./skills.ts";
 import type { TaskSourceRef } from "./task-source.ts";
 import type { TerminalBackendId, TerminalHandle } from "./terminal.ts";
@@ -378,6 +386,23 @@ export interface FleetAutomationCost {
   roles: AutomationRoleCost[];
 }
 
+/**
+ * Registry-owned identity for one logical conversation's completed work cycles.
+ *
+ * The logical key is the same durable identity used by the session note and goal. A
+ * generation is meaningful only within that key: clearing or rebinding a conversation
+ * selects a different row and starts from fresh state. `active` means work has been
+ * observed since the last completion; it is persisted so a daemon restart between work
+ * and the turn-end signal does not lose the completion opportunity.
+ */
+export interface WorkCycleSummary {
+  logicalKey: string;
+  generation: number;
+  active: boolean;
+  completedAt: number | null;
+  updatedAt: number;
+}
+
 export interface Session {
   /**
    * Stable identity and Registry map key for the life of this entry. Discovery mints
@@ -522,6 +547,13 @@ export interface Session {
   firstSeen: number; // epoch ms
   lastSeen: number; // epoch ms (last discovery observation; registration time for SDK)
   lastActivity: number | null; // epoch ms of last hook/report/driver event
+  /**
+   * Latest durable work-cycle state for this logical conversation.
+   *
+   * Optional for mixed daemon/worker startup compatibility. Absence means no lifecycle
+   * activity has been persisted for the current logical key, and consumers must fail closed.
+   */
+  workCycle?: WorkCycleSummary;
   /** Count of pending review items for this session (denormalized for the card). */
   pendingReviews: number;
   /**
@@ -862,7 +894,7 @@ export interface ForemanEpisode {
   /** `Pending.marker` - the stable id of this waiting episode. */
   marker: string;
   situation: string;
-  surface: "input-review" | "terminal";
+  surface: "input-review" | "terminal" | "pipeline";
   /** The ask, verbatim: a review body, an activity line, or a framed gate. */
   question: string;
   /** The child's screen when the reviewer read it. Terminal surfaces only. */
@@ -1205,9 +1237,10 @@ export interface SessionQueue {
   wrapupAskedAt: number | null;
   wrapupAnswer: string | null;
   /**
-   * The resolved intent episode the `prompted` wrap-up trigger last handled, or null if
-   * it never has. Encoded as `intent:<objectiveVersion>:<promptRevision>`, so a newly
-   * reconciled human instruction re-arms it and an unchanged idle session stays quiet.
+   * Historical resolved-intent guard from prompted completion before work-cycle cutover.
+   * New completion decisions never read or write it; it remains readable so an upgraded
+   * daemon can bootstrap a proven consumption or conservative cutover ceiling without
+   * replaying a spent turn.
    *
    * The historical field name is persisted and must not be renamed casually; its value
    * is now an opaque episode key rather than goal text.
@@ -1218,20 +1251,23 @@ export interface SessionQueue {
    */
   promptedGoal: string | null;
   /**
-   * SHA-256 proof marker for the completion boundary recorded with `promptedGoal`.
-   * A later settled turn may reuse the same human intent episode, so this second axis
-   * is what lets Foreman re-check only after HEAD or the transcript anchor advances.
-   * Null beside a non-null goal, or beside a null activity boundary, is a legacy
-   * spent guard and stays spent until the human intent changes.
+   * Historical prompted evidence marker. Retained for database and wire compatibility;
+   * current evidence fingerprints live on completion claims and do not re-arm lifecycle.
    */
   promptedEvidence: string | null;
   /**
-   * Session activity timestamp observed with `promptedEvidence`.
-   * This is the cheap re-arm watermark. It records the completion boundary Foreman
-   * examined, rather than the later time when its verifier result was persisted.
-   * Null beside a prompted guard is a legacy spent guard.
+   * Historical activity watermark paired with `promptedEvidence`. Current prompted
+   * completion consumes work-cycle generations instead.
    */
   promptedActivityAt: number | null;
+  /**
+   * Conservative one-time upgrade ceiling for a legacy guard with no immutable activity
+   * watermark. Generations at or below it are ineligible; a later completed generation
+   * naturally re-arms prompted completion without consulting legacy intent or evidence.
+   */
+  promptedLegacyCutoverGeneration: number | null;
+  /** Latest completed work-cycle generation consumed by prompted completion. */
+  promptedConsumedGeneration: number | null;
   updatedAt: number;
   items: WorkItem[];
 }
@@ -1339,6 +1375,11 @@ export interface SessionNoteSummary {
 export interface ForemanStatus {
   enabled: boolean;
   mode: "dry-run" | "live" | "semi-auto";
+  /**
+   * Which standing-guidance state is current. The document and its ETag stay on the focused
+   * instructions route rather than joining this frequently polled status response.
+   */
+  instructionsSource: ForemanInstructionsSource;
   /**
    * True when a worker currently HOLDS THE LEASE and renewed it recently - i.e. a
    * leader is alive. A second `npm run foreman` idles as a standby (so it can take
@@ -1495,7 +1536,7 @@ export type PrChecks = "passing" | "failing" | "pending";
  * APPEND, never reorder: `ship` at index 0 is the default every automated writer takes,
  * and the read paths that degrade an unknown persisted kind land on it.
  */
-export const TASK_KINDS = ["ship", "scout", "plan"] as const;
+export const TASK_KINDS = ["ship", "scout", "plan", "pipeline"] as const;
 
 export type TaskKind = (typeof TASK_KINDS)[number];
 
@@ -1613,8 +1654,10 @@ export interface TaskRepoEntry {
   worktreePath: string | null;
   /** Branch cut in this repo. Deliberately the SAME name as the primary's. */
   branch: string | null;
-  /** How this repo's worktree was provisioned, so teardown returns a lease vs removing a tree. */
+  /** Persisted provider authority for native return, legacy return, or disposable removal. */
   provider: WorktreeProvider | null;
+  /** Opaque native allocator identity. Present only when `provider` is `mission`. */
+  worktreeLeaseId: string | null;
   /** Full 40-character commit this repo's branch was cut at, recorded at provisioning time. */
   baseSha: string | null;
   /** The pull request this task opened in THIS repository, or null if none yet. */
@@ -1698,14 +1741,24 @@ export interface Task {
    * no-op. A seen row deliberately outlives the task; this field dies with it.
    */
   source: TaskSourceRef | null;
+  /**
+   * The provider run this pipeline dispatch started, once a child agent proves the join.
+   *
+   * Kept separate from `sessionId`: conductor may launch several sequential agents, so no
+   * one child session owns the task lifecycle. The daemon persists this key and settles the
+   * task from the provider projection instead.
+   */
+  pipelineRun: PipelineRunLink | null;
   /** Absolute path of the source repo the worktree is cut from. */
   repoRoot: string;
   /** Isolated worktree the agent runs in (realpath) - the correlation key. Null while in the backlog. */
   worktreePath: string | null;
   /** Worktree branch, once known - remembered so teardown can drop a throwaway `harness/*` branch by name. */
   branch: string | null;
-  /** How the worktree was provisioned, so teardown returns a treehouse lease vs `git worktree remove`. */
+  /** Persisted provider authority for native return, legacy return, or disposable removal. */
   provider: WorktreeProvider | null;
+  /** Opaque native allocator identity. Present only when `provider` is `mission`. */
+  worktreeLeaseId: string | null;
   /**
    * The full 40-character commit the PRIMARY repo's branch was cut at, or null before
    * dispatch (and on every task dispatched before this column existed).
@@ -2083,7 +2136,7 @@ export interface MissionReport {
 export type InspectorMode = "dry-run" | "live";
 
 /** How a PR came to be adopted. Older persisted provenance is normalized to `legacy`. */
-export type InspectorSource = "hook" | "legacy";
+export type InspectorSource = "hook" | "legacy" | "pipeline";
 
 /** Whether the PR is still worth polling. Merged and closed-unmerged are both "closed". */
 export type InspectorPrState = "open" | "closed";
@@ -2617,6 +2670,12 @@ export type ServerEvent =
    * been retired - which reads as a saved change being ignored.
    */
   | { type: "harnesses_config_changed" }
+  /**
+   * Native policy, bounded native inventory, or legacy drain classification changed.
+   * Content-free because the inventory is an expensive bounded HTTP observation and never
+   * belongs in the reconnect snapshot.
+   */
+  | { type: "worktrees_changed" }
   /**
    * The Keep Awake observation moved - a transition was requested, the OS child spawned
    * or exited, or a transition failed. Carries the whole status so every open dashboard

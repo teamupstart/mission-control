@@ -221,6 +221,7 @@ test("the consent config ships off, and defaults over a blob an older build wrot
   // object is what `getAppConfig` returns for a key nothing has written.
   const shipped = PipelinesConfigSchema.parse({});
   assert.equal(shipped.enabled, false);
+  assert.equal(shipped.foremanMechanicalTriage, false);
   assert.deepEqual(shipped.repos, []);
 
   // A repository arrives OFF even when the caller says nothing: adding is configuration,
@@ -392,6 +393,24 @@ test("a request is checked against what the verb says it needs, in both directio
   assert.equal(
     PipelineActionRequestSchema.safeParse({ ...base, action: "park", slug: "feat" }).success,
     true,
+  );
+  assert.equal(
+    PipelineActionRequestSchema.safeParse({
+      ...base,
+      action: "unpark",
+      slug: "feat",
+      requestedBy: "foreman",
+    }).success,
+    true,
+  );
+  assert.equal(
+    PipelineActionRequestSchema.safeParse({
+      ...base,
+      action: "unpark",
+      slug: "feat",
+      requestedBy: "future-automation",
+    }).success,
+    false,
   );
   assert.equal(
     PipelineActionRequestSchema.safeParse({ ...base, action: "daemon-pause", slug: "feat" }).success,

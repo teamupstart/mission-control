@@ -132,6 +132,7 @@ test("the contract issues the repository slots a submission has to use", () => {
             worktreePath: "/work/sibling",
             branch: null,
             provider: null,
+            worktreeLeaseId: null,
             baseSha: null,
             prUrl: null,
             prState: null,

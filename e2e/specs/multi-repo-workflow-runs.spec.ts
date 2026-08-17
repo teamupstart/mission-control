@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Locator, Page } from "@playwright/test";
@@ -131,6 +132,14 @@ async function provisionedTask(daemon: DaemonHandle, extras = 1): Promise<TaskRo
     )
     .toBe(true);
   return task!;
+}
+
+/** Model the agent creating its feature branch after native detached acquisition. */
+function createTaskBranches(task: TaskRow): void {
+  const paths = [task.worktreePath, ...task.extraRepos.map((entry) => entry.worktreePath)];
+  for (const path of paths) {
+    if (path) execFileSync("git", ["-C", path, "switch", "-q", "-c", "e2e/multi-repo-run"]);
+  }
 }
 
 /**
@@ -281,6 +290,7 @@ test("a two-repo task runs one review per changed repo, each named on the card",
   await dispatchAcross(dashboard, daemon);
   const session = await settledSession(daemon);
   const task = await provisionedTask(daemon);
+  createTaskBranches(task);
 
   // One command, two pull requests: both repositories changed.
   await announcePullRequests(daemon, session, [PR_PRIMARY, PR_SECOND]);
@@ -322,6 +332,7 @@ test("a repo the task never changed gets no review at all", async ({ dashboard, 
   await dispatchAcross(dashboard, daemon);
   const session = await settledSession(daemon);
   const task = await provisionedTask(daemon);
+  createTaskBranches(task);
 
   // Only the ATTACHED repo changed. The primary is deliberately the untouched one, because a
   // predicate that privileged it - or that iterated attached repos alone - passes a test where
@@ -374,6 +385,7 @@ test("a single-repo task still shows exactly one unnamed workflow chip", async (
 
   const session = await settledSession(daemon);
   const task = await provisionedTask(daemon, 0);
+  createTaskBranches(task);
   await announcePullRequests(daemon, session, [PR_PRIMARY]);
   scriptPullRequests(daemon, task, { primary: true });
   const bindingId = await bindReview(daemon, session.id);

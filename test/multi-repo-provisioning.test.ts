@@ -32,10 +32,6 @@ const {
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
-// None of these repos opts into treehouse, so every arm here is the git fallback: nothing
-// is leased, nothing is held, and a reap has nothing to consider.
-const NO_PINS = () => ({ sessionCwds: [], taskWorktrees: [], checkLeasePaths: [] });
-
 function git(dir: string, ...args: string[]): string {
   return execFileSync("git", ["-C", dir, ...args], { stdio: "pipe" }).toString().trim();
 }
@@ -71,8 +67,8 @@ test("two non-pool repos on one task provision to distinct paths and both succee
   const api = mkRepo("api");
   const web = mkRepo("web");
 
-  const primary = await provisionWorktree(api, "two-repos", "slug", "abc123", NO_PINS, null, 0);
-  const secondary = await provisionWorktree(web, "two-repos", "slug", "abc123", NO_PINS, null, 1);
+  const primary = await provisionWorktree(api, "two-repos", "slug", "abc123", null, 0);
+  const secondary = await provisionWorktree(web, "two-repos", "slug", "abc123", null, 1);
 
   assert.notEqual(primary.path, secondary.path);
   assert.equal(existsSync(primary.path), true);
@@ -95,8 +91,8 @@ test("two repos that share a basename still get distinct trees", async () => {
   const first = mkRepo(join("a", "api"));
   const second = mkRepo(join("b", "api"));
 
-  const one = await provisionWorktree(first, "same-name", "slug", "def456", NO_PINS, null, 0);
-  const two = await provisionWorktree(second, "same-name", "slug", "def456", NO_PINS, null, 1);
+  const one = await provisionWorktree(first, "same-name", "slug", "def456", null, 0);
+  const two = await provisionWorktree(second, "same-name", "slug", "def456", null, 1);
   assert.notEqual(one.path, two.path);
   assert.equal(existsSync(one.path), true);
   assert.equal(existsSync(two.path), true);
@@ -110,14 +106,14 @@ test("every provisioned tree records the full oid it was cut at", async () => {
   const repo = mkRepo("baseline");
   const head = git(repo, "rev-parse", "HEAD");
 
-  const single = await provisionWorktree(repo, "baseline-single", "slug", "aaa111", NO_PINS);
+  const single = await provisionWorktree(repo, "baseline-single", "slug", "aaa111");
   assert.equal(single.baseSha, head);
   assert.match(single.baseSha ?? "", /^[0-9a-f]{40}$/);
 
   // Recorded on a single-repo dispatch too - one code path, and phase 3 gets a baseline for
   // the ordinary case rather than only for the exotic one.
   const other = mkRepo("baseline-two");
-  const secondary = await provisionWorktree(other, "baseline-single", "slug", "aaa111", NO_PINS, null, 1);
+  const secondary = await provisionWorktree(other, "baseline-single", "slug", "aaa111", null, 1);
   assert.equal(secondary.baseSha, git(other, "rev-parse", "HEAD"));
 });
 
@@ -126,14 +122,15 @@ test("every provisioned tree records the full oid it was cut at", async () => {
 test("teardown returns every tree the task holds, primary and secondaries alike", async () => {
   const api = mkRepo("teardown-api");
   const web = mkRepo("teardown-web");
-  const primary = await provisionWorktree(api, "teardown-task", "slug", "bbb222", NO_PINS, null, 0);
-  const secondary = await provisionWorktree(web, "teardown-task", "slug", "bbb222", NO_PINS, null, 1);
+  const primary = await provisionWorktree(api, "teardown-task", "slug", "bbb222", null, 0);
+  const secondary = await provisionWorktree(web, "teardown-task", "slug", "bbb222", null, 1);
 
   await teardownWorktree({
     repoRoot: api,
     worktreePath: primary.path,
     branch: primary.branch,
     provider: primary.provider,
+    worktreeLeaseId: primary.leaseId,
     homeName: null,
     extraRepos: [
       {
@@ -141,6 +138,7 @@ test("teardown returns every tree the task holds, primary and secondaries alike"
         worktreePath: secondary.path,
         branch: secondary.branch,
         provider: secondary.provider,
+        worktreeLeaseId: secondary.leaseId,
       },
     ],
   });
@@ -159,8 +157,8 @@ test("one tree failing to come back does not strand the others", async () => {
   // nulls the whole collection on the row either way.
   const api = mkRepo("partial-api");
   const web = mkRepo("partial-web");
-  const primary = await provisionWorktree(api, "partial-task", "slug", "ccc333", NO_PINS, null, 0);
-  const secondary = await provisionWorktree(web, "partial-task", "slug", "ccc333", NO_PINS, null, 1);
+  const primary = await provisionWorktree(api, "partial-task", "slug", "ccc333", null, 0);
+  const secondary = await provisionWorktree(web, "partial-task", "slug", "ccc333", null, 1);
 
   // The error reports what it DID reclaim, which is what lets a caller clear exactly those
   // trees. A partial failure read as a total one leaves the row naming worktrees that are
@@ -206,10 +204,12 @@ const BASE_TASK = {
   effort: null,
   workflowId: null,
   source: null,
+  pipelineRun: null,
   repoRoot: "/repo/api",
   worktreePath: "/wt/t1",
   branch: "harness/ship-it-abc123",
   provider: "git" as const,
+  worktreeLeaseId: null,
   baseSha: "a".repeat(40),
   extraRepos: [],
   homeName: null,
@@ -242,6 +242,7 @@ test("a multi-repo task's intent is prefixed with where each repo lives and what
         worktreePath: "/wt/t1-1",
         branch: "harness/ship-it-abc123",
         provider: "git",
+        worktreeLeaseId: null,
         baseSha: "b".repeat(40),
         prUrl: null,
         prState: null,
@@ -276,6 +277,7 @@ test("a repo with no worktree is left out of the manifest", () => {
         worktreePath: null,
         branch: null,
         provider: null,
+        worktreeLeaseId: null,
         baseSha: null,
         prUrl: null,
         prState: null,
@@ -379,6 +381,7 @@ test("a set whose branches differ is told so, per repo, instead of promised one 
         // What a pool lease hands back: the tree's own branch, not ours.
         branch: "pool/tree-7",
         provider: "treehouse",
+        worktreeLeaseId: null,
         baseSha: "b".repeat(40),
         prUrl: null,
         prState: null,
@@ -406,6 +409,7 @@ test("a repo standing on no branch at all is described without inventing one", (
         worktreePath: "/wt/t1-1",
         branch: null,
         provider: "git",
+        worktreeLeaseId: null,
         baseSha: null,
         prUrl: null,
         prState: null,
@@ -427,6 +431,7 @@ test("a task releases the trees that came back and keeps the ones still standing
     worktreePath: "/wt/t1",
     branch: "harness/x-abc",
     provider: "git" as const,
+    worktreeLeaseId: null,
     baseSha: "a".repeat(40),
     extraRepos: [
       {
@@ -434,6 +439,7 @@ test("a task releases the trees that came back and keeps the ones still standing
         worktreePath: "/wt/t1-1",
         branch: "harness/x-abc",
         provider: "git" as const,
+        worktreeLeaseId: null,
         baseSha: "b".repeat(40),
         prUrl: null,
         prState: null,
@@ -444,6 +450,7 @@ test("a task releases the trees that came back and keeps the ones still standing
         worktreePath: "/wt/t1-2",
         branch: "harness/x-abc",
         provider: "treehouse" as const,
+        worktreeLeaseId: null,
         baseSha: "c".repeat(40),
         prUrl: null,
         prState: null,

@@ -127,6 +127,14 @@ const decide = (over: {
     unassignable: over.unassignable,
   });
 
+test("pipeline tasks never enter backlog autopilot", () => {
+  const pipeline = mkTask({ kind: "pipeline" });
+  assert.deepEqual(decide({ tasks: [pipeline], plan: mkPlan([[pipeline.id, []]]) }), {
+    kind: "none",
+    why: "no backlog item allows unattended scheduling",
+  });
+});
+
 // ---- the switch, and the empty cases -------------------------------------------------
 
 test("autopilot off decides nothing, whatever is waiting", () => {
@@ -323,6 +331,7 @@ test("a multi-repo task is never offered for assignment, and does not park the t
     worktreePath: null,
     branch: null,
     provider: null,
+    worktreeLeaseId: null,
     baseSha: null,
     prUrl: null,
     prState: null,
@@ -344,6 +353,7 @@ test("a multi-repo task at the head does not block an assignable item behind it"
     worktreePath: null,
     branch: null,
     provider: null,
+    worktreeLeaseId: null,
     baseSha: null,
     prUrl: null,
     prState: null,

@@ -134,7 +134,7 @@ count and links there). With an empty allowlist Foreman never types into any liv
 Live mode the popover shows a read-only **Live in N repos · manage in Settings →** link
 straight to it. An entry allowlists the **repo**, not just the directory: a session in a
 *worktree* of an allowlisted repo is cleared too, wherever that worktree sits on disk.
-That's what makes live mode usable - dispatched agents and treehouse checkouts run in
+That's what makes live mode usable: dispatched agents and native pooled checkouts run in
 worktrees parked far from the repo, so a directory-only rule would draft forever on the
 very repo you cleared.
 A worktree of a repo you haven't allowlisted is still refused. A separate
@@ -172,6 +172,8 @@ control's tooltip and accessible description - rather than printing under the fi
 current Foreman posture stays above the tabs so a stopped worker is always visible. **Live
 repositories** and **Right now** stay below them as read-only cards; the repository card
 shows the grant count and links to **Settings → Trust**, where repository access is edited.
+The read-only **Standing guidance** card reports its current source and links to the single
+editor at **Library → Personas → Foreman**. Settings does not fetch or write that document.
 
 Two default-on safeguards under **Settings → Foreman → Safety** decide which
 finished work never reaches an automatic completion action:
@@ -288,12 +290,31 @@ Two things make these different from the `AGENTS.md` / `CLAUDE.md` that Foreman 
 With no instructions the section renders as nothing at all, and a test pins that adding them
 changes only that block, leaving the rest of every prompt byte-for-byte identical.
 
-> **Next:** these move into a dashboard setting, stored in the database and editable from
-> **Settings → Foreman**. `personas/FOREMAN.md` stays the seed a fresh install starts from; once you save
-> your own, the file is only what "Reset to default" restores. The plumbing is already in place -
-> `GET`/`PUT /api/foreman/instructions`, stored under `app_config`, with empty and unset kept
-> distinct so clearing the box means "judge on your own policy" rather than silently reinstating
-> the default.
+Edit the document at **Library → Personas → Foreman** or open
+`#/library/personas/foreman` directly. The fixed System profile exposes only the
+operator-owned prose. Foreman's name, description, built-in policy, safety checks, output
+contracts, provider/model settings, operational posture, and repository authority remain
+application-owned or link to their existing Settings and Trust controls. Foreman is not a
+workflow or ensemble Persona.
+
+The source readout distinguishes three durable states:
+
+- **Built-in default** uses the exact `personas/FOREMAN.md` shipped with the app.
+- **Customized** uses the exact stored Markdown, even when it happens to equal the default.
+- **No standing guidance** is an intentional empty save. It does not fall back to the default.
+
+Save uses compare-and-swap against the loaded ETag. A focus refresh adopts a newer clean
+document, but preserves a dirty local draft and reports a conflict. **Reload latest** takes
+the newer saved text; **Keep editing** preserves every local character and rebases the next
+explicit Save on the known current ETag. Copy and Download always use the local draft,
+including during a conflict. **Reset to built-in default** is a separately confirmed
+operation, not an empty save, and restores the shipped document. The browser and route share
+the 64,000 JavaScript-character ceiling with the server contract.
+
+Each Foreman evaluation captures the effective standing guidance once when it starts. A save,
+clear, or reset affects later evaluations; work already in flight finishes with the document
+it captured. This prevents one evaluation from mixing two revisions while still making the
+next call observe the operator's latest choice.
 
 ### Which model Foreman runs as
 
@@ -462,3 +483,18 @@ plan is successfully stored.
 Turning Foreman on, its mode, the work queues and the on-drain action stay in the topbar
 Foreman control: those are the things you reach for while watching the fleet, and the
 panel is the durable posture.
+
+### Mechanical pipeline triage
+
+**Settings → Conductor → Foreman triage** is a separate, default-off permission for external
+pipeline halts. Both it and Foreman's master switch must be on when the halt is read, when its
+episode is reserved, and when the provider action is sent. The worker may call the existing
+pipeline action route only for a halt whose class is exactly `mechanical`; today that action is
+**Unpark**, which releases the feature for the engine to retry. Every `needs-human`,
+`protected-artifact`, `legacy`, `unclassified`, or unknown class stays in the Attention inbox
+for you.
+
+This permission does not put pipeline tasks into backlog autopilot and does not grant DECIDE
+re-entry. Foreman reads the daemon's halt view and posts its episode and action over HTTP. The
+daemon remains the only SQLite writer, and each attempted provider action is reserved in the
+decision ledger before the engine is called so a lost response cannot cause a duplicate act.

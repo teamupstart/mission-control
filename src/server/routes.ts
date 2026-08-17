@@ -3,6 +3,7 @@ import { bodyLimit } from "hono/body-limit";
 import type { Context, MiddlewareHandler } from "hono";
 import type { TypeOf, ZodTypeAny } from "zod";
 import { Readable } from "node:stream";
+import { randomUUID } from "node:crypto";
 import {
   AddWorkItemSchema,
   AssignTaskSchema,
@@ -21,6 +22,9 @@ import {
   DispatchSchema,
   ResolveRepoSchema,
   EditWorkItemSchema,
+  FOREMAN_INSTRUCTIONS_CONFLICT_CODE,
+  FOREMAN_INSTRUCTIONS_CONFLICT_MESSAGE,
+  FOREMAN_INSTRUCTIONS_MAX_LENGTH,
   ForemanConfigPatchSchema,
   ForemanInstructionsSchema,
   ForemanHeartbeatSchema,
@@ -38,6 +42,9 @@ import {
   InjectPromptSchema,
   KeepAwakeRequestSchema,
   MarkItemSentSchema,
+  ManualWorktreeAcquireSchema,
+  ManualWorktreeReturnSchema,
+  OpenWorktreeSchema,
   OtlpMetricsSchema,
   PendingTurnRevisionSchema,
   ReattachQueueSchema,
@@ -74,6 +81,7 @@ import {
   PushTaskSchema,
   PipelineActionSchema,
   PipelineConsoleSchema,
+  PipelineForemanEpisodeSchema,
   PipelinesConfigPatchSchema,
   SkillsConfigPatchSchema,
   TaskSourcesConfigPatchSchema,
@@ -110,13 +118,20 @@ import {
   UpdateWorkflowCommandSchema,
   WorkflowConfigSchema,
   WorkflowRunActionSchema,
+  WorktreeActionExecuteSchema,
+  WorktreeActionRequestSchema,
+  WorktreesConfigPatchSchema,
   SubmitWorkflowSchema,
   SubmitWorkflowEvidenceSchema,
   WorkflowRetainedEvidenceLocatorSchema,
   UpdateWorkflowBindingSchema,
   WrapupSchema,
 } from "@shared/protocol.ts";
-import type { ResolveFindingsResult, TaskDependencyInput } from "@shared/protocol.ts";
+import type {
+  ForemanInstructionsConflict,
+  ResolveFindingsResult,
+  TaskDependencyInput,
+} from "@shared/protocol.ts";
 import { capturePaneText } from "./discovery/pane-capture.ts";
 import { noteKeyFor } from "./registry.ts";
 import type { Registry } from "./registry.ts";
@@ -173,6 +188,12 @@ import { summarizeBuffer } from "@shared/away-buffer.ts";
 import type { AwayWatcher } from "./away/watcher.ts";
 import { getHarnessesConfig, setHarnessesConfig } from "./harnesses.ts";
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
+import type { WorktreeManager } from "./worktrees/manager.ts";
+import {
+  WorktreeOperationError,
+  type WorktreeOperationsService,
+} from "./worktrees/operations.ts";
+import { run as runCommand } from "./util/exec.ts";
 import type { PendingTurnManager } from "./pending-turns.ts";
 import { driverFormAnswer, driverOptionAnswer, type DriverAnswer } from "./sdk/answer.ts";
 import { dialogMarker } from "./foreman/pending.ts";
@@ -204,9 +225,15 @@ import {
   pipelineRepoKey,
   type PipelineActionResult,
   type PipelineConsoleResult,
+  type PipelineForemanView,
   type PipelinesView,
 } from "@shared/pipeline.ts";
 import { schedulePipelineRefresh } from "./pipelines/index.ts";
+import {
+  pipelineEpisodeKey,
+  pipelineEpisodeWrite,
+  pipelineHaltMarker,
+} from "./foreman/pipeline-triage.ts";
 import { ingestConductorEvents, MAX_INGEST_BYTES } from "./pipelines/ingest.ts";
 import { shellCommand } from "./terminal/shell.ts";
 import { setUiConfig, uiConfigView } from "./ui-config.ts";
@@ -223,10 +250,8 @@ import { skillDrift } from "./skills/reconcile.ts";
 import { pendingReloads } from "./skills/reload.ts";
 import { readStandards } from "./standards.ts";
 import {
-  defaultForemanInstructions,
-  foremanInstructions,
-  resetForemanInstructions,
-  setForemanInstructions,
+  foremanInstructionsView,
+  updateForemanInstructions,
 } from "./foreman/instructions.ts";
 import { computeCommitDiff, computeSessionDiff, repoRootOf } from "./diff.ts";
 import { readRuntimeEffortBaseline } from "./runtime-meta.ts";
@@ -241,7 +266,9 @@ import {
   resolveInspectorFindings,
   updateInspectorPr,
   episodeById,
+  foremanEpisodeExists,
   recentEpisodes,
+  recordEpisode as recordForemanEpisode,
 } from "./db.ts";
 import { recordSpendReport } from "./spend-ledger.ts";
 import { FOREMAN_EPISODE_LEDGER } from "@shared/foreman.ts";
@@ -346,6 +373,13 @@ const WAIT_TIMEOUT_MS = 30000;
 /** The upload cap as the refusal states it - both size guards say the same number. */
 const TOO_BIG_MB = Math.round(MAX_UPLOAD_BYTES / 1024 / 1024);
 const PERSONA_BODY_MAX_BYTES = WORKFLOW_LIMITS.personaGuidanceBytes * 6 + 16 * 1024;
+/**
+ * The semantic schema counts JavaScript code units, while this stream guard counts raw request
+ * bytes. A caller may legally spell each code unit as a six-byte `\uXXXX` escape, so the guard
+ * includes that worst case plus ample room for the fixed ETag and JSON envelope.
+ */
+const FOREMAN_INSTRUCTIONS_BODY_MAX_BYTES =
+  FOREMAN_INSTRUCTIONS_MAX_LENGTH * 6 + 16 * 1024;
 /**
  * The same ×6 headroom as a Persona's, and derived from the prompt ceiling rather than
  * copied from it: JSON string escaping can expand a UTF-8 byte several times over, so a
@@ -747,6 +781,10 @@ export function buildApp(
    * emitter on one live stream.
    */
   workflowCommands?: WorkflowCommandManager,
+  /** The daemon's singleton native allocator. Manual-session routes return 503 without it. */
+  worktrees?: WorktreeManager,
+  /** Singleton projection/action owner for Settings > Worktrees. */
+  worktreeOperations?: WorktreeOperationsService,
 ): Hono {
   const app = new Hono();
   const terminalLauncher = launchSessionTerminal ?? launchTerminal;
@@ -790,6 +828,164 @@ export function buildApp(
   app.get("/api/health", (c) =>
     c.json({ ok: true, service: "mission-control", version: VERSION, pid: process.pid }),
   );
+
+  app.post("/api/worktrees/manual/acquire", async (c) => {
+    if (!worktrees) return c.json({ error: "native worktree manager unavailable" }, 503);
+    const parsed = await parseBody(c, ManualWorktreeAcquireSchema);
+    if (!parsed.ok) return parsed.res;
+    const head = await runCommand(
+      "git",
+      ["-C", parsed.data.repositoryPath, "rev-parse", "--verify", "HEAD^{commit}"],
+      { timeoutMs: 15_000 },
+    );
+    const baseSha = head.stdout.trim();
+    if (head.code !== 0 || head.outcomeUnknown || !/^[0-9a-f]{40}$/.test(baseSha)) {
+      return c.json({ error: "repository HEAD could not be resolved to an exact commit" }, 400);
+    }
+    const ownerKey = `${randomUUID()}${parsed.data.label ? `:${parsed.data.label}` : ""}`;
+    const acquired = await worktrees.acquire({
+      repositoryPath: parsed.data.repositoryPath,
+      baseSha,
+      owner: { kind: "manual", key: ownerKey },
+    });
+    if (acquired.outcome === "acquired") {
+      return c.json({
+        path: acquired.lease.path,
+        leaseId: acquired.lease.leaseId,
+        baseSha: acquired.lease.baseSha,
+      }, 201);
+    }
+    return c.json(
+      { error: acquired.reason, outcome: acquired.outcome },
+      acquired.outcome === "outcomeUnknown" ? 503 : 409,
+    );
+  });
+
+  app.post("/api/worktrees/manual/return", async (c) => {
+    if (!worktrees) return c.json({ error: "native worktree manager unavailable" }, 503);
+    const parsed = await parseBody(c, ManualWorktreeReturnSchema);
+    if (!parsed.ok) return parsed.res;
+    const found = worktrees.lookupLease({ leaseId: parsed.data.leaseId });
+    if (found.state === "missing") return c.json({ error: "manual lease was not found" }, 404);
+    if (found.state === "mismatch") return c.json({ error: found.reason }, 409);
+    if (found.lease.owner.kind !== "manual") {
+      return c.json({ error: "this lease belongs to a task or workflow check" }, 409);
+    }
+    if (found.state === "released") return c.json({ ok: true, alreadyReleased: true });
+
+    const status = await worktrees.status();
+    const slot = status.flatMap((pool) => pool.slots).find((entry) => entry.slot.id === found.lease.slotId);
+    if (!slot || slot.dirty !== false) {
+      return c.json({ error: "manual worktree is dirty or its cleanliness is unknown" }, 409);
+    }
+    const released = await worktrees.release(found.lease, {
+      ownerAuthorized: true,
+      requireClean: true,
+    });
+    if (released.outcome === "released" || released.outcome === "alreadyReleased") {
+      return c.json({ ok: true, alreadyReleased: released.outcome === "alreadyReleased" });
+    }
+    return c.json(
+      { error: released.reason, outcome: released.outcome },
+      released.outcome === "outcomeUnknown" ? 503 : 409,
+    );
+  });
+
+  function worktreeFailure(error: unknown) {
+    if (error instanceof WorktreeOperationError) {
+      return { status: error.status, body: { error: error.message, code: error.code } } as const;
+    }
+    const message = (error instanceof Error ? error.message : String(error)).trim().replace(/\s+/g, " ");
+    return {
+      status: 503 as const,
+      body: { error: message.slice(0, 2_048), code: "unavailable" },
+    };
+  }
+
+  app.get("/api/worktrees", async (c) => {
+    if (!worktreeOperations) return c.json({ error: "worktree operations unavailable" }, 503);
+    try {
+      return c.json(await worktreeOperations.inventory());
+    } catch (error) {
+      const failure = worktreeFailure(error);
+      return c.json(failure.body, failure.status);
+    }
+  });
+
+  app.get("/api/worktrees/config", async (c) => {
+    if (!worktreeOperations) return c.json({ error: "worktree operations unavailable" }, 503);
+    try {
+      const inventory = await worktreeOperations.inventory();
+      return c.json({
+        config: inventory.config,
+        effective: inventory.repositories.map((repo) => ({
+          poolId: repo.id,
+          commonDirectory: repo.commonDirectory,
+          policy: repo.policy,
+        })),
+      });
+    } catch (error) {
+      const failure = worktreeFailure(error);
+      return c.json(failure.body, failure.status);
+    }
+  });
+
+  app.put("/api/worktrees/config", async (c) => {
+    if (!worktreeOperations) return c.json({ error: "worktree operations unavailable" }, 503);
+    const parsed = await parseBody(c, WorktreesConfigPatchSchema);
+    if (!parsed.ok) return parsed.res;
+    try {
+      return c.json({ config: worktreeOperations.setConfig(parsed.data) });
+    } catch (error) {
+      const failure = worktreeFailure(error);
+      return c.json(failure.body, failure.status);
+    }
+  });
+
+  app.post("/api/worktrees/actions/preview", async (c) => {
+    if (!worktreeOperations) return c.json({ error: "worktree operations unavailable" }, 503);
+    const parsed = await parseBody(c, WorktreeActionRequestSchema);
+    if (!parsed.ok) return parsed.res;
+    try {
+      return c.json(await worktreeOperations.preview(parsed.data));
+    } catch (error) {
+      const failure = worktreeFailure(error);
+      return c.json(failure.body, failure.status);
+    }
+  });
+
+  app.post("/api/worktrees/actions/execute", async (c) => {
+    if (!worktreeOperations) return c.json({ error: "worktree operations unavailable" }, 503);
+    const parsed = await parseBody(c, WorktreeActionExecuteSchema);
+    if (!parsed.ok) return parsed.res;
+    try {
+      return c.json(await worktreeOperations.execute(parsed.data.token, parsed.data.acknowledgements));
+    } catch (error) {
+      const failure = worktreeFailure(error);
+      return c.json(failure.body, failure.status);
+    }
+  });
+
+  app.post("/api/worktrees/:slotId/open", async (c) => {
+    if (!worktreeOperations) return c.json({ error: "worktree operations unavailable" }, 503);
+    const parsed = await parseBody(c, OpenWorktreeSchema);
+    if (!parsed.ok) return parsed.res;
+    const slotId = c.req.param("slotId");
+    const cwd = await worktreeOperations.slotPath(slotId);
+    if (!cwd) return c.json({ error: "native worktree slot was not found" }, 404);
+    const result = await terminalLauncher(parsed.data.backend, {
+      name: `worktree-${slotId.slice(0, 8)}`,
+      cwd,
+      argv: [process.env.SHELL || "/bin/sh", "-l"],
+    });
+    const body = {
+      ok: result.ok,
+      backend: parsed.data.backend,
+      label: result.label,
+      ...(result.error ? { error: result.error } : {}),
+    };
+    return result.ok ? c.json(body) : c.json(body, result.status as 404 | 409 | 502 | 504);
+  });
   app.get("/api/sessions", (c) => c.json(registry.snapshot().sessions));
 
   // --- Keep Awake: the transient idle-sleep inhibitor ---
@@ -2248,22 +2444,28 @@ export function buildApp(
   // they have edited it and the shipped `FOREMAN.md` otherwise, so the worker never has to
   // know which of the two it got.
   //
-  // A plain string body rather than JSON: the value IS the document, and the settings panel
-  // that will edit it wants a textarea, not a wrapper object.
-  app.get("/api/foreman/instructions", (c) =>
-    c.json({ text: foremanInstructions(), default: defaultForemanInstructions() }),
-  );
+  // The document route carries the exact effective text, built-in Reset target, durable source,
+  // and opaque ETag together. Status carries only the source so this document never joins the
+  // frequent global poll.
+  app.get("/api/foreman/instructions", (c) => c.json(foremanInstructionsView()));
 
-  // Replace them, or reset to the shipped default. An empty string is a real choice ("judge
-  // by your own policy alone") and is stored as such; resetting is a separate action, which
-  // is why it is a flag rather than an empty write.
-  app.put("/api/foreman/instructions", async (c) => {
+  // Replace or reset only from the exact view the caller read. An empty string is a real choice
+  // ("judge by your own policy alone") and is stored as such; reset writes null so the shipped
+  // default applies and older builds remain able to read the same row.
+  app.put("/api/foreman/instructions", bodyLimit({
+    maxSize: FOREMAN_INSTRUCTIONS_BODY_MAX_BYTES,
+    onError: (c) => c.json({ error: "Foreman instructions request is too large" }, 413),
+  }), async (c) => {
     const parsed = await parseBody(c, ForemanInstructionsSchema);
     if (!parsed.ok) return parsed.res;
-    const text = parsed.data.reset
-      ? resetForemanInstructions()
-      : setForemanInstructions(parsed.data.text ?? "");
-    return c.json({ text, default: defaultForemanInstructions() });
+    const result = updateForemanInstructions(parsed.data);
+    if (result.ok) return c.json(result.view);
+    const conflict = {
+      error: FOREMAN_INSTRUCTIONS_CONFLICT_MESSAGE,
+      code: FOREMAN_INSTRUCTIONS_CONFLICT_CODE,
+      current: result.current,
+    } satisfies ForemanInstructionsConflict;
+    return c.json(conflict, 409);
   });
 
   // Diff of a session's worktree/branch vs its source branch (localhost read).
@@ -3509,38 +3711,19 @@ export function buildApp(
     return c.json(queues.get(session.id));
   });
 
-  // The `prompted` trigger's once-per-episode stamp: the goal it last fired (or held)
-  // on. `ask` atomically raises the matching Ship it? card too; splitting those writes
-  // can retire a verified episode and then permanently lose its question on a daemon
-  // error. A separate endpoint from the drain ask because the two triggers still own
-  // separate guards - see `SessionQueue.promptedGoal`.
-  //
-  // Same `ensureQueue` reasoning: these sessions have no queue by definition.
+  // Consume one durable prompted work-cycle generation. `ask` atomically raises the
+  // matching Ship it? card too; splitting those writes can spend a verified generation
+  // and then permanently lose its question on a daemon error. The Registry rechecks the
+  // logical key, generation and resolved intent at this daemon-owned write boundary.
   app.post("/api/sessions/:id/queue/wrapup/prompted", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
     const parsed = await parseBody(c, PromptedWrapupSchema);
     if (!parsed.ok) return parsed.res;
-    const key = registry.ensureQueue(session.id);
-    if (!key) return c.json({ error: "no queue for this session" }, 404);
     const now = Date.now();
-    registry.setQueueWrapup(
-      key,
-      parsed.data.ask
-        ? {
-            promptedGoal: parsed.data.goal,
-            promptedEvidence: parsed.data.evidenceMarker ?? null,
-            promptedActivityAt: parsed.data.activityAt ?? null,
-            wrapupAskedAt: now,
-            wrapupAnswer: null,
-          }
-        : {
-            promptedGoal: parsed.data.goal,
-            promptedEvidence: parsed.data.evidenceMarker ?? null,
-            promptedActivityAt: parsed.data.activityAt ?? null,
-          },
-      now,
-    );
+    if (!registry.consumePromptedGeneration(session.id, parsed.data, now)) {
+      return c.json({ error: "prompted work-cycle generation is no longer current" }, 409);
+    }
     return c.json(queues.get(session.id));
   });
 
@@ -4171,7 +4354,11 @@ export function buildApp(
       seen.add(key);
       repos.push({ ...repo, repoRoot });
     }
-    setPipelinesConfig({ enabled: parsed.data.enabled, repos });
+    setPipelinesConfig({
+      enabled: parsed.data.enabled,
+      foremanMechanicalTriage: parsed.data.foremanMechanicalTriage,
+      repos,
+    });
     reconcilePipelineConsent(registry);
     // The tuple carries how many repositories are being observed, and the Runs page draws
     // its Pipelines tab from that. Published here rather than waited for on the watcher's
@@ -4181,6 +4368,15 @@ export function buildApp(
     publishSettingsStatus(registry);
     return c.json(await pipelinesView(false));
   });
+
+  /** Both independent operator grants required for Foreman to touch an external pipeline. */
+  const pipelineForemanEnabled = (): boolean => {
+    const pipeline = getPipelinesConfig();
+    return getForemanConfig().enabled && pipeline.enabled && pipeline.foremanMechanicalTriage;
+  };
+
+  const pipelineForemanDisabled = (c: Context) =>
+    c.json({ error: "Foreman pipeline triage is disabled" }, 403);
 
   /**
    * Ask the engine to do one thing: start, stop, pause, resume, park, unpark, grant.
@@ -4205,7 +4401,24 @@ export function buildApp(
   app.post("/api/pipelines/action", async (c) => {
     const parsed = await parseBody(c, PipelineActionSchema);
     if (!parsed.ok) return parsed.res;
-    const { provider, repoRoot, slug, action, step, reason } = parsed.data;
+    const { provider, repoRoot, slug, action, step, reason, requestedBy } = parsed.data;
+    if (requestedBy === "foreman") {
+      if (!pipelineForemanEnabled()) return pipelineForemanDisabled(c);
+      const run = registry
+        .listPipelineRuns()
+        .find(
+          (candidate) =>
+            candidate.provider === provider &&
+            candidate.repoRoot === repoRoot &&
+            candidate.slug === slug,
+        );
+      if (action !== "unpark" || run?.halt?.class !== "mechanical") {
+        return c.json({ error: "Foreman may only unpark a current mechanical pipeline halt" }, 403);
+      }
+      if (!foremanEpisodeExists(pipelineEpisodeKey(run), pipelineHaltMarker(run))) {
+        return c.json({ error: "Foreman must reserve the pipeline halt before acting" }, 409);
+      }
+    }
     const outcome = await runPipelineAction(registry, action, {
       provider,
       repoRoot,
@@ -4215,6 +4428,68 @@ export function buildApp(
     });
     if (!outcome.ok) return c.json({ error: outcome.error }, outcome.status);
     return c.json(outcome.result satisfies PipelineActionResult);
+  });
+
+  /** Halt observations for the standalone Foreman worker, with no probe or subprocess. */
+  app.get("/api/pipelines/foreman", (c) => {
+    const enabled = pipelineForemanEnabled();
+    const items = enabled
+      ? registry
+          .listPipelineRuns()
+          .filter((run) => run.halt !== null)
+          .map((run) => {
+            const marker = pipelineHaltMarker(run);
+            return {
+              run,
+              marker,
+              handled: foremanEpisodeExists(pipelineEpisodeKey(run), marker),
+            };
+          })
+      : [];
+    return c.json({ enabled, items } satisfies PipelineForemanView);
+  });
+
+  /**
+   * Persist a pipeline triage episode for Foreman, through the daemon's only-writer boundary.
+   * A reservation re-derives its marker from the current projection so a worker cannot stamp
+   * a stale observation and then act on a newer halt under its identity. A later outcome is
+   * different: Unpark can refresh the projection and clear that halt before the worker writes
+   * its result, so the existing durable reservation is the authority for finalizing it.
+   */
+  app.post("/api/pipelines/foreman-episode", async (c) => {
+    const parsed = await parseBody(c, PipelineForemanEpisodeSchema);
+    if (!parsed.ok) return parsed.res;
+    if (!pipelineForemanEnabled()) return pipelineForemanDisabled(c);
+    const { provider, repoRoot, slug, episode } = parsed.data;
+    const run = registry
+      .listPipelineRuns()
+      .find(
+        (candidate) =>
+          candidate.provider === provider &&
+          candidate.repoRoot === repoRoot &&
+          candidate.slug === slug,
+      );
+    if (!run) return c.json({ error: "no such pipeline run" }, 404);
+    const noteKey = pipelineEpisodeKey(run);
+    if (episode.disposition !== "pending") {
+      if (episode.classification !== "mechanical") {
+        return c.json({ error: "Foreman may only finalize mechanical pipeline triage" }, 403);
+      }
+      if (!foremanEpisodeExists(noteKey, episode.marker)) {
+        return c.json({ error: "Foreman must reserve the pipeline halt before finalizing it" }, 409);
+      }
+      recordForemanEpisode(pipelineEpisodeWrite(run, episode));
+      return c.json({ ok: true });
+    }
+    if (!run.halt) return c.json({ error: "no such halted pipeline run" }, 404);
+    if (run.halt.class !== "mechanical" || episode.classification !== "mechanical") {
+      return c.json({ error: "Foreman may only reserve a mechanical pipeline halt" }, 403);
+    }
+    if (episode.marker !== pipelineHaltMarker(run)) {
+      return c.json({ error: "the pipeline halt changed before Foreman could act" }, 409);
+    }
+    recordForemanEpisode(pipelineEpisodeWrite(run, episode));
+    return c.json({ ok: true });
   });
 
   /**

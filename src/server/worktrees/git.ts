@@ -36,6 +36,7 @@ export interface WorktreeGit {
   observedDefaultSha(identity: WorktreeRepositoryIdentity): Promise<GitResult<string>>;
   fetchDefaultSha(identity: WorktreeRepositoryIdentity): Promise<GitResult<string>>;
   mergedInto(path: string, targetSha: string): Promise<GitResult<boolean>>;
+  remove(identity: WorktreeRepositoryIdentity, path: string, force: boolean): Promise<GitResult<void>>;
 }
 
 function failure(step: string, result: Awaited<ReturnType<typeof run>>): GitResult<never> {
@@ -216,5 +217,18 @@ export class NativeWorktreeGit implements WorktreeGit {
     if (result.code === 0) return { ok: true, value: true };
     if (result.code === 1) return { ok: true, value: false };
     return failure("git merge-base --is-ancestor", result);
+  }
+
+  async remove(
+    identity: WorktreeRepositoryIdentity,
+    path: string,
+    force: boolean,
+  ): Promise<GitResult<void>> {
+    const args = ["-C", identity.mainCheckoutRoot, "worktree", "remove"];
+    if (force) args.push("--force");
+    args.push(path);
+    const result = await this.execute("git", args, { timeoutMs: 60_000 });
+    if (commandFailed(result)) return failure("git worktree remove", result);
+    return { ok: true, value: undefined };
   }
 }

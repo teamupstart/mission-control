@@ -335,7 +335,7 @@ test("a Foreman completion claim cannot create a full submission during the new-
     binding,
     completionKind: "drain",
     marker: "inspector-new-head-wait",
-    promptedActivityAt: null,
+    expectedWorkCycle: null,
     summary: "Foreman observed a completed repair.",
     evidenceFingerprint: "foreman-head",
     expectedIntent: null,

@@ -60,7 +60,7 @@ repository configured. Withdrawing consent must never require reinstalling softw
 the switch. Only the case where the engine is absent *and* nothing was ever configured
 produces no UI at all.
 
-Once the row exists, it holds three cards, because three different things can be false and an
+Once the row exists, it holds four cards, because different things can be false and an
 operator who sees no pipelines has to be able to tell which:
 
 - **The engine** - whether the binary was found, where, which version, and how many
@@ -69,6 +69,12 @@ operator who sees no pipelines has to be able to tell which:
   **Check again** re-runs the probe immediately rather than waiting out its cache.
 - **Observe pipelines** - the master switch. Turning it off stops every repository at once
   *without forgetting which ones you chose*, so turning it back on restores exactly that set.
+- **Foreman triage** - a separate switch, off by default. When both it and Foreman are on,
+  Foreman may unpark only a halt classified exactly `mechanical`, through the same daemon
+  action route the dashboard uses. `needs-human`, `protected-artifact`, `legacy`,
+  `unclassified`, and future classes remain operator work by default. Every attempted action
+  is recorded in Foreman's episode ledger through the daemon; the standalone worker never
+  opens SQLite.
 - **Repositories** - one row per repository, each with its own switch and a health line
   naming the engine daemon's state and the number of pipelines found, halted ones called out.
   A row that is not being read names the control that would change that, and the two ways of
@@ -585,11 +591,28 @@ The Settings health line says which of the three states a repository is in:
 Consent itself is stored in the daemon's database (`app_config`, key `pipelines`), alongside
 the Foreman, Skills, Harnesses, Task sources, Models and GitHub Inspector settings.
 
-## Where this is going
+## Dispatch, Inspector, and Foreman
 
-This page describes what has landed. The
-[integration plan](plans/conductor-sdlc-integration/plan.md) and its
-[phase split](plans/conductor-sdlc-integration/phased-plan.md) describe the rest: dispatching a
-feature into an engine from Mission Control's backlog, with the Foreman and the GitHub
-Inspector reaching the verbs above through the same routes an operator does, never through a
-second control path.
+An enabled repository adds **pipeline** to the Dispatch kind picker. Dispatch runs
+`conduct-ts engineer --idea "<intent>"` in the main checkout through Mission Control's terminal
+launcher, with `CLAUDECODE` removed. It never uses the Agent SDK, provisions no Mission Control
+worktree, and leaves conductor in charge of agent, model, effort, and stdin. The task is a
+manual dispatch surface only; backlog autopilot does not schedule it.
+
+When the first nested agent appears inside that terminal home's projected worktree, the daemon
+persists the provider, repository, and slug on the task. It does not bind the task to the child
+session because one conductor run may launch several agents. A processed projection settles
+the durable task, records the projected pull request as its outcome when present, and keeps the
+terminal home attached for standard cleanup. The same link is restored after a daemon restart.
+
+When a projected run first reports `pr_url`, Mission Control adopts that pull request into the
+existing GitHub Inspector ledger with source `pipeline`, provided its owner and repository
+match a GitHub remote configured in the projected checkout. No second review or shipping path
+is created: the ordinary Inspector lifecycle, Shipped page, and shipping gates take over.
+
+Foreman's optional mechanical triage reads halted runs over HTTP, reserves an episode through
+the daemon before acting, and calls `POST /api/pipelines/action`. Exact equality with
+`mechanical` is the automation gate. Any other or future class fails closed and remains in the
+Attention inbox for the operator. The daemon re-checks Foreman's master switch and the separate
+pipeline-triage permission on the halt feed, episode reservation, and Foreman-tagged action, so
+turning either switch off closes an in-flight automation race without disabling operator verbs.

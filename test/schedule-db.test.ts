@@ -182,6 +182,7 @@ function mkTask(over: Partial<Task> = {}): Task {
     worktreePath: "/wt/x",
     branch: "harness/x",
     provider: "git",
+    worktreeLeaseId: null,
     homeName: "harness-x",
     terminalResourceId: "res-1",
     sessionId: null,
@@ -197,6 +198,7 @@ function mkTask(over: Partial<Task> = {}): Task {
     dispatchedAt: null,
     completedAt: null,
     ...over,
+    pipelineRun: over.pipelineRun ?? null,
     workflowId: over.workflowId ?? null,
   };
 }

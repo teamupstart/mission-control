@@ -1,11 +1,6 @@
 #!/usr/bin/env node
-// One-time bootstrap that makes Mission Control fully functional and wires up the
-// companion tool it builds on:
-//
-//   • treehouse   - a pool of pre-warmed git worktrees, so parallel agent
-//                   sessions never fight over one working tree.
-// Steps: install deps, build, wire the Claude status hooks, make sure treehouse
-// is installed, and write this repo's treehouse.toml. Every step detects whether
+// One-time bootstrap that makes Mission Control fully functional.
+// Steps: install deps, build, and wire the Claude status hooks. Every step detects whether
 // it is already done, so this is safe to run repeatedly.
 //
 // Usage: node scripts/init.mjs [--dry-run] [--skip-hooks] [--skip-build] [--with-e2e]
@@ -18,7 +13,6 @@ import { existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
-import { have } from "./lib.mjs";
 import { chromiumPrerequisiteMessage, nodePrerequisiteMessage } from "./init-prerequisites.mjs";
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -57,19 +51,6 @@ async function chromiumPath() {
   }
 }
 
-function cap(cmd, args, opts = {}) {
-  try {
-    return execFileSync(cmd, args, { cwd: repo, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], ...opts }).trim();
-  } catch {
-    return "";
-  }
-}
-// A clean semver-ish version string from a tool's noisy --version output.
-function ver(bin) {
-  const raw = cap(bin, ["--version"]) || cap(bin, ["version"]);
-  const m = raw.match(/v?\d+\.\d+\.\d+/);
-  return m ? m[0] : "version unknown";
-}
 // Run a command for real, unless --dry-run, in which case just print it.
 function run(cmd, args, opts = {}) {
   if (dryRun) {
@@ -120,31 +101,7 @@ if (skipBuild) {
   ok("built dist/web + dist/mcp");
 }
 
-// 5. treehouse (pooled worktrees) --------------------------------------------
-heading("treehouse - pooled git worktrees");
-if (have("treehouse")) {
-  ok(`installed (${ver("treehouse")})`);
-} else {
-  doing("treehouse not found - installing…");
-  const installed = have("go")
-    ? run("go", ["install", "github.com/kunchenguid/treehouse@latest"])
-    : run("sh", ["-c", "curl -fsSL https://kunchenguid.github.io/treehouse/install.sh | sh"]);
-  if (installed && !dryRun && !have("treehouse")) {
-    warn("treehouse installed but not on PATH - add its bin dir (e.g. ~/.local/bin or `go env GOPATH`/bin) to PATH");
-  } else if (installed) {
-    ok("treehouse installed");
-  }
-}
-// Repo-level pool config (safe settings only; treehouse ignores hooks here).
-if (existsSync(join(repo, "treehouse.toml"))) {
-  ok("treehouse.toml present");
-} else if (dryRun) {
-  doing("[dry-run] would run `treehouse init` to create treehouse.toml");
-} else if (have("treehouse") && run("treehouse", ["init"])) {
-  ok("wrote treehouse.toml");
-}
-
-// 6. Claude status hooks -----------------------------------------------------
+// 5. Claude status hooks -----------------------------------------------------
 heading("Claude status hooks");
 if (skipHooks) {
   ok("skipped (--skip-hooks) - wire later with `npm run install-hooks`");

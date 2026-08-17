@@ -181,10 +181,11 @@ test("the terminal rendering draws the conversation as one stream", async ({ das
   const statusLine = reopened.getByRole("region", { name: "Session status" });
   await expect(statusLine).toBeVisible();
   await expect(statusLine).toContainText(/claude: (idle|working|running)/);
-  await expect(statusLine).toContainText("harness/");
+  // Native leases launch detached and must not invent the Git fallback's branch name.
+  await expect(statusLine).not.toContainText("harness/");
   // A dispatched SDK session reports no subprocess, so there is no pid to show - and the
   // line shows none rather than `pid 0`, which would name a process that does not exist.
-  // The branch above is proven present on the same element, so this absence is a real
+  // The state above is proven present on the same element, so this absence is a real
   // assertion about what the line draws and not about whether it rendered.
   await expect(statusLine).not.toContainText("pid");
   await expect(statusLine).toContainText("terminal");

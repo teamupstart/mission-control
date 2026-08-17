@@ -60,6 +60,28 @@ test("getConfig throws on a non-2xx, like every other read", async () => {
   await assert.rejects(withDaemon({}, () => client.getConfig(), false), /\/api\/foreman\/config -> 500/);
 });
 
+test("instructions projects only exact text from the expanded document view", async () => {
+  const exact = " \r\n# Operator\r\n\r\nCafé 😀\t \n";
+  const text = await withDaemon(
+    {
+      text: exact,
+      defaultText: "# Built in\n",
+      source: "custom",
+      etag: "foreman-instructions-v1:abc",
+    },
+    () => client.instructions(),
+  );
+  assert.equal(text, exact);
+});
+
+test("instructions keeps malformed and unavailable responses on the safe fallback path", async () => {
+  assert.equal(await withDaemon({ source: "builtin" }, () => client.instructions()), "");
+  await assert.rejects(
+    withDaemon({}, () => client.instructions(), false),
+    /\/api\/foreman\/instructions -> 500/,
+  );
+});
+
 test("workflow ownership reads the session-filtered run page", async () => {
   const real = globalThis.fetch;
   let requested = "";

@@ -6,8 +6,6 @@ export function envVar(suffix: string): string | undefined;
 export const PORT: number;
 export const HOST: string;
 export const BASE_URL: string;
-export const LEASE_HOLDER: string;
-export const LEASE_HOLDERS: readonly string[];
 
 export const STATE_DIRS: readonly string[];
 export function stateDir(): string;

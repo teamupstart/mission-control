@@ -1,204 +1,158 @@
-# Isolated worktrees per session (treehouse)
+# Isolated worktrees
 
 Running several agents in **one** working tree is a recipe for clobbering - one
-agent's branch switch or edit lands under another's feet. [`kunchenguid/treehouse`](https://github.com/kunchenguid/treehouse)
-solves this with a pool of pre-warmed git worktrees ("manage worktrees without
-managing worktrees"): each session gets its own isolated tree, and dependencies
-/ build cache aren't re-paid every time.
+agent's branch switch or edit lands under another's feet. Mission Control therefore gives every
+new task, Workflow check, and approved manual development session an isolated checkout through
+one daemon-owned native allocator.
 
 One tree per session, with one exception. A
 [multi-repo task](dispatch-and-backlog.md#attaching-more-than-one-repository) is dispatched
-with a worktree per attached repository - each from that repository's own pool, or a plain
-`git worktree` where it has none - and all of them are handed to one session. Everything on
-this page then applies per tree: each is leased, pinned and reaped on its own. Provisioning is
+with a worktree per attached repository. Each comes from that repository's native pool, or
+from a disposable Git worktree when native allocation is disabled or positively cannot
+reserve a slot, and all of them are handed to one session. Everything on this page then
+applies per tree: each is leased, pinned and reclaimed on its own. Provisioning is
 all-or-nothing, so a dispatch that cannot cut one of them hands back the ones it already took
 rather than starting an agent with half its repositories.
 
-### Native allocator foundation
+### Native pools
 
-The daemon now owns a durable native-worktree pool model keyed by Git's physical common
-directory, not by the checkout path used to reach it. Its slot records carry exact lease and
-owner identity, and startup reconciliation fails closed when process or cwd occupancy cannot be
-proved safe. Pool directories also carry a versioned Mission Control marker so a database row
-alone never authorizes filesystem maintenance.
+Native pooling is enabled by default. The daemon lazily creates exact-commit, detached Git
+worktrees beneath `MISSION_HOME/worktree-pools`, keyed by Git's physical common directory rather
+than by the checkout path used to reach it. Released slot directories remain in place so ignored
+dependencies and build caches stay warm for the next lease. A repository-specific disable uses a
+cold disposable Git worktree beneath `MISSION_HOME/worktrees` instead.
 
-This is lifecycle infrastructure only. Dispatch, workflow checks, `make session`, and leaked
-treehouse lease cleanup still acquire and return worktrees exactly as described below. Consumer
-cutover, treehouse retirement, and the Settings surface are later work.
+Every slot carries a random lease ID and an exact task, check, or manual owner. Task and check
+rows persist that ID before work starts. Cleanup reads the recorded provider and lease ID rather
+than deciding again from current configuration, and refuses a stale lease or any slot whose
+process occupancy cannot be proved empty. Startup reconciliation uses the same fail-closed rules.
 
-`make session` makes treehouse a one-command "start a clean session":
+`make session` is a loopback client for that daemon-owned inventory:
 
 ```sh
-make session                      # lease a worktree, warm it, drop you in a subshell
-make session ARGS="-- claude"     # …or launch an agent in it directly
-make session ARGS="--holder mine" # …under your own lease label (see below)
-node scripts/new-session.mjs -- claude   # equivalent, without make
+make session                                  # acquire, warm, and open your shell
+make session ARGS="--label review -- claude" # label it and launch a command
+make session ARGS="--return <lease-id>"       # return one exact durable lease
+make session ARGS="--return-lease <lease-id>" # explicit spelling of the same action
 ```
 
 Under the hood (`scripts/new-session.mjs`):
 
-1. **Lease** a worktree from this repo's pool (`treehouse get --lease`), creating
-   one if the pool is empty (up to `max_trees` in `treehouse.toml`).
+1. **Acquire** a manual lease from the running daemon's loopback API.
 2. **Warm** it (`scripts/worktree-setup.mjs`): install dependencies so the session starts fast.
-3. **Hand it over** - open your `$SHELL` (or the command after `--`) in the tree.
+3. **Hand it over** with `MISSION_WORKTREE` and `MISSION_WORKTREE_LEASE_ID` set, opening your
+   `$SHELL` or the command after `--` in the tree.
 
-The lease is durable, so a backgrounded agent keeps its tree after you exit.
-Release it when done:
+The lease stays durable after the shell exits. Return it explicitly with either command above,
+using the lease ID printed by `make session` or exported as `MISSION_WORKTREE_LEASE_ID`. A slot path
+is reusable and never authorizes a return. If the daemon is unavailable, `make session` tells you
+to start it and exits without allocating a standalone worktree. **Settings > Worktrees** reads
+and acts on the same durable lease. The command is useful from a shell; the panel adds the safety
+preview and the surrounding pool, Git, process, and owner state.
 
-```sh
-treehouse status                 # see the pool
-treehouse return <path>          # give the worktree back to the pool
-```
+Native capacity and enablement are configuration policy. The shipped policy is enabled with 16
+slots per physical repository. A repository override affects its next acquisition, never an
+active lease.
 
-Because treehouse ignores lifecycle hooks in the repo-level `treehouse.toml` for
-safety, the warm step is run by `make session` itself. To make **every**
-`treehouse get` (not just `make session`) warm automatically, add a
-`post_create` hook to your user config - see the comments in `treehouse.toml`.
+### Settings > Worktrees
 
-### Leaked leases are reclaimed for you
+Open **Settings > Worktrees** to configure and inspect the allocator. The page is split into three
+parts:
 
-A durable lease is what lets a backgrounded agent survive a restart, but it also
-means nothing frees a tree when its agent simply goes away. Left alone those
-leases pile up until the pool hits `max_trees` with **zero available**, and every
-later `treehouse get` fails - at which point a dispatch falls back to a throwaway
-`git worktree` and the pool stops being reused at all. (`treehouse prune` can't
-help: it skips any tree with an owner reservation, and a leaked lease is one.)
+- **Policy** controls the default enablement and maximum. Expanding a native repository shows its
+  effective override and an optional setup argv. The argv is operator-authored, stored as separate
+  arguments, and runs only when Mission Control creates a new slot. It never runs when a warm slot
+  is leased again. Lowering capacity below the current count marks the difference as **over
+  capacity** and offers a right-size preview; saving policy never deletes a slot.
+- **Native inventory** shows available, leased, quarantined, and over-capacity counts. Each slot
+  carries its exact manager path, observed HEAD, relationship to the remote default, cleanliness,
+  process count, disk estimate, and owner. **Copy path** stays in the browser. **Open terminal**
+  asks the daemon's registered terminal launcher to open a login shell in the manager-known path.
+- **Legacy drain** classifies historical Treehouse resources as exact, unverifiable, foreign, or
+  unreadable. Only an exact durable owner with a clean, process-free checkout offers Return.
 
-So the daemon sweeps every treehouse repo it can name - the ones behind your live
-sessions and tracked tasks, plus every checkout under `MISSION_WORKSPACE_DIRS` -
-each `MISSION_POOL_REAP_MS`, and again whenever a dispatch finds the pool dry. The
-workspace scan is what reaches a *fully* leaked repo: once its agents are gone
-there is no live session left to advertise it, and you can't start one to fix
-that, because `treehouse get` is precisely what fails when the pool is dry.
+All mutations begin with a server preview. The dialog lists the fixed paths, owners, disk estimate,
+risks, blockers, and consequences. Dirty or unlanded exact targets require an explicit
+acknowledgement. Execution consumes the short-lived token once and observes the lease, task or
+check owner, processes, Git state, and slot version again. A changed fact refuses with a stale
+preview message. Unknown process occupancy is never acknowledgeable.
 
-It hands back only the leases it can prove are dead, and only its **own**. A tree
-is returned **only** when it is leased to `mission-control` (the holder both `make
-session` and dispatch record), treehouse reports no processes under it, no live
-session's cwd is inside it, no task the harness tracks still records it - including as one of
-a multi-repo task's attached repositories, whose trees no session's cwd is inside - it has no
-uncommitted changes, and origin's default branch already contains its HEAD.
-It also leaves a lease alone when a Workflow check has pinned its path. Check leases use a
-separate holder identity as the primary guard, and the path pin is deliberate defence in
-depth for the interval before a check process appears.
-Anything else - including any uncertainty - leaves the lease alone: a leaked lease
-costs a slot, a wrong reap costs your work.
+The operations have deliberately narrow meanings:
 
-The holder check is the harness's own rule, not something treehouse enforces
-(`treehouse return` takes a path and checks no holder). It matters because a lease
-survives *"even with no process running inside it, until you release it"* - so a
-tree you reserved with `treehouse get --lease --lease-holder my-label` is idle **on
-purpose**, and the sweep leaves it exactly where you put it, in this repo or any
-other one it walks. Reclaiming a `mission-control` lease is only fair game because
-this harness took it and can tell its holder is gone.
+- **Return** hands an active lease back through its owner. Task Return uses the ordinary task
+  cleanup, including multi-repository accounting and required archive or snapshot capture. Its
+  preview therefore lists every native, legacy, or disposable Git path that task cleanup will
+  touch, even when Return began from one slot. Check Return uses the recorded check provider and
+  process-group recovery. Manual Return uses the exact durable lease. A successful native Return
+  resets to the freshly fetched remote default and keeps the warm slot.
+- **Prune** removes only the clean, merged, process-free, unreferenced available slots enumerated in
+  its preview. Right-size is the same safety rule restricted to capacity above the configured
+  maximum.
+- **Reconcile** re-observes durable state, Git registration, ownership, and processes. It repairs
+  only states whose result is positively proven and keeps uncertainty quarantined.
+- **Destroy** removes one exact manager-owned slot or the fixed slot set enumerated for one pool.
+  It may discard dirty or unlanded work only after those risks are acknowledged. It has no target
+  meaning every pool and cannot override unknown identity, ownership, registration, or process
+  state.
+- **Return legacy lease** delegates to the task or check owner and then the conditional Treehouse
+  adapter. There is no force action for unverifiable or foreign resources.
 
-That is also the escape hatch from this side: `make session ARGS="--holder my-label"`
-(or `node scripts/new-session.mjs --holder my-label`) still warms and gates the tree
-the usual way, but records the lease under **your** label instead, so the sweep will
-never collect it - park a tree that way and it is yours until you
-`treehouse return` it yourself.
+Inventory is an observation, not a second owner database. Open dashboards receive only a
+content-free change signal and fetch the bounded view again. They do not receive raw process
+commands, Git diffs, environment values, or unbounded errors.
 
-The flip side is that the sweep only knows the label it records *today*. A lease
-`make session` took under this project's old `ai-harness` name is skipped like any
-other holder's, since nothing tells it apart from a reservation someone made under
-that label on purpose. If `treehouse status` shows an old idle lease the sweep
-never collects, hand it back yourself: `treehouse return <path>`.
+### Legacy Treehouse compatibility
 
-Note that a *live* agent's tree is often clean and merged (right after a push), so
-it's the liveness checks, not the git ones, that keep it yours - and a task's tree
-stays its own even after the agent exits, which is what lets **Mark done** keep
-your work. Because those liveness checks are the load-bearing ones, they're
-re-taken immediately before a tree is handed back, so a tree leased while the
-sweep was fetching is never returned on the strength of a reading from before it
-existed.
+Treehouse is not an installation, configuration, or runtime prerequisite. New tasks, checks,
+and manual sessions never probe or acquire from it, and the repository has no `treehouse.toml`.
+The persisted provider value remains valid only so upgraded databases can account for resources
+that an older Mission Control acquired.
 
-That re-read alone isn't quite enough, because `treehouse status` prints no lease
-id or timestamp: a tree that was returned and then *re-leased* in that window looks
-identical to the stale lease the sweep planned to collect, since both hold as
-`mission-control`. It matters most for a dispatch, which has no process, no session
-and no task record between taking its tree and finishing provisioning - and a second
-dispatch that finds the pool dry runs a sweep itself, right into that window.
+The compatibility bridge reads only repositories named by durable Treehouse task or check rows.
+It never scans workspace roots or reaps an external pool in the background. Treehouse v2.1.1 or
+newer supplies JSON status and conditional return. A return requires the persisted lease ID,
+exact path, expected holder, a matching live status row, a clean checkout, and proven-empty
+occupancy. It then passes both `--if-lease-id` and `--if-lease-holder` and confirms the lease
+disappeared or changed before the task or check owner clears its fields.
 
-So the daemon also tracks its own acquisitions, and spares a tree on two counts: one
-it leased after the sweep looked, and one it is still provisioning. The second lasts
-only until the tree is recorded on its task, after which the ordinary rungs decide
-again, and it lapses on its own if that never happens - so a dispatch that dies mid-setup
-delays a reap rather than stranding the slot. A `treehouse get` from another terminal is
-outside all of this, which is why the holder check above stays the thing protecting
-*your* reservations.
+Most historical rows predate lease-ID persistence. Those resources are reported as
+`identityUnverifiable`; a path and familiar holder cannot distinguish the original lease from a
+later same-holder lease. Missing binaries, old versions, malformed status, foreign status rows,
+dirty trees, and uncertain occupancy are also read-only. Mission Control keeps their rows and
+prints an actionable diagnostic instead of guessing. A missing Treehouse binary blocks only
+cleanup of those historical resources. Native allocation continues normally.
 
-Set `MISSION_POOL_REAP_MS=0` to switch the background sweep off entirely; the
-dispatch-time reap stays on, since its only alternative is abandoning the pool
-for a throwaway worktree.
-
-Pool work is scheduled in two lanes per repository. New worktree acquisition uses the
-foreground lane. Periodic reaping and restart cleanup use the background lane, so an
-acquisition can pass returns that are waiting but never interrupts a return already in
-progress. Restart cleanup is also admitted one task at a time for each repository rather
-than placing every historical task on the pool lock at once.
-
-The dispatch-time pass restores capacity rather than draining the pool. If its status read
-already sees an available tree, it retries `get` without returning anything. Otherwise it
-stops after the first lease passes every safety check and is returned. The slow exhaustive
-cleanup remains the periodic reaper's job.
-
-That last-resort fallback is no longer silent, which is how a pool could sit full
-without anyone noticing: a dispatch that still can't get a tree warns in the daemon
-log and points you at `treehouse status`. It reports what it actually observed and
-quotes treehouse's own words rather than blaming a full pool - `get` fails the same
-way for an unresolvable pool or a bad config, and sending you to a `treehouse status`
-that looks perfectly healthy would help nobody.
+To investigate one, run `treehouse status --json` in the recorded repository. Resolve foreign or
+unverifiable leases with Treehouse itself after verifying their current owner. Remove the external
+Treehouse pool and installation only after **Settings > Worktrees** reports no durable legacy rows
+and every foreign lease has been reviewed. `MISSION_POOL_REAP_MS` is retired and ignored; if it remains set, startup names
+`MISSION_WORKTREE_SWEEP_MS` as the native maintenance replacement.
 
 ### Check leases
 
 A [Workflow check](workflows.md#workflows-and-personas) runs a build in an isolated worktree of its
-own, pinned to the exact commit the run captured. When the `treehouse` binary is installed,
-the check uses a pooled tree even if the repository has no `treehouse.toml`; unlike dispatch,
-checks gate on binary availability alone. When the binary is absent, the check uses a
-throwaway detached `git worktree`, still runs the configured command, and removes the tree
-afterwards. The gate never passes merely because treehouse is unavailable.
+own, pinned to the exact commit the run captured. New attempts acquire a native slot under
+owner `check:<attemptId>` and persist the allocator's random lease ID before the supervisor
+gate can release. A disabled repository or a positive native refusal uses a throwaway detached
+Git worktree, still runs the configured command, and removes the tree afterwards. An ambiguous
+native acquisition fails closed and never attempts a second provider. The gate never passes
+merely because worktree allocation is unavailable.
 
-A pooled check tree is leased like any other, with one difference you will see in
-`treehouse status`: it is held by **`mission-control-check-<attemptId>`**, not by plain
-`mission-control`.
+A check has no session or task row standing in for its lifecycle. Its durable check row,
+just-acquired pin, supervisor identity, process-group recovery, retries, and verdict rules remain
+authoritative above the generic slot record. Cleanup first proves the process group empty, then
+conditionally returns the exact native lease. A missing, stale, occupied, or uncertain lease is
+kept for startup or maintenance reconciliation rather than guessed away. Native check leak
+reclamation runs on the native maintenance cadence after slot startup reconciliation.
 
-The distinct holder is the point, not decoration. A check has no session standing in
-it and no task recording it, and between the lease and the build starting it has no
-processes either - so every signal the sweep above trusts reads "idle" on a tree that
-is about to be written into, and a reclaim would kill the build and hard-reset the
-work. Because the sweep only ever returns leases stamped with a name this app has used
-(`mission-control`, `fleet-control`, `ai-harness`), a check lease is refused by the
-same rung that protects your own `--holder` reservations. The daemon also pins the path
-outright while a check holds it, which is deliberate redundancy: the holder is a string
-a future rename could break, and the pin is a path the daemon knows it is holding.
+#### Historical Treehouse check rows
 
-The consequence is that the sweep can never collect a *leaked* check lease either, so
-the daemon collects its own. It keeps a durable record of every check lease and, at
-startup and on the same timer as the sweep, hands back the ones nobody is coming back
-for - but only after proving both that the tree is still ours (same path, same exact
-holder token) and that nothing is still running in it. A tree it cannot prove is empty
-is kept rather than reclaimed, because the cost of keeping one is a pool slot and the
-cost of guessing wrong is somebody's work. A path that has been re-leased to a
-different holder in the meantime is never returned at all; the daemon records it and
-walks away, which is what stops a crash-recovery from handing back a tree that is now
-yours.
-
-One residual, stated plainly because it cannot be closed from this side: the daemon
-serialises its own `treehouse get` / `status` / `return` calls so they cannot interleave,
-but that lock binds **one process**. A `make session` or a hand-run `treehouse get` in
-another terminal is outside it. What makes that safe is the holder comparison rather
-than the lock - anything leasing a tree from outside gets `mission-control` or its own
-label, never a check token, so the daemon sees the mismatch and refuses to touch it.
-(`treehouse return` accepts a path and no holder, and `--lease-holder` is a label
-treehouse records and never checks, so this is a rule the harness imposes on itself.)
-
-**A check lease costs a pool slot for as long as the command runs.** Two checks run at once, so
-in the worst case two of a repository's `max_trees` are held by builds rather than by sessions,
-and a dispatch that finds the pool dry waits. If that starts happening, raise `max_trees` in
-that repository's `treehouse.toml` - the number is per repository, and the one in this
-repository is 32.
-
-If you ever see an idle `mission-control-check-…` lease that outlives its daemon, it is
-safe to hand back by hand: `treehouse return <path>`.
+Rows that already record provider `treehouse` keep their exact provider authority and
+`mission-control-check-<attemptId>` holder. Check recovery runs on the native maintenance cadence
+even when there are no native pools. It keeps the row and pin on every unreadable, unverifiable,
+foreign, dirty, occupied, or conditional-return failure. Only an exact persisted lease ID and
+matching holder can reach the compatibility return described above. No check code can acquire a
+new Treehouse lease.
 
 ### Running a check command
 

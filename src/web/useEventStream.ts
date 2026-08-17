@@ -124,6 +124,8 @@ export interface MissionState {
    * indistinguishable from nothing having happened.
    */
   harnessesRevision: number;
+  /** Content-free invalidation counter for the bounded Settings > Worktrees query. */
+  worktreesRevision: number;
   /**
    * How many times the local archive library has changed since this stream opened, plus one
    * per (re)connect. A COUNTER, for `harnessesRevision`'s reason and one more: archive
@@ -173,6 +175,7 @@ export function useEventStream(): MissionState {
   const [settingsStatus, setSettingsStatus] = useState<SettingsStatus | null>(null);
   const [keepAwakeStatus, setKeepAwakeStatus] = useState<KeepAwakeStatus | null>(null);
   const [harnessesRevision, setHarnessesRevision] = useState(0);
+  const [worktreesRevision, setWorktreesRevision] = useState(0);
   const [archivesRevision, setArchivesRevision] = useState(0);
   const [connected, setConnected] = useState(false);
   const [hasSnapshot, setHasSnapshot] = useState(false);
@@ -187,6 +190,7 @@ export function useEventStream(): MissionState {
       // A change announced while the channel was down reached nobody, and this config is not
       // part of the reconnect snapshot - so treat regaining the stream as a reason to re-read.
       setHarnessesRevision((n) => n + 1);
+      setWorktreesRevision((n) => n + 1);
       // Same rule for the archive library, which rides no snapshot at all: bundles can be
       // reconciled, refused, or pruned while the channel is down, and a mounted Archives page
       // would otherwise go on showing the page it had before the gap.
@@ -417,6 +421,9 @@ export function useEventStream(): MissionState {
         case "harnesses_config_changed":
           setHarnessesRevision((n) => n + 1);
           break;
+        case "worktrees_changed":
+          setWorktreesRevision((n) => n + 1);
+          break;
         // Counted for the same reason, and one batch of reconciled bundles is one bump: the
         // page's response is to re-run its own bounded, filtered query, and forty frames
         // would not tell it anything one does not.
@@ -467,6 +474,7 @@ export function useEventStream(): MissionState {
     settingsStatus,
     keepAwakeStatus,
     harnessesRevision,
+    worktreesRevision,
     archivesRevision,
     connected,
     hasSnapshot,

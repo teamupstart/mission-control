@@ -230,6 +230,16 @@ export interface PipelineProvider {
     console: PipelineConsole,
     target: PipelineConsoleTarget,
   ): { argv: string[]; cwd: string } | { refused: string };
+  /**
+   * What a pipeline task launches in a hosted terminal.
+   *
+   * The provider owns the command because its driver grammar is provider-specific. Mission
+   * Control owns only the terminal home and the consent check around this call.
+   */
+  taskArgv(
+    intent: string,
+    repoRoot: string,
+  ): Promise<{ argv: string[]; cwd: string } | { refused: string }>;
 }
 
 /** What a control verb acts on. `slug` is null for a repository-scoped verb. */

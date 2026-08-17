@@ -1,5 +1,4 @@
 import type { DatabaseSync } from "node:sqlite";
-import { run } from "../util/exec.ts";
 import type {
   CheckExecutionRequest,
   CheckExecutionResult,
@@ -22,7 +21,7 @@ import {
   type CheckSupervisorLookup,
 } from "./check-supervisor.ts";
 
-// The execution runtime a Check node reaches: the ONE place the pooled lease and the gated
+// The execution runtime a Check node reaches: the ONE place the worktree lease and the gated
 // process supervisor meet, and the change that makes a configured check gate stop passing
 // without running.
 //
@@ -108,9 +107,8 @@ export interface CheckRuntimeDeps {
 /**
  * The composed check execution runtime.
  *
- * Constructed once per daemon, in `src/server/index.ts`, ABOVE the pool reaper and above the
- * `WorkflowManager` - a check must not be able to start before the daemon knows which trees it
- * already holds.
+ * Constructed once per daemon, in `src/server/index.ts`, above the `WorkflowManager`: a check
+ * must not start before durable check-lease recovery knows which trees it already holds.
  */
 export class CheckRuntime {
   private readonly supervise: typeof runSupervisedCheck;

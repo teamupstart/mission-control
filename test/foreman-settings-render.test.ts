@@ -62,6 +62,7 @@ function plannerStatus(): ForemanStatus {
       lastError: "codex exited 1: schema validation failed",
       nextRetryAt: Date.now() + 600_000,
     },
+    instructionsSource: "builtin",
   } as ForemanStatus;
 }
 
@@ -85,6 +86,29 @@ function decoded(html: string): string {
 }
 
 // ---- ForemanSettingsPanel ----
+
+test("standing guidance reports the status source and links to the one System profile", () => {
+  const expected = [
+    ["builtin", "Built-in default"],
+    ["custom", "Customized"],
+    ["none", "No standing guidance"],
+  ] as const;
+  for (const [instructionsSource, label] of expected) {
+    const state = mkState();
+    state.status = { ...plannerStatus(), instructionsSource };
+    const html = renderPanel(state);
+    assert.match(html, new RegExp(label));
+    assert.match(html, />Open System profile<\/button>/);
+    assert.match(html, /Identity, policy,[\s\S]*authority remain application-owned/);
+  }
+});
+
+test("standing guidance is unknown until status answers instead of assuming a source", () => {
+  const html = renderPanel(mkState());
+  assert.match(html, /Standing guidance/);
+  assert.match(html, /Unknown - the daemon has not answered/);
+  assert.doesNotMatch(html, /Built-in default/);
+});
 
 test("the Tier control lists all three cheap-tier options", () => {
   const html = renderPanel(mkState());

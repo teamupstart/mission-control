@@ -44,7 +44,7 @@ function probe(over: Partial<PipelineProbe> = {}): PipelineProbe {
 function answered(over: Partial<PipelinesView> = {}): ConductorState {
   return {
     view: {
-      config: { enabled: false, repos: [] },
+      config: { enabled: false, foremanMechanicalTriage: false, repos: [] },
       probes: [probe()],
       status: [],
       ...over,
@@ -91,17 +91,18 @@ test("the panel ships off, and says which of the three reasons applies", () => {
   const toggles = off.match(/<input[^>]*type="checkbox"[^>]*>/g) ?? [];
   assert.ok(toggles.length > 0, "the panel has a master switch");
   assert.doesNotMatch(toggles[0]!, /checked/, "the master switch ships off");
+  assert.match(off, /Foreman does not act on pipeline halts/);
 
   // Master on, nothing consented to: a different sentence, because the next move differs.
   const armedButEmpty = render(
-    answered({ config: { enabled: true, repos: [] } }),
+    answered({ config: { enabled: true, foremanMechanicalTriage: false, repos: [] } }),
   );
   assert.match(armedButEmpty, /On, but no repository is switched on/);
 
   // Master on, one repository consented to.
   const live = render(
     answered({
-      config: { enabled: true, repos: [{ provider: "ai-conductor", repoRoot: "/w/demo", enabled: true }] },
+      config: { enabled: true, foremanMechanicalTriage: false, repos: [{ provider: "ai-conductor", repoRoot: "/w/demo", enabled: true }] },
     }),
   );
   assert.match(live, /On - reading 1 repository/);
@@ -169,7 +170,7 @@ test("a version this build could not derive says so rather than inventing one", 
 test("a repository row carries its path, its switch and its health", () => {
   const html = render(
     answered({
-      config: { enabled: true, repos: [{ provider: "ai-conductor", repoRoot: "/w/demo", enabled: true }] },
+      config: { enabled: true, foremanMechanicalTriage: false, repos: [{ provider: "ai-conductor", repoRoot: "/w/demo", enabled: true }] },
       probes: [probe({ projects: [] })],
       status: [
         {
@@ -282,7 +283,7 @@ test("the panel names where the plugin is installed, without offering a control 
 test("a repository the engine has forgotten stays listed while its consent stands", () => {
   // Otherwise the consent would be in force with nothing on screen that could withdraw it.
   const repos = offeredRepos(
-    { enabled: true, repos: [{ provider: "ai-conductor", repoRoot: "/w/de-registered", enabled: true }] },
+    { enabled: true, foremanMechanicalTriage: false, repos: [{ provider: "ai-conductor", repoRoot: "/w/de-registered", enabled: true }] },
     [probe({ projects: [{ name: "demo", path: "/w/demo", remote: null, status: "registered" }] })],
   );
   assert.deepEqual(repos.map((r) => r.repoRoot), ["/w/de-registered", "/w/demo"]);

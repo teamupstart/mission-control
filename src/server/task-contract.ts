@@ -65,6 +65,7 @@ const KIND_CONTRACT: Record<TaskKind, (task: Task, inputs: TaskContractInputs) =
   ship: () => null,
   scout: (task, inputs) => scoutReportAppendix(scoutRepoSlots(task, inputs.fallbackRoot ?? null)),
   plan: (task, inputs) => planContractAppendix(requirePlanSkills(task, inputs)),
+  pipeline: () => null,
 };
 
 /**

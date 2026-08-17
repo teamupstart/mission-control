@@ -440,8 +440,8 @@ export class WorkflowEngine {
     // Inert in every build with no execution runtime, and in every daemon with no check
     // running: the watched set is empty and this returns immediately.
     //
-    // `src/server/index.ts` calls this from `shutdown()` BEFORE it stops the pool reaper, so
-    // the returns issued here still run under a live reaper and its lock. Do not reorder that.
+    // `src/server/index.ts` calls this before native maintenance stops, so provider-owned
+    // cleanup can finish through the ordinary lease state machine.
     killLiveCheckGroups();
     await Promise.allSettled([...this.inFlight]);
   }

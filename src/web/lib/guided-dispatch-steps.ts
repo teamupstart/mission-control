@@ -204,7 +204,12 @@ export function endGuidedPass(pass: GuidedPass): GuidedPass {
  * A `Record` over the tuple, so a fourth kind does not compile until it has said which key
  * takes it. `test/guided-dispatch-steps.test.ts` fails if two kinds claim the same letter.
  */
-export const GUIDED_KIND_KEYS: Record<TaskKind, string> = { ship: "p", scout: "t", plan: "l" };
+export const GUIDED_KIND_KEYS: Record<TaskKind, string> = {
+  ship: "p",
+  scout: "t",
+  plan: "l",
+  pipeline: "e",
+};
 
 /**
  * The harness mnemonics, hand-chosen for the same reason: Claude Code and Codex both start

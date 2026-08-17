@@ -2861,11 +2861,30 @@ export class WorkflowManager {
     }
     if (
       (claim.completionKind === "prompted" && !claim.expectedIntent) ||
+      (claim.completionKind === "prompted" && !claim.expectedWorkCycle) ||
       (claim.expectedIntent &&
         !sessionIntentMatches(this.registry.getGoal(session.id), claim.expectedIntent))
     ) {
       throw new Error("Foreman completion intent is no longer current");
     }
+    if (claim.expectedWorkCycle) {
+      const cycle = session.workCycle;
+      if (
+        claim.expectedWorkCycle.logicalKey !== noteKeyFor(session) ||
+        !cycle ||
+        cycle.logicalKey !== claim.expectedWorkCycle.logicalKey ||
+        cycle.generation !== claim.expectedWorkCycle.generation ||
+        cycle.generation < 1 ||
+        cycle.active ||
+        cycle.completedAt === null
+      ) {
+        throw new Error("Foreman completion work cycle is no longer current");
+      }
+    }
+    // Resolve a matching historical prompted guard before entering the claim
+    // transaction. A rejected legacy replay must persist its compatibility consume;
+    // doing this inside the transaction would roll that migration back with the claim.
+    if (claim.completionKind === "prompted") this.registry.getQueue(session.id);
     // A claim offers a proof to an existing binding; it never creates one. An unbound
     // conversation answers `no_binding` so that completion has exactly one owner and two
     // PR-producing paths can never race on the same branch.
@@ -2885,11 +2904,11 @@ export class WorkflowManager {
     // durable half of a completion - the guard, the runs, the submissions - is what the reply
     // speaks for, and it must not depend on how long a git read takes.
     for (const [index, target] of targets.entries()) {
-      // The FIRST target spends the completion episode; the rest ride the same proof. One
-      // settled turn is one episode however many repositories it touched, and retiring the
+      // The FIRST target spends the completion boundary; the rest ride the same proof. One
+      // settled turn is one boundary however many repositories it touched, and consuming the
       // guard again would throw on a guard that is no longer armed. It is deliberately the
       // first rather than the primary: a task whose primary is untouched has no primary run,
-      // and the episode must still be spent by the review that does exist.
+      // and the boundary must still be spent by the review that does exist.
       const claimed = this.claimCompletionForRepo(target, claim, index === 0, session, now);
       if (index === 0) {
         answer = claimed.result;
@@ -2965,7 +2984,7 @@ export class WorkflowManager {
    * budgets mean in practice.
    *
    * A sibling's failure is contained rather than fatal. The lead has already spent the
-   * episode by the time one can happen, so throwing would leave the conversation with no
+   * boundary by the time one can happen, so throwing would leave the conversation with no
    * review at all and a guard nobody can re-arm; a repository whose run failed to start is
    * visible as a repository with no run, and the operator can start one.
    */
@@ -2991,7 +3010,7 @@ export class WorkflowManager {
         binding,
         completionKind: claim.completionKind,
         marker: claim.marker,
-        promptedActivityAt: claim.activityAt,
+        expectedWorkCycle: claim.expectedWorkCycle,
         summary: claim.summary,
         evidenceFingerprint: claim.evidenceFingerprint,
         evidenceGroupKey: `foreman:${binding.noteKey}:${claim.completionKind}:${claim.marker}`,
@@ -4157,10 +4176,10 @@ export class WorkflowManager {
    * `waiting_for_session` and no later completion signal from that session can ever claim it.
    *
    * Sending a packet is what restarts the clock, and it restarts it through the existing
-   * machinery rather than a special case. The nudge is an ordinary delivery, so a confirmed
-   * send re-arms exactly one completion episode (`confirmDeliverySend`), and the next Foreman
-   * claim is therefore legitimate and gated on a fresh idle plus settle - about fourteen
-   * seconds - rather than firing on the next four-second tick.
+   * machinery rather than a special case. The nudge is an ordinary delivery: queue drain may
+   * re-arm explicitly, while an item-less prompted session waits for that delivered turn's
+   * natural completed work-cycle generation. The next Foreman claim is therefore legitimate
+   * and gated on a fresh idle plus settle, rather than firing on the next four-second tick.
    */
   private scheduleUnchangedEvidenceNudge(
     runId: string,
@@ -5611,9 +5630,10 @@ export class WorkflowManager {
         }
         this.publishRun(run.id);
         // Outside the capture lock's critical decision but inside the same turn: the nudge is a
-        // delivery, and a delivery re-arms exactly one completion episode on confirmation. That
-        // is what supplies the NEXT legitimate claim - re-arming the guard here instead would
-        // spin the whole capture every fourteen seconds against a session that is not changing.
+        // delivery. Queue drain may re-arm on confirmation; prompted completion waits for the
+        // delivered work's next natural completed generation. That is what supplies the NEXT
+        // legitimate claim; resetting the prompted guard here would spin capture against a
+        // session that is not changing.
         if (!exhausted) this.scheduleUnchangedEvidenceNudge(run.id, submission.id, refusals);
         return {
           ok: false,
@@ -5854,9 +5874,8 @@ export class WorkflowManager {
           // session stopped?", and a second poller asking that would be a second answer -
           // with its own window, its own settle threshold, and its own idea of idle.
           void this.sweepSessionActions();
-          // Also here rather than on a timer of its own: this asks whether a blocked run's
-          // pooled worktree came back, and the pool reaper that hands it back has no seam to
-          // announce it through. One observer, one interval, one answer per pass.
+          // Also here rather than on a timer of its own: this asks whether provider-owned
+          // cleanup for a blocked run has settled. One observer, one interval, one answer.
           this.engine.resumeClearedCheckCleanup();
         },
         this.options.resumptionIntervalMs ?? WORKFLOW_RESUMPTION_INTERVAL_MS,

@@ -25,23 +25,9 @@ import {
 } from "./harnesses.ts";
 import { harnessFor } from "./harness/index.ts";
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
-import {
-  poolAvailableFor,
-  poolPins,
-  recoverDryPoolCapacity,
-  type PoolPins,
-} from "./pool.ts";
-import {
-  acquireLease,
-  defaultTreehouseCli,
-  settleLease,
-  withPoolLock,
-  type PoolLockPriority,
-  type TreehouseCli,
-} from "./pool-lease.ts";
 import { heldHomeNames, homeAlive, homeNameRules, killHome, launchHome } from "./terminal/home.ts";
 import type { Registry } from "./registry.ts";
-import { resetWorktreeToCommit, verifyHeadIs } from "./git/ensemble-snapshot.ts";
+import { verifyHeadIs } from "./git/ensemble-snapshot.ts";
 import {
   kindMissionMcpRequirement,
   missionMcpDescriptor,
@@ -58,10 +44,12 @@ import {
 } from "./scouts/prompt-journal.ts";
 import { withRepoMemoryPointer } from "./memory.ts";
 import { hasBin, resolveBinPath, run, type RunResult } from "./util/exec.ts";
-import { mainRepoRoot } from "./util/git.ts";
 import { sleep } from "./util/timers.ts";
 import { prepareCodexLaunch } from "./harness/codex/launch.ts";
 import { preparePiLaunch } from "./harness/pi/launch.ts";
+import { pipelineTaskLaunch } from "./pipelines/index.ts";
+import { WorktreeManager } from "./worktrees/manager.ts";
+import { LegacyTreehouseService } from "./worktrees/legacy-treehouse.ts";
 
 /** How long to wait for the dispatched agent's pane to be discovered before failing. */
 const READY_TIMEOUT_MS = Number(envVar("DISPATCH_READY_MS") ?? 30000);
@@ -144,9 +132,13 @@ export function dispatchPermissionModeArgs(agent: AgentType): string[] {
  * human-readable reason rather than crashing the daemon.
  */
 export class Dispatcher {
+  private readonly teardown: typeof teardownWorktree;
+  private readonly worktrees: WorktreeManager;
+  private readonly legacy: LegacyTreehouseService;
+
   constructor(
     private registry: Registry,
-    private teardown: typeof teardownWorktree = teardownWorktree,
+    teardown: typeof teardownWorktree | undefined = undefined,
     private deps: {
       inject?: typeof injectPrompt;
       sleep?: typeof sleep;
@@ -175,8 +167,21 @@ export class Dispatcher {
       /** Server-owned immutable graph check; kept injectable so this launch layer stays DB-free. */
       workflowEvidenceEnabled?: (task: Pick<Task, "kind" | "workflowId">) => boolean;
       resolveRuntime?: typeof resolveDispatchRuntime;
+      /** Provider-owned terminal argv for a pipeline task. */
+      pipelineLaunch?: typeof pipelineTaskLaunch;
+      /** Terminal-home launch seam for focused pipeline dispatch tests. */
+      spawn?: typeof spawnUniquely;
+      /** The daemon's singleton native allocator. Focused tests may inject an isolated one. */
+      worktrees?: WorktreeManager;
+      /** Release-only bridge for persisted historical Treehouse resources. */
+      legacy?: LegacyTreehouseService;
     } = {},
-  ) {}
+  ) {
+    this.worktrees = deps.worktrees ?? new WorktreeManager();
+    this.legacy = deps.legacy ?? new LegacyTreehouseService();
+    this.teardown = teardown ?? ((task, legacy, priority) =>
+      teardownWorktree(task, legacy ?? this.legacy, priority, this.worktrees));
+  }
 
   async dispatch(taskId: string, options: TaskDispatchOptions = {}): Promise<void> {
     const task = this.registry.getTask(taskId);
@@ -186,9 +191,16 @@ export class Dispatcher {
       status: "dispatching",
       error: null,
       dispatchedAt: task.dispatchedAt ?? Date.now(),
+      // A retry must prove its new provider run instead of inheriting the prior attempt's
+      // slug and completing against a projection it did not launch.
+      ...(task.kind === "pipeline" ? { pipelineRun: null } : {}),
     });
 
     try {
+      if (task.kind === "pipeline") {
+        await this.dispatchPipeline(taskId, task);
+        return;
+      }
       const configured = resolveAgentBin(task.agent);
       const agentBin = await resolveBinPath(configured);
       if (!agentBin) throw new Error(`agent binary "${configured}" not found on PATH`);
@@ -271,21 +283,57 @@ export class Dispatcher {
       // tear down. On a single-repo task this is exactly one call with slot 0.
       const { primary: wt, extras } = await this.provisionAll(task, taskId, slug, shortId, baseSha);
       // Record every worktree BEFORE spawning, so a spawn failure can still tear them down.
-      // The collection lands in the SAME patch as the primary's triple: `poolPins` reads
-      // the task row, so a secondary recorded a moment later would be unpinned in between -
-      // and an unpinned tree is one the reaper may hard-reset.
-      this.patch(taskId, {
-        worktreePath: wt.path,
-        branch: wt.branch,
-        provider: wt.provider,
-        baseSha: wt.baseSha,
-        extraRepos: extras,
-      });
-      // The task now names these trees, so `PoolPins.taskWorktrees` speaks for them and the
-      // acquisition no longer has to. Handed over immediately after the record lands, which
-      // is the moment the reaper can see it - see `settleLease`.
-      settleLease(wt.path);
-      for (const entry of extras) if (entry.worktreePath) settleLease(entry.worktreePath);
+      // The collection lands in the SAME patch so every durable native owner becomes visible
+      // atomically before provisional allocator state settles.
+      try {
+        this.patch(taskId, {
+          worktreePath: wt.path,
+          branch: wt.branch,
+          provider: wt.provider,
+          worktreeLeaseId: wt.leaseId,
+          baseSha: wt.baseSha,
+          extraRepos: extras,
+        });
+      } catch (recordError) {
+        const paths = [wt.path, ...extras.flatMap((entry) => entry.worktreePath ?? [])];
+        let reclaimed: readonly string[] = [];
+        try {
+          await this.teardown({
+            taskId,
+            repoRoot: task.repoRoot,
+            worktreePath: wt.path,
+            branch: wt.branch,
+            provider: wt.provider,
+            worktreeLeaseId: wt.leaseId,
+            homeName: null,
+            extraRepos: extras,
+          });
+          reclaimed = paths;
+        } catch (cleanupError) {
+          reclaimed = reclaimedFrom(cleanupError);
+          console.error(
+            `[mission-control] could not fully unwind task ${taskId} after its lease record failed: ` +
+              (cleanupError instanceof Error ? cleanupError.message : String(cleanupError)),
+          );
+        }
+        if (reclaimed.includes(wt.path) && wt.leaseId) {
+          this.worktrees.settleDomainLease(wt.leaseId);
+        }
+        for (const entry of extras) {
+          if (
+            entry.worktreePath &&
+            reclaimed.includes(entry.worktreePath) &&
+            entry.worktreeLeaseId
+          ) {
+            this.worktrees.settleDomainLease(entry.worktreeLeaseId);
+          }
+        }
+        throw recordError;
+      }
+      if (wt.leaseId) this.worktrees.settleDomainLease(wt.leaseId);
+      for (const entry of extras) {
+        if (entry.worktreeLeaseId) this.worktrees.settleDomainLease(entry.worktreeLeaseId);
+      }
       if (await this.abortIfSettled(taskId)) return;
 
       // The task as it now stands, since `task` is the snapshot taken before any of this
@@ -296,6 +344,7 @@ export class Dispatcher {
         worktreePath: wt.path,
         branch: wt.branch,
         provider: wt.provider,
+        worktreeLeaseId: wt.leaseId,
         baseSha: wt.baseSha,
         extraRepos: extras,
       };
@@ -580,6 +629,39 @@ export class Dispatcher {
     }
   }
 
+  /** Launch conductor itself, leaving worktree creation and agent prompting to the engine. */
+  private async dispatchPipeline(taskId: string, task: Task): Promise<void> {
+    if (task.extraRepos.length > 0) {
+      throw new Error("a pipeline task owns one enabled conductor repository; detach the other repos");
+    }
+    if (task.workflowId !== null) {
+      throw new Error("a pipeline task cannot hand off to an after-work Workflow");
+    }
+    const launch = await (this.deps.pipelineLaunch ?? pipelineTaskLaunch)(
+      task.repoRoot,
+      task.intent,
+    );
+    if (!launch.ok) throw new Error(launch.error);
+
+    const label = sessionLabel(task.title);
+    const shortId = taskId.slice(0, 6);
+    const [command, ...args] = launch.argv;
+    if (!command) throw new Error("the pipeline provider returned no launch command");
+    const homeName = await (this.deps.spawn ?? spawnUniquely)(
+      label,
+      shortId,
+      launch.cwd,
+      command,
+      args,
+    );
+    this.patch(taskId, { homeName });
+    if (await this.abortIfSettled(taskId)) return;
+
+    // The terminal is conductor's live stdin, not an agent session. Agent sessions appear
+    // later in the engine's worktree and correlate through Registry.pipelineLinkFor.
+    this.patch(taskId, { status: "running", sessionId: null });
+  }
+
   /**
    * The embedded arm of the dispatch: hand the task to the supervisor and stop.
    *
@@ -841,16 +923,15 @@ export class Dispatcher {
    *
    * All-or-nothing, and that is the whole reason this is a method rather than a loop at the
    * call site. A task whose second repo fails to provision has already taken a real tree
-   * for its first - a pool lease, most likely - and nothing downstream would ever tear that
+   * for its first - a native lease, most likely - and nothing downstream would ever tear that
    * down: the dispatch throws before any of it reaches the task row, so teardown and
    * startup reconciliation, which both read the row, cannot see it. The pool would simply
    * lose a slot per failed dispatch.
    *
-   * Unwinding is provider-aware because `teardownWorktree` is: a treehouse lease is
-   * RETURNED (never git-removed, which would delete a pooled tree the pool still believes
-   * it owns) and a git fallback tree is removed with its `harness/` branch. Mixed providers
-   * across one task are ordinary - a treehouse repo takes a lease while a plain repo does
-   * not - so both orderings unwind correctly.
+   * Unwinding is provider-aware because `teardownWorktree` is: a native lease is returned
+   * conditionally through its exact allocator identity, while a Git fallback tree is removed
+   * with its `harness/` branch. Mixed providers across one task are ordinary because native
+   * policy is per physical repository, so both orderings unwind correctly.
    *
    * A failure during the unwind is logged, never thrown: the caller is already failing, and
    * replacing the cause with a cleanup error would hide the thing that actually went wrong.
@@ -862,10 +943,17 @@ export class Dispatcher {
     shortId: string,
     baseSha: string | null,
   ): Promise<{ primary: ProvisionedWorktree; extras: TaskRepoEntry[] }> {
-    const pins = () => poolPins(this.registry);
-    const primary = await provisionWorktree(task.repoRoot, taskId, slug, shortId, pins, baseSha, 0);
-    const taken: Array<{ repoRoot: string; wt: ProvisionedWorktree }> = [
-      { repoRoot: task.repoRoot, wt: primary },
+    const primary = await provisionWorktree(
+      task.repoRoot,
+      taskId,
+      slug,
+      shortId,
+      baseSha,
+      0,
+      this.worktrees,
+    );
+    const taken: Array<{ repoRoot: string; position: number; wt: ProvisionedWorktree }> = [
+      { repoRoot: task.repoRoot, position: 0, wt: primary },
     ];
     const extras: TaskRepoEntry[] = [];
     try {
@@ -878,26 +966,30 @@ export class Dispatcher {
           taskId,
           slug,
           shortId,
-          pins,
           null,
           index + 1,
+          this.worktrees,
         );
-        taken.push({ repoRoot: entry.repoRoot, wt });
+        taken.push({ repoRoot: entry.repoRoot, position: index + 1, wt });
         extras.push({
           ...entry,
           worktreePath: wt.path,
           branch: wt.branch,
           provider: wt.provider,
+          worktreeLeaseId: wt.leaseId,
           baseSha: wt.baseSha,
         });
       }
     } catch (err) {
-      for (const { repoRoot, wt } of taken) {
+      for (const { repoRoot, position, wt } of taken) {
         await this.teardown({
           repoRoot,
           worktreePath: wt.path,
           branch: wt.branch,
           provider: wt.provider,
+          worktreeLeaseId: wt.leaseId,
+          taskId,
+          position,
           // No terminal home exists yet - nothing has been spawned at this point.
           homeName: null,
         }).catch((cleanupError: unknown) => {
@@ -906,7 +998,7 @@ export class Dispatcher {
               `provision: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`,
           );
         });
-        settleLease(wt.path);
+        if (wt.leaseId) this.worktrees.settleDomainLease(wt.leaseId);
       }
       throw err;
     }
@@ -931,7 +1023,7 @@ export class Dispatcher {
       // The trees that DID come back are released even though the teardown failed overall.
       // Anything still standing keeps its record, so it remains reclaimable; anything gone
       // stops being pinned. Reporting the failure and keeping the whole collection would
-      // leave `poolPins` sparing trees that are already back in their pools.
+      // leave durable rows naming trees that are already back in their pools.
       this.patch(taskId, {
         ...releasedTaskResources(task, reclaimedFrom(error)),
         error: baseError
@@ -955,7 +1047,9 @@ export class Dispatcher {
 export interface ProvisionedWorktree {
   path: string; // realpath, so it matches a pane's reported cwd exactly
   branch: string | null;
-  provider: "treehouse" | "git";
+  provider: Extract<WorktreeProvider, "mission" | "git">;
+  /** Present only for the native provider. */
+  leaseId: string | null;
   /**
    * The full 40-character commit this tree was cut at, or null when HEAD could not be
    * read. Recorded for every repo on every dispatch, single-repo included: it costs one
@@ -1037,83 +1131,36 @@ export async function verifyPinnedBase(repoRoot: string, baseSha: string): Promi
 }
 
 /**
- * Point a leased pool worktree at one exact commit, or refuse to touch it.
+ * Give a task its own isolated tree. Native pooling is the default; a repository whose
+ * native policy is disabled or positively refuses an acquisition gets a disposable Git
+ * worktree on a fresh `harness/<slug>` branch. An ambiguous native outcome fails closed.
  *
- * The ownership check is not paranoia about treehouse - it is the guard on a HARD RESET.
- * `reset --hard` plus a clean is destructive by design, and the one thing that makes it
- * safe is that the tree belongs to the repository whose commit we are about to force it
- * to. A lease from a pool we could not prove is this repo's would be somebody else's
- * checkout, and the reset would land in it.
- *
- * Exported because the pool binary is not a test dependency: `provisionWorktree` only
- * reaches this arm on a machine with treehouse installed and a `treehouse.toml` repo, so
- * the behaviour is exercised here directly against a real linked worktree instead.
- */
-export async function pinLeasedWorktree(
-  repoRoot: string,
-  leasePath: string,
-  baseSha: string,
-): Promise<void> {
-  const owner = mainRepoRoot(leasePath);
-  const asked = mainRepoRoot(repoRoot) ?? realpathSync(repoRoot);
-  if (!owner || owner !== asked) {
-    throw new Error(
-      `the pooled worktree ${leasePath} belongs to ${owner ?? "no repository we can name"}, not ${asked} - ` +
-        "refusing to reset a checkout we cannot prove is this repository's",
-    );
-  }
-  await resetWorktreeToCommit(leasePath, baseSha);
-}
-
-/**
- * Give a task its own isolated tree. Repos that opted into treehouse (a
- * `treehouse.toml` at the root) get a pre-warmed pooled worktree; everything else
- * gets a plain `git worktree` on a fresh `harness/<slug>` branch. Either way the
- * agent never shares a working tree with another session - the whole reason this
- * harness exists.
- *
- * `baseSha` pins the tree's starting point. Absent - which is every ordinary dispatch -
- * nothing about this function changes: the git fallback still cuts from `HEAD` and a pool
- * lease is still taken as it comes. Present, both providers converge on that ONE commit and
- * then re-read `HEAD` to prove they did, because a member that silently started somewhere
- * else is not comparable with its siblings and nothing downstream could tell.
+ * `baseSha` pins the tree's starting point. Absent, the current exact HEAD is captured before
+ * either provider runs. Both providers start from that immutable commit, because a member
+ * that silently started somewhere else is not comparable with its siblings.
  */
 export async function provisionWorktree(
   repoRoot: string,
   taskId: string,
   slug: string,
   shortId: string,
-  /**
-   * What the harness is already holding, so a reap here can't evict a tree that is
-   * someone else's. Read as a callback rather than a snapshot because the lease
-   * attempt below can block for minutes: a concurrent dispatch that leases the last
-   * tree in that window records its worktree on its task, and only a reading taken
-   * AT the reap can see it.
-   *
-   * Required, with no empty default: this function can reach a forced return, and
-   * an empty spared set silently disarms the two rungs that carry that gate - a
-   * just-pushed agent's tree is clean, merged, and momentarily processless, so
-   * treehouse's process list alone would not save it. Better a caller that won't
-   * compile than one that reaps by omission.
-   */
-  pins: () => PoolPins,
   /** The exact commit the tree must start at, verified by `verifyPinnedBase` already. */
   baseSha: string | null = null,
   /**
    * Which of the task's repos this is: 0 is the primary, n > 0 the nth attached secondary.
    *
-   * It exists to make the git-fallback DESTINATION unique. That path was keyed on the task
-   * alone, so a task attaching two non-pool repositories provisioned the first and then ran
+   * It exists to identify the durable native owner and make the Git fallback destination
+   * unique. The fallback path was keyed on the task alone, so a task attaching two repos
+   * provisioned the first and then ran
    * `git worktree add` against a directory that already existed. Keyed on the slot rather
    * than on the repo's basename because two attached repos can share one (`~/a/api` and
    * `~/b/api`), while the slot is unique by construction and persisted as the entry's
    * `position`, so the path stays stable across restarts.
    *
-   * Defaulted to 0, whose destination is byte-identical to what it always was - single-repo
-   * dispatch, existing tasks and startup reconciliation are untouched. The pool arm ignores
-   * it entirely: those paths come from each repo's own pool and are already distinct.
+   * Defaulted to 0, whose fallback destination is byte-identical to what it always was.
    */
   slot = 0,
+  manager?: WorktreeManager,
 ): Promise<ProvisionedWorktree> {
   const check = await run("git", ["-C", repoRoot, "rev-parse", "--is-inside-work-tree"], {
     timeoutMs: GIT_PREFLIGHT_TIMEOUT_MS,
@@ -1127,91 +1174,36 @@ export async function provisionWorktree(
     throw new Error(`${repoRoot} is not a git repository`);
   }
 
-  // The gate is no longer spelled here. Both halves live in `pool.ts` beside
-  // `isTreehouseRepo`, because this used to be the ONLY place in the codebase that asked
-  // whether the pool is usable - and the Workflow check path, which needs the same answer,
-  // therefore never asked it at all. A check asks the binary half alone
-  // (`treehouseInstalled`); this is the full gate, opt-in included.
-  if (await poolAvailableFor(repoRoot)) {
-    // Each acquisition takes the pool lock on its own rather than one held across the
-    // whole arm: dry-pool recovery below takes the same lock per candidate, and this lock
-    // is deliberately not reentrant, so holding it here would deadlock against the return
-    // that is this branch's whole recovery strategy.
-    let lease = await withPoolLock(repoRoot, () => acquireLease(repoRoot));
-    // A dry pool is usually a LEAKED pool: leases are durable, so every agent that
-    // went away without returning its tree still holds a slot, and at `max_trees`
-    // the pool has nothing left to give. Collect those and ask once more - the
-    // alternative (below) is silently abandoning the pool for this dispatch.
-    if (!lease.path) {
-      const { reaped, capacityAvailable } = await recoverDryPoolCapacity(repoRoot, pins);
-      if (reaped.length > 0) {
-        console.log(
-          `[mission-control] pool was dry; returned ${reaped.length} leaked lease(s): ${reaped
-            .map((t) => t.name)
-            .join(", ")}`,
-        );
-      }
-      // Retry once when the recovery returned one safe lease OR observed that another
-      // cleanup had already made a slot available. It stops at that capacity boundary;
-      // dispatch does not wait for an exhaustive maintenance sweep.
-      if (capacityAvailable) {
-        lease = await withPoolLock(repoRoot, () => acquireLease(repoRoot));
-      }
-    }
-    if (lease.path !== null) {
-      const path = realpathSync(lease.path);
-      if (baseSha) {
-        try {
-          await pinLeasedWorktree(repoRoot, path, baseSha);
-          // Asserted again HERE, and not only inside the reset, so both arms of this
-          // function make the same promise in the same place - the guarantee belongs to
-          // provisioning rather than to whatever a helper happens to check today.
-          await verifyHeadIs(path, baseSha);
-        } catch (err) {
-          // The lease is LIVE and this function is about to throw, so nothing downstream
-          // will ever record this tree on a task - which means teardown will never see it
-          // and the pool loses a slot permanently. Hand it back here, while we still know
-          // it is ours and nothing has been launched into it. A return that itself fails is
-          // reported alongside the real cause rather than replacing it.
-          const returned = await withPoolLock(repoRoot, () => returnLease(path));
-          // Whether or not the return succeeded, this dispatch is done with the tree, so it
-          // must stop claiming to be provisioning it. A return that failed leaves a leaked
-          // lease for the sweep to collect later, which it cannot do while we hold it.
-          settleLease(path);
-          const cause = err instanceof Error ? err.message : String(err);
-          throw new Error(
-            returned.code === 0
-              ? cause
-              : `${cause} - and the pool lease could not be returned: ${returned.stderr.trim() || `exit ${returned.code}`}`,
-          );
-        }
-      }
+  const exactBase = baseSha ?? await headCommit(repoRoot);
+  if (!exactBase) throw new Error(`could not resolve the exact HEAD commit in ${repoRoot}`);
+
+  if (manager) {
+    const acquired = await manager.acquire({
+      repositoryPath: repoRoot,
+      baseSha: exactBase,
+      owner: { kind: "task", key: `${taskId}:${slot}` },
+      awaitingDomainRecord: true,
+    });
+    if (acquired.outcome === "acquired") {
       return {
-        path,
-        // Whatever the leased tree is standing on - a pool lease is not given a branch of
-        // our choosing, and it is not renamed here. That is why a multi-repo task's branch
-        // names are read back from the provisioned entries rather than assumed to be the
-        // git fallback's `harness/<slug>-<shortId>`; see `intentWithRepoManifest`.
-        branch: await currentBranch(path),
-        provider: "treehouse",
-        baseSha: baseSha ?? (await headCommit(path)),
+        path: acquired.lease.path,
+        branch: await currentBranch(acquired.lease.path),
+        provider: "mission",
+        leaseId: acquired.lease.leaseId,
+        baseSha: acquired.lease.baseSha,
       };
     }
-    // Fall through to a plain worktree - but say so. This used to be silent, which
-    // hid a full pool behind trees that merely looked unfamiliar; the fallback is a
-    // throwaway checkout with none of the pool's pre-warming.
-    //
-    // Report what we OBSERVED, not what we assume: a full pool is the likely cause
-    // and the reason we just tried to reap, but `get` fails the same shape for an
-    // unresolvable pool or a bad config, and telling someone their pool is full
-    // sends them to a `treehouse status` that will look perfectly healthy. So the
-    // failure names itself and treehouse's own words ride along verbatim.
-    const { what, stderr } = lease.failure;
-    console.warn(
-      `[mission-control] treehouse pool in ${repoRoot} could not hand over a worktree: ${what}` +
-        (stderr ? ` - treehouse said: ${stderr}` : "") +
-        ` - falling back to a throwaway git worktree. Inspect the pool with: treehouse status`,
-    );
+    if (acquired.outcome === "outcomeUnknown") {
+      throw new Error(
+        `native worktree acquisition outcome is unknown for ${repoRoot}: ${acquired.reason}`,
+      );
+    }
+    if (!/disabled for this repository/.test(acquired.reason)) {
+      console.warn(
+        `[mission-control] native worktree in ${repoRoot} was not acquired: ${acquired.reason}` +
+          " - falling back to a throwaway git worktree",
+      );
+    }
   }
 
   mkdirSync(WORKTREES_DIR, { recursive: true });
@@ -1220,15 +1212,13 @@ export async function provisionWorktree(
   // different repositories, so they cannot collide, and one name across the set is what
   // makes the resulting pull requests legible as one piece of work.
   //
-  // This arm is the only one that can promise it. The pool arm above reports the branch its
-  // LEASE came on and does not rename it - renaming there would change what a single-repo
-  // pooled dispatch does, which this phase leaves untouched - so a set mixing the two can
-  // hold two names. `intentWithRepoManifest` reads the provisioned branches rather than
-  // assuming this one, and says so when they differ.
+  // This arm is the only one that creates a branch. Native leases are detached, so a set
+  // mixing the two can hold a branch only for its Git fallback repos. The manifest reads the
+  // provisioned branches rather than assuming a shared name.
   const branch = `harness/${slug}-${shortId}`;
   const add = await run(
     "git",
-    ["-C", repoRoot, "worktree", "add", path, "-b", branch, baseSha ?? "HEAD"],
+    ["-C", repoRoot, "worktree", "add", path, "-b", branch, exactBase],
     { timeoutMs: 60000 },
   );
   if (add.code !== 0) throw new Error(`git worktree add failed: ${add.stderr.trim() || "unknown"}`);
@@ -1249,7 +1239,7 @@ export async function provisionWorktree(
       throw new Error(cleanup ? `${cause} - and its worktree could not be removed: ${cleanup}` : cause);
     }
   }
-  return { path: real, branch, provider: "git", baseSha: baseSha ?? (await headCommit(real)) };
+  return { path: real, branch, provider: "git", leaseId: null, baseSha: exactBase };
 }
 
 /**
@@ -1287,40 +1277,26 @@ async function headCommit(dir: string): Promise<string | null> {
 }
 
 /**
- * Hand a pooled worktree back to the pool - dispatch's one spelling of that command, shared
- * by ordinary teardown and by a pinned provisioning that has to unwind a lease it just took.
- *
- * **Unforced, deliberately, and this is not the same command the reaper runs.** Dispatch is
- * returning a tree it believes is idle and whose agent it has just closed, so it can afford
- * to be told "no" by a treehouse that disagrees; the reaper and the check reclaimer are
- * returning trees they believe are ABANDONED, from a poller with no stdin, so they pass
- * `--force` ("clean, reset, and return without prompting"). Collapsing the two spellings
- * onto whichever is read first is a silent behaviour change to dispatch teardown in one
- * direction and a hang in the other, so `force` is an argument the adapter makes every
- * caller answer. `cwd` stays unset here for the same reason: it is what this path has always
- * done, and treehouse resolves the pool from the path argument.
- *
- * The argv itself lives in `pool-lease.ts`. What lives here is the policy.
- */
-function returnLease(path: string, cli: TreehouseCli = defaultTreehouseCli): Promise<RunResult> {
-  return cli.return({ cwd: null, path, force: false });
-}
-
-/**
  * Tear down a task's live resources (best-effort): close the terminal home it was
  * dispatched into and return/remove its worktree + throwaway branch. Provider-aware so a
- * treehouse lease is handed back to the pool rather than leaked by a bare
- * `git worktree remove`.
+ * provider-owned lease is returned through its recorded provider rather than leaked or
+ * bypassed with a bare `git worktree remove`.
  *
  * `homeName` names the home vendor-neutrally: which backend holds that name is resolved
  * through the registry (`killHome`) rather than assumed here.
  */
 export async function teardownWorktree(
   task: {
+    taskId?: string;
+    /** `Task.id` when the full durable task is passed. */
+    id?: string;
     repoRoot: string;
     worktreePath: string | null;
     branch: string | null;
     provider: WorktreeProvider | null;
+    worktreeLeaseId?: string | null;
+    /** Position when this shape names one tree during provisioning unwind. */
+    position?: number;
     homeName: string | null;
     /**
      * The task's secondary repos, when it has any. Optional so the handful of callers that
@@ -1332,16 +1308,14 @@ export async function teardownWorktree(
       worktreePath: string | null;
       branch: string | null;
       provider: WorktreeProvider | null;
+      worktreeLeaseId?: string | null;
     }[];
   },
-  /**
-   * The pool CLI, injectable for one reason: dispatch teardown must keep returning a tree
-   * WITHOUT `--force` now that the argv is shared with two callers that do force it, and
-   * that is only provable by watching what this function actually asks for.
-   */
-  cli: TreehouseCli = defaultTreehouseCli,
-  /** Startup reconciliation is background work; direct lifecycle actions stay foreground. */
-  poolLockPriority: PoolLockPriority = "foreground",
+  legacy: LegacyTreehouseService = new LegacyTreehouseService(),
+  /** Startup reconciliation remains a background scheduling hint for focused test seams. */
+  _priority: "foreground" | "background" = "foreground",
+  /** The daemon's singleton allocator. Required only when a recorded provider is `mission`. */
+  manager?: WorktreeManager,
 ): Promise<void> {
   if (task.homeName) {
     const killed = await killHome(task.homeName);
@@ -1360,24 +1334,35 @@ export async function teardownWorktree(
   }
   // Every tree the task holds, primary first. Each is attempted even if an earlier one
   // failed, and the failures are reported together: stopping at the first would leave the
-  // remaining trees leased or on disk with nothing left that will ever come back for them -
-  // the caller nulls the whole collection on the row either way.
+  // remaining trees leased or on disk with nothing left that will ever come back for them.
   //
   // A single-repo task has no extras, so this is one entry and one error message, exactly
   // as it was before.
+  const taskId = task.taskId ?? task.id ?? null;
   const trees = [
-    { repoRoot: task.repoRoot, worktreePath: task.worktreePath, branch: task.branch, provider: task.provider },
-    ...(task.extraRepos ?? []).map((entry) => ({
+    {
+      repoRoot: task.repoRoot,
+      worktreePath: task.worktreePath,
+      branch: task.branch,
+      provider: task.provider,
+      worktreeLeaseId: task.worktreeLeaseId ?? null,
+      taskId,
+      position: task.position ?? 0,
+    },
+    ...(task.extraRepos ?? []).map((entry, index) => ({
       repoRoot: entry.repoRoot,
       worktreePath: entry.worktreePath,
       branch: entry.branch,
       provider: entry.provider,
+      worktreeLeaseId: entry.worktreeLeaseId ?? null,
+      taskId,
+      position: index + 1,
     })),
   ];
   const failures: string[] = [];
   const reclaimed: string[] = [];
   for (const tree of trees) {
-    await teardownOneWorktree(tree, cli, poolLockPriority).then(
+    await teardownOneWorktree(tree, legacy, manager).then(
       () => {
         if (tree.worktreePath) reclaimed.push(tree.worktreePath);
       },
@@ -1398,8 +1383,8 @@ export async function teardownWorktree(
  * It carries the paths that DID come back, which is the whole reason it is a type rather
  * than a plain Error. `teardownWorktree` attempts every tree even after one fails, so a
  * failure is no longer all-or-nothing - and a caller that treated it as such would leave
- * the row claiming trees that are already gone: `poolPins` would go on sparing them, and a
- * retry would re-issue a lease return against a tree the pool has already taken back.
+ * the row claiming trees that are already gone, and a retry would re-issue release against a
+ * resource the provider has already taken back.
  */
 export class WorktreeTeardownError extends Error {
   constructor(message: string, readonly reclaimed: readonly string[]) {
@@ -1431,9 +1416,15 @@ export function reclaimedFrom(error: unknown): readonly string[] {
  * again as the task the operator filed rather than silently becoming a single-repo one.
  */
 export function releasedTaskResources(
-  task: Pick<Task, "worktreePath" | "branch" | "provider" | "baseSha" | "extraRepos">,
+  task: Pick<
+    Task,
+    "worktreePath" | "branch" | "provider" | "worktreeLeaseId" | "baseSha" | "extraRepos"
+  >,
   reclaimed: readonly string[] | null,
-): Pick<Task, "worktreePath" | "branch" | "provider" | "baseSha" | "extraRepos"> {
+): Pick<
+  Task,
+  "worktreePath" | "branch" | "provider" | "worktreeLeaseId" | "baseSha" | "extraRepos"
+> {
   // A tree with no recorded path has nothing to reclaim and nothing to keep.
   const gone = (path: string | null): boolean =>
     path === null || reclaimed === null || reclaimed.includes(path);
@@ -1441,11 +1432,19 @@ export function releasedTaskResources(
     worktreePath: gone(task.worktreePath) ? null : task.worktreePath,
     branch: gone(task.worktreePath) ? null : task.branch,
     provider: gone(task.worktreePath) ? null : task.provider,
+    worktreeLeaseId: gone(task.worktreePath) ? null : task.worktreeLeaseId,
     // The primary's baseline is a fact about the primary's tree, so it goes with it.
     baseSha: gone(task.worktreePath) ? null : task.baseSha,
     extraRepos: task.extraRepos.map((entry) =>
       gone(entry.worktreePath)
-        ? { ...entry, worktreePath: null, branch: null, provider: null, baseSha: null }
+        ? {
+            ...entry,
+            worktreePath: null,
+            branch: null,
+            provider: null,
+            worktreeLeaseId: null,
+            baseSha: null,
+          }
         : entry,
     ),
   };
@@ -1454,30 +1453,58 @@ export function releasedTaskResources(
 /** One tree's return-or-remove, provider-aware. See `teardownWorktree` for the policy. */
 async function teardownOneWorktree(
   task: {
+    taskId: string | null;
+    position: number;
     repoRoot: string;
     worktreePath: string | null;
     branch: string | null;
     provider: WorktreeProvider | null;
+    worktreeLeaseId: string | null;
   },
-  cli: TreehouseCli,
-  poolLockPriority: PoolLockPriority,
+  legacy: LegacyTreehouseService,
+  manager?: WorktreeManager,
 ): Promise<void> {
   if (!task.worktreePath) return;
-  // Read once, so the return below keeps its narrowing inside the closure the pool lock
-  // wraps it in.
+  // Read once so every provider check and diagnostic names the same requested path.
   const worktreePath = task.worktreePath;
 
+  if (task.provider === "mission") {
+    if (!manager) throw new Error("native worktree manager is unavailable");
+    if (!task.taskId || !task.worktreeLeaseId) {
+      throw new Error("native task worktree is missing its task or lease identity");
+    }
+    const owner = { kind: "task" as const, key: `${task.taskId}:${task.position}` };
+    const lookup = manager.lookupLease({
+      leaseId: task.worktreeLeaseId,
+      path: worktreePath,
+      owner,
+    });
+    if (lookup.state === "missing" || lookup.state === "mismatch") {
+      throw new Error(
+        lookup.state === "missing"
+          ? "native task lease is unknown"
+          : `native task lease is stale: ${lookup.reason}`,
+      );
+    }
+    const released = await manager.release(lookup.lease, { ownerAuthorized: true });
+    if (released.outcome === "released" || released.outcome === "alreadyReleased") return;
+    throw new Error(`native worktree release ${released.outcome}: ${released.reason}`);
+  }
+
   if (task.provider === "treehouse") {
-    // Hand the lease back to the pool. Never fall back to `git worktree remove` for
-    // a pooled checkout - that would delete a tree behind treehouse's bookkeeping
-    // and leak the lease. If return fails, leave it for the pool to reconcile.
-    const returned = await withPoolLock(
-      task.repoRoot,
-      () => returnLease(worktreePath, cli),
-      poolLockPriority,
-    );
-    if (returned.code !== 0) {
-      throw new Error(`treehouse return failed: ${returned.stderr.trim() || `exit ${returned.code}`}`);
+    if (!task.taskId) throw new Error(`legacy Treehouse task owner is missing for ${worktreePath}`);
+    const returned = await legacy.executeReturn({
+      kind: "task",
+      id: task.taskId,
+      position: task.position,
+      path: worktreePath,
+      leaseId: task.worktreeLeaseId,
+    });
+    if (returned.outcome !== "returned") {
+      throw new Error(
+        `legacy Treehouse cleanup refused for ${task.repoRoot} at ${worktreePath} ` +
+          `(provider treehouse, lease ${task.worktreeLeaseId ?? "missing"}): ${returned.reason}`,
+      );
     }
     return;
   }
@@ -1530,10 +1557,10 @@ async function teardownOneWorktree(
  *
  * Each repo's branch is stated PER REPO and read from what was actually provisioned. The
  * design's intent is one shared name across the set - that is what makes the resulting pull
- * requests legible as one task - and the git fallback delivers it, but a treehouse-pooled
- * repo arrives on whatever branch its lease was already on. Claiming a shared name the
- * secondary does not have would send the agent to push a branch that does not exist there,
- * so the manifest reports the set it got and says plainly when they differ.
+ * requests legible as one task - and the Git fallback delivers it, while a native lease is
+ * detached. Claiming a shared name a native repo does not have would send the agent to push
+ * a branch that does not exist there, so the manifest reports the set it got and says plainly
+ * when they differ.
  *
  * Repos with no worktree are omitted rather than listed as unavailable: this text is
  * delivered after provisioning, so an entry without one is a bug being reported to the
@@ -1543,12 +1570,9 @@ export function intentWithRepoManifest(task: Task): string {
   const attached = task.extraRepos.filter((entry) => entry.worktreePath !== null);
   if (attached.length === 0) return task.intent;
   const branchOf = (branch: string | null): string => (branch ? `, on branch ${branch}` : "");
-  // Whether the whole set really did land on one branch name. The git fallback cuts
-  // `harness/<slug>-<shortId>` in every repo, but a treehouse-pooled repo does NOT: its
-  // lease arrives on whatever branch the pooled tree was already standing on, and nothing
-  // in provisioning renames it (doing so would change single-repo pooled dispatch, which
-  // this phase leaves byte-identical). So a mixed set can genuinely hold two names, and
-  // this is READ from what was provisioned rather than asserted from the design's intent -
+  // Whether the whole set really did land on one branch name. The Git fallback cuts
+  // `harness/<slug>-<shortId>` in every repo, while a native lease is detached. A mixed set
+  // can therefore carry branch names and nulls, and this is read from what was provisioned -
   // a manifest that promised one shared branch would send the agent to push a branch that
   // does not exist in the secondary.
   const branches = [task.branch, ...attached.map((entry) => entry.branch)];

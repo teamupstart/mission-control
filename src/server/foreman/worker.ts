@@ -45,10 +45,9 @@ import type { QueueConfig } from "./queue-machine.ts";
 import {
   PromptedFailureTracker,
   decidePromptedWrapup,
-  promptedEvidenceAdvanced,
   planPromptedWrapup,
 } from "./prompted-wrapup.ts";
-import type { PromptedConfig } from "./prompted-wrapup.ts";
+import type { PromptedCandidate, PromptedConfig } from "./prompted-wrapup.ts";
 import {
   InjectError,
   applyQueueAction,
@@ -77,10 +76,10 @@ import { installForemanShutdown } from "./shutdown.ts";
 import {
   drainCompletionClaim,
   promptedCompletionClaim,
-  promptedCompletionMarker,
   tryWorkflowCompletionClaim,
 } from "./workflow-claim.ts";
 import { automaticWrapupBlock } from "./wrapup-eligibility.ts";
+import { runPipelineTriage } from "./pipeline-triage.ts";
 
 /**
  * The menu on a pane, read with that agent's own grammar - or null when this harness draws
@@ -185,32 +184,37 @@ const evaluations = new EvaluationDebounce(EVAL_DEBOUNCE_MS);
 const promptedFailures = new PromptedFailureTracker();
 
 /**
- * Retire one episode: the write that disarms the trigger, and the ONLY thing that clears
+ * Consume one completed generation: the write that disarms the trigger, and the ONLY thing that clears
  * the strikes. Answers whether it landed, because every caller must abort on false - a
  * tick whose only write failed changed nothing, so reporting it as progress is what
  * makes the loop skip its IDLE_MS sleep and come straight back.
  */
-async function retirePromptedEpisode(
+async function consumePromptedCycle(
   client: ForemanClient,
   session: Session,
-  goal: string,
-  evidenceMarker: string,
+  candidate: Extract<PromptedCandidate, { kind: "check" | "retire" }>,
   opts?: { ask?: boolean },
 ): Promise<boolean> {
+  const expectedIntent = {
+    objective: candidate.objective,
+    objectiveVersion: candidate.objectiveVersion,
+    promptRevision: candidate.promptRevision,
+    episodeKey: candidate.episodeKey,
+  };
   try {
-    await client.markPromptedWrapup(
+    await client.consumePromptedGeneration(
       session.id,
-      goal,
-      evidenceMarker,
-      session.lastActivity ?? session.firstSeen,
+      candidate.logicalKey,
+      candidate.generation,
+      expectedIntent,
       opts,
     );
-    promptedFailures.onRetired(session.id);
+    promptedFailures.onConsumed(candidate.logicalKey);
     return true;
   } catch (err) {
-    const failures = promptedFailures.onFailure(session.id, goal);
+    const failures = promptedFailures.onFailure(candidate.logicalKey, candidate.generation);
     log(
-      `${session.name}: prompted wrap-up aborted - could not retire the episode ` +
+      `${session.name}: prompted wrap-up aborted - could not consume generation ` +
         `(${failures}x): ${String(err)}`,
     );
     return false;
@@ -372,6 +376,14 @@ async function main(): Promise<void> {
       log(`backlog autopilot failed (${String(err)})`);
     } finally {
       await publishBacklogPlannerHealth(client);
+    }
+
+    // A fleet-level loop over external engine halts. The Conductor switch is independent of
+    // backlog autopilot, but the worker lease and Foreman's own master switch still gate it.
+    try {
+      if (await runPipelineTriage(client)) advanced = true;
+    } catch (err) {
+      log(`pipeline triage failed (${String(err)})`);
     }
 
     // Also fleet-level, and outside the "no targets" bail for the same reason: a session
@@ -1033,7 +1045,7 @@ async function processTarget(
   // opposite things to the prompted path. Coercing a throw to `null` hands
   // `decidePromptedWrapup` a null queue on a transient daemon blip, which silently
   // disarms both of its double-fire guards at once: the overlap rule that hands a queued
-  // session to the drain trigger, and the once-per-episode `promptedGoal` re-arm. The
+  // session to the drain trigger, and the consumed-generation guard. The
   // result is a second wrap-up pushing the same branch.
   //
   // Distinguishable, but NOT fatal to the whole tick - the bail belongs on the prompted
@@ -1208,6 +1220,50 @@ function promptedConfig(cfg: ForemanConfig): PromptedConfig {
 }
 
 /**
+ * Re-read every prompted safety gate after evidence work, especially after a verifier call.
+ *
+ * Running the pure decision again keeps queue precedence, human-attention, instrumentation,
+ * settled-idle, logical-key, generation, and intent policy in one place. A changed result is
+ * discarded without consuming either the observed or newest generation.
+ */
+async function refreshPromptedCandidate(
+  client: ForemanClient,
+  pcfg: PromptedConfig,
+  expected: Extract<PromptedCandidate, { kind: "check" | "retire" }>,
+): Promise<{
+  session: Session;
+  candidate: Extract<PromptedCandidate, { kind: "check" | "retire" }>;
+} | null> {
+  const sessions = await client.sessions().catch(() => null);
+  if (!sessions) return null;
+  const session = resolveLiveSession(sessions, expected.logicalKey);
+  if (!session) return null;
+  const [queueRead, intent] = await Promise.all([
+    client.queue(session.id).then((queue) => ({ ok: true as const, queue }), () => null),
+    client.goal(session.id).catch(() => null),
+  ]);
+  if (!queueRead) return null;
+  const current = decidePromptedWrapup({
+    session,
+    bucket: reportBucket(session, sessions),
+    queue: queueRead.queue,
+    intent,
+    cfg: pcfg,
+    now: Date.now(),
+  });
+  if (
+    current.kind !== expected.kind ||
+    current.logicalKey !== expected.logicalKey ||
+    current.generation !== expected.generation ||
+    current.episodeKey !== expected.episodeKey ||
+    current.objective !== expected.objective ||
+    current.objectiveVersion !== expected.objectiveVersion ||
+    current.promptRevision !== expected.promptRevision
+  ) return null;
+  return { session, candidate: current };
+}
+
+/**
  * The `prompted` wrap-up trigger's tick: has this session finished the work a human
  * asked it for in the pane, and if so, ship it?
  *
@@ -1216,14 +1272,14 @@ function promptedConfig(cfg: ForemanConfig): PromptedConfig {
  * only does I/O and ordering.
  *
  * THE ORDERING IS THE SAFETY ARGUMENT, and it is the same one `auto-wrapup` makes:
- * the write that RETIRES the episode lands BEFORE the shipping instruction, so a crash
+ * the write that CONSUMES the generation lands BEFORE the shipping instruction, so a crash
  * between "typed" and "recorded that we typed" must leave the trigger disarmed. Concretely:
  *
- *   verify -> stamp goal + evidence + observed activity -> type -> record the answer
+ *   verify -> consume expected generation -> type -> record the answer
  *
- * Every failure degrades toward the human: a stamp that fails aborts before typing
+ * Every failure degrades toward the human: a consume that fails aborts before typing
  * (nothing happened, we retry next tick, and only so many times - see
- * `promptedFailures`); a type that fails leaves the episode retired with the Ship it?
+ * `promptedFailures`); a type that fails leaves the generation consumed with the Ship it?
  * card as the recovery; a record that fails has the instruction visibly in the pane with
  * a human looking at it.
  *
@@ -1257,38 +1313,25 @@ async function processPromptedWrapup(
   });
   if (candidate.kind === "skip") return false;
   if (candidate.kind === "retire") {
-    const evidenceMarker = promptedCompletionMarker({
-      noteKey: noteKeyOf(session),
-      intent: {
-        objective: candidate.objective,
-        objectiveVersion: candidate.objectiveVersion,
-        promptRevision: candidate.promptRevision,
-        episodeKey: candidate.episodeKey,
-      },
-      headSha: null,
-      transcriptAnchor: null,
-    });
-    if (!(await retirePromptedEpisode(
-      client,
-      session,
-      candidate.episodeKey,
-      evidenceMarker,
-    ))) return false;
+    const current = await refreshPromptedCandidate(client, pcfg, candidate);
+    if (!current || !(await consumePromptedCycle(client, current.session, current.candidate))) {
+      return false;
+    }
     log(`${session.name}: prompted automatic wrap-up skipped - ${candidate.why}`);
     return true;
   }
 
-  // Foreman already gave up on this episode - see `promptedFailures`, which counts both
+  // Foreman already gave up on this generation - see `promptedFailures`, which counts both
   // the failures below that can repeat forever. Checked HERE, above every read, because
   // the whole point of the cap is to stop spending on it: a check further down would
   // still pay for the evidence gather and the model call it exists to prevent.
-  if (promptedFailures.gaveUp(session.id, candidate.episodeKey)) return false;
+  if (promptedFailures.gaveUp(candidate.logicalKey, candidate.generation)) return false;
 
   // --- evidence. Same discipline as runVerify: any gap in it is a verify-INFRASTRUCTURE
   // failure and must never reach the verifier, which would otherwise find no proof the
   // work was done and answer "incomplete" about work that is finished. Here that
   // mistake is cheap in the right direction (we hold, and type nothing), so each of
-  // these returns WITHOUT stamping - the episode stays armed and retries next tick.
+  // these returns WITHOUT consuming - the generation stays armed and retries next tick.
 
   // No base sha: the whole branch since it diverged is the unit of work, because a
   // pane-typed session has no per-item scope to anchor to. That is also why
@@ -1316,28 +1359,6 @@ async function processPromptedWrapup(
     promptRevision: candidate.promptRevision,
     episodeKey: candidate.episodeKey,
   };
-  const evidenceMarker = promptedCompletionMarker({
-    noteKey: noteKeyOf(session),
-    intent: intentGuard,
-    headSha: diff.headSha,
-    transcriptAnchor,
-  });
-
-  // Step 10 already kept an unchanged `lastActivity` above this evidence gather. If a
-  // later hook moved activity but HEAD + transcript did not, restamp the SAME marker: that
-  // retires this false-positive activity boundary so every later idle tick is cheap again.
-  // It never reaches the verifier. Claude task notifications leave human intent alone, but
-  // the work they resume advances the transcript before a later Stop and therefore crosses
-  // both gates exactly once.
-  if (!promptedEvidenceAdvanced(candidate, evidenceMarker)) {
-    return await retirePromptedEpisode(
-      client,
-      session,
-      candidate.episodeKey,
-      evidenceMarker,
-    );
-  }
-
   // An empty diff decides itself, and decides it WITHOUT a model call: the session
   // changed nothing, so there is nothing to commit, push or open a PR for. This is the
   // common case for a question-and-answer session ("what does this function do?"), and
@@ -1345,16 +1366,14 @@ async function processPromptedWrapup(
   // it? card on every conversation. Stamped, because the answer will not change while
   // the session sits idle.
   if (!diff.patch.trim()) {
-    // The stamp IS the whole tick here, so its result is the tick's result. Swallowing
+    // The consume IS the whole tick here, so its result is the tick's result. Swallowing
     // it and claiming progress anyway would re-process this session every BETWEEN_MS -
     // four loopback reads a pass against the daemon's single synchronous handle, which
     // also serves hook ingest and SSE - for as long as the write stays broken.
-    if (!(await retirePromptedEpisode(
-      client,
-      session,
-      candidate.episodeKey,
-      evidenceMarker,
-    ))) return false;
+    const current = await refreshPromptedCandidate(client, pcfg, candidate);
+    if (!current || !(await consumePromptedCycle(client, current.session, current.candidate))) {
+      return false;
+    }
     log(`${session.name}: prompted wrap-up held - the session changed nothing`);
     return true;
   }
@@ -1362,7 +1381,7 @@ async function processPromptedWrapup(
   // The resolved objective gate above catches explicit mockup-style contracts. The diff
   // adds a content-shaped backstop for terse prompts whose only changes landed in the
   // repository's review-artifact paths. Retire before transcript gathering or verification:
-  // the result cannot become eligible for automatic shipping later in this same episode.
+  // the result cannot become eligible for automatic shipping later in this generation.
   const block = automaticWrapupBlock({
     taskKind: session.task?.kind ?? null,
     objective: candidate.objective,
@@ -1371,12 +1390,10 @@ async function processPromptedWrapup(
     skipReviewArtifactWrapup: cfg.skipReviewArtifactWrapup,
   });
   if (block) {
-    if (!(await retirePromptedEpisode(
-      client,
-      session,
-      candidate.episodeKey,
-      evidenceMarker,
-    ))) return false;
+    const current = await refreshPromptedCandidate(client, pcfg, candidate);
+    if (!current || !(await consumePromptedCycle(client, current.session, current.candidate))) {
+      return false;
+    }
     log(`${session.name}: prompted automatic wrap-up skipped - ${block.reason}`);
     return true;
   }
@@ -1413,14 +1430,12 @@ async function processPromptedWrapup(
   if (result.kind === "failed") {
     // Unlike the queue there is no item to escalate, but the failure is bounded the
     // same way and for the same reason - see `PromptedFailureTracker`. Under the cap
-    // the episode stays armed and retries next tick; at the cap Foreman gives up on it,
-    // and only a newly reconciled human prompt (which advances the intent key and resets
-    // the strikes) re-arms it. Retired durably as well, so the give-up survives a worker
-    // restart; the in-memory count is what holds the line when that write is the thing
-    // that's broken.
-    const failures = promptedFailures.onFailure(session.id, candidate.episodeKey);
+    // the generation stays armed and retries next tick; at the cap Foreman consumes it.
+    // A later completed generation gets a fresh bounded counter even when intent is unchanged.
+    const failures = promptedFailures.onFailure(candidate.logicalKey, candidate.generation);
     if (failures >= VERIFY_FAILURE_CAP) {
-      await retirePromptedEpisode(client, session, candidate.episodeKey, evidenceMarker);
+      const current = await refreshPromptedCandidate(client, pcfg, candidate);
+      if (current) await consumePromptedCycle(client, current.session, current.candidate);
       log(
         `${session.name}: prompted wrap-up gave up - verify failed ${failures}x (${result.reason})`,
       );
@@ -1429,20 +1444,13 @@ async function processPromptedWrapup(
     log(`${session.name}: prompted wrap-up held - verify failed (${result.reason})`);
     // NOT `advanced`: nothing was written and nothing changed. Reporting a failed tick
     // as progress makes the loop skip its IDLE_MS sleep and re-select this same session
-    // on the very next pass - the episode is still armed, since `promptedGoal` was
-    // deliberately not stamped - turning a broken verifier into a hot loop of model
+    // on the very next pass - the generation is still armed - turning a broken verifier into a hot loop of model
     // calls separated only by BETWEEN_MS.
     return false;
   }
 
-  const currentSessions = await client.sessions().catch(() => null);
-  const currentSession = currentSessions
-    ? resolveLiveSession(currentSessions, noteKeyOf(session))
-    : null;
-  const currentGoal = currentSession && currentSession.id === session.id
-    ? await client.goal(currentSession.id).catch(() => null)
-    : null;
-  if (!sessionIntentMatches(currentGoal, intentGuard)) return false;
+  let current = await refreshPromptedCandidate(client, pcfg, candidate);
+  if (!current || current.candidate.kind !== "check") return false;
 
   if (
     result.verdict.complete
@@ -1450,13 +1458,16 @@ async function processPromptedWrapup(
   ) {
     const claim = await tryWorkflowCompletionClaim(
       client,
-      session.id,
+      current.session.id,
       promptedCompletionClaim({
-        noteKey: noteKeyOf(session),
+        noteKey: current.candidate.logicalKey,
+        workCycle: {
+          logicalKey: current.candidate.logicalKey,
+          generation: current.candidate.generation,
+        },
         intent: intentGuard,
         headSha: diff.headSha,
         transcriptAnchor,
-        activityAt: session.lastActivity ?? session.firstSeen,
         summary: result.verdict.summary,
       }),
     );
@@ -1469,57 +1480,43 @@ async function processPromptedWrapup(
       return true;
     }
     if (claim.result.reason === "manual_trigger") {
-      // Preserve the active Manual binding and surface the boundary to the human. Passing
-      // `false` below selects `ask-wrapup`, which retires this verified episode without
-      // starting direct PR shipping alongside that binding.
-      const plan = planPromptedWrapup(
-        candidate.episodeKey,
-        result.verdict,
-        pcfg,
-        false,
-      );
-      // Retire the verified episode and raise its card in ONE daemon write. If that
-      // write fails, neither marker lands, this returns not-advanced, and a later tick
-      // retries instead of losing the only human-visible completion handoff.
-      if (!(await retirePromptedEpisode(
-        client,
-        session,
-        plan.goal,
-        evidenceMarker,
-        { ask: true },
-      ))) return false;
+      // Preserve the active Manual binding and surface the verified boundary to the
+      // human without starting direct PR shipping alongside that binding.
+      current = await refreshPromptedCandidate(client, pcfg, candidate);
+      if (
+        !current ||
+        !(await consumePromptedCycle(client, current.session, current.candidate, { ask: true }))
+      ) return false;
       log(`${session.name}: existing workflow is Manual - asked about wrapping up`);
       return true;
     }
+    current = await refreshPromptedCandidate(client, pcfg, candidate);
+    if (!current || current.candidate.kind !== "check") return false;
   }
   const plan = planPromptedWrapup(
     candidate.episodeKey,
     result.verdict,
     pcfg,
-    foremanMayActLive(cfg, session.cwd, session.repoRoot),
+    foremanMayActLive(cfg, current.session.cwd, current.session.repoRoot),
   );
 
   if (plan.kind === "ask-wrapup") {
-    // The card and prompted guard are one durable fact: a failure must leave both
+    // The card and consumed generation are one durable fact: a failure must leave both
     // absent so this verified boundary remains retryable.
-    if (!(await retirePromptedEpisode(
-      client,
-      session,
-      plan.goal,
-      evidenceMarker,
-      { ask: true },
-    ))) return false;
+    if (!(await consumePromptedCycle(client, current.session, current.candidate, { ask: true }))) {
+      return false;
+    }
     log(`${session.name}: prompted work looks complete - asked about wrapping up`);
     return true;
   }
 
-  // Retire the episode FIRST - before anything types - for the reason in the header.
-  // A failed stamp aborts: proceeding would be typing an instruction that pushes with
+  // Consume the generation FIRST - before anything types - for the reason in the header.
+  // A failed compare-and-set aborts: proceeding would be typing an instruction that pushes with
   // nothing recording that we did, so the next tick would do it again. It also aborts
-  // as NOT advanced, and counts a strike: nothing was written, and the episode is still
+  // as NOT advanced, and counts a strike: nothing was written, and the generation is still
   // armed, so claiming progress would spend a full evidence gather plus a model call
   // per BETWEEN_MS against a session whose only broken part is one endpoint.
-  if (!(await retirePromptedEpisode(client, session, plan.goal, evidenceMarker))) return false;
+  if (!(await consumePromptedCycle(client, current.session, current.candidate))) return false;
 
   if (plan.kind === "hold") {
     log(`${session.name}: prompted wrap-up held - ${oneLine(plan.why)}`);
@@ -1527,12 +1524,12 @@ async function processPromptedWrapup(
   }
 
   try {
-    await client.inject(session.id, plan.payload);
+    await client.inject(current.session.id, plan.payload);
   } catch (err) {
     // Never retry: a retry IS the double-push. Fall back to the card, which is exactly
     // `ask` mode and puts this same text one click away.
     log(`${session.name}: could not send the prompted wrap-up (${String(err)}) - asking instead`);
-    await client.markWrapupAsked(session.id, { clearAnswer: true }).catch(() => {});
+    await client.markWrapupAsked(current.session.id, { clearAnswer: true }).catch(() => {});
     return true;
   }
 
@@ -1543,9 +1540,9 @@ async function processPromptedWrapup(
   // fails - in which the card offers to send an instruction the agent has already been
   // given. On the drain path that window is accepted because `wrapupAskedAt` is also
   // that trigger's once-only guard and has to be written. This trigger's guard is
-  // `promptedGoal` + `promptedEvidence`, already stamped above, so there is nothing
+  // the consumed work-cycle generation, already stamped above, so there is nothing
   // forcing the same trade-off: leaving the ask unstamped means no card can ever double-offer.
-  await client.setWrapupAnswer(session.id, plan.payload).catch(() => {});
+  await client.setWrapupAnswer(current.session.id, plan.payload).catch(() => {});
   log(`${session.name}: prompted work complete - sent "${plan.payload}"`);
   return true;
 }

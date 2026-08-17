@@ -691,15 +691,13 @@ A copy control that reports nothing is incomplete. Confirm the success and say s
 Extend existing registries instead of adding parallel lists:
 
 - Settings: `SETTINGS_CATEGORIES`, `renderCategory`, panel component, and search anchors.
-  A category is normally unconditional - it configures Mission Control, so it exists for
-  everyone whether or not they have switched it on. A category that configures SOMEBODY
-  ELSE'S software is the exception and goes through `settingsCategoryAvailable`, which five
-  surfaces read: the rail, the arrow-key walk, the route's fallback, the ⌘K palette, and the
-  render test. Adding a second one means an arm there and a field on
-  `SettingsStatus` - never a local check in the panel, because a category reachable from
-  search but absent from the rail is the failure this shape exists to prevent. Availability
-  is a tri-state: `null` (the daemon has not answered) draws nothing and waits, because a
-  rail that guessed would flash a row in or out on every load
+  Categories are unconditional destinations. The rail, arrow-key walk, valid routes, ⌘K
+  palette, and render tests all read the same registry without subsystem availability
+  filters. A destination for somebody else's software explains missing installation inside
+  its panel; engine presence may remain in `SettingsStatus` for wire compatibility, but it
+  does not add or remove navigation. A local visibility check is how a panel becomes
+  reachable from search but absent from the rail, or how a valid deep link unexpectedly
+  falls back to Display
 - ⌘K palette: `PALETTE_PROVIDERS` and `PALETTE_KIND_INFO` in `src/web/lib/palette-index.ts`. A new
   searchable kind is a provider over an existing client SSE store, never a second index, a
   server-side search endpoint, or a fetch. Its rows may target only routes the router already

@@ -91,7 +91,7 @@ export const FAKE_CONDUCTOR_VERSION = "0.101.1-e2e";
  */
 const FAKE_CONDUCT_TS = `#!/usr/bin/env node
 const { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } = require("node:fs");
-const { join } = require("node:path");
+const { basename, join } = require("node:path");
 const argv = process.argv.slice(2);
 
 const log = process.env.MC_E2E_CONDUCTOR_LOG;
@@ -132,6 +132,38 @@ if (existsSync(join(daemonDir, "REFUSE")) && argv[0] !== "engineer") {
     }
   }
   say(JSON.stringify(projects));
+} else if (argv[0] === "register" && argv.length === 2) {
+  const repoRoot = argv[1];
+  const mode = process.env.MC_E2E_CONDUCTOR_REGISTER_MODE || "confirm";
+  if (mode === "nonzero") {
+    process.stderr.write("registry is not writable\\n");
+    process.exit(2);
+  }
+  if (mode === "unconfirmed") {
+    process.stdout.write("registration command completed\\n");
+  } else {
+    const path = process.env.MC_E2E_CONDUCTOR_PROJECTS;
+    let projects = [];
+    if (path) {
+      try {
+        projects = JSON.parse(readFileSync(path, "utf8"));
+      } catch {
+        projects = [];
+      }
+      if (!projects.some((project) => project.path === repoRoot)) {
+        projects.push({
+          schemaVersion: 1,
+          name: basename(repoRoot),
+          path: repoRoot,
+          remote: null,
+          status: "registered",
+          registeredAt: new Date().toISOString(),
+        });
+        writeFileSync(path, JSON.stringify(projects, null, 2));
+      }
+    }
+    process.stdout.write("Registered " + basename(repoRoot) + " (" + repoRoot + ").\\n");
+  }
 } else if (argv[0] === "daemon" && argv[1] === "start") {
   mkdirSync(daemonDir, { recursive: true });
   writeFileSync(

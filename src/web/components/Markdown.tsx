@@ -5,7 +5,14 @@ import remarkBreaks from "remark-breaks";
 import rehypeHighlight from "rehype-highlight";
 import { markdownLinkUrl } from "../lib/workspaceLinks.ts";
 import { rehypeWorkspacePaths, WORKSPACE_PATH_CLASS } from "../lib/rehypeWorkspacePaths.ts";
+import {
+  diagramFenceFromPre,
+  rehypeDiagramFences,
+  type DiagramHastNode,
+} from "../lib/rehypeDiagramFences.ts";
+import { MERMAID_MAX_DIAGRAMS } from "../lib/mermaidPreview.ts";
 import { Tooltip } from "./Tooltip.tsx";
+import type { MarkdownDiagramRegistry } from "./markdownDiagramRegistry.tsx";
 
 export type WorkspaceLinkHandler = (href: string, probe?: boolean) => boolean | Promise<boolean>;
 
@@ -98,6 +105,9 @@ function WorkspaceAnchor({
  * `rehypeWorkspacePaths`. Callers with no session behind them (plans, Foreman briefs, the
  * Markdown file preview) pass neither and render exactly as before.
  *
+ * `diagramRenderers` is a separate, opt-in capability for the Files preview. Keeping the
+ * registry absent by default is what leaves every other caller's fences as source code.
+ *
  * Memoized on the rendered text: highlighting is real work, and the transcript
  * re-renders on every SSE frame. Turns are append-only (see `mergeById`), so an
  * existing message's text never changes and this stays a hit for the whole session -
@@ -111,6 +121,10 @@ interface MarkdownProps {
   onLinkClick?: WorkspaceLinkHandler;
   /** This session's checkout listing, once it is known. Null renders no path links. */
   filePaths?: WorkspacePaths;
+  /** Canonical fenced languages this caller may replace with isolated diagram hosts. */
+  diagramRenderers?: MarkdownDiagramRegistry;
+  /** File identity for remounting async hosts when equal source comes from another file. */
+  diagramDocumentKey?: string;
 }
 
 function MarkdownBody({
@@ -118,6 +132,8 @@ function MarkdownBody({
   breaks = false,
   onLinkClick,
   filePaths = null,
+  diagramRenderers,
+  diagramDocumentKey = "",
 }: MarkdownProps): React.JSX.Element {
   const paths = onLinkClick ? filePaths : null;
   // The handler reaches the rendered anchors through a ref, and that is load-bearing
@@ -134,8 +150,8 @@ function MarkdownBody({
   const linkHandler = useRef(onLinkClick);
   linkHandler.current = onLinkClick;
   const linkable = Boolean(onLinkClick);
-  const components = useMemo(() => ({
-    a: ({ node: _node, href, onClick: _onClick, ...props }: React.ComponentPropsWithoutRef<"a"> & {
+  const components = useMemo(() => {
+    const anchor = ({ node: _node, href, onClick: _onClick, ...props }: React.ComponentPropsWithoutRef<"a"> & {
       node?: unknown;
     }) =>
       linkable ? (
@@ -153,19 +169,52 @@ function MarkdownBody({
             rel={href?.startsWith("http") ? "noreferrer noopener" : undefined}
           />
         </Tooltip>
-      ),
-  }), [linkable]);
+      );
+    if (!diagramRenderers) return { a: anchor };
+    return {
+      a: anchor,
+      pre: ({ node, ...props }: React.ComponentPropsWithoutRef<"pre"> & { node?: unknown }) => {
+        const fence = diagramFenceFromPre(node as DiagramHastNode | undefined);
+        const Renderer = fence ? diagramRenderers[fence.tag] : null;
+        if (!fence || !Renderer) return <pre {...props} />;
+        if (fence.overLimit) {
+          return (
+            <div className="mermaid-diagram-limit" role="note">
+              <p>Diagram not rendered because this document contains more than {MERMAID_MAX_DIAGRAMS} Mermaid blocks.</p>
+              <pre {...props} />
+            </div>
+          );
+        }
+        return (
+          <Renderer
+            key={`${diagramDocumentKey}\u0000${fence.ordinal}\u0000${fence.source}`}
+            source={fence.source}
+            ordinal={fence.ordinal}
+          />
+        );
+      },
+    };
+  }, [diagramDocumentKey, diagramRenderers, linkable]);
   return (
     <ReactMarkdown
       remarkPlugins={breaks ? [remarkGfm, remarkBreaks] : [remarkGfm]}
-      rehypePlugins={
-        paths
+      rehypePlugins={paths
+        ? diagramRenderers
           ? [
+              [rehypeDiagramFences, { tags: Object.keys(diagramRenderers), limit: MERMAID_MAX_DIAGRAMS }],
               [rehypeHighlight, HIGHLIGHT_OPTIONS],
               [rehypeWorkspacePaths, { paths }],
             ]
-          : [[rehypeHighlight, HIGHLIGHT_OPTIONS]]
-      }
+          : [
+              [rehypeHighlight, HIGHLIGHT_OPTIONS],
+              [rehypeWorkspacePaths, { paths }],
+            ]
+        : diagramRenderers
+          ? [
+              [rehypeDiagramFences, { tags: Object.keys(diagramRenderers), limit: MERMAID_MAX_DIAGRAMS }],
+              [rehypeHighlight, HIGHLIGHT_OPTIONS],
+            ]
+          : [[rehypeHighlight, HIGHLIGHT_OPTIONS]]}
       urlTransform={(url, key) => key === "href" ? markdownLinkUrl(url) : defaultUrlTransform(url)}
       components={components}
     >
@@ -194,7 +243,9 @@ export function markdownPropsEqual(before: MarkdownProps, after: MarkdownProps):
     before.children === after.children &&
     before.breaks === after.breaks &&
     before.filePaths === after.filePaths &&
-    before.onLinkClick === after.onLinkClick
+    before.onLinkClick === after.onLinkClick &&
+    before.diagramRenderers === after.diagramRenderers &&
+    before.diagramDocumentKey === after.diagramDocumentKey
   );
 }
 

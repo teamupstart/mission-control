@@ -1965,6 +1965,13 @@ export type TaskSourcesConfigPatch = z.infer<typeof TaskSourcesConfigPatchSchema
 export const PipelinesConfigPatchSchema = PipelinesConfigSchema;
 export type PipelinesConfigPatch = z.infer<typeof PipelinesConfigPatchSchema>;
 
+/** Register one canonical repository with its provider. Observation consent is a later write. */
+export const PipelineRepoRegistrationSchema = z.object({
+  provider: z.enum(PIPELINE_PROVIDER_IDS),
+  repoRoot: z.string().min(1),
+});
+export type PipelineRepoRegistrationBody = z.infer<typeof PipelineRepoRegistrationSchema>;
+
 /**
  * One control verb aimed at an external SDLC engine, and one request for a hosted terminal.
  *

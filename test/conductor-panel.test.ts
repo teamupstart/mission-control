@@ -4,7 +4,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import { ConductorPanel, detectionReading, offeredRepos, repoHealthLine } from "../src/web/components/ConductorPanel.tsx";
-import type { ConductorState } from "../src/web/useConductor.ts";
+import { configWithObservation, type ConductorState } from "../src/web/useConductor.ts";
 import type { PipelineProbe, PipelinesView } from "../src/shared/pipeline.ts";
 
 // What is at stake: this panel is the CONSENT surface, and consent has to be legible in
@@ -23,7 +23,18 @@ import type { PipelineProbe, PipelinesView } from "../src/shared/pipeline.ts";
 
 /** A state with no answer yet - what a static render is, and what a first paint is. */
 function unanswered(): ConductorState {
-  return { view: null, save: async () => true, recheck: async () => {}, checking: false, error: null };
+  return {
+    view: null,
+    workspaceRepos: [],
+    save: async () => true,
+    registerAndObserve: async () => true,
+    enableObservation: async () => true,
+    recheck: async () => {},
+    checking: false,
+    setup: null,
+    setupNotice: null,
+    error: null,
+  };
 }
 
 function probe(over: Partial<PipelineProbe> = {}): PipelineProbe {
@@ -49,9 +60,14 @@ function answered(over: Partial<PipelinesView> = {}): ConductorState {
       status: [],
       ...over,
     },
+    workspaceRepos: ["/Users/someone/workspace/demo"],
     save: async () => true,
+    registerAndObserve: async () => true,
+    enableObservation: async () => true,
     recheck: async () => {},
     checking: false,
+    setup: null,
+    setupNotice: null,
     error: null,
   };
 }
@@ -110,8 +126,8 @@ test("the panel ships off, and says which of the three reasons applies", () => {
 
 test("the panel says the integration never writes, which the word conductor invites you to assume", () => {
   const html = render(answered());
-  assert.match(html, /never writes them/);
-  assert.match(html, /never starts or stops a pipeline/);
+  assert.match(html, /never edits Conductor/);
+  assert.match(html, /through Conductor&#x27;s own CLI/);
 });
 
 test("detection names the engine, its version and where the registry was looked for", () => {
@@ -141,7 +157,7 @@ test("an absent engine is reported once, in its own words, and not also as an er
     }),
   );
   // React escapes the apostrophe, so the assertion is on the clause either side of it.
-  assert.match(html, /Not installed - conduct-ts is not on this daemon/);
+  assert.match(html, /Setup needed - conduct-ts is not on this daemon/);
   assert.equal(
     (html.match(/is not on this daemon/g) ?? []).length,
     1,
@@ -171,7 +187,11 @@ test("a repository row carries its path, its switch and its health", () => {
   const html = render(
     answered({
       config: { enabled: true, foremanMechanicalTriage: false, repos: [{ provider: "ai-conductor", repoRoot: "/w/demo", enabled: true }] },
-      probes: [probe({ projects: [] })],
+      probes: [
+        probe({
+          projects: [{ name: "demo", path: "/w/demo", remote: null, status: "registered" }],
+        }),
+      ],
       status: [
         {
           provider: "ai-conductor",
@@ -270,26 +290,51 @@ test("the health line says how observation is arriving, in all three states", ()
 });
 
 test("the panel names where the plugin is installed, without offering a control for it", () => {
-  // The phase's constraint: no new UI beyond the indicator. Installing the plugin is a file
-  // copy into another program's directory - there is nothing here that could do it, so the
-  // panel says where rather than pretending to a switch.
   const html = render(answered({}));
   assert.match(html, /~\/\.ai-conductor\/plugins\/mission-control\//);
   assert.match(html, /integrations\/ai-conductor\/mission-control\//);
-  // And it says the thing that keeps an operator from reading this as a requirement.
   assert.match(html, /needs nothing installed/);
 });
 
 test("a repository the engine has forgotten stays listed while its consent stands", () => {
   // Otherwise the consent would be in force with nothing on screen that could withdraw it.
   const repos = offeredRepos(
+    ["/w/workspace-only", "/w/demo"],
     { enabled: true, foremanMechanicalTriage: false, repos: [{ provider: "ai-conductor", repoRoot: "/w/de-registered", enabled: true }] },
     [probe({ projects: [{ name: "demo", path: "/w/demo", remote: null, status: "registered" }] })],
   );
-  assert.deepEqual(repos.map((r) => r.repoRoot), ["/w/de-registered", "/w/demo"]);
+  assert.deepEqual(repos.map((r) => r.repoRoot), ["/w/de-registered", "/w/demo", "/w/workspace-only"]);
   assert.equal(repos.find((r) => r.repoRoot === "/w/de-registered")?.enabled, true);
+  assert.equal(repos.find((r) => r.repoRoot === "/w/de-registered")?.registered, false);
   // A repository the engine reports and nobody has consented to is offered, and OFF.
   assert.equal(repos.find((r) => r.repoRoot === "/w/demo")?.enabled, false);
+  assert.equal(repos.find((r) => r.repoRoot === "/w/demo")?.registered, true);
+  assert.equal(repos.find((r) => r.repoRoot === "/w/workspace-only")?.workspace, true);
+});
+
+test("the combined action composes observation onto the latest whole config", () => {
+  assert.deepEqual(
+    configWithObservation(
+      {
+        enabled: false,
+        foremanMechanicalTriage: true,
+        repos: [
+          { provider: "ai-conductor", repoRoot: "/w/other", enabled: false },
+          { provider: "ai-conductor", repoRoot: "/w/demo", enabled: false },
+        ],
+      },
+      "ai-conductor",
+      "/w/demo",
+    ),
+    {
+      enabled: true,
+      foremanMechanicalTriage: true,
+      repos: [
+        { provider: "ai-conductor", repoRoot: "/w/other", enabled: false },
+        { provider: "ai-conductor", repoRoot: "/w/demo", enabled: true },
+      ],
+    },
+  );
 });
 
 test("detection before the first read is unknown, not absent", () => {

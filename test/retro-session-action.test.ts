@@ -75,6 +75,7 @@ test("a retro packet names the receiving session and claims no workflow run", ()
     actionName: action.name,
     promptMarkdown: action.promptMarkdown,
     skillCommand: "/retro",
+    workflowEvidence: false,
   });
   assert.equal(packet.ok, true);
   if (!packet.ok) return;
@@ -87,6 +88,9 @@ test("a retro packet names the receiving session and claims no workflow run", ()
   // Nothing invents a run. An on-demand retro has no workflow, no version, and no run id.
   assert.ok(!packet.payload.includes("Workflow:"));
   assert.ok(!packet.payload.includes("Run:"));
+  assert.match(packet.payload, /already authorized you to commit the scoped work/);
+  assert.doesNotMatch(packet.payload, /submit_workflow_evidence/);
+  assert.doesNotMatch(packet.payload, /resubmit the workflow/);
   // The authored instruction survives to the last byte - nothing is appended after it.
   assert.ok(packet.payload.endsWith(action.promptMarkdown));
 });
@@ -97,12 +101,14 @@ test("a run's packet still names its workflow and run", () => {
     actionName: "Tidy",
     promptMarkdown: "# Tidy\n",
     skillCommand: null,
+    workflowEvidence: false,
   });
   assert.equal(packet.ok, true);
   if (!packet.ok) return;
   assert.ok(packet.payload.includes("Workflow: Review v3"));
   assert.ok(packet.payload.includes("Run: run-1"));
   assert.ok(!packet.payload.includes("Session:"));
+  assert.match(packet.payload, /do not ask the human to resubmit the workflow/);
 });
 
 test("a run reviewing one repository of a multi-repo task names it in the packet", () => {
@@ -120,10 +126,13 @@ test("a run reviewing one repository of a multi-repo task names it in the packet
     actionName: "Pull Request",
     promptMarkdown: "# Pull Request\n",
     skillCommand: null,
+    workflowEvidence: true,
   });
   assert.equal(packet.ok, true);
   if (!packet.ok) return;
   assert.match(packet.payload, /Repository: \/work\/beta/);
+  assert.match(packet.payload, /already authorized you to commit the scoped work/);
+  assert.match(packet.payload, /does not authorize merge/);
 });
 
 test("a run on the session's own checkout names no repository at all", () => {
@@ -138,6 +147,7 @@ test("a run on the session's own checkout names no repository at all", () => {
     actionName: "Tidy",
     promptMarkdown: "# Tidy\n",
     skillCommand: null,
+    workflowEvidence: false,
   });
   assert.equal(packet.ok, true);
   if (!packet.ok) return;

@@ -352,8 +352,8 @@ export class Dispatcher {
       // The repo manifest is a PREFIX (context the agent needs before the request) and the
       // kind's contract is a SUFFIX (what "delivered" means once it has read it), so the
       // operator's own words are never buried and the ordering is the same on both delivery
-      // seams. A ship task passes through `withTaskKindContract` unchanged, which is what
-      // keeps its intent bytes identical to what they were.
+      // seams. The operator's intent remains the exact prefix; server-owned authorization
+      // and the narrower kind contract follow it in one deterministic order.
       const workflowEvidence = this.deps.workflowEvidenceEnabled?.(task) ?? false;
       const intent = withTaskKindContract(provisioned, intentWithRepoManifest(provisioned), {
         planSkills: planSkills?.ok ? planSkills.commands : null,

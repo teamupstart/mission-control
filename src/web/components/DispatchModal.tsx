@@ -348,6 +348,7 @@ export function DispatchLayer({
   workflowSummaries = [],
   foremanEnabled = false,
   harnessesRevision = 0,
+  pipelinesRevision = "count:0",
   launchIntent = null,
   onClose,
   onOpenSchedule,
@@ -370,6 +371,8 @@ export function DispatchLayer({
    * so a modal left open kept naming a model that was no longer the default.
    */
   harnessesRevision?: number;
+  /** Refetch exact active pipeline roots when observation consent changes under an open modal. */
+  pipelinesRevision?: string;
   /**
    * What the caller wants this opening to be, when it is not an ordinary Dispatch.
    *
@@ -625,6 +628,7 @@ export function DispatchLayer({
         workflowSummaries={workflowSummaries}
         foremanEnabled={foremanEnabled}
         harnessesRevision={harnessesRevision}
+        pipelinesRevision={pipelinesRevision}
       />
     );
   }
@@ -651,6 +655,7 @@ export function DispatchLayer({
       workflowSummaries={workflowSummaries}
       foremanEnabled={foremanEnabled}
       harnessesRevision={harnessesRevision}
+      pipelinesRevision={pipelinesRevision}
     />
   );
 }
@@ -694,6 +699,7 @@ function DispatchModal({
   workflowSummaries = [],
   foremanEnabled = false,
   harnessesRevision = 0,
+  pipelinesRevision = "count:0",
 }: {
   mode: DispatchMode;
   tasks: Task[];
@@ -735,6 +741,7 @@ function DispatchModal({
    * defaults change under an open modal, rather than only when the modal is reopened.
    */
   harnessesRevision?: number;
+  pipelinesRevision?: string;
 }): React.JSX.Element {
   const editing = mode.kind === "edit" ? mode.task : null;
   // Ensemble mode is a new-dispatch-only concern, and only when the layer wired the state up.
@@ -1636,10 +1643,6 @@ function DispatchModal({
       setRepos(list);
       setReposLoading(false);
     });
-    void fetchPipelineRepos().then((answer) => {
-      if (!alive) return;
-      setPipelineRepos(new Set((answer?.repos ?? []).map((repo) => repo.repoRoot)));
-    });
     void workflowRequest<WorkflowConfig>("/api/workflows/config")
       .then((config) => {
         if (alive) setWorkflowConfig(config);
@@ -1663,6 +1666,20 @@ function DispatchModal({
       alive = false;
     };
   }, []);
+
+  // Pipeline eligibility is exact-repository consent from the daemon. Re-read it when the
+  // settings status exact-root key changes so a modal already open during Register and observe
+  // gains Pipeline only after the consent PUT succeeds, without optimistically widening the gate.
+  useEffect(() => {
+    let alive = true;
+    void fetchPipelineRepos().then((answer) => {
+      if (!alive) return;
+      setPipelineRepos(new Set((answer?.repos ?? []).map((repo) => repo.repoRoot)));
+    });
+    return () => {
+      alive = false;
+    };
+  }, [pipelinesRevision]);
 
   /**
    * What this task could be filed into, read once when the editor opens.

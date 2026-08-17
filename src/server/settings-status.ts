@@ -3,7 +3,11 @@ import { getInspectorConfig } from "./inspector/config.ts";
 import { getShippingConfig } from "./shipping/config.ts";
 import { getTaskSourcesConfig } from "./task-sources/config.ts";
 import { taskSourceStatuses } from "./task-sources/sweeper.ts";
-import { pipelinesObserving, pipelinesPresent } from "./pipelines/index.ts";
+import {
+  pipelineObservedRepoKeys,
+  pipelinesObserving,
+  pipelinesPresent,
+} from "./pipelines/index.ts";
 
 // The one place the Settings status tuple is composed, and the one helper that emits it.
 //
@@ -31,14 +35,14 @@ export function settingsStatus(): SettingsStatus {
     inspector: { enabled: inspector.enabled, mode: inspector.mode },
     shipping: { autoMerge: shipping.autoMerge },
     taskSources: { failing },
-    // Whether the Conductor category is DRAWN at all, which is a different kind of fact from
-    // its three neighbours: they tint a dot on a row that always exists. Cheap enough to
-    // recompute here - see `pipelinesPresent`, which spawns nothing.
-    // Two facts, two surfaces: `present` draws the Conductor row in the Settings rail for
-    // an operator who has the engine installed, and `observing` draws the Runs page's
-    // Pipelines tab for one who has consented to a repository. Both are config reads and
-    // neither spawns anything - see `pipelinesPresent` and `pipelinesObserving`.
-    pipelines: { present: pipelinesPresent(), observing: pipelinesObserving() },
+    // Keep the append-only `present` compatibility fact for older dashboards. The current
+    // dashboard always draws Conductor and uses `observing` alone for the Runs and Dispatch
+    // gates. Both values are cheap reads and spawn nothing.
+    pipelines: {
+      present: pipelinesPresent(),
+      observing: pipelinesObserving(),
+      observedRepoKeys: pipelineObservedRepoKeys(),
+    },
   };
 }
 

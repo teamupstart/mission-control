@@ -520,6 +520,18 @@ remains inert: its document renders immediately, then a bounded set of checkout-
 stylesheets is inlined through the contained file reader without granting the sandbox scripts
 or network access. A slow stylesheet read therefore delays styling, not the document itself.
 
+Markdown in the Files **Preview** has one additional capability: a fenced block tagged exactly
+`mermaid` renders automatically as a local diagram. Each diagram runs in its own opaque,
+no-network sandbox and exposes a numbered accessible name. A malformed block reports its error
+beside readable source without hiding the rest of the file. Blocks over 50,000 characters and
+blocks after the first 32 in one document stay as source with a limit notice. **Editor** always
+shows and saves the exact Markdown, including every fence, and returning to Preview renders the
+latest buffer. Untagged fences, every other language tag, and Mermaid fences in conversations,
+shared plans, Foreman briefs, Personas, workflow actions, and reports remain code. Rendering uses
+the bundled Mermaid package only; it sends no source or labels to a remote service. External image
+and active-link constructs are rejected before rendering and remain readable through the block's
+source fallback.
+
 **The Diff tab has the same door.** The bar naming the file you are reading carries an
 **Open in Files** action, on every file, which opens that file in the Files tab beside it -
 the same route, the same containment rules. Press <kbd>l</kbd> while the diff reader owns

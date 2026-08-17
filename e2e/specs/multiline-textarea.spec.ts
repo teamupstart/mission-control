@@ -68,6 +68,15 @@ async function expectFiveLineViewport(field: Locator, shouldGrow: boolean): Prom
   expect(six.overflow, "input beyond five lines should scroll inside the textarea").toBeGreaterThan(1);
 }
 
+async function captureEvidence(page: Page, surface: Locator, filename: string): Promise<void> {
+  if (process.env.MC_E2E_EVIDENCE !== "1") return;
+
+  mkdirSync(EVIDENCE, { recursive: true });
+  await page.mouse.move(0, 0);
+  await surface.screenshot({ path: `${EVIDENCE}${filename}` });
+  console.log(`CAPTURED e2e/.artifacts/multiline-textarea/${filename}`);
+}
+
 async function prepareDispatch(page: Page, daemon: DaemonHandle): Promise<Locator> {
   await page.getByRole("button", { name: "Dispatch" }).click();
   const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
@@ -87,6 +96,8 @@ test("multiline text boxes grow through five lines before scrolling", async ({
   // The dispatch brief starts at five rows. It uses the same global contract as the compact
   // composers, but its empty-state floor should remain intact when content sizing turns on.
   await expectFiveLineViewport(task, false);
+  await task.fill(FIVE_LINES);
+  await captureEvidence(dashboard, dialog, "dispatch-brief-five-lines.png");
   await task.fill("exercise every multiline input size");
   await dialog.getByRole("button", { name: "Dispatch now" }).click();
   await expect(dialog).toBeHidden();
@@ -100,6 +111,8 @@ test("multiline text boxes grow through five lines before scrolling", async ({
   // draft needs them, then an internal scrollbar for anything longer.
   const compactComposer = card.getByPlaceholder("Message to send…");
   await expectFiveLineViewport(compactComposer, true);
+  await compactComposer.fill(FIVE_LINES);
+  await captureEvidence(dashboard, card, "collapsed-card-composer-five-lines.png");
   await compactComposer.press("Escape");
   await expect(compactComposer).toHaveCount(0);
 
@@ -118,10 +131,5 @@ test("multiline text boxes grow through five lines before scrolling", async ({
     return prompt.getBoundingClientRect().top - element.getBoundingClientRect().top;
   });
   expect(promptOffset, "the terminal prompt should stay beside the first input line").toBeLessThanOrEqual(6);
-  if (process.env.MC_E2E_EVIDENCE === "1") {
-    mkdirSync(EVIDENCE, { recursive: true });
-    await dashboard.mouse.move(0, 0);
-    await card.screenshot({ path: `${EVIDENCE}terminal-composer-five-lines.png` });
-    console.log("CAPTURED e2e/.artifacts/multiline-textarea/terminal-composer-five-lines.png");
-  }
+  await captureEvidence(dashboard, card, "terminal-composer-five-lines.png");
 });

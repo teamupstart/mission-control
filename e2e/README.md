@@ -552,12 +552,13 @@ every run for no added signal.
 
 ### Multiline text boxes grow with the draft
 
-`e2e/.artifacts/multiline-textarea/terminal-composer-five-lines.png` shows the compact
-terminal-style composer after five explicit lines are entered. The same browser regression
-checks the five-row dispatch brief and the collapsed-card composer, then proves a sixth line
-uses an internal scrollbar instead of growing the surrounding card without a bound.
+`e2e/.artifacts/multiline-textarea/` contains three captures showing five explicit input
+lines in every multiline surface covered by the regression: the dispatch brief, the
+collapsed-card composer, and the compact terminal-style composer. The browser assertions
+also prove a sixth line uses an internal scrollbar instead of growing the surrounding card
+without a bound.
 
-Regenerate it with:
+Regenerate them with:
 
 ```sh
 env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \

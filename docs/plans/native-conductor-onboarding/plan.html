@@ -1,0 +1,686 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Native Conductor onboarding plan</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0a0c0f;
+      --panel: #14181e;
+      --panel-2: #171c23;
+      --border: #232a33;
+      --fg: #e7ebf1;
+      --muted: #939eae;
+      --working: #4a9eff;
+      --idle: #35c08a;
+      --attention: #f6a733;
+      --danger: #f85149;
+      --shadow: 0 24px 80px rgba(0, 0, 0, .32);
+      --sans: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background:
+        radial-gradient(circle at 18% -12%, rgba(74,158,255,.11), transparent 34rem),
+        radial-gradient(circle at 86% 8%, rgba(53,192,138,.065), transparent 28rem),
+        var(--bg);
+      color: var(--fg);
+      font-family: var(--sans);
+      line-height: 1.58;
+    }
+    a { color: inherit; }
+    code {
+      color: #c7d5e8;
+      font-family: var(--mono);
+      font-size: .9em;
+      overflow-wrap: anywhere;
+    }
+    .shell {
+      width: min(1180px, calc(100% - 40px));
+      margin: 0 auto;
+      padding: 32px 0 80px;
+    }
+    .topline {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 18px;
+      color: var(--muted);
+      font: 650 11px/1.2 var(--mono);
+      letter-spacing: .11em;
+      text-transform: uppercase;
+    }
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .status::before {
+      content: "";
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--idle);
+      box-shadow: 0 0 0 4px rgba(53,192,138,.1);
+    }
+    .hero {
+      position: relative;
+      overflow: hidden;
+      padding: clamp(28px, 5vw, 60px);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      background: linear-gradient(145deg, rgba(23,28,35,.97), rgba(14,17,22,.96));
+      box-shadow: var(--shadow);
+    }
+    .hero::after {
+      content: "⇶";
+      position: absolute;
+      right: 28px;
+      top: -50px;
+      color: rgba(74,158,255,.055);
+      font: 700 240px/1 var(--sans);
+      pointer-events: none;
+    }
+    .eyebrow {
+      margin: 0 0 12px;
+      color: var(--working);
+      font: 700 11px/1.2 var(--mono);
+      letter-spacing: .14em;
+      text-transform: uppercase;
+    }
+    h1, h2, h3 { margin: 0; line-height: 1.14; }
+    h1 {
+      max-width: 780px;
+      font-size: clamp(35px, 6vw, 66px);
+      font-weight: 680;
+      letter-spacing: -.045em;
+    }
+    .dek {
+      max-width: 820px;
+      margin: 22px 0 0;
+      color: #b8c1ce;
+      font-size: clamp(16px, 2.1vw, 20px);
+    }
+    .answer {
+      display: grid;
+      grid-template-columns: 1.15fr .85fr;
+      gap: 1px;
+      margin-top: 30px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      border-radius: 13px;
+      background: var(--border);
+    }
+    .answer > div { padding: 18px 20px; background: rgba(10,12,15,.82); }
+    .answer b {
+      display: block;
+      margin-bottom: 5px;
+      color: var(--idle);
+      font: 700 11px/1.2 var(--mono);
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    .answer p { margin: 0; color: #cbd3dd; }
+    .commission {
+      position: relative;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 22px;
+      margin-top: 28px;
+    }
+    .commission::before {
+      content: "";
+      position: absolute;
+      left: 13%; right: 13%; top: 15px;
+      height: 1px;
+      background: linear-gradient(90deg, var(--idle), var(--working), var(--attention));
+      opacity: .7;
+    }
+    .stage { position: relative; min-width: 0; }
+    .stage-dot {
+      position: relative;
+      z-index: 1;
+      width: 31px;
+      height: 31px;
+      display: grid;
+      place-items: center;
+      margin: 0 auto 10px;
+      border: 1px solid currentColor;
+      border-radius: 50%;
+      background: var(--panel-2);
+      font: 700 11px/1 var(--mono);
+    }
+    .stage:nth-child(1) { color: var(--idle); }
+    .stage:nth-child(2) { color: var(--working); }
+    .stage:nth-child(3) { color: var(--attention); }
+    .stage strong, .stage small { display: block; text-align: center; }
+    .stage strong { color: var(--fg); font-size: 13px; }
+    .stage small { margin-top: 3px; color: var(--muted); font: 11px/1.35 var(--mono); }
+    .layout {
+      display: grid;
+      grid-template-columns: 220px minmax(0, 1fr);
+      gap: 34px;
+      margin-top: 34px;
+    }
+    nav {
+      position: sticky;
+      top: 20px;
+      align-self: start;
+      padding: 17px;
+      border: 1px solid var(--border);
+      border-radius: 13px;
+      background: rgba(20,24,30,.82);
+      backdrop-filter: blur(14px);
+    }
+    nav b {
+      display: block;
+      margin: 0 0 9px 9px;
+      color: var(--muted);
+      font: 700 10px/1.2 var(--mono);
+      letter-spacing: .1em;
+      text-transform: uppercase;
+    }
+    nav a {
+      display: block;
+      padding: 7px 9px;
+      border-radius: 7px;
+      color: #aab4c2;
+      font-size: 12px;
+      text-decoration: none;
+    }
+    nav a:hover { background: var(--panel-2); color: var(--fg); }
+    main { min-width: 0; }
+    section {
+      padding: 31px 0;
+      border-top: 1px solid var(--border);
+      scroll-margin-top: 20px;
+    }
+    main section:first-child { padding-top: 0; border-top: 0; }
+    h2 {
+      margin-bottom: 14px;
+      font-size: clamp(22px, 3vw, 31px);
+      letter-spacing: -.025em;
+    }
+    h3 { margin: 25px 0 8px; font-size: 16px; }
+    p { margin: 9px 0; color: #b7c0cc; }
+    ul, ol { margin: 12px 0; padding-left: 23px; color: #b7c0cc; }
+    li { margin: 7px 0; }
+    strong { color: var(--fg); }
+    .lede { font-size: 17px; color: #c8d0da; }
+    .callout {
+      margin: 18px 0;
+      padding: 17px 19px;
+      border: 1px solid rgba(74,158,255,.3);
+      border-left: 3px solid var(--working);
+      border-radius: 10px;
+      background: rgba(74,158,255,.055);
+    }
+    .callout.attention {
+      border-color: rgba(246,167,51,.25);
+      border-left-color: var(--attention);
+      background: rgba(246,167,51,.05);
+    }
+    .callout p { margin: 0; }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .card {
+      min-width: 0;
+      padding: 18px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: var(--panel);
+    }
+    .card h3 { margin: 0 0 8px; }
+    .card p:last-child, .card ul:last-child { margin-bottom: 0; }
+    .label {
+      display: inline-block;
+      margin-bottom: 8px;
+      color: var(--working);
+      font: 700 10px/1.2 var(--mono);
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    .evidence { counter-reset: evidence; list-style: none; padding: 0; }
+    .evidence li {
+      position: relative;
+      padding: 13px 14px 13px 46px;
+      border-top: 1px solid var(--border);
+    }
+    .evidence li::before {
+      counter-increment: evidence;
+      content: counter(evidence, decimal-leading-zero);
+      position: absolute;
+      left: 9px;
+      top: 15px;
+      color: var(--muted);
+      font: 700 10px/1 var(--mono);
+    }
+    .wireframe {
+      margin: 18px 0;
+      padding: 18px;
+      overflow: auto;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: #0d1014;
+      color: #c1cbd8;
+      font: 12px/1.55 var(--mono);
+      white-space: pre;
+    }
+    .flow {
+      width: 100%;
+      height: auto;
+      margin: 18px 0 6px;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: #0d1014;
+    }
+    table { width: 100%; border-collapse: collapse; margin: 14px 0; font-size: 13px; }
+    th, td { padding: 11px 10px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
+    th { color: var(--muted); font: 700 10px/1.2 var(--mono); letter-spacing: .07em; text-transform: uppercase; }
+    td { color: #b7c0cc; }
+    .decision-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .decision {
+      padding: 19px;
+      border: 1px solid rgba(74,158,255,.35);
+      border-radius: 12px;
+      background: linear-gradient(145deg, rgba(74,158,255,.08), rgba(20,24,30,.9));
+    }
+    .recommend {
+      display: inline-block;
+      margin-bottom: 10px;
+      padding: 4px 7px;
+      border-radius: 5px;
+      background: rgba(53,192,138,.12);
+      color: var(--idle);
+      font: 700 9px/1.2 var(--mono);
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    .decision h3 { margin: 0 0 8px; }
+    .footer {
+      display: flex;
+      justify-content: space-between;
+      gap: 18px;
+      padding-top: 22px;
+      border-top: 1px solid var(--border);
+      color: var(--muted);
+      font: 11px/1.45 var(--mono);
+    }
+    @media (max-width: 820px) {
+      .answer, .grid, .decision-grid { grid-template-columns: 1fr; }
+      .layout { grid-template-columns: 1fr; }
+      nav { position: static; display: none; }
+    }
+    @media (max-width: 560px) {
+      .shell { width: min(100% - 24px, 1180px); padding-top: 18px; }
+      .hero { padding: 25px 20px; border-radius: 14px; }
+      .hero::after { display: none; }
+      .commission { gap: 8px; }
+      .stage small { display: none; }
+      .wireframe { font-size: 10px; }
+      .footer { display: block; }
+      .footer span { display: block; margin-top: 6px; }
+    }
+    @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <div class="topline">
+      <span>Mission Control / Product plan</span>
+      <span class="status">Approved · 2026-08-17</span>
+    </div>
+
+    <header class="hero">
+      <p class="eyebrow">Native integration</p>
+      <h1>Conductor should always have a front door.</h1>
+      <p class="dek">Settings becomes the permanent place to install the machine-wide engine,
+        register each repository, and grant Mission Control observation. Setup becomes visible
+        without weakening the repository-specific gate that makes Pipeline appear in Dispatch.</p>
+
+      <div class="answer">
+        <div>
+          <b>Product decision</b>
+          <p>Always show Conductor in Settings, deep links, search, and the command palette.</p>
+        </div>
+        <div>
+          <b>Readiness boundary</b>
+          <p>Runs and Dispatch stay gated by active observation of the exact repository.</p>
+        </div>
+      </div>
+
+      <div class="commission" aria-label="Conductor commissioning flow">
+        <div class="stage"><span class="stage-dot">1</span><strong>Engine</strong><small>machine-wide</small></div>
+        <div class="stage"><span class="stage-dot">2</span><strong>Register repo</strong><small>provider registry</small></div>
+        <div class="stage"><span class="stage-dot">3</span><strong>Observe</strong><small>Mission Control consent</small></div>
+      </div>
+    </header>
+
+    <div class="layout">
+      <nav aria-label="Plan sections">
+        <b>Plan</b>
+        <a href="#decision">Decision</a>
+        <a href="#evidence">Evidence</a>
+        <a href="#experience">Experience</a>
+        <a href="#visual">Visual system</a>
+        <a href="#flow">Request flow</a>
+        <a href="#implementation">Implementation</a>
+        <a href="#safety">Safety</a>
+        <a href="#tests">Tests</a>
+        <a href="#non-goals">Non-goals</a>
+        <a href="#choices">Open choices</a>
+      </nav>
+
+      <main>
+        <section id="decision">
+          <h2>Decision</h2>
+          <p class="lede">Make <strong>Settings → Conductor</strong> permanent. Use the page to
+            explain and perform three separate acts: install the engine once on the machine,
+            register a repository through Conductor's CLI, and grant Mission Control permission
+            to observe it.</p>
+          <div class="callout">
+            <p><strong>Dispatch does not become global.</strong> Pipeline appears only when the
+              selected main repository is in <code>activePipelineRepos(config)</code>. Always-visible
+              Settings repairs discovery; it does not bypass consent.</p>
+          </div>
+          <p>The recommended repository action is <strong>Register and observe</strong>. Registration
+            runs first. Mission Control writes its own observation consent only after the provider
+            confirms the canonical path. If that second write fails, the row reports partial success
+            and offers a focused recovery action.</p>
+          <h3>Why this boundary</h3>
+          <p>The current design hides setup behind evidence that setup already happened. A native
+            integration needs a stable front door. It must also teach the actual scopes: installation
+            is machine-wide; registration is per repository in Conductor's registry; observation is
+            separate Mission Control consent.</p>
+        </section>
+
+        <section id="evidence">
+          <h2>Current evidence</h2>
+          <ol class="evidence">
+            <li>The registered category is filtered on <code>settingsStatus.pipelines.present</code>
+              in <code>src/web/lib/settings-registry.ts:228</code>,
+              <code>src/web/lib/settings-registry.ts:369</code>,
+              <code>src/web/components/SettingsPage.tsx:258</code>,
+              <code>src/web/App.tsx:713</code>, and
+              <code>src/web/lib/palette-index.ts:576</code>.</li>
+            <li>The daemon defines presence as stored pipeline config or a provider binary on PATH,
+              and polls once per minute mainly to reveal or hide the row:
+              <code>src/server/pipelines/index.ts:181</code> and
+              <code>src/server/pipelines/index.ts:1050</code>.</li>
+            <li>The panel offers only provider-reported or already-configured repositories. It omits
+              unregistered workspace repositories: <code>src/web/components/ConductorPanel.tsx:134</code>.</li>
+            <li>The shared inventory and canonicalization already exist at
+              <code>src/server/repos.ts:80</code>, <code>src/server/repos.ts:123</code>,
+              <code>src/server/routes.ts:2323</code>, and <code>src/server/routes.ts:2328</code>.</li>
+            <li>The provider seam already owns CLI composition and forbids direct provider-file writes:
+              <code>src/server/pipelines/types.ts:139</code> and
+              <code>src/server/pipelines/conductor/index.ts:355</code>.</li>
+            <li>ai-conductor's sanctioned <code>conduct-ts register [path]</code> validates the repo,
+              uses its own registry writer, and prints the confirmed absolute path:
+              <code>docs/reference/cli.md:477</code> and
+              <code>src/conductor/src/engine/registry-cli.ts:80</code> in ai-conductor.</li>
+            <li>The upstream installer is broad and interactive. It builds, links user-level tools and
+              skills, edits configuration, and may install global rendering dependencies. This supports
+              a visible terminal ceremony, not a silent HTTP mutation: <code>bin/install:7</code>,
+              <code>bin/install:591</code>, <code>bin/install:693</code>, and
+              <code>bin/install:1331</code> in ai-conductor.</li>
+          </ol>
+        </section>
+
+        <section id="experience">
+          <h2>Intended experience</h2>
+          <p>The rail row, hash route, and palette entry always exist. An amber dot can mean setup
+            needs action; green means at least one repository is actively observed. Missing software
+            is incomplete setup, not an error.</p>
+          <div class="wireframe" role="img" aria-label="Settings and Conductor panel wireframe">Settings rail                 Conductor panel
+┌──────────────────┐          ┌──────────────────────────────────────────────────┐
+│ Display          │          │  ⇶ Conductor                                     │
+│ Agents           │          │  ● Engine ───── ● Register repo ───── ● Observe │
+│ Conductor      ● │  ─────>  │                                                  │
+│ Worktrees        │          │  [contextual setup card for first open step]     │
+└──────────────────┘          │                                                  │
+                              │  Repositories                                    │
+                              │  repo-name  Registered  Observed  Action          │
+                              └──────────────────────────────────────────────────┘</div>
+
+          <div class="grid">
+            <article class="card">
+              <span class="label">State 1</span>
+              <h3>Engine missing</h3>
+              <p>Say: <strong>Install Conductor once on this machine. Repositories are registered
+                separately.</strong></p>
+              <p>When a verified local ai-conductor main checkout exists, confirm it and open
+                <code>bin/install</code> in a hosted interactive terminal. Otherwise provide copyable
+                clone/install instructions and an explicit recheck.</p>
+            </article>
+            <article class="card">
+              <span class="label">State 2</span>
+              <h3>Repo unregistered</h3>
+              <p>Merge the workspace repository catalog with provider projects and configured rows.
+                A searchable picker offers unregistered repositories.</p>
+              <p><strong>Register and observe</strong> resolves the main root, runs the provider CLI
+                without a shell, verifies exact output, probes again, then saves observation consent.</p>
+            </article>
+            <article class="card">
+              <span class="label">State 3</span>
+              <h3>Registered, not observed</h3>
+              <p>The row clearly separates provider registration from Mission Control permission.
+                <strong>Enable observation</strong> recovers a partial setup without repeating the
+                provider mutation.</p>
+            </article>
+            <article class="card">
+              <span class="label">State 4</span>
+              <h3>Dispatch ready</h3>
+              <p>Keep the current health, ingest, master switch, per-repo switch, and Foreman controls.
+                Show registered, observed, and dispatch-ready as distinct facts.</p>
+            </article>
+          </div>
+
+          <div class="callout attention">
+            <p><strong>Installer candidate rules:</strong> a real main checkout, not a linked worktree;
+              expected installer and package markers; and a recognized upstream remote or future
+              explicit trust grant. Detection is read-only. Only the user's click launches it.</p>
+          </div>
+        </section>
+
+        <section id="visual">
+          <h2>Visual system</h2>
+          <p>Use Mission Control's existing Settings layout, Console cards, and dark-only type system.
+            The integration should look first-party rather than like a branded mini-application.</p>
+          <table>
+            <thead><tr><th>Role</th><th>Token</th><th>Value</th><th>Use</th></tr></thead>
+            <tbody>
+              <tr><td>App background</td><td><code>--bg</code></td><td><code>#0a0c0f</code></td><td>Settings canvas</td></tr>
+              <tr><td>Card surface</td><td><code>--panel</code></td><td><code>#14181e</code></td><td>Setup and repo cards</td></tr>
+              <tr><td>Hairline</td><td><code>--border</code></td><td><code>#232a33</code></td><td>Signal path and row rules</td></tr>
+              <tr><td>Primary text</td><td><code>--fg</code></td><td><code>#e7ebf1</code></td><td>Labels and decisions</td></tr>
+              <tr><td>Active action</td><td><code>--working</code></td><td><code>#4a9eff</code></td><td>Current setup stage</td></tr>
+              <tr><td>Complete / attention</td><td><code>--idle</code> / <code>--attention</code></td><td><code>#35c08a</code> / <code>#f6a733</code></td><td>Ready and needs-action</td></tr>
+            </tbody>
+          </table>
+          <p>Application sans handles instructions and controls. The existing mono face handles paths,
+            commands, versions, and status. Keep the current 17px section heading and 12.5px settings
+            body scale.</p>
+          <p>The signature element is a compact <strong>⇶ commissioning line</strong>. A first draft
+            used three large onboarding cards, but that felt generic and temporary. The revision is a
+            persistent signal path that explains the real dependency while standard Console cards own
+            the details. No celebratory animation is needed; reduced motion remains respected.</p>
+        </section>
+
+        <section id="flow">
+          <h2>Data and request flow</h2>
+          <svg class="flow" viewBox="0 0 960 410" role="img" aria-labelledby="flow-title flow-desc">
+            <title id="flow-title">Native Conductor setup request flow</title>
+            <desc id="flow-desc">Settings always shows Conductor. Detection branches to a visible installer terminal or repository registration. Confirmed registration is followed by Mission Control observation, which enables Runs and exact-repository Pipeline dispatch.</desc>
+            <defs>
+              <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#536275"/></marker>
+              <style>
+                .n { fill:#14181e; stroke:#2b3541; stroke-width:1.5; rx:10; }
+                .a { fill:none; stroke:#536275; stroke-width:1.5; marker-end:url(#arrow); }
+                .t { fill:#e7ebf1; font:600 13px ui-sans-serif,system-ui; text-anchor:middle; }
+                .s { fill:#939eae; font:11px ui-monospace,monospace; text-anchor:middle; }
+                .good { stroke:#35c08a; } .active { stroke:#4a9eff; } .warn { stroke:#f6a733; }
+              </style>
+            </defs>
+            <path class="a" d="M190 70 H278"/><path class="a" d="M435 70 H520"/>
+            <path class="a" d="M610 104 V165 H475"/><path class="a" d="M610 104 V165 H745"/>
+            <path class="a" d="M745 205 V251 H633"/><path class="a" d="M475 205 V230 H633 V251"/>
+            <path class="a" d="M633 291 V337 H474"/><path class="a" d="M633 291 V337 H785"/>
+            <rect class="n active" x="28" y="38" width="162" height="65"/><text class="t" x="109" y="66">Settings</text><text class="s" x="109" y="84">always visible</text>
+            <rect class="n" x="278" y="38" width="157" height="65"/><text class="t" x="356" y="66">Pipeline view</text><text class="s" x="356" y="84">cached probe</text>
+            <rect class="n warn" x="520" y="38" width="180" height="65"/><text class="t" x="610" y="66">conduct-ts?</text><text class="s" x="610" y="84">detection boundary</text>
+            <rect class="n warn" x="375" y="165" width="200" height="40"/><text class="t" x="475" y="190">Hosted installer terminal</text>
+            <rect class="n active" x="652" y="165" width="186" height="40"/><text class="t" x="745" y="190">Workspace repo picker</text>
+            <rect class="n active" x="520" y="251" width="226" height="40"/><text class="t" x="633" y="276">Provider register + force probe</text>
+            <rect class="n good" x="375" y="337" width="198" height="40"/><text class="t" x="474" y="362">Runs → Pipelines</text>
+            <rect class="n good" x="680" y="337" width="210" height="40"/><text class="t" x="785" y="362">Dispatch → Pipeline</text>
+            <text class="s" x="517" y="324">Mission Control observation consent</text>
+          </svg>
+          <p>Registration belongs on the provider axis. Extend <code>PipelineProvider</code> with a
+            narrow <code>registerRepo(repoRoot)</code> capability and a typed result. Do not compose an
+            ai-conductor command inside <code>routes.ts</code>.</p>
+          <p>Installation is a different kind of action: an interactive terminal ceremony rooted in
+            verified source. Reuse the typed terminal targets and launcher. The browser submits only a
+            provider id, detected checkout, and terminal backend; it never sends argv or shell text.</p>
+        </section>
+
+        <section id="implementation">
+          <h2>Implementation slices</h2>
+          <div class="grid">
+            <article class="card">
+              <span class="label">01 / Discoverability</span>
+              <h3>Remove category gates</h3>
+              <ul>
+                <li>Make Conductor navigation and palette indexing unconditional.</li>
+                <li>Keep <code>SettingsStatus.pipelines.present</code> wire-compatible as detection if a rail dot consumes it.</li>
+                <li>Keep <code>pipelines.observing</code> unchanged as the Runs gate.</li>
+                <li>Remove the minute presence cadence only if it has no remaining reader.</li>
+              </ul>
+            </article>
+            <article class="card">
+              <span class="label">02 / Contracts</span>
+              <h3>Model setup explicitly</h3>
+              <ul>
+                <li>Add provider registration and typed Zod request/result schemas.</li>
+                <li>Resolve and canonicalize every path server-side.</li>
+                <li>Add read-only verified installer-candidate detection.</li>
+                <li>Bound process duration and captured output.</li>
+              </ul>
+            </article>
+            <article class="card">
+              <span class="label">03 / Interface</span>
+              <h3>Build native states</h3>
+              <ul>
+                <li>Merge workspace repos, provider projects, and configured rows.</li>
+                <li>Add the commissioning line and contextual setup card.</li>
+                <li>Serialize setup actions with existing optimistic config writes.</li>
+                <li>Never hide existing cleanup controls when detection fails.</li>
+              </ul>
+            </article>
+            <article class="card">
+              <span class="label">04 / Alignment</span>
+              <h3>Refresh Dispatch and docs</h3>
+              <ul>
+                <li>Refresh active pipeline repos after Register and observe.</li>
+                <li>Keep exact-repository Dispatch eligibility.</li>
+                <li>Rewrite <code>docs/pipelines.md</code> around machine, registry, and consent scopes.</li>
+                <li>Remove the current absent-by-default promise and stale phase notes.</li>
+              </ul>
+            </article>
+          </div>
+        </section>
+
+        <section id="safety">
+          <h2>Failure and safety contract</h2>
+          <ul>
+            <li><strong>No direct registry writes.</strong> <code>conduct-ts register</code> remains the only Conductor registry writer.</li>
+            <li><strong>No browser-supplied commands.</strong> Provider and server code compose all argv.</li>
+            <li><strong>No silent global installation.</strong> The first release does not clone or install in the background.</li>
+            <li><strong>No worktree installation.</strong> Use verified main checkouts and canonical main repository roots.</li>
+            <li><strong>Validate outcomes.</strong> Require exit success, exact bounded output, and a fresh provider probe.</li>
+            <li><strong>Report partial completion.</strong> Never call registration plus failed observation complete.</li>
+            <li><strong>Preserve reversibility.</strong> Disabling observation does not deregister provider state.</li>
+          </ul>
+        </section>
+
+        <section id="tests">
+          <h2>Tests and evidence</h2>
+          <h3>Unit and route contracts</h3>
+          <ul>
+            <li>Invert settings registry, sidebar, deep-link, and palette tests: Conductor exists without engine or config.</li>
+            <li>Cover exact registration argv, missing binary, invalid repo, worktree resolution, bad exit, misleading zero-exit output, truncation, timeout, idempotence, and canonical confirmation.</li>
+            <li>Cover schema refusal, force-probe, consent success, and registered-but-not-observed partial failure.</li>
+            <li>Cover candidate union and keep stale configured rows visible for consent withdrawal.</li>
+          </ul>
+          <h3>Browser contract</h3>
+          <p>Update <code>e2e/specs/settings-conductor.spec.ts</code> and its fake engine for:</p>
+          <ol>
+            <li>No-engine rail, palette, deep-link, and machine-scoped guidance.</li>
+            <li>Installer checkout confirmation and a faked hosted-terminal request.</li>
+            <li>Workspace repository selection and fake CLI registration.</li>
+            <li>Partial failure and Enable observation recovery.</li>
+            <li>Pipeline absent for other repos and present for the exact observed repo.</li>
+            <li>Narrow layout, keyboard order, accessible names, and non-color status cues.</li>
+          </ol>
+          <p>The fake intercepts registration and installation, spends no model tokens, and performs
+            no user-level mutation. Use roles, labels, and placeholders; add no
+            <code>data-testid</code>.</p>
+          <h3>Validation ladder</h3>
+          <p>Run focused pipeline/settings tests, then <code>npm run typecheck</code>,
+            <code>npm run lint</code>, <code>npm test</code>, <code>npm run build</code>,
+            <code>npm run smoke</code>, and <code>npm run test:e2e</code>. Preserve browser evidence
+            for missing-engine, registration, ready, and partial-failure states in a gitignored location.</p>
+        </section>
+
+        <section id="non-goals">
+          <h2>Non-goals</h2>
+          <ul>
+            <li>Bundling ai-conductor inside Mission Control or becoming its package manager.</li>
+            <li>Silently cloning, downloading, upgrading, uninstalling, or registering every repo.</li>
+            <li>Writing any provider-owned registry or pipeline state directly.</li>
+            <li>Showing Pipeline in Dispatch for an unobserved repository.</li>
+            <li>Starting a pipeline as part of registration.</li>
+            <li>Deregistration, upgrade management, or a multi-provider marketplace in the first release.</li>
+          </ul>
+        </section>
+
+        <section id="choices">
+          <h2>Confirmed product decisions</h2>
+          <p>The 2026-08-17 continuation approved both recommendations and authorized implementation
+            phasing, task scheduling, and publication of the plan artifacts.</p>
+          <div class="decision-grid">
+            <article class="decision">
+              <span class="recommend">Approved</span>
+              <h3>Guided terminal install</h3>
+              <p>Launch the upstream interactive installer only from a verified local main checkout.
+                Fall back to copyable instructions when no checkout exists. A fully managed download
+                waits until source trust, networking, versions, updates, and rollback have a policy.</p>
+            </article>
+            <article class="decision">
+              <span class="recommend">Approved</span>
+              <h3>Register and observe</h3>
+              <p>One explicit action performs the provider registration, then Mission Control consent,
+                with honest partial-success handling. Register-only is simpler but leaves Dispatch in the
+                same surprising state that motivated this plan.</p>
+            </article>
+          </div>
+          <div class="callout attention">
+            <p><strong>Follow-up approved:</strong> create merge-aware implementation phases and
+              schedule their dependency-linked tasks after these artifacts are published.</p>
+          </div>
+        </section>
+
+        <footer class="footer">
+          <strong>Native Conductor onboarding</strong>
+          <span>Source: docs/plans/native-conductor-onboarding/plan.md</span>
+        </footer>
+      </main>
+    </div>
+  </div>
+</body>
+</html>

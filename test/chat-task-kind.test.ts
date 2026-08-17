@@ -22,6 +22,9 @@ const {
 } = await import("../src/server/tasks.ts");
 const { kindMissionMcpRequirement } = await import("../src/server/mission-mcp.ts");
 const { withTaskKindContract } = await import("../src/server/task-contract.ts");
+const { executionAuthorizationContract } = await import(
+  "../src/server/execution-authorization.ts"
+);
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -74,7 +77,7 @@ test("schedule and task-source schemas refuse chat instead of normalizing it", (
   assert.equal(TaskSourceDefaultsSchema.safeParse({ kind: "chat" }).success, false);
 });
 
-test("an immediate chat persists and dispatches with its opener unchanged", async () => {
+test("an immediate chat persists and dispatches with its opener as the exact prompt prefix", async () => {
   const registry = new Registry();
   const tasks = new TaskManager(registry);
   const launched: string[] = [];
@@ -94,7 +97,13 @@ test("an immediate chat persists and dispatches with its opener unchanged", asyn
   assert.equal(task.status, "dispatching");
   assert.equal(registry.getTask(task.id)?.kind, "chat");
   assert.deepEqual(launched, [task.id]);
-  assert.equal(withTaskKindContract(task, task.intent), chatInput.intent);
+  assert.equal(
+    withTaskKindContract(task, task.intent),
+    `${chatInput.intent}\n\n${executionAuthorizationContract({
+      workflowEvidence: false,
+      workflowContinuation: false,
+    })}`,
+  );
   assert.equal(kindMissionMcpRequirement(task, null), null);
 });
 

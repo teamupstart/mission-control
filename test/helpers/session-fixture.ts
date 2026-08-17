@@ -208,6 +208,7 @@ export function mkTaskSummary(over: Partial<TaskSummary> = {}): TaskSummary {
     title: "Fix the parser",
     fullTitle: "Fix the parser",
     kind: "ship",
+    workflowId: null,
     status: "running",
     outcome: null,
     outcomeUrl: null,

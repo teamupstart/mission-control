@@ -232,6 +232,7 @@ export function decidePromptedWrapup(input: PromptedInput): PromptedCandidate {
   // or the direct shipping prompt.
   const block = automaticWrapupBlock({
     taskKind: session.task?.kind ?? null,
+    workflowId: session.task?.workflowId ?? null,
     objective,
     skipScoutWrapup: cfg.skipScoutWrapup,
     skipReviewArtifactWrapup: cfg.skipReviewArtifactWrapup,

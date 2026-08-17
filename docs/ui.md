@@ -666,7 +666,7 @@ names the layouts where a shortcut's target exists:
 | <kbd>⇧</kbd><kbd>P</kbd> | Open or close **Sitrep** | Fleet |
 | <kbd>+</kbd> | Start the guided dispatch pass. <kbd>Tab</kbd> reaches the ordinary form in one key | Anywhere |
 | type, <kbd>↑</kbd><kbd>↓</kbd>, <kbd>Enter</kbd> | Filter repositories by name, move through the matches and take one | Guided dispatch: Repo |
-| <kbd>p</kbd> / <kbd>t</kbd> / <kbd>l</kbd> | Choose ship / scout / plan | Guided dispatch: Kind |
+| <kbd>p</kbd> / <kbd>t</kbd> / <kbd>l</kbd> / <kbd>c</kbd> | Choose ship / scout / plan / chat | Guided dispatch: Kind |
 | <kbd>c</kbd> / <kbd>x</kbd> / <kbd>i</kbd> | Choose Claude Code / Codex / Pi | Guided dispatch: Harness |
 | <kbd>d</kbd> / <kbd>n</kbd> / printed letter | Choose the dispatch default, None or a published Workflow | Guided dispatch: After work |
 | <kbd>1</kbd>…<kbd>9</kbd> | Take that position in Kind, Harness or After work. Digits type into the filter during Repo | Guided dispatch |

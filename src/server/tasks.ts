@@ -17,6 +17,7 @@ import { isAnnotationOnlyUpdate } from "@shared/protocol.ts";
 import { capabilitiesFor, supportsEffort } from "@shared/harness-capabilities.ts";
 import { canMessage } from "@shared/pane.ts";
 import { declaredBlockers, type BacklogBlocker } from "@shared/backlog.ts";
+import { TASK_KIND_BACKLOG_REFUSAL, taskKindAllowsBacklog } from "@shared/task.ts";
 import { completableByMerge, type Registry, type TaskPrMerged } from "./registry.ts";
 import {
   Dispatcher,
@@ -189,10 +190,22 @@ export interface Ok {
 /** A user-fixable dependency selection conflict, safe to return as HTTP 409. */
 export class TaskDependencyError extends Error {}
 
+/** A chat task was sent through a surface without the manual Dispatch capability. */
+export class TaskKindBacklogError extends Error {}
+
+/**
+ * Capability held only by the localhost manual Dispatch route. Requiring the exact symbol
+ * keeps generic and durable task producers from constructing an immediate chat by accident.
+ */
+export const MANUAL_DISPATCH_TASK_CREATE = Symbol("manual-dispatch-task-create");
+
 export class TaskStatusConflictError extends Error {}
 
 export const INTERRUPTED_BEFORE_PROVISION_ERROR =
   "Dispatch was interrupted before a worktree or agent was created. It is back in the backlog and safe to launch again.";
+
+export const INTERRUPTED_CHAT_BEFORE_PROVISION_ERROR =
+  "Chat dispatch was interrupted before a worktree or agent was created. Launch a new chat from Dispatch.";
 
 export interface TaskManagerStartupDeps {
   /** Injectable only so startup cleanup ordering can be exercised without real providers. */
@@ -1505,8 +1518,25 @@ export class TaskManager {
    * property both recovery paths are built on. See `InternalCreateOptions`. Omitting it is
    * every other caller, and their behaviour here is unchanged: fresh UUID, model titling
    * when the title is blank, dispatch when it is not.
+   *
+   * `manualDispatch` is an explicit capability rather than another input field. Request
+   * bodies and generic producers therefore cannot opt themselves into creating chat tasks.
    */
-  create(input: CreateTaskInput, internal?: InternalCreateOptions): Task {
+  create(
+    input: CreateTaskInput,
+    internal?: InternalCreateOptions,
+    manualDispatch?: symbol,
+  ): Task {
+    if (!taskKindAllowsBacklog(input.kind) && manualDispatch !== MANUAL_DISPATCH_TASK_CREATE) {
+      throw new TaskKindBacklogError(TASK_KIND_BACKLOG_REFUSAL);
+    }
+    if (
+      !taskKindAllowsBacklog(input.kind) &&
+      (input.backlog || internal !== undefined || input.source !== undefined ||
+        (input.dependencies?.length ?? 0) > 0)
+    ) {
+      throw new TaskKindBacklogError(TASK_KIND_BACKLOG_REFUSAL);
+    }
     const now = Date.now();
     const explicitTitle = input.title?.trim();
     const id = internal?.id ?? randomUUID();
@@ -1706,6 +1736,9 @@ export class TaskManager {
       return { ok: false, error: "task is being assigned", task: t };
     }
     if (t.status === "backlog" || (t.status === "failed" && !t.worktreePath)) {
+      if (!taskKindAllowsBacklog(t.kind)) {
+        return { ok: false, error: TASK_KIND_BACKLOG_REFUSAL, task: t };
+      }
       // Asked before dependencies, like the allowlist is in `decideBacklogTick`: it is
       // the coarser fact and the one the operator can act on immediately.
       if (refusedAsDisabled(t, options.overrideDisabled)) {
@@ -1786,6 +1819,9 @@ export class TaskManager {
     }
     if (t.status !== "backlog" && !isAnnotationOnlyUpdate(patch)) {
       return { ok: false, error: `task is ${t.status}, not in the backlog` };
+    }
+    if (!isAnnotationOnlyUpdate(patch) && !taskKindAllowsBacklog(patch.kind ?? t.kind)) {
+      return { ok: false, error: TASK_KIND_BACKLOG_REFUSAL };
     }
     const intent = patch.intent?.trim() ?? t.intent;
     const title = patch.title?.trim();
@@ -2007,6 +2043,9 @@ export class TaskManager {
     if (!t) return { ok: false, error: "no such task", scope: "task" };
     if (t.status !== "backlog") {
       return { ok: false, error: `task is ${t.status}, not in the backlog`, scope: "task" };
+    }
+    if (!taskKindAllowsBacklog(t.kind)) {
+      return { ok: false, error: TASK_KIND_BACKLOG_REFUSAL, scope: "task" };
     }
     // Provider-owned tasks need the provider's own terminal launch. Handing one to an
     // existing harness session would bypass that launch and type an engine idea into an
@@ -2971,6 +3010,9 @@ export class TaskManager {
     }
     const t = this.registry.getTask(id);
     if (!t) return { ok: false, error: "no such task" };
+    if (!taskKindAllowsBacklog(t.kind)) {
+      return { ok: false, error: TASK_KIND_BACKLOG_REFUSAL };
+    }
     if (t.status !== "cancelled" && t.status !== "failed") {
       return {
         ok: false,
@@ -3166,8 +3208,10 @@ export class TaskManager {
       if (!current || !interruptedBeforeProvision(current)) return;
       this.registry.upsertTask({
         ...current,
-        status: "backlog",
-        error: INTERRUPTED_BEFORE_PROVISION_ERROR,
+        status: taskKindAllowsBacklog(current.kind) ? "backlog" : "failed",
+        error: taskKindAllowsBacklog(current.kind)
+          ? INTERRUPTED_BEFORE_PROVISION_ERROR
+          : INTERRUPTED_CHAT_BEFORE_PROVISION_ERROR,
         dispatchedAt: null,
         updatedAt: Date.now(),
       });

@@ -6,13 +6,20 @@ import type { TaskKind } from "@shared/types.ts";
  * These are policy reasons, not persisted ids. They stay structured so callers can log the
  * stable explanation while tests assert the decision without depending on prose.
  */
+type AutomaticChatWrapupBlock = { kind: "chat"; reason: string };
+
+type AutomaticScoutWrapupBlock = { kind: "scout"; reason: string };
+
 export type AutomaticWrapupBlock =
-  | { kind: "scout"; reason: string }
+  | AutomaticChatWrapupBlock
+  | AutomaticScoutWrapupBlock
   | { kind: "review_artifact"; reason: string };
 
 export interface AutomaticWrapupInput {
   /** The durable task kind when this session belongs to a Mission Control task. */
   taskKind: TaskKind | null;
+  /** The task's resolved Workflow selection, or null when completion belongs to the human. */
+  workflowId: string | null;
   /** The resolved completion contract Foreman is about to claim. */
   objective: string | null;
   /** Repo-relative paths from the completed diff, when that evidence is available. */
@@ -144,7 +151,7 @@ function diffContainsOnlyReviewArtifacts(paths: readonly string[]): boolean {
  * operator who turns that one off has not asked for a scout's mockup-only diff to start
  * shipping itself.
  *
- * `Record<TaskKind, …>` for `TASK_KIND_INFO`'s reason: a fourth kind does not compile until it
+ * `Record<TaskKind, …>` for `TASK_KIND_INFO`'s reason: a new kind does not compile until it
  * has answered this, which is the one question about a new kind that is easiest to forget and
  * whose wrong answer is invisible until a completion is silently retired.
  */
@@ -153,6 +160,16 @@ const KIND_TAKES_REVIEW_ARTIFACT_CLASSIFIER: Record<TaskKind, boolean> = {
   scout: true,
   plan: false,
   pipeline: false,
+  chat: true,
+};
+
+/** Kinds whose ordinary completion stays with the human unless a Workflow was selected. */
+const KIND_REQUIRES_EXPLICIT_WORKFLOW: Record<TaskKind, boolean> = {
+  ship: false,
+  scout: false,
+  plan: false,
+  pipeline: false,
+  chat: true,
 };
 
 /** A session with no linked task has no kind to exempt it, so it is classified as before. */
@@ -168,6 +185,14 @@ function classifiesAsReviewArtifact(kind: TaskKind | null): boolean {
  * operator actions stay outside this predicate.
  */
 export function automaticWrapupBlock(input: AutomaticWrapupInput): AutomaticWrapupBlock | null {
+  if (
+    input.taskKind !== null &&
+    KIND_REQUIRES_EXPLICIT_WORKFLOW[input.taskKind] &&
+    input.workflowId === null
+  ) {
+    return { kind: "chat", reason: "the linked chat task has no explicit Workflow" };
+  }
+
   if (input.skipScoutWrapup && input.taskKind === "scout") {
     return { kind: "scout", reason: "the linked task kind is scout" };
   }

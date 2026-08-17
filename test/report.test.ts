@@ -61,6 +61,7 @@ const shipSummary: TaskSummary = {
   title: "Wire dispatch",
   fullTitle: "Wire dispatch",
   kind: "ship",
+  workflowId: null,
   status: "running",
   outcome: null,
   outcomeUrl: null,

@@ -6,7 +6,13 @@ import {
   type TaskKind,
   type TaskPriority,
 } from "./types.ts";
-import { MAX_LABELS, TASK_PRIORITIES, normalizeLabels } from "./task.ts";
+import {
+  MAX_LABELS,
+  TASK_KIND_BACKLOG_REFUSAL,
+  TASK_PRIORITIES,
+  normalizeLabels,
+  taskKindAllowsBacklog,
+} from "./task.ts";
 
 // A task source is this app's connection to an EXTERNAL work tracker. Inbound, it reads
 // that tracker on a schedule and RETURNS candidate tasks. Outbound, a kind may also
@@ -383,7 +389,10 @@ export function clampSweepInterval(ms: number): number {
 
 /** Applied to any candidate that doesn't set its own. */
 export const TaskSourceDefaultsSchema = z.object({
-  kind: z.enum(TASK_KINDS).default("ship"),
+  kind: z
+    .enum(TASK_KINDS)
+    .refine(taskKindAllowsBacklog, TASK_KIND_BACKLOG_REFUSAL)
+    .default("ship"),
   agent: z.enum(AGENT_TYPES).default("claude"),
   priority: z.enum(TASK_PRIORITIES).nullable().default(null),
   labels: z.array(z.string()).max(MAX_LABELS).default([]).transform(normalizeLabels),

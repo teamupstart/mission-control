@@ -104,6 +104,7 @@ function mkTask(over: Partial<TaskSummary> = {}): TaskSummary {
     title: "T",
     fullTitle: "T",
     kind: "ship",
+    workflowId: null,
     status: "running",
     outcome: null,
     outcomeUrl: null,

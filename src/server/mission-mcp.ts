@@ -92,7 +92,7 @@ export interface MissionMcpRequirement {
  * prompt - which reads as an agent that simply sat there.
  *
  * `Record<TaskKind, …>` rather than a chain of comparisons, matching `KIND_CONTRACT` in
- * `task-contract.ts`: a fourth kind does not compile until it has said what its launch needs,
+ * `task-contract.ts`: a new kind does not compile until it has said what its launch needs,
  * including saying it needs nothing. `ship` is that empty case and it is not a placeholder -
  * it is the reason every existing dispatch's argv is unchanged.
  */
@@ -101,6 +101,7 @@ const KIND_MISSION_MCP_TOOLS: Record<TaskKind, readonly MissionMcpTool[]> = {
   scout: [SUBMIT_SCOUT_ARTIFACTS_TOOL],
   plan: [PLAN_DECISIONS_TOOL, PLAN_SCHEDULING_TOOL],
   pipeline: [],
+  chat: [],
 };
 
 /**

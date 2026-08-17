@@ -1521,7 +1521,8 @@ export type PrChecks = "passing" | "failing" | "pending";
 /**
  * What a dispatched task is FOR: ship = deliver a change (PR/merge);
  * scout = investigate/audit and report; plan = produce a reviewed plan, which can then
- * schedule the work it describes.
+ * schedule the work it describes; chat = have an open-ended conversation with no planned
+ * artifact.
  *
  * `scout` used to own the word "plan" in this comment, and giving the third kind the word
  * is the point of adding it: an investigation answers a question, where a plan proposes a
@@ -1536,7 +1537,7 @@ export type PrChecks = "passing" | "failing" | "pending";
  * APPEND, never reorder: `ship` at index 0 is the default every automated writer takes,
  * and the read paths that degrade an unknown persisted kind land on it.
  */
-export const TASK_KINDS = ["ship", "scout", "plan", "pipeline"] as const;
+export const TASK_KINDS = ["ship", "scout", "plan", "pipeline", "chat"] as const;
 
 export type TaskKind = (typeof TASK_KINDS)[number];
 
@@ -1891,6 +1892,8 @@ export interface TaskSummary {
   /** Complete title for hover/focus help when `title` is the shortened generated fallback. */
   fullTitle: string;
   kind: TaskKind;
+  /** Published Workflow chosen for completion, or null when the human owns completion. */
+  workflowId: WorkflowId | null;
   status: TaskStatus;
   outcome: string | null;
   outcomeUrl: string | null;

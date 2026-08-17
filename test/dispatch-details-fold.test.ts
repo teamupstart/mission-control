@@ -36,13 +36,16 @@ test("the Kind control offers every kind, in the registry's order", () => {
   // moved compiled cleanly and silently kept offering two. Order is the contract: the
   // tuple's order is picker order, and `ship` leads because it is the default.
   const html = fresh();
-  const options = [...html.matchAll(/<option value="(ship|scout|plan)"[^>]*>([^<]*)<\/option>/g)];
+  const options = [
+    ...html.matchAll(/<option value="(ship|scout|plan|chat)"[^>]*>([^<]*)<\/option>/g),
+  ];
   assert.deepEqual(
     options.map((m) => [m[1], m[2]]),
     [
       ["ship", "ship"],
       ["scout", "scout"],
       ["plan", "plan"],
+      ["chat", "chat"],
     ],
   );
   // Selected by the draft, not by document order, so a scout draft still opens on scout.

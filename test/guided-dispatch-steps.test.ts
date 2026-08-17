@@ -72,7 +72,7 @@ test("every step names itself, its question and the draft keys it writes", () =>
     Object.fromEntries(GUIDED_STEPS.map((step) => [step.id, [...step.writes]])),
     {
       repo: ["repoRoot"],
-      kind: ["kind", "workflowId"],
+      kind: ["kind", "workflowId", "dependencies"],
       harness: ["agent", "model", "effort"],
       afterWork: ["workflowId"],
     },
@@ -226,6 +226,7 @@ test("each kind's mnemonic is a letter of its own name", () => {
     scout: "t",
     plan: "l",
     pipeline: "e",
+    chat: "c",
   });
 });
 

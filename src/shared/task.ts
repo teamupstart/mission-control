@@ -91,7 +91,7 @@ export interface TaskKindBehavior {
   /** Which repository catalog may offer this kind. */
   repoAvailability: "workspace" | "pipeline-enabled";
   /** Who owns the launched process and runtime choices. */
-  launch: "harness" | "pipeline-terminal";
+  launch: "harness" | "pipeline";
   /** Whether Foreman's backlog loop may pick this kind unattended. */
   autopilot: boolean;
   /** A short, operator-facing explanation of non-default launch constraints. */
@@ -124,11 +124,10 @@ export const TASK_KIND_BEHAVIOR: Record<TaskKind, TaskKindBehavior> = {
   },
   pipeline: {
     repoAvailability: "pipeline-enabled",
-    launch: "pipeline-terminal",
+    launch: "pipeline",
     autopilot: false,
     constraint:
-      "Pipeline tasks always launch conductor in a real terminal because it reads stdin and refuses nested SDK sessions. " +
-      "Conductor owns its agent, model, and effort; attached repos, after-work workflows, and backlog autopilot do not apply.",
+      "Pipeline tasks use Conductor's configured Engineer host. Conductor owns its downstream agent, model, and effort; attached repos, after-work workflows, and backlog autopilot do not apply.",
   },
   chat: {
     repoAvailability: "workspace",
@@ -137,6 +136,11 @@ export const TASK_KIND_BEHAVIOR: Record<TaskKind, TaskKindBehavior> = {
     constraint: null,
   },
 };
+
+/** Whether the external provider projection, rather than a host session, owns completion. */
+export function providerOwnsTaskCompletion(kind: TaskKind): boolean {
+  return TASK_KIND_BEHAVIOR[kind].launch === "pipeline";
+}
 
 /** Whether Foreman's unattended backlog loop may schedule this kind. */
 export function allowsBacklogAutopilot(kind: TaskKind): boolean {

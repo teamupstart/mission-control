@@ -96,6 +96,27 @@ import {
 } from "../ensembles/dispatch/EnsembleDispatch.tsx";
 import { freshEnsembleDraft, type EnsembleDispatchDraft } from "../ensembles/dispatch/config.ts";
 import type { EnsembleStrategyId } from "@shared/ensemble.ts";
+import type { PipelineLaunchRuntime } from "@shared/pipeline.ts";
+
+/** The runtime-specific provider contract shown where a pipeline launch is chosen. */
+export function pipelineDispatchConstraint(runtime: PipelineLaunchRuntime | null): string {
+  if (runtime === "claude-sdk") {
+    return "Claude Agent SDK starts one managed Claude host with /engineer <idea> as turn one. Conductor owns downstream agent, model, and effort choices, and its provider projection owns task completion. Its background build daemon keeps its own tmux supervision.";
+  }
+  if (runtime === "terminal") {
+    return "Terminal opens conduct-ts engineer --idea in a real terminal with live stdin and removes the inherited Claude nesting marker. Conductor owns downstream agent, model, and effort choices, and its provider projection owns task completion.";
+  }
+  return "The daemon has not confirmed which Conductor Engineer host this dispatch will use.";
+}
+
+/** Render leaf kept separate so both runtime explanations are covered without browser effects. */
+export function PipelineDispatchConstraint({
+  runtime,
+}: {
+  runtime: PipelineLaunchRuntime | null;
+}): React.JSX.Element {
+  return <>{pipelineDispatchConstraint(runtime)}</>;
+}
 
 /**
  * What a fresh dispatch form holds: nothing, except the repo the last one went to.
@@ -752,6 +773,8 @@ function DispatchModal({
   const [repos, setRepos] = useState<string[]>([]);
   const [reposLoading, setReposLoading] = useState(true);
   const [pipelineRepos, setPipelineRepos] = useState<Set<string>>(new Set());
+  const [pipelineLaunchRuntime, setPipelineLaunchRuntime] =
+    useState<PipelineLaunchRuntime | null>(null);
   // The attach-a-repo control is a two-step (open, then pick) rather than a combobox that
   // is always mounted: an empty repo picker sitting under the primary on every dispatch
   // would read as a second required field. Local rather than drafted - a half-typed path
@@ -1129,7 +1152,7 @@ function DispatchModal({
    * form changes shape instead of leaving Dispatch enabled for a request the daemon refuses.
    */
   function selectKind(kind: TaskKind): void {
-    if (kind !== draft.kind && TASK_KIND_BEHAVIOR[kind].launch === "pipeline-terminal") {
+    if (kind !== draft.kind && TASK_KIND_BEHAVIOR[kind].launch === "pipeline") {
       setAddingRepo(false);
       setAddRepoValue("");
     }
@@ -1137,7 +1160,7 @@ function DispatchModal({
       kind,
       ...afterWorkForKind(kind),
       ...dependenciesForKind(kind),
-      ...(kind !== draft.kind && TASK_KIND_BEHAVIOR[kind].launch === "pipeline-terminal"
+      ...(kind !== draft.kind && TASK_KIND_BEHAVIOR[kind].launch === "pipeline"
         ? { extraRepoRoots: [] }
         : {}),
     });
@@ -1278,7 +1301,7 @@ function DispatchModal({
       // registry-inapplicable questions while preserving the ordinary guided state machine.
       advance: (current) => {
         let next = answerGuidedStep(current);
-        if (TASK_KIND_BEHAVIOR[k].launch === "pipeline-terminal") {
+        if (TASK_KIND_BEHAVIOR[k].launch === "pipeline") {
           next = answerGuidedStep(next);
           next = answerGuidedStep(next);
         }
@@ -1675,6 +1698,7 @@ function DispatchModal({
     void fetchPipelineRepos().then((answer) => {
       if (!alive) return;
       setPipelineRepos(new Set((answer?.repos ?? []).map((repo) => repo.repoRoot)));
+      setPipelineLaunchRuntime(answer?.launchRuntime ?? null);
     });
     return () => {
       alive = false;
@@ -2495,7 +2519,9 @@ function DispatchModal({
           <span className={`field-hint dispatch-crew-hint${guidedDim}`}>
             {usesHarness
               ? "Defaults from Settings → Harnesses. Switching agent resets the model and effort overrides."
-              : kindBehavior.constraint}
+              : draft.kind === "pipeline"
+                ? <PipelineDispatchConstraint runtime={pipelineLaunchRuntime} />
+                : kindBehavior.constraint}
           </span>
           {kindUnavailable && (
             <span className={`dispatch-workflow-warning${guidedDim}`}>

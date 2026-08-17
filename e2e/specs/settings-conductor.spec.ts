@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
 
 import type { Page } from "@playwright/test";
@@ -5,6 +6,7 @@ import type { Page } from "@playwright/test";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { FAKE_CONDUCTOR_VERSION, readConductorInvocations } from "../fixtures/conductor.ts";
+import { recordsIn } from "../fixtures/records.ts";
 
 // The installed-engine Phase 1 vertical slice. The fake CLI records argv and owns its project
 // registry, while the browser drives the separate Mission Control consent write. No agent binary
@@ -33,6 +35,10 @@ async function openConductor(page: Page, baseURL: string): Promise<void> {
     "aria-selected",
     "true",
   );
+}
+
+function installerTerminals(recordDir: string): { argv: string[] }[] {
+  return recordsIn<{ argv: string[] }>(recordDir, (file) => file.startsWith("cmux-"));
 }
 
 test("an installed engine registers a workspace and observes it through one honest flow", async ({
@@ -107,6 +113,42 @@ test("an installed engine registers a workspace and observes it through one hone
   await repo.fill(daemon.secondRepo);
   await page.keyboard.press("Escape");
   await expect(kind.locator('option[value="pipeline"]')).toHaveCount(0);
+});
+
+test("Engineer host defaults to SDK and persists an explicit Terminal choice", async ({
+  page,
+  daemon,
+}) => {
+  await openConductor(page, daemon.baseURL);
+  const sdk = page.getByRole("radio", { name: /Claude Agent SDK/ });
+  const terminal = page.getByRole("radio", { name: /Terminal/ });
+
+  await expect(sdk).toBeChecked();
+  await expect(terminal).not.toBeChecked();
+  await expect(page.getByText(/shipped default, with no terminal fallback/)).toBeVisible();
+
+  const selectTerminal = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/api/pipelines/config") && response.request().method() === "PUT",
+  );
+  await terminal.check();
+  expect((await selectTerminal).ok()).toBe(true);
+  await page.reload();
+  await expect(terminal).toBeChecked();
+  await expect(page.getByText(/explicit compatibility host/)).toBeVisible();
+
+  const selectSdk = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/api/pipelines/config") && response.request().method() === "PUT",
+  );
+  await sdk.check();
+  expect((await selectSdk).ok()).toBe(true);
+  await expect(sdk).toBeChecked();
+  await expect(
+    page.getByText(/background build daemon keeps its own tmux supervision/),
+  ).toBeVisible();
+  await expect(page.getByText(/Installed at .*conduct-ts/)).toBeVisible();
+  await shoot(page, "04-sdk-runtime-selected");
 });
 
 test("an open Dispatch modal changes only after exact observation succeeds", async ({
@@ -271,10 +313,15 @@ test("partial success stays registered and recovers without a second registratio
   ).toHaveLength(1);
 });
 
-test.describe("with no engine installed", () => {
-  test.use({ daemonEnv: { MISSION_CONDUCTOR_BIN: "/nonexistent/conduct-ts" } });
+test.describe("with no engine or verified source checkout", () => {
+  test.use({
+    daemonEnv: {
+      MISSION_PIPELINE_TICK_MS: "1000",
+      MC_E2E_CONDUCTOR_STARTS_MISSING: "1",
+    },
+  });
 
-  test("Conductor stays in Settings and the palette as a setup destination", async ({
+  test("Conductor stays discoverable and falls back to copyable upstream instructions", async ({
     page,
     daemon,
   }) => {
@@ -293,14 +340,200 @@ test.describe("with no engine installed", () => {
     await openConductor(page, daemon.baseURL);
     await expect.poll(() => pipelineReads.length).toBeGreaterThan(0);
     await expect(page.getByText(/Setup needed .*conduct-ts is not on this daemon/)).toBeVisible();
-    await expect(page.getByRole("button", { name: "Check again" })).toBeVisible();
-    await expect(page.getByLabel("Required Conductor command")).toHaveText("/nonexistent/conduct-ts");
+    await expect(page.getByRole("button", { name: "I installed it, check again" })).toBeVisible();
+    await expect(page.getByText("git clone https://github.com/mancej/ai-conductor.git")).toBeVisible();
+    await expect(page.getByText("cd ai-conductor && ./bin/install")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Review installer" })).toHaveCount(0);
     await expect(page.getByRole("button", { name: /Open installer/i })).toHaveCount(0);
+    await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+    await page.getByRole("button", { name: "Copy clone" }).click();
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(
+      "git clone https://github.com/mancej/ai-conductor.git",
+    );
     await shoot(page, "04-missing-engine");
 
     await page.keyboard.press("Meta+k");
     const palette = page.getByRole("dialog", { name: "Search everything" });
     await palette.getByRole("combobox", { name: "Search everything" }).fill("conductor");
     await expect(palette.getByRole("option", { name: /Conductor settings/ })).toBeVisible();
+  });
+});
+
+test.describe("with a verified local Conductor checkout", () => {
+  test.use({
+    daemonEnv: {
+      MISSION_PIPELINE_TICK_MS: "1000",
+      MC_E2E_CONDUCTOR_STARTS_MISSING: "1",
+      MC_E2E_CONDUCTOR_CHECKOUT: "1",
+    },
+  });
+
+  test("reviews scope, opens the exact installer in a hosted terminal, then rechecks honestly", async ({
+    page,
+    daemon,
+  }) => {
+    test.setTimeout(75_000);
+    expect(daemon.conductorCheckout).not.toBeNull();
+    const checkout = daemon.conductorCheckout!;
+    await openConductor(page, daemon.baseURL);
+
+    await expect(page.getByText(checkout, { exact: true })).toBeVisible();
+    await expect(page.getByText("github.com/mancej/ai-conductor", { exact: false })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Open installer" })).toHaveCount(0);
+    await page.getByRole("button", { name: "Review installer" }).click();
+
+    const confirmation = page.getByRole("region", { name: "Confirm Conductor installer" });
+    await expect(confirmation).toContainText("Confirm machine-wide installation");
+    await expect(confirmation).toContainText(checkout);
+    await expect(confirmation).toContainText(`${checkout}/bin/install`);
+    await expect(confirmation).toContainText("Link conduct-ts under your local bin directory");
+    await expect(confirmation).toContainText("Link Conductor skills for supported agents");
+    await expect(confirmation).toContainText("Update Claude user settings and hooks");
+    await expect(confirmation).toContainText("Create or update ~/.ai-conductor configuration");
+    await expect(confirmation).toContainText("Optionally install global Puppeteer");
+    await confirmation.getByLabel("Installer terminal backend").selectOption("cmux");
+    await shoot(page, "05-installer-confirmation");
+
+    await page.setViewportSize({ width: 680, height: 900 });
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+      "guided installation must not create horizontal clipping",
+    ).toBe(true);
+    await shoot(page, "07-installer-narrow");
+    await page.setViewportSize({ width: 1280, height: 720 });
+
+    await confirmation.getByRole("button", { name: "Open installer" }).click();
+    await expect(page.getByRole("status")).toContainText("Installer terminal opened");
+    await expect(page.getByText(/Setup needed .*conduct-ts is not on this daemon/)).toBeVisible();
+    await expect.poll(() => installerTerminals(daemon.recordDir).length).toBe(1);
+    const argv = installerTerminals(daemon.recordDir)[0]?.argv ?? [];
+    expect(argv[0]).toBe("new-workspace");
+    expect(argv[argv.indexOf("--cwd") + 1]).toBe(checkout);
+    expect(argv[argv.indexOf("--name") + 1]).toMatch(/^ai-conductor installer-[a-z0-9]+$/);
+    const command = argv[argv.indexOf("--command") + 1] ?? "";
+    expect(command).toContain(`${checkout}/bin/install`);
+    expect(command).toContain("read -r _");
+    await shoot(page, "06-installer-opened");
+
+    daemon.installFakeConductor();
+    await page.getByRole("button", { name: "I installed it, check again" }).click();
+    await expect(page.getByText(/Installed at .*conduct-ts/)).toBeVisible();
+    await expect(page.getByText(new RegExp(`version ${FAKE_CONDUCTOR_VERSION}`))).toBeVisible();
+    await expect(page.getByRole("button", { name: "Review installer" })).toHaveCount(0);
+
+    await page.getByPlaceholder("Search workspace repositories").fill("demo-repo");
+    const row = page.locator("li.conductor-repo").filter({ hasText: daemon.repo });
+    await row.getByRole("button", { name: "Register and observe" }).click();
+    await expect(row).toContainText("Dispatch ready", { timeout: 15_000 });
+
+    await page.goto(`${daemon.baseURL}/#/fleet`);
+    await page.getByRole("button", { name: "Dispatch" }).click();
+    const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
+    const repo = dialog.getByPlaceholder("search repos or type a path…");
+    const kind = dialog.getByRole("combobox", { name: "Kind", exact: true });
+    await repo.fill(daemon.repo);
+    await page.keyboard.press("Escape");
+    await expect(kind.locator('option[value="pipeline"]')).toHaveCount(1);
+    await repo.fill(daemon.secondRepo);
+    await page.keyboard.press("Escape");
+    await expect(kind.locator('option[value="pipeline"]')).toHaveCount(0);
+  });
+
+  test("rejects a candidate whose provenance changes after the confirmation is shown", async ({
+    page,
+    daemon,
+  }) => {
+    expect(daemon.conductorCheckout).not.toBeNull();
+    await openConductor(page, daemon.baseURL);
+    await page.getByRole("button", { name: "Review installer" }).click();
+    execFileSync(
+      "git",
+      [
+        "-C",
+        daemon.conductorCheckout!,
+        "remote",
+        "set-url",
+        "origin",
+        "https://github.com/mancej/ai-conductor-lookalike.git",
+      ],
+      { stdio: "pipe" },
+    );
+    await page.getByRole("button", { name: "Open installer" }).click();
+    await expect(page.getByRole("status")).toContainText("no longer a verified installer");
+    expect(installerTerminals(daemon.recordDir)).toEqual([]);
+  });
+
+  test("keeps launch disabled and shows manual commands when no terminal can be hosted", async ({
+    page,
+    daemon,
+  }) => {
+    await page.route("**/api/terminal-targets", async (route) => {
+      const response = await route.fetch();
+      const payload = (await response.json()) as {
+        targets: { unavailable: string | null }[];
+      };
+      await route.fulfill({
+        response,
+        json: {
+          targets: payload.targets.map((target) => ({
+            ...target,
+            unavailable: "Unavailable in this browser test.",
+          })),
+        },
+      });
+    });
+    await openConductor(page, daemon.baseURL);
+    await page.getByRole("button", { name: "Review installer" }).click();
+    await expect(page.getByRole("button", { name: "Open installer" })).toBeDisabled();
+    await expect(page.getByLabel("Unavailable terminal reasons")).toContainText(
+      "Unavailable in this browser test.",
+    );
+    await expect(page.getByRole("button", { name: "Copy clone" })).toBeVisible();
+  });
+
+  test("ignores an old candidate response after a newer engine probe succeeds", async ({
+    page,
+    daemon,
+  }) => {
+    let releaseCandidate!: () => void;
+    let sawCandidate!: () => void;
+    const held = new Promise<void>((resolve) => (releaseCandidate = resolve));
+    const requested = new Promise<void>((resolve) => (sawCandidate = resolve));
+    await page.route("**/api/pipelines/installers?**", async (route) => {
+      sawCandidate();
+      await held;
+      await route.continue();
+    });
+    await openConductor(page, daemon.baseURL);
+    await requested;
+    daemon.installFakeConductor();
+    await page.getByRole("button", { name: "I installed it, check again" }).click();
+    await expect(page.getByText(/Installed at .*conduct-ts/)).toBeVisible();
+    releaseCandidate();
+    await page.waitForTimeout(250);
+    await expect(page.getByRole("button", { name: "Review installer" })).toHaveCount(0);
+  });
+});
+
+test.describe("with a verified checkout and an unresponsive hosted terminal", () => {
+  test.use({
+    daemonEnv: {
+      MISSION_PIPELINE_TICK_MS: "1000",
+      MC_E2E_CONDUCTOR_STARTS_MISSING: "1",
+      MC_E2E_CONDUCTOR_CHECKOUT: "1",
+      MC_E2E_CMUX_MODE: "unknown",
+    },
+  });
+
+  test("reports only that the installer terminal may still be opening", async ({ page, daemon }) => {
+    test.setTimeout(35_000);
+    await openConductor(page, daemon.baseURL);
+    await page.getByRole("button", { name: "Review installer" }).click();
+    await page.getByLabel("Installer terminal backend").selectOption("cmux");
+    await page.getByRole("button", { name: "Open installer" }).click();
+    await expect(page.getByRole("status")).toContainText(/may still be opening|did not report back/i, {
+      timeout: 20_000,
+    });
+    await expect(page.getByRole("status")).not.toContainText("Installer terminal opened");
   });
 });

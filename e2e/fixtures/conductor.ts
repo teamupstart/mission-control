@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -60,6 +61,40 @@ export function writeConductorProjects(
 
 /** The version the fake installation reports, through its `VERSION` file. */
 export const FAKE_CONDUCTOR_VERSION = "0.101.1-e2e";
+
+/**
+ * Give a disposable fixture repository the exact markers and upstream provenance the guided
+ * installer verifier requires. The script is inert unless something actually executes it;
+ * browser tests assert the fake terminal records it instead.
+ */
+export function seedConductorInstallerCheckout(repo: string): string {
+  mkdirSync(join(repo, "bin"), { recursive: true });
+  mkdirSync(join(repo, "src/conductor"), { recursive: true });
+  writeFileSync(join(repo, "bin/install"), "#!/bin/sh\necho installer fixture must not execute >&2\nexit 91\n");
+  chmodSync(join(repo, "bin/install"), 0o755);
+  writeFileSync(
+    join(repo, "src/conductor/package.json"),
+    JSON.stringify({ name: "@james-stoup-agents/conductor" }, null, 2),
+  );
+  writeFileSync(join(repo, "VERSION"), `${FAKE_CONDUCTOR_VERSION}\n`);
+  execFileSync("git", ["-C", repo, "remote", "set-url", "origin", "git@github.com:mancej/ai-conductor.git"]);
+  execFileSync("git", ["-C", repo, "add", "-A"]);
+  execFileSync(
+    "git",
+    [
+      "-C",
+      repo,
+      "-c",
+      "user.name=e2e",
+      "-c",
+      "user.email=e2e@example.com",
+      "commit",
+      "-qm",
+      "installer markers",
+    ],
+  );
+  return repo;
+}
 
 /**
  * The stand-in engine CLI.

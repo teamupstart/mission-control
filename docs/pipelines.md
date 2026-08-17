@@ -108,7 +108,7 @@ registered but not observed and offers **Enable observation**. It does not repea
 A reload derives the same partial state by taking registration from the provider probe and
 observation from Mission Control config.
 
-The panel holds four cards, because different things can be false and an
+The panel holds five cards, because different things can be false and an
 operator who sees no pipelines has to be able to tell which:
 
 - **The engine** - whether the binary was found, where, which version, and how many
@@ -117,6 +117,9 @@ operator who sees no pipelines has to be able to tell which:
   **Check again** re-runs the probe immediately rather than waiting out its cache.
 - **Observe pipelines** - the master switch. Turning it off stops every repository at once
   *without forgetting which ones you chose*, so turning it back on restores exactly that set.
+- **Launch runtime** - which Mission Control host starts Engineer. Claude Agent SDK is the
+  shipped default; Terminal is the explicit compatibility choice. The setting does not replace
+  the ai-conductor build daemon's own tmux supervision.
 - **Foreman triage** - a separate switch, off by default. When both it and Foreman are on,
   Foreman may unpark only a halt classified exactly `mechanical`, through the same daemon
   action route the dashboard uses. `needs-human`, `protected-artifact`, `legacy`,
@@ -649,25 +652,34 @@ An enabled exact repository adds **pipeline** to the Dispatch kind picker. A dif
 an engine-only registration, or a failed observation write does not. An already-open Dispatch
 modal re-reads the daemon's active repository set after observation changes, so eligibility
 appears without a reload and never before the daemon confirms consent. Dispatch runs
-`conduct-ts engineer --idea "<intent>"` in the main checkout through Mission Control's terminal
-launcher, with `CLAUDECODE` removed. It never uses the Agent SDK, provisions no Mission Control
-worktree, and leaves conductor in charge of agent, model, effort, and stdin. The task is a
-manual dispatch surface only; backlog autopilot does not schedule it.
+the configured Engineer host in the main checkout without provisioning a Mission Control
+worktree. **Claude Agent SDK** is the default: it starts one managed Claude session and sends
+the exact `/engineer <intent>` command as turn one, with no model, effort, or permission override
+and no extra repositories. **Terminal** is an explicit stored choice and keeps the compatibility
+path, opening `conduct-ts engineer --idea "<intent>"` with live stdin and `CLAUDECODE` removed.
+An SDK preflight or start failure fails the task and never calls the Terminal launcher. There is
+no Codex Engineer host. The launch setting does not affect ai-conductor's background build daemon,
+which retains its own tmux supervision.
 
-Before the terminal launcher runs, the provider derives the same lowercase, ASCII-alphanumeric,
+Before either host starts, the provider derives the same lowercase, ASCII-alphanumeric,
 hyphenated, 50-character idea slug Engineer uses for its plan and worktree. Mission Control
 refuses an empty result, an unreadable provider run set, an existing worktree with that slug, or
 another live task already owning the same provider, repository, and slug. It then persists the
-complete run link before starting the terminal, closing the interval in which two Mission Control
+complete run link before starting the host, closing the interval in which two Mission Control
 dispatches could claim the same future run.
 
-The daemon does not bind the task to a nested child session because one conductor run may launch
-several agents. A processed projection for the exact prebound link settles the durable task,
-records the projected pull request as its outcome when present, and keeps the terminal home
-attached for standard cleanup. The same link is restored after a daemon restart. A task saved by
-an older build with no link still binds through its terminal home when a child appears inside a
-projected worktree. That legacy join may fill a null link or confirm a matching one, but it never
-rewrites a different prebound identity.
+Conductor owns downstream agent, model, and effort choices in either runtime. Agent, Model,
+Effort, attached repositories, After work, and the generic runtime picker stay unavailable, and
+backlog autopilot does not schedule Pipeline tasks. The SDK form records a session id and no home,
+which gives it managed focus, questions, cancellation, and restart recovery. The Terminal form
+records a home and no session id. Neither host owns completion: SDK idle, host pull-request merge,
+and host disappearance after the exact run appears cannot finish the task. A processed projection
+for the exact prebound link settles the durable task and records the projected pull request as its
+outcome when present. A lost SDK host fails the task only when that exact run never appeared. The
+same provider link is restored after a daemon restart. A task saved by an older build with no link
+still binds through its Terminal home when a child appears inside a projected worktree. That
+legacy join may fill a null link or confirm a matching one, but it never rewrites a different
+prebound identity.
 
 When a projected run first reports `pr_url`, Mission Control adopts that pull request into the
 existing GitHub Inspector ledger with source `pipeline`, provided its owner and repository

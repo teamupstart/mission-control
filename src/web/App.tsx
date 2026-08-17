@@ -2940,7 +2940,10 @@ export function App(): React.JSX.Element {
                 harnessesRevision={harnessesRevision}
                 pipelinesRevision={
                   settingsStatus?.pipelines.observedRepoKeys
-                    ? JSON.stringify(settingsStatus.pipelines.observedRepoKeys)
+                    ? JSON.stringify({
+                        repos: settingsStatus.pipelines.observedRepoKeys,
+                        launchRuntime: settingsStatus.pipelines.launchRuntime ?? null,
+                      })
                     : `count:${settingsStatus?.pipelines.observing ?? 0}`
                 }
                 launchIntent={dispatchIntent}

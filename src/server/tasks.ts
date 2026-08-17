@@ -17,7 +17,11 @@ import { isAnnotationOnlyUpdate } from "@shared/protocol.ts";
 import { capabilitiesFor, supportsEffort } from "@shared/harness-capabilities.ts";
 import { canMessage } from "@shared/pane.ts";
 import { declaredBlockers, type BacklogBlocker } from "@shared/backlog.ts";
-import { TASK_KIND_BACKLOG_REFUSAL, taskKindAllowsBacklog } from "@shared/task.ts";
+import {
+  TASK_KIND_BACKLOG_REFUSAL,
+  providerOwnsTaskCompletion,
+  taskKindAllowsBacklog,
+} from "@shared/task.ts";
 import { completableByMerge, type Registry, type TaskPrMerged } from "./registry.ts";
 import {
   Dispatcher,
@@ -285,6 +289,7 @@ function needsStartupReconcile(task: Task): boolean {
 function interruptedBeforeProvision(task: Task): boolean {
   return (
     task.status === "dispatching" &&
+    task.pipelineRun === null &&
     task.worktreePath === null &&
     task.provider === null &&
     task.homeName === null &&
@@ -746,6 +751,7 @@ export class TaskManager {
     try {
       const t = this.registry.getTask(e.taskId);
       if (!t || (t.status !== "running" && t.status !== "dispatching")) return;
+      if (providerOwnsTaskCompletion(t.kind)) return;
       const session = this.registry.getSession(e.sessionId);
       // The common ordering, and the one a `session_upsert` listener alone misses: the
       // agent finished its turn BEFORE the poller noticed the merge. Nothing further is
@@ -800,6 +806,7 @@ export class TaskManager {
     // this session ever ran", which is what the bindings are for.
     const t = this.executingTaskOn(s.id);
     if (!t) return;
+    if (providerOwnsTaskCompletion(t.kind)) return;
     const binding = taskWorkEpisodeForTask(t.id);
     if (!binding) return;
     // Rolled onto new work since the merge - not ours to conclude while the agent is still
@@ -1057,6 +1064,7 @@ export class TaskManager {
         // another row through that same re-entrancy, and can evict a terminal one entirely.
         const t = this.registry.getTask(id);
         if (!t || !completableByMerge(t.status)) continue;
+        if (providerOwnsTaskCompletion(t.kind)) continue;
         // A reschedule mid-teardown holds a cancelled/failed row it is about to re-file as
         // backlog. `complete` throws on that, and this runs inside event listeners and the
         // PR poller's reconciliation, where a throw abandons the rest of the sweep.
@@ -1262,6 +1270,13 @@ export class TaskManager {
    */
   private agentWentAway(t: Task): void {
     this.autoCompleted.delete(t.id);
+    if (providerOwnsTaskCompletion(t.kind)) {
+      if (t.status === "running" || t.status === "dispatching") this.pipelineHostWentAway(t);
+      else if (t.sessionId !== null) {
+        this.registry.upsertTask({ ...t, sessionId: null, updatedAt: Date.now() });
+      }
+      return;
+    }
     if (t.status !== "running" && t.status !== "dispatching") return;
     // The agent is gone AND its work landed, which is the one combination that means the
     // task finished rather than merely stopped. This is the boundary a later prompt
@@ -1291,6 +1306,43 @@ export class TaskManager {
       return;
     }
     this.settleAgentGone(t.id, null);
+  }
+
+  /** The exact projected provider run this task prebound, or null when it has not appeared. */
+  private projectedPipelineRun(t: Task): PipelineRun | null {
+    const link = t.pipelineRun;
+    if (!link) return null;
+    return this.registry.listPipelineRuns().find(
+      (run) =>
+        run.provider === link.provider &&
+        run.repoRoot === link.repoRoot &&
+        run.slug === link.slug,
+    ) ?? null;
+  }
+
+  /** Reconcile a managed Engineer host that disappeared without claiming provider completion. */
+  private pipelineHostWentAway(t: Task): void {
+    const run = this.projectedPipelineRun(t);
+    if (run) {
+      if (run.group === "processed") {
+        this.settlePipelineTask(run);
+        return;
+      }
+      this.registry.upsertTask({
+        ...t,
+        sessionId: null,
+        updatedAt: Date.now(),
+      });
+      return;
+    }
+    const expected = t.pipelineRun?.slug ? ` "${t.pipelineRun.slug}"` : "";
+    this.registry.upsertTask({
+      ...t,
+      status: "failed",
+      error: `the Claude Agent SDK host ended before Conductor created pipeline run${expected}`,
+      sessionId: null,
+      updatedAt: Date.now(),
+    });
   }
 
   /**
@@ -2578,7 +2630,7 @@ export class TaskManager {
   /** Stop only an agent this task launched, leaving assigned operator sessions alone. */
   private async quiesceLaunchedAgentBeforeCapture(t: Task): Promise<void> {
     const session = t.sessionId ? this.registry.getSession(t.sessionId) : undefined;
-    if (t.worktreePath && session?.runtime === "sdk") {
+    if ((t.worktreePath || providerOwnsTaskCompletion(t.kind)) && session?.runtime === "sdk") {
       if (!this.supervisor) throw new Error("this build has no session supervisor");
       if (this.supervisor.handleFor(session.id)) await this.supervisor.stop(session.id);
     }
@@ -3229,6 +3281,37 @@ export class TaskManager {
     // daemon is about to pick back up, and reading the empty handle map would reclaim its
     // worktree out from under it.
     const embedded = this.supervisor?.taskLiveness(t.id) ?? null;
+    if (providerOwnsTaskCompletion(t.kind) && t.homeName === null && t.pipelineRun !== null) {
+      const session = this.supervisor?.liveSessionForTask(t.id) ?? null;
+      if (embedded === true && session) {
+        this.registry.upsertTask({
+          ...t,
+          status: "running",
+          sessionId: session,
+          error: null,
+          updatedAt: Date.now(),
+        });
+        return;
+      }
+      const run = this.projectedPipelineRun(t);
+      if (run) {
+        if (run.group === "processed") this.settlePipelineTask(run);
+        else {
+          this.registry.upsertTask({
+            ...t,
+            status: "running",
+            sessionId: null,
+            error: null,
+            updatedAt: Date.now(),
+          });
+        }
+        return;
+      }
+      if (embedded === false || t.status === "dispatching") {
+        this.pipelineHostWentAway(t);
+        return;
+      }
+    }
     const alive = embedded ?? (t.homeName ? await homeAlive(t.homeName) : null);
     if (alive !== false) {
       if (t.status === "dispatching") {

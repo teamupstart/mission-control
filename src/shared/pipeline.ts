@@ -429,6 +429,10 @@ export const PipelineRepoSchema = z.object({
 });
 export type PipelineRepo = z.infer<typeof PipelineRepoSchema>;
 
+/** The explicit host Mission Control starts for Conductor's interactive Engineer intake. */
+export const PIPELINE_LAUNCH_RUNTIMES = ["claude-sdk", "terminal"] as const;
+export type PipelineLaunchRuntime = (typeof PIPELINE_LAUNCH_RUNTIMES)[number];
+
 /**
  * The whole `pipelines` blob: a schema-validated value over the `app_config` KV, the same
  * pattern as `taskSources` / `harnesses` / `foreman`, which is what means a new key needs
@@ -442,6 +446,8 @@ export type PipelineRepo = z.infer<typeof PipelineRepoSchema>;
  */
 export const PipelinesConfigSchema = z.object({
   enabled: z.boolean().default(false),
+  /** Controls Engineer's Mission Control host only. Conductor's build daemon remains external. */
+  launchRuntime: z.enum(PIPELINE_LAUNCH_RUNTIMES).default("claude-sdk"),
   /** Foreman may unpark mechanical halts. Ships off and never widens to another class. */
   foremanMechanicalTriage: z.boolean().default(false),
   repos: z
@@ -596,6 +602,12 @@ export interface PipelinesView {
   config: PipelinesConfig;
   probes: PipelineProbe[];
   status: PipelineRepoStatus[];
+}
+
+/** The cheap pipeline repository and launch-authority read used by Dispatch and the Runs rail. */
+export interface PipelineReposView {
+  repos: PipelineRepoStatus[];
+  launchRuntime: PipelineLaunchRuntime;
 }
 
 /**

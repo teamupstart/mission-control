@@ -153,6 +153,7 @@ test("the panel reads consent, detection and health in one call, and ships off",
   const view = (await res.json()) as PipelinesView;
 
   assert.equal(view.config.enabled, false, "the master switch ships off");
+  assert.equal(view.config.launchRuntime, "claude-sdk", "the Engineer host ships on SDK");
   assert.deepEqual(view.config.repos, [], "no repository is consented to on a fresh install");
   assert.deepEqual(view.status, []);
 });
@@ -251,6 +252,33 @@ test("a repository is stored at its resolved root, and arrives off unless asked"
   // The health line exists for a listed repository, and says it has not been read.
   assert.equal(view.status.length, 1);
   assert.equal(view.status[0]?.lastReadAt, null);
+});
+
+test("both Engineer runtimes round-trip and the cheap Dispatch read reports the same choice", async () => {
+  const { request } = fixture();
+  const repo = gitRepo("launch-runtime");
+  for (const launchRuntime of ["terminal", "claude-sdk"] as const) {
+    const write = await request("/api/pipelines/config", {
+      method: "PUT",
+      body: JSON.stringify({
+        enabled: true,
+        launchRuntime,
+        foremanMechanicalTriage: false,
+        repos: [{ provider: "ai-conductor", repoRoot: repo, enabled: true }],
+      }),
+    });
+    assert.equal(write.status, 200);
+    const written = (await write.json()) as PipelinesView;
+    assert.equal(written.config.launchRuntime, launchRuntime);
+    assert.equal(getPipelinesConfig().launchRuntime, launchRuntime);
+
+    const dispatch = (await (await request("/api/pipelines/repos")).json()) as {
+      repos: PipelineRepoStatus[];
+      launchRuntime: "terminal" | "claude-sdk";
+    };
+    assert.equal(dispatch.launchRuntime, launchRuntime);
+    assert.deepEqual(dispatch.repos.map((entry) => entry.repoRoot), [repo]);
+  }
 });
 
 test("a body the schema refuses changes nothing", async () => {
@@ -551,6 +579,7 @@ test("registration canonicalizes to the main checkout, invokes the provider, and
     assert.equal(body.registration.repoRoot, repo, "linked worktrees register their owner root");
     assert.deepEqual(body.view.config, {
       enabled: false,
+      launchRuntime: "claude-sdk",
       foremanMechanicalTriage: false,
       repos: [],
     }, "registration does not grant observation consent");
@@ -601,6 +630,7 @@ test("a provider refusal remains a typed registration result and grants no conse
       assert.match(body.registration.detail, /without confirming this exact repository/);
       assert.deepEqual(body.view.config, {
         enabled: false,
+        launchRuntime: "claude-sdk",
         foremanMechanicalTriage: false,
         repos: [],
       });
@@ -673,6 +703,7 @@ test("installer routes use the workspace catalog, reject browser commands, and r
   assert.doesNotMatch(command, /allow-worktree-root|--update|--provider/);
   assert.deepEqual(getPipelinesConfig(), {
     enabled: false,
+    launchRuntime: "claude-sdk",
     foremanMechanicalTriage: false,
     repos: [],
   }, "opening an installer terminal never changes observation consent");

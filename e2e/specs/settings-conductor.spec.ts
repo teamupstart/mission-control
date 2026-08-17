@@ -115,6 +115,42 @@ test("an installed engine registers a workspace and observes it through one hone
   await expect(kind.locator('option[value="pipeline"]')).toHaveCount(0);
 });
 
+test("Engineer host defaults to SDK and persists an explicit Terminal choice", async ({
+  page,
+  daemon,
+}) => {
+  await openConductor(page, daemon.baseURL);
+  const sdk = page.getByRole("radio", { name: /Claude Agent SDK/ });
+  const terminal = page.getByRole("radio", { name: /Terminal/ });
+
+  await expect(sdk).toBeChecked();
+  await expect(terminal).not.toBeChecked();
+  await expect(page.getByText(/shipped default, with no terminal fallback/)).toBeVisible();
+
+  const selectTerminal = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/api/pipelines/config") && response.request().method() === "PUT",
+  );
+  await terminal.check();
+  expect((await selectTerminal).ok()).toBe(true);
+  await page.reload();
+  await expect(terminal).toBeChecked();
+  await expect(page.getByText(/explicit compatibility host/)).toBeVisible();
+
+  const selectSdk = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/api/pipelines/config") && response.request().method() === "PUT",
+  );
+  await sdk.check();
+  expect((await selectSdk).ok()).toBe(true);
+  await expect(sdk).toBeChecked();
+  await expect(
+    page.getByText(/background build daemon keeps its own tmux supervision/),
+  ).toBeVisible();
+  await expect(page.getByText(/Installed at .*conduct-ts/)).toBeVisible();
+  await shoot(page, "04-sdk-runtime-selected");
+});
+
 test("an open Dispatch modal changes only after exact observation succeeds", async ({
   dashboard,
   daemon,

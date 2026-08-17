@@ -17,6 +17,7 @@ import type { LineSummary } from "./line.ts";
 import type { ClaudeTransport, LlmRunnerId, ResolvedLlmRunner } from "./llm.ts";
 import type { ResolvedModel } from "./model-choice.ts";
 import type {
+  PipelineLaunchRuntime,
   PipelineProviderId,
   PipelineRun,
   PipelineRunLink,
@@ -2468,6 +2469,8 @@ export interface SettingsStatus {
      * Optional so an older daemon's SettingsStatus remains readable during a rolling update.
      */
     observedRepoKeys?: string[];
+    /** Engineer host choice, appended so an open Dispatch dialog can invalidate its copy. */
+    launchRuntime?: PipelineLaunchRuntime;
   };
 }
 

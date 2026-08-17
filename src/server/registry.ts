@@ -884,6 +884,7 @@ export class Registry extends EventEmitter {
       prev.taskSources.failing === status.taskSources.failing &&
       prev.pipelines.present === status.pipelines.present &&
       prev.pipelines.observing === status.pipelines.observing &&
+      (prev.pipelines.launchRuntime ?? null) === (status.pipelines.launchRuntime ?? null) &&
       (prev.pipelines.observedRepoKeys?.length ?? 0) ===
         (status.pipelines.observedRepoKeys?.length ?? 0) &&
       (prev.pipelines.observedRepoKeys ?? []).every(

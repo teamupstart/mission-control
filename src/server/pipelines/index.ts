@@ -14,6 +14,7 @@ import {
   type PipelineInstallerCandidate,
   type PipelineInstallerCandidatesResult,
   type PipelineProbe,
+  type PipelinesConfig,
   type PipelineProviderId,
   type PipelineRepoRegistrationResult,
   type PipelineRepoStatus,
@@ -211,10 +212,26 @@ export async function pipelineTaskLaunch(
   repoRoot: string,
   intent: string,
 ): Promise<
-  | { ok: true; argv: string[]; cwd: string; pipelineRun: PipelineRunLink }
+  | {
+      ok: true;
+      launchRuntime: "terminal";
+      argv: string[];
+      cwd: string;
+      pipelineRun: PipelineRunLink;
+    }
+  | {
+      ok: true;
+      launchRuntime: "claude-sdk";
+      prompt: string;
+      cwd: string;
+      pipelineRun: PipelineRunLink;
+    }
   | { ok: false; error: string }
 > {
-  const matches = activePipelineRepos(getPipelinesConfig()).filter(
+  // One config read owns both consent and runtime. A concurrent Settings write applies to
+  // the next dispatch instead of changing the host after this launch has been composed.
+  const config = getPipelinesConfig();
+  const matches = activePipelineRepos(config).filter(
     (repo) => repo.repoRoot === repoRoot,
   );
   if (matches.length === 0) {
@@ -241,10 +258,20 @@ export async function pipelineTaskLaunch(
     };
   }
 
+  if (config.launchRuntime === "claude-sdk") {
+    return {
+      ok: true,
+      launchRuntime: config.launchRuntime,
+      prompt: provider.taskPrompt(intent),
+      cwd: repoRoot,
+      pipelineRun: identity,
+    };
+  }
+
   const launch = await provider.taskArgv(intent, repoRoot);
   return "refused" in launch
     ? { ok: false, error: launch.refused }
-    : { ok: true, ...launch, pipelineRun: identity };
+    : { ok: true, launchRuntime: config.launchRuntime, ...launch, pipelineRun: identity };
 }
 
 /**
@@ -256,9 +283,11 @@ export async function pipelineTaskLaunch(
  * nothing is reading has no runs to group and would draw an empty heading that no control
  * on the page can explain.
  */
-export function activePipelineRepoStatuses(): PipelineRepoStatus[] {
+export function activePipelineRepoStatuses(
+  config: PipelinesConfig = getPipelinesConfig(),
+): PipelineRepoStatus[] {
   const active = new Set(
-    activePipelineRepos(getPipelinesConfig()).map((repo) =>
+    activePipelineRepos(config).map((repo) =>
       pipelineRepoKey(repo.provider, repo.repoRoot),
     ),
   );

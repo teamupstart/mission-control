@@ -10,6 +10,7 @@ import {
   PIPELINE_HALT_ACTIONS,
   PIPELINE_HALT_CLASSES,
   PIPELINE_HALT_CONSOLES,
+  PIPELINE_LAUNCH_RUNTIMES,
   PIPELINE_PHASES,
   PIPELINE_PROVIDER_IDS,
   PIPELINE_PROVIDER_INFO,
@@ -41,7 +42,10 @@ import {
   type PipelinePhase,
 } from "../src/shared/pipeline.ts";
 import { LLM_SPEND_ROLES } from "../src/shared/llm-spend.ts";
-import { conductorIdeaSlug } from "../src/server/pipelines/conductor/index.ts";
+import {
+  conductorEngineerPrompt,
+  conductorIdeaSlug,
+} from "../src/server/pipelines/conductor/index.ts";
 import { PIPELINE_PROVIDERS } from "../src/server/pipelines/providers.ts";
 
 // What is at stake: `src/shared/pipeline.ts` is a cross-phase contract - phases 2 to 6 are
@@ -221,6 +225,7 @@ test("the projection key is the engine's own identity, and separates its three p
 test("every provider derives a complete task identity through the provider contract", () => {
   for (const id of PIPELINE_PROVIDER_IDS) {
     assert.equal(typeof PIPELINE_PROVIDERS[id].taskIdentity, "function", id);
+    assert.equal(typeof PIPELINE_PROVIDERS[id].taskPrompt, "function", id);
   }
   assert.deepEqual(
     PIPELINE_PROVIDERS["ai-conductor"].taskIdentity("Build the release train", "/repo/a"),
@@ -229,6 +234,15 @@ test("every provider derives a complete task identity through the provider contr
       repoRoot: "/repo/a",
       slug: "build-the-release-train",
     },
+  );
+});
+
+test("the SDK Engineer prompt is direct and preserves every idea byte after its prefix", () => {
+  const intent = "Build this; keep $HOME and `pwd` literal\nThen ask me.";
+  assert.equal(conductorEngineerPrompt(intent), `/engineer ${intent}`);
+  assert.equal(
+    PIPELINE_PROVIDERS["ai-conductor"].taskPrompt(intent),
+    `/engineer ${intent}`,
   );
 });
 
@@ -264,8 +278,14 @@ test("the consent config ships off, and defaults over a blob an older build wrot
   // object is what `getAppConfig` returns for a key nothing has written.
   const shipped = PipelinesConfigSchema.parse({});
   assert.equal(shipped.enabled, false);
+  assert.equal(shipped.launchRuntime, "claude-sdk");
   assert.equal(shipped.foremanMechanicalTriage, false);
   assert.deepEqual(shipped.repos, []);
+  assert.deepEqual([...PIPELINE_LAUNCH_RUNTIMES], ["claude-sdk", "terminal"]);
+
+  for (const launchRuntime of PIPELINE_LAUNCH_RUNTIMES) {
+    assert.equal(PipelinesConfigSchema.parse({ launchRuntime }).launchRuntime, launchRuntime);
+  }
 
   // A repository arrives OFF even when the caller says nothing: adding is configuration,
   // enabling is consent.

@@ -1,4 +1,5 @@
 import type { SettingsStatus } from "@shared/types.ts";
+import { getPipelinesConfig } from "./pipelines/config.ts";
 import { getInspectorConfig } from "./inspector/config.ts";
 import { getShippingConfig } from "./shipping/config.ts";
 import { getTaskSourcesConfig } from "./task-sources/config.ts";
@@ -31,6 +32,7 @@ export function settingsStatus(): SettingsStatus {
   const shipping = getShippingConfig();
   const sources = getTaskSourcesConfig().sources;
   const failing = taskSourceStatuses(sources).filter((s) => s.lastError !== null).length;
+  const pipelines = getPipelinesConfig();
   return {
     inspector: { enabled: inspector.enabled, mode: inspector.mode },
     shipping: { autoMerge: shipping.autoMerge },
@@ -42,6 +44,7 @@ export function settingsStatus(): SettingsStatus {
       present: pipelinesPresent(),
       observing: pipelinesObserving(),
       observedRepoKeys: pipelineObservedRepoKeys(),
+      launchRuntime: pipelines.launchRuntime,
     },
   };
 }

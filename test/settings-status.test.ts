@@ -89,7 +89,12 @@ const ALL_OFF: SettingsStatus = {
   taskSources: { failing: 0 },
   // No engine on this test's PATH and nothing configured, which is what an ordinary
   // installation looks like - and the state in which the Conductor rail row does not exist.
-  pipelines: { present: false, observing: 0, observedRepoKeys: [] },
+  pipelines: {
+    present: false,
+    observing: 0,
+    observedRepoKeys: [],
+    launchRuntime: "claude-sdk",
+  },
 };
 
 // ---- compose ----
@@ -183,6 +188,13 @@ test("the suppression compares every field, so no change can be dropped in silen
     "pipelines.observing": {
       ...base,
       pipelines: { ...base.pipelines, observing: base.pipelines.observing + 1 },
+    },
+    "pipelines.launchRuntime": {
+      ...base,
+      pipelines: {
+        ...base.pipelines,
+        launchRuntime: base.pipelines.launchRuntime === "terminal" ? "claude-sdk" : "terminal",
+      },
     },
     "pipelines.observedRepoKeys": {
       ...base,

@@ -134,9 +134,14 @@ engine's daemon, park and unpark a feature, authorize one DECIDE re-entry with y
 rationale, watch the daemon's console, and run the re-seal ceremony in a hosted terminal.
 
 The same integration starts at Dispatch. An enabled repository offers the **pipeline** task
-kind, which opens `conduct-ts engineer --idea` in a real terminal and lets conductor own the
-worktree, agent, model, and effort. When that run opens a pull request, GitHub Inspector adopts
-it under pipeline provenance and it joins **Shipped**. **Settings → Conductor → Foreman
+kind. Its shipped host is Claude Agent SDK, which starts a managed Claude session at the
+repository and sends `/engineer <idea>` directly as turn one. **Settings → Conductor → Launch
+runtime** can instead select the explicit Terminal compatibility host, which opens
+`conduct-ts engineer --idea` with live stdin. A failed SDK launch never falls back to Terminal.
+Either host lets conductor own the worktree and downstream agent, model, and effort, and only
+the exact provider projection completes the task. Conductor's background build daemon keeps its
+own tmux supervision. When that run opens a pull request, GitHub Inspector adopts it under
+pipeline provenance and it joins **Shipped**. **Settings → Conductor → Foreman
 triage** can also let Foreman unpark mechanical halts through the same action route the
 dashboard uses. That switch ships off, and every needs-human or unknown halt stays with the
 operator.

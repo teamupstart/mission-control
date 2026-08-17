@@ -4373,7 +4373,13 @@ export function buildApp(
    * engine spawn behind a rail that only needs to know whether a daemon is alive - on a
    * cadence, for as long as the tab is on screen.
    */
-  app.get("/api/pipelines/repos", (c) => c.json({ repos: activePipelineRepoStatuses() }));
+  app.get("/api/pipelines/repos", (c) => {
+    const config = getPipelinesConfig();
+    return c.json({
+      repos: activePipelineRepoStatuses(config),
+      launchRuntime: config.launchRuntime,
+    });
+  });
 
   /**
    * One run's gate evidence, read from the engine's files at request time.
@@ -4435,6 +4441,7 @@ export function buildApp(
     }
     setPipelinesConfig({
       enabled: parsed.data.enabled,
+      launchRuntime: parsed.data.launchRuntime,
       foremanMechanicalTriage: parsed.data.foremanMechanicalTriage,
       repos,
     });

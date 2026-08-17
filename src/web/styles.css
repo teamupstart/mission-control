@@ -15901,6 +15901,7 @@ button.wf-carried.is-link:focus-visible {
 .wf-pipeline-bind { padding: 13px; }
 .wf-pipeline-bind button { width: 100%; }
 .workflow-confirm { width: min(460px, 100%); }
+.workflow-confirm.has-evidence { width: min(760px, 100%); }
 .workflow-confirm-body { padding: 16px 18px; }
 .workflow-confirm-body p { margin: 0; font-size: 12px; line-height: 1.55; color: var(--muted); }
 /* The typed phrase the daemon also demands, for the two actions that cannot be undone. */
@@ -15915,6 +15916,186 @@ button.wf-carried.is-link:focus-visible {
   background: var(--bg);
   color: var(--fg);
   font: 12px var(--mono);
+}
+
+/* ---- workflow image evidence ----
+
+   A compact contact sheet married to an audit ledger. Thumbnails establish visual identity;
+   captions, repository slots and hashes do the durable work. The composer deliberately uses
+   the workflow's existing blue and neutral vocabulary instead of introducing an upload colour. */
+.workflow-evidence-composer {
+  display: grid;
+  gap: 10px;
+  margin: 16px 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: color-mix(in oklab, var(--bg) 74%, var(--panel));
+}
+.workflow-binding-dialog .workflow-evidence-composer { margin: 16px 0 4px; }
+.workflow-evidence-composer.is-dropping {
+  border-color: var(--working);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--working) 55%, transparent);
+}
+.workflow-evidence-heading,
+.workflow-evidence-registered-head,
+.workflow-evidence-fileline,
+.wf-image-record-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+.workflow-evidence-heading h3 { margin: 2px 0 0; font-size: 13px; }
+.workflow-evidence-freeze {
+  color: var(--dim);
+  font: 10.5px var(--mono);
+  white-space: nowrap;
+}
+.workflow-evidence-drop {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 3px 9px;
+  align-items: center;
+  width: 100%;
+  padding: 12px;
+  color: var(--muted);
+  text-align: left;
+  border: 1px dashed color-mix(in oklab, var(--working) 42%, var(--border));
+  border-radius: 9px;
+  background: color-mix(in oklab, var(--working) 5%, transparent);
+  cursor: pointer;
+}
+.workflow-evidence-drop > span {
+  grid-row: 1 / 3;
+  color: var(--working);
+  font-size: 20px;
+}
+.workflow-evidence-drop strong { color: var(--fg); font-size: 11.5px; }
+.workflow-evidence-drop small { color: var(--dim); font-size: 10px; }
+.workflow-evidence-drop:hover:not(:disabled) {
+  border-color: var(--working);
+  background: color-mix(in oklab, var(--working) 10%, transparent);
+}
+.workflow-evidence-drop:disabled { opacity: .55; cursor: not-allowed; }
+.workflow-evidence-draft-list,
+.wf-image-ledger {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.workflow-evidence-draft {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding: 9px;
+  border: 1px solid var(--border-soft);
+  border-radius: 9px;
+  background: var(--panel-2);
+}
+.workflow-evidence-draft.is-error { border-color: color-mix(in oklab, var(--danger) 50%, var(--border)); }
+.workflow-evidence-fields { display: grid; grid-template-columns: 1fr minmax(150px, .55fr); gap: 8px; }
+.workflow-evidence-fileline { grid-column: 1 / -1; min-width: 0; }
+.workflow-evidence-fileline strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+.workflow-evidence-fileline span { color: var(--dim); font: 9.5px var(--mono); }
+.workflow-evidence-fields label {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 9.5px;
+}
+.workflow-evidence-fields input,
+.workflow-evidence-fields select {
+  width: 100%;
+  min-width: 0;
+  padding: 7px 8px;
+  color: var(--fg);
+  font: 11px var(--sans);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg);
+}
+.workflow-evidence-fields p { grid-column: 1 / -1; margin: 0; color: var(--danger); font-size: 10.5px; }
+.workflow-evidence-registered {
+  display: grid;
+  gap: 7px;
+  padding: 9px;
+  border-left: 3px solid var(--working);
+  border-radius: 7px;
+  background: var(--panel-2);
+}
+.workflow-evidence-registered-head { color: var(--muted); font-size: 10.5px; }
+.workflow-evidence-registered-head strong { color: var(--fg); }
+.workflow-evidence-registered p { margin: 0; font-size: 10.5px; }
+.workflow-evidence-registered-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: start;
+  padding-top: 7px;
+  border-top: 1px solid var(--border-soft);
+}
+.workflow-evidence-registered-item strong { font-size: 11px; }
+.workflow-evidence-registered-item p,
+.workflow-evidence-registered-item small { color: var(--muted); }
+.workflow-evidence-source {
+  padding: 3px 5px;
+  color: var(--working);
+  font: 8.5px var(--mono);
+  text-transform: uppercase;
+  border: 1px solid color-mix(in oklab, var(--working) 35%, var(--border));
+  border-radius: 4px;
+}
+.workflow-evidence-errors { margin: 0; padding-left: 18px; color: var(--danger); font-size: 10.5px; }
+.workflow-evidence-note,
+.workflow-evidence-artifacts { margin: 0; color: var(--dim); font-size: 10px; line-height: 1.45; }
+
+.wf-image-ledger { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+.wf-image-record {
+  display: grid;
+  grid-template-columns: 128px minmax(0, 1fr);
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+}
+.wf-image-record.is-pruned { border-style: dashed; }
+.wf-image-frame {
+  display: grid;
+  place-items: center;
+  min-height: 148px;
+  color: var(--dim);
+  background:
+    linear-gradient(45deg, color-mix(in oklab, var(--panel-2) 85%, transparent) 25%, transparent 25%) 0 0 / 16px 16px,
+    linear-gradient(-45deg, color-mix(in oklab, var(--panel-2) 85%, transparent) 25%, transparent 25%) 0 8px / 16px 16px,
+    var(--panel);
+}
+.wf-image-frame img { width: 100%; height: 100%; min-height: 148px; object-fit: contain; }
+.wf-image-pruned,
+.wf-image-error { padding: 10px; font-size: 10.5px; text-align: center; }
+.wf-image-pruned { color: var(--attention); }
+.wf-image-error { color: var(--danger); }
+.wf-image-record-body { display: grid; align-content: start; gap: 7px; min-width: 0; padding: 10px; }
+.wf-image-record-body > p { margin: 0; color: var(--muted); font-size: 10.5px; overflow-wrap: anywhere; }
+.wf-image-record-head strong { font-size: 12px; line-height: 1.4; }
+.wf-image-record-body dl { display: grid; gap: 4px; margin: 0; }
+.wf-image-record-body dl div { display: grid; grid-template-columns: 45px minmax(0, 1fr); gap: 6px; }
+.wf-image-record-body dt { color: var(--dim); font-size: 9.5px; }
+.wf-image-record-body dd { min-width: 0; margin: 0; color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
+.wf-image-record-body code { font-size: 9px; word-break: break-all; }
+.wf-image-record-body .wf-run-pruned { white-space: normal; line-height: 1.4; }
+.wf-image-record-body .btn { justify-self: start; }
+
+@media (max-width: 620px) {
+  .workflow-evidence-heading { align-items: flex-start; flex-direction: column; }
+  .workflow-evidence-fields { grid-template-columns: 1fr; }
+  .workflow-evidence-fields > * { grid-column: 1; }
+  .wf-image-record { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 1180px) {

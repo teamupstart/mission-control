@@ -268,6 +268,7 @@ test("every terminal status offers the rerun, keyed by the binding rather than t
     // Confirmed, because it captures fresh evidence and spends model tokens. NOT phrase-gated:
     // the typed phrase exists for the two actions that abandon work, and this one only adds.
     assert.ok(move.confirm, `${status} must confirm before spending tokens`);
+    assert.equal(move.confirm.captureEvidence, true);
     assert.equal(move.confirm.requirePhrase, undefined);
     assert.match(move.confirm.body, /spends model tokens/);
     assert.match(move.confirm.body, /starts a NEW run/i);
@@ -346,6 +347,8 @@ test("a waiting run resumes the review, in the binding's own voice", () => {
     moveOf({ status: "waiting_for_session" }),
     { kind: "resubmit", label: "Preview fresh evidence" },
   );
+  assert.equal(runNextMove(detailFor({ status: "waiting_for_session", round: 2 }))?.id, "resubmit:3");
+  assert.equal(runNextMove(detailFor({ status: "waiting_for_session", round: 3 }))?.id, "resubmit:4");
 });
 
 /**
@@ -373,6 +376,19 @@ test("both unchanged-evidence phases offer the snapshot resubmission and nothing
     moveOf({ status: "blocked", phase: "unchanged_evidence_exhausted" }),
     { kind: "resubmit-unchanged", label: "Preview unchanged" },
   );
+});
+
+test("unchanged replay names the exact image count and never opens fresh intake", () => {
+  const detail = detailFor({ status: "waiting_for_session", phase: "unchanged_evidence" });
+  detail.evidenceImages = [{
+    submissionId: "submission",
+    images: [{ id: "one" }, { id: "two" }, { id: "three" }] as never,
+  }];
+  const move = runNextMove(detail);
+  assert.ok(move?.confirm);
+  assert.equal(move.kind, "resubmit-unchanged");
+  assert.match(move.confirm.body, /reuses exactly 3 images/);
+  assert.equal(move.confirm.captureEvidence, undefined);
 });
 
 /**

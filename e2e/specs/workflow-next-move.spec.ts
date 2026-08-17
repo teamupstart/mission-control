@@ -152,8 +152,11 @@ test("the header offers one derived move, and it becomes the recovery for its ow
    * because nothing was ever delivered to the session. That parks the run in
    * `unchanged_evidence` - a phase, persisted, which is why the affordance below survives a
    * reload rather than living in component state.
-   */
+  */
   await primary.click();
+  await dashboard.getByRole("dialog", { name: "Preview fresh evidence" })
+    .getByRole("button", { name: "Preview fresh evidence" })
+    .click();
   await expect
     .poll(async () => (await probe(daemon, runId)).run.currentPhase, {
       message: "the fresh resubmission should be refused for an unmoved evidence snapshot",

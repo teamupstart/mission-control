@@ -112,7 +112,7 @@ import type {
 } from "@shared/archives.ts";
 import type { AwayBufferSummary, AwayDigest } from "@shared/away-buffer.ts";
 import type { Stall } from "@shared/stall.ts";
-import type { PersonaDefaultsView } from "@shared/workflow.ts";
+import type { PersonaDefaultsView, WorkflowUploadEvidenceLocator } from "@shared/workflow.ts";
 
 export interface ActionResult {
   ok: boolean;
@@ -989,15 +989,30 @@ export const fetchTerminalTargets = () =>
  */
 export async function uploadImage(
   file: File,
-): Promise<{ ok: true; upload: Attachment } | { ok: false; error: string }> {
+): Promise<
+  | { ok: true; upload: Attachment; uploadId: string; bytes: number }
+  | { ok: false; error: string }
+> {
   try {
     const body = new FormData();
     body.append("file", file);
     const res = await fetch("/api/uploads", { method: "POST", body });
-    const data = (await res.json().catch(() => ({}))) as Partial<Attachment> & { error?: string };
+    const data = (await res.json().catch(() => ({}))) as Partial<Attachment> & {
+      uploadId?: string;
+      bytes?: number;
+      error?: string;
+    };
     if (!res.ok) return { ok: false, error: data.error ?? `HTTP ${res.status}` };
     if (!data.path || !data.name) return { ok: false, error: "upload returned no path" };
-    return { ok: true, upload: { path: data.path, name: data.name } };
+    if (!data.uploadId || !Number.isInteger(data.bytes) || (data.bytes ?? 0) <= 0) {
+      return { ok: false, error: "upload returned no workflow locator" };
+    }
+    return {
+      ok: true,
+      upload: { path: data.path, name: data.name },
+      uploadId: data.uploadId,
+      bytes: data.bytes!,
+    };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
@@ -1485,10 +1500,14 @@ export const api = {
     post(`/api/sessions/${encodeURIComponent(id)}/queue/${encodeURIComponent(itemId)}/approve`),
   setWrapupAnswer: (id: string, answer: string | null) =>
     put(`/api/sessions/${encodeURIComponent(id)}/queue/wrapup`, { answer }),
-  startBuiltinReview: (id: string, requestId: string) =>
+  startBuiltinReview: (
+    id: string,
+    requestId: string,
+    evidence: WorkflowUploadEvidenceLocator[] = [],
+  ) =>
     post<{ run?: { id: string } } & ActionResult>(
       `/api/sessions/${encodeURIComponent(id)}/workflow-review`,
-      { requestId },
+      { requestId, evidence },
     ),
   reattachQueue: (id: string, noteKey: string) =>
     post(`/api/sessions/${encodeURIComponent(id)}/queue/reattach`, { noteKey }),

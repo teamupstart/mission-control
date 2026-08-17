@@ -1,6 +1,13 @@
 import { useState } from "react";
 import { Overlay, OVERLAY_IDS } from "../components/Overlay.tsx";
 import { Tooltip } from "../components/Tooltip.tsx";
+import {
+  WorkflowEvidenceComposer,
+  workflowEvidenceSubmission,
+  type WorkflowEvidenceDraftController,
+  type WorkflowEvidenceScopeOption,
+} from "./WorkflowEvidenceComposer.tsx";
+import type { WorkflowUploadEvidenceLocator } from "@shared/workflow.ts";
 
 /**
  * The workflow surfaces' destructive confirmations, hosted by the overlay registry instead
@@ -43,7 +50,9 @@ export interface WorkflowConfirmRequest {
    * prompt that any keystroke satisfies is a different guarantee.
    */
   requirePhrase?: string;
-  onConfirm: () => void;
+  /** Fresh capture actions share the image-evidence composer. Exact replay actions do not. */
+  captureEvidence?: boolean;
+  onConfirm: (evidence?: WorkflowUploadEvidenceLocator[]) => void;
 }
 
 /**
@@ -68,25 +77,34 @@ export function confirmPhraseSatisfied(
 export function WorkflowConfirmModal({
   request,
   onClose,
+  evidence,
 }: {
   request: WorkflowConfirmRequest;
   onClose: () => void;
+  evidence?: {
+    controller: WorkflowEvidenceDraftController;
+    scopes: readonly WorkflowEvidenceScopeOption[];
+  };
 }): React.JSX.Element {
   const [typed, setTyped] = useState("");
   const satisfied = confirmPhraseSatisfied(request, typed);
+  const evidenceSubmission = request.captureEvidence && evidence
+    ? workflowEvidenceSubmission(evidence.controller, evidence.scopes)
+    : null;
+  const evidenceReady = !request.captureEvidence || evidenceSubmission?.ready === true;
   return (
     <Overlay
       id={OVERLAY_IDS.workflowConfirm}
       onClose={onClose}
-      className="modal workflow-confirm"
+      className={`modal workflow-confirm${request.captureEvidence ? " has-evidence" : ""}`}
       role="dialog"
       ariaLabel={request.title}
     >
       <form
         onSubmit={(event) => {
           event.preventDefault();
-          if (!satisfied) return;
-          request.onConfirm();
+          if (!satisfied || !evidenceReady) return;
+          request.onConfirm(evidenceSubmission?.locators);
           onClose();
         }}
       >
@@ -100,6 +118,12 @@ export function WorkflowConfirmModal({
         </header>
         <div className="workflow-confirm-body">
           <p>{request.body}</p>
+          {request.captureEvidence && evidence && (
+            <WorkflowEvidenceComposer
+              controller={evidence.controller}
+              scopes={evidence.scopes}
+            />
+          )}
           {request.requirePhrase && (
             <label className="workflow-confirm-phrase">
               <span>Type <strong>{request.requirePhrase}</strong> to confirm</span>
@@ -122,11 +146,13 @@ export function WorkflowConfirmModal({
           </Tooltip>
           <Tooltip label={request.requirePhrase && !satisfied
             ? `Type ${request.requirePhrase} above to enable this`
+            : !evidenceReady
+              ? "Finish the image evidence packet before submitting"
             : request.confirmHint}>
             <button
               type="submit"
               className={request.danger ? "btn btn-danger" : "btn"}
-              disabled={!satisfied}
+              disabled={!satisfied || !evidenceReady}
               autoFocus={!request.requirePhrase}
             >
               {request.confirmLabel}

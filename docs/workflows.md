@@ -651,6 +651,25 @@ scope, or Mission Control destination. `repositoryScope: "all"` is authorized on
 received that scope, and every daemon-side validation above still applies. Registration remains
 optional and never replaces code or test evidence.
 
+The dashboard uses one **Image evidence** composer anywhere a person can capture a new
+submission: the initial **Preview** in the binding dialog, **Ship it** and No-Mistakes review
+from a session card, **Run again** or **Preview again**, and every fresh repair resubmission.
+Choose files, drop them, or paste a screenshot; then give every image a caption and a repository
+scope. Session-registered images and text artifacts appear in the same packet and can be removed
+before capture, including in the initial binding dialog before that conversation has a binding.
+The daemon resolves that initial packet from the live session, so creating a placeholder binding
+is not required and a stale registration cannot reach the first review unseen. The dashboard
+blocks submission while an upload is pending or failed, a caption
+or scope is missing, registered evidence cannot be read, or the packet exceeds 8 images, 5 MiB
+per image, or 20 MiB in aggregate. PNG, JPEG, static GIF, and WebP are accepted. Closing a dialog
+or receiving a failed request keeps the draft intact for correction and retry. Once accepted,
+the count and byte total shown in the composer become part of that immutable submission.
+
+**Resubmit unchanged snapshot** is deliberately different. It replays exactly the images named
+by the previous submission and offers no fresh-image composer; the confirmation states that
+exact count. Choose the fresh resubmission path when the next review needs new or replacement
+screenshots, even when the repository HEAD has not changed.
+
 Submission creation reserves the applicable staged generation. A multi-repository completion
 copies `all` evidence into every sibling submission and keeps slot-scoped evidence in that
 repository's run. Inside the existing conversation capture lock, each reserved source is
@@ -736,6 +755,14 @@ by the graph's 100-node ceiling. Run summaries likewise carry exact active Perso
 SessionAction ids beside the older human-facing Persona names and Action wait reason. Those ids
 resolve same-name shadows and identify one action stage exactly; the browser never fetches every
 workflow to reconstruct either answer.
+
+Each submission in run detail has its own image-evidence ledger. It records the thumbnail,
+caption, repository scope, full sha256 digest, byte size, MIME type, and whether the retained
+body still exists. Image bodies load lazily through the authenticated dashboard route and the
+browser releases their object URLs when the ledger leaves the page. Retention cleanup changes
+the body to **Pruned** without erasing the metadata or digest that explains what reviewers saw.
+A retained image offers **Use in next review**, which stages a fresh immutable copy in the
+binding's composer. A pruned image keeps its audit record but cannot be reused.
 
 ### Watching a run
 

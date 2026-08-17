@@ -1408,6 +1408,17 @@ or log artifacts by issued repository slot or across all applicable repositories
 completion. It never tells the agent to commit evidence. A ship task without such a workflow
 keeps its prior Mission MCP launch and receives no evidence instructions:
 
+Registered evidence is visible in the session card's shared **Image evidence** composer before
+**Ship it** or the built-in No-Mistakes review starts. A person can remove a stale registration,
+add screenshots by choosing, dropping, or pasting, and assign captions and repository scopes
+without moving the files into git. The same conversation-owned list appears in the initial
+workflow binding dialog before a binding exists, so the first review cannot capture an unseen
+stale item. The composer keeps unfinished uploads and edits across a
+closed confirmation or a failed submission, then clears only after the daemon accepts the
+review request.
+
+The MCP tools are:
+
 - `share_plan(title, plan)` - show a markdown plan (non-blocking)
 - `request_plan_decisions(title, plan, decisions)` - show a plan with selectable
   options (radios / checkboxes) and **block** until the human submits their choices or

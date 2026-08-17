@@ -1676,6 +1676,21 @@ export function buildApp(
     );
     return staged ? c.json(staged) : c.json({ error: "no such workflow binding" }, 404);
   });
+  app.get("/api/sessions/:id/workflow-evidence", (c) => {
+    const manager = workflowManager();
+    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+    const staged = manager.stagedEvidenceForSession(c.req.param("id"));
+    return staged ? c.json(staged) : c.json({ error: "no such live workflow session" }, 404);
+  });
+  app.delete("/api/sessions/:id/workflow-evidence/:clientItemId", (c) => {
+    const manager = workflowManager();
+    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+    const staged = manager.removeStagedEvidenceForSession(
+      c.req.param("id"),
+      c.req.param("clientItemId"),
+    );
+    return staged ? c.json(staged) : c.json({ error: "no such live workflow session" }, 404);
+  });
   app.post("/api/workflow-bindings/:id/evidence/reattach", async (c) => {
     const manager = workflowManager();
     if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);

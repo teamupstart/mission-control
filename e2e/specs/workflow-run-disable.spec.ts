@@ -125,13 +125,43 @@ async function seedFailedRun(page: Page, daemon: DaemonHandle): Promise<string> 
   return runId;
 }
 
-async function previewUnchanged(page: Page): Promise<void> {
-  // The first press asks for fresh evidence. Its expected refusal changes the one primary
-  // action into the explicit unchanged-evidence recovery, which then requires confirmation.
+async function openNextRound(
+  page: Page,
+  daemon: DaemonHandle,
+  runId: string,
+  targetRound: number,
+): Promise<void> {
+  // The first press deliberately captures fresh evidence. When that capture is unchanged,
+  // the daemon offers the explicit replay confirmation; when a prior repair delivery changed
+  // the bounded transcript, the fresh capture can open the target round on its own.
   const primary = page.locator("header.wf-run-head button.btn-primary");
   await expect(primary).toHaveText("Preview fresh evidence");
   await primary.click();
-  await expect(primary).toHaveText("Preview unchanged", { timeout: 40_000 });
+  await page.getByRole("dialog", { name: "Preview fresh evidence" })
+    .getByRole("button", { name: "Preview fresh evidence" })
+    .click();
+  let outcome = "";
+  await expect.poll(async () => {
+    const detail = await api<{
+      run: { currentPhase: string; status: string };
+      summary: { round: number };
+      submissions: Array<{ round: number; segment: number; status: string }>;
+    }>(daemon, `/api/workflow-runs/${runId}`);
+    const submission = detail.submissions.find((candidate) =>
+      candidate.round === targetRound && candidate.segment === 0
+    );
+    outcome = submission?.status === "failed" && detail.run.currentPhase === "unchanged_evidence"
+      ? "replay"
+      : submission && !["capturing", "failed", "cancelled"].includes(submission.status)
+        ? "opened"
+        : "";
+    return outcome || `${submission?.status ?? "missing"}:${detail.run.currentPhase}`;
+  }, {
+    message: `fresh capture should either open round ${targetRound} or offer exact replay`,
+    timeout: 40_000,
+  }).toMatch(/^(opened|replay)$/);
+  if (outcome === "opened") return;
+  await expect(primary).toHaveText("Preview unchanged");
   await primary.click();
   await page.getByRole("dialog").getByRole("button", { name: "Preview unchanged" }).click();
 }
@@ -177,7 +207,7 @@ test("critical feedback follows one Persona through every later round of this ru
 
   // Round 2 proves the directive beats the target Persona's still-failing published guidance,
   // while the sibling Persona receives no directive and keeps its original fail behavior.
-  await previewUnchanged(dashboard);
+  await openNextRound(dashboard, daemon, runId, 2);
 
   await expect(row("Blocking reviewer")).toContainText("Passed", { timeout: 40_000 });
   await expect(row("Docs steward")).toContainText("Changes requested", { timeout: 40_000 });
@@ -185,7 +215,7 @@ test("critical feedback follows one Persona through every later round of this ru
 
   // It remains active without another save. Round 3 makes the same target pass again and
   // reaches the same unmodified sibling failure.
-  await previewUnchanged(dashboard);
+  await openNextRound(dashboard, daemon, runId, 3);
   await expect(dashboard.locator(".wf-run-scrubber")).toContainText("Round 3", { timeout: 40_000 });
   await expect(row("Blocking reviewer")).toContainText("Passed", { timeout: 40_000 });
   await expect(row("Docs steward")).toContainText("Changes requested", { timeout: 40_000 });

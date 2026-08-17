@@ -478,6 +478,7 @@ function runAgainMove(detail: WorkflowRunDetail, preview: boolean): RunNextMove 
       body,
       confirmLabel: preview ? "Preview again" : "Run again",
       confirmHint: "Starts a new run against the same session",
+      captureEvidence: true,
     },
   };
 }
@@ -655,6 +656,10 @@ export function runNextMove(detail: WorkflowRunDetail): RunNextMove | null {
    * affordance is durable across a remount rather than held in component state.
    */
   if (UNCHANGED_EVIDENCE_PHASES.has(currentPhase)) {
+    const latestSubmissionId = orderedSubmissions(detail).at(-1)?.id ?? null;
+    const reusedImageCount = latestSubmissionId
+      ? detail.evidenceImages?.find((group) => group.submissionId === latestSubmissionId)?.images.length ?? 0
+      : 0;
     return {
       id: "resubmit-unchanged",
       kind: "resubmit-unchanged",
@@ -665,7 +670,9 @@ export function runNextMove(detail: WorkflowRunDetail): RunNextMove | null {
       confirm: {
         title: preview ? "Preview unchanged evidence" : "Submit unchanged evidence",
         body: "This runs every reviewer again against the snapshot already taken, so"
-          + " nothing about the work under review has changed since the last round.",
+          + " nothing about the work under review has changed since the last round."
+          + ` It reuses exactly ${reusedImageCount} image${reusedImageCount === 1 ? "" : "s"};`
+          + " no new image evidence can be added to this replay.",
         confirmLabel: preview ? "Preview unchanged" : "Submit unchanged",
         confirmHint: "Starts a new round against the existing evidence snapshot",
       },
@@ -676,7 +683,10 @@ export function runNextMove(detail: WorkflowRunDetail): RunNextMove | null {
     || !DECISION_BLOCKED_PHASES.has(currentPhase);
   if (!resumable) return null;
   return {
-    id: "resubmit",
+    // One action-store intent per repair round. A fresh capture that is refused as unchanged
+    // must retain its request id for the exact replay, but once that replay runs the NEXT fresh
+    // capture cannot reuse the old id and be answered with the previous submission.
+    id: `resubmit:${detail.summary.round + 1}`,
     kind: "resubmit",
     label: preview ? "Preview fresh evidence" : "Resume review",
     tooltip: availability.resuming
@@ -684,7 +694,15 @@ export function runNextMove(detail: WorkflowRunDetail): RunNextMove | null {
       : "Re-read the session's current diff and run the review again",
     path: runPath(detail, "resubmit"),
     body: {},
-    confirm: null,
+    confirm: {
+      title: preview ? "Preview fresh evidence" : "Resume review with fresh evidence",
+      body: availability.resuming
+        ? "This re-reads the bound session and resumes the stopped workflow with a fresh, immutable evidence submission."
+        : "This re-reads the bound session and starts the next review round with a fresh, immutable evidence submission.",
+      confirmLabel: preview ? "Preview fresh evidence" : "Resume review",
+      confirmHint: "Captures the session again with this image evidence packet",
+      captureEvidence: true,
+    },
   };
 }
 

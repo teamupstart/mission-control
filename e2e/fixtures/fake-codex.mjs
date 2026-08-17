@@ -177,7 +177,7 @@ if (process.argv[2] === "exec") {
         );
       }
       if (!valid) {
-        process.stderr.write("fake-codex: workflow image bytes, MIME, or digest did not match --image inputs\n");
+        process.stderr.write("fake-codex: workflow image bytes did not match --image inputs (MIME or digest)\n");
         process.exitCode = 1;
         done();
         return;

@@ -106,6 +106,20 @@ function workflowImageManifest(prompt) {
   }
 }
 
+/** Identify the MIME from the pixels Codex received, independently of the prompt manifest. */
+function rasterMimeType(bytes) {
+  const ascii = (offset, value) => bytes.subarray(offset, offset + value.length).toString("ascii") === value;
+  if (
+    bytes.length >= 8
+    && bytes[0] === 0x89
+    && ascii(1, "PNG\r\n\x1a\n")
+  ) return "image/png";
+  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "image/jpeg";
+  if (ascii(0, "GIF87a") || ascii(0, "GIF89a")) return "image/gif";
+  if (ascii(0, "RIFF") && ascii(8, "WEBP")) return "image/webp";
+  return null;
+}
+
 function codexWorkflowAnswer(prompt) {
   if (prompt.includes("E2E_FAIL_VERDICT")) {
     return JSON.stringify({
@@ -147,12 +161,15 @@ if (process.argv[2] === "exec") {
       const observed = imagePaths.map((path) => {
         const bytes = readFileSync(path);
         return {
+          mimeType: rasterMimeType(bytes),
           bytes: bytes.byteLength,
           sha256: createHash("sha256").update(bytes).digest("hex"),
         };
       });
       const valid = manifest.length === observed.length && observed.every((image, index) =>
-        image.bytes === manifest[index]?.bytes && image.sha256 === manifest[index]?.sha256);
+        image.bytes === manifest[index]?.bytes
+        && image.sha256 === manifest[index]?.sha256
+        && image.mimeType === manifest[index]?.mimeType);
       if (recordDir && manifest.length > 0) {
         writeFileSync(
           join(recordDir, "codex", `workflow-image-boundary-${Date.now()}-${process.pid}.json`),
@@ -160,7 +177,7 @@ if (process.argv[2] === "exec") {
         );
       }
       if (!valid) {
-        process.stderr.write("fake-codex: workflow image bytes did not match --image inputs\n");
+        process.stderr.write("fake-codex: workflow image bytes, MIME, or digest did not match --image inputs\n");
         process.exitCode = 1;
         done();
         return;

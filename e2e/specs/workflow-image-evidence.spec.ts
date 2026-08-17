@@ -119,8 +119,8 @@ function providerBoundary(daemon: DaemonHandle, provider: "claude" | "codex") {
   if (!name) return null;
   return JSON.parse(readFileSync(join(dir, name), "utf8")) as {
     valid: boolean;
-    manifest: Array<{ sha256: string; bytes: number }>;
-    observed: Array<{ sha256: string; bytes: number }>;
+    manifest: Array<{ sha256: string; bytes: number; mimeType: string }>;
+    observed: Array<{ sha256: string; bytes: number; mimeType: string }>;
   };
 }
 
@@ -233,6 +233,7 @@ test("dashboard evidence reaches both native providers and remains auditable per
     expect(proof.manifest[0]?.sha256).toBe(pngDigest);
     expect(proof.observed[0]?.sha256).toBe(pngDigest);
     expect(proof.observed[0]?.bytes).toBe(PNG.byteLength);
+    expect(proof.observed[0]?.mimeType).toBe("image/png");
   }
 
   const initialLedger = dashboard.locator("section.wf-image-evidence");

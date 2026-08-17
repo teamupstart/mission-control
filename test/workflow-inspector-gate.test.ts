@@ -1073,6 +1073,12 @@ test("a spent repair budget vetoes under its own reason, survives new heads, and
   );
 
   await parkOnFindings(2, secondHead, "the second findings did not park on a new head");
+  const acceptedRecheckId = `recheck-before-spent-${serial}`;
+  const acceptedRecheck = seeded.manager.recheckInspector(
+    seeded.ids.run,
+    acceptedRecheckId,
+  );
+  assert.equal(acceptedRecheck.ok, true);
   signal(seeded, `head-${serial}-three`);
   await waitFor(
     () => seeded.store.getRun(seeded.ids.run)?.currentPhase === "round_limit",
@@ -1082,6 +1088,19 @@ test("a spent repair budget vetoes under its own reason, survives new heads, and
   // 1. The veto stands, and now it names itself. `pending` here would be the daemon
   //    telling the operator to wait for a review that will never run again.
   assert.equal(seeded.manager.mergeGate(seeded.key), "spent");
+  const acceptedReplay = seeded.manager.recheckInspector(
+    seeded.ids.run,
+    acceptedRecheckId,
+  );
+  assert.equal(acceptedReplay.ok, true);
+  assert.equal(acceptedReplay.ok && acceptedReplay.idempotent, true);
+  const recheckEventsBeforeDeadRequest = seeded.store.listEvents(seeded.ids.run)
+    .filter((event) => event.kind === "inspector_recheck_requested").length;
+  assert.equal(
+    recheckEventsBeforeDeadRequest,
+    1,
+    "replaying an accepted recheck after the run changed state wrote another audit event",
+  );
   const deadRecheck = seeded.manager.recheckInspector(
     seeded.ids.run,
     `recheck-spent-${serial}`,
@@ -1091,7 +1110,7 @@ test("a spent repair budget vetoes under its own reason, survives new heads, and
   assert.equal(
     seeded.store.listEvents(seeded.ids.run)
       .filter((event) => event.kind === "inspector_recheck_requested").length,
-    0,
+    recheckEventsBeforeDeadRequest,
     "a spent recheck left an audit event even though the evaluator cannot advance it",
   );
 

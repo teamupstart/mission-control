@@ -2521,6 +2521,13 @@ export class WorkflowManager {
     if (!run || !this.gateState(run)) {
       return { ok: false, reason: "not_found", message: "No active GitHub Inspector gate exists" };
     }
+    const repeated = this.store.listEvents(run.id).some((event) =>
+      event.kind === "inspector_recheck_requested"
+      && event.payload
+      && !Array.isArray(event.payload)
+      && typeof event.payload === "object"
+      && event.payload.requestId === requestId);
+    if (repeated) return { ok: true, value: run, idempotent: true };
     if (runIsTerminal(run)) {
       return {
         ok: false,
@@ -2540,13 +2547,6 @@ export class WorkflowManager {
         message: "This GitHub Inspector gate is not waiting in a state a recheck can advance",
       };
     }
-    const repeated = this.store.listEvents(run.id).some((event) =>
-      event.kind === "inspector_recheck_requested"
-      && event.payload
-      && !Array.isArray(event.payload)
-      && typeof event.payload === "object"
-      && event.payload.requestId === requestId);
-    if (repeated) return { ok: true, value: run, idempotent: true };
     this.store.appendEvent(run.id, "inspector_recheck_requested", { requestId }, now);
     this.scheduleGateEvaluation(run.id, null);
     return { ok: true, value: run };

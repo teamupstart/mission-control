@@ -4,10 +4,12 @@ Mission Control keeps its three primary pages in one segmented top bar control:
 **▦ Fleet / ⌗ Library / ▷ Runs**. Fleet shows the sessions doing the work, **Library** holds
 everything you author once and reuse, and **Runs** monitors live and finished workflow runs.
 Nothing runs *from* the Library - each shelf carries a single cross-link to where its assets
-are executing, and no live state beyond it. That link sits beside the shelf's question as a
-counted pill wearing a status dot: blue while work is merely open, amber when the count is
-one you have to answer. The original pull request includes runtime captures of both the wide
-and narrow layouts.
+are executing, and the **shelf index** renders no live run state beyond it. That link sits
+beside the shelf's question as a counted pill wearing a status dot: blue while work is merely
+open, amber when the count is one you have to answer. A Persona or Action detail is the
+deliberate exception: once you open an asset, its footer says which workflows depend on it and
+whether one of their runs is gating on it now. The original pull request includes runtime
+captures of both the wide and narrow shelf layouts.
 
 "Nothing runs from here" rather than "nothing here runs", because the Commands shelf holds
 executable argvs. Saving one executes nothing; a workflow reaching that slot, later, in a
@@ -162,6 +164,14 @@ defaults draws quiet, and one this Persona overrides draws solid - so what this 
 actually changes is legible without opening anything, and `source` names where the routing was
 decided. Everything left over is the guidance editor.
 
+**Used by** is the footer beneath the guidance. It names every workflow whose current draft or
+current published version references this Persona, links to that workflow, and labels those two
+graphs separately because they are different promises: a draft follows Library edits, while a
+published version keeps its frozen Persona snapshot. A live mark appears only when an in-flight
+attempt names this exact Persona id. Matching by id matters when an operator Persona shadows a
+same-named built-in. The mark links to the run and retires from the open screen through SSE when
+the run finishes; the Library shelf index remains unchanged.
+
 Opening `#/library/personas/foreman` keeps the same rail and workspace grammar but changes the
 ownership boundary. Foreman's name and application-owned description are fixed. The only
 editable field is the exact `FOREMAN.md` standing guidance, with Editor/Preview, Save,
@@ -223,6 +233,18 @@ ordinary default this daemon runs perfectly well. Until that read lands nothing 
 claims anything about it. Save stands down in the meantime and says which fact it is waiting
 for, because a pending read is not a refusal but it is a reason not to write. Everything left
 over is the instruction editor, whose Markdown reaches the session byte for byte.
+
+The shared **Used by** footer sits beneath that instruction. As on a Persona, it links each
+referencing workflow and keeps `Draft` apart from `Published vN`. Its live mark is stricter than
+"this workflow contains the Action": it appears only while a waiting action attempt carries
+this Action's exact source id, so a workflow with several action stages never marks all of them
+at once. The run link and live count update from the existing SSE summary and disappear when
+the run finishes, without a workflow-detail fetch or a page reload.
+
+Both footers stay absent when connected to an older daemon that does not project references.
+They never turn missing wire data into the false empty answer "nothing uses this". If an exact
+live run names a workflow the browser cannot resolve, the workflow is omitted and the footer
+states how many were omitted rather than guessing a name or destination.
 
 ### The Command detail screen
 

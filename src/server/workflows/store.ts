@@ -118,6 +118,7 @@ import type {
   WorkflowCheckSlot,
   WorkflowCommandOverride,
   WorkflowCommandView,
+  WorkflowAssetReferenceSet,
 } from "@shared/workflow.ts";
 import type { LlmRunnerId } from "@shared/llm.ts";
 import type { SessionIntentGuard } from "@shared/types.ts";
@@ -150,6 +151,30 @@ const PERSONA_DIRECTIVES_JSON_BYTES =
 export const WORKFLOW_RETENTION_BATCH_SIZE = 100;
 
 type RunCursor = { updatedAt: number; id: string };
+
+/**
+ * The one projection from graph nodes to Library asset identities.
+ *
+ * Both summary halves call this same helper so draft and published cannot quietly disagree
+ * about how a node names its source. Sets remove repeated use of one asset while preserving
+ * graph order; the output stays bounded by the graph's node ceiling.
+ */
+function workflowAssetReferenceSet(
+  graph: WorkflowDefinition["draft"] | WorkflowVersion["graph"],
+): WorkflowAssetReferenceSet {
+  const personaIds = new Set<string>();
+  const sessionActionIds = new Set<string>();
+  for (const node of graph.nodes) {
+    if (node.kind === "persona") {
+      personaIds.add("persona" in node ? node.persona.sourcePersonaId : node.personaId);
+    } else if (node.kind === "session_action") {
+      sessionActionIds.add("action" in node
+        ? node.action.sourceSessionActionId
+        : node.sessionActionId);
+    }
+  }
+  return { personaIds: [...personaIds], sessionActionIds: [...sessionActionIds] };
+}
 
 // A summary intentionally selects no submission evidence or context. The newest submission
 // contributes only its identity and segment; attempts for the bounded result set are loaded
@@ -3221,13 +3246,12 @@ export class WorkflowStore {
 
   summary(workflow: WorkflowDefinition): WorkflowSummary {
     const validation = this.validateDraft(workflow);
-    // A built-in owns no version rows, so the row lookup below would report it unpublished -
-    // which reads on the card as a shipped workflow nobody can bind.
+    // Resolve the WHOLE current version because the summary now projects its bounded asset ids
+    // as well as its version number. `getWorkflowVersionById` is already the one resolver for
+    // row-backed and built-in versions, so this does not create a second opinion about either.
     const current = workflow.currentVersionId === null
       ? null
-      : workflow.builtin
-        ? this.builtinWorkflowVersion(workflow.currentVersionId) ?? undefined
-        : this.db.prepare(`SELECT version FROM workflow_versions WHERE id = ?`).get(workflow.currentVersionId) as { version: number } | undefined;
+      : this.getWorkflowVersionById(workflow.currentVersionId);
     return {
       id: workflow.id,
       name: workflow.name,
@@ -3242,6 +3266,10 @@ export class WorkflowStore {
       nodeCount: workflow.draft.nodes.length,
       personaCount: workflow.draft.nodes.filter((node) => node.kind === "persona").length,
       builtin: workflow.builtin,
+      assetReferences: {
+        draft: workflowAssetReferenceSet(workflow.draft),
+        published: current ? workflowAssetReferenceSet(current.graph) : null,
+      },
     };
   }
 
@@ -3667,6 +3695,10 @@ export class WorkflowStore {
         latestAttempts.set(attempt.nodeId, attempt);
       }
       const attempts = [...latestAttempts.values()];
+      const activePersonaAttempts = attempts.filter((attempt) =>
+        attempt.persona && ["queued", "running", "retry_wait"].includes(attempt.state));
+      const activeSessionActionAttempts = attempts.filter((attempt) =>
+        attempt.sessionAction && attempt.state === "waiting");
       const gateState = inspectorGateState(run);
       const gatePrNumber = gateState?.prKey
         ? Number(gateState.prKey.match(/#(\d+)$/)?.[1] ?? NaN)
@@ -3721,10 +3753,16 @@ export class WorkflowStore {
             attempt.state === "waiting" ? [this.sessionActionState(attempt)?.wait] : [])
           .find((wait) => wait !== undefined) ?? null,
         maxRepairRounds: run.maxRepairRounds,
-        activePersonaNames: attempts.flatMap((attempt) =>
-          attempt.persona && ["queued", "running", "retry_wait"].includes(attempt.state)
-            ? [attempt.persona.name]
-            : []),
+        activePersonaNames: activePersonaAttempts.map((attempt) => attempt.persona!.name),
+        // Exact source ids beside the legacy names. Names stay for the existing human-facing
+        // summaries; ids are what make a same-named built-in and operator Persona unambiguous.
+        activePersonaIds: [...new Set(activePersonaAttempts.map((attempt) =>
+          attempt.persona!.sourcePersonaId))],
+        // `actionWait` says WHY an action is holding the run. The immutable attempt snapshot
+        // says WHICH one, so the Library can name the exact asset rather than every action the
+        // workflow happens to contain.
+        activeSessionActionIds: [...new Set(activeSessionActionAttempts.map((attempt) =>
+          attempt.sessionAction!.sourceSessionActionId))],
         failedPersonaCount: attempts.filter((attempt) => {
           const verdict = attempt.verdict;
           return Boolean(

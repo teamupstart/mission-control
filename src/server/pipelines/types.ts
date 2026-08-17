@@ -7,6 +7,7 @@ import type {
   PipelineProviderId,
   PipelineRun,
   PipelineRunDetail,
+  PipelineRunLink,
 } from "@shared/pipeline.ts";
 
 import type { PipelineEventInput } from "../db.ts";
@@ -230,6 +231,16 @@ export interface PipelineProvider {
     console: PipelineConsole,
     target: PipelineConsoleTarget,
   ): { argv: string[]; cwd: string } | { refused: string };
+  /**
+   * The provider-owned run a pipeline task will create, or a bounded refusal.
+   *
+   * Mission Control persists this complete link before it starts a host. The provider owns
+   * the derivation because the identity grammar is part of its plan/worktree protocol, not
+   * a shared task convention. This method never reads provider state; collision checking
+   * uses `knownRunSlugs` so identity and the provider's current key space stay separate
+   * answers with separate failure modes.
+   */
+  taskIdentity(intent: string, repoRoot: string): PipelineRunLink | { refused: string };
   /**
    * What a pipeline task launches in a hosted terminal.
    *

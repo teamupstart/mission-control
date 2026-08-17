@@ -151,3 +151,10 @@ SDK idleness replace provider completion.
   Control dispatches to prebind the same future run.
 - 2026-08-17: preserved terminal child-session binding for old rows. Removing it in the identity
   phase would strand tasks persisted before the new field is populated at launch.
+- 2026-08-17: implementation confirmed the existing resource join already accepts a child that
+  matches a prebound link and refuses a mismatched child. No TaskManager lifecycle rewrite was
+  needed, and Phase 2 must continue treating that join as a terminal-only legacy fallback.
+- 2026-08-17: provider worktree collision checking now precedes binary resolution, while the
+  Registry ownership check and durable prebind are synchronous immediately before terminal
+  spawn. This preserves the downstream assumption that Phase 2 can reuse one host-independent
+  ownership boundary.

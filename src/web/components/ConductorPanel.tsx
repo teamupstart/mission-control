@@ -284,6 +284,38 @@ export function ConductorPanel({ state }: { state: ConductorState }): React.JSX.
           </ConsoleState>
         </ConsoleCard>
 
+        <ConsoleCard
+          title="Foreman triage"
+          anchor="conductor/foreman-triage"
+          action={
+            <ConsoleSwitch
+              label="Triage mechanical pipeline halts"
+              tooltip={
+                config?.foremanMechanicalTriage
+                  ? "On - Foreman may unpark mechanical halts through conductor's action route. Click to stop."
+                  : "Off - every halt stays with the operator. Click to let Foreman unpark mechanical halts only."
+              }
+              checked={config?.foremanMechanicalTriage ?? false}
+              disabled={!config}
+              tone="ok"
+              onChange={(next) => {
+                if (config) void save({ ...config, foremanMechanicalTriage: next });
+              }}
+            />
+          }
+        >
+          <p className="settings-hint">
+            Off by default. Foreman may act only when conductor classifies a halt as
+            mechanical. Needs-human, protected-artifact, legacy, unclassified, and unknown
+            classes always stay in the operator's Attention inbox.
+          </p>
+          <ConsoleState tone={config?.foremanMechanicalTriage ? "attention" : "off"}>
+            {config?.foremanMechanicalTriage
+              ? "On - mechanical halts may be unparked automatically."
+              : "Off - Foreman does not act on pipeline halts."}
+          </ConsoleState>
+        </ConsoleCard>
+
         <ConsoleCard title="Repositories" anchor="conductor/repos">
           <p className="settings-hint">
             Every repository the engine says it manages. Listing one here is configuration;

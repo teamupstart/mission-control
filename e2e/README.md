@@ -60,6 +60,25 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   | tee e2e/.artifacts/dispatch-restart-recovery/focused-playwright-transcript.txt
 ```
 
+### Native worktree dispatch and reuse
+
+`e2e/.artifacts/native-worktree-dispatch/` carries the task card before cleanup and after a
+released slot is reused. The spec dispatches a multi-repo task through the dashboard, proves the
+daemon persisted one native lease per repository, keeps a concurrent task on a distinct slot,
+cancels through the visible task action, and proves a later dispatch reuses only the returned
+directories with fresh lease IDs.
+
+Regenerate the frames and transcript with:
+
+```sh
+mkdir -p e2e/.artifacts/native-worktree-dispatch
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/native-worktree-dispatch.spec.ts \
+  --workers=1 --reporter=list \
+  | tee e2e/.artifacts/native-worktree-dispatch/focused-playwright-transcript.txt
+```
+
 ### Scout prompt context reader
 
 `e2e/.artifacts/scout-prompt-context/` holds the five frames from the finished-scout flow:
@@ -1297,10 +1316,9 @@ on the fake so that regression is caught rather than invoiced.
 | `MISSION_WORKSPACE_DIRS` | repo discovery sees only the seeded fixture repo |
 | `MISSION_CLAUDE_BIN` / `CODEX` / `PI` | every agent launch hits a fake |
 | `MISSION_GH_BIN` | every `gh` call hits a fake. Not about cost: `gh issue create` **publishes** to a repository other people watch, and on a machine where `gh` is signed in an unfaked binary would file a real issue on every run of the push spec |
-| `MISSION_POOL_REAP_MS=0` | the pool sweep is **not** scoped by `MISSION_HOME` - it reaps the shared treehouse worktree pool and will delete a sibling checkout's work |
 | `MISSION_POLL_MS=0` | terminal discovery is **not** scoped either - it walks every process on the machine and cards anything that looks like an agent |
 
-Those last two matter most and are the least obvious. Without `MISSION_POLL_MS=0` a daemon
+That last setting matters most and is the least obvious. Without `MISSION_POLL_MS=0` a daemon
 booted on a developer's laptop adopts their real running sessions: the fleet count is
 non-deterministic against CI where there are none, and the dashboard's Kill and Reset
 controls act on live work.

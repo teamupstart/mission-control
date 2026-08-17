@@ -53,6 +53,8 @@ export interface GuidedOption {
    * opinion about what a choice MEANS that the form does not already have.
    */
   commit: () => void;
+  /** Optional kind-owned move when later questions do not apply to this launch owner. */
+  advance?: (pass: GuidedPass) => GuidedPass;
 }
 
 /** What an answered rung reads. */

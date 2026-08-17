@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { parse } from "jsonc-parser";
 
 const INSTALLER = join(import.meta.dirname, "..", "hooks", "install.mjs");
+const { transientCheckoutRoot } = await import("../hooks/install-checks.mjs");
 const MARKER = "harness-hook.mjs";
 const STATUSLINE_MARKER = "harness-statusline.mjs";
 // Under tsx, because that is the installer's real entry point (`npm run install-hooks`)
@@ -376,10 +377,10 @@ test("an install leaves the skills directory exactly as it found it", () => {
  * child modules load by their realpaths, which is fine, because only the entry
  * point's own location feeds the guard and the baked script path.
  */
-function fakePoolInstaller(dir: string): string {
+function fakePoolInstaller(dir: string, marker = "treehouse-state.json"): string {
   const repo = join(dir, "pool", "7", "repo");
   mkdirSync(join(repo, "hooks"), { recursive: true });
-  writeFileSync(join(dir, "pool", "treehouse-state.json"), "{}\n");
+  writeFileSync(join(dir, "pool", marker), "{}\n");
   const checkout = join(import.meta.dirname, "..");
   for (const f of ["install.mjs", "install-checks.mjs"]) {
     symlinkSync(join(checkout, "hooks", f), join(repo, "hooks", f), "file");
@@ -405,23 +406,50 @@ function runFromFakePool(settingsPath: string, installer: string, args: string[]
   });
 }
 
-test("refuses to install from a checkout inside a treehouse pool", () => {
-  withTempSettings(USER_SETTINGS, (path) => {
-    const installer = fakePoolInstaller(join(path, ".."));
-    const before = readFileSync(path, "utf8");
-    let refusal: (Error & { status?: number; stderr?: string }) | null = null;
-    try {
-      runFromFakePool(path, installer);
-    } catch (err) {
-      refusal = err as Error & { status?: number; stderr?: string };
-    }
-    assert.ok(refusal, "installer must exit non-zero from a pool checkout");
-    assert.equal(refusal.status, 1);
-    assert.match(String(refusal.stderr), /treehouse worktree pool/);
-    assert.match(String(refusal.stderr), /--force/, "the refusal names its own override");
-    assert.equal(readFileSync(path, "utf8"), before, "a refused install writes nothing");
-  });
+test("transient checkout detection recognizes native, legacy, nested, and durable roots", () => {
+  const dir = mkdtempSync(join(tmpdir(), "mission-transient-checkout-"));
+  try {
+    const native = join(dir, "native");
+    const legacy = join(dir, "legacy");
+    const durable = join(dir, "durable");
+    mkdirSync(join(native, "slot", "repo"), { recursive: true });
+    mkdirSync(join(legacy, "7", "repo"), { recursive: true });
+    mkdirSync(durable, { recursive: true });
+    writeFileSync(join(native, ".mission-control-worktree-pool"), "{}\n");
+    writeFileSync(join(legacy, "treehouse-state.json"), "{}\n");
+    assert.deepEqual(transientCheckoutRoot(join(native, "slot", "repo")), {
+      root: native,
+      reason: "native Mission Control worktree pool",
+    });
+    assert.deepEqual(transientCheckoutRoot(join(legacy, "7", "repo")), {
+      root: legacy,
+      reason: "legacy Treehouse worktree pool",
+    });
+    assert.equal(transientCheckoutRoot(durable), null);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
+
+for (const marker of ["treehouse-state.json", ".mission-control-worktree-pool"]) {
+  test(`refuses to install from a transient checkout marked by ${marker}`, () => {
+    withTempSettings(USER_SETTINGS, (path) => {
+      const installer = fakePoolInstaller(join(path, ".."), marker);
+      const before = readFileSync(path, "utf8");
+      let refusal: (Error & { status?: number; stderr?: string }) | null = null;
+      try {
+        runFromFakePool(path, installer);
+      } catch (err) {
+        refusal = err as Error & { status?: number; stderr?: string };
+      }
+      assert.ok(refusal, "installer must exit non-zero from a pool checkout");
+      assert.equal(refusal.status, 1);
+      assert.match(String(refusal.stderr), /transient pooled checkout/);
+      assert.match(String(refusal.stderr), /--force/, "the refusal names its own override");
+      assert.equal(readFileSync(path, "utf8"), before, "a refused install writes nothing");
+    });
+  });
+}
 
 test("--force overrides the guard, and --uninstall never needs it", () => {
   withTempSettings(USER_SETTINGS, (path) => {

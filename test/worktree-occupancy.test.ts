@@ -189,6 +189,32 @@ test("a failed or timed-out process read is unknown, never empty", async () => {
   assert.deepEqual(cwdFailure.get(one), { status: "unknown", reason: "lsof failed" });
 });
 
+test("a failed cwd read is empty only after every original process is proven gone", async () => {
+  const { one } = fixture();
+  let processReads = 0;
+  const result = await inspectWorktreeOccupancy([one], {
+    listProcesses: async () => {
+      processReads++;
+      return processReads === 1
+        ? {
+            processes: [process(10)],
+            unknownReason: null,
+            cwdScopePids: [10],
+            completedCollectorPids: [],
+          }
+        : {
+            processes: [],
+            unknownReason: null,
+            cwdScopePids: [],
+            completedCollectorPids: [],
+          };
+    },
+    readCwds: async () => ({ cwds: new Map(), unknownReason: "cwd listing failed: exit 1" }),
+  });
+  assert.equal(processReads, 2);
+  assert.deepEqual(result.get(one), { status: "known", occupants: [] });
+});
+
 test("an oversized occupancy request fails closed without spawning system reads", async () => {
   let processReads = 0;
   const paths = Array.from({ length: 257 }, (_, index) => `/tmp/native-slot-${index}`);

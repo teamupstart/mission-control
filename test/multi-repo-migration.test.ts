@@ -108,13 +108,23 @@ test("a pre-feature database still opens, and gains the multi-repo schema", () =
     d.prepare(`PRAGMA table_info(tasks)`).all() as unknown as Array<{ name: string }>
   ).map((c) => c.name);
   assert.ok(taskColumns.includes("base_sha"), "the additive primary-baseline column is added");
+  assert.ok(taskColumns.includes("worktree_lease_id"), "the additive primary lease column is added");
 
   const repoColumns = (
     d.prepare(`PRAGMA table_info(task_repos)`).all() as unknown as Array<{ name: string }>
   ).map((c) => c.name);
   assert.deepEqual(
     repoColumns.sort(),
-    ["base_sha", "branch", "position", "provider", "repo_root", "task_id", "worktree_path"],
+    [
+      "base_sha",
+      "branch",
+      "position",
+      "provider",
+      "repo_root",
+      "task_id",
+      "worktree_lease_id",
+      "worktree_path",
+    ],
     "task_repos arrives with exactly the columns later phases were promised",
   );
 });
@@ -130,6 +140,7 @@ test("the task that was already there loads, as a single-repo task", () => {
   // Null, not "": nothing recorded where this branch was cut, and that is a different
   // answer from "it was cut at no commit". Every later rule reads it as unknown.
   assert.equal(t.baseSha, null);
+  assert.equal(t.worktreeLeaseId, null);
   // An ARRAY on a row written before the table existed - the field a consumer iterates.
   assert.deepEqual(t.extraRepos, []);
   assert.deepEqual(
@@ -145,12 +156,15 @@ test("attaching repos to that task writes, reads back in order, and deletes with
   upsertTask({
     ...t,
     baseSha: "a".repeat(40),
+    provider: "mission",
+    worktreeLeaseId: "lease-primary",
     extraRepos: [
       {
         repoRoot: "/other",
         worktreePath: "/wt/before-multi-repo-1",
         branch: "harness/thing-abc123",
-        provider: "git",
+        provider: "mission",
+        worktreeLeaseId: "lease-secondary",
         baseSha: "b".repeat(40),
         prUrl: null,
         prState: null,
@@ -161,6 +175,7 @@ test("attaching repos to that task writes, reads back in order, and deletes with
         worktreePath: "/wt/before-multi-repo-2",
         branch: "harness/thing-abc123",
         provider: "treehouse",
+        worktreeLeaseId: null,
         baseSha: "c".repeat(40),
         prUrl: null,
         prState: null,
@@ -171,11 +186,18 @@ test("attaching repos to that task writes, reads back in order, and deletes with
 
   const reloaded = getTask("before-multi-repo");
   assert.equal(reloaded?.baseSha, "a".repeat(40));
+  assert.equal(reloaded?.worktreeLeaseId, "lease-primary");
   assert.deepEqual(
-    reloaded?.extraRepos.map((e) => [e.repoRoot, e.worktreePath, e.provider, e.baseSha]),
+    reloaded?.extraRepos.map((e) => [
+      e.repoRoot,
+      e.worktreePath,
+      e.provider,
+      e.worktreeLeaseId,
+      e.baseSha,
+    ]),
     [
-      ["/other", "/wt/before-multi-repo-1", "git", "b".repeat(40)],
-      ["/third", "/wt/before-multi-repo-2", "treehouse", "c".repeat(40)],
+      ["/other", "/wt/before-multi-repo-1", "mission", "lease-secondary", "b".repeat(40)],
+      ["/third", "/wt/before-multi-repo-2", "treehouse", null, "c".repeat(40)],
     ],
     "entries come back in position order, which is their provisioning slot",
   );

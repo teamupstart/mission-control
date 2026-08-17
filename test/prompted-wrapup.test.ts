@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import {
   PromptedFailureTracker,
   decidePromptedWrapup,
-  promptedEvidenceAdvanced,
   planPromptedWrapup,
 } from "../src/server/foreman/prompted-wrapup.ts";
 import type { PromptedConfig, PromptedInput } from "../src/server/foreman/prompted-wrapup.ts";
@@ -89,6 +88,13 @@ function mkSession(over: Partial<Session> = {}): Session {
     lastSeen: NOW,
     // Settled well past settleMs by default, so a test opts INTO un-settled.
     lastActivity: NOW - 60_000,
+    workCycle: {
+      logicalKey: "agent-1",
+      generation: 1,
+      active: false,
+      completedAt: NOW - 60_000,
+      updatedAt: NOW - 60_000,
+    },
     pendingReviews: 0,
     task: null,
     prUrl: null,
@@ -120,6 +126,8 @@ function mkQueue(over: Partial<SessionQueue> = {}): SessionQueue {
     promptedGoal: null,
     promptedEvidence: null,
     promptedActivityAt: null,
+    promptedLegacyCutoverGeneration: null,
+    promptedConsumedGeneration: null,
     updatedAt: 0,
     items: [],
     ...over,
@@ -350,13 +358,11 @@ test("the direct shipping payload is one line", () => {
   assert.ok(!/[\r\n]/.test(WRAPUP_PR));
 });
 
-test("THE RE-ARM: the same goal is decided once; a new prompt arms it again", () => {
-  const done = mkQueue({ promptedGoal: "intent:1:1" });
-  assert.equal(decide({ queue: done }).kind, "skip", "already handled this prompt");
+test("THE RE-ARM: consumption is per completed work cycle, not per intent revision", () => {
+  const done = mkQueue({ promptedConsumedGeneration: 1 });
+  assert.equal(decide({ queue: done }).kind, "skip", "already handled this work cycle");
 
-  // The human types something else. Note the trigger re-arms on the PROMPT changing,
-  // which is the only thing that moves when a person acts.
-  const next = decide({
+  const revisedIntentOnly = decide({
     queue: done,
     intent: mkIntent({
       prompt: "now add metrics",
@@ -368,84 +374,86 @@ test("THE RE-ARM: the same goal is decided once; a new prompt arms it again", ()
       resolvedPromptRevision: 2,
     }),
   });
-  assert.equal(next.kind, "check");
-  assert.equal(next.kind === "check" && next.episodeKey, "intent:2:2");
-  assert.equal(next.kind === "check" && next.objective, `${GOAL} and add metrics`);
+  assert.equal(revisedIntentOnly.kind, "skip", "intent alone cannot manufacture a new turn");
+
+  const laterCycle = decide({
+    queue: done,
+    session: mkSession({
+      workCycle: {
+        logicalKey: "agent-1",
+        generation: 2,
+        active: false,
+        completedAt: NOW - 10_000,
+        updatedAt: NOW - 10_000,
+      },
+    }),
+  });
+  assert.equal(laterCycle.kind, "check");
+  assert.equal(laterCycle.kind === "check" && laterCycle.generation, 2);
+  assert.equal(laterCycle.kind === "check" && laterCycle.episodeKey, "intent:1:1");
 });
 
-test("THE RE-ARM: the same human goal waits for durable completion evidence to advance", () => {
-  const handled = "a".repeat(64);
-  const queue = mkQueue({
-    promptedGoal: "intent:1:1",
-    promptedEvidence: handled,
-    promptedActivityAt: NOW - 30_000,
-    // The verifier persisted after the next Stop had already arrived. `updatedAt`
-    // therefore cannot be the re-arm watermark.
-    updatedAt: NOW,
-  });
+test("missing, active, or mismatched work-cycle state fails closed", () => {
+  assert.equal(decide({ session: mkSession({ workCycle: undefined }) }).kind, "skip");
   assert.equal(
-    decide({ queue }).kind,
+    decide({
+      session: mkSession({ workCycle: { logicalKey: "agent-1", generation: 1, active: true, completedAt: NOW - 20_000, updatedAt: NOW } }),
+    }).kind,
     "skip",
-    "the already-observed Stop must not gather evidence on every idle tick",
-  );
-
-  const laterStop = decide({
-    queue,
-    session: mkSession({ lastActivity: NOW - 10_000 }),
-  });
-  assert.equal(
-    laterStop.kind,
-    "check",
-    "a Stop arriving during verification must remain armed after that verifier writes",
-  );
-  if (laterStop.kind !== "check") return;
-  assert.equal(laterStop.previousEvidenceMarker, handled);
-  assert.equal(
-    promptedEvidenceAdvanced(laterStop, handled),
-    false,
-    "activity alone must not spend another verifier call",
   );
   assert.equal(
-    promptedEvidenceAdvanced(laterStop, "b".repeat(64)),
-    true,
-    "a later Stop with a newer HEAD or transcript anchor re-arms verification once",
+    decide({
+      session: mkSession({ workCycle: { logicalKey: "other", generation: 1, active: false, completedAt: NOW - 20_000, updatedAt: NOW } }),
+    }).kind,
+    "skip",
   );
 });
 
-test("a legacy prompt-only guard stays spent until a human prompt changes", () => {
+test("legacy intent and evidence fields are not an active fallback trigger", () => {
   assert.equal(
     decide({
       queue: mkQueue({
         promptedGoal: "intent:1:1",
         promptedEvidence: null,
         promptedActivityAt: null,
+        promptedConsumedGeneration: null,
       }),
     }).kind,
-    "skip",
-  );
-
-  const markerOnlyFromOlderDaemon = {
-    ...mkQueue({
-      promptedGoal: "intent:1:1",
-      promptedEvidence: "a".repeat(64),
-    }),
-    promptedActivityAt: undefined,
-  } as unknown as SessionQueue;
-  assert.equal(
-    decide({ queue: markerOnlyFromOlderDaemon }).kind,
-    "skip",
-    "a new worker must keep an older daemon's marker-only guard spent",
+    "check",
   );
 });
 
-test("the re-arm key is the intent revision, NOT the card's display sentence", () => {
-  // Rewording the compact card text must not produce another completion episode. Only the
-  // durable objective/prompt revision pair is allowed to re-arm it.
+test("an ambiguous legacy cutover blocks only its recorded work-cycle generation", () => {
+  const retired = mkQueue({
+    promptedGoal: "intent:1:1",
+    promptedLegacyCutoverGeneration: 1,
+  });
+  assert.equal(decide({ queue: retired }).kind, "skip");
+
+  const next = decide({
+    queue: retired,
+    session: mkSession({
+      workCycle: {
+        logicalKey: "agent-1",
+        generation: 2,
+        active: false,
+        completedAt: NOW - 10_000,
+        updatedAt: NOW - 10_000,
+      },
+    }),
+  });
+  assert.equal(next.kind, "check");
+  assert.equal(next.kind === "check" && next.generation, 2);
+});
+
+test("the card's display sentence cannot re-arm a consumed work cycle", () => {
+  // Rewording compact presentation state must not produce another completion opportunity.
+  // Only a later completed lifecycle generation can do that.
   const rewritten = mkSession({ goal: { text: "COMPLETELY DIFFERENT", source: "model", updatedAt: NOW } });
   assert.equal(
-    decide({ session: rewritten, queue: mkQueue({ promptedGoal: "intent:1:1" }) }).kind,
+    decide({ session: rewritten, queue: mkQueue({ promptedConsumedGeneration: 1 }) }).kind,
     "skip",
-    "the sentence moved but the prompt did not",
+    "the sentence moved but the work cycle did not",
   );
 });
 
@@ -540,48 +548,46 @@ test("a needs-you session is selected ONCE, by the needs-you half", () => {
 
 test("PromptedFailureTracker: strikes accumulate and the cap ends the episode", () => {
   const t = new PromptedFailureTracker();
-  assert.equal(t.gaveUp("s1", GOAL), false, "a fresh episode is armed");
+  assert.equal(t.gaveUp("agent-1", 1), false, "a fresh generation is armed");
 
   for (let n = 1; n < VERIFY_FAILURE_CAP; n++) {
-    assert.equal(t.onFailure("s1", GOAL), n);
-    assert.equal(t.gaveUp("s1", GOAL), false, `still retrying at ${n} strikes`);
+    assert.equal(t.onFailure("agent-1", 1), n);
+    assert.equal(t.gaveUp("agent-1", 1), false, `still retrying at ${n} strikes`);
   }
-  assert.equal(t.onFailure("s1", GOAL), VERIFY_FAILURE_CAP);
-  assert.equal(t.gaveUp("s1", GOAL), true, "at the cap Foreman gives up");
+  assert.equal(t.onFailure("agent-1", 1), VERIFY_FAILURE_CAP);
+  assert.equal(t.gaveUp("agent-1", 1), true, "at the cap Foreman gives up");
 });
 
-test("PromptedFailureTracker: a NEW human prompt re-arms a given-up episode", () => {
-  // The whole re-arm contract. Strikes belong to an episode, not to a session: a human
-  // who types something new is owed a fresh attempt, however badly the last one went.
+test("PromptedFailureTracker: a later generation gets a fresh bounded counter", () => {
   const t = new PromptedFailureTracker();
-  for (let n = 0; n < VERIFY_FAILURE_CAP; n++) t.onFailure("s1", GOAL);
-  assert.equal(t.gaveUp("s1", GOAL), true);
+  for (let n = 0; n < VERIFY_FAILURE_CAP; n++) t.onFailure("agent-1", 1);
+  assert.equal(t.gaveUp("agent-1", 1), true);
 
-  assert.equal(t.gaveUp("s1", "something else entirely"), false, "a new goal is a new episode");
-  assert.equal(t.strikes("s1", "something else entirely"), 0);
+  assert.equal(t.gaveUp("agent-1", 2), false, "a new work cycle is a new retry unit");
+  assert.equal(t.strikes("agent-1", 2), 0);
 });
 
 test("PromptedFailureTracker: only a RETIRE clears the strikes, not a mere verdict", () => {
   // This is the bug the cap exists to catch. A tick that verifies fine but fails to
-  // stamp `promptedGoal` has made no progress: the episode is still armed, so the next
+  // consume the generation has made no progress: the cycle is still armed, so the next
   // tick pays for the whole evidence gather and another `claude -p`. If a successful
   // verdict cleared the count, that loop would reset it every pass and never be bounded.
   const t = new PromptedFailureTracker();
   for (let n = 0; n < VERIFY_FAILURE_CAP; n++) {
     // Each pass: the verifier answers, then the retire stamp fails. Only the failure is
     // recorded, because only the retire is progress.
-    t.onFailure("s1", GOAL);
+    t.onFailure("agent-1", 1);
   }
-  assert.equal(t.gaveUp("s1", GOAL), true, "a persistently failing retire stamp IS bounded");
+  assert.equal(t.gaveUp("agent-1", 1), true, "a persistently failing consume write IS bounded");
 
-  t.onRetired("s1");
-  assert.equal(t.strikes("s1", GOAL), 0, "retiring the episode is what forgets the strikes");
-  assert.equal(t.gaveUp("s1", GOAL), false);
+  t.onConsumed("agent-1");
+  assert.equal(t.strikes("agent-1", 1), 0, "consuming the generation forgets the strikes");
+  assert.equal(t.gaveUp("agent-1", 1), false);
 });
 
-test("PromptedFailureTracker: strikes are per session", () => {
+test("PromptedFailureTracker: strikes are per logical session", () => {
   const t = new PromptedFailureTracker();
-  for (let n = 0; n < VERIFY_FAILURE_CAP; n++) t.onFailure("s1", GOAL);
-  assert.equal(t.gaveUp("s1", GOAL), true);
-  assert.equal(t.gaveUp("s2", GOAL), false, "one session's broken episode strands no other");
+  for (let n = 0; n < VERIFY_FAILURE_CAP; n++) t.onFailure("agent-1", 1);
+  assert.equal(t.gaveUp("agent-1", 1), true);
+  assert.equal(t.gaveUp("agent-2", 1), false, "one session's broken cycle strands no other");
 });

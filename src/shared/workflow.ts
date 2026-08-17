@@ -2566,10 +2566,10 @@ export function formatCheckCommand(argv: readonly string[]): string {
 
 export interface WorkflowCompletionClaim {
   completionKind: WorkflowCompletionKind;
-  /** SHA-256 of the worker's proof episode, never raw prompt or diff text. */
+  /** SHA-256 of the worker's proof boundary, never raw prompt or diff text. */
   marker: string;
-  /** Prompted session activity observed with this proof; null for drain completions. */
-  activityAt: number | null;
+  /** Completed lifecycle generation consumed by prompted claims; null for drain. */
+  expectedWorkCycle: { logicalKey: string; generation: number } | null;
   summary: string;
   evidenceFingerprint: string;
   expectedIntent: SessionIntentGuard | null;

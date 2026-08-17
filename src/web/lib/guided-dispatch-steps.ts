@@ -210,6 +210,7 @@ export const GUIDED_KIND_KEYS: Record<TaskKind, string> = {
   ship: "p",
   scout: "t",
   plan: "l",
+  pipeline: "e",
   chat: "c",
 };
 

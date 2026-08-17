@@ -282,6 +282,7 @@ const CAPTURE_KIND: Record<TaskKind, ArchiveKind | null> = {
   ship: null,
   scout: "scout",
   plan: "plan",
+  pipeline: null,
   chat: null,
 };
 

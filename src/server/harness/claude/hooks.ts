@@ -1,5 +1,5 @@
 import type { HookIngest } from "@shared/protocol.ts";
-import type { HookReading, HookSpec } from "../types.ts";
+import type { HookReading, HookSpec, WorkCycleSignal } from "../types.ts";
 import { substantivePrompt } from "./scaffolding.ts";
 
 // Claude Code's hook vocabulary: which events it fires, and what each one means.
@@ -117,6 +117,22 @@ function toState(evt: HookIngest): HookReading {
   }
 }
 
+/** Claude hook vocabulary to the generic work-cycle lifecycle. */
+function workCycleSignal(evt: HookIngest): WorkCycleSignal | null {
+  switch (evt.event) {
+    case "UserPromptSubmit":
+    case "PreToolUse":
+    case "PostToolUse":
+    case "SubagentStop":
+    case "PreCompact":
+      return "work_started";
+    case "Stop":
+      return "turn_completed";
+    default:
+      return null;
+  }
+}
+
 /**
  * The human's ask, when the event is the one that carries one.
  *
@@ -137,5 +153,6 @@ export const claudeHooks: HookSpec = {
   events: EVENTS,
   matcherEvents: MATCHER_EVENTS,
   toState,
+  workCycleSignal,
   promptText,
 };

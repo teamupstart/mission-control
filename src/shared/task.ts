@@ -6,7 +6,8 @@
 // Priority and labels are OPTIONAL and default to nothing: `priority: null` and
 // `labels: []`. Nothing in the product infers either one - a task carries a priority
 // because a human or a task source said so, never because we guessed from its text.
-// Kind is not optional; every task is a ship, scout, plan or chat, and `ship` is the default.
+// Kind is not optional; every task names one registered launch contract, and `ship` is the
+// default.
 
 import { DEFAULT_TASK_KIND, TASK_KINDS } from "./types.ts";
 import type { Session, Task, TaskKind, TaskPriority } from "./types.ts";
@@ -73,12 +74,74 @@ export const TASK_KIND_INFO: Record<TaskKind, TaskKindInfo> = {
     blurb: "Produce a reviewed plan, and optionally schedule the work. No diff, so no after-work.",
     purpose: "produce a reviewed plan",
   },
+  pipeline: {
+    label: "pipeline",
+    blurb: "Start conductor's SDLC pipeline. Conductor owns its worktree and PR; no after-work.",
+    purpose: "run a conductor pipeline",
+  },
   chat: {
     label: "chat",
     blurb: "Talk with an agent without a planned artifact. No after-work.",
     purpose: "have an open-ended conversation",
   },
 };
+
+/** The launch and scheduling rules every surface must apply to a task kind. */
+export interface TaskKindBehavior {
+  /** Which repository catalog may offer this kind. */
+  repoAvailability: "workspace" | "pipeline-enabled";
+  /** Who owns the launched process and runtime choices. */
+  launch: "harness" | "pipeline-terminal";
+  /** Whether Foreman's backlog loop may pick this kind unattended. */
+  autopilot: boolean;
+  /** A short, operator-facing explanation of non-default launch constraints. */
+  constraint: string | null;
+}
+
+/**
+ * Behaviour stays registry-driven so every picker and autonomous path gains a new kind only
+ * after answering the same three questions: where it is available, who launches it, and
+ * whether Foreman may schedule it.
+ */
+export const TASK_KIND_BEHAVIOR: Record<TaskKind, TaskKindBehavior> = {
+  ship: {
+    repoAvailability: "workspace",
+    launch: "harness",
+    autopilot: true,
+    constraint: null,
+  },
+  scout: {
+    repoAvailability: "workspace",
+    launch: "harness",
+    autopilot: true,
+    constraint: null,
+  },
+  plan: {
+    repoAvailability: "workspace",
+    launch: "harness",
+    autopilot: true,
+    constraint: null,
+  },
+  pipeline: {
+    repoAvailability: "pipeline-enabled",
+    launch: "pipeline-terminal",
+    autopilot: false,
+    constraint:
+      "Pipeline tasks always launch conductor in a real terminal because it reads stdin and refuses nested SDK sessions. " +
+      "Conductor owns its agent, model, and effort; attached repos, after-work workflows, and backlog autopilot do not apply.",
+  },
+  chat: {
+    repoAvailability: "workspace",
+    launch: "harness",
+    autopilot: false,
+    constraint: null,
+  },
+};
+
+/** Whether Foreman's unattended backlog loop may schedule this kind. */
+export function allowsBacklogAutopilot(kind: TaskKind): boolean {
+  return TASK_KIND_BEHAVIOR[kind].autopilot;
+}
 
 /**
  * Whether a kind sets out to produce a diff worth reviewing.
@@ -99,6 +162,7 @@ const KIND_PRODUCES_A_DIFF: Record<TaskKind, boolean> = {
   ship: true,
   scout: false,
   plan: false,
+  pipeline: false,
   chat: false,
 };
 
@@ -118,6 +182,7 @@ const KIND_ALLOWS_BACKLOG: Record<TaskKind, boolean> = {
   ship: true,
   scout: true,
   plan: true,
+  pipeline: true,
   chat: false,
 };
 

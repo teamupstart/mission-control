@@ -115,7 +115,7 @@ test("an idle SDK session remains idle on the Board and outside the working coun
   await expect(idle).toBeVisible();
   await expect(idle.locator(".board-col-n")).toHaveText("1");
   await expect(idle.locator(".tile")).toHaveCount(1);
-  await expect(idle.locator(".tile")).toContainText("idle");
+  await expect(idle.locator(".tile")).toContainText("Prove an Idle SDK Restore Stays Idle");
   await expect(dashboard.locator("section.board-col.tone-working")).toHaveCount(0);
 
   const boardEvidence = process.env.MC_E2E_EVIDENCE

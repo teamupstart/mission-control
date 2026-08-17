@@ -39,6 +39,9 @@ import {
   runRounds,
   selectedSubmission,
   stageStatus,
+  spentInspectorGateCondition,
+  spentInspectorGateStatus,
+  inspectorGateSentence,
   submissionRoundLabel,
   submissionStatus,
 } from "../src/web/workflows/run-model.ts";
@@ -110,6 +113,89 @@ const detail = (
   run: { status: "running" },
   ...overrides,
 } as unknown as WorkflowRunDetail);
+
+interface SpentGateShape {
+  historicalStatus?: "open" | "resolved";
+  extraOpenFinding?: boolean;
+  observedHead?: string | null;
+  reviewedHead?: string | null;
+  observedState?: "OPEN" | "CLOSED" | "MERGED" | null;
+  reviewPosture?: "live" | "dry-run" | "off" | "not-allowlisted" | null;
+  currentPosture?: "live" | "dry-run" | "off" | "not-allowlisted" | null;
+  lastError?: string | null;
+  missingInspection?: boolean;
+  omitHistoricalRow?: boolean;
+  tallyOffset?: number;
+  latestMode?: "full_workflow" | "inspector_only";
+  status?: "blocked" | "waiting_for_new_head";
+}
+
+const spentGateDetail = (shape: SpentGateShape = {}): WorkflowRunDetail => {
+  const historicalStatus = shape.historicalStatus ?? "resolved";
+  const findings = [
+    ...(shape.omitHistoricalRow ? [] : [{
+      id: "historical",
+      prKey: "owner/repo#91",
+      fingerprint: "historical-fingerprint",
+      title: "Historical workflow finding",
+      status: historicalStatus,
+    }]),
+    ...(shape.extraOpenFinding ? [{
+      id: "current",
+      prKey: "owner/repo#91",
+      fingerprint: "current-fingerprint",
+      title: "Current Inspector finding",
+      status: "open",
+    }] : []),
+  ];
+  const openFindings = findings.filter((finding) => finding.status !== "resolved").length;
+  const resolvedFindings = findings.length - openFindings;
+  const observedHead = shape.observedHead === undefined ? "current-head-123456789" : shape.observedHead;
+  const reviewedHead = shape.reviewedHead === undefined ? observedHead : shape.reviewedHead;
+  const status = shape.status ?? "blocked";
+  return detail([
+    submission("spent", 4, { mode: shape.latestMode ?? "inspector_only" }),
+  ], [], {
+    summary: {
+      round: 4,
+      maxRepairRounds: 3,
+      gate: "blocked",
+      gatePrNumber: 91,
+    },
+    run: { status, currentPhase: "round_limit" },
+    inspectorGate: {
+      state: {
+        prKey: "owner/repo#91",
+        prUrl: "https://github.com/owner/repo/pull/91",
+        targetHeadSha: "failed-head-123456789",
+        failedHeadSha: "failed-head-123456789",
+        enteredAt: 8,
+        lastObservedAt: 9,
+        observedHeadSha: "failed-head-123456789",
+        reviewPosture: "live",
+        waitReason: "findings",
+        findingFingerprints: ["historical-fingerprint"],
+      },
+      inspector: {
+        enabled: true,
+        mode: "live",
+        posture: shape.currentPosture === undefined ? "live" : shape.currentPosture,
+      },
+      inspection: shape.missingInspection ? null : {
+        key: "owner/repo#91",
+        state: "open",
+        observedState: shape.observedState === undefined ? "OPEN" : shape.observedState,
+        observedHeadSha: observedHead,
+        headSha: reviewedHead,
+        reviewPosture: shape.reviewPosture === undefined ? "live" : shape.reviewPosture,
+        lastError: shape.lastError ?? null,
+        openFindings: openFindings + (shape.tallyOffset ?? 0),
+        resolvedFindings,
+      },
+      findings,
+    },
+  } as unknown as Partial<WorkflowRunDetail>);
+};
 
 test("an unknown or absent round falls back to the newest one", () => {
   const rounds = [submission("s1", 1), submission("s2", 2)];
@@ -615,6 +701,60 @@ test("every gate wait reason has a sentence, and a satisfied gate says so", () =
     assert.doesNotMatch(text, /_/, `${reason}'s sentence still reads as a code`);
   }
   assert.match(gateWaitSentence(null), /has reviewed/);
+});
+
+test("a spent Inspector gate reconciles historical findings with current exact-head truth", () => {
+  const clean = spentGateDetail();
+  assert.deepEqual(spentInspectorGateCondition(clean), {
+    kind: "clean_exact_head",
+    headSha: "current-head-123456789",
+  });
+  assert.deepEqual(spentInspectorGateStatus(clean), {
+    tone: "waiting",
+    label: "Clean head ready",
+  });
+  assert.match(inspectorGateSentence(clean), /exact open pull-request head current-head/);
+  assert.match(inspectorGateSentence(clean), /workflow remains stopped until you adopt it/i);
+
+  assert.deepEqual(
+    spentInspectorGateCondition(spentGateDetail({ historicalStatus: "open" })),
+    {
+      kind: "historical_findings_open",
+      currentOpenFindings: 1,
+      historicalOpenFindings: 1,
+    },
+  );
+  assert.deepEqual(
+    spentInspectorGateCondition(spentGateDetail({ extraOpenFinding: true })),
+    { kind: "current_findings_open", currentOpenFindings: 1 },
+  );
+  assert.deepEqual(
+    spentInspectorGateCondition(spentGateDetail({ reviewedHead: null })),
+    { kind: "awaiting_current_review", observedHeadSha: "current-head-123456789" },
+  );
+});
+
+test("a spent Inspector gate fails closed on unavailable or inconsistent current evidence", () => {
+  const cases: Array<[string, SpentGateShape, string]> = [
+    ["missing inspection", { missingInspection: true }, "missing_inspection"],
+    ["closed observation", { observedState: "CLOSED" }, "pull_request_closed"],
+    ["missing observed head", { observedHead: null, reviewedHead: null }, "missing_observation"],
+    ["mismatched reviewed head", { reviewedHead: "older-head" }, "head_mismatch"],
+    ["non-live review", { reviewPosture: "dry-run" }, "review_not_live"],
+    ["non-live current posture", { currentPosture: "off" }, "review_not_live"],
+    ["review error", { lastError: "provider failed" }, "review_error"],
+    ["missing historical row", { omitHistoricalRow: true }, "finding_ledger_inconsistent"],
+    ["contradictory tallies", { tallyOffset: 1 }, "finding_ledger_inconsistent"],
+  ];
+  for (const [label, shape, problem] of cases) {
+    assert.deepEqual(
+      spentInspectorGateCondition(spentGateDetail(shape)),
+      { kind: "evidence_unavailable", problem },
+      label,
+    );
+  }
+  assert.equal(spentInspectorGateCondition(spentGateDetail({ latestMode: "full_workflow" })), null);
+  assert.equal(spentInspectorGateCondition(spentGateDetail({ status: "waiting_for_new_head" })), null);
 });
 
 test("a durable error becomes a sentence and keeps its code beside it", () => {

@@ -81,7 +81,7 @@ export function LibraryPropertyChip({
    * chip is a way of REACHING a control, so validation, accessible names and change
    * semantics stay exactly where they were.
    */
-  children?: React.ReactNode;
+  children?: React.ReactNode | ((close: () => void) => React.ReactNode);
 }): React.JSX.Element {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -99,6 +99,9 @@ export function LibraryPropertyChip({
     tone ? `is-${tone}` : "",
     align === "end" ? "is-trailing" : "",
   ].filter(Boolean).join(" ");
+  const popoverChildren = typeof children === "function"
+    ? children(() => setOpen(false))
+    : children;
 
   const face = (
     <>
@@ -146,7 +149,7 @@ export function LibraryPropertyChip({
           aria-label={controlLabel}
           tabIndex={-1}
         >
-          {children}
+          {popoverChildren}
         </div>
       )}
     </div>

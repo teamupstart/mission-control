@@ -110,7 +110,7 @@ of them have merged.
 A workflow is a versioned, durable process composed from persona, check, and session-action
 nodes, with recovery and a visible run history.
 
-## [Worktree / treehouse](worktrees-and-checks.md#isolated-worktrees-per-session-treehouse)
+## [Worktree](worktrees-and-checks.md#isolated-worktrees)
 
-A worktree is the isolated Git checkout assigned to a session or check. Treehouse is the
-pooled-worktree tool Mission Control uses when a repository has it available.
+A worktree is the isolated Git checkout assigned to a task, check, or manual session. Mission
+Control owns native, durable pools and can fall back to disposable Git worktrees.

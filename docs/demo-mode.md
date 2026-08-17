@@ -43,10 +43,10 @@ itself never reaches a model: `MISSION_CLAUDE_BIN`/`MISSION_CODEX_BIN`/`MISSION_
 at the scenario players installed under `~/.mission-control-demo/bin/`, and
 `ANTHROPIC_API_KEY` is blanked in the daemon's env as a second line of defense.
 
-Two sweeps that are not scoped to `MISSION_HOME` are switched off unconditionally
-(`MISSION_POLL_MS=0`, `MISSION_POOL_REAP_MS=0`) - without them the demo daemon would walk
-every process on the machine and adopt the operator's real sessions, Kill/Reset buttons
-included, or reap a shared treehouse worktree pool it does not own. With discovery off, the
+Global terminal discovery is switched off unconditionally (`MISSION_POLL_MS=0`). Without it the
+demo daemon would walk every process on the machine and adopt the operator's real sessions,
+Kill/Reset buttons included. Native worktree maintenance is scoped to the demo's disposable
+`MISSION_HOME`. With discovery off, the
 demo fleet is SDK-runtime sessions only: the launcher flips `claude`/`codex` to `sdk` through
 `PUT /api/harnesses/config`, the same route the Settings panel uses.
 

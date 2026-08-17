@@ -12,6 +12,7 @@ import type {
 } from "@shared/types.ts";
 import type { TaskDependencyInput, UpdateTask } from "@shared/protocol.ts";
 import type { TaskSourceRef } from "@shared/task-source.ts";
+import type { PipelineRun } from "@shared/pipeline.ts";
 import { isAnnotationOnlyUpdate } from "@shared/protocol.ts";
 import { capabilitiesFor, supportsEffort } from "@shared/harness-capabilities.ts";
 import { canMessage } from "@shared/pane.ts";
@@ -26,6 +27,8 @@ import {
   teardownWorktree,
   type TaskDispatchOptions,
 } from "./dispatcher.ts";
+import { WorktreeManager } from "./worktrees/manager.ts";
+import { LegacyTreehouseService } from "./worktrees/legacy-treehouse.ts";
 import {
   branchReleasedByReset,
   injectPrompt,
@@ -63,6 +66,7 @@ import {
   freezeScoutPromptBoundary,
 } from "./scouts/prompt-journal.ts";
 import { withTaskKindContract } from "./task-contract.ts";
+import { TASK_KIND_BEHAVIOR } from "@shared/task.ts";
 
 /**
  * What a SATISFIED quorum records as the task's outcome: every pull request that landed, in
@@ -96,7 +100,7 @@ import { stopSession } from "./sdk/control.ts";
 import { renameDriverSession } from "./sdk/rename.ts";
 import { summariseTaskTitle } from "./task-title.ts";
 import { resolveTaskWorkflowId } from "./workflows/config.ts";
-import { canonicalPath } from "./pool-lease.ts";
+import { canonicalWorktreePath } from "./worktrees/path.ts";
 
 export interface CreateTaskInput {
   repoRoot: string;
@@ -198,7 +202,7 @@ export const INTERRUPTED_CHAT_BEFORE_PROVISION_ERROR =
   "Chat dispatch was interrupted before a worktree or agent was created. Launch a new chat from Dispatch.";
 
 export interface TaskManagerStartupDeps {
-  /** Injectable only so startup cleanup ordering can be exercised without a real pool. */
+  /** Injectable only so startup cleanup ordering can be exercised without real providers. */
   teardown?: typeof teardownWorktree;
 }
 
@@ -211,9 +215,8 @@ interface StartupCleanupJob {
 /**
  * Starts at most one reconciliation touching a given repository.
  *
- * The pool lock is the final serializer, but bounding work before it reaches that lock is
- * what prevents startup from enqueuing every historical return ahead of new acquisition.
- * Jobs touching disjoint repositories may still progress together.
+ * Bounding work per repository prevents restart recovery from issuing a same-repository
+ * cleanup convoy all at once. Jobs touching disjoint repositories may still progress together.
  */
 class StartupCleanupQueue {
   private pending: StartupCleanupJob[] = [];
@@ -248,10 +251,10 @@ class StartupCleanupQueue {
   }
 }
 
-/** Every repository whose cleanup one task can reach, in the pool lock's key space. */
+/** Every repository whose cleanup one task can reach, in the queue's canonical key space. */
 function startupCleanupRepoKeys(task: Task): string[] {
   return [...new Set(
-    [task.repoRoot, ...task.extraRepos.map((entry) => entry.repoRoot)].map(canonicalPath),
+    [task.repoRoot, ...task.extraRepos.map((entry) => entry.repoRoot)].map(canonicalWorktreePath),
   )];
 }
 
@@ -483,6 +486,8 @@ function describeResetLoss(c: AssignResetConfirm): string {
  */
 export class TaskManager {
   private dispatcher: Dispatcher;
+  private readonly worktrees: WorktreeManager;
+  private readonly legacyWorktrees: LegacyTreehouseService;
   /**
    * In-flight titling runs, by task id.
    *
@@ -532,10 +537,16 @@ export class TaskManager {
      */
     private archives?: TaskArchiveGate,
     private startupDeps: TaskManagerStartupDeps = {},
+    worktrees?: WorktreeManager,
+    legacyWorktrees?: LegacyTreehouseService,
   ) {
+    this.worktrees = worktrees ?? new WorktreeManager();
+    this.legacyWorktrees = legacyWorktrees ?? new LegacyTreehouseService();
     this.dispatcher = new Dispatcher(registry, undefined, {
       supervisor,
       workflowEvidenceEnabled: (task) => this.workflowEvidenceEnabledForTask(task),
+      worktrees: this.worktrees,
+      legacy: this.legacyWorktrees,
     });
     // A restart severs the in-flight dispatch promises but leaves worktrees + terminal
     // homes on disk. Reconcile every task that still holds resources by checking
@@ -593,6 +604,7 @@ export class TaskManager {
       // `settleIfEpisodeFinished`.
       if (e.type === "session_upsert") {
         this.rebindTaskAtCwd(e.session);
+        this.bindPipelineTask(e.session);
         this.settleIfEpisodeFinished(e.session);
         this.reopenIfWorkResumed(e.session);
         // And the rows no session can settle: a terminal task whose pull request has since
@@ -618,6 +630,83 @@ export class TaskManager {
     // And the periodic backstop for the tasks that announcement cannot reach: whatever the
     // by-URL poller recorded this tick. No timer of its own - the poller's tick is it.
     registry.onPrMergesRecorded(() => this.reconcileMergedTasks());
+    // A pipeline task belongs to the provider run rather than to any one child agent.
+    // The provider projection is therefore its durable completion authority, including
+    // the boot-time restore of a run that finished while Mission Control was down.
+    registry.onPipelineRun((run) => this.settlePipelineTask(run));
+  }
+
+  /** Persist the strong terminal-home plus projected-worktree join for a pipeline task. */
+  private bindPipelineTask(session: Session): void {
+    const link = session.pipeline;
+    if (!link || session.state === "exited") return;
+    try {
+      const task = this.registry.taskResourceOwnerForSession(
+        session.id,
+        undefined,
+        (candidate) =>
+          candidate.kind === "pipeline" &&
+          (candidate.status === "running" || candidate.status === "dispatching"),
+      );
+      if (!task || task.repoRoot !== link.repoRoot) return;
+
+      if (task.pipelineRun === null) {
+        this.registry.upsertTask({
+          ...task,
+          pipelineRun: {
+            provider: link.provider,
+            repoRoot: link.repoRoot,
+            slug: link.slug,
+          },
+          updatedAt: Date.now(),
+        });
+      } else if (
+        task.pipelineRun.provider !== link.provider ||
+        task.pipelineRun.repoRoot !== link.repoRoot ||
+        task.pipelineRun.slug !== link.slug
+      ) {
+        // One terminal home cannot be reassigned from a proven run by a later child session.
+        return;
+      }
+
+      const run = this.registry.listPipelineRuns().find(
+        (candidate) =>
+          candidate.provider === link.provider &&
+          candidate.repoRoot === link.repoRoot &&
+          candidate.slug === link.slug,
+      );
+      if (run) this.settlePipelineTask(run);
+    } catch (error) {
+      // Session discovery must survive a persistence failure. The next discovery frame or
+      // projection update retries the same idempotent join.
+      console.warn("[tasks] could not bind pipeline task:", error);
+    }
+  }
+
+  /** Settle every live task durably correlated with a provider-completed run. */
+  private settlePipelineTask(run: PipelineRun): void {
+    if (run.group !== "processed") return;
+    for (const task of this.registry.listTasks()) {
+      if (
+        task.kind !== "pipeline" ||
+        (task.status !== "running" && task.status !== "dispatching") ||
+        task.pipelineRun?.provider !== run.provider ||
+        task.pipelineRun.repoRoot !== run.repoRoot ||
+        task.pipelineRun.slug !== run.slug
+      ) {
+        continue;
+      }
+      this.completeInBackground(task.id, {
+        outcome: run.prUrl ? `pipeline opened ${run.prUrl}` : `pipeline processed ${run.slug}`,
+        outcomeUrl: run.prUrl ?? undefined,
+        // A provider finishing or opening its pull request concludes this run, but it is not
+        // evidence that the pull request merged. Declared dependencies retain the ordinary
+        // merge-only satisfaction rule.
+        satisfyDependents: false,
+        requireStopped: false,
+        inferredFrom: null,
+      });
+    }
   }
 
   /** Install the daemon's immutable workflow-graph eligibility reader after both owners exist. */
@@ -1507,10 +1596,14 @@ export class TaskManager {
       // selected workflow's current immutable version there.
       workflowId,
       source: input.source ?? null,
+      // Learned only after a child agent appears inside the provider's projected worktree.
+      // The terminal launch itself has no slug to persist yet.
+      pipelineRun: null,
       repoRoot: input.repoRoot,
       worktreePath: null,
       branch: null,
       provider: null,
+      worktreeLeaseId: null,
       baseSha: null,
       // Already resolved and validated by the caller (the route), exactly as `repoRoot` is.
       // Recorded at creation so a backlog task carries its full repo set before anything is
@@ -1521,6 +1614,7 @@ export class TaskManager {
         worktreePath: null,
         branch: null,
         provider: null,
+        worktreeLeaseId: null,
         baseSha: null,
         prUrl: null,
         prState: null,
@@ -1734,6 +1828,7 @@ export class TaskManager {
             worktreePath: null,
             branch: null,
             provider: null,
+            worktreeLeaseId: null,
             baseSha: null,
             prUrl: null,
             prState: null,
@@ -1935,6 +2030,16 @@ export class TaskManager {
     }
     if (!taskKindAllowsBacklog(t.kind)) {
       return { ok: false, error: TASK_KIND_BACKLOG_REFUSAL, scope: "task" };
+    }
+    // Provider-owned tasks need the provider's own terminal launch. Handing one to an
+    // existing harness session would bypass that launch and type an engine idea into an
+    // agent, which is a different operation with no engine run behind it.
+    if (TASK_KIND_BEHAVIOR[t.kind].launch !== "harness") {
+      return {
+        ok: false,
+        error: `${t.title} must be dispatched so its pipeline provider can open the terminal session`,
+        scope: "task",
+      };
     }
     // Multi-repo tasks are DISPATCH-ONLY, and this is where that is enforced for every
     // caller - the board's drag, Foreman's autopilot, the HTTP route.
@@ -2566,7 +2671,7 @@ export class TaskManager {
       // created during the stop/capture awaits. teardownWorktree also closes the terminal
       // home if it survived the direct stop above.
       const teardownTarget = this.registry.getTask(id) ?? t;
-      await teardownWorktree(teardownTarget);
+      await teardownWorktree(teardownTarget, this.legacyWorktrees, "foreground", this.worktrees);
     } catch (error) {
       teardownError = error instanceof Error ? error.message : String(error);
       reclaimed = reclaimedFrom(error);
@@ -2582,8 +2687,8 @@ export class TaskManager {
       // Per TREE, not per teardown. `teardownWorktree` attempts every one of a task's trees
       // even after an earlier one fails, so "the teardown failed" no longer means "nothing
       // came back": clearing the whole collection would have the row forget trees that are
-      // still standing, and keeping it would have `poolPins` go on sparing trees that are
-      // already back in their pools. `releasedTaskResources` splits it on what was reclaimed.
+      // still standing, and keeping it would leave rows naming trees already released.
+      // `releasedTaskResources` splits it on what was reclaimed.
       ...releasedTaskResources(cur, reclaimed),
       homeName: teardownError === null ? null : cur.homeName,
       terminalResourceId: teardownError === null ? null : cur.terminalResourceId,
@@ -2918,7 +3023,7 @@ export class TaskManager {
       if (t.worktreePath || t.homeName) {
         try {
           const current = this.registry.getTask(id) ?? t;
-          await teardownWorktree(current);
+          await teardownWorktree(current, this.legacyWorktrees, "foreground", this.worktrees);
         } catch (error) {
           const partial = this.registry.getTask(id) ?? t;
           this.registry.upsertTask({
@@ -2949,6 +3054,7 @@ export class TaskManager {
         homeName: null,
         terminalResourceId: null,
         sessionId: null,
+        pipelineRun: null,
         outcome: null,
         outcomeUrl: null,
         error: null,
@@ -2986,7 +3092,7 @@ export class TaskManager {
     this.autoCompleted.delete(id);
     try {
       const current = this.registry.getTask(id) ?? t;
-      await teardownWorktree(current);
+      await teardownWorktree(current, this.legacyWorktrees, "foreground", this.worktrees);
     } catch (error) {
       // A partial reclaim still releases what came back. The refusal stands - the operator
       // is told the reclaim failed, and the trees still standing keep their record so a
@@ -3038,7 +3144,7 @@ export class TaskManager {
     // reclaim it so removing the record never leaks a worktree/lease.
     if (t.worktreePath || t.homeName) {
       try {
-        await teardownWorktree(t);
+        await teardownWorktree(t, this.legacyWorktrees, "foreground", this.worktrees);
       } catch (error) {
         // The row survives a failed remove, so the same partial-release rule applies to it.
         const partial = this.registry.getTask(id) ?? t;
@@ -3145,6 +3251,25 @@ export class TaskManager {
       }
       return; // resource-holding tasks stay loaded; live sessions re-bind by cwd
     }
+    // A completion authority may have moved the row while the terminal probe awaited. The
+    // pipeline projection is one such authority during boot restore. Re-read before cleanup
+    // so its `done` result is preserved instead of being overwritten from the startup
+    // snapshot as a failed task.
+    const currentAfterProbe = this.registry.getTask(t.id);
+    if (!currentAfterProbe) return;
+    if (
+      currentAfterProbe.dispatchedAt !== t.dispatchedAt ||
+      currentAfterProbe.worktreePath !== t.worktreePath ||
+      currentAfterProbe.homeName !== t.homeName ||
+      currentAfterProbe.terminalResourceId !== t.terminalResourceId ||
+      currentAfterProbe.sessionId !== t.sessionId ||
+      JSON.stringify(currentAfterProbe.extraRepos) !== JSON.stringify(t.extraRepos)
+    ) {
+      // Reschedule or re-dispatch replaced the launch while this probe was in flight. Its
+      // resources belong to a different attempt and this startup job has no claim on them.
+      return;
+    }
+    t = currentAfterProbe;
     // The agent is gone - reclaim its worktree. Terminal tasks keep their status and outcome.
     //
     // This is the startup half of cleanup safety, and the one the exit listener cannot reach:
@@ -3164,7 +3289,9 @@ export class TaskManager {
       return;
     }
     try {
-      await (this.startupDeps.teardown ?? teardownWorktree)(t, undefined, "background");
+      const teardown = this.startupDeps.teardown ?? ((target, legacy, priority) =>
+        teardownWorktree(target, legacy ?? this.legacyWorktrees, priority, this.worktrees));
+      await teardown(t, this.legacyWorktrees, "background");
     } catch (error) {
       const now = Date.now();
       this.registry.upsertTask({

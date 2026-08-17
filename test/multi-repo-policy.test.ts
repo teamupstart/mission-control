@@ -22,6 +22,7 @@ function entry(repoRoot: string): TaskRepoEntry {
     worktreePath: null,
     branch: null,
     provider: null,
+    worktreeLeaseId: null,
     baseSha: null,
     prUrl: null,
     prState: null,

@@ -18,6 +18,7 @@ import {
   MAX_LABELS,
   PRIORITY_LABELS,
   TASK_KIND_INFO,
+  TASK_KIND_BEHAVIOR,
   TASK_PRIORITIES,
   hasReviewableDiff,
   taskKindAllowsBacklog,
@@ -33,6 +34,7 @@ import {
   api,
   fetchEnvironmentChecks,
   fetchHarnessesConfig,
+  fetchPipelineRepos,
   fetchRepos,
   fetchTaskSources,
 } from "../lib/api.ts";
@@ -742,6 +744,7 @@ function DispatchModal({
   const backlogCompatible = taskKindAllowsBacklog(draft.kind);
   const [repos, setRepos] = useState<string[]>([]);
   const [reposLoading, setReposLoading] = useState(true);
+  const [pipelineRepos, setPipelineRepos] = useState<Set<string>>(new Set());
   // The attach-a-repo control is a two-step (open, then pick) rather than a combobox that
   // is always mounted: an empty repo picker sitting under the primary on every dispatch
   // would read as a second required field. Local rather than drafted - a half-typed path
@@ -986,14 +989,28 @@ function DispatchModal({
         (workflow) => workflow.id === workflowConfig.defaultWorkflowId,
       ) ?? null
     : null;
-  const selectedWorkflowBlocked = Boolean(
+  const kindBehavior = TASK_KIND_BEHAVIOR[draft.kind];
+  const usesHarness = kindBehavior.launch === "harness";
+  const kindAvailable = (kind: TaskKind): boolean => {
+    const behavior = TASK_KIND_BEHAVIOR[kind];
+    return behavior.repoAvailability === "workspace" || pipelineRepos.has(draft.repoRoot.trim());
+  };
+  const kindUnavailable =
+    !availableTaskKinds.includes(draft.kind) || !kindAvailable(draft.kind);
+  const offeredKinds = TASK_KINDS.filter(
+    (kind) =>
+      kind === draft.kind ||
+      (availableTaskKinds.includes(kind) && kindAvailable(kind)),
+  );
+  const selectedWorkflowBlocked = usesHarness && Boolean(
     selectedWorkflowId
     && (!foremanEnabled || !capabilitiesFor(draft.agent).workQueue),
   );
   // Whether this harness can hold write access outside its cwd. Read through
   // `capabilitiesFor`, which is the browser-safe door to the same record the daemon reads,
   // so the control that is offered and the request that is accepted cannot disagree.
-  const multiRepoSupported = capabilitiesFor(draft.agent).multiRepoDispatch !== null;
+  const multiRepoSupported =
+    usesHarness && capabilitiesFor(draft.agent).multiRepoDispatch !== null;
   // The control is absent in ENSEMBLE mode: an ensemble is N sessions over ONE repo, and
   // running one across several is deliberately out of scope for this release. The draft is
   // shared between the two modes, so the attachments are kept rather than cleared - flipping
@@ -1095,6 +1112,28 @@ function DispatchModal({
   function updateDependencies(dependencies: DispatchDraft["dependencies"]): void {
     stashedDependencies.current = NO_STASH;
     update({ dependencies });
+  }
+
+  /**
+   * Everything a kind transition owns, shared by the select and the guided question.
+   *
+   * Pipeline is a single-repository provider launch. Repositories attached to a harness
+   * task cannot cross that boundary, so selecting pipeline removes them at the moment the
+   * form changes shape instead of leaving Dispatch enabled for a request the daemon refuses.
+   */
+  function selectKind(kind: TaskKind): void {
+    if (kind !== draft.kind && TASK_KIND_BEHAVIOR[kind].launch === "pipeline-terminal") {
+      setAddingRepo(false);
+      setAddRepoValue("");
+    }
+    update({
+      kind,
+      ...afterWorkForKind(kind),
+      ...dependenciesForKind(kind),
+      ...(kind !== draft.kind && TASK_KIND_BEHAVIOR[kind].launch === "pipeline-terminal"
+        ? { extraRepoRoots: [] }
+        : {}),
+    });
   }
 
   /**
@@ -1219,18 +1258,25 @@ function DispatchModal({
     // and arrows through it, so a second list here would be a copy of a control the operator is
     // already looking at. See `answeredBy` on the step.
     repo: [],
-    kind: availableTaskKinds.map((k) => ({
+    kind: availableTaskKinds.filter(kindAvailable).map((k) => ({
       value: k,
       label: TASK_KIND_INFO[k].label,
       sub: TASK_KIND_INFO[k].blurb,
       hotkey: GUIDED_KIND_KEYS[k],
-      // Byte-identical to the Kind `<select>`'s own handler, including both reversible
-      // kind-dependent stashes. The pass must never become a second meaning for Kind.
-      commit: () => update({
-        kind: k,
-        ...afterWorkForKind(k),
-        ...dependenciesForKind(k),
-      }),
+      // Byte-identical to the Kind `<select>`'s own handler, `afterWorkForKind` and all.
+      // Workflow, dependency, and provider-launch transitions have one implementation,
+      // so the guided pass cannot become a second meaning for Kind.
+      commit: () => selectKind(k),
+      // A provider-owned launch has no harness or after-work choice. Advance through those
+      // registry-inapplicable questions while preserving the ordinary guided state machine.
+      advance: (current) => {
+        let next = answerGuidedStep(current);
+        if (TASK_KIND_BEHAVIOR[k].launch === "pipeline-terminal") {
+          next = answerGuidedStep(next);
+          next = answerGuidedStep(next);
+        }
+        return next;
+      },
     })),
     harness: AGENT_TYPES.map((a) => ({
       value: a,
@@ -1283,7 +1329,7 @@ function DispatchModal({
     const option = guidedList[index];
     if (!option) return false;
     option.commit();
-    setPass(answerGuidedStep(pass));
+    setPass(option.advance?.(pass) ?? answerGuidedStep(pass));
     setHighlight(null);
     return true;
   }
@@ -1590,6 +1636,10 @@ function DispatchModal({
       setRepos(list);
       setReposLoading(false);
     });
+    void fetchPipelineRepos().then((answer) => {
+      if (!alive) return;
+      setPipelineRepos(new Set((answer?.repos ?? []).map((repo) => repo.repoRoot)));
+    });
     void workflowRequest<WorkflowConfig>("/api/workflows/config")
       .then((config) => {
         if (alive) setWorkflowConfig(config);
@@ -1777,6 +1827,7 @@ function DispatchModal({
       busy ||
       drop.uploading ||
       repoSetBlocked ||
+      kindUnavailable ||
       (launchesNow && selectedWorkflowBlocked) ||
       Boolean(editing && dispatchNow && selectedDependenciesUnmet) ||
       (!backlogCompatible &&
@@ -2317,6 +2368,7 @@ function DispatchModal({
                     <select
                       className="field-input"
                       value={draft.agent}
+                      disabled={!usesHarness}
                       // Switching harness drops model and effort overrides with it: neither
                       // selection is portable across harnesses. Back to the defaults, which are
                       // per-agent and always right for the harness now chosen.
@@ -2353,18 +2405,21 @@ function DispatchModal({
                     onChange={(e) => {
                       const kind = e.target.value as TaskKind;
                       if (guidedTakeValue("kind", kind)) return;
-                      update({
-                        kind,
-                        ...afterWorkForKind(kind),
-                        ...dependenciesForKind(kind),
-                      });
+                      selectKind(kind);
                     }}
                   >
                     {/* Driven off the tuple for the reason the harness select above it is:
                         a hand-written pair goes stale silently, and the array's order is
                         the order every surface that offers the choice lists it in. */}
-                    {availableTaskKinds.map((k) => (
-                      <option key={k} value={k}>
+                    {offeredKinds.map((k) => (
+                      <option
+                        key={k}
+                        value={k}
+                        disabled={
+                          (!availableTaskKinds.includes(k) || !kindAvailable(k)) &&
+                          k !== draft.kind
+                        }
+                      >
                         {TASK_KIND_INFO[k].label}
                       </option>
                     ))}
@@ -2379,6 +2434,7 @@ function DispatchModal({
                 <select
                   className="field-input"
                   value={draft.model}
+                  disabled={!usesHarness}
                   onChange={(e) => update({ model: e.target.value })}
                 >
                 <option value="">
@@ -2403,6 +2459,7 @@ function DispatchModal({
                 <select
                   className="field-input"
                   value={draft.effort}
+                  disabled={!usesHarness}
                   onChange={(e) => update({ effort: e.target.value as ThinkingLevel | "" })}
                   aria-label={`Effort for dispatched ${AGENT_IDENTITY[draft.agent].label} session`}
                 >
@@ -2419,8 +2476,15 @@ function DispatchModal({
             </label>
           </div>
           <span className={`field-hint dispatch-crew-hint${guidedDim}`}>
-            Defaults from Settings → Harnesses. Switching agent resets the model and effort overrides.
+            {usesHarness
+              ? "Defaults from Settings → Harnesses. Switching agent resets the model and effort overrides."
+              : kindBehavior.constraint}
           </span>
+          {kindUnavailable && (
+            <span className={`dispatch-workflow-warning${guidedDim}`}>
+              This kind is available only when conductor is enabled for the selected repository.
+            </span>
+          )}
         </div>
 
         {/* The completion handoff is a first-class dispatch choice, not backlog metadata:
@@ -2444,6 +2508,7 @@ function DispatchModal({
             <Tooltip label={AFTER_WORK_FIELD_TIP}>
               <select
                 className="field-input"
+                disabled={!usesHarness}
                 value={
                   draft.workflowId === undefined
                     ? "__default"
@@ -2751,6 +2816,7 @@ function DispatchModal({
                 || !draft.repoRoot.trim()
                 || !draft.intent.trim()
                 || repoSetBlocked
+                || kindUnavailable
               }
             >
             {editing
@@ -2804,6 +2870,7 @@ function DispatchModal({
                 !draft.repoRoot.trim() ||
                 !draft.intent.trim() ||
                 repoSetBlocked ||
+                kindUnavailable ||
                 (selectedWorkflowBlocked && !selectedDependenciesUnmet) ||
                 Boolean(editing && selectedDependenciesUnmet)
               }

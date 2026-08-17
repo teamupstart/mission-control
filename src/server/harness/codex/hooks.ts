@@ -1,5 +1,5 @@
 import type { HookIngest } from "@shared/protocol.ts";
-import type { HookReading, HookSpec } from "../types.ts";
+import type { HookReading, HookSpec, WorkCycleSignal } from "../types.ts";
 
 export const CODEX_HOOK_EVENTS = [
   "SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PermissionRequest",
@@ -34,10 +34,29 @@ function toState(evt: HookIngest): HookReading {
   return { state: "working", activity: null };
 }
 
+/** Codex hook vocabulary to the generic work-cycle lifecycle. */
+function workCycleSignal(evt: HookIngest): WorkCycleSignal | null {
+  switch (evt.event) {
+    case "UserPromptSubmit":
+    case "PreToolUse":
+    case "PostToolUse":
+    case "PreCompact":
+    case "PostCompact":
+    case "SubagentStart":
+    case "SubagentStop":
+      return "work_started";
+    case "Stop":
+      return "turn_completed";
+    default:
+      return null;
+  }
+}
+
 export const codexHooks: HookSpec = {
   scope: "launch",
   events: CODEX_HOOK_EVENTS,
   matcherEvents: [],
   toState,
+  workCycleSignal,
   promptText: (evt) => evt.event === "UserPromptSubmit" && evt.prompt?.trim() ? evt.prompt.trim() : null,
 };

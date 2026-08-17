@@ -153,7 +153,7 @@ test("backlog edit, ensemble, schedules, and task sources do not offer chat", as
   const missions = dashboard.getByRole("dialog", { name: "Recurring missions" });
   await missions.getByRole("button", { name: "Create mission" }).click();
   expect(await options(missions.getByRole("combobox", { name: "Task kind" })))
-    .toEqual(["ship", "scout", "plan"]);
+    .toEqual(["ship", "scout", "plan", "pipeline"]);
   await missions.getByRole("button", { name: "Close" }).click();
 
   await api(daemon, "/api/task-sources/config", {
@@ -172,7 +172,7 @@ test("backlog edit, ensemble, schedules, and task sources do not offer chat", as
   await dashboard.goto(`${daemon.baseURL}/#/settings/task-sources`);
   const sourceKind = dashboard.getByRole("combobox", { name: "Kind", exact: true });
   await expect(sourceKind).toBeVisible();
-  expect(await options(sourceKind)).toEqual(["ship", "scout", "plan"]);
+  expect(await options(sourceKind)).toEqual(["ship", "scout", "plan", "pipeline"]);
 });
 
 test("a fake-agent chat survives idle and a later turn until Complete and close", async ({
@@ -263,9 +263,11 @@ test("a fake-agent chat survives idle and a later turn until Complete and close"
 
   await daemon.startForeman();
   await expect.poll(async () =>
-    (await api<{ promptedGoal: string | null }>(daemon, `/api/sessions/${session!.id}/queue`))
-      .promptedGoal,
-  { timeout: 40_000 }).not.toBeNull();
+    (await api<{ promptedConsumedGeneration: number | null }>(
+      daemon,
+      `/api/sessions/${session!.id}/queue`,
+    )).promptedConsumedGeneration ?? 0,
+  { timeout: 40_000 }).toBeGreaterThan(0);
   await expect.poll(async () =>
     (await api<Array<{ id: string; status: string; kind: string }>>(daemon, "/api/tasks"))
       .find((task) => task.kind === "chat")?.status ?? null,

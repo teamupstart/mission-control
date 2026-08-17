@@ -59,7 +59,7 @@ export interface PromptedInput {
   bucket: ReportBucket;
   /**
    * The FULL queue for this session's checkout, or null when it has none. The full
-   * one, not the card summary: this needs `promptedGoal`, which the summary omits.
+   * one, not the card summary: this needs the consumed generation, which the summary omits.
    */
   queue: SessionQueue | null;
   /** Full reconciled intent. The card summary deliberately omits its completion contract. */
@@ -72,46 +72,39 @@ export interface PromptedInput {
 export type PromptedCandidate =
   /** Not a candidate. `why` is for the log - every skip is explicable. */
   | { kind: "skip"; why: string }
-  /** A finished non-shipping episode to retire without verification or a wrap-up action. */
+  /** A finished non-shipping generation to consume without verification or a wrap-up action. */
   | {
       kind: "retire";
       episodeKey: string;
+      logicalKey: string;
+      generation: number;
       objective: string;
       objectiveVersion: number;
       promptRevision: number;
       why: string;
     }
   /**
-   * Worth verifying. Carries the goal both as the verifier's `intent` and as the
-   * episode key the result gets stamped under, so the two cannot come from different
-   * reads of a session that moved in between.
+   * Worth verifying. Carries both the verifier's intent guard and the completed
+   * generation, so neither can come from a different read of a session that moved.
    */
   | {
       kind: "check";
-      /** Opaque once-per-prompt guard. */
+      /** Independent intent staleness guard. */
       episodeKey: string;
+      /** Durable completed lifecycle identity consumed by every outcome. */
+      logicalKey: string;
+      generation: number;
       /** Durable completion contract. */
       objective: string;
       /** Latest steering instruction, never a replacement completion target. */
       focus: string | null;
       objectiveVersion: number;
       promptRevision: number;
-      /** Proof already handled for this intent, or null when the intent itself re-armed. */
-      previousEvidenceMarker: string | null;
     };
 
 export function promptedIntentKey(intent: SessionGoal): string {
   return resolvedSessionIntent(intent)?.episodeKey ??
     `intent:${intent.objectiveVersion}:${intent.promptRevision}`;
-}
-
-/** Whether this settled boundary is new enough to justify another verifier call. */
-export function promptedEvidenceAdvanced(
-  candidate: Extract<PromptedCandidate, { kind: "check" }>,
-  currentEvidenceMarker: string,
-): boolean {
-  return candidate.previousEvidenceMarker === null
-    || candidate.previousEvidenceMarker !== currentEvidenceMarker;
 }
 
 /**
@@ -206,6 +199,33 @@ export function decidePromptedWrapup(input: PromptedInput): PromptedCandidate {
   }
 
   const episodeKey = resolvedIntent.episodeKey;
+  const logicalKey = session.agentSessionId ?? session.id;
+  const cycle = session.workCycle;
+  if (
+    !cycle ||
+    cycle.logicalKey !== logicalKey ||
+    cycle.generation < 1 ||
+    cycle.active ||
+    cycle.completedAt === null
+  ) {
+    return { kind: "skip", why: "no completed work cycle is current for this session" };
+  }
+  if (
+    queue?.promptedConsumedGeneration != null &&
+    queue.promptedConsumedGeneration > cycle.generation
+  ) {
+    return { kind: "skip", why: "the prompted completion generation is inconsistent" };
+  }
+  if (queue?.promptedConsumedGeneration === cycle.generation) {
+    return { kind: "skip", why: "already handled this completed work cycle" };
+  }
+  if (
+    queue?.promptedLegacyCutoverGeneration != null &&
+    queue.promptedLegacyCutoverGeneration >= cycle.generation
+  ) {
+    return { kind: "skip", why: "the legacy prompted completion boundary is ambiguous" };
+  }
+
   // A scout or an explicit review-artifact objective is complete when its report or design
   // output is ready, not when it has become a PR. Retire the episode without spending a
   // verifier call: no verdict can make an ineligible completion safe to hand to a Workflow
@@ -218,12 +238,11 @@ export function decidePromptedWrapup(input: PromptedInput): PromptedCandidate {
     skipReviewArtifactWrapup: cfg.skipReviewArtifactWrapup,
   });
   if (block) {
-    if (queue?.promptedGoal === episodeKey) {
-      return { kind: "skip", why: "already retired this non-shipping prompt" };
-    }
     return {
       kind: "retire",
       episodeKey,
+      logicalKey,
+      generation: cycle.generation,
       objective,
       objectiveVersion: resolvedIntent.objectiveVersion,
       promptRevision: resolvedIntent.promptRevision,
@@ -231,42 +250,15 @@ export function decidePromptedWrapup(input: PromptedInput): PromptedCandidate {
     };
   }
 
-  // 10. THE RE-ARM. Human intent and completion evidence are independent axes. A newly
-  //     reconciled human prompt always advances the episode key. The same episode can also
-  //     resume through harness-owned input, notably Claude's `<task-notification>`, which is
-  //     correctly excluded from goal capture. The activity observed with the evidence is
-  //     the cheap watermark: do not gather HEAD + transcript again until a later hook moves
-  //     `lastActivity` past the boundary the verifier examined. This must not use the guard
-  //     write time because a newer Stop can arrive while the verifier is still running.
-  //     Even then, do not spend another verifier call unless the evidence marker advanced.
-  //
-  //     A non-null goal missing either evidence axis is a guard written by an older build.
-  //     Keep it spent until the human prompt changes; replaying every historical completion
-  //     once on upgrade would violate the exact-once guarantee these fields provide.
-  if (
-    queue?.promptedGoal === episodeKey
-    && (!queue.promptedEvidence || queue.promptedActivityAt == null)
-  ) {
-    return { kind: "skip", why: "already wrapped up this prompt" };
-  }
-  if (
-    queue?.promptedGoal === episodeKey
-    && queue.promptedEvidence
-    && queue.promptedActivityAt != null
-    && (session.lastActivity ?? session.firstSeen) <= queue.promptedActivityAt
-  ) {
-    return { kind: "skip", why: "no session activity since this completion boundary" };
-  }
-
   return {
     kind: "check",
     episodeKey,
+    logicalKey,
+    generation: cycle.generation,
     objective,
     focus: intent.prompt,
     objectiveVersion: resolvedIntent.objectiveVersion,
     promptRevision: resolvedIntent.promptRevision,
-    previousEvidenceMarker:
-      queue?.promptedGoal === episodeKey ? queue.promptedEvidence : null,
   };
 }
 
@@ -276,7 +268,7 @@ export type PromptedPlan =
   | { kind: "ask-wrapup"; goal: string }
   /** Complete, automated, and cleared to type. Carries the exact payload. */
   | { kind: "auto-wrapup"; goal: string; payload: string }
-  /** Not finished (or we could not tell). Type nothing; retire the episode. */
+  /** Not finished (or we could not tell). Type nothing; consume the generation. */
   | { kind: "hold"; goal: string; why: string };
 
 /**
@@ -289,11 +281,9 @@ export type PromptedPlan =
  * the way. Sending gap text into a session whose human is mid-thought would be Foreman
  * interrupting to relay a critique nobody asked for.
  *
- * `hold` still RETIRES the observed completion boundary (the caller stamps both
- * `promptedGoal` and `promptedEvidence`, same as a fire). The alternative is re-verifying
- * an idle session every tick forever. A later settled Stop for the same human intent first
- * crosses the cheap session-activity watermark and is eligible only when its HEAD +
- * transcript marker advances.
+ * `hold` still consumes the observed work-cycle generation, same as a fire. A later
+ * normalized completion advances that generation and creates one new opportunity even
+ * when human intent remains unchanged.
  */
 export function planPromptedWrapup(
   goal: string,
@@ -335,53 +325,53 @@ export function planPromptedWrapup(
 }
 
 /**
- * Consecutive FAILED ATTEMPTS per session, alongside the episode they belong to, and the
+ * Consecutive FAILED ATTEMPTS per logical session, alongside the generation they belong to, and the
  * cap that ends one. The queue path bounds the same thing with `failVerify` and the
  * item's durable `verifyFailures`; this path has no item to hold a count, so it keeps
  * one here - in memory, exactly like `ReviewFailureTracker`, and for the same reason: a
- * newly reconciled human prompt changes the intent episode key, which is precisely when
- * the strikes should reset.
+ * later completed work cycle advances the generation, which is precisely when the strikes
+ * should reset.
  *
  * WHAT COUNTS AS AN ATTEMPT is the load-bearing part, and it is deliberately wider than
- * "the verifier failed". An episode stays armed until `promptedGoal` is stamped, so the
- * two ways a tick can spend real work and leave the episode exactly where it found it
- * are a failed verify AND a failed retire stamp. Counting only the first bounds only the
- * cheaper loop: a daemon 500ing on the retire endpoint re-runs the whole evidence gather
+ * "the verifier failed". A generation stays armed until its compare-and-set consumption, so the
+ * two ways a tick can spend real work and leave the generation exactly where it found it
+ * are a failed verify AND a failed consume write. Counting only the first bounds only the
+ * cheaper loop: a daemon 500ing on the consume endpoint re-runs the whole evidence gather
  * plus a `claude -p` every tick, and a counter that reset on each successful verdict
  * would never see it. "This tick got nowhere" is the honest unit, and both failures are
- * that - which is why the count is cleared only by `onRetired`, the one event that makes
- * the next tick cheap (it is what `decidePromptedWrapup` step 10 reads to skip).
+ * that - which is why the count is cleared only by `onConsumed`, the one event that makes
+ * the next tick cheap.
  *
- * Keyed by SESSION with the episode key stored beside it rather than by session+episode,
+ * Keyed by LOGICAL SESSION with the generation stored beside it rather than by both,
  * so the re-arm falls out of the comparison instead of needing a sweep, and the map holds
- * one entry per session rather than one per episode ever seen.
+ * one entry per session rather than one per generation ever seen.
  */
 export class PromptedFailureTracker {
-  private bySession = new Map<string, { goal: string; failures: number }>();
+  private bySession = new Map<string, { generation: number; failures: number }>();
 
-  /** Strikes against THIS episode - a different goal is a different episode, hence zero. */
-  strikes(sessionId: string, goal: string): number {
-    const seen = this.bySession.get(sessionId);
-    return seen && seen.goal === goal ? seen.failures : 0;
+  /** Strikes against THIS lifecycle completion; a later generation starts at zero. */
+  strikes(logicalKey: string, generation: number): number {
+    const seen = this.bySession.get(logicalKey);
+    return seen && seen.generation === generation ? seen.failures : 0;
   }
 
   /** Record one attempt that got nowhere; answer how many in a row that makes. */
-  onFailure(sessionId: string, goal: string): number {
-    const failures = this.strikes(sessionId, goal) + 1;
-    this.bySession.set(sessionId, { goal, failures });
+  onFailure(logicalKey: string, generation: number): number {
+    const failures = this.strikes(logicalKey, generation) + 1;
+    this.bySession.set(logicalKey, { generation, failures });
     return failures;
   }
 
-  /** The episode is retired, so the next tick is cheap: forget the strikes. */
-  onRetired(sessionId: string): void {
-    this.bySession.delete(sessionId);
+  /** The generation is consumed, so the next tick is cheap: forget the strikes. */
+  onConsumed(logicalKey: string): void {
+    this.bySession.delete(logicalKey);
   }
 
   /**
-   * Has Foreman given up on this episode? Read BEFORE any evidence is gathered - a check
+   * Has Foreman given up on this generation? Read BEFORE any evidence is gathered - a check
    * further down the tick would still pay for the work the cap exists to prevent.
    */
-  gaveUp(sessionId: string, goal: string): boolean {
-    return this.strikes(sessionId, goal) >= VERIFY_FAILURE_CAP;
+  gaveUp(logicalKey: string, generation: number): boolean {
+    return this.strikes(logicalKey, generation) >= VERIFY_FAILURE_CAP;
   }
 }

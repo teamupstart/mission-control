@@ -1211,6 +1211,107 @@ test("the Inspector gate keeps its state, findings, actions, and bypass audit", 
   assertNoGraphIds(html);
 });
 
+test("a spent gate separates its historical observation from a clean current Inspector ledger", () => {
+  const base = runningDetail();
+  const currentHead = "cleanhead0123456789";
+  const failedHead = "failedhead0123456789";
+  const inspectorOnly = submission("submission-spent", 4, {
+    mode: "inspector_only",
+    prHeadSha: failedHead,
+    status: "completed",
+    completedAt: 8,
+  });
+  const html = render({
+    ...base,
+    summary: {
+      ...base.summary,
+      status: "blocked",
+      phase: "round_limit",
+      round: 4,
+      maxRepairRounds: 3,
+      gate: "blocked",
+      gatePrNumber: 91,
+      gateHeadShort: failedHead,
+      reviewPosture: "live",
+    },
+    version: {
+      ...version,
+      completionPolicy: {
+        kind: "inspector",
+        onFindings: "inspector_only",
+        missingPrAction: "offer_prepare_pr",
+      },
+    },
+    run: {
+      ...base.run,
+      status: "blocked",
+      currentPhase: "round_limit",
+      maxRepairRounds: 3,
+    },
+    submissions: [...base.submissions, inspectorOnly],
+    inspectorGate: {
+      state: {
+        prKey: "owner/repo#91",
+        prUrl: "https://github.com/owner/repo/pull/91",
+        targetHeadSha: failedHead,
+        failedHeadSha: failedHead,
+        enteredAt: 7,
+        lastObservedAt: 8,
+        observedHeadSha: failedHead,
+        reviewPosture: "live",
+        waitReason: "findings",
+        findingFingerprints: ["historical-fingerprint"],
+      },
+      inspector: { enabled: true, mode: "live", posture: "live" },
+      inspection: {
+        key: "owner/repo#91",
+        url: "https://github.com/owner/repo/pull/91",
+        number: 91,
+        source: "hook",
+        state: "open",
+        observedState: "OPEN",
+        observedHeadSha: currentHead,
+        headSha: currentHead,
+        reviewPosture: "live",
+        round: 5,
+        lastError: null,
+        nextAttemptAt: null,
+        openFindings: 0,
+        resolvedFindings: 1,
+      } as never,
+      findings: [{
+        id: "historical",
+        prKey: "owner/repo#91",
+        fingerprint: "historical-fingerprint",
+        path: "src/gate.ts",
+        line: 42,
+        title: "Historical workflow finding",
+        body: "This was the finding that stopped the workflow.",
+        severity: "major",
+        round: 3,
+        status: "resolved",
+        replies: 0,
+        answeredCommentId: null,
+        createdAt: 7,
+        updatedAt: 9,
+      }],
+    },
+  } as WorkflowRunDetail);
+
+  assert.match(html, /Last workflow observation/);
+  assert.match(html, /Current Inspector/);
+  assert.match(html, /Failed head/);
+  assert.match(html, /failedhead01/);
+  assert.match(html, /cleanhead012/);
+  assert.match(html, /Historical workflow finding/);
+  assert.match(html, /Historical findings<\/dt><dd>1/);
+  assert.match(html, /Open findings<\/dt><dd>0/);
+  assert.match(html, /Resolved findings<\/dt><dd>1/);
+  assert.match(html, /Clean head ready/);
+  assert.match(headerOf(html), /class="btn btn-primary"[^>]*>Adopt clean Inspector head</);
+  assert.doesNotMatch(html, /Recheck GitHub Inspector/);
+});
+
 test("scrubbing to an earlier round never withdraws a live recovery action", () => {
   // The reader's rule: what a ROUND says is scoped to the round, what the RUN offers is not.
   // With the live submission an Inspector-only repair and the run waiting on Inspector rather

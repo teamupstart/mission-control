@@ -144,6 +144,15 @@ export const SETTINGS_CATEGORIES = [
     keywords: ["agent", "model", "effort", "auto mode", "permission mode", "dispatch"],
   },
   {
+    id: "worktrees",
+    label: "Worktrees",
+    icon: "⑂",
+    blurb: "Checkout policy, native pool safety, and legacy drain",
+    group: "sessions",
+    scope: "machine",
+    keywords: ["pool", "worktree", "slot", "lease", "capacity", "prune", "treehouse", "cleanup"],
+  },
+  {
     id: "skills",
     label: "Skills",
     icon: "✦",

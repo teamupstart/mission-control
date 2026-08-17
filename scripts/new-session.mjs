@@ -1,82 +1,133 @@
 #!/usr/bin/env node
-// Start a new agent session in its own pre-warmed worktree.
+// Acquire and retain one daemon-owned native worktree for manual development.
 //
-// It leases a worktree from this repo's treehouse pool (creating one if the pool
-// is empty, up to max_trees), prepares it (warm deps), and then drops you
-// into it - so two agents never share one working tree, which is exactly the
-// clobbering this harness exists to watch for.
-//
-// Usage: node scripts/new-session.mjs [--holder <label>] [-- <command…>]
-//   (no command)     open your $SHELL in the worktree
-//   -- claude        launch an agent directly in the worktree
-//   --holder <label> record who holds the lease (default: this harness - the only
-//                    holder its leak sweep reclaims; pass your own to park a tree)
-//
-// The lease is durable: the worktree stays yours after you exit, so a
-// backgrounded agent keeps its tree. Release it later with:
-//   treehouse return <path>
+// Usage:
+//   node scripts/new-session.mjs [--label <text>] [-- <command...>]
+//   node scripts/new-session.mjs --return <lease-id>
+//   node scripts/new-session.mjs --return-lease <id>
 
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { execFileSync, spawnSync } from "node:child_process";
-import { LEASE_HOLDER } from "../src/shared/harness-runtime.mjs";
-import { have } from "./lib.mjs";
+import { spawnSync } from "node:child_process";
+import { BASE_URL } from "../src/shared/harness-runtime.mjs";
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), "..");
-
-// --- args -------------------------------------------------------------------
 const args = process.argv.slice(2);
-// The default is the harness's own lease identity, imported so this script and the
-// daemon's leak sweep (src/server/pool.ts) can never disagree about it: that label is
-// the only one the sweep reclaims, so a literal here that drifted from the gate's
-// would silently strand every lease this script takes. A lease recorded under any
-// other label is yours until you `treehouse return` it - which is what --holder is for.
-let holder = LEASE_HOLDER;
+let label;
+let returnLeaseId;
+let returnOption;
 let command = [];
+
 for (let i = 0; i < args.length; i++) {
-  if (args[i] === "--") {
+  const arg = args[i];
+  if (arg === "--") {
     command = args.slice(i + 1);
     break;
   }
-  if (args[i] === "--holder") {
-    holder = args[++i] ?? holder;
+  if (arg === "--label") {
+    label = args[++i];
+    if (!label) {
+      console.error("--label requires a value");
+      process.exit(2);
+    }
+    continue;
   }
+  if (arg === "--return") {
+    if (returnOption) {
+      console.error("choose either --return or --return-lease");
+      process.exit(2);
+    }
+    returnOption = arg;
+    returnLeaseId = args[++i];
+    if (!returnLeaseId) {
+      console.error("--return requires a lease ID");
+      process.exit(2);
+    }
+    continue;
+  }
+  if (arg === "--return-lease") {
+    if (returnOption) {
+      console.error("choose either --return or --return-lease");
+      process.exit(2);
+    }
+    returnOption = arg;
+    returnLeaseId = args[++i];
+    if (!returnLeaseId) {
+      console.error("--return-lease requires a lease ID");
+      process.exit(2);
+    }
+    continue;
+  }
+  console.error(`unknown argument: ${arg}`);
+  process.exit(2);
 }
 
-if (!have("treehouse")) {
-  console.error("treehouse is not installed. Run `make init` (or see https://github.com/kunchenguid/treehouse).");
+if (returnLeaseId && (label || command.length > 0)) {
+  console.error("return actions cannot also launch a session");
+  process.exit(2);
+}
+
+async function post(path, body) {
+  let response;
+  try {
+    response = await fetch(`${BASE_URL}${path}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch {
+    console.error("Mission Control is not running. Start it with `make up`, `make dev`, or the application, then retry.");
+    process.exit(1);
+  }
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    console.error(payload.error ?? `Mission Control returned HTTP ${response.status}`);
+    process.exit(1);
+  }
+  return payload;
+}
+
+if (returnLeaseId) {
+  const result = await post("/api/worktrees/manual/return", { leaseId: returnLeaseId });
+  console.error(result.alreadyReleased ? "🌳 lease was already returned" : "🌳 worktree returned");
+  process.exit(0);
+}
+
+console.error("🌳 acquiring a native Mission Control worktree...");
+const acquired = await post("/api/worktrees/manual/acquire", {
+  repositoryPath: repo,
+  ...(label ? { label } : {}),
+});
+const worktree = acquired.path;
+const leaseId = acquired.leaseId;
+if (typeof worktree !== "string" || typeof leaseId !== "string") {
+  console.error("Mission Control returned an invalid manual lease.");
   process.exit(1);
 }
 
-// --- acquire a worktree -----------------------------------------------------
-// `get --lease` prints only the absolute path on stdout; its banners go to
-// stderr, which we let through.
-console.error("🌳 acquiring a worktree from the pool…");
-let worktree;
-try {
-  worktree = execFileSync("treehouse", ["get", "--lease", "--lease-holder", holder], {
-    cwd: repo,
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "inherit"],
-  }).trim();
-} catch (err) {
-  console.error(`Failed to acquire a worktree: ${err instanceof Error ? err.message : String(err)}`);
-  process.exit(1);
-}
-if (!worktree) {
-  console.error("treehouse did not return a worktree path.");
-  process.exit(1);
-}
+// Keep the established checkout-local warmup. The daemon owns allocation; this explicit
+// client step still prepares this repository before handing it to the operator.
+spawnSync(process.execPath, [join(repo, "scripts", "worktree-setup.mjs"), worktree], {
+  stdio: "inherit",
+});
 
-// --- prepare it -------------------------------------------------------------
-spawnSync(process.execPath, [join(repo, "scripts", "worktree-setup.mjs"), worktree], { stdio: "inherit" });
-
-// --- hand it over -----------------------------------------------------------
-const env = { ...process.env, MISSION_WORKTREE: worktree, TREEHOUSE_LEASE_HOLDER: holder };
+const env = {
+  ...process.env,
+  MISSION_WORKTREE: worktree,
+  MISSION_WORKTREE_LEASE_ID: leaseId,
+};
+delete env.TREEHOUSE_LEASE_HOLDER;
 const [cmd, ...rest] = command.length > 0 ? command : [process.env.SHELL || "/bin/bash"];
-console.error(`\n🌳 session ready in ${worktree}\n   (lease held by "${holder}"; return it later with: treehouse return ${worktree})\n`);
+console.error(
+  `\n🌳 session ready in ${worktree}\n` +
+    `   Return it later with: make session ARGS="--return-lease ${leaseId}"\n` +
+    "   A future Settings > Worktrees panel will offer the same action.\n",
+);
 
 const result = spawnSync(cmd, rest, { cwd: worktree, stdio: "inherit", env });
 
-console.error(`\n🌳 left ${worktree} - still leased to you. Return it with: treehouse return ${worktree}`);
+console.error(
+  `\n🌳 left ${worktree} - still leased to you.\n` +
+    `   Return it with: make session ARGS="--return-lease ${leaseId}"`,
+);
 process.exit(result.status ?? 0);

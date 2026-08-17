@@ -158,7 +158,7 @@ test("an empty library offers New and import without pretending workflows alread
     onLeave: () => {},
     onDirtyChange: () => {},
   })));
-  assert.match(html, /No saved Personas yet/);
+  assert.match(html, /No saved workflow Personas yet/);
   assert.match(html, /Import \.md/);
   assert.match(html, /Choose a Persona/);
   const editor = text(renderToStaticMarkup(createElement(PersonaEditor, { persona: null, ...callbacks })));
@@ -507,7 +507,7 @@ test("an empty Yours group says what to do about it, and only where that is true
   // filter, and not with the list empty, where the line below already says it in the right
   // words for the state.
   assert.doesNotMatch(rail([]), /Duplicate a built-in to start from its standards/);
-  assert.match(rail([]), /No saved Personas yet/);
+  assert.match(rail([]), /No saved workflow Personas yet/);
 });
 
 test("a rail row's sub-label is the runner and model, from the one helper that formats them", () => {
@@ -642,7 +642,11 @@ test("the sidebar tags a drifted Persona beside the built-in tag, and only when 
 
   const html = rail([PERSONA, IMPORTED], { upstream: new Map([[IMPORTED.id, "changed" as const]]) });
   assert.match(html, /class="lib-rail-tag is-attention">upstream changed</);
-  assert.equal(html.match(/lib-rail-tag/g)?.length, 1, "only the drifted row carries a tag");
+  assert.equal(
+    html.match(/lib-rail-tag is-attention/g)?.length,
+    1,
+    "only the drifted row carries an attention tag",
+  );
   // Import and the archived filter moved below the list, and every one of them still
   // works: the rail footer is a relocation, not a reduction.
   assert.match(html, /placeholder="\/path\/to\/role\.md"/);

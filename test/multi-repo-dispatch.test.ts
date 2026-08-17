@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { mkTask } from "./helpers/session-fixture.ts";
 import type { TaskRepoEntry } from "@shared/types.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
+import type { WorktreeOccupancy } from "../src/server/worktrees/occupancy.ts";
 
 // Dispatching a task that attaches secondary repositories, and the two rules that make it
 // safe rather than merely working:
@@ -31,7 +32,7 @@ process.env.MISSION_PI_BIN = "/bin/echo";
 
 const { Registry } = await import("../src/server/registry.ts");
 const { Dispatcher, provisionWorktree } = await import("../src/server/dispatcher.ts");
-const { poolPins } = await import("../src/server/pool.ts");
+const { WorktreeManager } = await import("../src/server/worktrees/manager.ts");
 const { WORKTREES_DIR } = await import("../src/server/config.ts");
 
 after(() => {
@@ -40,10 +41,8 @@ after(() => {
   delete process.env.MISSION_PI_BIN;
 });
 
-// Nothing here opts into treehouse, so provisioning is the git fallback: nothing leased,
-// nothing held, and a reap has nothing to consider.
-const NO_PINS = () => ({ sessionCwds: [], taskWorktrees: [], checkLeasePaths: [] });
-
+// These repositories use the default-on native allocator. Direct provisioning cases that do
+// not inject the daemon manager remain on the disposable Git compatibility seam.
 function mkRepo(name: string): string {
   const repo = join(home, name);
   mkdirSync(repo, { recursive: true });
@@ -53,6 +52,11 @@ function mkRepo(name: string): string {
   writeFileSync(join(repo, "file.txt"), `${name}\n`);
   execFileSync("git", ["-C", repo, "add", "-A"]);
   execFileSync("git", ["-C", repo, "commit", "-qm", "first"]);
+  const origin = join(home, `${name}.git`);
+  execFileSync("git", ["init", "-q", "--bare", origin]);
+  execFileSync("git", ["-C", repo, "remote", "add", "origin", origin]);
+  execFileSync("git", ["-C", repo, "push", "-qu", "origin", "main"]);
+  execFileSync("git", ["-C", origin, "symbolic-ref", "HEAD", "refs/heads/main"]);
   return repo;
 }
 
@@ -62,11 +66,16 @@ function entry(repoRoot: string): TaskRepoEntry {
     worktreePath: null,
     branch: null,
     provider: null,
+    worktreeLeaseId: null,
     baseSha: null,
     prUrl: null,
     prState: null,
     mergedAt: null,
   };
+}
+
+function emptyOccupancy(paths: readonly string[]): Promise<Map<string, WorktreeOccupancy>> {
+  return Promise.resolve(new Map(paths.map((path) => [path, { status: "known", occupants: [] }])));
 }
 
 // ---- all-or-nothing --------------------------------------------------------------------
@@ -88,27 +97,24 @@ test("a secondary that cannot be provisioned unwinds the primary's tree", async 
       extraRepos: [entry(broken)],
     }),
   );
-  const dispatcher = new Dispatcher(registry);
+  // This case proves the all-or-nothing provisioning unwind. Process-snapshot uncertainty
+  // has its own fail-closed coverage and would make a disappearing runner PID an unrelated
+  // reason for this test to retain the lease it expects to return.
+  const worktrees = new WorktreeManager(undefined, { occupancy: emptyOccupancy });
+  const dispatcher = new Dispatcher(registry, undefined, { worktrees });
 
   await dispatcher.dispatch("rollback-task");
 
   const failed = registry.getTask("rollback-task");
   assert.equal(failed?.status, "failed");
   assert.match(failed?.error ?? "", /is not a git repository/);
-  // The primary's tree was really taken and really given back. Asserting the DISK, not the
-  // row: the row never learned about it, which is exactly why nothing else could clean up.
-  assert.equal(
-    existsSync(join(WORKTREES_DIR, "rollback-task")),
-    false,
-    "the primary tree provisioned before the failure is gone",
-  );
-  // And the throwaway branch with it, so a retry of the same task can cut it again.
-  assert.equal(
-    execFileSync("git", ["-C", api, "branch", "--list", "harness/t-rollba"], { stdio: "pipe" })
-      .toString()
-      .trim(),
-    "",
-  );
+  // The primary's native lease was really returned. Its warm directory remains while its
+  // exact slot becomes available, which is the resource fact this row never got to record.
+  const slots = worktrees.store.slots().filter((slot) => slot.path.includes("rollback-api"));
+  assert.equal(slots.length, 1);
+  assert.equal(slots[0]?.state, "available");
+  assert.equal(slots[0]?.activeLeaseId, null);
+  assert.ok(slots[0] && existsSync(slots[0].path));
   // Nothing half-recorded: a task that provisioned nothing names nothing.
   assert.equal(failed?.worktreePath, null);
   assert.deepEqual(
@@ -119,12 +125,9 @@ test("a secondary that cannot be provisioned unwinds the primary's tree", async 
 });
 
 test("the unwind is provider-aware in every ordering", async () => {
-  // Mixed providers on one task are ordinary - a treehouse repo takes a lease while a plain
-  // repo does not - and the two are UNWOUND by different commands. A lease must be RETURNED
-  // (a `git worktree remove` would delete a pooled tree the pool still believes it owns);
-  // a fallback tree must be removed. `teardownWorktree` is what knows the difference, so
-  // what this pins is that every taken tree reaches it carrying its OWN provider, whichever
-  // position in the set failed.
+  // Every taken tree must reach teardown carrying its own persisted provider. Native leases
+  // are returned through the allocator; disposable Git trees are removed. This case exercises
+  // native unwind in both primary and secondary positions.
   const broken = join(home, "mixed-not-a-repo");
   mkdirSync(broken, { recursive: true });
 
@@ -160,54 +163,9 @@ test("the unwind is provider-aware in every ordering", async () => {
     const unwound = seen.filter((call) => call.path !== null);
     assert.equal(unwound.length, taken, `${id}: every tree taken before the failure is offered back`);
     for (const call of unwound) {
-      assert.equal(call.provider, "git", `${id}: unwound as the provider it was taken as`);
+      assert.equal(call.provider, "mission", `${id}: unwound as the provider it was taken as`);
     }
   }
-});
-
-// ---- pins ------------------------------------------------------------------------------
-
-test("pool pins name every worktree a task holds, and only real ones", () => {
-  // The destructive edge, and the reason the pins ship in the same change as the loop that
-  // creates the trees. `poolPins.taskWorktrees` is the only thing standing between a
-  // secondary worktree and a `reset --hard` return-to-pool while an agent is writing in it.
-  //
-  // All three cases share one registry deliberately: pins are a fold over the WHOLE task
-  // list, so asserting the union is what actually proves a multi-repo task contributes its
-  // secondaries while a backlog task and a single-repo task contribute what they always did.
-  const registry = new Registry();
-  registry.upsertTask(
-    mkTask({
-      id: "pins-multi",
-      status: "running",
-      repoRoot: "/repo/api",
-      worktreePath: "/wt/pins-multi",
-      extraRepos: [
-        { ...entry("/repo/web"), worktreePath: "/wt/pins-multi-1" },
-        { ...entry("/repo/docs"), worktreePath: "/wt/pins-multi-2" },
-      ],
-    }),
-  );
-  // A backlog task has provisioned nothing. Its null must not reach the spared set AS a
-  // null: the reaper compares paths, and a null there is a rung that silently matches
-  // nothing while looking like it matches something.
-  registry.upsertTask(
-    mkTask({
-      id: "pins-backlog",
-      status: "backlog",
-      repoRoot: "/repo/api",
-      worktreePath: null,
-      extraRepos: [entry("/repo/web")],
-    }),
-  );
-  registry.upsertTask(
-    mkTask({ id: "pins-solo", status: "running", repoRoot: "/repo/api", worktreePath: "/wt/pins-solo" }),
-  );
-
-  assert.deepEqual(
-    [...poolPins(registry).taskWorktrees].sort(),
-    ["/wt/pins-multi", "/wt/pins-multi-1", "/wt/pins-multi-2", "/wt/pins-solo"],
-  );
 });
 
 // ---- the embedded-runtime guard --------------------------------------------------------
@@ -346,8 +304,8 @@ test("cancelling a multi-repo task stops it pinning the trees it just handed bac
   const { TaskManager } = await import("../src/server/tasks.ts");
   const api = mkRepo("cancel-api");
   const web = mkRepo("cancel-web");
-  const primary = await provisionWorktree(api, "cancel-multi", "slug", "ccl111", NO_PINS, null, 0);
-  const secondary = await provisionWorktree(web, "cancel-multi", "slug", "ccl111", NO_PINS, null, 1);
+  const primary = await provisionWorktree(api, "cancel-multi", "slug", "ccl111", null, 0);
+  const secondary = await provisionWorktree(web, "cancel-multi", "slug", "ccl111", null, 1);
 
   const registry = new Registry();
   registry.upsertTask(
@@ -396,10 +354,4 @@ test("cancelling a multi-repo task stops it pinning the trees it just handed bac
     [[web, null, null]],
     "the repo set survives; its provisioning facts do not",
   );
-  // The point of all of the above: neither tree is pinned any more. Asserted as ABSENCE
-  // from the pin set rather than an empty set - the registry is shared with the other cases
-  // in this file, and what matters is that these two trees stopped being spared.
-  const pinned = poolPins(registry).taskWorktrees;
-  assert.equal(pinned.includes(primary.path), false, "the primary is no longer pinned");
-  assert.equal(pinned.includes(secondary.path), false, "nor is the secondary");
 });

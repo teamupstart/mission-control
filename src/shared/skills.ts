@@ -28,8 +28,8 @@ import { skillLoadingAgents } from "./harness-capabilities.ts";
  * the slash menu as `/html-plans`. The harness owns the namespace; the user types a
  * clean name.
  *
- * A LIST rather than one string, for the same reason `LEASE_HOLDERS` is: a directory
- * name outlives a rename. The `fleet-<id>` dirs are still sitting in `~/.claude/skills`
+ * A LIST rather than one string because a directory name outlives a rename. The
+ * `fleet-<id>` dirs are still sitting in `~/.claude/skills`
  * on every machine that enabled a skill before the rename, and they are still the links
  * Claude loads. A recogniser that knew only the current prefix would stop seeing them as
  * ours - never reconciled, never removed by the master switch, and a `mission-` duplicate

@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { lstat, realpath } from "node:fs/promises";
@@ -73,6 +74,11 @@ export type WorktreeReleaseResult =
   | { outcome: "refused"; reason: string }
   | { outcome: "outcomeUnknown"; reason: string };
 
+export type NativeLeaseLookup =
+  | { state: "active" | "released"; lease: NativeWorktreeLease }
+  | { state: "missing" }
+  | { state: "mismatch"; reason: string };
+
 export interface NativeSlotStatus {
   slot: WorktreeSlotRow;
   nativePath: boolean;
@@ -82,6 +88,7 @@ export interface NativeSlotStatus {
   dirty: boolean | null;
   occupancy: WorktreeOccupancy;
   ownerReferenced: boolean | null;
+  mergedIntoDefault: boolean | null;
 }
 
 export interface NativePoolStatus {
@@ -89,8 +96,16 @@ export interface NativePoolStatus {
   policy: WorktreePolicy;
   identityValid: boolean;
   markerValid: boolean;
+  observedDefaultSha: string | null;
   slots: NativeSlotStatus[];
 }
+
+export type WorktreeRemoveResult =
+  | { outcome: "removed" }
+  | { outcome: "alreadyRemoved" }
+  | { outcome: "refused"; reason: string }
+  | { outcome: "conflict"; reason: string }
+  | { outcome: "outcomeUnknown"; reason: string };
 
 export interface NativeMaintenanceCandidate {
   poolId: string;
@@ -124,7 +139,8 @@ const DEFAULT_DEPS: WorktreeManagerDeps = {
   git: new NativeWorktreeGit(),
   occupancy: inspectWorktreeOccupancy,
   resolvePolicy: resolveWorktreePolicy,
-  // Phase 1 has no native consumers. Phase 2 replaces this with task/check/manual domain rows.
+  // Focused callers may have no domain tables. Production injects the durable task/check
+  // resolver so reconciliation never treats this permissive test seam as authority.
   ownerReferenced: async () => false,
   runSetup: async (argv, cwd) => {
     const result = await run(argv[0]!, argv.slice(1), {
@@ -237,6 +253,9 @@ export class WorktreeManager {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private maintenance: Promise<void> | null = null;
   private reclaimDomainLeases: () => Promise<void> = async () => {};
+  /** Grants protected until their task/check row durably records the random lease ID. */
+  private readonly pendingDomainLeases = new Set<string>();
+  private readonly changeBatch = new AsyncLocalStorage<{ pending: boolean }>();
 
   constructor(db: DatabaseSync = openDb(), deps: Partial<WorktreeManagerDeps> = {}) {
     this.store = new WorktreeStore(db);
@@ -282,11 +301,37 @@ export class WorktreeManager {
     return this.acquireLock(`slot:${slotId}`);
   }
 
-  private publish(): void {
+  private deliverPublish(publishChanged: () => void = this.deps.publishChanged): void {
     try {
-      this.deps.publishChanged();
+      publishChanged();
     } catch (error) {
       console.warn("[worktrees] change publication failed:", error);
+    }
+  }
+
+  private publish(): void {
+    const batch = this.changeBatch.getStore();
+    if (batch) {
+      batch.pending = true;
+      return;
+    }
+    this.deliverPublish();
+  }
+
+  /** Coalesces every visible mutation in one operator action into one invalidation. */
+  async runChangeBatch<T>(
+    operation: () => Promise<T>,
+    publishOnSuccess = true,
+    publishChanged?: () => void,
+  ): Promise<T> {
+    if (this.changeBatch.getStore()) return operation();
+    const batch = { pending: false };
+    try {
+      const result = await this.changeBatch.run(batch, operation);
+      if (publishOnSuccess) batch.pending = true;
+      return result;
+    } finally {
+      if (batch.pending) this.deliverPublish(publishChanged);
     }
   }
 
@@ -323,12 +368,16 @@ export class WorktreeManager {
     path: string,
   ): Promise<string | null> {
     try {
-      if (await this.deps.ownerReferenced(reference)) {
+      if (await this.ownerReferenced(reference)) {
         return "domain owner still references this lease";
       }
     } catch (error) {
       return `domain ownership is unknown: ${bounded(String(error))}`;
     }
+    return this.occupancyBlocker(path);
+  }
+
+  private async occupancyBlocker(path: string): Promise<string | null> {
     const occupancy = (await this.occupancy([path])).get(path);
     if (!occupancy || occupancy.status === "unknown") {
       return occupancy?.status === "unknown" ? occupancy.reason : "slot occupancy is unknown";
@@ -336,6 +385,16 @@ export class WorktreeManager {
     return occupancy.occupants.length > 0
       ? "one or more processes still occupy the worktree"
       : null;
+  }
+
+  private ownerReferenced(reference: WorktreeOwnerReference): Promise<boolean> {
+    if (this.pendingDomainLeases.has(reference.leaseId)) return Promise.resolve(true);
+    return this.deps.ownerReferenced(reference);
+  }
+
+  /** Complete the in-memory handoff after a task/check row durably records this lease. */
+  settleDomainLease(leaseId: string): void {
+    this.pendingDomainLeases.delete(leaseId);
   }
 
   private async validateResetTarget(
@@ -408,6 +467,8 @@ export class WorktreeManager {
     repositoryPath: string;
     baseSha: string;
     owner: WorktreeOwner;
+    /** Protect the grant until its task/check row is durably written. */
+    awaitingDomainRecord?: boolean;
   }): Promise<WorktreeAcquireResult> {
     if (!SHA.test(input.baseSha)) {
       return { outcome: "notAcquired", reason: "baseSha must be a full 40-character commit id" };
@@ -479,7 +540,7 @@ export class WorktreeManager {
         }
         if (priorReference) {
           try {
-            if (await this.deps.ownerReferenced(priorReference)) {
+            if (await this.ownerReferenced(priorReference)) {
               // This is the recoverable release/domain-row crash window. Keep the slot
               // available but ineligible until the exact owner clears its durable row.
               continue;
@@ -577,8 +638,6 @@ export class WorktreeManager {
     if (!reservation) {
       return { outcome: "notAcquired", reason: `native pool capacity ${policy.maxSlots} is exhausted` };
     }
-    this.publish();
-
     return this.withSlot(reservation.id, async () => {
       try {
         if (!created) {
@@ -651,6 +710,7 @@ export class WorktreeManager {
           return { outcome: "outcomeUnknown", reason: "lease commit could not be proven" };
         }
         this.publish();
+        if (input.awaitingDomainRecord) this.pendingDomainLeases.add(leaseId);
         return {
           outcome: "acquired",
           lease: {
@@ -672,7 +732,64 @@ export class WorktreeManager {
     });
   }
 
-  async release(lease: NativeWorktreeLease): Promise<WorktreeReleaseResult> {
+  /**
+   * Resolve durable consumer identity back to the allocator's full compare-and-swap lease.
+   * Task and check rows intentionally persist only the random lease ID; slot/version remain
+   * allocator facts and are re-read immediately before release.
+   */
+  lookupLease(input: {
+    leaseId?: string;
+    path?: string;
+    owner?: WorktreeOwner;
+  }): NativeLeaseLookup {
+    const slot = input.leaseId
+      ? this.store.slotByLeaseId(input.leaseId)
+      : input.path
+        ? this.store.slotByPath(resolve(input.path))
+        : null;
+    if (!slot) return { state: "missing" };
+    if (input.path && slot.path !== resolve(input.path)) {
+      return { state: "mismatch", reason: "lease path no longer matches the native slot" };
+    }
+    const active = activeReference(slot);
+    const released = lastReference(slot);
+    if (active === "invalid" || released === "invalid") {
+      return { state: "mismatch", reason: "native lease identity is incomplete" };
+    }
+    const wanted = input.leaseId ?? active?.leaseId;
+    const match = active?.leaseId === wanted ? active : released?.leaseId === wanted ? released : null;
+    if (!match) return { state: "mismatch", reason: "lease ID is not active or last released" };
+    if (
+      input.owner &&
+      (match.owner.kind !== input.owner.kind || match.owner.key !== input.owner.key)
+    ) {
+      return { state: "mismatch", reason: "native lease owner no longer matches" };
+    }
+    const pool = this.store.poolForSlot(slot.id);
+    if (!pool) return { state: "mismatch", reason: "native lease pool no longer exists" };
+    const baseSha = slot.requestedHeadSha ?? slot.currentHeadSha;
+    if (!baseSha || !SHA.test(baseSha)) {
+      return { state: "mismatch", reason: "native lease exact commit is unavailable" };
+    }
+    return {
+      state: match === active ? "active" : "released",
+      lease: {
+        slotId: slot.id,
+        poolId: pool.id,
+        path: slot.path,
+        provider: "mission",
+        leaseId: match.leaseId,
+        owner: match.owner,
+        baseSha,
+        slotVersion: slot.version,
+      },
+    };
+  }
+
+  async release(
+    lease: NativeWorktreeLease,
+    options: { ownerAuthorized?: boolean; requireClean?: boolean } = {},
+  ): Promise<WorktreeReleaseResult> {
     if (lease.provider !== "mission") return { outcome: "refused", reason: "lease provider is not mission" };
     const pool = this.store.poolForSlot(lease.slotId);
     if (!pool) return { outcome: "refused", reason: "native slot no longer exists" };
@@ -699,7 +816,9 @@ export class WorktreeManager {
       if (!reference || reference === "invalid") {
         return { outcome: "refused", reason: "active lease identity is incomplete or invalid" };
       }
-      const initialBlocker = await this.releaseBlocker(reference, slot.path);
+      const initialBlocker = options.ownerAuthorized
+        ? await this.occupancyBlocker(slot.path)
+        : await this.releaseBlocker(reference, slot.path);
       if (initialBlocker) return { outcome: "refused", reason: initialBlocker };
 
       const identity = this.identity(pool.mainCheckoutRoot);
@@ -729,8 +848,26 @@ export class WorktreeManager {
       }
       // Fetch and target validation may take long enough for a process or domain reference
       // to appear. Re-read both immediately before persisting the destructive reset intent.
-      const freshBlocker = await this.releaseBlocker(reference, slot.path);
+      const freshBlocker = options.ownerAuthorized
+        ? await this.occupancyBlocker(slot.path)
+        : await this.releaseBlocker(reference, slot.path);
       if (freshBlocker) return { outcome: "refused", reason: freshBlocker };
+      if (options.requireClean) {
+        let clean: Awaited<ReturnType<WorktreeGit["inspect"]>>;
+        try {
+          clean = await this.deps.git.inspect(slot.path);
+        } catch (error) {
+          return { outcome: "outcomeUnknown", reason: bounded(String(error)) };
+        }
+        if (!clean.ok) {
+          return clean.outcomeUnknown
+            ? { outcome: "outcomeUnknown", reason: clean.reason }
+            : { outcome: "refused", reason: clean.reason };
+        }
+        if (clean.value.dirty) {
+          return { outcome: "refused", reason: "manual worktree is dirty" };
+        }
+      }
       let returning: WorktreeSlotRow | null;
       try {
         returning = this.store.markReturning(slot.id, slot.version, target.value, this.deps.now());
@@ -738,7 +875,6 @@ export class WorktreeManager {
         return { outcome: "outcomeUnknown", reason: bounded(String(error)) };
       }
       if (!returning) return { outcome: "outcomeUnknown", reason: "return intent could not be persisted" };
-      this.publish();
       let reset: Awaited<ReturnType<WorktreeGit["reset"]>>;
       try {
         reset = await this.deps.git.reset(slot.path, target.value);
@@ -788,9 +924,18 @@ export class WorktreeManager {
   }
 
   async reconcile(): Promise<void> {
-    for (const pool of this.store.pools()) {
-      await this.reconcilePool(pool);
-    }
+    await this.runChangeBatch(async () => {
+      for (const pool of this.store.pools()) {
+        await this.reconcilePool(pool);
+      }
+    }, false);
+  }
+
+  async reconcilePoolById(poolId: string): Promise<boolean> {
+    const pool = this.store.pool(poolId);
+    if (!pool) return false;
+    await this.reconcilePool(pool);
+    return true;
   }
 
   private async reconcilePool(pool: WorktreePoolRow): Promise<void> {
@@ -953,7 +1098,7 @@ export class WorktreeManager {
             continue;
           }
           try {
-            if (prior && (await this.deps.ownerReferenced(prior))) {
+            if (prior && (await this.ownerReferenced(prior))) {
               // Release completed before the domain row cleared. Preserve this exact,
               // idempotently releasable state while keeping it unavailable to acquisition.
               this.store.updateObserved(slot.id, inspection.value.head, null, now);
@@ -976,7 +1121,7 @@ export class WorktreeManager {
           continue;
         }
         try {
-          if (!(await this.deps.ownerReferenced(active))) {
+          if (!(await this.ownerReferenced(active))) {
             reject("leased slot has no matching domain owner reference");
             continue;
           }
@@ -1009,12 +1154,17 @@ export class WorktreeManager {
       const marker = await readWorktreePoolMarker(pool.poolPath);
       const markerValid = marker?.poolId === pool.id;
       let listed: Awaited<ReturnType<WorktreeGit["list"]>> | null = null;
+      let observedDefaultSha: string | null = null;
       if (identityValid && identity) {
         try {
           listed = await this.deps.git.list(identity);
         } catch {
           listed = null;
         }
+        try {
+          const observed = await this.deps.git.observedDefaultSha(identity);
+          if (observed.ok) observedDefaultSha = observed.value;
+        } catch {}
       }
       const slots: NativeSlotStatus[] = [];
       for (const slot of allSlots.filter((candidate) => candidate.poolId === pool.id)) {
@@ -1033,7 +1183,7 @@ export class WorktreeManager {
         let referenced: boolean | null = invalidReference ? null : false;
         if (reference) {
           try {
-            referenced = await this.deps.ownerReferenced(reference);
+            referenced = await this.ownerReferenced(reference);
           } catch {
             referenced = null;
           }
@@ -1042,6 +1192,13 @@ export class WorktreeManager {
         const registration = listed?.ok === true
           ? registrationFor(listed.value, slot.path)
           : null;
+        let mergedIntoDefault: boolean | null = null;
+        if (inspection?.ok === true && observedDefaultSha) {
+          try {
+            const merged = await this.deps.git.mergedInto(slot.path, observedDefaultSha);
+            if (merged.ok) mergedIntoDefault = merged.value;
+          } catch {}
+        }
         slots.push({
           slot,
           nativePath,
@@ -1057,6 +1214,7 @@ export class WorktreeManager {
           dirty: inspection?.ok === true ? inspection.value.dirty : null,
           occupancy: occupancy.get(slot.path) ?? { status: "unknown", reason: "path is missing" },
           ownerReferenced: referenced,
+          mergedIntoDefault,
         });
       }
       output.push({
@@ -1064,10 +1222,139 @@ export class WorktreeManager {
         policy: this.deps.resolvePolicy(pool.gitCommonDirectory),
         identityValid,
         markerValid,
+        observedDefaultSha,
         slots,
       });
     }
     return output;
+  }
+
+  /**
+   * Remove one exact manager-owned slot after rechecking every destructive boundary.
+   * Dirty or unmerged work may be explicitly acknowledged; unknown identity, ownership,
+   * registration, or process state is never overrideable.
+   */
+  async removeSlot(input: {
+    slotId: string;
+    expectedVersion?: number;
+    allowDirty: boolean;
+    allowUnmerged: boolean;
+  }): Promise<WorktreeRemoveResult> {
+    return this.withSlot(input.slotId, async () => {
+      const slot = this.store.slot(input.slotId);
+      if (!slot) return { outcome: "alreadyRemoved" };
+      if (input.expectedVersion !== undefined && slot.version !== input.expectedVersion) {
+        return { outcome: "conflict", reason: "slot version changed after preview" };
+      }
+      if (slot.state !== "available" && slot.state !== "quarantined") {
+        return { outcome: "refused", reason: `slot is ${slot.state}, not removable` };
+      }
+      const active = activeReference(slot);
+      if (active !== null) {
+        return { outcome: "refused", reason: "slot still carries active lease identity" };
+      }
+      const prior = lastReference(slot);
+      if (prior === "invalid") {
+        return { outcome: "refused", reason: "last-released lease identity is incomplete" };
+      }
+      if (prior) {
+        try {
+          if (await this.ownerReferenced(prior)) {
+            return { outcome: "refused", reason: "domain owner still references this lease" };
+          }
+        } catch (error) {
+          return { outcome: "outcomeUnknown", reason: `domain ownership is unknown: ${bounded(String(error))}` };
+        }
+      }
+      const blocker = await this.occupancyBlocker(slot.path);
+      if (blocker) return { outcome: "refused", reason: blocker };
+      const pool = this.store.poolForSlot(slot.id);
+      if (!pool) return { outcome: "refused", reason: "native slot pool no longer exists" };
+      const identity = this.identity(pool.mainCheckoutRoot);
+      if (!identity || !exactSlotPath(pool, identity, slot)) {
+        return { outcome: "refused", reason: "pool repository identity can no longer be proven" };
+      }
+      const marker = await readWorktreePoolMarker(pool.poolPath);
+      if (marker?.poolId !== pool.id) {
+        return { outcome: "refused", reason: "native pool marker is missing or does not match" };
+      }
+      let observed: [
+        Awaited<ReturnType<WorktreeGit["list"]>>,
+        Awaited<ReturnType<WorktreeGit["inspect"]>>,
+        Awaited<ReturnType<WorktreeGit["observedDefaultSha"]>>,
+      ];
+      try {
+        observed = await Promise.all([
+          this.deps.git.list(identity),
+          this.deps.git.inspect(slot.path),
+          this.deps.git.observedDefaultSha(identity),
+        ]);
+      } catch (error) {
+        return { outcome: "outcomeUnknown", reason: bounded(String(error)) };
+      }
+      const [listed, inspection, target] = observed;
+      if (!listed.ok) return { outcome: listed.outcomeUnknown ? "outcomeUnknown" : "refused", reason: listed.reason };
+      const registration = registrationFor(listed.value, slot.path);
+      if (!registration || registration.bare || registration.locked || registration.prunable) {
+        return { outcome: "refused", reason: "slot has no safe Git worktree registration" };
+      }
+      if (!inspection.ok) {
+        return { outcome: inspection.outcomeUnknown ? "outcomeUnknown" : "refused", reason: inspection.reason };
+      }
+      if (inspection.value.path !== slot.path || inspection.value.commonDirectory !== pool.gitCommonDirectory) {
+        return { outcome: "refused", reason: "slot repository ownership is not proven" };
+      }
+      if (inspection.value.dirty && !input.allowDirty) {
+        return { outcome: "refused", reason: "slot is dirty" };
+      }
+      if (!target.ok) {
+        return { outcome: target.outcomeUnknown ? "outcomeUnknown" : "refused", reason: target.reason };
+      }
+      let merged: Awaited<ReturnType<WorktreeGit["mergedInto"]>>;
+      try {
+        merged = await this.deps.git.mergedInto(slot.path, target.value);
+      } catch (error) {
+        return { outcome: "outcomeUnknown", reason: bounded(String(error)) };
+      }
+      if (!merged.ok) {
+        return { outcome: merged.outcomeUnknown ? "outcomeUnknown" : "refused", reason: merged.reason };
+      }
+      if (!merged.value && !input.allowUnmerged) {
+        return { outcome: "refused", reason: "slot HEAD is not merged into the observed remote default" };
+      }
+      const finalBlocker = await this.occupancyBlocker(slot.path);
+      if (finalBlocker) return { outcome: "refused", reason: finalBlocker };
+      const pruning = this.store.markPruning(slot.id, slot.version, this.deps.now());
+      if (!pruning) return { outcome: "conflict", reason: "prune intent lost its slot compare-and-swap" };
+      this.publish();
+      let removed: Awaited<ReturnType<WorktreeGit["remove"]>>;
+      try {
+        removed = await this.deps.git.remove(identity, slot.path, inspection.value.dirty);
+      } catch (error) {
+        return { outcome: "outcomeUnknown", reason: bounded(String(error)) };
+      }
+      if (!removed.ok) {
+        return { outcome: "outcomeUnknown", reason: removed.reason };
+      }
+      let after: Awaited<ReturnType<WorktreeGit["list"]>>;
+      try {
+        after = await this.deps.git.list(identity);
+      } catch (error) {
+        return { outcome: "outcomeUnknown", reason: bounded(String(error)) };
+      }
+      if (!after.ok) {
+        return { outcome: "outcomeUnknown", reason: after.reason };
+      }
+      if (existsSync(slot.path) || registrationFor(after.value, slot.path)) {
+        this.quarantine(pruning, "worktree removal could not be verified");
+        return { outcome: "outcomeUnknown", reason: "worktree removal could not be verified" };
+      }
+      if (!this.store.removePruned(pruning.id, pruning.version)) {
+        return { outcome: "outcomeUnknown", reason: "removed worktree row could not be settled" };
+      }
+      this.publish();
+      return { outcome: "removed" };
+    });
   }
 
   /** Preview-only safe prune and right-size candidates. No filesystem mutation occurs. */
@@ -1075,15 +1362,6 @@ export class WorktreeManager {
     const status = await this.status();
     const candidates: NativeMaintenanceCandidate[] = [];
     for (const poolStatus of status) {
-      const identity = this.identity(poolStatus.pool.mainCheckoutRoot);
-      let target: Awaited<ReturnType<WorktreeGit["observedDefaultSha"]>> | null = null;
-      if (identity && poolStatus.identityValid && poolStatus.markerValid) {
-        try {
-          target = await this.deps.git.observedDefaultSha(identity);
-        } catch (error) {
-          target = { ok: false, reason: bounded(String(error)), outcomeUnknown: true };
-        }
-      }
       const overCapacity = Math.max(0, poolStatus.slots.length - poolStatus.policy.maxSlots);
       const rightSizeIds = new Set(
         [...poolStatus.slots]
@@ -1103,15 +1381,11 @@ export class WorktreeManager {
         else if (entry.dirty !== false) reason = "slot cleanliness is not proven";
         else if (entry.occupancy.status === "unknown") reason = entry.occupancy.reason;
         else if (entry.occupancy.occupants.length > 0) reason = "slot is occupied";
-        else if (!target?.ok) reason = target?.reason ?? "pool repository identity is unknown";
-        else {
-          try {
-            const merged = await this.deps.git.mergedInto(entry.slot.path, target.value);
-            if (!merged.ok) reason = merged.reason;
-            else if (!merged.value) reason = "slot HEAD is not merged into the observed remote default";
-          } catch (error) {
-            reason = bounded(String(error));
-          }
+        else if (!poolStatus.observedDefaultSha) reason = "remote default branch is unknown";
+        else if (entry.mergedIntoDefault !== true) {
+          reason = entry.mergedIntoDefault === false
+            ? "slot HEAD is not merged into the observed remote default"
+            : "slot merge relationship is unknown";
         }
         candidates.push({
           poolId: poolStatus.pool.id,
@@ -1146,16 +1420,18 @@ export class WorktreeManager {
   }
 
   private async runMaintenance(): Promise<void> {
+    let hasNativePools = false;
     try {
-      if (this.store.poolCount() === 0) return;
+      hasNativePools = this.store.poolCount() > 0;
     } catch (error) {
       console.error("[worktrees] maintenance could not read native pools:", error);
-      return;
     }
-    try {
-      await this.reconcile();
-    } catch (error) {
-      console.error("[worktrees] maintenance reconciliation failed:", error);
+    if (hasNativePools) {
+      try {
+        await this.reconcile();
+      } catch (error) {
+        console.error("[worktrees] maintenance reconciliation failed:", error);
+      }
     }
     try {
       await this.reclaimDomainLeases();

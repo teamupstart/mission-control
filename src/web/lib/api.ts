@@ -54,7 +54,16 @@ import type {
   UpdateTask,
   TaskDependencyInput,
   EnsembleActionBody,
+  WorktreesConfig,
+  WorktreesConfigPatch,
 } from "@shared/protocol.ts";
+import type {
+  WorktreeActionExecuteResult,
+  WorktreeActionPreview,
+  WorktreeActionRequest,
+  WorktreeInventory,
+  WorktreeRiskKey,
+} from "@shared/worktrees.ts";
 import type {
   EnsembleCreateInput,
   EnsembleDecision,
@@ -166,6 +175,55 @@ export const fetchForemanEpisode = (id: number) =>
 export const fetchBacklogPlan = () => fetchJson<BacklogPlan>("/api/backlog/plan");
 /** Dispatch-time defaults the harness applies to the sessions it launches. */
 export const fetchHarnessesConfig = () => fetchJson<HarnessesConfig>("/api/harnesses/config");
+export const fetchWorktrees = (signal?: AbortSignal) =>
+  fetchJsonWithSignal<WorktreeInventory>("/api/worktrees", signal);
+
+async function fetchJsonWithSignal<T>(path: string, signal?: AbortSignal): Promise<T | null> {
+  try {
+    const res = await fetch(path, { signal });
+    if (!res.ok) return null;
+    return (await res.json()) as T;
+  } catch {
+    return null;
+  }
+}
+
+export interface WorktreeApiFailure {
+  ok: false;
+  status: number;
+  error: string;
+  code?: string;
+}
+
+async function worktreeRequest<T>(path: string, method: "POST" | "PUT", body: unknown): Promise<({ ok: true } & T) | WorktreeApiFailure> {
+  try {
+    const res = await fetch(path, {
+      method,
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = (await res.json().catch(() => ({}))) as T & { error?: string; code?: string };
+    if (!res.ok) return { ok: false, status: res.status, error: data.error ?? `HTTP ${res.status}`, code: data.code };
+    return { ok: true, ...data };
+  } catch (error) {
+    return { ok: false, status: 0, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+export const updateWorktreesConfig = (patch: WorktreesConfigPatch) =>
+  worktreeRequest<{ config: WorktreesConfig }>("/api/worktrees/config", "PUT", patch);
+
+export const previewWorktreeAction = (request: WorktreeActionRequest) =>
+  worktreeRequest<WorktreeActionPreview>("/api/worktrees/actions/preview", "POST", request);
+
+export const executeWorktreeAction = (token: string, acknowledgements: WorktreeRiskKey[]) =>
+  worktreeRequest<WorktreeActionExecuteResult>("/api/worktrees/actions/execute", "POST", {
+    token,
+    acknowledgements,
+  });
+
+export const openWorktreeTerminal = (slotId: string, backend: TerminalBackendId) =>
+  worktreeRequest<{ label?: string }>(`/api/worktrees/${encodeURIComponent(slotId)}/open`, "POST", { backend });
 /**
  * What this MACHINE says about third-party tooling a dispatched session will inherit from
  * `~/.claude` - see `src/shared/environment-checks.ts`.

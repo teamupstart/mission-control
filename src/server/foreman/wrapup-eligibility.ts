@@ -159,6 +159,7 @@ const KIND_TAKES_REVIEW_ARTIFACT_CLASSIFIER: Record<TaskKind, boolean> = {
   ship: true,
   scout: true,
   plan: false,
+  pipeline: false,
   chat: true,
 };
 
@@ -167,6 +168,7 @@ const KIND_REQUIRES_EXPLICIT_WORKFLOW: Record<TaskKind, boolean> = {
   ship: false,
   scout: false,
   plan: false,
+  pipeline: false,
   chat: true,
 };
 

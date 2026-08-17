@@ -7,7 +7,7 @@
 // pointing back at the install that planted it. Both checks here exist because that
 // outage happened, from the same install, in two ways at once:
 //
-//   - the install ran from a treehouse pool slot, whose checkout the pool later
+//   - the install ran from a transient pooled checkout, whose allocator later
 //     reclaimed out from under the settings file;
 //   - it baked `process.execPath`, which resolves symlinks - under Homebrew that is
 //     /opt/homebrew/Cellar/node/<version>/bin/node, a directory the next
@@ -58,15 +58,13 @@ export function stableNodePath(execPath = process.execPath, pathEnv = process.en
   return execPath;
 }
 
-/**
- * treehouse's pool-state file. It sits at the pool root, above every slot, so its
- * presence on the walk from a checkout to the filesystem root is what "this checkout
- * is a pool slot" mechanically means - wherever the pool was configured to live.
- */
-const POOL_MARKER = "treehouse-state.json";
+const TRANSIENT_MARKERS = [
+  [".mission-control-worktree-pool", "native Mission Control worktree pool"],
+  ["treehouse-state.json", "legacy Treehouse worktree pool"],
+];
 
 /**
- * The treehouse pool root above `dir`, or null when `dir` is not inside a pool.
+ * The transient pool root above `dir`, or null when `dir` is a durable checkout.
  *
  * Walks the path as given rather than its realpath: the caller passes the path the
  * running script was actually reached by, which is the one that would get baked.
@@ -74,7 +72,9 @@ const POOL_MARKER = "treehouse-state.json";
 export function transientCheckoutRoot(dir) {
   let current = dir;
   for (;;) {
-    if (existsSync(join(current, POOL_MARKER))) return current;
+    for (const [marker, reason] of TRANSIENT_MARKERS) {
+      if (existsSync(join(current, marker))) return { root: current, reason };
+    }
     const parent = dirname(current);
     if (parent === current) return null;
     current = parent;

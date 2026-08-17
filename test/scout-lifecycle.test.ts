@@ -147,6 +147,7 @@ function bindSession(h: Harness, task: Task, cwd: string): Session {
       origin: "dispatch",
       name: "agent",
       state: "idle",
+      terminals: [],
       cwd,
       repoRoot: cwd,
       instrumented: true,

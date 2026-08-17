@@ -22,6 +22,7 @@ import { ForemanConfigSchema, TRANSCRIPT_DEFAULT_TAIL_TURNS } from "@shared/prot
 import type {
   BacklogPlanInput,
   ForemanConfig,
+  ForemanInstructionsView,
   ForemanLeaseResult,
   ForemanPlannerControl,
   RecordEpisode,
@@ -30,6 +31,7 @@ import type {
   SpendReportBody,
   SubmitOptions,
 } from "@shared/protocol.ts";
+import type { PipelineActionResult, PipelineForemanView, PipelineRun } from "@shared/pipeline.ts";
 import type {
   AssignRefusalScope,
   BacklogPlan,
@@ -38,6 +40,7 @@ import type {
   Session,
   SessionDiff,
   SessionGoal,
+  SessionIntentGuard,
   SessionNote,
   SessionQueue,
   Task,
@@ -1072,6 +1075,37 @@ export class ForemanClient implements ForemanActions {
     };
   }
 
+  // ---- external pipeline triage ----
+
+  /** The daemon's current, opt-in halt view. This read never probes the provider. */
+  pipelineForeman(): Promise<PipelineForemanView> {
+    return get<PipelineForemanView>("/api/pipelines/foreman");
+  }
+
+  /** Stamp ownership of an action before the request crosses to the provider. */
+  async recordPipelineEpisode(run: PipelineRun, episode: RecordEpisode): Promise<void> {
+    const res = await send("POST", "/api/pipelines/foreman-episode", {
+      provider: run.provider,
+      repoRoot: run.repoRoot,
+      slug: run.slug,
+      episode,
+    });
+    if (!res.ok) throw new Error(`recordPipelineEpisode -> ${res.status}`);
+  }
+
+  /** Drive the same phase 4 action route the dashboard uses. */
+  async pipelineAction(run: PipelineRun, action: "unpark"): Promise<PipelineActionResult> {
+    const res = await send("POST", "/api/pipelines/action", {
+      provider: run.provider,
+      repoRoot: run.repoRoot,
+      slug: run.slug,
+      action,
+      requestedBy: "foreman",
+    });
+    if (!res.ok) throw new Error(`pipelineAction -> ${res.status}`);
+    return (await res.json()) as PipelineActionResult;
+  }
+
   /**
    * The transcript window, with each turn's `tools` normalized - see `normalizeTools`. The rest
    * of the response is cast like every other read: `headCount` already refuses to let its own
@@ -1149,7 +1183,7 @@ export class ForemanClient implements ForemanActions {
    * (see `readInstructions`), which is the same state as an operator who cleared the box.
    */
   async instructions(): Promise<string> {
-    const r = await get<{ text: string }>("/api/foreman/instructions");
+    const r = await get<ForemanInstructionsView>("/api/foreman/instructions");
     return typeof r?.text === "string" ? r.text : "";
   }
 
@@ -1295,25 +1329,21 @@ export class ForemanClient implements ForemanActions {
     if (!res.ok) throw new Error(`setWrapupAnswer ${sessionId} -> ${res.status}`);
   }
 
-  /**
-   * Retire one episode of the `prompted` trigger. Throws on failure, and the caller
-   * must treat that as fatal to the episode: this write is what stops the trigger
-   * re-firing, so proceeding to type after it failed is the double-push.
-   */
-  async markPromptedWrapup(
+  /** Consume one expected completed work-cycle generation, optionally raising its ask. */
+  async consumePromptedGeneration(
     sessionId: string,
-    goal: string,
-    evidenceMarker: string,
-    activityAt: number,
+    logicalKey: string,
+    generation: number,
+    expectedIntent: SessionIntentGuard,
     opts?: { ask?: boolean },
   ): Promise<void> {
     const res = await send("POST", `/api/sessions/${enc(sessionId)}/queue/wrapup/prompted`, {
-      goal,
-      evidenceMarker,
-      activityAt,
+      logicalKey,
+      generation,
+      expectedIntent,
       ...(opts?.ask ? { ask: true } : {}),
     });
-    if (!res.ok) throw new Error(`markPromptedWrapup ${sessionId} -> ${res.status}`);
+    if (!res.ok) throw new Error(`consumePromptedGeneration ${sessionId} -> ${res.status}`);
   }
 
   /** The full reconciled intent, whose objective and raw prompt the card summary omits. */

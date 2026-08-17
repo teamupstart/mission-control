@@ -65,10 +65,13 @@ on unresolved comments or a red CI - tracks each pull request separately, so one
 feedback is never mistaken for another's or lost behind it. They share the pane, so they take
 turns in it: one instruction at a time, never two in a turn expecting neither.
 
-The daemon also carries the durable state and conservative restart reconciliation needed for
-Mission Control's native worktree pools. No dispatch or workflow-check acquisition path selects
-that allocator yet: current sessions and checks continue to use their existing treehouse or
-plain Git behavior until the later consumer cutover.
+The daemon owns a durable native worktree pool for every physical repository. New tasks,
+Workflow checks, and approved `make session` work use exact lease identities from that allocator
+by default. A disabled repository or positive capacity refusal degrades to a disposable Git
+worktree for tasks and checks, while ambiguous outcomes fail closed. Treehouse is not required;
+persisted legacy rows keep a narrow, conditional-return-only compatibility path.
+**Settings > Worktrees** exposes future capacity policy, native and legacy inventory, exact path
+actions, and preview-first cleanup without replacing task, check, Git, or process ownership.
 
 ![Mission Control dispatch](docs/images/dispatch.png)
 
@@ -77,6 +80,11 @@ plain Git behavior until the later consumer cutover.
 The Library keeps reusable workflows, personas, session actions, ensemble strategies, mission
 sources, and the commands behind each standard gate together rather than burying them in
 individual terminals.
+
+**Library → Personas → Foreman** is the fixed System profile for Foreman's exact standing
+guidance. Its name, policy, safeguards, models, and authority remain owned by Mission Control
+and their existing Settings controls. Only the Markdown guidance is editable here, and the
+System profile is never offered to workflows or ensembles as a Persona.
 
 ![Mission Control Library](docs/images/library.png)
 
@@ -124,6 +132,14 @@ that has no session behind it.
 You can act on a pipeline from there, not only read it: start, stop, pause and resume the
 engine's daemon, park and unpark a feature, authorize one DECIDE re-entry with your own
 rationale, watch the daemon's console, and run the re-seal ceremony in a hosted terminal.
+
+The same integration starts at Dispatch. An enabled repository offers the **pipeline** task
+kind, which opens `conduct-ts engineer --idea` in a real terminal and lets conductor own the
+worktree, agent, model, and effort. When that run opens a pull request, GitHub Inspector adopts
+it under pipeline provenance and it joins **Shipped**. **Settings → Conductor → Foreman
+triage** can also let Foreman unpark mechanical halts through the same action route the
+dashboard uses. That switch ships off, and every needs-human or unknown halt stays with the
+operator.
 Every verb spawns the engine's own CLI and is judged by what it printed, never by an exit code
 - and what a shipped feature cost lands in the [spend strip](docs/cost-and-usage.md) as
 automation, under the engine's own figures.

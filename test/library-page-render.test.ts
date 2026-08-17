@@ -13,7 +13,7 @@ import {
   emptyWorkflowCommandView,
   WORKFLOW_COMMAND_UNKNOWN,
 } from "../src/shared/workflow.ts";
-import { LibraryPage } from "../src/web/library/LibraryPage.tsx";
+import { LibraryPage, foremanProfileCard } from "../src/web/library/LibraryPage.tsx";
 import {
   actionCards,
   commandCards,
@@ -178,6 +178,22 @@ test("cards carry durable facts, and a draft says so", () => {
   // A validation error is a property of the DRAFT, which is why it belongs on an authoring
   // card at all - and it is toned so it reads as something to fix.
   assert.match(html, /class="lib-asset-fact is-warn">2 validation errors</);
+});
+
+test("the Persona shelf leads with one fixed System card outside Persona counts", () => {
+  const input = [persona()];
+  const card = foremanProfileCard({ runner: "codex", models: null });
+  assert.deepEqual(card.tags, [{ label: "system", tone: "system" }]);
+  assert.equal(card.fact, "Codex · 4 model roles");
+
+  const ordinary = personaCards(input);
+  const html = page({ personas: input, foremanSummary: { runner: "codex", models: null } });
+  assert.equal(input.length, 1);
+  assert.equal(ordinary.length, 1, "the workflow Persona projection must remain catalog-only");
+  assert.ok(html.indexOf(">Foreman<") < html.indexOf(">Code Risk Reviewer<"));
+  assert.match(html, /class="lib-tag lib-tag-system">system</);
+  assert.match(html, /Codex · 4 model roles/);
+  assert.match(html, /unavailable to workflows or ensembles/);
 });
 
 test("an archived asset is off the shelf, not merely marked", () => {

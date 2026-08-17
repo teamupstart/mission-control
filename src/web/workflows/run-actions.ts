@@ -16,7 +16,9 @@ import {
   cancelGateSentence,
   cancelReleasesGate,
   gateWaitSentence,
+  inspectorGateSentence,
   orderedSubmissions,
+  spentInspectorGateCondition,
 } from "./run-model.ts";
 import type { WorkflowConfirmRequest } from "./WorkflowConfirmModal.tsx";
 
@@ -114,7 +116,7 @@ export function inspectorGateActions(detail: WorkflowRunDetail): GateAction[] {
       disabled: false,
     });
   }
-  if (gate && gate.state.waitReason !== null) {
+  if (gate && gate.state.waitReason !== null && inspectorGateCanRecheck(detail)) {
     actions.push({
       id: "recheck-inspector",
       kind: "recheck-inspector",
@@ -149,6 +151,16 @@ export function inspectorGateActions(detail: WorkflowRunDetail): GateAction[] {
     });
   }
   return actions;
+}
+
+/** The exact run states the daemon's gate evaluator can advance on an explicit recheck. */
+function inspectorGateCanRecheck(detail: WorkflowRunDetail): boolean {
+  const { status, currentPhase } = detail.run;
+  return status === "waiting_for_pr"
+    || status === "waiting_for_inspector"
+    || status === "waiting_for_new_head"
+    || (status === "waiting_for_session" && currentPhase === "pr_handoff")
+    || (status === "blocked" && currentPhase === "inspector_disabled");
 }
 
 /**
@@ -484,10 +496,9 @@ export function runNextMove(detail: WorkflowRunDetail): RunNextMove | null {
     return null;
   }
 
-  // The three gate waits. `inspectorGateActions` already mirrors the manager's guards for both
-  // arms, so scoping to these statuses is what keeps a gate action from preempting a blocked
-  // run's own recovery - `manager.recheckInspector` accepts any non-terminal run with a gate,
-  // which would otherwise make `Check again` the answer to an Inspector findings block.
+  // The three ordinary gate waits. `inspectorGateActions` mirrors the manager's exact
+  // evaluator-processable states, so a gate action cannot preempt a blocked run's own recovery
+  // or make `Check again` the answer to a spent Inspector findings block.
   if (
     status === "waiting_for_pr"
     || status === "waiting_for_inspector"
@@ -598,21 +609,34 @@ export function runNextMove(detail: WorkflowRunDetail): RunNextMove | null {
       detail.summary.maxRepairRounds + GRANT_ROUNDS,
       WORKFLOW_LIMITS.repairRoundsMax,
     ) - detail.summary.maxRepairRounds;
+    const spentCondition = spentInspectorGateCondition(detail);
+    const adoptCleanHead = spentCondition?.kind === "clean_exact_head";
+    const label = adoptCleanHead
+      ? "Adopt clean Inspector head"
+      : rounds === 1 ? "Grant one more round" : `Grant ${rounds} more rounds`;
     return {
       id: "grant-rounds",
       kind: "grant-rounds",
-      label: rounds === 1 ? "Grant one more round" : `Grant ${rounds} more rounds`,
-      tooltip: "Raise this run's repair budget so the review can continue",
+      label,
+      tooltip: adoptCleanHead
+        ? "Resume the audited Inspector-only path so the daemon can revalidate and adopt this exact head"
+        : "Raise this run's repair budget so the review can continue",
       path: runPath(detail, "grant-rounds"),
       body: { rounds },
       confirm: {
-        title: rounds === 1 ? "Grant one more repair round" : `Grant ${rounds} more repair rounds`,
-        body: "This run used every repair round its budget allowed, so it stopped and will"
-          + " not restart on its own - and while it is stopped its pull request cannot merge."
-          + ` Granting ${rounds === 1 ? "one" : rounds} more lets the review carry on from`
-          + " where it left off.",
-        confirmLabel: "Grant the rounds",
-        confirmHint: "Raises this run's budget only",
+        title: adoptCleanHead
+          ? "Adopt the clean Inspector head"
+          : rounds === 1 ? "Grant one more repair round" : `Grant ${rounds} more repair rounds`,
+        body: adoptCleanHead
+          ? `Current Inspector reports ${shortHead(spentCondition.headSha)} as the exact open head, reviewed live with no open findings. This grants ${rounds === 1 ? "one repair round" : `${rounds} repair rounds`} through the existing audited path; the browser does not pass the gate. The daemon revalidates the head, creates the immutable Inspector-only submission, and only then may complete the workflow.`
+          : "This run used every repair round its budget allowed, so it stopped and will"
+            + " not restart on its own - and while it is stopped its pull request cannot merge."
+            + ` Granting ${rounds === 1 ? "one" : rounds} more lets the review carry on from`
+            + " where it left off.",
+        confirmLabel: adoptCleanHead ? "Adopt clean head" : "Grant the rounds",
+        confirmHint: adoptCleanHead
+          ? "Raises this run's budget and reuses the audited Inspector evaluator"
+          : "Raises this run's budget only",
         danger: false,
       },
     };
@@ -798,6 +822,17 @@ export function runNoMoveReason(detail: WorkflowRunDetail): RunNoMoveReason | nu
     || status === "waiting_for_action"
   ) return null;
 
+  const spentCondition = spentInspectorGateCondition(detail);
+  if (spentCondition) {
+    const release = cancelReleasesGate(detail.summary);
+    return {
+      cause: inspectorGateSentence(detail),
+      consequence: "This run cannot receive the audited grant from its current state."
+        + " Cancelling keeps its audit history"
+        + (release === null ? "." : `.${cancelGateSentence(release)}`),
+    };
+  }
+
   const mapped = NO_MOVE_SENTENCES[currentPhase];
   if (mapped) {
     /*
@@ -865,4 +900,9 @@ export function runNoMoveReason(detail: WorkflowRunDetail): RunNoMoveReason | nu
     cause: `This run is blocked - ${blockedPhaseClause(currentPhase)}.`,
     consequence: "Nothing up here settles it; the sections below carry what happened.",
   };
+}
+
+/** The short full object id used in a confirmation without importing presentation JSX. */
+function shortHead(head: string): string {
+  return head.length > 12 ? head.slice(0, 12) : head;
 }

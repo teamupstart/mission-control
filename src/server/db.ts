@@ -44,6 +44,7 @@ import type {
   TrackedGap,
   WorkItem,
   WorkItemState,
+  WorkCycleSummary,
   WorktreeProvider,
 } from "@shared/types.ts";
 import { DEFAULT_TASK_KIND, TASK_KINDS } from "@shared/types.ts";
@@ -59,7 +60,8 @@ import { normalizeLabels } from "@shared/task.ts";
  * Durable state. Live sessions are intentionally NOT persisted - they're rebuilt
  * from the OS on every poll. What survives a restart is state the OS can't rebuild:
  * pending review items (a human decision may be waiting), dispatched tasks (their
- * backlog, running intent, and recent outcomes), and the session event log.
+ * backlog, running intent, and recent outcomes), current work-cycle projections, and the
+ * session event log.
  */
 let db: DatabaseSync;
 
@@ -547,6 +549,21 @@ export function openDb(): DatabaseSync {
       updated_at       INTEGER NOT NULL
     );
 
+    -- Current lifecycle projection for one logical conversation. This is deliberately
+    -- separate from session_events: that table is hook-only evidence and its any-row query
+    -- drives Session.hooksSeen. It is also separate from session_work_episodes, whose rows
+    -- own task and pull-request provenance rather than individual agent turns.
+    --
+    -- One row per logical key keeps restart state bounded by conversations, not turns.
+    -- The active bit survives a daemon restart so a later turn end can advance exactly once.
+    CREATE TABLE IF NOT EXISTS session_work_cycles (
+      logical_key  TEXT PRIMARY KEY,                 -- noteKeyFor(session)
+      generation  INTEGER NOT NULL DEFAULT 0 CHECK (generation >= 0),
+      active       INTEGER NOT NULL DEFAULT 0 CHECK (active IN (0, 1)),
+      completed_at INTEGER,
+      updated_at   INTEGER NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS tasks (
       id            TEXT PRIMARY KEY,
       title         TEXT NOT NULL,
@@ -572,9 +589,15 @@ export function openDb(): DatabaseSync {
       external_id   TEXT,
       source_url    TEXT,
       repo_root     TEXT NOT NULL,
+      -- Provider-owned lifecycle key for a pipeline task. repo_root is the third
+      -- coordinate, so only provider and slug need their own nullable columns.
+      pipeline_provider TEXT,
+      pipeline_slug TEXT,
       worktree_path TEXT,
       branch        TEXT,
       provider      TEXT,
+      -- Opaque native allocator identity. NULL for historical treehouse and disposable git.
+      worktree_lease_id TEXT,
       -- The full 40-char commit the PRIMARY repo's branch was cut at. Here rather than in a
       -- task_repos row so "a single-repo task has zero task_repos rows" stays true; a reader
       -- that iterates task_repos alone therefore cannot see the primary and must read this.
@@ -617,6 +640,7 @@ export function openDb(): DatabaseSync {
       worktree_path TEXT,
       branch        TEXT,
       provider      TEXT,
+      worktree_lease_id TEXT,
       base_sha      TEXT,
       position      INTEGER NOT NULL,
       PRIMARY KEY (task_id, repo_root)
@@ -739,7 +763,7 @@ export function openDb(): DatabaseSync {
       session_id     TEXT NOT NULL,
       marker         TEXT NOT NULL,  -- Pending.marker: this waiting episode's identity
       situation      TEXT NOT NULL,  -- PendingSituation
-      surface        TEXT NOT NULL,  -- input-review | terminal
+      surface        TEXT NOT NULL,  -- input-review | terminal | pipeline
       question       TEXT NOT NULL,  -- the ask, verbatim
       pane           TEXT,           -- the child's screen at decision time (terminal only)
       menu           TEXT,           -- JSON PaneDialog: the rows the model chose among
@@ -1446,6 +1470,8 @@ export function openDb(): DatabaseSync {
       -- convenient - see the migration in migrate(), and the warning about nullable columns
       -- a few lines above, which this default is what keeps clear of.
       provider               TEXT    NOT NULL DEFAULT 'treehouse',
+      -- Opaque native allocator identity. NULL on every historical provider row.
+      lease_id                TEXT,
       created_at             INTEGER NOT NULL,
       updated_at             INTEGER NOT NULL
     );
@@ -1656,9 +1682,11 @@ export function openDb(): DatabaseSync {
       branch          TEXT,
       wrapup_asked_at INTEGER,            -- the drain ask fires exactly once
       wrapup_answer   TEXT,
-      prompted_goal   TEXT,               -- the goal the prompted trigger last fired on
-      prompted_evidence TEXT,             -- HEAD + transcript proof handled for that goal
-      prompted_activity_at INTEGER,       -- session activity observed with that proof
+      prompted_goal   TEXT,               -- historical intent guard for upgrade bootstrap
+      prompted_evidence TEXT,             -- historical evidence guard, compatibility only
+      prompted_activity_at INTEGER,       -- historical activity watermark, compatibility only
+      prompted_legacy_cutover_generation INTEGER, -- conservative ceiling for ambiguous legacy guards
+      prompted_consumed_generation INTEGER, -- latest work-cycle generation handled
       updated_at      INTEGER NOT NULL
     );
 
@@ -2901,37 +2929,37 @@ function migrate(d: DatabaseSync): void {
   // truthful answer for a row written before the daemon could recover one.
   addColumn(d, "foreman_queue_items", "recovered_at", "INTEGER");
 
-  // `prompted_goal`: the resolved intent episode the `prompted` wrap-up trigger last
-  // handled. The historical column name remains, but new writes store an opaque
-  // `intent:<objectiveVersion>:<promptRevision>` guard rather than goal text.
+  // `prompted_goal`: the historical resolved-intent guard used before prompted
+  // completion consumed work-cycle generations. It remains readable for one-time
+  // compatibility bootstrap and is no longer written by current completion paths.
   // Same exposure as the two ALTERs above: added to the CREATE TABLE after
   // `foreman_queues` shipped, and CREATE TABLE IF NOT EXISTS will not add a column to
   // an existing table, so without this every queue write on an upgraded db would fail.
   //
-  // Nullable with no default, and that reads correctly rather than merely harmlessly:
-  // NULL means "this checkout has never had a prompted wrap-up", which is the truthful
-  // answer for every row written before the trigger existed. It leaves the trigger
-  // ARMED on those checkouts, which is right - the whole point is to fire once the
-  // human turns it on - and the verify step still has to agree before anything types.
+  // Nullable with no default: NULL means no legacy guard needs compatibility handling.
   addColumn(d, "foreman_queues", "prompted_goal", "TEXT");
 
-  // `prompted_evidence`: the durable completion proof handled alongside
-  // `prompted_goal`. A Claude background task notification is not a human prompt and
-  // correctly leaves the intent episode unchanged, but the work it resumes can end at
-  // a later Stop with a newer transcript anchor. Keeping that proof separately lets
-  // the worker reverify the later boundary without polling the same settled Stop.
-  //
-  // NULL beside an existing `prompted_goal` means the row predates this proof axis.
-  // Read it as a spent legacy guard, not as permission to replay a shipping action on
-  // upgrade; the next reconciled human intent still re-arms it normally.
+  // `prompted_evidence`: the historical proof axis paired with `prompted_goal`.
+  // Current completion claims carry their own evidence fingerprint, while lifecycle
+  // selection reads only `prompted_consumed_generation`. Keep the column readable for
+  // wire and database compatibility; do not revive it as a fallback trigger.
   addColumn(d, "foreman_queues", "prompted_evidence", "TEXT");
 
-  // The guard write can land after a slow verifier returns. Its `updated_at` therefore
-  // cannot identify the activity boundary that verifier actually examined: a later Stop
-  // may already have arrived by then. Persist the observed session activity separately so
-  // that later boundary stays armed. NULL is a spent legacy guard, matching the evidence
-  // migration above, because an old worker cannot say which boundary it observed safely.
+  // The historical activity watermark paired with `prompted_evidence`. Retained only
+  // for compatibility after the work-cycle cutover.
   addColumn(d, "foreman_queues", "prompted_activity_at", "INTEGER");
+
+  // Very old prompted guards predate the immutable activity watermark. Their queue
+  // `updated_at` can move after later work and therefore cannot identify what the guard
+  // actually retired. Record the current settled generation as a conservative cutover
+  // ceiling instead: it cannot be claimed, while a later generation naturally re-arms.
+  addColumn(d, "foreman_queues", "prompted_legacy_cutover_generation", "INTEGER");
+
+  // The current prompted completion guard. A generation is meaningful only beside the
+  // `session_work_cycles` row for this queue's logical note key. NULL means no completed
+  // generation has been consumed yet; legacy rows are bootstrapped lazily only when their
+  // historical `prompted_goal` still matches the resolved intent.
+  addColumn(d, "foreman_queues", "prompted_consumed_generation", "INTEGER");
 
   // `decisions`: the structured questions of a `plan-decisions` review, as a JSON
   // array. Added to `reviews` after it shipped, so an upgraded DB only gets it via
@@ -3028,12 +3056,19 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "tasks", "source_id", "TEXT");
   addColumn(d, "tasks", "external_id", "TEXT");
   addColumn(d, "tasks", "source_url", "TEXT");
+  // The provider-run identity learned after a pipeline dispatch's first child agent appears.
+  // Both nullable with no default: old and non-pipeline tasks have no provider lifecycle to
+  // follow, and a half-written pair fails closed when the row is read.
+  addColumn(d, "tasks", "pipeline_provider", "TEXT");
+  addColumn(d, "tasks", "pipeline_slug", "TEXT");
   // The primary repo's baseline for multi-repo tasks. Nullable with no default because
   // that is the honest reading of an existing row: nothing recorded where its branch was
   // cut, and a fabricated value would be indistinguishable from a measured one to every
   // rule that later compares a head against it. `task_repos` needs no entry here - a new
   // TABLE is covered by the CREATE TABLE IF NOT EXISTS block, which runs on every open.
   addColumn(d, "tasks", "base_sha", "TEXT");
+  addColumn(d, "tasks", "worktree_lease_id", "TEXT");
+  addColumn(d, "task_repos", "worktree_lease_id", "TEXT");
 
   // `home_name`: the terminal home a dispatched agent lives in, renamed from the
   // tmux-specific `tmux_session` now that the name is resolved against ANY backend
@@ -3144,6 +3179,7 @@ function migrate(d: DatabaseSync): void {
   // No backfill statement and no index: the default IS the backfill, and the only reader
   // selects the row it already has by primary key.
   addColumn(d, "workflow_check_leases", "provider", "TEXT NOT NULL DEFAULT 'treehouse'");
+  addColumn(d, "workflow_check_leases", "lease_id", "TEXT");
 
   // `inspector_comments(pr_key)` is the leftmost prefix of the unique index on
   // (pr_key, fingerprint), so it can serve no query that one cannot. Dropped rather
@@ -3519,6 +3555,76 @@ export function logEvent(sessionId: string, ts: number, kind: string, payload: u
     .run(sessionId, ts, kind, payload === undefined ? null : JSON.stringify(payload));
 }
 
+interface WorkCycleRow {
+  logical_key: string;
+  generation: number;
+  active: number;
+  completed_at: number | null;
+  updated_at: number;
+}
+
+function rowToWorkCycle(row: WorkCycleRow): WorkCycleSummary {
+  return {
+    logicalKey: row.logical_key,
+    generation: row.generation,
+    active: row.active === 1,
+    completedAt: row.completed_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+/** Latest durable lifecycle state for one logical conversation, if any was observed. */
+export function workCycleFor(logicalKey: string): WorkCycleSummary | null {
+  const row = openDb()
+    .prepare(`SELECT * FROM session_work_cycles WHERE logical_key = ?`)
+    .get(logicalKey) as unknown as WorkCycleRow | undefined;
+  return row ? rowToWorkCycle(row) : null;
+}
+
+/**
+ * Arm a logical conversation after normalized work activity.
+ *
+ * Repeated activity keeps the same generation. The write time still moves because it is
+ * the current-state projection's latest observation, not a completion identity.
+ */
+export function markWorkCycleActive(logicalKey: string, updatedAt: number): WorkCycleSummary {
+  openDb()
+    .prepare(
+      `INSERT INTO session_work_cycles
+         (logical_key, generation, active, completed_at, updated_at)
+       VALUES (?, 0, 1, NULL, ?)
+       ON CONFLICT(logical_key) DO UPDATE SET
+         active = 1,
+         updated_at = excluded.updated_at`,
+    )
+    .run(logicalKey, updatedAt);
+  return workCycleFor(logicalKey)!;
+}
+
+/**
+ * Complete an armed cycle, advancing its generation once.
+ *
+ * A turn end with no prior work is a no-op. No row is created for idle/end noise, and an
+ * existing inactive row is returned unchanged so duplicate turn ends stay on one generation.
+ */
+export function completeWorkCycle(
+  logicalKey: string,
+  completedAt: number,
+  updatedAt: number,
+): WorkCycleSummary | null {
+  openDb()
+    .prepare(
+      `UPDATE session_work_cycles
+          SET generation = generation + 1,
+              active = 0,
+              completed_at = ?,
+              updated_at = ?
+        WHERE logical_key = ? AND active = 1`,
+    )
+    .run(completedAt, updatedAt, logicalKey);
+  return workCycleFor(logicalKey);
+}
+
 /**
  * Longest pane capture kept per episode.
  *
@@ -3735,7 +3841,8 @@ function episodeFromRow(r: Record<string, unknown>): ForemanEpisode {
     sessionId: String(r.session_id ?? ""),
     marker: String(r.marker ?? ""),
     situation: String(r.situation ?? ""),
-    surface: r.surface === "input-review" ? "input-review" : "terminal",
+    surface:
+      r.surface === "input-review" || r.surface === "pipeline" ? r.surface : "terminal",
     question: String(r.question ?? ""),
     pane: typeof r.pane === "string" ? r.pane : null,
     menu: parseMenu(r.menu),
@@ -3778,6 +3885,15 @@ export function episodesFor(noteKey: string, limit = 100): ForemanEpisode[] {
     )
     .all(noteKey, limit) as unknown as Array<Record<string, unknown>>;
   return rows.map(episodeFromRow);
+}
+
+/** Whether a synthetic or live note key already owns this episode marker. */
+export function foremanEpisodeExists(noteKey: string, marker: string): boolean {
+  return Boolean(
+    openDb()
+      .prepare(`SELECT 1 FROM foreman_episodes WHERE note_key = ? AND marker = ? LIMIT 1`)
+      .get(noteKey, marker),
+  );
 }
 
 /**
@@ -3998,9 +4114,12 @@ interface TaskRow {
   external_id: string | null;
   source_url: string | null;
   repo_root: string;
+  pipeline_provider: string | null;
+  pipeline_slug: string | null;
   worktree_path: string | null;
   branch: string | null;
   provider: string | null;
+  worktree_lease_id: string | null;
   base_sha: string | null;
   home_name: string | null;
   terminal_resource_id: string | null;
@@ -4024,6 +4143,7 @@ interface TaskRepoRow {
   worktree_path: string | null;
   branch: string | null;
   provider: string | null;
+  worktree_lease_id: string | null;
   base_sha: string | null;
   position: number;
 }
@@ -4079,6 +4199,7 @@ function rowToTaskRepo(
     worktreePath: r.worktree_path,
     branch: r.branch,
     provider: r.provider as WorktreeProvider | null,
+    worktreeLeaseId: r.worktree_lease_id,
     baseSha: r.base_sha,
     // Projected on read from `work_episode_prs` rather than stored on this row, so there is
     // one writer of a repository's pull request and one reader of it. Deriving any of this
@@ -4143,7 +4264,7 @@ function taskReposByTask(): Map<string, TaskRepoEntry[]> {
  *
  * Exists so no caller can write `rows.map(rowToTask)` and silently produce tasks whose
  * `extraRepos` is empty - which for a multi-repo task is not a missing display detail but
- * a set of worktrees the pool reaper would then be free to hard-reset.
+ * a set of worktrees whose durable owners would silently disappear.
  */
 function rowsToTasks(rows: TaskRow[]): Task[] {
   if (rows.length === 0) return [];
@@ -4273,9 +4394,14 @@ function rowToTask(r: TaskRow, extraRepos: TaskRepoEntry[]): Task {
         ? { sourceId: r.source_id, externalId: r.external_id, url: r.source_url }
         : null,
     repoRoot: r.repo_root,
+    pipelineRun:
+      r.pipeline_provider && isPipelineProviderId(r.pipeline_provider) && r.pipeline_slug
+        ? { provider: r.pipeline_provider, repoRoot: r.repo_root, slug: r.pipeline_slug }
+        : null,
     worktreePath: r.worktree_path,
     branch: r.branch,
     provider: r.provider as WorktreeProvider | null,
+    worktreeLeaseId: r.worktree_lease_id,
     baseSha: r.base_sha,
     extraRepos,
     homeName: r.home_name,
@@ -4324,12 +4450,14 @@ export function upsertTask(t: Task): string[] {
     d.prepare(
       `INSERT INTO tasks (
          id, title, intent, kind, agent, priority, labels, dependencies, enabled, model, effort,
-         workflow_id, source_id, external_id, source_url, repo_root, worktree_path, branch,
-         provider, base_sha, home_name, terminal_resource_id, session_id,
+         workflow_id, source_id, external_id, source_url, repo_root,
+         pipeline_provider, pipeline_slug, worktree_path, branch, provider, worktree_lease_id,
+         base_sha,
+         home_name, terminal_resource_id, session_id,
          schedule_id, schedule_occurrence_id, scheduled_for,
          status, outcome, outcome_url, error,
          created_at, updated_at, dispatched_at, completed_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          title=excluded.title, intent=excluded.intent, kind=excluded.kind, agent=excluded.agent,
          priority=excluded.priority, labels=excluded.labels, dependencies=excluded.dependencies,
@@ -4337,8 +4465,11 @@ export function upsertTask(t: Task): string[] {
          workflow_id=excluded.workflow_id,
          source_id=excluded.source_id, external_id=excluded.external_id,
          source_url=excluded.source_url,
-         repo_root=excluded.repo_root, worktree_path=excluded.worktree_path, branch=excluded.branch,
-         provider=excluded.provider, base_sha=excluded.base_sha, home_name=excluded.home_name,
+         repo_root=excluded.repo_root,
+         pipeline_provider=excluded.pipeline_provider, pipeline_slug=excluded.pipeline_slug,
+         worktree_path=excluded.worktree_path, branch=excluded.branch,
+         provider=excluded.provider, worktree_lease_id=excluded.worktree_lease_id,
+         base_sha=excluded.base_sha, home_name=excluded.home_name,
          terminal_resource_id=excluded.terminal_resource_id, session_id=excluded.session_id,
          schedule_id=excluded.schedule_id,
          schedule_occurrence_id=excluded.schedule_occurrence_id,
@@ -4358,7 +4489,8 @@ export function upsertTask(t: Task): string[] {
       t.effort,
       t.workflowId,
       t.source?.sourceId ?? null, t.source?.externalId ?? null, t.source?.url ?? null,
-      t.repoRoot, t.worktreePath, t.branch, t.provider, t.baseSha,
+      t.repoRoot, t.pipelineRun?.provider ?? null, t.pipelineRun?.slug ?? null,
+      t.worktreePath, t.branch, t.provider, t.worktreeLeaseId, t.baseSha,
       t.homeName, t.terminalResourceId, t.sessionId,
       t.scheduleId, t.scheduleOccurrenceId, t.scheduledFor,
       t.status, t.outcome, t.outcomeUrl, t.error, t.createdAt,
@@ -4373,8 +4505,9 @@ export function upsertTask(t: Task): string[] {
     d.prepare(`DELETE FROM task_repos WHERE task_id = ?`).run(t.id);
     if (t.extraRepos.length > 0) {
       const insert = d.prepare(
-        `INSERT INTO task_repos (task_id, repo_root, worktree_path, branch, provider, base_sha, position)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO task_repos
+           (task_id, repo_root, worktree_path, branch, provider, worktree_lease_id, base_sha, position)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       );
       t.extraRepos.forEach((entry, position) => {
         insert.run(
@@ -4383,6 +4516,7 @@ export function upsertTask(t: Task): string[] {
           entry.worktreePath,
           entry.branch,
           entry.provider,
+          entry.worktreeLeaseId,
           entry.baseSha,
           position,
         );
@@ -7463,16 +7597,17 @@ interface QueueRow {
   prompted_goal: string | null;
   prompted_evidence: string | null;
   prompted_activity_at: number | null;
+  prompted_legacy_cutover_generation: number | null;
+  prompted_consumed_generation: number | null;
   updated_at: number;
 }
 
 /**
- * One row -> object mapping, for the four readers that need it.
+ * One row -> object mapping, shared by every queue reader.
  *
  * Spelled once because it was spelled four times, and a column added to the table
- * reached whichever copies its author happened to grep: a `prompted_goal` missing
- * from `listQueueRows` alone would leave the orphan sweep reading every queue as
- * never-wrapped-up, which is the state that FIRES the trigger.
+ * reached whichever copies its author happened to grep. Missing the current consumed
+ * generation in one reader would make the same completed cycle appear eligible again.
  */
 function toQueueRow(r: QueueRow): Omit<SessionQueue, "items"> {
   return {
@@ -7484,6 +7619,8 @@ function toQueueRow(r: QueueRow): Omit<SessionQueue, "items"> {
     promptedGoal: r.prompted_goal,
     promptedEvidence: r.prompted_evidence,
     promptedActivityAt: r.prompted_activity_at,
+    promptedLegacyCutoverGeneration: r.prompted_legacy_cutover_generation,
+    promptedConsumedGeneration: r.prompted_consumed_generation,
     updatedAt: r.updated_at,
   };
 }
@@ -7554,13 +7691,16 @@ export function upsertQueue(q: Omit<SessionQueue, "items">): void {
     .prepare(
       `INSERT INTO foreman_queues
          (note_key, cwd, branch, wrapup_asked_at, wrapup_answer, prompted_goal,
-          prompted_evidence, prompted_activity_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          prompted_evidence, prompted_activity_at, prompted_legacy_cutover_generation,
+          prompted_consumed_generation, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(note_key) DO UPDATE SET
          cwd=excluded.cwd, branch=excluded.branch, wrapup_asked_at=excluded.wrapup_asked_at,
          wrapup_answer=excluded.wrapup_answer, prompted_goal=excluded.prompted_goal,
          prompted_evidence=excluded.prompted_evidence,
          prompted_activity_at=excluded.prompted_activity_at,
+         prompted_legacy_cutover_generation=excluded.prompted_legacy_cutover_generation,
+         prompted_consumed_generation=excluded.prompted_consumed_generation,
          updated_at=excluded.updated_at`,
     )
     .run(
@@ -7572,6 +7712,8 @@ export function upsertQueue(q: Omit<SessionQueue, "items">): void {
       q.promptedGoal,
       q.promptedEvidence,
       q.promptedActivityAt,
+      q.promptedLegacyCutoverGeneration,
+      q.promptedConsumedGeneration,
       q.updatedAt,
     );
 }
@@ -7580,6 +7722,135 @@ export function getQueueRow(noteKey: string): Omit<SessionQueue, "items"> | unde
   const r = openDb().prepare(`SELECT * FROM foreman_queues WHERE note_key = ?`).get(noteKey) as
     | unknown as QueueRow | undefined;
   return r ? toQueueRow(r) : undefined;
+}
+
+/**
+ * Lazily translate one matching legacy prompted guard into the generation it had spent.
+ *
+ * A null legacy guard stays eligible. A mismatched guard means intent advanced after the
+ * historical decision and also stays eligible. Missing lifecycle state changes nothing so
+ * the current reader can fail closed and try the bootstrap again after state is known. An
+ * active row is not a completed cutover boundary even when it retains an older completion
+ * timestamp, so compatibility must not consume its generation while work is in progress.
+ * The historical activity watermark associates the guard with the completion it examined. A later
+ * completed cycle stays unconsumed instead of letting an old intent guard advance onto new work.
+ * Rows from before the immutable watermark existed fail closed by recording the current settled
+ * generation as a separate cutover ceiling. That generation cannot be claimed, but the next one can.
+ */
+export function bootstrapPromptedConsumedGeneration(
+  noteKey: string,
+  resolvedEpisodeKey: string,
+  d: DatabaseSync = openDb(),
+): boolean {
+  const result = d.prepare(
+    `UPDATE foreman_queues
+        SET prompted_consumed_generation = CASE
+              WHEN prompted_activity_at IS NOT NULL THEN (
+                SELECT generation FROM session_work_cycles
+                 WHERE logical_key = foreman_queues.note_key
+                   AND generation > 0
+                   AND active = 0
+                   AND completed_at IS NOT NULL
+                   AND completed_at <= foreman_queues.prompted_activity_at
+              )
+              ELSE prompted_consumed_generation
+            END,
+            prompted_legacy_cutover_generation = CASE
+              WHEN prompted_activity_at IS NULL THEN (
+                SELECT generation FROM session_work_cycles
+                 WHERE logical_key = foreman_queues.note_key
+                   AND generation > 0
+                   AND active = 0
+                   AND completed_at IS NOT NULL
+              )
+              ELSE prompted_legacy_cutover_generation
+            END
+      WHERE note_key = ?
+        AND prompted_consumed_generation IS NULL
+        AND prompted_legacy_cutover_generation IS NULL
+        AND prompted_goal = ?
+        AND EXISTS (
+          SELECT 1 FROM session_work_cycles
+           WHERE logical_key = foreman_queues.note_key
+             AND generation > 0
+             AND active = 0
+             AND completed_at IS NOT NULL
+             AND (
+               foreman_queues.prompted_activity_at IS NULL
+               OR completed_at <= foreman_queues.prompted_activity_at
+             )
+        )`,
+  ).run(noteKey, resolvedEpisodeKey);
+  return Number(result.changes) === 1;
+}
+
+export interface ConsumePromptedGenerationInput {
+  noteKey: string;
+  sessionCwd: string | null;
+  generation: number;
+  ask: boolean;
+  now: number;
+}
+
+/**
+ * Compare and consume one currently completed work-cycle generation in one SQL statement.
+ *
+ * This is the shared daemon-owned action boundary for direct prompted handoffs and Workflow
+ * claims. The INSERT arm lets a queue-less prompted session record its first consumption;
+ * the conflict arm advances only to a newer generation. Both arms require the durable
+ * lifecycle row to still be the exact settled generation the caller observed.
+ */
+export function consumePromptedGeneration(
+  input: ConsumePromptedGenerationInput,
+  d: DatabaseSync = openDb(),
+): boolean {
+  const ask = input.ask ? 1 : 0;
+  const result = d.prepare(
+    `INSERT INTO foreman_queues (
+       note_key, cwd, branch, wrapup_asked_at, wrapup_answer, prompted_goal,
+       prompted_evidence, prompted_activity_at, prompted_legacy_cutover_generation,
+       prompted_consumed_generation, updated_at
+     )
+     SELECT ?, ?, NULL,
+            CASE WHEN ? = 1 THEN ? ELSE NULL END,
+            NULL, NULL, NULL, NULL, NULL, generation, ?
+       FROM session_work_cycles
+      WHERE logical_key = ?
+        AND generation = ?
+        AND generation > 0
+        AND active = 0
+        AND completed_at IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM foreman_queue_items WHERE note_key = ?
+        )
+     ON CONFLICT(note_key) DO UPDATE SET
+       prompted_consumed_generation = excluded.prompted_consumed_generation,
+       wrapup_asked_at = CASE
+         WHEN ? = 1 THEN excluded.wrapup_asked_at ELSE foreman_queues.wrapup_asked_at END,
+       wrapup_answer = CASE
+         WHEN ? = 1 THEN NULL ELSE foreman_queues.wrapup_answer END,
+       updated_at = excluded.updated_at
+     WHERE (
+         foreman_queues.prompted_consumed_generation IS NULL
+         OR foreman_queues.prompted_consumed_generation < excluded.prompted_consumed_generation
+       )
+       AND (
+         foreman_queues.prompted_legacy_cutover_generation IS NULL
+         OR foreman_queues.prompted_legacy_cutover_generation < excluded.prompted_consumed_generation
+       )`,
+  ).run(
+    input.noteKey,
+    input.sessionCwd,
+    ask,
+    input.now,
+    input.now,
+    input.noteKey,
+    input.generation,
+    input.noteKey,
+    ask,
+    ask,
+  );
+  return Number(result.changes) === 1;
 }
 
 /** Every stored queue (without items) - for the orphan sweep + the session list. */
@@ -7639,16 +7910,15 @@ export function countOpenQueueItems(noteKey: string): number {
  * So this only ever drops a fully-finished batch whose session is gone and which
  * nothing has touched since `cutoff`.
  *
- * The second branch collects rows that hold NOTHING - no items at all, and none of the
- * four wrap-up fields set - regardless of age. `ensureQueue` mints a row for any
+ * The second branch collects rows that hold NOTHING: no items and no wrap-up or
+ * prompted compatibility/current guard fields, regardless of age. `ensureQueue` mints a row for any
  * session whose wrap-up state is merely touched, and the `prompted` trigger touches
  * every session it ever considers, so this is now the common shape of a row rather than
  * a rarity. Waiting out `cutoff` for a row with nothing in it buys no safety: there is
  * no backlog to resume, no ask to answer and no episode to keep retired, and if the
  * session comes back `ensureQueue` mints it again for free. The `liveKeys` guard still
  * applies to both branches, which is what keeps this away from the row a live session is
- * mid-write on - `ensureQueue` and the `promptedGoal` stamp that follows it are two
- * writes, and between them the row is legitimately empty.
+ * mid-write on. A live direct consume can create and populate this row atomically.
  */
 export function pruneDeadQueues(liveKeys: Set<string>, cutoff: number): number {
   const db = openDb();
@@ -7668,6 +7938,9 @@ export function pruneDeadQueues(liveKeys: Set<string>, cutoff: number): number {
                 AND q.wrapup_answer IS NULL
                 AND q.prompted_goal IS NULL
                 AND q.prompted_evidence IS NULL
+                AND q.prompted_activity_at IS NULL
+                AND q.prompted_legacy_cutover_generation IS NULL
+                AND q.prompted_consumed_generation IS NULL
                 AND NOT EXISTS (
                   SELECT 1 FROM foreman_queue_items i WHERE i.note_key = q.note_key
                 )
@@ -7986,7 +8259,7 @@ function rowToInspectorPr(r: InspectorPrRow): InspectorPr {
     repoRoot: r.repo_root,
     cwd: r.cwd,
     sessionId: r.session_id,
-    source: r.source === "hook" ? "hook" : "legacy",
+    source: r.source === "hook" || r.source === "pipeline" ? r.source : "legacy",
     state: r.state as InspectorPrState,
     headSha: r.head_sha,
     reviewPosture: (r.review_posture as InspectorPr["reviewPosture"]) ?? null,

@@ -25,7 +25,7 @@ noun:
 | Missions · Sources | Where does work come from? | Recurring missions and a link to task sources in Settings |
 | Workflows | What counts as done? | Workflow cards - version, reviewer count, draft validation errors. The builder is one level deeper |
 | Commands | What does each standard gate run? | The four portable workflow slots - `test`, `lint`, `typecheck`, `build` - each with what it runs on this machine |
-| Personas | Who does the reviewing? | Persona cards with the provider and model each resolves to |
+| Personas | Who does the reviewing? | The fixed Foreman System profile, followed by Persona cards with the provider and model each resolves to |
 | Actions | What can a run tell the session to do? | [Session action](workflows.md#session-actions) cards - required skill and what proves completion |
 | Ensembles | Not sure of the best approach? | Strategy launchers (Best of N, Panel vote, Consensus) that open Dispatch already in Ensemble mode on that strategy |
 
@@ -36,6 +36,7 @@ The four authoring surfaces mount one level deeper at bookmarkable hashes:
 | `#/library` | The six shelves |
 | `#/library/workflows[/:id]` | The workflow builder, on that workflow |
 | `#/library/personas[/:id]` | The Persona library and editor |
+| `#/library/personas/foreman` | Foreman's fixed System profile and exact standing-guidance editor |
 | `#/library/actions[/:id]` | The session action library and editor |
 | `#/library/commands[/:slot]` | The Command editor, on that slot |
 | `#/library/<shelf>/new` | The same surface, opened on a blank draft - not Commands, which has nothing to draft |
@@ -136,7 +137,10 @@ leave-with-unsaved-changes question either way and neither is a route around it.
 Behind a Persona card is a rail and a workspace, and both are arranged around the one thing on
 the screen that is the asset: the guidance Markdown.
 
-**The rail** lists Personas in two groups - **Built-in** and **Yours** - each with a count, so
+**The rail** starts with a fixed **System** group containing Foreman, then lists workflow
+Personas in **Built-in** and **Yours** groups. The System row is always present above search,
+Active/Archived filtering, and the workflow Persona counts because it cannot be archived and
+is not a catalog member. The two Persona groups each carry their own count, so
 the roles that ship with the build stop reading as things you wrote and forgot. Each row's
 sub-label is the resolved runner and model, which is what tells two reviewers apart; the
 description is not repeated there, because on the shipped roles it restates the title. Search
@@ -157,6 +161,15 @@ them; `source` and `utf-8 bytes` are readouts. A chip whose value is inherited f
 defaults draws quiet, and one this Persona overrides draws solid - so what this Persona
 actually changes is legible without opening anything, and `source` names where the routing was
 decided. Everything left over is the guidance editor.
+
+Opening `#/library/personas/foreman` keeps the same rail and workspace grammar but changes the
+ownership boundary. Foreman's name and application-owned description are fixed. The only
+editable field is the exact `FOREMAN.md` standing guidance, with Editor/Preview, Save,
+Copy Markdown, Download, and confirmed Reset actions. Source reports **Built-in default**,
+**Customized**, or **No standing guidance**. Provider/model, top-bar posture, and repository
+authority appear as read-only summaries that link to their existing owners in Settings and
+Trust. The System card appears first on the Persona shelf but is composed beside
+`personaCards()` and never increases a workflow Persona count.
 
 ### The Action detail screen
 

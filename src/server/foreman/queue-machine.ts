@@ -237,7 +237,7 @@ export function tickTargets(
  *
  * A deliberately loose UPPER BOUND, for the reason `queueWantsATick` documents about
  * itself: this reads `Session`, whose `queue` field is the compact card summary, and
- * the summary carries no `promptedGoal` - so "already wrapped up this prompt" is
+ * the summary carries no consumed-generation marker, so "already handled this work cycle" is
  * invisible from here and every finished session stays selected. The machine sees the
  * full queue and answers `skip`; the loop's `advanced` flag then sleeps IDLE_MS, which
  * is the same latency an idle set of sessions already accepts. Guessing tighter would
@@ -260,6 +260,12 @@ function promptedWantsATick(s: Session, triggers: readonly WrapupTrigger[]): boo
   if ((s.queue?.totalCount ?? 0) > 0) return false;
   if (!s.hooksSeen || !s.instrumented) return false;
   if (s.state !== "idle") return false;
+  if (
+    !s.workCycle ||
+    s.workCycle.active ||
+    s.workCycle.generation < 1 ||
+    s.workCycle.completedAt === null
+  ) return false;
   return Boolean(s.goal?.text);
 }
 

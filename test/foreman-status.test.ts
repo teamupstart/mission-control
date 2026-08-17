@@ -13,6 +13,8 @@ process.env.HARNESS_HOME = home;
 const { openDb, upsertSessionNote } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { foremanStatus } = await import("../src/server/foreman/config.ts");
+const { foremanInstructionsView, updateForemanInstructions } =
+  await import("../src/server/foreman/instructions.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -69,6 +71,36 @@ test("foremanStatus counts only notes belonging to currently-live sessions", () 
   assert.equal(status.planner.state, "healthy");
   assert.equal(status.planner.runner, status.runner);
   assert.equal(status.planner.model, status.models.backlog.id);
+});
+
+test("foremanStatus projects only the standing-guidance source", () => {
+  openDb();
+  const r = new Registry();
+  const reset = updateForemanInstructions({
+    expectedEtag: foremanInstructionsView().etag,
+    reset: true,
+  });
+  assert.ok(reset.ok);
+
+  const builtin = foremanStatus(r);
+  assert.equal(builtin.instructionsSource, "builtin");
+  assert.equal("text" in builtin, false);
+  assert.equal("defaultText" in builtin, false);
+  assert.equal("etag" in builtin, false);
+
+  const custom = updateForemanInstructions({
+    expectedEtag: reset.view.etag,
+    text: "Exact custom guidance\r\n",
+  });
+  assert.ok(custom.ok);
+  assert.equal(foremanStatus(r).instructionsSource, "custom");
+
+  const cleared = updateForemanInstructions({ expectedEtag: custom.view.etag, text: "" });
+  assert.ok(cleared.ok);
+  assert.equal(foremanStatus(r).instructionsSource, "none");
+
+  const restored = updateForemanInstructions({ expectedEtag: cleared.view.etag, reset: true });
+  assert.ok(restored.ok);
 });
 
 

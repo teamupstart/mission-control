@@ -29,8 +29,6 @@ const { provisionWorktree, verifyPinnedBase } = await import("../src/server/disp
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
-const NO_PINS = () => ({ sessionCwds: [], taskWorktrees: [], checkLeasePaths: [] });
-
 /**
  * A `git` that dies without reporting an exit of its own.
  *
@@ -78,7 +76,7 @@ function mkRepo(name: string): { repo: string; head: string } {
 test("a git that dies before answering is never reported as 'not a git repository'", async () => {
   const { repo } = mkRepo("alive-and-well");
   const err = await withPath(fakeGitThatDies(), () =>
-    provisionWorktree(repo, "task-id", "slug", "abc123", NO_PINS).then(
+    provisionWorktree(repo, "task-id", "slug", "abc123").then(
       () => null,
       (e: unknown) => e as Error,
     ),
@@ -124,7 +122,7 @@ test("a directory that really is not a repository still says so", async () => {
   mkdirSync(plain, { recursive: true });
 
   await assert.rejects(
-    provisionWorktree(plain, "task-id", "slug", "abc123", NO_PINS),
+    provisionWorktree(plain, "task-id", "slug", "abc123"),
     /is not a git repository/,
     "git ran and answered, so the confident message is the correct one",
   );

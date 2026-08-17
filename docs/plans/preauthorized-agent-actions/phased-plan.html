@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Phased implementation: preauthorized agent actions</title>
+  <style>
+    :root { color-scheme: light dark; --bg:#eef1ed; --paper:#fbfdf9; --ink:#1e2822; --muted:#647067; --line:#c6d0c8; --accent:#17644f; --soft:#dfece5; --code:#18211c; --code-ink:#eef6f0; --shadow:0 16px 44px rgba(25,55,40,.11); }
+    @media (prefers-color-scheme: dark) { :root { --bg:#141a16; --paper:#1d251f; --ink:#edf5ef; --muted:#a9b7ad; --line:#445148; --accent:#78d0ad; --soft:#203b31; --code:#0f1511; --code-ink:#edf5ef; --shadow:0 16px 44px rgba(0,0,0,.3); } }
+    * { box-sizing:border-box; }
+    body { margin:0; background:radial-gradient(circle at 85% 0, color-mix(in srgb,var(--accent) 12%,transparent), transparent 26rem),var(--bg); color:var(--ink); font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif; line-height:1.6; }
+    main { width:min(1100px,calc(100% - 28px)); margin:34px auto 70px; }
+    article { overflow:hidden; border:1px solid var(--line); border-radius:22px; background:var(--paper); box-shadow:var(--shadow); }
+    header { padding:clamp(30px,6vw,66px); border-bottom:1px solid var(--line); background:linear-gradient(135deg,var(--soft),var(--paper) 68%); }
+    .eyebrow { color:var(--accent); font-size:.78rem; font-weight:800; letter-spacing:.15em; text-transform:uppercase; }
+    h1,h2,h3 { line-height:1.2; letter-spacing:-.02em; }
+    h1 { max-width:850px; margin:10px 0 14px; font-size:clamp(2.2rem,6vw,4.6rem); }
+    .lede { max-width:780px; color:var(--muted); font-size:1.1rem; }
+    .content { padding:clamp(26px,5vw,60px); }
+    section + section { margin-top:48px; }
+    h2 { margin:0 0 16px; color:var(--accent); font-size:clamp(1.5rem,3vw,2rem); }
+    h3 { margin:28px 0 10px; }
+    p,li { max-width:84ch; }
+    li + li { margin-top:7px; }
+    code { padding:.12em .34em; border-radius:5px; background:var(--soft); font-family:"SFMono-Regular",Consolas,monospace; font-size:.9em; }
+    .callout { padding:18px 22px; border:1px solid var(--line); border-left:5px solid var(--accent); border-radius:12px; background:var(--soft); }
+    .table-wrap,.code-wrap,.graph { max-width:100%; overflow-x:auto; }
+    table { width:100%; min-width:760px; border-collapse:collapse; }
+    th,td { padding:12px 14px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; }
+    th { color:var(--accent); }
+    pre { min-width:max-content; margin:0; padding:18px; border-radius:12px; background:var(--code); color:var(--code-ink); font: .88rem/1.55 "SFMono-Regular",Consolas,monospace; }
+    .graph { padding:14px; border:1px solid var(--line); border-radius:16px; background:var(--soft); }
+    .graph svg { display:block; min-width:720px; width:100%; height:auto; }
+    .graph .node { fill:var(--paper); stroke:var(--line); stroke-width:2; }
+    .graph .phase { fill:color-mix(in srgb,var(--accent) 15%,var(--paper)); stroke:var(--accent); stroke-width:2; }
+    .graph text { fill:var(--ink); font:600 16px Inter,ui-sans-serif,system-ui,sans-serif; }
+    .graph line { stroke:var(--muted); stroke-width:2.5; }
+    a { color:var(--accent); }
+    @media (max-width:620px) { main{width:calc(100% - 14px);margin-top:7px} article{border-radius:15px} header,.content{padding:23px} }
+  </style>
+</head>
+<body>
+<main>
+  <article>
+    <header>
+      <p class="eyebrow">Ready to publish</p>
+      <h1>Phased implementation: preauthorized PR and workflow actions</h1>
+      <p class="lede">One vertical phase applies the same scoped authorization to initial task delivery and every workflow continuation, without changing capabilities, frozen workflows, or dashboard UI.</p>
+    </header>
+    <div class="content">
+      <section>
+        <h2>Source and approved decisions</h2>
+        <ul>
+          <li>Source: <a href="plan.html">approved root plan</a>.</li>
+          <li>Always-on execution contract, with no setting or opt-out UI.</li>
+          <li>Publish these artifacts before scheduling the implementation task.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Repository investigation</h2>
+        <h3>Initial task delivery</h3>
+        <p><code>withTaskKindContract</code> is shared by fresh dispatch and live-session assignment. The old byte-identical ship invariant becomes exact human-intent prefix plus platform authorization and narrower task contracts.</p>
+        <h3>Workflow continuations</h3>
+        <p><code>src/server/workflows/feedback.ts</code> owns Persona, Inspector, unchanged-evidence, legacy PR, and SessionAction packets. Authorization belongs in the truncation-safe suffix and, for SessionActions, in the runtime envelope before immutable authored Markdown.</p>
+        <h3>Compatibility</h3>
+        <p class="callout">Do not edit <code>actions/pull-request.md</code>, generated action sources, or No-Mistakes v1-v10. Do not change MCP registration, sandbox posture, evidence schemas, routes, storage, or repository validation.</p>
+      </section>
+
+      <section>
+        <h2>Sizing and phase count</h2>
+        <p><strong>Estimated non-test production change: 90-160 lines.</strong></p>
+        <p>This is below the 200-line threshold, so it is exactly one one-shot phase. Splitting task delivery from workflow continuations would ship an incomplete policy and duplicate one wording contract across merge units.</p>
+      </section>
+
+      <section>
+        <h2>Compatibility decisions</h2>
+        <ul>
+          <li>Preserve the original human intent as the exact task-prompt prefix.</li>
+          <li>Place broad authorization before more-specific task-kind contracts, leaving the scout no-PR rule authoritative.</li>
+          <li>Keep <code>SessionActionSnapshot.promptMarkdown</code> byte-for-byte and at the end of its packet; policy is runtime envelope data.</li>
+          <li>Leave prepared delivery payloads and No-Mistakes v1-v10 unchanged.</li>
+          <li>Keep MCP, sandbox, evidence validation, and repository enforcement unchanged.</li>
+          <li>Leave workflow resubmission to the engine or Runs UI; the agent repairs, stages evidence when useful, and stops.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Phase table</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Phase</th><th>Outcome</th><th>Direct prerequisite</th><th>Estimate</th><th>Plan</th></tr></thead>
+            <tbody><tr><td>1</td><td>Agents act directly on already-scoped PR and workflow-evidence instructions</td><td>Planning PR merged</td><td>90-160 production lines</td><td><a href="phase-1-preauthorize-agent-actions.md">Phase 1 detail</a></td></tr></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section>
+        <h2>Dependency graph and merge order</h2>
+        <div class="graph" role="img" aria-label="Planning pull request merge releases the single implementation phase">
+          <svg viewBox="0 0 900 190" xmlns="http://www.w3.org/2000/svg">
+            <defs><marker id="a" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="var(--muted)"/></marker></defs>
+            <rect class="node" x="55" y="58" width="300" height="74" rx="13"/>
+            <text x="91" y="91"><tspan x="91">Planning session PR</tspan><tspan x="91" dy="24">merged to default branch</tspan></text>
+            <line x1="355" y1="95" x2="510" y2="95" marker-end="url(#a)"/>
+            <rect class="phase" x="512" y="48" width="335" height="94" rx="13"/>
+            <text x="548" y="82"><tspan x="548">Phase 1</tspan><tspan x="548" dy="24">Preauthorize agent actions</tspan></text>
+          </svg>
+        </div>
+        <p>No phases run concurrently. The plan merge publishes the paths, then Phase 1 creates the single implementation pull request.</p>
+      </section>
+
+      <section>
+        <h2>Cross-phase contracts</h2>
+        <ul>
+          <li>One server-owned renderer owns the authorization wording.</li>
+          <li>Task and workflow prompt families consume it without copied prose.</li>
+          <li>Narrow task and action instructions remain later and authoritative.</li>
+          <li>Capability enforcement stays outside the prompt.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Final verification strategy</h2>
+        <p>Phase 1 runs focused task-contract, assignment, workflow-feedback, SessionAction, and Mission MCP tests, followed by the full suite, typecheck, lint, build, and smoke. There is no dashboard UI change and no new Playwright spec.</p>
+        <div class="code-wrap"><pre><code>npm test
+npm run typecheck
+npm run lint
+npm run build
+npm run smoke</code></pre></div>
+      </section>
+
+      <section>
+        <h2>Cross-phase audit</h2>
+        <ul>
+          <li>Every approved requirement is owned by Phase 1.</li>
+          <li>Runtime envelope composition preserves immutable action and workflow sources.</li>
+          <li>No additional phase creates a meaningful merge or safety boundary.</li>
+        </ul>
+      </section>
+    </div>
+  </article>
+</main>
+</body>
+</html>

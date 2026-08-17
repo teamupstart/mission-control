@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Preauthorized PR and workflow actions</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f4f1e8;
+      --surface: #fffdf7;
+      --surface-2: #ebe6d8;
+      --ink: #20251f;
+      --muted: #63685e;
+      --line: #cbc5b6;
+      --accent: #1f6b57;
+      --accent-2: #b45e32;
+      --accent-soft: #dcece5;
+      --code: #252a25;
+      --code-ink: #f4f1e8;
+      --shadow: 0 18px 45px rgba(45, 40, 28, 0.1);
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #171b18;
+        --surface: #202621;
+        --surface-2: #2b322c;
+        --ink: #edf1e9;
+        --muted: #aeb8ad;
+        --line: #465047;
+        --accent: #73c7aa;
+        --accent-2: #efa071;
+        --accent-soft: #203d34;
+        --code: #111512;
+        --code-ink: #edf1e9;
+        --shadow: 0 18px 45px rgba(0, 0, 0, 0.28);
+      }
+    }
+    * { box-sizing: border-box; }
+    html { background: var(--bg); }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at top left, color-mix(in srgb, var(--accent) 12%, transparent), transparent 30rem),
+        var(--bg);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.62;
+    }
+    main { width: min(1120px, calc(100% - 32px)); margin: 40px auto 72px; }
+    article {
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      background: var(--surface);
+      box-shadow: var(--shadow);
+    }
+    header {
+      padding: clamp(32px, 7vw, 72px);
+      border-bottom: 1px solid var(--line);
+      background: linear-gradient(135deg, var(--accent-soft), var(--surface) 65%);
+    }
+    .eyebrow {
+      margin: 0 0 12px;
+      color: var(--accent);
+      font-size: .78rem;
+      font-weight: 800;
+      letter-spacing: .14em;
+      text-transform: uppercase;
+    }
+    h1, h2, h3 { line-height: 1.18; letter-spacing: -.025em; }
+    h1 { max-width: 840px; margin: 0; font-size: clamp(2.35rem, 7vw, 5rem); }
+    .lede { max-width: 780px; margin: 22px 0 0; color: var(--muted); font-size: 1.15rem; }
+    .content { padding: clamp(28px, 6vw, 68px); }
+    section + section { margin-top: 54px; }
+    h2 { margin: 0 0 18px; color: var(--accent); font-size: clamp(1.55rem, 3vw, 2.15rem); }
+    h3 { margin: 30px 0 12px; font-size: 1.18rem; }
+    p, li { max-width: 82ch; }
+    ul, ol { padding-left: 1.35rem; }
+    li + li { margin-top: 9px; }
+    code {
+      border-radius: 5px;
+      background: var(--surface-2);
+      padding: .12em .34em;
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: .9em;
+    }
+    .status, .decision, .guardrail {
+      border: 1px solid var(--line);
+      border-left: 5px solid var(--accent);
+      border-radius: 12px;
+      background: var(--accent-soft);
+      padding: 18px 22px;
+    }
+    .decision { border-left-color: var(--accent-2); }
+    .decision strong { color: var(--accent-2); }
+    .grid { display: grid; gap: 18px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+    .card { border: 1px solid var(--line); border-radius: 14px; padding: 20px; background: color-mix(in srgb, var(--surface) 88%, var(--surface-2)); }
+    .card h3 { margin-top: 0; }
+    .table-wrap, .code-wrap { max-width: 100%; overflow-x: auto; }
+    pre {
+      min-width: max-content;
+      margin: 0;
+      border-radius: 14px;
+      background: var(--code);
+      color: var(--code-ink);
+      padding: 20px;
+      font: .88rem/1.6 "SFMono-Regular", Consolas, monospace;
+    }
+    .flow {
+      max-width: 100%;
+      overflow-x: auto;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: var(--surface-2);
+      padding: 16px;
+    }
+    .flow svg { display: block; min-width: 940px; width: 100%; height: auto; }
+    .flow .box { fill: var(--surface); stroke: var(--line); stroke-width: 2; }
+    .flow .stop { fill: color-mix(in srgb, var(--accent-2) 14%, var(--surface)); stroke: var(--accent-2); stroke-width: 2; }
+    .flow .go { fill: color-mix(in srgb, var(--accent) 14%, var(--surface)); stroke: var(--accent); stroke-width: 2; }
+    .flow text { fill: var(--ink); font: 600 15px Inter, ui-sans-serif, system-ui, sans-serif; }
+    .flow .label { fill: var(--muted); font-size: 13px; font-weight: 800; letter-spacing: .12em; }
+    .flow line, .flow path { stroke: var(--muted); stroke-width: 2.2; fill: none; }
+    a { color: var(--accent); }
+    @media (max-width: 620px) {
+      main { width: min(100% - 16px, 1120px); margin-top: 8px; }
+      article { border-radius: 16px; }
+      header, .content { padding: 24px; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <article>
+    <header>
+      <p class="eyebrow">Approved on 2026-08-17</p>
+      <h1>Preauthorized PR and workflow actions</h1>
+      <p class="lede">Make Mission Control's existing scope legible to the agent, so creating the requested pull request and registering scoped workflow evidence no longer stop for a duplicate conversational approval.</p>
+    </header>
+    <div class="content">
+      <section>
+        <h2>Approved decisions</h2>
+        <ul>
+          <li>Apply the authorization as an always-on Mission Control execution contract. Do not add a setting or opt-out UI.</li>
+          <li>Create a phased implementation plan and schedule its implementation task after the plan artifacts are committed and pushed.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Outcome</h2>
+        <ol>
+          <li>When the task or workflow calls for a pull request, the agent may commit the scoped work, push its task branch, and create or update that pull request without asking again.</li>
+          <li>When a Persona workflow exposes <code>submit_workflow_evidence</code>, the agent may register task-produced, checkout-relative evidence under an issued repository scope without asking for approval of the payload or destination. The agent must not ask the human to resubmit the workflow after a repair.</li>
+        </ol>
+        <p class="guardrail">The authorization is conditional, not an instruction to perform either action in every task. Scout no-PR rules, repository boundaries, evidence validation, and the prohibition on merging remain authoritative.</p>
+      </section>
+
+      <section>
+        <h2>Why this is happening</h2>
+        <p>Codex is stopping on redundant conversational approvals even though Mission Control has already established the operational scope. The same gap appears around pull request creation: the task or workflow asks for a PR, but the delivered prompt does not state plainly enough that this external write is already authorized by the operator's Mission Control action.</p>
+      </section>
+
+      <section>
+        <h2>Repository findings</h2>
+        <ul>
+          <li><code>src/server/task-contract.ts</code> is the central composer used by both fresh dispatch and assignment to a live session.</li>
+          <li><code>src/server/workflows/agent-contract.ts</code> explains the evidence tool but does not explicitly preauthorize its scoped write or close the resubmission question.</li>
+          <li>Mission MCP launch registration and preapproval already exist. This is a prompt-level authorization gap, not a reason to widen sandbox access.</li>
+          <li><code>src/server/workflows/feedback.ts</code> renders daemon-authored repair, Inspector, unchanged-evidence, legacy PR, and SessionAction packets. Follow-up turns need the same authorization after context compaction.</li>
+          <li>The workflow engine or Runs UI owns resubmission. The agent should repair, stage evidence, and stop.</li>
+          <li><code>actions/pull-request.md</code> is frozen into published workflow versions. Runtime delivery must add the platform envelope without rewriting snapshot Markdown.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Adopted policy: always-on contract</h2>
+        <div class="decision">
+          <p><strong>Use an always-on Mission Control execution contract.</strong></p>
+          <p>Authorization does not expand the task. It removes a duplicate confirmation for an action another task or workflow instruction already requires. Making the invariant optional would preserve the stall whenever disabled and add a persistence and UI surface unrelated to the already-bounded action.</p>
+        </div>
+      </section>
+
+      <section>
+        <h2>Proposed design</h2>
+        <div class="grid">
+          <div class="card">
+            <h3>1. One prompt policy</h3>
+            <p>Add a server-side renderer for exact authorization language. It receives task/workflow context, evidence availability, and continuation state.</p>
+          </div>
+          <div class="card">
+            <h3>2. Both task seams</h3>
+            <p>Compose the shared authorization through <code>withTaskKindContract</code>. Keep the human intent first and narrower task-kind restrictions later.</p>
+          </div>
+          <div class="card">
+            <h3>3. Every workflow continuation</h3>
+            <p>Keep authorization in the truncation-safe workflow suffix and the runtime SessionAction envelope, outside frozen action Markdown.</p>
+          </div>
+          <div class="card">
+            <h3>4. Existing enforcement</h3>
+            <p>Keep the current sandbox, MCP allowlists, issued repository slots, path checks, bounds, and server-side attribution unchanged.</p>
+          </div>
+        </div>
+
+        <h3>Exact policy boundaries</h3>
+        <ul>
+          <li>PR creation or update is authorized only when the current task or workflow asks for it.</li>
+          <li>The task branch and repository named by Mission Control are in scope. Arbitrary repositories are not.</li>
+          <li>Merge is not authorized, and an explicit no-PR instruction wins.</li>
+          <li>An available evidence tool may be called directly for task-produced, checkout-relative files and issued scopes, including <code>all</code> when issued.</li>
+          <li>Workflow resubmission is owned by Mission Control or the Runs UI, not turned into an agent permission request.</li>
+        </ul>
+
+        <h3>Documentation</h3>
+        <p>Update <code>docs/sessions.md</code> and <code>docs/workflows.md</code>. No Settings documentation, schema, route, or UI changes are required.</p>
+      </section>
+
+      <section>
+        <h2>Prompt flow change</h2>
+        <div class="flow" role="img" aria-label="Before and after flow showing redundant permission removed from Mission Control task and workflow delivery">
+          <svg viewBox="0 0 1100 470" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+              <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="var(--muted)" stroke="none"/></marker>
+            </defs>
+            <text class="label" x="34" y="34">BEFORE</text>
+            <rect class="box" x="34" y="58" width="190" height="68" rx="12"/>
+            <text x="55" y="85"><tspan x="55">Human task or</tspan><tspan x="55" dy="22">approved workflow</tspan></text>
+            <rect class="box" x="294" y="58" width="200" height="68" rx="12"/>
+            <text x="320" y="85"><tspan x="320">Mission Control</tspan><tspan x="320" dy="22">prompt renderer</tspan></text>
+            <rect class="box" x="564" y="58" width="160" height="68" rx="12"/>
+            <text x="593" y="98">Agent session</text>
+            <rect class="stop" x="794" y="58" width="250" height="68" rx="12"/>
+            <text x="823" y="85"><tspan x="823">Redundant permission</tspan><tspan x="823" dy="22">request to human</tspan></text>
+            <line x1="224" y1="92" x2="292" y2="92" marker-end="url(#arrow)"/>
+            <line x1="494" y1="92" x2="562" y2="92" marker-end="url(#arrow)"/>
+            <line x1="724" y1="92" x2="792" y2="92" marker-end="url(#arrow)"/>
+
+            <text class="label" x="34" y="224">AFTER</text>
+            <rect class="box" x="34" y="248" width="190" height="68" rx="12"/>
+            <text x="55" y="275"><tspan x="55">Human task or</tspan><tspan x="55" dy="22">approved workflow</tspan></text>
+            <rect class="go" x="294" y="236" width="230" height="92" rx="12"/>
+            <text x="320" y="267"><tspan x="320">Mission Control prompt</tspan><tspan x="320" dy="22">plus conditional, scoped</tspan><tspan x="320" dy="22">authorization</tspan></text>
+            <rect class="box" x="594" y="248" width="160" height="68" rx="12"/>
+            <text x="623" y="288">Agent session</text>
+            <rect class="go" x="824" y="204" width="220" height="68" rx="12"/>
+            <text x="850" y="231"><tspan x="850">Create or update</tspan><tspan x="850" dy="22">the scoped PR</tspan></text>
+            <rect class="go" x="824" y="306" width="220" height="68" rx="12"/>
+            <text x="850" y="333"><tspan x="850">Register scoped</tspan><tspan x="850" dy="22">workflow evidence</tspan></text>
+            <line x1="224" y1="282" x2="292" y2="282" marker-end="url(#arrow)"/>
+            <line x1="524" y1="282" x2="592" y2="282" marker-end="url(#arrow)"/>
+            <path d="M754 274 C782 274 786 238 822 238" marker-end="url(#arrow)"/>
+            <path d="M754 290 C782 290 786 340 822 340" marker-end="url(#arrow)"/>
+            <rect class="box" x="824" y="400" width="220" height="48" rx="12"/>
+            <text x="844" y="430">Workflow engine observes</text>
+            <line x1="934" y1="374" x2="934" y2="398" marker-end="url(#arrow)"/>
+          </svg>
+        </div>
+        <p>The agent still asks when a genuinely new decision is required. It no longer asks the human to approve an action already selected and bounded by the task or workflow.</p>
+      </section>
+
+      <section>
+        <h2>Tests and verification</h2>
+        <ul>
+          <li>Cover every task kind, preserve the original intent prefix, and prove the scout no-PR contract stays later and authoritative.</li>
+          <li>Assert explicit evidence authorization and no resubmit request.</li>
+          <li>Cover normal and truncated repair packets, Inspector packets, unchanged-evidence nudges, legacy PR handoffs, and runtime-wrapped SessionActions.</li>
+          <li>Prove stored SessionAction Markdown remains byte-identical inside the runtime envelope.</li>
+          <li>Keep existing Mission MCP registration and preapproval coverage green with no sandbox widening.</li>
+        </ul>
+        <div class="code-wrap"><pre><code>node --test --import ./test/setup-state.mjs --import tsx test/scout-prompt.test.ts
+node --test --import ./test/setup-state.mjs --import tsx test/plan-prompt.test.ts
+node --test --import ./test/setup-state.mjs --import tsx test/workflow-feedback.test.ts
+node --test --import ./test/setup-state.mjs --import tsx test/session-action-durability.test.ts
+node --test --import ./test/setup-state.mjs --import tsx test/mission-mcp.test.ts
+npm test
+npm run typecheck
+npm run lint
+npm run build
+npm run smoke</code></pre></div>
+        <p>The approved always-on path has no dashboard UI change and requires no new Playwright spec.</p>
+      </section>
+
+      <section>
+        <h2>Acceptance criteria</h2>
+        <ul>
+          <li>Requested PR creation or update no longer causes a separate conversational permission request.</li>
+          <li>Eligible evidence can be submitted directly with the issued scope, including <code>repositoryScope: "all"</code>.</li>
+          <li>Repair and action packets do not ask the human to resubmit the workflow.</li>
+          <li>Scout, no-merge, repository, sandbox, MCP, and evidence-validation boundaries remain intact.</li>
+          <li>Published workflow versions and frozen SessionAction Markdown remain unchanged.</li>
+          <li>The authorization survives workflow feedback truncation.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Implementation follow-up</h2>
+        <p>The approved repository-verified breakdown is in <a href="phased-plan.html">the rendered phased plan</a>, with the detailed one-shot implementation guide in <a href="phase-1-preauthorize-agent-actions.md">Phase 1</a>.</p>
+      </section>
+
+      <section>
+        <h2>Delivery</h2>
+        <p>Implement this as one coherent server-and-documentation change. It has no schema or graph-version migration. Commit on a feature branch, open a reviewable pull request without asking for separate permission, and let the existing workflow and Inspector gates evaluate it.</p>
+      </section>
+    </div>
+  </article>
+</main>
+</body>
+</html>

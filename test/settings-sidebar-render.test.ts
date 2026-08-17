@@ -89,8 +89,6 @@ function status(over: Partial<SettingsStatus> = {}): SettingsStatus {
     inspector: { enabled: false, mode: "dry-run" },
     shipping: { autoMerge: false },
     taskSources: { failing: 0 },
-    // Present by default so the tests that are about OTHER categories keep seeing the whole
-    // rail; the ones about Conductor's conditional row override it.
     pipelines: { present: true, observing: 0 },
     ...over,
   };
@@ -109,50 +107,36 @@ const INSPECTOR_ONLY = /Run GitHub Inspector/; // the inspector master toggle la
 const SHIPPING_ONLY = /YOLO mode - merge/; // the auto-merge master toggle label
 const TASK_SOURCES_ONLY = /never dispatches an agent/; // the task-sources safety sentence
 const MODELS_ONLY = /Background jobs/; // the LLM panel's per-job group label
-const CONDUCTOR_ONLY = /never starts or stops a pipeline/; // the Conductor panel's read-only claim
+const CONDUCTOR_ONLY = /Conductor commissioning progress/; // the Conductor panel's setup path
 
 test("the rail lists every category exactly once", () => {
-  // With every conditional category available, so this is about the rail drawing the whole
-  // registry rather than about which categories this operator has.
   const html = render("display", { settingsStatus: status() });
   const items = html.match(/class="settings-nav-item/g) ?? [];
   assert.equal(items.length, SETTINGS_CATEGORIES.length);
   for (const c of SETTINGS_CATEGORIES) assert.ok(html.includes(c.label), `nav missing ${c.label}`);
 });
 
-// The plan's criterion, and the sharpest thing this file asserts: "an operator without
-// conductor installed sees nothing new". It is keyed on INSTALLED, not on enabled - a rail
-// row offering to observe an engine somebody does not have is a new thing on their screen
-// however off it ships. Conductor is the only category conditional this way, because it is
-// the only one that configures somebody else's software.
-test("without an engine installed, the Conductor category does not exist at all", () => {
+test("without an engine installed, Conductor remains a permanent destination", () => {
   const html = render("display", { settingsStatus: status({ pipelines: { present: false, observing: 0 } }) });
   assert.equal(
     (html.match(/class="settings-nav-item/g) ?? []).length,
-    SETTINGS_CATEGORIES.length - 1,
-    "the rail should be one row shorter",
+    SETTINGS_CATEGORIES.length,
+    "engine state must not alter navigation",
   );
-  assert.doesNotMatch(html, />Conductor</, "no rail row");
+  assert.match(html, />Conductor</, "the rail row is permanent");
   assert.doesNotMatch(html, CONDUCTOR_ONLY, "no panel");
-  assert.doesNotMatch(html, /data-anchor="conductor\//, "no anchored control");
 });
 
-// And the deep link is not a back door. A stale bookmark, or a link written before the
-// engine was uninstalled, must land where an unknown category lands rather than on an empty
-// pane - or the panel is reachable after all.
-test("routing to Conductor without an engine falls back rather than rendering it", () => {
+test("routing to Conductor without an engine renders its setup destination", () => {
   const html = render("conductor", { settingsStatus: status({ pipelines: { present: false, observing: 0 } }) });
-  assert.doesNotMatch(html, CONDUCTOR_ONLY);
-  assert.match(html, LAYOUT_ONLY, "falls back to the default category");
+  assert.match(html, CONDUCTOR_ONLY);
+  assert.doesNotMatch(html, LAYOUT_ONLY);
   assert.equal((html.match(/settings-nav-item is-active/g) ?? []).length, 1);
 });
 
-// The pre-snapshot instant is UNKNOWN, and unknown draws nothing. A rail that assumed
-// absence would flash the row in on every load for anyone who has the engine; one that
-// assumed presence would flash it out for everyone who does not.
-test("before the daemon answers, the conditional category is not drawn", () => {
+test("before the daemon answers, the permanent Conductor category is already drawn", () => {
   const html = render();
-  assert.doesNotMatch(html, />Conductor</);
+  assert.match(html, />Conductor</);
 });
 
 // The rail groups by blast radius, and the groups come from the registry - never from a

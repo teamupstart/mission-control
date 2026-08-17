@@ -1405,8 +1405,8 @@ ensemble member, [`submit_scout_artifacts`](archives.md) for a scout, and
 `submit_workflow_evidence` for a workflow-bound ship task whose immutable graph contains a
 Persona. The workflow tool registers contained gitignored screenshots and focused UTF-8 text
 or log artifacts by issued repository slot or across all applicable repositories before task
-completion. It never tells the agent to commit evidence, and a ship task without such a
-workflow keeps its prior launch and prompt unchanged.
+completion. It never tells the agent to commit evidence. A ship task without such a workflow
+keeps its prior Mission MCP launch and receives no evidence instructions:
 
 Registered evidence is visible in the session card's shared **Image evidence** composer before
 **Ship it** or the built-in No-Mistakes review starts. A person can remove a stale registration,
@@ -1439,6 +1439,23 @@ The MCP tools are:
   client id, caption, checkout-relative path, and `repositoryScope` set to an issued repository
   slot or `all`. At least one item is required. The daemon resolves and re-hashes the source;
   the caller never supplies an absolute path, digest, submission id, or storage location
+
+Mission Control-authored task and workflow execution prompts carry a standing, conditional
+authorization for already-scoped work. If the task or current workflow asks for a pull request,
+the agent may commit the scoped work, push its task branch, and create or update that pull
+request in the issued repository without asking for another confirmation. This is not an
+instruction to create a pull request, an explicit no-PR instruction still wins, and merge,
+other repositories, and other external writes remain unauthorized. Prompt authorization is
+also separate from sandbox approval posture and does not widen it.
+
+When `submit_workflow_evidence` is exposed, the prompt likewise authorizes the exact
+server-validated call for task-produced, checkout-relative files and issued repository scopes.
+That includes `repositoryScope: "all"` only when Mission Control issued it. The agent calls the
+tool directly instead of asking for approval of the payload or Mission Control destination.
+Repository resolution, path and symlink checks, type and size limits, UTF-8 validation, and
+live-session attribution remain authoritative. Workflow resubmission belongs to Mission
+Control's engine or the Runs UI, so an agent completes the repair and does not ask the human to
+resubmit it.
 
 Because the MCP server is a child of the agent, it inherits the terminal env and
 binds every call to the correct session automatically.

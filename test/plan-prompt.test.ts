@@ -150,8 +150,11 @@ test("a plan's intent arrives intact, with the contract appended after it", () =
 
 test("a ship or scout task never sees the plan contract, whatever is passed alongside it", () => {
   const ship = mkTask({ kind: "ship" });
-  // The same inputs a plan delivery carries, on a task that is not one: byte-identical out.
-  assert.equal(withTaskKindContract(ship, ship.intent, { planSkills: CLAUDE_SKILLS }), ship.intent);
+  // The same inputs a plan delivery carries, on a task that is not one: only shared policy follows.
+  const deliveredShip = withTaskKindContract(ship, ship.intent, { planSkills: CLAUDE_SKILLS });
+  assert.ok(deliveredShip.startsWith(ship.intent));
+  assert.match(deliveredShip, /Mission Control execution authorization/);
+  assert.ok(!deliveredShip.includes(PLAN_APPENDIX_MARKER));
   assert.equal(isPlanTask(ship), false);
 
   const scout = mkTask({ kind: "scout" });

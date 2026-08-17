@@ -12,6 +12,7 @@ import type {
 import type { InspectorComment } from "@shared/types.ts";
 import type { InspectorPosture } from "@shared/inspector.ts";
 import type { InspectorFindingsPolicy } from "@shared/workflow.ts";
+import { executionAuthorizationContract } from "../execution-authorization.ts";
 
 const TRUNCATION_NOTICE = "\n\n[Workflow repair packet truncated deterministically.]";
 /**
@@ -56,6 +57,8 @@ export interface InspectorFeedbackInput {
   reviewPosture: InspectorPosture | null;
   policy: InspectorFindingsPolicy;
   findings: InspectorComment[];
+  /** The pinned immutable workflow version contains at least one Persona. */
+  workflowEvidence: boolean;
 }
 
 export interface PrHandoffInput {
@@ -64,6 +67,8 @@ export interface PrHandoffInput {
   runId: string;
   originalGoal: string;
   skillCommand: string;
+  /** The pinned immutable workflow version contains at least one Persona. */
+  workflowEvidence: boolean;
   /**
    * The repository this run reviews, or null when it is the session's own checkout. Same
    * reason `SessionActionPacketOrigin` carries one: the handoff asks for a pull request, and
@@ -125,6 +130,8 @@ export interface SessionActionPacketInput {
   promptMarkdown: string;
   /** Resolved from the bound harness at preparation, or null when none is required. */
   skillCommand: string | null;
+  /** The pinned immutable workflow version contains a Persona; false for on-demand actions. */
+  workflowEvidence: boolean;
 }
 
 export interface UnchangedEvidenceNudgeInput {
@@ -141,6 +148,8 @@ export interface UnchangedEvidenceNudgeInput {
   /** Which nudge this is, and how many there are. Stated so the bound is not a surprise. */
   nudge: number;
   nudgeLimit: number;
+  /** The pinned immutable workflow version contains at least one Persona. */
+  workflowEvidence: boolean;
 }
 
 /** Remove bytes that a terminal could interpret as controls while retaining plain line breaks. */
@@ -187,16 +196,26 @@ function latestAttempts(attempts: WorkflowNodeAttempt[]): Map<string, WorkflowNo
   return latest;
 }
 
-function finalizePacket(body: string, truncated: boolean, finalInstruction: string): {
+function finalizePacket(
+  body: string,
+  truncated: boolean,
+  finalInstruction: string,
+  workflowEvidence: boolean,
+): {
   payload: string;
   payloadSha256: string;
   truncated: boolean;
 } {
   const cleanBody = sanitizeWorkflowFeedback(body).replace(/\s+$/u, "");
-  let payload = `${cleanBody}\n\n${finalInstruction}`;
+  const authorization = executionAuthorizationContract({
+    workflowEvidence,
+    workflowContinuation: true,
+  });
+  const finalBlock = `${authorization}\n\n${finalInstruction}`;
+  let payload = `${cleanBody}\n\n${finalBlock}`;
   if (encoder.encode(payload).byteLength > WORKFLOW_LIMITS.feedbackPayloadBytes) truncated = true;
   if (truncated) {
-    const suffix = `\n\n${finalInstruction}${TRUNCATION_NOTICE}`;
+    const suffix = `\n\n${finalBlock}${TRUNCATION_NOTICE}`;
     const budget = WORKFLOW_LIMITS.feedbackPayloadBytes - encoder.encode(suffix).byteLength;
     payload = clipUtf8(cleanBody, Math.max(0, budget)).value.replace(/\s+$/u, "") + suffix;
   }
@@ -256,7 +275,12 @@ export function renderWorkflowFeedback(input: WorkflowFeedbackInput): RenderedWo
     ...blocks.flatMap((block, index) => index === 0 ? [block] : ["", block]),
   ];
   return {
-    ...finalizePacket(bodyParts.join("\n"), truncated, FINAL_INSTRUCTION),
+    ...finalizePacket(
+      bodyParts.join("\n"),
+      truncated,
+      FINAL_INSTRUCTION,
+      input.version.graph.nodes.some((node) => node.kind === "persona"),
+    ),
     failedPersonaCount: blocks.length,
   };
 }
@@ -340,7 +364,7 @@ export function renderInspectorFeedback(input: InspectorFeedbackInput): Rendered
     }),
   ].join("\n");
   return {
-    ...finalizePacket(body, truncated, policyInstruction),
+    ...finalizePacket(body, truncated, policyInstruction, input.workflowEvidence),
     failedPersonaCount: findings.length,
   };
 }
@@ -397,7 +421,7 @@ export function renderUnchangedEvidenceNudge(
     + "plainly why it should not be made and leave the work as it stands. Reporting completion "
     + "again without doing one of those two will block this run for a human to resolve.";
   return {
-    ...finalizePacket(body, truncated, instruction),
+    ...finalizePacket(body, truncated, instruction, input.workflowEvidence),
     failedPersonaCount: 0,
   };
 }
@@ -438,7 +462,11 @@ export function renderSessionAction(input: SessionActionPacketInput): RenderedSe
   const lines = input.skillCommand
     ? [sanitizeWorkflowFeedback(input.skillCommand), "", ...header]
     : header;
-  const payload = `${lines.join("\n")}${sanitizeWorkflowFeedback(input.promptMarkdown)}`;
+  const authorization = executionAuthorizationContract({
+    workflowEvidence: input.workflowEvidence,
+    workflowContinuation: input.origin.kind === "run",
+  });
+  const payload = `${[...lines, authorization, ""].join("\n")}${sanitizeWorkflowFeedback(input.promptMarkdown)}`;
   // REFUSED, never truncated. Every other packet in this file clips, because every other
   // packet is prose the daemon composed and a shorter summary is still a true summary. This
   // one is the operator's own instruction, frozen into an immutable version: a prefix of
@@ -481,7 +509,7 @@ export function renderPrHandoff(input: PrHandoffInput): RenderedWorkflowFeedback
     ? "Use the invoked pull-request skill to commit the reviewed work in the repository named above, push it, and open that repository's pull request with a reviewer-ready description and concrete proof. Leave the task's other repositories alone; each has its own review and its own pull request."
     : "Use the invoked pull-request skill to commit all reviewed work, push it, and open the pull request with a reviewer-ready description and concrete proof.";
   return {
-    ...finalizePacket(body, truncated, instruction),
+    ...finalizePacket(body, truncated, instruction, input.workflowEvidence),
     failedPersonaCount: 0,
   };
 }

@@ -37,6 +37,7 @@ process.env.MISSION_MCP_SERVER = join(home, "no-such-mcp-bundle.mjs");
 const { Registry } = await import("../src/server/registry.ts");
 const { Dispatcher } = await import("../src/server/dispatcher.ts");
 const { openDb, getForemanInvite } = await import("../src/server/db.ts");
+const { executionAuthorizationContract } = await import("../src/server/execution-authorization.ts");
 const { setHarnessesConfig, resolveDispatchRuntime } = await import("../src/server/harnesses.ts");
 const { MISSION_MCP_TOOLS } = await import("../src/server/mission-mcp.ts");
 const { HarnessesConfigSchema } = await import("../src/shared/protocol.ts");
@@ -163,8 +164,15 @@ test("with both toggles on, Claude and Codex dispatch through the supervisor wit
     // The task's own title, unsanitized: `sessionLabel` cuts a name to a terminal backend's
     // grammar, and there is no terminal here to satisfy.
     assert.equal(start.name, `Exercise ${agent} SDK dispatch`);
-    // The intent IS turn one. There is no separate delivery step to verify or retry.
-    assert.equal(start.prompt, `run ${agent} through the embedded runtime`);
+    // The exact intent remains turn one's prefix, followed by the same server-owned
+    // authorization contract that terminal dispatch receives.
+    assert.equal(
+      start.prompt,
+      [
+        `run ${agent} through the embedded runtime`,
+        executionAuthorizationContract({ workflowEvidence: false, workflowContinuation: false }),
+      ].join("\n\n"),
+    );
     assert.equal(start.taskId, `task-sdk-${agent}`);
     assert.ok(start.cwd.length > 0);
 

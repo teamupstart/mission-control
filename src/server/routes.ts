@@ -82,6 +82,7 @@ import {
   PipelineActionSchema,
   PipelineConsoleSchema,
   PipelineForemanEpisodeSchema,
+  PipelineRepoRegistrationSchema,
   PipelinesConfigPatchSchema,
   SkillsConfigPatchSchema,
   TaskSourcesConfigPatchSchema,
@@ -218,6 +219,7 @@ import {
   probeAllPipelineProviders,
   readPipelineRunDetail,
   reconcilePipelineConsent,
+  registerPipelineRepo,
   runPipelineAction,
 } from "./pipelines/index.ts";
 import {
@@ -4299,6 +4301,23 @@ export function buildApp(
   app.get("/api/pipelines/config", async (c) =>
     c.json(await pipelinesView(c.req.query("refresh") === "1")),
   );
+
+  /**
+   * Register a canonical repository through its provider. This changes provider state only;
+   * observation consent remains the separate whole-config PUT below.
+   */
+  app.post("/api/pipelines/register", async (c) => {
+    const parsed = await parseBody(c, PipelineRepoRegistrationSchema);
+    if (!parsed.ok) return parsed.res;
+    const repoRoot = await resolveRepoRoot(parsed.data.repoRoot);
+    if (!repoRoot) return c.json({ error: `not a git repository: ${parsed.data.repoRoot}` }, 400);
+
+    const registration = await registerPipelineRepo(parsed.data.provider, repoRoot);
+    return c.json({
+      registration,
+      view: await pipelinesView(registration.ok),
+    });
+  });
 
   /**
    * The repositories being READ, for the Pipelines rail's group headings.

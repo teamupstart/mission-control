@@ -19000,18 +19000,162 @@ button.sc-row:focus-visible {
   border-color: color-mix(in oklab, var(--danger) 38%, transparent);
   background: color-mix(in oklab, var(--danger) 8%, var(--panel-2));
 }
-.conductor-install-copy {
-  margin-top: 9px;
+.conductor-installer-setup {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 10px;
+}
+.conductor-machine-scope {
+  margin: 0;
+}
+.conductor-machine-scope strong {
+  color: var(--fg);
+}
+.conductor-installer-candidates {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.conductor-installer-candidates li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 10px;
+  border: 1px solid color-mix(in oklab, var(--idle) 28%, var(--border-soft));
+  border-radius: 7px;
+  background: color-mix(in oklab, var(--idle) 5%, var(--panel-2));
+}
+.conductor-installer-candidates li > span {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.conductor-installer-candidates strong {
+  color: var(--idle);
+  font-size: 11.5px;
+}
+.conductor-installer-candidates code,
+.conductor-installer-confirm code,
+.conductor-command-row code {
+  overflow-wrap: break-word;
+  word-break: normal;
+}
+.conductor-installer-candidates small {
+  color: var(--muted);
+  font-size: 10.5px;
+}
+.conductor-installer-confirm {
+  padding: 12px;
+  border: 1px solid color-mix(in oklab, var(--working) 42%, var(--border-soft));
+  border-radius: 9px;
+  background: color-mix(in oklab, var(--working) 6%, var(--panel-2));
+}
+.conductor-installer-confirm > header {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-bottom: 10px;
+}
+.conductor-installer-confirm > header > span:first-child {
+  color: var(--working);
+  font-size: 19px;
+}
+.conductor-installer-confirm > header > span:last-child {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.conductor-installer-confirm > header strong {
+  color: var(--fg);
+  font-size: 12.5px;
+}
+.conductor-installer-confirm > header small {
+  color: var(--muted);
+  font-size: 10.5px;
+}
+.conductor-installer-confirm dl {
+  display: grid;
+  gap: 5px;
+  margin: 0 0 10px;
+}
+.conductor-installer-confirm dl > div {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 8px;
+  min-width: 0;
+}
+.conductor-installer-confirm dt {
+  color: var(--dim);
+  font-size: 10.5px;
+}
+.conductor-installer-confirm dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--fg);
+  font-size: 11px;
+}
+.conductor-installer-changes {
+  display: grid;
+  gap: 4px;
+  margin: 7px 0 11px;
+  padding-left: 19px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.conductor-terminal-choice {
+  display: grid;
+  grid-template-columns: minmax(130px, auto) minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  color: var(--fg);
+  font-size: 11.5px;
+}
+.conductor-terminal-choice select {
+  min-width: 0;
+  padding: 6px 8px;
+  color: var(--fg);
+  background: var(--panel);
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  font: inherit;
+}
+.conductor-terminal-reasons {
+  display: grid;
+  gap: 3px;
+  margin: 8px 0 0;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: 10.5px;
+}
+.conductor-confirm-actions {
+  display: flex;
+  gap: 7px;
+  margin-top: 12px;
+}
+.conductor-manual-install {
   padding: 10px 11px;
   border-left: 2px solid var(--attention);
   background: color-mix(in oklab, var(--attention) 6%, var(--panel-2));
 }
-.conductor-install-copy > p {
+.conductor-manual-install > p {
   margin: 0 0 8px;
 }
-.conductor-install-copy > code {
-  display: inline-block;
-  padding: 4px 7px;
+.conductor-command-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+.conductor-command-row code {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 7px;
   border: 1px solid var(--border-soft);
   border-radius: 5px;
   color: var(--fg);
@@ -19139,6 +19283,20 @@ button.sc-row:focus-visible {
     min-width: 0;
     justify-content: flex-start;
     padding-left: 34px;
+  }
+  .conductor-installer-candidates li,
+  .conductor-command-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .conductor-installer-candidates li > .btn,
+  .conductor-command-row .btn {
+    align-self: flex-start;
+  }
+  .conductor-installer-confirm dl > div,
+  .conductor-terminal-choice {
+    grid-template-columns: 1fr;
+    gap: 3px;
   }
 }
 

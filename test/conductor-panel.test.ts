@@ -33,6 +33,12 @@ function unanswered(): ConductorState {
     checking: false,
     setup: null,
     setupNotice: null,
+    installers: null,
+    installersLoading: false,
+    installerError: null,
+    openingInstaller: null,
+    installerNotice: null,
+    openInstaller: async () => true,
     error: null,
   };
 }
@@ -68,6 +74,12 @@ function answered(over: Partial<PipelinesView> = {}): ConductorState {
     checking: false,
     setup: null,
     setupNotice: null,
+    installers: null,
+    installersLoading: false,
+    installerError: null,
+    openingInstaller: null,
+    installerNotice: null,
+    openInstaller: async () => true,
     error: null,
   };
 }
@@ -164,6 +176,69 @@ test("an absent engine is reported once, in its own words, and not also as an er
     "the same sentence must not appear twice",
   );
   assert.doesNotMatch(html, /class="settings-error"/);
+});
+
+test("a missing engine with no verified checkout gives copyable manual instructions", () => {
+  const state = answered({
+    probes: [probe({ found: false, binPath: null, version: null, projects: [] })],
+  });
+  state.installers = {
+    provider: "ai-conductor",
+    supported: true,
+    detail: "No verified local installer checkout was found in the workspace catalog.",
+    candidates: [],
+  };
+  const html = render(state);
+  assert.match(html, /Install Conductor once on this machine/);
+  assert.match(html, /git clone https:\/\/github\.com\/mancej\/ai-conductor\.git/);
+  assert.match(html, /cd ai-conductor &amp;&amp; \.\/bin\/install/);
+  assert.match(html, /Copy clone/);
+  assert.match(html, /Copy install/);
+  assert.match(html, /I installed it, check again/);
+});
+
+test("a verified local main checkout is offered for review before any installer action", () => {
+  const state = answered({
+    probes: [probe({ found: false, binPath: null, version: null, projects: [] })],
+  });
+  state.installers = {
+    provider: "ai-conductor",
+    supported: true,
+    detail: "1 verified local installer checkout found.",
+    candidates: [
+      {
+        provider: "ai-conductor",
+        checkout: "/Users/someone/workspace/ai-conductor",
+        remote: "github.com/mancej/ai-conductor",
+        version: "0.101.1",
+        changes: [
+          "build-checkout",
+          "link-local-bin",
+          "link-agent-skills",
+          "update-claude-settings",
+          "write-user-config",
+          "optional-global-tools",
+        ],
+      },
+    ],
+  };
+  const html = render(state);
+  assert.match(html, /Verified upstream main checkout/);
+  assert.match(html, /github\.com\/mancej\/ai-conductor/);
+  assert.match(html, /\/Users\/someone\/workspace\/ai-conductor/);
+  assert.match(html, /Review installer/);
+  assert.doesNotMatch(html, />Open installer</, "launch requires the second confirmation click");
+});
+
+test("installer launch outcomes say only what the hosted terminal established", () => {
+  const state = answered();
+  state.installerNotice = {
+    tone: "ok",
+    detail: "Installer terminal opened. Finish the interactive installer there, then check again.",
+  };
+  const html = render(state);
+  assert.match(html, /Installer terminal opened/);
+  assert.doesNotMatch(html, /installation complete|Conductor installed/i);
 });
 
 test("an engine that WAS found and then could not answer prints why", () => {

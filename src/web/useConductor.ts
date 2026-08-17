@@ -1,11 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   pipelineRepoKey,
+  type PipelineInstallerCandidatesResult,
   type PipelineProviderId,
   type PipelinesConfig,
   type PipelinesView,
 } from "@shared/pipeline.ts";
-import { api, fetchPipelines, fetchRepos } from "./lib/api.ts";
+import type { TerminalBackendId } from "@shared/terminal.ts";
+import {
+  api,
+  fetchPipelineInstallers,
+  fetchPipelines,
+  fetchRepos,
+  openPipelineInstaller,
+} from "./lib/api.ts";
 import { readIsCurrent } from "./harnesses-reconcile.ts";
 
 // The Conductor Settings state. Provider registration and Mission Control observation are
@@ -43,6 +51,11 @@ export interface ConductorSetupNotice {
   output: string;
 }
 
+export interface ConductorInstallerNotice {
+  tone: "ok" | "attention" | "error";
+  detail: string;
+}
+
 export interface ConductorState {
   /** Null until the first read lands. Null is UNKNOWN, never "nothing is enabled". */
   view: PipelinesView | null;
@@ -60,6 +73,18 @@ export interface ConductorState {
   /** The repository and ordered phase currently mutating, or null. */
   setup: { repoRoot: string; phase: "registering" | "observing" } | null;
   setupNotice: ConductorSetupNotice | null;
+  /** Ephemeral verified local candidates, fetched only after a missing-engine probe. */
+  installers: PipelineInstallerCandidatesResult | null;
+  installersLoading: boolean;
+  installerError: string | null;
+  /** Physical checkout whose hosted installer terminal is currently being opened. */
+  openingInstaller: string | null;
+  installerNotice: ConductorInstallerNotice | null;
+  openInstaller: (
+    provider: PipelineProviderId,
+    checkout: string,
+    backend: TerminalBackendId,
+  ) => Promise<boolean>;
   /** Why the last ordinary config edit did not stick, or null. */
   error: string | null;
 }
@@ -72,12 +97,19 @@ export function useConductor(active: boolean): ConductorState {
   const [checking, setChecking] = useState(false);
   const [setup, setSetup] = useState<ConductorState["setup"]>(null);
   const [setupNotice, setSetupNotice] = useState<ConductorSetupNotice | null>(null);
+  const [installers, setInstallers] = useState<PipelineInstallerCandidatesResult | null>(null);
+  const [installersLoading, setInstallersLoading] = useState(false);
+  const [installerError, setInstallerError] = useState<string | null>(null);
+  const [openingInstaller, setOpeningInstaller] = useState<string | null>(null);
+  const [installerNotice, setInstallerNotice] = useState<ConductorInstallerNotice | null>(null);
   const viewRef = useRef<PipelinesView | null>(null);
   const editSeq = useRef(0);
   const writeGen = useRef(0);
   /** Non-null while the two-step setup flow owns the view. Ordinary polls stand down. */
   const setupToken = useRef<number | null>(null);
   const nextSetupToken = useRef(0);
+  /** Invalidates a candidate read after any newer probe state or installer action. */
+  const installerReadSeq = useRef(0);
   /** The config write or registration already in flight. Every later mutation queues behind it. */
   const writing = useRef<Promise<unknown>>(Promise.resolve());
 
@@ -129,6 +161,42 @@ export function useConductor(active: boolean): ConductorState {
       alive = false;
     };
   }, [active]);
+
+  const conductorProbe = view?.probes.find((candidate) => candidate.provider === "ai-conductor");
+  const missingProbeCheckedAt = conductorProbe?.found === false ? conductorProbe.checkedAt : null;
+
+  // Installer discovery is a missing-engine question, never a background workspace sweep.
+  // The probe timestamp is the read's identity: a response for an older detection answer cannot
+  // put a checkout confirmation back after a newer probe found the engine or changed the facts.
+  useEffect(() => {
+    const seq = ++installerReadSeq.current;
+    if (!active || missingProbeCheckedAt === null) {
+      setInstallers(null);
+      setInstallersLoading(false);
+      setInstallerError(null);
+      return;
+    }
+    setInstallersLoading(true);
+    setInstallerError(null);
+    void fetchPipelineInstallers("ai-conductor").then((result) => {
+      if (seq !== installerReadSeq.current) return;
+      const current = viewRef.current?.probes.find(
+        (candidate) => candidate.provider === "ai-conductor",
+      );
+      if (current?.found !== false || current.checkedAt !== missingProbeCheckedAt) return;
+      setInstallersLoading(false);
+      if (!result) {
+        setInstallers(null);
+        setInstallerError("Mission Control could not check the workspace for verified installer source.");
+        return;
+      }
+      setInstallerError(null);
+      setInstallers(result);
+    });
+    return () => {
+      if (seq === installerReadSeq.current) installerReadSeq.current += 1;
+    };
+  }, [active, missingProbeCheckedAt]);
 
   const save = useCallback(
     async (config: PipelinesConfig): Promise<boolean> => {
@@ -279,6 +347,49 @@ export function useConductor(active: boolean): ConductorState {
     [setView],
   );
 
+  const openInstaller = useCallback(
+    async (
+      provider: PipelineProviderId,
+      checkout: string,
+      backend: TerminalBackendId,
+    ): Promise<boolean> => {
+      const token = ++nextSetupToken.current;
+      setupToken.current = token;
+      installerReadSeq.current += 1;
+      setInstallersLoading(false);
+      setOpeningInstaller(checkout);
+      setInstallerNotice(null);
+      setError(null);
+
+      const queued = writing.current;
+      const attempt = (async (): Promise<boolean> => {
+        await queued;
+        const result = await openPipelineInstaller({ provider, checkout, backend });
+        if (result.outcome === "opened") {
+          setInstallerNotice({ tone: "ok", detail: result.detail });
+          return true;
+        }
+        if (result.outcome === "maybe-opening") {
+          setInstallerNotice({ tone: "attention", detail: result.detail });
+          return true;
+        }
+        setInstallerNotice({
+          tone: "error",
+          detail: result.detail || result.error || "The installer terminal was refused.",
+        });
+        return false;
+      })();
+      writing.current = attempt.catch(() => {});
+      try {
+        return await attempt;
+      } finally {
+        if (setupToken.current === token) setupToken.current = null;
+        setOpeningInstaller(null);
+      }
+    },
+    [],
+  );
+
   const recheck = useCallback(async (): Promise<void> => {
     setChecking(true);
     try {
@@ -298,6 +409,12 @@ export function useConductor(active: boolean): ConductorState {
     checking,
     setup,
     setupNotice,
+    installers,
+    installersLoading,
+    installerError,
+    openingInstaller,
+    installerNotice,
+    openInstaller,
     error,
   };
 }

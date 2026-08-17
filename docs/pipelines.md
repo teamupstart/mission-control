@@ -26,11 +26,11 @@ Three rules, and each of them is load-bearing rather than cautious:
   A second program racing its atomic renames corrupts a feature; it does not merge with it.
 - **Permanent, then off by default.** Conductor is always a Settings and command-palette
   destination, including before the engine is installed. The destination explains the setup
-  state; it does not imply the engine exists or that observation is enabled. Detection is
-  automatic only while that panel is open, registration is an explicit provider CLI action,
-  and observation is a separate explicit consent write. With nothing switched on, a watch
-  tick reads one config value and returns: no probe spawns, no engine file is opened, and no
-  pipeline event crosses the stream.
+state; it does not imply the engine exists or that observation is enabled. Detection is
+automatic only while that panel is open, registration is an explicit provider CLI action,
+guided installation is an explicit terminal launch, and observation is a separate explicit
+consent write. With nothing switched on, a watch tick reads one config value and returns: no
+probe spawns, no engine file is opened, and no pipeline event crosses the stream.
 - **The engine's files are the source of truth.** The `pipeline_runs` table is a cache, in
   the same family as the archive index: every column is derived from files still on disk, so
   deleting it costs one refresh pass. Nothing may be stored there that is not already under
@@ -43,8 +43,55 @@ Three rules, and each of them is load-bearing rather than cautious:
 and the command palette expose it independently of engine or config state. Opening the panel
 looks for `conduct-ts`; opening unrelated Settings categories does not probe an external
 engine or fetch the workspace catalog. If the binary is missing, the panel says setup is
-needed, names the command that must resolve on the daemon's `PATH`, and offers **Check again**.
-This phase does not launch or manage the Conductor installer.
+needed and offers **I installed it, check again**. It also looks only through repositories in
+Mission Control's existing workspace catalog for verified local Conductor source. It never
+clones, downloads, updates, or executes source discovered anywhere else.
+
+### Guided machine installation
+
+The setup path is machine-scoped and trust-first. A checkout is offered only when all of the
+following are true at the time it is listed:
+
+- its physical canonical root is a main checkout already present in the workspace catalog,
+  not a linked worktree;
+- one of its configured Git remotes is exactly the recognized
+  `github.com/mancej/ai-conductor` upstream through HTTPS, SCP-style SSH, or `ssh://`;
+- `bin/install` is a regular executable file physically contained by that checkout;
+- `src/conductor/package.json` is a regular contained file whose package name is exactly
+  `@james-stoup-agents/conductor`;
+- `VERSION` is a regular contained file and, when readable, contains one bounded version
+  token.
+
+Candidate discovery is read-only, deduplicated by physical path, and capped at eight results.
+Mission Control never returns a repository's raw remote URL to the browser, so credentials or
+other URL details cannot leak through this surface. An unrecognized, malformed, linked,
+symlinked, non-executable, or out-of-catalog checkout is omitted rather than weakened into a
+warning.
+
+Selecting **Review installer** does not launch anything. A second confirmation names the exact
+checkout, the exact `bin/install` command, its recognized upstream, and the user-level changes
+the upstream installer may offer:
+
+- building the checkout;
+- linking `conduct-ts` under the local bin directory;
+- linking Conductor skills for supported agents;
+- changing Claude user settings and hooks;
+- writing `~/.ai-conductor` configuration;
+- optionally installing global Puppeteer, Markdown-viewer, or Mermaid tools.
+
+The operator then chooses an available hosted terminal. The final request contains only the
+provider, verified checkout path, and terminal backend. The daemon checks workspace-catalog
+membership and re-verifies every trust marker before deriving the absolute installer command
+itself. It opens the upstream interactive installer in that visible terminal and holds the
+terminal open after the installer exits so its result remains readable. Mission Control does
+not add update flags, worktree-root overrides, or non-interactive answers.
+
+Opening a terminal is not proof that Conductor installed. The engine card remains at **Setup
+needed** until **I installed it, check again** finds `conduct-ts`; an unresponsive terminal
+launch is reported only as possibly still opening. If no candidate verifies, no terminal can
+be hosted, or candidate discovery fails, the panel shows copyable commands for cloning the
+recognized upstream and running `./bin/install` manually. Those commands remain operator
+instructions: Mission Control never executes them from the browser.
 
 The compact commissioning line keeps three facts separate: **Engine → Register repo →
 Observe**. They are not interchangeable milestones:

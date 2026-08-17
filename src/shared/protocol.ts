@@ -1947,6 +1947,21 @@ export const PipelineRepoRegistrationSchema = z.object({
 export type PipelineRepoRegistrationBody = z.infer<typeof PipelineRepoRegistrationSchema>;
 
 /**
+ * Open one provider-owned interactive installer in a selected hosted terminal.
+ *
+ * Strict on purpose. The browser selects three typed facts and nothing else; argv, shell
+ * text, flags, environment, cwd, and title are composed and reverified by the daemon.
+ */
+export const PipelineInstallerLaunchSchema = z
+  .object({
+    provider: z.enum(PIPELINE_PROVIDER_IDS),
+    checkout: z.string().min(1).max(4096),
+    backend: z.enum(TERMINAL_BACKEND_IDS),
+  })
+  .strict();
+export type PipelineInstallerLaunchBody = z.infer<typeof PipelineInstallerLaunchSchema>;
+
+/**
  * One control verb aimed at an external SDLC engine, and one request for a hosted terminal.
  *
  * Aliased here rather than defined here for `PipelinesConfigPatchSchema`'s reason: the cross-

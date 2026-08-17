@@ -50,6 +50,7 @@ import type {
   UiConfigPatch,
   UiConfigView,
   PipelinesConfigPatch,
+  PipelineInstallerLaunchBody,
   TaskSourcesConfigPatch,
   UpdateTask,
   TaskDependencyInput,
@@ -95,6 +96,8 @@ import type {
   PipelineActionResult,
   PipelineConsoleRequest,
   PipelineConsoleResult,
+  PipelineInstallerCandidatesResult,
+  PipelineInstallerLaunchResult,
   PipelineProviderId,
   PipelineRepoRegistrationResponse,
   PipelineRepoStatus,
@@ -338,6 +341,16 @@ export async function setPipelinesConfig(
  */
 export const fetchPipelineRepos = () =>
   fetchJson<{ repos: PipelineRepoStatus[] }>("/api/pipelines/repos");
+
+/** Ephemeral, provider-verified local source checkouts eligible for guided installation. */
+export const fetchPipelineInstallers = (provider: PipelineProviderId) =>
+  fetchJson<PipelineInstallerCandidatesResult>(
+    `/api/pipelines/installers?provider=${encodeURIComponent(provider)}`,
+  );
+
+/** Open the reverified upstream installer in the selected hosted terminal. */
+export const openPipelineInstaller = (body: PipelineInstallerLaunchBody) =>
+  post<ActionResult & PipelineInstallerLaunchResult>("/api/pipelines/install", body);
 /**
  * One run's gate evidence, read from the engine's files at request time.
  *

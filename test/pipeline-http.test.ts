@@ -1,12 +1,22 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   pipelineRepoKey,
   type PipelineHaltClass,
+  type PipelineInstallerCandidatesResult,
+  type PipelineInstallerLaunchResult,
   type PipelineRepoStatus,
   type PipelineRepoRegistrationResponse,
   type PipelineRunDetail,
@@ -31,6 +41,7 @@ process.env.HARNESS_HOME = join(home, "state");
 // detection card has to be right about.
 process.env.MISSION_CONDUCTOR_BIN = join(home, "no-such-conductor");
 process.env.AI_CONDUCTOR_REGISTRY = join(home, "no-such-registry.json");
+process.env.MISSION_WORKSPACE_DIRS = home;
 
 const { openDb } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
@@ -98,7 +109,15 @@ interface FakeLaunch {
 }
 
 /** A fresh daemon: an empty projection, no consent, and nothing yet found out. */
-function fixture(opened?: FakeLaunch[]) {
+function fixture(
+  opened?: FakeLaunch[],
+  launchResult: {
+    ok: boolean;
+    label: string;
+    error?: string;
+    status: number;
+  } = { ok: true, label: "fake terminal", status: 200 },
+) {
   db.exec("DELETE FROM pipeline_runs");
   setPipelinesConfig({ enabled: false, foremanMechanicalTriage: false, repos: [] });
   setForemanConfig({ enabled: true });
@@ -110,7 +129,7 @@ function fixture(opened?: FakeLaunch[]) {
   const launcher = opened
     ? (async (backend: never, spec: { name: string; cwd: string; argv: string[] }) => {
         opened.push({ backend, name: spec.name, cwd: spec.cwd, argv: spec.argv });
-        return { ok: true as const, label: `fake ${String(backend)}`, homeName: spec.name };
+        return { ...launchResult, label: launchResult.label || `fake ${String(backend)}`, homeName: spec.name };
       })
     : undefined;
   const app = buildApp(
@@ -327,6 +346,16 @@ test("the routes are loopback-only, like every other /api route", async () => {
     }),
   });
   assert.equal(console_.status, 403);
+  const installers = await request("/api/pipelines/installers?provider=ai-conductor", {
+    headers: { host: "example.com" },
+  });
+  assert.equal(installers.status, 403);
+  const install = await request("/api/pipelines/install", {
+    method: "POST",
+    headers: { host: "example.com" },
+    body: JSON.stringify({ provider: "ai-conductor", checkout: "/x", backend: "cmux" }),
+  });
+  assert.equal(install.status, 403);
 });
 
 // ---- what the Runs page's Pipelines tab reads ------------------------------------------
@@ -578,6 +607,106 @@ test("a provider refusal remains a typed registration result and grants no conse
     });
   } finally {
     delete process.env.MC_E2E_CONDUCTOR_REGISTER_MODE;
+  }
+});
+
+function installerCheckout(name: string): string {
+  const repo = gitRepo(name);
+  mkdirSync(join(repo, "bin"), { recursive: true });
+  mkdirSync(join(repo, "src/conductor"), { recursive: true });
+  writeFileSync(join(repo, "bin/install"), "#!/bin/sh\nexit 0\n");
+  chmodSync(join(repo, "bin/install"), 0o755);
+  writeFileSync(
+    join(repo, "src/conductor/package.json"),
+    JSON.stringify({ name: "@james-stoup-agents/conductor" }),
+  );
+  writeFileSync(join(repo, "VERSION"), "0.101.1\n");
+  execFileSync("git", ["-C", repo, "remote", "add", "origin", "git@github.com:mancej/ai-conductor.git"]);
+  return repo;
+}
+
+// Created while the module loads, before any route can fill `listRepos()`'s cache.
+const routeInstallerRepo = installerCheckout("installer-route");
+
+test("installer routes use the workspace catalog, reject browser commands, and reverify before launch", async () => {
+  const opened: FakeLaunch[] = [];
+  const { request } = fixture(opened);
+  const repo = routeInstallerRepo;
+
+  const invalidProvider = await request("/api/pipelines/installers?provider=lookalike");
+  assert.equal(invalidProvider.status, 400);
+
+  const read = await request("/api/pipelines/installers?provider=ai-conductor");
+  assert.equal(read.status, 200);
+  const candidates = (await read.json()) as PipelineInstallerCandidatesResult;
+  assert.equal(candidates.supported, true);
+  assert.deepEqual(candidates.candidates.map((candidate) => candidate.checkout), [repo]);
+  assert.equal(candidates.candidates[0]?.remote, "github.com/mancej/ai-conductor");
+
+  const browserCommand = await request("/api/pipelines/install", {
+    method: "POST",
+    body: JSON.stringify({
+      provider: "ai-conductor",
+      checkout: repo,
+      backend: "cmux",
+      argv: ["bin/install", "--allow-worktree-root"],
+    }),
+  });
+  assert.equal(browserCommand.status, 400, "strict schema refuses browser-authored argv");
+  assert.equal(opened.length, 0);
+
+  const launch = await request("/api/pipelines/install", {
+    method: "POST",
+    body: JSON.stringify({ provider: "ai-conductor", checkout: repo, backend: "cmux" }),
+  });
+  assert.equal(launch.status, 200);
+  const answer = (await launch.json()) as PipelineInstallerLaunchResult;
+  assert.equal(answer.outcome, "opened");
+  assert.equal(answer.detail, "Installer terminal opened. Finish the interactive installer there, then check again.");
+  assert.equal(opened.length, 1);
+  assert.equal(opened[0]?.backend, "cmux");
+  assert.equal(opened[0]?.cwd, repo);
+  assert.equal(opened[0]?.name, "ai-conductor installer");
+  const command = opened[0]?.argv.at(-1) ?? "";
+  assert.ok(command.includes(`'${repo}/bin/install'`));
+  assert.match(command, /read -r _/);
+  assert.doesNotMatch(command, /allow-worktree-root|--update|--provider/);
+  assert.deepEqual(getPipelinesConfig(), {
+    enabled: false,
+    foremanMechanicalTriage: false,
+    repos: [],
+  }, "opening an installer terminal never changes observation consent");
+
+  execFileSync("git", ["-C", repo, "remote", "set-url", "origin", "https://github.com/mancej/ai-conductor-lookalike.git"]);
+  const stale = await request("/api/pipelines/install", {
+    method: "POST",
+    body: JSON.stringify({ provider: "ai-conductor", checkout: repo, backend: "cmux" }),
+  });
+  assert.equal(stale.status, 409);
+  assert.match(await stale.text(), /no longer a verified installer candidate/);
+  assert.equal(opened.length, 1, "stale provenance is refused before terminal launch");
+  execFileSync("git", ["-C", repo, "remote", "set-url", "origin", "git@github.com:mancej/ai-conductor.git"]);
+});
+
+test("installer launch preserves terminal refusal and unknown-outcome statuses", async () => {
+  const repo = routeInstallerRepo;
+  for (const status of [404, 409, 502, 504] as const) {
+    const opened: FakeLaunch[] = [];
+    const { request } = fixture(opened, {
+      ok: false,
+      label: "fake cmux",
+      error: status === 504 ? "fake cmux did not report back - the window may still be opening" : `terminal ${status}`,
+      status,
+    });
+    const response = await request("/api/pipelines/install", {
+      method: "POST",
+      body: JSON.stringify({ provider: "ai-conductor", checkout: repo, backend: "cmux" }),
+    });
+    assert.equal(response.status, status);
+    const answer = (await response.json()) as PipelineInstallerLaunchResult;
+    assert.equal(answer.outcome, status === 504 ? "maybe-opening" : "refused");
+    if (status === 504) assert.match(answer.detail, /may still be opening/);
+    assert.equal(opened.length, 1);
   }
 });
 

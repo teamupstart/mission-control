@@ -650,7 +650,10 @@ submission: the initial **Preview** in the binding dialog, **Ship it** and No-Mi
 from a session card, **Run again** or **Preview again**, and every fresh repair resubmission.
 Choose files, drop them, or paste a screenshot; then give every image a caption and a repository
 scope. Session-registered images and text artifacts appear in the same packet and can be removed
-before capture. The dashboard blocks submission while an upload is pending or failed, a caption
+before capture, including in the initial binding dialog before that conversation has a binding.
+The daemon resolves that initial packet from the live session, so creating a placeholder binding
+is not required and a stale registration cannot reach the first review unseen. The dashboard
+blocks submission while an upload is pending or failed, a caption
 or scope is missing, registered evidence cannot be read, or the packet exceeds 8 images, 5 MiB
 per image, or 20 MiB in aggregate. PNG, JPEG, static GIF, and WebP are accepted. Closing a dialog
 or receiving a failed request keeps the draft intact for correction and retry. Once accepted,

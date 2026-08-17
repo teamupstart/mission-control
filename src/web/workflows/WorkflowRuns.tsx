@@ -39,6 +39,7 @@ import type { WorkflowRunFilters } from "./useWorkflowRoute.ts";
 import { requestWorkflowVersionOpen } from "./workflowSelection.ts";
 import {
   useWorkflowEvidenceDraft,
+  workflowBindingEvidenceOwner,
   workflowEvidenceScopes,
 } from "./WorkflowEvidenceComposer.tsx";
 import type { ChangeWorklistRow, ChangeWorklistState } from "./run-model.ts";
@@ -2776,7 +2777,7 @@ export function WorkflowRuns({
     [evidenceSession, detail?.summary.repoRoot],
   );
   const evidenceDraft = useWorkflowEvidenceDraft(
-    detail?.binding.id,
+    workflowBindingEvidenceOwner(detail?.binding.id),
     evidenceScopeSet.defaultScope,
   );
   const listPage = async (cursor: string | null, append: boolean): Promise<void> => {

@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { WORKFLOW_IMAGE_LIMITS } from "../src/shared/workflow.ts";
 import {
-  workflowEvidenceDraftForBinding,
+  workflowEvidenceDraftForOwner,
   workflowEvidenceSubmission,
   type WorkflowEvidenceDraft,
 } from "../src/web/workflows/WorkflowEvidenceComposer.tsx";
@@ -53,16 +53,16 @@ test("ready evidence keeps stable client ids across a request retry", () => {
   assert.doesNotMatch(JSON.stringify(first.locators), /private\/uploads/);
 });
 
-test("a draft is visible only to the binding that owns it", () => {
+test("a draft is visible only to the binding or session owner that owns it", () => {
   const draft: WorkflowEvidenceDraft = {
     attachments: [attachment("binding-one")],
     metadata: {
       "binding-one": { caption: "Only binding one", repositoryScope: "repo-01" },
     },
   };
-  const owned = { bindingId: "binding-one", draft };
-  assert.equal(workflowEvidenceDraftForBinding(owned, "binding-one"), draft);
-  assert.deepEqual(workflowEvidenceDraftForBinding(owned, "binding-two"), {
+  const owned = { ownerKey: "binding:binding-one", draft };
+  assert.equal(workflowEvidenceDraftForOwner(owned, "binding:binding-one"), draft);
+  assert.deepEqual(workflowEvidenceDraftForOwner(owned, "session:binding-one"), {
     attachments: [],
     metadata: {},
   });

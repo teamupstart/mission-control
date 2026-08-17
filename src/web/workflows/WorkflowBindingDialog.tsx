@@ -20,6 +20,7 @@ import {
   useWorkflowEvidenceDraft,
   workflowEvidenceScopes,
   workflowEvidenceSubmission,
+  workflowSessionEvidenceOwner,
 } from "./WorkflowEvidenceComposer.tsx";
 
 export interface WorkflowBindingTarget {
@@ -238,7 +239,13 @@ export function WorkflowBindingDialog({
     () => workflowEvidenceScopes(session),
     [session],
   );
-  const evidenceDraft = useWorkflowEvidenceDraft(existing?.id, evidenceScopeSet.defaultScope);
+  // A binding does not exist yet on the initial path, but staged evidence already belongs to
+  // the live conversation. Keep this dialog session-owned throughout so a late binding-list
+  // response cannot swap owners and discard a draft the operator started while it loaded.
+  const evidenceDraft = useWorkflowEvidenceDraft(
+    workflowSessionEvidenceOwner(sessionId),
+    evidenceScopeSet.defaultScope,
+  );
   const evidenceSubmission = workflowEvidenceSubmission(evidenceDraft, evidenceScopeSet.options);
   const previewIntent = useRef<{ key: string; requestId: string } | null>(null);
   /*

@@ -14,7 +14,7 @@ process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 
 const { openDb } = await import("../src/server/db.ts");
-const { Registry } = await import("../src/server/registry.ts");
+const { Registry, noteKeyFor } = await import("../src/server/registry.ts");
 const { ReviewManager } = await import("../src/server/reviews.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
 const { QueueManager } = await import("../src/server/queue.ts");
@@ -111,6 +111,90 @@ function request(app: ReturnType<typeof buildApp>, path: string, body?: unknown,
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
 }
+
+test("session evidence routes expose and remove staging before a binding exists", async () => {
+  const registry = new Registry();
+  registry.applyDiscovery([discovered({
+    syntheticId: "session-prebinding-evidence",
+    name: "prebinding evidence",
+    tty: "ttys-prebinding-evidence",
+  })]);
+  const session = registry.getSession("session-prebinding-evidence");
+  assert.ok(session);
+  const personas = new PersonaManager(registry);
+  const workflows = new WorkflowManager(registry, personas.store);
+  const noteKey = noteKeyFor(session);
+  assert.equal(workflows.store.activeBindingForNote(noteKey), null);
+  workflows.store.stageWorkflowEvidence(noteKey, [{
+    id: "staged-prebinding-evidence",
+    clientItemId: "prebinding-proof",
+    sourceKind: "agent",
+    evidenceKind: "image",
+    sourceRoot: "/repo",
+    sourceLocator: ".evidence/prebinding-proof.png",
+    displayName: "prebinding-proof.png",
+    caption: "Stale proof must be visible before the first binding",
+    repositoryScope: "repo-01",
+    mimeType: "image/png",
+    bytes: 68,
+    sha256: "a".repeat(64),
+  }], 100);
+  const app = buildApp(
+    registry,
+    new ReviewManager(registry),
+    new TaskManager(registry),
+    new QueueManager(registry),
+    undefined,
+    personas,
+    workflows,
+  );
+
+  const listed = await request(
+    app,
+    `/api/sessions/${session.id}/workflow-evidence`,
+    undefined,
+    "GET",
+  );
+  assert.equal(listed.status, 200);
+  const packet = await listed.json() as {
+    generation: number;
+    images: Array<{ clientItemId: string; caption: string }>;
+  };
+  assert.equal(packet.generation, 1);
+  assert.deepEqual(packet.images, [{
+    clientItemId: "prebinding-proof",
+    caption: "Stale proof must be visible before the first binding",
+    id: "staged-prebinding-evidence",
+    sourceKind: "agent",
+    displayName: "prebinding-proof.png",
+    repositoryScope: "repo-01",
+    mimeType: "image/png",
+    bytes: 68,
+    sha256: "a".repeat(64),
+    generation: 1,
+    createdAt: 100,
+    updatedAt: 100,
+  }]);
+  assert.doesNotMatch(JSON.stringify(packet), /sourceRoot|sourceLocator|\.evidence/);
+
+  const removed = await request(
+    app,
+    `/api/sessions/${session.id}/workflow-evidence/prebinding-proof`,
+    undefined,
+    "DELETE",
+  );
+  assert.equal(removed.status, 200);
+  assert.deepEqual((await removed.json() as { images: unknown[] }).images, []);
+  assert.deepEqual(workflows.store.listWorkflowEvidence(noteKey).images, []);
+
+  const missing = await request(
+    app,
+    "/api/sessions/missing-session/workflow-evidence",
+    undefined,
+    "GET",
+  );
+  assert.equal(missing.status, 404);
+});
 
 test("a dispatched task arms its selected published workflow at Foreman Complete", async () => {
   const graph: PublishedWorkflowGraph = {

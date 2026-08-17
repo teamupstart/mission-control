@@ -22,6 +22,7 @@ import { WorkflowConfirmModal } from "../workflows/WorkflowConfirmModal.tsx";
 import {
   useWorkflowEvidenceDraft,
   workflowEvidenceScopes,
+  workflowSessionEvidenceOwner,
 } from "../workflows/WorkflowEvidenceComposer.tsx";
 
 // The work-queue panel inside an expanded card: the batch of work queued for this
@@ -34,7 +35,6 @@ export function WorkQueue({
   foremanMode,
   foremanEnabled,
   allowlisted,
-  workflowBinding = null,
   collapsed = false,
   onToggleCollapsed,
 }: {
@@ -179,7 +179,6 @@ export function WorkQueue({
         {queue && queue.wrapupAskedAt !== null && (
           <Wrapup
             session={session}
-            workflowBinding={workflowBinding}
             queue={queue}
             onDone={() => void refresh()}
           />
@@ -637,7 +636,6 @@ export function WorkQueue({
       {queue && queue.wrapupAskedAt !== null && (
         <Wrapup
           session={session}
-          workflowBinding={workflowBinding}
           queue={queue}
           onDone={() => void refresh()}
         />
@@ -962,12 +960,10 @@ const wrapupSent = new Set<string>();
  */
 function Wrapup({
   session,
-  workflowBinding,
   queue,
   onDone,
 }: {
   session: Session;
-  workflowBinding: WorkflowBindingSummary | null;
   queue: SessionQueue;
   onDone: () => void;
 }): React.JSX.Element | null {
@@ -980,7 +976,7 @@ function Wrapup({
   const sessionId = session.id;
   const evidenceScopeSet = useMemo(() => workflowEvidenceScopes(session), [session]);
   const evidenceDraft = useWorkflowEvidenceDraft(
-    workflowBinding?.id,
+    workflowSessionEvidenceOwner(sessionId),
     evidenceScopeSet.defaultScope,
   );
   /** The instruction reached the pane. One ask, one send - whatever happens after. */

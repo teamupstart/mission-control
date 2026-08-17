@@ -1290,6 +1290,21 @@ export class WorkflowManager {
     return binding ? this.store.listWorkflowEvidence(binding.noteKey) : null;
   }
 
+  /**
+   * Conversation-owned staging before a binding exists.
+   *
+   * The initial dashboard composer must inspect the same packet `createBinding` will attach
+   * to this conversation. Resolving the note key from the live session here keeps that
+   * ownership decision in the daemon and avoids making the browser invent a provisional
+   * binding solely to list or remove evidence.
+   */
+  stagedEvidenceForSession(sessionId: string): WorkflowStagedEvidenceList | null {
+    const session = this.registry.getSession(sessionId);
+    return session && session.state !== "exited"
+      ? this.store.listWorkflowEvidence(noteKeyFor(session))
+      : null;
+  }
+
   removeStagedEvidence(
     bindingId: string,
     clientItemId: string,
@@ -1298,6 +1313,17 @@ export class WorkflowManager {
     const binding = this.store.getBinding(bindingId);
     return binding
       ? this.store.removeWorkflowEvidence(binding.noteKey, clientItemId, now)
+      : null;
+  }
+
+  removeStagedEvidenceForSession(
+    sessionId: string,
+    clientItemId: string,
+    now = Date.now(),
+  ): WorkflowStagedEvidenceList | null {
+    const session = this.registry.getSession(sessionId);
+    return session && session.state !== "exited"
+      ? this.store.removeWorkflowEvidence(noteKeyFor(session), clientItemId, now)
       : null;
   }
 

@@ -83,17 +83,44 @@ const EMPTY_DRAFT: WorkflowEvidenceDraft = { attachments: [], metadata: {} };
 const EMPTY_STAGED: WorkflowStagedEvidenceList = { generation: 0, images: [], artifacts: [] };
 const EMPTY_REMOVING = new Set<string>();
 
+export interface WorkflowEvidenceOwner {
+  key: string;
+  requestPath: string;
+}
+
+export function workflowBindingEvidenceOwner(
+  bindingId: string | null | undefined,
+): WorkflowEvidenceOwner | null {
+  return bindingId
+    ? {
+        key: `binding:${bindingId}`,
+        requestPath: `/api/workflow-bindings/${encodeURIComponent(bindingId)}/evidence`,
+      }
+    : null;
+}
+
+export function workflowSessionEvidenceOwner(
+  sessionId: string | null | undefined,
+): WorkflowEvidenceOwner | null {
+  return sessionId
+    ? {
+        key: `session:${sessionId}`,
+        requestPath: `/api/sessions/${encodeURIComponent(sessionId)}/workflow-evidence`,
+      }
+    : null;
+}
+
 export interface OwnedWorkflowEvidenceDraft {
-  bindingId: string | null;
+  ownerKey: string | null;
   draft: WorkflowEvidenceDraft;
 }
 
-/** A new binding sees an empty draft on its first render, before effects have a chance to run. */
-export function workflowEvidenceDraftForBinding(
+/** A new evidence owner sees an empty draft on its first render, before effects can run. */
+export function workflowEvidenceDraftForOwner(
   state: OwnedWorkflowEvidenceDraft,
-  bindingId: string | null | undefined,
+  ownerKey: string | null | undefined,
 ): WorkflowEvidenceDraft {
-  return state.bindingId === (bindingId ?? null) ? state.draft : EMPTY_DRAFT;
+  return state.ownerKey === (ownerKey ?? null) ? state.draft : EMPTY_DRAFT;
 }
 
 /**
@@ -101,72 +128,71 @@ export function workflowEvidenceDraftForBinding(
  * thumbnails, captions, scopes, and the request's opaque upload ids ready for the next click.
  */
 export function useWorkflowEvidenceDraft(
-  bindingId: string | null | undefined,
+  evidenceOwner: WorkflowEvidenceOwner | null | undefined,
   defaultScope: WorkflowEvidenceRepositoryScope,
 ): WorkflowEvidenceDraftController {
-  const owner = bindingId ?? null;
+  const owner = evidenceOwner?.key ?? null;
+  const requestPath = evidenceOwner?.requestPath ?? null;
   const [draftState, setDraftState] = useState<OwnedWorkflowEvidenceDraft>(() => ({
-    bindingId: owner,
+    ownerKey: owner,
     draft: EMPTY_DRAFT,
   }));
-  const draft = workflowEvidenceDraftForBinding(draftState, owner);
+  const draft = workflowEvidenceDraftForOwner(draftState, owner);
   const [stagedState, setStagedState] = useState<{
-    bindingId: string | null;
+    ownerKey: string | null;
     staged: WorkflowStagedEvidenceList;
     loading: boolean;
     error: string | null;
   }>(() => ({
-    bindingId: owner,
+    ownerKey: owner,
     staged: EMPTY_STAGED,
     loading: Boolean(owner),
     error: null,
   }));
-  const currentStaged = stagedState.bindingId === owner
+  const currentStaged = stagedState.ownerKey === owner
     ? stagedState
-    : { bindingId: owner, staged: EMPTY_STAGED, loading: Boolean(owner), error: null };
+    : { ownerKey: owner, staged: EMPTY_STAGED, loading: Boolean(owner), error: null };
   const [removalState, setRemovalState] = useState<{
-    bindingId: string | null;
+    ownerKey: string | null;
     ids: Set<string>;
-  }>(() => ({ bindingId: owner, ids: new Set() }));
-  const removingStaged = removalState.bindingId === owner
+  }>(() => ({ ownerKey: owner, ids: new Set() }));
+  const removingStaged = removalState.ownerKey === owner
     ? removalState.ids
     : EMPTY_REMOVING;
   const generation = useRef(0);
-  const bindingRef = useRef(owner);
-  bindingRef.current = owner;
+  const ownerRef = useRef(owner);
+  ownerRef.current = owner;
   const draftStateRef = useRef(draftState);
   draftStateRef.current = draftState;
 
   const loadStaged = useCallback(() => {
     const mine = ++generation.current;
-    if (!owner) {
-      setStagedState({ bindingId: owner, staged: EMPTY_STAGED, loading: false, error: null });
+    if (!owner || !requestPath) {
+      setStagedState({ ownerKey: owner, staged: EMPTY_STAGED, loading: false, error: null });
       return;
     }
     setStagedState((current) => ({
-      bindingId: owner,
-      staged: current.bindingId === owner ? current.staged : EMPTY_STAGED,
+      ownerKey: owner,
+      staged: current.ownerKey === owner ? current.staged : EMPTY_STAGED,
       loading: true,
       error: null,
     }));
-    void workflowRequest<WorkflowStagedEvidenceList>(
-      `/api/workflow-bindings/${encodeURIComponent(owner)}/evidence`,
-    ).then(
+    void workflowRequest<WorkflowStagedEvidenceList>(requestPath).then(
       (next) => {
-        if (generation.current !== mine || bindingRef.current !== owner) return;
-        setStagedState({ bindingId: owner, staged: next, loading: false, error: null });
+        if (generation.current !== mine || ownerRef.current !== owner) return;
+        setStagedState({ ownerKey: owner, staged: next, loading: false, error: null });
       },
       (caught) => {
-        if (generation.current !== mine || bindingRef.current !== owner) return;
+        if (generation.current !== mine || ownerRef.current !== owner) return;
         setStagedState({
-          bindingId: owner,
+          ownerKey: owner,
           staged: EMPTY_STAGED,
           loading: false,
           error: caught instanceof Error ? caught.message : "Could not load staged evidence",
         });
       },
     );
-  }, [owner]);
+  }, [owner, requestPath]);
 
   useEffect(() => {
     loadStaged();
@@ -174,20 +200,20 @@ export function useWorkflowEvidenceDraft(
   }, [loadStaged]);
   useEffect(() => {
     setDraftState((current) => {
-      if (current.bindingId === owner) return current;
+      if (current.ownerKey === owner) return current;
       revokeAttachments(current.draft.attachments);
-      return { bindingId: owner, draft: EMPTY_DRAFT };
+      return { ownerKey: owner, draft: EMPTY_DRAFT };
     });
-    setRemovalState((current) => current.bindingId === owner
+    setRemovalState((current) => current.ownerKey === owner
       ? current
-      : { bindingId: owner, ids: new Set() });
+      : { ownerKey: owner, ids: new Set() });
   }, [owner]);
   useEffect(() => () => revokeAttachments(draftStateRef.current.draft.attachments), []);
 
   const setAttachments = useCallback((attachments: PendingAttachment[]) => {
     setDraftState((current) => {
-      const currentDraft = workflowEvidenceDraftForBinding(current, owner);
-      if (current.bindingId !== owner) revokeAttachments(current.draft.attachments);
+      const currentDraft = workflowEvidenceDraftForOwner(current, owner);
+      if (current.ownerKey !== owner) revokeAttachments(current.draft.attachments);
       const ids = new Set(attachments.map((item) => item.id));
       const metadata = Object.fromEntries(
         Object.entries(currentDraft.metadata).filter(([id]) => ids.has(id)),
@@ -195,7 +221,7 @@ export function useWorkflowEvidenceDraft(
       for (const attachment of attachments) {
         metadata[attachment.id] ??= { caption: "", repositoryScope: defaultScope };
       }
-      return { bindingId: owner, draft: { attachments, metadata } };
+      return { ownerKey: owner, draft: { attachments, metadata } };
     });
   }, [defaultScope, owner]);
 
@@ -203,7 +229,7 @@ export function useWorkflowEvidenceDraft(
     id: string,
     patch: Partial<WorkflowEvidenceDraft["metadata"][string]>,
   ) => {
-    setDraftState((current) => current.bindingId !== owner
+    setDraftState((current) => current.ownerKey !== owner
       ? current
       : ({
           ...current,
@@ -220,52 +246,52 @@ export function useWorkflowEvidenceDraft(
   const clear = useCallback(() => {
     setDraftState((current) => {
       revokeAttachments(current.draft.attachments);
-      return { bindingId: owner, draft: EMPTY_DRAFT };
+      return { ownerKey: owner, draft: EMPTY_DRAFT };
     });
     loadStaged();
   }, [loadStaged, owner]);
 
   const removeStaged = useCallback((clientItemId: string) => {
-    if (!owner || removingStaged.has(clientItemId)) return;
+    if (!owner || !requestPath || removingStaged.has(clientItemId)) return;
     setStagedState((current) => ({
-      bindingId: owner,
-      staged: current.bindingId === owner ? current.staged : EMPTY_STAGED,
-      loading: current.bindingId === owner ? current.loading : false,
+      ownerKey: owner,
+      staged: current.ownerKey === owner ? current.staged : EMPTY_STAGED,
+      loading: current.ownerKey === owner ? current.loading : false,
       error: null,
     }));
     setRemovalState((current) => {
-      const ids = current.bindingId === owner ? new Set(current.ids) : new Set<string>();
+      const ids = current.ownerKey === owner ? new Set(current.ids) : new Set<string>();
       ids.add(clientItemId);
-      return { bindingId: owner, ids };
+      return { ownerKey: owner, ids };
     });
     void workflowRequest(
-      `/api/workflow-bindings/${encodeURIComponent(owner)}/evidence/${encodeURIComponent(clientItemId)}`,
+      `${requestPath}/${encodeURIComponent(clientItemId)}`,
       { method: "DELETE" },
     ).then(() => {
-      if (bindingRef.current !== owner) return;
+      if (ownerRef.current !== owner) return;
       loadStaged();
       setRemovalState((current) => {
-        if (current.bindingId !== owner) return current;
+        if (current.ownerKey !== owner) return current;
         const ids = new Set(current.ids);
         ids.delete(clientItemId);
         return { ...current, ids };
       });
     }, (caught) => {
-      if (bindingRef.current !== owner) return;
+      if (ownerRef.current !== owner) return;
       setStagedState((current) => ({
-        bindingId: owner,
-        staged: current.bindingId === owner ? current.staged : EMPTY_STAGED,
+        ownerKey: owner,
+        staged: current.ownerKey === owner ? current.staged : EMPTY_STAGED,
         loading: false,
         error: caught instanceof Error ? caught.message : "Could not remove staged evidence",
       }));
       setRemovalState((current) => {
-        if (current.bindingId !== owner) return current;
+        if (current.ownerKey !== owner) return current;
         const ids = new Set(current.ids);
         ids.delete(clientItemId);
         return { ...current, ids };
       });
     });
-  }, [loadStaged, owner, removingStaged]);
+  }, [loadStaged, owner, removingStaged, requestPath]);
 
   return {
     draft,

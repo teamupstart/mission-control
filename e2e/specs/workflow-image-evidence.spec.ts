@@ -28,6 +28,7 @@ const PNG = Buffer.from(
 );
 const GIF = Buffer.from("R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==", "base64");
 const INITIAL_CAPTION = "Initial dashboard evidence reaches both native provider transports";
+const PREBINDING_CAPTION = "Session-staged proof visible before the first binding";
 const REPLACEMENT_CAPTION = "Replacement visual evidence without a repository change";
 const SWITCHED_BINDING_CAPTION = "This unsent draft belongs only to the first binding";
 const EVIDENCE = artifactsDir("workflow-image-evidence");
@@ -151,6 +152,40 @@ test("dashboard evidence reaches both native providers and remains auditable per
   test.setTimeout(360_000);
   const sessionId = await dispatch(dashboard, daemon);
   const published = await createWorkflow(daemon);
+  const evidenceSession = (await api<Array<{ id: string; agentSessionId?: string }>>(
+    daemon,
+    "/api/sessions",
+  )).find((session) => session.id === sessionId);
+  expect(evidenceSession).toBeTruthy();
+  const noteKey = evidenceSession!.agentSessionId ?? evidenceSession!.id;
+  const now = Date.now();
+  withDaemonDb(daemon, (db) => {
+    db.prepare(
+      `INSERT INTO workflow_evidence_owners (
+         note_key, generation, all_generation, updated_at
+       ) VALUES (?, 1, 0, ?)`,
+    ).run(noteKey, now);
+    db.prepare(
+      `INSERT INTO workflow_evidence_staging (
+         id, note_key, client_item_id, source_kind, evidence_kind, source_root,
+         source_locator, display_name, caption, repository_scope, mime_type, bytes,
+         sha256, generation, state, reserved_group_key, created_at, updated_at
+       ) VALUES (?, ?, ?, 'agent', 'image', ?, ?, ?, ?, 'repo-01', 'image/png', ?, ?,
+         1, 'staged', NULL, ?, ?)`,
+    ).run(
+      "e2e-prebinding-staged",
+      noteKey,
+      "e2e-prebinding-proof",
+      daemon.repo,
+      ".evidence/prebinding-proof.png",
+      "prebinding-proof.png",
+      PREBINDING_CAPTION,
+      PNG.byteLength,
+      createHash("sha256").update(PNG).digest("hex"),
+      now,
+      now,
+    );
+  });
 
   await dashboard.goto(`${daemon.baseURL}/#/runs`);
   await dashboard.reload();
@@ -158,6 +193,20 @@ test("dashboard evidence reaches both native providers and remains auditable per
   const bind = dashboard.getByRole("dialog", { name: "Bind workflow" });
   await bind.getByLabel("Session").selectOption(sessionId);
   await bind.getByLabel("Published workflow").selectOption(published.versionId);
+  // Staging belongs to the conversation, so the first composer must reveal it before a
+  // binding exists and let the operator remove it through the session-owned route.
+  expect(await api<unknown[]>(daemon, "/api/workflow-bindings")).toHaveLength(0);
+  await expect(bind.getByText("Registered by the session")).toBeVisible();
+  await expect(bind).toContainText(PREBINDING_CAPTION);
+  const removedBeforeBinding = dashboard.waitForResponse((response) => {
+    const path = new URL(response.url()).pathname;
+    return response.request().method() === "DELETE"
+      && path.startsWith("/api/sessions/")
+      && path.endsWith("/workflow-evidence/e2e-prebinding-proof");
+  });
+  await bind.getByRole("button", { name: "Remove registered image prebinding-proof.png" }).click();
+  expect((await removedBeforeBinding).status()).toBe(200);
+  await expect(bind).not.toContainText(PREBINDING_CAPTION);
   await addEvidence(bind, { name: "initial-proof.png", mimeType: "image/png", buffer: PNG }, INITIAL_CAPTION);
   await expect(bind.getByRole("button", { name: "Bind and submit" })).toBeEnabled();
 

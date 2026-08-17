@@ -3,6 +3,7 @@ export interface DiagramHastNode {
   tagName?: string;
   value?: string;
   properties?: Record<string, unknown>;
+  data?: Record<string, unknown>;
   children?: DiagramHastNode[];
 }
 
@@ -11,6 +12,10 @@ export const DIAGRAM_ORDINAL_PROPERTY = "dataMissionDiagramOrdinal";
 export const DIAGRAM_LIMIT_PROPERTY = "dataMissionDiagramLimit";
 
 function languageTag(node: DiagramHastNode): string | null {
+  // remark-rehype preserves any words after the fence language in `data.meta`.
+  // A metadata-bearing fence is not the exact capability tag, even though its
+  // generated class is still only `language-mermaid`.
+  if (typeof node.data?.meta === "string" && node.data.meta.trim()) return null;
   const classes = node.properties?.className;
   if (!Array.isArray(classes)) return null;
   for (const value of classes) {

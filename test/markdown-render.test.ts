@@ -66,6 +66,7 @@ test("Files Preview replaces only exact fenced Mermaid blocks with numbered host
   const html = renderFilesPreview([
     "Inline `mermaid` stays inline.",
     "```Mermaid\nflowchart LR\n  A --> B\n```",
+    "```mermaid title=expanded\nflowchart LR\n  Metadata --> Source\n```",
     "```mermaid\nflowchart LR\n  A --> B\n```",
     "```unknown\nflowchart LR\n  C --> D\n```",
   ].join("\n\n"));
@@ -73,6 +74,8 @@ test("Files Preview replaces only exact fenced Mermaid blocks with numbered host
   assert.match(html, /Waiting to render/);
   assert.match(html, /<code>mermaid<\/code>/);
   assert.match(html, /language-Mermaid/);
+  assert.match(html, /language-mermaid/);
+  assert.match(html, /Metadata --&gt; Source/);
   assert.match(html, /language-unknown/);
   assert.doesNotMatch(html, /Mermaid diagram 2/);
 });

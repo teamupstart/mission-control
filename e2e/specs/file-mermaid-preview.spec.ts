@@ -24,6 +24,11 @@ const MARKDOWN = [
   "export const ordinaryCode = true;",
   "```",
   "",
+  "```mermaid title=source-only",
+  "flowchart LR",
+  "  Metadata --> Source",
+  "```",
+  "",
   "```mermaid",
   "flowchart LR",
   "  Broken[",
@@ -117,6 +122,9 @@ test("Files Preview renders isolated Mermaid diagrams while Editor keeps exact s
 
   await expect(first).toHaveAttribute("data-mermaid-state", "rendered");
   await expect(preview.locator("pre code.language-ts")).toContainText("ordinaryCode");
+  await expect(preview.locator("pre code.language-mermaid").filter({ hasText: "Metadata" })).toContainText(
+    "Metadata --> Source",
+  );
   await malformed.scrollIntoViewIfNeeded();
   await expect(malformed).toHaveAttribute("data-mermaid-state", "error");
   await expect(malformed.getByRole("alert")).toContainText("Diagram could not render");

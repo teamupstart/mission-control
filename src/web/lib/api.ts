@@ -100,7 +100,7 @@ import type {
   PipelineInstallerLaunchResult,
   PipelineProviderId,
   PipelineRepoRegistrationResponse,
-  PipelineRepoStatus,
+  PipelineReposView,
   PipelineRunDetail,
   PipelinesView,
 } from "@shared/pipeline.ts";
@@ -340,7 +340,7 @@ export async function setPipelinesConfig(
  * polling while its tab is open should cost.
  */
 export const fetchPipelineRepos = () =>
-  fetchJson<{ repos: PipelineRepoStatus[] }>("/api/pipelines/repos");
+  fetchJson<PipelineReposView>("/api/pipelines/repos");
 
 /** Ephemeral, provider-verified local source checkouts eligible for guided installation. */
 export const fetchPipelineInstallers = (provider: PipelineProviderId) =>

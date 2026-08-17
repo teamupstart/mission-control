@@ -1,11 +1,13 @@
 import { useEffect, useState } from "react";
 import {
   PIPELINE_INSTALLER_CHANGE_INFO,
+  PIPELINE_LAUNCH_RUNTIMES,
   PIPELINE_PROVIDER_INFO,
   activePipelineRepos,
   pipelineRepoKey,
   type PipelineInstallerCandidate,
   type PipelineProbe,
+  type PipelineLaunchRuntime,
   type PipelineProviderId,
   type PipelineRepoStatus,
   type PipelinesConfig,
@@ -20,6 +22,20 @@ import { Tooltip } from "./Tooltip.tsx";
 // Conductor's permanent commissioning destination. Registration changes the provider through its
 // CLI; observation changes Mission Control consent. Keeping both facts visible is what lets a
 // partial success remain recoverable without repeating provider work.
+
+const LAUNCH_RUNTIME_COPY: Record<
+  PipelineLaunchRuntime,
+  { label: string; detail: string }
+> = {
+  "claude-sdk": {
+    label: "Claude Agent SDK",
+    detail: "Starts one managed Claude session with /engineer <idea> as turn one.",
+  },
+  terminal: {
+    label: "Terminal",
+    detail: "Opens conduct-ts engineer --idea in a terminal home with live stdin.",
+  },
+};
 
 /** The last path segment, which is what an operator recognises a checkout by. */
 function repoLabel(repoRoot: string): string {
@@ -491,6 +507,51 @@ export function ConductorPanel({ state }: { state: ConductorState }): React.JSX.
                 : active > 0
                   ? `On - reading ${active} ${active === 1 ? "repository" : "repositories"}.`
                   : "On, but no repository is switched on, so nothing is being read."}
+          </ConsoleState>
+        </ConsoleCard>
+
+        <ConsoleCard title="Launch runtime" anchor="conductor/launch-runtime">
+          <fieldset className="settings-radios conductor-runtime-options">
+            <legend>Engineer host</legend>
+            {PIPELINE_LAUNCH_RUNTIMES.map((runtime) => {
+              const choice = LAUNCH_RUNTIME_COPY[runtime];
+              return (
+                <Tooltip
+                  key={runtime}
+                  label={`Use ${choice.label} as the Engineer host. ${choice.detail}`}
+                >
+                  <label
+                    className={`conductor-runtime-choice${config?.launchRuntime === runtime ? " is-selected" : ""}`}
+                  >
+                    <input
+                      type="radio"
+                      name="conductor-launch-runtime"
+                      value={runtime}
+                      checked={config?.launchRuntime === runtime}
+                      disabled={!config || setupBusy}
+                      onChange={() => {
+                        if (config) void save({ ...config, launchRuntime: runtime });
+                      }}
+                    />
+                    <span>
+                      <strong>{choice.label}</strong>
+                      <small>{choice.detail}</small>
+                    </span>
+                  </label>
+                </Tooltip>
+              );
+            })}
+          </fieldset>
+          <p className="settings-hint">
+            This controls Engineer's Mission Control host only. Conductor's background build
+            daemon keeps its own tmux supervision.
+          </p>
+          <ConsoleState tone={config ? "ok" : "unknown"}>
+            {!config
+              ? "Unknown - the daemon has not answered."
+              : config.launchRuntime === "claude-sdk"
+                ? "Claude Agent SDK - the shipped default, with no terminal fallback."
+                : "Terminal - the explicit compatibility host."}
           </ConsoleState>
         </ConsoleCard>
 

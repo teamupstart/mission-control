@@ -273,6 +273,8 @@ export interface PipelineProvider {
     intent: string,
     repoRoot: string,
   ): Promise<{ argv: string[]; cwd: string } | { refused: string }>;
+  /** Turn one for the provider's managed SDK host. No terminal command is nested inside it. */
+  taskPrompt(intent: string): string;
 }
 
 /** What a control verb acts on. `slug` is null for a repository-scoped verb. */

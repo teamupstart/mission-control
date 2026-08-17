@@ -1094,6 +1094,48 @@ test("a dispatch interrupted mid-launch is COMPLETED on restart, not failed", as
   assert.equal(t.error, null);
 });
 
+test("a prebound pipeline SDK host restores without a Mission Control worktree", async () => {
+  upsertSdkSession({
+    id: "sdk:pipeline-midflight",
+    agent: "claude",
+    agentSessionId: "agent-pipeline-mid",
+    cwd: "/repo/pipeline-mid",
+    taskId: "task-pipeline-mid",
+    model: null,
+    effort: null,
+    permissionMode: null,
+    status: "running",
+    turnInProgress: false,
+  });
+  const registry = new Registry();
+  registry.upsertTask(
+    mkTask({
+      id: "task-pipeline-mid",
+      kind: "pipeline",
+      status: "dispatching",
+      repoRoot: "/repo/pipeline-mid",
+      worktreePath: null,
+      homeName: null,
+      sessionId: null,
+      pipelineRun: {
+        provider: "ai-conductor",
+        repoRoot: "/repo/pipeline-mid",
+        slug: "pipeline-midflight",
+      },
+    }),
+  );
+  const supervisor = new SdkSupervisor(registry);
+
+  new TaskManager(registry, undefined, supervisor);
+  await waitFor(() => registry.getTask("task-pipeline-mid")?.status !== "dispatching");
+
+  const task = registry.getTask("task-pipeline-mid");
+  assert.equal(task?.status, "running");
+  assert.equal(task?.sessionId, "sdk:pipeline-midflight");
+  assert.equal(task?.worktreePath, null);
+  assert.equal(task?.homeName, null);
+});
+
 test("a dead embedded row still fails an interrupted dispatch", async () => {
   // The other half: liveness false means no agent is coming back, so the honest outcome is
   // the ordinary interrupted-dispatch failure rather than a `running` task with nothing

@@ -33,25 +33,35 @@ calling an unverified task running.
 
 An enabled conductor repository offers one different launch owner: **pipeline**. It creates
 the ordinary durable task row, derives conductor's canonical idea slug, and stores that exact
-provider run identity before it opens `conduct-ts engineer --idea "<intent>"` in a real terminal
-rooted at the repository. Dispatch refuses an intent with no canonical slug, an unreadable
-provider run set, a worktree already using the slug, or another live Mission Control task that
-already owns the same provider, repository, and slug. A retry clears the old identity and
-recomputes it from the current intent and provider configuration.
+provider run identity before it starts the configured Engineer host. Dispatch refuses an intent
+with no canonical slug, an unreadable provider run set, a worktree already using the slug, or
+another live Mission Control task that already owns the same provider, repository, and slug. A
+retry clears the old identity and recomputes it from the current intent and provider configuration.
 
-Mission Control does not provision its own worktree or inject a prompt because conductor owns
-both. The launch removes inherited `CLAUDECODE` before the engine starts; conductor refuses
-nested agent sessions and reads a real stdin. For the same reason Agent, Model, Effort, attached
-repositories, After work, and Agent SDK runtime do not apply. Pipeline tasks also stay out of
-Foreman's backlog autopilot. The provider's later agent sessions join the projected run through
-their worktree, exactly like a pipeline started outside Mission Control.
+The shipped host is **Claude Agent SDK**. Mission Control starts one managed Claude session at the
+repository and sends the exact `/engineer <intent>` command as turn one. It creates no Mission
+Control worktree or terminal home. **Settings → Conductor → Launch runtime** can instead select
+**Terminal**, which keeps the compatibility path: `conduct-ts engineer --idea "<intent>"` opens in
+a real terminal rooted at the repository, with live stdin and inherited `CLAUDECODE` removed so
+Conductor is not nested inside the daemon's Claude session. An SDK preflight or launch error fails
+the task visibly and never falls back to Terminal. This setting controls only the Engineer host;
+Conductor's background build daemon keeps its own tmux supervision.
 
-The task remains independent of any one child session and reaches done only when its exact
-provider projection becomes processed. Its pull request becomes the outcome link, while the
-terminal home stays recorded until standard cleanup releases it. A terminal task saved by an
-older build with no precomputed run identity can still bind once when a child in that terminal
-home appears inside a projected provider worktree. A discovered child can confirm a matching
-prebound identity, but cannot replace it with a different run.
+Conductor owns worktree creation and every downstream agent, model, and effort choice in both
+modes. Agent, Model, Effort, attached repositories, After work, and the generic runtime picker
+therefore remain unavailable for Pipeline. Pipeline tasks also stay out of Foreman's backlog
+autopilot. The SDK host is the task's current session, so Focus, questions, cancellation, and
+restart recovery use the ordinary managed-session paths. A Terminal task instead records its
+home and no session id.
+
+Neither host is a completion authority. An idle or merged SDK host cannot finish the task, and a
+host disappearing after the exact run appears only removes the stale session pointer. The task
+reaches done only when its exact provider projection becomes processed, at which point its pull
+request becomes the outcome link. A lost SDK host fails the task if that exact run never appeared.
+The Terminal home stays recorded until standard cleanup releases it. A Terminal task saved by an
+older build with no precomputed run identity can still bind once when a child in that home appears
+inside a projected provider worktree. A discovered child can confirm a matching prebound identity,
+but cannot replace it with a different run.
 
 ## The guided pass
 
@@ -292,10 +302,10 @@ pull request is still adopted by
 projection and appears in Shipped.
 The same projected run is also the task's completion boundary: the first child agent proves
 the durable task-to-run join for a task created by an older build. New dispatches persist the
-provider, repository, and canonical idea slug before their terminal starts. A processed exact
-projection settles either form without assigning the task to a child session. Opening a pull
-request concludes the provider run but does not by itself satisfy declared task dependencies,
-which retain their merge-only rule.
+provider, repository, and canonical idea slug before their configured Engineer host starts. A
+processed exact projection settles either runtime without treating the SDK host or a downstream
+child as the completion owner. Opening a pull request concludes the provider run but does not by
+itself satisfy declared task dependencies, which retain their merge-only rule.
 
 Once the task has a session, this selection is frozen so the task row and
 the already-armed Workflow cannot disagree. MCP-created tasks, task-source sweeps, and

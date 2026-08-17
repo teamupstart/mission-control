@@ -33,6 +33,7 @@ import {
   TASK_KIND_BEHAVIOR,
   TASK_KIND_INFO,
   hasReviewableDiff,
+  providerOwnsTaskCompletion,
   taskKindAllowsBacklog,
 } from "../src/shared/task.ts";
 
@@ -170,15 +171,16 @@ test("chat has the approved conversational copy", () => {
   });
 });
 
-test("pipeline is terminal-provider work and never backlog autopilot work", () => {
+test("pipeline is provider-owned work and never backlog autopilot work", () => {
   assert.deepEqual(TASK_KIND_BEHAVIOR.pipeline, {
     repoAvailability: "pipeline-enabled",
-    launch: "pipeline-terminal",
+    launch: "pipeline",
     autopilot: false,
     constraint:
-      "Pipeline tasks always launch conductor in a real terminal because it reads stdin and refuses nested SDK sessions. " +
-      "Conductor owns its agent, model, and effort; attached repos, after-work workflows, and backlog autopilot do not apply.",
+      "Pipeline tasks use Conductor's configured Engineer host. Conductor owns its downstream agent, model, and effort; attached repos, after-work workflows, and backlog autopilot do not apply.",
   });
+  assert.equal(providerOwnsTaskCompletion("pipeline"), true);
+  assert.equal(providerOwnsTaskCompletion("ship"), false);
 });
 
 /**

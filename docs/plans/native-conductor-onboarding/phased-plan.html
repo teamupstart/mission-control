@@ -69,7 +69,7 @@
     .card p { font-size:14px; }
     .card a { display:inline-block; margin-top:10px; color:var(--blue); font:700 11px/1.3 var(--mono); text-decoration:none; }
     .card a:hover { text-decoration:underline; }
-    .task { margin-top:14px; padding-top:13px; border-top:1px solid var(--border); color:var(--muted); font:11px/1.45 var(--mono); }
+    .task { margin-top:14px; padding-top:13px; border-top:1px solid var(--border); color:var(--muted); font:11px/1.45 var(--mono); overflow-wrap:anywhere; }
     table { width:100%; border-collapse:collapse; margin:14px 0; font-size:13px; }
     th,td { padding:11px 10px; border-bottom:1px solid var(--border); text-align:left; vertical-align:top; }
     th { color:var(--muted); font:700 9px/1.2 var(--mono); letter-spacing:.08em; text-transform:uppercase; }
@@ -186,8 +186,13 @@
             <rect class="n" x="690" y="95" width="175" height="80" rx="11" stroke="#f6a733"/><text class="t" x="777" y="127">Phase 2</text><text class="s" x="777" y="148">guided installation</text>
           </svg>
           <table><thead><tr><th>Phase</th><th>Direct prerequisites</th><th>Concurrency</th><th>Task id</th></tr></thead>
-            <tbody><tr><td>1 · Registration</td><td>Planning session</td><td>First lane</td><td>Pending publication</td></tr>
-            <tr><td>2 · Installation</td><td>Phase 1 + planning session</td><td>Sequential</td><td>Pending publication</td></tr></tbody></table>
+            <tbody><tr><td>1 · Registration</td><td>Planning session</td><td>First lane</td><td><code>20a736b6-a9d4-4c22-a460-96a153da2c69</code></td></tr>
+            <tr><td>2 · Installation</td><td>Phase 1 + planning session</td><td>Sequential</td><td><code>d3cdf141-e538-430e-87f7-9a2196cecae0</code></td></tr></tbody></table>
+          <ul>
+            <li>Planning session → Phase 1 task <code>20a736b6-a9d4-4c22-a460-96a153da2c69</code></li>
+            <li>Planning session → Phase 2 task <code>d3cdf141-e538-430e-87f7-9a2196cecae0</code></li>
+            <li>Phase 1 task → Phase 2 task</li>
+          </ul>
         </section>
 
         <section id="contracts">
@@ -213,7 +218,7 @@
                 observation consent, partial-success recovery, and exact-repository Dispatch refresh.</p>
               <ul><li>One vertical slice for installed engines</li><li>Instructions fallback for missing engines</li><li>Focused E2E fake registration</li></ul>
               <a href="phase-1-always-visible-registration.md">Read Phase 1 source →</a>
-              <div class="task">Task: pending artifact publication</div>
+              <div class="task">Task: 20a736b6-a9d4-4c22-a460-96a153da2c69</div>
             </article>
             <article class="card">
               <span class="num">2</span><h3>Guided engine installation</h3>
@@ -221,7 +226,7 @@
                 terminal selection, and hosted interactive installer launch with no silent acquisition.</p>
               <ul><li>Reverify provenance at click time</li><li>Never infer success from window launch</li><li>Final full-suite validation</li></ul>
               <a href="phase-2-guided-engine-installation.md">Read Phase 2 source →</a>
-              <div class="task">Task: pending Phase 1 task id</div>
+              <div class="task">Task: d3cdf141-e538-430e-87f7-9a2196cecae0</div>
             </article>
           </div>
         </section>

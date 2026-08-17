@@ -95,8 +95,8 @@ flowchart LR
 
 | Phase | Outcome | Direct prerequisites | Task id |
 |---|---|---|---|
-| 1 | Always-visible Settings plus Register and observe for installed engines | Planning session | Pending publication |
-| 2 | Verified local-checkout installer launched in a hosted interactive terminal | Phase 1 and planning session | Pending publication |
+| 1 | Always-visible Settings plus Register and observe for installed engines | Planning session | `20a736b6-a9d4-4c22-a460-96a153da2c69` |
+| 2 | Verified local-checkout installer launched in a hosted interactive terminal | Phase 1 and planning session | `d3cdf141-e538-430e-87f7-9a2196cecae0` |
 
 ## Concurrency and merge order
 
@@ -109,6 +109,13 @@ Phase 2 directly consumes Phase 1's provider setup contract, `useConductor` acti
 commissioning model, and E2E fake. It cannot safely run or merge concurrently. Both scheduled tasks
 also depend on the active planning session so neither can start before these documents reach the
 default branch.
+
+Scheduled dependency edges:
+
+- Planning session -> Phase 1 task `20a736b6-a9d4-4c22-a460-96a153da2c69`
+- Planning session -> Phase 2 task `d3cdf141-e538-430e-87f7-9a2196cecae0`
+- Phase 1 task `20a736b6-a9d4-4c22-a460-96a153da2c69` -> Phase 2 task
+  `d3cdf141-e538-430e-87f7-9a2196cecae0`
 
 ## Cross-phase contracts
 

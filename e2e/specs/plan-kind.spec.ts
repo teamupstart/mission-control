@@ -205,17 +205,18 @@ async function useBoardLayout(page: Page, daemon: DaemonHandle): Promise<void> {
   await expect(page.locator("main.board")).toBeVisible();
 }
 
-test("the Kind picker offers plan, after ship and scout", async ({ dashboard }) => {
+test("the Kind picker keeps plan after ship and scout, before chat", async ({ dashboard }) => {
   const { kind } = await openDispatch(dashboard);
 
   // Values AND text AND order, in one assertion, because each is a separate contract:
   // the value is what the route validates, the text is what a person reads, and the order
-  // is the tuple's - `ship` leads because it is the default, and `plan` was appended
-  // rather than inserted so nothing that indexes the tuple moved.
+  // is the tuple's - `ship` leads because it is the default, `plan` remains in its
+  // append-only slot, and the newer `chat` kind follows it.
   expect(await optionPairs(kind)).toEqual([
     ["ship", "ship"],
     ["scout", "scout"],
     ["plan", "plan"],
+    ["chat", "chat"],
   ]);
   await expect(kind).toHaveValue("ship");
 });
@@ -233,7 +234,7 @@ test("the guided pass offers plan as a listed option, with its blurb", async ({ 
 
   const picker = dialog.getByRole("listbox", { name: "What kind of run is this?" });
   await expect(picker).toBeVisible();
-  await expect(picker.getByRole("option")).toHaveCount(3);
+  await expect(picker.getByRole("option")).toHaveCount(4);
   const planOption = picker.getByRole("option", { name: /^plan/ });
   await expect(planOption).toBeVisible();
   // The blurb, not just the word - this is the copy `TASK_KIND_INFO` exists to carry, and
@@ -244,8 +245,8 @@ test("the guided pass offers plan as a listed option, with its blurb", async ({ 
   await expect(planOption).toContainText("l");
 
   // The whole viewport, not the dialog element: this picker is a portaled popover that
-  // overflows the dialog's own box, so an element-scoped frame clips the third option -
-  // which is the one the frame exists to show. Sized just past what the dialog and its
+  // overflows the dialog's own box, so an element-scoped frame clips the lower options.
+  // Sized just past what the dialog and its
   // popover occupy, so the subject fills the frame instead of floating in dead space.
   await shoot(dashboard, "03-guided-kind-picker", undefined, { width: 1000, height: 800 });
 

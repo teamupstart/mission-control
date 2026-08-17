@@ -647,6 +647,7 @@ const SCHEDULED_TASK = {
   title: "Run dependency audit",
   fullTitle: "Run dependency audit",
   kind: "ship" as const,
+  workflowId: null,
   status: "running" as const,
   outcome: null,
   outcomeUrl: null,

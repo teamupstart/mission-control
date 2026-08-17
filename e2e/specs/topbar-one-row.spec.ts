@@ -103,7 +103,9 @@ async function busyFleet(page: Page, daemon: DaemonHandle): Promise<number> {
 
   const card = page.locator("article.card").first();
   await expect(card).toBeVisible();
+  await expect(card.locator(".badge-idle")).toBeVisible({ timeout: 15_000 });
   await card.getByRole("button", { name: "Expand conversation" }).click();
+  await expect(card.getByRole("button", { name: "Collapse conversation" })).toBeVisible();
   const composer = card.getByPlaceholder(/^Reply to this session/);
   await expect(composer).toBeEnabled();
   await composer.fill(ASK_TURN);
@@ -118,6 +120,11 @@ async function busyFleet(page: Page, daemon: DaemonHandle): Promise<number> {
   // measured against. Asserted so the rest of the spec cannot quietly degrade into measuring
   // an idle bar and passing on the ladder this change replaced.
   await expect(page.locator(".pulse .pulse-seg")).toHaveCount(4);
+  await expect(
+    page
+      .getByRole("button", { name: "Foreman - the auto-responder (dry-run)" })
+      .locator(".ghost-badge"),
+  ).toHaveText("1");
 
   // The fourth segment is width the reported bar did not carry: the report's fleet read
   // `live · 4 sessions · 2 working` - three segments - and every pinned width below was

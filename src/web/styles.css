@@ -5117,6 +5117,84 @@ a.btn {
   color: var(--muted);
 }
 
+/* Files Preview diagrams keep the same quiet technical frame as code, with a small
+   drawing-register caption as their one distinguishing mark. Generated SVG never enters
+   this tree: the visible drawing is the opaque iframe below. */
+.mermaid-diagram {
+  min-width: 0;
+  margin: 16px 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg);
+}
+.mermaid-diagram > figcaption {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border-soft);
+  color: var(--dim);
+  background: color-mix(in srgb, var(--panel-2) 72%, var(--bg));
+  font: 700 9.5px/1 var(--mono);
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
+.mermaid-diagram > figcaption span:first-child { color: var(--working); }
+.mermaid-diagram-stage {
+  position: relative;
+  min-height: 148px;
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--working) 4%, transparent) 1px, transparent 1px),
+    linear-gradient(color-mix(in srgb, var(--working) 4%, transparent) 1px, transparent 1px),
+    var(--bg);
+  background-size: 24px 24px;
+}
+.mermaid-diagram-frame {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+}
+.mermaid-diagram-status {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  margin: 0 !important;
+  color: var(--muted);
+  font: 11.5px/1.45 var(--mono);
+  pointer-events: none;
+}
+.mermaid-diagram-failure { padding: 12px; }
+.mermaid-diagram-failure > p,
+.mermaid-diagram-limit > p {
+  margin: 0 0 10px;
+  color: var(--danger);
+  font-size: 12px;
+}
+.mermaid-diagram-failure > pre,
+.mermaid-diagram-limit > pre {
+  max-height: 280px;
+  margin: 0;
+}
+.mermaid-diagram-limit {
+  margin: 14px 0;
+  padding: 11px 12px 12px;
+  border-left: 3px solid var(--attention);
+  border-radius: 0 8px 8px 0;
+  background: color-mix(in srgb, var(--attention) 5%, var(--bg));
+}
+.mermaid-diagram-limit > p { color: var(--attention); }
+
+@media (max-width: 640px) {
+  .file-markdown-preview { padding: 18px 16px; }
+  .mermaid-diagram > figcaption { padding-inline: 8px; }
+}
+
 /* ---- syntax highlighting (highlight.js token classes) ----
    Built from the dashboard's own palette rather than dropping in one of highlight.js's
    stock themes. A stock theme carries its own background and its own idea of a
@@ -23322,6 +23400,9 @@ span.line-run-prov {
    coloured. */
 .bl-kind-plan {
   color: var(--purple);
+}
+.bl-kind-chat {
+  color: var(--syntax-type);
 }
 /* "N repos" on a multi-repo backlog card. Same pill as the kind/agent chips beside it -
    it is one more fact about what this task IS, not a warning - and it sits before

@@ -147,6 +147,7 @@ import type {
 } from "@shared/types.ts";
 import { ReviewResolutionError, type ReviewManager } from "./reviews.ts";
 import {
+  MANUAL_DISPATCH_TASK_CREATE,
   ScoutArchiveNotReadyError,
   TaskDependencyError,
   TaskStatusConflictError,
@@ -4666,7 +4667,11 @@ export function buildApp(
     }
     let task;
     try {
-      task = tasks.create({ ...parsed.data, repoRoot, extraRepoRoots, workflowId });
+      task = tasks.create(
+        { ...parsed.data, repoRoot, extraRepoRoots, workflowId },
+        undefined,
+        MANUAL_DISPATCH_TASK_CREATE,
+      );
     } catch (error) {
       if (error instanceof TaskDependencyError) return c.json({ error: error.message }, 409);
       throw error;

@@ -5483,6 +5483,7 @@ export class Registry extends EventEmitter {
           title: t.title,
           fullTitle: fullTaskTitle(t.title, t.intent),
           kind: t.kind,
+          workflowId: t.workflowId,
           status: t.status,
           outcome: t.outcome,
           outcomeUrl: t.outcomeUrl,

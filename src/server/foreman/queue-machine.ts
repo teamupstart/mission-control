@@ -388,6 +388,7 @@ export function decideQueueTick(input: QueueTickInput): QueueAction {
     const intentGuard = resolvedSessionIntent(intent);
     const block = automaticWrapupBlock({
       taskKind: session.task?.kind ?? null,
+      workflowId: session.task?.workflowId ?? null,
       // Queue items are completion contracts too. Include them beside the durable session
       // objective so `Output: mockups` cannot disappear merely because it was added as an
       // item rather than as the session's opening prompt. A task title is the last compact

@@ -128,6 +128,7 @@ test("schedule provenance rides inside Session.task, and a change to it still em
     title: "Audit dependencies",
     fullTitle: "Audit dependencies",
     kind: "ship" as const,
+    workflowId: null,
     status: "running" as const,
     outcome: null,
     outcomeUrl: null,

@@ -263,10 +263,10 @@ test("a fake-agent chat survives idle and a later turn until Complete and close"
 
   await daemon.startForeman();
   await expect.poll(async () =>
-    (await api<{ promptedConsumedGeneration: number | null }>(
+    (await api<{ promptedConsumedGeneration: number | null } | null>(
       daemon,
       `/api/sessions/${session!.id}/queue`,
-    )).promptedConsumedGeneration ?? 0,
+    ))?.promptedConsumedGeneration ?? 0,
   { timeout: 40_000 }).toBeGreaterThan(0);
   await expect.poll(async () =>
     (await api<Array<{ id: string; status: string; kind: string }>>(daemon, "/api/tasks"))

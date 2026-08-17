@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; connect-src 'none'; script-src 'nonce-mission-mermaid-v1'; style-src 'unsafe-inline'; img-src 'none'; font-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; child-src 'none'; worker-src 'none'; form-action 'none'; base-uri 'none'; navigate-to 'none'"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Mermaid diagram</title>
+    <style>
+      :root { color-scheme: dark; }
+      html, body { margin: 0; min-height: 100%; background: transparent; overflow: auto; }
+      body { box-sizing: border-box; padding: 16px; }
+      #diagram { display: grid; min-width: max-content; min-height: 1px; place-items: center; }
+      #diagram > svg { display: block; max-width: calc(100vw - 32px) !important; height: auto !important; }
+    </style>
+    <!-- mission-mermaid-classic-script -->
+  </head>
+  <body>
+    <div id="diagram"></div>
+  </body>
+</html>

@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { Markdown } from "../src/web/components/Markdown.tsx";
+import { FILES_DIAGRAM_RENDERERS } from "../src/web/components/markdownDiagramRegistry.tsx";
+import { MERMAID_MAX_DIAGRAMS, MERMAID_MAX_SOURCE_LENGTH } from "../src/web/lib/mermaidPreview.ts";
 import { hasTooltip, tooltipLabels } from "./helpers/markup.ts";
 
 // Rendered rather than driven through a browser, for the same reason as the other render
@@ -12,6 +14,14 @@ import { hasTooltip, tooltipLabels } from "./helpers/markup.ts";
 
 function render(md: string, breaks = false): string {
   return renderToStaticMarkup(createElement(Markdown, { children: md, breaks }));
+}
+
+function renderFilesPreview(md: string): string {
+  return renderToStaticMarkup(createElement(Markdown, {
+    children: md,
+    diagramRenderers: FILES_DIAGRAM_RENDERERS,
+    diagramDocumentKey: "docs/example.md",
+  }));
 }
 
 test("a fenced block becomes a highlighted <pre><code>, tagged with its language", () => {
@@ -43,6 +53,46 @@ test("a fence naming a language highlight.js doesn't ship still renders as code"
   const html = render("```notalanguage\nsome text\n```");
   assert.match(html, /<pre><code/);
   assert.match(html, /some text/);
+});
+
+test("Mermaid fences stay source code unless the caller explicitly enables diagrams", () => {
+  const html = render("```mermaid\nflowchart LR\n  A --> B\n```");
+  assert.match(html, /<pre><code class="[^"]*language-mermaid/);
+  assert.match(html, /flowchart LR/);
+  assert.doesNotMatch(html, /Mermaid diagram 1/);
+});
+
+test("Files Preview replaces only exact fenced Mermaid blocks with numbered hosts", () => {
+  const html = renderFilesPreview([
+    "Inline `mermaid` stays inline.",
+    "```Mermaid\nflowchart LR\n  A --> B\n```",
+    "```mermaid\nflowchart LR\n  A --> B\n```",
+    "```unknown\nflowchart LR\n  C --> D\n```",
+  ].join("\n\n"));
+  assert.match(html, /<figure[^>]*aria-label="Mermaid diagram 1"/);
+  assert.match(html, /Waiting to render/);
+  assert.match(html, /<code>mermaid<\/code>/);
+  assert.match(html, /language-Mermaid/);
+  assert.match(html, /language-unknown/);
+  assert.doesNotMatch(html, /Mermaid diagram 2/);
+});
+
+test("Files Preview leaves excessive Mermaid fences readable without creating another host", () => {
+  const source = Array.from({ length: MERMAID_MAX_DIAGRAMS + 1 }, (_, index) =>
+    `\`\`\`mermaid\nflowchart LR\n  A${index} --> B${index}\n\`\`\``).join("\n\n");
+  const html = renderFilesPreview(source);
+  assert.equal(html.match(/<figure/g)?.length, MERMAID_MAX_DIAGRAMS);
+  assert.match(html, new RegExp(`more than ${MERMAID_MAX_DIAGRAMS} Mermaid blocks`));
+  assert.match(html, new RegExp(`A${MERMAID_MAX_DIAGRAMS} --&gt; B${MERMAID_MAX_DIAGRAMS}`));
+});
+
+test("Files Preview reports an oversized Mermaid block locally and retains its source", () => {
+  const source = `flowchart LR\nA[${"x".repeat(MERMAID_MAX_SOURCE_LENGTH)}]`;
+  const html = renderFilesPreview(`\`\`\`mermaid\n${source}\n\`\`\``);
+  assert.match(html, /source exceeds 50,000 characters/);
+  assert.match(html, /language-mermaid/);
+  assert.match(html, /flowchart LR/);
+  assert.doesNotMatch(html, /<iframe/);
 });
 
 test("with `breaks`, single newlines inside a paragraph survive as breaks", () => {

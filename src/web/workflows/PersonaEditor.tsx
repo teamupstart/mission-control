@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { isLlmRunnerId } from "@shared/llm.ts";
 import type { LlmRunnerId } from "@shared/llm.ts";
 import type { ResolvedModel } from "@shared/model-choice.ts";
@@ -430,6 +430,7 @@ export function PersonaEditor({
   onDuplicate,
   onReimport = () => {},
   onArchive,
+  footer,
 }: {
   persona: PersonaView | null;
   seed?: PersonaDraftSeed;
@@ -445,6 +446,8 @@ export function PersonaEditor({
   /** Raised for the library to confirm and perform: it owns the request and the error line. */
   onReimport?: (persona: PersonaView) => void;
   onArchive: (persona: PersonaView) => void | Promise<void>;
+  /** The Library's shared usage footer; absent on a new draft and on older daemon state. */
+  footer?: ReactNode;
 }): React.JSX.Element {
   const [draft, setDraft] = useState<PersonaDraftSeed>(() => persona ? fromPersona(persona) : seed ?? {
     name: "",
@@ -845,17 +848,7 @@ export function PersonaEditor({
           )}
         </div>
       </section>
-      {/*
-       * The "used by" slot. Phase 5 fills it - which workflows reference this Persona, and
-       * whether a run is gating on it right now - and until then nothing renders here.
-       *
-       * Deliberately not an empty strip with the label already in it. A person reading
-       * "used by" over blank space concludes the question was asked and the answer was
-       * "nothing", and for a Persona that is currently blocking a review that is the worst
-       * of the three things this screen could say. The reference is not derivable in the
-       * browser (a persona id lives only inside a workflow graph, which the SSE snapshot
-       * does not carry), so a half-answer here would be a guess, not a partial.
-       */}
+      {footer}
     </article>
   );
 }

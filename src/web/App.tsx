@@ -2220,6 +2220,9 @@ export function App(): React.JSX.Element {
         <main className="lib-surface">
           <PersonaLibrary
             personas={personas}
+            workflowSummaries={workflowSummaries}
+            workflowRuns={workflowRuns}
+            hasSnapshot={hasSnapshot}
             providers={llm.status?.runners ?? []}
             defaults={llm.personaDefaults}
             foremanSummary={{
@@ -2246,6 +2249,8 @@ export function App(): React.JSX.Element {
           <main className="lib-surface">
             <SessionActionLibrary
               sessionActions={sessionActions}
+              workflowSummaries={workflowSummaries}
+              workflowRuns={workflowRuns}
               hasSnapshot={hasSnapshot}
               initialActionId={libraryAssetId}
               startNew={libraryCreating}

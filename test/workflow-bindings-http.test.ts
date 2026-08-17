@@ -85,6 +85,22 @@ function seedRuntimeVersion(id: string, graph: PublishedWorkflowGraph): void {
   ).run(`v-${id}`, `w-${id}`, JSON.stringify(graph), defaults);
 }
 
+function advanceRuntimeVersion(id: string, graph: PublishedWorkflowGraph): void {
+  const db = openDb();
+  const defaults = JSON.stringify({ triggerMode: "manual", deliveryMode: "preview", maxRepairRounds: 1 });
+  db.prepare(
+    `INSERT INTO workflow_versions (
+       id, workflow_id, version, source_draft_revision, graph_json,
+       completion_policy_json, binding_defaults_json, published_at
+     ) VALUES (?, ?, 2, 2, ?, '{"kind":"none"}', ?, 2)`,
+  ).run(`v-${id}-2`, `w-${id}`, JSON.stringify(graph), defaults);
+  db.prepare(
+    `UPDATE workflow_definitions
+        SET current_version_id = ?, draft_revision = 2, updated_at = 2
+      WHERE id = ?`,
+  ).run(`v-${id}-2`, `w-${id}`);
+}
+
 function request(app: ReturnType<typeof buildApp>, path: string, body?: unknown, method = "POST") {
   return app.request(path, {
     method,
@@ -200,6 +216,163 @@ test("a dispatched task arms its selected published workflow at Foreman Complete
   assert.equal(workflows.archiveBinding(binding.id).ok, true);
   await workflows.stop();
   setForemanConfig({ enabled: false });
+});
+
+test("restart reconciliation keeps an older immutable version of the selected workflow", async () => {
+  const graph: PublishedWorkflowGraph = {
+    nodes: [
+      { id: "session", kind: "session", position: { x: 0, y: 0 } },
+      { id: "end", kind: "end", outcome: "Complete", position: { x: 100, y: 0 } },
+    ],
+    edges: [
+      {
+        id: "end",
+        source: "session",
+        sourcePort: "submitted",
+        target: "end",
+        targetPort: "terminal",
+      },
+    ],
+  };
+  seedRuntimeVersion("dispatch-pinned", graph);
+  seedRuntimeVersion("dispatch-different", graph);
+  setForemanConfig({ enabled: true });
+  const registry = new Registry();
+  registry.applyDiscovery([
+    discovered({
+      syntheticId: "session-dispatch-pinned",
+      tty: "ttys-pinned",
+      terminals: [mkMuxHandle({ paneId: "%pinned" })],
+    }),
+    discovered({
+      syntheticId: "session-dispatch-manual",
+      tty: "ttys-manual",
+      terminals: [mkMuxHandle({ paneId: "%manual" })],
+    }),
+    discovered({
+      syntheticId: "session-dispatch-unresolved",
+      tty: "ttys-unresolved",
+      terminals: [mkMuxHandle({ paneId: "%unresolved" })],
+    }),
+    discovered({
+      syntheticId: "session-dispatch-different",
+      tty: "ttys-different",
+      terminals: [mkMuxHandle({ paneId: "%different" })],
+    }),
+  ]);
+  for (const [agentSessionId, pane] of [
+    ["agent-dispatch-pinned", "%pinned"],
+    ["agent-dispatch-manual", "%manual"],
+    ["agent-dispatch-unresolved", "%unresolved"],
+    ["agent-dispatch-different", "%different"],
+  ] as const) {
+    registry.applyHook({
+      agent: "claude",
+      event: "PostToolUse",
+      sessionId: agentSessionId,
+      cwd: "/repo",
+      transcriptPath: null,
+      env: { tmuxPane: pane },
+    });
+  }
+  const personas = new PersonaManager(registry);
+  let workflows = new WorkflowManager(registry, personas.store);
+  workflows.start();
+  registry.upsertTask(mkTask({
+    id: "task-dispatch-pinned",
+    status: "running",
+    sessionId: "session-dispatch-pinned",
+    workflowId: "w-dispatch-pinned",
+  }));
+
+  const original = workflows.store.activeBindingForNote("agent-dispatch-pinned");
+  assert.ok(original);
+  assert.equal(original.workflowVersionId, "v-dispatch-pinned");
+  assert.equal(original.triggerMode, "foreman_complete");
+
+  advanceRuntimeVersion("dispatch-pinned", graph);
+  assert.equal(
+    workflows.get("w-dispatch-pinned")?.workflow.currentVersionId,
+    "v-dispatch-pinned-2",
+  );
+  await workflows.stop();
+  workflows = new WorkflowManager(registry, personas.store);
+  workflows.start();
+
+  const errors: string[] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => { errors.push(args.map(String).join(" ")); };
+  try {
+    const session = registry.getSession("session-dispatch-pinned");
+    assert.ok(session);
+    registry.emit("event", { type: "session_upsert", session });
+  } finally {
+    console.error = originalError;
+  }
+
+  assert.deepEqual(
+    workflows.store.activeBindingForNote("agent-dispatch-pinned"),
+    original,
+  );
+
+  const manual = workflows.createBinding({
+    workflowVersionId: original.workflowVersionId,
+    sessionId: "session-dispatch-manual",
+    triggerMode: "manual",
+  });
+  assert.equal(manual.ok, true);
+  assert.equal(
+    workflows.assignmentWorkflowBlock(
+      "w-dispatch-pinned",
+      registry.getSession("session-dispatch-manual")!,
+    ),
+    "This conversation already has a different active Workflow binding",
+  );
+
+  const different = workflows.createBinding({
+    workflowVersionId: "v-dispatch-different",
+    sessionId: "session-dispatch-different",
+    triggerMode: "foreman_complete",
+  });
+  assert.equal(different.ok, true);
+  assert.equal(
+    workflows.assignmentWorkflowBlock(
+      "w-dispatch-pinned",
+      registry.getSession("session-dispatch-different")!,
+    ),
+    "This conversation already has a different active Workflow binding",
+  );
+
+  assert.equal(workflows.store.getWorkflowVersionById("v-dispatch-unresolved"), null);
+  workflows.store.insertBinding({
+    id: "binding-dispatch-unresolved",
+    workflowVersionId: "v-dispatch-unresolved",
+    noteKey: "agent-dispatch-unresolved",
+    sessionId: "session-dispatch-unresolved",
+    sessionAgent: "claude",
+    sessionName: "work",
+    sessionCwd: "/repo",
+    sessionRepoRoot: "/repo",
+    triggerMode: "foreman_complete",
+    deliveryMode: "preview",
+    maxRepairRounds: 1,
+    now: 3,
+  });
+  assert.equal(
+    workflows.assignmentWorkflowBlock(
+      "w-dispatch-pinned",
+      registry.getSession("session-dispatch-unresolved")!,
+    ),
+    "This conversation already has a different active Workflow binding",
+  );
+
+  assert.equal(workflows.archiveBinding(original.id).ok, true);
+  if (manual.ok) assert.equal(workflows.archiveBinding(manual.value.id).ok, true);
+  if (different.ok) assert.equal(workflows.archiveBinding(different.value.id).ok, true);
+  assert.equal(workflows.archiveBinding("binding-dispatch-unresolved").ok, true);
+  await workflows.stop();
+  setForemanConfig({ enabled: false });
+  assert.deepEqual(errors, []);
 });
 
 test("task creation inherits the dispatch default while explicit None opts out", async () => {

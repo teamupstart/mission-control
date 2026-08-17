@@ -1612,8 +1612,8 @@ export class TaskManager {
       // selected workflow's current immutable version there.
       workflowId,
       source: input.source ?? null,
-      // Learned only after a child agent appears inside the provider's projected worktree.
-      // The terminal launch itself has no slug to persist yet.
+      // Filled by pipeline dispatch before its host starts. Null remains valid for backlog
+      // rows and for tasks persisted by builds that learned the link only from a child.
       pipelineRun: null,
       repoRoot: input.repoRoot,
       worktreePath: null,

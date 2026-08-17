@@ -41,6 +41,8 @@ import {
   type PipelinePhase,
 } from "../src/shared/pipeline.ts";
 import { LLM_SPEND_ROLES } from "../src/shared/llm-spend.ts";
+import { conductorIdeaSlug } from "../src/server/pipelines/conductor/index.ts";
+import { PIPELINE_PROVIDERS } from "../src/server/pipelines/providers.ts";
 
 // What is at stake: `src/shared/pipeline.ts` is a cross-phase contract - phases 2 to 6 are
 // all consumers of it - and two of the things it promises are only true if somebody checks.
@@ -213,6 +215,47 @@ test("the projection key is the engine's own identity, and separates its three p
   assert.notEqual(
     pipelineRunKey("ai-conductor", "/repo/a", "b-c"),
     pipelineRunKey("ai-conductor", "/repo/a b", "c"),
+  );
+});
+
+test("every provider derives a complete task identity through the provider contract", () => {
+  for (const id of PIPELINE_PROVIDER_IDS) {
+    assert.equal(typeof PIPELINE_PROVIDERS[id].taskIdentity, "function", id);
+  }
+  assert.deepEqual(
+    PIPELINE_PROVIDERS["ai-conductor"].taskIdentity("Build the release train", "/repo/a"),
+    {
+      provider: "ai-conductor",
+      repoRoot: "/repo/a",
+      slug: "build-the-release-train",
+    },
+  );
+});
+
+test("conductor idea slugs match its lowercase ASCII, separator, trim, and cap contract", () => {
+  assert.deepEqual(
+    [
+      "Hello, world!",
+      "one___two / three",
+      "--- edge ---",
+      "MiXeD CaSe",
+      "Crème brûlée 東京",
+      "A".repeat(60),
+      "🔥 /// 東京",
+    ].map(conductorIdeaSlug),
+    [
+      "hello-world",
+      "one-two-three",
+      "edge",
+      "mixed-case",
+      "cr-me-br-l-e",
+      "a".repeat(50),
+      "",
+    ],
+  );
+  assert.deepEqual(
+    PIPELINE_PROVIDERS["ai-conductor"].taskIdentity("🔥 /// 東京", "/repo/a"),
+    { refused: "conductor cannot derive a run slug from this task intent" },
   );
 });
 

@@ -10,6 +10,7 @@ import type {
   WorktreeProvider,
 } from "@shared/types.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
+import { pipelineRunKeyOf } from "@shared/pipeline.ts";
 import { innermostTerminalResourceId } from "@shared/pane.ts";
 import { deriveTitle as deriveTaskTitle } from "@shared/title.ts";
 import { WORKTREES_DIR, envVar } from "./config.ts";
@@ -643,6 +644,25 @@ export class Dispatcher {
     );
     if (!launch.ok) throw new Error(launch.error);
 
+    const runKey = pipelineRunKeyOf(launch.pipelineRun);
+    const owner = this.registry.listTasks().find(
+      (candidate) =>
+        candidate.id !== taskId &&
+        candidate.kind === "pipeline" &&
+        (candidate.status === "running" || candidate.status === "dispatching") &&
+        candidate.pipelineRun !== null &&
+        pipelineRunKeyOf(candidate.pipelineRun) === runKey,
+    );
+    if (owner) {
+      throw new Error(
+        `pipeline run "${launch.pipelineRun.slug}" is already owned by active task ${owner.id}`,
+      );
+    }
+
+    // This write is the ownership boundary. It is synchronous and durable, so another
+    // dispatch sees the claim before this one yields to the terminal launcher.
+    this.patch(taskId, { pipelineRun: launch.pipelineRun });
+
     const label = sessionLabel(task.title);
     const shortId = taskId.slice(0, 6);
     const [command, ...args] = launch.argv;
@@ -658,7 +678,8 @@ export class Dispatcher {
     if (await this.abortIfSettled(taskId)) return;
 
     // The terminal is conductor's live stdin, not an agent session. Agent sessions appear
-    // later in the engine's worktree and correlate through Registry.pipelineLinkFor.
+    // later in the engine's worktree; their correlation remains a compatibility backstop
+    // for tasks created before provider identity was known at launch.
     this.patch(taskId, { status: "running", sessionId: null });
   }
 

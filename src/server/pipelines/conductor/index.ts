@@ -7,6 +7,7 @@ import {
   type PipelineDaemonState,
   type PipelineRun,
   type PipelineRunDetail,
+  type PipelineRunLink,
 } from "@shared/pipeline.ts";
 
 import type { PipelineEventInput } from "../../db.ts";
@@ -344,6 +345,34 @@ export function conductorEngineerArgv(bin: string, intent: string): string[] {
   return ["/usr/bin/env", "-u", "CLAUDECODE", bin, "engineer", "--idea", intent];
 }
 
+/**
+ * Conductor's canonical idea key, copied from its Engineer plan/worktree contract.
+ *
+ * Keep this provider-owned and fixture-pinned. The plan stem becomes the daemon run slug,
+ * so changing this independently of ai-conductor would prebind tasks to runs that can never
+ * appear. ASCII is intentional: characters outside `[a-z0-9]` are separators in the
+ * provider implementation rather than letters retained through Unicode normalization.
+ */
+export function conductorIdeaSlug(intent: string): string {
+  return intent
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 50);
+}
+
+/** The run Engineer will create from this idea, before any provider state exists for it. */
+function conductorTaskIdentity(
+  intent: string,
+  repoRoot: string,
+): PipelineRunLink | { refused: string } {
+  const slug = conductorIdeaSlug(intent);
+  if (slug === "") {
+    return { refused: "conductor cannot derive a run slug from this task intent" };
+  }
+  return { provider: "ai-conductor", repoRoot, slug };
+}
+
 /** Resolve conductor before opening a terminal that would otherwise exit immediately. */
 async function conductorTask(
   intent: string,
@@ -364,5 +393,6 @@ export const CONDUCTOR_PROVIDER: PipelineProvider = {
   readRunDetail: readConductorRunDetail,
   control: runConductorControl,
   consoleArgv: conductorConsole,
+  taskIdentity: conductorTaskIdentity,
   taskArgv: conductorTask,
 };

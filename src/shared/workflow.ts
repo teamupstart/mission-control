@@ -2638,6 +2638,26 @@ export interface WorkflowVersion {
 export type WorkflowVersionMetadata = Omit<WorkflowVersion, "graph">;
 
 /** The bounded catalog projection carried over SSE. Graphs and guidance stay on HTTP. */
+export interface WorkflowAssetReferenceSet {
+  /** Unique Persona ids named by this graph, bounded by `WORKFLOW_LIMITS.graphNodes`. */
+  personaIds: PersonaId[];
+  /** Unique SessionAction ids named by this graph, bounded by `WORKFLOW_LIMITS.graphNodes`. */
+  sessionActionIds: SessionActionId[];
+}
+
+/**
+ * The asset identities named by the two graphs one workflow can truthfully expose.
+ *
+ * Draft and published stay separate because they mean different things: the draft follows
+ * Library edits, while the published graph is the immutable version a new run binds. Each set
+ * is bounded by the graph's 100-node ceiling and contains ids only, never graph shape or asset
+ * content. `published` is null until the workflow has a current version.
+ */
+export interface WorkflowAssetReferences {
+  draft: WorkflowAssetReferenceSet;
+  published: WorkflowAssetReferenceSet | null;
+}
+
 export interface WorkflowSummary {
   id: WorkflowId;
   name: string;
@@ -2653,6 +2673,13 @@ export interface WorkflowSummary {
   personaCount: number;
   /** Mirrors `WorkflowDefinition.builtin` so the library row can say so without a detail fetch. */
   builtin: boolean;
+  /**
+   * Bounded asset identities for the Library's "Used by" footer.
+   *
+   * Optional only for wire compatibility with an older daemon. A browser that does not receive
+   * it must render no footer rather than infer references from names or fetch every workflow.
+   */
+  assetReferences?: WorkflowAssetReferences;
 }
 
 /** The catalog facts naming a version id needs. A `WorkflowSummary` satisfies it as-is. */
@@ -3343,6 +3370,18 @@ export interface WorkflowRunSummary {
   deliveryMode?: WorkflowDeliveryMode;
   maxRepairRounds: number;
   activePersonaNames: string[];
+  /**
+   * Exact ids for the active Persona attempts represented by `activePersonaNames`.
+   * Optional only for compatibility with older summaries, where name shadowing makes an exact
+   * asset match impossible.
+   */
+  activePersonaIds?: PersonaId[];
+  /**
+   * Exact ids for SessionAction attempts the run is currently waiting on.
+   * Optional only for compatibility with older summaries, whose `actionWait` names the reason
+   * but not the action.
+   */
+  activeSessionActionIds?: SessionActionId[];
   failedPersonaCount: number;
   bypassedPersonaReview: boolean;
   gate: WorkflowGateSummary;

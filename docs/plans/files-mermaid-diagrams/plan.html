@@ -1,0 +1,363 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Automatic Mermaid diagrams in the Files preview</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f5f7fb;
+      --surface: #ffffff;
+      --surface-2: #edf2f8;
+      --text: #18212d;
+      --muted: #566579;
+      --border: #cad4e1;
+      --accent: #1769c2;
+      --accent-soft: #e5f1ff;
+      --good: #157454;
+      --warn: #9a5b00;
+      --danger: #b42318;
+      --shadow: 0 18px 50px rgba(34, 50, 71, .11);
+      --mono: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0a0d12;
+        --surface: #121820;
+        --surface-2: #0d131b;
+        --text: #e6edf5;
+        --muted: #9aa8ba;
+        --border: #2a3543;
+        --accent: #62adff;
+        --accent-soft: #122943;
+        --good: #57c69d;
+        --warn: #f0ad4e;
+        --danger: #ff7b72;
+        --shadow: 0 18px 50px rgba(0, 0, 0, .35);
+      }
+    }
+    * { box-sizing: border-box; }
+    html { background: var(--bg); }
+    body {
+      margin: 0;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 12% 0%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 31rem),
+        var(--bg);
+      font-family: var(--sans);
+      font-size: 16px;
+      line-height: 1.62;
+      overflow-wrap: anywhere;
+    }
+    main {
+      width: min(1080px, calc(100% - 32px));
+      margin: 38px auto 72px;
+      padding: clamp(24px, 5vw, 62px);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+    h1, h2, h3 { line-height: 1.2; text-wrap: balance; }
+    h1 { margin: 0 0 12px; font-size: clamp(2rem, 5vw, 3.45rem); letter-spacing: -.045em; }
+    h2 { margin: 48px 0 16px; padding-top: 8px; font-size: 1.55rem; letter-spacing: -.018em; }
+    h3 { margin: 31px 0 11px; font-size: 1.12rem; }
+    p { margin: 0 0 16px; max-width: 84ch; }
+    ul, ol { margin: 0 0 18px; padding-left: 1.45rem; }
+    li { margin: 6px 0; }
+    strong { color: var(--text); }
+    a { color: var(--accent); text-underline-offset: 3px; }
+    a:hover { text-decoration-thickness: 2px; }
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 18px;
+      margin: 0 0 32px;
+      padding: 13px 16px;
+      color: var(--muted);
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 11px;
+      font-size: .91rem;
+    }
+    .lede {
+      padding: 20px 22px;
+      border-left: 4px solid var(--accent);
+      background: var(--accent-soft);
+      border-radius: 0 12px 12px 0;
+    }
+    .table-wrap, .code-wrap { max-width: 100%; overflow-x: auto; }
+    table { width: 100%; min-width: 680px; border-collapse: collapse; margin: 12px 0 20px; font-size: .93rem; }
+    th, td { padding: 11px 13px; border: 1px solid var(--border); text-align: left; vertical-align: top; }
+    th { background: var(--surface-2); font-size: .82rem; letter-spacing: .035em; text-transform: uppercase; }
+    code { font-family: var(--mono); font-size: .9em; color: color-mix(in srgb, var(--accent) 78%, var(--text)); }
+    pre {
+      min-width: max-content;
+      margin: 0;
+      padding: 15px 17px;
+      color: var(--text);
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      font: .88rem/1.55 var(--mono);
+    }
+    .diagram {
+      margin: 22px 0 25px;
+      padding: 18px;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      overflow-x: auto;
+    }
+    .diagram svg { display: block; min-width: 920px; width: 100%; height: auto; }
+    .note {
+      margin: 22px 0;
+      padding: 15px 17px;
+      color: var(--muted);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: var(--surface-2);
+    }
+    .decision {
+      margin-top: 26px;
+      padding: 20px 22px;
+      border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--border));
+      border-radius: 13px;
+      background: var(--accent-soft);
+    }
+    .decision ol { margin-bottom: 0; }
+    .sources li { margin: 8px 0; }
+    @media (max-width: 680px) {
+      main { width: min(100% - 18px, 1080px); margin-top: 10px; padding: 22px 17px 36px; border-radius: 14px; }
+      h2 { margin-top: 38px; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Automatic Mermaid diagrams in the Files preview</h1>
+    <div class="meta">
+      <span><strong>Status:</strong> Approved</span>
+      <span><strong>Date:</strong> 2026-08-17</span>
+      <span><strong>Owner:</strong> Mission Control web dashboard</span>
+    </div>
+  </header>
+
+  <h2>Recommendation</h2>
+  <div class="lede">
+    <p>Ship Mermaid as the only diagram engine in the first release, and render it only when a Markdown file is open in the Files workspace's Preview mode. Keep the shared Markdown renderer opt-in so conversations, shared plans, Foreman briefs, Personas, workflow actions, and scout reports continue to show fenced source exactly as they do today.</p>
+    <p>Use a small fence-to-renderer registry from the start, with <code>mermaid</code> as its only registered tag. That gives future engines a deliberate extension point without paying the dependency, security, bundle, and testing cost of several engines before there is demand.</p>
+  </div>
+
+  <h2>Approved decisions</h2>
+  <ul>
+    <li>The first release supports Mermaid only. Graphviz DOT and every other engine remain future candidates and do not expand this implementation task.</li>
+    <li>The approved plan will be decomposed into merge-aware implementation phases and scheduled as dependency-linked Mission Control work.</li>
+  </ul>
+  <p>Implementation package: <a href="phased-plan.html">open the rendered phased implementation plan</a>, or read its <a href="phased-plan.md">Markdown source</a>.</p>
+
+  <h2>Scope and effort</h2>
+  <p>This is a medium browser feature and should fit in one focused implementation pull request.</p>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Area</th><th>Expected scope</th></tr></thead>
+    <tbody>
+      <tr><td>Production code</td><td>About 250 to 450 non-test lines, plus generated lockfile changes</td></tr>
+      <tr><td>Tests</td><td>About 150 to 250 lines across focused unit tests and one Playwright spec</td></tr>
+      <tr><td>Delivery estimate</td><td>About 3 to 5 engineering days, including security and packaged-build verification</td></tr>
+      <tr><td>Backend and persistence</td><td>None: no route, database, shared protocol, migration, or SSE change</td></tr>
+      <tr><td>Main uncertainty</td><td>Proving the isolated renderer entry works in Vite development, the built daemon, and packaged Electron without weakening its sandbox</td></tr>
+    </tbody>
+  </table></div>
+  <p>Adding Graphviz DOT in the same release would add roughly 1 to 2 days, a WebAssembly asset, another error and sizing path, and a second security and packaging review. A broad multi-engine service would be a separate project.</p>
+
+  <h2>Repository findings</h2>
+  <ul>
+    <li><code>src/server/session-files.ts</code> already classifies <code>.md</code>, <code>.markdown</code>, and <code>.mdown</code> as Markdown and permits preview-only files up to 5 MiB. The daemon already returns all text needed by this feature.</li>
+    <li><code>src/web/components/FileWorkspace.tsx</code> sends Markdown Preview through <code>src/web/components/Markdown.tsx</code>. There is no second parser to replace.</li>
+    <li><code>Markdown.tsx</code> is intentionally shared by ten surfaces. A global Mermaid behavior there would silently expand this request into conversations, shared plans, Foreman output, Personas, workflow actions, and Scouts.</li>
+    <li><code>react-markdown</code> supports replacing fenced <code>code</code> elements with a React component while leaving ordinary and inline code alone. That is the smallest integration seam.</li>
+    <li>HTML files already render inside a no-network sandbox owned by <code>src/web/lib/htmlPreview.ts</code>. Checkout Markdown is equally untrusted, so generated diagram markup needs an isolation contract at least as strict.</li>
+    <li>The dashboard is dark-only and already exposes its palette as CSS custom properties. Diagram colors can derive from those tokens rather than introduce a second theme.</li>
+    <li>Every visible UI change requires a Playwright spec. The existing <code>e2e/specs/file-default-view.spec.ts</code> supplies the fixture and navigation pattern for a Markdown file opened in Preview.</li>
+  </ul>
+
+  <h2>User-visible contract</h2>
+  <ol>
+    <li>A fenced block tagged exactly <code>mermaid</code> renders automatically in a Markdown file opened in Files Preview.</li>
+    <li>The Preview and Editor toggle does not change. Editor continues to show and save the exact Markdown source; returning to Preview renders the latest buffer.</li>
+    <li>Untagged fences, unknown tags, inline code, and every non-<code>mermaid</code> language keep the existing <code>&lt;pre&gt;&lt;code&gt;</code> rendering and syntax highlighting.</li>
+    <li>Multiple Mermaid blocks can render independently in one document. A bad block shows a local, readable error and its source while the rest of the document continues rendering.</li>
+    <li>Rendering is local. Diagram source, labels, URLs, and assets never leave the machine and never gain access to the dashboard origin.</li>
+    <li>Diagrams use Mission Control's palette, fit the preview width, preserve readable labels, and expose an accessible name such as <code>Mermaid diagram 2</code>.</li>
+    <li>The first release does not add zoom, pan, export, copy-as-image, diagram links, custom Mermaid configuration, or a settings toggle.</li>
+  </ol>
+
+  <h2>Render flow</h2>
+  <p>Today every fence ends as code. The new branch exists only for Files Preview and only for a registered fence tag.</p>
+  <figure class="diagram" aria-labelledby="diagram-title diagram-desc">
+    <svg viewBox="0 0 1260 340" role="img" xmlns="http://www.w3.org/2000/svg">
+      <title id="diagram-title">Files Markdown diagram render flow</title>
+      <desc id="diagram-desc">A Markdown file enters FileWorkspace Preview and the shared Markdown renderer. Mermaid fences go to a bounded adapter and a no-network sandbox, while all other fences keep the existing code block path.</desc>
+      <defs>
+        <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="var(--accent)"/></marker>
+      </defs>
+      <g fill="var(--surface)" stroke="var(--border)" stroke-width="2">
+        <rect x="28" y="118" width="168" height="86" rx="13"/>
+        <rect x="242" y="118" width="176" height="86" rx="13"/>
+        <rect x="465" y="108" width="185" height="106" rx="13"/>
+        <path d="M735 108L827 161L735 214L643 161Z"/>
+        <rect x="850" y="35" width="175" height="86" rx="13"/>
+        <rect x="850" y="201" width="175" height="86" rx="13"/>
+        <rect x="1055" y="35" width="175" height="86" rx="13"/>
+      </g>
+      <g fill="none" stroke="var(--accent)" stroke-width="2.5" marker-end="url(#arrow)">
+        <path d="M196 161H242"/>
+        <path d="M418 161H465"/>
+        <path d="M650 161H643"/>
+        <path d="M804 126C822 109 833 96 850 88"/>
+        <path d="M805 197C823 216 834 231 850 242"/>
+        <path d="M1025 78H1055"/>
+      </g>
+      <g fill="var(--text)" font-family="var(--sans)" font-size="15" text-anchor="middle">
+        <text x="112" y="151"><tspan x="112" dy="0">Markdown file</tspan><tspan x="112" dy="23">up to 5 MiB</tspan></text>
+        <text x="330" y="151"><tspan x="330" dy="0">FileWorkspace</tspan><tspan x="330" dy="23">Preview</tspan></text>
+        <text x="557" y="142"><tspan x="557" dy="0">Shared Markdown</tspan><tspan x="557" dy="23">renderer with</tspan><tspan x="557" dy="23">diagram opt-in</tspan></text>
+        <text x="735" y="155"><tspan x="735" dy="0">Fence</tspan><tspan x="735" dy="22">language</tspan></text>
+        <text x="937" y="67"><tspan x="937" dy="0">Bounded Mermaid</tspan><tspan x="937" dy="22">adapter loaded</tspan><tspan x="937" dy="22">on demand</tspan></text>
+        <text x="937" y="233"><tspan x="937" dy="0">Existing highlighted</tspan><tspan x="937" dy="22">code block</tspan></text>
+        <text x="1142" y="67"><tspan x="1142" dy="0">No-network sandbox</tspan><tspan x="1142" dy="22">containing</tspan><tspan x="1142" dy="22">rendered SVG</tspan></text>
+      </g>
+      <g fill="var(--muted)" font-family="var(--mono)" font-size="13">
+        <text x="811" y="105">mermaid</text>
+        <text x="807" y="226">other or unknown</text>
+      </g>
+      <g fill="var(--muted)" font-family="var(--sans)" font-size="13" text-anchor="middle">
+        <text x="1040" y="319">Mermaid source and generated output never join the dashboard origin.</text>
+      </g>
+    </svg>
+  </figure>
+
+  <h2>Proposed design</h2>
+
+  <h3>1. Make fenced diagrams an explicit Markdown capability</h3>
+  <p>Extend <code>Markdown.tsx</code> with an explicit opt-in for fenced diagram renderers. Build its <code>components</code> map from stable inputs so the existing memoization and anchor identity rules do not regress. <code>FileWorkspace</code> opts in; every other caller passes nothing and therefore retains byte-for-byte source fences.</p>
+  <p>The integration recognizes the normalized language class that <code>react-markdown</code> already puts on block code. It never guesses from source text. The registry owns canonical tags and any future aliases, for example <code>dot</code> and <code>graphviz</code>, rather than scattering tag checks through React components.</p>
+
+  <h3>2. Render Mermaid in an isolated browser entry</h3>
+  <p>Add a dedicated Vite renderer entry and load it only from Mermaid fence hosts. Each host uses an iframe with <code>sandbox="allow-scripts"</code> and never adds <code>allow-same-origin</code>. The isolated page loads the pinned Mermaid package, receives one bounded source string and palette over <code>postMessage</code>, renders inside its own document, and posts back only status and measured height. Parent messages are matched by <code>event.source</code> and an instance token so one open Files window cannot settle another's diagram.</p>
+  <p>The renderer document carries a Content Security Policy before any diagram-controlled bytes:</p>
+  <ul>
+    <li><code>default-src 'none'</code> and <code>connect-src 'none'</code>;</li>
+    <li>only its built script may execute;</li>
+    <li>inline Mermaid-generated styles are allowed, but remote styles, fonts, images, forms, and navigation are blocked;</li>
+    <li>no Mermaid interaction binding is installed, so diagram clicks and scripts stay inert.</li>
+  </ul>
+  <p>Initialize Mermaid with its strict security level and lock security-sensitive configuration keys against diagram front matter. The iframe remains the real boundary because Mermaid's own maintainers state that sanitizing every generated path is difficult, and recent security work specifically calls out external image requests. Do not inject Mermaid SVG into the dashboard DOM.</p>
+  <p>The first implementation step proves this renderer entry in Vite development, the production daemon build, and packaged Electron. If module loading from the opaque origin fails, bundle the renderer as one classic asset. The fallback may change the build shape, but it may not add <code>allow-same-origin</code>, permit network access, or move Mermaid execution into the parent page.</p>
+
+  <h3>3. Bound work and make async state honest</h3>
+  <ul>
+    <li>Load the Mermaid renderer only when a visible Markdown preview contains a <code>mermaid</code> fence.</li>
+    <li>Keep Mermaid's 50,000-character source ceiling and enforce it before starting a render.</li>
+    <li>Render at most 32 diagram fences per document. Later fences remain readable code with a bounded-limit notice rather than creating unbounded iframe and layout work from a 5 MiB Markdown file.</li>
+    <li>Defer off-screen diagrams until they approach the viewport.</li>
+    <li>Key each render to its file, fence position, source, and instance token. Ignore late results after edits, file switches, mode switches, or unmounts.</li>
+    <li>Reserve a small loading height to avoid document jumps. Let the child report the final height, clamp pathological dimensions, and keep oversized diagrams scrollable inside their own frame.</li>
+    <li>Catch import, parse, render, timeout, and sandbox-message failures per block. No diagram failure may reject or blank the parent Markdown tree.</li>
+  </ul>
+
+  <h3>4. Match the existing visual and accessibility system</h3>
+  <p>Read the current CSS tokens from the parent and pass a fixed palette into Mermaid's <code>base</code> theme. Style the host in the Markdown section of <code>src/web/styles.css</code>, using the existing border, surface, foreground, muted, working, idle, attention, danger, purple, and type-accent tokens.</p>
+  <p>Render a <code>figure</code> with an accessible label and status text. Loading, source-too-large, unsupported-limit, and syntax-error states must be distinguishable in text, not color alone. The ordinary Editor toggle remains the path to correcting source, so no diagram-only toolbar is needed in this release.</p>
+
+  <h3>5. Add the dependency and document its boundary</h3>
+  <p>Add the current patched Mermaid 11.x release as a direct dependency and commit the generated lockfile. At implementation time, start from 11.16.x or newer and verify that the selected version includes the May 2026 security fixes. Record the dependency's MIT license through the repository's normal package metadata; do not use a CDN.</p>
+  <p>Update <code>docs/ui.md</code> to document the <code>mermaid</code> fence, Files-only scope, automatic rendering, Editor fallback, invalid-diagram behavior, local-only execution, and the fact that other tags remain code.</p>
+
+  <h2>Open-source engine assessment</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Engine or format</th><th>Fence tags</th><th>Browser fit</th><th>Recommendation</th></tr></thead>
+    <tbody>
+      <tr><td>Mermaid</td><td><code>mermaid</code></td><td>First-party JavaScript renderer, broad flowchart, sequence, class, state, ER, Gantt, mind map, and chart coverage; MIT</td><td>Ship first</td></tr>
+      <tr><td>Graphviz DOT through Viz.js</td><td><code>dot</code>, <code>graphviz</code></td><td>Mature directed-graph layout through a WebAssembly build; Viz.js is MIT and Graphviz is EPL-2.0</td><td>Best second engine when real examples appear</td></tr>
+      <tr><td>Nomnoml</td><td><code>nomnoml</code></td><td>Small JavaScript and SVG UML renderer; MIT</td><td>Good lightweight UML candidate, but narrower and less standard than Mermaid</td></tr>
+      <tr><td>WaveDrom</td><td><code>wavedrom</code></td><td>JavaScript and SVG timing diagrams from WaveJSON; MIT</td><td>Add only for hardware-heavy repositories</td></tr>
+      <tr><td>Markmap</td><td><code>markmap</code></td><td>JavaScript and SVG mind maps from Markdown; MIT</td><td>Useful specialty view, mostly overlaps Mermaid mind maps</td></tr>
+      <tr><td>Vega-Lite</td><td><code>vega-lite</code>, <code>vegalite</code></td><td>Browser-native declarative data visualization; BSD-3-Clause</td><td>Treat as a future chart feature, with external data loaders disabled</td></tr>
+      <tr><td>D2</td><td><code>d2</code></td><td>Strong architecture-diagram language, but the official renderer is Go and CLI oriented; MPL-2.0</td><td>Revisit when there is a stable first-party browser package or local service appetite</td></tr>
+      <tr><td>PlantUML</td><td><code>plantuml</code>, <code>puml</code></td><td>Very broad UML, but normal rendering needs a JVM or an HTTP server</td><td>Do not send private checkout text to a public renderer; consider only with an explicit local runtime</td></tr>
+      <tr><td>Kroki</td><td>engine-specific tags</td><td>Unified open-source HTTP API for many formats</td><td>Not a v1 dependency: a public service violates local-only behavior and self-hosting adds deployment and operations</td></tr>
+    </tbody>
+  </table></div>
+  <p>The registry is intentionally not a promise that every row will ship. Each engine still owes its own dependency, license, no-network policy, resource limits, packaging proof, fallback, and browser test.</p>
+
+  <h2>Verification plan</h2>
+  <h3>Focused unit and render tests</h3>
+  <ul>
+    <li>Extend <code>test/markdown-render.test.ts</code> or add a focused companion test proving that a <code>mermaid</code> block becomes a diagram host only when the capability is enabled.</li>
+    <li>Prove the default <code>Markdown</code> call still emits source code for Mermaid, protecting every non-Files caller.</li>
+    <li>Prove unknown, untagged, inline, oversized, and over-count fences degrade to ordinary readable code or a local error without throwing.</li>
+    <li>Pin the sandbox token set, Content Security Policy ordering, message-source and instance checks, maximum source size, maximum diagram count, and stale-result rejection in focused pure tests.</li>
+    <li>Add a package/build assertion if the renderer entry needs special Vite output, so a future bundler change cannot silently point the iframe at the SPA fallback.</li>
+  </ul>
+  <p>Run focused Node tests with the repository preload, for example:</p>
+  <div class="code-wrap"><pre><code>node --test --import ./test/setup-state.mjs --import tsx test/markdown-render.test.ts</code></pre></div>
+
+  <h3>Browser end-to-end coverage</h3>
+  <p>Add <code>e2e/specs/file-mermaid-preview.spec.ts</code>, reusing the Files fixture pattern. Seed a Markdown file containing:</p>
+  <ul>
+    <li>a valid Mermaid flowchart;</li>
+    <li>a normal tagged code block;</li>
+    <li>a malformed Mermaid block followed by ordinary prose;</li>
+    <li>a diagram that attempts an external image or link to a sentinel origin;</li>
+    <li>a second valid diagram to prove blocks settle independently.</li>
+  </ul>
+  <p>The spec asserts that the file opens in Preview, the valid diagrams become labelled rendered graphics, normal code remains code, the malformed block reports locally without hiding later prose, no request reaches the sentinel origin, and Editor shows the exact original fence. It then edits a label, returns to Preview, and proves the new diagram wins over any stale render.</p>
+
+  <h3>Repository gates</h3>
+  <p>Run:</p>
+  <div class="code-wrap"><pre><code>npm run typecheck
+npm run lint
+npm test
+npm run build
+npm run smoke
+npm run test:e2e</code></pre></div>
+  <p>Also inspect the production build output to confirm Mermaid lives outside the initial dashboard entry and that both the built daemon and packaged Electron can load the renderer entry without network access.</p>
+
+  <h2>Acceptance criteria</h2>
+  <ul>
+    <li>Files Preview renders a valid <code>mermaid</code> fence automatically and Editor preserves its exact source.</li>
+    <li>All existing Markdown surfaces outside Files retain code fences.</li>
+    <li>Invalid, oversized, excessive, slow, and stale diagrams fail per block and never blank the document.</li>
+    <li>Diagram rendering executes outside the dashboard origin, with no <code>allow-same-origin</code>, no network access, no active links, and no injected SVG in the parent DOM.</li>
+    <li>Mermaid is absent from the initial dashboard path when no Mermaid fence is viewed.</li>
+    <li>Visuals and textual states are usable in the integrated and extracted Files workspaces.</li>
+    <li>Focused tests, typecheck, lint, the full unit suite, build, smoke, and browser end-to-end tests pass.</li>
+    <li><code>docs/ui.md</code> matches the shipped behavior and supported fence tag.</li>
+  </ul>
+
+  <h2>Sources</h2>
+  <ul class="sources">
+    <li><a href="https://github.com/mermaid-js/mermaid/blob/develop/packages/mermaid/src/docs/config/usage.md">Mermaid usage, render API, security levels, and Tiny guidance</a></li>
+    <li><a href="https://github.com/mermaid-js/mermaid/blob/develop/LICENSE">Mermaid MIT license</a></li>
+    <li><a href="https://github.com/mermaid-js/mermaid/security">Mermaid security advisories</a></li>
+    <li><a href="https://github.com/mermaid-js/mermaid/issues/7645">Mermaid external-image isolation discussion</a></li>
+    <li><a href="https://docs.github.com/en/get-started/writing-on-github/working-with-advanced-formatting/creating-diagrams">GitHub fenced Mermaid support</a></li>
+    <li><a href="https://github.com/remarkjs/react-markdown"><code>react-markdown</code> custom component and security documentation</a></li>
+    <li><a href="https://viz-js.com/api/">Viz.js browser API</a></li>
+    <li><a href="https://graphviz.org/license/">Graphviz license</a></li>
+    <li><a href="https://github.com/terrastruct/d2">D2 repository and license</a></li>
+    <li><a href="https://github.com/wavedrom/wavedrom">WaveDrom browser renderer</a></li>
+    <li><a href="https://github.com/markmap/markmap">Markmap browser renderer</a></li>
+    <li><a href="https://vega.github.io/vega-lite/docs/">Vega-Lite documentation</a></li>
+    <li><a href="https://plantuml.com/server">PlantUML server options</a></li>
+    <li><a href="https://docs.kroki.io/kroki/">Kroki supported engines and deployment model</a></li>
+  </ul>
+</main>
+</body>
+</html>

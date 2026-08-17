@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Conductor SDK launch runtime</title>
+  <style>
+    :root{color-scheme:light dark;--bg:#f5f2ea;--paper:#fffdf7;--ink:#19201d;--muted:#64706a;--line:#d9ddd3;--accent:#0c6f5d;--accent2:#b6532d;--soft:#e4f1ec;--warn:#fff0d2;--code:#edf0e9;--shadow:0 18px 50px rgba(38,49,44,.10)}
+    *{box-sizing:border-box}body{margin:0;background:linear-gradient(135deg,#edf3ed 0,#f8f2e8 48%,#eee8dd 100%);color:var(--ink);font:16px/1.55 ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{width:min(1120px,calc(100% - 32px));margin:32px auto 72px;background:var(--paper);border:1px solid var(--line);box-shadow:var(--shadow)}header{padding:52px 56px 42px;border-bottom:1px solid var(--line);background:radial-gradient(circle at 92% 0,#cce9de 0,transparent 38%)}.eyebrow{margin:0 0 12px;color:var(--accent);font-size:.76rem;font-weight:800;letter-spacing:.14em;text-transform:uppercase}h1{max-width:780px;margin:0;font:700 clamp(2.35rem,6vw,5rem)/.96 ui-serif,Georgia,serif;letter-spacing:-.04em}.lede{max-width:800px;margin:24px 0 0;font-size:1.16rem;color:var(--muted)}section{padding:38px 56px;border-bottom:1px solid var(--line)}h2{margin:0 0 18px;font:700 1.55rem/1.15 ui-serif,Georgia,serif}h3{margin:24px 0 8px;font-size:1rem;color:var(--accent)}p{max-width:850px}.verdict{display:grid;grid-template-columns:1.3fr .7fr;gap:24px}.callout{padding:22px;border-left:5px solid var(--accent);background:var(--soft)}.boundary{padding:22px;border-left:5px solid var(--accent2);background:var(--warn)}.flow{overflow:auto;padding:12px 0}.flow svg{display:block;width:100%;min-width:760px;height:auto}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.card{padding:20px;border:1px solid var(--line);background:rgba(255,255,255,.35)}.card h3{margin-top:0}.tag{display:inline-block;padding:3px 9px;border-radius:999px;background:var(--soft);color:var(--accent);font-size:.75rem;font-weight:800;letter-spacing:.04em;text-transform:uppercase}table{width:100%;border-collapse:collapse;margin:18px 0}th,td{padding:13px;text-align:left;vertical-align:top;border-bottom:1px solid var(--line)}th{font-size:.75rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}code{padding:.12em .35em;border-radius:4px;background:var(--code);font:90%/1.4 ui-monospace,SFMono-Regular,Menlo,monospace}ul,ol{max-width:850px;padding-left:22px}li+li{margin-top:7px}.decision{display:grid;grid-template-columns:32px 1fr;gap:14px;align-items:start;padding:18px 0;border-top:1px solid var(--line)}.num{display:grid;place-items:center;width:30px;height:30px;border-radius:50%;background:var(--ink);color:var(--paper);font-weight:800}.small{font-size:.88rem;color:var(--muted)}footer{padding:26px 56px;color:var(--muted);font-size:.84rem}@media(max-width:760px){main{width:100%;margin:0;border:0}header,section,footer{padding-left:24px;padding-right:24px}.verdict,.grid{grid-template-columns:1fr}}
+    @media(prefers-color-scheme:dark){:root{--bg:#111713;--paper:#17201b;--ink:#edf2ed;--muted:#a9b5ad;--line:#34433a;--accent:#70d3b9;--accent2:#f09a72;--soft:#213c33;--warn:#493a22;--code:#253129;--shadow:none}body{background:linear-gradient(135deg,#111713,#20201a)}header{background:radial-gradient(circle at 92% 0,#244d40 0,transparent 38%)}.card{background:rgba(255,255,255,.025)}}
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <p class="eyebrow">Implementation plan</p>
+    <h1>Conductor SDK launch runtime</h1>
+    <p class="lede">Add an explicit choice between the current terminal-hosted Engineer launch and a managed Claude Agent SDK session that invokes <code>/engineer &lt;idea&gt;</code> directly.</p>
+  </header>
+
+  <section class="verdict">
+    <div class="callout">
+      <span class="tag">Answer first</span>
+      <h2>The SDK can replace Mission Control's Engineer terminal.</h2>
+      <p>tmux is not required by Conductor's planning logic. Today it supplies interactive stdin, persistence, attachment, and the task-to-run join for <code>conduct-ts engineer</code>. Mission Control can supply the host through its existing Claude SDK supervisor if it preserves provider-run identity and completion semantics.</p>
+    </div>
+    <div class="boundary">
+      <span class="tag">Boundary</span>
+      <h2>Not tmux-free end to end</h2>
+      <p>Conductor's separate background build daemon still uses its own tmux supervisor. This plan changes only the interactive Engineer host.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>Proposed ownership flow</h2>
+    <div class="flow">
+      <svg viewBox="0 0 1040 265" role="img" aria-labelledby="flow-title flow-desc">
+        <title id="flow-title">Pipeline task launch and completion flow</title>
+        <desc id="flow-desc">Settings select terminal or SDK. Both derive and persist one provider run key before launch. The provider projection completes the task.</desc>
+        <defs><marker id="arrow" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><path d="M0,0 L10,4 L0,8 Z" fill="#688078"/></marker></defs>
+        <g fill="none" stroke="#688078" stroke-width="2" marker-end="url(#arrow)"><path d="M180 72H300"/><path d="M490 72H590"/><path d="M780 72H890"/><path d="M395 108V190H590"/><path d="M685 108V190"/></g>
+        <g font-family="ui-sans-serif,system-ui" text-anchor="middle">
+          <rect x="20" y="35" width="160" height="74" rx="14" fill="#e4f1ec" stroke="#0c6f5d"/><text x="100" y="66" fill="#17352d" font-weight="700">Pipeline config</text><text x="100" y="89" fill="#45645a" font-size="13">terminal | claude-sdk</text>
+          <rect x="300" y="35" width="190" height="74" rx="14" fill="#fff0d2" stroke="#b6532d"/><text x="395" y="64" fill="#55301f" font-weight="700">Conductor adapter</text><text x="395" y="88" fill="#71503f" font-size="13">derive repo + idea slug</text>
+          <rect x="590" y="35" width="190" height="74" rx="14" fill="#e4f1ec" stroke="#0c6f5d"/><text x="685" y="64" fill="#17352d" font-weight="700">Durable task link</text><text x="685" y="88" fill="#45645a" font-size="13">provider + repo + slug</text>
+          <rect x="890" y="35" width="130" height="74" rx="14" fill="#edf0e9" stroke="#688078"/><text x="955" y="64" fill="#27342f" font-weight="700">Host launch</text><text x="955" y="88" fill="#53645d" font-size="13">terminal or SDK</text>
+          <rect x="590" y="176" width="190" height="66" rx="14" fill="#17201b" stroke="#70d3b9"/><text x="685" y="204" fill="#edf2ed" font-weight="700">Provider projection</text><text x="685" y="225" fill="#b8c7bf" font-size="13">processed settles task</text>
+        </g>
+      </svg>
+    </div>
+  </section>
+
+  <section>
+    <h2>Runtime contract</h2>
+    <div class="grid">
+      <article class="card"><h3>Terminal</h3><p>Keep <code>conduct-ts engineer --idea</code>, a unique terminal home, attachable stdin, and legacy home/worktree correlation.</p></article>
+      <article class="card"><h3>Claude Agent SDK</h3><p>Start Claude through <code>SdkSupervisor</code> with the task id and exact <code>/engineer &lt;idea&gt;</code> turn one. Record its session id and no home.</p></article>
+      <article class="card"><h3>Identity</h3><p>The provider adapter copies Conductor's canonical 50-character slug rule. Duplicate projected keys are refused before launch.</p></article>
+      <article class="card"><h3>Completion</h3><p>Neither terminal exit nor SDK idleness completes the task. The provider's processed projection remains authoritative.</p></article>
+    </div>
+  </section>
+
+  <section>
+    <h2>Compatibility and safety</h2>
+    <table>
+      <thead><tr><th>Concern</th><th>Plan</th></tr></thead>
+      <tbody>
+        <tr><td>Old config</td><td>Add a Zod-defaulted pipelines field; no database migration.</td></tr>
+        <tr><td>Old terminal tasks</td><td>Retain home and discovered-worktree binding when <code>pipelineRun</code> is null.</td></tr>
+        <tr><td>SDK restart</td><td>Use the existing durable SDK row, task liveness, restore, and Registry eviction path.</td></tr>
+        <tr><td>Host disappears</td><td>Fail before a provider run exists; preserve provider ownership once it does.</td></tr>
+        <tr><td>Fallback</td><td>Recommended: fail visibly instead of silently changing runtime.</td></tr>
+        <tr><td>Scope</td><td>No Codex host, no attached repos, no after-work Workflow, no provider-daemon rewrite.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Approved rollout decisions</h2>
+    <div class="decision"><span class="num">1</span><div><strong>Claude Agent SDK ships as the default</strong><p>Old config blobs and fresh installations parse to <code>claude-sdk</code>. Terminal remains an explicit compatibility selection.</p></div></div>
+    <div class="decision"><span class="num">2</span><div><strong>Selected-runtime failures stay visible</strong><p>Mission Control records the launch error and does not silently fall back to Terminal. Retry remains available after configuration changes.</p></div></div>
+  </section>
+
+  <section>
+    <h2>Verification bar</h2>
+    <ol>
+      <li>Schema and route round-trip both runtime values and upgrade old blobs by default.</li>
+      <li>Unit tests pin slug identity, duplicate refusal, both launch shapes, restart recovery, host loss, provider completion, and old terminal compatibility.</li>
+      <li>Playwright selects and persists SDK, dispatches to an SDK session with no home, then switches back and proves the terminal path still launches a home.</li>
+      <li>Run typecheck, lint, unit suite, build, smoke, and the end-to-end suite.</li>
+    </ol>
+  </section>
+
+  <footer>Source of truth: <code>docs/plans/conductor-sdk-runtime/plan.md</code>. This rendering is self-contained and makes no external requests.</footer>
+</main>
+</body>
+</html>

@@ -816,7 +816,9 @@ test("run detail carries display provenance and never the opaque idempotency key
     // rather than run detail precisely so no surface has to re-derive them from attempts or
     // live session activity.
     "actionWait",
+    "activePersonaIds",
     "activePersonaNames",
+    "activeSessionActionIds",
     "bindingId",
     "bypassedPersonaReview",
     // The two fields that decide whether a parked repair round is anybody's problem, and the

@@ -5,6 +5,8 @@ import type {
   PersonaDefaultsView,
   PersonaUpstreamState,
   PersonaView,
+  WorkflowRunSummary,
+  WorkflowSummary,
 } from "@shared/workflow.ts";
 import { PersonaEditor } from "./PersonaEditor.tsx";
 import { ForemanProfileEditor } from "./ForemanProfileEditor.tsx";
@@ -12,6 +14,7 @@ import { Tooltip } from "../components/Tooltip.tsx";
 import { LibraryBackRow } from "../library/LibraryBackRow.tsx";
 import { LibraryRailGroup, LibraryRailRow } from "../library/LibraryRail.tsx";
 import { personaRoutingLabel } from "../library/library-model.ts";
+import { LibraryAssetUsage } from "../library/LibraryAssetUsage.tsx";
 import { useLibraryEscape } from "../library/useLibraryEscape.ts";
 import type { PersonaDraftSeed } from "./PersonaEditor.tsx";
 import {
@@ -126,6 +129,9 @@ export function filterPersonas(
 
 export function PersonaLibrary({
   personas,
+  workflowSummaries = [],
+  workflowRuns = [],
+  hasSnapshot = false,
   providers,
   defaults,
   upstream,
@@ -143,6 +149,10 @@ export function PersonaLibrary({
   onSelectionChange,
 }: {
   personas: PersonaView[];
+  workflowSummaries?: WorkflowSummary[];
+  workflowRuns?: WorkflowRunSummary[];
+  /** Whether the workflow reference snapshot has landed. */
+  hasSnapshot?: boolean;
   providers: readonly LlmProviderView[];
   defaults: PersonaDefaultsView | null;
   /**
@@ -648,6 +658,15 @@ export function PersonaLibrary({
                 onConfirm: () => void archive(persona),
               });
             }}
+            footer={selected ? (
+              <LibraryAssetUsage
+                asset={{ kind: "persona", id: selected.id }}
+                assetLabel="Persona"
+                workflows={workflowSummaries}
+                runs={workflowRuns}
+                hasSnapshot={hasSnapshot}
+              />
+            ) : undefined}
           />
         )}
       </div>

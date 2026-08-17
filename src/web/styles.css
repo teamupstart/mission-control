@@ -14540,7 +14540,10 @@ button.lib-chip:focus-visible {
   /* The asset is the writing, so it takes every pixel the header, the chips and the contract
      line do not. The 430px floor these two carried belonged to a page that scrolled; in a
      bounded workspace it pushes the editor's own bottom edge off a short window. */
-  min-height: 240px;
+  /* Phase 5 adds the dependency ledger below this pane. At the 720px Electron floor, the old
+     240px minimum forced that footer past the clipped workspace edge; 160px preserves a useful
+     editor while keeping the new live state reachable. The stacked layout restores 520px. */
+  min-height: 160px;
   overflow: hidden;
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -14563,6 +14566,147 @@ button.lib-chip:focus-visible {
 .persona-editor.is-archived .persona-guidance,
 .wf-action-editor.is-archived .wf-action-prompt {
   opacity: 0.82;
+}
+
+/* ---- one dependency ledger, shared by Persona and Action details ----
+
+   This is the relationship the screen exists to expose, so it reads as a compact continuation
+   of the document above rather than as another card competing with it. The vertical rule and
+   node marks borrow the graph's own visual grammar: each row is one workflow downstream of the
+   open asset. Draft and Published remain separate labels because they are separate truths. */
+.lib-asset-usage {
+  flex: none;
+  position: relative;
+  padding: 10px 12px 10px 16px;
+  border: 1px solid var(--border-soft);
+  border-left: 2px solid color-mix(in oklab, var(--working) 48%, var(--border));
+  border-radius: 9px;
+  background: color-mix(in oklab, var(--panel) 88%, var(--bg-2));
+}
+.lib-asset-usage.is-live {
+  border-left-color: var(--attention);
+}
+.lib-asset-usage-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.lib-asset-usage-head h3,
+.lib-asset-usage-head p,
+.lib-asset-usage-empty,
+.lib-asset-usage-unresolved {
+  margin: 0;
+}
+.lib-asset-usage-head h3 {
+  font-size: 11.5px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  color: var(--fg);
+}
+.lib-asset-usage-head p {
+  margin-top: 2px;
+  font-size: 10.5px;
+  color: var(--dim);
+}
+.lib-asset-usage-live {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 650;
+  color: var(--attention);
+  background: color-mix(in oklab, var(--attention) 9%, transparent);
+}
+.lib-asset-usage-live > span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--attention) 14%, transparent);
+}
+.lib-asset-usage-list {
+  display: grid;
+  gap: 5px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.lib-asset-usage-list li {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding-left: 10px;
+}
+.lib-asset-usage-list li::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--working);
+}
+.lib-asset-usage-workflow,
+.lib-asset-usage-run {
+  border-radius: 4px;
+  color: var(--working);
+  text-decoration: none;
+}
+.lib-asset-usage-workflow {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+.lib-asset-usage-workflow:hover,
+.lib-asset-usage-run:hover {
+  color: var(--fg);
+  text-decoration: underline;
+}
+.lib-asset-usage-workflow:focus-visible,
+.lib-asset-usage-run:focus-visible {
+  outline: 2px solid var(--working);
+  outline-offset: 2px;
+}
+.lib-asset-usage-scopes {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+}
+.lib-asset-usage-scopes > span {
+  padding: 2px 5px;
+  border: 1px solid var(--border-soft);
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 9px;
+  color: var(--dim);
+  background: var(--bg-2);
+}
+.lib-asset-usage-run {
+  flex: none;
+  margin-left: auto;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--attention);
+}
+.lib-asset-usage-empty,
+.lib-asset-usage-unresolved {
+  margin-top: 8px;
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--dim);
+}
+.lib-asset-usage-unresolved {
+  color: var(--attention);
 }
 
 /* What the SessionActions library carries that the Persona library does not. Everything
@@ -15791,6 +15935,16 @@ button.wf-carried.is-link:focus-visible {
   .persona-guidance-toolbar .file-mode,
   .wf-action-prompt-toolbar .file-mode {
     margin-left: auto;
+  }
+  .lib-asset-usage-head,
+  .lib-asset-usage-list li {
+    flex-wrap: wrap;
+  }
+  .lib-asset-usage-workflow {
+    flex: 1 1 180px;
+  }
+  .lib-asset-usage-run {
+    margin-left: 10px;
   }
 }
 

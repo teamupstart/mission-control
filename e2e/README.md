@@ -284,6 +284,23 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   --workers=1 --reporter=list
 ```
 
+### Library asset usage
+
+`e2e/.artifacts/library-asset-usage/` holds the three states added to Persona and Action
+details. `01-populated.png` shows a built-in Persona naming the draft and published
+No-Mistakes Review graphs; `02-empty.png` shows the explicit answer for an unused Persona;
+and `03-live.png` shows an Action while one exact workflow run is gating on it. The live test
+then cancels that run and proves the mark retires through SSE without reloading the page.
+
+Regenerate them with:
+
+```sh
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/library-asset-usage.spec.ts \
+  --workers=1 --reporter=list
+```
+
 Attach the generated frames to the pull request; they are never committed.
 
 ### Per-harness dispatch defaults propagating

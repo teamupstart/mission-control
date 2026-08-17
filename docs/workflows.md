@@ -722,6 +722,15 @@ page before enrichment, and batch the latest attempts in one follow-up query. Su
 never load submission context or evidence. Detail reads batch attempts and receipts for the
 whole run, so their query count does not grow with the number of submissions.
 
+The workflow catalog summary carries one more bounded projection for the
+[Library detail footer](library-and-line.md#the-persona-detail-screen): unique Persona and
+SessionAction ids from the current draft and current published graph, with the two sets kept
+separate. It still carries no graph shape, guidance or instruction text, and each set is bounded
+by the graph's 100-node ceiling. Run summaries likewise carry exact active Persona and waiting
+SessionAction ids beside the older human-facing Persona names and Action wait reason. Those ids
+resolve same-name shadows and identify one action stage exactly; the browser never fetches every
+workflow to reconstruct either answer.
+
 ### Watching a run
 
 Everything below describes the **Workflows** tab of the Runs page, which is the whole page

@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Files Mermaid diagrams: phased implementation plan</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f4f7fb;
+      --surface: #fff;
+      --surface-2: #edf2f8;
+      --text: #18212d;
+      --muted: #58687a;
+      --border: #cad5e2;
+      --accent: #1769c2;
+      --accent-soft: #e5f1ff;
+      --good: #157454;
+      --shadow: 0 18px 50px rgba(34, 50, 71, .11);
+      --mono: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0a0d12;
+        --surface: #121820;
+        --surface-2: #0d131b;
+        --text: #e6edf5;
+        --muted: #9aa8ba;
+        --border: #2a3543;
+        --accent: #62adff;
+        --accent-soft: #122943;
+        --good: #57c69d;
+        --shadow: 0 18px 50px rgba(0, 0, 0, .35);
+      }
+    }
+    * { box-sizing: border-box; }
+    html { background: var(--bg); }
+    body {
+      margin: 0;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 12% 0%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 31rem),
+        var(--bg);
+      font: 16px/1.62 var(--sans);
+      overflow-wrap: anywhere;
+    }
+    main {
+      width: min(1080px, calc(100% - 32px));
+      margin: 38px auto 72px;
+      padding: clamp(24px, 5vw, 62px);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+    h1, h2, h3 { line-height: 1.2; text-wrap: balance; }
+    h1 { margin: 0 0 12px; font-size: clamp(2rem, 5vw, 3.35rem); letter-spacing: -.045em; }
+    h2 { margin: 46px 0 16px; padding-top: 8px; font-size: 1.52rem; letter-spacing: -.018em; }
+    h3 { margin: 28px 0 11px; font-size: 1.08rem; }
+    p { margin: 0 0 16px; max-width: 84ch; }
+    ul, ol { margin: 0 0 18px; padding-left: 1.45rem; }
+    li { margin: 6px 0; }
+    a { color: var(--accent); text-underline-offset: 3px; }
+    a:hover { text-decoration-thickness: 2px; }
+    code { font: .9em var(--mono); color: color-mix(in srgb, var(--accent) 78%, var(--text)); }
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 18px;
+      margin: 0 0 30px;
+      padding: 13px 16px;
+      color: var(--muted);
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 11px;
+      font-size: .91rem;
+    }
+    .lede {
+      padding: 20px 22px;
+      border-left: 4px solid var(--accent);
+      background: var(--accent-soft);
+      border-radius: 0 12px 12px 0;
+    }
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+      margin: 22px 0;
+    }
+    .stat {
+      padding: 17px;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+    }
+    .stat strong { display: block; margin-bottom: 4px; font-size: 1.28rem; color: var(--accent); }
+    .stat span { color: var(--muted); font-size: .9rem; }
+    .table-wrap { max-width: 100%; overflow-x: auto; }
+    table { width: 100%; min-width: 700px; border-collapse: collapse; margin: 12px 0 20px; font-size: .93rem; }
+    th, td { padding: 11px 13px; border: 1px solid var(--border); text-align: left; vertical-align: top; }
+    th { background: var(--surface-2); font-size: .82rem; letter-spacing: .035em; text-transform: uppercase; }
+    .diagram {
+      margin: 22px 0 25px;
+      padding: 18px;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      overflow-x: auto;
+    }
+    .diagram svg { display: block; min-width: 760px; width: 100%; height: auto; }
+    .phase-card {
+      padding: 22px;
+      border: 1px solid color-mix(in srgb, var(--accent) 48%, var(--border));
+      border-radius: 14px;
+      background: var(--accent-soft);
+    }
+    .phase-card h3 { margin-top: 0; }
+    .tag {
+      display: inline-block;
+      margin-right: 6px;
+      padding: 3px 8px;
+      color: var(--good);
+      border: 1px solid color-mix(in srgb, var(--good) 55%, var(--border));
+      border-radius: 999px;
+      background: color-mix(in srgb, var(--good) 10%, var(--surface));
+      font-size: .78rem;
+      font-weight: 700;
+      letter-spacing: .025em;
+      text-transform: uppercase;
+    }
+    .note {
+      margin: 22px 0;
+      padding: 15px 17px;
+      color: var(--muted);
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+    }
+    @media (max-width: 720px) {
+      main { width: min(100% - 18px, 1080px); margin-top: 10px; padding: 22px 17px 36px; border-radius: 14px; }
+      .stats { grid-template-columns: 1fr; }
+      h2 { margin-top: 38px; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Files Mermaid diagrams</h1>
+    <div class="meta">
+      <span><strong>Status:</strong> Approved for implementation</span>
+      <span><strong>Date:</strong> 2026-08-17</span>
+      <span><strong>Delivery:</strong> One vertical phase</span>
+    </div>
+  </header>
+
+  <div class="lede">
+    <p>The first release renders fenced <code>mermaid</code> blocks only in the Files workspace's Markdown Preview. It keeps the shared Markdown renderer code-only by default and runs diagram-controlled markup in a local, no-network sandbox.</p>
+    <p><a href="plan.html">Read the approved source plan</a></p>
+  </div>
+
+  <div class="stats" aria-label="Implementation sizing">
+    <div class="stat"><strong>1 phase</strong><span>One implementation task and pull request</span></div>
+    <div class="stat"><strong>340 to 520</strong><span>Estimated non-test implementation lines</span></div>
+    <div class="stat"><strong>0 backend</strong><span>No API, database, migration, or event change</span></div>
+  </div>
+
+  <h2>Why this is one phase</h2>
+  <p>The work crosses the Vite build, an isolated renderer, shared Markdown, Files Preview, styles, tests, and packaging. Those are one vertical behavior rather than independent layers. Splitting the renderer from its only consumer would land an unreachable foundation, obscure the end-to-end security proof, and force two reviews through the same contracts.</p>
+
+  <h2>Repository findings that shape the route</h2>
+  <ul>
+    <li>The Files API already supplies Markdown text. No daemon or persistence work is required.</li>
+    <li><code>Markdown.tsx</code> has ten callers, so diagrams must be an explicit, memo-safe capability that only <code>FileWorkspace.tsx</code> enables.</li>
+    <li>The existing HTML preview sandbox is a security precedent, not a renderer to weaken or overload.</li>
+    <li>Vite needs a second stable HTML entry. The daemon already serves built static files and Electron already packages all of <code>dist</code>.</li>
+    <li>The implementation must prove an opaque-origin script shape early. A classic renderer bundle is the fallback if module loading fails.</li>
+    <li>The Files preview's 5 MiB source allowance requires smaller browser limits: 50,000 characters per diagram and 32 diagrams per document.</li>
+  </ul>
+
+  <h2>Phase and dependency</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Phase</th><th>Outcome</th><th>Direct prerequisite</th><th>Execution</th></tr></thead>
+    <tbody><tr>
+      <td><a href="phase-1-secure-files-mermaid-preview.md">Phase 1: Secure Files Mermaid preview</a></td>
+      <td>Accessible, bounded Mermaid diagrams in Files Preview with exact-source Editor recovery</td>
+      <td>This planning pull request merged</td>
+      <td>Group A, one repository, one pull request</td>
+    </tr></tbody>
+  </table></div>
+
+  <figure class="diagram" aria-labelledby="dependency-title dependency-desc">
+    <svg viewBox="0 0 930 230" role="img" xmlns="http://www.w3.org/2000/svg">
+      <title id="dependency-title">Implementation dependency graph</title>
+      <desc id="dependency-desc">Merging the planning pull request releases Phase 1. Merging Phase 1 completes Mermaid support.</desc>
+      <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="var(--accent)"/></marker></defs>
+      <g fill="var(--surface)" stroke="var(--border)" stroke-width="2">
+        <rect x="25" y="64" width="230" height="98" rx="14"/>
+        <rect x="350" y="50" width="230" height="126" rx="14"/>
+        <rect x="675" y="64" width="230" height="98" rx="14"/>
+      </g>
+      <g fill="none" stroke="var(--accent)" stroke-width="3" marker-end="url(#arrow)">
+        <path d="M255 113H350"/><path d="M580 113H675"/>
+      </g>
+      <g fill="var(--text)" text-anchor="middle" font-family="var(--sans)">
+        <text x="140" y="102" font-size="18" font-weight="700">Planning PR</text><text x="140" y="130" font-size="15" fill="var(--muted)">paths published</text>
+        <text x="465" y="92" font-size="18" font-weight="700">Phase 1</text><text x="465" y="121" font-size="15">secure Files Mermaid</text><text x="465" y="148" font-size="15" fill="var(--muted)">one vertical merge unit</text>
+        <text x="790" y="102" font-size="18" font-weight="700">Released</text><text x="790" y="130" font-size="15" fill="var(--muted)">approved scope complete</text>
+      </g>
+    </svg>
+  </figure>
+
+  <div class="phase-card">
+    <span class="tag">Phase 1</span><span class="tag">Files only</span><span class="tag">Mermaid only</span>
+    <h3>Secure Files Mermaid preview</h3>
+    <p>Add the pinned dependency and isolated Vite renderer, define the source- and token-validated bridge, integrate a stable opt-in with shared Markdown, enable it in Files Preview, match the Mission Control palette, document the behavior, and prove the boundary in focused tests, Playwright, built output, and packaged Electron.</p>
+    <p><a href="phase-1-secure-files-mermaid-preview.md">Open the standalone phase instructions</a></p>
+  </div>
+
+  <h2>Contracts the implementation must preserve</h2>
+  <ul>
+    <li>Shared Markdown remains code-only unless its caller explicitly enables fenced diagrams.</li>
+    <li>Only exact registered tags dispatch. Unknown, inline, excessive, and unsupported blocks remain readable source.</li>
+    <li>Generated SVG stays in <code>sandbox="allow-scripts"</code> without <code>allow-same-origin</code>, network access, active links, or parent-DOM injection.</li>
+    <li>Failures, timeouts, and stale results remain local to one diagram and cannot blank surrounding Markdown.</li>
+    <li>Editor is the exact-source editing and recovery path. Existing HTML preview, packaging policy, and generated-output rules do not change.</li>
+  </ul>
+
+  <h2>Verification bar</h2>
+  <p>The phase owns unit coverage for dispatch, limits, sandbox messages, memoization, and stale state; a built-dashboard Playwright spec for valid, invalid, edited, and hostile diagrams; repository typecheck, lint, unit, build, smoke, and E2E gates; and packaged-Electron resource verification.</p>
+  <div class="note">The phase task depends on this planning session. It remains backlogged until the planning pull request merges and these paths resolve on the default branch.</div>
+
+  <h2>Audit result</h2>
+  <p>The approved Mermaid-only requirements are owned exactly once by Phase 1. There is no deferred cleanup, consumer phase, database compatibility step, or multi-repository merge. Future engines must be proposed and reviewed separately.</p>
+</main>
+</body>
+</html>

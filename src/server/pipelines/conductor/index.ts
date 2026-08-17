@@ -20,6 +20,7 @@ import type {
 import { conductorConsoleArgv, runConductorControl } from "./control.ts";
 import { normalizeConductorRun } from "./normalize.ts";
 import { conductorBin, probeConductor } from "./probe.ts";
+import { registerConductorRepo } from "./register.ts";
 import { resolveBinPath } from "../../util/exec.ts";
 import {
   MAX_RUNS_PER_REPO,
@@ -359,6 +360,7 @@ export const CONDUCTOR_PROVIDER: PipelineProvider = {
   provider: "ai-conductor",
   binForPresence: conductorBin,
   probe: probeConductor,
+  registerRepo: registerConductorRepo,
   readRepo: readConductorRepo,
   knownRunSlugs: conductorRunSlugs,
   readRunDetail: readConductorRunDetail,

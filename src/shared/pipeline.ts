@@ -598,6 +598,30 @@ export interface PipelinesView {
   status: PipelineRepoStatus[];
 }
 
+/**
+ * What a provider answered when asked to register one canonical repository root.
+ *
+ * Registration changes provider-owned state only. It is deliberately not an observation
+ * consent result: Mission Control writes that separate choice through `PipelinesConfig` after a
+ * confirmed registration, so either half can fail without being reported as the other.
+ */
+export interface PipelineRepoRegistrationResult {
+  ok: boolean;
+  provider: PipelineProviderId;
+  /** The canonical main-checkout root handed to the provider. */
+  repoRoot: string;
+  /** One bounded sentence confirming the registration or explaining the refusal. */
+  detail: string;
+  /** Bounded provider output for diagnosis. Empty on a clean confirmation. */
+  output: string;
+}
+
+/** The registration answer plus the provider/config facts derived immediately afterwards. */
+export interface PipelineRepoRegistrationResponse {
+  registration: PipelineRepoRegistrationResult;
+  view: PipelinesView;
+}
+
 /** One halted run offered to the standalone Foreman worker. */
 export interface PipelineForemanItem {
   run: PipelineRun;

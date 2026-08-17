@@ -31,13 +31,9 @@ export function settingsStatus(): SettingsStatus {
     inspector: { enabled: inspector.enabled, mode: inspector.mode },
     shipping: { autoMerge: shipping.autoMerge },
     taskSources: { failing },
-    // Whether the Conductor category is DRAWN at all, which is a different kind of fact from
-    // its three neighbours: they tint a dot on a row that always exists. Cheap enough to
-    // recompute here - see `pipelinesPresent`, which spawns nothing.
-    // Two facts, two surfaces: `present` draws the Conductor row in the Settings rail for
-    // an operator who has the engine installed, and `observing` draws the Runs page's
-    // Pipelines tab for one who has consented to a repository. Both are config reads and
-    // neither spawns anything - see `pipelinesPresent` and `pipelinesObserving`.
+    // Keep the append-only `present` compatibility fact for older dashboards. The current
+    // dashboard always draws Conductor and uses `observing` alone for the Runs and Dispatch
+    // gates. Both values are cheap reads and spawn nothing.
     pipelines: { present: pipelinesPresent(), observing: pipelinesObserving() },
   };
 }

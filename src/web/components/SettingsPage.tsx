@@ -35,14 +35,11 @@ import type { SettingsStatus } from "@shared/types.ts";
 import type { WorkflowSummary } from "@shared/workflow.ts";
 import { repoAllowlisted } from "@shared/allowlist.ts";
 import {
-  DEFAULT_SETTINGS_CATEGORY,
+  SETTINGS_CATEGORIES,
   SETTINGS_GROUPS,
   SETTINGS_SCOPES,
-  availableSettingsCategories,
   settingsCategoriesIn,
   settingsCategory,
-  settingsCategoryAvailable,
-  type SettingsAvailability,
   type SettingsCategoryId,
 } from "../lib/settings-registry.ts";
 import { settingsRailDot, type SettingsDotTone } from "../lib/settings-dots.ts";
@@ -250,30 +247,7 @@ export function SettingsPage({
    */
   jump?: { anchor: string; nonce: number } | null;
 }): React.JSX.Element {
-  // Resolved FIRST, above every hook, because one of them is gated on it.
-  //
-  // Which conditional categories this operator has. Null before the first snapshot, which
-  // draws nothing and waits - see `SettingsAvailability`.
-  const availability: SettingsAvailability = {
-    pipelinesPresent: settingsStatus === null ? null : settingsStatus.pipelines.present,
-  };
-  /**
-   * The category actually on screen, which is not always the one in the hash.
-   *
-   * A category the operator does not have is not a route: reached by a stale bookmark, by a
-   * link written before the engine was uninstalled, or by the hash being typed, it resolves
-   * to the default the way an unknown category does rather than to an empty pane.
-   *
-   * Everything downstream reads THIS rather than `category` - the rendered panel, the
-   * selected tab, the arrow-key walk, and the one hook whose activity is itself a thing an
-   * operator is not supposed to have. Gating that hook on the raw hash instead meant
-   * `#/settings/conductor` on a machine with no engine drew the Display fallback while
-   * quietly polling the pipelines route behind it, which is new behaviour for exactly the
-   * operator the whole conditional exists to leave alone.
-   */
-  const shown: SettingsCategoryId = settingsCategoryAvailable(category, availability)
-    ? category
-    : DEFAULT_SETTINGS_CATEGORY;
+  const shown = category;
   const skills = useSkills();
   // Owned here rather than by App, like `skills`: nothing outside this page reads the
   // harnesses config, so it polls only while the page is open.
@@ -289,8 +263,8 @@ export function SettingsPage({
   // than merely tidy: it is what keeps each source's last-swept line and its error moving
   // while you watch the panel, including for a sweep the background loop ran.
   const taskSources = useTaskSources();
-  // Only while its own category is actually ON SCREEN - the resolved one, never the hash.
-  // See the hook for why this one is gated at all, and `shown` for why not `category`.
+  // Only while its own permanent category is actually on screen. Opening unrelated Settings
+  // destinations must not probe an external engine or fetch the workspace catalog.
   const conductor = useConductor(shown === "conductor");
   // Owned here for the same reason as the four above: nothing outside this page reads the
   // Workflow config, so it polls only while the page is open. Its poll is load-bearing
@@ -470,12 +444,7 @@ export function SettingsPage({
   // order (see `SETTINGS_CATEGORIES`) - otherwise Down moves the selection somewhere the
   // eye is not. The stopPropagation keeps these keys inside the rail.
   function onTablistKey(e: React.KeyboardEvent<HTMLDivElement>): void {
-    // The VISIBLE subset, not the whole registry: a category this operator does not have is
-    // not drawn, so walking past it would move the selection to a tab that is not there.
-    // Indexed by the RESOLVED category for the same reason - a hash naming a category that
-    // is not drawn has no index in this list, and `-1` would send the first Down to the
-    // second tab.
-    const walk = availableSettingsCategories(availability);
+    const walk = SETTINGS_CATEGORIES;
     const last = walk.length - 1;
     const idx = walk.findIndex((c) => c.id === shown);
     let next: number;
@@ -647,15 +616,13 @@ export function SettingsPage({
           aria-label="Settings categories"
           onKeyDown={onTablistKey}
         >
-          {SETTINGS_GROUPS.filter(
-            (group) => settingsCategoriesIn(group.id, availability).length > 0,
-          ).map((group) => (
+          {SETTINGS_GROUPS.map((group) => (
             <div className="settings-nav-group" key={group.id}>
               <p className="settings-nav-label">
                 {group.label}
                 <ScopeBadge scope={group.scope} />
               </p>
-              {settingsCategoriesIn(group.id, availability).map((c) => (
+              {settingsCategoriesIn(group.id).map((c) => (
                 <Tooltip key={c.id} label={c.blurb}>
                   <button
                     id={tabDomId(c.id)}

@@ -5,6 +5,7 @@ import type {
   PipelineDaemonState,
   PipelineProbe,
   PipelineProviderId,
+  PipelineRepoRegistrationResult,
   PipelineRun,
   PipelineRunDetail,
 } from "@shared/pipeline.ts";
@@ -136,14 +137,15 @@ export interface PipelineProvider {
    * The command whose mere PRESENCE on `PATH` means this engine is installed, after the
    * operator's env override.
    *
-   * Separate from `probe()` because it answers a weaker question much more cheaply: the
-   * Settings rail needs "should this row exist" synchronously, on every snapshot, for every
-   * operator - and `onPath` walks `PATH` with `existsSync` where a probe spawns. What the
-   * engine's version is and which repositories it manages are the panel's questions.
+   * Separate from `probe()` because the append-only `SettingsStatus.pipelines.present`
+   * compatibility fact needs a synchronous, subprocess-free read. What the engine's version
+   * is and which repositories it manages are the panel's questions.
    */
   binForPresence(): string;
   /** Spawns. Called from the Settings route behind a cache, never from the watch loop. */
   probe(): Promise<PipelineProbe>;
+  /** Register a canonical repository through the provider's own CLI. Never throws. */
+  registerRepo(repoRoot: string): Promise<PipelineRepoRegistrationResult>;
   /**
    * Read every run in one repository, from the provider's files alone.
    *

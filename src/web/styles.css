@@ -18892,12 +18892,121 @@ button.sc-row:focus-visible {
   border-color: color-mix(in oklab, var(--muted) 28%, transparent);
 }
 
-/* ---- Conductor (observing an external SDLC engine) ----
-   Built entirely from the settings console's leaves (`sc-card`, `sc-switch`, `sc-state`,
-   `sc-health-row`), because it is the same shape as its neighbours: a posture, a switch,
-   and a list of repositories the switch applies to. Only the repository row is new, and it
-   is new because it carries three lines - a name, a path, and a health sentence - where
-   Trust's allowlist rows carry one. */
+/* ---- Conductor (registering, then observing an external SDLC engine) ---- */
+.conductor-commissioning {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1px;
+  margin: 16px 0 12px;
+  padding: 1px;
+  list-style: none;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--border-soft);
+  overflow: hidden;
+}
+.conductor-commissioning li {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: 9px;
+  row-gap: 1px;
+  align-items: center;
+  min-width: 0;
+  padding: 10px 11px;
+  color: var(--dim);
+  background: var(--panel);
+}
+.conductor-commissioning li > span {
+  grid-row: 1 / 3;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--dim);
+}
+.conductor-commissioning strong {
+  font-size: 11.5px;
+  font-weight: 650;
+  color: var(--muted);
+}
+.conductor-commissioning small {
+  overflow: hidden;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.conductor-commissioning li.is-current {
+  background: color-mix(in oklab, var(--attention) 8%, var(--panel));
+}
+.conductor-commissioning li.is-current > span,
+.conductor-commissioning li.is-current strong {
+  color: var(--attention);
+}
+.conductor-commissioning li.is-complete > span,
+.conductor-commissioning li.is-complete strong {
+  color: var(--idle);
+}
+.conductor-setup-notice {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 10px 0 0;
+  padding: 9px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+.conductor-setup-notice.is-ok {
+  color: var(--idle);
+  border-color: color-mix(in oklab, var(--idle) 35%, transparent);
+  background: color-mix(in oklab, var(--idle) 7%, var(--panel-2));
+}
+.conductor-setup-notice.is-attention {
+  color: var(--attention);
+  border-color: color-mix(in oklab, var(--attention) 38%, transparent);
+  background: color-mix(in oklab, var(--attention) 8%, var(--panel-2));
+}
+.conductor-setup-notice.is-error {
+  color: var(--danger);
+  border-color: color-mix(in oklab, var(--danger) 38%, transparent);
+  background: color-mix(in oklab, var(--danger) 8%, var(--panel-2));
+}
+.conductor-install-copy {
+  margin-top: 9px;
+  padding: 10px 11px;
+  border-left: 2px solid var(--attention);
+  background: color-mix(in oklab, var(--attention) 6%, var(--panel-2));
+}
+.conductor-install-copy > p {
+  margin: 0 0 8px;
+}
+.conductor-install-copy > code {
+  display: inline-block;
+  padding: 4px 7px;
+  border: 1px solid var(--border-soft);
+  border-radius: 5px;
+  color: var(--fg);
+  background: var(--panel);
+  user-select: all;
+}
+.conductor-repo-search {
+  display: block;
+  margin-top: 11px;
+}
+.conductor-repo-search input {
+  width: 100%;
+  padding: 8px 10px;
+  color: var(--fg);
+  background: var(--panel-2);
+  border: 1px solid var(--border-soft);
+  border-radius: 7px;
+  font: inherit;
+  font-size: 12px;
+}
+.conductor-repo-search input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--accent) 18%, transparent);
+}
 .conductor-repos {
   display: flex;
   flex-direction: column;
@@ -18910,6 +19019,8 @@ button.sc-row:focus-visible {
   display: flex;
   align-items: flex-start;
   gap: 10px;
+  padding: 11px 0;
+  border-top: 1px solid var(--border-soft);
 }
 .conductor-repo-body {
   display: flex;
@@ -18919,6 +19030,7 @@ button.sc-row:focus-visible {
      conductor checkout is an absolute path and several are long enough to push the switch
      off the card without it. */
   min-width: 0;
+  flex: 1;
 }
 .conductor-repo-name {
   font-size: 12.5px;
@@ -18937,11 +19049,67 @@ button.sc-row:focus-visible {
   font-size: 11.5px;
   color: var(--muted);
 }
+.conductor-repo-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 4px 0 2px;
+}
+.conductor-repo-facts > span {
+  padding: 2px 6px;
+  color: var(--dim);
+  background: var(--panel-2);
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  font-size: 9.5px;
+  font-weight: 620;
+  letter-spacing: 0.02em;
+}
+.conductor-repo-facts > span.is-ready {
+  color: var(--idle);
+  border-color: color-mix(in oklab, var(--idle) 30%, transparent);
+  background: color-mix(in oklab, var(--idle) 6%, var(--panel-2));
+}
+.conductor-repo-action {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex: none;
+  min-width: 144px;
+}
+.conductor-repo-action .btn {
+  white-space: nowrap;
+}
+.conductor-ready-mark {
+  color: var(--idle);
+  font-size: 11px;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
 .conductor-repo-error {
   margin: 2px 0 0;
 }
 .conductor-empty {
   margin-top: 10px;
+}
+.conductor-ingest-hint {
+  margin-top: 12px;
+}
+
+@media (max-width: 720px) {
+  .conductor-commissioning {
+    grid-template-columns: 1fr;
+  }
+  .conductor-repo {
+    flex-wrap: wrap;
+  }
+  .conductor-repo-action {
+    width: 100%;
+    min-width: 0;
+    justify-content: flex-start;
+    padding-left: 34px;
+  }
 }
 
 

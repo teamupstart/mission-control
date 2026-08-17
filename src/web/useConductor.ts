@@ -1,23 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { PipelinesConfig, PipelinesView } from "@shared/pipeline.ts";
-import { api, fetchPipelines } from "./lib/api.ts";
+import {
+  pipelineRepoKey,
+  type PipelineProviderId,
+  type PipelinesConfig,
+  type PipelinesView,
+} from "@shared/pipeline.ts";
+import { api, fetchPipelines, fetchRepos } from "./lib/api.ts";
 import { readIsCurrent } from "./harnesses-reconcile.ts";
 
-// The "Conductor" settings section: whether an external SDLC engine is installed, which
-// repositories it manages, and which of them this operator has consented to observe.
-// Owned locally by SettingsPage (like `useTaskSources` / `useSkills`), because nothing
-// outside the panel reads it.
-//
-// Polled rather than streamed, for the reason the other config hooks are: coarse,
-// rarely-edited chrome is not worth another SSE channel. The poll also carries the health
-// line, so a repository's run count and daemon state move while you watch.
-//
-// The read/write race discipline below is `useTaskSources`' verbatim, and it is not
-// defensive copying - this panel has the identical hazard. It polls, it applies edits
-// optimistically, and every save PUTs the WHOLE config, so a response applied over a value
-// the operator has moved past is not a flash: the next switch composes its blob from the
-// reverted view and persists it. The two counters and the write queue are what stop that.
-// See `useTaskSources` for the four defects that wrote this rule.
+// The Conductor Settings state. Provider registration and Mission Control observation are
+// deliberately two ordered mutations: the provider's CLI owns its registry, while the existing
+// whole-config PUT remains Mission Control's single consent writer.
 
 const POLL_MS = 4000;
 
@@ -28,42 +21,69 @@ function whyItFailed(error: string | undefined): string {
   return `That change didn't stick: ${flat.length > 120 ? `${flat.slice(0, 119)}…` : flat}`;
 }
 
+/** Compose observation consent without disturbing any other provider or repository choice. */
+export function configWithObservation(
+  config: PipelinesConfig,
+  provider: PipelineProviderId,
+  repoRoot: string,
+): PipelinesConfig {
+  const key = pipelineRepoKey(provider, repoRoot);
+  const kept = config.repos.filter((repo) => pipelineRepoKey(repo.provider, repo.repoRoot) !== key);
+  return {
+    ...config,
+    enabled: true,
+    repos: [...kept, { provider, repoRoot, enabled: true }],
+  };
+}
+
+export interface ConductorSetupNotice {
+  repoRoot: string;
+  tone: "ok" | "attention" | "error";
+  detail: string;
+  output: string;
+}
+
 export interface ConductorState {
   /** Null until the first read lands. Null is UNKNOWN, never "nothing is enabled". */
   view: PipelinesView | null;
+  /** Canonical repository roots from Mission Control's existing workspace catalog. */
+  workspaceRepos: string[];
   /** Write the whole consent config. Applied optimistically, reverted if refused. */
   save: (config: PipelinesConfig) => Promise<boolean>;
+  /** Register with the provider, then enable Mission Control observation after confirmation. */
+  registerAndObserve: (provider: PipelineProviderId, repoRoot: string) => Promise<boolean>;
+  /** Recovery after provider registration succeeded but the observation write did not. */
+  enableObservation: (provider: PipelineProviderId, repoRoot: string) => Promise<boolean>;
   /** Re-run the engine probe now, bypassing the daemon's TTL cache. */
   recheck: () => Promise<void>;
-  /** True while a forced re-check is in flight, so the control can say so. */
   checking: boolean;
-  /** Why the last edit didn't stick, or null. Cleared by the next one that does. */
+  /** The repository and ordered phase currently mutating, or null. */
+  setup: { repoRoot: string; phase: "registering" | "observing" } | null;
+  setupNotice: ConductorSetupNotice | null;
+  /** Why the last ordinary config edit did not stick, or null. */
   error: string | null;
 }
 
-/**
- * @param active Whether the Conductor category is the one on screen.
- *
- * Gated, unlike its neighbours in this directory, and for a reason particular to this
- * subject: a read can start an engine PROBE, which is a subprocess. Every other settings
- * hook polls a route that reads config, so paying for all of them on every category is
- * cheap; paying for a `fork` + `execve` on a page that is mostly about other things is not
- * - and it would be paid on a fleet that has this feature switched off entirely, which is
- * the one bill this phase promises nobody receives.
- */
+/** @param active Whether the permanent Conductor category is the one on screen. */
 export function useConductor(active: boolean): ConductorState {
   const [view, setViewState] = useState<PipelinesView | null>(null);
+  const [workspaceRepos, setWorkspaceRepos] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [checking, setChecking] = useState(false);
+  const [setup, setSetup] = useState<ConductorState["setup"]>(null);
+  const [setupNotice, setSetupNotice] = useState<ConductorSetupNotice | null>(null);
   const viewRef = useRef<PipelinesView | null>(null);
-  /** An edit has STARTED: a read that left before it cannot describe what is on screen. */
   const editSeq = useRef(0);
-  /** A write has LANDED: a read that left before it describes an older server. */
   const writeGen = useRef(0);
+  /** Non-null while the two-step setup flow owns the view. Ordinary polls stand down. */
+  const setupToken = useRef<number | null>(null);
+  const nextSetupToken = useRef(0);
+  /** The config write or registration already in flight. Every later mutation queues behind it. */
+  const writing = useRef<Promise<unknown>>(Promise.resolve());
 
-  const setView = useCallback((v: PipelinesView | null): void => {
-    viewRef.current = v;
-    setViewState(v);
+  const setView = useCallback((next: PipelinesView | null): void => {
+    viewRef.current = next;
+    setViewState(next);
   }, []);
 
   const refresh = useCallback(
@@ -71,11 +91,13 @@ export function useConductor(active: boolean): ConductorState {
       seqAtRequest: number = editSeq.current,
       { force = false }: { force?: boolean } = {},
     ): Promise<void> => {
+      if (!force && setupToken.current !== null) return;
       const genAtRequest = writeGen.current;
       const v = await fetchPipelines(force);
       if (!v) return;
       if (!readIsCurrent(seqAtRequest, editSeq.current)) return;
       if (!readIsCurrent(genAtRequest, writeGen.current)) return;
+      if (!force && setupToken.current !== null) return;
       setView(v);
     },
     [setView],
@@ -95,17 +117,19 @@ export function useConductor(active: boolean): ConductorState {
     };
   }, [active, refresh]);
 
-  /** The write already in flight, so the next one waits rather than racing it. */
-  const writing = useRef<Promise<unknown>>(Promise.resolve());
+  // The existing workspace catalog is fetched only while this destination is active. It is
+  // the candidate source; Conductor's probe remains the authority for registration.
+  useEffect(() => {
+    if (!active) return;
+    let alive = true;
+    void fetchRepos().then((repos) => {
+      if (alive) setWorkspaceRepos(repos);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [active]);
 
-  /**
-   * Apply a change optimistically, and TAKE IT BACK if the daemon refuses.
-   *
-   * The contract matters more here than in most panels because the switch IS the consent:
-   * a repository reading "on" while the daemon has it off is a page claiming to be
-   * watching something nothing is reading, and the operator's only evidence would be a run
-   * list that never fills in.
-   */
   const save = useCallback(
     async (config: PipelinesConfig): Promise<boolean> => {
       const before = viewRef.current;
@@ -116,8 +140,6 @@ export function useConductor(active: boolean): ConductorState {
       const queued = writing.current;
       const attempt = (async (): Promise<boolean> => {
         await queued;
-        // Superseded while queued: a later edit composed its blob from this one's
-        // optimistic view, so sending this older body after it would overwrite it.
         if (!readIsCurrent(seq, editSeq.current)) return true;
         const res = await api.setPipelines(config);
         if (!res.ok) {
@@ -127,23 +149,132 @@ export function useConductor(active: boolean): ConductorState {
         }
         setError(null);
         writeGen.current += 1;
-        await refresh(seq);
+        setView(res.view);
         return true;
       })();
       writing.current = attempt.catch(() => {});
       return attempt;
     },
-    [refresh, setView],
+    [setView],
   );
 
-  /**
-   * Ask the daemon to probe the engine again, right now.
-   *
-   * The one call that sets `force`. An operator who has just installed the engine, or just
-   * registered a repository with it, is asking a question the TTL cache would answer with
-   * yesterday's news - and "I installed it and the panel still says it is missing" is
-   * exactly the state this control exists to end.
-   */
+  const enableObservation = useCallback(
+    async (provider: PipelineProviderId, repoRoot: string): Promise<boolean> => {
+      const seq = ++editSeq.current;
+      const token = ++nextSetupToken.current;
+      setupToken.current = token;
+      setSetup({ repoRoot, phase: "observing" });
+      setSetupNotice(null);
+      setError(null);
+
+      const queued = writing.current;
+      const attempt = (async (): Promise<boolean> => {
+        await queued;
+        if (!readIsCurrent(seq, editSeq.current)) return true;
+        const current = viewRef.current;
+        if (!current) return false;
+        const res = await api.setPipelines(configWithObservation(current.config, provider, repoRoot));
+        if (!res.ok) {
+          setSetupNotice({
+            repoRoot,
+            tone: "attention",
+            detail: "Registered with Conductor; Mission Control observation still needs enabling.",
+            output: whyItFailed(res.error),
+          });
+          return false;
+        }
+        writeGen.current += 1;
+        setView(res.view);
+        setSetupNotice({
+          repoRoot,
+          tone: "ok",
+          detail: "Registered and observed. Pipeline dispatch is ready for this repository.",
+          output: "",
+        });
+        return true;
+      })();
+      writing.current = attempt.catch(() => {});
+      try {
+        return await attempt;
+      } finally {
+        if (setupToken.current === token) setupToken.current = null;
+        setSetup(null);
+      }
+    },
+    [setView],
+  );
+
+  const registerAndObserve = useCallback(
+    async (provider: PipelineProviderId, requestedRoot: string): Promise<boolean> => {
+      const seq = ++editSeq.current;
+      const token = ++nextSetupToken.current;
+      setupToken.current = token;
+      setSetup({ repoRoot: requestedRoot, phase: "registering" });
+      setSetupNotice(null);
+      setError(null);
+
+      const queued = writing.current;
+      const attempt = (async (): Promise<boolean> => {
+        await queued;
+        if (!readIsCurrent(seq, editSeq.current)) return true;
+        const res = await api.registerPipelineRepo(provider, requestedRoot);
+        if (!res.ok) {
+          setSetupNotice({
+            repoRoot: requestedRoot,
+            tone: "error",
+            detail: "Registration did not complete, so observation was not enabled.",
+            output: whyItFailed(res.error),
+          });
+          return false;
+        }
+
+        const registration = res.registration;
+        setView(res.view);
+        if (!registration.ok) {
+          setSetupNotice({
+            repoRoot: registration.repoRoot,
+            tone: "error",
+            detail: registration.detail,
+            output: registration.output,
+          });
+          return false;
+        }
+
+        setSetup({ repoRoot: registration.repoRoot, phase: "observing" });
+        const consent = await api.setPipelines(
+          configWithObservation(res.view.config, registration.provider, registration.repoRoot),
+        );
+        if (!consent.ok) {
+          setSetupNotice({
+            repoRoot: registration.repoRoot,
+            tone: "attention",
+            detail: "Registered with Conductor; Mission Control observation still needs enabling.",
+            output: whyItFailed(consent.error),
+          });
+          return false;
+        }
+
+        writeGen.current += 1;
+        setView(consent.view);
+        setSetupNotice({
+          repoRoot: registration.repoRoot,
+          tone: "ok",
+          detail: "Registered and observed. Pipeline dispatch is ready for this repository.",
+          output: "",
+        });
+        return true;
+      })();
+      writing.current = attempt.catch(() => {});
+      try {
+        return await attempt;
+      } finally {
+        if (setupToken.current === token) setupToken.current = null;
+        setSetup(null);
+      }
+    },
+    [setView],
+  );
+
   const recheck = useCallback(async (): Promise<void> => {
     setChecking(true);
     try {
@@ -153,5 +284,16 @@ export function useConductor(active: boolean): ConductorState {
     }
   }, [refresh]);
 
-  return { view, save, recheck, checking, error };
+  return {
+    view,
+    workspaceRepos,
+    save,
+    registerAndObserve,
+    enableObservation,
+    recheck,
+    checking,
+    setup,
+    setupNotice,
+    error,
+  };
 }

@@ -16,6 +16,7 @@ process.env.HARNESS_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
 const {
   INTERRUPTED_CHAT_BEFORE_PROVISION_ERROR,
+  MANUAL_DISPATCH_TASK_CREATE,
   TaskKindBacklogError,
   TaskManager,
 } = await import("../src/server/tasks.ts");
@@ -87,7 +88,7 @@ test("an immediate chat persists and dispatches with its opener unchanged", asyn
     },
   };
 
-  const task = tasks.create(chatInput);
+  const task = tasks.create(chatInput, undefined, MANUAL_DISPATCH_TASK_CREATE);
   await Promise.resolve();
 
   assert.equal(task.status, "dispatching");
@@ -97,27 +98,61 @@ test("an immediate chat persists and dispatches with its opener unchanged", asyn
   assert.equal(kindMissionMcpRequirement(task, null), null);
 });
 
+test("only manual Dispatch can create an immediate chat", () => {
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+  const taskCount = registry.listTasks().length;
+
+  assert.throws(() => tasks.create(chatInput), (error) => {
+    assert.ok(error instanceof TaskKindBacklogError);
+    assert.equal(error.message, TASK_KIND_BACKLOG_REFUSAL);
+    return true;
+  });
+  assert.equal(registry.listTasks().length, taskCount);
+});
+
 test("TaskManager refuses every backlog-producing chat creation path", () => {
   const registry = new Registry();
   const tasks = new TaskManager(registry);
 
   for (const [id, create] of [
-    ["backlog", () => tasks.create({ ...chatInput, backlog: true })],
+    [
+      "backlog",
+      () => tasks.create({ ...chatInput, backlog: true }, undefined, MANUAL_DISPATCH_TASK_CREATE),
+    ],
     [
       "dependency",
-      () => tasks.create({
-        ...chatInput,
-        dependencies: [{ type: "task", taskId: "prerequisite" }],
-      }),
+      () =>
+        tasks.create(
+          {
+            ...chatInput,
+            dependencies: [{ type: "task", taskId: "prerequisite" }],
+          },
+          undefined,
+          MANUAL_DISPATCH_TASK_CREATE,
+        ),
     ],
-    ["internal", () => tasks.create({ ...chatInput, backlog: true }, { id: "chat-internal" })],
+    [
+      "internal",
+      () =>
+        tasks.create(
+          { ...chatInput, backlog: true },
+          { id: "chat-internal" },
+          MANUAL_DISPATCH_TASK_CREATE,
+        ),
+    ],
     [
       "source",
-      () => tasks.create({
-        ...chatInput,
-        backlog: true,
-        source: { sourceId: "source-1", externalId: "issue-1", url: null },
-      }),
+      () =>
+        tasks.create(
+          {
+            ...chatInput,
+            backlog: true,
+            source: { sourceId: "source-1", externalId: "issue-1", url: null },
+          },
+          undefined,
+          MANUAL_DISPATCH_TASK_CREATE,
+        ),
     ],
   ] as const) {
     assert.throws(create, (error) => {

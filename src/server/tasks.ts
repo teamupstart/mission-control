@@ -190,8 +190,14 @@ export interface Ok {
 /** A user-fixable dependency selection conflict, safe to return as HTTP 409. */
 export class TaskDependencyError extends Error {}
 
-/** A chat task was sent through a surface that can only create or recycle backlog work. */
+/** A chat task was sent through a surface without the manual Dispatch capability. */
 export class TaskKindBacklogError extends Error {}
+
+/**
+ * Capability held only by the localhost manual Dispatch route. Requiring the exact symbol
+ * keeps generic and durable task producers from constructing an immediate chat by accident.
+ */
+export const MANUAL_DISPATCH_TASK_CREATE = Symbol("manual-dispatch-task-create");
 
 export class TaskStatusConflictError extends Error {}
 
@@ -1512,8 +1518,18 @@ export class TaskManager {
    * property both recovery paths are built on. See `InternalCreateOptions`. Omitting it is
    * every other caller, and their behaviour here is unchanged: fresh UUID, model titling
    * when the title is blank, dispatch when it is not.
+   *
+   * `manualDispatch` is an explicit capability rather than another input field. Request
+   * bodies and generic producers therefore cannot opt themselves into creating chat tasks.
    */
-  create(input: CreateTaskInput, internal?: InternalCreateOptions): Task {
+  create(
+    input: CreateTaskInput,
+    internal?: InternalCreateOptions,
+    manualDispatch?: symbol,
+  ): Task {
+    if (!taskKindAllowsBacklog(input.kind) && manualDispatch !== MANUAL_DISPATCH_TASK_CREATE) {
+      throw new TaskKindBacklogError(TASK_KIND_BACKLOG_REFUSAL);
+    }
     if (
       !taskKindAllowsBacklog(input.kind) &&
       (input.backlog || internal !== undefined || input.source !== undefined ||

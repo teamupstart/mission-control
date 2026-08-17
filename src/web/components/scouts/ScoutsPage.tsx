@@ -8,6 +8,7 @@ import { ScoutDeleteModal, type ScoutDeleteTarget } from "./ScoutDeleteModal.tsx
 import { ScoutReader } from "./ScoutReader.tsx";
 import { Tooltip } from "../Tooltip.tsx";
 import { SCOUT_STATUS_WORD, scoutLabel } from "./scout-labels.ts";
+import { chordFromEvent, useKeybindings } from "../../lib/keybindings.ts";
 
 /**
  * The Scouts page: search rail, report reader, evidence spine.
@@ -54,16 +55,21 @@ export function ScoutsPage({
   navigate,
   replace,
   revision,
+  overlayOpen,
 }: {
   route: Extract<MissionRoute, { page: "scouts" }>;
   navigate: (route: MissionRoute) => boolean;
   replace: (route: MissionRoute) => void;
   revision: number;
+  overlayOpen: boolean;
 }): React.JSX.Element {
   const filters = route.filters;
   const selectedKey = route.archiveKey ?? null;
   const catalog = useScoutsCatalog({ filters, archiveKey: selectedKey, revision });
+  const { bindings } = useKeybindings();
   const [deleting, setDeleting] = useState<ScoutDeleteTarget | null>(null);
+  /** Which selected archive has replaced its reader heading with the shared rename editor. */
+  const [renamingKey, setRenamingKey] = useState<string | null>(null);
   /**
    * The politely-announced confirmation, and a counter that makes each one a DOM change.
    *
@@ -78,6 +84,28 @@ export function ScoutsPage({
   /** Set after a delete: focus belongs back in the rail once the render lands. */
   const [pendingFocus, setPendingFocus] = useState(false);
   const railRef = useRef<HTMLElement | null>(null);
+
+  // The page owns its keys, matching App's non-fleet boundary. This resolves the SAME
+  // configurable rename action sessions use rather than hard-coding Shift+R a second time.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.defaultPrevented || overlayOpen || renamingKey) return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("input, textarea, select, [contenteditable='true']")) return;
+      if (chordFromEvent(event) !== bindings.rename) return;
+      const detail = catalog.detail;
+      if (!detail || catalog.detailState !== "ready") return;
+      event.preventDefault();
+      setRenamingKey(detail.key);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [bindings.rename, catalog.detail, catalog.detailState, overlayOpen, renamingKey]);
+
+  // A deep-link change swaps the reader. Its old editor must not reopen on the new archive.
+  useEffect(() => {
+    if (renamingKey && catalog.detail?.key !== renamingKey) setRenamingKey(null);
+  }, [catalog.detail?.key, renamingKey]);
 
   // The search box is LOCAL while it is being typed and the route is updated behind it, so
   // every keystroke is not a history entry and the field never fights the address bar. The
@@ -394,6 +422,19 @@ export function ScoutsPage({
         state={catalog.detailState}
         error={catalog.detailError}
         libraryPath={catalog.libraryPath}
+        renaming={renamingKey === detail?.key}
+        onRenameStart={() => {
+          if (detail) setRenamingKey(detail.key);
+        }}
+        onRenameClose={() => setRenamingKey(null)}
+        onRename={async (title) => {
+          if (!detail) return { ok: false, error: "This scout is no longer selected." };
+          const result = await catalog.rename(detail.key, title);
+          if (result.ok) {
+            setStatus((prev) => ({ text: "Scout renamed", n: (prev?.n ?? 0) + 1 }));
+          }
+          return result;
+        }}
         onDelete={(target, from) => {
           invoker.current = from;
           setDeleting(target);

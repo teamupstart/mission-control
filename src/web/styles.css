@@ -27186,6 +27186,14 @@ body.foreman-sidecar-open .modal-backdrop {
   letter-spacing: -0.02em;
   overflow-wrap: anywhere;
 }
+.scouts-question-edit {
+  width: 100%;
+  overflow-wrap: anywhere;
+}
+.scouts-question-renaming .rename-input {
+  font-size: 17px;
+  letter-spacing: -0.02em;
+}
 .scouts-legacy-question {
   max-width: 76ch;
   margin: -2px 0 12px;

@@ -1538,6 +1538,14 @@ export const api = {
       { target },
     ),
 
+  /** Change only this machine's display name for an immutable archive. */
+  renameArchive: (archiveKey: string, title: string) =>
+    request<ActionResult & { title?: string }>(
+      "PATCH",
+      `/api/archives/${encodeURIComponent(archiveKey)}`,
+      { title },
+    ),
+
   /**
    * Delete one archive from THIS machine's library.
    *

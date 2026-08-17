@@ -5182,6 +5182,12 @@ export const ArchiveSearchQuerySchema = z.object({
 });
 export type ArchiveSearchQueryInput = z.infer<typeof ArchiveSearchQuerySchema>;
 
+/** A local display name for one immutable archive bundle. */
+export const RenameArchiveSchema = z.object({
+  title: z.string().trim().min(1).max(ARCHIVE_TEXT_LIMITS.title),
+});
+export type RenameArchiveBody = z.infer<typeof RenameArchiveSchema>;
+
 /**
  * Deleting one archive.
  *

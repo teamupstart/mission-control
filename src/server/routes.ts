@@ -64,6 +64,7 @@ import {
   SendTextSchema,
   OpenSessionFileSchema,
   ArchiveSearchQuerySchema,
+  RenameArchiveSchema,
   DeleteArchiveSchema,
   OpenArchiveArtifactSchema,
   LaunchSessionTerminalSchema,
@@ -2060,11 +2061,11 @@ export function buildApp(
   });
   // --- The archive library ---
   //
-  // Five thin adapters over `ArchiveManager`. Nothing here touches the store, the
+  // Thin adapters over `ArchiveManager`. Nothing here touches the store, the
   // filesystem, or a path: a request names an opaque archive key and an opaque artifact id,
   // and the manager is the only thing that turns either into a file. That is what makes
   // "never accept a path from the browser" a property of the design rather than a rule each
-  // of these five has to remember.
+  // of these routes has to remember.
   const archiveLibrary = (): ArchiveManager | null => archives ?? null;
 
   app.get("/api/archives", (c) => {
@@ -2105,6 +2106,22 @@ export function buildApp(
     if (!library) return c.json({ error: "archive library unavailable" }, 503);
     const detail = library.detail(c.req.param("archiveKey"));
     return detail ? c.json(detail) : c.json({ error: "no such archive" }, 404);
+  });
+
+  // Rename only this machine's catalog entry. The immutable manifest and every archived
+  // byte stay untouched; `ArchiveManager` persists the display name beside the library so
+  // rebuilding the disposable index does not lose it.
+  app.patch("/api/archives/:archiveKey", async (c) => {
+    const library = archiveLibrary();
+    if (!library) return c.json({ error: "archive library unavailable" }, 503);
+    const parsed = await parseBody(c, RenameArchiveSchema);
+    if (!parsed.ok) return parsed.res;
+    try {
+      return c.json(await library.renameArchive(c.req.param("archiveKey"), parsed.data.title));
+    } catch (error) {
+      const failure = archiveErrorStatus(error);
+      return c.json({ ok: false, error: failure.message }, failure.status);
+    }
   });
 
   // One archived file's bytes.

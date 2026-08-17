@@ -6,7 +6,7 @@ import type {
   ArchiveSummary,
 } from "@shared/archives.ts";
 import { ARCHIVE_SEARCH_LIMITS } from "@shared/archives.ts";
-import { api, type ArchiveRead } from "../../lib/api.ts";
+import { api, type ActionResult, type ArchiveRead } from "../../lib/api.ts";
 import type { ScoutFilters } from "../../workflows/useWorkflowRoute.ts";
 
 /**
@@ -50,6 +50,8 @@ export interface ScoutsCatalog {
   detail: ArchiveDetail | null;
   detailState: ScoutDetailState;
   detailError: string | null;
+  /** Rename after daemon acceptance, patching the open window without an old-title flash. */
+  rename: (key: string, title: string) => Promise<ActionResult>;
   /** Refetch the current window and the open archive, e.g. after a delete. */
   refresh: () => void;
 }
@@ -315,6 +317,22 @@ export function useScoutsCatalog({
 
   const refresh = useCallback((): void => setManual((n) => n + 1), []);
 
+  const rename = useCallback(async (targetKey: string, requestedTitle: string): Promise<ActionResult> => {
+    const result = await api.renameArchive(targetKey, requestedTitle);
+    if (!result.ok) return result;
+    const title = result.title ?? requestedTitle.trim();
+    setArchives((prev) => prev.map((archive) => (
+      archive.key === targetKey ? { ...archive, title } : archive
+    )));
+    setDetail((prev) => {
+      if (prev?.key !== targetKey) return prev;
+      const next = { ...prev, title };
+      detailRef.current = next;
+      return next;
+    });
+    return result;
+  }, []);
+
   return {
     archives,
     libraryPath,
@@ -326,6 +344,7 @@ export function useScoutsCatalog({
     detail,
     detailState,
     detailError,
+    rename,
     refresh,
   };
 }

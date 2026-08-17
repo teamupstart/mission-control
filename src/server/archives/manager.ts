@@ -1,16 +1,18 @@
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { mkdir, open, realpath, rename, rm, rmdir, stat } from "node:fs/promises";
+import { lstat, mkdir, open, readdir, realpath, rename, rm, rmdir, stat } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import { join } from "node:path";
 import type { OpenTargetId } from "@shared/open-targets.ts";
 import {
   archiveKey,
   decodeArchiveCursor,
+  isArchiveId,
   parseArchiveKey,
   type ArchiveArtifactView,
   type ArchiveCaptureStatus,
   type ArchiveDetail,
+  type ArchiveIdentity,
   type ArchivePage,
   type ArchiveSearchQuery,
   type ArchiveSummary,
@@ -31,6 +33,7 @@ import { ArchivePathError, archiveDir, isInside, resolveArchiveFile, statRealDir
 import { loadArchiveProducer, type ArchiveProducerIdentity } from "./producer.ts";
 import { ArchiveReconciler, type ArchiveReconcilePass } from "./reconciler.ts";
 import { ArchiveStore, type ArchiveRow } from "./store.ts";
+import { ArchiveTitleStore } from "./titles.ts";
 import { discoverPlanCaptureScopes } from "../plans/capture-scopes.ts";
 import { clearScoutPromptContext } from "../scouts/prompt-context.ts";
 import { SUBMIT_SCOUT_ARTIFACTS_TOOL } from "../scouts/submission-tool.ts";
@@ -109,6 +112,8 @@ export interface ArchiveManagerOptions {
    */
   legacyRoots?: readonly string[];
   store?: ArchiveStore;
+  /** Durable local display names. Injectable for focused filesystem tests. */
+  titleStore?: ArchiveTitleStore;
   producer?: ArchiveProducerIdentity;
   /** The local capture-job ledger. Defaults to the daemon's database. */
   captureStore?: ArchiveCaptureStore;
@@ -146,6 +151,7 @@ export class ArchiveManager {
   private readonly library: ArchiveLibrary;
   readonly producer: ArchiveProducerIdentity;
   private readonly store: ArchiveStore;
+  private readonly titleStore: ArchiveTitleStore;
   private readonly captureStore: ArchiveCaptureStore;
   private readonly tasks: ArchiveTaskGateway | null;
   private readonly reconciler: ArchiveReconciler;
@@ -155,6 +161,9 @@ export class ArchiveManager {
     | undefined;
   private readonly handToTarget: (target: OpenTargetId, path: string) => Promise<OpenFileOutcome>;
   private readonly log: (message: string, detail: Record<string, unknown>) => void;
+  private readonly onChanged: () => void;
+  /** Per-key tails for filesystem/index mutations that must be observed in one order. */
+  private readonly mutationTails = new Map<string, Promise<void>>();
   /**
    * One capture in flight per operation key, chained rather than deduplicated.
    *
@@ -177,6 +186,7 @@ export class ArchiveManager {
     this.libraryPath = this.library.writeRoot;
     this.producer = options.producer ?? loadArchiveProducer(undefined, this.libraryPath);
     this.store = options.store ?? new ArchiveStore();
+    this.titleStore = options.titleStore ?? new ArchiveTitleStore(this.libraryPath);
     this.captureStore = options.captureStore ?? new ArchiveCaptureStore();
     this.tasks = options.tasks ?? null;
     this.renameDir = options.rename ?? ((from, to) => rename(from, to));
@@ -185,10 +195,12 @@ export class ArchiveManager {
     this.log =
       options.log ??
       ((message, detail) => console.warn(`[archives] ${message}`, JSON.stringify(detail)));
+    this.onChanged = options.onChanged ?? ((): void => {});
     this.reconciler = new ArchiveReconciler({
       roots: this.library.roots,
       store: this.store,
-      onChanged: options.onChanged,
+      titleFor: (key) => this.titleStore.get(key),
+      onChanged: this.onChanged,
       intervalMs: options.intervalMs === undefined ? archiveReconcileMs() : options.intervalMs,
       watch: options.watch ?? false,
     });
@@ -753,6 +765,46 @@ export class ArchiveManager {
   }
 
   /**
+   * Rename the archive as this machine displays it, without rewriting portable evidence.
+   *
+   * The sidecar is committed before the disposable index changes. A database loss between
+   * those two steps therefore heals on the next reconciliation instead of losing the name.
+   */
+  async renameArchive(key: string, rawTitle: string): Promise<{ ok: true; title: string }> {
+    if (!parseArchiveKey(key)) throw new ArchiveError("no such archive", 404);
+    return this.withMutation(key, async () => {
+      // Recheck after waiting: a delete ahead of this rename owns both the bundle and its
+      // sidecar, so the queued rename must not recreate local metadata for a gone archive.
+      if (!this.store.get(key)) throw new ArchiveError("no such archive", 404);
+      let title: string;
+      try {
+        title = await this.titleStore.set(key, rawTitle);
+      } catch (error) {
+        throw new ArchiveError(
+          `could not save the archive name: ${error instanceof Error ? error.message : String(error)}`,
+          500,
+        );
+      }
+      if (this.store.renameTitle(key, title) === null) {
+        // Reconciliation is independent of route mutations and may have pruned a bundle
+        // while the durable sidecar write was in flight. Compensate before returning 404 so
+        // a future bundle that reuses this key cannot inherit the abandoned local name.
+        try {
+          await this.titleStore.remove(key);
+        } catch (error) {
+          throw new ArchiveError(
+            `the archive disappeared while its display name was being saved, and the new display name could not be removed: ${error instanceof Error ? error.message : String(error)}`,
+            500,
+          );
+        }
+        throw new ArchiveError("no such archive", 404);
+      }
+      this.onChanged();
+      return { ok: true, title };
+    });
+  }
+
+  /**
    * Resolve one artifact to a file on disk.
    *
    * Four separate facts have to line up, and each is checked here rather than assumed: the
@@ -810,9 +862,11 @@ export class ArchiveManager {
    * Delete exactly one local bundle and its derived rows.
    *
    * Ordered so the durable half happens first and the recoverable half can be retried: the
-   * bundle is atomically renamed under `.trash`, THEN the index rows go, then the trash entry
-   * is removed. A crash after the rename leaves an archive that is gone from the library and
-   * whose rows the next complete pass prunes; a crash before it leaves the archive intact.
+   * bundle is atomically renamed under `.trash`, THEN its local display name and index rows
+   * go, then the trash entry is removed. A display-name failure is reported and leaves the
+   * row as a retry marker; the sidecar itself authorizes cleanup if reconciliation prunes
+   * that row first. A crash after the rename leaves an archive that is gone from the library
+   * and whose rows the next complete pass prunes; a crash before it leaves the archive intact.
    * There is no window in which the index says an archive exists and its bundle is half
    * deleted.
    *
@@ -826,7 +880,23 @@ export class ArchiveManager {
     }
     const identity = parseArchiveKey(key);
     if (!identity) throw new ArchiveError("no such archive", 404);
+    return this.withMutation(key, () => this.deleteLocked(key, identity));
+  }
+
+  /** The delete transaction after this key's earlier mutations have settled. */
+  private async deleteLocked(
+    key: string,
+    identity: ArchiveIdentity,
+  ): Promise<{ ok: true; deletedBundle: boolean }> {
     const indexed = this.store.get(key) !== null;
+    // The sidecar is durable independently of the disposable index. If a prior deletion
+    // moved the bundle but could not remove this name, the typed-key retry must still reach
+    // cleanup after reconciliation or a restart has pruned the stale row.
+    const hasLocalTitle = this.titleStore.get(key) !== null;
+    // A prior attempt may already have completed the durable rename before display-name or
+    // trash cleanup failed. Those exact-key graves are both work still owed and sufficient
+    // authority for the operator's typed-key retry after the index and sidecar are gone.
+    const graves = await this.trashEntriesFor(key);
 
     // The SAME resolution every read goes through, rather than a bare join - which is what
     // this used to do, and which made delete the one place a key became a filesystem
@@ -842,19 +912,21 @@ export class ArchiveManager {
       if (error instanceof ArchiveError && error.status === 404) bundle = null;
       else throw error;
     }
-    if (!indexed && !bundle) throw new ArchiveError("no such archive", 404);
+    if (!indexed && !bundle && !hasLocalTitle && graves.length === 0) {
+      throw new ArchiveError("no such archive", 404);
+    }
 
     let deletedBundle = false;
-    let grave: string | null = null;
     if (bundle) {
       // Trashed inside the root that holds it, so the durable step stays a rename within one
       // directory tree rather than a move that could cross a filesystem.
       const trash = trashRoot(bundle.root);
       await mkdir(trash, { recursive: true, mode: 0o700 });
-      grave = join(trash, `${archiveKey(identity.producerId, identity.archiveId)}.${randomUUID()}`);
+      const grave = join(trash, `${archiveKey(identity.producerId, identity.archiveId)}.${randomUUID()}`);
       try {
         await this.renameDir(bundle.dir, grave);
         deletedBundle = true;
+        graves.push(grave);
       } catch (error) {
         throw new ArchiveError(
           `could not remove the archive directory: ${error instanceof Error ? error.message : String(error)}`,
@@ -863,14 +935,104 @@ export class ArchiveManager {
       }
     }
 
+    try {
+      await this.titleStore.remove(key);
+    } catch (error) {
+      this.log("could not remove an archive display name after deletion", {
+        archiveKey: key,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      // Keep the index row as an in-process retry marker. If reconciliation removes it, the
+      // durable sidecar itself remains enough for a later typed-key cleanup-only retry.
+      throw new ArchiveError(
+        `the archive bundle was removed, but its display name could not be removed; retry deletion: ${error instanceof Error ? error.message : String(error)}`,
+        500,
+      );
+    }
     this.store.remove(key);
     this.reconciler.forget(key);
 
-    if (grave) await rm(grave, { recursive: true, force: true, maxRetries: 2 }).catch(() => {});
+    for (const grave of graves) {
+      try {
+        await rm(grave, { recursive: true, force: true, maxRetries: 2 });
+      } catch (error) {
+        // The bundle is already outside discovery and the index/name cleanup is complete.
+        // Its exact-key grave therefore authorizes another cleanup-only retry.
+        throw new ArchiveError(
+          `the archive was removed, but its trashed bundle could not be removed; retry deletion: ${error instanceof Error ? error.message : String(error)}`,
+          500,
+        );
+      }
+    }
     // Tidy an emptied producer namespace. `rmdir` refuses a non-empty directory, so this can
     // never take a sibling archive with it.
     if (bundle) await rmdir(join(bundle.root, identity.producerId)).catch(() => {});
     return { ok: true, deletedBundle };
+  }
+
+  /** Discover only interrupted deletion graves that were generated for this exact key. */
+  private async trashEntriesFor(key: string): Promise<string[]> {
+    const prefix = `${key}.`;
+    const graves: string[] = [];
+    for (const root of this.library.roots) {
+      const trash = trashRoot(root);
+      let info;
+      try {
+        info = await lstat(trash);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+        throw new ArchiveError(
+          `could not inspect interrupted archive deletions: ${error instanceof Error ? error.message : String(error)}`,
+          500,
+        );
+      }
+      if (!info.isDirectory() || info.isSymbolicLink()) {
+        throw new ArchiveError("could not inspect interrupted archive deletions: archive trash is not a directory", 500);
+      }
+
+      let entries;
+      try {
+        entries = await readdir(trash, { withFileTypes: true });
+      } catch (error) {
+        throw new ArchiveError(
+          `could not inspect interrupted archive deletions: ${error instanceof Error ? error.message : String(error)}`,
+          500,
+        );
+      }
+      for (const entry of entries) {
+        if (!entry.name.startsWith(prefix) || !isArchiveId(entry.name.slice(prefix.length))) continue;
+        if (!entry.isDirectory() || entry.isSymbolicLink()) {
+          throw new ArchiveError("could not remove an interrupted archive deletion: its trash entry is not a directory", 500);
+        }
+        graves.push(join(trash, entry.name));
+      }
+    }
+    return graves;
+  }
+
+  /**
+   * Serialize durable mutations for one archive while leaving unrelated keys independent.
+   *
+   * Each stored tail resolves only when its owner releases it. A later operation captures
+   * that tail before publishing its own, so it cannot pass the earlier operation between a
+   * filesystem write and the matching index update. Tails never reject and the final owner
+   * removes its entry, which keeps failures from poisoning later work or leaking keys.
+   */
+  private async withMutation<T>(key: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.mutationTails.get(key) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tail = previous.then(() => current);
+    this.mutationTails.set(key, tail);
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (this.mutationTails.get(key) === tail) this.mutationTails.delete(key);
+    }
   }
 
   /**

@@ -98,6 +98,23 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   --workers=1 --reporter=list
 ```
 
+### Scout rename
+
+`e2e/.artifacts/scout-rename/inline-scout-rename.png` shows the selected archive's reader
+heading replaced by the same focused, explicit-save inline editor sessions use. The spec
+rebounds the shared rename action first, so the frame and interaction also prove Scouts is
+reading the operator's configured binding rather than owning a second shortcut.
+
+Regenerate it with:
+
+```sh
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/scout-archive.spec.ts \
+  -g 'renames inline' \
+  --workers=1 --reporter=list
+```
+
 ### Full workflow graph canvas
 
 `e2e/.artifacts/workflow-graph/workflow-graph-full-canvas.png` is captured

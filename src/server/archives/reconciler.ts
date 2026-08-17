@@ -94,6 +94,8 @@ export interface ArchiveReconcilerOptions {
    */
   roots: readonly string[];
   store: ArchiveStore;
+  /** Local display-name sidecars projected over immutable manifest titles. */
+  titleFor?: (key: string) => string | null;
   /** Called once after a pass that changed derived state. Never once per file. */
   onChanged?: () => void;
   /** Recurring cadence in ms, or null to run only when triggered. */
@@ -134,6 +136,7 @@ export class ArchiveReconciler {
   private readonly roots: readonly string[];
   private readonly store: ArchiveStore;
   private readonly onChanged: () => void;
+  private readonly titleFor: (key: string) => string | null;
   private readonly intervalMs: number | null;
   private readonly wantsWatch: boolean;
   private readonly maxCandidates: number;
@@ -175,6 +178,7 @@ export class ArchiveReconciler {
     this.roots = [...options.roots];
     this.store = options.store;
     this.onChanged = options.onChanged ?? ((): void => {});
+    this.titleFor = options.titleFor ?? (() => null);
     this.intervalMs = options.intervalMs ?? null;
     this.wantsWatch = options.watch ?? false;
     this.maxCandidates = options.maxCandidates ?? MAX_CANDIDATES;
@@ -477,6 +481,7 @@ export class ArchiveReconciler {
       if (known && sameFingerprint(known.fingerprint, fingerprint)) {
         result.unchanged += 1;
         this.pending.delete(key);
+        if (this.applyTitle(key)) result.changed = true;
         continue;
       }
 
@@ -513,6 +518,7 @@ export class ArchiveReconciler {
           indexedAt: epoch,
           epoch,
         });
+        this.applyTitle(key);
         result.unreadable += 1;
         result.changed = true;
         continue;
@@ -530,6 +536,7 @@ export class ArchiveReconciler {
           indexedAt: epoch,
           epoch,
         });
+        this.applyTitle(key);
         result.unreadable += 1;
         result.changed = true;
         continue;
@@ -559,16 +566,24 @@ export class ArchiveReconciler {
           indexedAt: epoch,
           epoch,
         });
+        this.applyTitle(key);
         result.unreadable += 1;
         result.changed = true;
         continue;
       }
 
       this.store.replaceArchive(read.bundle, epoch, epoch);
+      this.applyTitle(key);
       result.indexed += 1;
       result.changed = true;
     }
     return { failed: null };
+  }
+
+  /** Reapply the durable local annotation after a whole derived-row replacement. */
+  private applyTitle(key: string): boolean {
+    const title = this.titleFor(key);
+    return title ? this.store.renameTitle(key, title) === true : false;
   }
 
   /**

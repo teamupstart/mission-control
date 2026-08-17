@@ -25,6 +25,7 @@ import { useInterrupting } from "../lib/interrupting.ts";
 import { formatScheduledFor } from "../lib/schedules.ts";
 import { api } from "../lib/api.ts";
 import { Tooltip } from "./Tooltip.tsx";
+import { InlineRenameEditor } from "./InlineRenameEditor.tsx";
 import { EffortPicker } from "./EffortPicker.tsx";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
 import { ensembleStageWord, type EnsembleSummary, type TaskEnsembleLink } from "@shared/ensemble.ts";
@@ -1543,105 +1544,13 @@ export function RenameEditor({
   session: Session;
   onClose: () => void;
 }): React.JSX.Element {
-  const [value, setValue] = useState(session.name);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    const el = inputRef.current;
-    if (!el) return;
-    el.focus();
-    el.select();
-  }, []);
-
-  // Disabling the input mid-flight drops focus to <body>; take it back so a rejected name
-  // still hears Enter/Escape. Keyed on `busy` too: retrying the same bad name re-reports an
-  // identical string, so `error` alone wouldn't re-fire.
-  useEffect(() => {
-    if (busy || !error) return;
-    const el = inputRef.current;
-    if (!el) return;
-    el.focus();
-    el.select();
-  }, [busy, error]);
-
-  async function submit(): Promise<void> {
-    const name = value.trim();
-    if (!name || name === session.name) {
-      onClose();
-      return;
-    }
-    setBusy(true);
-    const r = await api.rename(session.id, name);
-    setBusy(false);
-    if (r.ok) onClose();
-    else setError(r.error ?? "rename failed");
-  }
-
   return (
-    <div className="rename-edit" onClick={(e) => e.stopPropagation()}>
-      <div className="rename-row">
-        <input
-          ref={inputRef}
-          className="rename-input"
-          value={value}
-          disabled={busy}
-          maxLength={200}
-          aria-label="Rename session"
-          spellCheck={false}
-          autoComplete="off"
-          onChange={(e) => {
-            setValue(e.target.value);
-            setError(null);
-          }}
-          onKeyDown={(e) => {
-            e.stopPropagation();
-            if (e.key === "Enter") {
-              e.preventDefault();
-              void submit();
-            } else if (e.key === "Escape") {
-              e.preventDefault();
-              onClose();
-            }
-          }}
-          // Clicking away cancels, but a Cmd+Tab to the terminal must not: the browser fires
-          // blur before the window loses focus, so guard on document.hasFocus().
-          onBlur={() => {
-            if (!busy && document.hasFocus()) onClose();
-          }}
-        />
-        <Tooltip label={busy ? "Renaming…" : "Save the new name (Enter)"}>
-          <button
-            type="button"
-            className="rename-btn rename-save"
-            aria-label="Save name"
-            disabled={busy}
-            onMouseDown={(e) => e.preventDefault()}
-            onClick={() => void submit()}
-          >
-            ✓
-          </button>
-        </Tooltip>
-        <Tooltip label={busy ? "Renaming…" : "Discard the rename (Escape)"}>
-          <button
-            type="button"
-            className="rename-btn rename-cancel"
-            aria-label="Cancel rename"
-            disabled={busy}
-            onMouseDown={(e) => e.preventDefault()}
-            onClick={onClose}
-          >
-            ✕
-          </button>
-        </Tooltip>
-      </div>
-      {error && (
-        <span className="rename-error" role="alert">
-          {error}
-        </span>
-      )}
-    </div>
+    <InlineRenameEditor
+      initialValue={session.name}
+      ariaLabel="Rename session"
+      onSubmit={(name) => api.rename(session.id, name)}
+      onClose={onClose}
+    />
   );
 }
 

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { rename as renamePath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after, beforeEach } from "node:test";
@@ -25,7 +26,8 @@ const { openDb } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { ArchiveStore, clearArchiveTables } = await import("../src/server/archives/store.ts");
-const { ArchiveManager } = await import("../src/server/archives/manager.ts");
+const { ArchiveError, ArchiveManager } = await import("../src/server/archives/manager.ts");
+const { ArchiveTitleStore } = await import("../src/server/archives/titles.ts");
 const { ensureToken } = await import("../src/server/auth.ts");
 const { provisionScoutSubmissionCredential } = await import(
   "../src/server/scouts/submission-auth.ts"
@@ -60,6 +62,7 @@ interface Harness {
 function harness(
   options: {
     rename?: (from: string, to: string) => Promise<void>;
+    titleStore?: InstanceType<typeof ArchiveTitleStore>;
     root?: string;
     /**
      * Roots that are read and never written. Absent means none, because naming `root`
@@ -89,6 +92,7 @@ function harness(
     watch: false,
     onChanged: () => registry.emitArchiveChanged(),
     rename: options.rename,
+    titleStore: options.titleStore,
     tasks: options.tasks,
     openTarget: async (_target, path) => {
       opened.push(path);
@@ -386,6 +390,296 @@ test("a deleted file under an indexed archive is a 404, not a stack trace", asyn
   assert.equal(res.status, 404);
 });
 
+test("renaming changes the local catalog and search without rewriting the immutable bundle", async () => {
+  const { app, root, manager, events } = harness();
+  const written = writeScoutBundle(root, { title: "Portable title before rename" });
+  await settle(manager);
+  const manifestPath = join(written.dir, "manifest.json");
+  const manifestBefore = readFileSync(manifestPath, "utf8");
+  events.length = 0;
+
+  const blank = await app.request(`/api/archives/${written.key}`, {
+    method: "PATCH",
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ title: "   " }),
+  });
+  assert.equal(blank.status, 400);
+
+  const renamed = await app.request(`/api/archives/${written.key}`, {
+    method: "PATCH",
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ title: "  Reconnect grant finding  " }),
+  });
+  assert.equal(renamed.status, 200);
+  assert.deepEqual(await renamed.json(), { ok: true, title: "Reconnect grant finding" });
+  assert.deepEqual(events, [{ type: "archive_changed" }], "one accepted rename is one invalidation");
+
+  const detail = (await (await app.request(`/api/archives/${written.key}`, { headers: LOOPBACK })).json()) as {
+    title: string;
+  };
+  assert.equal(detail.title, "Reconnect grant finding");
+  const match = (await (await app.request("/api/archives?q=reconnect%20grant%20finding", {
+    headers: LOOPBACK,
+  })).json()) as { archives: Array<{ key: string; title: string }> };
+  assert.deepEqual(match.archives.map((archive) => [archive.key, archive.title]), [
+    [written.key, "Reconnect grant finding"],
+  ]);
+  assert.equal(readFileSync(manifestPath, "utf8"), manifestBefore, "rename never changes evidence bytes");
+
+  const sidecar = join(root, ".metadata", "names", `${written.key}.json`);
+  assert.equal(existsSync(sidecar), true, "the durable name lives beside, not inside, the bundle");
+
+  // Prove the sidecar is the authority rather than the disposable row: erase the whole
+  // index, construct the manager a daemon restart would construct, and rediscover.
+  manager.stop();
+  clearArchiveTables(db);
+  const restarted = harness({ root });
+  await settle(restarted.manager);
+  const rebuilt = (await (await restarted.app.request(`/api/archives/${written.key}`, {
+    headers: LOOPBACK,
+  })).json()) as { title: string };
+  assert.equal(rebuilt.title, "Reconnect grant finding");
+  assert.equal(readFileSync(manifestPath, "utf8"), manifestBefore);
+
+  const deleted = await restarted.app.request(`/api/archives/${written.key}`, {
+    method: "DELETE",
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ confirmArchiveKey: written.key }),
+  });
+  assert.equal(deleted.status, 200);
+  assert.equal(existsSync(sidecar), false, "deleting the archive also removes its local name");
+});
+
+test("a rename queued behind deletion cannot retain a name for the deleted archive", async () => {
+  const root = newLibrary();
+  let titleWrites = 0;
+  class CountingTitleStore extends ArchiveTitleStore {
+    override async set(key: string, title: string): Promise<string> {
+      titleWrites += 1;
+      return super.set(key, title);
+    }
+  }
+
+  let deletionReachedRename!: () => void;
+  const deletionAtRename = new Promise<void>((resolve) => {
+    deletionReachedRename = resolve;
+  });
+  let releaseDeletion!: () => void;
+  const deletionReleased = new Promise<void>((resolve) => {
+    releaseDeletion = resolve;
+  });
+  const { manager } = harness({
+    root,
+    titleStore: new CountingTitleStore(root),
+    rename: async (from, to) => {
+      deletionReachedRename();
+      await deletionReleased;
+      await renamePath(from, to);
+    },
+  });
+  const written = writeScoutBundle(root, { title: "Archive being deleted" });
+  await settle(manager);
+
+  // Hold deletion after it owns this key but before its durable bundle move. A concurrent
+  // rename sees the indexed row at this instant, which is the exact old race: without the
+  // per-key queue it enters the sidecar write now and can finish after deletion removed it.
+  const deleting = manager.delete(written.key, written.key);
+  await deletionAtRename;
+  const renameRejected = assert.rejects(
+    manager.renameArchive(written.key, "Name that must not survive"),
+    (error: unknown) => error instanceof ArchiveError && error.status === 404,
+  );
+  assert.equal(titleWrites, 0, "the queued rename has not crossed the deletion");
+
+  releaseDeletion();
+  assert.deepEqual(await deleting, { ok: true, deletedBundle: true });
+  await renameRejected;
+  assert.equal(titleWrites, 0, "the rename rechecks the row after deletion and writes nothing");
+  const sidecar = join(root, ".metadata", "names", `${written.key}.json`);
+  assert.equal(existsSync(sidecar), false);
+
+  // Reusing the generated identity later must read the new bundle's own title. A stale
+  // sidecar is durable, so this assertion catches the user-visible consequence of the race.
+  writeScoutBundle(root, {
+    producerId: written.producerId,
+    archiveId: written.archiveId,
+    title: "Fresh archive with the reused key",
+  });
+  await settle(manager);
+  assert.equal(manager.detail(written.key)?.title, "Fresh archive with the reused key");
+});
+
+test("a rename compensates when reconciliation removes its archive during the sidecar write", async () => {
+  const root = newLibrary();
+  let sidecarWritten!: () => void;
+  const writtenSidecar = new Promise<void>((resolve) => {
+    sidecarWritten = resolve;
+  });
+  let releaseWrite!: () => void;
+  const writeReleased = new Promise<void>((resolve) => {
+    releaseWrite = resolve;
+  });
+  class PausedTitleStore extends ArchiveTitleStore {
+    override async set(key: string, title: string): Promise<string> {
+      const saved = await super.set(key, title);
+      sidecarWritten();
+      await writeReleased;
+      return saved;
+    }
+  }
+
+  const { manager } = harness({ root, titleStore: new PausedTitleStore(root) });
+  const written = writeScoutBundle(root, { title: "Archive reconciliation will remove" });
+  await settle(manager);
+  const sidecar = join(root, ".metadata", "names", `${written.key}.json`);
+
+  const renaming = assert.rejects(
+    manager.renameArchive(written.key, "Name written during reconciliation"),
+    (error: unknown) => error instanceof ArchiveError && error.status === 404,
+  );
+  await writtenSidecar;
+  rmSync(written.dir, { recursive: true, force: true });
+  const pass = await manager.reconcileNow();
+  assert.equal(pass.pruned, 1);
+  assert.equal(manager.detail(written.key), null);
+
+  releaseWrite();
+  await renaming;
+  assert.equal(existsSync(sidecar), false, "the losing rename removes its just-written sidecar");
+
+  writeScoutBundle(root, {
+    producerId: written.producerId,
+    archiveId: written.archiveId,
+    title: "Fresh title after reconciliation",
+  });
+  await settle(manager);
+  assert.equal(manager.detail(written.key)?.title, "Fresh title after reconciliation");
+});
+
+test("a rename surfaces failure to compensate after reconciliation removes its archive", async () => {
+  const root = newLibrary();
+  let sidecarWritten!: () => void;
+  const writtenSidecar = new Promise<void>((resolve) => {
+    sidecarWritten = resolve;
+  });
+  let releaseWrite!: () => void;
+  const writeReleased = new Promise<void>((resolve) => {
+    releaseWrite = resolve;
+  });
+  class FailedCompensationTitleStore extends ArchiveTitleStore {
+    override async set(key: string, title: string): Promise<string> {
+      const saved = await super.set(key, title);
+      sidecarWritten();
+      await writeReleased;
+      return saved;
+    }
+
+    override async remove(): Promise<void> {
+      throw new Error("the metadata disk became read-only");
+    }
+  }
+
+  const { manager } = harness({ root, titleStore: new FailedCompensationTitleStore(root) });
+  const written = writeScoutBundle(root, { title: "Archive reconciliation will remove" });
+  await settle(manager);
+
+  const renaming = assert.rejects(
+    manager.renameArchive(written.key, "Name whose cleanup fails"),
+    (error: unknown) =>
+      error instanceof ArchiveError &&
+      error.status === 500 &&
+      /display name could not be removed/.test(error.message),
+  );
+  await writtenSidecar;
+  rmSync(written.dir, { recursive: true, force: true });
+  await manager.reconcileNow();
+  releaseWrite();
+  await renaming;
+});
+
+test("display-name cleanup failure makes deletion fail and remains retryable after restart", async () => {
+  const root = newLibrary();
+  class FailingOnceTitleStore extends ArchiveTitleStore {
+    private removals = 0;
+
+    override async remove(key: string): Promise<void> {
+      this.removals += 1;
+      if (this.removals === 1) throw new Error("the metadata disk is read-only");
+      await super.remove(key);
+    }
+  }
+
+  const { app, manager } = harness({ root, titleStore: new FailingOnceTitleStore(root) });
+  const written = writeScoutBundle(root, { title: "Archive before failed cleanup" });
+  await settle(manager);
+  await manager.renameArchive(written.key, "Durable name awaiting cleanup");
+  const sidecar = join(root, ".metadata", "names", `${written.key}.json`);
+
+  const failed = await app.request(`/api/archives/${written.key}`, {
+    method: "DELETE",
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ confirmArchiveKey: written.key }),
+  });
+  assert.equal(failed.status, 500, "the route must not claim the deletion completed");
+  assert.match(((await failed.json()) as { error: string }).error, /retry deletion/);
+  assert.equal(existsSync(written.dir), false, "the durable bundle move already happened");
+  assert.equal(existsSync(sidecar), true, "the failed cleanup remains present for a retry");
+  assert.equal(
+    manager.detail(written.key)?.title,
+    "Durable name awaiting cleanup",
+    "the row remains as the in-process retry marker",
+  );
+  const trash = join(root, ".trash");
+  const interruptedGraves = readdirSync(trash).filter((name) => name.startsWith(`${written.key}.`));
+  assert.equal(interruptedGraves.length, 1, "the failed attempt retains the moved bundle for retry cleanup");
+
+  // Reconciliation may prune that marker before the operator retries, and a daemon restart
+  // loses all in-memory state. The sidecar itself must still make the typed-key retry valid.
+  manager.stop();
+  clearArchiveTables(db);
+  const restarted = harness({ root });
+  const retried = await restarted.app.request(`/api/archives/${written.key}`, {
+    method: "DELETE",
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ confirmArchiveKey: written.key }),
+  });
+  assert.equal(retried.status, 200);
+  assert.deepEqual(await retried.json(), { ok: true, deletedBundle: false });
+  assert.equal(existsSync(sidecar), false);
+  assert.deepEqual(
+    readdirSync(trash).filter((name) => name.startsWith(`${written.key}.`)),
+    [],
+    "a successful cleanup-only retry removes the first attempt's trashed bundle",
+  );
+
+  writeScoutBundle(root, {
+    producerId: written.producerId,
+    archiveId: written.archiveId,
+    title: "Fresh title after cleanup retry",
+  });
+  await settle(restarted.manager);
+  assert.equal(restarted.manager.detail(written.key)?.title, "Fresh title after cleanup retry");
+});
+
+test("a symlink cannot redirect archive display-name writes outside the library", async () => {
+  const { app, root, manager } = harness();
+  const written = writeScoutBundle(root, {});
+  await settle(manager);
+  const outside = join(home, `outside-names-${libraries}`);
+  mkdirSync(outside, { recursive: true });
+  mkdirSync(join(root, ".metadata"), { recursive: true });
+  symlinkSync(outside, join(root, ".metadata", "names"));
+
+  const res = await app.request(`/api/archives/${written.key}`, {
+    method: "PATCH",
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ title: "Redirected" }),
+  });
+  assert.equal(res.status, 500);
+  assert.deepEqual(readdirSync(outside), [], "nothing is written through the symlink");
+  assert.equal(manager.detail(written.key)?.title, "Resume permission loss");
+});
+
 test("opening an artifact hands the launcher a path inside the verified bundle", async () => {
   const { app, root, manager, opened } = harness();
   const written = writeScoutBundle(root, {});
@@ -526,6 +820,7 @@ test("every scout route answers 503 when the daemon has no library, rather than 
   for (const [method, path] of [
     ["GET", "/api/archives"],
     ["GET", "/api/archives/a"],
+    ["PATCH", "/api/archives/a"],
     ["GET", "/api/archives/a/artifacts/b"],
     ["POST", "/api/archives/a/artifacts/b/open"],
     ["DELETE", "/api/archives/a"],
@@ -533,7 +828,11 @@ test("every scout route answers 503 when the daemon has no library, rather than 
     const res = await app.request(path, {
       method,
       headers: JSON_HEADERS,
-      body: method === "GET" ? undefined : JSON.stringify({ target: "browser", confirmArchiveKey: "a" }),
+      body: method === "GET" ? undefined : JSON.stringify({
+        title: "Renamed",
+        target: "browser",
+        confirmArchiveKey: "a",
+      }),
     });
     assert.equal(res.status, 503, `${method} ${path}`);
   }

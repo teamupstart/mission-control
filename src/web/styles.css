@@ -1066,6 +1066,7 @@ button.wf-run-version:focus-visible {
   text-transform: uppercase;
 }
 .wf-persona-directive-field textarea {
+  --textarea-block-chrome: 24px;
   min-height: 150px;
   resize: vertical;
   padding: 11px 12px;
@@ -2047,6 +2048,29 @@ button.wf-run-version:focus-visible {
 
 * {
   box-sizing: border-box;
+}
+
+/* Every native multiline field follows one sizing contract. It starts at the number of
+   rows its component asks for, grows with wrapped or explicit lines, and keeps five lines
+   visible before it becomes its own scroller. `field-sizing` also reacts to imperative
+   value changes, which matters when a queued turn is recalled into an uncontrolled
+   composer without a React render. Unsupported browsers keep the native rows-based size
+   and the existing vertical resize handle. */
+:where(textarea) {
+  --textarea-min-content-height: 2lh;
+  --textarea-block-chrome: 18px;
+  field-sizing: content;
+  min-height: calc(var(--textarea-min-content-height) + var(--textarea-block-chrome));
+  max-height: calc(5lh + var(--textarea-block-chrome));
+  overflow-y: auto;
+}
+textarea[rows="1"] { --textarea-min-content-height: 1lh; }
+textarea[rows="2"] { --textarea-min-content-height: 2lh; }
+textarea[rows="3"] { --textarea-min-content-height: 3lh; }
+textarea[rows="4"] { --textarea-min-content-height: 4lh; }
+textarea[rows="5"] { --textarea-min-content-height: 5lh; }
+textarea[rows] {
+  min-height: calc(var(--textarea-min-content-height) + var(--textarea-block-chrome));
 }
 
 .sr-only {
@@ -4552,6 +4576,7 @@ a.btn {
   outline: none;
 }
 .compose-input {
+  --textarea-block-chrome: 14px;
   flex: 1;
   min-width: 0;
   resize: vertical;
@@ -6998,15 +7023,19 @@ mark.find-hit.is-current {
   background: var(--panel);
 }
 .transcript[data-view="terminal"] .compose-row {
-  align-items: center;
+  /* A multiline command still begins at the prompt. Centering this row put `mission ❯`
+     beside line three once the textarea grew to five lines. */
+  align-items: flex-start;
   gap: 8px;
 }
 .pty-prompt {
   flex: none;
+  margin-top: 4px;
   color: var(--working);
   font: 700 12.5px/1 var(--mono);
 }
 .transcript[data-view="terminal"] .transcript-input {
+  --textarea-block-chrome: 4px;
   min-height: 24px;
   padding: 2px 0;
   border: 0;
@@ -13021,6 +13050,7 @@ a.pipelines-chip.is-link:focus-visible {
   padding: 6px 8px;
 }
 .pipelines-field textarea {
+  --textarea-block-chrome: 14px;
   font-family: var(--mono);
   line-height: 1.5;
   resize: vertical;
@@ -19574,15 +19604,8 @@ button.sc-row:focus-visible {
 }
 .wq-wrapup .field-input {
   resize: vertical;
-  /* The instruction is prose of no fixed length, in a box whose width varies by a
-     factor of four (grid card vs console detail pane), so its `rows` is a floor and
-     this is what actually sizes it. A fixed row count that reads right in the detail
-     pane hides the last two lines of the same string in a card - and this is the one
-     textarea whose content you must read in full before pressing Send. */
-  field-sizing: content;
-  /* ...which also SHRINKS, and `rows` is not a floor once it is on. Untick both boxes
-     and the prefill is empty, so without this the box collapses to a single line and
-     the card looks broken at the moment it is asking you a question. */
+  /* The shared textarea rule grows the instruction at every card width. This local
+     floor keeps the empty state from collapsing when both shipping choices are off. */
   min-height: calc(3lh + 18px);
 }
 

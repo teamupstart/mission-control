@@ -567,6 +567,23 @@ It is behind that flag rather than captured on every run because the card carrie
 timestamp and a fresh worktree uuid, so an unconditional capture would rewrite a binary on
 every run for no added signal.
 
+### Multiline text boxes grow with the draft
+
+`e2e/.artifacts/multiline-textarea/` contains three captures showing five explicit input
+lines in every multiline surface covered by the regression: the dispatch brief, the
+collapsed-card composer, and the compact terminal-style composer. The browser assertions
+also prove a sixth line uses an internal scrollbar instead of growing the surrounding card
+without a bound.
+
+Regenerate them with:
+
+```sh
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/multiline-textarea.spec.ts \
+  --workers=1 --reporter=list
+```
+
 ### The agent's own question
 
 `e2e/.artifacts/driver-question-in-conversation/`

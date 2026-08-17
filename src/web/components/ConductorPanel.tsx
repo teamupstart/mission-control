@@ -1,14 +1,19 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
+  PIPELINE_INSTALLER_CHANGE_INFO,
   PIPELINE_PROVIDER_INFO,
   activePipelineRepos,
   pipelineRepoKey,
+  type PipelineInstallerCandidate,
   type PipelineProbe,
   type PipelineProviderId,
   type PipelineRepoStatus,
   type PipelinesConfig,
 } from "@shared/pipeline.ts";
+import type { TerminalBackendId } from "@shared/terminal.ts";
 import type { ConductorState } from "../useConductor.ts";
+import { COPY_FEEDBACK_LABEL, useCopyFeedback } from "../lib/clipboard.ts";
+import { useTerminalTargets } from "../lib/terminalTargets.ts";
 import { ConsoleCard, ConsoleState, ConsoleSwitch } from "./settings-console.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
@@ -129,6 +134,195 @@ export function offeredRepos(
   return [...byKey.values()].sort((a, b) => a.repoRoot.localeCompare(b.repoRoot));
 }
 
+const CLONE_COMMAND = "git clone https://github.com/mancej/ai-conductor.git";
+const INSTALL_COMMAND = "cd ai-conductor && ./bin/install";
+
+function ConductorManualInstall(): React.JSX.Element {
+  const cloneCopy = useCopyFeedback();
+  const installCopy = useCopyFeedback();
+  return (
+    <div className="conductor-manual-install">
+      <p className="settings-hint">
+        Mission Control will not download or run source for you. Clone the recognized upstream,
+        review it locally, then start its interactive installer yourself:
+      </p>
+      <div className="conductor-command-row">
+        <code>{CLONE_COMMAND}</code>
+        <Tooltip label={cloneCopy.copied ? COPY_FEEDBACK_LABEL : "Copy clone command"}>
+          <button
+            type="button"
+            className="btn btn-ghost"
+            onClick={() => void cloneCopy.copy(CLONE_COMMAND)}
+          >
+            {cloneCopy.copied ? COPY_FEEDBACK_LABEL : "Copy clone"}
+          </button>
+        </Tooltip>
+      </div>
+      {cloneCopy.error && <p className="settings-error">{cloneCopy.error}</p>}
+      <div className="conductor-command-row">
+        <code>{INSTALL_COMMAND}</code>
+        <Tooltip label={installCopy.copied ? COPY_FEEDBACK_LABEL : "Copy install command"}>
+          <button
+            type="button"
+            className="btn btn-ghost"
+            onClick={() => void installCopy.copy(INSTALL_COMMAND)}
+          >
+            {installCopy.copied ? COPY_FEEDBACK_LABEL : "Copy install"}
+          </button>
+        </Tooltip>
+      </div>
+      {installCopy.error && <p className="settings-error">{installCopy.error}</p>}
+    </div>
+  );
+}
+
+function ConductorInstallerSetup({ state }: { state: ConductorState }): React.JSX.Element {
+  const terminals = useTerminalTargets();
+  const [selectedCheckout, setSelectedCheckout] = useState<string | null>(null);
+  const [terminalId, setTerminalId] = useState<TerminalBackendId | null>(null);
+  const candidates = state.installers?.candidates ?? [];
+  const selected = candidates.find((candidate) => candidate.checkout === selectedCheckout) ?? null;
+  const available = terminals.targets?.filter((target) => target.unavailable === null) ?? [];
+  const terminal = available.find((target) => target.id === terminalId) ?? available[0] ?? null;
+
+  useEffect(() => {
+    if (terminal && terminal.id !== terminalId) setTerminalId(terminal.id);
+  }, [terminal, terminalId]);
+  useEffect(() => {
+    if (selectedCheckout && !candidates.some((candidate) => candidate.checkout === selectedCheckout)) {
+      setSelectedCheckout(null);
+    }
+  }, [candidates, selectedCheckout]);
+
+  const command = (candidate: PipelineInstallerCandidate): string =>
+    `${candidate.checkout}/bin/install`;
+  const noTerminal = terminals.targets !== null && available.length === 0;
+  const sourcePending = state.installersLoading || (!state.installers && !state.installerError);
+
+  return (
+    <div className="conductor-installer-setup">
+      <p className="settings-hint conductor-machine-scope">
+        <strong>Install Conductor once on this machine.</strong> Repositories are registered
+        separately after the engine resolves.
+      </p>
+      {sourcePending && <ConsoleState tone="unknown">Checking workspace repositories for verified source…</ConsoleState>}
+      {state.installerError && <p className="settings-warn">{state.installerError}</p>}
+      {state.installers && !state.installers.supported && (
+        <p className="settings-warn">{state.installers.detail}</p>
+      )}
+      {state.installers?.supported && candidates.length === 0 && (
+        <p className="settings-hint">{state.installers.detail}</p>
+      )}
+
+      {candidates.length > 0 && (
+        <ul className="conductor-installer-candidates" aria-label="Verified Conductor installer checkouts">
+          {candidates.map((candidate) => (
+            <li key={candidate.checkout}>
+              <span>
+                <strong>Verified upstream main checkout</strong>
+                <code>{candidate.checkout}</code>
+                <small>
+                  {candidate.remote} · {candidate.version ? `version ${candidate.version}` : "version unknown"}
+                </small>
+              </span>
+              <Tooltip label="Review this verified checkout and the changes its installer may offer">
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={state.openingInstaller !== null}
+                  onClick={() => setSelectedCheckout(candidate.checkout)}
+                >
+                  Review installer
+                </button>
+              </Tooltip>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {selected && (
+        <section className="conductor-installer-confirm" aria-label="Confirm Conductor installer">
+          <header>
+            <span aria-hidden>⇶</span>
+            <span>
+              <strong>Confirm machine-wide installation</strong>
+              <small>The upstream installer remains interactive in the terminal you choose.</small>
+            </span>
+          </header>
+          <dl>
+            <div><dt>Checkout</dt><dd><code>{selected.checkout}</code></dd></div>
+            <div><dt>Command</dt><dd><code>{command(selected)}</code></dd></div>
+            <div><dt>Remote</dt><dd>{selected.remote}</dd></div>
+          </dl>
+          <p className="settings-hint">Depending on your answers, the installer may:</p>
+          <ul className="conductor-installer-changes">
+            {selected.changes.map((change) => (
+              <li key={change}>{PIPELINE_INSTALLER_CHANGE_INFO[change]}</li>
+            ))}
+          </ul>
+          <label className="conductor-terminal-choice">
+            <span>Visible hosted terminal</span>
+            <Tooltip label="Choose which visible hosted terminal will open the interactive installer">
+              <select
+                aria-label="Installer terminal backend"
+                value={terminal?.id ?? ""}
+                disabled={!terminals.targets || available.length === 0 || state.openingInstaller !== null}
+                onChange={(event) => setTerminalId(event.target.value as TerminalBackendId)}
+              >
+                {!terminals.targets && <option value="">Checking terminals…</option>}
+                {terminals.targets?.map((target) => (
+                  <option key={target.id} value={target.id} disabled={target.unavailable !== null}>
+                    {target.label}{target.unavailable ? `: ${target.unavailable}` : ""}
+                  </option>
+                ))}
+              </select>
+            </Tooltip>
+          </label>
+          {terminals.failed && (
+            <p className="settings-warn">Mission Control could not check terminal availability.</p>
+          )}
+          {noTerminal && (
+            <ul className="conductor-terminal-reasons" aria-label="Unavailable terminal reasons">
+              {terminals.targets?.map((target) => (
+                <li key={target.id}><strong>{target.label}</strong>: {target.unavailable}</li>
+              ))}
+            </ul>
+          )}
+          <div className="conductor-confirm-actions">
+            <Tooltip label="Open the reverified upstream installer in the selected terminal">
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={!terminal || state.openingInstaller !== null}
+                onClick={() => void state.openInstaller(selected.provider, selected.checkout, terminal!.id)}
+              >
+                {state.openingInstaller === selected.checkout ? "Opening…" : "Open installer"}
+              </button>
+            </Tooltip>
+            <Tooltip label="Close this confirmation without opening the installer">
+              <button
+                type="button"
+                className="btn btn-ghost"
+                disabled={state.openingInstaller !== null}
+                onClick={() => setSelectedCheckout(null)}
+              >
+                Cancel
+              </button>
+            </Tooltip>
+          </div>
+        </section>
+      )}
+
+      {((state.installers && candidates.length === 0) ||
+        state.installerError ||
+        terminals.failed ||
+        noTerminal) && (
+        <ConductorManualInstall />
+      )}
+    </div>
+  );
+}
+
 export function ConductorPanel({ state }: { state: ConductorState }): React.JSX.Element {
   const {
     view,
@@ -140,6 +334,8 @@ export function ConductorPanel({ state }: { state: ConductorState }): React.JSX.
     checking,
     setup,
     setupNotice,
+    openingInstaller,
+    installerNotice,
     error,
   } = state;
   const [query, setQuery] = useState("");
@@ -161,7 +357,7 @@ export function ConductorPanel({ state }: { state: ConductorState }): React.JSX.
   const registered = repos.filter((repo) => repo.registered).length;
   const info = PIPELINE_PROVIDER_INFO["ai-conductor"];
   const detection = detectionReading(probe);
-  const setupBusy = setup !== null;
+  const setupBusy = setup !== null || openingInstaller !== null;
 
   const setRepoEnabled = (repo: ConductorRepoCandidate, enabled: boolean): void => {
     if (!config || (!repo.registered && enabled)) return;
@@ -209,6 +405,11 @@ export function ConductorPanel({ state }: { state: ConductorState }): React.JSX.
           {setupNotice.output && <span>{setupNotice.output}</span>}
         </div>
       )}
+      {installerNotice && (
+        <div className={`conductor-setup-notice is-${installerNotice.tone}`} role="status">
+          <strong>{installerNotice.detail}</strong>
+        </div>
+      )}
 
       <p className="settings-hint conductor-ingest-hint">
         Reading files on a cadence needs nothing installed, and each row below says so. To have the
@@ -230,21 +431,18 @@ export function ConductorPanel({ state }: { state: ConductorState }): React.JSX.
                 disabled={!view || checking || setupBusy}
                 onClick={() => void recheck()}
               >
-                {checking ? "Checking…" : "Check again"}
+                {checking
+                  ? "Checking…"
+                  : probe?.found === false
+                    ? "I installed it, check again"
+                    : "Check again"}
               </button>
             </Tooltip>
           }
         >
           <ConsoleState tone={detection.tone}>{detection.text}</ConsoleState>
           {probe && !probe.found && (
-            <div className="conductor-install-copy">
-              <p className="settings-hint">
-                Install ai-conductor with its documented installer, ensure <code>{probe.bin}</code>{" "}
-                is on the Mission Control daemon's PATH, then check again. Mission Control does not
-                run the installer from this page.
-              </p>
-              <code aria-label="Required Conductor command">{probe.bin}</code>
-            </div>
+            <ConductorInstallerSetup state={state} />
           )}
           {probes.map((candidate) => (
             <p className="sc-health-row" key={candidate.provider}>

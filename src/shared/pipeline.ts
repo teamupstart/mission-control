@@ -622,6 +622,70 @@ export interface PipelineRepoRegistrationResponse {
   view: PipelinesView;
 }
 
+/** How many verified local installer checkouts one read may return. */
+export const MAX_PIPELINE_INSTALLER_CANDIDATES = 8;
+
+/**
+ * The bounded user-level changes an interactive provider installer may offer to make.
+ *
+ * These are categories, not a predicted file diff. The upstream installer owns its prompts
+ * and may skip optional work; Mission Control names the scope before opening it and never
+ * claims which choices the operator will make in the terminal.
+ */
+export const PIPELINE_INSTALLER_CHANGE_IDS = [
+  "build-checkout",
+  "link-local-bin",
+  "link-agent-skills",
+  "update-claude-settings",
+  "write-user-config",
+  "optional-global-tools",
+] as const;
+export type PipelineInstallerChangeId = (typeof PIPELINE_INSTALLER_CHANGE_IDS)[number];
+
+export const PIPELINE_INSTALLER_CHANGE_INFO: Record<PipelineInstallerChangeId, string> = {
+  "build-checkout": "Build the Conductor engine in this checkout",
+  "link-local-bin": "Link conduct-ts under your local bin directory",
+  "link-agent-skills": "Link Conductor skills for supported agents",
+  "update-claude-settings": "Update Claude user settings and hooks",
+  "write-user-config": "Create or update ~/.ai-conductor configuration",
+  "optional-global-tools":
+    "Optionally install global Puppeteer, Markdown-viewer, or Mermaid tooling when prompted",
+};
+
+/** Browser-safe evidence for one local source checkout the provider verified. */
+export interface PipelineInstallerCandidate {
+  provider: PipelineProviderId;
+  /** Physical canonical root of a verified main checkout. */
+  checkout: string;
+  /** Recognized upstream identity, never the repository's raw possibly-credentialed URL. */
+  remote: string;
+  /** Bounded VERSION marker, or null when the marker exists but could not be read. */
+  version: string | null;
+  changes: PipelineInstallerChangeId[];
+}
+
+/** The optional installer capability's answer for one provider. */
+export interface PipelineInstallerCandidatesResult {
+  provider: PipelineProviderId;
+  supported: boolean;
+  detail: string;
+  candidates: PipelineInstallerCandidate[];
+}
+
+export type PipelineInstallerLaunchOutcome = "opened" | "maybe-opening" | "refused";
+
+/** What opening the selected hosted installer terminal actually established. */
+export interface PipelineInstallerLaunchResult {
+  ok: boolean;
+  provider: PipelineProviderId;
+  checkout: string;
+  outcome: PipelineInstallerLaunchOutcome;
+  /** Terminal backend label when launch reached that layer. */
+  label: string;
+  /** Bounded operator-facing result. Opening is never reported as installation success. */
+  detail: string;
+}
+
 /** One halted run offered to the standalone Foreman worker. */
 export interface PipelineForemanItem {
   run: PipelineRun;

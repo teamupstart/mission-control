@@ -82,6 +82,7 @@ import {
   PipelineActionSchema,
   PipelineConsoleSchema,
   PipelineForemanEpisodeSchema,
+  PipelineInstallerLaunchSchema,
   PipelineRepoRegistrationSchema,
   PipelinesConfigPatchSchema,
   SkillsConfigPatchSchema,
@@ -214,6 +215,8 @@ import type { TaskSourcesView } from "@shared/task-source.ts";
 import { getPipelinesConfig, setPipelinesConfig } from "./pipelines/config.ts";
 import {
   activePipelineRepoStatuses,
+  pipelineInstallerCandidates,
+  pipelineInstallerLaunch,
   pipelineConsoleLaunch,
   pipelineConsoleName,
   pipelineRepoStatuses,
@@ -229,6 +232,7 @@ import {
   type PipelineActionResult,
   type PipelineConsoleResult,
   type PipelineForemanView,
+  type PipelineInstallerLaunchResult,
   type PipelinesView,
 } from "@shared/pipeline.ts";
 import { schedulePipelineRefresh } from "./pipelines/index.ts";
@@ -4268,10 +4272,9 @@ export function buildApp(
 
   // --- Pipelines: observing an external SDLC engine (localhost only) ---
   //
-  // Two reads and one write, and every one of them is about CONSENT. Nothing here starts,
-  // stops, pauses or advances anything: the projection is built from the engine's own files
-  // by the watcher, and the engine's CLI is the only thing that may change them. The verbs
-  // that spawn it arrive in a later phase and will land beside these.
+  // Detection, registration, observation consent, and guided installation remain separate
+  // facts. Provider-owned commands are composed behind typed routes; the browser never sends
+  // argv, and the watcher remains a reader of provider-owned files.
   //
   // The probe is the one subprocess in this neighbourhood, and it is cached behind a TTL
   // because the panel polls - `refresh=1` is the panel's own "Check again", which is an
@@ -4303,6 +4306,62 @@ export function buildApp(
       registration,
       view: await pipelinesView(registration.ok),
     });
+  });
+
+  /** Verified local source checkouts eligible for this provider's interactive installer. */
+  app.get("/api/pipelines/installers", async (c) => {
+    const provider = c.req.query("provider") ?? "";
+    if (!isPipelineProviderId(provider)) {
+      return c.json({ error: "no such pipeline provider" }, 400);
+    }
+    return c.json(await pipelineInstallerCandidates(provider, await listRepos()));
+  });
+
+  /**
+   * Open the provider's upstream installer in a visible selected terminal.
+   *
+   * Workspace-catalog membership and every trust marker are checked in this request. Only provider,
+   * checkout, and backend came from the browser; the provider owns argv/cwd/title and the
+   * daemon owns the trusted hold-open shell wrapper.
+   */
+  app.post("/api/pipelines/install", async (c) => {
+    const parsed = await parseBody(c, PipelineInstallerLaunchSchema);
+    if (!parsed.ok) return parsed.res;
+    const body = parsed.data;
+    const launch = await pipelineInstallerLaunch(body.provider, body.checkout, await listRepos());
+    if (!launch.ok) {
+      const answer: PipelineInstallerLaunchResult = {
+        ok: false,
+        provider: body.provider,
+        checkout: body.checkout,
+        outcome: "refused",
+        label: "",
+        detail: launch.error,
+      };
+      return c.json(answer, 409);
+    }
+
+    const hold =
+      `${shellCommand(launch.argv)}\n` +
+      `status=$?\n` +
+      `printf '\\n[installer exited %s] press enter to close ' "$status"\n` +
+      `read -r _\n`;
+    const result = await terminalLauncher(body.backend, {
+      name: launch.title,
+      cwd: launch.cwd,
+      argv: [process.env.SHELL || "/bin/sh", "-c", hold],
+    });
+    const answer: PipelineInstallerLaunchResult = {
+      ok: result.ok,
+      provider: body.provider,
+      checkout: launch.candidate.checkout,
+      outcome: result.ok ? "opened" : result.status === 504 ? "maybe-opening" : "refused",
+      label: result.label,
+      detail: result.ok
+        ? "Installer terminal opened. Finish the interactive installer there, then check again."
+        : (result.error ?? `${result.label} could not open the installer terminal.`),
+    };
+    return result.ok ? c.json(answer) : c.json(answer, result.status as 404 | 409 | 502 | 504);
   });
 
   /**

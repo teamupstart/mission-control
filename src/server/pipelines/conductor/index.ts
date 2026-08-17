@@ -22,6 +22,7 @@ import { conductorConsoleArgv, runConductorControl } from "./control.ts";
 import { normalizeConductorRun } from "./normalize.ts";
 import { conductorBin, probeConductor } from "./probe.ts";
 import { registerConductorRepo } from "./register.ts";
+import { conductorInstallerCandidates, conductorInstallerTerminalArgv } from "./installer.ts";
 import { resolveBinPath } from "../../util/exec.ts";
 import {
   MAX_RUNS_PER_REPO,
@@ -390,6 +391,10 @@ export const CONDUCTOR_PROVIDER: PipelineProvider = {
   binForPresence: conductorBin,
   probe: probeConductor,
   registerRepo: registerConductorRepo,
+  installer: {
+    candidates: conductorInstallerCandidates,
+    terminalArgv: conductorInstallerTerminalArgv,
+  },
   readRepo: readConductorRepo,
   knownRunSlugs: conductorRunSlugs,
   readRunDetail: readConductorRunDetail,

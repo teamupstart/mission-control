@@ -4,11 +4,13 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type {
-  PipelineHaltClass,
-  PipelineRepoStatus,
-  PipelineRunDetail,
-  PipelinesView,
+import {
+  pipelineRepoKey,
+  type PipelineHaltClass,
+  type PipelineRepoStatus,
+  type PipelineRepoRegistrationResponse,
+  type PipelineRunDetail,
+  type PipelinesView,
 } from "../src/shared/pipeline.ts";
 
 // What is at stake: this route is the consent boundary. Everything the integration does is
@@ -45,6 +47,7 @@ const {
   seedConductorDaemon,
   seedConductorRun,
   writeFakeConductor,
+  writeConductorProjects,
 } = await import("../e2e/fixtures/conductor.ts");
 type Registry = InstanceType<typeof Registry>;
 
@@ -470,6 +473,7 @@ test("gate evidence is behind the same consent the projection is", async () => {
 
 const fakeEngine = writeFakeConductor(home);
 process.env.MC_E2E_CONDUCTOR_LOG = fakeEngine.logPath;
+process.env.MC_E2E_CONDUCTOR_PROJECTS = fakeEngine.projectsPath;
 
 /** Run `body` with the fake engine installed, then put the missing binary back. */
 async function withEngine<T>(body: () => Promise<T>): Promise<T> {
@@ -498,6 +502,84 @@ function verbsAsked(): string[][] {
     .filter((call) => call.argv[0] !== "engineer")
     .map((call) => call.argv);
 }
+
+test("registration canonicalizes to the main checkout, invokes the provider, and force-probes", async () => {
+  const { request } = fixture();
+  const repo = gitRepo("register-owner");
+  execFileSync("git", ["-C", repo, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-qm", "seed"]);
+  const linked = join(home, "register-linked");
+  execFileSync("git", ["-C", repo, "worktree", "add", "-q", "-b", "register-linked", linked]);
+  writeConductorProjects(home, []);
+
+  await withEngine(async () => {
+    const res = await request("/api/pipelines/register", {
+      method: "POST",
+      body: JSON.stringify({ provider: "ai-conductor", repoRoot: linked }),
+    });
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as PipelineRepoRegistrationResponse;
+    assert.equal(body.registration.ok, true);
+    assert.equal(body.registration.repoRoot, repo, "linked worktrees register their owner root");
+    assert.deepEqual(body.view.config, {
+      enabled: false,
+      foremanMechanicalTriage: false,
+      repos: [],
+    }, "registration does not grant observation consent");
+    assert.ok(
+      body.view.probes.some((probe) => probe.projects.some((project) => project.path === repo)),
+      "the response carries the forced post-registration probe",
+    );
+
+    const registration = readConductorInvocations(home).find((call) => call.argv[0] === "register");
+    assert.deepEqual(registration, { argv: ["register", repo], cwd: repo });
+  });
+});
+
+test("registration refuses malformed or non-repository roots before spawning the provider", async () => {
+  const { request } = fixture();
+  await withEngine(async () => {
+    const malformed = await request("/api/pipelines/register", {
+      method: "POST",
+      body: JSON.stringify({ provider: "ai-conductor", repoRoot: "" }),
+    });
+    assert.equal(malformed.status, 400);
+
+    const invalid = await request("/api/pipelines/register", {
+      method: "POST",
+      body: JSON.stringify({ provider: "ai-conductor", repoRoot: home }),
+    });
+    assert.equal(invalid.status, 400);
+    assert.equal(
+      readConductorInvocations(home).some((call) => call.argv[0] === "register"),
+      false,
+    );
+  });
+});
+
+test("a provider refusal remains a typed registration result and grants no consent", async () => {
+  const { request } = fixture();
+  const repo = gitRepo("register-unconfirmed");
+  process.env.MC_E2E_CONDUCTOR_REGISTER_MODE = "unconfirmed";
+  try {
+    await withEngine(async () => {
+      const res = await request("/api/pipelines/register", {
+        method: "POST",
+        body: JSON.stringify({ provider: "ai-conductor", repoRoot: repo }),
+      });
+      assert.equal(res.status, 200);
+      const body = (await res.json()) as PipelineRepoRegistrationResponse;
+      assert.equal(body.registration.ok, false);
+      assert.match(body.registration.detail, /without confirming this exact repository/);
+      assert.deepEqual(body.view.config, {
+        enabled: false,
+        foremanMechanicalTriage: false,
+        repos: [],
+      });
+    });
+  } finally {
+    delete process.env.MC_E2E_CONDUCTOR_REGISTER_MODE;
+  }
+});
 
 /** A repository with one halted run, consented to and projected. */
 async function actable(
@@ -1132,14 +1214,19 @@ test("with the integration switched off, no verb acts and no console opens", asy
 
 test("consent moves the settings tuple, so the Runs page's tab appears with it", async () => {
   // The Pipelines tab is drawn from `settingsStatus.pipelines.observing`, which rides the
-  // connect snapshot. Published at the write rather than waited for on the watcher's
-  // once-a-minute presence check: an operator who switches a repository on is entitled to
-  // see the surface it produces without wondering whether they mis-clicked.
+  // connect snapshot. Published at the write: an operator who switches a repository on is
+  // entitled to see the surface it produces without wondering whether they mis-clicked.
   const { registry, request } = fixture();
   const repo = gitRepo("observing");
-  const seen: number[] = [];
+  const replacement = gitRepo("observing-replacement");
+  const seen: Array<{ observing: number; keys: string[] }> = [];
   const unsubscribe = registry.subscribe((event) => {
-    if (event.type === "settings_status") seen.push(event.status.pipelines.observing);
+    if (event.type === "settings_status") {
+      seen.push({
+        observing: event.status.pipelines.observing,
+        keys: event.status.pipelines.observedRepoKeys ?? [],
+      });
+    }
   });
 
   await request("/api/pipelines/config", {
@@ -1153,10 +1240,21 @@ test("consent moves the settings tuple, so the Runs page's tab appears with it",
     method: "PUT",
     body: JSON.stringify({
       enabled: true,
-      repos: [{ provider: "ai-conductor", repoRoot: repo, enabled: false }],
+      repos: [{ provider: "ai-conductor", repoRoot: replacement, enabled: true }],
+    }),
+  });
+  await request("/api/pipelines/config", {
+    method: "PUT",
+    body: JSON.stringify({
+      enabled: true,
+      repos: [{ provider: "ai-conductor", repoRoot: replacement, enabled: false }],
     }),
   });
   unsubscribe();
 
-  assert.deepEqual(seen, [1, 0], "on and off both reach the browser at the write");
+  assert.deepEqual(seen, [
+    { observing: 1, keys: [pipelineRepoKey("ai-conductor", repo)] },
+    { observing: 1, keys: [pipelineRepoKey("ai-conductor", replacement)] },
+    { observing: 0, keys: [] },
+  ], "on, an exact-root swap, and off all reach the browser at the write");
 });

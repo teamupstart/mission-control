@@ -36,12 +36,7 @@ import {
 import { personaRoutingLabel } from "../library/library-model.ts";
 import { runTriageRound, runTriageSentence } from "../workflows/run-model.ts";
 import type { MissionRoute } from "../workflows/useWorkflowRoute.ts";
-import {
-  availableSettingsCategories,
-  settingsCategory,
-  settingsCategoryAvailable,
-  type SettingsAvailability,
-} from "./settings-registry.ts";
+import { SETTINGS_CATEGORIES, settingsCategory } from "./settings-registry.ts";
 import { SETTINGS_CONTROLS, type SettingsBindings } from "./settings-search.ts";
 
 /**
@@ -194,14 +189,6 @@ export interface PaletteStores {
    */
   sessionNames: ReadonlyMap<string, string>;
   settingsBindings: SettingsBindings;
-  /**
-   * Which conditional settings categories this operator has.
-   *
-   * The palette may only target routes the app publishes and affordances that already
-   * exist, so a category the rail does not draw must not be reachable from here either -
-   * otherwise ⌘K becomes the one place a hidden panel is still offered.
-   */
-  settingsAvailability: SettingsAvailability;
 }
 
 export interface PaletteProvider {
@@ -572,8 +559,8 @@ const commandProvider: PaletteProvider = {
  */
 const settingsPanelProvider: PaletteProvider = {
   id: "settings-panels",
-  rows: ({ settingsAvailability }) =>
-    availableSettingsCategories(settingsAvailability).map((category) => ({
+  rows: () =>
+    SETTINGS_CATEGORIES.map((category) => ({
       id: `panel:${category.id}`,
       kind: "panel" as const,
       title: `${category.label} settings`,
@@ -586,10 +573,8 @@ const settingsPanelProvider: PaletteProvider = {
 
 const settingsProvider: PaletteProvider = {
   id: "settings",
-  rows: ({ settingsAvailability, settingsBindings }) =>
-    SETTINGS_CONTROLS.filter((control) =>
-      settingsCategoryAvailable(control.category, settingsAvailability),
-    ).map((control) => {
+  rows: ({ settingsBindings }) =>
+    SETTINGS_CONTROLS.map((control) => {
       const binding = control.kind === "toggle" && !control.risky
         ? settingsBindings.get(control.id)
         : undefined;

@@ -96,6 +96,7 @@ import type {
   PipelineConsoleRequest,
   PipelineConsoleResult,
   PipelineProviderId,
+  PipelineRepoRegistrationResponse,
   PipelineRepoStatus,
   PipelineRunDetail,
   PipelinesView,
@@ -297,6 +298,37 @@ export const fetchTaskSources = () => fetchJson<TaskSourcesView>("/api/task-sour
  */
 export const fetchPipelines = (refresh = false) =>
   fetchJson<PipelinesView>(`/api/pipelines/config${refresh ? "?refresh=1" : ""}`);
+
+/**
+ * Replace observation consent and keep the returned pipeline status array intact.
+ *
+ * This cannot use the generic mutation helper: that helper adds the HTTP `status` number to
+ * every answer, while `PipelinesView.status` is the repository health array. Flattening both
+ * shapes would replace the array with `200` precisely when a consent write succeeds.
+ */
+export async function setPipelinesConfig(
+  config: PipelinesConfigPatch,
+): Promise<{ ok: true; view: PipelinesView } | { ok: false; error: string }> {
+  try {
+    const res = await fetch("/api/pipelines/config", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(config),
+    });
+    const data = (await res.json().catch(() => ({}))) as Partial<PipelinesView> & {
+      error?: string;
+    };
+    if (!res.ok || !data.config || !data.probes || !data.status) {
+      return { ok: false, error: data.error ?? `HTTP ${res.status}` };
+    }
+    return {
+      ok: true,
+      view: { config: data.config, probes: data.probes, status: data.status },
+    };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
 /**
  * The repositories being read, for the Pipelines rail's headings.
  *
@@ -1356,7 +1388,12 @@ export const api = {
   setShippingConfig: (cfg: ShippingConfigPatch) => put(`/api/shipping/config`, cfg),
 
   // --- Pipelines (observing an external SDLC engine) ---
-  setPipelines: (cfg: PipelinesConfigPatch) => put(`/api/pipelines/config`, cfg),
+  setPipelines: setPipelinesConfig,
+  registerPipelineRepo: (provider: PipelineProviderId, repoRoot: string) =>
+    post<ActionResult & PipelineRepoRegistrationResponse>(`/api/pipelines/register`, {
+      provider,
+      repoRoot,
+    }),
 
   // --- Task sources (pulling work into the backlog) ---
   setTaskSources: (cfg: TaskSourcesConfigPatch) => put(`/api/task-sources/config`, cfg),

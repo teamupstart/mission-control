@@ -11,7 +11,7 @@ import type {
 } from "@shared/types.ts";
 import { run } from "./util/exec.ts";
 
-export const MAX_SESSION_FILE_ENTRIES = 2_000;
+export const MAX_SESSION_FILE_ENTRIES = 10_000;
 export const MAX_SESSION_EDITOR_BYTES = 2 * 1024 * 1024;
 export const MAX_SESSION_PREVIEW_BYTES = 5 * 1024 * 1024;
 

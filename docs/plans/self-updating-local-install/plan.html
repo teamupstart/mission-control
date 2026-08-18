@@ -139,7 +139,7 @@
   <section>
     <h2>Security and failure rules</h2>
     <ul>
-      <li>Only this repository's releases are trusted; the slug is not user-configurable in v1.</li>
+      <li><strong>Only the canonical repository's releases are trusted, on the install path as well as the update path.</strong> The slug is one exported constant and every <code>gh</code> call passes it with <code>--repo</code>; otherwise <code>gh</code> infers the repository from whichever checkout it runs in, so the documented install run inside a fork would install fork-controlled code under the same tag name. A non-canonical origin is refused unless explicitly requested, and such an install records its real repository and leaves the updater disabled.</li>
       <li><strong>Select the candidate release from an explicitly filtered list; never filter after asking for "the latest".</strong> Once a prerelease has been selected as latest, declining it cannot recover the newest stable release, so stable users silently stop receiving updates with no error raised.</li>
       <li>Never install a version lower than the running one.</li>
       <li>One check and one apply at a time; a repeated action returns the live operation.</li>

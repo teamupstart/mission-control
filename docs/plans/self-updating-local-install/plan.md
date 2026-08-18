@@ -174,7 +174,13 @@ location would be replaced mid-run.
 
 ## Security and failure rules
 
-- Only this repository's releases are trusted. The repository slug is not user-configurable in v1.
+- **Only the canonical repository's releases are trusted, on the install path as well as the update
+  path.** The slug is one exported constant, not user-configurable in v1, and every `gh` invocation
+  passes it explicitly with `--repo`. Without that, `gh` infers the repository from whichever checkout
+  it runs in, so the documented install command run inside a fork would install fork-controlled code
+  under the same tag name while the receipt and the updater still claimed the canonical repository. An
+  install from a non-canonical origin is refused unless explicitly requested, and such an install
+  records its real repository and leaves the updater disabled.
 - **Select the candidate release from an explicitly filtered list; never filter after asking for "the
   latest".** Drafts and prereleases are excluded by the query that chooses the release, not by a check
   applied to whatever "latest" returned. Filtering afterwards cannot recover: once a prerelease has

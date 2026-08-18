@@ -28,6 +28,9 @@ depends on the updater existing.
      `validateReceipt` returning a reason string or `null`. Browser-safe, no `node:` imports.
    - `src/shared/install-receipt.mjs` (plus `.d.mts`): the path resolution and the read and write,
      importing the schema module for validation.
+   - `CANONICAL_REPO`, the trusted `owner/name` slug, exported from the browser-safe schema module as
+     the single source of truth. The install script and the Phase 2 updater both read it; neither
+     hardcodes its own copy, and it is not user-configurable in v1.
 2. `scripts/install-app.mjs`: the install entry point. Prerequisites, clone establishment, checkout,
    build, package, verify, swap, receipt.
 3. `Makefile`: a new `install` target for the user path. `make install-app` keeps its current
@@ -142,10 +145,18 @@ pins `arch: arm64`, so an Intel host would otherwise build an app it cannot run.
 
 1. Check prerequisites. Exit non-zero on any failure.
 2. Resolve the updater-owned clone path: `join(stateDir(), "app-src")`.
-3. Establish the clone. If absent, `git clone` from the current repository's `origin` remote URL so a
-   user who cloned over SSH keeps SSH and one who used HTTPS keeps HTTPS. If present, `git fetch
-   --tags --prune`. Refuse to proceed if the directory exists but is not a git repository whose
-   `origin` matches, rather than deleting anything.
+3. Establish the clone, **pinned to the canonical repository rather than to whatever the caller's
+   `origin` happens to be**. Take only the *transport* from the caller's origin, so a user who cloned
+   over SSH keeps SSH and one who used HTTPS keeps HTTPS, and take the *repository* from
+   `CANONICAL_REPO`. If present, `git fetch --tags --prune`. Refuse to proceed if the directory exists
+   but is not a git repository whose `origin` resolves to the canonical repository, rather than
+   deleting anything.
+
+   If the caller's own origin is **not** the canonical repository - a fork, or a rename - stop with a
+   message naming both repositories rather than silently retargeting, because a developer who
+   deliberately ran this from their fork should not have canonical code installed behind their back
+   either. Provide an explicit `--from-origin` escape hatch for that case, and when it is used, record
+   the actual repository in the receipt so the updater can see it.
 4. Resolve the target ref: `--ref` if given, else the newest **stable** release tag, else the default
    branch tip when no release exists yet. Record which was used in the output.
 
@@ -153,8 +164,13 @@ pins `arch: arm64`, so an Intel host would otherwise build an app it cannot run.
    by asking for "the latest" and filtering afterwards:
 
    ```sh
-   gh release list --exclude-drafts --exclude-pre-releases --order desc --limit 1 --json tagName
+   gh release list --repo <CANONICAL_REPO> --exclude-drafts --exclude-pre-releases \
+     --order desc --limit 1 --json tagName
    ```
+
+   `--repo` is not optional here. Without it `gh` infers the repository from the checkout it runs in,
+   which would resolve releases from a fork while the receipt and the updater both declare only the
+   canonical repository trusted - and the same tag name would then point at fork-controlled code.
 
    `gh release view` with no tag argument applies its own "latest release" rule, and its `--help` does
    not state whether that rule skips prereleases, so an install must not depend on it either. Both the
@@ -226,6 +242,12 @@ Unit tests in `test/`, using `node:test` and `node:assert/strict`:
 - `assert-release-version` accepts matching input and rejects each mismatch shape, including a
   lockfile that disagrees with `package.json`.
 - new prerequisite message builders, including the arm64 refusal;
+- every `gh` invocation carries `--repo CANONICAL_REPO`, so a checkout whose origin is a fork cannot
+  redirect the release lookup. Assert on the argv, since this is a trust boundary rather than a
+  formatting preference;
+- a non-canonical origin is refused by default, the message names both repositories, and `--from-origin`
+  is the only way past it - in which case the receipt records the actual repository rather than the
+  canonical one;
 - the target-ref resolver prefers `--ref`, then the newest stable release tag, then the default branch
   tip, and **does not select a prerelease or draft** even when one is newer than the newest stable
   release. This is the same regression Phase 2 guards on the update side; both paths resolve a tag, so
@@ -269,7 +291,10 @@ Phase 2 may rely on:
 - `sourceClone` naming a clean, updater-exclusive git checkout;
 - `installedVersion` equalling the packaged `app.getVersion()`;
 - `scripts/install-app.mjs` being idempotent, accepting `--ref`, and exiting non-zero on failure;
-- at least one GitHub Release existing to compare against.
+- at least one GitHub Release existing to compare against;
+- `CANONICAL_REPO` as the single exported source of the trusted slug;
+- the receipt's `repo` field naming the repository actually installed from, which equals
+  `CANONICAL_REPO` unless `--from-origin` was used.
 
 Phase 2 must not change the receipt schema shape, repoint the clone, or make the install script
 non-idempotent. If Phase 2 needs another field, it is added as an optional field under the same
@@ -295,3 +320,10 @@ non-idempotent. If Phase 2 needs another field, it is added as an optional field
   a different version than an update from identical repository state. Both paths now use the same
   explicitly filtered selection query, the exit criterion verifies with that query, and a test covers
   the install-side rule. Not flagged by the review.
+- **2026-08-18, Inspector round 5.** Closed a trust hole this phase had introduced: the install cloned
+  the caller's `origin` and looked releases up without `--repo`, so running the documented command in a
+  fork checkout would install fork-controlled code while the receipt and the Phase 2 updater both
+  declared only the canonical repository trusted. The clone is now pinned to `CANONICAL_REPO` taking
+  only the transport from the caller's origin, every `gh` call carries `--repo`, a non-canonical origin
+  is refused with an explicit `--from-origin` escape hatch, and the slug became one exported constant
+  instead of two hardcoded copies. Phase 2 gained a matching `disabled` reason.

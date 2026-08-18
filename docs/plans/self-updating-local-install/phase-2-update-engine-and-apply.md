@@ -89,6 +89,7 @@ its own bundle has failure modes that no other phase has.
 From Phase 1, consumed and not changed:
 
 - receipt path, schema 1, reader returning `null` when absent or malformed;
+- `CANONICAL_REPO` as the single exported source of the trusted slug, and the receipt's `repo` field;
 - `sourceClone` is a clean, updater-exclusive checkout;
 - `installedVersion` equals the packaged `app.getVersion()`;
 - `scripts/install-app.mjs` is idempotent, accepts `--ref`, and exits non-zero on failure.
@@ -103,7 +104,7 @@ Follow the tagged-union conventions in `src/shared/alerts.ts` and the const-tupl
 
 | Phase | Renderer-visible data | Allowed actions |
 |---|---|---|
-| `disabled` | reason (not packaged, no receipt, no system node, arch mismatch) | none |
+| `disabled` | reason (not packaged, no receipt, non-canonical repo, no system node, arch mismatch) | none |
 | `idle` | current version, last successful check time | check |
 | `checking` | current version, whether manual | none |
 | `up-to-date` | current version, check time | check |
@@ -140,8 +141,8 @@ interface UpdaterPort {
 Behavior:
 
 - Run only when `app.isPackaged`. Otherwise publish `disabled` with the reason.
-- Publish `disabled` when there is no receipt, when no system node can be found, or when the host is
-  not arm64.
+- Publish `disabled` when there is no receipt, when the receipt's `repo` is not `CANONICAL_REPO`, when
+  no system node can be found, or when the host is not arm64.
 - Read the newest eligible release by **selecting it explicitly from a list**, not by asking for "the
   latest" and filtering afterwards:
 
@@ -176,7 +177,13 @@ Behavior:
 - Log to a rotating file in the state dir. Redact absolute paths and any `Authorization` or token-like
   substring before writing.
 
-The repository slug is a constant in v1, not a setting.
+The repository slug is `CANONICAL_REPO`, imported from the Phase 1 schema module. Do not declare a
+second copy of it here, and do not make it a setting in v1.
+
+Publish `disabled` when the receipt's `repo` is not `CANONICAL_REPO` - the `--from-origin` install case.
+Such an install came from a fork, and since the slug is not configurable in v1 the updater has no
+trustworthy release stream for it; silently updating that machine to canonical code would replace what
+the user deliberately installed. State the reason so it is visible rather than mysterious.
 
 ### 3. Apply handoff
 
@@ -283,6 +290,9 @@ Pure unit tests against the injected port, in `test/`:
 - a second apply while one is in flight is refused;
 - background failure logs and returns to idle; manual failure publishes an actionable `error`;
 - missing `gh`, unauthenticated `gh`, and missing system node each produce their specific message;
+- a receipt naming a repository other than `CANONICAL_REPO` yields `disabled` with that reason, and no
+  `gh` call is made at all;
+- every `gh` invocation carries `--repo CANONICAL_REPO`, asserted on the argv;
 - release notes are truncated and sanitized;
 - the log redacts absolute paths and token-like substrings;
 - `lastOutcome` is surfaced once and then cleared;
@@ -395,3 +405,7 @@ bridge, and must not widen the snapshot to carry paths, URLs, or raw error text.
   for the strand-the-stable-channel regression specifically. Relaunch changed from `open -a <appPath>`
   to the bare path form `open "<appPath>"` on both the success and failure paths. No contract consumed
   by another phase changed shape, and no approved decision moved.
+- **2026-08-18, Inspector round 5.** Consumed Phase 1's new `CANONICAL_REPO` constant instead of
+  declaring a second copy of the slug, and added the matching `disabled` reason for a receipt whose
+  `repo` is not canonical, so a fork install is inert rather than silently updated to canonical code.
+  Added argv assertions that every `gh` call carries `--repo`.

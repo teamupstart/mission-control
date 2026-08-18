@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pi live model catalog: phased implementation</title>
+<style>
+  :root { color-scheme:dark; --bg:#0b1017; --panel:#131b26; --panel2:#1a2634; --line:#304052; --text:#edf4fb; --muted:#a8b5c5; --blue:#6ca8ff; --green:#43cf91; --amber:#e7b855; --violet:#b9a2ff; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif; }
+  @media (prefers-color-scheme:light) { :root { color-scheme:light; --bg:#f5f8fb; --panel:#fff; --panel2:#eef3f8; --line:#d4dee9; --text:#142232; --muted:#596a7e; --blue:#246ec0; --green:#157a50; --amber:#946607; --violet:#6447b8; } }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.62 var(--sans); }
+  main { max-width:1120px; margin:0 auto; padding:58px 30px 110px; }
+  header { padding-bottom:34px; border-bottom:1px solid var(--line); margin-bottom:36px; }
+  .eyebrow { color:var(--muted); font:11px var(--mono); letter-spacing:.13em; text-transform:uppercase; }
+  h1 { margin:10px 0 14px; font-size:clamp(34px,5vw,48px); line-height:1.06; letter-spacing:-.03em; }
+  .lede { max-width:82ch; font-size:17px; color:var(--muted); }
+  .status { display:inline-block; margin-top:8px; padding:5px 10px; border:1px solid var(--green); border-radius:999px; color:var(--green); font:11px var(--mono); letter-spacing:.08em; }
+  h2 { margin:54px 0 12px; padding-top:22px; border-top:1px solid var(--line); font-size:24px; }
+  h3 { margin:28px 0 8px; font-size:18px; }
+  p { max-width:86ch; margin:0 0 14px; }
+  a { color:var(--blue); }
+  code { font:.88em var(--mono); background:var(--panel2); border:1px solid var(--line); border-radius:4px; padding:1px 5px; }
+  ul { max-width:88ch; padding-left:24px; } li { margin:7px 0; }
+  .tiles { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; margin:24px 0; }
+  .tile { padding:17px; background:var(--panel); border:1px solid var(--line); border-radius:10px; }
+  .tile b { display:block; color:var(--green); font-size:25px; line-height:1.1; } .tile span { color:var(--muted); font-size:12px; }
+  .call { max-width:90ch; padding:16px 18px; margin:22px 0; background:var(--panel); border-left:3px solid var(--green); border-radius:0 9px 9px 0; }
+  .table-wrap { overflow-x:auto; margin:20px 0; border:1px solid var(--line); border-radius:10px; }
+  table { width:100%; border-collapse:collapse; background:var(--panel); font-size:13.5px; }
+  th,td { padding:11px 13px; text-align:left; vertical-align:top; border-bottom:1px solid var(--line); }
+  th { background:var(--panel2); color:var(--muted); font:10.5px var(--mono); letter-spacing:.08em; text-transform:uppercase; white-space:nowrap; }
+  tr:last-child td { border-bottom:0; }
+  .phase { font-weight:700; color:var(--text); } .pending { color:var(--amber); }
+  figure { overflow-x:auto; margin:28px 0; padding:18px; background:var(--panel); border:1px solid var(--line); border-radius:10px; }
+  svg { display:block; min-width:940px; width:100%; height:auto; }
+  .zone { fill:none; stroke:var(--line); stroke-width:1.5; stroke-dasharray:6 6; }
+  .box { fill:var(--panel2); stroke:var(--line); stroke-width:1.5; }
+  .p1 { stroke:var(--green); } .p2 { stroke:var(--violet); } .fallback { stroke:var(--amber); }
+  .arrow { fill:none; stroke:var(--muted); stroke-width:2; marker-end:url(#arrow); }
+  .t { fill:var(--text); font:600 13px var(--sans); } .s { fill:var(--muted); font:11px var(--sans); }
+  .z { fill:var(--green); font:600 11px var(--mono); letter-spacing:.08em; } .z2 { fill:var(--violet); }
+  figcaption { margin-top:12px; color:var(--muted); font-size:12px; }
+  .contracts { columns:2; column-gap:34px; } .contracts li { break-inside:avoid; margin-bottom:10px; }
+  footer { margin-top:58px; padding-top:20px; border-top:1px solid var(--line); color:var(--muted); font-size:12px; }
+  @media (max-width:800px) { .tiles { grid-template-columns:repeat(2,minmax(0,1fr)); } .contracts { columns:1; } main { padding-inline:20px; } }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <p class="eyebrow">Phased plan · 18 August 2026</p>
+    <h1>Pi live model catalog</h1>
+    <p class="lede">Two serial merge units replace Pi's stale four-row picker with the complete account-aware catalog reported by the configured Pi installation. The process boundary lands first; every browser consumer moves together second.</p>
+    <span class="status">APPROVED FOR SCHEDULING</span>
+    <p><a href="plan.html">Source plan</a> · <a href="../../reports/pi-model-catalog-source/report.html">Investigation</a> · <a href="../../../.docs/architecture/sequences/pi-model-catalog.md">Request sequence</a></p>
+  </header>
+
+  <div class="tiles" aria-label="Plan summary">
+    <div class="tile"><b>38</b><span>Pi models observed in the source investigation</span></div>
+    <div class="tile"><b>2</b><span>serial implementation and merge units</span></div>
+    <div class="tile"><b>600-850</b><span>estimated non-test production lines</span></div>
+    <div class="tile"><b>0</b><span>persistent migrations or model prompts</span></div>
+  </div>
+
+  <h2>Approved decisions</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Question</th><th>Approved answer</th><th>Implementation consequence</th></tr></thead>
+    <tbody>
+      <tr><td>Catalog</td><td>Mirror every Pi-available model</td><td>No live shortlist or provider allowlist</td></tr>
+      <tr><td>Presentation</td><td>Group by provider</td><td>Provider identity remains in the bounded browser contract</td></tr>
+      <tr><td>Failure</td><td>Stay usable</td><td>Stale success or shipped choices, plus current-value retention</td></tr>
+      <tr><td>Persistence</td><td>Keep the existing path</td><td>No schema migration; launch still receives <code>provider/id</code></td></tr>
+    </tbody>
+  </table></div>
+
+  <h2>Why two phases</h2>
+  <p>The server work owns a security-sensitive JSONL subprocess, validation bounds, concurrency, caching, and a new aggregate route. The browser work owns a broad React source-of-truth cutover, long-list presentation, fallback UX, and Playwright infrastructure. Combining them would be difficult to verify in one implementation session.</p>
+  <p>Phase 1 is independently testable while the UI remains entirely static. Phase 2 then changes every visible consumer atomically. Splitting Phase 2 again would leave different pickers showing different catalogs for the same stored id.</p>
+
+  <h2>Request flow and phase ownership</h2>
+  <figure>
+    <svg viewBox="0 0 1080 390" role="img" aria-labelledby="flow-title flow-desc">
+      <title id="flow-title">Pi live model catalog request flow split across two phases</title>
+      <desc id="flow-desc">Phase 2 owns the browser provider and picker presentation. Phase 1 owns the aggregate API, cache service, exhaustive harness registry, and bounded Pi RPC probe. The selected id continues through the existing persistence and launch path.</desc>
+      <defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="var(--muted)"/></marker></defs>
+      <rect class="zone" x="16" y="32" width="242" height="270" rx="12"/><text class="z z2" x="34" y="57">PHASE 2 · BROWSER</text>
+      <rect class="zone" x="282" y="32" width="782" height="270" rx="12"/><text class="z" x="300" y="57">PHASE 1 · DAEMON AND HARNESS</text>
+      <rect class="box p2" x="38" y="92" width="198" height="82" rx="9"/><text class="t" x="56" y="120">Root catalog provider</text><text class="s" x="56" y="140">one fetch · one resolver</text><text class="s" x="56" y="157">current value retained</text>
+      <rect class="box p2" x="38" y="208" width="198" height="68" rx="9"/><text class="t" x="56" y="235">Every model picker</text><text class="s" x="56" y="254">provider groups + fallback note</text>
+      <rect class="box p1" x="306" y="92" width="170" height="82" rx="9"/><text class="t" x="324" y="120">Aggregate API</text><text class="s" x="324" y="140">GET /api/harnesses/models</text><text class="s" x="324" y="157">bounded response</text>
+      <rect class="box p1" x="512" y="92" width="170" height="82" rx="9"/><text class="t" x="530" y="120">Catalog service</text><text class="s" x="530" y="140">TTL + in-flight dedupe</text><text class="s" x="530" y="157">last successful result</text>
+      <rect class="box p1" x="718" y="92" width="150" height="82" rx="9"/><text class="t" x="736" y="120">Harness.models</text><text class="s" x="736" y="140">exhaustive registry</text><text class="s" x="736" y="157">no route Pi branch</text>
+      <rect class="box p1" x="904" y="80" width="138" height="106" rx="9"/><text class="t" x="922" y="110">Pi RPC child</text><text class="s" x="922" y="130">no session</text><text class="s" x="922" y="147">no prompt</text><text class="s" x="922" y="164">time/byte/row caps</text>
+      <rect class="box fallback" x="512" y="214" width="170" height="62" rx="9"/><text class="t" x="530" y="240">Shipped fallback</text><text class="s" x="530" y="258">cache failure path</text>
+      <path class="arrow" d="M236 133 H306"/><path class="arrow" d="M476 133 H512"/><path class="arrow" d="M682 133 H718"/><path class="arrow" d="M868 133 H904"/>
+      <path class="arrow" d="M597 214 V174"/><path class="arrow" d="M137 174 V208"/>
+      <rect class="box" x="310" y="330" width="460" height="44" rx="9"/><text class="t" x="329" y="357">Existing ModelIdSchema, persistence, and Pi --model provider/id launch</text>
+      <path class="arrow" d="M236 242 C275 242 270 352 310 352"/>
+    </svg>
+    <figcaption>Only choice production changes. The selected provider-qualified id follows the existing write and launch path.</figcaption>
+  </figure>
+
+  <h2>Phases and dependency</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Phase</th><th>Outcome</th><th>Direct prerequisite</th><th>Task</th></tr></thead>
+    <tbody>
+      <tr><td class="phase"><a href="phase-1-harness-model-catalog-service.md">1 · Harness model catalog service</a></td><td>Bounded Pi RPC discovery, exhaustive harness capability, cache and fallback policy, aggregate API</td><td>None</td><td><code>0ce5d9e4-17d0-418f-912f-aa4766bf6e98</code></td></tr>
+      <tr><td class="phase"><a href="phase-2-browser-catalog-cutover.md">2 · Browser catalog cutover</a></td><td>One catalog provider, complete provider-grouped Pi choices everywhere, fallback UX, fake-Pi e2e proof</td><td>Phase 1</td><td><code>68107d31-1058-4f13-91ae-709c39a2952e</code></td></tr>
+    </tbody>
+  </table></div>
+  <div class="call"><strong>Merge order:</strong> Phase 1, then Phase 2. There are no concurrency groups. Both implementation tasks also depend on this planning session so they remain backlogged until these artifacts reach the default branch. Phase 2 additionally depends directly on the Phase 1 task.</div>
+
+  <h2>Findings that changed the proposed route</h2>
+  <ul>
+    <li>The browser needs every harness catalog at once, so the plan uses aggregate <code>GET /api/harnesses/models</code> rather than a per-agent route family.</li>
+    <li>The daemon cannot know every current off-catalog value. Each browser consumer retains its own current value, matching today's safety behavior.</li>
+    <li>The source investigation missed <code>ModelField</code>. Foreman's Pi backlog-default picker is a dispatch-time consumer and joins the atomic Phase 2 cutover.</li>
+    <li>The browser architecture forbids polling. The root provider fetches once; Retry reuses the same bounded route explicitly.</li>
+    <li>The current e2e Pi stub must become an RPC-only fake that still refuses every model launch.</li>
+  </ul>
+
+  <h2>Cross-phase contracts</h2>
+  <ul class="contracts">
+    <li><strong>One harness owner:</strong> every server harness declares model behavior; generic layers never start Pi by id check.</li>
+    <li><strong>Safe wire:</strong> validated ids and bounded presentation metadata only; no auth, cost, raw objects, stdout, or stderr.</li>
+    <li><strong>No model work:</strong> no session, prompt, tools, or project-local resources during discovery.</li>
+    <li><strong>Deterministic cache:</strong> one in-flight probe; stale successful data before shipped fallback; memory only.</li>
+    <li><strong>Aggregate API:</strong> one exhaustive catalog per <code>AgentType</code>; no SSE model event.</li>
+    <li><strong>Existing writes:</strong> catalog quality never changes model persistence or launch validation.</li>
+    <li><strong>One browser source:</strong> every old UI helper call moves in one phase.</li>
+    <li><strong>Complete mirroring:</strong> all safe Pi rows, grouped in first-seen provider order.</li>
+    <li><strong>Retained selection:</strong> discovery absence is not revocation.</li>
+    <li><strong>Usable degradation:</strong> loading, failure, and retry never disable a writable picker.</li>
+    <li><strong>Zero-token tests:</strong> fake Pi accepts only catalog RPC and refuses agent launches.</li>
+  </ul>
+
+  <h2>Verification bar</h2>
+  <p>Both phases run focused tests, typecheck, lint, the full unit suite, build, and smoke. Phase 2 also runs focused and full Playwright gates. The final e2e path proves a fake-only model appears under its provider, persists as the exact id, remains visible across reload, and survives a fresh-daemon discovery failure without any real provider call.</p>
+
+  <h2>Non-goals</h2>
+  <p>No dynamic Claude or Codex discovery, SQLite catalog persistence, per-model effort redesign, human table parsing, browser polling, model prompt, or selected-model storage change.</p>
+
+  <footer>Authoritative Markdown: <code>docs/plans/pi-live-model-catalog/phased-plan.md</code>. Detailed implementation briefs remain in the linked phase Markdown files.</footer>
+</main>
+</body>
+</html>

@@ -567,7 +567,7 @@ membership is the whole test - not what the name looks like. Every file the File
 lists is reachable, with no excluded extension and no excluded shape, so `Makefile`,
 `.env`, `gradlew` and `docs/My Plan.md` link exactly like `src/App.tsx` does, while a word
 that is merely path-shaped does not. The set of files is the same one the Files tab shows
-you (`git ls-files`, tracked plus untracked, capped at 2000 entries), so a path the tab
+you (`git ls-files`, tracked plus untracked, capped at 10,000 entries), so a path the tab
 cannot show you is never offered as one you can open.
 
 Matching runs on whole words: a name is never linked inside a longer one, and where

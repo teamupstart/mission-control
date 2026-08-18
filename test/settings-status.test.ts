@@ -36,6 +36,10 @@ process.env.HARNESS_HOME = join(home, "state");
 // operator-installed `conduct-ts` turn this test's intentional absent state into present.
 // The fake `gh` above has an absolute /bin/sh shebang, so it needs no host PATH entries.
 process.env.PATH = bin;
+// An absolute binary override bypasses PATH, so clear every supported alias too.
+delete process.env.MISSION_CONDUCTOR_BIN;
+delete process.env.FLEET_CONDUCTOR_BIN;
+delete process.env.HARNESS_CONDUCTOR_BIN;
 
 const { openDb } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");

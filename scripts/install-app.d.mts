@@ -41,6 +41,11 @@ export function resolveTargetRef(input: {
 }): { ref: string; source: TargetRefSource };
 export function receiptReleaseTag(input: { ref: string; source: TargetRefSource }): string | null;
 export function plistVersion(text: string | null | undefined): string | null;
+export function appsDirProblem(input: {
+  appsDir: string;
+  exists: boolean;
+  isDirectory: boolean;
+}): string | null;
 export function packagedVersionProblem(input: {
   packagedVersion: string | null;
   sourceVersion: string;

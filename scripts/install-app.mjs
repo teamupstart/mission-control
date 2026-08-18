@@ -33,7 +33,7 @@
 // different versions.
 
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { stateDir } from "../src/shared/harness-runtime.mjs";
@@ -175,6 +175,19 @@ export function plistVersion(text) {
     String(text ?? ""),
   );
   return match?.[1]?.trim() || null;
+}
+
+/**
+ * Why the app cannot be installed into this directory, or `null` when it can.
+ *
+ * `cp -R app dir` creates `dir` AS the bundle when `dir` does not exist, so a mistyped
+ * `--apps-dir` would silently produce an app named after the typo. `/Applications` always
+ * exists, which is exactly why this needs asserting rather than assuming.
+ */
+export function appsDirProblem({ appsDir, exists, isDirectory }) {
+  if (!exists) return `${appsDir} does not exist - create it, or leave --apps-dir unset to install into ${DEFAULT_APPS_DIR}`;
+  if (!isDirectory) return `${appsDir} is not a directory`;
+  return null;
 }
 
 export function packagedVersionProblem({ packagedVersion, sourceVersion }) {
@@ -367,6 +380,12 @@ function installApp(options) {
   // 8. Install ---------------------------------------------------------------------------
   heading("Install");
   const appPath = join(options.appsDir, APP_BUNDLE_NAME);
+  const appsDirIssue = appsDirProblem({
+    appsDir: options.appsDir,
+    exists: existsSync(options.appsDir),
+    isDirectory: existsSync(options.appsDir) && statSync(options.appsDir).isDirectory(),
+  });
+  if (appsDirIssue) fail(appsDirIssue);
   if (dryRun) {
     doing(`[dry-run] would replace ${appPath}`);
   } else {

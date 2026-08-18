@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
   GH_ARGS,
+  appsDirProblem,
   canonicalRemoteUrl,
   newestStableReleaseTag,
   packagedVersionProblem,
@@ -186,4 +187,21 @@ test("install arguments parse, and an unknown one stops the install", () => {
   assert.equal(parseArgs(["--wat"]).problem, "unknown argument: --wat");
   assert.equal(parseArgs(["--help"]).help, true);
   assert.equal(parseArgs(["--apps-dir", "/tmp/apps"]).options.appsDir, "/tmp/apps");
+});
+
+test("a missing install directory stops the install before the copy invents one", () => {
+  // `cp -R app dir` creates `dir` as the bundle when it does not exist, so a mistyped
+  // --apps-dir would otherwise produce an app named after the typo.
+  assert.equal(
+    appsDirProblem({ appsDir: "/Applications", exists: true, isDirectory: true }),
+    null,
+  );
+  assert.match(
+    String(appsDirProblem({ appsDir: "/tmp/nope", exists: false, isDirectory: false })),
+    /does not exist/,
+  );
+  assert.match(
+    String(appsDirProblem({ appsDir: "/tmp/file", exists: true, isDirectory: false })),
+    /not a directory/,
+  );
 });

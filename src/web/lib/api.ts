@@ -36,6 +36,7 @@ import type {
   CostTelemetryStatus,
   HarnessesConfig,
   HarnessesConfigPatch,
+  HarnessModelCatalogs,
   InspectorConfig,
   InspectorConfigPatch,
   LlmConfig,
@@ -58,6 +59,7 @@ import type {
   WorktreesConfig,
   WorktreesConfigPatch,
 } from "@shared/protocol.ts";
+import { HarnessModelCatalogsSchema } from "@shared/protocol.ts";
 import type {
   WorktreeActionExecuteResult,
   WorktreeActionPreview,
@@ -179,6 +181,24 @@ export const fetchForemanEpisode = (id: number) =>
 export const fetchBacklogPlan = () => fetchJson<BacklogPlan>("/api/backlog/plan");
 /** Dispatch-time defaults the harness applies to the sessions it launches. */
 export const fetchHarnessesConfig = () => fetchJson<HarnessesConfig>("/api/harnesses/config");
+/**
+ * The complete dispatch-time model catalog, read once by the root browser provider.
+ *
+ * Unlike most optional reads in this module, this response is narrowed at the browser
+ * boundary. A stale tab can be talking to an older daemon, and a malformed aggregate must
+ * degrade to the shipped catalog rather than become three partially trusted picker lists.
+ */
+export async function fetchHarnessModelCatalogs(
+  refresh = false,
+  signal?: AbortSignal,
+): Promise<HarnessModelCatalogs | null> {
+  const value = await fetchJsonWithSignal<unknown>(
+    `/api/harnesses/models${refresh ? "?refresh=1" : ""}`,
+    signal,
+  );
+  const parsed = HarnessModelCatalogsSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
 export const fetchWorktrees = (signal?: AbortSignal) =>
   fetchJsonWithSignal<WorktreeInventory>("/api/worktrees", signal);
 

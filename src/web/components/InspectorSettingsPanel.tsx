@@ -358,7 +358,7 @@ export function InspectorSettingsPanel({
             {/* The model picker is filtered by the provider above it, and switching
                 provider clears the stored id (see the select's onChange) - a Claude model
                 name is not a thing Codex can be spawned with. `ModelField` is the same
-                `<select>` over `modelChoicesFor` that Foreman, Models and the Persona
+                `<select>` over the shared browser catalog that Foreman, Models and the Persona
                 editor use, so an off-catalog id set by another build stays selectable
                 instead of silently reading as "no model chosen". */}
             <div className="sc-field sc-model">

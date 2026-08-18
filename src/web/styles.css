@@ -11934,14 +11934,36 @@ select:not([multiple]) option:focus-visible {
   gap: 8px;
 }
 
-.ensemble-delete-echo {
-  width: 100%;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg);
-  color: var(--fg);
-  padding: 8px;
-  font: inherit;
+.ensemble-delete-modal {
+  width: min(540px, 100%);
+}
+
+.ensemble-delete-body {
+  padding: 18px;
+  display: grid;
+  gap: 12px;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.ensemble-delete-subject,
+.ensemble-delete-consequence,
+.ensemble-delete-kept {
+  margin: 0;
+}
+
+.ensemble-delete-subject {
+  font-size: 14px;
+}
+
+.ensemble-delete-consequence {
+  padding: 10px 12px;
+  border-left: 3px solid var(--danger);
+  background: color-mix(in srgb, var(--danger) 7%, var(--panel));
+}
+
+.ensemble-delete-kept {
+  color: var(--muted);
 }
 
 .btn.danger {

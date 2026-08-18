@@ -10,6 +10,7 @@ import {
   AwayConfigPatchSchema,
   BacklogPlanSchema,
   CompleteTaskSchema,
+  CompleteRetroNoChangeSchema,
   CreatePersonaSchema,
   ImportPersonaSchema,
   ReimportPersonaSchema,
@@ -2657,6 +2658,18 @@ export function buildApp(
     }
   });
 
+  app.post("/mcp/retros/no-change", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, CompleteRetroNoChangeSchema);
+    if (!parsed.ok) return parsed.res;
+    const { env, sessionId, cwd } = parsed.data;
+    const session = registry.findSessionByEnv(env, sessionId, cwd);
+    if (!session) return c.json({ error: "no matching active session" }, 404);
+    const result = await tasks.completeRetroNoChange(session.id, cwd);
+    if (!result.ok) return c.json({ error: result.error }, result.status);
+    return c.json({ task: result.task, sourceTaskId: result.sourceTaskId, replayed: result.replayed });
+  });
+
   app.get("/mcp/reviews/:id/wait", async (c) => {
     if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
     const review = await reviews.wait(c.req.param("id"), WAIT_TIMEOUT_MS);
@@ -3192,13 +3205,13 @@ export function buildApp(
     return c.json(r, r.ok ? 200 : 500);
   });
 
-  // Ask a session to run its own retrospective, or file one when it cannot.
+  // Ask a session to run its own retrospective, or create the appropriate follow-up Task.
   //
   // No request body, deliberately: there is exactly one retro and nothing about it is a
-  // parameter. What the daemon does is decided by the session's own state - a live session is
-  // typed into, a dead one gets a task filed against its repository - and neither is a choice a
-  // caller may override, because "type into that session" is not a request a caller can make
-  // true. See `runRetro` for the delivery composition and the R3 fallback.
+  // parameter. What the daemon does is decided by durable pull-request posture first: a merged
+  // work review gets one linked, immediately dispatched Task, while a current open review keeps
+  // the same-session delivery. With no merged source posture, an unreachable session gets the
+  // existing backlog fallback. None is a choice the caller may override. See `runRetro`.
   //
   // 404 is the session, and it means the registry has no row at all: an EXITED session is not a
   // 404 here, it is the fallback's ordinary input, and it is the only place the branch and pull

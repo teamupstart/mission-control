@@ -47,7 +47,7 @@ reads it:
 | ☰ Backlog | **Drawer** - the queue in the order autopilot would take it, with the triage moves on each row, escalating to the [Sitrep](attention-and-alerts.md#roundup) |
 | ▶ Working | The fleet, with the filter cleared - so the count and the cards agree again |
 | ⌁ Review | **Drawer** - one ladder per live run |
-| ⧉ Decide | **Drawer** - the condensed decision dossier, one row per live ensemble, with confirmed cancellation |
+| ⧉ Decide | **Drawer** - the condensed decision dossier, one row per live ensemble, with confirmed cancellation; its header also counts unacknowledged failed runs until they are dismissed from the full ensemble page |
 | ⚑ Shipped | **Drawer** - the week's adopted pull requests, newest first, escalating to the [Ship log](library-and-line.md#the-ship-log) |
 
 Hovering a stage gives you what it is for, plus its sentence in full - the visible line is
@@ -100,7 +100,7 @@ on a failed call would be lying about the queue it is describing.
 | Drawer | Each row says | Escalates to |
 |--------|---------------|--------------|
 | **Review** | The session, the workflow and version, the repair round, a compact pipeline of chips (evidence → reviewers → session action → GitHub Inspector), and what the run is doing - **including why it stopped**, as `Blocked · session gone`. A run stopped on *you* is marked amber; a run that has stopped and will not move on its own is marked red. Three or more runs stopped for the *same* reason are one bar instead of three rows. A run an ensemble handed off wears its **⧉ from an ensemble** provenance, which opens that ensemble | The one remedy that run's state actually takes - `Dismiss`, `Retry`, `Resubmit`, `Restart…`, or `Dismiss all` for a bar - then `Open run` → `#/runs/:id`, `All runs →` → `#/runs`, and `Bind a workflow…` opens the binding dialog |
-| **Decide** | What was at stake, elapsed, the candidate progress dots, and what the run wants next. The ones awaiting an answer sort first | `Decide` (awaiting an answer) or `Open full dossier` → `#/ensembles/:id`, `All ensembles →` → `#/ensembles` |
+| **Decide** | What was at stake, elapsed, the candidate progress dots, and what the run wants next. The ones awaiting an answer sort first. A terminal failure remains in the header attention count until **Dismiss failure** acknowledges it without deleting its history | `Decide` (awaiting an answer) or `Open full dossier` → `#/ensembles/:id`, `All ensembles →` → `#/ensembles` |
 | **Backlog** | One queued task: its title (which reopens the [Dispatch](dispatch-and-backlog.md#dispatch-an-agent) form over it), its kind, agent and age, and the marks for its state - **next up**, what it is waiting on, **parked**. The ready band is in [plan order](work-queues.md#backlog-autopilot-foreman-schedules-the-fleet), so the top row is what autopilot takes next; blocked and parked follow. **next up** is a button: it opens the [planner](#the-autopilot-planner), which says why that row is the row | `Launch now` dispatches it into a fresh worktree, the switch parks or resumes it, the picker sets its priority, and a dead prerequisite resolves from the row it is blocking. The footer carries the [autopilot switch and its readout](#the-autopilot-planner), and `Sitrep →` opens the [Roundup](attention-and-alerts.md#roundup) |
 | **Intake** | Each source's last sweep and what it filed, or the error it failed with; each mission's cadence, next firing, and health | `Settings` → task sources, `Open` → [Recurring Missions](recurring-missions.md#recurring-missions) |
 | **Shipped** | One adopted pull request: its merge state as a **mark and a word** (merged / open / gone), its title - falling back to the branch, then to its own number - over `owner/repo#N`, the session that opened it, and when. Newest adoption first, over the same rolling seven days the count above it is folded from. Chips in the header split the week **All / Merged / Open / Gone** with their counts, and are toggles | The pull request itself on GitHub, and `Ship log →` → [`#/shipped`](library-and-line.md#the-ship-log) |
@@ -662,6 +662,10 @@ names the layouts where a shortcut's target exists:
 | <kbd>f</kbd> | Open **Fleet** | Anywhere |
 | <kbd>w</kbd> | Open the **Library** | Anywhere |
 | <kbd>r</kbd> | Open **Workflow Runs** | Anywhere |
+| <kbd>↑</kbd> <kbd>↓</kbd> | Select the previous or next workflow run and load it immediately in the reader | Workflow Runs rail |
+| <kbd>Tab</kbd> | From the selected run, enter the workflow at its first authored stage. Further Tabs advance through the stages | Workflow Runs rail and pipeline |
+| <kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> | Select the previous or next authored stage | Workflow Runs pipeline |
+| <kbd>Enter</kbd> | Load a completed stage's recorded details in the Review worklist | Workflow Runs pipeline |
 | <kbd>⇧</kbd><kbd>S</kbd> | Open **Scouts** - the archive of finished investigations | Anywhere |
 | <kbd>⇧</kbd><kbd>P</kbd> | Open or close **Sitrep** | Fleet |
 | <kbd>+</kbd> | Start the guided dispatch pass. <kbd>Tab</kbd> reaches the ordinary form in one key | Anywhere |

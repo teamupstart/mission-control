@@ -94,6 +94,11 @@ Workflows and Personas turn the team's review practice into reusable, inspectabl
 blocks. The Line keeps their live runs attached to the fleet. On a run, clicking a settled
 reviewer or Command tile selects that exact result in the review worklist below.
 
+On **Workflow Runs**, <kbd>↑</kbd> and <kbd>↓</kbd> select and immediately load runs.
+From the selected run, <kbd>Tab</kbd> enters the pipeline; further Tabs or any arrow key move
+between stages. Press <kbd>Enter</kbd> on a completed stage to load its recorded details in the
+Review worklist below.
+
 ![Mission Control workflow library](docs/images/workflows.png)
 
 ## Coordinate the fleet

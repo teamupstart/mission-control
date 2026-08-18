@@ -264,6 +264,7 @@ export function mkEnsembleSummary(over: Partial<EnsembleSummary> = {}): Ensemble
     selectedMemberId: null,
     outcomeKind: null,
     unreadable: null,
+    failureAcknowledgedAt: null,
     attention: false,
     error: null,
     createdAt: 1000,

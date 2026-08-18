@@ -731,6 +731,21 @@ export function openDb(): DatabaseSync {
     CREATE INDEX IF NOT EXISTS idx_historical_task_work_episode_session
       ON historical_task_work_episode_bindings(session_id, episode_id);
 
+    -- One post-merge retro task per source work episode. The relation is written before the
+    -- ordinary Task row so a retry after a crash reconstructs the same reserved task id
+    -- instead of filing a duplicate. It deliberately carries no task lifecycle state: the
+    -- Task row remains the single source of truth for dispatch, completion, and pull requests.
+    CREATE TABLE IF NOT EXISTS retro_followups (
+      source_task_id    TEXT NOT NULL,
+      source_episode_id TEXT NOT NULL,
+      source_session_id TEXT NOT NULL,
+      retro_task_id     TEXT NOT NULL,
+      created_at        INTEGER NOT NULL,
+      updated_at        INTEGER NOT NULL,
+      PRIMARY KEY (source_task_id, source_episode_id),
+      UNIQUE (retro_task_id)
+    );
+
     -- Every decision Foreman has faced on a session, append-only: the question it
     -- was asked, what it concluded, and what was actually sent back.
     --
@@ -1940,6 +1955,9 @@ export function openDb(): DatabaseSync {
       -- different field (a different repository, title, config, or workflow) is a conflict rather
       -- than a silent idempotent replay of the old run. Empty string on rows written before it.
       request_fingerprint    TEXT NOT NULL DEFAULT '',
+      -- A failed run remains durable history after the operator has seen it. This timestamp
+      -- retires only its attention signal; NULL means the failure has not been acknowledged.
+      failure_acknowledged_at INTEGER,
       created_at           INTEGER NOT NULL,
       updated_at           INTEGER NOT NULL,
       completed_at         INTEGER,
@@ -2797,6 +2815,10 @@ function migrate(d: DatabaseSync): void {
   // "no recorded fingerprint"; a replay against such a run compares against '' and, when the new
   // request carries a real fingerprint, is a conflict rather than a silent adoption of a stranger.
   addColumn(d, "ensemble_runs", "request_fingerprint", "TEXT NOT NULL DEFAULT ''");
+  // Acknowledging a failed run is deliberately separate from deletion: historical rows begin
+  // unacknowledged, and the nullable timestamp records the operator action without changing the
+  // terminal status or touching any artifacts.
+  addColumn(d, "ensemble_runs", "failure_acknowledged_at", "INTEGER");
 
   // `queued` -> `backlog`: the task backlog stopped calling itself a queue, so
   // "queue" now only ever means a session's work queue. Rows persisted before the
@@ -4575,6 +4597,36 @@ export interface TaskWorkEpisodeBinding {
   updatedAt: number;
 }
 
+/** Durable ownership of the one retro follow-up allowed for a merged source episode. */
+export interface RetroFollowupRelation {
+  sourceTaskId: string;
+  sourceEpisodeId: string;
+  sourceSessionId: string;
+  retroTaskId: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+type RetroFollowupRow = {
+  source_task_id: string;
+  source_episode_id: string;
+  source_session_id: string;
+  retro_task_id: string;
+  created_at: number;
+  updated_at: number;
+};
+
+function retroFollowupFromRow(row: RetroFollowupRow): RetroFollowupRelation {
+  return {
+    sourceTaskId: row.source_task_id,
+    sourceEpisodeId: row.source_episode_id,
+    sourceSessionId: row.source_session_id,
+    retroTaskId: row.retro_task_id,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
 type SessionWorkEpisodeRow = {
   episode_id: string;
   session_id: string;
@@ -5018,6 +5070,84 @@ export function historicalTaskWorkEpisodeBindingsForTask(
   return rows.map(taskWorkEpisodeFromRow);
 }
 
+/** The retro task already reserved for this source episode, when one exists. */
+export function retroFollowupForSource(
+  sourceTaskId: string,
+  sourceEpisodeId: string,
+): RetroFollowupRelation | null {
+  const row = openDb()
+    .prepare(
+      `SELECT * FROM retro_followups
+       WHERE source_task_id = ? AND source_episode_id = ?`,
+    )
+    .get(sourceTaskId, sourceEpisodeId) as unknown as RetroFollowupRow | undefined;
+  return row ? retroFollowupFromRow(row) : null;
+}
+
+/** The source episode for a retro task, used by the no-change completion boundary. */
+export function retroFollowupForTask(retroTaskId: string): RetroFollowupRelation | null {
+  const row = openDb()
+    .prepare(`SELECT * FROM retro_followups WHERE retro_task_id = ?`)
+    .get(retroTaskId) as unknown as RetroFollowupRow | undefined;
+  return row ? retroFollowupFromRow(row) : null;
+}
+
+/**
+ * Reserve one stable retro task id for a source episode.
+ *
+ * The caller supplies the candidate id, then creates an ordinary Task with the returned id.
+ * If the process stops between those writes, the next click reads this relation and recreates
+ * that exact Task. `BEGIN IMMEDIATE` serializes two clicks before either can observe a gap.
+ */
+export function reserveRetroFollowup(input: {
+  sourceTaskId: string;
+  sourceEpisodeId: string;
+  sourceSessionId: string;
+  retroTaskId: string;
+  now: number;
+}): { relation: RetroFollowupRelation; created: boolean } {
+  const d = openDb();
+  const ownsTransaction = !d.isTransaction;
+  if (ownsTransaction) d.exec("BEGIN IMMEDIATE");
+  try {
+    const existing = d
+      .prepare(
+        `SELECT * FROM retro_followups
+         WHERE source_task_id = ? AND source_episode_id = ?`,
+      )
+      .get(input.sourceTaskId, input.sourceEpisodeId) as unknown as RetroFollowupRow | undefined;
+    if (existing) {
+      if (ownsTransaction) d.exec("COMMIT");
+      return { relation: retroFollowupFromRow(existing), created: false };
+    }
+    d.prepare(
+      `INSERT INTO retro_followups
+         (source_task_id, source_episode_id, source_session_id, retro_task_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(
+      input.sourceTaskId,
+      input.sourceEpisodeId,
+      input.sourceSessionId,
+      input.retroTaskId,
+      input.now,
+      input.now,
+    );
+    const relation: RetroFollowupRelation = {
+      sourceTaskId: input.sourceTaskId,
+      sourceEpisodeId: input.sourceEpisodeId,
+      sourceSessionId: input.sourceSessionId,
+      retroTaskId: input.retroTaskId,
+      createdAt: input.now,
+      updatedAt: input.now,
+    };
+    if (ownsTransaction) d.exec("COMMIT");
+    return { relation, created: true };
+  } catch (error) {
+    if (ownsTransaction && d.isTransaction) d.exec("ROLLBACK");
+    throw error;
+  }
+}
+
 export function deleteHistoricalTaskWorkEpisodeBinding(
   taskId: string,
   episodeId: string,
@@ -5234,6 +5364,78 @@ export function primaryRepoPrForTask(taskId: string): TaskRepoPrRecord {
   }
   if (current?.prUrl) return { prUrl: current.prUrl, prState: "open", mergedAt: null };
   return { prUrl: null, prState: null, mergedAt: null };
+}
+
+/**
+ * Pull-request posture used only to decide where a requested retro belongs.
+ *
+ * An open CURRENT pull request wins over every historical merge because it is the review the
+ * live source session can still add a memory commit to. Only when no current review is open
+ * does the newest merged binding move the retro into its own task and pull request. This is
+ * intentionally separate from `primaryRepoPrForTask`, whose completion-oriented merged-first
+ * rule must not change.
+ */
+export type RetroPrPosture =
+  | { kind: "open"; binding: TaskWorkEpisodeBinding }
+  | {
+      kind: "merged";
+      binding: TaskWorkEpisodeBinding;
+      prUrl: string;
+      mergedAt: number;
+    };
+
+export function retroPrPostureForTask(taskId: string): RetroPrPosture | null {
+  const current = taskWorkEpisodeForTask(taskId);
+  if (current?.prUrl && current.mergedAt === null) return { kind: "open", binding: current };
+
+  const repoPrs = workEpisodeRepoPrsForTask(taskId);
+  if (
+    current &&
+    repoPrs.some(
+      (row) =>
+        row.episodeId === current.episodeId &&
+        row.mergedAt === null &&
+        row.prState?.toLowerCase() !== "closed",
+    )
+  ) {
+    return { kind: "open", binding: current };
+  }
+
+  const bindings = [
+    ...(current ? [current] : []),
+    ...historicalTaskWorkEpisodeBindingsForTask(taskId),
+  ];
+  const bindingByEpisode = new Map(bindings.map((binding) => [binding.episodeId, binding]));
+  let merged: Extract<RetroPrPosture, { kind: "merged" }> | null = null;
+  for (const binding of bindings) {
+    if (binding.prUrl === null || binding.mergedAt === null) continue;
+    if (merged === null || binding.mergedAt > merged.mergedAt) {
+      merged = {
+        kind: "merged",
+        binding,
+        prUrl: binding.prUrl,
+        mergedAt: binding.mergedAt,
+      };
+    }
+  }
+  // Secondary-repository reviews have their own durable table. They still belong to the
+  // task's work episode, so retain that binding as the follow-up key while carrying the
+  // actual merged review URL separately. A row without a surviving binding cannot safely
+  // name the source session or episode and is ignored rather than guessed at.
+  for (const row of repoPrs) {
+    if (row.mergedAt === null) continue;
+    const binding = bindingByEpisode.get(row.episodeId);
+    if (!binding) continue;
+    if (merged === null || row.mergedAt > merged.mergedAt) {
+      merged = {
+        kind: "merged",
+        binding,
+        prUrl: row.prUrl,
+        mergedAt: row.mergedAt,
+      };
+    }
+  }
+  return merged;
 }
 
 export function recordWorkEpisodePrompt(

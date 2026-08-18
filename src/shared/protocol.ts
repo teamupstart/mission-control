@@ -503,6 +503,18 @@ export const McpCreateTaskSchema = z
 export type McpCreateTask = z.infer<typeof McpCreateTaskSchema>;
 
 /**
+ * Identity added by the bundled MCP bridge when a retro follow-up reports no approved change.
+ * There is intentionally no task id and no caller-controlled outcome: the daemon attributes
+ * the live session, then permits this operation only for its linked retro follow-up Task.
+ */
+export const CompleteRetroNoChangeSchema = z.object({
+  env: EnvSchema,
+  sessionId: z.string().nullable().optional().default(null),
+  cwd: z.string().nullable().optional().default(null),
+}).strict();
+export type CompleteRetroNoChange = z.infer<typeof CompleteRetroNoChangeSchema>;
+
+/**
  * What the human picked for one decision, echoed back by option id.
  *
  * Ids and not labels: the label is display text that an agent may rewrite between asking
@@ -2912,7 +2924,9 @@ export type InjectPrompt = z.infer<typeof InjectPromptSchema>;
  * `delivered` is the source plan's R1: the session that did the work was asked to run its own
  * retrospective, and the next thing a human sees is that session talking to them. `dispatched`
  * is R3, taken when the session can no longer be typed into: a retro task is filed against the
- * repository, and the next thing a human sees is a backlog card.
+ * repository, and the next thing a human sees is a backlog card. `started` and `queued`
+ * are the post-merge split: both name the one separate follow-up task while distinguishing
+ * an accepted launch from a synchronous launch refusal that left the task recoverable.
  *
  * A `kind` field rather than a shape test, so a caller never has to infer which happened from
  * which fields are present. The union may GAIN arms and fields; a published arm keeps its
@@ -2930,7 +2944,9 @@ export type RetroResponse =
      */
     submitVerified: boolean;
   }
-  | { kind: "dispatched"; task: Task };
+  | { kind: "dispatched"; task: Task }
+  | { kind: "started"; task: Task }
+  | { kind: "queued"; task: Task; reason: string };
 
 /** CAS guard for a pending-turn action selected from the current session projection. */
 export const PendingTurnRevisionSchema = z.object({
@@ -4816,6 +4832,7 @@ export const EnsembleRunSchema: z.ZodType<EnsembleRun> = z.object({
   outcome: EnsembleOutcomeSchema.nullable(),
   workflowHandoff: EnsembleWorkflowHandoffSchema.nullable(),
   unreadable: EnsembleUnreadableSchema.nullable(),
+  failureAcknowledgedAt: z.number().int().nullable(),
   error: z.string().nullable(),
   createdAt: z.number().int(),
   updatedAt: z.number().int(),
@@ -4973,6 +4990,7 @@ export const EnsembleSummarySchema: z.ZodType<EnsembleSummary> = z.object({
   selectedMemberId: z.string().nullable(),
   outcomeKind: z.enum(ENSEMBLE_OUTCOME_KINDS).nullable(),
   unreadable: EnsembleUnreadableSchema.nullable(),
+  failureAcknowledgedAt: z.number().int().nullable(),
   attention: z.boolean(),
   error: z.string().nullable(),
   createdAt: z.number().int(),
@@ -5077,6 +5095,7 @@ export const EnsembleActionSchema = z.discriminatedUnion("kind", [
     skipWorkflowHandoff: z.boolean().default(false),
   }),
   z.object({ kind: z.literal("cancel"), reason: z.string().max(ENSEMBLE_LIMITS.rationale).nullable().default(null) }),
+  z.object({ kind: z.literal("dismiss_failure") }),
   z.object({ kind: z.literal("restore_artifact"), artifactId: ensembleId }),
 ]);
 export type EnsembleActionBody = z.infer<typeof EnsembleActionSchema>;

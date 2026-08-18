@@ -147,8 +147,14 @@ Then obey what comes back, literally:
 - Selected `add` with no free text: commit exactly the text you showed.
 - Selected `add` with free text: the free text wins. Commit their wording, not yours.
 - Selected `skip`: write nothing for that memory, and do not raise it again in this retro.
-- **Dismissed:** write nothing at all, commit nothing, and stop. A dismissal is not a
-  deferral, and it is never an approval of the ones they did not get to.
+- **Dismissed:** write nothing at all and commit nothing. If this is the separate post-merge
+  follow-up task whose intent names `complete_retro_no_change`, call that tool and stop. On a
+  same-session retro, stop without calling it. A dismissal is not a deferral, and it is never
+  an approval of the ones they did not get to.
+
+If every proposal is skipped, or there were no qualifying proposals, apply the same rule:
+the post-merge follow-up calls `complete_retro_no_change`; every other retro simply stops.
+Never manufacture a commit or review to make a no-change retro look shipped.
 
 If the tool is not available at all - the Mission Control MCP server is not connected - ask the
 same questions in the conversation, showing each memory in full, and wait for a real answer. The
@@ -227,18 +233,18 @@ git commit -m "docs(memory): <what was learned>"
   its commit has made itself unreviewable.
 - **No co-author trailer**, and no change to how this repository pushes or merges.
 
-Where it goes from there depends on how the retro reached you, and there are exactly two
-ways:
+Where it goes from there depends on how the retro reached you:
 
 - **Riding a session's own branch** (the usual case: a session action arrived in the session
   that did the work). The branch already has a review in flight, so push, and the memory is
   read in the same pull request as the work it came from. Do not open a second one for that
   repository - and where the session opened a pull request in each of several repositories,
   each memory rides the one for the repository it was committed in.
-- **Dispatched as its own task**, because the session that did the work was already gone. The
-  commit is then the task's entire deliverable and there is no review for it to ride, so
-  finish the task the way this repository ships any other one - which normally means opening
-  a pull request for the memory commit.
+- **Dispatched as its own task**, because the source session was gone or its work pull request
+  had already merged. The approved memory commit is this task's deliverable and has no open
+  review to ride. Invoke the pull-request skill and open or update this task's own pull request
+  in every repository where approved memory files changed. A post-merge task must not push to
+  or reopen the source branch or pull request.
 
 Then say, in one short message, what was committed and what was skipped. The retro is over;
 do not start on a memory the human declined.

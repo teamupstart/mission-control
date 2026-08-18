@@ -1,4 +1,5 @@
 import type { RetroReason, Session } from "@shared/types.ts";
+import type { RetroResponse } from "@shared/protocol.ts";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
 import { inspectorChipView } from "../components/session-bits.tsx";
 
@@ -160,9 +161,16 @@ export function retroCallView(
   };
 }
 
-/** What the daemon's two success arms mean to the person who clicked, in one line each. */
-export function retroOutcome(result: { kind?: string }): string {
-  return result.kind === "dispatched"
-    ? "This session can no longer be typed into, so a retro task was filed in the backlog."
-    : "Retro sent - the session will propose memories for you to approve.";
+/** What each daemon success arm means to the person who clicked, in one line. */
+export function retroOutcome(result: RetroResponse): string {
+  switch (result.kind) {
+    case "delivered":
+      return "Retro sent - the session will propose memories for you to approve.";
+    case "dispatched":
+      return "This session can no longer be typed into, so a retro task was filed in the backlog.";
+    case "started":
+      return `Retro started in a new task: ${result.task.title}. The original task remains complete.`;
+    case "queued":
+      return `Retro follow-up queued as ${result.task.title}. The original task remains complete. ${result.reason}`;
+  }
 }

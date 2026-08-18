@@ -36,6 +36,7 @@ import {
   stageStatus,
   type InheritedPass,
 } from "./run-model.ts";
+import { moveWorkflowStageSelection } from "./run-navigation.ts";
 
 /** A reviewer or Command whose current attempt has settled and has worklist data to inspect. */
 function opensReviewWorklist(raw: string | undefined): boolean {
@@ -44,6 +45,11 @@ function opensReviewWorklist(raw: string | undefined): boolean {
     || raw === "completed"
     || raw === "error"
     || raw === "cancelled";
+}
+
+/** A stage member whose run has finished and whose Review worklist record can be opened. */
+function completedReviewWorklist(raw: string | undefined): boolean {
+  return raw !== "cancelled" && opensReviewWorklist(raw);
 }
 
 function PipelineActionsMenu({
@@ -125,6 +131,7 @@ export function RunPipeline({
   directiveFor,
   onOpenPersonaDirective,
   onOpenNode,
+  onOpenStage,
 }: {
   version: WorkflowVersion;
   /** Node id -> runtime status, scoped to the round being viewed. */
@@ -186,6 +193,8 @@ export function RunPipeline({
   onOpenPersonaDirective?: (nodeId: string) => void;
   /** Select one settled reviewer or Command in the review worklist below the pipeline. */
   onOpenNode?: (nodeId: string) => void;
+  /** Load the completed stage's recorded member details in the review worklist. */
+  onOpenStage?: (nodeIds: readonly string[]) => void;
 }): React.JSX.Element {
   const graph = version.graph;
   const pipeline = useMemo(() => projectStages(graph), [graph]);
@@ -235,6 +244,55 @@ export function RunPipeline({
     node.kind === "session_action" && "action" in node
       ? [{ id: node.action.sourceSessionActionId, name: node.action.name }]
       : []);
+
+  /** Focus one authored stage inside this strip and reveal it without moving the page further. */
+  const focusStage = (source: HTMLElement, index: number): void => {
+    const next = source.closest(".wf-pipeline-strip")
+      ?.querySelector<HTMLElement>(`[data-focus-key="run-stage:${index}"]`);
+    next?.focus({ preventScroll: true });
+    next?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  };
+
+  /**
+   * A run stage is one keyboard stop. Arrows and Tab walk the authored stages; Enter opens
+   * recorded detail only after every member has a completed item in the Review worklist.
+   */
+  const onStageKeyDown = (
+    event: React.KeyboardEvent<HTMLElement>,
+    index: number,
+    nodeIds: readonly string[],
+    openable: boolean,
+  ): void => {
+    if (event.target !== event.currentTarget) return;
+    if (event.key === "Enter") {
+      if (!openable || !onOpenStage) return;
+      event.preventDefault();
+      onOpenStage(nodeIds);
+      return;
+    }
+    if (
+      event.key !== "ArrowUp"
+      && event.key !== "ArrowDown"
+      && event.key !== "ArrowLeft"
+      && event.key !== "ArrowRight"
+      && event.key !== "Tab"
+    ) return;
+    if (event.altKey || event.ctrlKey || event.metaKey) return;
+    const next = moveWorkflowStageSelection(
+      pipeline.stages.length,
+      index,
+      event.key,
+      event.shiftKey,
+    );
+    // Tab may leave either end of the strip normally. Arrows stay owned by the strip so an
+    // edge press cannot fall through to the Runs rail and select a different workflow.
+    if (next === null) {
+      if (event.key !== "Tab") event.preventDefault();
+      return;
+    }
+    event.preventDefault();
+    focusStage(event.currentTarget, next);
+  };
 
   return (
     <PipelineFrame ariaLabel="Workflow run pipeline" repair={repair}>
@@ -312,7 +370,7 @@ export function RunPipeline({
         // The stage toggle needs every member addressable AND switchable; a projection member
         // without a node id (a compile-time placeholder), or a session action, leaves the
         // stage header unswitchable rather than half-switching it.
-        const stageNodeIds = members.flatMap((member) =>
+        const stageToggleNodeIds = members.flatMap((member) =>
           member.togglable && member.nodeId ? [member.nodeId] : []);
         const stageDisabled = members.length > 0 && members.every((member) => member.disabled);
         const stageTitle = stageName(stage, index, personaNames, actionNames);
@@ -340,14 +398,38 @@ export function RunPipeline({
         const carriedPasses = members.flatMap((member) => member.carried ? [member.carried] : []);
         const stageCarried = members.length > 0 && carriedPasses.length === members.length;
         const carriedSource = stageCarried ? newestInheritedSource(carriedPasses) : null;
+        const displayStatus = stageCarried
+          ? carriedStageStatus(carriedPasses.map((pass) => pass.roundLabel))
+          : stageStatus(members.map((member) => member.status), stage.kind);
+        // Authored kind does not decide whether Enter works. Each member's settled worklist
+        // state does, so Commands such as test and lint behave exactly like completed Persona
+        // stages, while an unfinished or action-only stage never advertises a dead action.
+        const stageWorklistNodeIds = members.flatMap((member) =>
+          member.kind !== "session_action"
+          && member.nodeId
+          && completedReviewWorklist(statuses[member.nodeId])
+            ? [member.nodeId]
+            : []);
+        const opensWorklist = Boolean(onOpenStage)
+          && stageWorklistNodeIds.length === members.length;
         return (
           <div className="wf-pipeline-slot" key={`stage:${index}`}>
             <StageCard
               name={stageTitle}
               subtitle={stageSummary(stage)}
-              status={stageCarried
-                ? carriedStageStatus(carriedPasses.map((pass) => pass.roundLabel))
-                : stageStatus(members.map((member) => member.status), stage.kind)}
+              status={displayStatus}
+              header={{
+                tabIndex: 0,
+                focusKey: `run-stage:${index}`,
+                ariaLabel: [
+                  stageTitle,
+                  `Stage ${index + 1} of ${pipeline.stages.length}`,
+                  displayStatus.label,
+                  opensWorklist ? "Press Enter to load this stage in the review worklist" : null,
+                ].filter(Boolean).join(", "),
+                onKeyDown: (event) =>
+                  onStageKeyDown(event, index, stageWorklistNodeIds, opensWorklist),
+              }}
               carried={stageCarried}
               footer={carriedSource
                 ? (
@@ -368,8 +450,8 @@ export function RunPipeline({
                 onFeedback={openStageFeedback}
                 feedbackActive={members.some((member) => member.directiveActive)}
                 disabled={stageDisabled}
-                onToggleDisabled={onToggleNodes && stageNodeIds.length === members.length
-                  ? () => onToggleNodes(stageNodeIds, !stageDisabled)
+                onToggleDisabled={onToggleNodes && stageToggleNodeIds.length === members.length
+                  ? () => onToggleNodes(stageToggleNodeIds, !stageDisabled)
                   : null}
               />}
             >

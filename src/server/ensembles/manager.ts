@@ -412,6 +412,7 @@ export class EnsembleManager {
       attention: ensembleNeedsAttention({
         status: summary.status,
         unreadable: summary.unreadable,
+        failureAcknowledgedAt: summary.failureAcknowledgedAt,
         membersNeedingInput: counts.membersNeedingInput,
       }),
     };
@@ -1125,6 +1126,28 @@ export class EnsembleManager {
    * is re-read after the act so the response and the SSE channel agree.
    */
   async applyAction(runId: string, action: EnsembleAction): Promise<EnsembleActionResult> {
+    if (action.kind === "dismiss_failure") {
+      const acknowledged = this.store.acknowledgeFailure(runId, this.now());
+      if (!acknowledged.ok) {
+        return acknowledged.reason === "not_found"
+          ? { ok: false, reason: "not_found", detail: "no such ensemble" }
+          : {
+              ok: false,
+              reason: "conflict",
+              detail: "only a failed ensemble can have its failure dismissed",
+            };
+      }
+      this.store.appendEvent(
+        {
+          runId,
+          kind: "failure_dismissed",
+          payload: {},
+          operationKey: `failure_dismissed:${runId}`,
+        },
+        acknowledged.value.failureAcknowledgedAt ?? this.now(),
+      );
+      return { ok: true, summary: this.publish(runId) };
+    }
     if (!this.engine) return { ok: false, reason: "unavailable", detail: "this build cannot act on ensembles" };
     switch (action.kind) {
       case "retry_stage": {

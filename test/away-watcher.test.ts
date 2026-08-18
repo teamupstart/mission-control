@@ -127,6 +127,7 @@ function ensembleSummary(over: Partial<EnsembleSummary> = {}): EnsembleSummary {
     selectedMemberId: null,
     outcomeKind: null,
     unreadable: null,
+    failureAcknowledgedAt: null,
     attention: false,
     error: null,
     createdAt: 1,

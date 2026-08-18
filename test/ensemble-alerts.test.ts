@@ -41,6 +41,7 @@ function summary(patch: Partial<EnsembleSummary> = {}): EnsembleSummary {
     selectedMemberId: null,
     outcomeKind: null,
     unreadable: null,
+    failureAcknowledgedAt: null,
     attention: false,
     error: null,
     createdAt: 1,
@@ -55,6 +56,7 @@ function summary(patch: Partial<EnsembleSummary> = {}): EnsembleSummary {
   merged.attention = ensembleNeedsAttention({
     status: merged.status,
     unreadable: merged.unreadable,
+    failureAcknowledgedAt: merged.failureAcknowledgedAt,
     membersNeedingInput: merged.membersNeedingInput,
   });
   return merged;

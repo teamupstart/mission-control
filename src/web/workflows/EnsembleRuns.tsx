@@ -173,7 +173,7 @@ export function EnsembleRuns({
     });
   };
 
-  const runDelete = (confirmId: string): void => {
+  const runDelete = (): void => {
     const actedRunId = selected;
     if (!actedRunId) return;
     const actionToken = ++actionGeneration.current;
@@ -181,7 +181,10 @@ export function EnsembleRuns({
     setActionError(null);
     setActionErrorKind(null);
     setActionErrorMemberId(null);
-    void deleteEnsemble(actedRunId, confirmId).then((result) => {
+    // The daemon still requires the URL id echoed in the body as a defense-in-depth contract.
+    // The browser already owns that exact selected id, so confirmation does not ask the operator
+    // to transcribe an implementation detail.
+    void deleteEnsemble(actedRunId, actedRunId).then((result) => {
       if (
         selectedRef.current !== actedRunId ||
         actionGeneration.current !== actionToken

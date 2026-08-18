@@ -1,7 +1,8 @@
 // What is at stake: the generic run detail renders members, artifacts, timeline and outcome for
 // ANY strategy, while Best-of-N contributes only its scorecards and select-one decision through
 // the result-renderer registry. The evaluator judged blind, but the operator view reveals which
-// member each artifact came from. Destructive actions confirm inline; delete demands the id.
+// member each artifact came from. Failure dismissal preserves history, and deletion confirms in a
+// registered dialog without asking a person to transcribe an internal id.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -22,8 +23,10 @@ import type {
 } from "../src/web/ensembles/types.ts";
 import { EnsembleDetail } from "../src/web/ensembles/EnsembleDetail.tsx";
 import { EnsembleActions } from "../src/web/ensembles/EnsembleActions.tsx";
+import { EnsembleDeleteModal } from "../src/web/ensembles/EnsembleDeleteModal.tsx";
 import { validateManualChecks } from "../src/web/ensembles/EnsembleMembers.tsx";
 import { EnsembleRuns } from "../src/web/workflows/EnsembleRuns.tsx";
+import { withOverlayHost } from "./helpers/overlay-host.ts";
 
 const run: EnsembleRun = {
   id: "run-1",
@@ -125,6 +128,7 @@ const run: EnsembleRun = {
   outcome: null,
   workflowHandoff: null,
   unreadable: null,
+  failureAcknowledgedAt: null,
   error: null,
   createdAt: 1000,
   updatedAt: 2000,
@@ -553,7 +557,7 @@ test("the decision panel appears while awaiting a person, offers no-consensus, a
   assert.match(html, /type="submit"[^>]*disabled/);
 });
 
-test("a completed run drops the decision panel and offers delete behind an id echo", () => {
+test("a completed run drops the decision panel and offers delete through a confirmation dialog", () => {
   const terminal: EnsembleRun = { ...run, status: "completed", completedAt: 3000 };
   const html = renderToStaticMarkup(
     createElement(EnsembleActions, {
@@ -566,6 +570,63 @@ test("a completed run drops the decision panel and offers delete behind an id ec
   );
   assert.doesNotMatch(html, /Cancel run/); // terminal: nothing to cancel
   assert.match(html, /Delete run…/);
+});
+
+test("a failed run can retire its attention without deleting history", () => {
+  const failed: EnsembleRun = {
+    ...run,
+    status: "failed",
+    failureAcknowledgedAt: null,
+    completedAt: 3000,
+  };
+  const needsDismissal = renderToStaticMarkup(
+    createElement(EnsembleActions, {
+      detail: { ...detail, run: failed },
+      pending: null,
+      error: null,
+      onAction: () => {},
+      onDelete: () => {},
+    }),
+  );
+  assert.match(needsDismissal, /Dismiss failure/);
+  assert.match(needsDismissal, /Delete run…/);
+
+  const acknowledged = renderToStaticMarkup(
+    createElement(EnsembleActions, {
+      detail: {
+        ...detail,
+        run: { ...failed, failureAcknowledgedAt: 3100 },
+      },
+      pending: null,
+      error: null,
+      onAction: () => {},
+      onDelete: () => {},
+    }),
+  );
+  assert.doesNotMatch(acknowledged, /Dismiss failure/);
+  assert.match(acknowledged, /Delete run…/);
+});
+
+test("ensemble deletion names the run and consequence without exposing a GUID field", () => {
+  const html = renderToStaticMarkup(
+    withOverlayHost(
+      createElement(EnsembleDeleteModal, {
+        run: { ...run, status: "completed", completedAt: 3000 },
+        busy: false,
+        error: null,
+        onClose: () => {},
+        onConfirm: () => {},
+      }),
+    ),
+  );
+  assert.match(html, /role="dialog"/);
+  assert.match(html, /Delete ensemble run/);
+  assert.match(html, /Fix the parser/);
+  assert.match(html, /private snapshot refs/);
+  assert.match(html, /member Tasks and any linked Workflow run are kept/);
+  assert.match(html, />Delete run</);
+  assert.doesNotMatch(html, /<input/);
+  assert.doesNotMatch(html, /run-1/);
 });
 
 test("the actions surface offers Cancel while a run is live, but not once terminal", () => {
@@ -1081,6 +1142,7 @@ function summary(over: Partial<EnsembleSummary> & { id: string }): EnsembleSumma
     selectedMemberId: null,
     outcomeKind: null,
     unreadable: null,
+    failureAcknowledgedAt: null,
     attention: false,
     error: null,
     createdAt: 1000,

@@ -1940,6 +1940,9 @@ export function openDb(): DatabaseSync {
       -- different field (a different repository, title, config, or workflow) is a conflict rather
       -- than a silent idempotent replay of the old run. Empty string on rows written before it.
       request_fingerprint    TEXT NOT NULL DEFAULT '',
+      -- A failed run remains durable history after the operator has seen it. This timestamp
+      -- retires only its attention signal; NULL means the failure has not been acknowledged.
+      failure_acknowledged_at INTEGER,
       created_at           INTEGER NOT NULL,
       updated_at           INTEGER NOT NULL,
       completed_at         INTEGER,
@@ -2797,6 +2800,10 @@ function migrate(d: DatabaseSync): void {
   // "no recorded fingerprint"; a replay against such a run compares against '' and, when the new
   // request carries a real fingerprint, is a conflict rather than a silent adoption of a stranger.
   addColumn(d, "ensemble_runs", "request_fingerprint", "TEXT NOT NULL DEFAULT ''");
+  // Acknowledging a failed run is deliberately separate from deletion: historical rows begin
+  // unacknowledged, and the nullable timestamp records the operator action without changing the
+  // terminal status or touching any artifacts.
+  addColumn(d, "ensemble_runs", "failure_acknowledged_at", "INTEGER");
 
   // `queued` -> `backlog`: the task backlog stopped calling itself a queue, so
   // "queue" now only ever means a session's work queue. Rows persisted before the

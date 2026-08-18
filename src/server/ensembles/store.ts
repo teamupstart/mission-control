@@ -181,6 +181,7 @@ const RunRowSchema = z.object({
   outcome_json: nullableText,
   workflow_handoff_json: nullableText,
   request_fingerprint: z.string(),
+  failure_acknowledged_at: integer.nullable(),
   created_at: integer,
   updated_at: integer,
   completed_at: integer.nullable(),
@@ -236,6 +237,7 @@ function readRunRow(value: unknown): { row: RunRow; issues: RunRowIssue[] } {
       outcome_json: read("outcome_json", nullableText, null),
       workflow_handoff_json: read("workflow_handoff_json", nullableText, null),
       request_fingerprint: read("request_fingerprint", z.string(), ""),
+      failure_acknowledged_at: read("failure_acknowledged_at", integer.nullable(), null),
       created_at: read("created_at", integer, 0),
       updated_at: read("updated_at", integer, 0),
       completed_at: read("completed_at", integer.nullable(), null),
@@ -558,6 +560,7 @@ function rowToRun(value: unknown): EnsembleRun {
     outcome: snapshot.outcome,
     workflowHandoff: snapshot.workflowHandoff,
     unreadable: snapshot.unreadable,
+    failureAcknowledgedAt: row.failure_acknowledged_at,
     error: row.error,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -1367,7 +1370,12 @@ export class EnsembleStore {
       selectedMemberId,
       outcomeKind: outcome?.kind ?? null,
       unreadable: run.unreadable,
-      attention: ensembleNeedsAttention({ status: run.status, unreadable: run.unreadable }),
+      failureAcknowledgedAt: run.failureAcknowledgedAt,
+      attention: ensembleNeedsAttention({
+        status: run.status,
+        unreadable: run.unreadable,
+        failureAcknowledgedAt: run.failureAcknowledgedAt,
+      }),
       error: run.error,
       createdAt: run.createdAt,
       updatedAt: run.updatedAt,
@@ -1501,6 +1509,45 @@ export class EnsembleStore {
           ...ENSEMBLE_TERMINAL_STATUSES,
         ).changes > 0
     );
+  }
+
+  /**
+   * Retire a failed run's attention signal without changing its terminal state or history.
+   *
+   * Idempotent because a lost response may be replayed. The status predicate and NULL check are
+   * in the write, so a stale browser cannot acknowledge a run that was never failed.
+   */
+  acknowledgeFailure(id: string, now = Date.now()): EnsembleTransition<EnsembleRun> {
+    return this.inTransaction(() => {
+      const current = this.getRun(id);
+      if (!current) return { ok: false, reason: "not_found", current: null };
+      if (current.status !== "failed") {
+        return { ok: false, reason: "precondition_failed", current };
+      }
+      if (current.failureAcknowledgedAt !== null) return { ok: true, value: current };
+      const changed = this.db
+        .prepare(
+          `UPDATE ensemble_runs
+             SET failure_acknowledged_at = ?, updated_at = ?
+             WHERE id = ? AND status = 'failed' AND failure_acknowledged_at IS NULL`,
+        )
+        .run(now, now, id).changes;
+      if (changed === 0) {
+        const latest = this.getRun(id);
+        if (latest?.status === "failed" && latest.failureAcknowledgedAt !== null) {
+          return { ok: true, value: latest };
+        }
+        return {
+          ok: false,
+          reason: latest ? "precondition_failed" : "not_found",
+          current: latest,
+        };
+      }
+      const updated = this.getRun(id);
+      return updated
+        ? { ok: true, value: updated }
+        : { ok: false, reason: "not_found", current: null };
+    });
   }
 
   /** The same compare-and-set discipline for one member. */

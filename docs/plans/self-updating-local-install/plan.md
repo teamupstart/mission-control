@@ -9,8 +9,9 @@
 
 A user installs Mission Control by cloning this repository and running one install command. The
 installed app then keeps itself current: the Electron main process asks the `gh` CLI whether a newer
-GitHub Release exists, prompts the user, and on acceptance rebuilds the app from that release tag in
-a clone the updater owns and swaps the result into `/Applications`.
+stable GitHub Release exists - drafts and prereleases excluded by the query that selects it - prompts
+the user, and on acceptance rebuilds the app from that release tag in a clone the updater owns, then
+swaps the result into `/Applications`.
 
 Homebrew is not used. Neither is UMT, Jamf, a private tap, a hosted update feed, or any signed
 artifact origin. The evidence for removing each is recorded under
@@ -144,7 +145,7 @@ flowchart TB
     Script --> Receipt[Install receipt in state dir]
   end
   subgraph Update
-    Main[Electron UpdateManager] -->|gh release view| Tag
+    Main[Electron UpdateManager] -->|"gh release list, drafts and prereleases excluded"| Tag
     Main --> Receipt
     Main --> Prompt[Prompt: banner or native dialog]
     Prompt --> Helper[Detached apply-update helper]
@@ -174,6 +175,12 @@ location would be replaced mid-run.
 ## Security and failure rules
 
 - Only this repository's releases are trusted. The repository slug is not user-configurable in v1.
+- **Select the candidate release from an explicitly filtered list; never filter after asking for "the
+  latest".** Drafts and prereleases are excluded by the query that chooses the release, not by a check
+  applied to whatever "latest" returned. Filtering afterwards cannot recover: once a prerelease has
+  been selected as latest, the check declines it and has no way to reach the newest stable release, so
+  every stable user silently stops receiving updates until another stable release ships, with no error
+  raised anywhere. Phase 2 carries the exact command and a regression test.
 - Never install a version lower than the running one.
 - One check and one apply at a time. A repeated action returns the live operation.
 - Build into the clone and verify the packaged app's version equals the target tag before swapping.

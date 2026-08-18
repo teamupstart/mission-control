@@ -54,7 +54,7 @@
   <header>
     <div class="eyebrow">Root plan · approved</div>
     <h1>Self-updating local install</h1>
-    <p>A user clones the repository and runs one install command. The installed app then keeps itself current: the Electron main process asks the <code>gh</code> CLI whether a newer GitHub Release exists, prompts, and rebuilds itself from that tag in a clone the updater owns.</p>
+    <p>A user clones the repository and runs one install command. The installed app then keeps itself current: the Electron main process asks the <code>gh</code> CLI whether a newer <strong>stable</strong> GitHub Release exists - drafts and prereleases excluded by the query that selects it - prompts, and rebuilds itself from that tag in a clone the updater owns.</p>
     <span class="status">Supersedes the distribution half of issue #642</span>
   </header>
 
@@ -88,7 +88,7 @@
 
         <text class="cap" x="14" y="146">Approved: clone plus gh</text>
         <rect class="node2" x="14" y="162" width="196" height="82" rx="13"/><text x="112" y="194" text-anchor="middle">GitHub Releases</text><text class="sub" x="112" y="216" text-anchor="middle">tag, notes, version</text>
-        <path class="edge" d="M210 203 H300"/><text class="sub" x="255" y="194" text-anchor="middle">gh</text>
+        <path class="edge" d="M210 203 H300"/><text class="sub" x="255" y="194" text-anchor="middle">gh list, filtered</text>
         <rect class="node" x="300" y="162" width="215" height="82" rx="13"/><text x="407" y="194" text-anchor="middle">Installed app</text><text class="sub" x="407" y="216" text-anchor="middle">main-process updater</text>
         <path class="edge" d="M515 203 H605"/><text class="sub" x="560" y="194" text-anchor="middle">rebuild</text>
         <rect class="node" x="605" y="162" width="215" height="82" rx="13"/><text x="712" y="194" text-anchor="middle">Updater-owned clone</text><text class="sub" x="712" y="216" text-anchor="middle">in the state dir</text>
@@ -140,6 +140,7 @@
     <h2>Security and failure rules</h2>
     <ul>
       <li>Only this repository's releases are trusted; the slug is not user-configurable in v1.</li>
+      <li><strong>Select the candidate release from an explicitly filtered list; never filter after asking for "the latest".</strong> Once a prerelease has been selected as latest, declining it cannot recover the newest stable release, so stable users silently stop receiving updates with no error raised.</li>
       <li>Never install a version lower than the running one.</li>
       <li>One check and one apply at a time; a repeated action returns the live operation.</li>
       <li>Verify the packaged app's version equals the target tag <em>before</em> swapping.</li>

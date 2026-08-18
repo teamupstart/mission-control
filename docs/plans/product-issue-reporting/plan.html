@@ -1,0 +1,434 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Public product issue reporting plan</title>
+  <style>
+    :root{color-scheme:light dark;--bg:#eef2f0;--paper:#fff;--paper2:#f6f8f7;--ink:#18211e;--muted:#627069;--line:#d8e0dc;--green:#18765b;--blue:#276eae;--purple:#7157a8;--amber:#a7660f;--code:#edf4f1;--shadow:0 18px 48px rgba(24,44,36,.10);--sans:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+    @media(prefers-color-scheme:dark){:root{--bg:#0b0f0e;--paper:#141b18;--paper2:#101613;--ink:#e5eee9;--muted:#97a79f;--line:#293730;--green:#48c99d;--blue:#69adf3;--purple:#b7a0eb;--amber:#efa74b;--code:#19241f;--shadow:0 20px 58px rgba(0,0,0,.35)}}
+    *{box-sizing:border-box}html{scroll-behavior:smooth;background:var(--bg)}body{margin:0;min-width:0;background:radial-gradient(950px 520px at 90% -12%,color-mix(in srgb,var(--green) 14%,transparent),transparent 62%),var(--bg);color:var(--ink);font:15px/1.68 var(--sans)}a{color:var(--blue);text-underline-offset:3px}.mast{border-bottom:1px solid var(--line);background:color-mix(in srgb,var(--paper) 91%,transparent)}.mast-inner{max-width:1320px;margin:auto;padding:40px clamp(20px,5vw,64px) 34px}.kicker{margin:0 0 8px;color:var(--green);font:800 11px/1.2 var(--mono);letter-spacing:.14em;text-transform:uppercase}.mast h1{max-width:920px;margin:0;font-size:clamp(35px,5vw,58px);line-height:1.06;letter-spacing:-.04em}.mast-copy{max-width:900px;margin:15px 0 0;color:var(--muted);font-size:17px}.badges{display:flex;flex-wrap:wrap;gap:7px;margin-top:20px}.badge{padding:5px 10px;border:1px solid color-mix(in srgb,var(--green) 38%,var(--line));border-radius:999px;background:color-mix(in srgb,var(--green) 7%,var(--paper));color:var(--green);font:700 11px var(--mono)}.layout{display:grid;grid-template-columns:235px minmax(0,940px);gap:32px;max-width:1250px;margin:auto;padding:30px 18px 90px}nav{position:sticky;top:18px;align-self:start;max-height:calc(100vh - 36px);overflow:auto;padding:14px;border:1px solid var(--line);border-radius:13px;background:var(--paper);box-shadow:var(--shadow)}nav b{display:block;margin:0 0 8px;color:var(--muted);font:800 10px var(--mono);letter-spacing:.12em;text-transform:uppercase}nav a{display:block;padding:6px 8px;border-radius:7px;color:var(--muted);text-decoration:none;font-size:12px}nav a:hover{color:var(--ink);background:var(--paper2)}article{min-width:0;padding:10px clamp(18px,4vw,50px) 58px;border:1px solid var(--line);border-radius:17px;background:var(--paper);box-shadow:var(--shadow)}article>h1:first-child{display:none}h2{margin:46px 0 13px;padding-top:7px;border-top:1px solid var(--line);font-size:24px;line-height:1.25;letter-spacing:-.02em}h2:first-of-type{margin-top:22px;border-top:0}h3{margin:29px 0 9px;font-size:18px;line-height:1.35}p{margin:8px 0 14px}ul,ol{padding-left:24px}li{margin:5px 0}code{padding:2px 5px;border:1px solid var(--line);border-radius:5px;background:var(--code);color:var(--green);font:12.5px/1.45 var(--mono);overflow-wrap:anywhere}pre{max-width:100%;overflow:auto;margin:17px 0;padding:15px 17px;border:1px solid var(--line);border-radius:11px;background:var(--paper2)}pre code{padding:0;border:0;background:none;color:var(--ink);white-space:pre}table{display:block;width:100%;max-width:100%;overflow-x:auto;margin:18px 0;border-collapse:collapse;font-size:13px}th,td{padding:9px 11px;border:1px solid var(--line);text-align:left;vertical-align:top}th{background:var(--paper2);font-size:11px}.flow{max-width:100%;margin:22px 0;padding:16px;overflow-x:auto;border:1px solid var(--line);border-radius:14px;background:var(--paper2)}.flow figcaption{margin-bottom:12px;font-weight:760}.flow svg{display:block;width:100%;height:auto;min-width:760px}.flow p{margin:11px 3px 0;color:var(--muted);font-size:12px}.flow .edges path{fill:none;stroke:var(--muted);stroke-width:1.8;marker-end:url(#flow-arrow)}.flow .monitor-edges path{fill:none;stroke:var(--muted);stroke-width:1.8;marker-end:url(#monitor-arrow)}.flow .phase-edges path{fill:none;stroke:var(--muted);stroke-width:1.8;marker-end:url(#phase-arrow)}.flow .node rect{fill:var(--paper);stroke:var(--line);stroke-width:1.5}.flow .human rect,.flow .planning rect{fill:color-mix(in srgb,var(--blue) 8%,var(--paper));stroke:var(--blue)}.flow .ui rect{fill:color-mix(in srgb,var(--green) 8%,var(--paper));stroke:var(--green)}.flow .agent rect{fill:color-mix(in srgb,var(--purple) 8%,var(--paper));stroke:var(--purple)}.flow .service rect,.flow .source rect{fill:color-mix(in srgb,var(--amber) 8%,var(--paper));stroke:var(--amber)}.flow .cli rect,.flow .public rect,.flow .final rect{fill:color-mix(in srgb,var(--green) 8%,var(--paper));stroke:var(--green)}.flow .muted rect{fill:var(--paper);stroke:var(--muted);stroke-dasharray:4 4}.flow text{fill:var(--ink);font:650 13px var(--sans);text-anchor:middle}.flow text.sub{fill:var(--muted);font-size:10px;font-weight:480}.flow text.edge-label{fill:var(--muted);font:500 10px var(--mono)}footer{max-width:1250px;margin:0 auto 34px;padding:0 18px;color:var(--muted);font:11px var(--mono)}
+    @media(max-width:860px){.layout{grid-template-columns:1fr}.layout nav{position:static;display:flex;gap:4px;max-height:none;overflow-x:auto}.layout nav b{display:none}.layout nav a{white-space:nowrap}article{padding-inline:20px}}@media(max-width:560px){.mast-inner{padding-top:28px}.layout{padding-inline:8px}article{border-radius:13px}th,td{min-width:130px}}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media print{body{background:#fff}.mast,article,nav{box-shadow:none}.layout{display:block;max-width:none}.layout nav,footer{display:none}article{border:0}.flow svg{min-width:0}}
+  </style>
+</head>
+<body>
+  <header class="mast"><div class="mast-inner"><p class="kicker">Mission Control · product and engineering plan</p><h1>Public product issue reporting</h1><p class="mast-copy">One safe CLI reporting contract for the dashboard and user-authorized agents, with image support built behind a hard gate and a self-cleaning release monitor.</p><div class="badges"><span class="badge">five report types</span><span class="badge">dashboard + MCP</span><span class="badge">CLI-only v1</span><span class="badge">attachment gate off</span><span class="badge">release monitor</span></div></div></header>
+  <div class="layout"><nav aria-label="Plan sections"><b>On this page</b><a href="#outcome">Outcome</a><a href="#confirmed-product-decisions">Confirmed product decisions</a><a href="#why-this-shape-fits-the-existing-product">Why this shape fits the existing product</a><a href="#user-experience">User experience</a><a href="#labels-and-issue-body">Labels and issue body</a><a href="#request-flow">Request flow</a><a href="#shared-contract-and-daemon-ownership">Shared contract and daemon ownership</a><a href="#mcp-capability">MCP capability</a><a href="#github-cli-attachment-release-monitor">GitHub CLI attachment release monitor</a><a href="#public-repository-and-task-source-rollout">Public repository and task-source rollout</a><a href="#compatibility-and-safety-boundaries">Compatibility and safety boundaries</a><a href="#implementation-surfaces">Implementation surfaces</a><a href="#test-and-verification-contract">Test and verification contract</a><a href="#approved-review-decisions">Approved review decisions</a><a href="#verify-claims-ledger">Verify-claims ledger</a></nav><article><h1 id="public-product-issue-reporting">Public product issue reporting</h1>
+<p><strong>Status:</strong> Approved on 2026-08-18. The operator selected dashboard confirmation for MCP reports,
+<code>mancej/mission-controller-control-issues</code> as the shipped public target, a weekly Monday 09:00
+<code>America/New_York</code> attachment-release check, and a phased implementation follow-up.</p>
+<p><strong>Rendered review:</strong> <a href="plan.html">plan.html</a></p>
+<h2 id="outcome">Outcome</h2>
+<p>Give every Mission Control user one easy, public path for reporting product feedback, and give an
+agent the same capability when the user explicitly asks it to report something. Both paths produce
+one structured GitHub issue in the dedicated public issue repository through the reporter&#x27;s existing
+GitHub CLI authentication. The operator&#x27;s GitHub task source can then sweep new reports into Mission
+Control for evaluation without this feature creating a second intake system.</p>
+<p>The dashboard experience is intentionally small: open <strong>Feedback</strong> from an always-reachable topbar
+glyph or the command palette, choose one of five report types, enter a title and details, review the
+public-content warning, and submit through <code>gh issue create</code>. The screenshot dropzone is built in the
+same surface but visibly disabled until first-party GitHub CLI attachment support ships and a
+follow-up task verifies its final contract. A successful submission becomes a link to the new issue.
+A failed submission stays editable and explains whether retrying is safe.</p>
+<h2 id="confirmed-product-decisions">Confirmed product decisions</h2>
+<table><thead><tr><th>Decision</th><th>V1 contract</th></tr></thead><tbody><tr><td>Product track</td><td>This is a user-facing capability with public side effects and browser behavior.</td></tr><tr><td>Report types</td><td><code>bug</code>, <code>feature-request</code>, <code>documentation</code>, <code>usability</code>, and <code>other</code>. Exactly one is required.</td></tr><tr><td>Type ownership</td><td>The reporter chooses the type. The daemon maps it to one fixed GitHub label; callers cannot submit arbitrary labels.</td></tr><tr><td>Intake labels</td><td>Every issue also receives <code>status:needs-triage</code> and exactly one source label: <code>source:dashboard</code> or <code>source:agent</code>.</td></tr><tr><td>Deeper triage</td><td>Area, severity, duplicate, priority, and disposition labels are assigned during evaluation, not by the reporter.</td></tr><tr><td>GitHub identity</td><td>Mission Control uses the reporter&#x27;s installed <code>gh</code> binary and existing <code>gh auth</code>; it stores no GitHub token.</td></tr><tr><td>Screenshot rollout</td><td>Build the Dispatch-style upload contract and anticipated <code>gh issue create --attach</code> adapter now, but hard-disable production attachment input and execution. A release-follow-up task verifies the shipped CLI contract before enabling it.</td></tr><tr><td>Agent path</td><td>Add a Mission MCP tool for reports explicitly requested by the user. It converges on the same daemon service as the dashboard.</td></tr><tr><td>Agent consent</td><td>Every MCP report opens a bounded dashboard preview and blocks until the human submits or dismisses it. No agent call directly publishes.</td></tr><tr><td>Public target</td><td>Ship <code>mancej/mission-controller-control-issues</code> as the fixed default, with the validated downstream-fork override described below.</td></tr><tr><td>Task source</td><td>Creating and enabling the GitHub Issues task source is an operator rollout step. The reporting feature never dispatches an agent.</td></tr><tr><td>Upstream monitor</td><td>A recurring Mission Control mission checks GitHub CLI issue #13256 and stable CLI documentation every Monday at 09:00 <code>America/New_York</code>. It deduplicates the enablement task, remains enabled while that work is active, and archives itself only after the task completes and its pull request merges.</td></tr></tbody></table>
+<h2 id="why-this-shape-fits-the-existing-product">Why this shape fits the existing product</h2>
+<p>Repository findings verified on 2026-08-18:</p>
+<ul>
+<li><code>src/web/components/ImageDrop.tsx</code>, <code>src/server/uploads.ts</code>, and <code>POST /api/uploads</code> already provide
+the Dispatch-style drop/paste interaction, image sniffing, a 10 MiB per-image limit, local preview,
+server-issued upload ids, and safe resolution inside Mission Control&#x27;s upload directory.</li>
+<li>Those existing uploads are local filesystem artifacts. <code>withAttachments()</code> appends their local
+paths to an agent prompt; those paths are not public GitHub URLs and must never be placed in a
+public issue.</li>
+<li><code>src/server/task-sources/github-issues.ts</code> already creates GitHub issues through <code>gh</code>, maps the
+resulting URL, and preserves the critical distinction between a retry-safe refusal and an unknown
+outcome that may already have created an issue.</li>
+<li><code>src/server/config.ts</code> already owns <code>ghBin()</code>, including the <code>MISSION_GH_BIN</code> test seam. This feature
+must reuse it rather than add another GitHub executable lookup.</li>
+<li>The GitHub Issues task source already filters by <code>labelsAny</code>, copies labels when configured, and
+records seen issues durably. <code>status:needs-triage</code> is therefore a sufficient stable sweep label.</li>
+<li>Mission MCP tools are registered in <code>src/mcp/server.ts</code>, declared in <code>MISSION_MCP_TOOLS</code>, validated
+again by daemon request schemas, and exercised through the built-bundle smoke check. The MCP child
+already authenticates to the daemon with the per-machine token and can identify its session.</li>
+<li>The topbar is a measured one-row layout. A new glyph must join the existing tool group and update
+its geometry guards; the command palette should open the same modal rather than implement another
+reporting surface.</li>
+<li>There are no existing <code>.docs/architecture</code> diagrams to update. The new external request flow is
+recorded below in this plan, with an inline SVG rendering in <code>plan.html</code>.</li>
+</ul>
+<p>GitHub&#x27;s current official CLI documents title, body, labels, issue type, assignees, milestone,
+project, relationships, templates, and web mode for <code>gh issue create</code>, but no file attachment flag.
+GitHub CLI issue #13256 proposes either a standalone attachment uploader or <code>--attach</code> on issue and
+pull-request commands. As of 2026-08-18 it is open, assigned, labeled <code>blocked</code>, and has no linked
+branch or pull request. The issue says the GitHub platform may need a new REST or GraphQL surface
+before the CLI can implement the feature. The operator has nevertheless approved the proposed
+<code>gh issue create --attach</code> shape as the implementation assumption, provided production attachment
+execution remains disabled until a stable release and official CLI help confirm the actual contract.</p>
+<p>References:</p>
+<ul>
+<li><a href="https://cli.github.com/manual/gh_issue_create">GitHub CLI: <code>gh issue create</code></a></li>
+<li><a href="https://docs.github.com/en/get-started/writing-on-github/working-with-advanced-formatting/attaching-files">GitHub Docs: attaching files</a></li>
+<li><a href="https://github.com/cli/cli/issues/13256">GitHub CLI issue #13256: first-party attachment upload</a></li>
+</ul>
+<h2 id="user-experience">User experience</h2>
+<h3 id="entry-and-draft-lifetime">Entry and draft lifetime</h3>
+<p>Add one compact <strong>Feedback</strong> glyph to the topbar&#x27;s tool group, next to Settings and Alerts, with an
+accessible name and tooltip that say <strong>Report product feedback</strong>. At narrow widths it remains a glyph
+like the existing tools. Add one static command-palette action with the same wording and common search
+terms such as bug, issue, feature request, docs, and usability. Both entry points call one App-owned
+opener and mount the same modal.</p>
+<p>The draft lives in <code>App</code>, not inside the modal, so closing and reopening does not discard text or
+finished image uploads. This matches Dispatch&#x27;s useful draft lifetime without sharing its much larger
+task schema. <strong>Clear</strong> discards the draft deliberately. A confirmed successful submission clears it;
+a refusal or unknown outcome does not.</p>
+<h3 id="form">Form</h3>
+<p>The modal contains only:</p>
+<ol>
+<li><strong>Type</strong>, a required five-option control in the confirmed order: Bug, Feature request,
+Documentation, Usability, Other.</li>
+<li><strong>Title</strong>, required and bounded.</li>
+<li><strong>Details</strong>, required and bounded. The prompt copy changes by type, but the persisted shape stays
+one field rather than five incompatible forms. Bug copy asks for observed behavior, expected
+behavior, and reproduction; feature-request copy asks for the current limitation and desired
+outcome.</li>
+<li><strong>Screenshots</strong>, rendered as a disabled Dispatch-style dropzone in the initial release with the
+explanation <strong>Screenshot upload is waiting for first-party GitHub CLI support</strong> and a link to
+issue #13256. Build the state, server-issued locator contract, previews, validation, and
+attachment strip now, but do not allow paste, drop, selection, or a non-empty attachment request
+in production. The dormant adapter anticipates one repeated <code>--attach &lt;resolved-image-path&gt;</code>
+argument per image. Only the release-follow-up may correct that shape and enable the control.</li>
+<li>A visible notice: <strong>This report and its screenshots will be public on GitHub. Review them for
+secrets and personal information before submitting.</strong></li>
+</ol>
+<p>The daemon appends a small generated environment section containing only allowlisted facts useful to
+triage: Mission Control version, operating-system family, CPU architecture, and dashboard mode
+(browser or Electron). It never includes usernames, home paths, repository paths, environment
+variables, session transcripts, prompts, logs, tokens, hostnames, or process arguments. Generated
+context is shown in the final preview before publication.</p>
+<h3 id="success-and-failure">Success and failure</h3>
+<p>On success, replace the primary action with <strong>View GitHub issue</strong> and render the returned issue URL.
+The modal may then close without losing the result. On a normal <code>gh</code> refusal, keep the draft and the
+submit action because nothing was published. On an unknown outcome, keep the draft but withdraw the
+submit action for that opening and say the issue may already exist; opening GitHub to check is the
+primary recovery. This reuses the safety rule already established by task-source pushes and prevents
+a timeout from becoming a duplicate public issue.</p>
+<h2 id="labels-and-issue-body">Labels and issue body</h2>
+<p>The server owns an exhaustive report-type-to-label map:</p>
+<table><thead><tr><th>UI and API value</th><th>GitHub label</th><th>Meaning</th></tr></thead><tbody><tr><td><code>bug</code></td><td><code>bug</code></td><td>Existing behavior is incorrect or broken.</td></tr><tr><td><code>feature-request</code></td><td><code>feature-request</code></td><td>A new capability or material extension is requested.</td></tr><tr><td><code>documentation</code></td><td><code>documentation</code></td><td>Product or contributor documentation is missing, misleading, or unclear.</td></tr><tr><td><code>usability</code></td><td><code>usability</code></td><td>The capability exists but is difficult to find, understand, or operate.</td></tr><tr><td><code>other</code></td><td><code>other</code></td><td>Valid product feedback that does not fit the other four choices.</td></tr></tbody></table>
+<p>Every issue also receives <code>status:needs-triage</code>. The caller channel is derived by the daemon and adds
+<code>source:dashboard</code> or <code>source:agent</code>; neither UI nor MCP input accepts these labels directly. The
+target repository must create all eight labels before enabling submissions. Missing labels are a
+visible preflight or submission failure, never silently omitted.</p>
+<p>The body is deterministic Markdown. The disabled initial release omits the Screenshots section;
+the enabled follow-up adds it only if the final CLI contract requires body placeholders or returned
+URLs:</p>
+<pre><code class="language-markdown">## Details
+
+«reporter-authored details»
+
+## Environment
+
+- Mission Control: «version»
+- Platform: «OS family / architecture»
+- Client: «browser or Electron»
+
+&lt;!-- mission-control-product-report:v1 --&gt;
+</code></pre>
+<p>The marker is versioned and append-only. It identifies in-product submissions for later analysis
+without exposing a local identifier. The issue title is the reporter&#x27;s title without a type prefix;
+the label already owns type.</p>
+<h2 id="request-flow">Request flow</h2>
+<p>The dashboard and agent paths converge before any GitHub subprocess runs. The only external writer
+is the daemon-owned product-issue service.</p>
+
+<figure class="flow" aria-labelledby="request-flow-title">
+  <figcaption id="request-flow-title">Public product report request flow</figcaption>
+  <svg viewBox="0 0 1180 390" role="img" aria-label="A human can report through the Feedback modal, or explicitly ask an agent to report through Mission MCP. Both paths meet at the Mission Control daemon, which derives the safe body and fixed labels. The daemon uses the user's GitHub CLI to create a public issue, then the existing GitHub Issues task source can sweep it into the backlog for evaluation.">
+    <defs><marker id="flow-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 10 5 0 10z"/></marker></defs>
+    <g class="edges">
+      <path d="M170 85H245"/><path d="M430 85H515"/>
+      <path d="M170 250H245"/><path d="M430 250H515"/>
+      <path d="M700 168H780"/><path d="M965 168H1030"/>
+      <path d="M1095 200V304H965"/>
+    </g>
+    <g class="node human" transform="translate(20 55)"><rect width="150" height="60" rx="13"/><text x="75" y="27">Human</text><text class="sub" x="75" y="45">reviews public content</text></g>
+    <g class="node ui" transform="translate(245 55)"><rect width="185" height="60" rx="13"/><text x="92" y="27">Feedback modal</text><text class="sub" x="92" y="45">five-type report draft</text></g>
+    <g class="node human" transform="translate(20 220)"><rect width="150" height="60" rx="13"/><text x="75" y="27">Human</text><text class="sub" x="75" y="45">explicit report request</text></g>
+    <g class="node agent" transform="translate(245 220)"><rect width="185" height="60" rx="13"/><text x="92" y="27">Agent + Mission MCP</text><text class="sub" x="92" y="45">bounded report input</text></g>
+    <g class="node service" transform="translate(515 135)"><rect width="185" height="66" rx="13"/><text x="92" y="28">Daemon service</text><text class="sub" x="92" y="48">safe body + fixed labels</text></g>
+    <g class="node cli" transform="translate(780 135)"><rect width="185" height="66" rx="13"/><text x="92" y="28">User's gh CLI</text><text class="sub" x="92" y="48">existing authentication</text></g>
+    <g class="node public" transform="translate(1030 135)"><rect width="130" height="66" rx="13"/><text x="65" y="28">Public repo</text><text class="sub" x="65" y="48">new GitHub issue</text></g>
+    <g class="node source" transform="translate(770 304)"><rect width="195" height="60" rx="13"/><text x="97" y="27">GitHub task source</text><text class="sub" x="97" y="45">triage sweep into backlog</text></g>
+  </svg>
+  <p>The dashboard and agent entry points share one contract and one daemon-owned GitHub writer. Task ingestion remains a separate, existing operator-controlled path.</p>
+</figure>
+<p>Report submission adds no task row, database migration, SSE event, session mutation, or background
+poller. The existing task source remains the inbound bridge from the public repository into the
+backlog. The separate upstream-release monitor below uses the existing recurring-mission system and
+does not become part of this request path.</p>
+<h2 id="shared-contract-and-daemon-ownership">Shared contract and daemon ownership</h2>
+<p>Add a browser-safe report contract, preferably in a focused <code>src/shared/product-issues.ts</code> module
+with route schemas composed from <code>src/shared/protocol.ts</code>:</p>
+<ul>
+<li>an append-only tuple for the five report types;</li>
+<li>bounded <code>title</code> and <code>details</code> fields;</li>
+<li>bounded server-issued screenshot locators as a forward-compatible field that currently accepts
+only an empty list in production;</li>
+<li>an exhaustive label map and source type;</li>
+<li>a result union that distinguishes success, refusal, invalid configuration, and unknown outcome.</li>
+</ul>
+<p>The mutating HTTP route uses <code>parseBody</code> and never hand-parses JSON. A focused daemon service owns
+preflight, body construction, fixed argv construction, subprocess execution, URL parsing, and
+failure classification. It receives <code>source</code> from its trusted caller boundary rather than from the
+public request shape. It runs <code>ghBin()</code> with a fixed argv array and <code>--repo owner/name</code>; it never
+uses a shell or requires a checkout of the public issue repository.</p>
+<p>Give the service one injected attachment capability. Production wiring passes <strong>disabled</strong> and has
+no operator-facing override. Tests can inject the anticipated capability to prove that each upload
+id is re-resolved, re-sniffed, bounded, and emitted as a separate
+<code>--attach &lt;resolved-image-path&gt;</code> argv pair without a shell. The disabled capability rejects every
+non-empty attachment list before starting <code>gh</code>. The release-follow-up owns checking the real
+stable-CLI syntax, adjusting the adapter and schemas if necessary, adding a minimum-version or
+capability check, and changing production wiring to enabled.</p>
+<p>Provide a read-only preflight used when the modal opens. It verifies that <code>gh</code> is available and
+authenticated, that the configured target repository is reachable, and that the required labels
+exist. Preflight has a short timeout and returns actionable sentences. It does not create labels or
+mutate the target repository.</p>
+<p>Provide separate trusted dashboard and token-authenticated MCP preview routes. Each accepts the same
+bounded draft as its matching mutation route, assigns the source at the route boundary, and returns
+the exact target, fixed labels, allowlisted environment, and rendered public body. The dashboard
+submits the previewed draft; the MCP tool obtains this server-derived preview before opening its
+blocking review, then submits the original bounded draft only after confirmation. The mutation
+service derives and validates everything again, so a stale or fabricated preview is never authority.</p>
+<p>The target repo defaults to <code>mancej/mission-controller-control-issues</code>, with a
+<code>MISSION_PRODUCT_ISSUES_REPO</code> override for downstream forks and isolated tests. The value is parsed
+as exact <code>owner/name</code>, is shown in the modal, and is never accepted from a report draft. This
+prevents a caller from turning a product-report tool into an arbitrary issue writer.</p>
+<h2 id="mcp-capability">MCP capability</h2>
+<p>Register <code>report_product_issue</code> in <code>src/mcp/server.ts</code>, add it to <code>MISSION_MCP_TOOLS</code>, and validate
+its input again at the daemon route. The tool accepts the same five-type enum, title, details, and
+only the approved bounded screenshot locator shape. It accepts no repository, labels, assignees,
+milestone, project, arbitrary filesystem path, or raw environment block.</p>
+<p>The tool description says it prepares a public GitHub issue and may be called only when the user has
+explicitly asked the agent to report the product issue. Every call creates a bounded dashboard
+preview and blocks until the human submits or dismisses it. Submission returns the issue URL or the
+same retry-safety distinction as the UI; dismissal returns a typed cancellation without calling
+<code>gh</code>. The tool is not added to any task kind&#x27;s mandatory preapproved tool list merely by existing.</p>
+<p>Any screenshot locator from MCP must resolve to a server-issued Mission Control upload, remain
+inside the upload directory after realpath resolution, pass image sniffing again, and stay within
+the same count and byte limits as the dashboard. An agent can never publish an arbitrary checkout or
+host file through this tool.</p>
+<p>Until the release-follow-up enables attachments, the MCP tool description states that screenshots
+are unavailable and its schema accepts only an empty locator list. This keeps agent and dashboard
+behavior identical while preserving the intended wire field for the follow-up.</p>
+<h2 id="github-cli-attachment-release-monitor">GitHub CLI attachment release monitor</h2>
+<p><strong>Live schedule:</strong> <code>7f19c8d3-7062-47c3-87d1-a4891638cbb2</code></p>
+<p>Create one enabled recurring mission after this plan is approved. It runs with cron
+<code>0 9 * * 1</code> in <code>America/New_York</code>, using <code>skip-active</code>, <code>coalesce-latest</code>, low priority, the Codex
+harness, and the current repository. Every occurrence files a bounded checker task and stops,
+exactly like any other recurring mission.</p>
+<p>The checker treats issue closure alone as insufficient. It verifies all of the following against
+primary sources:</p>
+<ol>
+<li>GitHub CLI issue #13256, or its official successor, identifies a shipped implementation.</li>
+<li>A stable GitHub CLI release contains the attachment capability.</li>
+<li>The official <code>gh</code> manual or <code>gh issue create --help</code> documents the final command, argument
+repetition, supported file types, repository context, output, failure behavior, and minimum
+version.</li>
+<li><code>docs/plans/product-issue-reporting/plan.md</code> resolves on the implementation repository&#x27;s default
+branch before any task is created from it.</li>
+</ol>
+<p>If any release check fails, the checker records the evidence in its task outcome and makes no
+repository or schedule mutation. Once all release checks pass, it searches task history and open or
+merged pull requests for the deterministic follow-up title <strong>Enable GitHub CLI image attachments for
+product reports</strong>. An active task or open pull request makes the occurrence a no-op. If no active
+task and no open or merged implementation pull request exists, it creates exactly one ship task
+pointing at this plan. A terminal failed task with no implementation pull request is retry-eligible
+on a later occurrence. The schedule stays enabled so it can observe completion without racing a
+duplicate task.</p>
+<p>The follow-up task verifies the released CLI against the fake and a disposable public issue,
+corrects the anticipated argv or response contract, enables production capability detection,
+enables the dashboard and MCP attachment inputs, updates documentation, and runs the full focused
+and browser verification. A later checker occurrence archives the recurring mission through the
+validated loopback schedule route only after it observes both the task&#x27;s successful completion and
+the implementation pull request&#x27;s merged state. Mission Control has no hard-delete operation for
+recurring missions; archive is the intended self-cleanup because it removes the live schedule while
+retaining the occurrence audit.</p>
+
+<figure class="flow" aria-labelledby="monitor-flow-title">
+  <figcaption id="monitor-flow-title">GitHub CLI attachment release monitor</figcaption>
+  <svg viewBox="0 0 1180 420" role="img" aria-label="A recurring mission files a low-priority release checker task. The checker verifies primary GitHub sources and inspects the deterministic task and pull request state. When support is unavailable or work is active, it does nothing and leaves the mission enabled. When support is stable and no work exists, it creates one follow-up task. A later checker archives the mission only after that task succeeds and its pull request merges.">
+    <defs><marker id="monitor-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 10 5 0 10z"/></marker></defs>
+    <g class="monitor-edges">
+      <path d="M205 100H260"/><path d="M480 100H515"/><path d="M735 100H770"/>
+      <path d="M880 135V195H370V250"/><path d="M880 135V250"/>
+      <path d="M990 100H1090V250"/><path d="M880 312V345"/>
+    </g>
+    <g class="node service" transform="translate(20 67)"><rect width="185" height="66" rx="13"/><text x="92" y="28">Recurring mission</text><text class="sub" x="92" y="48">selected cadence</text></g>
+    <g class="node agent" transform="translate(260 67)"><rect width="220" height="66" rx="13"/><text x="110" y="28">Release checker task</text><text class="sub" x="110" y="48">low priority, skip active</text></g>
+    <g class="node public" transform="translate(515 67)"><rect width="220" height="66" rx="13"/><text x="110" y="27">GitHub primary sources</text><text class="sub" x="110" y="47">issue + stable gh + help</text></g>
+    <g class="node ui" transform="translate(770 67)"><rect width="220" height="66" rx="13"/><text x="110" y="27">Task + pull request state</text><text class="sub" x="110" y="47">deterministic title</text></g>
+    <g class="node muted" transform="translate(260 250)"><rect width="220" height="62" rx="13"/><text x="110" y="27">No-op</text><text class="sub" x="110" y="46">not ready or work active</text></g>
+    <g class="node service" transform="translate(770 250)"><rect width="220" height="62" rx="13"/><text x="110" y="27">Create one follow-up</text><text class="sub" x="110" y="46">mission remains enabled</text></g>
+    <g class="node final" transform="translate(1020 250)"><rect width="140" height="62" rx="13"/><text x="70" y="27">Archive</text><text class="sub" x="70" y="46">only after merge</text></g>
+    <g class="node agent" transform="translate(770 345)"><rect width="220" height="62" rx="13"/><text x="110" y="27">Enablement follow-up</text><text class="sub" x="110" y="46">adapt, test, open PR</text></g>
+    <text class="edge-label" x="500" y="185">unreleased or active</text>
+    <text class="edge-label" x="895" y="185">ready, no work</text>
+    <text class="edge-label" x="1010" y="86">successful + merged</text>
+  </svg>
+  <p>The mission remains enabled while upstream support is unavailable and while follow-up work is active. Each later occurrence deduplicates against task and pull request state; only one that observes successful completion plus a merged pull request archives the schedule and retains its audit history.</p>
+</figure>
+<h2 id="public-repository-and-task-source-rollout">Public repository and task-source rollout</h2>
+<p>Repository creation and task-source enablement are operational prerequisites, not hidden code-side
+effects of this feature. Before enabling the shipped target:</p>
+<ol>
+<li>Create the public repository at <code>mancej/mission-controller-control-issues</code> and enable public
+issues.</li>
+<li>Create <code>bug</code>, <code>feature-request</code>, <code>documentation</code>, <code>usability</code>, <code>other</code>,
+<code>status:needs-triage</code>, <code>source:dashboard</code>, and <code>source:agent</code> with documented descriptions and
+colors.</li>
+<li>Publish a security policy and issue guidance that direct secrets and vulnerabilities away from
+the public tracker.</li>
+<li>Configure a GitHub Issues task source against the Mission Control implementation repository,
+with <code>repo</code> set to the public report repository, <code>labelsAny: [&quot;status:needs-triage&quot;]</code>, and
+<code>copyLabels: true</code>.</li>
+<li>Run task-source preflight and one manual sweep before enabling its schedule. Task sources create
+backlog rows only; the operator separately chooses the evaluation workflow and dispatch policy.</li>
+</ol>
+<p>The application does not create the repository, labels, security policy, task source, or workflow.
+Those actions change external or operator-owned state and are verified in rollout.</p>
+<h2 id="compatibility-and-safety-boundaries">Compatibility and safety boundaries</h2>
+<ul>
+<li>This is additive. Existing Dispatch attachments continue to resolve to local prompt paths and are
+not changed into public uploads.</li>
+<li>No secret, token, or new GitHub OAuth flow is introduced. <code>gh</code> remains the credential owner.</li>
+<li>Demo mode and tests must never reach GitHub. They use the existing <code>MISSION_GH_BIN</code> fake seam, and
+demo mode either hides the submit action or returns an explicit inert-mode refusal.</li>
+<li>Reports are always public. The warning and final preview are present for dashboard and MCP
+confirmation flows; no automatic log collection exists.</li>
+<li>The initial production build cannot upload an attachment even if a caller fabricates a non-empty
+locator list. The gate is server-side, has no user-operable override, and is tested before <code>gh</code>
+execution.</li>
+<li>A missing target repository, missing label, unauthenticated <code>gh</code>, timeout, malformed success URL,
+and subprocess signal death are separate tested outcomes.</li>
+<li>Concurrent double-submit is guarded in memory by a draft/request id for the duration of the
+attempt. Ambiguous completion never enables blind retry in the same opening.</li>
+<li>Report type values and the body marker are append-only. A future type is appended and must update
+the exhaustive label map, UI options, MCP schema, docs, and tests together.</li>
+<li>The task source&#x27;s own persisted kind and seen-item contracts are unchanged.</li>
+</ul>
+<h2 id="implementation-surfaces">Implementation surfaces</h2>
+<p>The phase plan may adjust names where repository evidence warrants, but should preserve ownership:</p>
+<table><thead><tr><th>Area</th><th>Existing or expected surface</th></tr></thead><tbody><tr><td>Shared report vocabulary</td><td>New focused shared module plus route schemas in <code>src/shared/protocol.ts</code></td></tr><tr><td>GitHub execution and preflight</td><td>Focused daemon service reusing <code>ghBin()</code> and existing run-result semantics</td></tr><tr><td>HTTP</td><td><code>src/server/routes.ts</code>, read-only preflight plus trusted dashboard/MCP preview and mutation routes</td></tr><tr><td>Upload resolution</td><td>Reuse <code>src/server/uploads.ts</code>; do not trust browser paths or MCP paths</td></tr><tr><td>Attachment capability</td><td>Injected daemon adapter; production disabled, fake-enabled tests anticipate repeated <code>--attach</code> argv</td></tr><tr><td>MCP</td><td><code>src/mcp/server.ts</code>, <code>src/server/mission-mcp.ts</code>, bundle smoke and registration tests</td></tr><tr><td>Dashboard state</td><td><code>src/web/App.tsx</code>, one App-owned draft/opener/result</td></tr><tr><td>Modal</td><td>New focused component reusing <code>ImageDrop</code>, <code>AttachmentStrip</code>, <code>Tooltip</code>, and overlay conventions</td></tr><tr><td>Entry points</td><td>Topbar tool group and a static command-palette action that call the same opener</td></tr><tr><td>Styling and geometry</td><td><code>src/web/styles.css</code>, <code>src/web/topbarLadder.ts</code>, existing Electron/topbar guards</td></tr><tr><td>E2E fake</td><td>Extend the shared fake <code>gh</code> to record product-issue argv and return controlled outcomes</td></tr><tr><td>Documentation</td><td><code>docs/ui.md</code>, <code>docs/configuration.md</code>, <code>docs/security.md</code>, and task-source guidance</td></tr><tr><td>Release automation</td><td>Existing recurring-mission API and one low-priority monitoring definition; no scheduler code change</td></tr></tbody></table>
+<h2 id="test-and-verification-contract">Test and verification contract</h2>
+<h3 id="unit-and-contract-tests">Unit and contract tests</h3>
+<ul>
+<li>The five-type tuple and exhaustive label mapping compile and map exactly as approved.</li>
+<li>Body generation escapes no reporter Markdown but keeps generated sections and the v1 marker
+deterministic; bounds count UTF-8 bytes where public payload size matters.</li>
+<li>GitHub argv uses the fixed target, one label argument per derived label, body-file or safe argv
+transport, and never a shell.</li>
+<li>Success URL parsing, retry-safe refusal, timeout/signal unknown outcome, malformed success output,
+missing labels, unavailable repo, and unauthenticated CLI are distinct.</li>
+<li>Production rejects every non-empty screenshot locator list before GitHub is called. With the
+injected fake capability enabled, locators accept only fresh server-issued uploads inside the
+upload root; traversal, symlinks out, stale ids, non-images, excessive count, and excessive
+aggregate bytes fail before GitHub is called.</li>
+<li>The fake attachment-capable <code>gh</code> receives one anticipated <code>--attach</code> pair per resolved image. A
+contract fixture isolates this assumption so the release-follow-up changes one adapter rather
+than every caller.</li>
+<li>The MCP registry and built bundle expose exactly the declared tool, validate the schema twice, do
+not allow repository/label/path overrides, and preserve dashboard/MCP source attribution.</li>
+<li>Static React rendering covers all five types, draft/success/failure states, public warning,
+preflight, upload-in-progress, refusal, and unknown-outcome copy.</li>
+<li>Palette and topbar ladder tests prove the new entry remains reachable and the topbar remains one
+row at supported widths.</li>
+</ul>
+<h3 id="browser-end-to-end-tests">Browser end-to-end tests</h3>
+<p>Add a Playwright spec because this is a new UI feature. Against the built daemon and fake <code>gh</code>, prove:</p>
+<ol>
+<li>the topbar entry and command-palette entry open the same retained draft;</li>
+<li>each of the five report types creates the exact derived label set, with no caller-defined labels;</li>
+<li>the screenshot dropzone is visible but disabled, explains the upstream dependency, and neither
+paste, drop, selection, nor a fabricated HTTP payload invokes attachment upload;</li>
+<li>a successful response shows and opens the issue URL, then clears the next draft;</li>
+<li>an ordinary refusal keeps a safe retry, while an unknown outcome withdraws it for that opening;</li>
+<li>a missing or unauthenticated CLI produces actionable preflight copy;</li>
+<li>demo mode causes no fake <code>gh</code> invocation;</li>
+<li>the new topbar glyph stays accessible at each measured layout rung;</li>
+<li>an attachment-enabled fake build exercises paste/drop, preview, safe upload-id resolution, and
+anticipated repeated <code>--attach</code> argv without enabling that path in production wiring.</li>
+</ol>
+<p>The fake agent binaries remain in force, so the spec spends no model tokens.</p>
+<h3 id="commands">Commands</h3>
+<p>Run focused unit and HTTP files while iterating, always with the repository&#x27;s test preload, then:</p>
+<pre><code class="language-sh">npm run typecheck
+npm run lint
+npm test
+npm run build
+npm run smoke
+npm run test:e2e
+</code></pre>
+<p>UI verification includes the Playwright flow and the relevant Electron topbar geometry test. Manual
+verification uses a disposable text-only test issue in the public repository, confirms
+labels/body/source, confirms attachment controls remain disabled, and closes the test issue without
+deleting evidence from the implementation PR. Native image upload is manual verification owned by
+the later release-follow-up, not by this initial build.</p>
+<h2 id="approved-review-decisions">Approved review decisions</h2>
+<ul>
+<li><strong>MCP consent:</strong> dashboard confirmation. The MCP call posts a bounded public preview and blocks
+until the human submits or dismisses it.</li>
+<li><strong>Target repository:</strong> <code>mancej/mission-controller-control-issues</code> is the shipped default.</li>
+<li><strong>Release monitor:</strong> weekly at 09:00 Monday in <code>America/New_York</code>, expressed as
+<code>0 9 * * 1</code>, with missed runs coalesced and overlap skipped while a prior checker is active.</li>
+<li><strong>Implementation follow-up:</strong> create merge-aware phase documents and schedule their dependent
+Mission Control tasks.</li>
+</ul>
+<h2 id="verify-claims-ledger">Verify-claims ledger</h2>
+<h3 id="verified-claims">Verified claims</h3>
+<ul>
+<li>Existing Dispatch images become daemon-local paths, not public URLs. Basis: inspected
+<code>ImageDrop.tsx</code>, <code>attachments.ts</code>, <code>uploads.ts</code>, and <code>POST /api/uploads</code>.</li>
+<li>GitHub CLI lacks a supported issue attachment flag as of 2026-08-18. Basis: official current CLI
+manual plus the open first-party attachment feature request linked above.</li>
+<li>GitHub CLI issue #13256 is open, assigned, labeled <code>blocked</code>, and has no linked development as of
+2026-08-18. Its proposal includes both a standalone uploader and <code>gh issue create --attach</code>, while
+its implementation notes identify a possible GitHub API dependency. Basis: inspected the linked
+first-party issue and its current metadata.</li>
+<li>GitHub native issue attachment is documented as a web-composer operation. Basis: official GitHub
+attachment documentation linked above.</li>
+<li>Existing GitHub issue push code already preserves refusal versus unknown outcome. Basis: inspected
+<code>github-issues.ts</code>, <code>push.ts</code>, HTTP tests, and Playwright coverage.</li>
+<li>The task source can sweep one stable triage label and copy the remaining labels. Basis: inspected
+the shared GitHub source schema, implementation, settings UI, and task-source documentation.</li>
+<li>The Mission MCP child authenticates to the daemon and the tool vocabulary is checked against the
+built bundle. Basis: inspected <code>src/mcp/server.ts</code>, <code>src/server/mission-mcp.ts</code>, and smoke tests.</li>
+</ul>
+<h3 id="confirmed-inputs">Confirmed inputs</h3>
+<ul>
+<li>Product reporting includes five v1 types: bug, feature request, documentation, usability, other.</li>
+<li>Agents may report through Mission MCP only when the user has explicitly prompted them to do so.</li>
+<li>The destination is a dedicated new public GitHub repository, and the operator will configure the
+inbound task source that evaluates its issues.</li>
+<li>V1 is CLI-only. It builds an anticipated repeated-<code>--attach</code> adapter but keeps screenshot input and
+execution disabled until a recurring mission detects a stable release and schedules the verified
+enablement follow-up.</li>
+<li>MCP publication requires dashboard confirmation, the shipped default is
+<code>mancej/mission-controller-control-issues</code>, and the upstream monitor runs weekly at the approved
+cron and time zone.</li>
+</ul>
+<h3 id="accepted-contained-assumption">Accepted contained assumption</h3>
+<ul>
+<li><strong>Future CLI attachment contract:</strong> accepted assumption, not a verified fact. The operator has
+explicitly authorized implementation against repeated <code>--attach</code> arguments even though #13256 is
+blocked and describes more than one possible surface. The production gate prevents this assumption
+from affecting users; the release-follow-up must reconcile every actual contract difference before
+enabling it.</li>
+</ul>
+<p><strong>Verdict:</strong> <code>CLEAR_WITH_ACCEPTED_ASSUMPTION</code>. All product decisions are approved. The only unverified
+future claim is isolated behind a production-off capability gate and an evidence-gated follow-up, so
+it does not block phasing or the initial release.</p></article></div>
+  <footer>Source of truth: plan.md · static HTML · no external requests</footer>
+</body>
+</html>

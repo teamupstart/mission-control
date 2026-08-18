@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Public product issue reporting phased plan</title>
+  <style>
+    :root{color-scheme:light dark;--bg:#eef2f0;--paper:#fff;--paper2:#f6f8f7;--ink:#18211e;--muted:#627069;--line:#d8e0dc;--green:#18765b;--blue:#276eae;--purple:#7157a8;--amber:#a7660f;--code:#edf4f1;--shadow:0 18px 48px rgba(24,44,36,.10);--sans:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+    @media(prefers-color-scheme:dark){:root{--bg:#0b0f0e;--paper:#141b18;--paper2:#101613;--ink:#e5eee9;--muted:#97a79f;--line:#293730;--green:#48c99d;--blue:#69adf3;--purple:#b7a0eb;--amber:#efa74b;--code:#19241f;--shadow:0 20px 58px rgba(0,0,0,.35)}}
+    *{box-sizing:border-box}html{scroll-behavior:smooth;background:var(--bg)}body{margin:0;min-width:0;background:radial-gradient(950px 520px at 90% -12%,color-mix(in srgb,var(--green) 14%,transparent),transparent 62%),var(--bg);color:var(--ink);font:15px/1.68 var(--sans)}a{color:var(--blue);text-underline-offset:3px}.mast{border-bottom:1px solid var(--line);background:color-mix(in srgb,var(--paper) 91%,transparent)}.mast-inner{max-width:1320px;margin:auto;padding:40px clamp(20px,5vw,64px) 34px}.kicker{margin:0 0 8px;color:var(--green);font:800 11px/1.2 var(--mono);letter-spacing:.14em;text-transform:uppercase}.mast h1{max-width:920px;margin:0;font-size:clamp(35px,5vw,58px);line-height:1.06;letter-spacing:-.04em}.mast-copy{max-width:900px;margin:15px 0 0;color:var(--muted);font-size:17px}.badges{display:flex;flex-wrap:wrap;gap:7px;margin-top:20px}.badge{padding:5px 10px;border:1px solid color-mix(in srgb,var(--green) 38%,var(--line));border-radius:999px;background:color-mix(in srgb,var(--green) 7%,var(--paper));color:var(--green);font:700 11px var(--mono)}.layout{display:grid;grid-template-columns:235px minmax(0,940px);gap:32px;max-width:1250px;margin:auto;padding:30px 18px 90px}nav{position:sticky;top:18px;align-self:start;max-height:calc(100vh - 36px);overflow:auto;padding:14px;border:1px solid var(--line);border-radius:13px;background:var(--paper);box-shadow:var(--shadow)}nav b{display:block;margin:0 0 8px;color:var(--muted);font:800 10px var(--mono);letter-spacing:.12em;text-transform:uppercase}nav a{display:block;padding:6px 8px;border-radius:7px;color:var(--muted);text-decoration:none;font-size:12px}nav a:hover{color:var(--ink);background:var(--paper2)}article{min-width:0;padding:10px clamp(18px,4vw,50px) 58px;border:1px solid var(--line);border-radius:17px;background:var(--paper);box-shadow:var(--shadow)}article>h1:first-child{display:none}h2{margin:46px 0 13px;padding-top:7px;border-top:1px solid var(--line);font-size:24px;line-height:1.25;letter-spacing:-.02em}h2:first-of-type{margin-top:22px;border-top:0}h3{margin:29px 0 9px;font-size:18px;line-height:1.35}p{margin:8px 0 14px}ul,ol{padding-left:24px}li{margin:5px 0}code{padding:2px 5px;border:1px solid var(--line);border-radius:5px;background:var(--code);color:var(--green);font:12.5px/1.45 var(--mono);overflow-wrap:anywhere}pre{max-width:100%;overflow:auto;margin:17px 0;padding:15px 17px;border:1px solid var(--line);border-radius:11px;background:var(--paper2)}pre code{padding:0;border:0;background:none;color:var(--ink);white-space:pre}table{display:block;width:100%;max-width:100%;overflow-x:auto;margin:18px 0;border-collapse:collapse;font-size:13px}th,td{padding:9px 11px;border:1px solid var(--line);text-align:left;vertical-align:top}th{background:var(--paper2);font-size:11px}.flow{max-width:100%;margin:22px 0;padding:16px;overflow-x:auto;border:1px solid var(--line);border-radius:14px;background:var(--paper2)}.flow figcaption{margin-bottom:12px;font-weight:760}.flow svg{display:block;width:100%;height:auto;min-width:760px}.flow p{margin:11px 3px 0;color:var(--muted);font-size:12px}.flow .edges path{fill:none;stroke:var(--muted);stroke-width:1.8;marker-end:url(#flow-arrow)}.flow .monitor-edges path{fill:none;stroke:var(--muted);stroke-width:1.8;marker-end:url(#monitor-arrow)}.flow .phase-edges path{fill:none;stroke:var(--muted);stroke-width:1.8;marker-end:url(#phase-arrow)}.flow .node rect{fill:var(--paper);stroke:var(--line);stroke-width:1.5}.flow .human rect,.flow .planning rect{fill:color-mix(in srgb,var(--blue) 8%,var(--paper));stroke:var(--blue)}.flow .ui rect{fill:color-mix(in srgb,var(--green) 8%,var(--paper));stroke:var(--green)}.flow .agent rect{fill:color-mix(in srgb,var(--purple) 8%,var(--paper));stroke:var(--purple)}.flow .service rect,.flow .source rect{fill:color-mix(in srgb,var(--amber) 8%,var(--paper));stroke:var(--amber)}.flow .cli rect,.flow .public rect,.flow .final rect{fill:color-mix(in srgb,var(--green) 8%,var(--paper));stroke:var(--green)}.flow .muted rect{fill:var(--paper);stroke:var(--muted);stroke-dasharray:4 4}.flow text{fill:var(--ink);font:650 13px var(--sans);text-anchor:middle}.flow text.sub{fill:var(--muted);font-size:10px;font-weight:480}.flow text.edge-label{fill:var(--muted);font:500 10px var(--mono)}footer{max-width:1250px;margin:0 auto 34px;padding:0 18px;color:var(--muted);font:11px var(--mono)}
+    @media(max-width:860px){.layout{grid-template-columns:1fr}.layout nav{position:static;display:flex;gap:4px;max-height:none;overflow-x:auto}.layout nav b{display:none}.layout nav a{white-space:nowrap}article{padding-inline:20px}}@media(max-width:560px){.mast-inner{padding-top:28px}.layout{padding-inline:8px}article{border-radius:13px}th,td{min-width:130px}}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media print{body{background:#fff}.mast,article,nav{box-shadow:none}.layout{display:block;max-width:none}.layout nav,footer{display:none}article{border:0}.flow svg{min-width:0}}
+  </style>
+</head>
+<body>
+  <header class="mast"><div class="mast-inner"><p class="kicker">Mission Control · merge-aware implementation</p><h1>Public product issue reporting: phased implementation</h1><p class="mast-copy">Two serial merge units deliver the confirmed agent path first and the direct dashboard surface second, while a separate weekly monitor waits for stable CLI image support.</p><div class="badges"><span class="badge">five report types</span><span class="badge">2 serial phases</span><span class="badge">CLI-only v1</span><span class="badge">attachment gate off</span><span class="badge">release monitor</span></div></div></header>
+  <div class="layout"><nav aria-label="Plan sections"><b>On this page</b><a href="#implementation-shape">Implementation shape</a><a href="#repository-findings-incorporated">Repository findings incorporated</a><a href="#phase-graph">Phase graph</a><a href="#phase-table">Phase table</a><a href="#cross-phase-contracts">Cross-phase contracts</a><a href="#merge-order-and-concurrency">Merge order and concurrency</a><a href="#final-verification-strategy">Final verification strategy</a><a href="#operational-follow-up">Operational follow-up</a><a href="#complete-cross-phase-audit">Complete cross-phase audit</a></nav><article><h1 id="public-product-issue-reporting-phased-implementation">Public product issue reporting: phased implementation</h1>
+<p><strong>Source plan:</strong> <a href="plan.md">plan.md</a></p>
+<p><strong>Approved decisions:</strong> five report types; CLI-only issue creation; production-disabled image
+attachments built against the anticipated repeated <code>--attach</code> shape; dashboard confirmation for
+agent reports; <code>mancej/mission-controller-control-issues</code> as the shipped default; and a weekly
+Monday 09:00 <code>America/New_York</code> upstream-release monitor.</p>
+<h2 id="implementation-shape">Implementation shape</h2>
+<p>The feature is split into two serial merge units:</p>
+<ol>
+<li>a complete daemon and MCP reporting path that can publish a text-only issue after dashboard
+confirmation;</li>
+<li>the direct dashboard Feedback surface, including its visible but disabled attachment control.</li>
+</ol>
+<p>This is the fewest safe split. The estimated production change is <strong>850 to 1,150 non-test lines</strong>:
+roughly 450 to 650 for shared contracts, GitHub execution, HTTP and MCP confirmation, then 400 to
+500 for App state, modal UI, palette/topbar integration and styling. Tests, fixtures and
+documentation are excluded from that estimate.</p>
+<p>One phase would combine an irreversible external writer, subprocess outcome classification,
+token-scoped MCP behavior, a blocking human review, a retained modal draft, and the topbar&#x27;s measured
+responsive geometry. That is too broad for one mid-tier implementation and review pass. Splitting at
+the already-operable agent path gives Phase 1 a real outcome and lets Phase 2 consume a merged HTTP
+contract. Splitting further would create horizontal schema, test, documentation or disabled-control
+phases with no independent value.</p>
+<h2 id="repository-findings-incorporated">Repository findings incorporated</h2>
+<ul>
+<li><code>src/server/task-sources/github-issues.ts</code> already contains the proven three-way reading of
+<code>gh issue create</code>: success with URL, retry-safe CLI refusal, and unknown outcome after process
+death or malformed success. Phase 1 extracts that classification for reuse instead of copying it.</li>
+<li><code>src/server/util/exec.ts</code> accepts stdin, so report Markdown travels through
+<code>gh issue create --body-file -</code> rather than process argv or a temporary file.</li>
+<li><code>ghBin()</code> in <code>src/server/config.ts</code> and <code>MISSION_GH_BIN</code> are the single executable and test seams.</li>
+<li><code>/mcp/reviews</code> plus an <code>input</code> review with selectable decisions already provide a token-guarded,
+durable, blocking dashboard answer. The new MCP tool reuses that channel; it does not add a review
+kind, database column, event or second confirmation UI.</li>
+<li><code>buildApp</code> is a positional dependency list used by many tests. A product-issue service seam must be
+appended as the last optional parameter, while production passes its singleton from
+<code>src/server/index.ts</code>.</li>
+<li><code>src/server/uploads.ts</code> resolves only daemon-issued basenames inside the uploads directory and
+rejects symbolic links and expired files. The attachment-capable test seam must additionally
+re-sniff bytes and enforce count and aggregate limits before forming anticipated <code>--attach</code> argv.</li>
+<li><code>useImageDrop</code> already makes <code>disabled</code> block paste, drop and selection while retaining one shared
+upload implementation. Phase 2 reuses it and never forks a feedback-only uploader.</li>
+<li>The command palette&#x27;s fixed actions live in <code>commandProvider</code>; the topbar tool glyphs live in the
+final <code>tb-tools</code> group. The topbar is governed by <code>topbarLadder.ts</code>, source guards, Playwright&#x27;s
+<code>topbar-one-row.spec.ts</code>, and Electron geometry tests.</li>
+<li>UI changes require Playwright coverage against the built dashboard. The shared fake <code>gh</code> already
+records argv and prevents a signed-in developer machine from creating real issues.</li>
+<li>Recurring missions already support the chosen cron, time zone, coalescing, overlap suppression,
+pause and archive. The upstream monitor is an operational definition, not scheduler code.</li>
+</ul>
+<h2 id="phase-graph">Phase graph</h2>
+
+<figure class="flow" aria-labelledby="phase-flow-title">
+  <figcaption id="phase-flow-title">Merge-aware implementation and release follow-up</figcaption>
+  <svg viewBox="0 0 1180 390" role="img" aria-label="The merged planning artifacts release Phase 1, the reporting core and confirmed agent path. Phase 1 releases Phase 2, the dashboard Feedback surface. Separately, the merged planning artifacts allow a weekly upstream monitor. Only after stable GitHub CLI support and the completed initial feature does that monitor release the future image attachment enablement task.">
+    <defs><marker id="phase-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 10 5 0 10z"/></marker></defs>
+    <g class="phase-edges">
+      <path d="M225 105H310"/><path d="M540 105H625"/>
+      <path d="M120 138V285H310"/><path d="M540 285H625"/>
+      <path d="M760 138V240"/><path d="M840 105H1040V240"/>
+    </g>
+    <g class="node planning" transform="translate(20 70)"><rect width="205" height="70" rx="14"/><text x="102" y="30">Planning artifacts</text><text class="sub" x="102" y="51">approved and merged</text></g>
+    <g class="node agent" transform="translate(310 70)"><rect width="230" height="70" rx="14"/><text x="115" y="29">Phase 1</text><text class="sub" x="115" y="49">core + confirmed agent path</text></g>
+    <g class="node ui" transform="translate(625 70)"><rect width="215" height="70" rx="14"/><text x="107" y="29">Phase 2</text><text class="sub" x="107" y="49">dashboard Feedback surface</text></g>
+    <g class="node service" transform="translate(310 250)"><rect width="230" height="70" rx="14"/><text x="115" y="29">Weekly monitor</text><text class="sub" x="115" y="49">issue + stable gh + help</text></g>
+    <g class="node final" transform="translate(625 250)"><rect width="270" height="70" rx="14"/><text x="135" y="29">Future enablement task</text><text class="sub" x="135" y="49">adapt, enable, verify, open PR</text></g>
+    <text class="edge-label" x="930" y="94">initial feature complete</text>
+  </svg>
+  <p>The two implementation phases are serial because the dashboard consumes the merged reporting contract. The release monitor is operational and cannot enable images until both the stable upstream CLI and the completed initial feature exist.</p>
+</figure>
+<p>The phase tasks are serial because Phase 2 imports Phase 1&#x27;s shared draft, preview, preflight and
+result contracts and calls its routes. The weekly monitor is not an implementation phase: it may run after
+the planning paths reach the default branch, and it schedules the future enablement task only after
+the initial feature and stable upstream contract both exist.</p>
+<h2 id="phase-table">Phase table</h2>
+<table><thead><tr><th>Phase</th><th>Outcome</th><th>Direct prerequisites</th><th>Merge value</th></tr></thead><tbody><tr><td><a href="phase-1-reporting-core-and-agent-path.md">Phase 1</a></td><td>Text-only public product issues through the daemon and user-confirmed MCP tool</td><td>Planning artifacts</td><td>Agents can prepare a five-type report, a human confirms it in Mission Control, and <code>gh</code> returns a safe result</td></tr><tr><td><a href="phase-2-dashboard-feedback-surface.md">Phase 2</a></td><td>Always-reachable direct Feedback modal with disabled future screenshot affordance</td><td>Phase 1</td><td>Users can file the same report directly; topbar, palette, retained draft and built-browser behavior are complete</td></tr></tbody></table>
+<h2 id="cross-phase-contracts">Cross-phase contracts</h2>
+<p>Phase 1 owns these names and semantics. Phase 2 consumes them without creating a parallel type or
+changing the wire shape:</p>
+<ul>
+<li>the five-value report-type tuple and exhaustive type-to-label map;</li>
+<li>bounded title, details and <code>attachmentUploadIds</code> draft fields;</li>
+<li>a server-derived preview carrying the exact target, fixed labels, allowlisted environment,
+rendered public body, capability state, and the bounded draft/request identity it represents;</li>
+<li>trusted <code>source:dashboard</code> versus <code>source:agent</code> derivation at separate route boundaries;</li>
+<li><code>mancej/mission-controller-control-issues</code> default plus exact <code>owner/name</code> override validation;</li>
+<li>fixed <code>status:needs-triage</code> and one source label, with no caller-defined labels;</li>
+<li>deterministic Markdown body and <code>mission-control-product-report:v1</code> marker;</li>
+<li>success, retry-safe refusal, invalid configuration and unknown-outcome result variants;</li>
+<li>production attachment capability disabled with no operator override;</li>
+<li>one repeated anticipated <code>--attach &lt;resolved path&gt;</code> pair per image only under an injected test
+capability;</li>
+<li>dashboard confirmation before any MCP-triggered <code>gh</code> call.</li>
+</ul>
+<p>No phase adds task persistence, a product-report database table, an SSE event, a background poller,
+or another GitHub credential source. The existing GitHub Issues task source remains the inbound
+bridge into the backlog.</p>
+<h2 id="merge-order-and-concurrency">Merge order and concurrency</h2>
+<p>There is one execution lane:</p>
+<pre><code class="language-text">planning PR -&gt; Phase 1 -&gt; Phase 2
+</code></pre>
+<p>No implementation phases run concurrently. Phase 2&#x27;s UI would otherwise have to guess a draft and
+result contract while Phase 1 is still free to change it. The future attachment enablement task is
+outside this graph and is created only by the approved recurring monitor after upstream release.</p>
+<h2 id="final-verification-strategy">Final verification strategy</h2>
+<p>Each phase runs focused tests with the required test-state preload. Phase 1 proves schema bounds,
+label derivation, stdin body transport, outcome classification, preflight, the hard attachment gate,
+MCP registration and confirmation. Phase 2 adds static rendering, palette and topbar guards plus a
+Playwright journey against the built daemon and fake <code>gh</code>.</p>
+<p>The completed feature runs:</p>
+<pre><code class="language-sh">npm run typecheck
+npm run lint
+npm test
+npm run build
+npm run smoke
+npm run test:e2e
+</code></pre>
+<p>Manual verification creates one disposable text-only issue in the public target, verifies body and
+labels, and closes it. No phase uses a real screenshot upload before the release-follow-up verifies
+stable CLI support.</p>
+<h2 id="operational-follow-up">Operational follow-up</h2>
+<p>Schedule <code>7f19c8d3-7062-47c3-87d1-a4891638cbb2</code> is the approved recurring mission. It uses cron
+<code>0 9 * * 1</code>, time zone <code>America/New_York</code>, <code>skip-active</code>, <code>coalesce-latest</code>, low priority and Codex.
+Its task checks issue #13256, a stable <code>gh</code> release and official help. It does nothing until all
+release gates pass and this plan resolves on the default branch. It then creates exactly one task
+titled <strong>Enable GitHub CLI image attachments for product reports</strong> and includes its schedule id in
+that task. It remains enabled but creates no duplicate while the task or its pull request is active.
+The enablement task adjusts the isolated adapter, enables production input, verifies a disposable
+image issue, and opens the implementation pull request. A later checker occurrence archives the
+schedule only after the task succeeds and that pull request is merged.</p>
+<h2 id="complete-cross-phase-audit">Complete cross-phase audit</h2>
+<ul>
+<li>Every approved report type, label and public-target decision is owned by Phase 1 and consumed by
+Phase 2.</li>
+<li>Dashboard confirmation is complete in Phase 1; Phase 2 does not add a weaker agent route.</li>
+<li>The disabled attachment contract spans both phases with the same field and server gate. Neither
+phase claims upstream support exists.</li>
+<li>Phase 1 leaves an operable agent path. Phase 2 leaves the complete direct-user path. Neither merge
+relies on a later repair to stay safe.</li>
+<li>The monitor is operational state with no code dependency on unmerged phase files. Its checker
+refuses to schedule enablement until the source plan exists on the default branch.</li>
+<li>No concurrent merge can introduce incompatible contracts because Phase 2 directly depends on
+Phase 1 and the future enablement task depends on the final initial feature plus upstream release.</li>
+</ul></article></div>
+  <footer>Source of truth: phased-plan.md · static HTML · no external requests</footer>
+</body>
+</html>

@@ -58,3 +58,22 @@ test("the HTML database guide catalogs every application table exactly once", ()
   assert.equal(schemaTables.length, 73);
   assert.deepEqual(documentedTables, schemaTables);
 });
+
+test("every database guide family reports the number of tables it catalogs", () => {
+  const guide = readFileSync(new URL("../docs/sqlite-database.html", import.meta.url), "utf8");
+  const familyOpenings = [...guide.matchAll(/<details class="family"[^>]*>/g)];
+  assert.ok(familyOpenings.length > 0);
+
+  for (const opening of familyOpenings) {
+    assert.equal(typeof opening.index, "number");
+    const end = guide.indexOf("</details>", opening.index);
+    assert.notEqual(end, -1);
+    const family = guide.slice(opening.index, end);
+    const summary = family.match(
+      /<summary><strong>([^<]+)<\/strong><span>(\d+) tables<\/span><\/summary>/,
+    );
+    assert.ok(summary);
+    const cataloged = [...family.matchAll(/class="table-row"/g)].length;
+    assert.equal(cataloged, Number(summary[2]), `${summary[1]} table count`);
+  }
+});

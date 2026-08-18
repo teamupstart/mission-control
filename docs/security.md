@@ -34,6 +34,9 @@ Product reports are public GitHub issues, not private support messages. The agen
 for use only after the user explicitly requests a report, shows the daemon-derived public content in an
 `input` review, and calls the mutation route only after a human selects **Submit public issue**.
 Dismissed, orphaned, free-form, malformed, and non-human review answers publish nothing.
+The dashboard HTTP surface exposes only read-only preflight and preview in this phase. It has no
+mutation route until the direct Feedback UI can bind submission to its own completed human
+confirmation.
 
 The daemon owns the destination, the fixed type and triage labels, and the dashboard or agent
 source label. Requests cannot supply routing metadata. The destination defaults to

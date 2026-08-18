@@ -85,7 +85,6 @@ import {
   WrapupAskedSchema,
   PushTaskSchema,
   ProductIssuePreviewRequestSchema,
-  ProductIssueSubmitRequestSchema,
   PipelineActionSchema,
   PipelineConsoleSchema,
   PipelineForemanEpisodeSchema,
@@ -872,7 +871,7 @@ export function buildApp(
     c.json({ ok: true, service: "mission-control", version: VERSION, pid: process.pid }),
   );
 
-  // --- public product issues (dashboard source is fixed at this route boundary) ---
+  // --- public product issue preflight/preview for the future dashboard form ---
   app.get("/api/product-issues/preflight", async (c) => {
     if (!productIssues) {
       return c.json({
@@ -904,29 +903,6 @@ export function buildApp(
       const result = productIssues.preview("dashboard", parsed.data);
       if (result.outcome === "preview") return c.json(result);
       return c.json(result, result.outcome === "configuration" ? 503 : 409);
-    },
-  );
-
-  app.post(
-    "/api/product-issues",
-    bodyLimit({
-      maxSize: PRODUCT_ISSUE_LIMITS.requestJsonBytes,
-      onError: (c) => c.json({ error: "Product issue request is too large" }, 413),
-    }),
-    async (c) => {
-      if (!productIssues) {
-        return c.json({
-          outcome: "configuration",
-          message: "Product issue service unavailable",
-          retrySafe: true,
-        } as const, 503);
-      }
-      const parsed = await parseBody(c, ProductIssueSubmitRequestSchema);
-      if (!parsed.ok) return parsed.res;
-      const response = productIssueSubmitResponse(
-        await productIssues.submit("dashboard", parsed.data),
-      );
-      return c.json(response.body, response.status);
     },
   );
 

@@ -151,12 +151,12 @@ test("MCP preview and mutation require the token and a live attributed session",
   }
 });
 
-test("mutation revalidates the previewed draft and returns the exact issue URL", async () => {
-  const calls: Array<{ args: string[]; input: string | undefined }> = [];
+test("the dashboard mutation route stays unavailable until Phase 2 confirmation", async () => {
+  let calls = 0;
   const app = appFor(new ProductIssueService({
     target: () => ({ ok: true, repo: "acme/public-issues" }),
-    runner: async (_bin, args, options) => {
-      calls.push({ args, input: options?.input });
+    runner: async () => {
+      calls++;
       return stubRun({
         stdout: "https://github.com/acme/public-issues/issues/88\n",
         stderr: "",
@@ -171,18 +171,48 @@ test("mutation revalidates the previewed draft and returns the exact issue URL",
     body: JSON.stringify(input),
   })).status, 200);
 
-  const changed = await app.request("/api/product-issues", {
+  const mutation = await app.request("/api/product-issues", {
     method: "POST",
     headers: JSON_HEADERS,
-    body: JSON.stringify({ ...input, title: "Changed after preview" }),
+    body: JSON.stringify(input),
+  });
+  assert.equal(mutation.status, 404);
+  assert.equal(calls, 0);
+});
+
+test("MCP mutation revalidates the previewed draft and returns the exact issue URL", async () => {
+  const calls: Array<{ args: string[]; input: string | undefined }> = [];
+  const app = appFor(new ProductIssueService({
+    target: () => ({ ok: true, repo: "acme/public-issues" }),
+    runner: async (_bin, args, options) => {
+      calls.push({ args, input: options?.input });
+      return stubRun({
+        stdout: "https://github.com/acme/public-issues/issues/88\n",
+        stderr: "",
+        code: 0,
+      });
+    },
+  }));
+  const input = draft();
+  const envelope = { ...input, env: { tmuxPane: "%19" }, cwd: "/repo/product" };
+  assert.equal((await app.request("/mcp/product-issues/preview", {
+    method: "POST",
+    headers: MCP_HEADERS,
+    body: JSON.stringify(envelope),
+  })).status, 200);
+
+  const changed = await app.request("/mcp/product-issues", {
+    method: "POST",
+    headers: MCP_HEADERS,
+    body: JSON.stringify({ ...envelope, title: "Changed after preview" }),
   });
   assert.equal(changed.status, 502);
   assert.equal(calls.length, 0);
 
-  const submitted = await app.request("/api/product-issues", {
+  const submitted = await app.request("/mcp/product-issues", {
     method: "POST",
-    headers: JSON_HEADERS,
-    body: JSON.stringify(input),
+    headers: MCP_HEADERS,
+    body: JSON.stringify(envelope),
   });
   assert.equal(submitted.status, 201);
   assert.deepEqual(await submitted.json(), {
@@ -192,12 +222,12 @@ test("mutation revalidates the previewed draft and returns the exact issue URL",
   });
   assert.deepEqual(
     calls[0]!.args.flatMap((value, index) => value === "--label" ? [calls[0]!.args[index + 1]!] : []),
-    ["documentation", "status:needs-triage", "source:dashboard"],
+    ["documentation", "status:needs-triage", "source:agent"],
   );
   assert.match(calls[0]!.input ?? "", /## Environment/);
 });
 
-test("caller-owned routing fields are rejected at both write boundaries", async () => {
+test("caller-owned routing fields are rejected at both preview boundaries", async () => {
   const app = appFor(new ProductIssueService({
     target: () => ({ ok: true, repo: "acme/public-issues" }),
   }));
@@ -236,15 +266,20 @@ test("refusal is retry-safe, while unknown outcome is a typed 504", async () => 
     },
   }));
   const retryDraft = draft();
-  await retryApp.request("/api/product-issues/preview", {
+  const retryEnvelope = {
+    ...retryDraft,
+    env: { tmuxPane: "%19" },
+    cwd: "/repo/product",
+  };
+  await retryApp.request("/mcp/product-issues/preview", {
     method: "POST",
-    headers: JSON_HEADERS,
-    body: JSON.stringify(retryDraft),
+    headers: MCP_HEADERS,
+    body: JSON.stringify(retryEnvelope),
   });
-  const refused = await retryApp.request("/api/product-issues", {
+  const refused = await retryApp.request("/mcp/product-issues", {
     method: "POST",
-    headers: JSON_HEADERS,
-    body: JSON.stringify(retryDraft),
+    headers: MCP_HEADERS,
+    body: JSON.stringify(retryEnvelope),
   });
   assert.equal(refused.status, 502);
   assert.deepEqual(await refused.json(), {
@@ -252,10 +287,10 @@ test("refusal is retry-safe, while unknown outcome is a typed 504", async () => 
     message: "GitHub CLI refused the issue: not authenticated",
     retrySafe: true,
   });
-  assert.equal((await retryApp.request("/api/product-issues", {
+  assert.equal((await retryApp.request("/mcp/product-issues", {
     method: "POST",
-    headers: JSON_HEADERS,
-    body: JSON.stringify(retryDraft),
+    headers: MCP_HEADERS,
+    body: JSON.stringify(retryEnvelope),
   })).status, 201);
 
   const unknownApp = appFor(new ProductIssueService({
@@ -266,15 +301,20 @@ test("refusal is retry-safe, while unknown outcome is a typed 504", async () => 
     }),
   }));
   const unknownDraft = draft();
-  await unknownApp.request("/api/product-issues/preview", {
+  const unknownEnvelope = {
+    ...unknownDraft,
+    env: { tmuxPane: "%19" },
+    cwd: "/repo/product",
+  };
+  await unknownApp.request("/mcp/product-issues/preview", {
     method: "POST",
-    headers: JSON_HEADERS,
-    body: JSON.stringify(unknownDraft),
+    headers: MCP_HEADERS,
+    body: JSON.stringify(unknownEnvelope),
   });
-  const unknown = await unknownApp.request("/api/product-issues", {
+  const unknown = await unknownApp.request("/mcp/product-issues", {
     method: "POST",
-    headers: JSON_HEADERS,
-    body: JSON.stringify(unknownDraft),
+    headers: MCP_HEADERS,
+    body: JSON.stringify(unknownEnvelope),
   });
   assert.equal(unknown.status, 504);
   const unknownBody = (await unknown.json()) as { outcome: string; retrySafe: boolean };
@@ -292,10 +332,14 @@ test("production attachment and demo-mode gates run before the subprocess", asyn
     target: () => ({ ok: true, repo: "acme/public-issues" }),
     runner,
   }));
-  const attachment = await productionApp.request("/api/product-issues", {
+  const attachment = await productionApp.request("/mcp/product-issues", {
     method: "POST",
-    headers: JSON_HEADERS,
-    body: JSON.stringify(draft({ attachmentUploadIds: ["fabricated.png"] })),
+    headers: MCP_HEADERS,
+    body: JSON.stringify({
+      ...draft({ attachmentUploadIds: ["fabricated.png"] }),
+      env: { tmuxPane: "%19" },
+      cwd: "/repo/product",
+    }),
   });
   assert.equal(attachment.status, 502);
 
@@ -312,10 +356,14 @@ test("production attachment and demo-mode gates run before the subprocess", asyn
   });
   assert.equal(preview.status, 503);
   assert.equal(((await preview.json()) as { outcome: string }).outcome, "configuration");
-  const demo = await demoApp.request("/api/product-issues", {
+  const demo = await demoApp.request("/mcp/product-issues", {
     method: "POST",
-    headers: JSON_HEADERS,
-    body: JSON.stringify(demoDraft),
+    headers: MCP_HEADERS,
+    body: JSON.stringify({
+      ...demoDraft,
+      env: { tmuxPane: "%19" },
+      cwd: "/repo/product",
+    }),
   });
   assert.equal(demo.status, 503);
   assert.equal(((await demo.json()) as { outcome: string }).outcome, "configuration");

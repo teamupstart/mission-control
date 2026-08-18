@@ -211,4 +211,5 @@ test("a same-document fragment link scrolls to and keeps rendering its target", 
   await alpha.getByRole("link", { name: "Jump to target" }).click();
 
   await expect(alpha.getByRole("heading", { name: "Fragment target" })).toBeInViewport();
+  await shoot(dashboard, "preview-fragment-target");
 });

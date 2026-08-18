@@ -146,9 +146,21 @@ pins `arch: arm64`, so an Intel host would otherwise build an app it cannot run.
    user who cloned over SSH keeps SSH and one who used HTTPS keeps HTTPS. If present, `git fetch
    --tags --prune`. Refuse to proceed if the directory exists but is not a git repository whose
    `origin` matches, rather than deleting anything.
-4. Resolve the target ref: `--ref` if given, else the latest release tag via
-   `gh release view --json tagName`, else the default branch tip when no release exists yet. Record
-   which was used in the output.
+4. Resolve the target ref: `--ref` if given, else the newest **stable** release tag, else the default
+   branch tip when no release exists yet. Record which was used in the output.
+
+   Select that tag the same way the Phase 2 updater does, from an explicitly filtered list rather than
+   by asking for "the latest" and filtering afterwards:
+
+   ```sh
+   gh release list --exclude-drafts --exclude-pre-releases --order desc --limit 1 --json tagName
+   ```
+
+   `gh release view` with no tag argument applies its own "latest release" rule, and its `--help` does
+   not state whether that rule skips prereleases, so an install must not depend on it either. Both the
+   install path and the update path resolve a release tag, so both need the same rule; if they
+   disagree, a fresh install and an update can land on different versions from the same repository
+   state.
 5. `git -C <clone> checkout --force <ref>` and confirm the resulting tree is clean. This clone is
    updater-exclusive, so a forced checkout is correct here and only here.
 6. `npm ci`, then `npm run package`, both in the clone.
@@ -213,7 +225,11 @@ Unit tests in `test/`, using `node:test` and `node:assert/strict`:
   atomic in the sense that a failed write leaves any previous file intact.
 - `assert-release-version` accepts matching input and rejects each mismatch shape, including a
   lockfile that disagrees with `package.json`.
-- new prerequisite message builders, including the arm64 refusal.
+- new prerequisite message builders, including the arm64 refusal;
+- the target-ref resolver prefers `--ref`, then the newest stable release tag, then the default branch
+  tip, and **does not select a prerelease or draft** even when one is newer than the newest stable
+  release. This is the same regression Phase 2 guards on the update side; both paths resolve a tag, so
+  both are tested for it.
 
 Tests that touch a state directory must carry the suite's state preload. Run a single file as:
 
@@ -239,7 +255,8 @@ Manual verification to record on the pull request:
 - `make install` works from a clean clone and writes a valid receipt.
 - The updater-owned clone exists, is clean, and is distinct from the user's worktree.
 - Merging a Release Please pull request produces a tag, a generated `CHANGELOG.md`, and a GitHub
-  Release; `gh release view --json tagName` returns it.
+  Release, and the filtered selection query returns it:
+  `gh release list --exclude-drafts --exclude-pre-releases --order desc --limit 1 --json tagName`.
 - Tag, `package.json`, and lockfile version equality is enforced in CI.
 - `docs/overview.md` and `docs/desktop-and-packaging.md` match the behavior.
 - All gates above pass.
@@ -272,3 +289,9 @@ non-idempotent. If Phase 2 needs another field, it is added as an optional field
   `src/shared/harness-runtime.mjs` and `src/shared/claude-settings.ts`, so the I/O stays there by
   precedent; the split is defensive rather than mandated, and the reasoning is now recorded in the
   implementation step. No contract consumed by a later phase changed shape.
+- **2026-08-18, Inspector round 4.** The round-4 comment was against the root plan's diagram, but
+  chasing it surfaced the same defect here: this phase resolved its target ref with
+  `gh release view --json tagName`, which would install a prerelease and could leave a fresh install on
+  a different version than an update from identical repository state. Both paths now use the same
+  explicitly filtered selection query, the exit criterion verifies with that query, and a test covers
+  the install-side rule. Not flagged by the review.

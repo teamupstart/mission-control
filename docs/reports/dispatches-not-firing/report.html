@@ -1,0 +1,483 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Investigation of Mission Control dispatches that appeared to disappear without launching">
+  <title>Dispatches not firing | Mission Control investigation</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --paper: #eef1ec;
+      --surface: #fffdf7;
+      --ink: #17221c;
+      --muted: #657068;
+      --line: #cbd2c9;
+      --green: #285f49;
+      --green-soft: #dcebe2;
+      --amber: #a76216;
+      --amber-soft: #f7e7c7;
+      --red: #a23d35;
+      --red-soft: #f6dfdc;
+      --blue: #315f77;
+      --code: #18241e;
+      --shadow: 0 20px 58px rgba(23, 34, 28, 0.12);
+      --display: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+      --body: "Avenir Next", Avenir, "Segoe UI", sans-serif;
+      --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        linear-gradient(rgba(40, 95, 73, 0.045) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(40, 95, 73, 0.045) 1px, transparent 1px),
+        var(--paper);
+      background-size: 25px 25px;
+      font: 16px/1.62 var(--body);
+    }
+
+    a { color: var(--blue); text-underline-offset: 0.2em; }
+    a:hover { color: var(--amber); }
+    a:focus-visible { outline: 3px solid var(--amber); outline-offset: 3px; }
+    code, pre, th, .eyebrow, .tag, .metric strong { font-family: var(--mono); }
+    code { overflow-wrap: anywhere; }
+
+    .shell {
+      width: min(1320px, calc(100% - 32px));
+      margin: 24px auto 72px;
+      display: grid;
+      grid-template-columns: 230px minmax(0, 1fr);
+      gap: 26px;
+      align-items: start;
+    }
+    .rail {
+      position: sticky;
+      top: 24px;
+      max-height: calc(100vh - 48px);
+      overflow: auto;
+      padding: 20px 18px;
+      color: #edf7f0;
+      background: var(--code);
+      border-top: 5px solid #6eaa88;
+      box-shadow: var(--shadow);
+    }
+    .rail p {
+      margin: 0 0 16px;
+      color: #9fc8b1;
+      font: 700 0.72rem/1.3 var(--mono);
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+    }
+    .rail nav { display: grid; gap: 3px; }
+    .rail a {
+      padding: 7px 9px;
+      color: #dbe9df;
+      border-left: 2px solid transparent;
+      text-decoration: none;
+      font-size: 0.84rem;
+      line-height: 1.25;
+    }
+    .rail a:hover { color: white; border-left-color: #e0a14c; }
+
+    main {
+      min-width: 0;
+      overflow: hidden;
+      background: var(--surface);
+      border-top: 5px solid var(--green);
+      box-shadow: var(--shadow);
+    }
+    .hero {
+      position: relative;
+      overflow: hidden;
+      padding: clamp(42px, 7vw, 86px) clamp(26px, 7vw, 84px) 68px;
+      color: #f3f7f3;
+      background: #214c3b;
+    }
+    .hero::after {
+      content: "";
+      position: absolute;
+      width: 430px;
+      height: 430px;
+      right: -150px;
+      bottom: -235px;
+      border: 68px solid rgba(247, 190, 105, 0.15);
+      border-radius: 50%;
+    }
+    .hero > * { position: relative; z-index: 1; }
+    .eyebrow {
+      margin: 0 0 18px;
+      color: #a9d5bb;
+      font-size: 0.73rem;
+      font-weight: 700;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+    }
+    h1, h2, h3 { font-family: var(--display); font-weight: 600; }
+    h1 {
+      max-width: 880px;
+      margin: 0;
+      font-size: clamp(3.1rem, 8vw, 6.9rem);
+      line-height: 0.88;
+      letter-spacing: -0.052em;
+    }
+    .question {
+      max-width: 780px;
+      margin: 28px 0 0;
+      color: #d5e7dc;
+      font-size: 1.14rem;
+    }
+    .verdict {
+      max-width: 850px;
+      margin: 34px 0 0;
+      padding: 20px 22px;
+      color: #fff7e8;
+      background: rgba(12, 28, 21, 0.5);
+      border-left: 5px solid #eda84d;
+      font-size: clamp(1.04rem, 2vw, 1.28rem);
+    }
+    .verdict strong { color: #ffd698; }
+
+    .metrics {
+      position: relative;
+      z-index: 2;
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      margin: -24px clamp(16px, 5vw, 58px) 0;
+      background: #fff;
+      border: 1px solid var(--line);
+      box-shadow: 0 10px 28px rgba(23, 34, 28, 0.09);
+    }
+    .metric { padding: 20px 18px; border-right: 1px solid var(--line); }
+    .metric:last-child { border-right: 0; }
+    .metric strong { display: block; color: var(--green); font-size: 1.35rem; }
+    .metric span { color: var(--muted); font-size: 0.82rem; }
+
+    .content { padding: 46px clamp(22px, 6vw, 72px) 78px; }
+    section { margin-top: 72px; scroll-margin-top: 28px; }
+    section:first-child { margin-top: 14px; }
+    h2 {
+      margin: 0 0 18px;
+      color: var(--green);
+      font-size: clamp(2rem, 4vw, 3.15rem);
+      line-height: 1.02;
+      letter-spacing: -0.035em;
+    }
+    h3 { margin: 28px 0 8px; font-size: 1.34rem; line-height: 1.2; }
+    p, li { max-width: 82ch; }
+    .lede { color: var(--muted); font-size: 1.04rem; }
+    .callout {
+      margin: 26px 0;
+      padding: 18px 21px;
+      background: var(--amber-soft);
+      border-left: 5px solid var(--amber);
+    }
+    .callout.danger { background: var(--red-soft); border-color: var(--red); }
+    .callout.good { background: var(--green-soft); border-color: var(--green); }
+    .callout p { margin: 5px 0 0; }
+
+    .table-wrap, .flow, pre { overflow: auto; max-width: 100%; }
+    table { width: 100%; border-collapse: collapse; min-width: 690px; }
+    th, td { padding: 12px 13px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); }
+    th {
+      color: #fff;
+      background: var(--green);
+      font-size: 0.73rem;
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+    }
+    tbody tr:nth-child(even) { background: #f3f6f1; }
+    td:first-child { white-space: nowrap; font-family: var(--mono); font-size: 0.88rem; }
+
+    .flow {
+      margin: 28px 0;
+      padding: 18px;
+      background: #edf4ef;
+      border: 1px solid var(--line);
+    }
+    .flow svg { display: block; width: 100%; min-width: 780px; height: auto; }
+    .flow text { font-family: var(--mono); fill: var(--ink); }
+    .flow .box { fill: #fff; stroke: #7a9484; stroke-width: 2; }
+    .flow .bad { fill: #f7e2df; stroke: #a23d35; }
+    .flow .wait { fill: #f8ead0; stroke: #a76216; }
+    .flow .arrow { stroke: #315f77; stroke-width: 3; fill: none; marker-end: url(#arrow); }
+    .flow .restart { stroke: #a23d35; stroke-dasharray: 8 6; }
+
+    ol, ul { padding-left: 1.35rem; }
+    li { margin: 9px 0; }
+    :not(pre) > code {
+      padding: 0.12em 0.34em;
+      color: #224e39;
+      background: #e4eee7;
+      border-radius: 3px;
+      font-size: 0.9em;
+    }
+    pre {
+      margin: 18px 0;
+      padding: 18px 20px;
+      color: #eaf3ed;
+      background: var(--code);
+      border-left: 5px solid #77ae8c;
+      font-size: 0.85rem;
+      line-height: 1.62;
+    }
+    .sources li { margin-bottom: 12px; }
+    .tag {
+      display: inline-block;
+      margin-right: 6px;
+      padding: 3px 7px;
+      color: #fff;
+      background: var(--green);
+      font-size: 0.7rem;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+    footer {
+      margin-top: 68px;
+      padding-top: 22px;
+      color: var(--muted);
+      border-top: 1px solid var(--line);
+      font-size: 0.86rem;
+    }
+
+    @media (max-width: 900px) {
+      .shell { display: block; width: min(100% - 18px, 900px); margin-top: 9px; }
+      .rail { position: static; max-height: none; margin-bottom: 12px; }
+      .rail nav { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .metrics { grid-template-columns: repeat(2, 1fr); }
+      .metric:nth-child(2) { border-right: 0; }
+      .metric:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        color-scheme: dark;
+        --paper: #101713;
+        --surface: #17201b;
+        --ink: #e5eee8;
+        --muted: #acb9b0;
+        --line: #3b4b41;
+        --green: #86c6a1;
+        --green-soft: #233b2d;
+        --amber: #e0a657;
+        --amber-soft: #3a2e1c;
+        --red: #e08379;
+        --red-soft: #3d2524;
+        --blue: #91c4dd;
+        --code: #0b100d;
+      }
+      main { background: var(--surface); }
+      .metrics { background: #1d2922; }
+      tbody tr:nth-child(even) { background: #1c2821; }
+      :not(pre) > code { color: #b8dfc6; background: #24352b; }
+      .flow { background: #132019; }
+      .flow .box { fill: #1b2820; stroke: #759783; }
+      .flow .bad { fill: #3d2524; stroke: #e08379; }
+      .flow .wait { fill: #3a2e1c; stroke: #e0a657; }
+      .flow text { fill: var(--ink); }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <aside class="rail">
+      <p>Investigation</p>
+      <nav aria-label="Report sections">
+        <a href="#finding">Finding</a>
+        <a href="#timeline">Timeline</a>
+        <a href="#flow">Failure flow</a>
+        <a href="#evidence">Evidence</a>
+        <a href="#not-cause">Ruled out</a>
+        <a href="#recovery">Recovery</a>
+        <a href="#recommendations">Recommendations</a>
+        <a href="#limits">Limits</a>
+      </nav>
+    </aside>
+
+    <main>
+      <header class="hero">
+        <p class="eyebrow">Mission Control / dispatch incident / 2026-08-15</p>
+        <h1>Dispatches are waiting behind cleanup</h1>
+        <p class="question"><strong>Question:</strong> Why do newly dispatched tasks disappear and never appear to be scheduled?</p>
+        <p class="verdict"><strong>Finding:</strong> dispatch acquisition is blocked behind a long Treehouse startup-cleanup queue. Restarting the daemon during that wait marks every in-progress dispatch as failed, moving it out of the active scheduling surfaces. The task records are persisted; they are not deleted.</p>
+      </header>
+
+      <div class="metrics" aria-label="Key incident measurements">
+        <div class="metric"><strong>3</strong><span>dispatches failed together at 21:24:05</span></div>
+        <div class="metric"><strong>47→48</strong><span>terminal tasks still holding Treehouse worktrees</span></div>
+        <div class="metric"><strong>46</strong><span>of those tied to exited SDK sessions</span></div>
+        <div class="metric"><strong>20–30s</strong><span>observed per Treehouse return</span></div>
+      </div>
+
+      <div class="content">
+        <section id="finding">
+          <h2>Finding</h2>
+          <p class="lede">This is a lock convoy in worktree lifecycle management, amplified by restart recovery and made confusing by the asynchronous dispatch UI.</p>
+
+          <div class="callout danger">
+            <strong>Primary cause</strong>
+            <p>On startup, <code>TaskManager</code> starts reconciliation for every resource-holding terminal task without awaiting or bounding the batch. Each pooled teardown queues a Treehouse return behind the same per-repository lock used by new worktree acquisition. With 47 terminal task rows still holding pooled worktrees, acquisition can sit behind many minutes of cleanup even when <code>treehouse status</code> already shows available slots.</p>
+          </div>
+
+          <div class="callout">
+            <strong>Why tasks appear to disappear</strong>
+            <p>The create route returns once the task row exists, while worktree provisioning continues in the background. The modal closes on that successful create response. If the daemon restarts before provisioning finishes, startup reconciliation changes the task from <code>dispatching</code> to <code>failed</code>. It then leaves the backlog and active dispatch views and appears only among recent terminal outcomes.</p>
+          </div>
+
+          <p>The live task submitted at 21:25:51 remained <code>dispatching</code> with no worktree, provider, session, or error through repeated reads roughly nine minutes later. During those reads, the daemon process repeatedly had a <code>treehouse return …</code> child. That places the wait before worktree registration and agent launch, at the exact shared-lock boundary described by the source.</p>
+        </section>
+
+        <section id="timeline">
+          <h2>Observed timeline</h2>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>Local time</th><th>Observation</th><th>Interpretation</th></tr>
+              </thead>
+              <tbody>
+                <tr><td>21:16:53–57</td><td>Multiple SDK sessions bind after an earlier daemon start; one resumed session receives the restart continuation prompt at 21:16:59.</td><td>A restart occurred before the first affected dispatch.</td></tr>
+                <tr><td>21:17:27</td><td>First affected task is created; <code>dispatched_at</code> is set at 21:17:32, but no worktree is recorded.</td><td>Dispatch entered provisioning and did not reach the first durable worktree milestone.</td></tr>
+                <tr><td>21:20:17</td><td>Second affected task enters the same state with no worktree.</td><td>It queues behind the same repository work.</td></tr>
+                <tr><td>21:23:28</td><td>Third affected task enters the same state with no worktree.</td><td>The queue continues to grow.</td></tr>
+                <tr><td>21:24:02</td><td>A live <code>make restart</code> process starts the development stack.</td><td>The waiting dispatch promises are severed.</td></tr>
+                <tr><td>21:24:05</td><td>All three task rows change to <code>failed</code> with <code>dispatch interrupted by a restart - Focus or Cancel it</code>.</td><td>This is the database event that makes them leave active scheduling views.</td></tr>
+                <tr><td>21:25:51</td><td>A fourth task is created and reaches <code>dispatching</code> at 21:25:56.</td><td>New daemon, same cleanup queue.</td></tr>
+                <tr><td>21:29–21:35</td><td>The daemon owns sequential <code>treehouse return</code> children. Individual returns are observed alive for roughly 20–30 seconds. The fourth task still has no worktree after roughly nine minutes.</td><td>Direct live confirmation that the shared pool lock is occupied by cleanup, not agent startup.</td></tr>
+                <tr><td>21:35</td><td>The count of terminal Treehouse tasks still holding worktrees rises from 47 to 48 as another task finishes.</td><td>The cleanup queue can grow while it blocks new acquisition.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section id="flow">
+          <h2>Failure flow</h2>
+          <div class="flow" role="img" aria-label="Flow showing startup cleanup occupying the Treehouse lock, dispatch waiting, and restart converting tasks to failed">
+            <svg viewBox="0 0 1120 470" xmlns="http://www.w3.org/2000/svg">
+              <defs>
+                <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                  <path d="M 0 0 L 10 5 L 0 10 z" fill="#315f77"/>
+                </marker>
+              </defs>
+
+              <rect class="box" x="34" y="54" width="220" height="88" rx="8"/>
+              <text x="144" y="87" text-anchor="middle" font-size="17" font-weight="700">Daemon startup</text>
+              <text x="144" y="113" text-anchor="middle" font-size="13">47 terminal task trees</text>
+
+              <rect class="wait" x="335" y="36" width="290" height="125" rx="8"/>
+              <text x="480" y="72" text-anchor="middle" font-size="17" font-weight="700">Startup reconciliation</text>
+              <text x="480" y="99" text-anchor="middle" font-size="13">queues treehouse return calls</text>
+              <text x="480" y="124" text-anchor="middle" font-size="13">20–30 seconds observed each</text>
+
+              <rect class="wait" x="707" y="54" width="246" height="88" rx="8"/>
+              <text x="830" y="87" text-anchor="middle" font-size="17" font-weight="700">Per-repo pool lock</text>
+              <text x="830" y="113" text-anchor="middle" font-size="13">return and get serialize</text>
+
+              <rect class="box" x="34" y="256" width="220" height="88" rx="8"/>
+              <text x="144" y="289" text-anchor="middle" font-size="17" font-weight="700">POST /api/tasks</text>
+              <text x="144" y="315" text-anchor="middle" font-size="13">row becomes dispatching</text>
+
+              <rect class="wait" x="335" y="238" width="290" height="125" rx="8"/>
+              <text x="480" y="274" text-anchor="middle" font-size="17" font-weight="700">Worktree acquisition waits</text>
+              <text x="480" y="301" text-anchor="middle" font-size="13">no worktree, provider, or session</text>
+              <text x="480" y="326" text-anchor="middle" font-size="13">modal already closed</text>
+
+              <rect class="bad" x="707" y="238" width="246" height="125" rx="8"/>
+              <text x="830" y="274" text-anchor="middle" font-size="17" font-weight="700">Daemon restarts</text>
+              <text x="830" y="301" text-anchor="middle" font-size="13">dispatch promise is lost</text>
+              <text x="830" y="326" text-anchor="middle" font-size="13">task becomes failed</text>
+
+              <path class="arrow" d="M254 98 H330"/>
+              <path class="arrow" d="M625 98 H702"/>
+              <path class="arrow" d="M254 300 H330"/>
+              <path class="arrow" d="M625 300 H702"/>
+              <path class="arrow" d="M480 238 V184 H830 V147"/>
+              <path class="arrow restart" d="M953 300 H1040 V98 H958"/>
+              <text x="1045" y="198" font-size="12" fill="#a23d35" transform="rotate(90 1045 198)">cleanup begins again</text>
+            </svg>
+          </div>
+        </section>
+
+        <section id="evidence">
+          <h2>Evidence</h2>
+
+          <h3>1. Database state</h3>
+          <p>A read-only query against <code>~/.mission-control/harness.db</code> found three tasks created between 21:17 and 21:23 with identical transition time and error:</p>
+          <pre>status = failed
+updated_local = 2026-08-15 21:24:05
+error = dispatch interrupted by a restart - Focus or Cancel it
+worktree_path = NULL
+provider = NULL
+session_id = NULL</pre>
+          <p>The same database initially contained 47 terminal tasks whose <code>provider='treehouse'</code> and <code>worktree_path IS NOT NULL</code>: 36 done, 8 failed, and 3 cancelled. Forty-six of those joined to exited SDK session rows. By the final 21:35 read, the terminal worktree count had risen to 48 as another task completed.</p>
+
+          <h3>2. Live process and pool state</h3>
+          <p>The daemon listening on port 7317 was PID 48460. Repeated process snapshots showed it spawning <code>treehouse return</code> against different pool slots. Two examples were slot 76 alive for 21 seconds and slot 37 alive for 22 seconds. A live pool count reported 49 leased and 5 available worktrees. Despite those available entries, acquisition remained blocked because returns and gets share the in-process per-repository lock.</p>
+
+          <h3>3. Source path</h3>
+          <ul class="sources">
+            <li><span class="tag">create</span> A new immediate task is stored as <code>dispatching</code>, then <code>Dispatcher.dispatch</code> is fired without awaiting it: <code>src/server/tasks.ts:1405–1425</code>.</li>
+            <li><span class="tag">ui</span> The dispatch modal treats successful row creation as submission success and closes while provisioning continues: <code>src/web/components/DispatchModal.tsx:1803–1829</code>.</li>
+            <li><span class="tag">acquire</span> Dispatch must finish <code>provisionAll</code> before it records a worktree on the task: <code>src/server/dispatcher.ts:260–280</code>.</li>
+            <li><span class="tag">lock</span> Both <code>treehouse get</code> and <code>treehouse return</code> are serialized by <code>withPoolLock</code>: <code>src/server/pool-lease.ts:123–164</code> and <code>src/server/dispatcher.ts:1448–1456</code>.</li>
+            <li><span class="tag">recovery</span> The constructor starts <code>reconcileOnStartup</code> for every dispatching or resource-holding task with <code>void</code>, producing an unbounded batch of cleanup work: <code>src/server/tasks.ts:436–447</code>.</li>
+            <li><span class="tag">restart</span> An interrupted pre-worktree dispatch is deliberately moved to <code>failed</code>: <code>src/server/tasks.ts:2927–2977</code>.</li>
+            <li><span class="tag">visibility</span> Terminal tasks are retained, but they are no longer backlog or active work; only the recent terminal projection reloads them for outcome surfaces: <code>src/server/db.ts:4892–4914</code> and <code>src/server/registry.ts:753–757</code>.</li>
+          </ul>
+        </section>
+
+        <section id="not-cause">
+          <h2>What is not causing this</h2>
+          <ul>
+            <li><strong>Foreman is enabled.</strong> Persisted config has <code>enabled=true</code>, <code>mode=live</code>, <code>autoBacklog=true</code>, a repository allowlist containing this checkout, and <code>maxSessions=9</code>.</li>
+            <li><strong>The task rows were accepted.</strong> The API-to-database seam is working. Each affected task has a durable id, timestamps, title, status history, and restart error.</li>
+            <li><strong>Agent binary or SDK launch was not reached.</strong> The affected rows never acquired a worktree, so there is no evidence of an agent binary failure, runtime refusal, prompt delivery failure, or SDK supervisor failure.</li>
+            <li><strong>Pool capacity alone is not the live blocker.</strong> Five pool slots were already available during observation. The daemon still could not acquire one because its own cleanup calls occupied or queued ahead of acquisition on the same lock.</li>
+          </ul>
+        </section>
+
+        <section id="recovery">
+          <h2>Immediate recovery</h2>
+          <div class="callout good">
+            <strong>Do not restart the development stack again while cleanup is draining.</strong>
+            <p>Another restart fails the current dispatch and starts startup reconciliation again for every task whose cleanup did not finish.</p>
+          </div>
+          <ol>
+            <li>Leave the current daemon running until its <code>treehouse return</code> queue stops and the current <code>dispatching</code> task either acquires a worktree or reports a concrete failure.</li>
+            <li>Find the three failed submissions under recent outcomes. Because they have no worktree, provider, or session, the server permits a clean re-dispatch after the pool queue clears.</li>
+            <li>If an operator chooses to reclaim leases manually, verify each target is idle, clean, merged, and not pinned before returning it. A forced return is destructive. This investigation did not perform any return, cleanup, cancellation, or task mutation.</li>
+          </ol>
+        </section>
+
+        <section id="recommendations">
+          <h2>Recommended product changes</h2>
+          <ol>
+            <li><strong>Give acquisition priority over background reconciliation.</strong> Startup cleanup should not place dozens of teardown operations ahead of a human dispatch on the same repository lock.</li>
+            <li><strong>Bound startup cleanup.</strong> Reconcile resource-holding tasks through a small queue instead of launching every cleanup concurrently with <code>void</code>. The bound should be per repository because that is the lock domain.</li>
+            <li><strong>Stop dry-pool recovery after it creates capacity.</strong> The dispatch path currently completes a full reap before retrying <code>get</code>. A waiting launch only needs one safe slot, not an exhaustively cleaned pool.</li>
+            <li><strong>Expose the dispatch phase.</strong> Keep the task visible as “waiting for worktree cleanup” with the count ahead of it. If row creation closes the modal before launch, the card must carry the asynchronous failure and progress prominently.</li>
+            <li><strong>Make pre-provision restart recovery retryable by default.</strong> A task with no worktree, provider, home, or session is known not to have launched. Consider restoring that narrow state to backlog instead of terminal failure, while preserving the conservative behavior once any launch resource exists.</li>
+            <li><strong>Add a regression test for the convoy.</strong> Seed many resource-holding terminal tasks, hold teardown returns, submit a new dispatch, and assert that acquisition can proceed without waiting for the entire cleanup batch. A browser spec should also assert the user-visible waiting state because the current symptom is a disappearing task.</li>
+          </ol>
+        </section>
+
+        <section id="limits">
+          <h2>Limits and unanswered questions</h2>
+          <ul>
+            <li>The shell could not connect to the loopback daemon from inside its sandbox, so live HTTP responses and the dashboard DOM were not captured. The listening process, database WAL activity, process children, and Treehouse pool were inspected directly.</li>
+            <li>The investigation established that <code>make restart</code> began at 21:24:02. It did not establish whether a person, script, or higher-level workflow invoked it.</li>
+            <li>The reason each individual Treehouse return took 20–30 seconds was not isolated. Large cleanup work, process termination, and Treehouse behavior are possible contributors. The dispatch blockage does not depend on which of those made the return slow.</li>
+            <li>No destructive validation was performed. In particular, no lease was returned, no task was cancelled or re-dispatched, and no process was stopped.</li>
+          </ul>
+        </section>
+
+        <footer>
+          Evidence captured read-only on 2026-08-15 between approximately 21:27 and 21:35 America/New_York. Repository source was inspected at the working tree's current revision. The existing unrelated <code>treehouse.toml</code> modification was preserved.
+        </footer>
+      </div>
+    </main>
+  </div>
+</body>
+</html>

@@ -34,6 +34,7 @@ import { TERMINAL_BACKEND_IDS } from "./terminal.ts";
 import { AGENT_TYPES, SESSION_RUNTIMES, TASK_KINDS, THINKING_LEVELS } from "./types.ts";
 import type { AgentType, SessionRuntime, Task } from "./types.ts";
 import { supportsEffort } from "./harness-capabilities.ts";
+import { HARNESS_MODEL_INPUT_MODES } from "./model.ts";
 import { INSPECTOR_LIMITS } from "./inspector.ts";
 import {
   DEFAULT_WORKFLOW_BINDING_DEFAULTS,
@@ -623,6 +624,77 @@ export const ModelIdSchema = z
   // Terminal adapters own argv preservation; this schema owns the persisted id vocabulary.
   // Test: `dispatch-model.test.ts`.
   .regex(/^[a-zA-Z0-9][a-zA-Z0-9._/-]*$/, "model id must be alphanumeric with . _ - / only");
+
+/** Bounds for the aggregate harness model catalog carried over HTTP. */
+export const HARNESS_MODEL_CATALOG_LIMITS = {
+  choices: 512,
+  labelChars: 120,
+  hintChars: 160,
+  providerChars: 64,
+  contextWindow: 100_000_000,
+  inputModes: 2,
+} as const;
+
+export const HARNESS_MODEL_CATALOG_SOURCES = ["shipped", "live", "cached", "fallback"] as const;
+export type HarnessModelCatalogSource = (typeof HARNESS_MODEL_CATALOG_SOURCES)[number];
+
+/** Stable diagnostics only. Child output and error text never enter this vocabulary. */
+export const HARNESS_MODEL_CATALOG_PROBLEMS = [
+  "unsupported",
+  "unavailable",
+  "invalid_response",
+  "rpc_failed",
+  "process_failed",
+  "timeout",
+  "output_limit",
+] as const;
+export type HarnessModelCatalogProblem = (typeof HARNESS_MODEL_CATALOG_PROBLEMS)[number];
+
+export const HarnessModelChoiceSchema = z
+  .object({
+    id: ModelIdSchema,
+    label: z.string().min(1).max(HARNESS_MODEL_CATALOG_LIMITS.labelChars),
+    hint: z.string().max(HARNESS_MODEL_CATALOG_LIMITS.hintChars).nullable(),
+    provider: z.string().min(1).max(HARNESS_MODEL_CATALOG_LIMITS.providerChars).nullable(),
+    contextWindow: z
+      .number()
+      .int()
+      .positive()
+      .max(HARNESS_MODEL_CATALOG_LIMITS.contextWindow)
+      .nullable(),
+    reasoning: z.boolean().nullable(),
+    inputModes: z
+      .array(z.enum(HARNESS_MODEL_INPUT_MODES))
+      .max(HARNESS_MODEL_CATALOG_LIMITS.inputModes),
+  })
+  .strict();
+export type HarnessModelCatalogChoice = z.infer<typeof HarnessModelChoiceSchema>;
+
+export const HarnessModelCatalogSchema = z
+  .object({
+    choices: z
+      .array(HarnessModelChoiceSchema)
+      .min(1)
+      .max(HARNESS_MODEL_CATALOG_LIMITS.choices),
+    source: z.enum(HARNESS_MODEL_CATALOG_SOURCES),
+    refreshedAt: z.string().datetime().nullable(),
+    problem: z.enum(HARNESS_MODEL_CATALOG_PROBLEMS).nullable(),
+  })
+  .strict();
+export type HarnessModelCatalog = z.infer<typeof HarnessModelCatalogSchema>;
+
+const harnessModelCatalogShape = Object.fromEntries(
+  AGENT_TYPES.map((agent) => [agent, HarnessModelCatalogSchema]),
+) as Record<AgentType, typeof HarnessModelCatalogSchema>;
+
+/** One catalog for every harness, with neither missing nor future/unknown keys accepted. */
+export const HarnessModelCatalogsSchema = z.object(harnessModelCatalogShape).strict();
+export type HarnessModelCatalogs = z.infer<typeof HarnessModelCatalogsSchema>;
+
+/** The only query form supported by `GET /api/harnesses/models`. */
+export const HarnessModelCatalogQuerySchema = z
+  .object({ refresh: z.literal("1").optional() })
+  .strict();
 
 /**
  * Dispatch (or shelve) a new agent: launch an agent in an isolated worktree of

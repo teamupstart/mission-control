@@ -13,6 +13,10 @@ import type {
   TranscriptMessage,
 } from "@shared/types.ts";
 import type { HarnessCapabilities } from "@shared/harness-capabilities.ts";
+import type {
+  HarnessModelCatalogChoice,
+  HarnessModelCatalogProblem,
+} from "@shared/protocol.ts";
 // Type-only, so this file keeps its no-`node:`-imports rule: the import is erased at emit
 // (verbatimModuleSyntax). The descriptor is named here rather than restated because
 // launch-scoped MCP is declared ONCE, in `mission-mcp.ts`.
@@ -532,6 +536,19 @@ export interface BinSpec {
   legacyEnv: readonly string[];
   /** What to run when the operator has set no override. Bare, so PATH resolves it. */
   command: string;
+}
+
+/** A bounded, non-secret outcome from a harness-owned catalog discoverer. */
+export type ModelCatalogDiscoveryResult =
+  | { ok: true; choices: HarnessModelCatalogChoice[] }
+  | { ok: false; problem: HarnessModelCatalogProblem };
+
+export type ModelCatalogDiscover = (signal: AbortSignal) => Promise<ModelCatalogDiscoveryResult>;
+
+/** Shipped failure data plus an explicit answer about live discovery support. */
+export interface ModelCatalogSpec {
+  shipped: readonly HarnessModelCatalogChoice[];
+  discover: ModelCatalogDiscover | null;
 }
 
 /**
@@ -1063,6 +1080,8 @@ export interface Harness extends HarnessCapabilities {
   detect: DetectSpec;
   /** Which CLI to launch, and what overrides it. Required - a harness runs something. */
   bin: BinSpec;
+  /** How this harness supplies dispatch-time model choices. Required and exhaustive. */
+  models: ModelCatalogSpec;
   /** How this harness's screen READS, or null when we cannot read it at all. */
   tui: TuiSpec | null;
   /** How a turn reaches this harness. Not nullable - see `ControlSpec`. */

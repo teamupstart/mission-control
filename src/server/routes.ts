@@ -33,6 +33,8 @@ import {
   ForemanPlannerRetryClaimSchema,
   ForemanPlannerRetrySchema,
   HarnessesConfigPatchSchema,
+  HarnessModelCatalogQuerySchema,
+  HarnessModelCatalogsSchema,
   UiConfigPatchSchema,
   InspectorConfigPatchSchema,
   LlmConfigPatchSchema,
@@ -192,6 +194,7 @@ import { summarizeBuffer } from "@shared/away-buffer.ts";
 import type { AwayWatcher } from "./away/watcher.ts";
 import { getHarnessesConfig, setHarnessesConfig } from "./harnesses.ts";
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
+import type { HarnessModelCatalogService } from "./harness/model-catalog-service.ts";
 import type { WorktreeManager } from "./worktrees/manager.ts";
 import {
   WorktreeOperationError,
@@ -793,6 +796,11 @@ export function buildApp(
   worktrees?: WorktreeManager,
   /** Singleton projection/action owner for Settings > Worktrees. */
   worktreeOperations?: WorktreeOperationsService,
+  /**
+   * Daemon-owned model discovery/cache service. Appended last so focused route tests that
+   * do not exercise catalogs never construct or spawn one.
+   */
+  modelCatalogs?: HarnessModelCatalogService,
 ): Hono {
   const app = new Hono();
   const terminalLauncher = launchSessionTerminal ?? launchTerminal;
@@ -4199,6 +4207,15 @@ export function buildApp(
 
   // --- Harnesses: dispatch-time defaults for launched sessions (localhost only) ---
   app.get("/api/harnesses/config", (c) => c.json(getHarnessesConfig()));
+  app.get("/api/harnesses/models", async (c) => {
+    if (!modelCatalogs) return c.json({ error: "Harness model catalog service unavailable" }, 503);
+    const query = HarnessModelCatalogQuerySchema.safeParse(c.req.query());
+    if (!query.success) return c.json({ error: query.error.message }, 400);
+    const result = await modelCatalogs.getCatalogs({ refresh: query.data.refresh === "1" });
+    const parsed = HarnessModelCatalogsSchema.safeParse(result);
+    if (!parsed.success) return c.json({ error: "Harness model catalog response was invalid" }, 500);
+    return c.json(parsed.data);
+  });
   app.put("/api/harnesses/config", async (c) => {
     const parsed = await parseBody(c, HarnessesConfigPatchSchema);
     if (!parsed.ok) return parsed.res;

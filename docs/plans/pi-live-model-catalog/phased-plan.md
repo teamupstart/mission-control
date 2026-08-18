@@ -83,6 +83,17 @@ it would add handoff risk without an independently coherent result.
 | 1 | Harness model catalog service | [phase-1-harness-model-catalog-service.md](phase-1-harness-model-catalog-service.md) | Safe Pi RPC discovery, exhaustive harness capability, cache and fallback policy, aggregate daemon API | none |
 | 2 | Browser catalog cutover | [phase-2-browser-catalog-cutover.md](phase-2-browser-catalog-cutover.md) | One browser catalog provider, provider-grouped Pi choices in every picker, fallback UX, fake-Pi Playwright proof, docs | Phase 1 |
 
+## Scheduled task graph
+
+| Phase | Mission Control task | Direct task prerequisites | Planning-session prerequisite |
+| --- | --- | --- | --- |
+| 1 | `0ce5d9e4-17d0-418f-912f-aa4766bf6e98` | none | this planning task |
+| 2 | `68107d31-1058-4f13-91ae-709c39a2952e` | Phase 1 task | this planning task |
+
+Both tasks were created in backlog state after the artifact paths resolved in pushed commit
+`0e33beee`. The planning-session edges keep them backlogged until the planning pull request merges;
+the Phase 1 edge then keeps Phase 2 backlogged until Phase 1's implementation pull request merges.
+
 ## Dependency graph and merge order
 
 ```mermaid
@@ -174,3 +185,6 @@ registry ownership.
 - 2026-08-18: kept the entire browser change in Phase 2. A partial cutover would make model options
   depend on which picker the operator opened and recreate the competing-source defect this work is
   meant to remove.
+- 2026-08-18: scheduled both tasks only after all artifact paths resolved in pushed commit
+  `0e33beee`. Phase 2 carries only the direct Phase 1 task edge; both tasks also carry the active
+  planning-session edge.

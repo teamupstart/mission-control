@@ -104,11 +104,11 @@
   <div class="table-wrap"><table>
     <thead><tr><th>Phase</th><th>Outcome</th><th>Direct prerequisite</th><th>Task</th></tr></thead>
     <tbody>
-      <tr><td class="phase"><a href="phase-1-harness-model-catalog-service.md">1 · Harness model catalog service</a></td><td>Bounded Pi RPC discovery, exhaustive harness capability, cache and fallback policy, aggregate API</td><td>None</td><td class="pending">Assigned after artifact publication</td></tr>
-      <tr><td class="phase"><a href="phase-2-browser-catalog-cutover.md">2 · Browser catalog cutover</a></td><td>One catalog provider, complete provider-grouped Pi choices everywhere, fallback UX, fake-Pi e2e proof</td><td>Phase 1</td><td class="pending">Assigned after artifact publication</td></tr>
+      <tr><td class="phase"><a href="phase-1-harness-model-catalog-service.md">1 · Harness model catalog service</a></td><td>Bounded Pi RPC discovery, exhaustive harness capability, cache and fallback policy, aggregate API</td><td>None</td><td><code>0ce5d9e4-17d0-418f-912f-aa4766bf6e98</code></td></tr>
+      <tr><td class="phase"><a href="phase-2-browser-catalog-cutover.md">2 · Browser catalog cutover</a></td><td>One catalog provider, complete provider-grouped Pi choices everywhere, fallback UX, fake-Pi e2e proof</td><td>Phase 1</td><td><code>68107d31-1058-4f13-91ae-709c39a2952e</code></td></tr>
     </tbody>
   </table></div>
-  <div class="call"><strong>Merge order:</strong> Phase 1, then Phase 2. There are no concurrency groups. Both implementation tasks also depend on this planning session so they remain backlogged until these artifacts reach the default branch.</div>
+  <div class="call"><strong>Merge order:</strong> Phase 1, then Phase 2. There are no concurrency groups. Both implementation tasks also depend on this planning session so they remain backlogged until these artifacts reach the default branch. Phase 2 additionally depends directly on the Phase 1 task.</div>
 
   <h2>Findings that changed the proposed route</h2>
   <ul>

@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import { AGENT_TYPES, type AgentType, type ThinkingLevel } from "@shared/types.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
-import { modelChoicesFor } from "@shared/model.ts";
 import { withAttachments } from "@shared/attachments.ts";
 import type { EnsembleLaunchEstimate } from "@shared/ensemble.ts";
 import type {
@@ -22,6 +21,12 @@ import {
 import { readyAttachments, type PendingAttachment } from "../../components/ImageDrop.tsx";
 import { Tooltip } from "../../components/Tooltip.tsx";
 import { createEnsemble, previewEnsemble } from "../../lib/api.ts";
+import {
+  ModelCatalogNotice,
+  ModelCatalogOptions,
+  type ResolveHarnessModelCatalog,
+  useHarnessModelCatalogs,
+} from "../../model-catalog.tsx";
 import { workflowRequest } from "../../workflows/workflowApi.ts";
 import type { EnsemblePreviewResult, StrategyIssue } from "../types.ts";
 import {
@@ -227,6 +232,7 @@ export function EnsembleDispatch({
   workflowSummaries: WorkflowSummary[];
   launch: EnsembleLaunchState;
 }): React.JSX.Element {
+  const { resolve: resolveModels } = useHarnessModelCatalogs();
   const descriptor = ENSEMBLE_STRATEGY_INFO[ensemble.strategyId];
   const { preview, reviewed, previewIssues, estimate } = launch;
 
@@ -375,6 +381,7 @@ export function EnsembleDispatch({
           config={ensemble.config}
           personas={personas}
           issues={issuesFor(field.key)}
+          resolveModels={resolveModels}
           onChange={setConfig}
         />
       ))}
@@ -387,6 +394,7 @@ export function EnsembleDispatch({
             config={ensemble.config}
             personas={personas}
             issues={issuesFor(field.key)}
+            resolveModels={resolveModels}
             onChange={setConfig}
           />
         ))}
@@ -453,7 +461,12 @@ export function EnsembleDispatch({
         </dl>
       )}
 
-      <PlanStrip descriptor={descriptor} config={ensemble.config} estimate={estimate} />
+      <PlanStrip
+        descriptor={descriptor}
+        config={ensemble.config}
+        estimate={estimate}
+        resolveModels={resolveModels}
+      />
 
       {generalIssues.length > 0 && (
         <ul className="ensemble-issues" role="alert">
@@ -491,6 +504,7 @@ function FormField({
   config,
   personas,
   issues,
+  resolveModels,
   onChange,
 }: {
   field: StrategyFormField;
@@ -498,6 +512,7 @@ function FormField({
   /** The operator's Personas, for the field kinds that can offer one. */
   personas: PersonaView[];
   issues: StrategyIssue[];
+  resolveModels: ResolveHarnessModelCatalog;
   onChange: (key: string, value: unknown) => void;
 }): React.JSX.Element {
   const error = <FieldIssues issues={issues} />;
@@ -626,6 +641,7 @@ function FormField({
       maxRows={field.maxRows}
       rows={rows}
       issues={issues}
+      resolveModels={resolveModels}
       onChange={(next) => onChange(field.key, next)}
     />
   );
@@ -684,6 +700,7 @@ function Roster({
   maxRows,
   rows,
   issues,
+  resolveModels,
   onChange,
 }: {
   /** The config path this roster edits - and therefore the path its issues are addressed at. */
@@ -694,6 +711,7 @@ function Roster({
   maxRows: number;
   rows: Record<string, unknown>[];
   issues: StrategyIssue[];
+  resolveModels: ResolveHarnessModelCatalog;
   onChange: (rows: Record<string, unknown>[]) => void;
 }): React.JSX.Element {
   const setRow = (index: number, patch: Record<string, unknown>): void => {
@@ -706,110 +724,119 @@ function Roster({
   const removeRow = (index: number): void => {
     onChange(rows.filter((_, i) => i !== index));
   };
+  const providerBackedAgents = AGENT_TYPES.filter(
+    (agent) =>
+      rows.some((row) => row.agent === agent) && resolveModels(agent).groups.length > 0,
+  );
 
   return (
-    <LaneSection
-      label={label}
-      help={help}
-      count={rows.length}
-      max={maxRows}
-      addLabel="+ Add candidate"
-      addTooltip="Add another candidate (duplicates are allowed)"
-      addDisabled={rows.length >= maxRows}
-      onAdd={addRow}
-      issues={issues}
-      fieldKey={fieldKey}
-    >
-      {rows.map((row, index) => {
-        const agent = (row.agent as AgentType | null) ?? null;
-        const model = (row.model as string | null) ?? null;
-        const effort = (row.effort as ThinkingLevel | null) ?? null;
-        const approach = (row.approach as string | null) ?? "";
-        const efforts = agent ? capabilitiesFor(agent).effort?.levels ?? [] : [];
-        const rowIssues = issues.filter((issue) => {
-          const path = normalizeIssuePath(issue.path);
-          return path === `${fieldKey}.${index}` || path.startsWith(`${fieldKey}.${index}.`);
-        });
-        return (
-          <li key={index} className="ensemble-lane">
-            <span className="ensemble-lane-ordinal">#{index + 1}</span>
-            <Tooltip label={`Harness for candidate ${index + 1}`}>
-              <span
-                className="ensemble-lane-agent"
-                style={agent ? { ["--agent-accent" as string]: AGENT_IDENTITY[agent].accent } : undefined}
-              >
-                <select
-                  aria-label={`Candidate ${index + 1} agent`}
-                  value={agent ?? ""}
-                  onChange={(e) =>
-                    setRow(index, {
-                      agent: e.target.value ? (e.target.value as AgentType) : null,
-                      model: null,
-                      effort: null,
-                    })
-                  }
+    <>
+      <LaneSection
+        label={label}
+        help={help}
+        count={rows.length}
+        max={maxRows}
+        addLabel="+ Add candidate"
+        addTooltip="Add another candidate (duplicates are allowed)"
+        addDisabled={rows.length >= maxRows}
+        onAdd={addRow}
+        issues={issues}
+        fieldKey={fieldKey}
+      >
+        {rows.map((row, index) => {
+          const agent = (row.agent as AgentType | null) ?? null;
+          const model = (row.model as string | null) ?? null;
+          const effort = (row.effort as ThinkingLevel | null) ?? null;
+          const approach = (row.approach as string | null) ?? "";
+          const efforts = agent ? capabilitiesFor(agent).effort?.levels ?? [] : [];
+          const rowIssues = issues.filter((issue) => {
+            const path = normalizeIssuePath(issue.path);
+            return path === `${fieldKey}.${index}` || path.startsWith(`${fieldKey}.${index}.`);
+          });
+          return (
+            <li key={index} className="ensemble-lane">
+              <span className="ensemble-lane-ordinal">#{index + 1}</span>
+              <Tooltip label={`Harness for candidate ${index + 1}`}>
+                <span
+                  className="ensemble-lane-agent"
+                  style={agent ? { ["--agent-accent" as string]: AGENT_IDENTITY[agent].accent } : undefined}
                 >
-                  <option value="">Default agent</option>
-                  {AGENT_TYPES.map((a) => (
-                    <option key={a} value={a}>
-                      {AGENT_IDENTITY[a].label}
+                  <select
+                    aria-label={`Candidate ${index + 1} agent`}
+                    value={agent ?? ""}
+                    onChange={(e) =>
+                      setRow(index, {
+                        agent: e.target.value ? (e.target.value as AgentType) : null,
+                        model: null,
+                        effort: null,
+                      })
+                    }
+                  >
+                    <option value="">Default agent</option>
+                    {AGENT_TYPES.map((a) => (
+                      <option key={a} value={a}>
+                        {AGENT_IDENTITY[a].label}
+                      </option>
+                    ))}
+                  </select>
+                </span>
+              </Tooltip>
+              <Tooltip label={agent ? `Model for candidate ${index + 1}` : "Choose an agent first"}>
+                <select
+                  aria-label={`Candidate ${index + 1} model`}
+                  value={model ?? ""}
+                  onChange={(e) => setRow(index, { model: e.target.value || null })}
+                >
+                  <option value="">Default model</option>
+                  {agent && (
+                    <ModelCatalogOptions
+                      catalog={resolveModels(agent, model)}
+                      includeHints={false}
+                    />
+                  )}
+                </select>
+              </Tooltip>
+              <Tooltip label={agent ? `Reasoning effort for candidate ${index + 1}` : "Choose an agent first"}>
+                <select
+                  aria-label={`Candidate ${index + 1} effort`}
+                  value={effort ?? ""}
+                  onChange={(e) => setRow(index, { effort: e.target.value || null })}
+                >
+                  <option value="">Default effort</option>
+                  {efforts.map((level) => (
+                    <option key={level} value={level}>
+                      {level}
                     </option>
                   ))}
                 </select>
-              </span>
-            </Tooltip>
-            <Tooltip label={agent ? `Model for candidate ${index + 1}` : "Choose an agent first"}>
-              <select
-                aria-label={`Candidate ${index + 1} model`}
-                value={model ?? ""}
-                onChange={(e) => setRow(index, { model: e.target.value || null })}
-              >
-                <option value="">Default model</option>
-                {agent &&
-                  modelChoicesFor(agent, model).map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.label}
-                    </option>
-                  ))}
-              </select>
-            </Tooltip>
-            <Tooltip label={agent ? `Reasoning effort for candidate ${index + 1}` : "Choose an agent first"}>
-              <select
-                aria-label={`Candidate ${index + 1} effort`}
-                value={effort ?? ""}
-                onChange={(e) => setRow(index, { effort: e.target.value || null })}
-              >
-                <option value="">Default effort</option>
-                {efforts.map((level) => (
-                  <option key={level} value={level}>
-                    {level}
-                  </option>
-                ))}
-              </select>
-            </Tooltip>
-            <input
-              aria-label={`Candidate ${index + 1} approach`}
-              className="ensemble-lane-approach"
-              placeholder="Optional approach nudge"
-              value={approach}
-              onChange={(e) => setRow(index, { approach: e.target.value || null })}
-            />
-            <Tooltip label={`Remove candidate ${index + 1}`}>
-              <button
-                type="button"
-                className="ensemble-lane-x"
-                aria-label={`Remove candidate ${index + 1}`}
-                disabled={rows.length <= minRows}
-                onClick={() => removeRow(index)}
-              >
-                ✕
-              </button>
-            </Tooltip>
-            <FieldIssues issues={rowIssues} />
-          </li>
-        );
-      })}
-    </LaneSection>
+              </Tooltip>
+              <input
+                aria-label={`Candidate ${index + 1} approach`}
+                className="ensemble-lane-approach"
+                placeholder="Optional approach nudge"
+                value={approach}
+                onChange={(e) => setRow(index, { approach: e.target.value || null })}
+              />
+              <Tooltip label={`Remove candidate ${index + 1}`}>
+                <button
+                  type="button"
+                  className="ensemble-lane-x"
+                  aria-label={`Remove candidate ${index + 1}`}
+                  disabled={rows.length <= minRows}
+                  onClick={() => removeRow(index)}
+                >
+                  ✕
+                </button>
+              </Tooltip>
+              <FieldIssues issues={rowIssues} />
+            </li>
+          );
+        })}
+      </LaneSection>
+      {providerBackedAgents.map((agent) => (
+        <ModelCatalogNotice key={agent} agent={agent} />
+      ))}
+    </>
   );
 }
 
@@ -1112,10 +1139,12 @@ function PlanStrip({
   descriptor,
   config,
   estimate,
+  resolveModels,
 }: {
   descriptor: EnsembleStrategyInfo;
   config: unknown;
   estimate: EnsembleLaunchEstimate | null;
+  resolveModels: ResolveHarnessModelCatalog;
 }): React.JSX.Element {
   const capabilities = descriptor.capabilities;
   const memberField = descriptor.form.fields.find((field) => field.kind === "member_roster");
@@ -1128,7 +1157,7 @@ function PlanStrip({
     const model = (row.model as string | null) ?? null;
     const effort = (row.effort as ThinkingLevel | null) ?? null;
     const modelLabel = agent && model
-      ? modelChoicesFor(agent, model).find((m) => m.id === model)?.label ?? model
+      ? resolveModels(agent, model).choices.find((m) => m.id === model)?.label ?? model
       : model;
     return {
       accent: agent ? AGENT_IDENTITY[agent].accent : null,

@@ -29,6 +29,18 @@ export interface FakeAgents {
   bins: { claude: string; codex: string; pi: string; cmux: string; keepAwake: string; gh: string };
 }
 
+export type FakePiCatalogMode = "success" | "failure";
+
+/** Where the Pi fake reads its per-invocation catalog behavior. */
+export function piCatalogControlPath(home: string): string {
+  return join(home, "fake-pi-catalog-mode.txt");
+}
+
+/** Switch the next and later Pi catalog probes without changing daemon environment. */
+export function writePiCatalogMode(home: string, mode: FakePiCatalogMode): void {
+  writeFileSync(piCatalogControlPath(home), `${mode}\n`);
+}
+
 /**
  * One pull request `FAKE_GH` will report, in the shape `gh pr list --json …` prints.
  *
@@ -60,20 +72,6 @@ export function writeGhPullRequests(home: string, prs: readonly FakePullRequest[
 /** The issue `FAKE_GH` says it created, and the id the daemon derives from it. */
 export const FAKE_GH_ISSUE_URL = "https://github.com/acme/demo-repo/issues/123";
 export const FAKE_GH_ISSUE_ID = "acme/demo-repo#123";
-
-/**
- * A fake that only has to exist.
- *
- * `pi` is pointed at this so that nothing can silently fall through to a real binary on
- * PATH, but no spec drives it yet. It fails loudly rather than succeeding quietly: a test
- * that starts exercising it should see this message, not a mysteriously idle card.
- */
-function unimplemented(agent: string): string {
-  return `#!/bin/sh
-echo "fake-${agent}: this agent has no e2e fake yet - see e2e/fixtures/fake-agents.ts" >&2
-exit 1
-`;
-}
 
 /**
  * The stand-in terminal backend, so a spec can watch what a click asks a terminal to run.
@@ -250,8 +248,9 @@ export function writeFakeAgents(home: string): FakeAgents {
   chmodSync(codex, 0o755);
 
   const pi = join(binDir, "fake-pi");
-  writeFileSync(pi, unimplemented("pi"));
+  copyFileSync(fileURLToPath(new URL("./fake-pi.mjs", import.meta.url)), pi);
   chmodSync(pi, 0o755);
+  writePiCatalogMode(home, "success");
 
   const cmux = join(binDir, "fake-cmux");
   writeFileSync(cmux, FAKE_CMUX);

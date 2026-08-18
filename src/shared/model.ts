@@ -1,10 +1,9 @@
 // Pure helpers for turning a raw model identifier into a friendly display name
-// and inferring its context-window size, plus the catalog of models a dispatch
-// can be launched on. Lives in `shared` because both the daemon (filling
-// SessionMeta) and the web UI (the card's model pill, the dispatch and Harnesses
-// pickers) need identical results - the single source of truth for how a model id
-// like "claude-opus-4-8[1m]" becomes "Opus 4.8" + a 1M window, and for which ids
-// are offered in the first place.
+// and inferring its context-window size, plus the shipped model catalog. Lives in
+// `shared` because both the daemon (filling SessionMeta) and the web UI (the card's
+// model pill and browser catalog fallback) need identical results. It is the single
+// source of truth for how a model id like "claude-opus-4-8[1m]" becomes "Opus 4.8"
+// + a 1M window, and for the rows available before or without live discovery.
 //
 // The one import is type-only, so this stays dependency-free at runtime.
 
@@ -126,8 +125,8 @@ export interface ShippedHarnessModelChoice extends ModelChoice {
  * and is the immediate/failure fallback for Pi while its configured installation is
  * queried through the daemon. Keeping the small fallback in shared code lets existing
  * render paths stay synchronous and keeps a missing or older Pi binary from blocking
- * dispatch. A stored value from another version is still preserved by
- * `modelChoicesFor`.
+ * dispatch. Browser pickers merge stored values through their catalog resolver;
+ * synchronous callers can use `modelChoicesFor` for the same shipped-only behavior.
  *
  * Order matters: the picker renders it as written, so the most capable model per
  * harness leads. Ids only - no `[1m]` markers - because these are pasted onto a
@@ -158,7 +157,7 @@ export const MODEL_CATALOG: Record<AgentType, readonly ShippedHarnessModelChoice
 };
 
 /**
- * The catalog for one harness, with `extra` folded in when it isn't already there.
+ * The shipped catalog for one harness, with `extra` folded in when it isn't already there.
  *
  * The `extra` argument is what keeps a hand-maintained catalog from silently eating
  * a stored value: a default set on a newer build (or typed straight into the config

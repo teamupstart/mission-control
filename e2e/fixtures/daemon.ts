@@ -14,7 +14,11 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { ghPullRequestsPath, writeFakeAgents } from "./fake-agents.ts";
+import {
+  ghPullRequestsPath,
+  piCatalogControlPath,
+  writeFakeAgents,
+} from "./fake-agents.ts";
 import {
   FAKE_CONDUCTOR_VERSION,
   seedConductorInstallerCheckout,
@@ -272,6 +276,9 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     // has to read the file; a daemon that never spawns a control verb simply leaves it absent.
     MC_E2E_CONDUCTOR_LOG: conductor.logPath,
     MC_E2E_RECORD_DIR: recordDir,
+    // Re-read on every prompt-free Pi catalog probe so a spec can move from live discovery
+    // to failure across a daemon restart without ever allowing a launch-shaped invocation.
+    MC_E2E_PI_CATALOG_CONTROL: piCatalogControlPath(home),
     // Where that fake reads its scripted pull requests from. Set for every daemon so a spec
     // only has to write the file; absent content simply means "no pull requests anywhere",
     // which is what every spec that does not script one already expects.

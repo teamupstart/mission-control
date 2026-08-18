@@ -17,7 +17,6 @@ import {
   TASK_KIND_INFO,
   TASK_PRIORITIES,
 } from "@shared/task.ts";
-import { modelChoicesFor } from "@shared/model.ts";
 import {
   createSchedule,
   fetchRepos,
@@ -38,6 +37,11 @@ import {
   type CadenceForm,
   type CadencePreset,
 } from "../../lib/schedules.ts";
+import {
+  ModelCatalogNotice,
+  ModelCatalogOptions,
+  useHarnessModelCatalogs,
+} from "../../model-catalog.tsx";
 import { RepoCombobox } from "../RepoCombobox.tsx";
 import { LabelChips } from "../session-bits.tsx";
 import { Tooltip } from "../Tooltip.tsx";
@@ -153,6 +157,7 @@ export function ScheduleEditor({
   onDirtyChange?: (dirty: boolean) => void;
   onBusyChange?: (busy: boolean) => void;
 }): React.JSX.Element {
+  const { resolve: resolveModels } = useHarnessModelCatalogs();
   const [draft, setDraft] = useState<EditorDraft>(() =>
     schedule ? draftFromSchedule(schedule) : emptyDraft(),
   );
@@ -433,11 +438,7 @@ export function ScheduleEditor({
                   onChange={(event) => update({ model: event.target.value })}
                 >
                   <option value="">harness default</option>
-                  {modelChoicesFor(draft.agent, draft.model).map((choice) => (
-                    <option key={choice.id} value={choice.id}>
-                      {choice.label} - {choice.hint}
-                    </option>
-                  ))}
+                  <ModelCatalogOptions catalog={resolveModels(draft.agent, draft.model)} />
                 </select>
               </Tooltip>
             </Field>
@@ -459,6 +460,7 @@ export function ScheduleEditor({
               </Tooltip>
             </Field>
           </div>
+          <ModelCatalogNotice agent={draft.agent} />
         </FormSection>
 
         <FormSection

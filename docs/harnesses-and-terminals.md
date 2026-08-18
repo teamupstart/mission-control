@@ -19,3 +19,29 @@ This is the technical counterpart to [Sessions and conversations](sessions.md). 
 for adding a harness, preserving browser-safe shared code, and using capability predicates
 are in the authoritative [harnesses and terminals contract](agent-guides/architecture.md#harnesses-and-terminals)
 and [harness-change contract](agent-guides/change-contracts.md#harness-changes).
+
+## Dispatch-time model catalogs
+
+Every model picker that can affect a dispatch reads one browser catalog. The browser starts with
+the shipped choices, then reads the daemon's aggregate catalog once when the dashboard loads. It
+does not poll and individual controls do not fetch their own lists. Claude Code and Codex continue
+to use their shipped static choices.
+
+Pi's rows come from the configured local Pi installation and account, using the same binary
+resolution as a Pi launch, including `MISSION_PI_BIN`. The daemon asks Pi for its available models
+with one prompt-free RPC command in offline, no-session mode. It does not submit a prompt or call a
+model provider. The browser preserves Pi's order and groups every returned row by its reported
+provider. The selected value remains one exact provider-qualified string such as
+`anthropic/claude-sonnet-5`; no separate provider field is stored.
+
+The daemon caches a successful discovery for five minutes. A dashboard reload normally consumes
+that cache. **Retry Pi models** forces the same aggregate read with `?refresh=1`. If refresh fails,
+the daemon serves the last successful list when one exists and otherwise returns the compact
+shipped Pi fallback. A transport failure in the browser likewise leaves its current choices in
+place. These degraded states show a bounded status message, keep every picker and dispatch action
+enabled, and never expose Pi's process output.
+
+A saved model absent from the current response is appended once as **not currently reported**. It
+remains selected and submit-safe in Harnesses Settings, ordinary and guided dispatch, recurring
+missions, Ensemble member rows and summaries, Personas, Foreman, and the GitHub Inspector. Catalog
+absence is therefore not revocation and never rewrites an operator's selection.

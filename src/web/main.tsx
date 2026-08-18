@@ -2,6 +2,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App.tsx";
 import { hydrateUiConfig } from "./lib/uiConfig.ts";
+import { ModelCatalogProvider } from "./model-catalog.tsx";
 import "@xyflow/react/dist/style.css";
 // Global vendor CSS belongs at the browser entry rather than inside `DiffView`: the latter is
 // reached by reusable review cards, including server-rendered component tests, while this file
@@ -25,6 +26,8 @@ const root = document.getElementById("root");
 if (!root) throw new Error("missing #root");
 createRoot(root).render(
   <StrictMode>
-    <App />
+    <ModelCatalogProvider>
+      <App />
+    </ModelCatalogProvider>
   </StrictMode>,
 );

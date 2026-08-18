@@ -23,7 +23,6 @@ import {
   hasReviewableDiff,
   taskKindAllowsBacklog,
 } from "@shared/task.ts";
-import { modelChoicesFor } from "@shared/model.ts";
 import type { EnvironmentCheckView } from "@shared/environment-checks.ts";
 import {
   TASK_SOURCE_KIND_INFO,
@@ -52,6 +51,12 @@ import {
 } from "../lib/task-draft.ts";
 import { formatScheduledFor } from "../lib/schedules.ts";
 import { repoLeaf } from "../lib/format.ts";
+import {
+  ModelCatalogNotice,
+  ModelCatalogOptions,
+  type ResolveHarnessModelCatalog,
+  useHarnessModelCatalogs,
+} from "../model-catalog.tsx";
 import { RepoCombobox } from "./RepoCombobox.tsx";
 import { RepositoryName } from "./RepositoryName.tsx";
 import {
@@ -280,14 +285,15 @@ type EditSlot = { id: string; seed: DispatchDraft; draft: DispatchDraft };
  * wins); and a plain "Default" in the instant before the config lands, which never
  * claims a model it can't see.
  */
-function defaultModelOptionLabel(
+export function defaultModelOptionLabel(
   agent: AgentType,
   defaults: HarnessesConfig["defaultModel"] | null,
+  resolveModels: ResolveHarnessModelCatalog,
 ): string {
   if (!defaults) return "Default";
   const id = defaults[agent];
   if (!id) return "Default - whatever the harness is set to";
-  const label = modelChoicesFor(agent, id).find((m) => m.id === id)?.label ?? id;
+  const label = resolveModels(agent, id).choices.find((m) => m.id === id)?.label ?? id;
   return `Default - ${label}`;
 }
 
@@ -321,11 +327,15 @@ const AFTER_WORK_FIELD_TIP =
  * for; both render as an option with no second line rather than as a promise the form cannot
  * keep.
  */
-function harnessDefaultsLine(agent: AgentType, defaults: HarnessesConfig | null): string | null {
+export function harnessDefaultsLine(
+  agent: AgentType,
+  defaults: HarnessesConfig | null,
+  resolveModels: ResolveHarnessModelCatalog,
+): string | null {
   if (!defaults) return null;
   const modelId = defaults.defaultModel[agent];
   const model = modelId
-    ? modelChoicesFor(agent, modelId).find((m) => m.id === modelId)?.label ?? modelId
+    ? resolveModels(agent, modelId).choices.find((m) => m.id === modelId)?.label ?? modelId
     : null;
   const effort = defaults.defaultEffort[agent] || null;
   const parts = [model, effort].filter(Boolean);
@@ -764,6 +774,7 @@ function DispatchModal({
   harnessesRevision?: number;
   pipelinesRevision?: string;
 }): React.JSX.Element {
+  const { resolve: resolveModels } = useHarnessModelCatalogs();
   const editing = mode.kind === "edit" ? mode.task : null;
   // Ensemble mode is a new-dispatch-only concern, and only when the layer wired the state up.
   const ensembleMode = !editing && launchMode === "ensemble" && ensembleDraft !== undefined;
@@ -1312,7 +1323,7 @@ function DispatchModal({
       value: a,
       label: AGENT_IDENTITY[a].label,
       accent: AGENT_IDENTITY[a].accent,
-      sub: harnessDefaultsLine(a, defaults),
+      sub: harnessDefaultsLine(a, defaults, resolveModels),
       hotkey: GUIDED_HARNESS_KEYS[a],
       // And identical to the Agent `<select>`'s, `overridesForAgent` and all - including its
       // guard, which is what keeps confirming the current harness from dropping anything.
@@ -2478,19 +2489,19 @@ function DispatchModal({
                   disabled={!usesHarness}
                   onChange={(e) => update({ model: e.target.value })}
                 >
-                <option value="">
-                  {defaultModelOptionLabel(draft.agent, defaults?.defaultModel ?? null)}
-                </option>
-                {/* The draft's own id is folded in, for the same reason the Settings picker
-                    folds in the stored default: reopening a shelved task can seed this from a
-                    row naming a model this build's catalog doesn't list, and an unlisted value
-                    renders the select on nothing - reading as "Default" over a task that is
-                    pinned, and saving as one on the next edit. */}
-                  {modelChoicesFor(draft.agent, draft.model).map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.label} - {m.hint}
-                    </option>
-                  ))}
+                  <option value="">
+                    {defaultModelOptionLabel(
+                      draft.agent,
+                      defaults?.defaultModel ?? null,
+                      resolveModels,
+                    )}
+                  </option>
+                  {/* The draft's own id is folded in, for the same reason the Settings picker
+                      folds in the stored default: reopening a shelved task can seed this from a
+                      row naming a model this build's catalog doesn't list, and an unlisted value
+                      renders the select on nothing - reading as "Default" over a task that is
+                      pinned, and saving as one on the next edit. */}
+                  <ModelCatalogOptions catalog={resolveModels(draft.agent, draft.model)} />
                 </select>
               </Tooltip>
             </label>
@@ -2523,6 +2534,7 @@ function DispatchModal({
                 ? <PipelineDispatchConstraint runtime={pipelineLaunchRuntime} />
                 : kindBehavior.constraint}
           </span>
+          {usesHarness && <ModelCatalogNotice agent={draft.agent} />}
           {kindUnavailable && (
             <span className={`dispatch-workflow-warning${guidedDim}`}>
               This kind is available only when conductor is enabled for the selected repository.

@@ -115,6 +115,20 @@ and remote review state visible beside the work that produced it.
 
 ![Mission Control GitHub Inspector settings](docs/images/inspector.png)
 
+## Report a public product issue through an agent
+
+When you explicitly ask an agent to report a Mission Control product issue, the bundled Mission
+MCP server prepares the exact GitHub title, labels, body, and safe environment summary. Mission
+Control then opens that public preview in the dashboard and blocks publication until you select
+**Submit public issue**. Dismissing the review publishes nothing.
+
+Reports are text-only in this release and use your installed, authenticated GitHub CLI. Screenshot
+upload remains disabled until the upstream CLI attachment contract ships and is verified. There is
+not yet a direct dashboard Feedback form; that user-facing entry point is a separate follow-up.
+
+See [the MCP tool reference](docs/sessions.md#review-channel-mcp) and
+[security boundaries](docs/security.md#public-product-issue-reporting).
+
 ## Watch a pipeline engine you already use
 
 Some work is driven by an external SDLC engine rather than by a single agent.

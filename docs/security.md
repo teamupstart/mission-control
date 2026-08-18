@@ -28,6 +28,29 @@ which comments on pull requests under your GitHub account, and
 separate - trusting an automated reviewer to comment in a repo is not the same act as
 letting it push to that repo's base branch.
 
+## Public product issue reporting
+
+Product reports are public GitHub issues, not private support messages. The agent tool is defined
+for use only after the user explicitly requests a report, shows the daemon-derived public content in an
+`input` review, and calls the mutation route only after a human selects **Submit public issue**.
+Dismissed, orphaned, free-form, malformed, and non-human review answers publish nothing.
+
+The daemon owns the destination, the fixed type and triage labels, and the dashboard or agent
+source label. Requests cannot supply routing metadata. The destination defaults to
+`mancej/mission-controller-control-issues`; the optional environment override accepts only one exact
+`owner/name` value and cannot be changed per report. The issue body contains only reporter-authored
+details plus an allowlisted Mission Control version, OS family, architecture, browser or Electron
+client value, and a versioned marker. Mission Control does not collect logs, paths, session text,
+tokens, account data, or other process environment for a report.
+
+Issue creation uses the installed `gh` binary and its existing authentication. Mission Control
+stores no GitHub token and sends the body on standard input instead of the process argument list.
+The production attachment capability has no operator override and rejects every non-empty upload
+list before starting `gh`. The anticipated image adapter exists only behind an injected test
+capability until stable first-party CLI attachment support is released and verified. A CLI refusal
+is safe to retry after correction; a timeout, signal, or success response without an issue URL is
+reported as unknown and blocks another submission for that report opening.
+
 [Archives](archives.md) are local files under `~/.mission-control/archives`, and
 Mission Control never sends one anywhere. Three properties keep them from becoming a way in.
 A bundle copied into the library is untrusted input: its manifest is validated for version,

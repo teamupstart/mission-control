@@ -1399,8 +1399,8 @@ would be reported as such rather than silently skipped.)
 >   `MISSION_MCP_TOOLS` exactly, in either direction.
 
 This registers a stdio MCP server (`src/mcp/server.ts`) that each session launches. It exposes
-six review-channel tools, plus three task-scoped submission tools a session receives only when
-its work needs one: [`submit_ensemble_result`](ensembles.md#multi-agent-ensembles) for an
+the standard review, reporting, and status tools, plus task-scoped submission tools a session
+receives only when its work needs one: [`submit_ensemble_result`](ensembles.md#multi-agent-ensembles) for an
 ensemble member, [`submit_scout_artifacts`](archives.md) for a scout, and
 `submit_workflow_evidence` for a workflow-bound ship task whose immutable graph contains a
 Persona. The workflow tool registers contained gitignored screenshots and focused UTF-8 text
@@ -1433,6 +1433,13 @@ The MCP tools are:
   With `options` the human gets clickable choices (radios, or checkboxes with
   `multiSelect`, plus an optional free-text "Other") and can dismiss a stale set without
   submitting it; without them, a text box
+- `report_product_issue(type, title, details, attachmentUploadIds?)` - only after the user
+  explicitly asks for a Mission Control product report, prepare a public GitHub issue and
+  **block** on a dashboard review containing the exact daemon-derived repository, labels, body,
+  and safe environment summary. The only publishing choice is **Submit public issue**; Dismiss
+  and any non-human or malformed answer publish nothing. Reports are text-only in this release,
+  so `attachmentUploadIds` must be empty. Success returns the exact issue URL, a CLI refusal says
+  retrying is safe, and an unknown outcome says to check GitHub before trying again
 - `report_status(activity)` - update the session's activity line
 - `submit_workflow_evidence(images?, artifacts?)` - register bounded gitignored screenshots
   and UTF-8 text or log files for the selected Persona workflow. Every item supplies a stable

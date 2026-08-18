@@ -54,6 +54,7 @@ export const MISSION_MCP_TOOLS = [
   "request_review",
   PLAN_SCHEDULING_TOOL,
   "request_input",
+  "report_product_issue",
   "report_status",
   SUBMIT_ENSEMBLE_RESULT_TOOL,
   SUBMIT_SCOUT_ARTIFACTS_TOOL,

@@ -118,6 +118,20 @@ test("the tool vocabulary matches what the MCP server actually registers", () =>
   assert.deepEqual([...MISSION_MCP_TOOLS].sort(), [...registered].sort());
 });
 
+test("product issue registration requires public confirmation and empty attachments", () => {
+  const source = readFileSync(fileURLToPath(new URL("../src/mcp/server.ts", import.meta.url)), "utf8");
+  const start = source.indexOf('server.registerTool(\n  "report_product_issue"');
+  const end = source.indexOf('server.registerTool(\n  "report_status"', start);
+  assert.ok(start >= 0 && end > start, "report_product_issue registration is present");
+  const registration = source.slice(start, end);
+  assert.match(registration, /only after the user explicitly/);
+  assert.match(registration, /public GitHub issue/);
+  assert.match(registration, /Submit public issue/);
+  assert.match(registration, /Screenshots are unavailable/);
+  assert.match(registration, /\.max\(0\)/);
+  assert.match(registration, /new TextEncoder\(\)\.encode\(value\)\.byteLength/);
+});
+
 test("submit_workflow_evidence publishes bounded text artifacts beside existing images", () => {
   const source = readFileSync(fileURLToPath(new URL("../src/mcp/server.ts", import.meta.url)), "utf8");
   const registration = source.slice(

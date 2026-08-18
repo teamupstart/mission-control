@@ -118,9 +118,19 @@ Nothing beyond the sanitized snapshot may cross. No paths, no URLs, no raw error
 ### 3. Hook
 
 `src/web/useDesktopUpdates.ts`. Guard on `window.missionDesktop` so the browser build gets a stable
-"no updates surface" result. **Read the current snapshot first, then subscribe**, so a transition
-between page load and listener registration cannot be missed. Return the unsubscribe from the effect,
-in the style of the existing `onOpenSettings` effect at `src/web/App.tsx:424-430`.
+"no updates surface" result. Return the unsubscribe from the effect, in the style of the existing
+`onOpenSettings` effect at `src/web/App.tsx:424-430`.
+
+**Subscribe first, then read the snapshot.** Either order leaves a window; only this one leaves a
+window that is harmless. Subscribing first means a change landing during the read is still delivered,
+and because every message is a whole snapshot rather than a delta, the redundant delivery is
+idempotent - the worst case is rendering the same state twice. Reading first means a change landing
+between the read and the subscription is delivered to nobody, and the banner stays stale until the
+next scheduled check, which can be six hours away.
+
+Guard against the resulting out-of-order risk rather than ignoring it: a snapshot that arrives while
+the initial read is still in flight must win over that read's result. Sequence the two so the
+subscription's value is never overwritten by an older read.
 
 ### 4. Banner
 
@@ -170,7 +180,10 @@ IPC and preload contract test:
 
 - exact command and push channel names;
 - the snapshot the renderer receives carries no path, URL, or raw error field;
-- the subscription's unsubscribe actually removes the listener.
+- the subscription's unsubscribe actually removes the listener;
+- **the hook subscribes before it reads**, and a snapshot pushed while the initial read is still in
+  flight is not overwritten by that read's older result. Drive it with a deliberately slow fake read
+  so the ordering is asserted rather than assumed.
 
 Playwright spec in `e2e/` - **required, because this is a UI change**:
 
@@ -220,3 +233,8 @@ and it must not move update decisions into the renderer.
 - **2026-08-18, final set audit.** Same documentation gap found across the set: added
   `docs/desktop-and-packaging.md` to this phase's scope so the prompt and the failure surface are
   documented by the phase that introduces them. No contract change to Phase 1 or Phase 2.
+- **2026-08-18, Inspector round 1.** Corrected the subscription ordering. The plan said read the
+  snapshot then subscribe, inherited from issue #642, and that loses any transition landing in the gap.
+  Now: subscribe first, then read, which is safe precisely because every message is a whole snapshot
+  rather than a delta, so a redundant delivery is idempotent. Added the out-of-order guard and a test
+  that drives it with a slow fake read.

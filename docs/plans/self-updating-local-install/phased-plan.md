@@ -116,7 +116,7 @@ may change its shape; later phases consume it.
 
 | Contract | Owner | Consumed by |
 |---|---|---|
-| Install receipt: JSON file in the state dir naming the updater-owned clone path, installed version, release tag, and install timestamp | Phase 1 | Phase 2 |
+| Install receipt, split across a browser-safe schema module and a separate I/O module, naming the updater-owned clone path, installed version, release tag, and install timestamp | Phase 1 | Phase 2 |
 | Updater-owned clone location and the guarantee that it is clean and updater-exclusive | Phase 1 | Phase 2 |
 | `vX.Y.Z` tag equals `package.json` version equals packaged `app.getVersion()` | Phase 1 | Phase 2 |
 | Install script contract: idempotent, re-runnable, accepts a target ref, exits non-zero on failure | Phase 1 | Phase 2 |
@@ -143,6 +143,23 @@ Performed over the complete set on 2026-08-18.
   preload shape, and the topbar geometry interaction with a new full-width banner. Both are decisions the
   implementing agent should make against the code, with the reasoning recorded in its pull request.
 - The final state matches the source plan and depends on no undocumented cleanup.
+
+**Inspector round 1, 2026-08-18.** Three `major` comments, all addressed in the phase files and recorded
+in their audit records:
+
+- *Receipt I/O in `src/shared/`* - split into a browser-safe schema module plus a separate I/O module.
+  The review's premise that `src/shared/` admits no `node:` imports is contradicted by
+  `src/shared/harness-runtime.mjs` and `src/shared/claude-settings.ts`, so the I/O stays there by
+  precedent and the split is defensive. Phase 1.
+- *Snapshot subscription race* - correct, and the plan was wrong. Read-then-subscribe loses any
+  transition landing in the gap; the order is now subscribe-then-read, with an out-of-order guard and a
+  test. Phase 3.
+- *No E2E for the native controls* - replaced the bare exemption claim with a testable command seam, and
+  argued the residual gap explicitly: Chromium cannot drive an Electron menu or native modal, and the
+  contract itself names the Electron tests as the layer for what a browser cannot see. **One open
+  question for the plan owner** is recorded in Phase 2 rather than decided unilaterally: whether to move
+  the menu, tray, and dialog into Phase 3 so this phase has no user-visible surface at all, which would
+  satisfy the contract literally at the cost of Phase 2's independent shippability.
 
 ## Final verification strategy
 

@@ -156,7 +156,7 @@
     <div class="table-wrap"><table>
       <thead><tr><th>Contract</th><th>Owner</th><th>Consumed by</th></tr></thead>
       <tbody>
-        <tr><td>Install receipt: clone path, installed version, release tag, timestamp</td><td>Phase 1</td><td>Phase 2</td></tr>
+        <tr><td>Install receipt, split across a browser-safe schema module and a separate I/O module: clone path, installed version, release tag, timestamp</td><td>Phase 1</td><td>Phase 2</td></tr>
         <tr><td>Updater-owned clone, guaranteed clean and updater-exclusive</td><td>Phase 1</td><td>Phase 2</td></tr>
         <tr><td>Tag equals <code>package.json</code> equals packaged <code>app.getVersion()</code></td><td>Phase 1</td><td>Phase 2</td></tr>
         <tr><td>Install script: idempotent, accepts a target ref, non-zero on failure</td><td>Phase 1</td><td>Phase 2</td></tr>
@@ -172,6 +172,7 @@
     <div class="audit">
       <p>Every source-plan requirement and approved decision is owned by exactly one phase. Every consumer follows its prerequisite. No concurrency is claimed, because none holds.</p>
       <p><strong>One defect found and fixed rather than deferred.</strong> Documentation had been scoped only into Phase 1, which would have left the updater and the banner undocumented and broken the definition of done. <code>docs/desktop-and-packaging.md</code> is now scoped into Phases 2 and 3 as well, recorded in both phases' audit records.</p>
+      <p><strong>Inspector round 1.</strong> Three <code>major</code> comments, all addressed. Receipt I/O split into a browser-safe schema module plus a separate I/O module, though the review's premise that <code>src/shared/</code> admits no <code>node:</code> imports is contradicted by <code>harness-runtime.mjs</code> and <code>claude-settings.ts</code>, so the I/O stays there by precedent. The snapshot subscription order was genuinely wrong and is now subscribe-then-read with an out-of-order guard. The native-control E2E gap gained a testable command seam, and <strong>one open question is left for the plan owner</strong> rather than decided unilaterally: whether to move the menu, tray, and dialog into Phase 3 so Phase 2 has no user-visible surface at all.</p>
       <p><strong>Two risks are carried openly</strong> in Phase 3 rather than resolved on paper: the flat-versus-namespaced preload shape, and the topbar geometry interaction with a new full-width banner. Both are decisions the implementing agent should make against the code, with reasoning recorded in its pull request.</p>
     </div>
   </section>

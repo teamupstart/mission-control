@@ -33,7 +33,10 @@ its own bundle has failure modes that no other phase has.
 3. `scripts/apply-update.mjs`: the detached helper. Wait, back up, rebuild, verify, swap, relaunch,
    roll back, record the outcome.
 4. `electron-builder.yml`: ship the helper in the bundle.
-5. `src/main/menu.ts` and `src/main/tray.ts`: a **Check for Updates...** command in both.
+5. `src/main/menu.ts` and `src/main/tray.ts`: a **Check for Updates...** command in both, as thin
+   adapters over a controller method, with the native dialog behind an injected port so the command
+   flow is testable without Electron. See
+   [the Playwright question](#the-playwright-question-for-the-native-surfaces).
 6. `src/main/index.ts` and `src/main/lifecycle.ts`: wire the controller, and make the update quit
    ordering explicit and testable.
 7. `docs/desktop-and-packaging.md`: how updates are checked and applied, the updater-owned clone's
@@ -252,7 +255,11 @@ Pure unit tests against the injected port, in `test/`:
 - missing `gh`, unauthenticated `gh`, and missing system node each produce their specific message;
 - release notes are truncated and sanitized;
 - the log redacts absolute paths and token-like substrings;
-- `lastOutcome` is surfaced once and then cleared.
+- `lastOutcome` is surfaced once and then cleared;
+- **the command seam**: the menu path and the tray path reach the same controller method; a manual
+  check that finds nothing reports it while a background check that finds nothing stays silent;
+  accepting the prompt hands off exactly once; declining hands off not at all; and a second invocation
+  while an operation is live does not start another.
 
 Electron-layer test, following the pure-policy style rather than launching a GUI:
 
@@ -265,8 +272,39 @@ Outcome-marker round trip, including the unknown-higher-schema refusal.
 Commands that must pass: `npm run typecheck`, `npm run lint`, `npm test`, `npm run test:electron`,
 `npm run build`, `npm run smoke`.
 
-No UI surface changes yet, so no `e2e/` spec is required by this phase; the native dialog is not
-reachable from Playwright. Say so explicitly in the pull request.
+### The Playwright question for the native surfaces
+
+This phase adds user-visible controls - a menu item, a tray item, and a dialog - and the repository
+contract states that every UI change requires a Playwright spec in `e2e/` with no exemptions. That
+requirement and this phase's surfaces cannot both be satisfied literally, and the reason is physical
+rather than a preference: `e2e/` drives Chromium against the built dashboard
+(`e2e/playwright.config.ts`), and Chromium cannot open an Electron application menu, a tray menu, or a
+native modal. There is no selector for either. The contract's own stated rationale - "Only `e2e/`
+connects a click to a route to a server event and back to the DOM" - describes a DOM that a native
+menu does not have, and the contract separately names the Electron tests as the layer for what a
+browser cannot see.
+
+So do not declare an exemption and move on. Do this instead:
+
+1. **Build the seam.** The menu and tray items must be thin adapters that do nothing but call a named
+   controller method, and the dialog must be reached through an injected port rather than by calling
+   `dialog.showMessageBox` inline. Then the whole command flow - invoke, dedupe, prompt, accept,
+   decline, hand off - is assertable without Electron, and the native layer that remains untested is
+   only the platform's own menu rendering.
+2. **Assert that seam** in the unit tests below, including that the menu path and the tray path reach
+   the same controller method and cannot start a second concurrent operation.
+3. **Record the reasoning in the pull request**, naming this section, so a reviewer sees a deliberate
+   decision rather than a skipped gate.
+
+The first Playwright coverage of update behavior lands in Phase 3, where it is mandatory and where the
+surface is real DOM.
+
+**Alternative if a reviewer prefers strict literal compliance:** move the menu, tray, and dialog into
+Phase 3 and leave this phase engine-only, so this phase has no user-visible surface and the contract is
+satisfied without interpretation. That is a viable restructuring - the primary justification for
+splitting this phase from Phase 3 is isolating the self-replacement machinery for review, not the menu -
+but it costs this phase its independent shippability and makes its manual acceptance run depend on a
+temporary trigger. Raise it with the plan owner rather than deciding it silently mid-implementation.
 
 Manual acceptance to record on the pull request, both runs required:
 
@@ -313,3 +351,10 @@ bridge, and must not widen the snapshot to carry paths, URLs, or raw error text.
   left this phase's updater behavior undocumented and violated the source plan's definition of done.
   Added `docs/desktop-and-packaging.md` and `docs/overview.md` to this phase's scope, per the rule that
   documentation is implementation work in the phase that introduces the behavior.
+- **2026-08-18, Inspector round 1.** Replaced the bare "no E2E required" claim with a testable command
+  seam: the menu and tray items become thin adapters over a controller method and the dialog moves
+  behind an injected port, so the full command flow is asserted without Electron. Added the seam
+  assertions to the unit tests. The residual gap - Chromium cannot drive a native menu or modal - is
+  now argued explicitly against the contract's own rationale rather than asserted, and the structural
+  alternative of moving all user-visible surfaces into Phase 3 is recorded for the plan owner rather
+  than applied unilaterally, because it would change phase scope.

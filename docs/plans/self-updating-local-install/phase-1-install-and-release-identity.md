@@ -22,8 +22,12 @@ depends on the updater existing.
 
 ## Scope
 
-1. `src/shared/install-receipt.mjs` (plus `.d.mts`): the receipt schema, a writer, a reader, and a
-   validator. Pure functions, no side effects beyond the explicit read and write.
+1. The receipt contract, deliberately split in two so nothing renderer-adjacent can pull in
+   filesystem code:
+   - `src/shared/install-receipt-schema.ts`: the receipt type, the schema constant, and a pure
+     `validateReceipt` returning a reason string or `null`. Browser-safe, no `node:` imports.
+   - `src/shared/install-receipt.mjs` (plus `.d.mts`): the path resolution and the read and write,
+     importing the schema module for validation.
 2. `scripts/install-app.mjs`: the install entry point. Prerequisites, clone establishment, checkout,
    build, package, verify, swap, receipt.
 3. `Makefile`: a new `install` target for the user path. `make install-app` keeps its current
@@ -80,9 +84,26 @@ None. This phase defines the contracts the rest of the plan consumes.
 
 ## Implementation steps
 
-### 1. Receipt module
+### 1. Receipt modules
 
-Create `src/shared/install-receipt.mjs` with a versioned schema. Suggested shape:
+Two modules, split on the I/O boundary.
+
+`src/shared/install-receipt-schema.ts` holds the type, the `schema` constant, and a pure
+`validateReceipt(value)` returning a reason string or `null`. It must stay browser-safe with no
+`node:` imports, so a renderer-adjacent import can never drag filesystem code into the web bundle.
+
+`src/shared/install-receipt.mjs` holds `receiptPath()` derived from `stateDir()`, `readReceipt()`, and
+`writeReceipt(receipt)`, delegating validation to the schema module.
+
+A note on why the I/O lives in `src/shared/` at all, since the directory is a controlled path: the
+consumers are `scripts/install-app.mjs`, the Phase 2 apply helper, and the bundled main process, and
+`src/shared/harness-runtime.mjs` is the established precedent for exactly this - it imports
+`node:crypto`, `node:fs`, `node:os`, and `node:path`, and already performs atomic
+`writeFileSync`-then-`renameSync` writes. `src/shared/claude-settings.ts` also imports `node:`. So a
+node-using `.mjs` here is conventional rather than novel; the split above is defensive, keeping the
+browser-safe half genuinely browser-safe rather than relying on callers to be careful.
+
+The receipt's shape:
 
 ```js
 {
@@ -96,9 +117,8 @@ Create `src/shared/install-receipt.mjs` with a versioned schema. Suggested shape
 }
 ```
 
-Export `receiptPath()` derived from `stateDir()`, `readReceipt()` returning `null` rather than
-throwing when absent or malformed, `writeReceipt(receipt)` writing atomically (temp file then
-rename), and `validateReceipt(value)` returning a reason string or `null`.
+`readReceipt()` returns `null` rather than throwing when the file is absent or malformed.
+`writeReceipt()` writes atomically, temp file then rename, matching `harness-runtime.mjs`.
 
 `schema` is append-only. A reader that meets a higher schema number than it knows must decline rather
 than guess, because Phase 2 decides whether to run an update from this file.
@@ -246,3 +266,9 @@ non-idempotent. If Phase 2 needs another field, it is added as an optional field
   duplicating build logic. Confirmed the receipt carries `sourceClone` and `appPath`, which are the
   two paths the helper operates on. No change required to this file.
 - **2026-08-18, after Phase 3.** Phase 3 consumes nothing from this phase directly. No change.
+- **2026-08-18, Inspector round 1.** Split the receipt into a browser-safe schema module and a
+  separate I/O module, so nothing renderer-adjacent can pull filesystem code into the web bundle. The
+  review's premise that node-using code cannot live in `src/shared/` is contradicted by
+  `src/shared/harness-runtime.mjs` and `src/shared/claude-settings.ts`, so the I/O stays there by
+  precedent; the split is defensive rather than mandated, and the reasoning is now recorded in the
+  implementation step. No contract consumed by a later phase changed shape.

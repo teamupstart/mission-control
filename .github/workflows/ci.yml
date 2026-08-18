@@ -349,6 +349,14 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # A dmg is only worth building if its version is the one the tag claims: the packaged
+      # app's `package.json` version is what the updater compares against a release tag, so a
+      # tag that disagrees produces an artifact the updater either never offers or offers
+      # forever. Tag runs only - a `workflow_dispatch` build has no tag to agree with.
+      - name: Assert the tag, package.json, and lockfile agree
+        if: startsWith(github.ref, 'refs/tags/')
+        run: node scripts/assert-release-version.mjs "$GITHUB_REF_NAME"
+
       - name: Package
         run: npm run package
 

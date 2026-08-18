@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  archPrerequisiteMessage,
   chromiumPrerequisiteMessage,
+  ghPrerequisiteMessage,
+  gitPrerequisiteMessage,
   MIN_NODE_MAJOR,
   nodeMajor,
   nodePrerequisiteMessage,
+  REQUIRED_ARCH,
 } from "../scripts/init-prerequisites.mjs";
 
 test("init prerequisite checks accept supported Node versions", () => {
@@ -25,5 +29,33 @@ test("init prerequisite checks give the Playwright installation fix", () => {
   assert.equal(
     chromiumPrerequisiteMessage(),
     'Playwright Chromium is required for end-to-end tests. Run `npx playwright install chromium`, then rerun `make init ARGS="--with-e2e"`.',
+  );
+});
+
+test("the install refuses a non-arm64 host rather than warning", () => {
+  assert.equal(archPrerequisiteMessage(REQUIRED_ARCH), null);
+  assert.equal(
+    archPrerequisiteMessage("x64"),
+    `Mission Control packages for Apple Silicon only (found x64). Install it on an ${REQUIRED_ARCH} Mac.`,
+  );
+  assert.match(String(archPrerequisiteMessage("")), /unknown architecture/);
+});
+
+test("the install prerequisite checks give the git installation fix", () => {
+  assert.equal(gitPrerequisiteMessage(true), null);
+  assert.match(String(gitPrerequisiteMessage(false)), /xcode-select --install/);
+});
+
+test("the installer and the running app describe a broken gh identically", () => {
+  // Same two sentences as `preflight` in src/server/task-sources/github-issues.ts, so a person
+  // whose gh is not usable reads one wording whichever surface tells them.
+  assert.equal(ghPrerequisiteMessage({ installed: true, authenticated: true }), null);
+  assert.equal(
+    ghPrerequisiteMessage({ installed: false, authenticated: false }),
+    "the gh CLI is not installed - install it and run `gh auth login`",
+  );
+  assert.equal(
+    ghPrerequisiteMessage({ installed: true, authenticated: false }),
+    "gh is not authenticated - run `gh auth login`",
   );
 });

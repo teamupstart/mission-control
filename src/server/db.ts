@@ -5370,21 +5370,65 @@ export function primaryRepoPrForTask(taskId: string): TaskRepoPrRecord {
  */
 export type RetroPrPosture =
   | { kind: "open"; binding: TaskWorkEpisodeBinding }
-  | { kind: "merged"; binding: TaskWorkEpisodeBinding };
+  | {
+      kind: "merged";
+      binding: TaskWorkEpisodeBinding;
+      prUrl: string;
+      mergedAt: number;
+    };
 
 export function retroPrPostureForTask(taskId: string): RetroPrPosture | null {
   const current = taskWorkEpisodeForTask(taskId);
   if (current?.prUrl && current.mergedAt === null) return { kind: "open", binding: current };
 
-  let merged: TaskWorkEpisodeBinding | null = null;
-  for (const binding of [
+  const repoPrs = workEpisodeRepoPrsForTask(taskId);
+  if (
+    current &&
+    repoPrs.some(
+      (row) =>
+        row.episodeId === current.episodeId &&
+        row.mergedAt === null &&
+        row.prState?.toLowerCase() !== "closed",
+    )
+  ) {
+    return { kind: "open", binding: current };
+  }
+
+  const bindings = [
     ...(current ? [current] : []),
     ...historicalTaskWorkEpisodeBindingsForTask(taskId),
-  ]) {
+  ];
+  const bindingByEpisode = new Map(bindings.map((binding) => [binding.episodeId, binding]));
+  let merged: Extract<RetroPrPosture, { kind: "merged" }> | null = null;
+  for (const binding of bindings) {
     if (binding.prUrl === null || binding.mergedAt === null) continue;
-    if (merged === null || binding.mergedAt > (merged.mergedAt ?? 0)) merged = binding;
+    if (merged === null || binding.mergedAt > merged.mergedAt) {
+      merged = {
+        kind: "merged",
+        binding,
+        prUrl: binding.prUrl,
+        mergedAt: binding.mergedAt,
+      };
+    }
   }
-  return merged ? { kind: "merged", binding: merged } : null;
+  // Secondary-repository reviews have their own durable table. They still belong to the
+  // task's work episode, so retain that binding as the follow-up key while carrying the
+  // actual merged review URL separately. A row without a surviving binding cannot safely
+  // name the source session or episode and is ignored rather than guessed at.
+  for (const row of repoPrs) {
+    if (row.mergedAt === null) continue;
+    const binding = bindingByEpisode.get(row.episodeId);
+    if (!binding) continue;
+    if (merged === null || row.mergedAt > merged.mergedAt) {
+      merged = {
+        kind: "merged",
+        binding,
+        prUrl: row.prUrl,
+        mergedAt: row.mergedAt,
+      };
+    }
+  }
+  return merged;
 }
 
 export function recordWorkEpisodePrompt(

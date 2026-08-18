@@ -307,7 +307,7 @@ async function startPostMergeRetro(
       sourceEpisodeId: posture.binding.episodeId,
       sourceSessionId: posture.binding.sessionId,
       title: `Retro: ${sourceTask.title}`.slice(0, 120),
-      intent: postMergeRetroIntent(session, sourceTask, posture.binding),
+      intent: postMergeRetroIntent(session, sourceTask, posture.binding, posture.prUrl),
       agent: runner.agent,
     });
   } catch (error) {
@@ -350,6 +350,7 @@ function postMergeRetroIntent(
   clickedSession: Session,
   sourceTask: Task,
   sourceBinding: TaskWorkEpisodeBinding,
+  mergedPrUrl: string,
 ): string {
   const repoRoots = [sourceTask.repoRoot, ...sourceTask.extraRepos.map((repo) => repo.repoRoot)];
   const facts = [
@@ -357,7 +358,7 @@ function postMergeRetroIntent(
     `Source work episode: ${sourceBinding.episodeId}`,
     `Source session: ${clickedSession.name} (${clickedSession.id})`,
     sourceBinding.branch ? `Source branch: ${sourceBinding.branch}` : null,
-    sourceBinding.prUrl ? `Merged pull request: ${sourceBinding.prUrl}` : null,
+    `Merged pull request: ${mergedPrUrl}`,
     clickedSession.cwd ? `Former worktree: ${clickedSession.cwd}` : null,
     `Repository set: ${repoRoots.join(", ")}`,
   ].filter((line): line is string => line !== null);

@@ -9,7 +9,12 @@ const home = mkdtempSync(join(tmpdir(), "mission-retro-http-home-"));
 const repos = mkdtempSync(join(tmpdir(), "mission-retro-http-repos-"));
 process.env.MISSION_HOME = home;
 
-const { bindTaskWorkEpisode, openDb } = await import("../src/server/db.ts");
+const {
+  bindTaskWorkEpisode,
+  markWorkEpisodeMerged,
+  openDb,
+  recordWorkEpisodeRepoPr,
+} = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
@@ -142,6 +147,7 @@ function bindSourceTask(
   session: ReturnType<typeof liveSession>,
   repo: string,
   mergedAt: number | null,
+  primaryPrUrl: string | null = "https://github.example/o/r/pull/40",
 ) {
   const task = f.tasks.create({
     repoRoot: repo,
@@ -157,7 +163,7 @@ function bindSourceTask(
     status: "done",
     sessionId: session.id,
     outcome: "merged source work",
-    outcomeUrl: "https://github.example/o/r/pull/40",
+    outcomeUrl: primaryPrUrl,
     completedAt: now,
     updatedAt: now,
   });
@@ -167,8 +173,8 @@ function bindSourceTask(
     sessionId: session.id,
     agentSessionId: session.agentSessionId!,
     branch: "feature/source-work",
-    prUrl: "https://github.example/o/r/pull/40",
-    prHeadSha: "c".repeat(40),
+    prUrl: primaryPrUrl,
+    prHeadSha: primaryPrUrl ? "c".repeat(40) : null,
     mergedAt,
     boundAt: now - 1_000,
     updatedAt: now,
@@ -304,6 +310,59 @@ test("a merged primary review cannot start a retro while an attached source revi
   assert.match(body.error, /every attached repository review/i);
   assert.equal(f.tasks.list().length, before, "no follow-up is filed before source completion");
   assert.equal(f.tasks.get(source.id)?.status, "running");
+  assert.equal(f.typed.length, 0);
+});
+
+test("a completed source whose only merged review is attached starts the linked retro", async () => {
+  installRetroSkill();
+  enableSkills(true);
+  const f = fixture();
+  const repo = gitRepo(`secondary-only-source-${f.serial}`);
+  const secondary = gitRepo(`secondary-only-attached-${f.serial}`);
+  const session = liveSession(f, repo);
+  const source = bindSourceTask(f, session, repo, null, null);
+  const completedSource = f.tasks.get(source.id);
+  assert.ok(completedSource);
+  f.registry.upsertTask({
+    ...completedSource,
+    extraRepos: [{
+      repoRoot: secondary,
+      worktreePath: join(secondary, "source-worktree"),
+      branch: "feature/secondary-source-work",
+      provider: "git",
+      worktreeLeaseId: null,
+      baseSha: "e".repeat(40),
+      prUrl: null,
+      prState: null,
+      mergedAt: null,
+    }],
+  });
+  const episodeId = `source-episode-${f.serial}`;
+  const secondaryUrl = "https://github.example/o/secondary/pull/42";
+  recordWorkEpisodeRepoPr({
+    episodeId,
+    repoRoot: secondary,
+    sessionId: session.id,
+    taskId: source.id,
+    prUrl: secondaryUrl,
+    prState: "open",
+    prHeadSha: "f".repeat(40),
+  }, Date.now());
+  assert.equal(markWorkEpisodeMerged(session.id, episodeId, secondaryUrl, Date.now()), true);
+  f.tasks.dispatch = async (id) => {
+    const current = f.tasks.get(id);
+    assert.ok(current);
+    f.registry.upsertTask({ ...current, status: "dispatching", updatedAt: Date.now() });
+    return { ok: true as const, task: f.tasks.get(id)! };
+  };
+
+  const response = await retro(f.app, session.id);
+  assert.equal(response.status, 200);
+  const body = (await response.json()) as { kind: string; task: Task };
+  assert.equal(body.kind, "started");
+  assert.ok(body.task.intent.includes(secondaryUrl));
+  assert.deepEqual(body.task.extraRepos.map((entry) => entry.repoRoot), [secondary]);
+  assert.equal(f.tasks.get(source.id)?.status, "done");
   assert.equal(f.typed.length, 0);
 });
 

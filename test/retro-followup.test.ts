@@ -9,6 +9,7 @@ process.env.MISSION_HOME = home;
 
 const {
   bindTaskWorkEpisode,
+  markWorkEpisodeMerged,
   recordWorkEpisodeRepoPr,
   retroFollowupForSource,
   retroFollowupForTask,
@@ -25,14 +26,14 @@ function binding(over: {
   taskId: string;
   episodeId: string;
   sessionId: string;
-  prUrl: string;
+  prUrl: string | null;
   mergedAt: number | null;
 }) {
   return {
     ...over,
     agentSessionId: `agent:${over.sessionId}`,
     branch: `feature/${over.episodeId}`,
-    prHeadSha: "a".repeat(40),
+    prHeadSha: over.prUrl ? "a".repeat(40) : null,
     boundAt: 100,
     updatedAt: over.mergedAt ?? 100,
   };
@@ -64,6 +65,42 @@ test("retro posture prefers a current open review over a historical merge", () =
   assert.deepEqual(retroPrPostureForTask(taskId), {
     kind: "merged",
     binding: mergedCurrent,
+    prUrl: mergedCurrent.prUrl,
+    mergedAt: mergedCurrent.mergedAt,
+  });
+});
+
+test("retro posture follows a merged attached-repository review when the primary had none", () => {
+  const taskId = "retro-secondary-posture-source";
+  const current = binding({
+    taskId,
+    episodeId: "episode-secondary-only",
+    sessionId: "session-secondary-only",
+    prUrl: null,
+    mergedAt: null,
+  });
+  bindTaskWorkEpisode(current);
+  const secondaryUrl = "https://github.example/o/secondary/pull/3";
+  recordWorkEpisodeRepoPr({
+    episodeId: current.episodeId,
+    repoRoot: "/repos/secondary-only",
+    sessionId: current.sessionId,
+    taskId,
+    prUrl: secondaryUrl,
+    prState: "open",
+    prHeadSha: "b".repeat(40),
+  }, 2_000);
+
+  assert.deepEqual(retroPrPostureForTask(taskId), { kind: "open", binding: current });
+  assert.equal(
+    markWorkEpisodeMerged(current.sessionId, current.episodeId, secondaryUrl, 3_000),
+    true,
+  );
+  assert.deepEqual(retroPrPostureForTask(taskId), {
+    kind: "merged",
+    binding: current,
+    prUrl: secondaryUrl,
+    mergedAt: 3_000,
   });
 });
 

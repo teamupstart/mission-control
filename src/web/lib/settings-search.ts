@@ -93,10 +93,10 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
   {
     id: "layout",
     label: "Layout",
-    description: "Arrange the fleet as Cards, Console, or Board.",
+    description: "Arrange the fleet as Console or Board.",
     category: "display",
     anchor: "display/layout",
-    keywords: ["grid", "console", "board", "cards", "arrangement", "view"],
+    keywords: ["console", "board", "arrangement", "view"],
     kind: "jump",
   },
   {

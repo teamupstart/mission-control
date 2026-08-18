@@ -250,7 +250,8 @@ rationale is in [`docs/plans/best-of-n-swarm-dispatch/plan.md`](plans/best-of-n-
    request id: a lost response and a retry return the same run, never a second fleet.
 3. The daemon pins **one full base commit** and launches 2-5 ordinary member tasks from it - every
    candidate starts byte-identical. Each is a normal session in Cards, Console and Board, marked
-   with an **E** chip that opens the run.
+   with an **E** chip that opens the run. Its task title starts with **Candidate N -** so sibling
+   tasks remain identifiable wherever titles are truncated or scanned in a list.
 4. Each candidate implements and tests alone. Its prompt forbids pushing, opening a PR, or running
    the shipping gate, and tells it to **submit** when ready.
 5. A member submits through the launch-scoped `submit_ensemble_result` MCP tool (or the manual

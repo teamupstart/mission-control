@@ -65,9 +65,12 @@ sibling implementation phases.
 
 ### Pull request posture and episode identity
 
-- `primaryRepoPrForTask` in `src/server/db.ts` already treats any durable merged episode as the
-  lasting result and only treats an unmerged pull request as current when it belongs to the
-  current episode. Reuse that rule through the task-owned seam instead of reconstructing it
+- `primaryRepoPrForTask` in `src/server/db.ts` deliberately lets any durable merged episode
+  outrank an open pull request on the current episode. That is correct for task completion and
+  card outcome, but wrong for retro routing: the current open review must receive the retro.
+  Add a sibling durable query owned beside the binding readers. It returns the current episode's
+  open pull request first; only when none exists does it return the newest merged binding from
+  current or historical episodes. Do not change `primaryRepoPrForTask` or reconstruct posture
   from `Session.prUrl`.
 - A source task can have historical episodes. Key the follow-up on `(source_task_id,
   source_episode_id)`, not only `source_task_id`, so a genuinely new work cycle can earn a new
@@ -142,9 +145,10 @@ sibling implementation phases.
 
 ### 3. Route open and merged pull requests differently
 
-- Resolve the source task and current episode before live action delivery.
-- When the current durable pull request is open, retain the existing skill reload check,
-  render, injection lock, provenance recording, and `delivered` response.
+- Resolve the source task and current episode before live action delivery. Use the dedicated
+  current-open-first retro posture query, not the merged-first completion projection.
+- When that query returns the current episode's open pull request, retain the existing skill
+  reload check, render, injection lock, provenance recording, and `delivered` response.
 - When a durable merged pull request is associated with the source episode, resolve a harness
   that can run the retro and shipping procedures, create or reuse the linked task, then invoke
   ordinary task dispatch.
@@ -281,6 +285,8 @@ the normal retro approval procedure.
 - It introduces no contract another phase must finish.
 - Its database, shared wire, server, MCP, skill, UI, documentation, and browser changes land
   together, so the merged repository is internally consistent.
+- Inspector review corrected one repository assumption: the retro route owns a
+  current-open-first binding query and must not reuse the merged-first task completion query.
 - The scheduled task must treat this phase file as a proposed route, not a specification. Use
   engineering judgment against the current repository and record material deviations in the
   pull request.

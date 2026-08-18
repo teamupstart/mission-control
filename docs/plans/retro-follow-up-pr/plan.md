@@ -61,9 +61,12 @@ and has no explicit no-change completion path.
 ### 1. Resolve pull request posture from durable task history
 
 The retro route first identifies the session's task and its current work episode. It asks the
-task layer for the primary repository pull request posture, using the durable work-episode
-bindings rather than relying only on the session's `prUrl` projection. A merged pull request
-can outlive or disappear from a session card, so the durable task binding is the authority.
+task layer for a retro-specific pull request posture from the durable work-episode bindings,
+rather than relying only on the session's `prUrl` projection. The query checks the current
+episode's open pull request first. Only when the current episode has no open pull request may
+the newest merged binding from the current or historical episodes establish the post-merge
+boundary. This ordering is deliberately different from task completion, where any historical
+merge remains durable outcome evidence.
 
 For a multi-repository task, the follow-up receives the same repository set. Each approved
 memory is committed in the repository it concerns and produces at most one pull request for
@@ -154,6 +157,9 @@ flowchart TD
 
 - Use the work-episode identity already owned by task bindings. Do not key idempotency only by
   task id, because a re-dispatched task is a new work episode.
+- Keep retro posture separate from `primaryRepoPrForTask`: a current open episode must outrank
+  historical merged outcome evidence for this decision, while task completion keeps its
+  existing merged-first rule.
 - Add a normalized retro-follow-up relation with a unique source-task/source-episode key and a
   unique retro-task key. Create it through the daemon-owned task/database layer.
 - A fresh database and an upgraded database must both create the relation and its indexes in

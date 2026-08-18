@@ -18,9 +18,12 @@ Source plan: [`plan.md`](plan.md) ([rendered](plan.html))
 - `src/server/retro.ts` currently chooses only between live delivery and a dead-session
   backlog fallback. A merged pull request on a still-live session therefore takes the live
   branch and can reopen the already-completed source task.
-- `src/server/db.ts` already exposes `primaryRepoPrForTask(taskId)`, whose merged arm searches
-  current and historical episode bindings. This is a stronger posture signal than
-  `Session.prUrl`, which is a projection and may lag branch or merge changes.
+- `src/server/db.ts` already exposes `primaryRepoPrForTask(taskId)`, but its merged-first rule
+  serves completion and card projection, not retro routing. A task can have a historical merge
+  and a current open pull request. The retro therefore needs a sibling durable query whose
+  current open episode wins, with newest historical/current merged evidence used only when no
+  current open pull request exists. `Session.prUrl` remains too weak because it is a projection
+  that may lag branch or merge changes.
 - `src/server/tasks.ts` deliberately lets new work reverse a completion inferred from idleness.
   A fresh linked task avoids treating the retro as resumed feature work and prevents the old
   merge from proving the new work complete.
@@ -108,6 +111,9 @@ not a repository change.
 - **Compatibility pass:** verified that the phase appends wire response arms, leaves existing
   task and session status vocabularies untouched, routes database writes through the daemon,
   and uses work-episode identity rather than a task-title convention.
+- **Inspector reconciliation:** corrected the posture contract after repository review proved
+  `primaryRepoPrForTask` intentionally lets any merged episode outrank a current open one. The
+  phase now owns a separate current-open-first query and leaves completion semantics unchanged.
 - **Mergeability pass:** verified that Phase 1 starts from the default branch after the planning
   pull request merges and ends with a complete user-visible lifecycle. No later phase is needed
   to repair an intermediate state.

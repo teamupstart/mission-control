@@ -56,7 +56,7 @@
       <h2>Repository findings</h2>
       <ul>
         <li><code>src/server/retro.ts</code> currently chooses live delivery before considering task pull-request posture.</li>
-        <li><code>primaryRepoPrForTask</code> already supplies durable merged history across current and historical work episodes.</li>
+        <li><code>primaryRepoPrForTask</code> is intentionally merged-first for completion. Retro routing needs a sibling durable query where the current episode's open review wins, and historical merged evidence is considered only when no current PR is open.</li>
         <li>Resumed work can reverse an idle-inferred task completion, so the retro must not continue inside the completed feature task after merge.</li>
         <li>Historical merge evidence can settle later work if episode identity is blurred. The retro therefore needs its own task episode and PR binding.</li>
         <li>The retro skill's current “never open a second PR” rule needs an explicit open-versus-merged branch.</li>
@@ -111,6 +111,7 @@
       <ul>
         <li>Every approved decision belongs to Phase 1, including the open-PR exception, original-task immutability, immediate launch, automatic new-PR shipping, and no-change completion.</li>
         <li>The response is additive, database writes remain daemon-owned, and work-episode identity replaces title-based inference.</li>
+        <li>Inspector review corrected the posture contract: Phase 1 adds a current-open-first retro query without changing merged-first completion semantics.</li>
         <li>The phase starts from the default branch after this plan merges and ends in a complete user-visible state.</li>
         <li>Migration, lifecycle, MCP bundle, shared UI, and browser verification are not deferred.</li>
       </ul>

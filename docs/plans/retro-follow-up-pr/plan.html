@@ -153,7 +153,7 @@
       <section>
         <h2>Lifecycle design</h2>
         <h3>Resolve durable posture</h3>
-        <p>Identify the source task and current episode, then read the primary repository posture from durable work-episode bindings. A session pull request field is only a projection and is not authoritative after branch or merge changes.</p>
+        <p>Identify the source task and current episode, then use a retro-specific durable query. The current episode's open pull request wins. Only when no current review is open may the newest merged binding from current or historical episodes establish the post-merge boundary. This is deliberately different from merged-first task completion; a session pull request field remains too weak because it is only a projection.</p>
         <h3>Keep open reviews together</h3>
         <p>An open source pull request keeps the existing action delivery, skill approval, branches, and review. No second pull request is opened.</p>
         <h3>Create or reuse post-merge work</h3>
@@ -170,6 +170,7 @@
         <h2>Data and compatibility contracts</h2>
         <ul>
           <li>Idempotency is keyed by source task and work episode, with a unique retro-task relation.</li>
+          <li>Retro routing uses a current-open-first posture query and does not change the merged-first task completion rule.</li>
           <li>Fresh and upgraded databases create the relation in migration-safe order.</li>
           <li>Existing response arm spellings are frozen; new arms are additive.</li>
           <li>Task and session changes flow through TaskManager and Registry so SSE, leasing, dependencies, and merge reconciliation remain consistent.</li>

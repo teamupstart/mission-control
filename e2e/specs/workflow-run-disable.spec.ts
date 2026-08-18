@@ -187,6 +187,26 @@ test("critical feedback follows one Persona through every later round of this ru
   await expect(row("Docs steward")).toContainText("Changes requested", { timeout: 40_000 });
   await expect(dashboard.locator(".wf-run-scrubber")).toContainText("Round 2");
 
+  // Each reviewer is its own stage in this workflow. Move from the blocking Docs verdict to
+  // the passed reviewer by clicking the settled stage header, rather than its member row, and
+  // prove the separate stage-level shortcut selects that reviewer's exact worklist detail.
+  const worklist = dashboard.locator(".wf-run-worklist");
+  const segments = worklist.getByRole("group", { name: "Worklist segment" });
+  const docsWorklistRow = worklist.locator("button.wf-run-worklist-row")
+    .filter({ hasText: "Docs steward" });
+  await expect(docsWorklistRow).toHaveAttribute("aria-current", "true");
+  const blockingStage = pipeline.locator("section.wf-pipeline-stage")
+    .filter({ hasText: "Blocking reviewer" });
+  await blockingStage.locator(".wf-pipeline-stage-hit").click();
+  await expect(segments.getByRole("button", { name: "Passed 1" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  const blockingWorklistRow = worklist.locator("button.wf-run-worklist-row")
+    .filter({ hasText: "Blocking reviewer" });
+  await expect(blockingWorklistRow).toHaveAttribute("aria-current", "true");
+  await expect(worklist.locator("article.wf-run-verdict")).toContainText("Blocking reviewer");
+
   // It remains active without another save. Round 3 makes the same target pass again and
   // reaches the same unmodified sibling failure.
   await previewUnchanged(dashboard);

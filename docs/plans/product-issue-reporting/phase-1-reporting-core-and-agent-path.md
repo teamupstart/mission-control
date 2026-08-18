@@ -247,5 +247,7 @@ enable caller-chosen repositories and labels.
   persisted review kind, so no migration or ReviewModal branch becomes a Phase 2 prerequisite.
 - Review reconciliation: the unauthenticated dashboard mutation route is deferred to Phase 2 so a
   local caller cannot publish after preview without proof of completed human confirmation.
+- Review reconciliation: preflight paginates the target's complete label collection before checking
+  the required set, so repositories with more than 100 labels do not receive a false refusal.
 - Contract reconciliation: `attachmentUploadIds` is present from Phase 1 but production accepts only
   empty lists, which lets Phase 2 render disabled state without inventing a different draft.

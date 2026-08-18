@@ -377,7 +377,7 @@ test("read-only preflight is exposed without creating or editing GitHub state", 
     stubRun({ stdout: "authenticated\n", stderr: "", code: 0 }),
     stubRun({ stdout: "acme/public-issues\n", stderr: "", code: 0 }),
     stubRun({
-      stdout: JSON.stringify(PRODUCT_ISSUE_REQUIRED_LABELS.map((name) => ({ name }))),
+      stdout: JSON.stringify([PRODUCT_ISSUE_REQUIRED_LABELS.map((name) => ({ name }))]),
       stderr: "",
       code: 0,
     }),
@@ -396,7 +396,13 @@ test("read-only preflight is exposed without creating or editing GitHub state", 
     ["--version"],
     ["auth", "status"],
     ["repo", "view"],
-    ["label", "list"],
+    ["api", "--paginate"],
+  ]);
+  assert.deepEqual(args[3], [
+    "api",
+    "--paginate",
+    "--slurp",
+    "repos/acme/public-issues/labels?per_page=100",
   ]);
   assert.equal(args.some((argv) => argv.includes("create") || argv.includes("edit")), false);
 });

@@ -350,7 +350,12 @@ export class ProductIssueService {
 
     const labels = await this.runner(
       ghBin(),
-      ["label", "list", "--repo", target.repo, "--limit", "100", "--json", "name"],
+      [
+        "api",
+        "--paginate",
+        "--slurp",
+        `repos/${target.repo}/labels?per_page=100`,
+      ],
       { timeoutMs: PREFLIGHT_TIMEOUT_MS },
     );
     if (labels.outcomeUnknown || labels.code !== 0) {
@@ -367,9 +372,12 @@ export class ProductIssueService {
       const parsed = JSON.parse(labels.stdout) as unknown;
       if (!Array.isArray(parsed)) throw new Error("unexpected label list");
       names = new Set(
-        parsed.flatMap((entry) => {
-          const name = (entry as { name?: unknown })?.name;
-          return typeof name === "string" ? [name] : [];
+        parsed.flatMap((page) => {
+          if (!Array.isArray(page)) throw new Error("unexpected label page");
+          return page.flatMap((entry) => {
+            const name = (entry as { name?: unknown })?.name;
+            return typeof name === "string" ? [name] : [];
+          });
         }),
       );
     } catch {

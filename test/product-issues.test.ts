@@ -343,18 +343,25 @@ test("production rejects attachments and demo mode remains inert before any gh c
 test("preflight distinguishes binary, auth, repository, and label failures", async (t) => {
   const ok = stubRun({ stdout: "ok\n", stderr: "", code: 0 });
   const labels = stubRun({
-    stdout: JSON.stringify(PRODUCT_ISSUE_REQUIRED_LABELS.map((name) => ({ name }))),
+    stdout: JSON.stringify([
+      Array.from({ length: 100 }, (_, index) => ({ name: `extra-${index}` })),
+      PRODUCT_ISSUE_REQUIRED_LABELS.map((name) => ({ name })),
+    ]),
     stderr: "",
     code: 0,
   });
 
   async function preflightWith(results: ReturnType<typeof stubRun>[]) {
     let calls = 0;
+    const args: string[][] = [];
     const service = new ProductIssueService({
       target,
-      runner: async () => results[calls++] ?? ok,
+      runner: async (_bin, argv) => {
+        args.push(argv);
+        return results[calls++] ?? ok;
+      },
     });
-    return { result: await service.preflight(), calls };
+    return { result: await service.preflight(), calls, args };
   }
 
   await t.test("invalid target", async () => {
@@ -387,14 +394,14 @@ test("preflight distinguishes binary, auth, repository, and label failures", asy
       ok,
       ok,
       ok,
-      stubRun({ stdout: JSON.stringify([{ name: "bug" }]), stderr: "", code: 0 }),
+      stubRun({ stdout: JSON.stringify([[{ name: "bug" }]]), stderr: "", code: 0 }),
     ]);
     assert.equal(result.ready, false);
     assert.equal(result.problems[0]?.code, "labels");
     assert.match(result.problems[0]?.message ?? "", /source:agent/);
   });
-  await t.test("ready", async () => {
-    const { result, calls } = await preflightWith([ok, ok, ok, labels]);
+  await t.test("ready when required labels are after the first page", async () => {
+    const { result, calls, args } = await preflightWith([ok, ok, ok, labels]);
     assert.deepEqual(result, {
       ready: true,
       target: "acme/public-issues",
@@ -405,6 +412,12 @@ test("preflight distinguishes binary, auth, repository, and label failures", asy
       problems: [],
     });
     assert.equal(calls, 4);
+    assert.deepEqual(args[3], [
+      "api",
+      "--paginate",
+      "--slurp",
+      "repos/acme/public-issues/labels?per_page=100",
+    ]);
   });
 });
 

@@ -274,18 +274,18 @@ Sources card points too. Sessions and backlog tasks are not searchable kinds yet
 borrows its session's name, but that is a label, not an index - and they are the next kinds
 the provider registry behind the palette is built to take.
 
-## Layout (cards, console, or board)
+## Layout (console or board in Settings)
 
-The same fleet, three shapes. **Settings → Display → Layout** (the ⚙ gear, or <kbd>⌘</kbd><kbd>,</kbd>)
-switches between them live, and the choice persists per machine:
+The same fleet has three supported shapes. **Settings → Display → Layout** (the ⚙ gear, or <kbd>⌘</kbd><kbd>,</kbd>)
+currently lets you switch live between the two non-Cards layouts, and the choice persists per machine:
 
 | Layout | Shape | Good for |
 |--------|-------|----------|
-| **Cards** (default) | Every session a card in a responsive grid; one expands in place to fill the screen. | The general case, and the most detail per session without clicking. |
 | **Console** | A dense rail of every session with one always-open detail pane beside it. | Working *one* session while keeping an eye on the rest - the conversation is permanent, not a click away. |
 | **Board** | A column per state; clicking a card - or pressing <kbd>Enter</kbd> on the one the arrow keys are on - drills that column into the console's detail. | Reading the fleet's shape at a glance. "How many need me" is a column's height, not eight badges. |
 
-Switching layouts does not change the underlying sessions. Controls repeated across
+Existing Cards preferences remain supported while that layout is retired, but Cards is no
+longer an option in Display settings. Switching layouts does not change the underlying sessions. Controls repeated across
 surfaces come from the *same* leaf pieces so their behavior stays aligned. What changes is
 how they're arranged - dense overview surfaces select a subset, while Console and the
 Board's drill-in expose the complete detail - and the console's permanent conversation

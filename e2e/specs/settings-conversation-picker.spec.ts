@@ -44,6 +44,25 @@ const PRE_FIX_ROWS = [383, 749] as const;
 /** And what the section around them measured. See the header for where these come from. */
 const PRE_FIX_SECTION = 1139;
 
+test("Display settings no longer offers the Cards layout", async ({ page, daemon }) => {
+  await page.goto(`${daemon.baseURL}/#/settings/display`);
+
+  const picker = page.getByRole("radiogroup", { name: "Dashboard layout" });
+  await expect(picker).toBeVisible();
+  await expect(picker.getByRole("radio")).toHaveCount(2);
+  await expect(picker.getByRole("radio", { name: /^Board\b/ })).toBeVisible();
+  await expect(picker.getByRole("radio", { name: /^Console\b/ })).toBeVisible();
+  await expect(picker.getByRole("radio", { name: /^Cards\b/ })).toHaveCount(0);
+
+  if (process.env.MC_E2E_EVIDENCE === "1") {
+    mkdirSync(EVIDENCE, { recursive: true });
+    await page.mouse.move(0, 0);
+    await picker.screenshot({ path: `${EVIDENCE}01-layout-options.png` });
+    // eslint-disable-next-line no-console
+    console.log("CAPTURED e2e/.artifacts/settings-conversation-picker/01-layout-options.png");
+  }
+});
+
 test("the conversation picker draws sized thumbnails, not a full-width picture", async ({
   page,
   daemon,

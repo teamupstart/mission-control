@@ -1,4 +1,4 @@
-import { LAYOUTS, type LayoutMode } from "../lib/layout.ts";
+import { SELECTABLE_LAYOUTS, type LayoutMode } from "../lib/layout.ts";
 import { Tooltip } from "./Tooltip.tsx";
 
 /**
@@ -40,10 +40,10 @@ function LayoutGlyph({ mode }: { mode: LayoutMode }): React.JSX.Element {
 /**
  * Which shape the dashboard takes: the card grid, the split-pane console, or the
  * state board. The same sessions and the same cards either way - only the
- * arrangement changes - so this is a preference about this screen, and it lives in
- * localStorage next to the keybindings rather than going near the daemon.
+ * arrangement changes - so this is a preference about this screen, persisted per machine
+ * through the daemon's UI configuration.
  *
- * A radio group, not a segmented control: these are three exclusive answers to one
+ * A radio group, not a segmented control: these are two exclusive answers to one
  * question, and the description is the point. The labels alone don't say what you'd
  * be trading, and this is the rare setting where the wrong pick isn't obviously
  * wrong - it just quietly doesn't suit how you work. Applies live behind the settings
@@ -67,7 +67,7 @@ export function LayoutPanel({
         aria-label="Dashboard layout"
         data-anchor="display/layout"
       >
-        {LAYOUTS.map((l) => (
+        {SELECTABLE_LAYOUTS.map((l) => (
           <label key={l.id} className={`layout-option${layout === l.id ? " is-on" : ""}`}>
             <Tooltip label={l.description}>
               <input

@@ -121,7 +121,7 @@ may change its shape; later phases consume it.
 | `vX.Y.Z` tag equals `package.json` version equals packaged `app.getVersion()` | Phase 1 | Phase 2 |
 | Install script contract: idempotent, re-runnable, accepts a target ref, exits non-zero on failure | Phase 1 | Phase 2 |
 | `UpdateSnapshot` discriminated union in `src/shared/update.ts`, browser-safe with no `node:` imports | Phase 2 | Phase 3 |
-| `mission:update-*` IPC command names and the `mission:update-state` push channel | Phase 2 | Phase 3 |
+| `mission:update-*` IPC command names and the `mission:update-state` push channel | Phase 3 | none in v1 |
 | Quit ordering: `setQuitting(true)` before the app is asked to exit for an update | Phase 2 | Phase 3 |
 | Apply helper invocation contract: argv, temporary-copy rule, exit codes | Phase 2 | none in v1 |
 
@@ -160,6 +160,13 @@ in their audit records:
   question for the plan owner** is recorded in Phase 2 rather than decided unilaterally: whether to move
   the menu, tray, and dialog into Phase 3 so this phase has no user-visible surface at all, which would
   satisfy the contract literally at the cost of Phase 2's independent shippability.
+
+**Inspector round 2, 2026-08-18.** One `major` comment, valid and fixed. The cross-phase contracts table
+assigned the `mission:update-*` commands and the `mission:update-state` push to Phase 2, which
+contradicted Phase 2's own non-goals (it excludes all IPC) and Phase 3's scope (it implements them). The
+table was the wrong artifact: Phase 3's inherited-contracts list had correctly omitted IPC all along.
+Phase 3 is now recorded as the owner, consumed by nothing in v1. No phase scope changed - only the index
+was wrong.
 
 ## Final verification strategy
 

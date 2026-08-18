@@ -238,3 +238,7 @@ and it must not move update decisions into the renderer.
   Now: subscribe first, then read, which is safe precisely because every message is a whole snapshot
   rather than a delta, so a redundant delivery is idempotent. Added the out-of-order guard and a test
   that drives it with a slow fake read.
+- **2026-08-18, Inspector round 2.** Confirmed this phase, not Phase 2, owns the `mission:update-*`
+  command names and the `mission:update-state` push channel. The index had assigned them to Phase 2,
+  contradicting both phase files; the index was corrected rather than this phase's scope. Nothing here
+  inherits IPC names from an earlier phase.

@@ -21,7 +21,9 @@
 // 1. The clone is pinned to CANONICAL_REPO, and only the TRANSPORT comes from the caller's
 //    origin (so an SSH clone keeps SSH and an HTTPS clone keeps HTTPS). A checkout whose
 //    origin is a fork is refused rather than silently retargeted, in either direction:
-//    `--from-origin` installs the fork and records the fork in the receipt.
+//    `--from-origin` installs the fork and records the fork in the receipt. Every remote is
+//    compared as HOST and slug, never slug alone - the owner and name of a repository are not
+//    its identity, and an existing clone is about to be fetched and force-checked-out.
 // 2. The release lookup passes the repository explicitly. Without it the CLI infers the
 //    repository from whichever checkout it runs in, so the same tag name would resolve to
 //    fork-controlled code while the receipt still named the canonical repository. Every
@@ -33,7 +35,7 @@
 // different versions.
 
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, rmSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { stateDir } from "../src/shared/harness-runtime.mjs";
@@ -89,15 +91,43 @@ export const GH_ARGS = {
 export function parseRemote(url) {
   const trimmed = String(url ?? "").trim();
   const patterns = [
-    { transport: "ssh", re: /^ssh:\/\/(?:[^@/]+@)?[^/]+\/(.+?)(?:\.git)?\/?$/ },
-    { transport: "ssh", re: /^(?:[^@\s/]+@)[^:\s]+:(.+?)(?:\.git)?\/?$/ },
-    { transport: "https", re: /^https?:\/\/(?:[^@/]+@)?[^/]+\/(.+?)(?:\.git)?\/?$/ },
+    { transport: "ssh", re: /^ssh:\/\/(?:[^@/]+@)?([^/:]+)(?::\d+)?\/(.+?)(?:\.git)?\/?$/ },
+    { transport: "ssh", re: /^(?:[^@\s/]+@)([^:\s/]+):(.+?)(?:\.git)?\/?$/ },
+    { transport: "https", re: /^https?:\/\/(?:[^@/]+@)?([^/:]+)(?::\d+)?\/(.+?)(?:\.git)?\/?$/ },
   ];
   for (const { transport, re } of patterns) {
     const match = re.exec(trimmed);
-    const slug = match?.[1];
-    if (slug && /^[\w.-]+\/[\w.-]+$/.test(slug)) return { slug, transport };
+    const host = match?.[1]?.toLowerCase();
+    const slug = match?.[2];
+    if (host && slug && /^[\w.-]+\/[\w.-]+$/.test(slug)) return { host, slug, transport };
   }
+  return null;
+}
+
+/**
+ * The only host a remote may name.
+ *
+ * The slug alone is not identity. `https://attacker.example/mancej-cyc/ai-harness.git` carries
+ * the canonical owner and name, so a check that compared only the slug would fetch and force
+ * check out whatever that host served. Every remote this script trusts is compared as host AND
+ * slug, and the releases it compares against are GitHub releases, so there is no second host to
+ * support.
+ */
+export const REQUIRED_REMOTE_HOST = "github.com";
+
+/**
+ * Why a remote URL is not the repository it is supposed to be, or `null` when it is.
+ *
+ * Used for the caller's `origin` and for the updater-owned clone's `origin` alike, because both
+ * are places a wrong host would be believed.
+ */
+export function remoteProblem({ url, repo }) {
+  const remote = parseRemote(url);
+  if (!remote) return `${url || "(empty)"} is not a git remote URL naming an owner/name repository`;
+  if (remote.host !== REQUIRED_REMOTE_HOST) {
+    return `${url} is hosted at ${remote.host}, not ${REQUIRED_REMOTE_HOST} - only ${REQUIRED_REMOTE_HOST} repositories are supported, because the releases this compares against are GitHub releases`;
+  }
+  if (remote.slug !== repo) return `${url} is ${remote.slug}, not ${repo}`;
   return null;
 }
 
@@ -121,36 +151,66 @@ export function originMismatchMessage(originSlug) {
  * The returned `repo` is what the receipt records, so `--from-origin` is visible to the
  * updater rather than being a flag that disappears after the install.
  */
-export function resolveInstallRepo({ originSlug, fromOrigin = false }) {
-  if (originSlug === CANONICAL_REPO) return { repo: CANONICAL_REPO, problem: null };
+export function resolveInstallRepo({ originSlug, originHost, fromOrigin = false }) {
   if (!originSlug) {
     return {
       repo: null,
       problem: "this checkout has no usable `origin` remote, so there is no transport to clone with. Run this from a git clone of the repository.",
     };
   }
+  // Checked before the canonical comparison, and before `--from-origin` can wave anything
+  // through: `canonicalRemoteUrl` always builds a github.com URL, so accepting another host
+  // here would silently install a github.com repository of the same name instead of the one
+  // the caller is standing in.
+  if (originHost !== REQUIRED_REMOTE_HOST) {
+    return {
+      repo: null,
+      problem: `this checkout's origin is hosted at ${originHost || "an unknown host"}, not ${REQUIRED_REMOTE_HOST}. Only ${REQUIRED_REMOTE_HOST} repositories can be installed, because the releases this compares against are GitHub releases.`,
+    };
+  }
+  if (originSlug === CANONICAL_REPO) return { repo: CANONICAL_REPO, problem: null };
   if (fromOrigin) return { repo: originSlug, problem: null };
   return { repo: null, problem: originMismatchMessage(originSlug) };
 }
 
 /**
- * The newest stable release tag, or `null` when the repository has published none.
+ * The newest stable release, as `{ tag, problem }`.
  *
  * Drafts and prereleases are excluded by the QUERY. Asking for the latest release and
  * rejecting it afterwards cannot recover: once a prerelease has been selected, there is no way
  * back to the newest stable release, and every stable install silently stops updating with no
  * error raised anywhere.
+ *
+ * A failed or unreadable query is a `problem`, NOT an empty list. They mean opposite things and
+ * only one of them is safe to act on: "this repository has published no stable release yet"
+ * legitimately falls back to the default branch tip, while "GitHub could not be asked" would
+ * turn a transient outage into an install of unreleased code under a user who asked for a
+ * release. `tag` and `problem` are never both set.
  */
-export function newestStableReleaseTag({ repo = CANONICAL_REPO, run }) {
+export function newestStableRelease({ repo = CANONICAL_REPO, run }) {
   const result = run(GH_BIN, GH_ARGS.releaseList(repo));
-  if (result.status !== 0) return null;
-  try {
-    const releases = JSON.parse(result.stdout || "[]");
-    const tag = Array.isArray(releases) ? releases[0]?.tagName : null;
-    return typeof tag === "string" && tag.length > 0 ? tag : null;
-  } catch {
-    return null;
+  if (result.status !== 0) {
+    const detail = String(result.stderr || result.stdout || "").trim().split("\n")[0];
+    return {
+      tag: null,
+      problem: `could not list ${repo} releases (gh exited ${result.status})${detail ? `: ${detail}` : ""}`,
+    };
   }
+  let releases;
+  try {
+    releases = JSON.parse(result.stdout || "[]");
+  } catch {
+    return { tag: null, problem: `could not read the release list for ${repo}: gh returned output that is not JSON` };
+  }
+  if (!Array.isArray(releases)) {
+    return { tag: null, problem: `could not read the release list for ${repo}: gh returned ${typeof releases}, not a list` };
+  }
+  if (releases.length === 0) return { tag: null, problem: null };
+  const tag = releases[0]?.tagName;
+  if (typeof tag !== "string" || tag.length === 0) {
+    return { tag: null, problem: `could not read the release list for ${repo}: the newest release has no tagName` };
+  }
+  return { tag, problem: null };
 }
 
 /** `--ref` wins, then the newest stable release, then the default branch tip. */
@@ -187,6 +247,80 @@ export function plistVersion(text) {
 export function appsDirProblem({ appsDir, exists, isDirectory }) {
   if (!exists) return `${appsDir} does not exist - create it, or leave --apps-dir unset to install into ${DEFAULT_APPS_DIR}`;
   if (!isDirectory) return `${appsDir} is not a directory`;
+  return null;
+}
+
+/**
+ * The two hidden paths beside the destination that the swap uses.
+ *
+ * Both live in the SAME directory as the installed app, so the moves below are renames within
+ * one filesystem - which is what makes them atomic and instant rather than a second full copy
+ * that could half-succeed.
+ */
+export function stagingPaths({ appsDir, pid }) {
+  return {
+    staged: join(appsDir, `.${APP_BUNDLE_NAME}.incoming-${pid}`),
+    previous: join(appsDir, `.${APP_BUNDLE_NAME}.previous-${pid}`),
+  };
+}
+
+/**
+ * Put the newly built bundle in place, keeping the existing app until the copy has succeeded.
+ * Returns a problem string, or `null` when the app is installed.
+ *
+ * Copy first, THEN swap. Removing the installed app before copying leaves a user with no app at
+ * all when the copy fails - a full disk or an I/O error - which is a worse outcome than the
+ * failed upgrade they actually had. So the new bundle is copied to a hidden sibling first; only
+ * once that whole copy is on disk is the existing app renamed aside and the new one renamed into
+ * place. If that final rename fails, the previous app is renamed back.
+ *
+ * Filesystem operations are injected so every one of those failure paths is a test rather than a
+ * full-disk rehearsal.
+ */
+export function swapAppBundle({ packagedApp, appPath, appsDir, pid, ops }) {
+  const { staged, previous } = stagingPaths({ appsDir, pid });
+  const why = (err) => (err instanceof Error ? err.message : String(err));
+
+  ops.remove(staged); // a killed earlier run can leave one behind
+  try {
+    ops.copy(packagedApp, staged);
+  } catch (err) {
+    ops.remove(staged);
+    return `could not stage the new app at ${staged}: ${why(err)}. ${appPath} is unchanged.`;
+  }
+
+  const hadPrevious = ops.exists(appPath);
+  if (hadPrevious) {
+    try {
+      ops.move(appPath, previous);
+    } catch (err) {
+      ops.remove(staged);
+      return `could not move the existing app aside: ${why(err)}. ${appPath} is unchanged.`;
+    }
+  }
+
+  try {
+    ops.move(staged, appPath);
+  } catch (err) {
+    let restored = false;
+    if (hadPrevious) {
+      try {
+        ops.move(previous, appPath);
+        restored = true;
+      } catch {
+        // Fall through: the message below has to say the app is at `previous`, because it is.
+      }
+    }
+    ops.remove(staged);
+    const state = hadPrevious
+      ? restored
+        ? "The previous app was restored."
+        : `The previous app is at ${previous} - move it back by hand.`
+      : "Nothing was installed.";
+    return `could not put the new app in place at ${appPath}: ${why(err)}. ${state}`;
+  }
+
+  if (hadPrevious) ops.remove(previous);
   return null;
 }
 
@@ -302,6 +436,7 @@ function installApp(options) {
   const origin = parseRemote(originUrl);
   const { repo, problem: repoProblem } = resolveInstallRepo({
     originSlug: origin?.slug ?? null,
+    originHost: origin?.host ?? null,
     fromOrigin: options.fromOrigin,
   });
   if (repoProblem) fail(repoProblem);
@@ -312,13 +447,12 @@ function installApp(options) {
   const clone = join(stateDir(), SOURCE_CLONE_DIR_NAME);
   const remoteUrl = canonicalRemoteUrl(origin?.transport ?? "https", repo);
   if (existsSync(clone)) {
-    const cloneOrigin = parseRemote(
-      capture("git", ["-C", clone, "remote", "get-url", "origin"]).stdout.trim(),
-    );
-    if (!cloneOrigin) {
-      fail(`${clone} exists but is not a git clone. Move or remove it yourself, then rerun; this script will not delete it.`);
-    } else if (cloneOrigin.slug !== repo) {
-      fail(`${clone} is a clone of ${cloneOrigin.slug}, not ${repo}. Move or remove it yourself, then rerun; this script will not delete it.`);
+    // Host AND slug. This clone is about to be fetched and force-checked-out, so a remote that
+    // merely carries the right owner/name - served from anywhere - is not the same repository.
+    const cloneRemote = capture("git", ["-C", clone, "remote", "get-url", "origin"]).stdout.trim();
+    const cloneProblem = remoteProblem({ url: cloneRemote, repo });
+    if (cloneProblem) {
+      fail(`${clone} is not a clone of ${repo}: ${cloneProblem}. Move or remove it yourself, then rerun; this script will not delete it.`);
     }
     ok(`clone present at ${clone}`);
     run("git", ["-C", clone, "fetch", "--tags", "--prune", "origin"]);
@@ -329,12 +463,19 @@ function installApp(options) {
 
   // 4. Target ref ------------------------------------------------------------------------
   heading("Target ref");
-  const releaseTag = newestStableReleaseTag({ repo, run: capture });
+  // Not asked at all when a ref was named: an explicit `--ref` install has no reason to fail on
+  // a GitHub outage it does not depend on.
+  const release = options.ref
+    ? { tag: null, problem: null }
+    : newestStableRelease({ repo, run: capture });
+  // A lookup that FAILED is not an empty release list. Falling back to the default branch here
+  // would install unreleased code because GitHub had a bad minute.
+  if (release.problem) fail(`${release.problem}\n\nRetry, or pass --ref to install a specific ref without asking for releases.`);
   const headRef = capture("git", ["-C", clone, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"]).stdout.trim();
   const defaultBranchRef = headRef || "origin/main";
   const { ref, source } = resolveTargetRef({
     requestedRef: options.ref,
-    releaseTag,
+    releaseTag: release.tag,
     defaultBranchRef,
   });
   const sourceLabel = {
@@ -387,12 +528,23 @@ function installApp(options) {
   });
   if (appsDirIssue) fail(appsDirIssue);
   if (dryRun) {
-    doing(`[dry-run] would replace ${appPath}`);
+    doing(`[dry-run] would stage the new bundle beside ${appPath} and swap it in`);
   } else {
-    rmSync(appPath, { recursive: true, force: true });
-    // `cp -R` rather than `fs.cpSync`, matching the `install-app` recipe this replaces: the
-    // bundle carries framework symlinks, and this is the copy that is known to preserve them.
-    run("cp", ["-R", packagedApp, options.appsDir]);
+    const swapProblem = swapAppBundle({
+      packagedApp,
+      appPath,
+      appsDir: options.appsDir,
+      pid: process.pid,
+      ops: {
+        // `cp -R` rather than `fs.cpSync`, matching the `install-app` recipe this replaces: the
+        // bundle carries framework symlinks, and this is the copy known to preserve them.
+        copy: (from, to) => execFileSync("cp", ["-R", from, to], { stdio: "inherit" }),
+        move: (from, to) => renameSync(from, to),
+        remove: (path) => rmSync(path, { recursive: true, force: true }),
+        exists: (path) => existsSync(path),
+      },
+    });
+    if (swapProblem) fail(swapProblem);
     ok(`installed ${appPath}`);
   }
 

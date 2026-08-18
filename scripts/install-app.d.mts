@@ -7,8 +7,16 @@ export interface CommandResult {
 export type CommandRunner = (command: string, args: string[]) => CommandResult;
 
 export interface ParsedRemote {
+  host: string;
   slug: string;
   transport: "ssh" | "https";
+}
+
+export interface BundleOps {
+  copy(from: string, to: string): void;
+  move(from: string, to: string): void;
+  remove(path: string): void;
+  exists(path: string): boolean;
 }
 
 export type TargetRefSource = "flag" | "release" | "default-branch";
@@ -28,11 +36,25 @@ export function canonicalRemoteUrl(transport: string, repo?: string): string;
 export function originMismatchMessage(originSlug: string): string;
 export function resolveInstallRepo(input: {
   originSlug: string | null;
+  originHost: string | null;
   fromOrigin?: boolean;
 }): { repo: string | null; problem: string | null };
-export function newestStableReleaseTag(input: {
+export const REQUIRED_REMOTE_HOST: string;
+export function remoteProblem(input: { url: string; repo: string }): string | null;
+export function newestStableRelease(input: {
   repo?: string;
   run: CommandRunner;
+}): { tag: string | null; problem: string | null };
+export function stagingPaths(input: { appsDir: string; pid: number | string }): {
+  staged: string;
+  previous: string;
+};
+export function swapAppBundle(input: {
+  packagedApp: string;
+  appPath: string;
+  appsDir: string;
+  pid: number | string;
+  ops: BundleOps;
 }): string | null;
 export function resolveTargetRef(input: {
   requestedRef?: string | null;

@@ -35,9 +35,20 @@ Two trust rules hold on the install path, not only in the updater:
   *transport* comes from the caller's `origin`, so an SSH clone stays SSH and an HTTPS clone
   stays HTTPS. A checkout whose `origin` is a fork is refused, with `--from-origin` as the
   explicit way past it; such an install records its real repository in the receipt.
+- Every remote is compared as **host and repository**, never repository alone - the caller's
+  `origin` and the existing clone's `origin` alike. `https://elsewhere.example/owner/name.git`
+  carries the right owner and name, and the clone it names is about to be fetched and force
+  checked out, so a slug-only comparison would trust whatever that host served. Only
+  `github.com` is accepted, on either transport, because the releases being compared against are
+  GitHub releases.
 - Every release query passes the repository explicitly. Left implicit, the GitHub CLI infers it
   from whichever checkout it runs in, so the documented command run inside a fork would install
   fork-controlled code under the same tag name.
+- A release lookup that **fails** is not an empty release list. "This repository has published no
+  stable release yet" falls back to the default branch tip; "GitHub could not be asked" stops the
+  install, because otherwise a transient outage silently installs unreleased code under someone
+  who asked for a release. `--ref` skips the lookup entirely, so an explicit-ref install does not
+  depend on GitHub being reachable.
 
 The install ends by writing a **receipt** to `install-receipt.json` in the state directory:
 
@@ -72,6 +83,13 @@ Three contracts hold for readers:
   bundle's `CFBundleShortVersionString` against the source tree's `package.json` before it
   replaces anything in `/Applications`, so a build that did not come from the checked-out ref
   fails while the previous app is still in place.
+
+The swap itself keeps the installed app until the new one is fully on disk. The new bundle is
+copied to a hidden sibling of the destination first; only then is the existing app renamed aside
+and the new one renamed into place, both renames within one directory and therefore atomic. A
+failed copy leaves the installed app untouched, and a failed final rename puts the previous app
+back. A user whose disk filled mid-install ends up with the app they already had, not with
+none.
 
 ## Release identity
 

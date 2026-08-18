@@ -1108,11 +1108,18 @@ button.wf-run-version:focus-visible {
 }
 .wf-persona-directive-actions .btn-ghost { margin-left: auto; }
 .wf-persona-directive-actions .btn-danger-ghost + .btn-ghost { margin-left: 0; }
-.wf-persona-directive-save {
+/* `.btn` is declared later in this file, so the component modifier needs both classes to
+   preserve this drawer's amber action instead of falling back to the generic button. */
+.btn.wf-persona-directive-save {
   color: #1d1305;
   border-color: var(--attention);
   background: var(--attention);
   font-weight: 700;
+}
+.btn.wf-persona-directive-save:hover:not(:disabled) {
+  color: #1d1305;
+  border-color: color-mix(in oklab, var(--attention) 88%, #fff);
+  background: color-mix(in oklab, var(--attention) 88%, #fff);
 }
 
 @media (max-width: 700px) {
@@ -4160,6 +4167,10 @@ body {
 .file-codemirror .cm-scroller { overflow: auto; }
 .html-preview { flex: 1; min-width: 0; min-height: 0; border: 0; background: white; }
 .file-markdown-preview { flex: 1; min-width: 0; min-height: 0; overflow: auto; padding: 24px 32px; }
+.file-preview-reader:focus {
+  outline: 2px solid var(--working);
+  outline-offset: -2px;
+}
 .file-notice {
   flex: none;
   display: flex;
@@ -4377,9 +4388,9 @@ body {
   font: inherit;
   font-size: 12px;
   font-weight: 540;
-  color: var(--muted);
+  color: var(--fg);
   background: var(--panel-2);
-  border: 1px solid var(--border);
+  border: 1px solid color-mix(in oklab, var(--working) 28%, var(--border));
   border-radius: 8px;
   padding: 5px 11px;
   cursor: pointer;
@@ -4398,8 +4409,8 @@ body {
 }
 .btn:hover:not(:disabled) {
   color: var(--fg);
-  border-color: color-mix(in oklab, var(--working) 45%, var(--border));
-  background: color-mix(in oklab, var(--working) 10%, var(--panel-2));
+  border-color: color-mix(in oklab, var(--working) 55%, var(--border));
+  background: color-mix(in oklab, var(--working) 14%, var(--panel-2));
 }
 .btn:disabled {
   opacity: 0.4;
@@ -4410,6 +4421,7 @@ body {
   border-color: color-mix(in oklab, var(--working) 45%, var(--border));
 }
 .btn-ghost {
+  color: var(--muted);
   background: transparent;
   border-color: transparent;
 }

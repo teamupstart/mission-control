@@ -442,7 +442,10 @@ export function App(): React.JSX.Element {
   // one mount: `registerFind` replays it and clears it, so revealing a conversation for
   // some other reason later never opens a find nobody asked for.
   const pendingFind = useRef<string | null>(null);
-  const detailScrollers = useRef<Map<string, (direction: -1 | 1) => void>>(new Map());
+  const detailScrollers = useRef<Map<
+    string,
+    (direction: -1 | 1, fromReader: boolean) => boolean
+  >>(new Map());
   // Tab cycles the open detail's tabs (Conversation -> Work queue -> Gate -> Diff -> Files);
   // ConsoleDetail owns that state, so it registers a stepper here that App's global key
   // handler drives. "edge" means there is no further tab that way - forward it clamps, back
@@ -494,13 +497,12 @@ export function App(): React.JSX.Element {
   }, []);
 
   const focusReaderBody = useCallback(() => {
-    // Land on the reader body - the conversation pane the vertical arrows scroll - not the
-    // whole detail section. That is what "Tab selects the conversation window" means: the
-    // ring frames what is being read, and a later native Tab steps into the transcript and
-    // reply box rather than the session title up in the header chrome. Only one detail is
-    // open at a time (console beside the rail, or the board drill-in), so a bare query finds
-    // the right one in either layout.
-    document.querySelector<HTMLElement>(".detail-body")?.focus({ preventScroll: true });
+    // Files Preview has a reader inside the detail body. Enter it directly so the next
+    // vertical arrow scrolls the document; before Tab, those arrows belong to the file list.
+    // Every other tab lands on the body itself, preserving the conversation reader ring.
+    const target = document.querySelector<HTMLElement>(".cdetail .file-preview-reader")
+      ?? document.querySelector<HTMLElement>(".cdetail .detail-body");
+    target?.focus({ preventScroll: true });
   }, []);
 
   const registerActions = useCallback((id: string, handle: ActionBarHandle | null) => {
@@ -539,7 +541,10 @@ export function App(): React.JSX.Element {
     [],
   );
 
-  const registerDetailScroll = useCallback((id: string, scroll: ((direction: -1 | 1) => void) | null) => {
+  const registerDetailScroll = useCallback((
+    id: string,
+    scroll: ((direction: -1 | 1, fromReader: boolean) => boolean) | null,
+  ) => {
     if (scroll) detailScrollers.current.set(id, scroll);
     else detailScrollers.current.delete(id);
   }, []);
@@ -1786,20 +1791,16 @@ export function App(): React.JSX.Element {
         case "ArrowUp":
         case "ArrowDown": {
           e.preventDefault();
-          // With the keyboard in the reader (console detail or board drill-in), the vertical
-          // arrows scroll the active tab's content - the detail owns the scroll node because
-          // Conversation and Files use different nested containers. On the rail they fall
-          // through to `moveSelection`, which walks the selection a row at a time.
+          // Preview owns vertical arrows before focus enters its rendered page, using them
+          // to walk files. Other tabs claim them only with focus inside the reader. Anything
+          // unclaimed falls through to `moveSelection` and walks the session rail.
           if (
             readerSession &&
-            (e.key === "ArrowUp" || e.key === "ArrowDown") &&
-            target?.closest(".cdetail")
+            (e.key === "ArrowUp" || e.key === "ArrowDown")
           ) {
             const detailScroll = detailScrollers.current.get(readerSession.id);
-            if (detailScroll) {
-              detailScroll(e.key === "ArrowUp" ? -1 : 1);
-              return;
-            }
+            const fromReader = Boolean(target?.closest(".cdetail"));
+            if (detailScroll?.(e.key === "ArrowUp" ? -1 : 1, fromReader)) return;
           }
           const nextId = moveSelection({
             mode: layout,

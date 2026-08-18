@@ -34,8 +34,10 @@ function SaveStatus({ buffer }: { buffer: FileBuffer }): React.JSX.Element {
 }
 
 export interface FileWorkspaceHandle {
-  /** Move whichever file reader is visible (editor, preview, comparison, or list). */
-  scrollByArrow: (direction: -1 | 1) => void;
+  /** Claim a vertical arrow for preview navigation or scroll the focused file reader. */
+  handleArrow: (direction: -1 | 1, fromReader: boolean) => boolean;
+  /** Move keyboard focus from the file selection into the rendered preview. */
+  focusPreview: () => boolean;
 }
 
 function scrollElement(element: HTMLElement, direction: -1 | 1): void {
@@ -64,6 +66,27 @@ export function scrollActiveFileReader(root: ParentNode, direction: -1 | 1): boo
   return true;
 }
 
+export function adjacentFilePath(
+  paths: readonly string[],
+  selectedPath: string | null,
+  direction: -1 | 1,
+): string | null {
+  const index = selectedPath === null ? -1 : paths.indexOf(selectedPath);
+  if (index < 0) return paths[0] ?? null;
+  return paths[index + direction] ?? null;
+}
+
+function previewReader(root: ParentNode): HTMLElement | null {
+  return root.querySelector<HTMLElement>(
+    ".file-content .html-preview, .file-content .file-markdown-preview",
+  );
+}
+
+function previewHasFocus(preview: HTMLElement): boolean {
+  const active = document.activeElement;
+  return active === preview || (active instanceof HTMLElement && preview.contains(active));
+}
+
 export function FileWorkspace({
   session,
   controller,
@@ -85,6 +108,7 @@ export function FileWorkspace({
   const [launching, setLaunching] = useState(false);
   const [launchError, setLaunchError] = useState<string | null>(null);
   const [pendingOpen, setPendingOpen] = useState<{ path: string; target: OpenTargetId } | null>(null);
+  const focusSelectedFile = useRef(false);
 
   useEffect(() => controller.ensure(session.id), [controller.ensure, session.id]);
   useEffect(
@@ -200,16 +224,49 @@ export function FileWorkspace({
   }, [files, filter]);
 
   useImperativeHandle(ref, () => ({
-    scrollByArrow: (direction) => {
+    handleArrow: (direction, fromReader) => {
       const root = workspaceRef.current;
-      if (root) scrollActiveFileReader(root, direction);
+      if (!root) return false;
+      if (previewable && mode === "preview") {
+        const preview = previewReader(root);
+        if (preview && previewHasFocus(preview)) {
+          return scrollActiveFileReader(root, direction);
+        }
+        const next = adjacentFilePath(shown.map((file) => file.path), selectedPath, direction);
+        if (next) {
+          focusSelectedFile.current = true;
+          choose(next);
+        }
+        // Preview owns the file cursor even at the first and last item. Falling through
+        // there would switch sessions merely because this file has no neighbour.
+        return true;
+      }
+      return fromReader ? scrollActiveFileReader(root, direction) : false;
     },
-  }), []);
+    focusPreview: () => {
+      const root = workspaceRef.current;
+      if (!root || !previewable || mode !== "preview") return false;
+      const preview = previewReader(root);
+      if (!preview || previewHasFocus(preview)) return false;
+      preview.focus({ preventScroll: true });
+      return true;
+    },
+  }), [mode, previewable, selectedPath, shown]);
 
   function choose(path: string): void {
     setComparing(false);
     controller.select(session.id, path);
   }
+
+  useEffect(() => {
+    if (!focusSelectedFile.current) return;
+    focusSelectedFile.current = false;
+    const row = workspaceRef.current?.querySelector<HTMLButtonElement>(
+      '.file-row[aria-selected="true"]',
+    );
+    row?.focus({ preventScroll: true });
+    row?.scrollIntoView({ block: "nearest" });
+  }, [selectedPath]);
 
   const launch = useCallback(async (path: string, target: OpenTargetId): Promise<void> => {
     setLaunching(true);
@@ -352,10 +409,10 @@ export function FileWorkspace({
           {selectedPath && !buffer && !state?.openError && <p className="file-empty">Loading {selectedPath}…</p>}
           {buffer && buffer.document.text == null && <p className="file-empty">{buffer.document.error ?? "This file cannot be opened."}</p>}
           {buffer?.document.text != null && buffer.document.kind === "html" && mode === "preview" && (
-            <iframe className="html-preview" title={`Preview of ${buffer.document.path}`} sandbox={HTML_PREVIEW_SANDBOX} srcDoc={htmlPreviewSource(previewText)} />
+            <iframe className="html-preview file-preview-reader" tabIndex={-1} title={`Preview of ${buffer.document.path}`} sandbox={HTML_PREVIEW_SANDBOX} srcDoc={htmlPreviewSource(previewText)} />
           )}
           {buffer?.document.text != null && buffer.document.kind === "markdown" && mode === "preview" && (
-            <article className="file-markdown-preview markdown">
+            <article className="file-markdown-preview file-preview-reader markdown" tabIndex={-1} aria-label={`Preview of ${buffer.document.path}`}>
               <Markdown
                 diagramRenderers={FILES_DIAGRAM_RENDERERS}
                 diagramDocumentKey={buffer.document.path}

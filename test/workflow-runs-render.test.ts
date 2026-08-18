@@ -467,13 +467,17 @@ test("a check row and its stage use deterministic status vocabulary", () => {
       ],
     },
   };
-  const pipeline = (status: string): string => renderToStaticMarkup(createElement(RunPipeline, {
+  const pipeline = (
+    status: string,
+    extra: Partial<Parameters<typeof RunPipeline>[0]> = {},
+  ): string => renderToStaticMarkup(createElement(RunPipeline, {
     version: checkVersion,
     statuses: { "check-typecheck": status },
     session: { tone: "running", label: "Under review" },
     end: { tone: "waiting", label: "Not reached" },
     metaFor: () => null,
     repair: null,
+    ...extra,
   }));
 
   const running = pipeline("running");
@@ -483,6 +487,12 @@ test("a check row and its stage use deterministic status vocabulary", () => {
   const errored = pipeline("error");
   assert.match(errored, /Command failed to run/);
   assert.doesNotMatch(errored, /Provider error/);
+
+  const completed = pipeline("completed", {
+    onOpenNode: () => undefined,
+    onOpenStage: () => undefined,
+  });
+  assert.match(completed, /Press Enter to load this stage in the review worklist/);
 });
 
 test("the round scrubber defaults to the latest round and scopes what it says", () => {

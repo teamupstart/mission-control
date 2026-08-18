@@ -510,6 +510,14 @@ test("a completed action reads Complete, and the stage does not claim the wave p
   assert.doesNotMatch(html, /Tidy the workspace<\/span>[\s\S]{0,200}?>Passed</);
 });
 
+test("a completed action does not advertise Review worklist detail it cannot own", () => {
+  const html = runPipelineMarkup({}, { [ACTION]: "completed" }, {
+    onOpenNode: () => undefined,
+    onOpenStage: () => undefined,
+  });
+  assert.doesNotMatch(html, /Press Enter to load this stage/);
+});
+
 test("the Inspector footer follows End, is marked fixed, and vanishes without the policy", () => {
   const withGate = runPipelineMarkup({}, {}, {
     version: version({ kind: "inspector", onFindings: "restart_workflow", missingPrAction: "wait" }),

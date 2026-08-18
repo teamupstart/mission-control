@@ -14,6 +14,115 @@ by an external Node process, and skills are read through filesystem links, so bo
 plain files on disk. The Electron shell starts the daemon; it does not become a second state
 owner.
 
+## Managed install and the receipt
+
+`make install` ([`scripts/install-app.mjs`](../scripts/install-app.mjs)) is the user install
+path; `make app` and `make install-app` remain the developer path that packages the current
+worktree. The difference that matters is not the build - it is who owns the source tree the app
+was built from, and whether an install left a record of itself.
+
+A managed install builds in a clone **only the updater touches**, at `app-src` inside the state
+directory (`~/.mission-control/app-src`). A developer's own worktree is never fetched, checked
+out, or rebuilt by the install or by the updater, which is why the install can safely use a
+forced checkout in that one location and nowhere else. The clone is a full checkout with its own
+`node_modules` and `release/` output, so budget roughly 1-2 GB of disk for it. It is disposable:
+deleting it costs the next install a fresh clone and nothing else.
+
+Two trust rules hold on the install path, not only in the updater:
+
+- The clone is pinned to the canonical repository, exported once as `CANONICAL_REPO` from
+  [`src/shared/install-receipt-schema.mjs`](../src/shared/install-receipt-schema.mjs). Only the
+  *transport* comes from the caller's `origin`, so an SSH clone stays SSH and an HTTPS clone
+  stays HTTPS. A checkout whose `origin` is a fork is refused, with `--from-origin` as the
+  explicit way past it; such an install records its real repository in the receipt.
+- Every remote is compared as **host and repository**, never repository alone - the caller's
+  `origin` and the existing clone's `origin` alike. `https://elsewhere.example/owner/name.git`
+  carries the right owner and name, and the clone it names is about to be fetched and force
+  checked out, so a slug-only comparison would trust whatever that host served. Only
+  `github.com` is accepted, on either transport, because the releases being compared against are
+  GitHub releases.
+- Every release query passes the repository explicitly. Left implicit, the GitHub CLI infers it
+  from whichever checkout it runs in, so the documented command run inside a fork would install
+  fork-controlled code under the same tag name.
+- A release lookup that **fails** is not an empty release list. "This repository has published no
+  stable release yet" falls back to the default branch tip; "GitHub could not be asked" stops the
+  install, because otherwise a transient outage silently installs unreleased code under someone
+  who asked for a release. `--ref` skips the lookup entirely, so an explicit-ref install does not
+  depend on GitHub being reachable.
+
+The install ends by writing a **receipt** to `install-receipt.json` in the state directory:
+
+```json
+{
+  "schema": 1,
+  "repo": "mancej-cyc/ai-harness",
+  "releaseTag": "v0.1.0",
+  "installedVersion": "0.1.0",
+  "sourceClone": "/Users/you/.mission-control/app-src",
+  "appPath": "/Applications/Mission Control.app",
+  "installedAt": "2026-08-18T00:00:00.000Z"
+}
+```
+
+The receipt is the packaged app's only evidence that it is updater-managed. It is split across
+two modules on the I/O boundary:
+[`install-receipt-schema.mjs`](../src/shared/install-receipt-schema.mjs) is browser-safe and
+holds the shape, the trusted slug, and validation;
+[`install-receipt.mjs`](../src/shared/install-receipt.mjs) resolves the path and does the
+atomic temp-file-then-rename write.
+
+Three contracts hold for readers:
+
+- **Absent, malformed, or newer means `null`.** A missing receipt is the normal state of an
+  install made outside the managed path - including every install made before it existed - and
+  reads as "not updater-managed" rather than as an error. A receipt whose `schema` is higher
+  than the reader knows is declined rather than partially believed.
+- **`schema` is append-only.** Add optional fields under the same number, or increment it and
+  keep accepting every earlier number.
+- **`installedVersion` equals the packaged app's version.** The install verifies the packaged
+  bundle's `CFBundleShortVersionString` against the source tree's `package.json` before it
+  replaces anything in `/Applications`, so a build that did not come from the checked-out ref
+  fails while the previous app is still in place.
+
+The swap itself keeps the installed app until the new one is fully on disk. The new bundle is
+copied to a hidden sibling of the destination first; only then is the existing app renamed aside
+and the new one renamed into place, both renames within one directory and therefore atomic. A
+failed copy leaves the installed app untouched, and a failed final rename puts the previous app
+back. A user whose disk filled mid-install ends up with the app they already had, not with
+none.
+
+## Release identity
+
+Release Please owns the version, the generated `CHANGELOG.md`, the `vX.Y.Z` tag, and the GitHub
+Release. Configuration is [`release-please-config.json`](../release-please-config.json) with
+[`.release-please-manifest.json`](../.release-please-manifest.json) bootstrapped at the `0.1.0`
+already in `package.json`; [`.github/workflows/release.yml`](../.github/workflows/release.yml)
+keeps a single release pull request current on the default branch. Merging that pull request is
+the release: the tag and the GitHub Release follow from the next run. Never hand-edit
+`CHANGELOG.md`.
+
+One equality is load-bearing and therefore enforced rather than assumed: the tag, `package.json`,
+and both version fields in `package-lock.json` must name the same version.
+[`scripts/assert-release-version.mjs`](../scripts/assert-release-version.mjs) proves it, and runs
+both in the release workflow and in `ci.yml`'s `package` job, where it blocks a mismatched tag
+from producing a dmg. A release the updater can compare against is exactly a release whose tag
+equals the version the app reports.
+
+Releases are selected - by the install path and by the updater alike - from an explicitly
+filtered list:
+
+```sh
+gh release list --repo <owner/name> --exclude-drafts --exclude-pre-releases   --order desc --limit 1 --json tagName
+```
+
+Filtering after asking for "the latest" cannot recover: once a prerelease has been chosen, there
+is no route back to the newest stable release, and every stable install silently stops updating
+with nothing logged anywhere.
+
+Tags created by the release workflow are pushed with `GITHUB_TOKEN`, and GitHub does not start
+workflow runs from those, so the `package` job does not fire on a release tag and cannot race the
+release. Packaging a tag stays a manual `workflow_dispatch`.
+
 See [Configuration and commands](configuration.md) for operating the app. Packaging and
 build-surface rules are authoritative in the [Electron and build surfaces contract](agent-guides/change-contracts.md#electron-and-build-surfaces)
 and [process-boundary guide](agent-guides/architecture.md#process-boundaries).

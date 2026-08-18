@@ -162,9 +162,37 @@ macOS app (Apple Silicon) that supervises the daemon, shows the dashboard in a w
 and - crucially - **delivers alerts even with the window closed** (a browser tab can't).
 
 ```sh
-make app            # build + package → release/Mission Control-<version>-arm64.dmg
-make install-app    # …and copy Mission Control.app into /Applications
+make install        # install the app from a clean, updater-owned clone
 ```
+
+That is the whole install. It needs `git`, an authenticated `gh` (`gh auth login`), and an
+Apple Silicon Mac - it refuses an Intel host rather than building an app that cannot run
+there. From a fresh clone it:
+
+- establishes a **separate clone of this repository at `~/.mission-control/app-src` that only
+  the updater ever touches**. Your own worktree is never built, fetched, or checked out by it;
+- checks out the newest stable release - drafts and prereleases are excluded by the query
+  that selects it - or the default branch tip while no release exists yet.
+  `make install ARGS="--ref v1.2.3"` installs a specific ref instead;
+- builds and packages there, then verifies the packaged app's version equals the source tree's
+  before it touches `/Applications`;
+- replaces `/Applications/Mission Control.app`;
+- writes an install **receipt** at `~/.mission-control/install-receipt.json` recording the
+  repository, release tag, version, source clone, and app path. See
+  [Desktop shell and packaging](desktop-and-packaging.md#managed-install-and-the-receipt).
+
+Re-running it is safe - every step detects its own completion - and
+`make install ARGS="--dry-run"` prints what it would do without changing anything.
+
+The developer path is unchanged, and deliberately separate:
+
+```sh
+make app            # build + package → release/Mission Control-<version>-arm64.dmg
+make install-app    # …and copy THIS worktree's build into /Applications
+```
+
+`make install-app` writes no receipt, so a work-in-progress build is never mistaken for a
+managed install.
 
 The app is self-contained: the daemon runs on Electron's bundled Node (with `node:sqlite`),
 so no system `node` is required to run it. On launch it **adopts** an already-running daemon
@@ -173,8 +201,10 @@ so no system `node` is required to run it. On launch it **adopts** an already-ru
 **Start at login** and **Install Claude integrations…** (wires the status hooks + MCP review
 server at the app's bundled paths) from the tray menu.
 
-Because it's a local, unsigned build, the first launch may need a right-click → **Open**
-(or `xattr -dr com.apple.quarantine "/Applications/Mission Control.app"`).
+Both paths build on your own Mac and copy the result into place, so nothing crosses a
+download boundary and Gatekeeper never quarantines the bundle: the app opens normally, with no
+right-click → **Open** and no `xattr` workaround. It is ad-hoc signed rather than notarized -
+Developer ID signing is out of scope while the app is built locally.
 
 For desktop development with the same hot-reload loop as the browser:
 

@@ -14,3 +14,35 @@ export function nodePrerequisiteMessage(version) {
 export function chromiumPrerequisiteMessage() {
   return "Playwright Chromium is required for end-to-end tests. Run `npx playwright install chromium`, then rerun `make init ARGS=\"--with-e2e\"`.";
 }
+
+/**
+ * The architecture the packaged app can be built for.
+ *
+ * `electron-builder.yml` pins `arch: arm64` for both the dmg and the dir target, so an Intel
+ * host would build an app it cannot run. That is a refusal, not a warning.
+ */
+export const REQUIRED_ARCH = "arm64";
+
+export function archPrerequisiteMessage(arch) {
+  if (arch === REQUIRED_ARCH) return null;
+  return `Mission Control packages for Apple Silicon only (found ${arch || "an unknown architecture"}). Install it on an ${REQUIRED_ARCH} Mac.`;
+}
+
+export function gitPrerequisiteMessage(installed) {
+  if (installed) return null;
+  return "git is not installed - install the Xcode command line tools (`xcode-select --install`) or git itself, then rerun `make install`.";
+}
+
+/**
+ * The `gh` prerequisite, in the app's own words.
+ *
+ * The two phrasings are copied verbatim from `preflight` in
+ * `src/server/task-sources/github-issues.ts`, which is the only other place this application
+ * tells someone their `gh` is not usable. One wording, so the installer and the running app
+ * cannot describe the same broken dependency differently.
+ */
+export function ghPrerequisiteMessage({ installed, authenticated }) {
+  if (!installed) return "the gh CLI is not installed - install it and run `gh auth login`";
+  if (!authenticated) return "gh is not authenticated - run `gh auth login`";
+  return null;
+}

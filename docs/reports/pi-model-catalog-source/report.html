@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pi model catalog sourcing investigation</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0d1117;
+    --panel: #151b23;
+    --panel-2: #1c2430;
+    --line: #303a48;
+    --text: #f0f4f8;
+    --muted: #a9b4c2;
+    --blue: #66a3ff;
+    --green: #42c98a;
+    --amber: #e7b64c;
+    --red: #f07979;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      color-scheme: light;
+      --bg: #f5f7fa;
+      --panel: #ffffff;
+      --panel-2: #edf2f7;
+      --line: #d5dde7;
+      --text: #15202d;
+      --muted: #586779;
+      --blue: #246fc2;
+      --green: #157a50;
+      --amber: #986b08;
+      --red: #b63737;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.62 var(--sans); }
+  main { max-width: 1060px; margin: 0 auto; padding: 56px 28px 110px; }
+  header { border-bottom: 1px solid var(--line); padding-bottom: 34px; margin-bottom: 38px; }
+  .eyebrow { margin: 0 0 10px; color: var(--muted); font: 11px/1.3 var(--mono); letter-spacing: .13em; text-transform: uppercase; }
+  h1 { max-width: 820px; margin: 0 0 16px; font-size: clamp(32px, 5vw, 46px); line-height: 1.08; letter-spacing: -.025em; }
+  .answer { max-width: 78ch; margin: 0; color: var(--muted); font-size: 18px; }
+  .answer strong { color: var(--text); }
+  h2 { margin: 58px 0 10px; padding-top: 24px; border-top: 1px solid var(--line); font-size: 25px; letter-spacing: -.014em; }
+  h3 { margin: 30px 0 9px; font-size: 18px; }
+  p { max-width: 80ch; margin: 0 0 14px; }
+  a { color: var(--blue); }
+  code { font: .88em var(--mono); background: var(--panel-2); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; }
+  pre { overflow-x: auto; margin: 16px 0 22px; padding: 16px; background: var(--panel); border: 1px solid var(--line); border-radius: 9px; font: 12.5px/1.55 var(--mono); }
+  pre code { border: 0; padding: 0; background: transparent; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(185px, 1fr)); gap: 12px; margin: 26px 0; }
+  .tile { padding: 17px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+  .tile b { display: block; margin-bottom: 4px; font-size: 30px; line-height: 1; font-variant-numeric: tabular-nums; }
+  .tile span { color: var(--muted); font-size: 12px; }
+  .tile.good { border-left: 3px solid var(--green); }
+  .tile.warn { border-left: 3px solid var(--amber); }
+  .tile.bad { border-left: 3px solid var(--red); }
+  .callout { max-width: 86ch; margin: 24px 0; padding: 16px 18px; background: var(--panel); border-left: 3px solid var(--blue); border-radius: 0 8px 8px 0; }
+  .callout.good { border-left-color: var(--green); }
+  .callout.warn { border-left-color: var(--amber); }
+  .table-wrap { overflow-x: auto; margin: 20px 0 28px; border: 1px solid var(--line); border-radius: 10px; }
+  table { width: 100%; border-collapse: collapse; background: var(--panel); font-size: 13.5px; }
+  th, td { padding: 10px 13px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); }
+  th { background: var(--panel-2); color: var(--muted); font: 10.5px var(--mono); letter-spacing: .08em; text-transform: uppercase; white-space: nowrap; }
+  tbody tr:last-child td { border-bottom: 0; }
+  .yes { color: var(--green); font-weight: 650; }
+  .no { color: var(--red); font-weight: 650; }
+  .maybe { color: var(--amber); font-weight: 650; }
+  figure { overflow-x: auto; margin: 28px 0; padding: 18px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+  svg { display: block; min-width: 820px; width: 100%; height: auto; }
+  .box { fill: var(--panel-2); stroke: var(--line); stroke-width: 1.5; }
+  .box.live { stroke: var(--green); }
+  .box.stale { stroke: var(--amber); }
+  .arrow { stroke: var(--muted); stroke-width: 2; fill: none; marker-end: url(#arrow); }
+  .t { fill: var(--text); font: 600 14px var(--sans); }
+  .s { fill: var(--muted); font: 11.5px var(--sans); }
+  figcaption { margin-top: 12px; color: var(--muted); font-size: 12px; }
+  ul, ol { max-width: 82ch; padding-left: 23px; }
+  li { margin: 7px 0; }
+  .source-list li { margin: 10px 0; }
+  .verdict { display: inline-block; padding: 4px 9px; color: var(--green); border: 1px solid var(--green); border-radius: 999px; font: 11px var(--mono); letter-spacing: .08em; }
+  footer { margin-top: 60px; padding-top: 20px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <p class="eyebrow">Investigation · 18 August 2026</p>
+    <h1>Pi's models are compiled into Mission Control, not sourced from Pi</h1>
+    <p class="answer"><strong>Verified root cause:</strong> the four rows in the screenshot come from a hand-maintained array in <code>src/shared/model.ts</code>. The installed Pi 0.84.2 has a structured, account-aware model-list command that Mission Control does not call. On this machine Pi reports 38 available models; Mission Control offers four, only three overlap, and it misses 35 current entries.</p>
+  </header>
+
+  <div class="tiles" aria-label="Key findings">
+    <div class="tile warn"><b>4</b><span>Pi choices compiled into Mission Control</span></div>
+    <div class="tile good"><b>38</b><span>models Pi reports available on this machine</span></div>
+    <div class="tile bad"><b>35</b><span>Pi-reported models absent from the Mission Control picker</span></div>
+    <div class="tile bad"><b>1</b><span>shipped choice absent from Pi's current available list</span></div>
+  </div>
+
+  <div class="callout good"><strong>Recommendation:</strong> use Pi's RPC <code>get_available_models</code> response as the live source for Pi, through a harness-owned server capability. Keep the shipped catalog and the currently stored value as fallbacks. This fixes the drift without making settings depend on Pi always succeeding.</div>
+
+  <h2>How the list is sourced today</h2>
+  <p><a href="../../../src/shared/model.ts"><code>src/shared/model.ts:94-150</code></a> declares one <code>MODEL_CATALOG</code> for Claude, Codex, and Pi. The Pi branch contains exactly the four screenshot rows. The source comment says the list is hand-maintained because no CLI exposes a machine-readable account list. That premise is no longer true for Pi 0.84.2.</p>
+
+  <figure>
+    <svg viewBox="0 0 980 235" role="img" aria-labelledby="today-title today-desc">
+      <title id="today-title">Current Pi model data flow</title>
+      <desc id="today-desc">A static shared TypeScript array feeds every browser picker. The selected provider-qualified id is persisted and passed to the Pi binary as a model argument. Pi's own catalog is outside the flow.</desc>
+      <defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="var(--muted)"/></marker></defs>
+      <rect class="box stale" x="24" y="65" width="190" height="76" rx="9"/>
+      <text class="t" x="43" y="91">MODEL_CATALOG.pi</text><text class="s" x="43" y="111">4 compiled rows</text><text class="s" x="43" y="127">last added with Pi support</text>
+      <rect class="box" x="274" y="31" width="212" height="144" rx="9"/>
+      <text class="t" x="294" y="57">Browser consumers</text><text class="s" x="294" y="79">Harness settings</text><text class="s" x="294" y="96">Dispatch and schedules</text><text class="s" x="294" y="113">Ensembles</text><text class="s" x="294" y="130">Saved-value labels</text><text class="s" x="294" y="151">No daemon catalog read</text>
+      <rect class="box" x="546" y="65" width="176" height="76" rx="9"/>
+      <text class="t" x="566" y="92">Persisted model ID</text><text class="s" x="566" y="113">ModelIdSchema</text><text class="s" x="566" y="129">provider/id allowed</text>
+      <rect class="box" x="782" y="65" width="174" height="76" rx="9"/>
+      <text class="t" x="802" y="92">Pi launch</text><text class="s" x="802" y="113">--model provider/id</text><text class="s" x="802" y="129">passed verbatim</text>
+      <path class="arrow" d="M214 103 H274"/><path class="arrow" d="M486 103 H546"/><path class="arrow" d="M722 103 H782"/>
+      <text class="s" x="24" y="205">Pi's own account-aware catalog is not queried anywhere in this path.</text>
+    </svg>
+    <figcaption>The compiled array is the only option source. There is no cache invalidation bug: the current data was never connected to Pi.</figcaption>
+  </figure>
+
+  <p>The same helper, <code>modelChoicesFor</code>, supplies multiple surfaces:</p>
+  <ul class="source-list">
+    <li><a href="../../../src/web/components/HarnessesPanel.tsx"><code>src/web/components/HarnessesPanel.tsx:179-200</code></a> renders the Settings model select shown in the screenshot.</li>
+    <li><a href="../../../src/web/components/DispatchModal.tsx"><code>src/web/components/DispatchModal.tsx:283-332, 2489</code></a> uses it for dispatch choices and default labels.</li>
+    <li><a href="../../../src/web/components/schedules/ScheduleEditor.tsx"><code>src/web/components/schedules/ScheduleEditor.tsx:436</code></a> uses it for scheduled tasks.</li>
+    <li><a href="../../../src/web/ensembles/dispatch/EnsembleDispatch.tsx"><code>src/web/ensembles/dispatch/EnsembleDispatch.tsx:769, 1131</code></a> uses it for ensemble members and summary labels.</li>
+  </ul>
+  <p>The selected ID is not restricted to the array. <a href="../../../src/shared/protocol.ts"><code>src/shared/protocol.ts:605-613</code></a> accepts safe provider-qualified IDs, and <code>modelChoicesFor</code> preserves an already stored off-catalog value. This is a useful fallback, but the UI has no free-text path to discover or choose a new value in the first place.</p>
+
+  <h2>What Pi reports now</h2>
+  <p>The installed binary is <code>/opt/homebrew/bin/pi</code>, package <code>@earendil-works/pi-coding-agent</code> 0.84.2. The historical Pi integration note was measured against 0.80.10, and its four IDs were copied into <a href="../../../todo/pi-harness.md"><code>todo/pi-harness.md:201-214</code></a>.</p>
+  <pre><code>$ pi --version
+0.84.2
+
+$ pi --offline --list-models openai
+# 38 account-available OpenAI rows
+
+$ printf '{"id":"mc-model-probe","type":"get_available_models"}\n' |
+    pi --mode rpc --no-session --offline ...
+# one JSON response containing 38 full model objects; no prompt and no model call</code></pre>
+  <p>Pi's own implementation confirms the semantics. <code>dist/cli/list-models.js</code> calls <code>modelRuntime.getAvailable()</code>; that runtime checks configured provider authentication and applies provider-specific model filtering. The documented RPC command <code>get_available_models</code> returns the same available set as structured model objects.</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Model</th><th>Mission Control</th><th>Pi 0.84.2</th><th>Finding</th></tr></thead>
+      <tbody>
+        <tr><td><code>openai/gpt-5.5-pro</code></td><td class="yes">Offered</td><td class="yes">Available</td><td>Still aligned</td></tr>
+        <tr><td><code>openai/gpt-5.5</code></td><td class="yes">Offered</td><td class="yes">Available</td><td>Still aligned</td></tr>
+        <tr><td><code>openai/gpt-5-codex</code></td><td class="yes">Offered</td><td class="no">Not listed</td><td>Stale catalog row; Pi lists <code>gpt-5.3-codex</code> and <code>-spark</code></td></tr>
+        <tr><td><code>openai/gpt-5-mini</code></td><td class="yes">Offered</td><td class="yes">Available</td><td>Still aligned</td></tr>
+        <tr><td><code>openai/gpt-5.6-sol</code></td><td class="no">Missing</td><td class="yes">Available</td><td>Current capable tier missing</td></tr>
+        <tr><td><code>openai/gpt-5.6-terra</code></td><td class="no">Missing</td><td class="yes">Available</td><td>Current balanced tier missing</td></tr>
+        <tr><td><code>openai/gpt-5.6-luna</code></td><td class="no">Missing</td><td class="yes">Available</td><td>Current fast tier missing</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>All 38 IDs became <code>provider/id</code> strings that passed Mission Control's existing length and character checks. No schema widening is needed for the current result.</p>
+
+  <h2>Root cause</h2>
+  <p><strong>Verified, 99% confidence:</strong> catalog drift is caused by the static array and the obsolete discovery premise in its comment. The evidence is direct: the screenshot labels match the four literals exactly; every picker reads that array; Pi 0.84.2 exposes both a table command and a structured RPC command; Mission Control calls neither.</p>
+  <p>This is not a browser cache issue and not an operator configuration issue. Restarting or rebuilding Mission Control can only render the same four compiled values until source changes.</p>
+
+  <h2>Solution options</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Option</th><th>Benefit</th><th>Cost / failure mode</th><th>Verdict</th></tr></thead>
+      <tbody>
+        <tr><td>Update the four literals now</td><td>Small, immediate patch</td><td>Repeats the same drift on the next Pi catalog change; remains blind to custom providers and account availability</td><td class="no">Reject as the durable fix</td></tr>
+        <tr><td>Parse <code>pi --list-models</code></td><td>Account-aware and easy to invoke</td><td>Scrapes human-formatted columns and loses Pi's richer metadata</td><td class="maybe">Acceptable fallback only</td></tr>
+        <tr><td>Use RPC <code>get_available_models</code> with fallbacks</td><td>Structured, account-aware, includes custom/configured providers and context metadata, spends no model tokens</td><td>Needs a bounded subprocess probe, cache, API contract, and UI loading/failure states</td><td class="yes">Recommended</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>Recommended architecture</h3>
+  <figure>
+    <svg viewBox="0 0 980 318" role="img" aria-labelledby="after-title after-desc">
+      <title id="after-title">Recommended live model discovery flow</title>
+      <desc id="after-desc">The browser requests harness model choices from the daemon. The daemon asks the harness registry. Pi runs a bounded RPC probe and maps allowlisted model fields. A cache and shipped fallback keep the UI usable on failure. The selected model follows the existing persistence and launch path.</desc>
+      <defs><marker id="arrow2" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="var(--muted)"/></marker></defs>
+      <rect class="box" x="24" y="30" width="180" height="72" rx="9"/><text class="t" x="43" y="57">Browser model store</text><text class="s" x="43" y="77">settings, dispatch,</text><text class="s" x="43" y="92">schedules, ensembles</text>
+      <rect class="box" x="264" y="30" width="180" height="72" rx="9"/><text class="t" x="284" y="57">Harness models API</text><text class="s" x="284" y="77">generic route</text><text class="s" x="284" y="92">bounded response</text>
+      <rect class="box" x="504" y="30" width="180" height="72" rx="9"/><text class="t" x="524" y="57">Harness.models</text><text class="s" x="524" y="77">registry-owned spec</text><text class="s" x="524" y="92">no route-level Pi branch</text>
+      <rect class="box live" x="744" y="18" width="212" height="96" rx="9"/><text class="t" x="764" y="47">Pi RPC probe</text><text class="s" x="764" y="67">get_available_models</text><text class="s" x="764" y="83">no session, no prompt</text><text class="s" x="764" y="99">resolved Pi binary</text>
+      <path d="M204 66 H264" stroke="var(--muted)" stroke-width="2" marker-end="url(#arrow2)"/><path d="M444 66 H504" stroke="var(--muted)" stroke-width="2" marker-end="url(#arrow2)"/><path d="M684 66 H744" stroke="var(--muted)" stroke-width="2" marker-end="url(#arrow2)"/>
+      <rect class="box" x="504" y="175" width="180" height="78" rx="9"/><text class="t" x="524" y="202">In-memory cache</text><text class="s" x="524" y="222">last successful result</text><text class="s" x="524" y="238">dedupe concurrent probes</text>
+      <rect class="box stale" x="744" y="175" width="212" height="78" rx="9"/><text class="t" x="764" y="202">Shipped fallback</text><text class="s" x="764" y="222">plus stored off-catalog ID</text><text class="s" x="764" y="238">used on timeout/error</text>
+      <path d="M850 114 V175" stroke="var(--muted)" stroke-width="2" marker-end="url(#arrow2)"/><path d="M744 214 H684" stroke="var(--muted)" stroke-width="2" marker-end="url(#arrow2)"/><path d="M594 175 V103" stroke="var(--muted)" stroke-width="2" marker-end="url(#arrow2)"/>
+      <text class="s" x="24" y="297">Selection then continues through the existing ModelIdSchema, persistence, and Pi --model provider/id launch path.</text>
+    </svg>
+    <figcaption>The new flow changes only where choices come from. Persisting and launching a selected provider-qualified ID stays unchanged.</figcaption>
+  </figure>
+
+  <ol>
+    <li>Add a required server-side <code>models</code> capability to <code>Harness</code>. Claude and Codex return their shipped catalogs; Pi supplies a discoverer plus fallback. This follows the registry pattern already documented in <a href="../../../src/server/harness/types.ts"><code>src/server/harness/types.ts:1035-1076</code></a>.</li>
+    <li>Implement Pi discovery as a short-lived RPC subprocess using the same <code>resolveAgentBin("pi")</code> path as dispatch. Send one correlated <code>get_available_models</code> request, accept only its matching success response, allowlist fields, validate every derived <code>provider/id</code>, bound time, bytes, and row count, then terminate.</li>
+    <li>Expose the resolved catalog from a generic harness-model route. Return source, refresh time, and a non-secret diagnostic state so the browser can distinguish live data from fallback.</li>
+    <li>Give all picker consumers one browser model-catalog store. Merge the currently saved value exactly as <code>modelChoicesFor</code> does today, so a transient probe failure or older build never erases a valid selection.</li>
+    <li>Keep the shipped list as a failure fallback, not the primary source. Older Pi versions, a missing binary, no configured provider, malformed output, timeout, and subprocess failure must leave the picker usable and visibly stale.</li>
+    <li>Cover the new UI behavior with Playwright and the subprocess/parser with focused tests. The fake Pi binary must answer the RPC probe so end-to-end tests never reach a real provider.</li>
+  </ol>
+  <p><a href="../../plans/pi-live-model-catalog/plan.html">Open the companion rendered proposal</a> for the implementation sequence and explicit product decision.</p>
+
+  <h2>Decision resolved</h2>
+  <p>The operator approved mirroring every model Pi reports available, grouped by provider. The live catalog is therefore complete rather than curated. The compact shipped list remains only as a failure fallback, and a saved off-catalog value remains selectable.</p>
+
+  <h2>Limits and what was not established</h2>
+  <ul>
+    <li>The live probe covered this machine's Pi 0.84.2 installation and one configured OpenAI provider. No custom provider or multi-provider account was available to exercise grouping.</li>
+    <li>The probe used <code>--offline</code>. It establishes that Pi can expose its locally known, account-filtered catalog without a model call; it does not establish the desired policy for refreshing remote dynamic catalogs.</li>
+    <li>Older Pi versions were not installed and tested. The solution therefore must feature-detect or fail back instead of declaring a minimum version from this sample.</li>
+    <li>No request was sent to any model. "Available" here means Pi includes the entry after its auth/filter pass, not that all 38 APIs were individually invoked successfully.</li>
+    <li>No production code was changed and no repository test suite was run. Only read-only repository inspection and no-session Pi catalog probes were performed.</li>
+  </ul>
+
+  <h2>Verify-claims ledger</h2>
+  <p><span class="verdict">CLEAR FOR PROPOSAL</span></p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Claim or assumption</th><th>Status</th><th>Basis / impact</th></tr></thead>
+      <tbody>
+        <tr><td>The screenshot list is statically sourced.</td><td class="yes">Verified</td><td>Literal labels and IDs in <code>MODEL_CATALOG.pi</code>; all picker call sites traced.</td></tr>
+        <tr><td>Pi exposes an account-aware structured list without a model call.</td><td class="yes">Verified</td><td>Successful 0.84.2 RPC response; installed source calls <code>getAvailable</code> and returns full objects; process exited on stdin EOF.</td></tr>
+        <tr><td>Current discovered IDs fit existing storage/launch validation.</td><td class="yes">Verified</td><td>All 38 derived <code>provider/id</code> values passed the current regex and 80-character cap.</td></tr>
+        <tr><td>The picker should mirror all Pi-available models.</td><td class="yes">Approved</td><td>The operator selected the full account-aware catalog, grouped by provider, on 2026-08-18.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2>Evidence sources</h2>
+  <ul class="source-list">
+    <li><a href="../../../src/shared/model.ts"><code>src/shared/model.ts</code></a>: current catalog, comment, labels, ordering, and stored-value fallback.</li>
+    <li><a href="../../../src/shared/protocol.ts"><code>src/shared/protocol.ts</code></a>: provider-qualified model-ID safety contract.</li>
+    <li><a href="../../../src/server/harness/index.ts"><code>src/server/harness/index.ts</code></a> and <a href="../../../src/server/harness/types.ts"><code>src/server/harness/types.ts</code></a>: server harness registry and the planned ownership seam for model behavior.</li>
+    <li><a href="../../../src/server/routes.ts"><code>src/server/routes.ts</code></a>: current Harnesses API exposes config only, not choices.</li>
+    <li><a href="../../../todo/pi-harness.md"><code>todo/pi-harness.md</code></a>: original Pi 0.80.10 investigation and the copied provider-qualified IDs.</li>
+    <li><code>/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/dist/cli/list-models.js</code>, <code>dist/core/model-runtime.js</code>, and <code>docs/rpc.md</code>: installed Pi 0.84.2 list and RPC behavior.</li>
+    <li>User-supplied screenshot <code>Screenshot-2026-08-18-at-9.43.24-AM-af52bd2e.png</code>: observed four-row Mission Control picker.</li>
+  </ul>
+
+  <footer>Prepared from the task worktree. The approved companion plan and phased implementation briefs are published with this investigation.</footer>
+</main>
+</body>
+</html>

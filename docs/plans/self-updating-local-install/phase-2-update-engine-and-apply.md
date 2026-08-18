@@ -142,8 +142,27 @@ Behavior:
 - Run only when `app.isPackaged`. Otherwise publish `disabled` with the reason.
 - Publish `disabled` when there is no receipt, when no system node can be found, or when the host is
   not arm64.
-- Read the latest release with `gh release view --repo <slug> --json tagName,name,body,publishedAt,isDraft,isPrerelease`,
-  invoked with a login-shell PATH. Ignore drafts and prereleases in v1.
+- Read the newest eligible release by **selecting it explicitly from a list**, not by asking for "the
+  latest" and filtering afterwards:
+
+  ```sh
+  gh release list --repo <slug> --exclude-drafts --exclude-pre-releases \
+    --order desc --limit 1 --json tagName,name,publishedAt,isDraft,isPrerelease
+  ```
+
+  invoked with a login-shell PATH, then fetch that tag's notes with
+  `gh release view <tag> --repo <slug> --json body` if the list output does not already carry them.
+
+  This ordering is load-bearing. `gh release view` with no tag argument resolves "the latest release"
+  by its own rule, and `gh release view --help` does not state whether that rule skips prereleases.
+  Filtering `isDraft` and `isPrerelease` *after* that resolution cannot recover: if the newest release
+  is a prerelease, the check has already been handed the wrong release and has no way to reach the
+  newest stable one, so every stable user silently stops receiving updates until another stable release
+  is published. Selecting from an explicitly filtered, explicitly ordered list has no such failure mode
+  and states the intent in the command.
+
+  Still assert `isDraft` and `isPrerelease` are false on whatever comes back, as a cheap
+  belt-and-braces check rather than the primary mechanism.
 - Compare against `app.getVersion()`. Equal or lower is `up-to-date`.
 - At most one check and one apply in flight. A repeated action returns the live operation rather than
   starting a second.
@@ -194,9 +213,15 @@ Sequence:
 3. Copy the existing app bundle aside as a backup inside the temp dir.
 4. Run the clone's install script as a child process: `node <clone>/scripts/install-app.mjs --ref <tag>`.
    This deliberately reuses Phase 1 rather than duplicating build, verify, swap, and receipt logic.
-5. On success, record a `success` outcome and relaunch with `open -a <appPath>`.
+5. On success, record a `success` outcome and relaunch the bundle **by path**: `open "<appPath>"`, not
+   `open -a "<appPath>"`. `-a` names the application to open a file *with*, and resolves through
+   LaunchServices; the bare form opens the bundle at that path directly, which is what a receipt's
+   `appPath` describes and the only form that cannot be redirected to a different copy of the app by a
+   stale LaunchServices registration - a real risk immediately after the bundle was replaced. Treat a
+   non-zero exit from `open` as a relaunch failure worth recording, not as success.
 6. On any failure, restore the backup bundle, record a `failure` outcome carrying a short safe reason,
-   and relaunch the restored app so the user is not left with nothing.
+   and relaunch the restored app the same way - `open "<appPath>"` - so the user is not left with
+   nothing. Both outcomes use the identical path-launch form; there is no second relaunch mechanism.
 7. Remove the temp dir last, on both paths.
 
 A note the implementer needs: Node loads a module's entire static graph before executing it, so the
@@ -248,7 +273,12 @@ Pure unit tests against the injected port, in `test/`:
 
 - every transition: disabled for each reason, idle, checking, up-to-date, available, applying, error;
 - equal and lower remote versions are not offered; the `v` prefix is handled;
-- drafts and prereleases are ignored;
+- **a prerelease newer than the newest stable release does not stall updates**: the port is asked for an
+  already-filtered list, and a stable release older than that prerelease is still offered. This is the
+  regression that would silently strand every stable user, so assert it directly rather than only
+  asserting that a prerelease is skipped;
+- a draft newer than the newest stable release behaves the same way;
+- a release that comes back flagged draft or prerelease despite the filter is still refused;
 - a second check while one is in flight returns the live operation and does not spawn a second;
 - a second apply while one is in flight is refused;
 - background failure logs and returns to idle; manual failure publishes an actionable `error`;
@@ -358,3 +388,10 @@ bridge, and must not widen the snapshot to carry paths, URLs, or raw error text.
   now argued explicitly against the contract's own rationale rather than asserted, and the structural
   alternative of moving all user-visible surfaces into Phase 3 is recorded for the plan owner rather
   than applied unilaterally, because it would change phase scope.
+- **2026-08-18, Inspector round 3.** Two `major` comments, both valid and both fixed in the release
+  and relaunch mechanics. Release selection moved from `gh release view` plus after-the-fact
+  `isDraft`/`isPrerelease` filtering to an explicitly filtered and ordered `gh release list`, because
+  filtering after "latest" has already resolved cannot recover the newest stable release; added a test
+  for the strand-the-stable-channel regression specifically. Relaunch changed from `open -a <appPath>`
+  to the bare path form `open "<appPath>"` on both the success and failure paths. No contract consumed
+  by another phase changed shape, and no approved decision moved.

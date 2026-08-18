@@ -30,6 +30,7 @@ import {
   WorkflowRunView,
   WorkflowRunsEmpty,
   followSelection,
+  worklistSelectionForNode,
 } from "../src/web/workflows/WorkflowRuns.tsx";
 import {
   carriedStatus,
@@ -574,6 +575,61 @@ test("a waiting run offers ONE primary move, the context controls, and cancel", 
   assert.match(html, /status truncated/);
   assert.match(html, /Join and gate packet/);
   assertNoGraphIds(html);
+});
+
+test("image evidence is an auditable per-submission ledger with retained and pruned states", () => {
+  const base = runningDetail();
+  const html = render({
+    ...base,
+    evidenceImages: [{
+      submissionId: "submission-2",
+      images: [
+        {
+          id: "image-retained",
+          ordinal: 0,
+          displayName: "dashboard.png",
+          caption: "Composer with caption and repository scope",
+          repositoryScope: "repo-01",
+          mimeType: "image/png",
+          bytes: 2048,
+          sha256: "a".repeat(64),
+          availability: "retained",
+          prunedAt: null,
+          createdAt: 8,
+        },
+        {
+          id: "image-pruned",
+          ordinal: 1,
+          displayName: "old-dashboard.webp",
+          caption: "Historical evidence whose body aged out",
+          repositoryScope: "all",
+          mimeType: "image/webp",
+          bytes: 4096,
+          sha256: "b".repeat(64),
+          availability: "pruned",
+          prunedAt: 9,
+          createdAt: 7,
+        },
+      ],
+    }],
+  }, {
+    evidenceScopeOptions: [
+      { value: "all", label: "All repositories" },
+      { value: "repo-01", label: "app (primary)" },
+    ],
+    onRestageImage: async () => {},
+  });
+  assert.match(html, /2 images frozen for this submission/);
+  assert.match(html, /Composer with caption and repository scope/);
+  assert.match(html, /app \(primary\)/);
+  assert.match(html, new RegExp("a{64}"));
+  assert.match(html, /Use in next review/);
+  assert.match(html, /Historical evidence whose body aged out/);
+  assert.match(html, /Raw body pruned/);
+  assert.match(html, /Caption, scope, MIME, size, and SHA-256 remain auditable/);
+  assert.equal((html.match(/Use in next review/g) ?? []).length, 1);
+  // Static rendering never fetches bodies: the authenticated route is reached lazily in view.
+  assert.doesNotMatch(html, /src="\/api\/workflow-runs/);
 });
 
 /**
@@ -1211,6 +1267,107 @@ test("the Inspector gate keeps its state, findings, actions, and bypass audit", 
   assertNoGraphIds(html);
 });
 
+test("a spent gate separates its historical observation from a clean current Inspector ledger", () => {
+  const base = runningDetail();
+  const currentHead = "cleanhead0123456789";
+  const failedHead = "failedhead0123456789";
+  const inspectorOnly = submission("submission-spent", 4, {
+    mode: "inspector_only",
+    prHeadSha: failedHead,
+    status: "completed",
+    completedAt: 8,
+  });
+  const html = render({
+    ...base,
+    summary: {
+      ...base.summary,
+      status: "blocked",
+      phase: "round_limit",
+      round: 4,
+      maxRepairRounds: 3,
+      gate: "blocked",
+      gatePrNumber: 91,
+      gateHeadShort: failedHead,
+      reviewPosture: "live",
+    },
+    version: {
+      ...version,
+      completionPolicy: {
+        kind: "inspector",
+        onFindings: "inspector_only",
+        missingPrAction: "offer_prepare_pr",
+      },
+    },
+    run: {
+      ...base.run,
+      status: "blocked",
+      currentPhase: "round_limit",
+      maxRepairRounds: 3,
+    },
+    submissions: [...base.submissions, inspectorOnly],
+    inspectorGate: {
+      state: {
+        prKey: "owner/repo#91",
+        prUrl: "https://github.com/owner/repo/pull/91",
+        targetHeadSha: failedHead,
+        failedHeadSha: failedHead,
+        enteredAt: 7,
+        lastObservedAt: 8,
+        observedHeadSha: failedHead,
+        reviewPosture: "live",
+        waitReason: "findings",
+        findingFingerprints: ["historical-fingerprint"],
+      },
+      inspector: { enabled: true, mode: "live", posture: "live" },
+      inspection: {
+        key: "owner/repo#91",
+        url: "https://github.com/owner/repo/pull/91",
+        number: 91,
+        source: "hook",
+        state: "open",
+        observedState: "OPEN",
+        observedHeadSha: currentHead,
+        headSha: currentHead,
+        reviewPosture: "live",
+        round: 5,
+        lastError: null,
+        nextAttemptAt: null,
+        openFindings: 0,
+        resolvedFindings: 1,
+      } as never,
+      findings: [{
+        id: "historical",
+        prKey: "owner/repo#91",
+        fingerprint: "historical-fingerprint",
+        path: "src/gate.ts",
+        line: 42,
+        title: "Historical workflow finding",
+        body: "This was the finding that stopped the workflow.",
+        severity: "major",
+        round: 3,
+        status: "resolved",
+        replies: 0,
+        answeredCommentId: null,
+        createdAt: 7,
+        updatedAt: 9,
+      }],
+    },
+  } as WorkflowRunDetail);
+
+  assert.match(html, /Last workflow observation/);
+  assert.match(html, /Current Inspector/);
+  assert.match(html, /Failed head/);
+  assert.match(html, /failedhead01/);
+  assert.match(html, /cleanhead012/);
+  assert.match(html, /Historical workflow finding/);
+  assert.match(html, /Historical findings<\/dt><dd>1/);
+  assert.match(html, /Open findings<\/dt><dd>0/);
+  assert.match(html, /Resolved findings<\/dt><dd>1/);
+  assert.match(html, /Clean head ready/);
+  assert.match(headerOf(html), /class="btn btn-primary"[^>]*>Adopt clean Inspector head</);
+  assert.doesNotMatch(html, /Recheck GitHub Inspector/);
+});
+
 test("scrubbing to an earlier round never withdraws a live recovery action", () => {
   // The reader's rule: what a ROUND says is scoped to the round, what the RUN offers is not.
   // With the live submission an Inspector-only repair and the run waiting on Inspector rather
@@ -1713,6 +1870,22 @@ test("active Persona feedback marks only its target and opens from the row", () 
   assert.match(html, /Add critical feedback for Quality reviewer/);
   assert.match(html, /Edit critical feedback/);
   assert.match(html, /Disable for this run/);
+  assertNoGraphIds(html);
+});
+
+test("settled pipeline members open their matching review worklist data", () => {
+  const html = render(runningDetail(), {
+    roundId: "submission-1",
+    onSetPersonaDirective: () => {},
+    onRemovePersonaDirective: () => {},
+  });
+
+  assert.equal(hasTooltip(html, "Show Quality reviewer in the review worklist"), true);
+  assert.equal(hasTooltip(html, "Show Security reviewer in the review worklist"), true);
+  // Critical feedback remains in the existing actions menu after the settled tile's primary
+  // click becomes the evidence-navigation affordance.
+  assert.match(html, /Actions for Quality reviewer/);
+  assert.match(html, /Add critical feedback/);
   assertNoGraphIds(html);
 });
 
@@ -2385,6 +2558,20 @@ function changeItem(key: string, nodeId: string): WorklistItem {
 
 const emptySegments = (): Record<WorklistSegment, WorklistItem[]> =>
   ({ blocking: [], passed: [], archive: [] });
+
+test("a pipeline node selects its first row in worklist priority order", () => {
+  const segments = emptySegments();
+  segments.passed = [changeItem(`${REVIEWER_NODE}\n\npassed`, REVIEWER_NODE)];
+  segments.blocking = [
+    changeItem(`${REVIEWER_NODE}\n\nfirst blocker`, REVIEWER_NODE),
+    changeItem(`${REVIEWER_NODE}\n\nsecond blocker`, REVIEWER_NODE),
+  ];
+
+  const selected = worklistSelectionForNode(REVIEWER_NODE, segments);
+  assert.equal(selected?.segment, "blocking");
+  assert.equal(selected?.item.key, `change:${REVIEWER_NODE}\n\nfirst blocker`);
+  assert.equal(worklistSelectionForNode("missing-node", segments), null);
+});
 
 test("a selected reviewer that reports a failing verdict is followed to the change it raised", () => {
   const waiting = pendingAttempt("attempt-slow");

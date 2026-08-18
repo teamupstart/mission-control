@@ -2,7 +2,7 @@
 //
 // A GUI app launched from Finder/Dock inherits a minimal PATH
 // (/usr/bin:/bin:/usr/sbin:/sbin). `git` and `ps` are there, but `tmux`,
-// `wezterm` and `treehouse` usually live in ~/.local/bin,
+// `wezterm` and other terminal helpers often live in ~/.local/bin,
 // /opt/homebrew/bin, or a Go bin dir - so without this the daemon's discovery
 // and dispatch would silently fail. We ask the login shell for its PATH (the
 // same trick VS Code's `fix-path` uses) and union it with the well-known tool

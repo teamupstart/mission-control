@@ -72,7 +72,7 @@ test("every step names itself, its question and the draft keys it writes", () =>
     Object.fromEntries(GUIDED_STEPS.map((step) => [step.id, [...step.writes]])),
     {
       repo: ["repoRoot"],
-      kind: ["kind", "workflowId"],
+      kind: ["kind", "workflowId", "dependencies"],
       harness: ["agent", "model", "effort"],
       afterWork: ["workflowId"],
     },
@@ -221,7 +221,13 @@ test("each kind's mnemonic is a letter of its own name", () => {
   // And the specific assignments, because "a letter of its own name" does not pick between
   // `p` and `s` for ship. `plan` takes `l` by elimination: `p` is ship's, `a` is in all
   // three words, and `n` reads as "no".
-  assert.deepEqual(GUIDED_KIND_KEYS, { ship: "p", scout: "t", plan: "l" });
+  assert.deepEqual(GUIDED_KIND_KEYS, {
+    ship: "p",
+    scout: "t",
+    plan: "l",
+    pipeline: "e",
+    chat: "c",
+  });
 });
 
 test("a fetched option takes the first letter of its name that is still free", () => {

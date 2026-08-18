@@ -10,6 +10,12 @@ import type {
   WorkflowSummary,
 } from "@shared/workflow.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
+import {
+  FOREMAN_PROFILE_DESCRIPTION,
+  FOREMAN_PROFILE_ID,
+  foremanProfileFact,
+  type ForemanProfileSummary,
+} from "../lib/foreman-profile.ts";
 import type { LibrarySurface } from "../workflows/useWorkflowRoute.ts";
 import {
   actionCards,
@@ -66,6 +72,17 @@ function ShelfCard({
       </button>
     </Tooltip>
   );
+}
+
+/** The fixed System profile is projected beside Personas, never inserted into their catalog. */
+export function foremanProfileCard(summary: ForemanProfileSummary): LibraryCard {
+  return {
+    id: FOREMAN_PROFILE_ID,
+    name: "Foreman",
+    description: FOREMAN_PROFILE_DESCRIPTION,
+    tags: [{ label: "system", tone: "system" }],
+    fact: foremanProfileFact(summary),
+  };
 }
 
 function Shelf({
@@ -148,6 +165,7 @@ function Shelf({
 export function LibraryPage({
   workflowSummaries = [],
   personas = [],
+  foremanSummary = { runner: null, models: null },
   personaUpstream,
   sessionActions = [],
   workflowCommands = [],
@@ -166,6 +184,8 @@ export function LibraryPage({
 }: {
   workflowSummaries?: WorkflowSummary[];
   personas?: PersonaView[];
+  /** App-owned Foreman execution summary for the fixed System card. */
+  foremanSummary?: ForemanProfileSummary;
   /** What the last upstream check found for each imported Persona; badges the reviewer cards. */
   personaUpstream?: ReadonlyMap<string, PersonaUpstreamState>;
   sessionActions?: SessionAction[];
@@ -200,7 +220,7 @@ export function LibraryPage({
   onOpenTaskSources: () => void;
 }): React.JSX.Element {
   const workflows = workflowCards(workflowSummaries);
-  const reviewers = personaCards(personas, personaUpstream);
+  const reviewers = [foremanProfileCard(foremanSummary), ...personaCards(personas, personaUpstream)];
   const actions = actionCards(sessionActions);
   const strategies = ensembleStrategyCards();
   const missions = missionCards(schedules);
@@ -288,7 +308,9 @@ export function LibraryPage({
         crossLinkHint="Watch the runs where these reviewers return verdicts"
         onCrossLink={onOpenRuns}
         onOpenCard={(card) => onOpenAsset("personas", card.id)}
-        openHint={(card) => `Open ${card.name} in the Persona editor`}
+        openHint={(card) => card.id === FOREMAN_PROFILE_ID
+          ? "Edit Foreman standing guidance; unavailable to workflows or ensembles"
+          : `Open ${card.name} in the Persona editor`}
         newCard={{
           label: "＋ New Persona",
           sub: "or import .md",

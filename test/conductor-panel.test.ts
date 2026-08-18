@@ -4,7 +4,8 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import { ConductorPanel, detectionReading, offeredRepos, repoHealthLine } from "../src/web/components/ConductorPanel.tsx";
-import type { ConductorState } from "../src/web/useConductor.ts";
+import { PipelineDispatchConstraint } from "../src/web/components/DispatchModal.tsx";
+import { configWithObservation, type ConductorState } from "../src/web/useConductor.ts";
 import type { PipelineProbe, PipelinesView } from "../src/shared/pipeline.ts";
 
 // What is at stake: this panel is the CONSENT surface, and consent has to be legible in
@@ -23,7 +24,24 @@ import type { PipelineProbe, PipelinesView } from "../src/shared/pipeline.ts";
 
 /** A state with no answer yet - what a static render is, and what a first paint is. */
 function unanswered(): ConductorState {
-  return { view: null, save: async () => true, recheck: async () => {}, checking: false, error: null };
+  return {
+    view: null,
+    workspaceRepos: [],
+    save: async () => true,
+    registerAndObserve: async () => true,
+    enableObservation: async () => true,
+    recheck: async () => {},
+    checking: false,
+    setup: null,
+    setupNotice: null,
+    installers: null,
+    installersLoading: false,
+    installerError: null,
+    openingInstaller: null,
+    installerNotice: null,
+    openInstaller: async () => true,
+    error: null,
+  };
 }
 
 function probe(over: Partial<PipelineProbe> = {}): PipelineProbe {
@@ -44,14 +62,25 @@ function probe(over: Partial<PipelineProbe> = {}): PipelineProbe {
 function answered(over: Partial<PipelinesView> = {}): ConductorState {
   return {
     view: {
-      config: { enabled: false, repos: [] },
+      config: { enabled: false, launchRuntime: "claude-sdk", foremanMechanicalTriage: false, repos: [] },
       probes: [probe()],
       status: [],
       ...over,
     },
+    workspaceRepos: ["/Users/someone/workspace/demo"],
     save: async () => true,
+    registerAndObserve: async () => true,
+    enableObservation: async () => true,
     recheck: async () => {},
     checking: false,
+    setup: null,
+    setupNotice: null,
+    installers: null,
+    installersLoading: false,
+    installerError: null,
+    openingInstaller: null,
+    installerNotice: null,
+    openInstaller: async () => true,
     error: null,
   };
 }
@@ -91,26 +120,66 @@ test("the panel ships off, and says which of the three reasons applies", () => {
   const toggles = off.match(/<input[^>]*type="checkbox"[^>]*>/g) ?? [];
   assert.ok(toggles.length > 0, "the panel has a master switch");
   assert.doesNotMatch(toggles[0]!, /checked/, "the master switch ships off");
+  assert.match(off, /Foreman does not act on pipeline halts/);
 
   // Master on, nothing consented to: a different sentence, because the next move differs.
   const armedButEmpty = render(
-    answered({ config: { enabled: true, repos: [] } }),
+    answered({ config: { enabled: true, launchRuntime: "claude-sdk", foremanMechanicalTriage: false, repos: [] } }),
   );
   assert.match(armedButEmpty, /On, but no repository is switched on/);
 
   // Master on, one repository consented to.
   const live = render(
     answered({
-      config: { enabled: true, repos: [{ provider: "ai-conductor", repoRoot: "/w/demo", enabled: true }] },
+      config: { enabled: true, launchRuntime: "claude-sdk", foremanMechanicalTriage: false, repos: [{ provider: "ai-conductor", repoRoot: "/w/demo", enabled: true }] },
     }),
   );
   assert.match(live, /On - reading 1 repository/);
 });
 
+test("Launch runtime renders SDK as the default and Terminal as an explicit stored choice", () => {
+  const sdk = render(answered());
+  const sdkRadio = (sdk.match(/<input[^>]*name="conductor-launch-runtime"[^>]*value="claude-sdk"[^>]*>/) ?? [])[0] ?? "";
+  assert.match(sdkRadio, /checked/);
+  assert.match(sdk, /Claude Agent SDK - the shipped default, with no terminal fallback/);
+  assert.match(sdk, /background build daemon keeps its own tmux supervision/);
+
+  const terminal = render(
+    answered({
+      config: {
+        enabled: false,
+        launchRuntime: "terminal",
+        foremanMechanicalTriage: false,
+        repos: [],
+      },
+    }),
+  );
+  const terminalRadio = (terminal.match(/<input[^>]*name="conductor-launch-runtime"[^>]*value="terminal"[^>]*>/) ?? [])[0] ?? "";
+  assert.match(terminalRadio, /checked/);
+  assert.match(terminal, /Terminal - the explicit compatibility host/);
+});
+
+test("pipeline dispatch renders the selected host contract without offering a fallback", () => {
+  const sdk = renderToStaticMarkup(
+    createElement(PipelineDispatchConstraint, { runtime: "claude-sdk" }),
+  );
+  assert.match(sdk, /managed Claude host with \/engineer &lt;idea&gt; as turn one/);
+  assert.match(sdk, /provider projection owns task completion/);
+  assert.match(sdk, /background build daemon keeps its own tmux supervision/);
+  assert.doesNotMatch(sdk, /fallback/i);
+
+  const terminal = renderToStaticMarkup(
+    createElement(PipelineDispatchConstraint, { runtime: "terminal" }),
+  );
+  assert.match(terminal, /conduct-ts engineer --idea in a real terminal with live stdin/);
+  assert.match(terminal, /inherited Claude nesting marker/);
+  assert.match(terminal, /provider projection owns task completion/);
+});
+
 test("the panel says the integration never writes, which the word conductor invites you to assume", () => {
   const html = render(answered());
-  assert.match(html, /never writes them/);
-  assert.match(html, /never starts or stops a pipeline/);
+  assert.match(html, /never edits Conductor/);
+  assert.match(html, /through Conductor&#x27;s own CLI/);
 });
 
 test("detection names the engine, its version and where the registry was looked for", () => {
@@ -140,13 +209,76 @@ test("an absent engine is reported once, in its own words, and not also as an er
     }),
   );
   // React escapes the apostrophe, so the assertion is on the clause either side of it.
-  assert.match(html, /Not installed - conduct-ts is not on this daemon/);
+  assert.match(html, /Setup needed - conduct-ts is not on this daemon/);
   assert.equal(
     (html.match(/is not on this daemon/g) ?? []).length,
     1,
     "the same sentence must not appear twice",
   );
   assert.doesNotMatch(html, /class="settings-error"/);
+});
+
+test("a missing engine with no verified checkout gives copyable manual instructions", () => {
+  const state = answered({
+    probes: [probe({ found: false, binPath: null, version: null, projects: [] })],
+  });
+  state.installers = {
+    provider: "ai-conductor",
+    supported: true,
+    detail: "No verified local installer checkout was found in the workspace catalog.",
+    candidates: [],
+  };
+  const html = render(state);
+  assert.match(html, /Install Conductor once on this machine/);
+  assert.match(html, /git clone https:\/\/github\.com\/mancej\/ai-conductor\.git/);
+  assert.match(html, /cd ai-conductor &amp;&amp; \.\/bin\/install/);
+  assert.match(html, /Copy clone/);
+  assert.match(html, /Copy install/);
+  assert.match(html, /I installed it, check again/);
+});
+
+test("a verified local main checkout is offered for review before any installer action", () => {
+  const state = answered({
+    probes: [probe({ found: false, binPath: null, version: null, projects: [] })],
+  });
+  state.installers = {
+    provider: "ai-conductor",
+    supported: true,
+    detail: "1 verified local installer checkout found.",
+    candidates: [
+      {
+        provider: "ai-conductor",
+        checkout: "/Users/someone/workspace/ai-conductor",
+        remote: "github.com/mancej/ai-conductor",
+        version: "0.101.1",
+        changes: [
+          "build-checkout",
+          "link-local-bin",
+          "link-agent-skills",
+          "update-claude-settings",
+          "write-user-config",
+          "optional-global-tools",
+        ],
+      },
+    ],
+  };
+  const html = render(state);
+  assert.match(html, /Verified upstream main checkout/);
+  assert.match(html, /github\.com\/mancej\/ai-conductor/);
+  assert.match(html, /\/Users\/someone\/workspace\/ai-conductor/);
+  assert.match(html, /Review installer/);
+  assert.doesNotMatch(html, />Open installer</, "launch requires the second confirmation click");
+});
+
+test("installer launch outcomes say only what the hosted terminal established", () => {
+  const state = answered();
+  state.installerNotice = {
+    tone: "ok",
+    detail: "Installer terminal opened. Finish the interactive installer there, then check again.",
+  };
+  const html = render(state);
+  assert.match(html, /Installer terminal opened/);
+  assert.doesNotMatch(html, /installation complete|Conductor installed/i);
 });
 
 test("an engine that WAS found and then could not answer prints why", () => {
@@ -169,8 +301,12 @@ test("a version this build could not derive says so rather than inventing one", 
 test("a repository row carries its path, its switch and its health", () => {
   const html = render(
     answered({
-      config: { enabled: true, repos: [{ provider: "ai-conductor", repoRoot: "/w/demo", enabled: true }] },
-      probes: [probe({ projects: [] })],
+      config: { enabled: true, launchRuntime: "claude-sdk", foremanMechanicalTriage: false, repos: [{ provider: "ai-conductor", repoRoot: "/w/demo", enabled: true }] },
+      probes: [
+        probe({
+          projects: [{ name: "demo", path: "/w/demo", remote: null, status: "registered" }],
+        }),
+      ],
       status: [
         {
           provider: "ai-conductor",
@@ -269,26 +405,53 @@ test("the health line says how observation is arriving, in all three states", ()
 });
 
 test("the panel names where the plugin is installed, without offering a control for it", () => {
-  // The phase's constraint: no new UI beyond the indicator. Installing the plugin is a file
-  // copy into another program's directory - there is nothing here that could do it, so the
-  // panel says where rather than pretending to a switch.
   const html = render(answered({}));
   assert.match(html, /~\/\.ai-conductor\/plugins\/mission-control\//);
   assert.match(html, /integrations\/ai-conductor\/mission-control\//);
-  // And it says the thing that keeps an operator from reading this as a requirement.
   assert.match(html, /needs nothing installed/);
 });
 
 test("a repository the engine has forgotten stays listed while its consent stands", () => {
   // Otherwise the consent would be in force with nothing on screen that could withdraw it.
   const repos = offeredRepos(
-    { enabled: true, repos: [{ provider: "ai-conductor", repoRoot: "/w/de-registered", enabled: true }] },
+    ["/w/workspace-only", "/w/demo"],
+    { enabled: true, launchRuntime: "claude-sdk", foremanMechanicalTriage: false, repos: [{ provider: "ai-conductor", repoRoot: "/w/de-registered", enabled: true }] },
     [probe({ projects: [{ name: "demo", path: "/w/demo", remote: null, status: "registered" }] })],
   );
-  assert.deepEqual(repos.map((r) => r.repoRoot), ["/w/de-registered", "/w/demo"]);
+  assert.deepEqual(repos.map((r) => r.repoRoot), ["/w/de-registered", "/w/demo", "/w/workspace-only"]);
   assert.equal(repos.find((r) => r.repoRoot === "/w/de-registered")?.enabled, true);
+  assert.equal(repos.find((r) => r.repoRoot === "/w/de-registered")?.registered, false);
   // A repository the engine reports and nobody has consented to is offered, and OFF.
   assert.equal(repos.find((r) => r.repoRoot === "/w/demo")?.enabled, false);
+  assert.equal(repos.find((r) => r.repoRoot === "/w/demo")?.registered, true);
+  assert.equal(repos.find((r) => r.repoRoot === "/w/workspace-only")?.workspace, true);
+});
+
+test("the combined action composes observation onto the latest whole config", () => {
+  assert.deepEqual(
+    configWithObservation(
+      {
+        enabled: false,
+        launchRuntime: "terminal",
+        foremanMechanicalTriage: true,
+        repos: [
+          { provider: "ai-conductor", repoRoot: "/w/other", enabled: false },
+          { provider: "ai-conductor", repoRoot: "/w/demo", enabled: false },
+        ],
+      },
+      "ai-conductor",
+      "/w/demo",
+    ),
+    {
+      enabled: true,
+      launchRuntime: "terminal",
+      foremanMechanicalTriage: true,
+      repos: [
+        { provider: "ai-conductor", repoRoot: "/w/other", enabled: false },
+        { provider: "ai-conductor", repoRoot: "/w/demo", enabled: true },
+      ],
+    },
+  );
 });
 
 test("detection before the first read is unknown, not absent", () => {

@@ -7,7 +7,7 @@
 //
 // The paths it bakes are absolute and must outlive the install: the node binary is
 // a stable PATH alias rather than the versioned dir `process.execPath` resolves to,
-// and an install from a transient treehouse pool checkout is refused outright
+// and an install from any transient pooled checkout is refused outright
 // (`--force` overrides). Both preflights live in install-checks.mjs, with the
 // outage that motivated them.
 //
@@ -102,21 +102,22 @@ function statuslineCommand() {
 }
 
 // --- refuse to bake a doomed path -------------------------------------------
-// A treehouse pool slot is a transient worktree: the daemon leases, returns, and
+// A pool slot is a transient worktree: its allocator leases, returns, and
 // reclaims them. An install run from one wires every Claude session on the machine
 // to a script the pool will delete, and when it does, every hook event everywhere
 // fails with MODULE_NOT_FOUND and nothing points back at the install that did it.
 // Uninstall is exempt on purpose - cleaning up FROM the doomed checkout is exactly
 // what someone abandoning it should be able to run.
 if (!uninstall && !force) {
-  const poolRoot = transientCheckoutRoot(dirname(fileURLToPath(import.meta.url)));
-  if (poolRoot) {
+  const transient = transientCheckoutRoot(dirname(fileURLToPath(import.meta.url)));
+  if (transient) {
     console.error(
       [
-        `Refusing to install: this checkout lives inside a treehouse worktree pool.`,
+        `Refusing to install: this checkout lives inside a transient pooled checkout.`,
         ``,
         `  checkout: ${dirname(dirname(fileURLToPath(import.meta.url)))}`,
-        `  pool:     ${poolRoot}`,
+        `  pool:     ${transient.root}`,
+        `  detected: ${transient.reason}`,
         ``,
         `Pool slots are reclaimed; when this one goes, every hook baked into`,
         `~/.claude/settings.json points at a script that no longer exists, and every`,

@@ -97,10 +97,16 @@ test("finds the pool root above a slot checkout", () => {
     const checkout = join(pool, "3", "repo", "hooks");
     mkdirSync(checkout, { recursive: true });
     writeFileSync(join(pool, "treehouse-state.json"), "{}\n");
-    assert.equal(transientCheckoutRoot(checkout), pool);
+    assert.deepEqual(transientCheckoutRoot(checkout), {
+      root: pool,
+      reason: "legacy Treehouse worktree pool",
+    });
     // The marker beside you counts too - installing from the pool root itself is
     // no more durable than installing from a slot.
-    assert.equal(transientCheckoutRoot(pool), pool);
+    assert.deepEqual(transientCheckoutRoot(pool), {
+      root: pool,
+      reason: "legacy Treehouse worktree pool",
+    });
   });
 });
 

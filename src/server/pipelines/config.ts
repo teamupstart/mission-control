@@ -1,5 +1,8 @@
-import { PipelinesConfigSchema, type PipelinesConfig } from "@shared/pipeline.ts";
-import type { PipelinesConfigPatch } from "@shared/protocol.ts";
+import {
+  PipelinesConfigSchema,
+  type PipelinesConfig,
+  type PipelinesConfigInput,
+} from "@shared/pipeline.ts";
 import { getAppConfig, setAppConfig } from "../db.ts";
 
 // Which repositories an operator has consented to, and how. A schema-validated blob over
@@ -15,7 +18,7 @@ export function getPipelinesConfig(): PipelinesConfig {
 }
 
 /** Replace it, persist, and return the result. */
-export function setPipelinesConfig(patch: PipelinesConfigPatch): PipelinesConfig {
+export function setPipelinesConfig(patch: PipelinesConfigInput): PipelinesConfig {
   const next = PipelinesConfigSchema.parse(patch);
   setAppConfig(CONFIG_KEY, next);
   return next;

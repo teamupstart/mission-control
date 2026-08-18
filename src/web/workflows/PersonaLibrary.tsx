@@ -5,12 +5,16 @@ import type {
   PersonaDefaultsView,
   PersonaUpstreamState,
   PersonaView,
+  WorkflowRunSummary,
+  WorkflowSummary,
 } from "@shared/workflow.ts";
 import { PersonaEditor } from "./PersonaEditor.tsx";
+import { ForemanProfileEditor } from "./ForemanProfileEditor.tsx";
 import { Tooltip } from "../components/Tooltip.tsx";
 import { LibraryBackRow } from "../library/LibraryBackRow.tsx";
 import { LibraryRailGroup, LibraryRailRow } from "../library/LibraryRail.tsx";
 import { personaRoutingLabel } from "../library/library-model.ts";
+import { LibraryAssetUsage } from "../library/LibraryAssetUsage.tsx";
 import { useLibraryEscape } from "../library/useLibraryEscape.ts";
 import type { PersonaDraftSeed } from "./PersonaEditor.tsx";
 import {
@@ -23,6 +27,11 @@ import {
   WorkflowConfirmModal,
   type WorkflowConfirmRequest,
 } from "./WorkflowConfirmModal.tsx";
+import {
+  FOREMAN_PROFILE_ID,
+  foremanProfileFact,
+  type ForemanProfileSummary,
+} from "../lib/foreman-profile.ts";
 
 const EMPTY_SEED: PersonaDraftSeed = {
   name: "",
@@ -120,10 +129,18 @@ export function filterPersonas(
 
 export function PersonaLibrary({
   personas,
+  workflowSummaries = [],
+  workflowRuns = [],
+  hasSnapshot = false,
   providers,
   defaults,
   upstream,
   onCheckUpstream,
+  foremanSummary,
+  onOpenForemanModels,
+  onOpenForemanPosture,
+  onOpenForemanTrust,
+  onOpenForemanControl,
   initialPersonaId = null,
   startNew = false,
   isOverlayOpen,
@@ -132,6 +149,10 @@ export function PersonaLibrary({
   onSelectionChange,
 }: {
   personas: PersonaView[];
+  workflowSummaries?: WorkflowSummary[];
+  workflowRuns?: WorkflowRunSummary[];
+  /** Whether the workflow reference snapshot has landed. */
+  hasSnapshot?: boolean;
   providers: readonly LlmProviderView[];
   defaults: PersonaDefaultsView | null;
   /**
@@ -141,6 +162,11 @@ export function PersonaLibrary({
   upstream?: ReadonlyMap<string, PersonaUpstreamState>;
   /** Ask for a fresh check. Called by the affordance, and after an import or a re-import. */
   onCheckUpstream?: () => void;
+  foremanSummary?: ForemanProfileSummary;
+  onOpenForemanModels?: () => void;
+  onOpenForemanPosture?: () => void;
+  onOpenForemanTrust?: () => void;
+  onOpenForemanControl?: () => void;
   /**
    * The Persona the ROUTE asked for, read once as this surface mounts.
    *
@@ -210,6 +236,7 @@ export function PersonaLibrary({
       (streamedPersona === null || localPersona.revision > streamedPersona.revision)
     ? localPersona
     : streamedPersona;
+  const foremanSelected = selectedId === FOREMAN_PROFILE_ID;
 
   // Escape leaves the guidance editor, then leaves the page - the same ladder the back row
   // above the rail is the visible half of.
@@ -277,6 +304,18 @@ export function PersonaLibrary({
       editorGeneration.current += 1;
       setSeed(null);
       setSelectedId(id);
+      setEditorKey((key) => key + 1);
+      setDirty(false);
+      setError(null);
+    });
+  }
+
+  function selectForeman(): void {
+    guardDiscard("Opening Foreman", () => {
+      editorGeneration.current += 1;
+      setSeed(null);
+      setLocalPersona(null);
+      setSelectedId(FOREMAN_PROFILE_ID);
       setEditorKey((key) => key + 1);
       setDirty(false);
       setError(null);
@@ -432,13 +471,24 @@ export function PersonaLibrary({
           />
         </label>
         <div className="persona-list">
+          <LibraryRailGroup label="System" count={1}>
+            <LibraryRailRow
+              className="persona-list-item foreman-system-row"
+              name="Foreman"
+              detail={foremanProfileFact(foremanSummary ?? { runner: null, models: null })}
+              tags={[{ label: "System", tone: "system" }]}
+              selected={foremanSelected}
+              tooltip="Open Foreman's System profile - not available to workflows or ensembles"
+              onSelect={selectForeman}
+            />
+          </LibraryRailGroup>
           {listed.length === 0 && (
             <p className="persona-list-empty">
               {search.trim()
                 ? "No Personas match this search."
                 : personaState === "archived"
                   ? "No archived Personas."
-                  : "No saved Personas yet."}
+                  : "No saved workflow Personas yet."}
             </p>
           )}
           {groups.builtin.length > 0 && (
@@ -531,13 +581,25 @@ export function PersonaLibrary({
 
       <div className="persona-workspace">
         {error && <p className="persona-error" role="alert">{error}</p>}
-        {!selected && !seed && (
+        {!foremanSelected && !selected && !seed && (
           <section className="workflow-empty persona-empty">
             <h3>Choose a Persona</h3>
             <p>Select one from the library or create a new Markdown review role.</p>
           </section>
         )}
-        {(selected || seed) && (
+        {foremanSelected && (
+          <ForemanProfileEditor
+            key={editorKey}
+            summary={foremanSummary ?? { runner: null, models: null }}
+            isOverlayOpen={isOverlayOpen}
+            onDirtyChange={setDirty}
+            onOpenModels={onOpenForemanModels ?? (() => {})}
+            onOpenPosture={onOpenForemanPosture ?? (() => {})}
+            onOpenTrust={onOpenForemanTrust ?? (() => {})}
+            onOpenForemanControl={onOpenForemanControl ?? (() => {})}
+          />
+        )}
+        {!foremanSelected && (selected || seed) && (
           <PersonaEditor
             key={editorKey}
             persona={selected}
@@ -596,6 +658,15 @@ export function PersonaLibrary({
                 onConfirm: () => void archive(persona),
               });
             }}
+            footer={selected ? (
+              <LibraryAssetUsage
+                asset={{ kind: "persona", id: selected.id }}
+                assetLabel="Persona"
+                workflows={workflowSummaries}
+                runs={workflowRuns}
+                hasSnapshot={hasSnapshot}
+              />
+            ) : undefined}
           />
         )}
       </div>

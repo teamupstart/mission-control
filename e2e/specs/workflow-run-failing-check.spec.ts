@@ -1,5 +1,3 @@
-import { existsSync } from "node:fs";
-import { delimiter, join } from "node:path";
 import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
@@ -21,37 +19,14 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
  * No model tokens: the Persona is answered by the fake agent, and the Command is `sh`.
  */
 
-const NODE = { session: "session-node", check: "check-node", persona: "persona-node", end: "end-node" };
+const NODE = {
+  session: "session-node",
+  check: "check-node",
+  persona: "persona-node",
+  join: "join-node",
+  end: "end-node",
+};
 const REVIEWER = "E2E agreeable reviewer";
-
-/*
- * The daemon runs its checks in a git worktree, and which provider cuts that worktree is chosen
- * from whether a `treehouse` binary is on PATH - deliberately, without consulting whether the
- * repository is a treehouse one, and with no environment override to aim it (`TREEHOUSE_BIN` is
- * a constant). This fixture's repo is a plain temp checkout with no pool behind it, so on a
- * machine that has treehouse installed the lease would be cut by a provider that cannot serve
- * it, and the check would come back `infrastructure` rather than `failed`. PATH is the only
- * lever, so dropping the directories that hold that binary makes the choice here what it
- * already is on CI, where treehouse is simply absent.
- *
- * DROPPING A DIRECTORY TAKES EVERYTHING IN IT, which is the part worth bounding. Installed
- * through Homebrew or cargo, `treehouse` shares a directory with `git` and `node` - and a
- * daemon that cannot spawn `git` fails at cutting a worktree at all, nowhere near the gate this
- * spec is about, in a way that reads as a product bug. So the drop is refused when it would
- * take an essential tool with it, and the spec skips instead: an honest skip naming the reason
- * beats an environment-dependent failure about something else entirely.
- */
-const PATH_ENTRIES = (process.env.PATH ?? "").split(delimiter).filter((dir) => dir !== "");
-const provides = (dir: string, tool: string): boolean => existsSync(join(dir, tool));
-const TREEHOUSE_DIRS = PATH_ENTRIES.filter((dir) => provides(dir, "treehouse"));
-const KEPT = PATH_ENTRIES.filter((dir) => !TREEHOUSE_DIRS.includes(dir));
-/** Tools the daemon still has to reach afterwards: git for the worktree, the rest for the run. */
-const STRANDED = ["git", "node", "sh", "env"]
-  .filter((tool) =>
-    PATH_ENTRIES.some((dir) => provides(dir, tool)) && !KEPT.some((dir) => provides(dir, tool)));
-const STEERABLE = STRANDED.length === 0;
-
-test.use({ daemonEnv: STEERABLE ? { PATH: KEPT.join(delimiter) } : {} });
 
 async function api<T>(daemon: DaemonHandle, path: string, body?: unknown, method?: string): Promise<T> {
   const response = await fetch(`${daemon.baseURL}${path}`, {
@@ -125,15 +100,18 @@ async function seedFailingCheckRun(page: Page, daemon: DaemonHandle): Promise<st
         { id: NODE.session, kind: "session", position: { x: 0, y: 0 } },
         { id: NODE.check, kind: "check", slot: "test", position: { x: 220, y: 0 } },
         { id: NODE.persona, kind: "persona", personaId: persona.id, position: { x: 220, y: 140 } },
-        { id: NODE.end, kind: "end", outcome: "Approved", position: { x: 440, y: 70 } },
+        { id: NODE.join, kind: "all_pass", position: { x: 440, y: 70 } },
+        { id: NODE.end, kind: "end", outcome: "Approved", position: { x: 660, y: 70 } },
       ],
       edges: [
         { id: "e-check", source: NODE.session, sourcePort: "submitted", target: NODE.check, targetPort: "activate" },
         { id: "e-persona", source: NODE.session, sourcePort: "submitted", target: NODE.persona, targetPort: "activate" },
-        { id: "e-check-pass", source: NODE.check, sourcePort: "pass", target: NODE.end, targetPort: "terminal" },
-        { id: "e-check-fail", source: NODE.check, sourcePort: "fail", target: NODE.session, targetPort: "return_for_changes" },
-        { id: "e-persona-pass", source: NODE.persona, sourcePort: "pass", target: NODE.end, targetPort: "terminal" },
-        { id: "e-persona-fail", source: NODE.persona, sourcePort: "fail", target: NODE.session, targetPort: "return_for_changes" },
+        { id: "e-check-pass", source: NODE.check, sourcePort: "pass", target: NODE.join, targetPort: "result" },
+        { id: "e-check-fail", source: NODE.check, sourcePort: "fail", target: NODE.join, targetPort: "result" },
+        { id: "e-persona-pass", source: NODE.persona, sourcePort: "pass", target: NODE.join, targetPort: "result" },
+        { id: "e-persona-fail", source: NODE.persona, sourcePort: "fail", target: NODE.join, targetPort: "result" },
+        { id: "e-join-pass", source: NODE.join, sourcePort: "pass", target: NODE.end, targetPort: "terminal" },
+        { id: "e-join-fail", source: NODE.join, sourcePort: "fail", target: NODE.session, targetPort: "return_for_changes" },
       ],
     },
   });
@@ -185,12 +163,6 @@ test("a failed command gate is the blocker, and keeps its exit code and output",
   dashboard,
   daemon,
 }) => {
-  test.skip(
-    !STEERABLE,
-    `treehouse shares a PATH directory with ${STRANDED.join(", ")} on this machine, so steering`
-    + " worktree-provider selection away from it would take the daemon's own tools with it."
-    + " Runs on CI, where treehouse is absent.",
-  );
   const runId = await seedFailingCheckRun(dashboard, daemon);
   await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
   const worklist = worklistOf(dashboard);
@@ -234,4 +206,15 @@ test("a failed command gate is the blocker, and keeps its exit code and output",
   await segments.getByRole("button", { name: "Passed 1" }).click();
   await expect(worklist.locator("button.wf-run-worklist-row")).toHaveCount(1);
   await expect(worklist).toContainText(REVIEWER);
+
+  // The failed Command tile returns the rail to Blocking and selects the exact output that
+  // explains the red stage, even after the reader moved to another segment.
+  const checkTile = dashboard.locator(".wf-pipeline-strip li.wf-pipeline-reviewer.is-check");
+  await checkTile.getByRole("button", { name: /^Command test Failed/ }).click();
+  await expect(segments.getByRole("button", { name: "Blocking 1" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await expect(row).toHaveAttribute("aria-current", "true");
+  await expect(card.locator("pre.wf-run-check-output")).toContainText("E2E CHECK BOOM");
 });

@@ -89,7 +89,12 @@ const ALL_OFF: SettingsStatus = {
   taskSources: { failing: 0 },
   // No engine on this test's PATH and nothing configured, which is what an ordinary
   // installation looks like - and the state in which the Conductor rail row does not exist.
-  pipelines: { present: false, observing: 0 },
+  pipelines: {
+    present: false,
+    observing: 0,
+    observedRepoKeys: [],
+    launchRuntime: "claude-sdk",
+  },
 };
 
 // ---- compose ----
@@ -164,9 +169,8 @@ test("the suppression compares every field, so no change can be dropped in silen
   // The other half of the rule above, and the one that fails silently. A field missing from
   // the comparison is not compared loosely - it is a field whose change never reaches a
   // browser at all, because the tuple that moved only there compares equal and no frame is
-  // sent. `pipelines` shipped outside it, which is how "installing the engine makes the
-  // Conductor row appear while you are still looking for it" came to depend on some
-  // unrelated setting moving next.
+  // sent. This includes exact observed repository keys, because A -> B at the same count
+  // still has to invalidate an open Dispatch modal.
   //
   // Walked over the composed tuple rather than over a hand-written list, so a field added to
   // `SettingsStatus` is in this test the moment it exists.
@@ -184,6 +188,20 @@ test("the suppression compares every field, so no change can be dropped in silen
     "pipelines.observing": {
       ...base,
       pipelines: { ...base.pipelines, observing: base.pipelines.observing + 1 },
+    },
+    "pipelines.launchRuntime": {
+      ...base,
+      pipelines: {
+        ...base.pipelines,
+        launchRuntime: base.pipelines.launchRuntime === "terminal" ? "claude-sdk" : "terminal",
+      },
+    },
+    "pipelines.observedRepoKeys": {
+      ...base,
+      pipelines: {
+        ...base.pipelines,
+        observedRepoKeys: [...(base.pipelines.observedRepoKeys ?? []), "ai-conductor::/moved"],
+      },
     },
   };
   // Every leaf of the tuple has a case above. A new field with none is a field this test

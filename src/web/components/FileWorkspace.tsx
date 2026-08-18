@@ -9,6 +9,7 @@ import {
 } from "../lib/sessionFiles.ts";
 import { FileEditor } from "./FileEditor.tsx";
 import { Markdown } from "./Markdown.tsx";
+import { FILES_DIAGRAM_RENDERERS } from "./markdownDiagramRegistry.tsx";
 import { OpenInMenu } from "./OpenInMenu.tsx";
 import { api } from "../lib/api.ts";
 import { COPY_FEEDBACK_LABEL, useCopyFeedback } from "../lib/clipboard.ts";
@@ -355,7 +356,12 @@ export function FileWorkspace({
           )}
           {buffer?.document.text != null && buffer.document.kind === "markdown" && mode === "preview" && (
             <article className="file-markdown-preview markdown">
-              <Markdown>{previewText}</Markdown>
+              <Markdown
+                diagramRenderers={FILES_DIAGRAM_RENDERERS}
+                diagramDocumentKey={buffer.document.path}
+              >
+                {previewText}
+              </Markdown>
             </article>
           )}
           {buffer?.document.text != null && (!previewable || mode === "editor") && !comparing && (

@@ -103,7 +103,7 @@ and get your decision back.
 ## Quick start
 
 ```sh
-make init          # one-time bootstrap (deps, build, hooks, treehouse)
+make init          # one-time bootstrap (deps, build, hooks)
 make dev           # daemon + Vite, open http://127.0.0.1:5173
 make db            # inspect the live SQLite database in a read-only shell
 ```
@@ -113,9 +113,8 @@ with both SQLite read-only mode and `PRAGMA query_only` enabled. See the
 [SQLite database field guide](sqlite-database.html) for the table catalog, storage
 conventions, query examples, and offline backup guidance.
 
-`make init` is idempotent - it installs dependencies, builds, wires the Claude
-hooks, and makes sure [treehouse](worktrees-and-checks.md#isolated-worktrees-per-session-treehouse) is
-installed. If you'd rather
+`make init` is idempotent: it installs dependencies, builds, and wires the Claude hooks. Native
+worktree pooling is built into the daemon and needs no external allocator. If you'd rather
 do the minimum by hand:
 
 ```sh

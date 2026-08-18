@@ -704,6 +704,7 @@ export function ConsoleDetail({
           <div ref={paneRef} className="detail-pane">
             <WorkQueue
               session={session}
+              workflowBinding={workflowBinding}
               foremanMode={view.foremanMode}
               foremanEnabled={view.foremanEnabled}
               allowlisted={allowlisted}

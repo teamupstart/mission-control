@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Session, SessionQueue, WorkItem } from "@shared/types.ts";
+import type { WorkflowBindingSummary, WorkflowUploadEvidenceLocator } from "@shared/workflow.ts";
 import { WRAPUP_PR, wrapupAskCopy } from "@shared/queue.ts";
 import { workQueueBlockedReason } from "@shared/harness-capabilities.ts";
 import { withAttachments } from "@shared/attachments.ts";
@@ -17,6 +18,12 @@ import {
   type PendingAttachment,
 } from "./ImageDrop.tsx";
 import { Tooltip } from "./Tooltip.tsx";
+import { WorkflowConfirmModal } from "../workflows/WorkflowConfirmModal.tsx";
+import {
+  useWorkflowEvidenceDraft,
+  workflowEvidenceScopes,
+  workflowSessionEvidenceOwner,
+} from "../workflows/WorkflowEvidenceComposer.tsx";
 
 // The work-queue panel inside an expanded card: the batch of work queued for this
 // session, in the order you authored it. Items are drag-reorderable, editable, and
@@ -41,6 +48,7 @@ export function WorkQueue({
   foremanEnabled: boolean;
   /** Whether this session's repo is cleared for live sends (see the panel note). */
   allowlisted: boolean;
+  workflowBinding?: WorkflowBindingSummary | null;
   /** Folded down to just its header - the panel is still open, only its body is away. */
   collapsed?: boolean;
   /** Fold / unfold. Absent = no fold control (the header stays a plain label). */
@@ -169,7 +177,11 @@ export function WorkQueue({
         {head(0)}
         {session.orphanedQueue && <ReattachHint session={session} onDone={() => void refresh()} />}
         {queue && queue.wrapupAskedAt !== null && (
-          <Wrapup sessionId={sessionId} queue={queue} onDone={() => void refresh()} />
+          <Wrapup
+            session={session}
+            queue={queue}
+            onDone={() => void refresh()}
+          />
         )}
         <AddBox
           value={adding}
@@ -622,7 +634,11 @@ export function WorkQueue({
       />
 
       {queue && queue.wrapupAskedAt !== null && (
-        <Wrapup sessionId={sessionId} queue={queue} onDone={() => void refresh()} />
+        <Wrapup
+          session={session}
+          queue={queue}
+          onDone={() => void refresh()}
+        />
       )}
 
       {error && <p className="wq-error">{error}</p>}
@@ -943,11 +959,11 @@ const wrapupSent = new Set<string>();
  * it never launches these itself.
  */
 function Wrapup({
-  sessionId,
+  session,
   queue,
   onDone,
 }: {
-  sessionId: string;
+  session: Session;
   queue: SessionQueue;
   onDone: () => void;
 }): React.JSX.Element | null {
@@ -955,22 +971,33 @@ function Wrapup({
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [dismissed, setDismissed] = useState(false);
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const requestId = useRef<string | null>(null);
+  const sessionId = session.id;
+  const evidenceScopeSet = useMemo(() => workflowEvidenceScopes(session), [session]);
+  const evidenceDraft = useWorkflowEvidenceDraft(
+    workflowSessionEvidenceOwner(sessionId),
+    evidenceScopeSet.defaultScope,
+  );
   /** The instruction reached the pane. One ask, one send - whatever happens after. */
   const sentKey = `${sessionId}:${queue.wrapupAskedAt}`;
   const [sent, setSent] = useState(() => wrapupSent.has(sentKey));
 
   if (dismissed || queue.wrapupAnswer !== null) return null;
 
-  async function runReview(): Promise<void> {
+  async function runReview(evidence: WorkflowUploadEvidenceLocator[] = []): Promise<void> {
     if (busy) return;
     setBusy(true);
     setErr(null);
-    const result = await api.startBuiltinReview(sessionId, crypto.randomUUID());
+    requestId.current ??= crypto.randomUUID();
+    const result = await api.startBuiltinReview(sessionId, requestId.current, evidence);
     setBusy(false);
     if (!result.ok) {
       setErr(result.error ?? "could not start No-Mistakes Review");
       return;
     }
+    evidenceDraft.clear();
+    requestId.current = null;
     onDone();
   }
 
@@ -1039,7 +1066,7 @@ function Wrapup({
       </p>
       <div className="wq-actions">
         <Tooltip label="Bind and start the built-in review workflow for this session">
-          <button className="btn btn-primary" disabled={busy} onClick={() => void runReview()}>
+          <button className="btn btn-primary" disabled={busy} onClick={() => setReviewOpen(true)}>
             Run No-Mistakes Review
           </button>
         </Tooltip>
@@ -1082,6 +1109,20 @@ function Wrapup({
           there is one - this is for the remount, which has lost it. */}
       {sent && !err && <p className="wq-hint dim">Already sent.</p>}
       {err && <p className="wq-error">{err}</p>}
+      {reviewOpen && (
+        <WorkflowConfirmModal
+          request={{
+            title: "Run No-Mistakes Review",
+            body: "Capture this session's current diff and transcript, freeze the image evidence packet, and start the built-in review workflow.",
+            confirmLabel: "Run review",
+            confirmHint: "Starts No-Mistakes Review with this evidence packet",
+            captureEvidence: true,
+            onConfirm: (evidence) => void runReview(evidence),
+          }}
+          evidence={{ controller: evidenceDraft, scopes: evidenceScopeSet.options }}
+          onClose={() => setReviewOpen(false)}
+        />
+      )}
     </div>
   );
 }

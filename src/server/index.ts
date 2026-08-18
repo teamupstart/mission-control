@@ -29,8 +29,6 @@ import { SdkSupervisor } from "./sdk/supervisor.ts";
 import { PendingTurnManager } from "./pending-turns.ts";
 import { runtimePromptInjector } from "./sdk/deliver.ts";
 import { startAgentsShadow } from "./discovery/agents-shadow.ts";
-import { startPoolReaper } from "./pool.ts";
-import { installCheckLeasePins } from "./pool-lease.ts";
 import { CheckLeaseManager } from "./workflows/check-lease.ts";
 import { CheckRuntime } from "./workflows/check-runtime.ts";
 import { startPrPoller } from "./pr.ts";
@@ -68,6 +66,12 @@ import { createFinalizeDeps, resolveEnsembleWorkflowVersion } from "./ensembles/
 import { createReviewScheduler } from "./llm/review-scheduler.ts";
 import { createCheckScheduler } from "./workflows/checks.ts";
 import { WorktreeManager } from "./worktrees/manager.ts";
+import {
+  LegacyTreehouseService,
+  warnRetiredTreehouseCadence,
+} from "./worktrees/legacy-treehouse.ts";
+import { WorktreeOperationsService } from "./worktrees/operations.ts";
+import { nativeWorktreeOwnerReferenced } from "./worktrees/owners.ts";
 
 openDb();
 // Only the daemon can read app_config. The Foreman imports the same runner in a separate
@@ -94,11 +98,15 @@ try {
 // session id at all, and the ingest can only drop them. The feature would look installed
 // and record nothing.
 warnIfSessionAttributionDisabled();
+warnRetiredTreehouseCadence();
 const registry = new Registry();
 // The one daemon-owned native allocator. It is reconciled before Workflow check recovery,
-// and no Phase 1 consumer selects it yet: existing dispatch, check and make-session paths
-// remain provider-byte-identical while the durable state machine is reviewed in isolation.
-const worktrees = new WorktreeManager();
+// then shared by task dispatch, checks, manual leases, routes, and recurring maintenance.
+const worktrees = new WorktreeManager(undefined, {
+  ownerReferenced: async (reference) => nativeWorktreeOwnerReferenced(reference),
+  publishChanged: () => registry.emitWorktreesChanged(),
+});
+const legacyWorktrees = new LegacyTreehouseService();
 try {
   await worktrees.reconcile();
 } catch (err) {
@@ -144,7 +152,16 @@ const archives = new ArchiveManager({
 // row, its task binding and its worktree paths can all still be derived - which is precisely
 // what a capture needs and precisely what `session_remove` no longer has.
 registry.onSessionExit((session) => archives.reserveOnExit(session));
-const tasks = new TaskManager(registry, undefined, sdkSessions, pendingTurns, archives);
+const tasks = new TaskManager(
+  registry,
+  undefined,
+  sdkSessions,
+  pendingTurns,
+  archives,
+  {},
+  worktrees,
+  legacyWorktrees,
+);
 const queues = new QueueManager(registry);
 const personas = new PersonaManager(registry);
 // Shares the Persona manager's store handle, so both catalogs and the workflow family are
@@ -166,36 +183,68 @@ const reviewScheduler = createReviewScheduler();
 // subsystem reaching for its own limiter is a subsystem whose "two" quietly becomes four.
 const checkScheduler = createCheckScheduler();
 // Workflow check leases and the runtime that takes them. The ORDERING here is the whole
-// protection, not tidiness, and it runs ABOVE the WorkflowManager for a second reason on top
-// of the reaper one: `workflows.start()` recovers runs and can schedule a check attempt
+// protection, not tidiness: `workflows.start()` recovers runs and can schedule a check attempt
 // immediately, and a check must not be able to lease a tree before the daemon knows which
 // trees it already holds.
 //
-// A check holds a pooled worktree with no session, no task and - between the lease and the
-// spawn - no processes, so every liveness signal the reaper trusts reads "idle" on a tree
-// that is about to be built in. Two things stop it being reaped, and both have to be in
-// place before the reaper's first sweep: the pin source below, and the durable rows
-// reconciliation restores into it. A pin registered after that sweep is invisible to it -
-// the same rule that makes `sdkSessions.restore()` run before `startPoller`.
+// A check can hold a worktree with no session, task, or process. Its durable row and the native
+// manager's provisional grant are therefore the ownership authority, and startup reconciliation
+// must restore those rows before new attempts may allocate.
 //
 // Reconciliation resolves only what it can prove safe. It returns a tree whose supervisor
 // gate was never released, and otherwise asks the supervisor's group recovery whether
-// anything is still running in it: proving the tree is OURS is not proving that nothing is
-// still writing in it, and only the second authorises a `return --force`. That seam is
-// injected here - it is declared with a refusing default, so a daemon that forgot this line
-// would keep every non-sentinel lease across a restart and quietly lose a pool slot each time.
+// anything is still running in it: proving the tree is ours is not proving that nothing is
+// still writing in it, and only the second authorizes provider release. That seam is injected
+// here with a refusing default, so missing recovery keeps the resource instead of guessing.
 //
 // Awaited rather than fire-and-forget for the ordering itself, and best-effort because a
 // daemon that refused to start over one unreconcilable lease would be worse than one
 // running without it.
-const checkLeases = new CheckLeaseManager();
+const checkLeases = new CheckLeaseManager(undefined, {
+  manager: worktrees,
+  legacy: legacyWorktrees,
+});
 const checkRuntime = new CheckRuntime(checkLeases);
-installCheckLeasePins(() => checkLeases.pinnedPaths());
 try {
   await checkLeases.reconcileOnStartup(checkRuntime.groupRecovery);
 } catch (err) {
   console.error("[mission-control] could not reconcile check leases:", err);
 }
+const worktreeOperations = new WorktreeOperationsService(worktrees, {
+  legacy: legacyWorktrees,
+  tasks: {
+    get: (id) => {
+      const task = registry.getTask(id);
+      if (!task) return null;
+      return {
+        id: task.id,
+        title: task.title,
+        resources: [
+          {
+            position: 0,
+            repoRoot: task.repoRoot,
+            path: task.worktreePath,
+            provider: task.provider,
+            leaseId: task.worktreeLeaseId,
+            branch: task.branch,
+          },
+          ...task.extraRepos.map((entry, index) => ({
+            position: index + 1,
+            repoRoot: entry.repoRoot,
+            path: entry.worktreePath,
+            provider: entry.provider,
+            leaseId: entry.worktreeLeaseId,
+            branch: entry.branch,
+          })),
+        ].flatMap((resource) => resource.path === null ? [] : [{ ...resource, path: resource.path }]),
+      };
+    },
+    reclaim: (id) => tasks.reclaim(id),
+  },
+  checks: checkLeases,
+  checkRecovery: checkRuntime.groupRecovery,
+  notifyChanged: () => registry.emitWorktreesChanged(),
+});
 // Assigned below. The Workflow binding guard reaches it through this reference, and the reference
 // is safe because the guard fires only at bind time - long after `ensembles` is constructed. This
 // is the two-way seam the plan requires: Workflow asks Ensemble whether a session may be bound,
@@ -358,21 +407,9 @@ const away = startAwayWatcher(registry, undefined, {
   }),
 });
 const stopHeadlessPruner = startHeadlessPruner();
-// The reclamation pass rides the reaper's tick: same cadence, same lock, and it collects
-// what the reaper structurally cannot see. A check lease is held under a token outside
-// LEASE_HOLDERS precisely so the reaper refuses it, which means the reaper can never
-// collect a leaked one either - so this is an obligation that comes with that protection.
-//
-// It gets the SAME group-recovery seam startup reconciliation got, and for the same reason:
-// ownership is not emptiness, and a pass that returned a tree on ownership alone would
-// hard-reset one a build is still writing into. Left uninjected here, every non-sentinel
-// lease would be kept forever - fail closed, but a pool slot per crashed check.
-const stopPoolReaper = startPoolReaper(registry, {
-  reclaimLeases: () => checkLeases.reclaimLeaked(checkRuntime.groupRecovery),
-});
-// A separate native cadence, deliberately not aliased to MISSION_POOL_REAP_MS. It is inert
-// while no native pool rows exist, which is the production shape until Phase 2 cuts over.
-worktrees.startMaintenance();
+// Check-domain crash recovery rides the native manager's cadence. It still runs when no
+// native pool exists because persisted legacy check rows remain domain-owned resources.
+worktrees.startMaintenance(() => checkLeases.reclaimLeaked(checkRuntime.groupRecovery));
 const stopSkillsReloader = startSkillsReloader(registry);
 // Pulls work INTO the backlog from systems that already hold it. In the daemon because
 // ingest writes to the DB and the daemon is the only writer; needs none of the reload
@@ -388,7 +425,7 @@ const stopTaskSources = startTaskSourceSweeper(tasks, () => publishSettingsStatu
 // back as a frame about a repository nobody enabled. Inert on the shipped configuration:
 // with no repository consented to, the restore prunes nothing and each tick is one KV read.
 restorePipelineProjection(registry);
-const stopPipelines = startPipelineWatcher(registry, () => publishSettingsStatus(registry));
+const stopPipelines = startPipelineWatcher(registry);
 // Recurring Missions, for the same two reasons as the sweeper above: it writes to the DB,
 // and the port bind guarantees exactly one of it. It files backlog tasks and stops there -
 // Foreman is still the only autonomous path to a running agent. Inert until an operator
@@ -435,6 +472,8 @@ const app = buildApp(
   keepAwake,
   archives,
   workflowCommands,
+  worktrees,
+  worktreeOperations,
 );
 
 // In production the daemon serves the built SPA; in dev, Vite serves it and
@@ -545,15 +584,11 @@ async function shutdown(): Promise<void> {
   pendingTurns.stop();
   await sdkSessions.stopAll();
   // `workflows.stop()` cancels any live check process group and then waits for its attempt to
-  // hand the pooled worktree back. It MUST stay above `stopPoolReaper()` below: those returns
-  // run through the pool adapter and its lock, and stopping the reaper first would leave the
-  // last thing that could collect a lease already shut down while leases were still being
-  // returned. Do not reorder.
+  // release its provider-authoritative worktree before native maintenance stops.
   await workflows.stop();
   ensembles.stop();
   away.stop();
   stopHeadlessPruner();
-  stopPoolReaper();
   await worktrees.stop();
   stopSkillsReloader();
   stopTaskSources();

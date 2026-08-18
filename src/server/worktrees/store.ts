@@ -164,6 +164,24 @@ export class WorktreeStore {
     return row ? slotRow(row) : null;
   }
 
+  slotByPath(path: string): WorktreeSlotRow | null {
+    const row = this.db.prepare(`SELECT * FROM worktree_slots WHERE path = ?`).get(path) as
+      | Record<string, unknown>
+      | undefined;
+    return row ? slotRow(row) : null;
+  }
+
+  slotByLeaseId(leaseId: string): WorktreeSlotRow | null {
+    const row = this.db
+      .prepare(
+        `SELECT * FROM worktree_slots
+          WHERE active_lease_id = ? OR last_released_lease_id = ?
+          LIMIT 1`,
+      )
+      .get(leaseId, leaseId) as Record<string, unknown> | undefined;
+    return row ? slotRow(row) : null;
+  }
+
   poolForSlot(slotId: string): WorktreePoolRow | null {
     const row = this.db
       .prepare(
@@ -322,6 +340,18 @@ export class WorktreeStore {
          WHERE id = ? AND state = 'returning' AND version = ?`,
       )
       .run(currentHeadSha, now, now, slotId, version);
+    return Number(changed.changes) === 1 ? this.slot(slotId) : null;
+  }
+
+  markPruning(slotId: string, version: number, now: number): WorktreeSlotRow | null {
+    const changed = this.db
+      .prepare(
+        `UPDATE worktree_slots SET state = 'pruning', version = version + 1,
+           last_error = NULL, updated_at = ?
+         WHERE id = ? AND state IN ('available', 'quarantined') AND version = ?
+           AND active_lease_id IS NULL AND active_owner_kind IS NULL AND active_owner_key IS NULL`,
+      )
+      .run(now, slotId, version);
     return Number(changed.changes) === 1 ? this.slot(slotId) : null;
   }
 

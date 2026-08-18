@@ -8,6 +8,14 @@ gets an explicit conflict and keeps its local text. Archive is soft: archived Pe
 read-only, remain addressable for future published history, and continue reserving their
 normalized names.
 
+Foreman's fixed **System profile** also appears in **Library → Personas**, but it is not a
+Persona and never enters this catalog. It edits Foreman's global standing guidance only.
+Workflow stage pickers and graph validation resolve exclusively against real `PersonaView`
+rows, so a forged `foreman` reviewer is unknown. Ensemble evaluator and panel-judge choices
+use that same supplied Persona catalog, so Foreman is unavailable there as well. Editing,
+clearing, or resetting the System profile creates no Persona revision, Registry row, SSE
+event, workflow snapshot, or ensemble metadata.
+
 Guidance is exact text. Accepted Markdown is not trimmed or newline-normalized when it is
 created or updated. Copy writes that same text to the browser clipboard, download writes it
 to a local `.md` Blob, and both imports store the document unchanged after deriving a proposed
@@ -495,8 +503,8 @@ the two halves are never stored apart and a second window's save is refused rath
 silently overwriting unsaved typing.
 
 Worktrees of a configured repository count too,
-wherever they live on disk: a dispatched session usually stands in a pooled checkout under
-`~/.treehouse/`, and because a worktree mirrors its repository's layout, a session in that
+wherever they live on disk: a dispatched session usually stands in a native pooled checkout under
+`MISSION_HOME/worktree-pools`, and because a worktree mirrors its repository's layout, a session in that
 checkout's `packages/web` resolves the command configured for the repository's
 `packages/web`. That match is on the exact directory, component by component - a session in
 `examples/packages/web` gets the repository-wide command, not the one configured for
@@ -528,16 +536,12 @@ double dagger on every Workflows cell while the switch is on, names those reposi
 offers **Turn Commands off** in place. A grant with Commands off is not flagged: nothing can
 run, and amber on an inert grant is how a matrix teaches you to stop reading it.
 
-**Commands use the treehouse pool whenever the binary is installed.** Unlike dispatch, a Command
-does not consult `treehouse.toml`; it keeps using the pool for a repository that has no such file.
-Two Commands run at once, and each one holds a pooled worktree for as long as it runs - drawn
-from the same `max_trees` a dispatched session draws from (`treehouse.toml` in the repository;
-this one sets 32). On a repository with a small pool, a long test suite gating a review is a slot
-a dispatch is waiting for. Raise `max_trees` there if dispatch starts queuing behind Commands.
-
-When `treehouse` is not installed, a Command instead uses a throwaway detached `git worktree`
-pinned to the captured commit. The configured argv still runs and its real result still gates the
-workflow; the fallback does not record the gate as passed without running it. Commands also run
+**Commands use the built-in native pool.** Two Commands run at once, and each holds one exact,
+detached lease for as long as it runs. A repository whose native policy is disabled or whose
+allocator positively refuses capacity uses a throwaway detached Git worktree pinned to the
+captured commit. An ambiguous native outcome does not try another provider. The configured argv
+still runs on positive degradation and its real result still gates the workflow; the fallback
+does not record the gate as passed without running it. Commands also run
 through their own small attempt budget, separate from the review budget, so a build never spends
 a Persona's slot.
 
@@ -641,6 +645,31 @@ images, and files that are not gitignored. Browser submission continues to accep
 through an opaque upload id; it never accepts the absolute upload path returned for chat
 compatibility and does not upload text artifacts.
 
+The delivered prompt states that this exact scoped registration is already authorized. The
+agent calls the tool directly without asking the human to approve the file, payload, repository
+scope, or Mission Control destination. `repositoryScope: "all"` is authorized only when the task
+received that scope, and every daemon-side validation above still applies. Registration remains
+optional and never replaces code or test evidence.
+
+The dashboard uses one **Image evidence** composer anywhere a person can capture a new
+submission: the initial **Preview** in the binding dialog, **Ship it** and No-Mistakes review
+from a session card, **Run again** or **Preview again**, and every fresh repair resubmission.
+Choose files, drop them, or paste a screenshot; then give every image a caption and a repository
+scope. Session-registered images and text artifacts appear in the same packet and can be removed
+before capture, including in the initial binding dialog before that conversation has a binding.
+The daemon resolves that initial packet from the live session, so creating a placeholder binding
+is not required and a stale registration cannot reach the first review unseen. The dashboard
+blocks submission while an upload is pending or failed, a caption
+or scope is missing, registered evidence cannot be read, or the packet exceeds 8 images, 5 MiB
+per image, or 20 MiB in aggregate. PNG, JPEG, static GIF, and WebP are accepted. Closing a dialog
+or receiving a failed request keeps the draft intact for correction and retry. Once accepted,
+the count and byte total shown in the composer become part of that immutable submission.
+
+**Resubmit unchanged snapshot** is deliberately different. It replays exactly the images named
+by the previous submission and offers no fresh-image composer; the confirmation states that
+exact count. Choose the fresh resubmission path when the next review needs new or replacement
+screenshots, even when the repository HEAD has not changed.
+
 Submission creation reserves the applicable staged generation. A multi-repository completion
 copies `all` evidence into every sibling submission and keeps slot-scoped evidence in that
 repository's run. Inside the existing conversation capture lock, each reserved source is
@@ -718,6 +747,23 @@ page before enrichment, and batch the latest attempts in one follow-up query. Su
 never load submission context or evidence. Detail reads batch attempts and receipts for the
 whole run, so their query count does not grow with the number of submissions.
 
+The workflow catalog summary carries one more bounded projection for the
+[Library detail footer](library-and-line.md#the-persona-detail-screen): unique Persona and
+SessionAction ids from the current draft and current published graph, with the two sets kept
+separate. It still carries no graph shape, guidance or instruction text, and each set is bounded
+by the graph's 100-node ceiling. Run summaries likewise carry exact active Persona and waiting
+SessionAction ids beside the older human-facing Persona names and Action wait reason. Those ids
+resolve same-name shadows and identify one action stage exactly; the browser never fetches every
+workflow to reconstruct either answer.
+
+Each submission in run detail has its own image-evidence ledger. It records the thumbnail,
+caption, repository scope, full sha256 digest, byte size, MIME type, and whether the retained
+body still exists. Image bodies load lazily through the authenticated dashboard route and the
+browser releases their object URLs when the ledger leaves the page. Retention cleanup changes
+the body to **Pruned** without erasing the metadata or digest that explains what reviewers saw.
+A retained image offers **Use in next review**, which stages a fresh immutable copy in the
+binding's composer. A pruned image keeps its audit record but cannot be reused.
+
 ### Watching a run
 
 Everything below describes the **Workflows** tab of the Runs page, which is the whole page
@@ -761,7 +807,11 @@ refreshes from the compact SSE summary's `updatedAt` signal; the SSE payload its
 The **Runs** tab reads a run on **the pipeline it was authored on** - the same Session,
 stages and End the Pipeline view draws, with a live status on every member. Reviewers show
 queued, reviewing, passed, or changes requested; Checks show their corresponding command
-state. A stage this round did not run because an earlier one already passed it reads a neutral
+state. Click a settled reviewer or Command tile to select that node's result in the review
+worklist below. A single-member stage header does the same; a multi-member stage keeps the
+choice on each member so the target is unambiguous. Session actions stay in their own section
+because they report a lifecycle rather than a verdict. A stage this round did not run because
+an earlier one already passed it reads a neutral
 grey **Not re-run**, and carries a **✓ Passed in Round 1 · evidence 1** line naming the round
 that earned the pass; pressing that line scrubs straight to it. The chip is deliberately not
 green - it speaks for the round on screen, where nothing executed - and the tick on the
@@ -842,6 +892,8 @@ cites or "No file cited"; the round it was raised in, the rounds it has been ope
 evidence count; the rationale in full and the quotes behind it. From there a person can **copy
 that one change, open its file, give that reviewer feedback, or switch that reviewer off** -
 the last two only while the run can still be affected. Previous and Next walk the segment.
+Selecting a settled reviewer or Command in the pipeline above switches to the matching segment
+and first row for that node, so the explanation behind a passed or failed stage is one click.
 
 A **stalemate card** sits at the foot of the rail when a reviewer has failed consecutive rounds,
 in the ladder's own words: *"Code Risk Reviewer has failed 10 rounds running."*
@@ -945,10 +997,14 @@ further down.
 **A run that spent its repair budget is the exception, and it gets a button.** It used to get
 the sentence too, and that was the one dead end on the page: the run had stopped, nothing on
 the dashboard could restart it, and its GitHub Inspector gate went on vetoing its pull request
-forever. Its primary is now **Grant 2 more rounds**. The sentence that used to stand there
-named the binding's `Max repair rounds` as the fix, which was wrong: a run snapshots its
-budget when its row is created, and editing the binding changes what the *next* run may
-spend.
+forever. Its primary is normally **Grant 2 more rounds**. When a spent Inspector-only gate's
+current durable ledger proves that the open pull request was reviewed live at its exact current
+head with no open findings, the same primary reads **Adopt clean Inspector head**. That label
+does not add a route or let the browser pass the gate. It sends the existing confirmed
+`grant-rounds` request, whose audit restores the evaluator-owned path. The sentence that used
+to stand there named the binding's `Max repair rounds` as the fix, which was wrong: a run
+snapshots its budget when its row is created, and editing the binding changes what the *next*
+run may spend.
 
 What the grant does depends on what stopped the run, and the difference is not cosmetic. A
 **parked repair round** needs only the number: the resume move refuses on
@@ -960,7 +1016,9 @@ on the next observation, picking up the very head it refused. Without that secon
 grant would flip the merge block from "gave up" to "still working" while nothing was working,
 which is worse than the dead end it replaced. Beside the primary sit at most
 **Copy feedback** and **Open PR**, and **Open PR** appears only when there is an adopted pull
-request to open.
+request to open. The contextual adoption still waits for the ordinary daemon evaluator to
+revalidate an open exact head from the Inspector ledger and create the immutable
+Inspector-only submission. It never completes directly from the browser's current view.
 
 **A finished run can be run again.** A `completed`, `cancelled` or `failed` run used to be the
 end of the road - every control left on it copied, downloaded or navigated, and nothing anywhere
@@ -1078,6 +1136,11 @@ itself - fresh evidence, same graph, the round counter and `Max repair rounds` b
 had. Staging a new gitignored screenshot or text artifact therefore re-arms an evidence-only
 repair without requiring an evidence commit.
 
+Every newly rendered workflow continuation also tells the agent to finish the repair, register
+useful new evidence when eligible, and stop. The daemon owns automatic resumption and the Runs
+UI owns manual resubmission, so the agent does not turn resubmission into another permission
+question for the human.
+
 Four things it deliberately does not do:
 
 - **It does not ask the model to signal anything.** The instruction that used to end every
@@ -1192,6 +1255,10 @@ both, and why revoking it stops delivery and checks together.
 When a Persona failure returns to Session, the daemon renders one bounded deterministic repair
 packet in published graph order. The packet preserves the original raw goal, identifies the
 immutable workflow version and evidence fingerprint, and includes only failed Persona findings.
+Its non-truncatable suffix carries Mission Control's scoped execution authorization, including
+the no-resubmission instruction. The same runtime policy wraps SessionAction prompts before the
+immutable authored Markdown, which remains byte-identical and last. Prepared delivery rows keep
+their stored payload; only newly rendered packets receive the policy.
 Preview stores the exact packet and hash without touching the terminal. Live records
 **Prepared**, claims **Sending**, and uses the same pane-locked prompt injection as dispatch and
 the work queue. Confirmed delivery is credited to `workflow` in the transcript. A positive
@@ -1203,29 +1270,32 @@ round.
 **Foreman complete** lets an active binding claim Foreman's existing queue-drain or prompted
 completion proof. Foreman still runs as a separate HTTP-only worker and never reads workflow
 SQLite. The daemon creates or resumes the durable workflow and retires the matching Foreman
-once-only guard in one transaction. A prompted guard includes the human intent episode and the
-HEAD plus transcript anchor Foreman verified. This keeps retries idempotent while allowing a
-later settled turn on the same intent, such as work resumed by a Claude background task
-notification, to claim the existing binding exactly once after that evidence advances. The
-session activity observed with that proof is the cheap watermark before Foreman refetches it,
-so an unchanged idle boundary does not incur repeated diff reads. Because the watermark is the
-observed boundary rather than the later guard write, a Stop arriving during verification remains
-eligible afterward. A missing or failed claim endpoint fails closed - Foreman does not fall
-through to an unreviewed wrap-up. If no Foreman binding claims the boundary,
+once-only guard in one transaction. A prompted claim carries the expected logical conversation
+key and completed work-cycle generation alongside the reconciled human intent and the HEAD plus
+transcript proof Foreman verified. The daemon atomically compares and consumes that generation;
+evidence keeps retries idempotent, while a later completed generation under unchanged intent can
+claim the binding exactly once. Work restarting, a newer completion, key rotation, intent drift,
+or queue work appearing before the claim makes the old result fail closed. A missing or failed
+claim endpoint also fails closed, so Foreman does not fall through to an unreviewed wrap-up. If no
+Foreman binding claims the boundary,
 the existing wrap-up behavior is unchanged.
 
 #### The repair loop, end to end
 
-One confirmed Live delivery re-arms **exactly one** completion episode - drain when the session
-has queue items, prompted when it does not. Exactly one, because re-arming both would let a
-single repair packet produce two completion claims and therefore two review rounds for one fix.
+One confirmed Live delivery can explicitly re-arm only the queue-drain guard, and only when the
+session has queue items. Prompted completion has no delivery reset: on an item-less session, the
+repair turn's natural work start and completion advance its durable generation. This separation
+prevents one packet from opening both completion paths while still letting either session shape
+reach the next round.
 So the whole cycle runs without you:
 
 1. A Persona (or a [Command](#command-nodes)) fails. The run parks in
    `waiting_for_session` and the repair packet is typed into the pane.
-2. Confirming that delivery re-arms one Foreman completion episode.
-3. The session makes the change and goes idle.
-4. Foreman notices, claims the completion, and opens round N+1.
+2. Confirming a queue-backed delivery re-arms drain; an item-less prompted session waits for its
+   next natural work-cycle generation.
+3. The session makes the change and goes idle, completing that cycle.
+4. Foreman consumes the matching drain guard or work-cycle generation, claims the completion,
+   and opens round N+1.
 5. The graph re-runs **from the top** - every reviewer, against fresh evidence. Attempts are
    keyed by submission, so round N+1 starts with an empty slate rather than resuming round N.
 
@@ -1273,6 +1343,24 @@ Once the matching head is pinned, the durable GitHub Inspector ledger decides th
 - A completed current-head review with zero findings completes the workflow.
 - Closing or switching the PR blocks instead of accepting old approval.
 
+When an Inspector-only run has already spent its repair budget, run detail keeps two records
+visible. **Last workflow observation** is the immutable reason that run stopped: its failed
+head, observed head, wait reason, observation time, and historical finding fingerprints.
+**Current Inspector** is the mutable ledger the Inspector owns now: its open pull-request
+state, observed and reviewed heads, review posture, current mode, finding tallies, backoff, and
+error. Resolving a finding or reviewing a later head updates only the second record; it never
+rewrites the failed observation into a historical pass.
+
+A clean current record is actionable only when the pull request is open, the observed and
+reviewed heads are identical, both the review and current Inspector posture are live, the
+ledger has no error or open finding, its tallies reconcile, and every historical fingerprint
+is still represented as resolved. Missing or contradictory evidence fails closed. The
+dashboard then says **Clean head ready**, not passed, because the workflow remains blocked and
+Shipping remains vetoed. **Adopt clean Inspector head** grants the existing audited repair
+budget and hands the run back to the same gate evaluator. Only that evaluator may create the
+next immutable Inspector-only submission and complete after exact-head proof. Dirty, stale,
+closed, mismatched, non-live, or unavailable evidence keeps the ordinary grant label.
+
 Findings produce one frozen, bounded, hashed `inspector_feedback` packet through the same Preview
 or safe Live delivery state machine as Persona repair. The published default,
 `restart_workflow`, requires fix, verify, commit, push, and a full resubmission that reruns every
@@ -1287,6 +1375,9 @@ itself never pushes or opens a pull request. When the run reviews an attached re
 prompt names it and asks for that repository's pull request alone, because a session running
 several reviews receives them all in one pane. The offered action prepares the packet under Preview
 or sends it under Live delivery. Automatic preparation is scheduled only for a Live binding.
+The prompt makes explicit that this requested, repository-scoped commit, push, and pull request
+creation or update is already authorized. It does not authorize merge, a sibling repository, or
+another external write, and it does not change sandbox or Mission MCP enforcement.
 When that handoff opens an already-reviewed clean commit, its durable adoption record pins the PR.
 The record must belong to the bound session, match its exact known repository root, and have been
 adopted after gate entry, so an older PR or one from a nested checkout is never claimed.
@@ -1294,8 +1385,11 @@ After the handoff turn settles, unchanged repository evidence advances the gate 
 observation without spending another Persona round. If PR preparation changed the head, the normal
 full resubmission requirement still applies. The durable adoption also preserves the workflow's
 Shipping veto across a daemon or SDK-session restart before the gate has pinned the PR key.
-**Recheck GitHub Inspector** only reevaluates the current durable observation and remains waiting until
-GitHub Inspector's normal sweep has seen a new head.
+**Recheck GitHub Inspector** only appears while the run is in a live gate wait that the
+evaluator can process. It reevaluates the current durable observation and remains waiting until
+GitHub Inspector's normal sweep has seen a new head. A spent blocked run has no working recheck,
+so the dashboard omits it and the daemon refuses a direct request without writing a recheck
+audit event.
 
 Gate summaries travel on the existing workflow-run SSE upsert. Finding bodies and full audit
 state stay on the selected run's HTTP detail, so the browser adds no polling. Reset removes the

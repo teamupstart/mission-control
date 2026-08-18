@@ -178,7 +178,7 @@ test("dispatching an agent puts a live session on the fleet", async ({ dashboard
   await expect(card).toContainText("Write a Haiku About Flexbox");
   // Running on the SDK runtime, headless, with a worktree of its own.
   await expect(card).toContainText("Agent SDK");
-  await expect(card).toContainText("worktrees/");
+  await expect(card).toContainText("worktree-pools/");
   // The model the fake reported through the SDK's `system/init` frame, proving the card's
   // model line is fed by the driver rather than by a default.
   await expect(card).toContainText("Claude e2e Mock");
@@ -432,8 +432,11 @@ test("Ship it starts No-Mistakes Review through the workflow route", async ({
   // The card is still settling around this button; click it once it has stopped moving.
   await settled(card);
   await review.click();
+  const confirmation = dashboard.getByRole("dialog", { name: "Run No-Mistakes Review" });
+  await expect(confirmation).toBeVisible();
+  await confirmation.getByRole("button", { name: "Run review" }).click();
   const sent = await request;
-  expect(sent.postDataJSON()).toEqual({ requestId: expect.any(String) });
+  expect(sent.postDataJSON()).toEqual({ requestId: expect.any(String), evidence: [] });
   if (process.env.MC_E2E_EVIDENCE) {
     mkdirSync(EVIDENCE, { recursive: true });
     // eslint-disable-next-line no-console
@@ -697,17 +700,26 @@ test("Foreman never resurfaces Ship it actions after a scout completes", async (
   const scoutObjective = "Compare the fleet layouts and report the findings";
   await postHook("UserPromptSubmit", { prompt: scoutObjective });
   await postHook("Stop", {});
+  let completedGeneration: number | null = null;
   await expect.poll(async () => {
     const current = (await api<Array<{
       id: string;
       hooksSeen: boolean;
       instrumented: boolean;
+      workCycle: {
+        generation: number;
+        active: boolean;
+        completedAt: number | null;
+      } | null;
       goal: {
         relationship: string | null;
         promptRevision: number;
         resolvedPromptRevision: number;
       } | null;
     }>>(daemon, "/api/sessions")).find((candidate) => candidate.id === sessionId);
+    if (current?.workCycle && !current.workCycle.active && current.workCycle.completedAt !== null) {
+      completedGeneration = current.workCycle.generation;
+    }
     return current ? {
       hooksSeen: current.hooksSeen,
       instrumented: current.instrumented,
@@ -715,16 +727,21 @@ test("Foreman never resurfaces Ship it actions after a scout completes", async (
       revisions: current.goal
         ? [current.goal.resolvedPromptRevision, current.goal.promptRevision]
         : null,
+      cycle: current.workCycle
+        ? [current.workCycle.generation, current.workCycle.active, current.workCycle.completedAt !== null]
+        : null,
     } : null;
   }, {
-    message: "the completion hooks should leave a fresh, fully reconciled scout objective",
+    message: "the completion hooks should leave a fresh objective and completed work cycle",
     timeout: 30_000,
   }).toEqual({
     hooksSeen: true,
     instrumented: true,
     relationship: "initial",
     revisions: [1, 1],
+    cycle: [expect.any(Number), false, true],
   });
+  if (completedGeneration === null) throw new Error("the scout work cycle never completed");
 
   await dashboard.evaluate(() => {
     type ShippingProbe = {
@@ -743,21 +760,27 @@ test("Foreman never resurfaces Ship it actions after a scout completes", async (
 
   await daemon.startForeman();
   await expect.poll(async () => {
-    const queue = await api<{ promptedGoal: string | null }>(
+    const queue = await api<{ promptedConsumedGeneration: number | null }>(
       daemon,
       `/api/sessions/${sessionId}/queue`,
     );
-    return queue.promptedGoal;
+    return queue.promptedConsumedGeneration;
   }, {
-    message: `Foreman did not retire the scout completion:\n${daemon.readLog()}`,
+    message: `Foreman did not consume the scout work-cycle generation:\n${daemon.readLog()}`,
     timeout: 40_000,
-  }).not.toBeNull();
+  }).toBe(completedGeneration);
 
-  const completion = await api<{ wrapupAnswer: string | null }>(
+  const completion = await api<{
+    wrapupAnswer: string | null;
+    promptedGoal: string | null;
+    promptedConsumedGeneration: number | null;
+  }>(
     daemon,
     `/api/sessions/${sessionId}/queue`,
   );
   expect(completion.wrapupAnswer).toBe(seededAnswer);
+  expect(completion.promptedGoal).toBeNull();
+  expect(completion.promptedConsumedGeneration).toBe(completedGeneration);
   const shippingSurfaceAppeared = await dashboard.evaluate(() => {
     type ShippingProbe = { seen: boolean; observer: MutationObserver };
     const target = window as typeof window & { __mcShippingProbe?: ShippingProbe };
@@ -852,5 +875,5 @@ test("the dispatched agent was launched headless, without the daemon's terminal 
   }
 
   // And it ran in the worktree the dispatch cut, not in the repo or the daemon's cwd.
-  expect(record.cwd).toContain("worktrees");
+  expect(record.cwd).toContain(join(daemon.home, "worktree-pools"));
 });

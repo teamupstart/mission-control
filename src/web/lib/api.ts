@@ -50,11 +50,21 @@ import type {
   UiConfigPatch,
   UiConfigView,
   PipelinesConfigPatch,
+  PipelineInstallerLaunchBody,
   TaskSourcesConfigPatch,
   UpdateTask,
   TaskDependencyInput,
   EnsembleActionBody,
+  WorktreesConfig,
+  WorktreesConfigPatch,
 } from "@shared/protocol.ts";
+import type {
+  WorktreeActionExecuteResult,
+  WorktreeActionPreview,
+  WorktreeActionRequest,
+  WorktreeInventory,
+  WorktreeRiskKey,
+} from "@shared/worktrees.ts";
 import type {
   EnsembleCreateInput,
   EnsembleDecision,
@@ -86,8 +96,11 @@ import type {
   PipelineActionResult,
   PipelineConsoleRequest,
   PipelineConsoleResult,
+  PipelineInstallerCandidatesResult,
+  PipelineInstallerLaunchResult,
   PipelineProviderId,
-  PipelineRepoStatus,
+  PipelineRepoRegistrationResponse,
+  PipelineReposView,
   PipelineRunDetail,
   PipelinesView,
 } from "@shared/pipeline.ts";
@@ -99,7 +112,7 @@ import type {
 } from "@shared/archives.ts";
 import type { AwayBufferSummary, AwayDigest } from "@shared/away-buffer.ts";
 import type { Stall } from "@shared/stall.ts";
-import type { PersonaDefaultsView } from "@shared/workflow.ts";
+import type { PersonaDefaultsView, WorkflowUploadEvidenceLocator } from "@shared/workflow.ts";
 
 export interface ActionResult {
   ok: boolean;
@@ -166,6 +179,55 @@ export const fetchForemanEpisode = (id: number) =>
 export const fetchBacklogPlan = () => fetchJson<BacklogPlan>("/api/backlog/plan");
 /** Dispatch-time defaults the harness applies to the sessions it launches. */
 export const fetchHarnessesConfig = () => fetchJson<HarnessesConfig>("/api/harnesses/config");
+export const fetchWorktrees = (signal?: AbortSignal) =>
+  fetchJsonWithSignal<WorktreeInventory>("/api/worktrees", signal);
+
+async function fetchJsonWithSignal<T>(path: string, signal?: AbortSignal): Promise<T | null> {
+  try {
+    const res = await fetch(path, { signal });
+    if (!res.ok) return null;
+    return (await res.json()) as T;
+  } catch {
+    return null;
+  }
+}
+
+export interface WorktreeApiFailure {
+  ok: false;
+  status: number;
+  error: string;
+  code?: string;
+}
+
+async function worktreeRequest<T>(path: string, method: "POST" | "PUT", body: unknown): Promise<({ ok: true } & T) | WorktreeApiFailure> {
+  try {
+    const res = await fetch(path, {
+      method,
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = (await res.json().catch(() => ({}))) as T & { error?: string; code?: string };
+    if (!res.ok) return { ok: false, status: res.status, error: data.error ?? `HTTP ${res.status}`, code: data.code };
+    return { ok: true, ...data };
+  } catch (error) {
+    return { ok: false, status: 0, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+export const updateWorktreesConfig = (patch: WorktreesConfigPatch) =>
+  worktreeRequest<{ config: WorktreesConfig }>("/api/worktrees/config", "PUT", patch);
+
+export const previewWorktreeAction = (request: WorktreeActionRequest) =>
+  worktreeRequest<WorktreeActionPreview>("/api/worktrees/actions/preview", "POST", request);
+
+export const executeWorktreeAction = (token: string, acknowledgements: WorktreeRiskKey[]) =>
+  worktreeRequest<WorktreeActionExecuteResult>("/api/worktrees/actions/execute", "POST", {
+    token,
+    acknowledgements,
+  });
+
+export const openWorktreeTerminal = (slotId: string, backend: TerminalBackendId) =>
+  worktreeRequest<{ label?: string }>(`/api/worktrees/${encodeURIComponent(slotId)}/open`, "POST", { backend });
 /**
  * What this MACHINE says about third-party tooling a dispatched session will inherit from
  * `~/.claude` - see `src/shared/environment-checks.ts`.
@@ -239,6 +301,37 @@ export const fetchTaskSources = () => fetchJson<TaskSourcesView>("/api/task-sour
  */
 export const fetchPipelines = (refresh = false) =>
   fetchJson<PipelinesView>(`/api/pipelines/config${refresh ? "?refresh=1" : ""}`);
+
+/**
+ * Replace observation consent and keep the returned pipeline status array intact.
+ *
+ * This cannot use the generic mutation helper: that helper adds the HTTP `status` number to
+ * every answer, while `PipelinesView.status` is the repository health array. Flattening both
+ * shapes would replace the array with `200` precisely when a consent write succeeds.
+ */
+export async function setPipelinesConfig(
+  config: PipelinesConfigPatch,
+): Promise<{ ok: true; view: PipelinesView } | { ok: false; error: string }> {
+  try {
+    const res = await fetch("/api/pipelines/config", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(config),
+    });
+    const data = (await res.json().catch(() => ({}))) as Partial<PipelinesView> & {
+      error?: string;
+    };
+    if (!res.ok || !data.config || !data.probes || !data.status) {
+      return { ok: false, error: data.error ?? `HTTP ${res.status}` };
+    }
+    return {
+      ok: true,
+      view: { config: data.config, probes: data.probes, status: data.status },
+    };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
 /**
  * The repositories being read, for the Pipelines rail's headings.
  *
@@ -247,7 +340,17 @@ export const fetchPipelines = (refresh = false) =>
  * polling while its tab is open should cost.
  */
 export const fetchPipelineRepos = () =>
-  fetchJson<{ repos: PipelineRepoStatus[] }>("/api/pipelines/repos");
+  fetchJson<PipelineReposView>("/api/pipelines/repos");
+
+/** Ephemeral, provider-verified local source checkouts eligible for guided installation. */
+export const fetchPipelineInstallers = (provider: PipelineProviderId) =>
+  fetchJson<PipelineInstallerCandidatesResult>(
+    `/api/pipelines/installers?provider=${encodeURIComponent(provider)}`,
+  );
+
+/** Open the reverified upstream installer in the selected hosted terminal. */
+export const openPipelineInstaller = (body: PipelineInstallerLaunchBody) =>
+  post<ActionResult & PipelineInstallerLaunchResult>("/api/pipelines/install", body);
 /**
  * One run's gate evidence, read from the engine's files at request time.
  *
@@ -886,15 +989,30 @@ export const fetchTerminalTargets = () =>
  */
 export async function uploadImage(
   file: File,
-): Promise<{ ok: true; upload: Attachment } | { ok: false; error: string }> {
+): Promise<
+  | { ok: true; upload: Attachment; uploadId: string; bytes: number }
+  | { ok: false; error: string }
+> {
   try {
     const body = new FormData();
     body.append("file", file);
     const res = await fetch("/api/uploads", { method: "POST", body });
-    const data = (await res.json().catch(() => ({}))) as Partial<Attachment> & { error?: string };
+    const data = (await res.json().catch(() => ({}))) as Partial<Attachment> & {
+      uploadId?: string;
+      bytes?: number;
+      error?: string;
+    };
     if (!res.ok) return { ok: false, error: data.error ?? `HTTP ${res.status}` };
     if (!data.path || !data.name) return { ok: false, error: "upload returned no path" };
-    return { ok: true, upload: { path: data.path, name: data.name } };
+    if (!data.uploadId || !Number.isInteger(data.bytes) || (data.bytes ?? 0) <= 0) {
+      return { ok: false, error: "upload returned no workflow locator" };
+    }
+    return {
+      ok: true,
+      upload: { path: data.path, name: data.name },
+      uploadId: data.uploadId,
+      bytes: data.bytes!,
+    };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
@@ -1298,7 +1416,12 @@ export const api = {
   setShippingConfig: (cfg: ShippingConfigPatch) => put(`/api/shipping/config`, cfg),
 
   // --- Pipelines (observing an external SDLC engine) ---
-  setPipelines: (cfg: PipelinesConfigPatch) => put(`/api/pipelines/config`, cfg),
+  setPipelines: setPipelinesConfig,
+  registerPipelineRepo: (provider: PipelineProviderId, repoRoot: string) =>
+    post<ActionResult & PipelineRepoRegistrationResponse>(`/api/pipelines/register`, {
+      provider,
+      repoRoot,
+    }),
 
   // --- Task sources (pulling work into the backlog) ---
   setTaskSources: (cfg: TaskSourcesConfigPatch) => put(`/api/task-sources/config`, cfg),
@@ -1377,10 +1500,14 @@ export const api = {
     post(`/api/sessions/${encodeURIComponent(id)}/queue/${encodeURIComponent(itemId)}/approve`),
   setWrapupAnswer: (id: string, answer: string | null) =>
     put(`/api/sessions/${encodeURIComponent(id)}/queue/wrapup`, { answer }),
-  startBuiltinReview: (id: string, requestId: string) =>
+  startBuiltinReview: (
+    id: string,
+    requestId: string,
+    evidence: WorkflowUploadEvidenceLocator[] = [],
+  ) =>
     post<{ run?: { id: string } } & ActionResult>(
       `/api/sessions/${encodeURIComponent(id)}/workflow-review`,
-      { requestId },
+      { requestId, evidence },
     ),
   reattachQueue: (id: string, noteKey: string) =>
     post(`/api/sessions/${encodeURIComponent(id)}/queue/reattach`, { noteKey }),

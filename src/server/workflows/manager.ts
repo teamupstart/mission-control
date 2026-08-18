@@ -183,6 +183,11 @@ export type WorkflowMutation =
   | { ok: true; workflow: WorkflowDefinition; summary: WorkflowSummary }
   | Exclude<WorkflowStoreWrite, { ok: true }>;
 
+/** Evidence eligibility is a fact of the immutable version already in hand. */
+function versionSupportsWorkflowEvidence(version: WorkflowVersion): boolean {
+  return version.graph.nodes.some((node) => node.kind === "persona");
+}
+
 /** Success carries only the id: there is no row left to summarize. */
 export type WorkflowDeleteMutation =
   | { ok: true; id: string }
@@ -728,12 +733,11 @@ export class WorkflowManager {
   assignmentWorkflowBlock(workflowId: string | null, session: Session): string | null {
     const current = this.store.activeBindingForNote(noteKeyFor(session));
     if (!current) return null;
-    const selectedVersionId = workflowId
-      ? this.get(workflowId)?.workflow.currentVersionId ?? null
-      : null;
+    // The binding owns the immutable version. Resolve only its workflow identity here so a
+    // newer current version does not make the same task-owned binding look foreign.
+    const currentVersion = this.store.getWorkflowVersionById(current.workflowVersionId);
     if (
-      selectedVersionId
-      && current.workflowVersionId === selectedVersionId
+      currentVersion?.workflowId === workflowId
       && current.triggerMode === "foreman_complete"
     ) return null;
     return "This conversation already has a different active Workflow binding";
@@ -1238,7 +1242,7 @@ export class WorkflowManager {
     const version = workflow?.currentVersionId
       ? this.store.getWorkflowVersionById(workflow.currentVersionId)
       : null;
-    return Boolean(version?.graph.nodes.some((node) => node.kind === "persona"));
+    return Boolean(version && versionSupportsWorkflowEvidence(version));
   }
 
   /** Session-attributed intake used by the bundled Mission MCP tool. */
@@ -1291,6 +1295,21 @@ export class WorkflowManager {
     return binding ? this.store.listWorkflowEvidence(binding.noteKey) : null;
   }
 
+  /**
+   * Conversation-owned staging before a binding exists.
+   *
+   * The initial dashboard composer must inspect the same packet `createBinding` will attach
+   * to this conversation. Resolving the note key from the live session here keeps that
+   * ownership decision in the daemon and avoids making the browser invent a provisional
+   * binding solely to list or remove evidence.
+   */
+  stagedEvidenceForSession(sessionId: string): WorkflowStagedEvidenceList | null {
+    const session = this.registry.getSession(sessionId);
+    return session && session.state !== "exited"
+      ? this.store.listWorkflowEvidence(noteKeyFor(session))
+      : null;
+  }
+
   removeStagedEvidence(
     bindingId: string,
     clientItemId: string,
@@ -1299,6 +1318,17 @@ export class WorkflowManager {
     const binding = this.store.getBinding(bindingId);
     return binding
       ? this.store.removeWorkflowEvidence(binding.noteKey, clientItemId, now)
+      : null;
+  }
+
+  removeStagedEvidenceForSession(
+    sessionId: string,
+    clientItemId: string,
+    now = Date.now(),
+  ): WorkflowStagedEvidenceList | null {
+    const session = this.registry.getSession(sessionId);
+    return session && session.state !== "exited"
+      ? this.store.removeWorkflowEvidence(noteKeyFor(session), clientItemId, now)
       : null;
   }
 
@@ -2488,6 +2518,7 @@ export class WorkflowManager {
       originalGoal: this.originalGoal(run.id),
       skillCommand: skill.command,
       repoRoot: binding.repoRoot || null,
+      workflowEvidence: versionSupportsWorkflowEvidence(version),
     });
     const prepared = this.store.prepareDelivery({
       id: randomUUID(),
@@ -2521,13 +2552,6 @@ export class WorkflowManager {
     if (!run || !this.gateState(run)) {
       return { ok: false, reason: "not_found", message: "No active GitHub Inspector gate exists" };
     }
-    if (runIsTerminal(run)) {
-      return {
-        ok: false,
-        reason: "run_not_waiting",
-        message: "This GitHub Inspector gate is already terminal",
-      };
-    }
     const repeated = this.store.listEvents(run.id).some((event) =>
       event.kind === "inspector_recheck_requested"
       && event.payload
@@ -2535,6 +2559,25 @@ export class WorkflowManager {
       && typeof event.payload === "object"
       && event.payload.requestId === requestId);
     if (repeated) return { ok: true, value: run, idempotent: true };
+    if (runIsTerminal(run)) {
+      return {
+        ok: false,
+        reason: "run_not_waiting",
+        message: "This GitHub Inspector gate is already terminal",
+      };
+    }
+    const canEvaluate = run.status === "waiting_for_pr"
+      || run.status === "waiting_for_inspector"
+      || run.status === "waiting_for_new_head"
+      || (run.status === "waiting_for_session" && run.currentPhase === "pr_handoff")
+      || (run.status === "blocked" && run.currentPhase === "inspector_disabled");
+    if (!canEvaluate) {
+      return {
+        ok: false,
+        reason: "run_not_waiting",
+        message: "This GitHub Inspector gate is not waiting in a state a recheck can advance",
+      };
+    }
     this.store.appendEvent(run.id, "inspector_recheck_requested", { requestId }, now);
     this.scheduleGateEvaluation(run.id, null);
     return { ok: true, value: run };
@@ -2849,11 +2892,30 @@ export class WorkflowManager {
     }
     if (
       (claim.completionKind === "prompted" && !claim.expectedIntent) ||
+      (claim.completionKind === "prompted" && !claim.expectedWorkCycle) ||
       (claim.expectedIntent &&
         !sessionIntentMatches(this.registry.getGoal(session.id), claim.expectedIntent))
     ) {
       throw new Error("Foreman completion intent is no longer current");
     }
+    if (claim.expectedWorkCycle) {
+      const cycle = session.workCycle;
+      if (
+        claim.expectedWorkCycle.logicalKey !== noteKeyFor(session) ||
+        !cycle ||
+        cycle.logicalKey !== claim.expectedWorkCycle.logicalKey ||
+        cycle.generation !== claim.expectedWorkCycle.generation ||
+        cycle.generation < 1 ||
+        cycle.active ||
+        cycle.completedAt === null
+      ) {
+        throw new Error("Foreman completion work cycle is no longer current");
+      }
+    }
+    // Resolve a matching historical prompted guard before entering the claim
+    // transaction. A rejected legacy replay must persist its compatibility consume;
+    // doing this inside the transaction would roll that migration back with the claim.
+    if (claim.completionKind === "prompted") this.registry.getQueue(session.id);
     // A claim offers a proof to an existing binding; it never creates one. An unbound
     // conversation answers `no_binding` so that completion has exactly one owner and two
     // PR-producing paths can never race on the same branch.
@@ -2873,11 +2935,11 @@ export class WorkflowManager {
     // durable half of a completion - the guard, the runs, the submissions - is what the reply
     // speaks for, and it must not depend on how long a git read takes.
     for (const [index, target] of targets.entries()) {
-      // The FIRST target spends the completion episode; the rest ride the same proof. One
-      // settled turn is one episode however many repositories it touched, and retiring the
+      // The FIRST target spends the completion boundary; the rest ride the same proof. One
+      // settled turn is one boundary however many repositories it touched, and consuming the
       // guard again would throw on a guard that is no longer armed. It is deliberately the
       // first rather than the primary: a task whose primary is untouched has no primary run,
-      // and the episode must still be spent by the review that does exist.
+      // and the boundary must still be spent by the review that does exist.
       const claimed = this.claimCompletionForRepo(target, claim, index === 0, session, now);
       if (index === 0) {
         answer = claimed.result;
@@ -2953,7 +3015,7 @@ export class WorkflowManager {
    * budgets mean in practice.
    *
    * A sibling's failure is contained rather than fatal. The lead has already spent the
-   * episode by the time one can happen, so throwing would leave the conversation with no
+   * boundary by the time one can happen, so throwing would leave the conversation with no
    * review at all and a guard nobody can re-arm; a repository whose run failed to start is
    * visible as a repository with no run, and the operator can start one.
    */
@@ -2979,7 +3041,7 @@ export class WorkflowManager {
         binding,
         completionKind: claim.completionKind,
         marker: claim.marker,
-        promptedActivityAt: claim.activityAt,
+        expectedWorkCycle: claim.expectedWorkCycle,
         summary: claim.summary,
         evidenceFingerprint: claim.evidenceFingerprint,
         evidenceGroupKey: `foreman:${binding.noteKey}:${claim.completionKind}:${claim.marker}`,
@@ -3915,6 +3977,7 @@ export class WorkflowManager {
       reviewPosture: nextState.reviewPosture,
       policy: version.completionPolicy.onFindings,
       findings,
+      workflowEvidence: versionSupportsWorkflowEvidence(version),
     });
     const deliveryId = randomUUID();
     let prepared: ReturnType<WorkflowStore["transitionInspectorFindingsWithDelivery"]>;
@@ -4145,10 +4208,10 @@ export class WorkflowManager {
    * `waiting_for_session` and no later completion signal from that session can ever claim it.
    *
    * Sending a packet is what restarts the clock, and it restarts it through the existing
-   * machinery rather than a special case. The nudge is an ordinary delivery, so a confirmed
-   * send re-arms exactly one completion episode (`confirmDeliverySend`), and the next Foreman
-   * claim is therefore legitimate and gated on a fresh idle plus settle - about fourteen
-   * seconds - rather than firing on the next four-second tick.
+   * machinery rather than a special case. The nudge is an ordinary delivery: queue drain may
+   * re-arm explicitly, while an item-less prompted session waits for that delivered turn's
+   * natural completed work-cycle generation. The next Foreman claim is therefore legitimate
+   * and gated on a fresh idle plus settle, rather than firing on the next four-second tick.
    */
   private scheduleUnchangedEvidenceNudge(
     runId: string,
@@ -4212,6 +4275,7 @@ export class WorkflowManager {
       priorPacket: prior?.payload ?? null,
       nudge,
       nudgeLimit: UNCHANGED_EVIDENCE_NUDGE_LIMIT,
+      workflowEvidence: versionSupportsWorkflowEvidence(version),
     });
     const prepared = this.store.prepareDelivery({
       id: randomUUID(),
@@ -4435,6 +4499,7 @@ export class WorkflowManager {
       actionName: snapshot.name,
       promptMarkdown: snapshot.promptMarkdown,
       skillCommand,
+      workflowEvidence: versionSupportsWorkflowEvidence(version),
     });
     // An instruction that cannot be sent WHOLE is not sent at all. `sessionActionPromptBytes`
     // is derived from the packet budget, so an action authored through this build cannot
@@ -5599,9 +5664,10 @@ export class WorkflowManager {
         }
         this.publishRun(run.id);
         // Outside the capture lock's critical decision but inside the same turn: the nudge is a
-        // delivery, and a delivery re-arms exactly one completion episode on confirmation. That
-        // is what supplies the NEXT legitimate claim - re-arming the guard here instead would
-        // spin the whole capture every fourteen seconds against a session that is not changing.
+        // delivery. Queue drain may re-arm on confirmation; prompted completion waits for the
+        // delivered work's next natural completed generation. That is what supplies the NEXT
+        // legitimate claim; resetting the prompted guard here would spin capture against a
+        // session that is not changing.
         if (!exhausted) this.scheduleUnchangedEvidenceNudge(run.id, submission.id, refusals);
         return {
           ok: false,
@@ -5842,9 +5908,8 @@ export class WorkflowManager {
           // session stopped?", and a second poller asking that would be a second answer -
           // with its own window, its own settle threshold, and its own idea of idle.
           void this.sweepSessionActions();
-          // Also here rather than on a timer of its own: this asks whether a blocked run's
-          // pooled worktree came back, and the pool reaper that hands it back has no seam to
-          // announce it through. One observer, one interval, one answer per pass.
+          // Also here rather than on a timer of its own: this asks whether provider-owned
+          // cleanup for a blocked run has settled. One observer, one interval, one answer.
           this.engine.resumeClearedCheckCleanup();
         },
         this.options.resumptionIntervalMs ?? WORKFLOW_RESUMPTION_INTERVAL_MS,

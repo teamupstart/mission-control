@@ -24,7 +24,7 @@ export const TOKEN_PATH = tokenPath();
 export const WORKTREES_DIR = join(STATE_DIR, "worktrees");
 /** Durable, reusable worktrees allocated by the daemon-owned native provider. */
 export const WORKTREE_POOLS_DIR = join(STATE_DIR, "worktree-pools");
-/** Isolated worktrees the daemon creates for Workflow checks when treehouse is unavailable. */
+/** Disposable isolated worktrees used when native allocation positively declines a check. */
 export const CHECK_WORKTREES_DIR = join(STATE_DIR, "check-worktrees");
 
 /**
@@ -184,9 +184,8 @@ const DEFAULT_POLL_MS = 1500;
  * actually disable it - handed to `setTimeout`, 0 is a ~1ms tick, which turns the off
  * switch into a hot loop of `ps` over every process on the machine. Same for any negative
  * value. An unparseable value is a typo rather than an instruction, so it falls back to
- * the default instead of into that spin. This mirrors `reapIntervalMs` in `pool.ts`, which
- * is where the `=0` convention was set; a second spelling of "off" is how one of the two
- * ends up not honouring it.
+ * the default instead of into that spin. Recurring maintenance settings use the same `=0`
+ * convention so operators get one spelling of "off".
  *
  * The off switch is not only a test affordance, though a browser-level suite is what forced
  * it. Terminal discovery walks EVERY process on the machine and cards anything that looks

@@ -1,9 +1,16 @@
 import { z } from "zod";
 import { WRAPUP_MODES, WRAPUP_TRIGGERS } from "./queue.ts";
-import { MAX_LABELS, TASK_PRIORITIES, normalizeLabels } from "./task.ts";
+import {
+  MAX_LABELS,
+  TASK_KIND_BACKLOG_REFUSAL,
+  TASK_PRIORITIES,
+  normalizeLabels,
+  taskKindAllowsBacklog,
+} from "./task.ts";
 import {
   PipelineActionRequestSchema,
   PipelineConsoleRequestSchema,
+  PIPELINE_PROVIDER_IDS,
   PipelinesConfigSchema,
 } from "./pipeline.ts";
 import { TaskSourcesConfigSchema } from "./task-source.ts";
@@ -646,6 +653,23 @@ export const DispatchSchema = z
   .refine((o) => o.effort === undefined || supportsEffort(o.agent, o.effort), {
     path: ["effort"],
     message: "reasoning effort is not supported by this harness",
+  })
+  .superRefine((o, ctx) => {
+    if (taskKindAllowsBacklog(o.kind)) return;
+    if (o.backlog) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["backlog"],
+        message: TASK_KIND_BACKLOG_REFUSAL,
+      });
+    }
+    if (o.dependencies.length > 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["dependencies"],
+        message: TASK_KIND_BACKLOG_REFUSAL,
+      });
+    }
   });
 export type Dispatch = z.infer<typeof DispatchSchema>;
 
@@ -779,7 +803,10 @@ export const UpdateTaskSchema = z
     extraRepoRoots: z.array(z.string().min(1)).max(8).optional(),
     intent: z.string().min(1).optional(),
     title: z.string().optional(),
-    kind: z.enum(TASK_KINDS).optional(),
+    kind: z
+      .enum(TASK_KINDS)
+      .refine(taskKindAllowsBacklog, TASK_KIND_BACKLOG_REFUSAL)
+      .optional(),
     agent: z.enum(AGENT_TYPES).optional(),
     enabled: z.boolean().optional(),
     priority: z.enum(TASK_PRIORITIES).nullable().optional(),
@@ -923,7 +950,7 @@ export type SetNote = z.infer<typeof SetNoteSchema>;
 export const RecordEpisodeSchema = z.object({
   marker: z.string().min(1),
   situation: z.string().min(1),
-  surface: z.enum(["input-review", "terminal"]),
+  surface: z.enum(["input-review", "terminal", "pipeline"]),
   question: z.string(),
   pane: z.string().nullable().optional(),
   menu: z
@@ -959,6 +986,15 @@ export const RecordEpisodeSchema = z.object({
   sentBy: z.enum(["foreman", "you"]).nullable().optional(),
 });
 export type RecordEpisode = z.infer<typeof RecordEpisodeSchema>;
+
+/** A pipeline-owned episode, addressed without inventing a live agent session. */
+export const PipelineForemanEpisodeSchema = z.object({
+  provider: z.enum(PIPELINE_PROVIDER_IDS),
+  repoRoot: z.string().min(1),
+  slug: z.string().min(1),
+  episode: RecordEpisodeSchema,
+});
+export type PipelineForemanEpisode = z.infer<typeof PipelineForemanEpisodeSchema>;
 
 /**
  * Stamp the human's answer onto an episode Foreman left open.
@@ -1311,6 +1347,39 @@ export const AwayConfigSchema = z.object({
 });
 export type AwayConfig = z.infer<typeof AwayConfigSchema>;
 
+/** Semantic ceiling for Foreman's exact standing-guidance document. */
+export const FOREMAN_INSTRUCTIONS_MAX_LENGTH = 64_000;
+
+/** Which durable state supplies the effective standing-guidance bytes. */
+export const ForemanInstructionsSourceSchema = z.enum(["builtin", "custom", "none"]);
+export type ForemanInstructionsSource = z.infer<typeof ForemanInstructionsSourceSchema>;
+
+/**
+ * Foreman's current exact-text document, including the shipped Reset target and opaque
+ * compare-and-swap token. The source stays explicit because custom text may be byte-identical
+ * to the built-in document, while an empty built-in seed is not an intentional clear.
+ */
+export const ForemanInstructionsViewSchema = z.object({
+  text: z.string(),
+  defaultText: z.string(),
+  source: ForemanInstructionsSourceSchema,
+  etag: z.string().min(1),
+}).strict();
+export type ForemanInstructionsView = z.infer<typeof ForemanInstructionsViewSchema>;
+
+/** The stable conflict vocabulary consumed by every standing-guidance editor. */
+export const FOREMAN_INSTRUCTIONS_CONFLICT_MESSAGE =
+  "Foreman standing guidance changed in another window";
+export const FOREMAN_INSTRUCTIONS_CONFLICT_CODE =
+  "foreman_instructions_revision_conflict";
+
+export const ForemanInstructionsConflictSchema = z.object({
+  error: z.literal(FOREMAN_INSTRUCTIONS_CONFLICT_MESSAGE),
+  code: z.literal(FOREMAN_INSTRUCTIONS_CONFLICT_CODE),
+  current: ForemanInstructionsViewSchema,
+}).strict();
+export type ForemanInstructionsConflict = z.infer<typeof ForemanInstructionsConflictSchema>;
+
 /**
  * Foreman's standing instructions - the prose half of its configuration, edited as one
  * document rather than as fields.
@@ -1320,20 +1389,21 @@ export type AwayConfig = z.infer<typeof AwayConfigSchema>;
  * carries prose that shapes JUDGEMENT. Keeping them apart is what stops a sentence in a text
  * box from doing a switch's job - see `PREFS_FRAMING`.
  *
- * `reset` and `text` are distinct operations because empty is a real value: an operator who
- * clears the box wants Foreman judging by its own policy alone, which is not the same as
- * wanting the shipped default back.
+ * Reset and text are strict, disjoint operations because empty is a real value: an operator
+ * who clears the box wants Foreman judging by its own policy alone, which is not the same as
+ * wanting the shipped default back. Every mutation carries the exact ETag it was based on so
+ * a stale window cannot overwrite a newer document silently.
  */
-export const ForemanInstructionsSchema = z
-  .object({
-    /** The new document. Ignored when `reset` is true. */
-    text: z.string().max(64_000).optional(),
-    /** Drop the stored value so the shipped `FOREMAN.md` applies again. */
-    reset: z.boolean().default(false),
-  })
-  .refine((o) => o.reset || typeof o.text === "string", {
-    message: "provide `text`, or `reset: true`",
-  });
+export const ForemanInstructionsSchema = z.union([
+  z.object({
+    expectedEtag: z.string().min(1),
+    text: z.string().max(FOREMAN_INSTRUCTIONS_MAX_LENGTH),
+  }).strict(),
+  z.object({
+    expectedEtag: z.string().min(1),
+    reset: z.literal(true),
+  }).strict(),
+]);
 export type ForemanInstructionsUpdate = z.infer<typeof ForemanInstructionsSchema>;
 
 /** Partial update of the away config from the dashboard. */
@@ -1753,6 +1823,83 @@ export const WorktreesConfigPatchSchema = z
   });
 export type WorktreesConfigPatch = z.infer<typeof WorktreesConfigPatchSchema>;
 
+/** Loopback-only request used by `make session`; the daemon derives every destination. */
+export const ManualWorktreeAcquireSchema = z
+  .object({
+    repositoryPath: z.string().min(1).max(4096),
+    label: z.string().trim().min(1).max(160).optional(),
+  })
+  .strict();
+export type ManualWorktreeAcquire = z.infer<typeof ManualWorktreeAcquireSchema>;
+
+/** Return one exact manual lease by its unguessable durable identity. */
+export const ManualWorktreeReturnSchema = z
+  .object({
+    leaseId: z.string().min(1).max(512),
+  })
+  .strict();
+export type ManualWorktreeReturn = z.infer<typeof ManualWorktreeReturnSchema>;
+
+const WorktreeStableIdSchema = z.string().min(1).max(128);
+const WorktreeOwnerTargetSchema = z
+  .object({
+    kind: z.enum(["task", "check"]),
+    id: WorktreeStableIdSchema,
+    position: z.number().int().min(0).max(255).optional(),
+  })
+  .strict();
+
+/** Closed, stable-id-only operation vocabulary for Settings > Worktrees. */
+export const WorktreeActionRequestSchema = z.discriminatedUnion("action", [
+  z.object({ action: z.literal("return"), slotId: WorktreeStableIdSchema }).strict(),
+  z
+    .object({
+      action: z.literal("prune"),
+      poolId: WorktreeStableIdSchema,
+      mode: z.enum(["safe", "rightSize"]),
+    })
+    .strict(),
+  z.object({ action: z.literal("reconcile"), poolId: WorktreeStableIdSchema }).strict(),
+  z
+    .object({
+      action: z.literal("destroy"),
+      target: z.discriminatedUnion("kind", [
+        z.object({ kind: z.literal("slot"), slotId: WorktreeStableIdSchema }).strict(),
+        z.object({ kind: z.literal("pool"), poolId: WorktreeStableIdSchema }).strict(),
+      ]),
+    })
+    .strict(),
+  z
+    .object({ action: z.literal("legacyReturn"), owner: WorktreeOwnerTargetSchema })
+    .strict(),
+]);
+
+export const WorktreeActionExecuteSchema = z
+  .object({
+    token: z.string().uuid(),
+    acknowledgements: z
+      .array(
+        z.enum([
+          "dirty",
+          "unlanded",
+          "leased",
+          "domain-owned",
+          "occupied",
+          "unknown-occupancy",
+          "quarantined",
+          "over-capacity",
+          "legacy-unverifiable",
+          "foreign",
+        ]),
+      )
+      .max(16),
+  })
+  .strict();
+
+export const OpenWorktreeSchema = z
+  .object({ backend: z.enum(TERMINAL_BACKEND_IDS) })
+  .strict();
+
 /**
  * Partial update of the harnesses config from the dashboard.
  *
@@ -1817,6 +1964,28 @@ export type TaskSourcesConfigPatch = z.infer<typeof TaskSourcesConfigPatchSchema
  */
 export const PipelinesConfigPatchSchema = PipelinesConfigSchema;
 export type PipelinesConfigPatch = z.infer<typeof PipelinesConfigPatchSchema>;
+
+/** Register one canonical repository with its provider. Observation consent is a later write. */
+export const PipelineRepoRegistrationSchema = z.object({
+  provider: z.enum(PIPELINE_PROVIDER_IDS),
+  repoRoot: z.string().min(1),
+});
+export type PipelineRepoRegistrationBody = z.infer<typeof PipelineRepoRegistrationSchema>;
+
+/**
+ * Open one provider-owned interactive installer in a selected hosted terminal.
+ *
+ * Strict on purpose. The browser selects three typed facts and nothing else; argv, shell
+ * text, flags, environment, cwd, and title are composed and reverified by the daemon.
+ */
+export const PipelineInstallerLaunchSchema = z
+  .object({
+    provider: z.enum(PIPELINE_PROVIDER_IDS),
+    checkout: z.string().min(1).max(4096),
+    backend: z.enum(TERMINAL_BACKEND_IDS),
+  })
+  .strict();
+export type PipelineInstallerLaunchBody = z.infer<typeof PipelineInstallerLaunchSchema>;
 
 /**
  * One control verb aimed at an external SDLC engine, and one request for a hosted terminal.
@@ -2610,29 +2779,30 @@ export const WrapupAskedSchema = z.object({
 });
 export type WrapupAsked = z.infer<typeof WrapupAskedSchema>;
 
+const SessionIntentGuardSchema = z.object({
+  objective: z.string().trim().min(1).max(INTENT_MAX),
+  objectiveVersion: z.number().int().min(1),
+  promptRevision: z.number().int().min(1),
+  episodeKey: z.string().min(1).max(200),
+}).refine(
+  (intent) => intent.episodeKey === `intent:${intent.objectiveVersion}:${intent.promptRevision}`,
+  { message: "Intent episode key does not match its revisions" },
+);
+
 /**
- * Retire one episode of the `prompted` wrap-up trigger: the goal it just decided on.
+ * Consume one completed work-cycle generation for the `prompted` trigger.
  *
- * INTENT_MAX is generous headroom here, not a tight fit: this carries a whole captured
- * prompt, which `clampPrompt` has already bounded to ~4k upstream. The bound is about
- * weight rather than safety - unlike `WrapupSchema.answer` this value is never
- * delivered into a pane and is only ever compared for equality, so its content is
- * inert. It still belongs at the boundary, since it is persisted and re-served on
- * every queue read the worker polls.
+ * The daemon compares every field again at the write boundary. A worker result from a
+ * rotated conversation, changed intent, restarted turn, or newer completion therefore
+ * cannot spend either the stale or current generation.
  */
 export const PromptedWrapupSchema = z.object({
-  goal: z.string().min(1).max(INTENT_MAX),
-  /**
-   * SHA-256 marker of the HEAD + transcript completion evidence just decided.
-   * Optional only for an old worker talking to a newly upgraded daemon. The route
-   * stores that write as the same legacy spent guard an upgraded database exposes.
-   */
-  evidenceMarker: z.string().regex(/^[a-f0-9]{64}$/).optional(),
-  /** Activity boundary observed with the evidence. Optional for worker version skew. */
-  activityAt: z.number().int().nonnegative().optional(),
-  // The human-decision path must retire the prompted episode and raise its Ship it?
-  // card in one durable write. If that write fails, neither marker lands and the
-  // worker can retry the whole verified boundary on its next unhurried tick.
+  logicalKey: z.string().min(1).max(NOTE_KEY_MAX),
+  generation: z.number().int().min(1),
+  expectedIntent: SessionIntentGuardSchema,
+  // The human-decision path must consume the generation and raise its Ship it?
+  // card in one durable write. If that write fails, neither fact lands and the worker
+  // can retry the whole verified boundary on its next unhurried tick.
   ask: z.boolean().optional().default(false),
 });
 export type PromptedWrapup = z.infer<typeof PromptedWrapupSchema>;
@@ -3915,20 +4085,20 @@ export const WorkflowCheckOutcomeSchema = z.object({
 export const WorkflowCompletionClaimSchema = z.object({
   completionKind: z.enum(WORKFLOW_COMPLETION_KINDS),
   marker: z.string().regex(/^[a-f0-9]{64}$/),
-  /** Prompted session activity observed with this proof. Absent on drain or old-worker claims. */
-  activityAt: z.number().int().nonnegative().nullable().optional().default(null),
+  expectedWorkCycle: z.object({
+    logicalKey: z.string().min(1).max(NOTE_KEY_MAX),
+    generation: z.number().int().min(1),
+  }).nullable().optional().default(null),
   summary: z.string().min(1).max(WORKFLOW_EXECUTION_LIMITS.verdictSummary),
   evidenceFingerprint: z.string().min(1).max(200),
-  expectedIntent: z.object({
-    objective: z.string().trim().min(1).max(INTENT_MAX),
-    objectiveVersion: z.number().int().min(1),
-    promptRevision: z.number().int().min(1),
-    episodeKey: z.string().min(1).max(200),
-  }).refine(
-    (intent) =>
-      intent.episodeKey === `intent:${intent.objectiveVersion}:${intent.promptRevision}`,
-    { message: "Intent episode key does not match its revisions" },
-  ).nullable().optional().default(null),
+  expectedIntent: SessionIntentGuardSchema.nullable().optional().default(null),
+}).superRefine((claim, ctx) => {
+  if (claim.completionKind === "prompted" && !claim.expectedWorkCycle) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Prompted completion requires a work cycle" });
+  }
+  if (claim.completionKind === "drain" && claim.expectedWorkCycle) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Drain completion cannot consume a work cycle" });
+  }
 });
 export type WorkflowCompletionClaimInput = z.infer<typeof WorkflowCompletionClaimSchema>;
 
@@ -4877,7 +5047,10 @@ const ScheduleTemplateSchema = z
     title: z.string().trim().min(1).max(200),
     intent: z.string().trim().min(1),
     repoRoot: z.string().min(1),
-    kind: z.enum(TASK_KINDS).default("ship"),
+    kind: z
+      .enum(TASK_KINDS)
+      .refine(taskKindAllowsBacklog, TASK_KIND_BACKLOG_REFUSAL)
+      .default("ship"),
     agent: z.enum(AGENT_TYPES).default("claude"),
     priority: z.enum(TASK_PRIORITIES).nullable().default(null),
     labels: z.array(z.string()).max(MAX_LABELS).default([]).transform(normalizeLabels),

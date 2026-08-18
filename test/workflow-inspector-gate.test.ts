@@ -989,6 +989,27 @@ test("a blocked run stays open on both sides of the wire, so its gate keeps veto
   );
 });
 
+test("a live Inspector wait accepts an idempotent recheck request", async () => {
+  const seeded = await seed({ policy: "inspector_only" });
+  try {
+    assert.equal(seeded.store.getRun(seeded.ids.run)?.status, "waiting_for_inspector");
+    const requestId = `recheck-live-${serial}`;
+    const first = seeded.manager.recheckInspector(seeded.ids.run, requestId);
+    assert.equal(first.ok, true);
+    const replay = seeded.manager.recheckInspector(seeded.ids.run, requestId);
+    assert.equal(replay.ok, true);
+    assert.equal(replay.ok && replay.idempotent, true);
+    assert.equal(
+      seeded.store.listEvents(seeded.ids.run)
+        .filter((event) => event.kind === "inspector_recheck_requested").length,
+      1,
+      "an idempotent recheck wrote more than one audit event",
+    );
+  } finally {
+    await seeded.manager.stop();
+  }
+});
+
 // A run that exhausts its repair budget vetoes its pull request FOREVER, and until this
 // test existed nothing pinned any part of that story. The veto itself is correct and stays
 // - a gate that gave up did not pass, and auto-merging it is the bypass the veto exists to
@@ -1052,6 +1073,12 @@ test("a spent repair budget vetoes under its own reason, survives new heads, and
   );
 
   await parkOnFindings(2, secondHead, "the second findings did not park on a new head");
+  const acceptedRecheckId = `recheck-before-spent-${serial}`;
+  const acceptedRecheck = seeded.manager.recheckInspector(
+    seeded.ids.run,
+    acceptedRecheckId,
+  );
+  assert.equal(acceptedRecheck.ok, true);
   signal(seeded, `head-${serial}-three`);
   await waitFor(
     () => seeded.store.getRun(seeded.ids.run)?.currentPhase === "round_limit",
@@ -1061,6 +1088,31 @@ test("a spent repair budget vetoes under its own reason, survives new heads, and
   // 1. The veto stands, and now it names itself. `pending` here would be the daemon
   //    telling the operator to wait for a review that will never run again.
   assert.equal(seeded.manager.mergeGate(seeded.key), "spent");
+  const acceptedReplay = seeded.manager.recheckInspector(
+    seeded.ids.run,
+    acceptedRecheckId,
+  );
+  assert.equal(acceptedReplay.ok, true);
+  assert.equal(acceptedReplay.ok && acceptedReplay.idempotent, true);
+  const recheckEventsBeforeDeadRequest = seeded.store.listEvents(seeded.ids.run)
+    .filter((event) => event.kind === "inspector_recheck_requested").length;
+  assert.equal(
+    recheckEventsBeforeDeadRequest,
+    1,
+    "replaying an accepted recheck after the run changed state wrote another audit event",
+  );
+  const deadRecheck = seeded.manager.recheckInspector(
+    seeded.ids.run,
+    `recheck-spent-${serial}`,
+  );
+  assert.equal(deadRecheck.ok, false);
+  if (!deadRecheck.ok) assert.equal(deadRecheck.reason, "run_not_waiting");
+  assert.equal(
+    seeded.store.listEvents(seeded.ids.run)
+      .filter((event) => event.kind === "inspector_recheck_requested").length,
+    recheckEventsBeforeDeadRequest,
+    "a spent recheck left an audit event even though the evaluator cannot advance it",
+  );
 
   // 2. The remedy run detail used to advertise - "a larger repair budget is a change to
   //    the binding" - does not work, because every guard reads the RUN's snapshot and
@@ -1133,6 +1185,58 @@ test("a spent repair budget vetoes under its own reason, survives new heads, and
     seeded.store.listEvents(seeded.ids.run).filter((event) => event.kind === "repair_rounds_granted").length,
     1,
     "the replay wrote a second grant into the run's history",
+  );
+
+  /*
+   * 7. The granted path can adopt a clean exact current head, but only after the daemon's
+   * ordinary evaluator sees the current Inspector ledger. Granting did not complete the run,
+   * rewrite its historical gate observation, or create a browser-owned shortcut.
+   */
+  const currentHead = `head-${serial}-five`;
+  const resolvedAt = Date.now();
+  db.prepare(
+    `UPDATE inspector_comments SET status = 'resolved', updated_at = ? WHERE pr_key = ?`,
+  ).run(resolvedAt, seeded.key);
+  updateInspectorPr(seeded.key, {
+    state: "open",
+    headSha: currentHead,
+    lastAttemptSha: currentHead,
+    observedHeadSha: currentHead,
+    observedState: "OPEN",
+    observedAt: resolvedAt,
+    reviewPosture: "live",
+    round: 3,
+    lastReviewedAt: resolvedAt,
+    lastError: null,
+    nextAttemptAt: null,
+  }, resolvedAt);
+  signal(seeded, currentHead, resolvedAt);
+  await waitFor(
+    () => seeded.store.getRun(seeded.ids.run)?.status === "completed",
+    "the granted evaluator path did not adopt the clean exact Inspector head",
+  );
+  const adoptedSubmission = seeded.store.latestSubmission(seeded.ids.run);
+  assert.equal(adoptedSubmission?.mode, "inspector_only");
+  assert.equal(adoptedSubmission?.prHeadSha, currentHead);
+  const adoptedContext = adoptedSubmission?.context as
+    | { priorFindingFingerprints?: string[] }
+    | undefined;
+  assert.deepEqual(
+    adoptedContext?.priorFindingFingerprints,
+    [
+      `round-limit-finding-${serial}-1`,
+      `round-limit-finding-${serial}-2`,
+    ],
+    "the immutable Inspector-only submission lost its prior finding audit",
+  );
+  assert.equal(
+    seeded.store.listEvents(seeded.ids.run).filter((event) => event.kind === "inspector_gate_clean").length,
+    1,
+  );
+  assert.equal(
+    seeded.manager.mergeGate(seeded.key),
+    "none",
+    "the completed workflow still held a Shipping veto",
   );
   await seeded.manager.stop();
 });

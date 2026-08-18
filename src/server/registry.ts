@@ -22,6 +22,7 @@ import type {
   SessionCost,
   SessionMeta,
   SessionGoal,
+  SessionIntentGuard,
   SessionGoalSummary,
   SessionNote,
   SessionNoteSummary,
@@ -60,7 +61,8 @@ import type {
 } from "@shared/protocol.ts";
 import { inFlightItem as inFlightItemOf, isTerminalState } from "@shared/queue.ts";
 import { noteAwaitsYou } from "@shared/foreman.ts";
-import { goalLine } from "@shared/goal.ts";
+import { reportBucket } from "@shared/session.ts";
+import { goalLine, resolvedSessionIntent, sessionIntentMatches } from "@shared/goal.ts";
 import { fullTaskTitle } from "@shared/title.ts";
 import { taskRepoPrSummaries, taskRepoRefs } from "@shared/task-repos.ts";
 import { capabilitiesFor, workQueueBlockedReason } from "@shared/harness-capabilities.ts";
@@ -81,7 +83,13 @@ import {
   parseContextWindowSize,
 } from "@shared/model.ts";
 import type { DiscoveredSession } from "./discovery/correlate.ts";
-import type { RuntimeMetaRead, SdkEvent, SdkUsage, SessionActivityRead } from "./harness/types.ts";
+import type {
+  RuntimeMetaRead,
+  SdkEvent,
+  SdkUsage,
+  SessionActivityRead,
+  WorkCycleSignal,
+} from "./harness/types.ts";
 // The one projection of a driver request into the dialog shape every surface already
 // renders. Pure and its own module - see `sdk/dialog.ts`.
 import { driverDialog } from "./sdk/dialog.ts";
@@ -106,6 +114,7 @@ import { clampPrompt } from "./util/prompt-text.ts";
 // for rather than re-spelled as a `startsWith`, which would read `.worktrees/add-widgets` as
 // living inside `.worktrees/add`.
 import { withinRoot } from "./util/repo-doc.ts";
+import { gitInfo } from "./util/git.ts";
 import {
   clearPendingTurns as clearPendingTurnsDb,
   clearQueue as clearQueueDb,
@@ -134,6 +143,10 @@ import {
   hooksEverSeen,
   lastAgentBinding,
   logEvent,
+  markWorkCycleActive,
+  completeWorkCycle,
+  bootstrapPromptedConsumedGeneration,
+  consumePromptedGeneration as dbConsumePromptedGeneration,
   recordAgentBinding,
   rekeyQueue,
   listQueueRowsForCwd,
@@ -178,6 +191,7 @@ import {
   taskReposFor,
   workEpisodeRepoPr,
   workEpisodeRepoPrsForTask,
+  workCycleFor as dbWorkCycleFor,
   upsertQueue,
   upsertQueueItem,
   upsertSessionGoal,
@@ -422,6 +436,8 @@ const LINE_INPUT_EVENTS = new Set<ServerEvent["type"]>([
   // Changes which model/effort/runtime the NEXT dispatch uses, so the pickers naming those
   // defaults have to re-read rather than wait out a poll.
   "harnesses_config_changed",
+  // Deliberately absent: worktree inventory and policy do not feed the Line's execution
+  // fold. Its content-free event only tells an open Settings panel to re-observe.
   // `pipeline_upsert` / `pipeline_remove` are DELIBERATELY absent, and the question was
   // asked rather than skipped. The Line folds Mission Control's own execution - its
   // sessions, tasks, runs and ensembles - and a pipeline run is a second engine's, which
@@ -850,15 +866,13 @@ export class Registry extends EventEmitter {
    * The suppression mirrors `recomputeFleetCost`: `publishSettingsStatus` recomposes on
    * every config write and after every sweep, so without this an operator toggling one
    * source's interval would push an identical tuple to every open dashboard. The compare
-   * is a shallow field walk - the shape is a handful of small scalars, so `byJson` would be
-   * the same answer at more cost.
+   * is a shallow field walk over a handful of small scalars and one bounded string tuple, so
+   * serializing the entire payload would be the same answer at more cost.
    *
    * **Every field of the tuple has to appear below.** A field left out is not merely
    * compared loosely: it is a field whose CHANGE is silently dropped, because a tuple that
-   * moved only there compares equal and no frame is sent. The `pipelines` pair was missing
-   * when it arrived, which meant the promise that installing the engine makes the Conductor
-   * row appear "while you are still looking for it" was answered by a frame this method
-   * threw away - and the row waited for whatever unrelated setting moved next.
+   * moved only there compares equal and no frame is sent. That includes the exact observed
+   * repository keys: a count-preserving root swap still has to invalidate Dispatch.
    */
   emitSettingsStatus(status: SettingsStatus): void {
     const prev = this.lastSettingsStatus;
@@ -869,7 +883,13 @@ export class Registry extends EventEmitter {
       prev.shipping.autoMerge === status.shipping.autoMerge &&
       prev.taskSources.failing === status.taskSources.failing &&
       prev.pipelines.present === status.pipelines.present &&
-      prev.pipelines.observing === status.pipelines.observing;
+      prev.pipelines.observing === status.pipelines.observing &&
+      (prev.pipelines.launchRuntime ?? null) === (status.pipelines.launchRuntime ?? null) &&
+      (prev.pipelines.observedRepoKeys?.length ?? 0) ===
+        (status.pipelines.observedRepoKeys?.length ?? 0) &&
+      (prev.pipelines.observedRepoKeys ?? []).every(
+        (key, index) => key === status.pipelines.observedRepoKeys?.[index],
+      );
     this.lastSettingsStatus = status;
     if (same) return;
     this.emitEvent({ type: "settings_status", status });
@@ -885,6 +905,11 @@ export class Registry extends EventEmitter {
    */
   emitHarnessesConfigChanged(): void {
     this.emitEvent({ type: "harnesses_config_changed" });
+  }
+
+  /** Announce that the bounded Worktrees route should be re-observed. */
+  emitWorktreesChanged(): void {
+    this.emitEvent({ type: "worktrees_changed" });
   }
 
   /**
@@ -1004,6 +1029,12 @@ export class Registry extends EventEmitter {
   onPrOpened(fn: (e: PrOpened) => void): () => void {
     this.on("pr_opened", fn);
     return () => this.off("pr_opened", fn);
+  }
+
+  /** A projected pipeline moved, including the boot-time projection restore. */
+  onPipelineRun(fn: (run: PipelineRun) => void): () => void {
+    this.on("pipeline_run", fn);
+    return () => this.off("pipeline_run", fn);
   }
 
   /**
@@ -1319,10 +1350,12 @@ export class Registry extends EventEmitter {
 
   /**
    * Boot-time install of the projection read back from SQLite. It precedes serving SSE, so
-   * it emits nothing - the same contract `initializeWorkflowCommands` holds.
+   * it emits no browser frame, the same contract `initializeWorkflowCommands` holds. The
+   * internal event lets server-owned consumers such as Inspector rebuild their projections.
    */
   initializePipelineRuns(runs: readonly PipelineRun[]): void {
     this.pipelineRuns = new Map(runs.map((run) => [pipelineRunKeyOf(run), run]));
+    for (const run of runs) this.emit("pipeline_run", run);
   }
 
   /**
@@ -1341,6 +1374,7 @@ export class Registry extends EventEmitter {
     const prev = this.pipelineRuns.get(key);
     this.pipelineRuns.set(key, run);
     if (prev && pipelineRunDisplayEqual(prev, run)) return;
+    this.emit("pipeline_run", run);
     this.emitEvent({ type: "pipeline_upsert", run });
     // After the frame, and after the map already holds the new run: the sessions this moves
     // are re-derived FROM the projection, so it has to be current before they are asked.
@@ -1558,6 +1592,7 @@ export class Registry extends EventEmitter {
       firstSeen: prev?.firstSeen ?? now,
       lastSeen: now,
       lastActivity: prev?.lastActivity ?? null,
+      workCycle: undefined,
       pendingReviews: this.countPending(d.syntheticId),
       task: this.taskSummaryFor(d.syntheticId, d.cwd),
       // Carried forward like the PR fields for the same reason: discovery cannot see it.
@@ -1612,6 +1647,13 @@ export class Registry extends EventEmitter {
         base.lastActivity = passive.lastActivity;
       }
     }
+    // Work-cycle state follows the logical conversation key, not the pane-backed map key.
+    // Read SQLite only on first sight or rotation; otherwise the in-memory projection is the
+    // freshest value and avoids adding one synchronous query to every discovery poll.
+    base.workCycle =
+      prev && noteKeyFor(prev) === noteKeyFor(base)
+        ? prev.workCycle
+        : (dbWorkCycleFor(noteKeyFor(base)) ?? undefined);
     // The overlay may have just supplied a binding nothing has persisted yet, and
     // that is the ORDINARY case at launch, not an edge: a hook whose session hasn't
     // been discovered yet has no live session to apply to, so it only ever reaches
@@ -1744,6 +1786,7 @@ export class Registry extends EventEmitter {
       firstSeen: now,
       lastSeen: now,
       lastActivity: null,
+      workCycle: undefined,
       pendingReviews: this.countPending(input.id),
       task: null,
       prUrl: null,
@@ -1772,6 +1815,7 @@ export class Registry extends EventEmitter {
     s.cost = sessionCostFor(noteKeyFor(s));
     s.queue = this.queueSummaryFor(s);
     s.pendingTurns = this.pendingTurnsFor(s);
+    s.workCycle = dbWorkCycleFor(noteKeyFor(s)) ?? undefined;
     this.resolveInspectionSummaries(s);
     this.sessions.set(s.id, s);
     this.emitSession(s);
@@ -1796,6 +1840,40 @@ export class Registry extends EventEmitter {
   }
 
   /**
+   * Persist one normalized lifecycle signal, then return the matching session projection.
+   *
+   * The database write comes first so an emitted session can never advertise a generation
+   * that a daemon restart would lose. A completion without an armed row returns no summary,
+   * which is the fail-closed meaning of idle/end noise on a conversation with no work.
+   */
+  private withWorkCycleSignal(
+    s: Session,
+    signal: WorkCycleSignal,
+    occurredAt: number,
+    updatedAt: number,
+  ): Session {
+    const logicalKey = noteKeyFor(s);
+    const workCycle = signal === "work_started"
+      ? markWorkCycleActive(logicalKey, updatedAt)
+      : completeWorkCycle(logicalKey, occurredAt, updatedAt);
+    const projected = workCycle ?? undefined;
+    if (JSON.stringify(s.workCycle) === JSON.stringify(projected)) return s;
+    return { ...s, workCycle: projected };
+  }
+
+  /** Persist and emit a lifecycle-only change, used when an SDK completion stays busy. */
+  private applyWorkCycleOnly(
+    s: Session,
+    signal: WorkCycleSignal,
+    occurredAt: number,
+    updatedAt: number,
+  ): void {
+    const next = this.withWorkCycleSignal(s, signal, occurredAt, updatedAt);
+    this.sessions.set(next.id, next);
+    if (!sessionEqual(s, next)) this.emitSession(next);
+  }
+
+  /**
    * Ingest one event from a session's driver - the first-class sibling of `applyHook`.
    *
    * Refuses anything about a session that is not driver-run, which is the same shape of
@@ -1815,7 +1893,13 @@ export class Registry extends EventEmitter {
         this.applyDriverBinding(s, evt, now);
         return;
       case "state":
-        this.applyDriverState(s, evt.state, evt.activity, now);
+        this.applyDriverState(
+          s,
+          evt.state,
+          evt.activity,
+          now,
+          evt.state === "working" ? "work_started" : null,
+        );
         return;
       case "turn_done":
         // The turn ended, so the session is idle - the same fact a `Stop` hook carries -
@@ -1840,7 +1924,13 @@ export class Registry extends EventEmitter {
         // the session first is silently reverted by it - the ledger row survives, the card's
         // own figure does not, and the fleet total then disagrees with every chip on it.
         // Recording last means `applyDurableUsage` re-reads the session it is updating.
-        if (!options.deferIdle) this.applyDriverState(s, "idle", null, now);
+        if (!options.deferIdle) {
+          this.applyDriverState(s, "idle", null, now, "turn_completed");
+        } else {
+          // The next accepted turn keeps the card working, but the cycle that just ended
+          // still advances. Emit only that durable projection instead of a transient idle.
+          this.applyWorkCycleOnly(s, "turn_completed", now, now);
+        }
         this.recordDriverTurnUsage(s, evt.usage, now);
         return;
       case "rate_limits":
@@ -1929,6 +2019,9 @@ export class Registry extends EventEmitter {
     if (this.clearEffortTrackingOnRebind(s, next) && next.meta) {
       next.meta = { ...next.meta, thinkingLevel: null };
     }
+    if (noteKeyFor(next) !== noteKeyFor(s)) {
+      next.workCycle = dbWorkCycleFor(noteKeyFor(next)) ?? undefined;
+    }
     // Binding changes the note key, so everything keyed on it is re-resolved NOW rather
     // than on some later event, exactly as `applyHook` does and for the same reason: until
     // it is, the card shows the synthetic id's (empty) note, queue and goal.
@@ -1968,12 +2061,16 @@ export class Registry extends EventEmitter {
     state: "working" | "idle",
     activity: string | null,
     now: number,
+    workCycleSignal: WorkCycleSignal | null = null,
   ): void {
     // A final result/state frame may race an operator stop. It can update the durable turn
     // mirror in the supervisor, but it must not make this card actionable again after the
     // supervisor has closed delivery and acknowledged that fact to the browser.
-    if (s.state === "stopping") return;
-    const next: Session = {
+    if (s.state === "stopping") {
+      if (workCycleSignal) this.applyWorkCycleOnly(s, workCycleSignal, now, now);
+      return;
+    }
+    let next: Session = {
       ...s,
       state,
       activity,
@@ -1985,6 +2082,7 @@ export class Registry extends EventEmitter {
       stateConfirmed: true,
       lastActivity: now,
     };
+    if (workCycleSignal) next = this.withWorkCycleSignal(next, workCycleSignal, now, now);
     this.sessions.set(next.id, next);
     if (!sessionEqual(s, next) || s.lastActivity !== now) this.emitSession(next);
   }
@@ -2015,8 +2113,13 @@ export class Registry extends EventEmitter {
   private applyDriverPrCreated(s: Session, urls: string[]): void {
     const url = urls[0];
     if (!url) return;
+    // Native leases are detached at registration. The driver observed `gh pr create`, so
+    // read the branch from the checkout now and adopt it in place before the poller confirms
+    // the PR. The ordinary discovery refresh remains authoritative for later branch moves.
+    const gitBranch = s.gitBranch ?? (s.cwd ? gitInfo(s.cwd).branch : null);
     const next: Session = {
       ...s,
+      gitBranch,
       prUrl: url,
       prNumber: prNumberFromUrl(url),
       prState: "open",
@@ -2086,6 +2189,7 @@ export class Registry extends EventEmitter {
     const ts = evt.ts ?? now;
     const key = overlayKeyFromEnv(evt.env);
     const { state, activity } = spec.toState(evt);
+    const workCycleSignal = spec.workCycleSignal(evt);
     const target = this.findSessionForHook(evt, key);
 
     // Passive PID/open-file identity is exact. A conflicting hook belongs to another
@@ -2145,7 +2249,15 @@ export class Registry extends EventEmitter {
       const transcriptPath = agentRebound && evt.transcriptPath === target.transcriptPath
         ? null
         : evt.transcriptPath ?? (agentRebound ? null : target.transcriptPath);
-      const next: Session = {
+      // A native lease starts detached. A live SDK hook after the agent creates its branch
+      // is a better moment to observe that branch than a later passive sweep. Keep a known
+      // branch untouched, but let the first real branch replace the acquisition-time null
+      // so the existing PR and workflow lifecycles can use it immediately.
+      const gitBranch = target.gitBranch ??
+        (target.runtime === "sdk" && target.cwd
+          ? gitInfo(target.cwd).branch
+          : null);
+      let next: Session = {
         ...target,
         ...pr,
         instrumented: true,
@@ -2157,7 +2269,14 @@ export class Registry extends EventEmitter {
         lastActivity: ts,
         agentSessionId,
         transcriptPath,
+        gitBranch,
       };
+      if (noteKeyFor(next) !== noteKeyFor(target)) {
+        next.workCycle = dbWorkCycleFor(noteKeyFor(next)) ?? undefined;
+      }
+      if (workCycleSignal) {
+        next = this.withWorkCycleSignal(next, workCycleSignal, ts, now);
+      }
       if (this.clearEffortTrackingOnRebind(target, next) && next.meta) {
         next.meta = { ...next.meta, thinkingLevel: null };
       }
@@ -2229,6 +2348,13 @@ export class Registry extends EventEmitter {
           this.announcePrOpened(next, url);
         }
       }
+    } else if (workCycleSignal && evt.sessionId) {
+      // Hooks can beat process discovery during launch. The harness session id is already
+      // the logical key, so persist the lifecycle edge now and let the first discovery
+      // projection read it back. Without this branch the first prompt of a new session can
+      // be the one cycle whose active bit disappears on a daemon restart.
+      if (workCycleSignal === "work_started") markWorkCycleActive(evt.sessionId, now);
+      else completeWorkCycle(evt.sessionId, ts, now);
     }
     this.pruneOverlays(now);
   }
@@ -2322,6 +2448,7 @@ export class Registry extends EventEmitter {
       ...s,
       agentSessionId,
       transcriptPath: null,
+      workCycle: dbWorkCycleFor(agentSessionId) ?? undefined,
     };
     if (this.clearEffortTrackingOnRebind(s, next) && next.meta) {
       next.meta = { ...next.meta, thinkingLevel: null };
@@ -3492,16 +3619,20 @@ export class Registry extends EventEmitter {
       if (!task || task.extraRepos.length === 0) continue;
       const episode = sessionWorkEpisodeFor(s.id);
       for (const entry of task.extraRepos) {
-        // No tree or no branch means nothing was provisioned here (or teardown already
-        // took it back), and there is no checkout to run `gh` in.
-        if (!entry.worktreePath || !entry.branch) continue;
+        // Native acquisition records the detached checkout honestly as `branch: null`.
+        // Agents create their branches later, so use the recorded provision-time branch
+        // when one exists and otherwise observe the checkout now. Do not write it back to
+        // the task: its resource record remains the exact acquisition result.
+        if (!entry.worktreePath) continue;
+        const branch = entry.branch ?? gitInfo(entry.worktreePath).branch;
+        if (!branch) continue;
         out.push({
           key: repoPrTargetKey(s.id, entry.repoRoot),
           sessionId: s.id,
           taskId: task.id,
           repoRoot: entry.repoRoot,
           cwd: entry.worktreePath,
-          branch: entry.branch,
+          branch,
           agentSessionId: s.agentSessionId,
           episodeId: episode?.episodeId ?? null,
         });
@@ -4221,6 +4352,7 @@ export class Registry extends EventEmitter {
       // the note key like any other binding - and the invite moves with the key.
       this.moveForemanInviteKey(noteKeyFor(s), noteKeyFor(next));
       next.foremanInvite = this.foremanInviteFor(next);
+      next.workCycle = dbWorkCycleFor(noteKeyFor(next)) ?? undefined;
     }
     this.rememberAgentSession(next, s.agentSessionId);
     this.sessions.set(next.id, next);
@@ -4316,6 +4448,7 @@ export class Registry extends EventEmitter {
       // Inside the rotation guard for the same per-render economy the cost re-read is.
       this.moveForemanInviteKey(noteKeyFor(s), key);
       next.foremanInvite = this.foremanInviteFor(next);
+      next.workCycle = dbWorkCycleFor(key) ?? undefined;
     }
     this.rememberAgentSession(next, s.agentSessionId);
     this.sessions.set(s.id, next);
@@ -5150,6 +5283,11 @@ export class Registry extends EventEmitter {
     this.tasks.set(task.id, task);
     this.emitEvent({ type: "task_upsert", task });
     this.syncSessionsForWorktree(task.worktreePath);
+    // Pipeline tasks deliberately have neither `sessionId` nor a Mission Control worktree.
+    // Their nested agents still need their task card refreshed when the durable provider
+    // lifecycle moves, including when explicit cleanup releases the terminal home.
+    if (previous) this.syncSessionsForTaskResources(previous);
+    this.syncSessionsForTaskResources(task);
     if (previous?.sessionId && previous.sessionId !== task.sessionId) {
       this.resyncSessionTask(previous.sessionId);
     }
@@ -5346,6 +5484,7 @@ export class Registry extends EventEmitter {
           title: t.title,
           fullTitle: fullTaskTitle(t.title, t.intent),
           kind: t.kind,
+          workflowId: t.workflowId,
           status: t.status,
           outcome: t.outcome,
           outcomeUrl: t.outcomeUrl,
@@ -5398,6 +5537,15 @@ export class Registry extends EventEmitter {
       if (!bound || t.updatedAt > bound.updatedAt) bound = t;
     }
     if (bound) return bound;
+    const pipelineTask = this.taskResourceOwnerForSession(
+      sessionId,
+      undefined,
+      (task) =>
+        task.kind === "pipeline" &&
+        task.status !== "backlog" &&
+        task.status !== "cancelled",
+    );
+    if (pipelineTask) return pipelineTask;
     const task = this.activeTaskForCwd(cwd);
     if (!task) return undefined;
     const episode = sessionWorkEpisodeFor(sessionId);
@@ -5541,6 +5689,18 @@ export class Registry extends EventEmitter {
     if (!cwd) return;
     for (const id of this.sessions.keys()) {
       if (this.sessions.get(id)?.cwd === cwd) this.resyncSessionTask(id);
+    }
+  }
+
+  /** Refresh cards sharing a pipeline task's terminal home, without binding its children. */
+  private syncSessionsForTaskResources(task: Pick<Task, "homeName" | "terminalResourceId">): void {
+    if (task.homeName === null && task.terminalResourceId === null) return;
+    for (const session of this.sessions.values()) {
+      const sharesHome = task.homeName !== null && terminalHomeNames(session).has(task.homeName);
+      const sharesResource =
+        task.terminalResourceId !== null &&
+        terminalResourceIds(session).has(task.terminalResourceId);
+      if (sharesHome || sharesResource) this.resyncSessionTask(session.id);
     }
   }
 
@@ -6299,7 +6459,10 @@ export class Registry extends EventEmitter {
   getQueue(id: string): SessionQueue | null {
     const s = this.sessions.get(id);
     if (!s) return null;
-    return this.getQueueByKey(noteKeyFor(s));
+    const key = noteKeyFor(s);
+    const intent = resolvedSessionIntent(this.getGoal(s.id));
+    if (intent) bootstrapPromptedConsumedGeneration(key, intent.episodeKey);
+    return this.getQueueByKey(key);
   }
 
   /** Full queue by note key - the orphan path, where no live session resolves it. */
@@ -6316,6 +6479,8 @@ export class Registry extends EventEmitter {
       promptedGoal: row?.promptedGoal ?? null,
       promptedEvidence: row?.promptedEvidence ?? null,
       promptedActivityAt: row?.promptedActivityAt ?? null,
+      promptedLegacyCutoverGeneration: row?.promptedLegacyCutoverGeneration ?? null,
+      promptedConsumedGeneration: row?.promptedConsumedGeneration ?? null,
       updatedAt: row?.updatedAt ?? 0,
       items,
     };
@@ -6405,6 +6570,8 @@ export class Registry extends EventEmitter {
       promptedGoal: prev?.promptedGoal ?? null,
       promptedEvidence: prev?.promptedEvidence ?? null,
       promptedActivityAt: prev?.promptedActivityAt ?? null,
+      promptedLegacyCutoverGeneration: prev?.promptedLegacyCutoverGeneration ?? null,
+      promptedConsumedGeneration: prev?.promptedConsumedGeneration ?? null,
       updatedAt: now,
     });
     return key;
@@ -6419,6 +6586,8 @@ export class Registry extends EventEmitter {
       promptedGoal?: string | null;
       promptedEvidence?: string | null;
       promptedActivityAt?: number | null;
+      promptedLegacyCutoverGeneration?: number | null;
+      promptedConsumedGeneration?: number | null;
     },
     now = Date.now(),
   ): void {
@@ -6441,6 +6610,14 @@ export class Registry extends EventEmitter {
           : patch.promptedGoal === null
             ? null
             : prev.promptedActivityAt,
+      promptedLegacyCutoverGeneration:
+        patch.promptedLegacyCutoverGeneration !== undefined
+          ? patch.promptedLegacyCutoverGeneration
+          : prev.promptedLegacyCutoverGeneration,
+      promptedConsumedGeneration:
+        patch.promptedConsumedGeneration !== undefined
+          ? patch.promptedConsumedGeneration
+          : prev.promptedConsumedGeneration,
       updatedAt: now,
     });
     this.syncSessionsForQueue(key);
@@ -6449,6 +6626,49 @@ export class Registry extends EventEmitter {
   /** Re-read a queue after another daemon-owned transaction updated its guard columns. */
   refreshQueue(key: string): void {
     this.syncSessionsForQueue(key);
+  }
+
+  /** Atomically consume the expected settled generation for one live logical session. */
+  consumePromptedGeneration(
+    id: string,
+    input: {
+      logicalKey: string;
+      generation: number;
+      expectedIntent: SessionIntentGuard;
+      ask: boolean;
+    },
+    now = Date.now(),
+  ): boolean {
+    const session = this.sessions.get(id);
+    if (!session || session.state === "exited" || workQueueBlockedReason(session)) return false;
+    if (noteKeyFor(session) !== input.logicalKey) return false;
+    if (session.state !== "idle" || reportBucket(session, [...this.sessions.values()]) === "needs-you") {
+      return false;
+    }
+    if (listQueueItems(input.logicalKey).length > 0) return false;
+    if (!sessionIntentMatches(this.getGoal(id), input.expectedIntent)) return false;
+    const cycle = session.workCycle;
+    if (
+      !cycle ||
+      cycle.logicalKey !== input.logicalKey ||
+      cycle.generation !== input.generation ||
+      cycle.generation < 1 ||
+      cycle.active ||
+      cycle.completedAt === null
+    ) return false;
+    // Upgrade compatibility is resolved at the daemon mutation boundary too, not
+    // only when the worker happened to read the queue first. A matching historical
+    // guard must remain spent even for a direct HTTP consumer.
+    bootstrapPromptedConsumedGeneration(input.logicalKey, input.expectedIntent.episodeKey);
+    const consumed = dbConsumePromptedGeneration({
+      noteKey: input.logicalKey,
+      sessionCwd: session.cwd,
+      generation: input.generation,
+      ask: input.ask,
+      now,
+    });
+    if (consumed) this.syncSessionsForQueue(input.logicalKey);
+    return consumed;
   }
 
   /**
@@ -6612,6 +6832,8 @@ export class Registry extends EventEmitter {
         promptedGoal: row.promptedGoal,
         promptedEvidence: row.promptedEvidence,
         promptedActivityAt: row.promptedActivityAt,
+        promptedLegacyCutoverGeneration: row.promptedLegacyCutoverGeneration,
+        promptedConsumedGeneration: row.promptedConsumedGeneration,
         updatedAt: now,
       },
       items.map((i, n) => ({ ...i, noteKey: toKey, seq: base + n, updatedAt: now })),
@@ -6985,6 +7207,9 @@ export const SESSION_FIELD_COMPARATORS: SessionFieldComparators = {
   // its call site when it needs the timestamp to force an emit.
   lastSeen: alwaysEqual,
   lastActivity: alwaysEqual,
+  // Small durable projection. A generation or active edge can be the only change on an
+  // SDK session whose next accepted turn suppresses the transient idle state.
+  workCycle: byJson,
   pendingReviews: byValue,
   task: byJson,
   prUrl: byValue,

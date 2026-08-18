@@ -388,12 +388,14 @@ function guard(noteKey: string): {
   wrapupAskedAt: number | null;
   wrapupAnswer: string | null;
   promptedGoal: string | null;
+  promptedConsumedGeneration: number | null;
 } {
   const row = getQueueRow(noteKey);
   return {
     wrapupAskedAt: row?.wrapupAskedAt ?? null,
     wrapupAnswer: row?.wrapupAnswer ?? null,
     promptedGoal: row?.promptedGoal ?? null,
+    promptedConsumedGeneration: row?.promptedConsumedGeneration ?? null,
   };
 }
 
@@ -480,12 +482,12 @@ test("a drained session repairs itself: packet, re-arm, claim, and the graph re-
   }
 });
 
-test("an item-less session repairs itself through the prompted episode", async () => {
+test("an item-less session resumes prompted completion through a new natural work cycle", async () => {
   const h = await harness("prompted-cycle");
   try {
-    // The case the drain re-arm structurally cannot serve: no work queue, so
-    // `rearmDrainCompletionForDelivery`'s EXISTS clause is false and only the prompted half
-    // can fire. Before `rearmPromptedCompletionForDelivery` existed, nothing did.
+    // The case the drain re-arm structurally cannot serve: no work queue. Prompted
+    // completion must resume only after the delivered repair creates and completes a
+    // new lifecycle generation.
     const { runId } = await parkedAfterRoundOne(h);
     assert.equal(h.queues.getByKey(h.noteKey), null, "this fixture must have no work queue");
 
@@ -506,9 +508,19 @@ test("an item-less session repairs itself through the prompted episode", async (
       source: "heuristic",
     }, 5);
     h.head.sha = "head-2";
+    h.registry.applyHook({
+      agent: "claude",
+      event: "Stop",
+      sessionId: h.noteKey,
+      cwd: "/repo",
+      transcriptPath: null,
+      env: { tmuxPane: `%${"prompted-cycle".length}` },
+      ts: 6,
+    });
 
     const claim = promptedCompletionClaim({
       noteKey: h.noteKey,
+      workCycle: { logicalKey: h.noteKey, generation: 1 },
       intent: {
         objective: goal,
         objectiveVersion: 1,
@@ -517,39 +529,65 @@ test("an item-less session repairs itself through the prompted episode", async (
       },
       headSha: h.head.sha,
       transcriptAnchor: 100,
-      activityAt: 5,
       summary: "complete",
     });
     const claimed = await h.manager.claimCompletion(h.sessionId, claim);
     assert.equal(claimed.claimed, true, "the prompted completion claim was refused");
 
-    // The claim succeeding IS the proof it spent the prompted episode: `retirePromptedGuard`
-    // returns false when the stored goal already matches, and `claimForemanCompletion` throws
-    // on a guard it could not retire.
+    assert.equal(guard(h.noteKey).promptedConsumedGeneration, 1);
     const roundTwo = h.store.latestSubmission(runId)!;
     assert.equal(roundTwo.round, 2);
 
-    // Round 2's confirmed packet put the episode back - and the event names WHICH half fired,
-    // which is the whole point: drain declined (no items) and prompted covered it. Before
-    // `rearmPromptedCompletionForDelivery` existed there was no second half to fall through to.
+    // Confirmed workflow delivery does not mutate the prompted guard. It is only proof
+    // that a repair turn was requested; lifecycle observation is what arms the next claim.
     await waitFor(
       () => h.store.listDeliveries(runId).filter((d) => d.state === "delivered").length === 2,
       "round 2 never delivered its packet",
     );
     const rearmed = h.store.listEvents(runId)
       .filter((event) => event.kind === "foreman_completion_rearmed");
-    assert.equal(rearmed.length, 1, "exactly one episode, from exactly one confirmed delivery");
-    assert.equal(
-      (rearmed[0]!.payload as { completionKind?: string }).completionKind,
-      "prompted",
-      "an item-less session can only be re-armed through the prompted episode",
-    );
-    assert.equal(
-      guard(h.noteKey).promptedGoal,
-      null,
-      "the prompted episode must be re-armed by the confirmed delivery",
-    );
+    assert.equal(rearmed.length, 0, "workflow delivery must not re-arm prompted completion");
+    assert.equal(guard(h.noteKey).promptedConsumedGeneration, 1);
     assert.equal(h.queues.getByKey(h.noteKey)?.items.length ?? 0, 0, "no items were invented");
+
+    // The session performs the delivered repair under unchanged intent. A fresh work
+    // start/end advances generation 2 and is sufficient for a second completion claim.
+    h.registry.applyHook({
+      agent: "claude",
+      event: "PreToolUse",
+      sessionId: h.noteKey,
+      cwd: "/repo",
+      transcriptPath: null,
+      env: { tmuxPane: `%${"prompted-cycle".length}` },
+      toolName: "Edit",
+      ts: 7,
+    });
+    h.registry.applyHook({
+      agent: "claude",
+      event: "Stop",
+      sessionId: h.noteKey,
+      cwd: "/repo",
+      transcriptPath: null,
+      env: { tmuxPane: `%${"prompted-cycle".length}` },
+      ts: 8,
+    });
+    h.head.sha = "head-3";
+    const next = await h.manager.claimCompletion(h.sessionId, promptedCompletionClaim({
+      noteKey: h.noteKey,
+      workCycle: { logicalKey: h.noteKey, generation: 2 },
+      intent: {
+        objective: goal,
+        objectiveVersion: 1,
+        promptRevision: 1,
+        episodeKey: "intent:1:1",
+      },
+      headSha: h.head.sha,
+      transcriptAnchor: 200,
+      summary: "repair complete",
+    }));
+    assert.equal(next.claimed, true, "the naturally completed second generation was refused");
+    assert.equal(guard(h.noteKey).promptedConsumedGeneration, 2);
+    assert.equal(h.store.latestSubmission(runId)?.round, 3);
   } finally {
     h.stop();
   }

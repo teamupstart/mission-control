@@ -24,14 +24,13 @@ Three rules, and each of them is load-bearing rather than cautious:
   reads what it printed. The park marker, the grant record and the pause marker are all
   written by the engine, in response, exactly as they are when a person types the same thing.
   A second program racing its atomic renames corrupts a feature; it does not merge with it.
-- **Absent by default, then off by default.** An operator with no engine installed and
-  nothing configured sees **no Conductor UI at all** - no Settings row, no panel, no
-  command-palette entry, and `#/settings/conductor` falls back the way an unknown category
-  does. Once the engine is found on the daemon's `PATH` the category appears, and everything
-  in it is still off:
-  detection is automatic, consent is not. With nothing switched on, a watch tick reads one
-  config value and a `PATH` walk once a minute, and no probe spawns, no file is opened and no
-  event crosses the stream.
+- **Permanent, then off by default.** Conductor is always a Settings and command-palette
+  destination, including before the engine is installed. The destination explains the setup
+state; it does not imply the engine exists or that observation is enabled. Detection is
+automatic only while that panel is open, registration is an explicit provider CLI action,
+guided installation is an explicit terminal launch, and observation is a separate explicit
+consent write. With nothing switched on, a watch tick reads one config value and returns: no
+probe spawns, no engine file is opened, and no pipeline event crosses the stream.
 - **The engine's files are the source of truth.** The `pipeline_runs` table is a cache, in
   the same family as the archive index: every column is derived from files still on disk, so
   deleting it costs one refresh pass. Nothing may be stored there that is not already under
@@ -40,27 +39,76 @@ Three rules, and each of them is load-bearing rather than cautious:
 
 ## Settings → Conductor
 
-**The category has to be earned.** Mission Control looks for the engine binary on the
-daemon's `PATH`; on a machine that has never had one and has never been configured, there is
-no Conductor row in the Settings rail, no panel behind it, and no palette entry -
-`#/settings/conductor` falls back to the default category the way an unknown category does.
-That is the plan's criterion, and it is keyed on *installed* rather than on *enabled*: a row
-offering to observe software somebody does not have is a new thing on their screen however
-off it ships.
+**The category is permanent.** The Settings rail, `#/settings/conductor`, arrow-key navigation,
+and the command palette expose it independently of engine or config state. Opening the panel
+looks for `conduct-ts`; opening unrelated Settings categories does not probe an external
+engine or fetch the workspace catalog. If the binary is missing, the panel says setup is
+needed and offers **I installed it, check again**. It also looks only through repositories in
+Mission Control's existing workspace catalog for verified local Conductor source. It never
+clones, downloads, updates, or executes source discovered anywhere else.
 
-The check is a `PATH` walk rather than a probe, so it costs no subprocess, and the watch loop
-re-runs it about once a minute - installing conductor makes the row appear while you are
-still looking for it, with no restart.
+### Guided machine installation
 
-**The complete condition is "an engine on `PATH`, OR any stored Conductor configuration."**
-That second half is what keeps the row reachable after the engine is removed, and it counts
-the master switch as well as the repository list - so a fleet that once turned Conductor on
-and later uninstalled the engine keeps the surface that can turn it off again, even with no
-repository configured. Withdrawing consent must never require reinstalling software to reach
-the switch. Only the case where the engine is absent *and* nothing was ever configured
-produces no UI at all.
+The setup path is machine-scoped and trust-first. A checkout is offered only when all of the
+following are true at the time it is listed:
 
-Once the row exists, it holds three cards, because three different things can be false and an
+- its physical canonical root is a main checkout already present in the workspace catalog,
+  not a linked worktree;
+- one of its configured Git remotes is exactly the recognized
+  `github.com/mancej/ai-conductor` upstream through HTTPS, SCP-style SSH, or `ssh://`;
+- `bin/install` is a regular executable file physically contained by that checkout;
+- `src/conductor/package.json` is a regular contained file whose package name is exactly
+  `@james-stoup-agents/conductor`;
+- `VERSION` is a regular contained file and, when readable, contains one bounded version
+  token.
+
+Candidate discovery is read-only, deduplicated by physical path, and capped at eight results.
+Mission Control never returns a repository's raw remote URL to the browser, so credentials or
+other URL details cannot leak through this surface. An unrecognized, malformed, linked,
+symlinked, non-executable, or out-of-catalog checkout is omitted rather than weakened into a
+warning.
+
+Selecting **Review installer** does not launch anything. A second confirmation names the exact
+checkout, the exact `bin/install` command, its recognized upstream, and the user-level changes
+the upstream installer may offer:
+
+- building the checkout;
+- linking `conduct-ts` under the local bin directory;
+- linking Conductor skills for supported agents;
+- changing Claude user settings and hooks;
+- writing `~/.ai-conductor` configuration;
+- optionally installing global Puppeteer, Markdown-viewer, or Mermaid tools.
+
+The operator then chooses an available hosted terminal. The final request contains only the
+provider, verified checkout path, and terminal backend. The daemon checks workspace-catalog
+membership and re-verifies every trust marker before deriving the absolute installer command
+itself. It opens the upstream interactive installer in that visible terminal and holds the
+terminal open after the installer exits so its result remains readable. Mission Control does
+not add update flags, worktree-root overrides, or non-interactive answers.
+
+Opening a terminal is not proof that Conductor installed. The engine card remains at **Setup
+needed** until **I installed it, check again** finds `conduct-ts`; an unresponsive terminal
+launch is reported only as possibly still opening. If no candidate verifies, no terminal can
+be hosted, or candidate discovery fails, the panel shows copyable commands for cloning the
+recognized upstream and running `./bin/install` manually. Those commands remain operator
+instructions: Mission Control never executes them from the browser.
+
+The compact commissioning line keeps three facts separate: **Engine → Register repo →
+Observe**. They are not interchangeable milestones:
+
+1. The engine is installed once on the machine and `conduct-ts` resolves for the daemon.
+2. A workspace repository is registered with Conductor by spawning
+   `conduct-ts register <canonical-main-repository-root>`. Mission Control parses the exact
+   `Registered <name> (<root>).` confirmation and never edits Conductor's registry itself.
+3. Mission Control observation is granted through its existing whole-config writer only
+   after registration is confirmed.
+
+If registration succeeds and the observation write fails, the panel says the repository is
+registered but not observed and offers **Enable observation**. It does not repeat registration.
+A reload derives the same partial state by taking registration from the provider probe and
+observation from Mission Control config.
+
+The panel holds five cards, because different things can be false and an
 operator who sees no pipelines has to be able to tell which:
 
 - **The engine** - whether the binary was found, where, which version, and how many
@@ -69,15 +117,26 @@ operator who sees no pipelines has to be able to tell which:
   **Check again** re-runs the probe immediately rather than waiting out its cache.
 - **Observe pipelines** - the master switch. Turning it off stops every repository at once
   *without forgetting which ones you chose*, so turning it back on restores exactly that set.
-- **Repositories** - one row per repository, each with its own switch and a health line
-  naming the engine daemon's state and the number of pipelines found, halted ones called out.
-  A row that is not being read names the control that would change that, and the two ways of
-  being off are not the same sentence: with the master switch off it says so, because a row
-  whose own switch is visibly checked must never be told to switch it on.
+- **Launch runtime** - which Mission Control host starts Engineer. Claude Agent SDK is the
+  shipped default; Terminal is the explicit compatibility choice. The setting does not replace
+  the ai-conductor build daemon's own tmux supervision.
+- **Foreman triage** - a separate switch, off by default. When both it and Foreman are on,
+  Foreman may unpark only a halt classified exactly `mechanical`, through the same daemon
+  action route the dashboard uses. `needs-human`, `protected-artifact`, `legacy`,
+  `unclassified`, and future classes remain operator work by default. Every attempted action
+  is recorded in Foreman's episode ledger through the daemon; the standalone worker never
+  opens SQLite.
+- **Workspace repositories** - the union of Mission Control's workspace catalog, the
+  provider's registered projects, and stored observation rows. Each row says **Registered**,
+  **Observed**, and **Dispatch ready** independently, carries the reversible observation
+  switch and health line, and offers **Register and observe** or the partial-state recovery
+  **Enable observation** as appropriate. Search filters the existing workspace catalog; it
+  does not add a second repository scanner.
 
-Listing a repository is configuration; switching it on is consent. Withdrawing it takes
-effect in the same request: the projection rows, the live catalog entries and the health line
-all go at once, rather than on some later tick.
+Provider registration and Mission Control observation are separate state changes. Withdrawing
+observation takes effect in the same request: the projection rows, the live catalog entries
+and the health line all go at once, rather than on some later tick. It does not de-register the
+repository from Conductor.
 
 A repository that the engine has since de-registered stays listed while its consent stands -
 otherwise the consent would be in force with nothing on screen that could withdraw it.
@@ -126,9 +185,9 @@ The [Runs page](workflows.md#watching-a-run) gains a page-level kind tab once a 
 being observed: **Workflows** is the page it always was, and **Pipelines** is what the engine
 is driving. Both tabs carry a count.
 
-**The tab has to be earned, and by a different fact from the Settings row.** That row is keyed
-on the engine being *installed*; this tab is keyed on a repository being *read* - master switch
-on, repository switched on. With nothing switched on there is no tab strip at all, the Runs
+**The tab has to be earned, and by a different fact from the permanent Settings row.** This tab
+is keyed on a repository being *read* - master switch on, exact repository switched on. With
+nothing switched on there is no tab strip at all, the Runs
 page is byte for byte the one that shipped before this feature, and nothing on it asks the
 daemon anything about pipelines. Turning a repository on makes the tab appear without a
 reload, and turning the last one off takes it away again in the same request.
@@ -584,12 +643,52 @@ The Settings health line says which of the three states a repository is in:
 
 Consent itself is stored in the daemon's database (`app_config`, key `pipelines`), alongside
 the Foreman, Skills, Harnesses, Task sources, Models and GitHub Inspector settings.
+Conductor registration is not stored there: `conduct-ts register` remains the only writer of
+the provider's registry.
 
-## Where this is going
+## Dispatch, Inspector, and Foreman
 
-This page describes what has landed. The
-[integration plan](plans/conductor-sdlc-integration/plan.md) and its
-[phase split](plans/conductor-sdlc-integration/phased-plan.md) describe the rest: dispatching a
-feature into an engine from Mission Control's backlog, with the Foreman and the GitHub
-Inspector reaching the verbs above through the same routes an operator does, never through a
-second control path.
+An enabled exact repository adds **pipeline** to the Dispatch kind picker. A different root,
+an engine-only registration, or a failed observation write does not. An already-open Dispatch
+modal re-reads the daemon's active repository set after observation changes, so eligibility
+appears without a reload and never before the daemon confirms consent. Dispatch runs
+the configured Engineer host in the main checkout without provisioning a Mission Control
+worktree. **Claude Agent SDK** is the default: it starts one managed Claude session and sends
+the exact `/engineer <intent>` command as turn one, with no model, effort, or permission override
+and no extra repositories. **Terminal** is an explicit stored choice and keeps the compatibility
+path, opening `conduct-ts engineer --idea "<intent>"` with live stdin and `CLAUDECODE` removed.
+An SDK preflight or start failure fails the task and never calls the Terminal launcher. There is
+no Codex Engineer host. The launch setting does not affect ai-conductor's background build daemon,
+which retains its own tmux supervision.
+
+Before either host starts, the provider derives the same lowercase, ASCII-alphanumeric,
+hyphenated, 50-character idea slug Engineer uses for its plan and worktree. Mission Control
+refuses an empty result, an unreadable provider run set, an existing worktree with that slug, or
+another live task already owning the same provider, repository, and slug. It then persists the
+complete run link before starting the host, closing the interval in which two Mission Control
+dispatches could claim the same future run.
+
+Conductor owns downstream agent, model, and effort choices in either runtime. Agent, Model,
+Effort, attached repositories, After work, and the generic runtime picker stay unavailable, and
+backlog autopilot does not schedule Pipeline tasks. The SDK form records a session id and no home,
+which gives it managed focus, questions, cancellation, and restart recovery. The Terminal form
+records a home and no session id. Neither host owns completion: SDK idle, host pull-request merge,
+and host disappearance after the exact run appears cannot finish the task. A processed projection
+for the exact prebound link settles the durable task and records the projected pull request as its
+outcome when present. A lost SDK host fails the task only when that exact run never appeared. The
+same provider link is restored after a daemon restart. A task saved by an older build with no link
+still binds through its Terminal home when a child appears inside a projected worktree. That
+legacy join may fill a null link or confirm a matching one, but it never rewrites a different
+prebound identity.
+
+When a projected run first reports `pr_url`, Mission Control adopts that pull request into the
+existing GitHub Inspector ledger with source `pipeline`, provided its owner and repository
+match a GitHub remote configured in the projected checkout. No second review or shipping path
+is created: the ordinary Inspector lifecycle, Shipped page, and shipping gates take over.
+
+Foreman's optional mechanical triage reads halted runs over HTTP, reserves an episode through
+the daemon before acting, and calls `POST /api/pipelines/action`. Exact equality with
+`mechanical` is the automation gate. Any other or future class fails closed and remains in the
+Attention inbox for the operator. The daemon re-checks Foreman's master switch and the separate
+pipeline-triage permission on the halt feed, episode reservation, and Foreman-tagged action, so
+turning either switch off closes an in-flight automation race without disabling operator verbs.

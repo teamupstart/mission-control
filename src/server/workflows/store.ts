@@ -118,11 +118,12 @@ import type {
   WorkflowCheckSlot,
   WorkflowCommandOverride,
   WorkflowCommandView,
+  WorkflowAssetReferenceSet,
 } from "@shared/workflow.ts";
 import type { LlmRunnerId } from "@shared/llm.ts";
 import type { SessionIntentGuard } from "@shared/types.ts";
 import { LLM_RUNNER_IDS } from "@shared/llm.ts";
-import { openDb } from "../db.ts";
+import { consumePromptedGeneration, openDb } from "../db.ts";
 import { BUILTIN_PERSONAS } from "./builtin-personas.ts";
 import { BUILTIN_SESSION_ACTIONS } from "./builtin-session-actions.ts";
 import { BUILTIN_WORKFLOWS, type BuiltinWorkflow } from "./builtin-workflows.ts";
@@ -150,6 +151,30 @@ const PERSONA_DIRECTIVES_JSON_BYTES =
 export const WORKFLOW_RETENTION_BATCH_SIZE = 100;
 
 type RunCursor = { updatedAt: number; id: string };
+
+/**
+ * The one projection from graph nodes to Library asset identities.
+ *
+ * Both summary halves call this same helper so draft and published cannot quietly disagree
+ * about how a node names its source. Sets remove repeated use of one asset while preserving
+ * graph order; the output stays bounded by the graph's node ceiling.
+ */
+function workflowAssetReferenceSet(
+  graph: WorkflowDefinition["draft"] | WorkflowVersion["graph"],
+): WorkflowAssetReferenceSet {
+  const personaIds = new Set<string>();
+  const sessionActionIds = new Set<string>();
+  for (const node of graph.nodes) {
+    if (node.kind === "persona") {
+      personaIds.add("persona" in node ? node.persona.sourcePersonaId : node.personaId);
+    } else if (node.kind === "session_action") {
+      sessionActionIds.add("action" in node
+        ? node.action.sourceSessionActionId
+        : node.sessionActionId);
+    }
+  }
+  return { personaIds: [...personaIds], sessionActionIds: [...sessionActionIds] };
+}
 
 // A summary intentionally selects no submission evidence or context. The newest submission
 // contributes only its identity and segment; attempts for the bounded result set are loaded
@@ -1880,22 +1905,22 @@ export interface ForemanCompletionStoreInput {
   binding: WorkflowBinding;
   completionKind: "drain" | "prompted";
   marker: string;
-  promptedActivityAt: number | null;
+  expectedWorkCycle: { logicalKey: string; generation: number } | null;
   summary: string;
   evidenceFingerprint: string;
-  /** Same completion episode across every repository sibling. */
+  /** Same completion boundary across every repository sibling. */
   evidenceGroupKey?: string;
   expectedIntent: SessionIntentGuard | null;
   runId: string;
   submissionId: string;
   /**
-   * Whether this claim spends the completion episode. Defaults to true, which is what every
+   * Whether this claim spends the completion boundary. Defaults to true, which is what every
    * single-repo claim is and what every caller before per-repo runs meant.
    *
    * A multi-repo task's turn offers ONE proof to one binding per repository it changed, and
-   * the episode is one episode however many repositories it touched. The first claim retires
-   * the once-only guard; the rest pass `false` and ride the same proof, because retiring a
-   * guard that is no longer armed throws - correctly, since a second spend of one episode is
+   * the boundary is one boundary however many repositories it touched. The first claim consumes
+   * the once-only guard; the rest pass `false` and ride the same proof, because consuming a
+   * guard that is no longer armed throws - correctly, since a second spend of one boundary is
    * exactly what that guard exists to refuse.
    */
   retireGuard?: boolean;
@@ -3221,13 +3246,12 @@ export class WorkflowStore {
 
   summary(workflow: WorkflowDefinition): WorkflowSummary {
     const validation = this.validateDraft(workflow);
-    // A built-in owns no version rows, so the row lookup below would report it unpublished -
-    // which reads on the card as a shipped workflow nobody can bind.
+    // Resolve the WHOLE current version because the summary now projects its bounded asset ids
+    // as well as its version number. `getWorkflowVersionById` is already the one resolver for
+    // row-backed and built-in versions, so this does not create a second opinion about either.
     const current = workflow.currentVersionId === null
       ? null
-      : workflow.builtin
-        ? this.builtinWorkflowVersion(workflow.currentVersionId) ?? undefined
-        : this.db.prepare(`SELECT version FROM workflow_versions WHERE id = ?`).get(workflow.currentVersionId) as { version: number } | undefined;
+      : this.getWorkflowVersionById(workflow.currentVersionId);
     return {
       id: workflow.id,
       name: workflow.name,
@@ -3242,6 +3266,10 @@ export class WorkflowStore {
       nodeCount: workflow.draft.nodes.length,
       personaCount: workflow.draft.nodes.filter((node) => node.kind === "persona").length,
       builtin: workflow.builtin,
+      assetReferences: {
+        draft: workflowAssetReferenceSet(workflow.draft),
+        published: current ? workflowAssetReferenceSet(current.graph) : null,
+      },
     };
   }
 
@@ -3667,6 +3695,10 @@ export class WorkflowStore {
         latestAttempts.set(attempt.nodeId, attempt);
       }
       const attempts = [...latestAttempts.values()];
+      const activePersonaAttempts = attempts.filter((attempt) =>
+        attempt.persona && ["queued", "running", "retry_wait"].includes(attempt.state));
+      const activeSessionActionAttempts = attempts.filter((attempt) =>
+        attempt.sessionAction && attempt.state === "waiting");
       const gateState = inspectorGateState(run);
       const gatePrNumber = gateState?.prKey
         ? Number(gateState.prKey.match(/#(\d+)$/)?.[1] ?? NaN)
@@ -3721,10 +3753,16 @@ export class WorkflowStore {
             attempt.state === "waiting" ? [this.sessionActionState(attempt)?.wait] : [])
           .find((wait) => wait !== undefined) ?? null,
         maxRepairRounds: run.maxRepairRounds,
-        activePersonaNames: attempts.flatMap((attempt) =>
-          attempt.persona && ["queued", "running", "retry_wait"].includes(attempt.state)
-            ? [attempt.persona.name]
-            : []),
+        activePersonaNames: activePersonaAttempts.map((attempt) => attempt.persona!.name),
+        // Exact source ids beside the legacy names. Names stay for the existing human-facing
+        // summaries; ids are what make a same-named built-in and operator Persona unambiguous.
+        activePersonaIds: [...new Set(activePersonaAttempts.map((attempt) =>
+          attempt.persona!.sourcePersonaId))],
+        // `actionWait` says WHY an action is holding the run. The immutable attempt snapshot
+        // says WHICH one, so the Library can name the exact asset rather than every action the
+        // workflow happens to contain.
+        activeSessionActionIds: [...new Set(activeSessionActionAttempts.map((attempt) =>
+          attempt.sessionAction!.sourceSessionActionId))],
         failedPersonaCount: attempts.filter((attempt) => {
           const verdict = attempt.verdict;
           return Boolean(
@@ -4391,6 +4429,9 @@ export class WorkflowStore {
       if (input.completionKind === "prompted" && !expectedIntent) {
         throw new Error("Foreman prompted completion has no intent guard");
       }
+      if (input.completionKind === "prompted" && !input.expectedWorkCycle) {
+        throw new Error("Foreman prompted completion has no work-cycle guard");
+      }
       if (
         expectedIntent &&
         (
@@ -4407,7 +4448,6 @@ export class WorkflowStore {
       ) {
         throw new Error("Foreman completion intent is no longer current");
       }
-
       let run = this.activeRunForBinding(binding.id);
       let submission: WorkflowSubmission | null = null;
       let state: Exclude<
@@ -4493,21 +4533,17 @@ export class WorkflowStore {
         }, input.now);
       }
 
-      // Retiring the guard stays inside this transaction: a later failure rolls it back, so
-      // a rejected or stale claim never spends the episode. A sibling repository's claim on
-      // the same turn passes `retireGuard: false` - the episode was already spent by the
+      // Consuming the guard stays inside this transaction: a later failure rolls it back, so
+      // a rejected or stale claim never spends the boundary. A sibling repository's claim on
+      // the same turn passes `retireGuard: false` - the boundary was already spent by the
       // first, and this claim is that same proof offered to another repository's review.
       if (input.retireGuard !== false) {
         const retired = input.completionKind === "drain"
           ? this.retireDrainGuard(binding.noteKey, `workflow:${run.id}`, input.now)
-          : this.retirePromptedGuard(
-              {
-                noteKey: binding.noteKey,
-                sessionCwd: input.guardCwd === undefined ? binding.sessionCwd : input.guardCwd,
-              },
-              expectedIntent!.episodeKey,
-              input.marker,
-              input.promptedActivityAt,
+          : this.consumePromptedGuard(
+              binding.noteKey,
+              input.guardCwd === undefined ? binding.sessionCwd : input.guardCwd,
+              input.expectedWorkCycle!,
               input.now,
             );
         if (!retired) {
@@ -4520,6 +4556,7 @@ export class WorkflowStore {
         marker: input.marker,
         summary: input.summary,
         evidenceFingerprint: input.evidenceFingerprint,
+        expectedWorkCycle: input.expectedWorkCycle,
         state,
         submissionId: submission?.id ?? null,
       }, input.now);
@@ -7199,45 +7236,11 @@ export class WorkflowStore {
   }
 
   /**
-   * The other half of the re-arm pair: put the PROMPTED episode back in play.
+   * Re-arm queue drain for a confirmed delivery, and say whether it was applicable.
    *
-   * `rearmDrainCompletionForDelivery` above can only speak for a session that has queue
-   * items - its `EXISTS` clause is what makes "the queue drained again" a true statement.
-   * A session driven by a human prompt has no items at all, so before this existed a
-   * confirmed repair packet re-armed nothing and the loop depended on a new human prompt.
-   * Clearing `prompted_goal` and both evidence boundary fields is the exact inverse of what
-   * `retirePromptedGuard` writes, so `decidePromptedWrapup` step 10 stops matching and the
-   * episode is armed again.
-   *
-   * Deliberately UPDATE-only, matching the drain function's shape: an absent row means this
-   * session has no wrap-up state to re-arm, and inserting one here would manufacture a queue
-   * for a session Foreman was never watching. `retirePromptedGuard` may insert because it is
-   * recording an episode that actually fired; this is only ever undoing one.
-   */
-  private rearmPromptedCompletionForDelivery(
-    delivery: WorkflowDelivery,
-    now: number,
-  ): boolean {
-    const result = this.db.prepare(
-      `UPDATE foreman_queues
-          SET prompted_goal = NULL, prompted_evidence = NULL,
-              prompted_activity_at = NULL, updated_at = ?
-        WHERE note_key = ? AND prompted_goal IS NOT NULL`,
-    ).run(now, delivery.noteKey);
-    return Number(result.changes) === 1;
-  }
-
-  /**
-   * Re-arm EXACTLY ONE completion episode for a confirmed delivery, and say which.
-   *
-   * Drain first, prompted only if drain declined. Re-arming both would let one repair packet
-   * produce two completion claims and therefore two repair rounds for one fix - the session
-   * would be reviewed twice for work it did once, and the second round would land on
-   * `unchanged_evidence` because nothing moved between them.
-   *
-   * Drain wins the tie because it is the more specific statement: it fires only for a session
-   * that has queue items and has drained them, which is a real event with a real moment. The
-   * prompted episode is the fallback for a session Foreman is merely watching.
+   * Queue drain retains its explicit state-machine re-arm. Queue-less prompted work needs no
+   * delivery reset: the delivered repair turn's later normalized completion advances the
+   * durable work-cycle generation naturally.
    */
   private rearmCompletionForDelivery(
     delivery: WorkflowDelivery,
@@ -7250,57 +7253,23 @@ export class WorkflowStore {
     // open a repair round that competes with the continuation segment for the same turn.
     if (delivery.kind === "session_action") return null;
     if (this.rearmDrainCompletionForDelivery(delivery, now)) return "drain";
-    if (this.rearmPromptedCompletionForDelivery(delivery, now)) return "prompted";
     return null;
   }
 
-  private retirePromptedGuard(
-    binding: Pick<WorkflowBinding, "noteKey" | "sessionCwd">,
-    episodeKey: string,
-    evidenceMarker: string,
-    activityAt: number | null,
+  private consumePromptedGuard(
+    noteKey: string,
+    sessionCwd: string | null,
+    expectedWorkCycle: { logicalKey: string; generation: number },
     now: number,
   ): boolean {
-    const existing = this.db.prepare(
-      `SELECT prompted_goal, prompted_evidence FROM foreman_queues WHERE note_key = ?`,
-    ).get(binding.noteKey) as {
-      prompted_goal: string | null;
-      prompted_evidence: string | null;
-    } | undefined;
-    if (
-      existing?.prompted_goal === episodeKey
-      && (
-        existing.prompted_evidence === null
-        || existing.prompted_evidence === evidenceMarker
-      )
-    ) return false;
-    if (existing) {
-      const result = this.db.prepare(
-        `UPDATE foreman_queues
-            SET prompted_goal = ?, prompted_evidence = ?, prompted_activity_at = ?, updated_at = ?
-          WHERE note_key = ?
-            AND (
-              prompted_goal IS NULL OR prompted_goal <> ?
-              OR prompted_evidence IS NULL OR prompted_evidence <> ?
-            )`,
-      ).run(
-        episodeKey,
-        evidenceMarker,
-        activityAt,
-        now,
-        binding.noteKey,
-        episodeKey,
-        evidenceMarker,
-      );
-      return Number(result.changes) === 1;
-    }
-    const result = this.db.prepare(
-      `INSERT INTO foreman_queues (
-         note_key, cwd, branch, wrapup_asked_at, wrapup_answer, prompted_goal,
-         prompted_evidence, prompted_activity_at, updated_at
-       ) VALUES (?, ?, NULL, NULL, NULL, ?, ?, ?, ?)`,
-    ).run(binding.noteKey, binding.sessionCwd, episodeKey, evidenceMarker, activityAt, now);
-    return Number(result.changes) === 1;
+    if (expectedWorkCycle.logicalKey !== noteKey) return false;
+    return consumePromptedGeneration({
+      noteKey,
+      sessionCwd,
+      generation: expectedWorkCycle.generation,
+      ask: false,
+      now,
+    }, this.db);
   }
 
   private insertSubmissionInTransaction(input: WorkflowSubmissionInsert): void {

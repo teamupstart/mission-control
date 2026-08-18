@@ -1,14 +1,26 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type {
-  PipelineHaltClass,
-  PipelineRepoStatus,
-  PipelineRunDetail,
-  PipelinesView,
+import {
+  pipelineRepoKey,
+  type PipelineHaltClass,
+  type PipelineInstallerCandidatesResult,
+  type PipelineInstallerLaunchResult,
+  type PipelineRepoStatus,
+  type PipelineRepoRegistrationResponse,
+  type PipelineRunDetail,
+  type PipelinesView,
 } from "../src/shared/pipeline.ts";
 
 // What is at stake: this route is the consent boundary. Everything the integration does is
@@ -29,6 +41,7 @@ process.env.HARNESS_HOME = join(home, "state");
 // detection card has to be right about.
 process.env.MISSION_CONDUCTOR_BIN = join(home, "no-such-conductor");
 process.env.AI_CONDUCTOR_REGISTRY = join(home, "no-such-registry.json");
+process.env.MISSION_WORKSPACE_DIRS = home;
 
 const { openDb } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
@@ -36,6 +49,7 @@ const { buildApp } = await import("../src/server/routes.ts");
 const { getPipelinesConfig, setPipelinesConfig } = await import(
   "../src/server/pipelines/config.ts"
 );
+const { setForemanConfig } = await import("../src/server/foreman/config.ts");
 const { refreshPipelineRepo, restorePipelineProjection } = await import(
   "../src/server/pipelines/index.ts"
 );
@@ -44,11 +58,15 @@ const {
   seedConductorDaemon,
   seedConductorRun,
   writeFakeConductor,
+  writeConductorProjects,
 } = await import("../e2e/fixtures/conductor.ts");
 type Registry = InstanceType<typeof Registry>;
 
 const db = openDb();
-after(() => rmSync(home, { recursive: true, force: true }));
+// Background probe/refresh promises can finish while the test worker is tearing its home
+// down. Linux may report ENOTEMPTY when one lands between recursive enumeration and removal,
+// so give the standard recursive remover a short bounded retry window.
+after(() => rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }));
 
 /**
  * Poll `read` until it equals `want`, or fail saying what it was.
@@ -91,9 +109,18 @@ interface FakeLaunch {
 }
 
 /** A fresh daemon: an empty projection, no consent, and nothing yet found out. */
-function fixture(opened?: FakeLaunch[]) {
+function fixture(
+  opened?: FakeLaunch[],
+  launchResult: {
+    ok: boolean;
+    label: string;
+    error?: string;
+    status: number;
+  } = { ok: true, label: "fake terminal", status: 200 },
+) {
   db.exec("DELETE FROM pipeline_runs");
-  setPipelinesConfig({ enabled: false, repos: [] });
+  setPipelinesConfig({ enabled: false, foremanMechanicalTriage: false, repos: [] });
+  setForemanConfig({ enabled: true });
   const registry = new Registry();
   // The real boot path, which is also what clears this process's held probe - so a test
   // about the FIRST read of a daemon is about a first read rather than about whichever
@@ -102,7 +129,7 @@ function fixture(opened?: FakeLaunch[]) {
   const launcher = opened
     ? (async (backend: never, spec: { name: string; cwd: string; argv: string[] }) => {
         opened.push({ backend, name: spec.name, cwd: spec.cwd, argv: spec.argv });
-        return { ok: true as const, label: `fake ${String(backend)}`, homeName: spec.name };
+        return { ...launchResult, label: launchResult.label || `fake ${String(backend)}`, homeName: spec.name };
       })
     : undefined;
   const app = buildApp(
@@ -126,6 +153,7 @@ test("the panel reads consent, detection and health in one call, and ships off",
   const view = (await res.json()) as PipelinesView;
 
   assert.equal(view.config.enabled, false, "the master switch ships off");
+  assert.equal(view.config.launchRuntime, "claude-sdk", "the Engineer host ships on SDK");
   assert.deepEqual(view.config.repos, [], "no repository is consented to on a fresh install");
   assert.deepEqual(view.status, []);
 });
@@ -226,6 +254,33 @@ test("a repository is stored at its resolved root, and arrives off unless asked"
   assert.equal(view.status[0]?.lastReadAt, null);
 });
 
+test("both Engineer runtimes round-trip and the cheap Dispatch read reports the same choice", async () => {
+  const { request } = fixture();
+  const repo = gitRepo("launch-runtime");
+  for (const launchRuntime of ["terminal", "claude-sdk"] as const) {
+    const write = await request("/api/pipelines/config", {
+      method: "PUT",
+      body: JSON.stringify({
+        enabled: true,
+        launchRuntime,
+        foremanMechanicalTriage: false,
+        repos: [{ provider: "ai-conductor", repoRoot: repo, enabled: true }],
+      }),
+    });
+    assert.equal(write.status, 200);
+    const written = (await write.json()) as PipelinesView;
+    assert.equal(written.config.launchRuntime, launchRuntime);
+    assert.equal(getPipelinesConfig().launchRuntime, launchRuntime);
+
+    const dispatch = (await (await request("/api/pipelines/repos")).json()) as {
+      repos: PipelineRepoStatus[];
+      launchRuntime: "terminal" | "claude-sdk";
+    };
+    assert.equal(dispatch.launchRuntime, launchRuntime);
+    assert.deepEqual(dispatch.repos.map((entry) => entry.repoRoot), [repo]);
+  }
+});
+
 test("a body the schema refuses changes nothing", async () => {
   const { request } = fixture();
   const repo = gitRepo("bad-body");
@@ -319,6 +374,16 @@ test("the routes are loopback-only, like every other /api route", async () => {
     }),
   });
   assert.equal(console_.status, 403);
+  const installers = await request("/api/pipelines/installers?provider=ai-conductor", {
+    headers: { host: "example.com" },
+  });
+  assert.equal(installers.status, 403);
+  const install = await request("/api/pipelines/install", {
+    method: "POST",
+    headers: { host: "example.com" },
+    body: JSON.stringify({ provider: "ai-conductor", checkout: "/x", backend: "cmux" }),
+  });
+  assert.equal(install.status, 403);
 });
 
 // ---- what the Runs page's Pipelines tab reads ------------------------------------------
@@ -465,6 +530,7 @@ test("gate evidence is behind the same consent the projection is", async () => {
 
 const fakeEngine = writeFakeConductor(home);
 process.env.MC_E2E_CONDUCTOR_LOG = fakeEngine.logPath;
+process.env.MC_E2E_CONDUCTOR_PROJECTS = fakeEngine.projectsPath;
 
 /** Run `body` with the fake engine installed, then put the missing binary back. */
 async function withEngine<T>(body: () => Promise<T>): Promise<T> {
@@ -493,6 +559,187 @@ function verbsAsked(): string[][] {
     .filter((call) => call.argv[0] !== "engineer")
     .map((call) => call.argv);
 }
+
+test("registration canonicalizes to the main checkout, invokes the provider, and force-probes", async () => {
+  const { request } = fixture();
+  const repo = gitRepo("register-owner");
+  execFileSync("git", ["-C", repo, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-qm", "seed"]);
+  const linked = join(home, "register-linked");
+  execFileSync("git", ["-C", repo, "worktree", "add", "-q", "-b", "register-linked", linked]);
+  writeConductorProjects(home, []);
+
+  await withEngine(async () => {
+    const res = await request("/api/pipelines/register", {
+      method: "POST",
+      body: JSON.stringify({ provider: "ai-conductor", repoRoot: linked }),
+    });
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as PipelineRepoRegistrationResponse;
+    assert.equal(body.registration.ok, true);
+    assert.equal(body.registration.repoRoot, repo, "linked worktrees register their owner root");
+    assert.deepEqual(body.view.config, {
+      enabled: false,
+      launchRuntime: "claude-sdk",
+      foremanMechanicalTriage: false,
+      repos: [],
+    }, "registration does not grant observation consent");
+    assert.ok(
+      body.view.probes.some((probe) => probe.projects.some((project) => project.path === repo)),
+      "the response carries the forced post-registration probe",
+    );
+
+    const registration = readConductorInvocations(home).find((call) => call.argv[0] === "register");
+    assert.deepEqual(registration, { argv: ["register", repo], cwd: repo });
+  });
+});
+
+test("registration refuses malformed or non-repository roots before spawning the provider", async () => {
+  const { request } = fixture();
+  await withEngine(async () => {
+    const malformed = await request("/api/pipelines/register", {
+      method: "POST",
+      body: JSON.stringify({ provider: "ai-conductor", repoRoot: "" }),
+    });
+    assert.equal(malformed.status, 400);
+
+    const invalid = await request("/api/pipelines/register", {
+      method: "POST",
+      body: JSON.stringify({ provider: "ai-conductor", repoRoot: home }),
+    });
+    assert.equal(invalid.status, 400);
+    assert.equal(
+      readConductorInvocations(home).some((call) => call.argv[0] === "register"),
+      false,
+    );
+  });
+});
+
+test("a provider refusal remains a typed registration result and grants no consent", async () => {
+  const { request } = fixture();
+  const repo = gitRepo("register-unconfirmed");
+  process.env.MC_E2E_CONDUCTOR_REGISTER_MODE = "unconfirmed";
+  try {
+    await withEngine(async () => {
+      const res = await request("/api/pipelines/register", {
+        method: "POST",
+        body: JSON.stringify({ provider: "ai-conductor", repoRoot: repo }),
+      });
+      assert.equal(res.status, 200);
+      const body = (await res.json()) as PipelineRepoRegistrationResponse;
+      assert.equal(body.registration.ok, false);
+      assert.match(body.registration.detail, /without confirming this exact repository/);
+      assert.deepEqual(body.view.config, {
+        enabled: false,
+        launchRuntime: "claude-sdk",
+        foremanMechanicalTriage: false,
+        repos: [],
+      });
+    });
+  } finally {
+    delete process.env.MC_E2E_CONDUCTOR_REGISTER_MODE;
+  }
+});
+
+function installerCheckout(name: string): string {
+  const repo = gitRepo(name);
+  mkdirSync(join(repo, "bin"), { recursive: true });
+  mkdirSync(join(repo, "src/conductor"), { recursive: true });
+  writeFileSync(join(repo, "bin/install"), "#!/bin/sh\nexit 0\n");
+  chmodSync(join(repo, "bin/install"), 0o755);
+  writeFileSync(
+    join(repo, "src/conductor/package.json"),
+    JSON.stringify({ name: "@james-stoup-agents/conductor" }),
+  );
+  writeFileSync(join(repo, "VERSION"), "0.101.1\n");
+  execFileSync("git", ["-C", repo, "remote", "add", "origin", "git@github.com:mancej/ai-conductor.git"]);
+  return repo;
+}
+
+// Created while the module loads, before any route can fill `listRepos()`'s cache.
+const routeInstallerRepo = installerCheckout("installer-route");
+
+test("installer routes use the workspace catalog, reject browser commands, and reverify before launch", async () => {
+  const opened: FakeLaunch[] = [];
+  const { request } = fixture(opened);
+  const repo = routeInstallerRepo;
+
+  const invalidProvider = await request("/api/pipelines/installers?provider=lookalike");
+  assert.equal(invalidProvider.status, 400);
+
+  const read = await request("/api/pipelines/installers?provider=ai-conductor");
+  assert.equal(read.status, 200);
+  const candidates = (await read.json()) as PipelineInstallerCandidatesResult;
+  assert.equal(candidates.supported, true);
+  assert.deepEqual(candidates.candidates.map((candidate) => candidate.checkout), [repo]);
+  assert.equal(candidates.candidates[0]?.remote, "github.com/mancej/ai-conductor");
+
+  const browserCommand = await request("/api/pipelines/install", {
+    method: "POST",
+    body: JSON.stringify({
+      provider: "ai-conductor",
+      checkout: repo,
+      backend: "cmux",
+      argv: ["bin/install", "--allow-worktree-root"],
+    }),
+  });
+  assert.equal(browserCommand.status, 400, "strict schema refuses browser-authored argv");
+  assert.equal(opened.length, 0);
+
+  const launch = await request("/api/pipelines/install", {
+    method: "POST",
+    body: JSON.stringify({ provider: "ai-conductor", checkout: repo, backend: "cmux" }),
+  });
+  assert.equal(launch.status, 200);
+  const answer = (await launch.json()) as PipelineInstallerLaunchResult;
+  assert.equal(answer.outcome, "opened");
+  assert.equal(answer.detail, "Installer terminal opened. Finish the interactive installer there, then check again.");
+  assert.equal(opened.length, 1);
+  assert.equal(opened[0]?.backend, "cmux");
+  assert.equal(opened[0]?.cwd, repo);
+  assert.equal(opened[0]?.name, "ai-conductor installer");
+  const command = opened[0]?.argv.at(-1) ?? "";
+  assert.ok(command.includes(`'${repo}/bin/install'`));
+  assert.match(command, /read -r _/);
+  assert.doesNotMatch(command, /allow-worktree-root|--update|--provider/);
+  assert.deepEqual(getPipelinesConfig(), {
+    enabled: false,
+    launchRuntime: "claude-sdk",
+    foremanMechanicalTriage: false,
+    repos: [],
+  }, "opening an installer terminal never changes observation consent");
+
+  execFileSync("git", ["-C", repo, "remote", "set-url", "origin", "https://github.com/mancej/ai-conductor-lookalike.git"]);
+  const stale = await request("/api/pipelines/install", {
+    method: "POST",
+    body: JSON.stringify({ provider: "ai-conductor", checkout: repo, backend: "cmux" }),
+  });
+  assert.equal(stale.status, 409);
+  assert.match(await stale.text(), /no longer a verified installer candidate/);
+  assert.equal(opened.length, 1, "stale provenance is refused before terminal launch");
+  execFileSync("git", ["-C", repo, "remote", "set-url", "origin", "git@github.com:mancej/ai-conductor.git"]);
+});
+
+test("installer launch preserves terminal refusal and unknown-outcome statuses", async () => {
+  const repo = routeInstallerRepo;
+  for (const status of [404, 409, 502, 504] as const) {
+    const opened: FakeLaunch[] = [];
+    const { request } = fixture(opened, {
+      ok: false,
+      label: "fake cmux",
+      error: status === 504 ? "fake cmux did not report back - the window may still be opening" : `terminal ${status}`,
+      status,
+    });
+    const response = await request("/api/pipelines/install", {
+      method: "POST",
+      body: JSON.stringify({ provider: "ai-conductor", checkout: repo, backend: "cmux" }),
+    });
+    assert.equal(response.status, status);
+    const answer = (await response.json()) as PipelineInstallerLaunchResult;
+    assert.equal(answer.outcome, status === 504 ? "maybe-opening" : "refused");
+    if (status === 504) assert.match(answer.detail, /may still be opening/);
+    assert.equal(opened.length, 1);
+  }
+});
 
 /** A repository with one halted run, consented to and projected. */
 async function actable(
@@ -567,6 +814,159 @@ test("a verb reaches the engine, and the run it changed is re-projected in the s
     });
     assert.equal(((await back.json()) as { ok: boolean }).ok, true);
     assert.equal(registry.listPipelineRuns()[0]?.group, "halted");
+  });
+});
+
+test("Foreman's master switch gates its pipeline feed, reservation, and provider action", async () => {
+  const { registry, request } = fixture();
+  await withEngine(async () => {
+    const repo = await actable("foreman-master-switch", registry, request, "mechanical");
+    setPipelinesConfig({ ...getPipelinesConfig(), foremanMechanicalTriage: true });
+    setForemanConfig({ enabled: true });
+
+    const available = (await (await request("/api/pipelines/foreman")).json()) as {
+      enabled: boolean;
+      items: Array<{ marker: string }>;
+    };
+    assert.equal(available.enabled, true);
+    assert.equal(available.items.length, 1);
+    const marker = available.items[0]?.marker;
+    assert.ok(marker);
+
+    setForemanConfig({ enabled: false });
+    const stopped = await request("/api/pipelines/foreman");
+    assert.deepEqual(await stopped.json(), { enabled: false, items: [] });
+
+    const episode = {
+      marker,
+      situation: "pipeline-halt",
+      surface: "pipeline",
+      question: "a gate refused",
+      classification: "mechanical",
+      disposition: "pending",
+    };
+    const reserved = await request("/api/pipelines/foreman-episode", {
+      method: "POST",
+      body: JSON.stringify({
+        provider: "ai-conductor",
+        repoRoot: repo,
+        slug: "feat",
+        episode,
+      }),
+    });
+    assert.equal(reserved.status, 403);
+
+    const before = verbsAsked().length;
+    const automated = await request("/api/pipelines/action", {
+      method: "POST",
+      body: JSON.stringify({
+        provider: "ai-conductor",
+        repoRoot: repo,
+        slug: "feat",
+        action: "unpark",
+        requestedBy: "foreman",
+      }),
+    });
+    assert.equal(automated.status, 403);
+    assert.equal(verbsAsked().length, before, "a disabled Foreman reaches no provider command");
+
+    const operator = await request("/api/pipelines/action", {
+      method: "POST",
+      body: JSON.stringify({
+        provider: "ai-conductor",
+        repoRoot: repo,
+        slug: "feat",
+        action: "unpark",
+      }),
+    });
+    assert.equal(operator.status, 200, "Foreman's switch does not withdraw operator control");
+    assert.equal(((await operator.json()) as { ok: boolean }).ok, true);
+  });
+});
+
+test("Foreman finalizes a reserved triage after Unpark clears the projected halt", async () => {
+  const { registry, request } = fixture();
+  await withEngine(async () => {
+    const repo = await actable("foreman-finalize-after-refresh", registry, request, "mechanical");
+    setPipelinesConfig({ ...getPipelinesConfig(), foremanMechanicalTriage: true });
+    setForemanConfig({ enabled: true });
+
+    const available = (await (await request("/api/pipelines/foreman")).json()) as {
+      items: Array<{ marker: string }>;
+    };
+    const marker = available.items[0]?.marker;
+    assert.ok(marker);
+    const episode = {
+      marker,
+      situation: "pipeline-halt",
+      surface: "pipeline",
+      question: "a mechanical gate refused",
+      classification: "mechanical",
+      disposition: "pending" as const,
+    };
+
+    const unreserved = await request("/api/pipelines/foreman-episode", {
+      method: "POST",
+      body: JSON.stringify({
+        provider: "ai-conductor",
+        repoRoot: repo,
+        slug: "feat",
+        episode: { ...episode, disposition: "answered" },
+      }),
+    });
+    assert.equal(unreserved.status, 409, "an outcome cannot create its own reservation");
+
+    const reserved = await request("/api/pipelines/foreman-episode", {
+      method: "POST",
+      body: JSON.stringify({ provider: "ai-conductor", repoRoot: repo, slug: "feat", episode }),
+    });
+    assert.equal(reserved.status, 200);
+
+    const action = await request("/api/pipelines/action", {
+      method: "POST",
+      body: JSON.stringify({
+        provider: "ai-conductor",
+        repoRoot: repo,
+        slug: "feat",
+        action: "unpark",
+        requestedBy: "foreman",
+      }),
+    });
+    assert.equal(action.status, 200);
+    assert.equal(((await action.json()) as { ok: boolean }).ok, true);
+
+    const projected = registry.listPipelineRuns()[0];
+    assert.ok(projected);
+    registry.upsertPipelineRun({
+      ...projected,
+      halt: null,
+      group: "building",
+      updatedAt: projected.updatedAt + 1,
+    });
+
+    const finalized = await request("/api/pipelines/foreman-episode", {
+      method: "POST",
+      body: JSON.stringify({
+        provider: "ai-conductor",
+        repoRoot: repo,
+        slug: "feat",
+        episode: {
+          ...episode,
+          disposition: "answered",
+          lastAction: "unpark: released",
+        },
+      }),
+    });
+    assert.equal(finalized.status, 200, await finalized.text());
+
+    const ledger = (await (await request("/api/foreman/episodes")).json()) as Array<{
+      marker: string;
+      disposition: string;
+      resolvedBy: string | null;
+    }>;
+    const recorded = ledger.find((entry) => entry.marker === marker);
+    assert.equal(recorded?.disposition, "answered");
+    assert.equal(recorded?.resolvedBy, "foreman");
   });
 });
 
@@ -974,14 +1374,19 @@ test("with the integration switched off, no verb acts and no console opens", asy
 
 test("consent moves the settings tuple, so the Runs page's tab appears with it", async () => {
   // The Pipelines tab is drawn from `settingsStatus.pipelines.observing`, which rides the
-  // connect snapshot. Published at the write rather than waited for on the watcher's
-  // once-a-minute presence check: an operator who switches a repository on is entitled to
-  // see the surface it produces without wondering whether they mis-clicked.
+  // connect snapshot. Published at the write: an operator who switches a repository on is
+  // entitled to see the surface it produces without wondering whether they mis-clicked.
   const { registry, request } = fixture();
   const repo = gitRepo("observing");
-  const seen: number[] = [];
+  const replacement = gitRepo("observing-replacement");
+  const seen: Array<{ observing: number; keys: string[] }> = [];
   const unsubscribe = registry.subscribe((event) => {
-    if (event.type === "settings_status") seen.push(event.status.pipelines.observing);
+    if (event.type === "settings_status") {
+      seen.push({
+        observing: event.status.pipelines.observing,
+        keys: event.status.pipelines.observedRepoKeys ?? [],
+      });
+    }
   });
 
   await request("/api/pipelines/config", {
@@ -995,10 +1400,21 @@ test("consent moves the settings tuple, so the Runs page's tab appears with it",
     method: "PUT",
     body: JSON.stringify({
       enabled: true,
-      repos: [{ provider: "ai-conductor", repoRoot: repo, enabled: false }],
+      repos: [{ provider: "ai-conductor", repoRoot: replacement, enabled: true }],
+    }),
+  });
+  await request("/api/pipelines/config", {
+    method: "PUT",
+    body: JSON.stringify({
+      enabled: true,
+      repos: [{ provider: "ai-conductor", repoRoot: replacement, enabled: false }],
     }),
   });
   unsubscribe();
 
-  assert.deepEqual(seen, [1, 0], "on and off both reach the browser at the write");
+  assert.deepEqual(seen, [
+    { observing: 1, keys: [pipelineRepoKey("ai-conductor", repo)] },
+    { observing: 1, keys: [pipelineRepoKey("ai-conductor", replacement)] },
+    { observing: 0, keys: [] },
+  ], "on, an exact-root swap, and off all reach the browser at the write");
 });

@@ -15,8 +15,9 @@ what is active, what needs a decision, and what is ready for the next step.
 
 ## Dispatch with context
 
-Start a task in the right repository, choose its harness and runtime, and leave it attached
-to the backlog and workflow that will carry it through review.
+Start a task in the right repository, choose its harness and runtime, and decide whether the
+agent should ship, investigate, plan, or simply talk through something with you. Backlog and
+review Workflow controls stay available only where that kind of work supports them.
 
 <kbd>+</kbd> starts the guided pass by default. It asks for the repository, kind, harness and
 what runs after the work, then hands over the same dispatch form with those answers set and
@@ -29,6 +30,11 @@ same task without advancing the pass.
 **Guided** in the modal header and **Settings → Dispatch** control the preference, which ⌘K
 also finds by name. See
 [the guided pass](docs/dispatch-and-backlog.md#the-guided-pass).
+
+Choose **chat** for an open-ended conversation. It requires an opening message and launches
+immediately from Dispatch, with no backlog, dependencies, generated artifact, archive, or
+automatic after-work action. The session stays yours to continue and complete unless you
+explicitly choose a Workflow for that chat.
 
 A task can attach more than one repository. Dispatch it and you get **one** agent session
 holding all of them in shared context: its working directory is the primary repo's worktree,
@@ -59,10 +65,13 @@ on unresolved comments or a red CI - tracks each pull request separately, so one
 feedback is never mistaken for another's or lost behind it. They share the pane, so they take
 turns in it: one instruction at a time, never two in a turn expecting neither.
 
-The daemon also carries the durable state and conservative restart reconciliation needed for
-Mission Control's native worktree pools. No dispatch or workflow-check acquisition path selects
-that allocator yet: current sessions and checks continue to use their existing treehouse or
-plain Git behavior until the later consumer cutover.
+The daemon owns a durable native worktree pool for every physical repository. New tasks,
+Workflow checks, and approved `make session` work use exact lease identities from that allocator
+by default. A disabled repository or positive capacity refusal degrades to a disposable Git
+worktree for tasks and checks, while ambiguous outcomes fail closed. Treehouse is not required;
+persisted legacy rows keep a narrow, conditional-return-only compatibility path.
+**Settings > Worktrees** exposes future capacity policy, native and legacy inventory, exact path
+actions, and preview-first cleanup without replacing task, check, Git, or process ownership.
 
 ![Mission Control dispatch](docs/images/dispatch.png)
 
@@ -72,12 +81,18 @@ The Library keeps reusable workflows, personas, session actions, ensemble strate
 sources, and the commands behind each standard gate together rather than burying them in
 individual terminals.
 
+**Library → Personas → Foreman** is the fixed System profile for Foreman's exact standing
+guidance. Its name, policy, safeguards, models, and authority remain owned by Mission Control
+and their existing Settings controls. Only the Markdown guidance is editable here, and the
+System profile is never offered to workflows or ensembles as a Persona.
+
 ![Mission Control Library](docs/images/library.png)
 
 ## Design reusable review workflows
 
 Workflows and Personas turn the team's review practice into reusable, inspectable building
-blocks. The Line keeps their live runs attached to the fleet.
+blocks. The Line keeps their live runs attached to the fleet. On a run, clicking a settled
+reviewer or Command tile selects that exact result in the review worklist below.
 
 ![Mission Control workflow library](docs/images/workflows.png)
 
@@ -118,6 +133,19 @@ that has no session behind it.
 You can act on a pipeline from there, not only read it: start, stop, pause and resume the
 engine's daemon, park and unpark a feature, authorize one DECIDE re-entry with your own
 rationale, watch the daemon's console, and run the re-seal ceremony in a hosted terminal.
+
+The same integration starts at Dispatch. An enabled repository offers the **pipeline** task
+kind. Its shipped host is Claude Agent SDK, which starts a managed Claude session at the
+repository and sends `/engineer <idea>` directly as turn one. **Settings → Conductor → Launch
+runtime** can instead select the explicit Terminal compatibility host, which opens
+`conduct-ts engineer --idea` with live stdin. A failed SDK launch never falls back to Terminal.
+Either host lets conductor own the worktree and downstream agent, model, and effort, and only
+the exact provider projection completes the task. Conductor's background build daemon keeps its
+own tmux supervision. When that run opens a pull request, GitHub Inspector adopts it under
+pipeline provenance and it joins **Shipped**. **Settings → Conductor → Foreman
+triage** can also let Foreman unpark mechanical halts through the same action route the
+dashboard uses. That switch ships off, and every needs-human or unknown halt stays with the
+operator.
 Every verb spawns the engine's own CLI and is judged by what it printed, never by an exit code
 - and what a shipped feature cost lands in the [spend strip](docs/cost-and-usage.md) as
 automation, under the engine's own figures.

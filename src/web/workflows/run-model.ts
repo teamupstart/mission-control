@@ -28,6 +28,7 @@ import {
   WORKFLOW_RUN_SPENT_PHASES,
   isVerdictNode,
   verdictAuthor,
+  workflowRunGaveUp,
 } from "@shared/workflow.ts";
 import type { Stage } from "@shared/workflow-stages.ts";
 import {
@@ -902,6 +903,163 @@ export function gateWaitSentence(reason: WorkflowGateWaitReason | null): string 
   return reason === null
     ? "GitHub Inspector has reviewed the exact head this submission produced."
     : GATE_WAIT_SENTENCES[reason];
+}
+
+/** Why a spent Inspector-only gate cannot treat the current ledger as clean proof. */
+export type SpentInspectorEvidenceProblem =
+  | "missing_inspection"
+  | "pull_request_mismatch"
+  | "pull_request_closed"
+  | "missing_observation"
+  | "head_mismatch"
+  | "review_not_live"
+  | "review_error"
+  | "finding_ledger_inconsistent";
+
+/**
+ * The current Inspector condition beside a spent gate's immutable historical observation.
+ *
+ * This is presentation only. In particular, `clean_exact_head` does not pass the gate: it
+ * merely earns the contextual label on the existing grant route. The daemon still re-enters
+ * the gate, observes the head again and owns the immutable Inspector-only submission.
+ */
+export type SpentInspectorGateCondition =
+  | {
+      kind: "historical_findings_open";
+      currentOpenFindings: number;
+      historicalOpenFindings: number;
+    }
+  | { kind: "current_findings_open"; currentOpenFindings: number }
+  | { kind: "awaiting_current_review"; observedHeadSha: string }
+  | { kind: "clean_exact_head"; headSha: string }
+  | { kind: "evidence_unavailable"; problem: SpentInspectorEvidenceProblem };
+
+/**
+ * Reconcile one spent Inspector-only gate with the CURRENT Inspector ledger.
+ *
+ * Every clean prerequisite is positive: an open observed PR, identical observed and reviewed
+ * heads, a live review under a currently live Inspector posture, no review error, zero open
+ * findings, tally agreement, and a resolved row for every historical fingerprint. A missing
+ * or contradictory fact fails closed instead of promoting historical state into current truth.
+ */
+export function spentInspectorGateCondition(
+  detail: WorkflowRunDetail,
+): SpentInspectorGateCondition | null {
+  const gate = detail.inspectorGate;
+  const latest = orderedSubmissions(detail).at(-1);
+  if (
+    !gate
+    || latest?.mode !== "inspector_only"
+    || !workflowRunGaveUp({
+      status: detail.run.status,
+      phase: detail.run.currentPhase,
+      round: detail.summary.round,
+      maxRepairRounds: detail.summary.maxRepairRounds,
+    })
+  ) return null;
+
+  const inspection = gate.inspection;
+  if (!inspection) return { kind: "evidence_unavailable", problem: "missing_inspection" };
+  if (!gate.state.prKey || inspection.key !== gate.state.prKey) {
+    return { kind: "evidence_unavailable", problem: "pull_request_mismatch" };
+  }
+  if (inspection.state !== "open" || inspection.observedState !== "OPEN") {
+    return { kind: "evidence_unavailable", problem: "pull_request_closed" };
+  }
+  if (!inspection.observedHeadSha) {
+    return { kind: "evidence_unavailable", problem: "missing_observation" };
+  }
+
+  const openRows = gate.findings.filter((finding) => finding.status !== "resolved");
+  const resolvedRows = gate.findings.filter((finding) => finding.status === "resolved");
+  const findingsByFingerprint = new Map(
+    gate.findings.map((finding) => [finding.fingerprint, finding]),
+  );
+  const historicalRows = gate.state.findingFingerprints.map((fingerprint) =>
+    findingsByFingerprint.get(fingerprint));
+  if (
+    openRows.length !== inspection.openFindings
+    || resolvedRows.length !== inspection.resolvedFindings
+    || historicalRows.some((finding) => !finding)
+  ) {
+    return { kind: "evidence_unavailable", problem: "finding_ledger_inconsistent" };
+  }
+
+  const historicalOpenFindings = historicalRows.filter((finding) =>
+    finding?.status !== "resolved").length;
+  if (historicalOpenFindings > 0) {
+    return {
+      kind: "historical_findings_open",
+      currentOpenFindings: openRows.length,
+      historicalOpenFindings,
+    };
+  }
+  if (openRows.length > 0) {
+    return { kind: "current_findings_open", currentOpenFindings: openRows.length };
+  }
+  if (inspection.lastError !== null) {
+    return { kind: "evidence_unavailable", problem: "review_error" };
+  }
+  if (inspection.headSha === null) {
+    return {
+      kind: "awaiting_current_review",
+      observedHeadSha: inspection.observedHeadSha,
+    };
+  }
+  if (inspection.headSha !== inspection.observedHeadSha) {
+    return { kind: "evidence_unavailable", problem: "head_mismatch" };
+  }
+  if (inspection.reviewPosture !== "live" || gate.inspector.posture !== "live") {
+    return { kind: "evidence_unavailable", problem: "review_not_live" };
+  }
+  return { kind: "clean_exact_head", headSha: inspection.observedHeadSha };
+}
+
+const SPENT_EVIDENCE_SENTENCES: Record<SpentInspectorEvidenceProblem, string> = {
+  missing_inspection: "Current Inspector evidence is unavailable for this stopped workflow.",
+  pull_request_mismatch: "Current Inspector evidence belongs to a different pull request than this workflow's historical gate.",
+  pull_request_closed: "Current Inspector reports that the pull request is no longer open.",
+  missing_observation: "Current Inspector has not recorded an open pull-request head yet.",
+  head_mismatch: "Current Inspector has not reviewed the exact pull-request head it most recently observed.",
+  review_not_live: "Current Inspector's exact-head review was not produced under a live review posture.",
+  review_error: "Current Inspector's latest review evidence includes an error and cannot be adopted.",
+  finding_ledger_inconsistent: "Current Inspector finding totals do not reconcile with this workflow's historical finding record.",
+};
+
+/** The current-truth sentence for a spent gate, with live-gate wording left unchanged. */
+export function inspectorGateSentence(detail: WorkflowRunDetail): string {
+  const condition = spentInspectorGateCondition(detail);
+  if (!condition) return gateWaitSentence(detail.inspectorGate?.state.waitReason ?? null);
+  switch (condition.kind) {
+    case "historical_findings_open":
+      return `Current Inspector still has ${condition.currentOpenFindings} open finding${condition.currentOpenFindings === 1 ? "" : "s"}; ${condition.historicalOpenFindings} ${condition.historicalOpenFindings === 1 ? "was" : "were"} recorded when this workflow stopped.`;
+    case "current_findings_open":
+      return `The workflow's historical findings are resolved, but Current Inspector has ${condition.currentOpenFindings} open finding${condition.currentOpenFindings === 1 ? "" : "s"}.`;
+    case "awaiting_current_review":
+      return `The workflow's historical findings are resolved. Current Inspector has observed ${shortSha(condition.observedHeadSha) ?? condition.observedHeadSha}, but has not reviewed that exact head yet.`;
+    case "clean_exact_head":
+      return `Current Inspector reviewed the exact open pull-request head ${shortSha(condition.headSha) ?? condition.headSha} live with no open findings. The workflow remains stopped until you adopt it.`;
+    case "evidence_unavailable":
+      return SPENT_EVIDENCE_SENTENCES[condition.problem];
+  }
+}
+
+/** Compact current-state status for spent gate surfaces; `null` keeps ordinary gate status. */
+export function spentInspectorGateStatus(detail: WorkflowRunDetail): PipelineStatus | null {
+  const condition = spentInspectorGateCondition(detail);
+  if (!condition) return null;
+  switch (condition.kind) {
+    case "historical_findings_open":
+    case "current_findings_open":
+      return { tone: "failed", label: "Findings remain" };
+    case "awaiting_current_review":
+      return { tone: "waiting", label: "Review pending" };
+    case "clean_exact_head":
+      // Deliberately not green: the durable workflow and its Shipping veto are still active.
+      return { tone: "waiting", label: "Clean head ready" };
+    case "evidence_unavailable":
+      return { tone: "failed", label: "Evidence unavailable" };
+  }
 }
 
 const GATE_SUMMARIES: Record<WorkflowGateSummary, PipelineStatus> = {

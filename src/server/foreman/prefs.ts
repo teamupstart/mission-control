@@ -336,10 +336,11 @@ const PREFS_FRAMING_LEAD = [
  * behaviour every install had before this setting existed.
  *
  * The text is interpolated as written. It is NOT defanged, and that is the difference the
- * source makes: this arrives from `foremanInstructions()` - the markdown shipped with the app,
- * or what the operator typed into their own settings - so there is no adversary on this side
- * to defend against. The guards that remain in this file all point the other way, at the CHILD
- * (see `fromChild`), which is untrusted no matter where these instructions came from.
+ * source makes: this arrives through the daemon's Foreman instructions view, from the markdown
+ * shipped with the app or what the operator typed into their own settings, so there is no
+ * adversary on this side to defend against. The guards that remain in this file all point the
+ * other way, at the CHILD (see `fromChild`), which is untrusted no matter where these
+ * instructions came from.
  */
 export function instructionsSection(text: string): string[] {
   const body = text.trim();

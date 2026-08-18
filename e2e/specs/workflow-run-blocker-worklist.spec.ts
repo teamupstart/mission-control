@@ -205,6 +205,9 @@ async function openNextRound(page: Page): Promise<void> {
   const primary = page.locator("header.wf-run-head button.btn-primary");
   await expect(primary).toHaveText("Preview fresh evidence");
   await primary.click();
+  await page.getByRole("dialog", { name: "Preview fresh evidence" })
+    .getByRole("button", { name: "Preview fresh evidence" })
+    .click();
   await expect(primary).toHaveText("Preview unchanged", { timeout: 40_000 });
   await primary.click();
   await page.getByRole("dialog").getByRole("button", { name: "Preview unchanged" }).click();

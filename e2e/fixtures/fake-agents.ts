@@ -105,6 +105,9 @@ if (dir) {
     JSON.stringify({ argv: process.argv.slice(2) }, null, 2),
   );
 }
+if (process.env.MC_E2E_CMUX_MODE === "unknown") {
+  setInterval(() => {}, 1000);
+}
 `;
 
 /**

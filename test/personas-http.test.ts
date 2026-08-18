@@ -237,6 +237,13 @@ test("built-in Personas are served, refuse edits and archives, and reserve their
 test("missing ids and invalid archive-list queries are explicit", async () => {
   const { request } = fixture();
   assert.equal((await request("/api/personas/missing")).status, 404);
+  assert.equal(
+    (await request("/api/personas/foreman")).status,
+    404,
+    "Foreman's fixed System profile is not a Persona API row",
+  );
+  const listed = (await (await request("/api/personas")).json()) as Array<{ id: string }>;
+  assert.equal(listed.some((persona) => persona.id === "foreman"), false);
   assert.equal((await request("/api/personas?includeArchived=maybe")).status, 400);
 });
 

@@ -2,6 +2,7 @@ import type { Task, TaskKind } from "@shared/types.ts";
 import { planContractAppendix, type PlanSkillInvocations } from "./plans/prompt.ts";
 import { scoutReportAppendix } from "./scouts/prompt.ts";
 import { scoutRepoSlots } from "./scouts/repos.ts";
+import { executionAuthorizationContract } from "./execution-authorization.ts";
 import {
   workflowEvidenceContractAppendix,
 } from "./workflows/agent-contract.ts";
@@ -17,9 +18,8 @@ import {
  *
  * A REGISTRY over the kinds rather than a chain of `if`s, so that adding a kind's contract
  * means adding one entry here and nowhere else, and so that a kind added without a contract
- * does not compile. `ship` returns null and is not a placeholder for future work: a ship task
- * is delivered exactly what the operator wrote, and returning the composed intent untouched -
- * the same string, not a copy of it - is what keeps every existing dispatch byte-identical.
+ * does not compile. `ship` returns null because it has no KIND-specific appendix. Every task
+ * still receives the shared execution authorization below.
  *
  * The appendix is a SUFFIX, always. Whatever the caller already composed - the repo manifest
  * on a multi-repo dispatch, Pi's repository-memory pointer - is context the agent needs BEFORE
@@ -58,13 +58,15 @@ export interface TaskContractInputs {
 /**
  * The appendix each kind contributes, or null when it contributes none.
  *
- * `Record<TaskKind, …>` is the enforcement, matching `TASK_KIND_INFO`: a fourth kind does not
+ * `Record<TaskKind, …>` is the enforcement, matching `TASK_KIND_INFO`: a new kind does not
  * compile until it has said what its delivery contract is, including saying it is nothing.
  */
 const KIND_CONTRACT: Record<TaskKind, (task: Task, inputs: TaskContractInputs) => string | null> = {
   ship: () => null,
   scout: (task, inputs) => scoutReportAppendix(scoutRepoSlots(task, inputs.fallbackRoot ?? null)),
   plan: (task, inputs) => planContractAppendix(requirePlanSkills(task, inputs)),
+  pipeline: () => null,
+  chat: () => null,
 };
 
 /**
@@ -85,11 +87,13 @@ function requirePlanSkills(task: Task, inputs: TaskContractInputs): PlanSkillInv
 }
 
 /**
- * The intent a task is actually delivered: the composed intent, then its kind's contract.
+ * The intent a task is actually delivered: the composed intent, shared authorization, then
+ * its kind's contract and eligible evidence instructions.
  *
  * `composedIntent` is whatever the caller has already built - the repo manifest prefix on a
  * multi-repo dispatch, the repository-memory pointer on Pi, the raw intent on an assignment.
- * Composing here rather than in each caller is what makes the ordering deterministic.
+ * Composing here rather than in each caller is what makes the ordering deterministic. Broad
+ * authorization comes before narrower kind instructions, so the scout's later no-PR rule wins.
  */
 export function withTaskKindContract(
   task: Task,
@@ -97,8 +101,12 @@ export function withTaskKindContract(
   inputs: TaskContractInputs = {},
 ): string {
   const appendices = [
+    executionAuthorizationContract({
+      workflowEvidence: false,
+      workflowContinuation: false,
+    }),
     KIND_CONTRACT[task.kind](task, inputs),
     task.kind === "ship" && inputs.workflowEvidence ? workflowEvidenceContractAppendix() : null,
   ].filter((value): value is string => value !== null);
-  return appendices.length === 0 ? composedIntent : `${composedIntent}\n\n${appendices.join("\n\n")}`;
+  return `${composedIntent}\n\n${appendices.join("\n\n")}`;
 }

@@ -230,6 +230,10 @@ count or a hidden driver queue. Press <kbd>↑</kbd> in an empty composer, or ch
 to remove the newest queued message atomically and put its exact text back in the box. Other
 queued messages stay in FIFO order.
 
+Every multiline text box grows as text wraps or new lines are added. It keeps up to five
+lines visible, including the end of the draft, then scrolls inside the box for longer input.
+The field's original row count remains its empty-state floor.
+
 Delivery begins only after the session positively reports idle and no question is covering
 its input. An Agent SDK driver rechecks that condition at its own acceptance boundary, so a
 message that is still shown as editable never joins a turn that is already running. Both
@@ -515,7 +519,7 @@ The paths it bakes are absolute, and chosen to outlive the machine changing unde
 them. The `node` it writes is a stable alias (e.g. `/opt/homebrew/bin/node`) rather
 than the versioned directory `process.execPath` resolves to, which the next
 `brew upgrade node` deletes. And it refuses to run from a checkout inside a
-treehouse worktree pool: pool slots are reclaimed, and every hook baked from one
+native or legacy transient worktree pool: pool slots are reclaimed, and every hook baked from one
 then fails every event in every session on the machine with `MODULE_NOT_FOUND`.
 Install from a durable clone, or pass `--force` to override; `--uninstall` is
 always allowed, so an abandoned slot can still clean up after itself.
@@ -1401,8 +1405,19 @@ ensemble member, [`submit_scout_artifacts`](archives.md) for a scout, and
 `submit_workflow_evidence` for a workflow-bound ship task whose immutable graph contains a
 Persona. The workflow tool registers contained gitignored screenshots and focused UTF-8 text
 or log artifacts by issued repository slot or across all applicable repositories before task
-completion. It never tells the agent to commit evidence, and a ship task without such a
-workflow keeps its prior launch and prompt unchanged:
+completion. It never tells the agent to commit evidence. A ship task without such a workflow
+keeps its prior Mission MCP launch and receives no evidence instructions:
+
+Registered evidence is visible in the session card's shared **Image evidence** composer before
+**Ship it** or the built-in No-Mistakes review starts. A person can remove a stale registration,
+add screenshots by choosing, dropping, or pasting, and assign captions and repository scopes
+without moving the files into git. The same conversation-owned list appears in the initial
+workflow binding dialog before a binding exists, so the first review cannot capture an unseen
+stale item. The composer keeps unfinished uploads and edits across a
+closed confirmation or a failed submission, then clears only after the daemon accepts the
+review request.
+
+The MCP tools are:
 
 - `share_plan(title, plan)` - show a markdown plan (non-blocking)
 - `request_plan_decisions(title, plan, decisions)` - show a plan with selectable
@@ -1424,6 +1439,23 @@ workflow keeps its prior launch and prompt unchanged:
   client id, caption, checkout-relative path, and `repositoryScope` set to an issued repository
   slot or `all`. At least one item is required. The daemon resolves and re-hashes the source;
   the caller never supplies an absolute path, digest, submission id, or storage location
+
+Mission Control-authored task and workflow execution prompts carry a standing, conditional
+authorization for already-scoped work. If the task or current workflow asks for a pull request,
+the agent may commit the scoped work, push its task branch, and create or update that pull
+request in the issued repository without asking for another confirmation. This is not an
+instruction to create a pull request, an explicit no-PR instruction still wins, and merge,
+other repositories, and other external writes remain unauthorized. Prompt authorization is
+also separate from sandbox approval posture and does not widen it.
+
+When `submit_workflow_evidence` is exposed, the prompt likewise authorizes the exact
+server-validated call for task-produced, checkout-relative files and issued repository scopes.
+That includes `repositoryScope: "all"` only when Mission Control issued it. The agent calls the
+tool directly instead of asking for approval of the payload or Mission Control destination.
+Repository resolution, path and symlink checks, type and size limits, UTF-8 validation, and
+live-session attribution remain authoritative. Workflow resubmission belongs to Mission
+Control's engine or the Runs UI, so an agent completes the repair and does not ask the human to
+resubmit it.
 
 Because the MCP server is a child of the agent, it inherits the terminal env and
 binds every call to the correct session automatically.

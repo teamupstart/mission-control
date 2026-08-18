@@ -145,7 +145,8 @@ test("shadowed built-ins resolve while Persona pickers show the operator row", (
     onLeave: () => {},
     onDirtyChange: () => {},
   }));
-  assert.equal(library.match(/class="persona-list-item/g)?.length, 1);
+  assert.equal(library.match(/class="persona-list-item/g)?.length, 2);
+  assert.match(library, /class="lib-rail-tag is-system">System<\/em>/);
   assert.doesNotMatch(library, /class="persona-list-tag">Built-in</);
 });
 

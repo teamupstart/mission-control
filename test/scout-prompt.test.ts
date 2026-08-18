@@ -84,14 +84,32 @@ test("a scout's intent arrives intact, with the contract appended after it", () 
   const task = mkTask();
   const delivered = withTaskKindContract(task, task.intent);
   assert.ok(delivered.startsWith(task.intent), "the operator's request is read first, unmodified");
+  const authorization = delivered.indexOf("Mission Control execution authorization");
   const marker = delivered.indexOf(SCOUT_APPENDIX_MARKER);
+  assert.ok(authorization >= task.intent.length, "shared authorization follows the intent");
   assert.ok(marker > task.intent.length - 1, "and the contract follows it");
+  assert.ok(authorization < marker, "the narrower scout contract remains authoritative");
+  assert.ok(
+    marker < delivered.indexOf("Do NOT open a pull request"),
+    "the scout's explicit no-PR instruction remains last and specific",
+  );
 });
 
-test("a ship task's intent is byte-identical to what it was", () => {
-  const task = mkTask({ kind: "ship" });
-  assert.equal(withTaskKindContract(task, task.intent), task.intent);
-  assert.equal(isScoutTask(task), false);
+test("every task kind keeps the exact intent prefix and receives conditional PR authorization", () => {
+  for (const kind of ["ship", "scout", "plan", "pipeline"] as const) {
+    const task = mkTask({ kind });
+    const delivered = withTaskKindContract(
+      task,
+      task.intent,
+      kind === "plan" ? { planSkills: { htmlPlans: "/html-plans", phasedPlan: "/phased-plan" } } : {},
+    );
+    assert.ok(delivered.startsWith(task.intent), `${kind} keeps the operator's exact prefix`);
+    assert.match(delivered, /already authorized you to commit the scoped work/);
+    assert.match(delivered, /explicit no-PR instruction wins/);
+    assert.match(delivered, /does not authorize merge, another repository, or another external write/);
+    assert.match(delivered, /does not change sandbox approval or server-side validation/);
+  }
+  assert.equal(isScoutTask(mkTask({ kind: "ship" })), false);
 });
 
 test("only a ship task whose selected graph runs Personas receives workflow evidence", () => {
@@ -100,6 +118,11 @@ test("only a ship task whose selected graph runs Personas receives workflow evid
   assert.match(delivered, new RegExp(SUBMIT_WORKFLOW_EVIDENCE_TOOL));
   assert.match(delivered, /gitignored/);
   assert.match(delivered, /Do not commit/);
+  assert.match(delivered, /already authorized `submit_workflow_evidence`/);
+  assert.match(delivered, /the repository slot Mission Control issued/);
+  assert.match(delivered, /`repositoryScope: "all"` only when Mission Control issued that scope/);
+  assert.match(delivered, /without asking the human to approve the payload or Mission Control destination/);
+  assert.match(delivered, /do not ask the human to resubmit the workflow/);
   const required = kindMissionMcpRequirement(task, null, true);
   assert.deepEqual(required?.tools, [SUBMIT_WORKFLOW_EVIDENCE_TOOL]);
 });
@@ -132,6 +155,7 @@ test("the contract issues the repository slots a submission has to use", () => {
             worktreePath: "/work/sibling",
             branch: null,
             provider: null,
+            worktreeLeaseId: null,
             baseSha: null,
             prUrl: null,
             prState: null,

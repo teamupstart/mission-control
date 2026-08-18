@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   WORKFLOW_LIMITS,
   normalizeSessionActionName,
@@ -649,6 +649,7 @@ export function SessionActionEditor({
   onSaved,
   onDuplicate,
   onArchive,
+  footer,
 }: {
   action: SessionAction | null;
   seed?: SessionActionDraftSeed;
@@ -672,6 +673,8 @@ export function SessionActionEditor({
   onSaved: (action: SessionAction) => void;
   onDuplicate: (seed: SessionActionDraftSeed) => void;
   onArchive: (action: SessionAction) => void | Promise<void>;
+  /** The Library's shared usage footer; absent on a new draft and on older daemon state. */
+  footer?: ReactNode;
 }): React.JSX.Element {
   const [draft, setDraft] = useState<SessionActionDraftSeed>(
     () => action ? sessionActionSeed(action) : seed ?? EMPTY_SESSION_ACTION_SEED,
@@ -1195,17 +1198,7 @@ export function SessionActionEditor({
           )}
         </div>
       </section>
-      {/*
-       * The "used by" slot. Phase 5 fills it - which workflows send this action, and whether
-       * a run is waiting on it right now - and until then nothing renders here.
-       *
-       * Deliberately not an empty strip with the label already in it. A person reading
-       * "used by" over blank space concludes the question was asked and the answer was
-       * "nothing", and for an action a published workflow sends that is the worst of the
-       * three things this screen could say. The reference is not derivable in the browser -
-       * an action id lives only inside a workflow graph, which the SSE snapshot does not
-       * carry - so a half-answer here would be a guess rather than a partial.
-       */}
+      {footer}
     </article>
   );
 }

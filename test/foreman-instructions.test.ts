@@ -17,6 +17,7 @@ import { join } from "node:path";
 // DB_PATH off it) at module scope, so an unset home would point these writes at the
 // developer's live ~/.mission-control/harness.db from a unit test.
 process.env.MISSION_HOME = mkdtempSync(join(tmpdir(), "foreman-instr-home-"));
+const { getAppConfig } = await import("../src/server/db.ts");
 
 /** Point the seed at a scratch file, then load the module fresh so nothing is cached. */
 async function withSeed(text: string | null): Promise<typeof import("../src/server/foreman/instructions.ts")> {
@@ -31,47 +32,123 @@ async function withSeed(text: string | null): Promise<typeof import("../src/serv
   // leak the first case's answer into every later one.
   const m = await import(`../src/server/foreman/instructions.ts?case=${encodeURIComponent(file)}`);
   // Each case starts from "never edited", whatever the previous one stored in the shared db.
-  m.resetForemanInstructions();
+  const reset = m.updateForemanInstructions({
+    expectedEtag: m.foremanInstructionsView().etag,
+    reset: true,
+  });
+  assert.ok(reset.ok);
   return m;
 }
 
-test("the shipped markdown is what an operator who has changed nothing gets", async () => {
-  const m = await withSeed("# Defaults\n\nCorrectness first.");
-  assert.match(m.foremanInstructions(), /Correctness first/);
-  assert.equal(m.defaultForemanInstructions(), m.foremanInstructions());
+test("the built-in view returns the exact shipped default with a stable ETag", async () => {
+  const text = "# Defaults\r\n\r\nCorrectness first.\n";
+  const m = await withSeed(text);
+  const first = m.foremanInstructionsView();
+  const second = m.foremanInstructionsView();
+
+  assert.equal(first.source, "builtin");
+  assert.equal(first.text, text);
+  assert.equal(first.defaultText, text);
+  assert.equal(first.etag, second.etag);
+  assert.equal(getAppConfig<unknown>("foreman.instructions"), null);
 });
 
-test("a stored value replaces the default", async () => {
+test("a custom view preserves whitespace, line endings, Unicode, and storage bytes exactly", async () => {
   const m = await withSeed("# Defaults\n\nCorrectness first.");
-  m.setForemanInstructions("Only ever escalate.");
-  assert.equal(m.foremanInstructions(), "Only ever escalate.");
-  // The default is still reportable, so a settings panel can offer to restore it.
-  assert.match(m.defaultForemanInstructions(), /Correctness first/);
+  const exact = " \r\n# Operator\r\n\r\nCafé 😀\t \n";
+  const changed = m.updateForemanInstructions({
+    expectedEtag: m.foremanInstructionsView().etag,
+    text: exact,
+  });
+
+  assert.ok(changed.ok);
+  assert.equal(changed.view.source, "custom");
+  assert.equal(changed.view.text, exact);
+  assert.match(changed.view.defaultText, /Correctness first/);
+  assert.equal(m.foremanInstructionsView().text, exact);
+  assert.equal(m.foremanInstructionsView().etag, changed.view.etag);
+  assert.equal(getAppConfig<string>("foreman.instructions"), exact);
 });
 
-test("an EMPTY stored value means none - it does not fall back to the default", async () => {
-  // The whole reason this is not `stored || seed()`. Clearing the box is a choice, and
-  // quietly reinstating the shipped text there would override an operator who had just
-  // decided they wanted Foreman judging on its own policy.
+test("ETags preserve lone UTF-16 surrogates as distinct exact text", async () => {
   const m = await withSeed("# Defaults\n\nCorrectness first.");
-  m.setForemanInstructions("");
-  assert.equal(m.foremanInstructions(), "");
+  const initial = m.foremanInstructionsView();
+  const first = m.updateForemanInstructions({ expectedEtag: initial.etag, text: "\ud800" });
+  assert.ok(first.ok);
+
+  const second = m.updateForemanInstructions({ expectedEtag: first.view.etag, text: "\ud801" });
+  assert.ok(second.ok);
+  assert.notEqual(second.view.etag, first.view.etag);
+
+  const stale = m.updateForemanInstructions({ expectedEtag: first.view.etag, text: "overwrite" });
+  assert.ok(!stale.ok);
+  assert.deepEqual(stale.current, second.view);
+  assert.equal(m.foremanInstructionsView().text, "\ud801");
+  assert.equal(getAppConfig<string>("foreman.instructions"), "\ud801");
 });
 
-test("reset is distinct from clearing, and restores the default", async () => {
-  const m = await withSeed("# Defaults\n\nCorrectness first.");
-  m.setForemanInstructions("");
-  assert.equal(m.foremanInstructions(), "", "precondition: cleared");
+test("custom text identical to the seed remains source-distinct from built-in", async () => {
+  const text = "# Defaults\n\nCorrectness first.";
+  const m = await withSeed(text);
+  const builtin = m.foremanInstructionsView();
+  const changed = m.updateForemanInstructions({ expectedEtag: builtin.etag, text });
 
-  assert.match(m.resetForemanInstructions(), /Correctness first/);
-  assert.match(m.foremanInstructions(), /Correctness first/, "and it sticks");
+  assert.ok(changed.ok);
+  assert.equal(changed.view.source, "custom");
+  assert.equal(changed.view.text, builtin.text);
+  assert.notEqual(changed.view.etag, builtin.etag);
 });
 
-test("a missing seed file degrades to no instructions, not a crash", async () => {
-  // A packaging slip must not take the daemon down, and it must not invent instructions
-  // either. "No instructions" is a state the whole path already handles: it renders nothing
-  // and leaves every prompt exactly as it was before this setting existed.
+test("an empty stored value is intentional none, while reset restores built-in", async () => {
+  const m = await withSeed("# Defaults\n\nCorrectness first.");
+  const builtin = m.foremanInstructionsView();
+  const cleared = m.updateForemanInstructions({ expectedEtag: builtin.etag, text: "" });
+
+  assert.ok(cleared.ok);
+  assert.equal(cleared.view.source, "none");
+  assert.equal(cleared.view.text, "");
+  assert.match(cleared.view.defaultText, /Correctness first/);
+  assert.equal(getAppConfig<string>("foreman.instructions"), "");
+
+  const reset = m.updateForemanInstructions({ expectedEtag: cleared.view.etag, reset: true });
+  assert.ok(reset.ok);
+  assert.equal(reset.view.source, "builtin");
+  assert.equal(reset.view.text, builtin.text);
+  assert.equal(reset.view.etag, builtin.etag);
+  assert.equal(getAppConfig<unknown>("foreman.instructions"), null);
+});
+
+test("a stale mutation returns the current view and performs no storage write", async () => {
+  const m = await withSeed("# Defaults\n\nCorrectness first.");
+  const initial = m.foremanInstructionsView();
+  const changed = m.updateForemanInstructions({
+    expectedEtag: initial.etag,
+    text: "Current document\r\n",
+  });
+  assert.ok(changed.ok);
+
+  const stale = m.updateForemanInstructions({
+    expectedEtag: initial.etag,
+    text: "Stale overwrite",
+  });
+  assert.ok(!stale.ok);
+  assert.deepEqual(stale.current, changed.view);
+  assert.equal(m.foremanInstructionsView().text, "Current document\r\n");
+  assert.equal(getAppConfig<string>("foreman.instructions"), "Current document\r\n");
+});
+
+test("a missing seed is empty built-in and remains distinct from intentional none", async () => {
   const m = await withSeed(null);
-  assert.equal(m.foremanInstructions(), "");
-  assert.equal(m.defaultForemanInstructions(), "");
+  const builtin = m.foremanInstructionsView();
+
+  assert.equal(builtin.source, "builtin");
+  assert.equal(builtin.text, "");
+  assert.equal(builtin.defaultText, "");
+
+  const cleared = m.updateForemanInstructions({ expectedEtag: builtin.etag, text: "" });
+  assert.ok(cleared.ok);
+  assert.equal(cleared.view.source, "none");
+  assert.equal(cleared.view.text, "");
+  assert.equal(cleared.view.defaultText, "");
+  assert.notEqual(cleared.view.etag, builtin.etag);
 });

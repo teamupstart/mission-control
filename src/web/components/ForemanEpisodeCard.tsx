@@ -121,9 +121,11 @@ function EpisodeAsk({ episode }: { episode: ForemanEpisode }): React.JSX.Element
   const where =
     episode.surface === "input-review"
       ? "the review it posted"
-      : episode.pane
-        ? "the child's screen, as Foreman read it"
-        : "what the session reported";
+      : episode.surface === "pipeline"
+        ? "the pipeline halt Mission Control observed"
+        : episode.pane
+          ? "the child's screen, as Foreman read it"
+          : "what the session reported";
   return (
     <div className="fe-block">
       <div className="fe-label">

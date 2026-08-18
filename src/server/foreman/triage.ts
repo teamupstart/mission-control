@@ -562,7 +562,7 @@ export async function triageSession(
    * wrote the file to govern. A preferences doc only the expensive tier honours is not a
    * preferences doc, it is a coin flip on which tier happens to pick the ask up. The extra
    * tokens are real: the doc is schema-capped at 64,000 characters
-   * (`ForemanInstructionsSchema.text`) and its rendered section adds about 2.4KB of framing,
+   * (`FOREMAN_INSTRUCTIONS_MAX_LENGTH`) and its rendered section adds about 2.4KB of framing,
    * so a filled-in box rides along on every triage, review and verify prompt. Worth it
    * against the coin flip, and this tier is Haiku.
    */

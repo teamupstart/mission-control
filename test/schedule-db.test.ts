@@ -182,6 +182,7 @@ function mkTask(over: Partial<Task> = {}): Task {
     worktreePath: "/wt/x",
     branch: "harness/x",
     provider: "git",
+    worktreeLeaseId: null,
     homeName: "harness-x",
     terminalResourceId: "res-1",
     sessionId: null,
@@ -197,6 +198,7 @@ function mkTask(over: Partial<Task> = {}): Task {
     dispatchedAt: null,
     completedAt: null,
     ...over,
+    pipelineRun: over.pipelineRun ?? null,
     workflowId: over.workflowId ?? null,
   };
 }
@@ -406,6 +408,23 @@ test("a template priority or effort from a newer build fails closed, it does not
     assert.equal(back.health, "attention");
     assert.equal(scheduleIsRunnable(back), false);
   }
+});
+
+test("a persisted chat template is unreadable because schedules only produce backlog work", () => {
+  const s = mkSchedule();
+  const row = db
+    .openDb()
+    .prepare(`SELECT template_json AS t FROM mission_schedule_revisions WHERE schedule_id = ?`)
+    .get(s.id) as { t: string };
+  const template = { ...(JSON.parse(row.t) as Record<string, unknown>), kind: "chat" };
+  db.openDb()
+    .prepare(`UPDATE mission_schedule_revisions SET template_json = ? WHERE schedule_id = ?`)
+    .run(JSON.stringify(template), s.id);
+
+  const back = store.getSchedule(s.id, T0)!;
+  assert.equal(back.template, null);
+  assert.deepEqual(back.unreadable?.fields, ["template"]);
+  assert.equal(scheduleIsRunnable(back), false);
 });
 
 test("a template that simply set no priority or effort is ordinary, not unreadable", () => {

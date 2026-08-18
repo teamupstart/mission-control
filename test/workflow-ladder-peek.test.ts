@@ -9,6 +9,7 @@ import {
 import {
   deliveryStateView,
   gateWaitSentence,
+  inspectorGateSentence,
 } from "../src/web/workflows/run-model.ts";
 import {
   ladderDetail,
@@ -69,6 +70,21 @@ test("the Inspector gate outranks already-passed stages in the Board peek", () =
   const html = render("gate");
   assert.match(html, /PR #301 · head 4f2ab19c/);
   assert.ok(html.includes(gateWaitSentence("review_pending")));
+});
+
+test("the Board peek reads a spent gate from the current Inspector ledger", () => {
+  const detail = ladderDetail("spent-clean");
+  const view = workflowLadderPeekView(detail.summary, detail);
+  assert.equal(view?.name, "GitHub Inspector gate");
+  assert.equal(view?.sub, "PR #301 · head clean0000000");
+  assert.equal(view?.status.label, "Clean head ready");
+  assert.equal(view?.sentence, inspectorGateSentence(detail));
+
+  const html = render("spent-clean");
+  assert.match(html, /PR #301 · head clean0000000/);
+  assert.match(html, /Clean head ready/);
+  assert.ok(html.includes(inspectorGateSentence(detail)));
+  assert.doesNotMatch(html, new RegExp(gateWaitSentence("findings")));
 });
 
 test("uncertain delivery takes precedence and reuses the shipped warning", () => {

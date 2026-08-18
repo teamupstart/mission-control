@@ -520,6 +520,18 @@ remains inert: its document renders immediately, then a bounded set of checkout-
 stylesheets is inlined through the contained file reader without granting the sandbox scripts
 or network access. A slow stylesheet read therefore delays styling, not the document itself.
 
+Markdown in the Files **Preview** has one additional capability: a fenced block tagged exactly
+`mermaid` renders automatically as a local diagram. Each diagram runs in its own opaque,
+no-network sandbox and exposes a numbered accessible name. A malformed block reports its error
+beside readable source without hiding the rest of the file. Blocks over 50,000 characters and
+blocks after the first 32 in one document stay as source with a limit notice. **Editor** always
+shows and saves the exact Markdown, including every fence, and returning to Preview renders the
+latest buffer. Untagged fences, every other language tag, and Mermaid fences in conversations,
+shared plans, Foreman briefs, Personas, workflow actions, and reports remain code. Rendering uses
+the bundled Mermaid package only; it sends no source or labels to a remote service. External image
+and active-link constructs are rejected before rendering and remain readable through the block's
+source fallback.
+
 **The Diff tab has the same door.** The bar naming the file you are reading carries an
 **Open in Files** action, on every file, which opens that file in the Files tab beside it -
 the same route, the same containment rules. Press <kbd>l</kbd> while the diff reader owns
@@ -642,7 +654,7 @@ names the layouts where a shortcut's target exists:
 
 | Key | Action | Scope |
 |-----|--------|-------|
-| <kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> | Around the grid in **Cards**; in **Console** and the **Board** drill-in <kbd>↑</kbd>/<kbd>↓</kbd> walk the rail selection, or scroll the reader's active tab once you <kbd>Tab</kbd> into it (and move through files while its inline Diff reader is focused); along and across the columns in the **Board** overview. With nothing selected, the first arrow selects the first session | Anywhere |
+| <kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> | Around the grid in **Cards**; in **Console** and the **Board** drill-in <kbd>↑</kbd>/<kbd>↓</kbd> walk the rail selection, or scroll the reader's active tab once you <kbd>Tab</kbd> into it (and move through files while its inline Diff reader is focused); along and across the columns in the **Board** overview. On **Scouts**, <kbd>↑</kbd>/<kbd>↓</kbd> open the adjacent report in the current results when focus is outside a text field or selector. With nothing selected, the first arrow selects the first session | Anywhere |
 | <kbd>Tab</kbd> | **Console & board drill-in:** step into the open detail and one tab right each press - Conversation → Work queue → Workflows → Diff → Files - clamping at the last rather than tabbing away. The reader takes a soft ring and <kbd>↑</kbd>/<kbd>↓</kbd> scroll whichever tab shows; <kbd>⇧</kbd><kbd>Tab</kbd> walks back, and from the conversation (or <kbd>Esc</kbd>) hands the keyboard to the rail | Open detail (Console or Board) |
 | <kbd>Enter</kbd> | Open the selected session's detail. **Cards**: focus-expands or collapses the selected card. **Board**: opens the drill-in. Console already shows the selected session. On a focused link or button Enter activates that instead, as it always does | Anywhere |
 | <kbd>Esc</kbd> | Peel back exactly one layer per press - first close whatever's open on top of the grid (a panel, a dialog, the away digest), then leave a focused text box, then collapse an expanded card (**Cards**), hand a Console reader back to its rail, or leave the drill-in with the cursor still on it (**Board**), then deselect. In guided dispatch's Repo step, the first press closes the repo list and leaves the pass for the ordinary form; a second closes the modal | Anywhere |
@@ -654,13 +666,13 @@ names the layouts where a shortcut's target exists:
 | <kbd>⇧</kbd><kbd>P</kbd> | Open or close **Sitrep** | Fleet |
 | <kbd>+</kbd> | Start the guided dispatch pass. <kbd>Tab</kbd> reaches the ordinary form in one key | Anywhere |
 | type, <kbd>↑</kbd><kbd>↓</kbd>, <kbd>Enter</kbd> | Filter repositories by name, move through the matches and take one | Guided dispatch: Repo |
-| <kbd>p</kbd> / <kbd>t</kbd> / <kbd>l</kbd> | Choose ship / scout / plan | Guided dispatch: Kind |
+| <kbd>p</kbd> / <kbd>t</kbd> / <kbd>l</kbd> / <kbd>c</kbd> | Choose ship / scout / plan / chat | Guided dispatch: Kind |
 | <kbd>c</kbd> / <kbd>x</kbd> / <kbd>i</kbd> | Choose Claude Code / Codex / Pi | Guided dispatch: Harness |
 | <kbd>d</kbd> / <kbd>n</kbd> / printed letter | Choose the dispatch default, None or a published Workflow | Guided dispatch: After work |
 | <kbd>1</kbd>…<kbd>9</kbd> | Take that position in Kind, Harness or After work. Digits type into the filter during Repo | Guided dispatch |
 | <kbd>Backspace</kbd> | Delete a Repo-filter character, or go back one question from a later step | Guided dispatch |
 | <kbd>Tab</kbd> | Leave the guided pass, keep every answer and focus the task box | Guided dispatch |
-| <kbd>/</kbd> | Focus the filter box (sessions, plus the board's backlog) | Anywhere |
+| <kbd>/</kbd> | Focus the filter box (sessions, plus the board's backlog), or **Scouts** search while on that page | Anywhere |
 | <kbd>⌘</kbd><kbd>K</kbd> | Open [the palette](#the-palette-k) over workflows, runs, ensembles, Personas, actions, missions and settings - it opens where you are and never navigates to open; press again to close | Anywhere |
 | <kbd>⇧</kbd><kbd>F10</kbd> or the Menu key | Open the [context menu](#context-menus) for the focused item or text field | Anywhere |
 | <kbd>e</kbd> | On the **Board** overview, show the selected card's full workflow or collapse it back to the active-rung preview. This is the keyboard equivalent of **Show full workflow** / **Collapse workflow** and never opens Conversation or another session-detail tab | Selected Board card with a workflow |

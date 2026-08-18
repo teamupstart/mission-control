@@ -5,6 +5,15 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, URL } from "node:url";
+import {
+  FOREMAN_INSTRUCTIONS_CONFLICT_CODE,
+  FOREMAN_INSTRUCTIONS_CONFLICT_MESSAGE,
+  FOREMAN_INSTRUCTIONS_MAX_LENGTH,
+} from "../src/shared/protocol.ts";
+import type {
+  ForemanInstructionsConflict,
+  ForemanInstructionsView,
+} from "../src/shared/protocol.ts";
 
 // Isolate the daemon's state dir (token + sqlite) BEFORE anything reads config.
 // This is what proves the DRY refactor's single-source-of-truth runtime module:
@@ -452,12 +461,14 @@ test("rename: 404 unknown session, 400 invalid name, and it's wired to the actio
     effort: null,
     workflowId: null,
     source: null,
+    pipelineRun: null,
     repoRoot: "/repo",
     baseSha: null,
     extraRepos: [],
     worktreePath: "/wt/stale-xyzzy",
     branch: null,
     provider: null,
+    worktreeLeaseId: null,
     homeName: "harness-rename-taken-xyzzy",
     terminalResourceId: null,
     sessionId: null,
@@ -1070,104 +1081,108 @@ test("a prompted ask clears a PREVIOUS episode's answer; the drain ask never doe
   assert.equal(q.wrapupAnswer, null, "and the stale answer went with it, so the card renders");
 });
 
-test("the prompted trigger's episode guard round-trips, and is separate from the drain ask", async () => {
-  // One field for both guards would mean a prompted wrap-up consumed the drain ask (or
-  // the reverse) on a checkout that later gets a work queue. They must not interfere.
+test("the prompted endpoint consumes exact work-cycle generations and raises its ask atomically", async () => {
   seedSession();
-  // Read the drain ask's current value rather than assuming null: these tests share one
-  // registry and one db, so an earlier case may have stamped it. UNCHANGED is the real
-  // invariant here anyway - "never null" would pass for a stamp that was already there.
-  const before = await app.request("/api/sessions/sess-1/queue", { headers: LOOPBACK });
-  const askedBefore = ((await before.json()) as { wrapupAskedAt: number | null }).wrapupAskedAt;
+  const agentSessionId = "agent-prompted-generation";
+  const goal = "preserve the existing Manual workflow binding";
+  const prompt = await app.request("/hooks/UserPromptSubmit", {
+    method: "POST",
+    headers: authed,
+    body: JSON.stringify({ env: { tmuxPane: "%3" }, sessionId: agentSessionId, prompt: goal }),
+  });
+  assert.equal(prompt.status, 204);
+  registry.upsertGoal("sess-1", {
+    prompt: goal,
+    text: goal,
+    objective: goal,
+    focus: goal,
+    relationship: "initial",
+    rationale: "Initial objective",
+    objectiveVersion: 1,
+    promptRevision: 1,
+    resolvedPromptRevision: 1,
+    pendingPrompts: [],
+    source: "heuristic",
+  }, Date.now());
+  const stop = await app.request("/hooks/Stop", {
+    method: "POST",
+    headers: authed,
+    body: JSON.stringify({ env: { tmuxPane: "%3" }, sessionId: agentSessionId }),
+  });
+  assert.equal(stop.status, 204);
 
-  const goal = "add retry handling to the uploader";
-  const evidenceMarker = "a".repeat(64);
-  const activityAt = 1234;
-  const res = await app.request("/api/sessions/sess-1/queue/wrapup/prompted", {
+  const first = registry.getSession("sess-1")!;
+  const currentGoal = registry.getGoal("sess-1")!;
+  assert.equal(first.workCycle?.generation, 1);
+  const expectedIntent = {
+    objective: currentGoal.objective,
+    objectiveVersion: currentGoal.objectiveVersion,
+    promptRevision: currentGoal.promptRevision,
+    episodeKey: `intent:${currentGoal.objectiveVersion}:${currentGoal.promptRevision}`,
+  };
+  const logicalKey = first.workCycle!.logicalKey;
+
+  const consumed = await app.request("/api/sessions/sess-1/queue/wrapup/prompted", {
     method: "POST",
     headers: jsonHeaders,
-    body: JSON.stringify({ goal, evidenceMarker, activityAt }),
+    body: JSON.stringify({ logicalKey, generation: 1, expectedIntent }),
   });
-  assert.equal(res.status, 200);
-  const q = (await res.json()) as {
+  assert.equal(consumed.status, 200);
+  const firstQueue = (await consumed.json()) as {
+    promptedConsumedGeneration: number | null;
     promptedGoal: string | null;
-    promptedEvidence: string | null;
-    promptedActivityAt: number | null;
     wrapupAskedAt: number | null;
   };
-  assert.equal(q.promptedGoal, goal);
-  assert.equal(q.promptedEvidence, evidenceMarker);
-  assert.equal(q.promptedActivityAt, activityAt);
-  assert.equal(q.wrapupAskedAt, askedBefore, "retiring a prompted episode never touches the drain ask");
+  assert.equal(firstQueue.promptedConsumedGeneration, 1);
+  assert.equal(firstQueue.promptedGoal, null, "new writes do not use the legacy fallback");
 
-  // And it survives a re-read, since it is the thing that stops the trigger re-firing.
-  const read = await app.request("/api/sessions/sess-1/queue", { headers: LOOPBACK });
-  assert.equal(((await read.json()) as { promptedGoal: string | null }).promptedGoal, goal);
-});
-
-test("an old worker can retire a prompted episode without an evidence marker", async () => {
-  seedSession();
-  const goal = "finish the upload retry";
-  const res = await app.request("/api/sessions/sess-1/queue/wrapup/prompted", {
+  const duplicate = await app.request("/api/sessions/sess-1/queue/wrapup/prompted", {
     method: "POST",
     headers: jsonHeaders,
-    body: JSON.stringify({ goal }),
+    body: JSON.stringify({ logicalKey, generation: 1, expectedIntent }),
   });
-  assert.equal(res.status, 200);
-  const queue = (await res.json()) as {
-    promptedGoal: string | null;
-    promptedEvidence: string | null;
-    promptedActivityAt: number | null;
-  };
-  assert.equal(queue.promptedGoal, goal);
-  assert.equal(queue.promptedEvidence, null, "the version-skew write is a legacy spent guard");
-  assert.equal(queue.promptedActivityAt, null);
+  assert.equal(duplicate.status, 409, "one completed generation can be consumed only once");
 
-  // The immediately preceding worker version knew the evidence marker but not the
-  // observed-activity axis. That upgrade window must remain valid and spent too.
-  const markerOnly = await app.request("/api/sessions/sess-1/queue/wrapup/prompted", {
+  // A later work start invalidates the old result before that work has completed.
+  const work = await app.request("/hooks/PreToolUse", {
+    method: "POST",
+    headers: authed,
+    body: JSON.stringify({ env: { tmuxPane: "%3" }, sessionId: agentSessionId, toolName: "Bash" }),
+  });
+  assert.equal(work.status, 204);
+  const stale = await app.request("/api/sessions/sess-1/queue/wrapup/prompted", {
     method: "POST",
     headers: jsonHeaders,
-    body: JSON.stringify({ goal: `${goal} again`, evidenceMarker: "c".repeat(64) }),
+    body: JSON.stringify({ logicalKey, generation: 1, expectedIntent }),
   });
-  assert.equal(markerOnly.status, 200);
-  const markerOnlyQueue = (await markerOnly.json()) as {
-    promptedEvidence: string | null;
-    promptedActivityAt: number | null;
-  };
-  assert.equal(markerOnlyQueue.promptedEvidence, "c".repeat(64));
-  assert.equal(markerOnlyQueue.promptedActivityAt, null, "unknown activity stays a legacy boundary");
-});
+  assert.equal(stale.status, 409, "a stale verifier result cannot consume across active work");
 
-test("a prompted human handoff retires its episode and raises the card atomically", async () => {
-  seedSession();
+  const secondStop = await app.request("/hooks/Stop", {
+    method: "POST",
+    headers: authed,
+    body: JSON.stringify({ env: { tmuxPane: "%3" }, sessionId: agentSessionId }),
+  });
+  assert.equal(secondStop.status, 204);
   await app.request("/api/sessions/sess-1/queue/wrapup", {
     method: "PUT",
     headers: jsonHeaders,
     body: JSON.stringify({ answer: "ship directly" }),
   });
 
-  const goal = "preserve the existing Manual workflow binding";
-  const evidenceMarker = "b".repeat(64);
-  const activityAt = 5678;
   const res = await app.request("/api/sessions/sess-1/queue/wrapup/prompted", {
     method: "POST",
     headers: jsonHeaders,
-    body: JSON.stringify({ goal, evidenceMarker, activityAt, ask: true }),
+    body: JSON.stringify({ logicalKey, generation: 2, expectedIntent, ask: true }),
   });
   assert.equal(res.status, 200);
   const queue = (await res.json()) as {
-    promptedGoal: string | null;
-    promptedEvidence: string | null;
-    promptedActivityAt: number | null;
+    promptedConsumedGeneration: number | null;
     wrapupAskedAt: number | null;
     wrapupAnswer: string | null;
   };
-  assert.equal(queue.promptedGoal, goal);
-  assert.equal(queue.promptedEvidence, evidenceMarker);
-  assert.equal(queue.promptedActivityAt, activityAt);
-  assert.ok(queue.wrapupAskedAt, "the Ship it? card is raised with the episode guard");
-  assert.equal(queue.wrapupAnswer, null, "the previous episode's answer cannot hide the new card");
+  assert.equal(queue.promptedConsumedGeneration, 2);
+  assert.ok(queue.wrapupAskedAt, "the Ship it? card is raised with the generation consume");
+  assert.equal(queue.wrapupAnswer, null, "the previous generation's answer cannot hide the new card");
 });
 
 test("a second in-flight item is refused with a clean 409, not a raw 500", async () => {
@@ -1268,7 +1283,12 @@ test("foremanStatus reports running only while a leader's lease is live", async 
     body: JSON.stringify({ workerId: "worker-b" }),
   });
   const off = await app.request("/api/foreman/status", { headers: LOOPBACK });
-  assert.equal(((await off.json()) as { running: boolean }).running, false);
+  const offBody = (await off.json()) as Record<string, unknown>;
+  assert.equal(offBody.running, false);
+  assert.equal(offBody.instructionsSource, "builtin");
+  for (const documentKey of ["text", "defaultText", "etag"]) {
+    assert.equal(documentKey in offBody, false, `${documentKey} stays off the status poll`);
+  }
 
   await app.request("/api/foreman/heartbeat", {
     method: "POST",
@@ -1729,48 +1749,142 @@ test("the standards request carries its paths in a BODY, so a big refactor still
   rmSync(repo, { recursive: true, force: true });
 });
 
-test("the foreman instructions route reads, writes, resets - and is loopback-gated", async () => {
+test("the foreman instructions route is exact, source-aware, CAS-protected, and bounded", async () => {
   // GLOBAL, not per-session: these are one setting for the operator, not a property of
-  // whichever session is under review. The seam worth an integration test is EMPTY vs UNSET -
-  // clearing the box has to survive a round-trip as empty rather than falling back to the
-  // shipped default, because a settings panel that silently undoes a deletion is worse than
-  // one that refuses it.
+  // whichever session is under review. Empty versus unset, exact bytes, and stale-write refusal
+  // all meet at this route, so exercise them as one document lifecycle.
+  const readView = async (): Promise<ForemanInstructionsView> => {
+    const response = await app.request("/api/foreman/instructions", { headers: LOOPBACK });
+    assert.equal(response.status, 200);
+    return (await response.json()) as ForemanInstructionsView;
+  };
+  const put = (body: unknown, headers: Record<string, string> = jsonHeaders) =>
+    app.request("/api/foreman/instructions", {
+      method: "PUT",
+      headers,
+      body: JSON.stringify(body),
+    });
+  const personasBefore = structuredClone(registry.snapshot().personas);
+  const personaEvents: unknown[] = [];
+  const unsubscribe = registry.subscribe((event) => {
+    if (event.type === "persona_upsert") personaEvents.push(event);
+  });
+
   const read = await app.request("/api/foreman/instructions", { headers: LOOPBACK });
   assert.equal(read.status, 200);
-  const initial = (await read.json()) as { text: string; default: string };
-  assert.equal(initial.text, initial.default, "untouched, so the default applies");
+  const initial = (await read.json()) as ForemanInstructionsView & { default?: unknown };
+  assert.equal(initial.source, "builtin");
+  assert.equal(initial.text, initial.defaultText, "untouched, so the default applies");
+  assert.equal("default" in initial, false, "the old response name is retired");
 
-  const put = await app.request("/api/foreman/instructions", {
+  const exact = " \r\n# Operator\r\n\r\nEscalate auth changes. Café 😀\t \n";
+  const written = await put({
+    expectedEtag: initial.etag,
+    text: exact,
+  });
+  assert.equal(written.status, 200);
+  const custom = (await written.json()) as ForemanInstructionsView;
+  assert.equal(custom.source, "custom");
+  assert.equal(custom.text, exact);
+  assert.equal(custom.defaultText, initial.defaultText);
+  assert.notEqual(custom.etag, initial.etag);
+
+  const stale = await put({
+    expectedEtag: initial.etag,
+    text: "Stale overwrite",
+  });
+  assert.equal(stale.status, 409);
+  assert.deepEqual((await stale.json()) as ForemanInstructionsConflict, {
+    error: FOREMAN_INSTRUCTIONS_CONFLICT_MESSAGE,
+    code: FOREMAN_INSTRUCTIONS_CONFLICT_CODE,
+    current: custom,
+  });
+  assert.deepEqual(await readView(), custom, "a stale request performs no write");
+
+  const invalidBodies: unknown[] = [
+    { expectedEtag: custom.etag, text: "both", reset: true },
+    { expectedEtag: custom.etag },
+    { expectedEtag: "", text: "empty ETag" },
+    { expectedEtag: custom.etag, text: "unknown key", extra: true },
+    { expectedEtag: custom.etag, reset: false },
+    { expectedEtag: custom.etag, text: "x".repeat(FOREMAN_INSTRUCTIONS_MAX_LENGTH + 1) },
+  ];
+  for (const invalid of invalidBodies) {
+    const refused = await put(invalid);
+    assert.equal(refused.status, 400, `strict refusal for ${Object.keys(invalid as object)}`);
+  }
+  assert.deepEqual(await readView(), custom, "malformed requests perform no write");
+
+  const clearedResponse = await put({ expectedEtag: custom.etag, text: "" });
+  assert.equal(clearedResponse.status, 200);
+  const cleared = (await clearedResponse.json()) as ForemanInstructionsView;
+  assert.equal(cleared.source, "none");
+  assert.equal(cleared.text, "", "empty is a choice, not unset");
+
+  const sameAsDefaultResponse = await put({
+    expectedEtag: cleared.etag,
+    text: initial.defaultText,
+  });
+  const sameAsDefault = (await sameAsDefaultResponse.json()) as ForemanInstructionsView;
+  assert.equal(sameAsDefaultResponse.status, 200);
+  assert.equal(sameAsDefault.source, "custom");
+  assert.notEqual(sameAsDefault.etag, initial.etag);
+
+  const resetResponse = await put({ expectedEtag: sameAsDefault.etag, reset: true });
+  assert.equal(resetResponse.status, 200);
+  const reset = (await resetResponse.json()) as ForemanInstructionsView;
+  assert.equal(reset.source, "builtin");
+  assert.equal(reset.text, initial.defaultText, "reset restores the built-in document");
+  assert.equal(reset.etag, initial.etag, "identical built-in state has a stable ETag");
+
+  const highUnicode = "😀".repeat(FOREMAN_INSTRUCTIONS_MAX_LENGTH / 2);
+  assert.equal(highUnicode.length, FOREMAN_INSTRUCTIONS_MAX_LENGTH);
+  const unicodeResponse = await put({ expectedEtag: reset.etag, text: highUnicode });
+  assert.equal(unicodeResponse.status, 200, "legal high-Unicode text clears the byte guard");
+  const unicode = (await unicodeResponse.json()) as ForemanInstructionsView;
+  assert.equal(unicode.text, highUnicode);
+
+  const escapedHighUnicode = "\u1234".repeat(FOREMAN_INSTRUCTIONS_MAX_LENGTH);
+  const escapedBody = `{"expectedEtag":${JSON.stringify(unicode.etag)},"text":"${
+    "\\u1234".repeat(FOREMAN_INSTRUCTIONS_MAX_LENGTH)
+  }"}`;
+  const escapedResponse = await app.request("/api/foreman/instructions", {
     method: "PUT",
     headers: jsonHeaders,
-    body: JSON.stringify({ text: "Escalate anything that touches auth." }),
+    body: escapedBody,
   });
-  assert.equal(put.status, 200);
-  assert.equal(((await put.json()) as { text: string }).text, "Escalate anything that touches auth.");
+  assert.equal(escapedResponse.status, 200, "a max-length escaped document clears the byte guard");
+  const escaped = (await escapedResponse.json()) as ForemanInstructionsView;
+  assert.equal(escaped.text, escapedHighUnicode);
 
-  const cleared = await app.request("/api/foreman/instructions", {
-    method: "PUT",
-    headers: jsonHeaders,
-    body: JSON.stringify({ text: "" }),
+  const oversized = await put({
+    expectedEtag: escaped.etag,
+    text: "x".repeat(FOREMAN_INSTRUCTIONS_MAX_LENGTH * 7),
   });
-  assert.equal(((await cleared.json()) as { text: string }).text, "", "empty is a choice, not unset");
+  assert.equal(oversized.status, 413);
+  assert.deepEqual(await readView(), escaped, "the stream limit refuses before mutation");
 
-  const reset = await app.request("/api/foreman/instructions", {
-    method: "PUT",
-    headers: jsonHeaders,
-    body: JSON.stringify({ reset: true }),
-  });
-  assert.equal(((await reset.json()) as { text: string }).text, initial.default, "reset restores it");
+  const restoredResponse = await put({ expectedEtag: escaped.etag, reset: true });
+  const restored = (await restoredResponse.json()) as ForemanInstructionsView;
+  assert.equal(restoredResponse.status, 200);
+  assert.equal(restored.source, "builtin");
 
   // Neither verb is reachable from a page the user merely visits.
   for (const method of ["GET", "PUT"]) {
     const rebound = await app.request("/api/foreman/instructions", {
       method,
       headers: { host: "evil.example.com", "content-type": "application/json" },
-      body: method === "PUT" ? JSON.stringify({ reset: true }) : undefined,
+      body: method === "PUT"
+        ? JSON.stringify({ expectedEtag: restored.etag, text: "rebound overwrite" })
+        : undefined,
     });
     assert.equal(rebound.status, 403, `${method} must be loopback-gated`);
   }
+  assert.deepEqual(await readView(), restored, "non-loopback requests perform no write");
+
+  unsubscribe();
+  assert.deepEqual(registry.snapshot().personas, personasBefore);
+  assert.deepEqual(personaEvents, [], "standing-guidance writes emit no Persona SSE event");
 });
 
 test("a reorder moves the queue's change token, so a second tab learns about it", async () => {

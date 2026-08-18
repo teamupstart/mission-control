@@ -1,12 +1,17 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { sessionActionsForDisplay } from "@shared/workflow.ts";
-import type { SessionAction } from "@shared/workflow.ts";
+import type {
+  SessionAction,
+  WorkflowRunSummary,
+  WorkflowSummary,
+} from "@shared/workflow.ts";
 import type { SkillCatalogEntry } from "@shared/types.ts";
 import { fetchSkills } from "../lib/api.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
 import { LibraryBackRow } from "../library/LibraryBackRow.tsx";
 import { LibraryRailGroup, LibraryRailRow } from "../library/LibraryRail.tsx";
 import { sessionActionContractLabel } from "../library/library-model.ts";
+import { LibraryAssetUsage } from "../library/LibraryAssetUsage.tsx";
 import { useLibraryEscape } from "../library/useLibraryEscape.ts";
 import {
   EMPTY_SESSION_ACTION_SEED,
@@ -68,6 +73,8 @@ export function groupSessionActions(
 
 export function SessionActionLibrary({
   sessionActions,
+  workflowSummaries = [],
+  workflowRuns = [],
   hasSnapshot = false,
   initialActionId = null,
   startNew = false,
@@ -77,6 +84,8 @@ export function SessionActionLibrary({
   onSelectionChange,
 }: {
   sessionActions: SessionAction[];
+  workflowSummaries?: WorkflowSummary[];
+  workflowRuns?: WorkflowRunSummary[];
   /**
    * Whether the SSE snapshot has landed. Without it an empty catalog and an unread one look
    * identical, and "No session actions yet" beside a New button is an invitation to author a
@@ -396,6 +405,15 @@ export function SessionActionLibrary({
                 onConfirm: () => void archive(action),
               });
             }}
+            footer={selected ? (
+              <LibraryAssetUsage
+                asset={{ kind: "session_action", id: selected.id }}
+                assetLabel="Action"
+                workflows={workflowSummaries}
+                runs={workflowRuns}
+                hasSnapshot={hasSnapshot}
+              />
+            ) : undefined}
           />
         )}
       </div>

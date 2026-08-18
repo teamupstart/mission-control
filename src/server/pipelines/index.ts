@@ -1,4 +1,5 @@
 import {
+  MAX_PIPELINE_INSTALLER_CANDIDATES,
   PIPELINE_PROVIDER_IDS,
   PIPELINE_SPEND_ROLES,
   PIPELINE_SPEND_WRITERS,
@@ -10,11 +11,16 @@ import {
   type PipelineAction,
   type PipelineActionResult,
   type PipelineConsole,
+  type PipelineInstallerCandidate,
+  type PipelineInstallerCandidatesResult,
   type PipelineProbe,
+  type PipelinesConfig,
   type PipelineProviderId,
+  type PipelineRepoRegistrationResult,
   type PipelineRepoStatus,
   type PipelineRun,
   type PipelineRunDetail,
+  type PipelineRunLink,
 } from "@shared/pipeline.ts";
 
 import { envVar } from "../config.ts";
@@ -66,14 +72,6 @@ import type {
 
 /** How often the loop re-reads every consented repository's files. */
 const TICK_MS = Math.max(1000, Number(envVar("PIPELINE_TICK_MS") ?? 5000));
-
-/**
- * How many ticks apart the cheap "is an engine installed" check runs.
- *
- * Derived from `TICK_MS` so it stays about a minute however the tick is tuned, and floored
- * at 1 so a tick slower than a minute still checks every time rather than never.
- */
-const PRESENCE_EVERY_TICKS = Math.max(1, Math.round(60_000 / TICK_MS));
 
 /** How long a cached probe answers the Settings route before it is re-run. */
 const PROBE_TTL_MS = Math.max(1000, Number(envVar("PIPELINE_PROBE_TTL_MS") ?? 30_000));
@@ -163,20 +161,15 @@ export function pipelineRepoStatuses(): PipelineRepoStatus[] {
 /**
  * Whether this operator has anything to do with a pipeline engine.
  *
- * The one question that decides whether the Conductor category exists in the Settings rail,
- * and it is answered WITHOUT a subprocess: `onPath` walks `PATH` with `existsSync`, so this
- * is a handful of stats rather than the `fork` + `execve` a real probe costs. That is what
- * makes it affordable on a signal the rail needs synchronously, on every snapshot, for every
- * operator - including the overwhelming majority who will never install an engine.
+ * This backs the append-only `SettingsStatus.pipelines.present` compatibility fact. The
+ * Conductor Settings destination is permanent, so the value no longer gates navigation.
+ * It is answered WITHOUT a subprocess: `onPath` walks `PATH` with `existsSync`.
  *
- * It deliberately asks a WEAKER question than `probePipelineProvider`. Whether the binary
- * exists is enough to decide that a row should be drawn; what version it is and which
- * repositories it manages are the panel's questions, and the panel is the thing that has
- * been opened on purpose.
+ * It deliberately asks a WEAKER question than `probePipelineProvider`. What version the
+ * binary is and which repositories it manages are the panel's questions, and the panel is
+ * the thing that has been opened on purpose.
  *
- * The `configured` half is not symmetry for its own sake. Without it, an operator who
- * enabled a repository and then uninstalled the engine would lose the row that holds the
- * only switch that can turn it off - consent in force with nothing on screen to withdraw it.
+ * The `configured` half preserves the historical meaning of `present` for older dashboards.
  */
 export function pipelinesPresent(): boolean {
   const config = getPipelinesConfig();
@@ -189,18 +182,96 @@ export function pipelinesPresent(): boolean {
 /**
  * How many repositories are actually being read right now.
  *
- * The weaker sibling of `pipelinesPresent`, and it decides a different thing: `present`
- * draws the Settings row for an operator who has an engine INSTALLED, while this draws the
- * Runs page's Pipelines tab for one who has consented to a repository. A tab offering to
- * show pipelines to somebody observing none would be a page with nothing behind it, and -
- * because the tab is what starts the surface's own reads - it would also be the thing that
- * makes "off costs nothing" stop being true.
+ * This draws the Runs page's Pipelines tab for an operator who has consented to at least one
+ * exact repository. A tab offering to show pipelines to somebody observing none would be a
+ * page with nothing behind it, and because the tab starts the surface's own reads, it would
+ * also make "off costs nothing" stop being true.
  *
  * A number rather than a boolean because the tab's empty state says how many repositories
  * are being watched, and deriving that twice is how two surfaces come to disagree.
  */
 export function pipelinesObserving(): number {
   return activePipelineRepos(getPipelinesConfig()).length;
+}
+
+/** Exact active repository identities for cache invalidation across count-preserving swaps. */
+export function pipelineObservedRepoKeys(): string[] {
+  return activePipelineRepos(getPipelinesConfig())
+    .map((repo) => pipelineRepoKey(repo.provider, repo.repoRoot))
+    .sort();
+}
+
+/**
+ * Compose one pipeline-task launch behind current repository consent.
+ *
+ * A task stores no provider id, so exactly one active provider must own its repository. The
+ * current registry has one provider; making ambiguity a refusal keeps that future extension
+ * from choosing a driver by config order.
+ */
+export async function pipelineTaskLaunch(
+  repoRoot: string,
+  intent: string,
+): Promise<
+  | {
+      ok: true;
+      launchRuntime: "terminal";
+      argv: string[];
+      cwd: string;
+      pipelineRun: PipelineRunLink;
+    }
+  | {
+      ok: true;
+      launchRuntime: "claude-sdk";
+      prompt: string;
+      cwd: string;
+      pipelineRun: PipelineRunLink;
+    }
+  | { ok: false; error: string }
+> {
+  // One config read owns both consent and runtime. A concurrent Settings write applies to
+  // the next dispatch instead of changing the host after this launch has been composed.
+  const config = getPipelinesConfig();
+  const matches = activePipelineRepos(config).filter(
+    (repo) => repo.repoRoot === repoRoot,
+  );
+  if (matches.length === 0) {
+    return { ok: false, error: "conductor is not enabled for this repository" };
+  }
+  if (matches.length > 1) {
+    return { ok: false, error: "more than one pipeline provider is enabled for this repository" };
+  }
+  const repo = matches[0]!;
+  const provider = PIPELINE_PROVIDERS[repo.provider];
+  const identity = provider.taskIdentity(intent, repoRoot);
+  if ("refused" in identity) return { ok: false, error: identity.refused };
+
+  // Fail closed before resolving or launching the provider binary. Null means the provider
+  // could not read its key space, not that the repository has no active runs.
+  const known = provider.knownRunSlugs(repoRoot);
+  if (known === null) {
+    return { ok: false, error: "could not read current pipeline runs for this repository" };
+  }
+  if (known.has(identity.slug)) {
+    return {
+      ok: false,
+      error: `pipeline run "${identity.slug}" already exists in this repository`,
+    };
+  }
+
+  if (config.launchRuntime === "claude-sdk") {
+    return {
+      ok: true,
+      launchRuntime: config.launchRuntime,
+      prompt: provider.taskPrompt(intent),
+      cwd: repoRoot,
+      pipelineRun: identity,
+    };
+  }
+
+  const launch = await provider.taskArgv(intent, repoRoot);
+  return "refused" in launch
+    ? { ok: false, error: launch.refused }
+    : { ok: true, launchRuntime: config.launchRuntime, ...launch, pipelineRun: identity };
 }
 
 /**
@@ -212,9 +283,11 @@ export function pipelinesObserving(): number {
  * nothing is reading has no runs to group and would draw an empty heading that no control
  * on the page can explain.
  */
-export function activePipelineRepoStatuses(): PipelineRepoStatus[] {
+export function activePipelineRepoStatuses(
+  config: PipelinesConfig = getPipelinesConfig(),
+): PipelineRepoStatus[] {
   const active = new Set(
-    activePipelineRepos(getPipelinesConfig()).map((repo) =>
+    activePipelineRepos(config).map((repo) =>
       pipelineRepoKey(repo.provider, repo.repoRoot),
     ),
   );
@@ -511,6 +584,98 @@ export async function probeAllPipelineProviders(
   return answers.filter((probe): probe is PipelineProbe => probe !== null);
 }
 
+/** Ask one provider to register a canonical root without changing Mission Control consent. */
+export async function registerPipelineRepo(
+  provider: PipelineProviderId,
+  repoRoot: string,
+): Promise<PipelineRepoRegistrationResult> {
+  return PIPELINE_PROVIDERS[provider].registerRepo(repoRoot);
+}
+
+/** Read one provider's optional, ephemeral installer candidates from the workspace catalog. */
+export async function pipelineInstallerCandidates(
+  provider: PipelineProviderId,
+  repoRoots: readonly string[],
+): Promise<PipelineInstallerCandidatesResult> {
+  const installer = PIPELINE_PROVIDERS[provider].installer;
+  if (!installer) {
+    return {
+      provider,
+      supported: false,
+      detail: "This pipeline provider does not offer guided installation from local source.",
+      candidates: [],
+    };
+  }
+  try {
+    const candidates = await installer.candidates(repoRoots);
+    const byCheckout = new Map<string, PipelineInstallerCandidate>();
+    for (const candidate of candidates) {
+      if (candidate.provider !== provider || byCheckout.has(candidate.checkout)) continue;
+      byCheckout.set(candidate.checkout, candidate);
+      if (byCheckout.size === MAX_PIPELINE_INSTALLER_CANDIDATES) break;
+    }
+    const bounded = [...byCheckout.values()];
+    return {
+      provider,
+      supported: true,
+      detail:
+        bounded.length > 0
+          ? `${bounded.length} verified local installer ${bounded.length === 1 ? "checkout" : "checkouts"} found.`
+          : "No verified local installer checkout was found in the workspace catalog.",
+      candidates: bounded,
+    };
+  } catch {
+    return {
+      provider,
+      supported: true,
+      detail: "Mission Control could not verify local installer checkouts.",
+      candidates: [],
+    };
+  }
+}
+
+export type PipelineInstallerPreparation =
+  | {
+      ok: true;
+      candidate: PipelineInstallerCandidate;
+      argv: string[];
+      cwd: string;
+      title: string;
+    }
+  | { ok: false; error: string };
+
+/** Re-check catalog membership and provider evidence immediately before a terminal launch. */
+export async function pipelineInstallerLaunch(
+  provider: PipelineProviderId,
+  checkout: string,
+  repoRoots: readonly string[],
+): Promise<PipelineInstallerPreparation> {
+  const installer = PIPELINE_PROVIDERS[provider].installer;
+  if (!installer) return { ok: false, error: "This provider has no guided installer." };
+  const read = await pipelineInstallerCandidates(provider, repoRoots);
+  const candidate = read.candidates.find((entry) => entry.checkout === checkout);
+  if (!candidate) {
+    return {
+      ok: false,
+      error: "That checkout is no longer a verified installer candidate in the workspace catalog.",
+    };
+  }
+  try {
+    const launch = await installer.terminalArgv(candidate.checkout);
+    if ("refused" in launch) return { ok: false, error: launch.refused };
+    if (
+      launch.candidate.provider !== provider ||
+      launch.candidate.checkout !== candidate.checkout ||
+      launch.cwd !== candidate.checkout
+    ) {
+      return { ok: false, error: "The provider did not confirm the selected checkout." };
+    }
+    return { ok: true, ...launch };
+  } catch {
+    return { ok: false, error: "The provider could not reverify that installer checkout." };
+  }
+}
+
 /**
  * What the loop needs of the registry: somewhere to put the projection.
  *
@@ -540,10 +705,12 @@ export interface PipelineProjectionSink {
 /**
  * Seed the live catalog from the durable projection, dropping anything no longer consented.
  *
- * Runs before the daemon serves, so it emits nothing - a dashboard's first snapshot is
- * simply right. The pruning is the half that matters: consent can be withdrawn while the
- * daemon is down, and a row that outlived its consent would come back on the next boot as
- * an SSE frame about a repository the operator switched off.
+ * Runs before the daemon serves, so it emits no browser frame and a dashboard's first
+ * snapshot is simply right. The registry does notify server-owned projection consumers so
+ * Inspector can rebuild pipeline PR adoption on restart. The pruning is the half that
+ * matters: consent can be withdrawn while the daemon is down, and a row that outlived its
+ * consent would come back on the next boot as an SSE frame about a repository the operator
+ * switched off.
  */
 export function restorePipelineProjection(sink: PipelineProjectionSink): void {
   // Establishes this process's in-memory state from the durable rows rather than adding to
@@ -1020,48 +1187,18 @@ export function reconcilePipelineConsent(sink: PipelineProjectionSink): void {
  * The config is re-read every tick rather than at construction, so consent takes effect
  * without a restart - the same discipline the sweeper holds.
  */
-export function startPipelineWatcher(
-  sink: PipelineProjectionSink,
-  /**
-   * Called when the presence answer moves, so the caller can push the settings status the
-   * Settings rail reads. Passed in rather than reached for, exactly as the task-source
-   * sweeper's `onSwept` is: this module touches neither the registry nor the rail.
-   */
-  onPresenceChanged?: () => void,
-): () => void {
+export function startPipelineWatcher(sink: PipelineProjectionSink): () => void {
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
-  /**
-   * How many ticks since presence was last checked, and the answer it gave.
-   *
-   * Checked on a SLOWER sub-cadence than the projection pass because it answers a question
-   * that changes about once in an installation's life - an operator installing or removing
-   * the engine - and the whole point of `pipelinesPresent` being stat-only is undone if it
-   * runs at the cadence of a loop built for file changes. A minute is fast enough that
-   * installing conductor makes the row appear while the operator is still looking for it,
-   * and slow enough to be free.
-   */
-  let sinceCheck = Number.MAX_SAFE_INTEGER;
-  let present: boolean | null = null;
 
   const tick = async (): Promise<void> => {
     if (stopped) return;
     try {
-      sinceCheck += 1;
-      if (sinceCheck >= PRESENCE_EVERY_TICKS) {
-        sinceCheck = 0;
-        const now = pipelinesPresent();
-        // Only on a CHANGE, and `null` on the first pass is not a change: the daemon's boot
-        // snapshot already carries the right answer, so announcing it again would wake every
-        // browser to tell it what it was handed a moment ago.
-        if (present !== null && now !== present) onPresenceChanged?.();
-        present = now;
-      }
       const repos = activePipelineRepos(getPipelinesConfig());
       // The whole cost of this feature on a fleet that has enabled nothing: one KV read,
-      // plus a handful of `existsSync` calls once a minute. Not even the consent
-      // reconciliation runs, because a fleet that has never consented to a repository has
-      // nothing stored for it to find - and `pipelineStoredRepos()` is a query.
+      // and no filesystem or subprocess work. Not even the consent reconciliation runs,
+      // because a fleet that has never consented to a repository has nothing stored for it
+      // to find - and `pipelineStoredRepos()` is a query.
       //
       // Withdrawal does not rely on this tick reaching it. The config route reconciles on
       // the write, which is what makes a repository switched off between two ticks lose its

@@ -36,6 +36,7 @@ const { WorkflowStore, WorkflowRowError, clearWorkflowTables, parseWorkflowSubmi
 const { SESSION_ACTION_ADAPTERS, sessionActionAdapter, sessionActionCapabilities } =
   await import("../src/server/workflows/session-action-adapters.ts");
 const { renderSessionAction } = await import("../src/server/workflows/feedback.ts");
+const { executionAuthorizationContract } = await import("../src/server/execution-authorization.ts");
 
 const db = openDb();
 const store = new WorkflowStore(db, [], [], []);
@@ -605,6 +606,10 @@ test("what may be authored is derived from what can be delivered, not chosen bes
   const envelope = WORKFLOW_LIMITS.sessionActionName
     + WORKFLOW_LIMITS.workflowName
     + WORKFLOW_LIMITS.sessionActionSkillId
+    + Buffer.byteLength(executionAuthorizationContract({
+      workflowEvidence: true,
+      workflowContinuation: true,
+    }), "utf8")
     + 200; // run id, version, labels and newlines
   assert.ok(
     envelope < WORKFLOW_LIMITS.sessionActionEnvelopeBytes,
@@ -646,6 +651,7 @@ test("a packet that cannot be sent whole is REFUSED, never truncated to a prefix
     actionName: "Tidy",
     promptMarkdown: "# Tidy\n\nRemove the scratch file.\n",
     skillCommand: null,
+    workflowEvidence: true,
   });
   assert.equal(packet.ok, true);
   if (!packet.ok) return;
@@ -653,6 +659,14 @@ test("a packet that cannot be sent whole is REFUSED, never truncated to a prefix
   // the operator's instruction, because a trailing house sentence would be an instruction
   // nobody authored arriving after the one they did.
   assert.ok(packet.payload.endsWith("# Tidy\n\nRemove the scratch file.\n"));
+  assert.ok(
+    packet.payload.indexOf("Mission Control execution authorization")
+      < packet.payload.indexOf("# Tidy\n\nRemove the scratch file."),
+    "runtime policy precedes the exact frozen prompt",
+  );
+  assert.match(packet.payload, /already authorized `submit_workflow_evidence`/);
+  assert.match(packet.payload, /do not ask the human to resubmit the workflow/);
+  assert.match(packet.payload, /does not authorize merge/);
   assert.equal(packet.payloadSha256.length, 64);
 
   // A version minted by some other build, carrying a prompt this one cannot send whole.
@@ -661,6 +675,7 @@ test("a packet that cannot be sent whole is REFUSED, never truncated to a prefix
     actionName: "Tidy",
     promptMarkdown: "y".repeat(WORKFLOW_LIMITS.sessionActionPacketBytes + 1),
     skillCommand: null,
+    workflowEvidence: true,
   });
   assert.equal(oversize.ok, false);
   if (oversize.ok) return;

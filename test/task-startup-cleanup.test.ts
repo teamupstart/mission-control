@@ -13,8 +13,6 @@ const {
   INTERRUPTED_BEFORE_PROVISION_ERROR,
   TaskManager,
 } = await import("../src/server/tasks.ts");
-const { teardownWorktree } = await import("../src/server/dispatcher.ts");
-const { withPoolLock } = await import("../src/server/pool-lease.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -40,6 +38,7 @@ test("a restart returns a resource-free dispatch with stale branch metadata to t
       worktreePath: null,
       branch: "harness/stale-attached-metadata",
       provider: null,
+      worktreeLeaseId: null,
       baseSha: "b".repeat(40),
       prUrl: null,
       prState: null,
@@ -63,111 +62,68 @@ test("a restart returns a resource-free dispatch with stale branch metadata to t
   assert.equal(recovered.extraRepos[0]?.branch, "harness/stale-attached-metadata");
 });
 
-test("foreground acquisition passes cleanup already waiting in the background lane", async () => {
-  const repoRoot = "/repo/pool-priority";
-  const order: string[] = [];
-  let releaseActive!: () => void;
-  let markActive!: () => void;
-  const activeMayFinish = new Promise<void>((resolve) => {
-    releaseActive = resolve;
-  });
-  const activeStarted = new Promise<void>((resolve) => {
-    markActive = resolve;
-  });
-
-  const activeCleanup = withPoolLock(repoRoot, async () => {
-    order.push("active-cleanup");
-    markActive();
-    await activeMayFinish;
-  }, "background");
-  await activeStarted;
-  const queuedCleanup = withPoolLock(repoRoot, async () => {
-    order.push("queued-cleanup");
-  }, "background");
-  const acquisition = withPoolLock(repoRoot, async () => {
-    order.push("acquisition");
-  });
-
-  releaseActive();
-  await Promise.all([activeCleanup, queuedCleanup, acquisition]);
-
-  assert.deepEqual(order, ["active-cleanup", "acquisition", "queued-cleanup"]);
-});
-
-test("large startup cleanup stays one-deep per repo and yields its next lock turn to acquisition", async () => {
+test("startup cleanup stays one-deep per repository without delaying disjoint repositories", async () => {
   const registry = new Registry();
-  const repoRoot = "/repo/startup-convoy";
-  const taskCount = 40;
-  for (let index = 0; index < taskCount; index += 1) {
+  for (let index = 0; index < 8; index += 1) {
     registry.upsertTask(mkTask({
       id: `startup-cleanup-${index}`,
       title: `Startup cleanup ${index}`,
-      repoRoot,
+      repoRoot: "/repo/startup-convoy",
       status: "done",
       provider: "treehouse",
       worktreePath: `/pool/startup-convoy/${index}`,
-      branch: `tree-${index}`,
       createdAt: 10_000 + index,
       updatedAt: 10_000 + index,
       completedAt: 10_000 + index,
     }));
   }
+  registry.upsertTask(mkTask({
+    id: "startup-cleanup-disjoint",
+    repoRoot: "/repo/disjoint",
+    status: "done",
+    provider: "treehouse",
+    worktreePath: "/pool/disjoint/1",
+  }));
 
   let releaseFirst!: () => void;
   const firstMayFinish = new Promise<void>((resolve) => {
     releaseFirst = resolve;
   });
-  const order: string[] = [];
-  let teardownCalls = 0;
-  let activeCleanups = 0;
-  let maxActiveCleanups = 0;
-  const startupTeardown: typeof teardownWorktree = async (task, _cli, priority) => {
-    teardownCalls += 1;
-    assert.equal(priority, "background", "startup returns must enter the background lane");
-    await withPoolLock(task.repoRoot, async () => {
-      activeCleanups += 1;
-      maxActiveCleanups = Math.max(maxActiveCleanups, activeCleanups);
-      order.push(`cleanup-start:${task.worktreePath}`);
-      if (task.worktreePath === "/pool/startup-convoy/0") await firstMayFinish;
-      order.push(`cleanup-end:${task.worktreePath}`);
-      activeCleanups -= 1;
-    }, priority);
+  let activeSameRepo = 0;
+  let maxActiveSameRepo = 0;
+  let disjointStarted = false;
+  const teardown: NonNullable<ConstructorParameters<typeof TaskManager>[5]>["teardown"] = async (
+    task,
+    _legacy,
+    priority,
+  ) => {
+    assert.equal(priority, "background");
+    if (task.repoRoot === "/repo/disjoint") {
+      disjointStarted = true;
+      return;
+    }
+    activeSameRepo += 1;
+    maxActiveSameRepo = Math.max(maxActiveSameRepo, activeSameRepo);
+    if (task.worktreePath === "/pool/startup-convoy/0") await firstMayFinish;
+    activeSameRepo -= 1;
   };
-  const supervisor = {
-    taskLiveness: () => false,
-  } as never;
 
   new TaskManager(
     registry,
     undefined,
-    supervisor,
+    { taskLiveness: () => false } as never,
     undefined,
     undefined,
-    { teardown: startupTeardown },
+    { teardown },
   );
-  await eventually(() => teardownCalls > 0, "the first startup cleanup never began");
-  assert.equal(
-    teardownCalls,
-    1,
-    "the remaining 39 returns must stay outside the pool lock queue",
-  );
-
-  const acquisition = withPoolLock(repoRoot, async () => {
-    order.push("acquire");
-  });
+  await eventually(() => activeSameRepo === 1 && disjointStarted, "startup cleanup did not begin");
+  assert.equal(maxActiveSameRepo, 1);
   releaseFirst();
-  await acquisition;
   await eventually(
     () => registry.listTasks().filter((task) => task.id.startsWith("startup-cleanup-")).every(
       (task) => task.worktreePath === null,
     ),
     "startup cleanup did not drain",
   );
-
-  assert.equal(maxActiveCleanups, 1);
-  assert.ok(
-    order.indexOf("acquire") < order.indexOf("cleanup-start:/pool/startup-convoy/1"),
-    `acquisition did not pass queued background cleanup: ${order.join(", ")}`,
-  );
-  assert.equal(teardownCalls, taskCount);
+  assert.equal(maxActiveSameRepo, 1);
 });

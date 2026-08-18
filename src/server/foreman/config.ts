@@ -19,6 +19,7 @@ import { activeAgentCount } from "./backlog-machine.ts";
 import { noteKeyFor } from "../registry.ts";
 import type { Registry } from "../registry.ts";
 import { foremanTriageAuthorized } from "./authorization.ts";
+import { foremanInstructionsView } from "./instructions.ts";
 
 // Foreman's operating config + derived live status. The config is the only
 // durable state (in app_config); the worker itself runs as a separate process
@@ -276,6 +277,8 @@ export function foremanStatus(registry: Registry, now = Date.now()): ForemanStat
   return {
     enabled: cfg.enabled,
     mode: cfg.mode,
+    // Source only. The exact document and ETag remain on the focused instructions route.
+    instructionsSource: foremanInstructionsView().source,
     // "A leader heartbeated recently", not "someone beat recently": a standby
     // worker never acquires the lease, so it can't make this true on its own.
     running: leaderAlive(now),

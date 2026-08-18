@@ -196,6 +196,8 @@ function mkFake(
       promptedGoal: null,
       promptedEvidence: null,
       promptedActivityAt: null,
+      promptedLegacyCutoverGeneration: null,
+      promptedConsumedGeneration: null,
       updatedAt: 0,
       items,
     }),

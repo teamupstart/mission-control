@@ -40,6 +40,29 @@ Video is off. Recording it cost 16s of every CI shard whether or not anything fa
 showed nothing the trace does not already replay. A failure still leaves a trace and a
 screenshot; open the trace with `npx playwright show-trace`.
 
+### Native workflow image evidence
+
+`e2e/.artifacts/workflow-image-evidence/` records the dashboard intake and audit surfaces for
+one real built-daemon workflow run. The spec attaches a screenshot in the initial binding
+preview, supplies its caption and repository scope, and proves the fake Claude and Codex
+provider boundaries received and decoded the same bytes named by the manifest. It then shows
+the retained thumbnail and audit metadata, submits a replacement image on an unchanged
+repository snapshot, restages retained evidence for the next review, and converts another
+body to a pruned fixture while preserving its digest and metadata.
+
+Both fake providers reject a metadata-only image request. Their accepted-boundary records are
+written inside the isolated Playwright state directory and compare MIME, byte count, and
+sha256 digest against the exact native image input before returning a verdict.
+
+Regenerate the optional dashboard frames with:
+
+```sh
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/workflow-image-evidence.spec.ts \
+  --workers=1 --reporter=list
+```
+
 ### Dispatch restart recovery
 
 `e2e/.artifacts/dispatch-restart-recovery/restart-recovery-backlog.png` shows a dispatch
@@ -58,6 +81,25 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   e2e/specs/dispatch-restart-recovery.spec.ts \
   --workers=1 --reporter=list \
   | tee e2e/.artifacts/dispatch-restart-recovery/focused-playwright-transcript.txt
+```
+
+### Native worktree dispatch and reuse
+
+`e2e/.artifacts/native-worktree-dispatch/` carries the task card before cleanup and after a
+released slot is reused. The spec dispatches a multi-repo task through the dashboard, proves the
+daemon persisted one native lease per repository, keeps a concurrent task on a distinct slot,
+cancels through the visible task action, and proves a later dispatch reuses only the returned
+directories with fresh lease IDs.
+
+Regenerate the frames and transcript with:
+
+```sh
+mkdir -p e2e/.artifacts/native-worktree-dispatch
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/native-worktree-dispatch.spec.ts \
+  --workers=1 --reporter=list \
+  | tee e2e/.artifacts/native-worktree-dispatch/focused-playwright-transcript.txt
 ```
 
 ### Scout prompt context reader
@@ -265,6 +307,23 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   --workers=1 --reporter=list
 ```
 
+### Library asset usage
+
+`e2e/.artifacts/library-asset-usage/` holds the three states added to Persona and Action
+details. `01-populated.png` shows a built-in Persona naming the draft and published
+No-Mistakes Review graphs; `02-empty.png` shows the explicit answer for an unused Persona;
+and `03-live.png` shows an Action while one exact workflow run is gating on it. The live test
+then cancels that run and proves the mark retires through SSE without reloading the page.
+
+Regenerate them with:
+
+```sh
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/library-asset-usage.spec.ts \
+  --workers=1 --reporter=list
+```
+
 Attach the generated frames to the pull request; they are never committed.
 
 ### Per-harness dispatch defaults propagating
@@ -420,8 +479,10 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
 `e2e/.artifacts/workflow-run-reviewer-verdicts/workflow-run-reviewer-verdicts.png` is
 the run page of a completed two-reviewer run, captured by the regression that arrives at it from
 the session card's own `⌁ Approved` chip. Both reviewers are named with the verdict they gave, and
-the three structural attempts every graph produces - the Session, the all-pass join, the End - are
-absent: before the fix each rendered as a card reading `… completed · attempt 1` under a heading
+clicking the second reviewer's settled pipeline tile selects that reviewer in the worklist and
+shows its full verdict. The three structural attempts every graph produces, the Session, the
+all-pass join, and the End, remain absent: before the fix each rendered as a card reading
+`… completed · attempt 1` under a heading
 that promises a verdict. What those nodes did is still on the pipeline strip above, and the
 stage's own join packet is still under the list.
 
@@ -436,8 +497,8 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
 
 ### Run-scoped critical Persona feedback
 
-The `workflow-persona-directive.png` evidence capture shows the drawer opened directly from a
-Persona row. The locked run and Persona scope, future-round
+The `workflow-persona-directive.png` evidence capture shows the drawer opened from a Persona
+row's actions menu. The locked run and Persona scope, future-round
 persistence, critical priority, byte limit, and editable instruction are all visible in the
 built dashboard. The same browser regression saves the instruction, proves it changes only
 that Persona in rounds 2 and 3, and checks the directive snapshots stored on both attempts.
@@ -530,6 +591,23 @@ MC_E2E_EVIDENCE=1 npm run test:e2e
 It is behind that flag rather than captured on every run because the card carries a relative
 timestamp and a fresh worktree uuid, so an unconditional capture would rewrite a binary on
 every run for no added signal.
+
+### Multiline text boxes grow with the draft
+
+`e2e/.artifacts/multiline-textarea/` contains three captures showing five explicit input
+lines in every multiline surface covered by the regression: the dispatch brief, the
+collapsed-card composer, and the compact terminal-style composer. The browser assertions
+also prove a sixth line uses an internal scrollbar instead of growing the surrounding card
+without a bound.
+
+Regenerate them with:
+
+```sh
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/multiline-textarea.spec.ts \
+  --workers=1 --reporter=list
+```
 
 ### The agent's own question
 
@@ -1297,10 +1375,9 @@ on the fake so that regression is caught rather than invoiced.
 | `MISSION_WORKSPACE_DIRS` | repo discovery sees only the seeded fixture repo |
 | `MISSION_CLAUDE_BIN` / `CODEX` / `PI` | every agent launch hits a fake |
 | `MISSION_GH_BIN` | every `gh` call hits a fake. Not about cost: `gh issue create` **publishes** to a repository other people watch, and on a machine where `gh` is signed in an unfaked binary would file a real issue on every run of the push spec |
-| `MISSION_POOL_REAP_MS=0` | the pool sweep is **not** scoped by `MISSION_HOME` - it reaps the shared treehouse worktree pool and will delete a sibling checkout's work |
 | `MISSION_POLL_MS=0` | terminal discovery is **not** scoped either - it walks every process on the machine and cards anything that looks like an agent |
 
-Those last two matter most and are the least obvious. Without `MISSION_POLL_MS=0` a daemon
+That last setting matters most and is the least obvious. Without `MISSION_POLL_MS=0` a daemon
 booted on a developer's laptop adopts their real running sessions: the fleet count is
 non-deterministic against CI where there are none, and the dashboard's Kill and Reset
 controls act on live work.

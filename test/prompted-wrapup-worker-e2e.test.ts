@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { VERIFY_FAILURE_CAP } from "../src/server/foreman/queue-machine.ts";
 import type { Session, SessionQueue } from "../src/shared/types.ts";
-import { mkMuxHandle } from "./helpers/session-fixture.ts";
+import { mkMuxHandle, mkTaskSummary } from "./helpers/session-fixture.ts";
 
 // The `prompted` wrap-up trigger, driven END TO END: the real worker binary, a stub
 // daemon, and a fake `claude`.
@@ -198,6 +198,13 @@ function mkSession(cwd: string, over: Partial<Session> = {}): Session {
     // Settled well past SETTLE_MS, and re-stamped on every read below so it stays that
     // way however long a test runs.
     lastActivity: now - 120_000,
+    workCycle: {
+      logicalKey: "agent-1",
+      generation: 1,
+      active: false,
+      completedAt: now - 120_000,
+      updatedAt: now - 120_000,
+    },
     pendingReviews: 0,
     task: null,
     prUrl: null,
@@ -229,6 +236,8 @@ function mkQueue(cwd: string, over: Partial<SessionQueue> = {}): SessionQueue {
     promptedGoal: null,
     promptedEvidence: null,
     promptedActivityAt: null,
+    promptedLegacyCutoverGeneration: null,
+    promptedConsumedGeneration: null,
     updatedAt: 0,
     items: [],
     ...over,
@@ -236,7 +245,6 @@ function mkQueue(cwd: string, over: Partial<SessionQueue> = {}): SessionQueue {
 }
 
 const GOAL = "make the uploader retry on a 500";
-const INTENT_KEY = "intent:1:1";
 const goalRecord = {
   noteKey: "agent-1",
   text: GOAL,
@@ -333,7 +341,7 @@ test("a daemon blip on the queue read never double-fires a wrap-up, and never st
   // The bug this pins: `client.queue()` used to coerce a throw to `null`, and `null` is
   // ALSO the honest answer for "this session has no queue". So a 500 on that one route
   // read as "no queue here", which disarms BOTH of the trigger's double-fire guards -
-  // the overlap rule and the once-per-episode `promptedGoal` - and the worker fired a
+  // the overlap rule and the once-per-generation consume - and the worker fired a
   // fresh wrap-up every pass. Reverting the fix produced ten shipping actions
   // in nine seconds against a session that had already been shipped once.
   //
@@ -452,14 +460,87 @@ test("a daemon blip on the queue read never double-fires a wrap-up, and never st
   );
 });
 
-test("a verified prompt submits its existing workflow instead of Straight to PR", async () => {
+test("a changed-file chat retires before verification or shipping", async () => {
+  const repo = tmp("pw-chat-repo-");
+  const fake = mkFakeClaude({ fail: false });
+  const session = mkSession(repo, {
+    task: mkTaskSummary({ kind: "chat", workflowId: null }),
+  });
+  let queue = mkQueue(repo);
+  let retired = false;
+
+  const stub = await startStub((_req, url, raw) => {
+    const p = url.pathname;
+    if (p === "/api/foreman/config") {
+      return { status: 200, json: cfg({ mode: "live", repoAllowlist: [repo], wrapup: "pr" }) };
+    }
+    if (p === "/api/foreman/heartbeat") return { status: 200, json: { leader: true } };
+    if (p === "/api/sessions") {
+      const now = Date.now();
+      return {
+        status: 200,
+        json: [{ ...session, lastSeen: now, lastActivity: now - 120_000 }],
+      };
+    }
+    if (p === "/api/reviews") return { status: 200, json: [] };
+    if (p === "/api/queues") return { status: 200, json: [] };
+    if (p === "/api/sessions/s1/queue") return { status: 200, json: queue };
+    if (p === "/api/sessions/s1/goal") return { status: 200, json: goalRecord };
+    if (p === "/api/sessions/s1/diff") {
+      return {
+        status: 200,
+        json: {
+          ok: true,
+          patch: "diff --git a/notes.txt b/notes.txt\n+conversation note\n",
+          truncated: false,
+          headSha: "chat-head",
+        },
+      };
+    }
+    if (p === "/api/sessions/s1/queue/wrapup/prompted") {
+      const body = JSON.parse(raw) as {
+        goal: string;
+        evidenceMarker: string;
+        activityAt: number;
+      };
+      queue = {
+        ...queue,
+        promptedGoal: body.goal,
+        promptedEvidence: body.evidenceMarker,
+        promptedActivityAt: body.activityAt,
+        updatedAt: Date.now(),
+      };
+      retired = true;
+      return { status: 200, json: { ok: true } };
+    }
+    return { status: 200, json: null };
+  });
+
+  const out = await runWorker({
+    port: stub.port,
+    claudeBin: fake.bin,
+    claudeLog: fake.log,
+    ms: 5_000,
+    until: () => retired,
+  });
+  await stub.close();
+
+  assert.equal(retired, true, out);
+  assert.equal(stub.to("GET", "/api/sessions/s1/diff").length, 0, out);
+  assert.equal(stub.to("POST", "/api/sessions/s1/workflow-completion").length, 0, out);
+  assert.equal(stub.to("POST", "/api/sessions/s1/inject").length, 0, out);
+  assert.equal(claudeCalls(fake.log).length, 0, out);
+});
+
+test("an explicit chat Workflow reaches ordinary verification and claims that Workflow", async () => {
   const repo = tmp("pw-repo-");
   const fake = mkFakeClaude({ fail: false });
-  const session = mkSession(repo);
+  const session = mkSession(repo, {
+    task: mkTaskSummary({ kind: "chat", workflowId: "workflow-review" }),
+  });
   const stopAt = Date.now() - 120_000;
-  // The row the worker's own `markPromptedWrapup` writes into. Serving it back is what
-  // arms the once-per-episode guard, so "fires exactly once" is a real assertion about
-  // the re-arm rather than an artefact of a short run.
+  // The row the worker's generation consume writes into. Serving it back proves the
+  // durable lifecycle guard, rather than a short run, prevents a duplicate claim.
   let queue = mkQueue(repo);
 
   const stub = await startStub((req, url, raw) => {
@@ -500,15 +581,12 @@ test("a verified prompt submits its existing workflow instead of Straight to PR"
       };
     }
     if (p === "/api/sessions/s1/workflow-completion") {
-      // The real daemon retires the prompted guard in the same transaction that claims
-      // the completion. Mirror that durable effect so later worker ticks see the episode
-      // as spent and prove this path does not request a second run.
-      const body = JSON.parse(raw) as { marker: string; activityAt: number };
+      // The real daemon consumes the work-cycle generation in the same transaction that
+      // claims completion. Mirror that durable effect for later worker ticks.
+      const body = JSON.parse(raw) as { expectedWorkCycle: { generation: number } };
       queue = {
         ...queue,
-        promptedGoal: INTENT_KEY,
-        promptedEvidence: body.marker,
-        promptedActivityAt: body.activityAt,
+        promptedConsumedGeneration: body.expectedWorkCycle.generation,
         updatedAt: Date.now(),
       };
       return {
@@ -518,12 +596,10 @@ test("a verified prompt submits its existing workflow instead of Straight to PR"
     }
     if (p === "/api/sessions/s1/standards") return { status: 200, json: { docs: [], truncated: false } };
     if (p === "/api/sessions/s1/queue/wrapup/prompted") {
-      const body = JSON.parse(raw) as { goal: string; evidenceMarker: string; activityAt: number };
+      const body = JSON.parse(raw) as { generation: number };
       queue = {
         ...queue,
-        promptedGoal: body.goal,
-        promptedEvidence: body.evidenceMarker,
-        promptedActivityAt: body.activityAt,
+        promptedConsumedGeneration: body.generation,
         updatedAt: Date.now(),
       };
       return { status: 200, json: { ok: true } };
@@ -572,6 +648,121 @@ test("a verified prompt submits its existing workflow instead of Straight to PR"
   );
 });
 
+test("an empty diff consumes its generation without calling the verifier", async () => {
+  const repo = tmp("pw-repo-");
+  const fake = mkFakeClaude({ fail: false });
+  const session = mkSession(repo);
+  let queue = mkQueue(repo);
+  let consumedAt = 0;
+
+  const stub = await startStub((req, url, raw) => {
+    const p = url.pathname;
+    if (p === "/api/foreman/config") return { status: 200, json: cfg() };
+    if (p === "/api/foreman/heartbeat") return { status: 200, json: { leader: true } };
+    if (p === "/api/sessions") {
+      return { status: 200, json: [{ ...session, lastSeen: Date.now() }] };
+    }
+    if (p === "/api/reviews") return { status: 200, json: [] };
+    if (p === "/api/queues") return { status: 200, json: [] };
+    if (p === "/api/sessions/s1/queue") return { status: 200, json: queue };
+    if (p === "/api/sessions/s1/goal") return { status: 200, json: goalRecord };
+    if (p === "/api/sessions/s1/diff") {
+      return { status: 200, json: { ok: true, patch: "", truncated: false, headSha: "abc" } };
+    }
+    if (p === "/api/sessions/s1/transcript/size") return { status: 200, json: { size: 100 } };
+    if (p === "/api/sessions/s1/queue/wrapup/prompted") {
+      const body = JSON.parse(raw) as { generation: number };
+      queue = { ...queue, promptedConsumedGeneration: body.generation, updatedAt: Date.now() };
+      consumedAt = Date.now();
+      return { status: 200, json: queue };
+    }
+    return { status: 200, json: null };
+  });
+
+  const out = await runWorker({
+    port: stub.port,
+    claudeBin: fake.bin,
+    claudeLog: fake.log,
+    ms: 20_000,
+    until: () => consumedAt !== 0 && Date.now() - consumedAt >= IDLE_SETTLE_MS,
+  });
+  await stub.close();
+
+  assert.equal(queue.promptedConsumedGeneration, 1, out);
+  assert.equal(claudeCalls(fake.log).length, 0, `empty work spent a verifier call\n${out}`);
+  assert.equal(stub.to("POST", "/api/sessions/s1/queue/wrapup/prompted").length, 1, out);
+  assert.equal(stub.to("POST", "/api/sessions/s1/workflow-completion").length, 0, out);
+  assert.equal(stub.to("POST", "/api/sessions/s1/inject").length, 0, out);
+});
+
+test("direct wrap-up consumes the expected generation before injecting", async () => {
+  const repo = tmp("pw-repo-");
+  const fake = mkFakeClaude({ fail: false });
+  const session = mkSession(repo);
+  let queue = mkQueue(repo);
+  let injectedAt = 0;
+
+  const stub = await startStub((req, url, raw) => {
+    const p = url.pathname;
+    if (p === "/api/foreman/config") {
+      return { status: 200, json: cfg({ mode: "live", repoAllowlist: [repo], wrapup: "pr" }) };
+    }
+    if (p === "/api/foreman/heartbeat") return { status: 200, json: { leader: true } };
+    if (p === "/api/sessions") {
+      return { status: 200, json: [{ ...session, lastSeen: Date.now() }] };
+    }
+    if (p === "/api/reviews") return { status: 200, json: [] };
+    if (p === "/api/queues") return { status: 200, json: [] };
+    if (p === "/api/sessions/s1/queue") return { status: 200, json: queue };
+    if (p === "/api/sessions/s1/goal") return { status: 200, json: goalRecord };
+    if (p === "/api/sessions/s1/diff") {
+      return {
+        status: 200,
+        json: { ok: true, patch: "diff --git a/up.ts b/up.ts\n+retry();\n", truncated: false, headSha: "abc" },
+      };
+    }
+    if (p === "/api/sessions/s1/transcript/size") return { status: 200, json: { size: 100 } };
+    if (p === "/api/sessions/s1/transcript") {
+      return {
+        status: 200,
+        json: { messages: [{ role: "user", text: GOAL, tools: [] }], truncated: false },
+      };
+    }
+    if (p === "/api/sessions/s1/standards") return { status: 200, json: { docs: [], truncated: false } };
+    if (p === "/api/sessions/s1/workflow-completion") {
+      return { status: 200, json: { claimed: false, reason: "no_binding" } };
+    }
+    if (p === "/api/sessions/s1/queue/wrapup/prompted") {
+      const body = JSON.parse(raw) as { generation: number };
+      queue = { ...queue, promptedConsumedGeneration: body.generation, updatedAt: Date.now() };
+      return { status: 200, json: queue };
+    }
+    if (p === "/api/sessions/s1/inject") {
+      injectedAt = Date.now();
+      return { status: 200, json: { ok: true } };
+    }
+    if (p === "/api/sessions/s1/queue/wrapup") return { status: 200, json: queue };
+    return { status: 200, json: null };
+  });
+
+  const out = await runWorker({
+    port: stub.port,
+    claudeBin: fake.bin,
+    claudeLog: fake.log,
+    ms: 20_000,
+    until: () => injectedAt !== 0 && Date.now() - injectedAt >= IDLE_SETTLE_MS,
+  });
+  await stub.close();
+
+  const consume = stub.to("POST", "/api/sessions/s1/queue/wrapup/prompted");
+  const inject = stub.to("POST", "/api/sessions/s1/inject");
+  assert.equal(consume.length, 1, out);
+  assert.equal(inject.length, 1, out);
+  assert.ok(stub.calls.indexOf(consume[0]!) < stub.calls.indexOf(inject[0]!), "injected before consume");
+  assert.equal(queue.promptedConsumedGeneration, 1);
+  assert.equal(claudeCalls(fake.log).length, 1, out);
+});
+
 test("an incomplete prompted hold re-arms on a task-notification turn and claims one workflow", async () => {
   const repo = tmp("pw-repo-");
   const fake = mkFakeClaude({ fail: false, completions: [false, true] });
@@ -603,6 +794,13 @@ test("an incomplete prompted hold re-arms on a task-notification turn and claims
             activity: "<task-notification><status>completed</status></task-notification>",
             lastSeen: now,
             lastActivity: now,
+            workCycle: {
+              logicalKey: "agent-1",
+              generation: 2,
+              active: true,
+              completedAt: firstStopAt,
+              updatedAt: now,
+            },
           }],
         };
       }
@@ -616,6 +814,13 @@ test("an incomplete prompted hold re-arms on a task-notification turn and claims
           // Hook activity is a durable event timestamp, not a sliding clock. Keeping the
           // later Stop fixed proves the claimed boundary stays quiet on subsequent ticks.
           lastActivity: phase === "first-stop" ? firstStopAt : laterStopAt,
+          workCycle: {
+            logicalKey: "agent-1",
+            generation: phase === "first-stop" ? 1 : 2,
+            active: false,
+            completedAt: phase === "first-stop" ? firstStopAt : laterStopAt,
+            updatedAt: phase === "first-stop" ? firstStopAt : laterStopAt,
+          },
         }],
       };
     }
@@ -658,24 +863,20 @@ test("an incomplete prompted hold re-arms on a task-notification turn and claims
     }
     if (p === "/api/sessions/s1/standards") return { status: 200, json: { docs: [], truncated: false } };
     if (p === "/api/sessions/s1/queue/wrapup/prompted") {
-      const body = JSON.parse(raw) as { goal: string; evidenceMarker: string; activityAt: number };
+      const body = JSON.parse(raw) as { generation: number };
       queue = {
         ...queue,
-        promptedGoal: body.goal,
-        promptedEvidence: body.evidenceMarker,
-        promptedActivityAt: body.activityAt,
+        promptedConsumedGeneration: body.generation,
         updatedAt: Date.now(),
       };
       phase = "task-notification";
       return { status: 200, json: queue };
     }
     if (p === "/api/sessions/s1/workflow-completion") {
-      const body = JSON.parse(raw) as { marker: string; activityAt: number };
+      const body = JSON.parse(raw) as { expectedWorkCycle: { generation: number } };
       queue = {
         ...queue,
-        promptedGoal: INTENT_KEY,
-        promptedEvidence: body.marker,
-        promptedActivityAt: body.activityAt,
+        promptedConsumedGeneration: body.expectedWorkCycle.generation,
         updatedAt: Date.now(),
       };
       claimedAt = Date.now();
@@ -702,14 +903,14 @@ test("an incomplete prompted hold re-arms on a task-notification turn and claims
   assert.equal(holds.length, 1, `the incomplete Stop was not retired exactly once\n${out}`);
   assert.equal(claims.length, 1, `the later Stop did not claim exactly one binding\n${out}`);
   assert.equal(
-    (holds[0]!.body as { activityAt?: number }).activityAt,
-    firstStopAt,
-    "the held guard must watermark the Stop it examined, not its later write time",
+    (holds[0]!.body as { generation?: number }).generation,
+    1,
+    "the held guard must consume the completed generation it examined",
   );
   assert.equal(
-    (claims[0]!.body as { activityAt?: number }).activityAt,
-    laterStopAt,
-    "the workflow claim must retire the later observed Stop",
+    (claims[0]!.body as { expectedWorkCycle?: { generation: number } }).expectedWorkCycle?.generation,
+    2,
+    "the workflow claim must consume the later completed generation",
   );
   assert.equal(claudeCalls(fake.log).length, 2, `unchanged evidence re-entered the verifier\n${out}`);
   assert.equal(
@@ -722,16 +923,84 @@ test("an incomplete prompted hold re-arms on a task-notification turn and claims
     2,
     `idle ticks gathered extra transcript anchors\n${out}`,
   );
-  assert.notEqual(
-    (holds[0]!.body as { evidenceMarker?: string }).evidenceMarker,
-    (claims[0]!.body as { marker?: string }).marker,
-    "the later transcript anchor must produce a fresh durable completion marker",
-  );
+  assert.equal(queue.promptedConsumedGeneration, 2, "the later generation is durably consumed");
   assert.equal(
     stub.calls.filter((call) => call.path.endsWith("/inject")).length,
     0,
     `Straight to PR raced the existing Foreman-complete binding\n${out}`,
   );
+});
+
+test("work restarting during verification discards the verdict without consuming either generation", async () => {
+  const repo = tmp("pw-repo-");
+  const fake = mkFakeClaude({ fail: false });
+  const session = mkSession(repo);
+  const completedAt = Date.now() - 120_000;
+  let restarted = false;
+  let verifierStartedAt = 0;
+  const queue = mkQueue(repo);
+
+  const stub = await startStub((req, url) => {
+    const p = url.pathname;
+    if (p === "/api/foreman/config") return { status: 200, json: cfg() };
+    if (p === "/api/foreman/heartbeat") return { status: 200, json: { leader: true } };
+    if (p === "/api/sessions") {
+      const now = Date.now();
+      return {
+        status: 200,
+        json: [{
+          ...session,
+          state: restarted ? "working" : "idle",
+          activity: restarted ? "running Bash" : "idle",
+          lastSeen: now,
+          lastActivity: restarted ? now : completedAt,
+          workCycle: restarted
+            ? { logicalKey: "agent-1", generation: 2, active: true, completedAt, updatedAt: now }
+            : session.workCycle,
+        }],
+      };
+    }
+    if (p === "/api/reviews") return { status: 200, json: [] };
+    if (p === "/api/queues") return { status: 200, json: [] };
+    if (p === "/api/sessions/s1/queue") return { status: 200, json: queue };
+    if (p === "/api/sessions/s1/goal") return { status: 200, json: goalRecord };
+    if (p === "/api/sessions/s1/diff") {
+      return {
+        status: 200,
+        json: { ok: true, patch: "diff --git a/up.ts b/up.ts\n+retry();\n", truncated: false, headSha: "abc" },
+      };
+    }
+    if (p === "/api/sessions/s1/transcript/size") return { status: 200, json: { size: 100 } };
+    if (p === "/api/sessions/s1/transcript") {
+      return {
+        status: 200,
+        json: { messages: [{ role: "user", text: GOAL, tools: [] }], truncated: false },
+      };
+    }
+    if (p === "/api/sessions/s1/standards") {
+      // This read is immediately before the verifier call. Model a hook that starts
+      // generation 2 while the verifier is evaluating generation 1.
+      restarted = true;
+      verifierStartedAt = Date.now();
+      return { status: 200, json: { docs: [], truncated: false } };
+    }
+    return { status: 200, json: null };
+  });
+
+  const out = await runWorker({
+    port: stub.port,
+    claudeBin: fake.bin,
+    claudeLog: fake.log,
+    ms: 20_000,
+    until: () => verifierStartedAt !== 0 && Date.now() - verifierStartedAt >= IDLE_SETTLE_MS,
+  });
+  await stub.close();
+
+  assert.equal(claudeCalls(fake.log).length, 1, `the stale generation was re-verified\n${out}`);
+  assert.equal(stub.to("POST", "/api/sessions/s1/queue/wrapup/prompted").length, 0, out);
+  assert.equal(stub.to("POST", "/api/sessions/s1/workflow-completion").length, 0, out);
+  assert.equal(stub.to("POST", "/api/sessions/s1/inject").length, 0, out);
+  assert.equal(queue.promptedConsumedGeneration, null, "neither generation was consumed");
 });
 
 test("a Manual binding blocks Straight to PR and a failed card write stays retryable", async () => {
@@ -790,17 +1059,13 @@ test("a Manual binding blocks Straight to PR and a failed card write stays retry
       if (promptedWrites === 1) return { status: 500, json: { error: "temporary write failure" } };
       if (promptedWrites === 2) retriedAt = Date.now();
       const body = JSON.parse(raw) as {
-        goal: string;
-        evidenceMarker: string;
-        activityAt: number;
+        generation: number;
         ask?: boolean;
       };
       assert.equal(body.ask, true, "the guard and Ship it? card must share one write");
       queue = {
         ...queue,
-        promptedGoal: body.goal,
-        promptedEvidence: body.evidenceMarker,
-        promptedActivityAt: body.activityAt,
+        promptedConsumedGeneration: body.generation,
         updatedAt: Date.now(),
         wrapupAskedAt: Date.now(),
         wrapupAnswer: null,
@@ -834,7 +1099,7 @@ test("a Manual binding blocks Straight to PR and a failed card write stays retry
     0,
     `used the non-atomic card endpoint\n${out}`,
   );
-  assert.equal(queue.promptedGoal, INTENT_KEY, `the successful retry did not retire the episode\n${out}`);
+  assert.equal(queue.promptedConsumedGeneration, 1, `the successful retry did not consume the generation\n${out}`);
   assert.ok(queue.wrapupAskedAt, `the successful retry did not raise the Ship it? card\n${out}`);
   assert.equal(
     stub.calls.filter((call) => call.path.endsWith("/inject")).length,
@@ -888,12 +1153,10 @@ test("a broken verifier gives up after the strike cap, at one strike per unhurri
     }
     if (p === "/api/sessions/s1/standards") return { status: 200, json: { docs: [], truncated: false } };
     if (p === "/api/sessions/s1/queue/wrapup/prompted") {
-      const body = JSON.parse(raw) as { goal: string; evidenceMarker: string; activityAt: number };
+      const body = JSON.parse(raw) as { generation: number };
       queue = {
         ...queue,
-        promptedGoal: body.goal,
-        promptedEvidence: body.evidenceMarker,
-        promptedActivityAt: body.activityAt,
+        promptedConsumedGeneration: body.generation,
         updatedAt: Date.now(),
       };
       return { status: 200, json: { ok: true } };

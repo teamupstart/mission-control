@@ -384,8 +384,59 @@ async function smokeSatellitePaths() {
   }
 }
 
+/**
+ * Prove the second Vite entry is a real isolated document and Mermaid remains outside
+ * the dashboard's initial static import graph. A missing file would otherwise be answered
+ * by the daemon's SPA fallback, which looks like a successful HTTP load until the bridge
+ * times out in front of a checkout file.
+ */
+async function smokeMermaidRenderer() {
+  const webRoot = resolve("dist/web");
+  const rendererHtmlPath = join(webRoot, "mermaid-renderer.html");
+  const rendererScriptPath = join(webRoot, "assets", "mermaid-renderer.js");
+  const indexHtmlPath = join(webRoot, "index.html");
+  const manifestPath = join(webRoot, ".vite", "manifest.json");
+  for (const path of [rendererHtmlPath, rendererScriptPath, indexHtmlPath, manifestPath]) {
+    if (!existsSync(path)) {
+      fail(`the web build is missing ${path}`);
+      return;
+    }
+  }
+  const [rendererHtml, rendererScript, indexHtml, manifestSource] = await Promise.all([
+    readFile(rendererHtmlPath, "utf8"),
+    readFile(rendererScriptPath, "utf8"),
+    readFile(indexHtmlPath, "utf8"),
+    readFile(manifestPath, "utf8"),
+  ]);
+  if (rendererHtml === indexHtml || !rendererHtml.includes("Content-Security-Policy")) {
+    fail("mermaid-renderer.html is the SPA fallback or has lost its Content Security Policy");
+    return;
+  }
+  const manifest = JSON.parse(manifestSource);
+  const app = manifest["index.html"];
+  if (!app?.isEntry || !existsSync(join(webRoot, app.file))) {
+    fail("the Vite manifest does not publish the dashboard entry");
+    return;
+  }
+  if (
+    !rendererHtml.includes("nonce=\"mission-mermaid-v1\"") ||
+    !rendererHtml.includes("src=\"/assets/mermaid-renderer.js\"") ||
+    !rendererScript.includes('globalThis["mermaid"]') ||
+    !rendererScript.includes("mission:mermaid-ready")
+  ) {
+    fail("the isolated Mermaid renderer is missing its nonce-authorized classic bundle");
+    return;
+  }
+  if (indexHtml.includes("mermaid-renderer")) {
+    fail("the dashboard's initial document now includes the Mermaid renderer bundle");
+    return;
+  }
+  console.log("[smoke] isolated Mermaid renderer exists and stays outside the dashboard entry");
+}
+
 await smokeDaemon();
 await smokeMcp();
 await smokeSatellitePaths();
+await smokeMermaidRenderer();
 if (process.exitCode) process.exit(process.exitCode);
 console.log("[smoke] ok");

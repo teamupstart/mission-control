@@ -97,6 +97,16 @@ test("a task that isn't in the backlog is refused", async () => {
   assert.match(res.error!, /not in the backlog/);
 });
 
+test("a pipeline task cannot be typed into an existing harness session", async () => {
+  const { r, tasks, sessionId } = setup();
+  r.upsertTask(mkTask({ kind: "pipeline", title: "Run the release pipeline" }));
+  const res = await tasks.assign("t1", sessionId);
+  assert.equal(res.ok, false);
+  assert.match(res.error!, /must be dispatched.*pipeline provider/);
+  assert.equal(res.scope, "task");
+  assert.equal(r.getTask("t1")?.status, "backlog");
+});
+
 test("an unknown task or session is refused rather than half-applied", async () => {
   const { r, tasks, sessionId } = setup();
   r.upsertTask(mkTask());
@@ -1111,7 +1121,7 @@ test("a scout is refused before reset when its scoped submission credential cann
   assert.equal(r.getTask("t1")?.status, "backlog");
 });
 
-test("an assigned scout is typed the report contract, and an assigned ship task is not", async () => {
+test("assigned scout and ship prompts keep intent first and receive the shared authorization", async () => {
   for (const kind of ["scout", "ship"] as const) {
     const { r, tasks, sessionId, clone } = setupInRepo(`mission-assign-${kind}-contract-`);
     r.upsertTask(mkTask({ repoRoot: clone, kind, intent: "look into the resume path" }));
@@ -1142,8 +1152,9 @@ test("an assigned scout is typed the report contract, and an assigned ship task 
 
     assert.equal(res.ok, true, res.error);
     assert.ok(typed !== null, "the task was typed");
-    // The operator's own words arrive intact either way. Only the contract differs.
-    assert.match(typed!, /look into the resume path/);
+    assert.match(typed!, /^look into the resume path/, "the operator's own words stay first");
+    assert.match(typed!, /Mission Control execution authorization/);
+    assert.match(typed!, /already authorized you to commit the scoped work/);
     if (kind === "scout") {
       assert.deepEqual(credentialScope, { taskId: "t1", cwd: clone });
       assert.match(typed!, /docs\/reports\/<slug>\/report\.html/);
@@ -1151,7 +1162,7 @@ test("an assigned scout is typed the report contract, and an assigned ship task 
       assert.match(typed!, /repoSlot: "repo-01"/, "the slot is issued for the session's own checkout");
     } else {
       assert.equal(credentialScope, null);
-      assert.equal(typed, "look into the resume path", "a ship task's intent is byte-identical");
+      assert.doesNotMatch(typed!, /docs\/reports\/<slug>\/report\.html/);
     }
   }
 });

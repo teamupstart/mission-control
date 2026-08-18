@@ -99,6 +99,20 @@ test("missing and archived Personas cannot enter a new version", () => {
   assert.ok(validateWorkflowGraph({ graph: graph(), personas: archived, completionPolicy: { kind: "none" } }).diagnostics.some((item) => item.code === "archived_persona"));
 });
 
+test("the local Foreman System profile is unknown to workflow validation", () => {
+  const candidate = graph();
+  candidate.nodes = candidate.nodes.map((node) => node.id === "code"
+    ? { ...node, personaId: "foreman" }
+    : node);
+  const result = validateWorkflowGraph({
+    graph: candidate,
+    personas,
+    completionPolicy: { kind: "none" },
+  });
+  assert.ok(result.diagnostics.some((item) =>
+    item.code === "missing_persona" && item.nodeId === "code"));
+});
+
 // ---- Check nodes ----
 //
 // A Check decides a pass/fail outcome exactly as a Persona does, so every rule that is

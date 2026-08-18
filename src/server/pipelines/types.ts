@@ -3,10 +3,13 @@ import type {
   PipelineActionResult,
   PipelineConsole,
   PipelineDaemonState,
+  PipelineInstallerCandidate,
   PipelineProbe,
   PipelineProviderId,
+  PipelineRepoRegistrationResult,
   PipelineRun,
   PipelineRunDetail,
+  PipelineRunLink,
 } from "@shared/pipeline.ts";
 
 import type { PipelineEventInput } from "../db.ts";
@@ -136,14 +139,34 @@ export interface PipelineProvider {
    * The command whose mere PRESENCE on `PATH` means this engine is installed, after the
    * operator's env override.
    *
-   * Separate from `probe()` because it answers a weaker question much more cheaply: the
-   * Settings rail needs "should this row exist" synchronously, on every snapshot, for every
-   * operator - and `onPath` walks `PATH` with `existsSync` where a probe spawns. What the
-   * engine's version is and which repositories it manages are the panel's questions.
+   * Separate from `probe()` because the append-only `SettingsStatus.pipelines.present`
+   * compatibility fact needs a synchronous, subprocess-free read. What the engine's version
+   * is and which repositories it manages are the panel's questions.
    */
   binForPresence(): string;
   /** Spawns. Called from the Settings route behind a cache, never from the watch loop. */
   probe(): Promise<PipelineProbe>;
+  /** Register a canonical repository through the provider's own CLI. Never throws. */
+  registerRepo(repoRoot: string): Promise<PipelineRepoRegistrationResult>;
+  /**
+   * Optional interactive installation from provider-verified local source.
+   *
+   * Discovery executes no checkout code. `terminalArgv` repeats the verification immediately
+   * before returning provider-owned argv, so a stale remote or marker is refused before the
+   * terminal layer sees it.
+   */
+  installer?: {
+    candidates(repoRoots: readonly string[]): Promise<PipelineInstallerCandidate[]>;
+    terminalArgv(checkout: string): Promise<
+      | {
+          candidate: PipelineInstallerCandidate;
+          argv: string[];
+          cwd: string;
+          title: string;
+        }
+      | { refused: string }
+    >;
+  };
   /**
    * Read every run in one repository, from the provider's files alone.
    *
@@ -230,6 +253,28 @@ export interface PipelineProvider {
     console: PipelineConsole,
     target: PipelineConsoleTarget,
   ): { argv: string[]; cwd: string } | { refused: string };
+  /**
+   * The provider-owned run a pipeline task will create, or a bounded refusal.
+   *
+   * Mission Control persists this complete link before it starts a host. The provider owns
+   * the derivation because the identity grammar is part of its plan/worktree protocol, not
+   * a shared task convention. This method never reads provider state; collision checking
+   * uses `knownRunSlugs` so identity and the provider's current key space stay separate
+   * answers with separate failure modes.
+   */
+  taskIdentity(intent: string, repoRoot: string): PipelineRunLink | { refused: string };
+  /**
+   * What a pipeline task launches in a hosted terminal.
+   *
+   * The provider owns the command because its driver grammar is provider-specific. Mission
+   * Control owns only the terminal home and the consent check around this call.
+   */
+  taskArgv(
+    intent: string,
+    repoRoot: string,
+  ): Promise<{ argv: string[]; cwd: string } | { refused: string }>;
+  /** Turn one for the provider's managed SDK host. No terminal command is nested inside it. */
+  taskPrompt(intent: string): string;
 }
 
 /** What a control verb acts on. `slug` is null for a repository-scoped verb. */

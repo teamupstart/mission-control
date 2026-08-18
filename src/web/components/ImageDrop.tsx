@@ -28,6 +28,12 @@ export interface PendingAttachment {
   status: "uploading" | "ready" | "error";
   /** The daemon's absolute path. Present only once `status` is "ready". */
   upload?: Attachment;
+  /** Opaque daemon-issued locator. Workflow evidence sends this and never sends `upload.path`. */
+  uploadId?: string;
+  /** Exact decoded size returned by the daemon after it sniffed and stored the image. */
+  bytes?: number;
+  /** Browser-reported MIME, used only for intake copy; the daemon sniffs the actual bytes. */
+  mimeType?: string;
   error?: string;
 }
 
@@ -117,13 +123,21 @@ export function useImageDrop({
         name: file.name || "pasted image",
         previewUrl: URL.createObjectURL(file),
         status: "uploading",
+        mimeType: file.type,
       }));
       onChange([...listRef.current, ...added]);
       added.forEach((att, i) => {
         void uploadImage(images[i]!).then((r) => {
           // Dropped again while it uploaded? The patch is keyed by id, so a removed
           // chip simply finds no row and the late reply lands nowhere.
-          if (r.ok) patch(att.id, { status: "ready", upload: r.upload });
+          if (r.ok) {
+            patch(att.id, {
+              status: "ready",
+              upload: r.upload,
+              uploadId: r.uploadId,
+              bytes: r.bytes,
+            });
+          }
           else patch(att.id, { status: "error", error: r.error });
         });
       });
@@ -246,9 +260,11 @@ export function useImageDrop({
 export function AttachmentStrip({
   attachments,
   onRemove,
+  removeContext = "this message",
 }: {
   attachments: PendingAttachment[];
   onRemove: (id: string) => void;
+  removeContext?: string;
 }): React.JSX.Element | null {
   if (attachments.length === 0) return null;
   return (
@@ -272,7 +288,7 @@ export function AttachmentStrip({
           <Tooltip label={a.status === "error" ? (a.error ?? a.name) : a.name}>
             <span className="attach-name">{a.status === "error" ? a.error : a.name}</span>
           </Tooltip>
-          <Tooltip label={`Remove ${a.name} from this message`}>
+          <Tooltip label={`Remove ${a.name} from ${removeContext}`}>
             <button
               type="button"
               className="attach-remove"

@@ -21,7 +21,10 @@ import { AwayDigestCard } from "./components/AwayDigestCard.tsx";
 import { DiffViewer } from "./components/DiffViewer.tsx";
 import { AlertBar } from "./components/AlertBar.tsx";
 import { SettingsPage } from "./components/SettingsPage.tsx";
-import { DEFAULT_SETTINGS_CATEGORY } from "./lib/settings-registry.ts";
+import {
+  DEFAULT_SETTINGS_CATEGORY,
+  type SettingsCategoryId,
+} from "./lib/settings-registry.ts";
 import { settingsGearDot } from "./lib/settings-dots.ts";
 import { ForemanBar } from "./components/ForemanBar.tsx";
 import { AgentDot } from "./components/session-bits.tsx";
@@ -101,7 +104,7 @@ import { AppPageShell } from "./components/AppPageShell.tsx";
 import { ExecutionPage } from "./workflows/ExecutionPage.tsx";
 import { WorkflowConfirmModal } from "./workflows/WorkflowConfirmModal.tsx";
 import {
-  WorkflowBindingDialog,
+  WorkflowBindingDialogHost,
   type WorkflowBindingTarget,
 } from "./workflows/WorkflowBindingDialog.tsx";
 import { Palette } from "./components/Palette.tsx";
@@ -214,6 +217,7 @@ export function App(): React.JSX.Element {
     settingsStatus,
     keepAwakeStatus,
     harnessesRevision,
+    worktreesRevision,
     // One counter, bumped per reconciled batch of archives and once per reconnect. It is
     // how the Scouts page learns to refetch its current window without the browser polling
     // and without unbounded history entering the SSE snapshot.
@@ -315,6 +319,9 @@ export function App(): React.JSX.Element {
   // The nonce is what makes asking twice for the same control flash twice - without it the
   // second request would be a prop that did not change, and nothing would happen.
   const [settingsJump, setSettingsJump] = useState<{ anchor: string; nonce: number } | null>(null);
+  // A one-shot request rather than lifted popover state: ForemanBar still owns its ordinary
+  // toggle/close lifecycle, while the System profile can ask that existing control to open.
+  const [foremanOpenRequest, setForemanOpenRequest] = useState(0);
   const [launcherFocusError, setLauncherFocusError] = useState<string | null>(null);
   const launcherFocusErrorTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // The Recurring Missions overlay. `missionsTarget` carries an optional deep link from a
@@ -339,6 +346,17 @@ export function App(): React.JSX.Element {
     sessionId: string;
     nonce: number;
   } | null>(null);
+
+  const openSettingsAnchor = useCallback(
+    (category: SettingsCategoryId, anchor: string): void => {
+      navigate({ page: "settings", category });
+      setSettingsJump((previous) => ({
+        anchor,
+        nonce: (previous?.nonce ?? 0) + 1,
+      }));
+    },
+    [navigate],
+  );
   const [workflowsTabRequest, setWorkflowsTabRequest] = useState<{
     sessionId: string;
     nonce: number;
@@ -689,11 +707,6 @@ export function App(): React.JSX.Element {
       schedules,
       sessionNames,
       settingsBindings: paletteBindings,
-      // The palette may only reach panels the rail draws. Null before the first snapshot,
-      // which offers the conditional categories nowhere rather than guessing.
-      settingsAvailability: {
-        pipelinesPresent: settingsStatus === null ? null : settingsStatus.pipelines.present,
-      },
     }),
     [
       workflowSummaries,
@@ -704,7 +717,6 @@ export function App(): React.JSX.Element {
       schedules,
       sessionNames,
       paletteBindings,
-      settingsStatus,
     ],
   );
 
@@ -2202,10 +2214,21 @@ export function App(): React.JSX.Element {
         <main className="lib-surface">
           <PersonaLibrary
             personas={personas}
+            workflowSummaries={workflowSummaries}
+            workflowRuns={workflowRuns}
+            hasSnapshot={hasSnapshot}
             providers={llm.status?.runners ?? []}
             defaults={llm.personaDefaults}
+            foremanSummary={{
+              runner: foreman.status?.runner ?? null,
+              models: foreman.status?.models ?? null,
+            }}
             upstream={personaDrift.upstream}
             onCheckUpstream={personaDrift.refresh}
+            onOpenForemanModels={() => openSettingsAnchor("foreman", "foreman/provider")}
+            onOpenForemanPosture={() => openSettingsAnchor("foreman", "foreman/cheap-tier")}
+            onOpenForemanTrust={() => openSettingsAnchor("trust", "trust/matrix")}
+            onOpenForemanControl={() => setForemanOpenRequest((request) => request + 1)}
             initialPersonaId={libraryAssetId}
             startNew={libraryCreating}
             isOverlayOpen={isOverlayOpen}
@@ -2220,6 +2243,8 @@ export function App(): React.JSX.Element {
           <main className="lib-surface">
             <SessionActionLibrary
               sessionActions={sessionActions}
+              workflowSummaries={workflowSummaries}
+              workflowRuns={workflowRuns}
               hasSnapshot={hasSnapshot}
               initialActionId={libraryAssetId}
               startNew={libraryCreating}
@@ -2234,6 +2259,10 @@ export function App(): React.JSX.Element {
           <LibraryPage
             workflowSummaries={workflowSummaries}
             personas={personas}
+            foremanSummary={{
+              runner: foreman.status?.runner ?? null,
+              models: foreman.status?.models ?? null,
+            }}
             personaUpstream={personaDrift.upstream}
             sessionActions={sessionActions}
             workflowCommands={workflowCommands}
@@ -2383,6 +2412,7 @@ export function App(): React.JSX.Element {
             <div className="tb-group">
               <ForemanBar
                 state={foreman}
+                openRequest={foremanOpenRequest}
                 onOpenSettings={() => navigate({ page: "settings", category: "foreman" })}
               />
               <Tooltip label={`Dispatch a new agent (${formatChord(bindings.dispatch)})`}>
@@ -2508,6 +2538,7 @@ export function App(): React.JSX.Element {
               ) : (
                 <WorkflowRuns
                   runs={workflowRuns}
+                  sessions={sessions}
                   selectedRunId={route.page === "runs" ? route.runId ?? null : null}
                   filters={route.page === "runs" ? route.filters : undefined}
                   onSelectRun={openWorkflowRun}
@@ -2612,8 +2643,14 @@ export function App(): React.JSX.Element {
               onLayoutChange={setLayout}
               settingsStatus={settingsStatus}
               harnessesRevision={harnessesRevision}
+              worktreesRevision={worktreesRevision}
               workflowSummaries={workflowSummaries}
               onOpenPalette={() => setPaletteOpen(true)}
+              onOpenForemanProfile={() => navigate({
+                page: "library",
+                shelf: "personas",
+                assetId: "foreman",
+              })}
               jump={settingsJump}
             />
           )}
@@ -2902,6 +2939,14 @@ export function App(): React.JSX.Element {
                 workflowSummaries={workflowSummaries}
                 foremanEnabled={foreman.config?.enabled ?? false}
                 harnessesRevision={harnessesRevision}
+                pipelinesRevision={
+                  settingsStatus?.pipelines.observedRepoKeys
+                    ? JSON.stringify({
+                        repos: settingsStatus.pipelines.observedRepoKeys,
+                        launchRuntime: settingsStatus.pipelines.launchRuntime ?? null,
+                      })
+                    : `count:${settingsStatus?.pipelines.observing ?? 0}`
+                }
                 launchIntent={dispatchIntent}
                 onClose={closeDispatch}
                 onOpenSchedule={onOpenSchedule}
@@ -2992,17 +3037,15 @@ export function App(): React.JSX.Element {
                 />
               )}
 
-              {workflowBindingTarget && (
-                <WorkflowBindingDialog
-                  target={workflowBindingTarget}
-                  sessions={sessions}
-                  workflows={workflowSummaries}
-                  foremanEnabled={foreman.config?.enabled ?? false}
-                  promptedWrapupEnabled={foreman.config?.wrapupTriggers.includes("prompted") ?? false}
-                  onClose={() => setWorkflowBindingTarget(null)}
-                  onRun={openWorkflowRun}
-                />
-              )}
+              <WorkflowBindingDialogHost
+                target={workflowBindingTarget}
+                sessions={sessions}
+                workflows={workflowSummaries}
+                foremanEnabled={foreman.config?.enabled ?? false}
+                promptedWrapupEnabled={foreman.config?.wrapupTriggers.includes("prompted") ?? false}
+                onClose={() => setWorkflowBindingTarget(null)}
+                onRun={openWorkflowRun}
+              />
             </>
           )}
         />

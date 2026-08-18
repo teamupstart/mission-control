@@ -72,17 +72,35 @@ from source without touching the bundle. The refusal is deliberate: a scout that
 an agent that finishes its work and has nowhere to put it. See [Adding or changing a tool means
 rebuilding the bundle](sessions.md#review-channel-mcp).
 
-## A treehouse pool has no available worktree, or a check lease looks stale
+## A legacy Treehouse task or check cannot clean up
 
-Run `treehouse status` first. Mission Control automatically reclaims only leases it can
-prove are its own and safe to return. A lease held under your own label is intentionally
-left alone, as are old holder names the daemon cannot identify safely; return those
-yourself with `treehouse return <path>` when you are finished.
+New work never needs Treehouse. A cleanup error naming provider `treehouse` refers to a persisted
+resource from an older Mission Control. Run `treehouse status --json` in the recorded repository
+if the binary is available. Mission Control conditionally returns only a v2.1.1+ lease whose
+persisted lease ID, path, and holder still match and whose checkout is clean and unoccupied.
 
-An idle `mission-control-check-…` lease left behind after its daemon has exited is safe
-to return with the same command. If dispatch still cannot acquire a tree after a reap,
-check the daemon log and the reported `treehouse` error rather than assuming the pool is
-full. See [worktrees and checks](worktrees-and-checks.md#leaked-leases-are-reclaimed-for-you).
+A missing or older binary, null lease ID, changed identity, foreign lease, dirty checkout, or
+uncertain occupancy keeps the row and worktree intact. Resolve unverifiable or foreign resources
+with Treehouse itself after confirming their current owner. Do not convert them to Git worktrees or
+delete their directories behind Treehouse's bookkeeping. See
+[Legacy Treehouse compatibility](worktrees-and-checks.md#legacy-treehouse-compatibility).
+
+**Settings > Worktrees > Legacy drain** shows the same provider reading with its exact
+classification. An exact row offers a preview-first Return only when durable owner identity,
+cleanliness, and empty occupancy all agree. Unverifiable, foreign, and unreadable rows show
+remediation instead of a Force button. Treehouse can be removed after that section reports no
+durable legacy rows and you have separately reviewed every foreign lease.
+
+## A Worktrees action says the preview is stale
+
+Nothing was changed. A short-lived preview is bound to the exact owner, slot version, Git and
+process observations, and fixed target set it displayed. Refresh the preview and review the new
+facts. This commonly happens when a task finishes, a process exits, Git state moves, another
+dashboard changes policy, or reconciliation repairs a slot between preview and Execute.
+
+An unknown-process blocker is different: it cannot be acknowledged. Restore the host's process
+inspection, stop the owning task or check through its normal control, and use **Reconcile**. Do not
+delete the directory or Git registration by hand; uncertainty is why Mission Control kept it.
 
 ## A session says exited but its task or workflow has not settled yet
 

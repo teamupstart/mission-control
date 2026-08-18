@@ -6,6 +6,7 @@ import { WorkflowLadder } from "../src/web/workflows/WorkflowLadder.tsx";
 import {
   deliveryStateView,
   gateWaitSentence,
+  inspectorGateSentence,
 } from "../src/web/workflows/run-model.ts";
 import {
   ladderDetail,
@@ -18,6 +19,7 @@ const render = (state: Parameters<typeof ladderDetail>[0]): string => {
     summary: detail.summary,
     detail,
     onOpenRun: () => {},
+    onRecheckInspector: () => {},
     sessionBound: true,
   }));
 };
@@ -70,6 +72,19 @@ test("the Inspector gate rung carries its wait sentence and pinned PR facts", ()
   assert.match(html, /4f2ab19c/);
   assert.match(html, /posture/);
   assert.match(html, new RegExp(gateWaitSentence("review_pending")));
+  assert.match(html, /Recheck GitHub Inspector/);
+});
+
+test("a spent gate rung names historical and current heads without offering a dead recheck", () => {
+  const detail = ladderDetail("spent-clean");
+  const html = render("spent-clean");
+  assert.match(html, /Clean head ready/);
+  assert.ok(html.includes(inspectorGateSentence(detail)));
+  assert.match(html, /last workflow head/);
+  assert.match(html, /failed000000/);
+  assert.match(html, /current Inspector head/);
+  assert.match(html, /clean0000000/);
+  assert.doesNotMatch(html, /Recheck GitHub Inspector/);
 });
 
 test("the uncertain delivery rung uses the shared label and sentence verbatim", () => {

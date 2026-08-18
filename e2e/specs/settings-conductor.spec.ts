@@ -1,264 +1,539 @@
+import { execFileSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
 
 import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
-import {
-  FAKE_CONDUCTOR_VERSION,
-  seedConductorDaemon,
-  seedConductorRun,
-  writeConductorProjects,
-} from "../fixtures/conductor.ts";
+import { FAKE_CONDUCTOR_VERSION, readConductorInvocations } from "../fixtures/conductor.ts";
+import { recordsIn } from "../fixtures/records.ts";
 
-/**
- * Consenting to an external SDLC engine, in the panel an operator actually uses.
- *
- * What only this layer can prove. `test/conductor-panel.test.ts` pins the panel's markup and
- * its three "which of these is false" sentences, and `test/pipeline-http.test.ts` pins the
- * route's refusals - but neither can see a click reach the daemon, a probe spawn, a watch
- * pass read the engine's files, and a health line come back with what it found. That whole
- * chain is what an operator is actually trusting when they flip a switch here.
- *
- * Three claims:
- *
- *  1. Everything ARRIVES OFF. Detection is automatic and consent is not: the engine is found
- *     and its repositories are listed while nothing at all is being read.
- *  2. Enabling is consent, and it takes effect. One switch, and the daemon starts reading
- *     that repository's state files - the health line names the engine daemon's state and
- *     counts the runs it found, including the halted one.
- *  3. Disabling returns it to inert, in the same request rather than on some later tick.
- *
- * No model tokens: nothing here dispatches an agent, and the only subprocess the daemon
- * spawns is the fake `conduct-ts` that `e2e/fixtures/conductor.ts` installs.
- */
+// The installed-engine Phase 1 vertical slice. The fake CLI records argv and owns its project
+// registry, while the browser drives the separate Mission Control consent write. No agent binary
+// or installer runs, and no model token can be spent.
 
-// The fastest watch cadence the daemon allows - the value is floored at 1000ms, so asking
-// for less would be a number this file states and the daemon ignores. Per file rather than
-// in the shared list: this is the only spec that waits for a pipeline pass, and 5x the
-// background polling in every other worker's daemon is a cost fifty specs would pay for
-// this one.
 test.use({ daemonEnv: { MISSION_PIPELINE_TICK_MS: "1000" } });
 
 const EVIDENCE = artifactsDir("settings-conductor");
 
-/** Photograph a state this spec has already asserted on. Behind `MC_E2E_EVIDENCE`. */
 async function shoot(page: Page, name: string): Promise<void> {
   if (!process.env.MC_E2E_EVIDENCE) return;
   mkdirSync(EVIDENCE, { recursive: true });
   await page.mouse.move(0, 0);
-  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
-  await page.screenshot({ path: `${EVIDENCE}${name}.png` });
+  await page.evaluate(() => {
+    (document.activeElement as HTMLElement | null)?.blur();
+    window.scrollTo(0, 0);
+  });
+  await page.screenshot({ path: `${EVIDENCE}${name}.png`, fullPage: true });
   // oxlint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/settings-conductor/${name}.png`);
 }
 
-test("the engine is detected, arrives off, and one switch starts observing it", async ({
+async function openConductor(page: Page, baseURL: string): Promise<void> {
+  await page.goto(`${baseURL}/#/settings/conductor`);
+  await expect(page.getByRole("tab", { name: /Conductor/ })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+}
+
+function installerTerminals(recordDir: string): { argv: string[] }[] {
+  return recordsIn<{ argv: string[] }>(recordDir, (file) => file.startsWith("cmux-"));
+}
+
+test("an installed engine registers a workspace and observes it through one honest flow", async ({
   page,
   daemon,
 }) => {
-  // The engine says it manages the seeded repository. Written before the panel is opened,
-  // because the daemon caches its probe and the first read is what fills that cache.
-  writeConductorProjects(daemon.home, [{ name: "demo-repo", path: daemon.repo }]);
-  // Two features in flight, one of them halted, under a live engine daemon. This is the
-  // tree the daemon's readers will meet - written by the same fixture the unit tests use,
-  // so a reader that passes there is reading the shape it meets here.
-  seedConductorRun(daemon.repo, "add-widgets", {
-    steps: { worktree: "done", memory: "done", explore: "in_progress" },
-    lastStep: "explore",
-    tier: "M",
-    track: "product",
-  });
-  seedConductorRun(daemon.repo, "fix-the-thing", {
-    steps: { worktree: "done", build: "done" },
-    lastStep: "build",
-    halt: "the build review found two blocking defects",
-    haltClass: "needs-human",
-  });
-  seedConductorDaemon(daemon.repo, { pid: process.pid });
-
-  await page.goto(`${daemon.baseURL}/#/settings/conductor`);
-
-  // Detection is automatic: the engine is found, at the path and version the fake installs,
-  // and it says which repositories it manages.
+  test.setTimeout(60_000);
+  await openConductor(page, daemon.baseURL);
   await expect(page.getByText(/Installed at .*conduct-ts/)).toBeVisible();
   await expect(page.getByText(new RegExp(`version ${FAKE_CONDUCTOR_VERSION}`))).toBeVisible();
-  await expect(page.getByText(/1 repository registered/)).toBeVisible();
 
-  // And consent is not. Everything arrives off, and the panel says which of the two switches
-  // is the reason nothing is being read.
-  // The master switch is a `ConsoleSwitch`: a real checkbox with `appearance: none`, whose
-  // visible track is a sibling span that takes the pointer. So the STATE is read off the
-  // input and the CLICK lands on the label - the same split `trust-workflows-grant.spec.ts`
-  // makes, and the reason the input is a checkbox at all rather than a div with an onClick.
-  const master = page.getByRole("checkbox", { name: "Observe conductor pipelines" });
-  const masterLabel = page.locator('.sc-card[data-anchor="conductor/enabled"] label.sc-switch');
-  await expect(master).not.toBeChecked();
-  const repoSwitch = page.getByRole("checkbox", { name: "Observe pipelines in demo-repo" });
-  await expect(repoSwitch).toBeVisible();
-  await expect(repoSwitch).not.toBeChecked();
-  await expect(page.getByText("Off - no pipeline state is being read.")).toBeVisible();
-  // Both switches are off here, and the master one is what the row names: it blocks the
-  // read either way, and flipping it is what makes this row's own switch the next ask.
-  await expect(
-    page.getByText("Not observed - Observe pipelines is off, so no repository is read."),
-  ).toBeVisible();
-  await shoot(page, "01-detected-and-off");
+  const search = page.getByPlaceholder("Search workspace repositories");
+  await search.fill("demo-repo");
+  const row = page.locator("li.conductor-repo").filter({ hasText: daemon.repo });
+  await expect(row).toContainText("Not registered");
+  await expect(row).toContainText("Not observed");
+  await expect(row).toContainText("Dispatch not ready");
+  await expect(row.getByRole("button", { name: "Register and observe" })).toBeEnabled();
+  await shoot(page, "01-ready-to-register");
 
-  // Nothing is being read, and the daemon says so from its own side rather than from the
-  // panel's optimistic view - which is the difference between a switch that looks off and a
-  // daemon that IS off.
+  await page.setViewportSize({ width: 680, height: 900 });
+  expect(
+    await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+    "the commissioning line and repository actions must not create horizontal clipping",
+  ).toBe(true);
+  await search.focus();
+  await page.keyboard.press("Tab");
+  await expect(row.getByRole("button", { name: "Register and observe" })).toBeFocused();
+
+  const registrationResponse = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/api/pipelines/register") && response.request().method() === "POST",
+  );
+  const observationResponse = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/api/pipelines/config") && response.request().method() === "PUT",
+  );
+  await row.getByRole("button", { name: "Register and observe" }).click();
+  expect((await (await registrationResponse).json()).registration.ok).toBe(true);
+  await expect(row).toContainText("Registered", { timeout: 20_000 });
+  expect((await observationResponse).ok()).toBe(true);
+  await expect(row).toContainText("Observed", { timeout: 15_000 });
+  await expect(row).toContainText("Dispatch ready", { timeout: 15_000 });
+  await expect(row.getByText("Ready", { exact: true })).toBeVisible();
+  await expect(page.getByText(/Registered and observed/)).toBeVisible();
+
+  const calls = readConductorInvocations(daemon.home);
+  expect(calls.filter((call) => call.argv[0] === "register")).toEqual([
+    { argv: ["register", daemon.repo], cwd: daemon.repo },
+  ]);
   const config = await page.request.get(`${daemon.baseURL}/api/pipelines/config`);
-  expect((await config.json()).config).toMatchObject({ enabled: false, repos: [] });
-
-  // Consent, in two acts: the master switch, then the repository.
-  await masterLabel.click();
-  await expect(master).toBeChecked();
-  await expect(page.getByText(/On, but no repository is switched on/)).toBeVisible();
-  await repoSwitch.check();
-  await expect(page.getByText("On - reading 1 repository.")).toBeVisible();
-
-  // And now the whole chain: the daemon reads the engine's files and reports what it found.
-  // Polled rather than awaited on a locator, because the first pass has to happen and the
-  // panel has to poll it back - two round trips, neither of which the DOM can wait on.
-  await expect(page.getByText(/engine daemon running · 2 pipelines, 1 halted/)).toBeVisible({
-    timeout: 15_000,
+  expect((await config.json()).config).toMatchObject({
+    enabled: true,
+    repos: [{ provider: "ai-conductor", repoRoot: daemon.repo, enabled: true }],
   });
-  await shoot(page, "02-observing");
 
-  // The projection reached the browser over SSE too, not just the panel's own poll - which
-  // is what phases 2 and 3 will render from.
-  await expect
-    .poll(
-      async () => {
-        const res = await page.request.get(`${daemon.baseURL}/api/pipelines/config`);
-        return (await res.json()).status?.[0]?.runs ?? 0;
-      },
-      { message: "the daemon should be projecting both features" },
-    )
-    .toBe(2);
+  await expect(row.getByText("Ready", { exact: true })).toBeVisible();
 
-  // Withdrawing consent returns it to inert, and does so in the write itself.
-  await repoSwitch.uncheck();
-  await expect(page.getByText(/On, but no repository is switched on/)).toBeVisible();
-  await expect(
-    page.getByText("Not observed - switch this repository on to project its pipelines."),
-  ).toBeVisible();
-  await shoot(page, "03-withdrawn");
+  await page.goto(`${daemon.baseURL}/#/fleet`);
+  await page.getByRole("button", { name: "Dispatch" }).click();
+  const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
+  const repo = dialog.getByPlaceholder("search repos or type a path…");
+  const kind = dialog.getByRole("combobox", { name: "Kind", exact: true });
+  await repo.fill(daemon.repo);
+  await page.keyboard.press("Escape");
+  await expect(kind.locator('option[value="pipeline"]')).toHaveCount(1);
+  await kind.selectOption("pipeline");
+  await expect(kind).toHaveValue("pipeline");
+  await shoot(page, "02-dispatch-ready");
 
-  // The choice survives the master switch, which is the whole reason it is a separate
-  // control: turning it back on must restore the set an operator chose, not an empty one.
-  await repoSwitch.check();
-  await expect(page.getByText("On - reading 1 repository.")).toBeVisible();
-  await masterLabel.click();
-  await expect(master).not.toBeChecked();
-  await expect(page.getByText("Off - no pipeline state is being read.")).toBeVisible();
-  await expect(repoSwitch).toBeChecked();
-
-  // This exact state is where one boolean for "observed" reads as a lie: the row's own
-  // switch is VISIBLY CHECKED, and the reason nothing is read is the master switch above
-  // it. The row has to name that control, because an operator sent to switch on a
-  // repository that is already on finds nothing to do.
-  await expect(
-    page.getByText("Not observed - Observe pipelines is off, so no repository is read."),
-  ).toBeVisible();
-  await expect(
-    page.getByText("Not observed - switch this repository on to project its pipelines."),
-  ).toHaveCount(0);
-
-  // And it survives a fresh page, which is what an operator comes back to tomorrow.
-  //
-  // The daemon's own answer is waited for first, and that is not belt and braces: saves are
-  // applied optimistically and serialized, so the last click's PUT can still be in flight
-  // when the reload cancels it - which made this pass alone and fail under the slower
-  // evidence run. Reading the route is what says the write LANDED, as against being drawn.
-  await expect
-    .poll(
-      async () => {
-        const res = await page.request.get(`${daemon.baseURL}/api/pipelines/config`);
-        return (await res.json()).config;
-      },
-      { message: "the daemon should hold the master switch off with the repository still chosen" },
-    )
-    .toMatchObject({ enabled: false, repos: [{ repoRoot: daemon.repo, enabled: true }] });
-
-  await page.reload();
-  await expect(page.getByRole("checkbox", { name: "Observe conductor pipelines" })).not.toBeChecked();
-  await expect(page.getByRole("checkbox", { name: "Observe pipelines in demo-repo" })).toBeChecked();
+  await kind.selectOption("ship");
+  await repo.fill(daemon.secondRepo);
+  await page.keyboard.press("Escape");
+  await expect(kind.locator('option[value="pipeline"]')).toHaveCount(0);
 });
 
-test.describe("with no engine installed", () => {
-  // The plan's criterion, in a browser: "an operator without conductor installed sees
-  // nothing new". Keyed on INSTALLED rather than on enabled - a Settings row offering to
-  // observe an engine somebody does not have is a new thing on their screen however off it
-  // ships.
-  //
-  // Reached by pointing the daemon's resolution at a path that is not there, rather than by
-  // mocking a response: what is under test is the daemon deciding this operator has nothing
-  // to do with a pipeline engine, and a mocked body would assert that the rail renders a
-  // shape the daemon might never send.
-  test.use({ daemonEnv: { MISSION_CONDUCTOR_BIN: "/nonexistent/conduct-ts" } });
+test("Engineer host defaults to SDK and persists an explicit Terminal choice", async ({
+  page,
+  daemon,
+}) => {
+  await openConductor(page, daemon.baseURL);
+  const sdk = page.getByRole("radio", { name: /Claude Agent SDK/ });
+  const terminal = page.getByRole("radio", { name: /Terminal/ });
 
-  test("no Conductor row, no panel, and the hash is not a back door", async ({
+  await expect(sdk).toBeChecked();
+  await expect(terminal).not.toBeChecked();
+  await expect(page.getByText(/shipped default, with no terminal fallback/)).toBeVisible();
+
+  const selectTerminal = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/api/pipelines/config") && response.request().method() === "PUT",
+  );
+  await terminal.check();
+  expect((await selectTerminal).ok()).toBe(true);
+  await page.reload();
+  await expect(terminal).toBeChecked();
+  await expect(page.getByText(/explicit compatibility host/)).toBeVisible();
+
+  const selectSdk = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/api/pipelines/config") && response.request().method() === "PUT",
+  );
+  await sdk.check();
+  expect((await selectSdk).ok()).toBe(true);
+  await expect(sdk).toBeChecked();
+  await expect(
+    page.getByText(/background build daemon keeps its own tmux supervision/),
+  ).toBeVisible();
+  await expect(page.getByText(/Installed at .*conduct-ts/)).toBeVisible();
+  await shoot(page, "04-sdk-runtime-selected");
+});
+
+test("an open Dispatch modal changes only after exact observation succeeds", async ({
+  dashboard,
+  daemon,
+}) => {
+  await dashboard.getByRole("button", { name: "Dispatch" }).click();
+  const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
+  const repo = dialog.getByPlaceholder("search repos or type a path…");
+  const kind = dialog.getByRole("combobox", { name: "Kind", exact: true });
+  await repo.fill(daemon.repo);
+  await dashboard.keyboard.press("Escape");
+  await expect(kind.locator('option[value="pipeline"]')).toHaveCount(0);
+
+  const registration = await dashboard.request.post(`${daemon.baseURL}/api/pipelines/register`, {
+    data: { provider: "ai-conductor", repoRoot: daemon.repo },
+  });
+  expect((await registration.json()).registration.ok).toBe(true);
+  await expect(kind.locator('option[value="pipeline"]')).toHaveCount(0);
+
+  const consent = await dashboard.request.put(`${daemon.baseURL}/api/pipelines/config`, {
+    data: {
+      enabled: true,
+      foremanMechanicalTriage: false,
+      repos: [{ provider: "ai-conductor", repoRoot: daemon.repo, enabled: true }],
+    },
+  });
+  expect(consent.ok()).toBe(true);
+  await expect(kind.locator('option[value="pipeline"]')).toHaveCount(1);
+
+  await repo.fill(daemon.secondRepo);
+  await dashboard.keyboard.press("Escape");
+  await expect(kind.locator('option[value="pipeline"]')).toHaveCount(0);
+
+  const replacement = await dashboard.request.put(`${daemon.baseURL}/api/pipelines/config`, {
+    data: {
+      enabled: true,
+      foremanMechanicalTriage: false,
+      repos: [{ provider: "ai-conductor", repoRoot: daemon.secondRepo, enabled: true }],
+    },
+  });
+  expect(replacement.ok()).toBe(true);
+  await expect(kind.locator('option[value="pipeline"]')).toHaveCount(1);
+
+  await repo.fill(daemon.repo);
+  await dashboard.keyboard.press("Escape");
+  await expect(kind.locator('option[value="pipeline"]')).toHaveCount(0);
+});
+
+test("a stale consent response never replaces or restores a newer repository edit", async ({
+  page,
+  daemon,
+}) => {
+  for (const repoRoot of [daemon.repo, daemon.secondRepo]) {
+    const registration = await page.request.post(`${daemon.baseURL}/api/pipelines/register`, {
+      data: { provider: "ai-conductor", repoRoot },
+    });
+    expect((await registration.json()).registration.ok).toBe(true);
+  }
+  const seeded = await page.request.put(`${daemon.baseURL}/api/pipelines/config`, {
+    data: {
+      enabled: true,
+      foremanMechanicalTriage: false,
+      repos: [
+        { provider: "ai-conductor", repoRoot: daemon.repo, enabled: false },
+        { provider: "ai-conductor", repoRoot: daemon.secondRepo, enabled: false },
+      ],
+    },
+  });
+  expect(seeded.ok()).toBe(true);
+
+  let writes = 0;
+  await page.route("**/api/pipelines/config", async (route) => {
+    if (route.request().method() !== "PUT") {
+      await route.continue();
+      return;
+    }
+    writes += 1;
+    if (writes === 1) {
+      const response = await route.fetch();
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      await route.fulfill({ response });
+      return;
+    }
+    await route.fulfill({
+      status: 500,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "forced second consent refusal" }),
+    });
+  });
+
+  await openConductor(page, daemon.baseURL);
+  const first = page.getByRole("checkbox", { name: "Observe pipelines in demo-repo" });
+  const second = page.getByRole("checkbox", { name: "Observe pipelines in second-repo" });
+  await expect(first).toBeEnabled();
+  await expect(second).toBeEnabled();
+  await first.click();
+  await second.click();
+
+  await expect(page.getByText(/forced second consent refusal/)).toBeVisible();
+  await expect(first).toBeChecked();
+  await expect(second).not.toBeChecked();
+  const config = await page.request.get(`${daemon.baseURL}/api/pipelines/config`);
+  expect((await config.json()).config.repos).toEqual([
+    { provider: "ai-conductor", repoRoot: daemon.secondRepo, enabled: false },
+    { provider: "ai-conductor", repoRoot: daemon.repo, enabled: true },
+  ]);
+});
+
+test.describe("when the provider does not confirm registration", () => {
+  test.use({ daemonEnv: { MC_E2E_CONDUCTOR_REGISTER_MODE: "unconfirmed" } });
+
+  test("observation is never granted", async ({ page, daemon }) => {
+    await openConductor(page, daemon.baseURL);
+    await page.getByPlaceholder("Search workspace repositories").fill("demo-repo");
+    const row = page.locator("li.conductor-repo").filter({ hasText: daemon.repo });
+    await row.getByRole("button", { name: "Register and observe" }).click();
+
+    await expect(page.getByText(/without confirming this exact repository/)).toBeVisible();
+    await expect(row).toContainText("Not registered");
+    await expect(row).toContainText("Not observed");
+    const config = await page.request.get(`${daemon.baseURL}/api/pipelines/config`);
+    expect((await config.json()).config).toMatchObject({ enabled: false, repos: [] });
+  });
+});
+
+test("partial success stays registered and recovers without a second registration", async ({
+  page,
+  daemon,
+}) => {
+  test.setTimeout(60_000);
+  let refused = false;
+  await page.route("**/api/pipelines/config", async (route) => {
+    if (route.request().method() === "PUT" && !refused) {
+      refused = true;
+      await route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "forced observation refusal" }),
+      });
+      return;
+    }
+    await route.continue();
+  });
+
+  await openConductor(page, daemon.baseURL);
+  await page.getByPlaceholder("Search workspace repositories").fill("demo-repo");
+  const row = page.locator("li.conductor-repo").filter({ hasText: daemon.repo });
+  await row.getByRole("button", { name: "Register and observe" }).click();
+
+  await expect(page.getByText(/Registered with Conductor; Mission Control observation/)).toBeVisible();
+  await expect(row).toContainText("Registered");
+  await expect(row).toContainText("Not observed");
+  await expect(row.getByRole("button", { name: "Enable observation" })).toBeVisible();
+  await shoot(page, "03-partial-success");
+
+  await page.unroute("**/api/pipelines/config");
+  await row.getByRole("button", { name: "Enable observation" }).click();
+  await expect(row).toContainText("Dispatch ready", { timeout: 15_000 });
+  expect(
+    readConductorInvocations(daemon.home).filter((call) => call.argv[0] === "register"),
+  ).toHaveLength(1);
+});
+
+test.describe("with no engine or verified source checkout", () => {
+  test.use({
+    daemonEnv: {
+      MISSION_PIPELINE_TICK_MS: "1000",
+      MC_E2E_CONDUCTOR_STARTS_MISSING: "1",
+    },
+  });
+
+  test("Conductor stays discoverable and falls back to copyable upstream instructions", async ({
     page,
     daemon,
   }) => {
-    await page.goto(`${daemon.baseURL}/#/settings`);
-    // Waited for rather than assumed: the rail is what proves the page has painted and the
-    // snapshot has landed, so the absences below are read after the daemon has answered
-    // rather than before it.
-    await expect(page.getByRole("tab", { name: /Task sources/ })).toBeVisible();
-
-    await expect(page.getByRole("tab", { name: /Conductor/ })).toHaveCount(0);
-    await expect(page.getByRole("checkbox", { name: "Observe conductor pipelines" })).toHaveCount(0);
-    await expect(page.getByText(/Not installed/)).toHaveCount(0);
-    await expect(page.getByText(/never starts or stops a pipeline/)).toHaveCount(0);
-
-    // A stale bookmark lands on the default category rather than on an empty pane, which is
-    // what an unknown category already does - and it must not start the Conductor hook
-    // behind that fallback either. Watched from here, because "no new UI" and "no new
-    // behaviour" are different claims and only one of them is visible on screen: the hook
-    // polls the pipelines route, and that route is what starts the daemon's engine probe.
     const pipelineReads: string[] = [];
-    page.on("request", (req) => {
-      if (req.url().includes("/api/pipelines/")) pipelineReads.push(req.url());
+    page.on("request", (request) => {
+      if (request.url().includes("/api/pipelines/")) pipelineReads.push(request.url());
     });
-
-    await page.goto(`${daemon.baseURL}/#/settings/conductor`);
-    // Asserted on the RAIL rather than on the Display panel's contents: what is under test
-    // is where the route resolved, and the selected tab says that without depending on what
-    // any particular panel happens to render.
+    await page.goto(`${daemon.baseURL}/#/settings/display`);
     await expect(page.getByRole("tab", { name: /Display/ })).toHaveAttribute(
       "aria-selected",
       "true",
     );
-    await expect(page.getByRole("tab", { name: /Conductor/ })).toHaveCount(0);
-    await expect(page.getByText(/never starts or stops a pipeline/)).toHaveCount(0);
-    // The headline artifact, taken HERE: the rail an operator without the engine actually
-    // gets, after the stale hash has resolved, with nothing overlaying it. Captured before
-    // the palette below opens - an earlier cut of this spec shot it afterwards and produced
-    // a frame of a dimmed page behind a dialog, which shows the reviewer nothing.
-    await shoot(page, "04-no-conductor-row");
+    await page.waitForTimeout(4_250);
+    expect(pipelineReads, "unrelated Settings destinations must not probe Conductor").toEqual([]);
 
-    // Long enough to cover more than one turn of the hook's 4s poll, so this is "it never
-    // started" rather than "it had not got round to it yet".
-    await page.waitForTimeout(5000);
-    expect(pipelineReads, "a stale hash must not start the Conductor poll").toEqual([]);
+    await openConductor(page, daemon.baseURL);
+    await expect.poll(() => pipelineReads.length).toBeGreaterThan(0);
+    await expect(page.getByText(/Setup needed .*conduct-ts is not on this daemon/)).toBeVisible();
+    await expect(page.getByRole("button", { name: "I installed it, check again" })).toBeVisible();
+    await expect(page.getByText("git clone https://github.com/mancej/ai-conductor.git")).toBeVisible();
+    await expect(page.getByText("cd ai-conductor && ./bin/install")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Review installer" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /Open installer/i })).toHaveCount(0);
+    await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+    await page.getByRole("button", { name: "Copy clone" }).click();
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(
+      "git clone https://github.com/mancej/ai-conductor.git",
+    );
+    await shoot(page, "04-missing-engine");
 
-    // And it is absent from the one other place a panel is reachable from. The palette may
-    // only target routes the app publishes, so a hidden category offered here would be the
-    // criterion holding everywhere except the search box.
     await page.keyboard.press("Meta+k");
-    await expect(page.getByRole("dialog", { name: "Search everything" })).toBeVisible();
-    const query = page.getByRole("combobox", { name: "Search everything" });
-    // First a query that DOES land, so the absence below is a filtered palette rather than a
-    // broken one - "assert nothing is there" proves nothing when nothing is ever there.
-    await query.fill("display");
-    await expect(page.getByRole("option", { name: /Display settings/ })).toBeVisible();
-    await query.fill("conductor");
-    await expect(page.getByRole("option", { name: /Conductor/ })).toHaveCount(0);
-    // The second artifact, and the palette IS its subject - so this one is taken with the
-    // dialog open on purpose.
-    await shoot(page, "05-not-in-the-palette");
+    const palette = page.getByRole("dialog", { name: "Search everything" });
+    await palette.getByRole("combobox", { name: "Search everything" }).fill("conductor");
+    await expect(palette.getByRole("option", { name: /Conductor settings/ })).toBeVisible();
+  });
+});
+
+test.describe("with a verified local Conductor checkout", () => {
+  test.use({
+    daemonEnv: {
+      MISSION_PIPELINE_TICK_MS: "1000",
+      MC_E2E_CONDUCTOR_STARTS_MISSING: "1",
+      MC_E2E_CONDUCTOR_CHECKOUT: "1",
+    },
+  });
+
+  test("reviews scope, opens the exact installer in a hosted terminal, then rechecks honestly", async ({
+    page,
+    daemon,
+  }) => {
+    test.setTimeout(75_000);
+    expect(daemon.conductorCheckout).not.toBeNull();
+    const checkout = daemon.conductorCheckout!;
+    await openConductor(page, daemon.baseURL);
+
+    await expect(page.getByText(checkout, { exact: true })).toBeVisible();
+    await expect(page.getByText("github.com/mancej/ai-conductor", { exact: false })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Open installer" })).toHaveCount(0);
+    await page.getByRole("button", { name: "Review installer" }).click();
+
+    const confirmation = page.getByRole("region", { name: "Confirm Conductor installer" });
+    await expect(confirmation).toContainText("Confirm machine-wide installation");
+    await expect(confirmation).toContainText(checkout);
+    await expect(confirmation).toContainText(`${checkout}/bin/install`);
+    await expect(confirmation).toContainText("Link conduct-ts under your local bin directory");
+    await expect(confirmation).toContainText("Link Conductor skills for supported agents");
+    await expect(confirmation).toContainText("Update Claude user settings and hooks");
+    await expect(confirmation).toContainText("Create or update ~/.ai-conductor configuration");
+    await expect(confirmation).toContainText("Optionally install global Puppeteer");
+    await confirmation.getByLabel("Installer terminal backend").selectOption("cmux");
+    await shoot(page, "05-installer-confirmation");
+
+    await page.setViewportSize({ width: 680, height: 900 });
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+      "guided installation must not create horizontal clipping",
+    ).toBe(true);
+    await shoot(page, "07-installer-narrow");
+    await page.setViewportSize({ width: 1280, height: 720 });
+
+    await confirmation.getByRole("button", { name: "Open installer" }).click();
+    await expect(page.getByRole("status")).toContainText("Installer terminal opened");
+    await expect(page.getByText(/Setup needed .*conduct-ts is not on this daemon/)).toBeVisible();
+    await expect.poll(() => installerTerminals(daemon.recordDir).length).toBe(1);
+    const argv = installerTerminals(daemon.recordDir)[0]?.argv ?? [];
+    expect(argv[0]).toBe("new-workspace");
+    expect(argv[argv.indexOf("--cwd") + 1]).toBe(checkout);
+    expect(argv[argv.indexOf("--name") + 1]).toMatch(/^ai-conductor installer-[a-z0-9]+$/);
+    const command = argv[argv.indexOf("--command") + 1] ?? "";
+    expect(command).toContain(`${checkout}/bin/install`);
+    expect(command).toContain("read -r _");
+    await shoot(page, "06-installer-opened");
+
+    daemon.installFakeConductor();
+    await page.getByRole("button", { name: "I installed it, check again" }).click();
+    await expect(page.getByText(/Installed at .*conduct-ts/)).toBeVisible();
+    await expect(page.getByText(new RegExp(`version ${FAKE_CONDUCTOR_VERSION}`))).toBeVisible();
+    await expect(page.getByRole("button", { name: "Review installer" })).toHaveCount(0);
+
+    await page.getByPlaceholder("Search workspace repositories").fill("demo-repo");
+    const row = page.locator("li.conductor-repo").filter({ hasText: daemon.repo });
+    await row.getByRole("button", { name: "Register and observe" }).click();
+    await expect(row).toContainText("Dispatch ready", { timeout: 15_000 });
+
+    await page.goto(`${daemon.baseURL}/#/fleet`);
+    await page.getByRole("button", { name: "Dispatch" }).click();
+    const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
+    const repo = dialog.getByPlaceholder("search repos or type a path…");
+    const kind = dialog.getByRole("combobox", { name: "Kind", exact: true });
+    await repo.fill(daemon.repo);
+    await page.keyboard.press("Escape");
+    await expect(kind.locator('option[value="pipeline"]')).toHaveCount(1);
+    await repo.fill(daemon.secondRepo);
+    await page.keyboard.press("Escape");
+    await expect(kind.locator('option[value="pipeline"]')).toHaveCount(0);
+  });
+
+  test("rejects a candidate whose provenance changes after the confirmation is shown", async ({
+    page,
+    daemon,
+  }) => {
+    expect(daemon.conductorCheckout).not.toBeNull();
+    await openConductor(page, daemon.baseURL);
+    await page.getByRole("button", { name: "Review installer" }).click();
+    execFileSync(
+      "git",
+      [
+        "-C",
+        daemon.conductorCheckout!,
+        "remote",
+        "set-url",
+        "origin",
+        "https://github.com/mancej/ai-conductor-lookalike.git",
+      ],
+      { stdio: "pipe" },
+    );
+    await page.getByRole("button", { name: "Open installer" }).click();
+    await expect(page.getByRole("status")).toContainText("no longer a verified installer");
+    expect(installerTerminals(daemon.recordDir)).toEqual([]);
+  });
+
+  test("keeps launch disabled and shows manual commands when no terminal can be hosted", async ({
+    page,
+    daemon,
+  }) => {
+    await page.route("**/api/terminal-targets", async (route) => {
+      const response = await route.fetch();
+      const payload = (await response.json()) as {
+        targets: { unavailable: string | null }[];
+      };
+      await route.fulfill({
+        response,
+        json: {
+          targets: payload.targets.map((target) => ({
+            ...target,
+            unavailable: "Unavailable in this browser test.",
+          })),
+        },
+      });
+    });
+    await openConductor(page, daemon.baseURL);
+    await page.getByRole("button", { name: "Review installer" }).click();
+    await expect(page.getByRole("button", { name: "Open installer" })).toBeDisabled();
+    await expect(page.getByLabel("Unavailable terminal reasons")).toContainText(
+      "Unavailable in this browser test.",
+    );
+    await expect(page.getByRole("button", { name: "Copy clone" })).toBeVisible();
+  });
+
+  test("ignores an old candidate response after a newer engine probe succeeds", async ({
+    page,
+    daemon,
+  }) => {
+    let releaseCandidate!: () => void;
+    let sawCandidate!: () => void;
+    const held = new Promise<void>((resolve) => (releaseCandidate = resolve));
+    const requested = new Promise<void>((resolve) => (sawCandidate = resolve));
+    await page.route("**/api/pipelines/installers?**", async (route) => {
+      sawCandidate();
+      await held;
+      await route.continue();
+    });
+    await openConductor(page, daemon.baseURL);
+    await requested;
+    daemon.installFakeConductor();
+    await page.getByRole("button", { name: "I installed it, check again" }).click();
+    await expect(page.getByText(/Installed at .*conduct-ts/)).toBeVisible();
+    releaseCandidate();
+    await page.waitForTimeout(250);
+    await expect(page.getByRole("button", { name: "Review installer" })).toHaveCount(0);
+  });
+});
+
+test.describe("with a verified checkout and an unresponsive hosted terminal", () => {
+  test.use({
+    daemonEnv: {
+      MISSION_PIPELINE_TICK_MS: "1000",
+      MC_E2E_CONDUCTOR_STARTS_MISSING: "1",
+      MC_E2E_CONDUCTOR_CHECKOUT: "1",
+      MC_E2E_CMUX_MODE: "unknown",
+    },
+  });
+
+  test("reports only that the installer terminal may still be opening", async ({ page, daemon }) => {
+    test.setTimeout(35_000);
+    await openConductor(page, daemon.baseURL);
+    await page.getByRole("button", { name: "Review installer" }).click();
+    await page.getByLabel("Installer terminal backend").selectOption("cmux");
+    await page.getByRole("button", { name: "Open installer" }).click();
+    await expect(page.getByRole("status")).toContainText(/may still be opening|did not report back/i, {
+      timeout: 20_000,
+    });
+    await expect(page.getByRole("status")).not.toContainText("Installer terminal opened");
   });
 });

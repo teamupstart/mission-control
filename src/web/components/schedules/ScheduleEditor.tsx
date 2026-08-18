@@ -8,9 +8,15 @@ import type {
 } from "@shared/schedules.ts";
 import { SCHEDULE_CATCHUP_CREATE_CAP } from "@shared/schedules.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
-import { AGENT_TYPES, TASK_KINDS } from "@shared/types.ts";
+import { AGENT_TYPES } from "@shared/types.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
-import { MAX_LABELS, PRIORITY_LABELS, TASK_KIND_INFO, TASK_PRIORITIES } from "@shared/task.ts";
+import {
+  BACKLOG_TASK_KINDS,
+  MAX_LABELS,
+  PRIORITY_LABELS,
+  TASK_KIND_INFO,
+  TASK_PRIORITIES,
+} from "@shared/task.ts";
 import { modelChoicesFor } from "@shared/model.ts";
 import {
   createSchedule,
@@ -375,7 +381,7 @@ export function ScheduleEditor({
                       select is the only thing on this row that says what a kind IS - the
                       dispatch form can afford the blurb beside the option, and this
                       cannot. */}
-                  {TASK_KINDS.map((kind) => (
+                  {BACKLOG_TASK_KINDS.map((kind) => (
                     <option key={kind} value={kind}>
                       {`${TASK_KIND_INFO[kind].label} - ${TASK_KIND_INFO[kind].purpose}`}
                     </option>

@@ -76,7 +76,7 @@ export const GUIDED_STEPS: readonly GuidedStep[] = [
     name: "Kind",
     question: "What kind of run is this?",
     answeredBy: "options",
-    writes: ["kind", "workflowId"],
+    writes: ["kind", "workflowId", "dependencies"],
   },
   {
     id: "harness",
@@ -200,11 +200,19 @@ export function endGuidedPass(pass: GuidedPass): GuidedPass {
  * `plan` then takes `l`, and by elimination rather than by preference: `p` is already
  * `ship`'s, `a` is the letter every one of the three words contains, and `n` reads as
  * "no". `l` is the one letter in `plan` that names only `plan`.
+ * `chat` takes its natural `c`; the harness step can reuse that key because each question
+ * owns its mnemonic scope.
  *
- * A `Record` over the tuple, so a fourth kind does not compile until it has said which key
+ * A `Record` over the tuple, so a new kind does not compile until it has said which key
  * takes it. `test/guided-dispatch-steps.test.ts` fails if two kinds claim the same letter.
  */
-export const GUIDED_KIND_KEYS: Record<TaskKind, string> = { ship: "p", scout: "t", plan: "l" };
+export const GUIDED_KIND_KEYS: Record<TaskKind, string> = {
+  ship: "p",
+  scout: "t",
+  plan: "l",
+  pipeline: "e",
+  chat: "c",
+};
 
 /**
  * The harness mnemonics, hand-chosen for the same reason: Claude Code and Codex both start

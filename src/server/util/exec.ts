@@ -36,8 +36,8 @@ export function onPath(bin: string, env: NodeJS.ProcessEnv = process.env): boole
  *
  * `check-spawn.ts:29-35` documents why a command precheck must not use `onPath`, and that
  * reasoning only holds while the two stay separately named. Callers pick deliberately:
- * `agentBinPresent` and `pool.ts`'s `treehouseInstalled` want the resolver's answer because
- * the very next thing either does is spawn the binary they asked about.
+ * `agentBinPresent` wants the resolver's answer because the very next thing it does is spawn
+ * the binary it asked about.
  *
  * A path containing a separator is not a PATH lookup at all - it names one file, so it is
  * answered from the filesystem, and null means "not there".
@@ -52,9 +52,7 @@ export async function resolveBinPath(bin: string): Promise<string | null> {
 /**
  * Whether `bin` is resolvable at all - `resolveBinPath` with the path discarded.
  *
- * Exported rather than left private to the one subsystem that had it, because "is this
- * binary installed?" being answerable in only one place is exactly how the check path came
- * to have no such gate at all. See `pool.ts`'s two named predicates.
+ * Exported for callers that need the system resolver's answer without keeping the path.
  */
 export async function hasBin(bin: string): Promise<boolean> {
   return (await resolveBinPath(bin)) !== null;

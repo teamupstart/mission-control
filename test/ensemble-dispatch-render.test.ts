@@ -205,6 +205,21 @@ test("dispatch Persona selectors retain a shadowed current selection", () => {
   }
 });
 
+test("a forged Foreman evaluator remains unavailable outside the supplied Persona catalog", () => {
+  const draft = freshEnsembleDraft();
+  const forged = {
+    ...draft,
+    config: setConfigPath(
+      setConfigPath(draft.config, "evaluator.personaId", "foreman"),
+      "evaluator.personaRevision",
+      1,
+    ),
+  };
+  const html = render({ ensemble: forged, personas: [persona("p1", "Reviewer", "reviewer", false)] });
+  assert.match(html, /Unavailable: foreman/);
+  assert.doesNotMatch(html, /<option value="foreman">Foreman<\/option>/);
+});
+
 test("a reviewed plan puts Launch in the primary slot with a Reviewed chip beside it", () => {
   const html = renderToStaticMarkup(
     createElement(EnsembleLaunchControls, { launch: reviewedLaunch() }),

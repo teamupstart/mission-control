@@ -1,7 +1,7 @@
 import { Tooltip } from "../components/Tooltip.tsx";
 
 /**
- * The two rail primitives every Library authoring surface draws its asset list from.
+ * The rail primitives every Library authoring surface draws its asset list from.
  *
  * The fault they exist for: the rail listed every asset flat, so the four Personas that
  * ship with the build read as things the operator wrote, and each row's sub-label was the
@@ -20,10 +20,10 @@ import { Tooltip } from "../components/Tooltip.tsx";
 export interface LibraryRailTag {
   label: string;
   /**
-   * `attention` for a fact waiting on the operator - an imported Persona whose source file
-   * has moved on. `quiet`, the default, is provenance trivia that is never acted on.
+   * `attention` marks a fact waiting on the operator, `system` marks an application-owned
+   * identity, and `quiet`, the default, is provenance trivia that is never acted on.
    */
-  tone?: "quiet" | "attention";
+  tone?: "quiet" | "attention" | "system";
 }
 
 /**
@@ -120,7 +120,7 @@ export function LibraryRailRow({
           {tags.map((tag) => (
             <em
               key={tag.label}
-              className={`lib-rail-tag${tag.tone === "attention" ? " is-attention" : ""}`}
+              className={`lib-rail-tag${tag.tone === "attention" ? " is-attention" : tag.tone === "system" ? " is-system" : ""}`}
             >
               {tag.label}
             </em>

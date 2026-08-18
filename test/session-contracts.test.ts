@@ -54,6 +54,15 @@ test("a visible change emits", () => {
     { stateConfirmed: false },
     { hooksSeen: false },
     { activity: "something else" },
+    {
+      workCycle: {
+        logicalKey: "agent-1",
+        generation: 1,
+        active: false,
+        completedAt: 123,
+        updatedAt: 124,
+      },
+    },
     { permissionMode: "plan" },
     { pendingReviews: 3 },
     { prUrl: "https://example.test/pr/1" },
@@ -119,6 +128,7 @@ test("schedule provenance rides inside Session.task, and a change to it still em
     title: "Audit dependencies",
     fullTitle: "Audit dependencies",
     kind: "ship" as const,
+    workflowId: null,
     status: "running" as const,
     outcome: null,
     outcomeUrl: null,

@@ -78,6 +78,9 @@ export function ScoutsPage({
   /** Set after a delete: focus belongs back in the rail once the render lands. */
   const [pendingFocus, setPendingFocus] = useState(false);
   const railRef = useRef<HTMLElement | null>(null);
+  const searchRef = useRef<HTMLInputElement | null>(null);
+  /** The row an arrow press moved to, so focus follows only explicit keyboard navigation. */
+  const pendingArrowFocus = useRef<string | null>(null);
 
   // The search box is LOCAL while it is being typed and the route is updated behind it, so
   // every keystroke is not a history entry and the field never fights the address bar. The
@@ -155,6 +158,54 @@ export function ScoutsPage({
     setPendingFocus(false);
   }, [pendingFocus, catalog.archives]);
 
+  // Arrow movement is a route change, so focus has to wait until the newly selected row is
+  // in the DOM. Do not do this for an initial selection or a click: opening Scouts should not
+  // pull focus away from the page chrome, and a pointer already owns its focus.
+  useEffect(() => {
+    if (!pendingArrowFocus.current || pendingArrowFocus.current !== selectedKey) return;
+    const row = railRef.current?.querySelector<HTMLElement>(
+      '.scouts-row-open[aria-current="true"]',
+    );
+    if (!row) return;
+    pendingArrowFocus.current = null;
+    row.scrollIntoView({ block: "nearest" });
+    row.focus({ preventScroll: true });
+  }, [selectedKey, catalog.archives]);
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent): void {
+      // An overlay owns its keys. This page remains mounted behind the palette and delete
+      // confirmation, so do not let a focused dialog button walk the archive underneath it.
+      if (event.defaultPrevented || document.querySelector("[role='dialog']")) return;
+      if (event.key === "/" && !event.metaKey && !event.ctrlKey && !event.altKey) {
+        event.preventDefault();
+        searchRef.current?.focus();
+        return;
+      }
+      // Text entry and select controls keep their normal editing and selection keys. The
+      // rail's selected-row button deliberately remains eligible, so repeated arrows keep
+      // walking reports after focus follows the first move.
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("input, textarea, select, [contenteditable='true']")) {
+        return;
+      }
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+
+      if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+      const current = catalog.archives.findIndex((archive) => archive.key === selectedKey);
+      const delta = event.key === "ArrowDown" ? 1 : -1;
+      const nextIndex = current < 0 ? (delta > 0 ? 0 : catalog.archives.length - 1) : current + delta;
+      const next = catalog.archives[nextIndex] ?? null;
+      if (!next) return;
+      event.preventDefault();
+      pendingArrowFocus.current = next.key;
+      select(next.key);
+    }
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [catalog.archives, selectedKey, select]);
+
   const groups = useMemo(() => {
     const out: { day: string; rows: ArchiveSummary[] }[] = [];
     for (const archive of catalog.archives) {
@@ -229,6 +280,7 @@ export function ScoutsPage({
             placeholder="Search titles, prompts, findings, reports, files..."
             autoComplete="off"
             spellCheck={false}
+            ref={searchRef}
             onChange={(event) => setDraftQuery(event.target.value)}
           />
           <div className="scouts-filters">

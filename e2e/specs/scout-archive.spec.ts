@@ -46,6 +46,7 @@ const OLDER_TITLE = "Older reconnect archive";
 const OLDER_QUESTION = "Why did the older reconnect path lose its grant?";
 const OLDER_REPORT = "The older archive report remains readable without prompt metadata.";
 const EVIDENCE = artifactsDir("scout-prompt-context");
+const SHORTCUT_EVIDENCE = artifactsDir("scouts-shortcuts");
 /** Visible text that exists ONLY inside the report the fake writes. */
 const FINDING = "the resume path never replayed the repository grant";
 /** Turns the fake into a scout that writes its page and deliberately never submits it. */
@@ -394,6 +395,18 @@ async function capturePromptEvidence(page: Page, name: string): Promise<void> {
   console.log(`CAPTURED e2e/.artifacts/scout-prompt-context/${name}.png`);
 }
 
+/** A reviewer-visible frame of the keyboard handoff from State to Scouts search. */
+async function captureShortcutEvidence(page: Page): Promise<void> {
+  if (process.env.MC_E2E_EVIDENCE !== "1") return;
+  mkdirSync(SHORTCUT_EVIDENCE, { recursive: true });
+  await page.screenshot({
+    path: `${SHORTCUT_EVIDENCE}slash-focus-from-state-selector.png`,
+    animations: "disabled",
+  });
+  // eslint-disable-next-line no-console
+  console.log("CAPTURED e2e/.artifacts/scouts-shortcuts/slash-focus-from-state-selector.png");
+}
+
 test("Scouts is reachable from the topbar, its shortcut, and the command palette", async ({
   dashboard,
 }) => {
@@ -428,6 +441,47 @@ test("Scouts is reachable from the topbar, its shortcut, and the command palette
   await expect(row).toBeVisible();
   await row.click();
   await expect(scoutsRail).toBeVisible();
+});
+
+test("Scouts arrows load adjacent reports and slash focuses its search", async ({
+  dashboard,
+  daemon,
+}) => {
+  const older = writeScoutBundle(join(daemon.home, "scouts"), {
+    title: "Older keyboard scout",
+    createdAt: "2026-08-12T18:42:11.000Z",
+    completedAt: "2026-08-12T18:50:03.000Z",
+  });
+  const newer = writeScoutBundle(join(daemon.home, "scouts"), {
+    title: "Newer keyboard scout",
+    createdAt: "2026-08-13T18:42:11.000Z",
+    completedAt: "2026-08-13T18:50:03.000Z",
+  });
+  await expect.poll(() => archives(daemon).then((rows) => rows.length), { timeout: 20_000 }).toBe(2);
+
+  await dashboard.getByRole("button", { name: /^Scouts/ }).click();
+  const scoutsRail = rail(dashboard);
+  const search = scoutsRail.getByPlaceholder("Search titles, prompts, findings, reports, files...");
+  const reader = dashboard.getByRole("region", { name: "Scout report" });
+  await expect(reader.getByRole("heading", { level: 1, name: newer.manifest.archive.title })).toBeVisible();
+
+  await dashboard.keyboard.press("ArrowDown");
+  await expect(reader.getByRole("heading", { level: 1, name: older.manifest.archive.title })).toBeVisible();
+  await expect(dashboard).toHaveURL(new RegExp(`#\\/scouts\\/${older.key}`));
+
+  await dashboard.keyboard.press("ArrowUp");
+  await expect(reader.getByRole("heading", { level: 1, name: newer.manifest.archive.title })).toBeVisible();
+  await expect(dashboard).toHaveURL(new RegExp(`#\\/scouts\\/${newer.key}`));
+
+  await dashboard.keyboard.press("/");
+  await expect(search).toBeFocused();
+
+  // `/` is a Scouts-page shortcut even when an in-page control owns focus: the operator
+  // can abandon a filter choice and immediately start searching without a mouse click.
+  await scoutsRail.getByLabel("State").focus();
+  await dashboard.keyboard.press("/");
+  await expect(search).toBeFocused();
+  await captureShortcutEvidence(dashboard);
 });
 
 test("a finished scout keeps its concise title and ordered human prompt context", async ({

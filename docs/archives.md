@@ -570,7 +570,9 @@ Two different things can be wrong with a key, and they are answered differently:
   title, time, artifact count and size, plus the daemon's snippet saying *why* it matched. For
   a newly captured scout, that title is the same short name its live session card showed.
   Search covers titles, prompts, findings, report text and file metadata; a prompt match is
-  labelled `prompt` without replacing that title.
+  labelled `prompt` without replacing that title. Press <kbd>/</kbd> to focus the search box;
+  when focus is outside a text field or selector, <kbd>↑</kbd> and <kbd>↓</kbd> open the previous
+  or next report in the current results.
 - **The reader** leads with the same short archive title and, for a new bundle, shows the
   ordered **Prompt context** before the report: **Original request**, then each human
   **Follow-up** with its recorded delivery time. Prompt text is escaped plain text outside the

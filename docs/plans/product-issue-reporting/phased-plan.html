@@ -135,7 +135,7 @@ npm run test:e2e
 labels, and closes it. No phase uses a real screenshot upload before the release-follow-up verifies
 stable CLI support.</p>
 <h2 id="operational-follow-up">Operational follow-up</h2>
-<p>After these planning artifacts are published, create the approved recurring mission with cron
+<p>Schedule <code>7f19c8d3-7062-47c3-87d1-a4891638cbb2</code> is the approved recurring mission. It uses cron
 <code>0 9 * * 1</code>, time zone <code>America/New_York</code>, <code>skip-active</code>, <code>coalesce-latest</code>, low priority and Codex.
 Its task checks issue #13256, a stable <code>gh</code> release and official help. It does nothing until all
 release gates pass and this plan resolves on the default branch. It then creates exactly one task

@@ -136,7 +136,7 @@ stable CLI support.
 
 ## Operational follow-up
 
-After these planning artifacts are published, create the approved recurring mission with cron
+Schedule `7f19c8d3-7062-47c3-87d1-a4891638cbb2` is the approved recurring mission. It uses cron
 `0 9 * * 1`, time zone `America/New_York`, `skip-active`, `coalesce-latest`, low priority and Codex.
 Its task checks issue #13256, a stable `gh` release and official help. It does nothing until all
 release gates pass and this plan resolves on the default branch. It then creates exactly one task

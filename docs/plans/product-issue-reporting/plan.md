@@ -276,6 +276,8 @@ behavior identical while preserving the intended wire field for the follow-up.
 
 ## GitHub CLI attachment release monitor
 
+**Live schedule:** `7f19c8d3-7062-47c3-87d1-a4891638cbb2`
+
 Create one enabled recurring mission after this plan is approved. It runs with cron
 `0 9 * * 1` in `America/New_York`, using `skip-active`, `coalesce-latest`, low priority, the Codex
 harness, and the current repository. Every occurrence files a bounded checker task and stops,

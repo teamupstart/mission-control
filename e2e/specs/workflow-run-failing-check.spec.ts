@@ -217,4 +217,19 @@ test("a failed command gate is the blocker, and keeps its exit code and output",
   );
   await expect(row).toHaveAttribute("aria-current", "true");
   await expect(card.locator("pre.wf-run-check-output")).toContainText("E2E CHECK BOOM");
+
+  // A completed Command phase is keyboard-openable too. Move the worklist away first so
+  // Enter has to load this stage's blocking test detail rather than merely leave the default
+  // selection untouched.
+  await segments.getByRole("button", { name: "Passed 1" }).click();
+  await expect(worklist).toContainText(REVIEWER);
+  const stages = dashboard.locator(".wf-run-reader .wf-pipeline-stage-head");
+  await expect(stages).toHaveCount(1);
+  await stages.focus();
+  await dashboard.keyboard.press("Enter");
+  await expect(segments.getByRole("button", { name: "Blocking 1" }))
+    .toHaveAttribute("aria-pressed", "true");
+  await expect(row).toHaveAttribute("aria-current", "true");
+  await expect(worklist.locator("article.wf-run-check pre.wf-run-check-output"))
+    .toContainText("E2E CHECK BOOM");
 });

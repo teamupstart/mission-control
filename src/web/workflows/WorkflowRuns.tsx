@@ -104,6 +104,7 @@ import {
 } from "./run-actions.ts";
 import { useRunActions } from "./run-action-store.ts";
 import { createWorkflowLoadCommitBarrier } from "./workflow-load-commit.ts";
+import { moveWorkflowRunSelection } from "./run-navigation.ts";
 
 /**
  * Watching a run.
@@ -677,16 +678,25 @@ const nodeOf = (item: WorklistItem): string =>
 
 const SEGMENTS = ["blocking", "passed", "archive"] as const;
 
-/** The first worklist row owned by a pipeline node, in the worklist's displayed priority. */
+/** The first worklist row owned by any requested pipeline node, in displayed priority. */
+export function worklistSelectionForNodes(
+  nodeIds: readonly string[],
+  bySegment: Record<WorklistSegment, WorklistItem[]>,
+): { segment: WorklistSegment; item: WorklistItem } | null {
+  const requested = new Set(nodeIds);
+  for (const segment of SEGMENTS) {
+    const item = bySegment[segment].find((candidate) => requested.has(nodeOf(candidate)));
+    if (item) return { segment, item };
+  }
+  return null;
+}
+
+/** The first worklist row owned by one pipeline node, in the worklist's displayed priority. */
 export function worklistSelectionForNode(
   nodeId: string,
   bySegment: Record<WorklistSegment, WorklistItem[]>,
 ): { segment: WorklistSegment; item: WorklistItem } | null {
-  for (const segment of SEGMENTS) {
-    const item = bySegment[segment].find((candidate) => nodeOf(candidate) === nodeId);
-    if (item) return { segment, item };
-  }
-  return null;
+  return worklistSelectionForNodes([nodeId], bySegment);
 }
 
 /**
@@ -954,7 +964,7 @@ function RunWorklist({
   reviewerlessVersion,
   personaNodeIds,
   disabledNodeIds,
-  initialNodeId = null,
+  initialNodeIds = [],
   onOpenFile,
   onCopyChange,
   changeCopied = false,
@@ -972,8 +982,8 @@ function RunWorklist({
   reviewerlessVersion: boolean;
   personaNodeIds: ReadonlySet<string>;
   disabledNodeIds: readonly string[];
-  /** A settled pipeline tile clicked before this keyed worklist instance mounted. */
-  initialNodeId?: string | null;
+  /** Settled pipeline nodes requested before this keyed worklist instance mounted. */
+  initialNodeIds?: readonly string[];
   onOpenFile?: (path: string) => void;
   onCopyChange?: (text: string) => void;
   changeCopied?: boolean;
@@ -1108,9 +1118,7 @@ function RunWorklist({
     passed: [...passed, ...pending],
     archive,
   };
-  const initialSelection = initialNodeId === null
-    ? null
-    : worklistSelectionForNode(initialNodeId, bySegment);
+  const initialSelection = worklistSelectionForNodes(initialNodeIds, bySegment);
 
   /** The reader's own pick, and the round they made it in. Both, for the scrub rule below. */
   const [chosenSegment, setChosenSegment] = useState<
@@ -1649,7 +1657,7 @@ export function WorkflowRunView({
   const [directiveNodeId, setDirectiveNodeId] = useState<string | null>(null);
   const [worklistFocus, setWorklistFocus] = useState<{
     runId: string;
-    nodeId: string;
+    nodeIds: readonly string[];
     sequence: number;
   } | null>(null);
   useEffect(() => setDirectiveNodeId(null), [detail.run.id]);
@@ -2092,7 +2100,12 @@ export function WorkflowRunView({
             : undefined}
           onOpenNode={(nodeId) => setWorklistFocus((current) => ({
             runId: detail.run.id,
-            nodeId,
+            nodeIds: [nodeId],
+            sequence: (current?.sequence ?? 0) + 1,
+          }))}
+          onOpenStage={(nodeIds) => setWorklistFocus((current) => ({
+            runId: detail.run.id,
+            nodeIds: [...nodeIds],
             sequence: (current?.sequence ?? 0) + 1,
           }))}
         />
@@ -2147,7 +2160,7 @@ export function WorkflowRunView({
           reviewerlessVersion={reviewerlessVersion}
           personaNodeIds={personaNodeIds}
           disabledNodeIds={detail.run.disabledNodeIds ?? []}
-          initialNodeId={currentWorklistFocus?.nodeId ?? null}
+          initialNodeIds={currentWorklistFocus?.nodeIds ?? []}
           onOpenFile={onOpenFile}
           onCopyChange={onCopyChange}
           changeCopied={changeCopied}
@@ -2794,6 +2807,9 @@ export function WorkflowRuns({
   const mounted = useRef(false);
   const listGeneration = useRef(0);
   const selectedIndex = useRef(0);
+  const page = useRef<HTMLElement>(null);
+  const runRows = useRef(new Map<string, HTMLButtonElement>());
+  const pendingKeyboardFocus = useRef<string | null>(null);
   const selected = selectedRunId ?? ordered[0]?.id ?? null;
   const selectedSummary = ordered.find((run) => run.id === selected) ?? null;
   const evidenceSession = sessions.find((session) => session.id === detail?.binding.sessionId) ?? null;
@@ -2871,6 +2887,72 @@ export function WorkflowRuns({
     ) return;
     onSelectRun(ordered[Math.min(selectedIndex.current, ordered.length - 1)]!.id);
   }, [detail?.run.id, onSelectRun, ordered, runs, selectedRunId]);
+  /**
+   * The Runs page owns its two keyboard zones while it is mounted. Vertical arrows on the rail
+   * select and load a run immediately; Tab on that selected row crosses into the first authored
+   * stage. Once focus is in the reader, the pipeline owns its own arrows and tabs.
+   *
+   * Inputs keep their native arrows, and a dialog owns every key while it is open. The global
+   * App handler deliberately stands down off the Fleet, so this listener has no competing
+   * session cursor to suppress.
+   */
+  useEffect(() => {
+    const ids = ordered.map((run) => run.id);
+    function onKey(event: KeyboardEvent): void {
+      if (
+        event.defaultPrevented
+        || confirm !== null
+      ) return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("input, textarea, select, [contenteditable='true'], [role='dialog']")) {
+        return;
+      }
+      if (
+        event.key === "Tab"
+        && !event.shiftKey
+        && !event.altKey
+        && !event.ctrlKey
+        && !event.metaKey
+        && target?.closest(".wf-run-row") === (selected ? runRows.current.get(selected) : null)
+      ) {
+        const firstStage = page.current?.querySelector<HTMLElement>(
+          '.wf-run-reader [data-focus-key="run-stage:0"]',
+        );
+        if (!firstStage) return;
+        event.preventDefault();
+        firstStage.focus({ preventScroll: true });
+        firstStage.scrollIntoView({ block: "nearest", inline: "nearest" });
+        return;
+      }
+      if (
+        (event.key !== "ArrowUp" && event.key !== "ArrowDown")
+        || event.altKey
+        || event.ctrlKey
+        || event.metaKey
+        || event.shiftKey
+        || target?.closest(".wf-run-reader")
+      ) return;
+      if (ids.length === 0) return;
+      const next = moveWorkflowRunSelection(ids, selected, event.key);
+      event.preventDefault();
+      if (!next || next === selected) return;
+      pendingKeyboardFocus.current = next;
+      onSelectRun(next);
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [confirm, onSelectRun, ordered, selected]);
+  // Keep route, DOM focus, and the independently scrolling rail on the same row after a key.
+  // Non-keyboard arrivals still scroll a bookmarked or palette-selected run into view, but do
+  // not steal focus from the control that opened it.
+  useEffect(() => {
+    if (!selected) return;
+    const row = runRows.current.get(selected);
+    row?.scrollIntoView({ block: "nearest" });
+    if (pendingKeyboardFocus.current !== selected || !row) return;
+    pendingKeyboardFocus.current = null;
+    row.focus({ preventScroll: true });
+  }, [ordered.length, selected]);
   useEffect(() => {
     loadCommit.current.commit(committedLoadGeneration);
   }, [committedLoadGeneration]);
@@ -3148,7 +3230,7 @@ export function WorkflowRuns({
   }
 
   return (
-    <section className="workflow-runs">
+    <section ref={page} className="workflow-runs">
       <aside className="wf-run-rail">
         {listError && <p className="wf-run-error" role="alert">{listError}</p>}
         <div className="wf-run-chips" role="group" aria-label="Filter runs by state">
@@ -3233,34 +3315,43 @@ export function WorkflowRuns({
             <p>Clear a filter or wait for a matching run.</p>
           </div>
         )}
-        {ordered.map((run) => (
-          <Tooltip key={run.id} label={`Open this ${run.workflowName} run - ${runStatusLabel(run.status)}`}>
-            <button
-              className={`wf-run-row${selected === run.id ? " active" : ""}`}
-              onClick={() => onSelectRun(run.id)}
-            >
-              <span className="wf-run-row-head">
-                <strong>{run.workflowName}</strong>
-                <span className="wf-run-version">v{run.workflowVersion}</span>
-              </span>
-              <span className={`workflow-chip workflow-${workflowRunTone(run)}`}>
-                {runStatusLabel(run.status)}
-              </span>
-              <span className="wf-run-row-session">{run.noteKey}</span>
-              {run.repoRoot && (
-                <span className="wf-run-row-repo">{repoLeaf(run.repoRoot)}</span>
-              )}
-              {run.gate !== "none" && (
-                <span className="wf-run-row-gate">
-                  GitHub Inspector: {run.gate.replaceAll("_", " ")}
-                  {run.gatePrNumber ? ` · #${run.gatePrNumber}` : ""}
-                  {run.gateHeadShort ? ` · ${run.gateHeadShort}` : ""}
-                </span>
-              )}
-              <small>{relativeTime(run.updatedAt)}</small>
-            </button>
-          </Tooltip>
-        ))}
+        <div className="wf-run-list" role="list" aria-label="Workflow runs">
+          {ordered.map((run) => (
+            <div role="listitem" key={run.id}>
+              <Tooltip label={`Open this ${run.workflowName} run - ${runStatusLabel(run.status)}`}>
+                <button
+                  ref={(node) => {
+                    if (node) runRows.current.set(run.id, node);
+                    else runRows.current.delete(run.id);
+                  }}
+                  aria-current={selected === run.id}
+                  className={`wf-run-row${selected === run.id ? " active" : ""}`}
+                  onClick={() => onSelectRun(run.id)}
+                >
+                  <span className="wf-run-row-head">
+                    <strong>{run.workflowName}</strong>
+                    <span className="wf-run-version">v{run.workflowVersion}</span>
+                  </span>
+                  <span className={`workflow-chip workflow-${workflowRunTone(run)}`}>
+                    {runStatusLabel(run.status)}
+                  </span>
+                  <span className="wf-run-row-session">{run.noteKey}</span>
+                  {run.repoRoot && (
+                    <span className="wf-run-row-repo">{repoLeaf(run.repoRoot)}</span>
+                  )}
+                  {run.gate !== "none" && (
+                    <span className="wf-run-row-gate">
+                      GitHub Inspector: {run.gate.replaceAll("_", " ")}
+                      {run.gatePrNumber ? ` · #${run.gatePrNumber}` : ""}
+                      {run.gateHeadShort ? ` · ${run.gateHeadShort}` : ""}
+                    </span>
+                  )}
+                  <small>{relativeTime(run.updatedAt)}</small>
+                </button>
+              </Tooltip>
+            </div>
+          ))}
+        </div>
         {nextCursor && (
           <Tooltip label="Load the next page of Workflow run history">
             <button

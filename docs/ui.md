@@ -662,6 +662,10 @@ names the layouts where a shortcut's target exists:
 | <kbd>f</kbd> | Open **Fleet** | Anywhere |
 | <kbd>w</kbd> | Open the **Library** | Anywhere |
 | <kbd>r</kbd> | Open **Workflow Runs** | Anywhere |
+| <kbd>↑</kbd> <kbd>↓</kbd> | Select the previous or next workflow run and load it immediately in the reader | Workflow Runs rail |
+| <kbd>Tab</kbd> | From the selected run, enter the workflow at its first authored stage. Further Tabs advance through the stages | Workflow Runs rail and pipeline |
+| <kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> | Select the previous or next authored stage | Workflow Runs pipeline |
+| <kbd>Enter</kbd> | Load a completed stage's recorded details in the Review worklist | Workflow Runs pipeline |
 | <kbd>⇧</kbd><kbd>S</kbd> | Open **Scouts** - the archive of finished investigations | Anywhere |
 | <kbd>⇧</kbd><kbd>P</kbd> | Open or close **Sitrep** | Fleet |
 | <kbd>+</kbd> | Start the guided dispatch pass. <kbd>Tab</kbd> reaches the ordinary form in one key | Anywhere |

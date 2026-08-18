@@ -809,9 +809,13 @@ stages and End the Pipeline view draws, with a live status on every member. Revi
 queued, reviewing, passed, or changes requested; Checks show their corresponding command
 state. Click a settled reviewer or Command tile to select that node's result in the review
 worklist below. A single-member stage header does the same; a multi-member stage keeps the
-choice on each member so the target is unambiguous. Session actions stay in their own section
-because they report a lifecycle rather than a verdict. A stage this round did not run because
-an earlier one already passed it reads a neutral
+choice on each member so the pointer target is unambiguous. Session actions stay in their own
+section because they report a lifecycle rather than a verdict. <kbd>↑</kbd> and <kbd>↓</kbd>
+move through the run rail and load each selection in the reader immediately, with no Enter
+step. From the selected run, <kbd>Tab</kbd> enters the first authored stage. Further Tabs or any
+arrow key move between stages, and <kbd>Enter</kbd> on a completed stage loads that stage's
+first recorded member detail, in worklist priority order, in the Review worklist below. A
+stage this round did not run because an earlier one already passed it reads a neutral
 grey **Not re-run**, and carries a **✓ Passed in Round 1 · evidence 1** line naming the round
 that earned the pass; pressing that line scrubs straight to it. The chip is deliberately not
 green - it speaks for the round on screen, where nothing executed - and the tick on the

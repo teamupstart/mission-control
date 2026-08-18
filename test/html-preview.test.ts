@@ -37,16 +37,18 @@ test("HTML fragments stay opaque and authorize only the two bridges", () => {
   assert.match(source, /mission:file-preview-link/);
 });
 
-test("the link bridge claims non-fragment clicks instead of letting them navigate", () => {
+test("the link bridge claims authored navigation before scrolling fragments or posting links", () => {
   const source = htmlPreviewSource("ok");
   const bridge = [...source.matchAll(/<script>([^<]+)<\/script>/g)]
     .map((match) => match[1]!)
     .find((script) => script.includes("mission:file-preview-link"));
   assert.ok(bridge);
-  assert.match(bridge, /preventDefault/);
-  // Fragment links are the one navigation the sandbox performs correctly, so they are
-  // the one kind the bridge must leave alone.
-  assert.match(bridge, /startsWith\("#"\)/);
+  // Every authored navigation is claimed before it is classified: fragments scroll inside
+  // the document, while non-fragments cross the parent bridge instead of navigating it.
+  assert.match(
+    bridge,
+    /preventDefault\(\).*startsWith\("#"\).*scrollIntoView\(\).*postMessage\(.*mission:file-preview-link/s,
+  );
 });
 
 test("a head-looking comment cannot swallow the preview CSP or its bridges", () => {

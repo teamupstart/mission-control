@@ -484,6 +484,28 @@ test("Scouts arrows load adjacent reports and slash focuses its search", async (
   await captureShortcutEvidence(dashboard);
 });
 
+test("a Scout report fragment link scrolls to and keeps rendering its target", async ({
+  dashboard,
+  daemon,
+}) => {
+  writeScoutBundle(join(daemon.home, "scouts"), {
+    title: "Scout report fragment navigation",
+    reportHtml: `<!doctype html><html><body>
+      <h1>Scout fragment report</h1>
+      <a href="#target">Jump to target</a>
+      <div style="height: 2000px"></div>
+      <h2 id="target">Scout fragment target</h2>
+    </body></html>`,
+  });
+  await expect.poll(() => archives(daemon).then((rows) => rows.length), { timeout: 20_000 }).toBe(1);
+
+  await dashboard.getByRole("button", { name: /^Scouts/ }).click();
+  const report = dashboard.frameLocator('iframe[title^="Report"]');
+  await report.getByRole("link", { name: "Jump to target" }).click();
+
+  await expect(report.getByRole("heading", { name: "Scout fragment target" })).toBeInViewport();
+});
+
 test("a finished scout keeps its concise title and ordered human prompt context", async ({
   dashboard,
   daemon,

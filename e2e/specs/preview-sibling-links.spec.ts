@@ -49,6 +49,9 @@ const ALPHA_HTML = `<!doctype html>
   <h1>Mock page alpha</h1>
   <a href="b.html">Continue to beta</a>
   <a href="https://example.com/">External site</a>
+  <a href="#100%">Jump to target</a>
+  <div style="height: 2000px"></div>
+  <h2 id="100%">Fragment target</h2>
 </body></html>
 `;
 
@@ -196,4 +199,16 @@ test("an external link cannot navigate the preview away", async ({ dashboard, da
       name: "Mock page beta",
     }),
   ).toBeVisible();
+});
+
+test("a same-document fragment link scrolls to and keeps rendering its target", async ({
+  dashboard,
+  daemon,
+}) => {
+  await openAlphaPreview(dashboard, daemon);
+  const alpha = dashboard.frameLocator('iframe[title="Preview of docs/a.html"]');
+
+  await alpha.getByRole("link", { name: "Jump to target" }).click();
+
+  await expect(alpha.getByRole("heading", { name: "Fragment target" })).toBeInViewport();
 });

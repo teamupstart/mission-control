@@ -72,24 +72,26 @@ const requestFlow = `
 const monitorFlow = `
 <figure class="flow" aria-labelledby="monitor-flow-title">
   <figcaption id="monitor-flow-title">GitHub CLI attachment release monitor</figcaption>
-  <svg viewBox="0 0 1180 410" role="img" aria-label="A recurring mission files a low-priority release checker task. The checker verifies the upstream issue, stable GitHub CLI release, official help, and merged plan. If support is unavailable it finishes and leaves the mission enabled. If support is available it creates one follow-up task and pauses the mission. The follow-up adapts and enables image attachments, merges its pull request, then archives the mission.">
+  <svg viewBox="0 0 1180 420" role="img" aria-label="A recurring mission files a low-priority release checker task. The checker verifies primary GitHub sources and inspects the deterministic task and pull request state. When support is unavailable or work is active, it does nothing and leaves the mission enabled. When support is stable and no work exists, it creates one follow-up task. A later checker archives the mission only after that task succeeds and its pull request merges.">
     <defs><marker id="monitor-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 10 5 0 10z"/></marker></defs>
     <g class="monitor-edges">
-      <path d="M205 100H280"/><path d="M485 100H565"/>
-      <path d="M665 130V205H385V265"/><path d="M765 100H845"/>
-      <path d="M945 130V205H735V265"/><path d="M945 130V265"/>
-      <path d="M845 295H760"/><path d="M1045 295V358H205"/>
+      <path d="M205 100H260"/><path d="M480 100H515"/><path d="M735 100H770"/>
+      <path d="M880 135V195H370V250"/><path d="M880 135V250"/>
+      <path d="M990 100H1090V250"/><path d="M880 312V345"/>
     </g>
     <g class="node service" transform="translate(20 67)"><rect width="185" height="66" rx="13"/><text x="92" y="28">Recurring mission</text><text class="sub" x="92" y="48">selected cadence</text></g>
-    <g class="node agent" transform="translate(280 67)"><rect width="205" height="66" rx="13"/><text x="102" y="28">Release checker task</text><text class="sub" x="102" y="48">low priority, skip active</text></g>
-    <g class="node public" transform="translate(565 67)"><rect width="200" height="66" rx="13"/><text x="100" y="27">GitHub primary sources</text><text class="sub" x="100" y="47">issue + stable gh + help</text></g>
-    <g class="node muted" transform="translate(280 265)"><rect width="210" height="62" rx="13"/><text x="105" y="27">Not released</text><text class="sub" x="105" y="46">finish; mission stays enabled</text></g>
-    <g class="node ui" transform="translate(845 67)"><rect width="200" height="66" rx="13"/><text x="100" y="27">Contract verified</text><text class="sub" x="100" y="47">one deterministic follow-up</text></g>
-    <g class="node service" transform="translate(635 265)"><rect width="210" height="62" rx="13"/><text x="105" y="27">Pause mission</text><text class="sub" x="105" y="46">prevent another occurrence</text></g>
-    <g class="node agent" transform="translate(945 265)"><rect width="210" height="62" rx="13"/><text x="105" y="27">Enablement follow-up</text><text class="sub" x="105" y="46">adapt, enable, test, merge</text></g>
-    <g class="node final" transform="translate(20 350)"><rect width="185" height="48" rx="12"/><text x="92" y="29">Archive mission</text></g>
+    <g class="node agent" transform="translate(260 67)"><rect width="220" height="66" rx="13"/><text x="110" y="28">Release checker task</text><text class="sub" x="110" y="48">low priority, skip active</text></g>
+    <g class="node public" transform="translate(515 67)"><rect width="220" height="66" rx="13"/><text x="110" y="27">GitHub primary sources</text><text class="sub" x="110" y="47">issue + stable gh + help</text></g>
+    <g class="node ui" transform="translate(770 67)"><rect width="220" height="66" rx="13"/><text x="110" y="27">Task + pull request state</text><text class="sub" x="110" y="47">deterministic title</text></g>
+    <g class="node muted" transform="translate(260 250)"><rect width="220" height="62" rx="13"/><text x="110" y="27">No-op</text><text class="sub" x="110" y="46">not ready or work active</text></g>
+    <g class="node service" transform="translate(770 250)"><rect width="220" height="62" rx="13"/><text x="110" y="27">Create one follow-up</text><text class="sub" x="110" y="46">mission remains enabled</text></g>
+    <g class="node final" transform="translate(1020 250)"><rect width="140" height="62" rx="13"/><text x="70" y="27">Archive</text><text class="sub" x="70" y="46">only after merge</text></g>
+    <g class="node agent" transform="translate(770 345)"><rect width="220" height="62" rx="13"/><text x="110" y="27">Enablement follow-up</text><text class="sub" x="110" y="46">adapt, test, open PR</text></g>
+    <text class="edge-label" x="500" y="185">unreleased or active</text>
+    <text class="edge-label" x="895" y="185">ready, no work</text>
+    <text class="edge-label" x="1010" y="86">successful + merged</text>
   </svg>
-  <p>The mission remains enabled only while upstream support is unavailable. Verification pauses it before implementation, and the merged follow-up archives it while retaining its audit history.</p>
+  <p>The mission remains enabled while upstream support is unavailable and while follow-up work is active. Each later occurrence deduplicates against task and pull request state; only one that observes successful completion plus a merged pull request archives the schedule and retains its audit history.</p>
 </figure>`;
 
 const phaseFlow = `
@@ -106,7 +108,7 @@ const phaseFlow = `
     <g class="node agent" transform="translate(310 70)"><rect width="230" height="70" rx="14"/><text x="115" y="29">Phase 1</text><text class="sub" x="115" y="49">core + confirmed agent path</text></g>
     <g class="node ui" transform="translate(625 70)"><rect width="215" height="70" rx="14"/><text x="107" y="29">Phase 2</text><text class="sub" x="107" y="49">dashboard Feedback surface</text></g>
     <g class="node service" transform="translate(310 250)"><rect width="230" height="70" rx="14"/><text x="115" y="29">Weekly monitor</text><text class="sub" x="115" y="49">issue + stable gh + help</text></g>
-    <g class="node final" transform="translate(625 250)"><rect width="270" height="70" rx="14"/><text x="135" y="29">Future enablement task</text><text class="sub" x="135" y="49">adapt, enable, verify, archive</text></g>
+    <g class="node final" transform="translate(625 250)"><rect width="270" height="70" rx="14"/><text x="135" y="29">Future enablement task</text><text class="sub" x="135" y="49">adapt, enable, verify, open PR</text></g>
     <text class="edge-label" x="930" y="94">initial feature complete</text>
   </svg>
   <p>The two implementation phases are serial because the dashboard consumes the merged reporting contract. The release monitor is operational and cannot enable images until both the stable upstream CLI and the completed initial feature exist.</p>

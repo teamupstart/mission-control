@@ -91,44 +91,69 @@ export interface ModelChoice {
   hint: string;
 }
 
+/** The input media a discovered model explicitly reports accepting. */
+export const HARNESS_MODEL_INPUT_MODES = ["text", "image"] as const;
+export type HarnessModelInputMode = (typeof HARNESS_MODEL_INPUT_MODES)[number];
+
+/**
+ * The browser-safe presentation record returned by the harness model-catalog API.
+ *
+ * This preserves the long-standing `ModelChoice` fields so existing synchronous picker
+ * data remains structurally compatible while Phase 2 can use the additional live metadata.
+ * Null means the harness did not make a trustworthy claim; an empty input list has the
+ * same meaning for input media.
+ */
+export interface HarnessModelChoice extends Omit<ModelChoice, "hint"> {
+  hint: string | null;
+  provider: string | null;
+  contextWindow: number | null;
+  reasoning: boolean | null;
+  inputModes: HarnessModelInputMode[];
+}
+
+/** Shipped rows retain the original non-null hint contract used by synchronous pickers. */
+export interface ShippedHarnessModelChoice extends ModelChoice {
+  provider: string | null;
+  contextWindow: number | null;
+  reasoning: boolean | null;
+  inputModes: HarnessModelInputMode[];
+}
+
 /**
  * The models each harness offers, best-first.
  *
- * Hand-maintained on purpose: neither CLI exposes a machine-readable list of the
- * models the signed-in account may use, so shelling out to discover them would buy
- * a slow, failure-prone startup dependency and still guess. The cost of drift is
- * small and bounded - a new model is one line here, and until it is added the
- * operator can still reach it, because `--model` is only ever passed through and a
- * value stored by another version is preserved in the picker (see `modelChoicesFor`).
+ * This is the shipped, synchronous catalog. It remains the source for Claude and Codex,
+ * and is the immediate/failure fallback for Pi while its configured installation is
+ * queried through the daemon. Keeping the small fallback in shared code lets existing
+ * render paths stay synchronous and keeps a missing or older Pi binary from blocking
+ * dispatch. A stored value from another version is still preserved by
+ * `modelChoicesFor`.
  *
  * Order matters: the picker renders it as written, so the most capable model per
  * harness leads. Ids only - no `[1m]` markers - because these are pasted onto a
  * command line (`ModelIdSchema` in protocol.ts enforces that shape).
  */
-export const MODEL_CATALOG: Record<AgentType, readonly ModelChoice[]> = {
+export const MODEL_CATALOG: Record<AgentType, readonly ShippedHarnessModelChoice[]> = {
   claude: [
-    { id: "claude-fable-5", label: "Fable 5", hint: "most capable, hardest work" },
-    { id: "claude-opus-5", label: "Opus 5", hint: "strong all-rounder" },
-    { id: "claude-opus-4-8", label: "Opus 4.8", hint: "previous-generation Opus" },
-    { id: "claude-sonnet-5", label: "Sonnet 5", hint: "near-Opus, cheaper" },
-    { id: "claude-haiku-4-5", label: "Haiku 4.5", hint: "fastest, simple tasks" },
+    { id: "claude-fable-5", label: "Fable 5", hint: "most capable, hardest work", provider: null, contextWindow: null, reasoning: null, inputModes: [] },
+    { id: "claude-opus-5", label: "Opus 5", hint: "strong all-rounder", provider: null, contextWindow: null, reasoning: null, inputModes: [] },
+    { id: "claude-opus-4-8", label: "Opus 4.8", hint: "previous-generation Opus", provider: null, contextWindow: null, reasoning: null, inputModes: [] },
+    { id: "claude-sonnet-5", label: "Sonnet 5", hint: "near-Opus, cheaper", provider: null, contextWindow: null, reasoning: null, inputModes: [] },
+    { id: "claude-haiku-4-5", label: "Haiku 4.5", hint: "fastest, simple tasks", provider: null, contextWindow: null, reasoning: null, inputModes: [] },
   ],
   codex: [
-    { id: "gpt-5.6-sol", label: "GPT-5.6 Sol", hint: "most capable" },
-    { id: "gpt-5.6-terra", label: "GPT-5.6 Terra", hint: "balanced" },
-    { id: "gpt-5.6-luna", label: "GPT-5.6 Luna", hint: "fastest" },
-    { id: "gpt-5.5", label: "GPT-5.5", hint: "previous generation" },
+    { id: "gpt-5.6-sol", label: "GPT-5.6 Sol", hint: "most capable", provider: null, contextWindow: null, reasoning: null, inputModes: [] },
+    { id: "gpt-5.6-terra", label: "GPT-5.6 Terra", hint: "balanced", provider: null, contextWindow: null, reasoning: null, inputModes: [] },
+    { id: "gpt-5.6-luna", label: "GPT-5.6 Luna", hint: "fastest", provider: null, contextWindow: null, reasoning: null, inputModes: [] },
+    { id: "gpt-5.5", label: "GPT-5.5", hint: "previous generation", provider: null, contextWindow: null, reasoning: null, inputModes: [] },
   ],
-  // pi is multi-provider, so its ids are PROVIDER-QUALIFIED (`provider/id`) - a bare `gpt-5.5`
-  // would resolve against pi's default provider (google), not OpenAI, or fail outright. The
-  // `/` now passes `ModelIdSchema` (interior only), and `--model openai/gpt-5.5` is exactly
-  // pi's documented `provider/id` pattern, so a dispatch selects the intended model regardless
-  // of the configured default. Real ids from pi's own store; `gpt-5.5` is a 272k window.
+  // Pi is multi-provider, so even fallback ids are provider-qualified. The live daemon
+  // catalog mirrors the configured account; these three current tiers are deliberately a
+  // compact usable fallback rather than a checked-in copy of Pi's full catalog.
   pi: [
-    { id: "openai/gpt-5.5-pro", label: "GPT-5.5 Pro", hint: "most capable, 1M context" },
-    { id: "openai/gpt-5.5", label: "GPT-5.5", hint: "strong all-rounder" },
-    { id: "openai/gpt-5-codex", label: "GPT-5 Codex", hint: "coding-tuned" },
-    { id: "openai/gpt-5-mini", label: "GPT-5 Mini", hint: "fastest, cheaper" },
+    { id: "openai/gpt-5.6-sol", label: "GPT-5.6 Sol", hint: "most capable", provider: "openai", contextWindow: null, reasoning: null, inputModes: [] },
+    { id: "openai/gpt-5.6-terra", label: "GPT-5.6 Terra", hint: "balanced", provider: "openai", contextWindow: null, reasoning: null, inputModes: [] },
+    { id: "openai/gpt-5.6-luna", label: "GPT-5.6 Luna", hint: "fastest", provider: "openai", contextWindow: null, reasoning: null, inputModes: [] },
   ],
 };
 

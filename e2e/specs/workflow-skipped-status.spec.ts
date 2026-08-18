@@ -109,7 +109,9 @@ test("skipped checks stay amber while a carried pass reads neutral in an Inspect
   await expect(checkStatus).toHaveClass(/workflow-waiting/);
   await expect(check).toContainText("Skipped");
   await checkStatus.hover();
-  await expect(dashboard.locator(".tooltip")).toHaveText(
+  await expect(dashboard.locator(".tooltip", {
+    hasText: "Skipped because this machine configures nothing for this Command.",
+  })).toHaveText(
     "Skipped because this machine configures nothing for this Command.",
   );
 
@@ -160,7 +162,9 @@ test("skipped checks stay amber while a carried pass reads neutral in an Inspect
   await expect(repairedCheckStatus).toHaveClass(/workflow-waiting/);
   await expect(repairedCheck).toContainText("Skipped");
   await repairedCheckStatus.hover();
-  await expect(dashboard.locator(".tooltip")).toHaveText(
+  await expect(dashboard.locator(".tooltip", {
+    hasText: "Skipped because this machine configures nothing for this Command.",
+  })).toHaveText(
     "Skipped because this machine configures nothing for this Command.",
   );
 
@@ -172,7 +176,9 @@ test("skipped checks stay amber while a carried pass reads neutral in an Inspect
   await expect(personaStatus).toHaveClass(/workflow-stopped/);
   await expect(persona).toContainText("Not re-run");
   await personaStatus.hover();
-  await expect(dashboard.locator(".tooltip")).toHaveText(
+  await expect(dashboard.locator(".tooltip", {
+    hasText: "Not re-run in this round. It passed in Round 1, and that pass still stands.",
+  })).toHaveText(
     "Not re-run in this round. It passed in Round 1, and that pass still stands.",
   );
   await expect(

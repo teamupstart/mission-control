@@ -30,6 +30,7 @@ import {
   WorkflowRunView,
   WorkflowRunsEmpty,
   followSelection,
+  worklistSelectionForNode,
 } from "../src/web/workflows/WorkflowRuns.tsx";
 import {
   carriedStatus,
@@ -1817,6 +1818,22 @@ test("active Persona feedback marks only its target and opens from the row", () 
   assertNoGraphIds(html);
 });
 
+test("settled pipeline members open their matching review worklist data", () => {
+  const html = render(runningDetail(), {
+    roundId: "submission-1",
+    onSetPersonaDirective: () => {},
+    onRemovePersonaDirective: () => {},
+  });
+
+  assert.equal(hasTooltip(html, "Show Quality reviewer in the review worklist"), true);
+  assert.equal(hasTooltip(html, "Show Security reviewer in the review worklist"), true);
+  // Critical feedback remains in the existing actions menu after the settled tile's primary
+  // click becomes the evidence-navigation affordance.
+  assert.match(html, /Actions for Quality reviewer/);
+  assert.match(html, /Add critical feedback/);
+  assertNoGraphIds(html);
+});
+
 test("Persona feedback click targets require both mutation handlers", () => {
   const detail = runningDetail();
   const setOnly = render(detail, { onSetPersonaDirective: () => {} });
@@ -2486,6 +2503,20 @@ function changeItem(key: string, nodeId: string): WorklistItem {
 
 const emptySegments = (): Record<WorklistSegment, WorklistItem[]> =>
   ({ blocking: [], passed: [], archive: [] });
+
+test("a pipeline node selects its first row in worklist priority order", () => {
+  const segments = emptySegments();
+  segments.passed = [changeItem(`${REVIEWER_NODE}\n\npassed`, REVIEWER_NODE)];
+  segments.blocking = [
+    changeItem(`${REVIEWER_NODE}\n\nfirst blocker`, REVIEWER_NODE),
+    changeItem(`${REVIEWER_NODE}\n\nsecond blocker`, REVIEWER_NODE),
+  ];
+
+  const selected = worklistSelectionForNode(REVIEWER_NODE, segments);
+  assert.equal(selected?.segment, "blocking");
+  assert.equal(selected?.item.key, `change:${REVIEWER_NODE}\n\nfirst blocker`);
+  assert.equal(worklistSelectionForNode("missing-node", segments), null);
+});
 
 test("a selected reviewer that reports a failing verdict is followed to the change it raised", () => {
   const waiting = pendingAttempt("attempt-slow");

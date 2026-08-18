@@ -456,8 +456,10 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
 `e2e/.artifacts/workflow-run-reviewer-verdicts/workflow-run-reviewer-verdicts.png` is
 the run page of a completed two-reviewer run, captured by the regression that arrives at it from
 the session card's own `⌁ Approved` chip. Both reviewers are named with the verdict they gave, and
-the three structural attempts every graph produces - the Session, the all-pass join, the End - are
-absent: before the fix each rendered as a card reading `… completed · attempt 1` under a heading
+clicking the second reviewer's settled pipeline tile selects that reviewer in the worklist and
+shows its full verdict. The three structural attempts every graph produces, the Session, the
+all-pass join, and the End, remain absent: before the fix each rendered as a card reading
+`… completed · attempt 1` under a heading
 that promises a verdict. What those nodes did is still on the pipeline strip above, and the
 stage's own join packet is still under the list.
 
@@ -472,8 +474,8 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
 
 ### Run-scoped critical Persona feedback
 
-The `workflow-persona-directive.png` evidence capture shows the drawer opened directly from a
-Persona row. The locked run and Persona scope, future-round
+The `workflow-persona-directive.png` evidence capture shows the drawer opened from a Persona
+row's actions menu. The locked run and Persona scope, future-round
 persistence, critical priority, byte limit, and editable instruction are all visible in the
 built dashboard. The same browser regression saves the instruction, proves it changes only
 that Persona in rounds 2 and 3, and checks the directive snapshots stored on both attempts.

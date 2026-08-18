@@ -780,7 +780,11 @@ refreshes from the compact SSE summary's `updatedAt` signal; the SSE payload its
 The **Runs** tab reads a run on **the pipeline it was authored on** - the same Session,
 stages and End the Pipeline view draws, with a live status on every member. Reviewers show
 queued, reviewing, passed, or changes requested; Checks show their corresponding command
-state. A stage this round did not run because an earlier one already passed it reads a neutral
+state. Click a settled reviewer or Command tile to select that node's result in the review
+worklist below. A single-member stage header does the same; a multi-member stage keeps the
+choice on each member so the target is unambiguous. Session actions stay in their own section
+because they report a lifecycle rather than a verdict. A stage this round did not run because
+an earlier one already passed it reads a neutral
 grey **Not re-run**, and carries a **✓ Passed in Round 1 · evidence 1** line naming the round
 that earned the pass; pressing that line scrubs straight to it. The chip is deliberately not
 green - it speaks for the round on screen, where nothing executed - and the tick on the
@@ -861,6 +865,8 @@ cites or "No file cited"; the round it was raised in, the rounds it has been ope
 evidence count; the rationale in full and the quotes behind it. From there a person can **copy
 that one change, open its file, give that reviewer feedback, or switch that reviewer off** -
 the last two only while the run can still be affected. Previous and Next walk the segment.
+Selecting a settled reviewer or Command in the pipeline above switches to the matching segment
+and first row for that node, so the explanation behind a passed or failed stage is one click.
 
 A **stalemate card** sits at the foot of the rail when a reviewer has failed consecutive rounds,
 in the ladder's own words: *"Code Risk Reviewer has failed 10 rounds running."*

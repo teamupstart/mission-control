@@ -146,16 +146,20 @@ test("critical feedback follows one Persona through every later round of this ru
   const pipeline = dashboard.locator(".wf-pipeline-strip");
   const row = (name: string) =>
     pipeline.locator("li.wf-pipeline-reviewer").filter({ hasText: name });
+  const openFeedback = async (name: string): Promise<void> => {
+    const reviewer = row(name);
+    await reviewer.getByRole("button", { name: `Actions for ${name}` }).click();
+    await reviewer.getByRole("menuitem", { name: /critical feedback/ }).click();
+  };
 
   // Round 1's truth, before any directive.
   await expect(row("Blocking reviewer")).toContainText("Changes requested");
   await expect(row("Docs steward")).toContainText("Not started");
 
-  // The row itself is the feedback affordance. The editor states its two locked dimensions
-  // and persistence before accepting the instruction.
-  await row("Blocking reviewer")
-    .getByRole("button", { name: /^Blocking reviewer/ })
-    .click();
+  // Settled reviewer tiles now reveal their evidence in the worklist, so critical feedback
+  // stays in the row's explicit actions menu. The editor states its two locked dimensions and
+  // persistence before accepting the instruction.
+  await openFeedback("Blocking reviewer");
   const editor = dashboard.getByRole("dialog", { name: "Guide this reviewer's future rounds" });
   await expect(editor).toBeVisible();
   await expect(editor.getByLabel("Locked feedback scope")).toContainText("E2E disable toggle");
@@ -219,9 +223,7 @@ test("critical feedback follows one Persona through every later round of this ru
   // Removal follows the same durable round trip as Save. The drawer closes only after live
   // state confirms the directive is gone, and reopening starts empty instead of offering to
   // restore the just-deleted instruction.
-  await row("Blocking reviewer")
-    .getByRole("button", { name: /^Blocking reviewer/ })
-    .click();
+  await openFeedback("Blocking reviewer");
   await editor.getByRole("button", { name: "Remove feedback" }).click();
   await expect(editor).toBeHidden();
   await expect(row("Blocking reviewer")).not.toContainText("Critical feedback active");
@@ -233,9 +235,7 @@ test("critical feedback follows one Persona through every later round of this ru
   expect(removed.run.personaDirectives).toEqual([]);
   expect(removed.events.some((event) => event.kind === "persona_directive_removed")).toBe(true);
 
-  await row("Blocking reviewer")
-    .getByRole("button", { name: /^Blocking reviewer/ })
-    .click();
+  await openFeedback("Blocking reviewer");
   await expect(editor.getByLabel("Feedback for Blocking reviewer")).toHaveValue("");
   await editor.getByRole("button", { name: "Cancel" }).click();
 });

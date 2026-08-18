@@ -249,5 +249,7 @@ enable caller-chosen repositories and labels.
   local caller cannot publish after preview without proof of completed human confirmation.
 - Review reconciliation: preflight paginates the target's complete label collection before checking
   the required set, so repositories with more than 100 labels do not receive a false refusal.
+- Review reconciliation: launch-scoped MCP registration propagates the daemon's browser or Electron
+  context because the external Node MCP child cannot recover Electron ownership from its own process.
 - Contract reconciliation: `attachmentUploadIds` is present from Phase 1 but production accepts only
   empty lists, which lets Phase 2 render disabled state without inventing a different draft.

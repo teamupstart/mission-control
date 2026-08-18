@@ -14,7 +14,12 @@ import {
   readToken,
 } from "@shared/harness-runtime.mjs";
 import { titleLine } from "@shared/title.ts";
-import { PRODUCT_ISSUE_LIMITS, PRODUCT_ISSUE_TYPES } from "@shared/product-issues.ts";
+import {
+  PRODUCT_ISSUE_CLIENT_ENV,
+  PRODUCT_ISSUE_LIMITS,
+  PRODUCT_ISSUE_TYPES,
+  productIssueClientFromEnvironment,
+} from "@shared/product-issues.ts";
 import { reportProductIssueWithConfirmation } from "./product-issues.ts";
 
 // This runs as a stdio MCP server, launched by Claude Code per session. Because
@@ -24,6 +29,9 @@ import { reportProductIssueWithConfirmation } from "./product-issues.ts";
 
 const ENV = captureTerminalEnv();
 const SESSION_ID = process.env.CLAUDE_SESSION_ID ?? null;
+const PRODUCT_ISSUE_CLIENT = productIssueClientFromEnvironment(
+  process.env[PRODUCT_ISSUE_CLIENT_ENV],
+);
 
 async function http(
   path: string,
@@ -401,7 +409,7 @@ server.registerTool(
     try {
       const result = await reportProductIssueWithConfirmation(
         { type, title, details, attachmentUploadIds },
-        process.versions.electron ? "electron" : "browser",
+        PRODUCT_ISSUE_CLIENT,
         {
           requestId: randomUUID,
           preview: async (request) => responseResult(await http(

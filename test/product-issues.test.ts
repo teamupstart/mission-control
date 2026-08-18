@@ -28,12 +28,14 @@ const {
 } = await import("../src/shared/protocol.ts");
 const {
   PRODUCT_ISSUE_BODY_MARKER,
+  PRODUCT_ISSUE_CLIENT_ENV,
   PRODUCT_ISSUE_LIMITS,
   PRODUCT_ISSUE_REQUIRED_LABELS,
   PRODUCT_ISSUE_SOURCE_LABELS,
   PRODUCT_ISSUE_STATUS_LABEL,
   PRODUCT_ISSUE_TYPE_LABELS,
   PRODUCT_ISSUE_TYPES,
+  productIssueClientFromEnvironment,
 } = await import("../src/shared/product-issues.ts");
 const {
   DEFAULT_PRODUCT_ISSUES_REPO,
@@ -84,6 +86,11 @@ test("the append-only vocabulary, maps, and bounded schemas agree", () => {
   assert.equal(PRODUCT_ISSUE_STATUS_LABEL, "status:needs-triage");
   assert.equal(PRODUCT_ISSUE_SOURCE_LABELS.dashboard, "source:dashboard");
   assert.equal(PRODUCT_ISSUE_SOURCE_LABELS.agent, "source:agent");
+  assert.equal(PRODUCT_ISSUE_CLIENT_ENV, "MISSION_PRODUCT_ISSUE_CLIENT");
+  assert.equal(productIssueClientFromEnvironment("electron"), "electron");
+  assert.equal(productIssueClientFromEnvironment("browser"), "browser");
+  assert.equal(productIssueClientFromEnvironment("forged"), "browser");
+  assert.equal(productIssueClientFromEnvironment(undefined), "browser");
 
   const parsed = ProductIssueRequestSchema.parse({
     ...request(),

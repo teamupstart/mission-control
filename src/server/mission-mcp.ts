@@ -11,6 +11,10 @@ import {
 } from "node:fs";
 import { basename, join } from "node:path";
 import type { Task, TaskKind } from "@shared/types.ts";
+import {
+  PRODUCT_ISSUE_CLIENT_ENV,
+  type ProductIssueClient,
+} from "@shared/product-issues.ts";
 import { STATE_DIR, mcpServerPath } from "./config.ts";
 import { SUBMIT_ENSEMBLE_RESULT_TOOL } from "./ensembles/submission-tool.ts";
 import { PLAN_DECISIONS_TOOL, PLAN_SCHEDULING_TOOL } from "./plans/tools.ts";
@@ -167,6 +171,16 @@ async function resolveRuntime(): Promise<{ command: string; env: Record<string, 
 }
 
 /**
+ * The dashboard client that owns this daemon launch, before the MCP server becomes a
+ * separate Node process and loses Electron's version marker.
+ */
+export function missionMcpProductIssueClient(
+  electronVersion: string | undefined,
+): ProductIssueClient {
+  return electronVersion ? "electron" : "browser";
+}
+
+/**
  * How to launch our MCP server on this machine, or NULL when it cannot be launched at all.
  *
  * Null means the bundle is not on disk (`npm run build` never ran, or a packaged build
@@ -187,7 +201,10 @@ export async function missionMcpDescriptor(): Promise<MissionMcpDescriptor | nul
     serverName: MISSION_MCP_SERVER_NAME,
     command: runtime.command,
     args: [server],
-    env: runtime.env,
+    env: {
+      ...runtime.env,
+      [PRODUCT_ISSUE_CLIENT_ENV]: missionMcpProductIssueClient(process.versions.electron),
+    },
   };
 }
 

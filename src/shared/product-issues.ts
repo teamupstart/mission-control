@@ -44,6 +44,16 @@ export const PRODUCT_ISSUE_REQUIRED_LABELS = [
 export const PRODUCT_ISSUE_CLIENTS = ["browser", "electron"] as const;
 export type ProductIssueClient = (typeof PRODUCT_ISSUE_CLIENTS)[number];
 
+/** Trusted launch context passed from the daemon to its bundled MCP child. */
+export const PRODUCT_ISSUE_CLIENT_ENV = "MISSION_PRODUCT_ISSUE_CLIENT";
+
+/** Unknown or absent launch context is the standalone browser/daemon mode. */
+export function productIssueClientFromEnvironment(
+  value: string | undefined,
+): ProductIssueClient {
+  return value === "electron" ? "electron" : "browser";
+}
+
 /** Every public-payload and future-attachment bound, shared with the Phase 2 consumer. */
 export const PRODUCT_ISSUE_LIMITS = {
   titleBytes: 200,

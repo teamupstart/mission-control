@@ -52,6 +52,7 @@ const ALPHA_HTML = `<!doctype html>
   <a href="#100%">Jump to target</a>
   <div style="height: 2000px"></div>
   <h2 id="100%">Fragment target</h2>
+  <a href="#">Back to top</a>
 </body></html>
 `;
 
@@ -212,4 +213,18 @@ test("a same-document fragment link scrolls to and keeps rendering its target", 
 
   await expect(alpha.getByRole("heading", { name: "Fragment target" })).toBeInViewport();
   await shoot(dashboard, "preview-fragment-target");
+});
+
+test("an empty fragment link scrolls the preview back to the top", async ({
+  dashboard,
+  daemon,
+}) => {
+  await openAlphaPreview(dashboard, daemon);
+  const alpha = dashboard.frameLocator('iframe[title="Preview of docs/a.html"]');
+
+  await alpha.getByRole("link", { name: "Jump to target" }).click();
+  await expect(alpha.getByRole("heading", { name: "Fragment target" })).toBeInViewport();
+  await alpha.getByRole("link", { name: "Back to top" }).click();
+
+  await expect(alpha.getByRole("heading", { name: "Mock page alpha" })).toBeInViewport();
 });

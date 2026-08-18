@@ -47,7 +47,7 @@ test("the link bridge claims authored navigation before scrolling fragments or p
   // the document, while non-fragments cross the parent bridge instead of navigating it.
   assert.match(
     bridge,
-    /preventDefault\(\).*startsWith\("#"\).*scrollIntoView\(\).*postMessage\(.*mission:file-preview-link/s,
+    /preventDefault\(\).*startsWith\("#"\).*if\(!raw\).*scrollTo\(\{top:0\}\).*scrollIntoView\(\).*postMessage\(.*mission:file-preview-link/s,
   );
 });
 

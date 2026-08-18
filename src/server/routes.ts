@@ -39,6 +39,8 @@ import {
   InspectorConfigPatchSchema,
   LlmConfigPatchSchema,
   McpCreateTaskSchema,
+  McpProductIssuePreviewRequestSchema,
+  McpProductIssueSubmitRequestSchema,
   ResolveFindingsSchema,
   ShippingConfigPatchSchema,
   HookIngestSchema,
@@ -82,6 +84,7 @@ import {
   PromptedWrapupSchema,
   WrapupAskedSchema,
   PushTaskSchema,
+  ProductIssuePreviewRequestSchema,
   PipelineActionSchema,
   PipelineConsoleSchema,
   PipelineForemanEpisodeSchema,
@@ -137,6 +140,10 @@ import type {
   ResolveFindingsResult,
   TaskDependencyInput,
 } from "@shared/protocol.ts";
+import {
+  PRODUCT_ISSUE_LIMITS,
+  type ProductIssueSubmitResult,
+} from "@shared/product-issues.ts";
 import { capturePaneText } from "./discovery/pane-capture.ts";
 import { noteKeyFor } from "./registry.ts";
 import type { Registry } from "./registry.ts";
@@ -195,6 +202,7 @@ import type { AwayWatcher } from "./away/watcher.ts";
 import { getHarnessesConfig, setHarnessesConfig } from "./harnesses.ts";
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
 import type { HarnessModelCatalogService } from "./harness/model-catalog-service.ts";
+import type { ProductIssueService } from "./product-issues.ts";
 import type { WorktreeManager } from "./worktrees/manager.ts";
 import {
   WorktreeOperationError,
@@ -669,6 +677,22 @@ function artifactShortSha(locator: unknown): string | null {
   return null;
 }
 
+function productIssueSubmitResponse(result: ProductIssueSubmitResult): {
+  status: 201 | 502 | 503 | 504;
+  body: ProductIssueSubmitResult;
+} {
+  switch (result.outcome) {
+    case "created":
+      return { status: 201, body: result };
+    case "refused":
+      return { status: 502, body: result };
+    case "configuration":
+      return { status: 503, body: result };
+    case "unknown":
+      return { status: 504, body: result };
+  }
+}
+
 /**
  * Map one submission result to an HTTP status and body, for both the MCP and the manual route.
  *
@@ -801,6 +825,8 @@ export function buildApp(
    * do not exercise catalogs never construct or spawn one.
    */
   modelCatalogs?: HarnessModelCatalogService,
+  /** Daemon-owned public issue writer. Appended last for focused route-test compatibility. */
+  productIssues?: ProductIssueService,
 ): Hono {
   const app = new Hono();
   const terminalLauncher = launchSessionTerminal ?? launchTerminal;
@@ -843,6 +869,41 @@ export function buildApp(
 
   app.get("/api/health", (c) =>
     c.json({ ok: true, service: "mission-control", version: VERSION, pid: process.pid }),
+  );
+
+  // --- public product issue preflight/preview for the future dashboard form ---
+  app.get("/api/product-issues/preflight", async (c) => {
+    if (!productIssues) {
+      return c.json({
+        ready: false,
+        target: null,
+        attachments: { enabled: false, reason: "Product issue service unavailable" },
+        problems: [{ code: "invalid-target", message: "Product issue service unavailable" }],
+      }, 503);
+    }
+    return c.json(await productIssues.preflight());
+  });
+
+  app.post(
+    "/api/product-issues/preview",
+    bodyLimit({
+      maxSize: PRODUCT_ISSUE_LIMITS.requestJsonBytes,
+      onError: (c) => c.json({ error: "Product issue request is too large" }, 413),
+    }),
+    async (c) => {
+      if (!productIssues) {
+        return c.json({
+          outcome: "configuration",
+          message: "Product issue service unavailable",
+          retrySafe: true,
+        } as const, 503);
+      }
+      const parsed = await parseBody(c, ProductIssuePreviewRequestSchema);
+      if (!parsed.ok) return parsed.res;
+      const result = productIssues.preview("dashboard", parsed.data);
+      if (result.outcome === "preview") return c.json(result);
+      return c.json(result, result.outcome === "configuration" ? 503 : 409);
+    },
   );
 
   app.post("/api/worktrees/manual/acquire", async (c) => {
@@ -2600,6 +2661,64 @@ export function buildApp(
     // the machine while looking, from here, like everything was fine.
     return c.json({});
   });
+
+  // --- MCP product issues (token-guarded; source and session are daemon-derived) ---
+  app.post(
+    "/mcp/product-issues/preview",
+    bodyLimit({
+      maxSize: PRODUCT_ISSUE_LIMITS.requestJsonBytes,
+      onError: (c) => c.json({ error: "Product issue request is too large" }, 413),
+    }),
+    async (c) => {
+      if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+      if (!productIssues) {
+        return c.json({
+          outcome: "configuration",
+          message: "Product issue service unavailable",
+          retrySafe: true,
+        } as const, 503);
+      }
+      const parsed = await parseBody(c, McpProductIssuePreviewRequestSchema);
+      if (!parsed.ok) return parsed.res;
+      const { env, sessionId, cwd, ...request } = parsed.data;
+      const session = registry.findSessionByEnv(env, sessionId, cwd);
+      if (!session || session.state === "exited") {
+        return c.json({ error: "no matching active session" }, 404);
+      }
+      const result = productIssues.preview("agent", request);
+      if (result.outcome === "preview") return c.json(result);
+      return c.json(result, result.outcome === "configuration" ? 503 : 409);
+    },
+  );
+
+  app.post(
+    "/mcp/product-issues",
+    bodyLimit({
+      maxSize: PRODUCT_ISSUE_LIMITS.requestJsonBytes,
+      onError: (c) => c.json({ error: "Product issue request is too large" }, 413),
+    }),
+    async (c) => {
+      if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+      if (!productIssues) {
+        return c.json({
+          outcome: "configuration",
+          message: "Product issue service unavailable",
+          retrySafe: true,
+        } as const, 503);
+      }
+      const parsed = await parseBody(c, McpProductIssueSubmitRequestSchema);
+      if (!parsed.ok) return parsed.res;
+      const { env, sessionId, cwd, ...request } = parsed.data;
+      const session = registry.findSessionByEnv(env, sessionId, cwd);
+      if (!session || session.state === "exited") {
+        return c.json({ error: "no matching active session" }, 404);
+      }
+      const response = productIssueSubmitResponse(
+        await productIssues.submit("agent", request),
+      );
+      return c.json(response.body, response.status);
+    },
+  );
 
   // --- MCP review channel (token-guarded) ---
   app.post("/mcp/reviews", async (c) => {

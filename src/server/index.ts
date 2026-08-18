@@ -73,6 +73,10 @@ import {
 import { WorktreeOperationsService } from "./worktrees/operations.ts";
 import { nativeWorktreeOwnerReferenced } from "./worktrees/owners.ts";
 import { HarnessModelCatalogService } from "./harness/model-catalog-service.ts";
+import {
+  PRODUCT_ISSUE_ATTACHMENTS_DISABLED,
+  ProductIssueService,
+} from "./product-issues.ts";
 
 openDb();
 // Only the daemon can read app_config. The Foreman imports the same runner in a separate
@@ -458,6 +462,12 @@ registry.setKeepAwakeStatus(keepAwake.status());
 // deliberately not persisted and is shared by every dashboard request through the route.
 const modelCatalogs = new HarnessModelCatalogService();
 
+// The only external writer for public product reports. Production attachment execution is
+// deliberately impossible until the upstream-release follow-up replaces this capability.
+const productIssues = new ProductIssueService({
+  attachments: PRODUCT_ISSUE_ATTACHMENTS_DISABLED,
+});
+
 const app = buildApp(
   registry,
   reviews,
@@ -480,6 +490,7 @@ const app = buildApp(
   worktrees,
   worktreeOperations,
   modelCatalogs,
+  productIssues,
 );
 
 // In production the daemon serves the built SPA; in dev, Vite serves it and

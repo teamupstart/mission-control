@@ -21,6 +21,12 @@ import { RASTER_IMAGE_MIME_TYPES } from "./images.ts";
 import { LLM_SPEND_ROLES } from "./llm-spend.ts";
 import { OPEN_TARGET_IDS } from "./open-targets.ts";
 import {
+  PRODUCT_ISSUE_CLIENTS,
+  PRODUCT_ISSUE_LIMITS,
+  PRODUCT_ISSUE_PREFLIGHT_PROBLEMS,
+  PRODUCT_ISSUE_TYPES,
+} from "./product-issues.ts";
+import {
   ARCHIVE_INDEX_STATUSES,
   ARCHIVE_KINDS,
   ARCHIVE_SEARCH_LIMITS,
@@ -477,6 +483,150 @@ export const CreateReviewSchema = z
     path: ["decisions"],
   });
 export type CreateReview = z.infer<typeof CreateReviewSchema>;
+
+// ---- public product issue reporting --------------------------------------------------
+
+const productIssueUtf8 = new TextEncoder();
+const productIssueUtf8AtMost = (value: string, max: number): boolean =>
+  productIssueUtf8.encode(value).byteLength <= max;
+
+const ProductIssueTitleSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(PRODUCT_ISSUE_LIMITS.titleBytes)
+  .refine((value) => productIssueUtf8AtMost(value, PRODUCT_ISSUE_LIMITS.titleBytes), {
+    message: `title must be at most ${PRODUCT_ISSUE_LIMITS.titleBytes} UTF-8 bytes`,
+  });
+
+const ProductIssueDetailsSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(PRODUCT_ISSUE_LIMITS.detailsBytes)
+  .refine((value) => productIssueUtf8AtMost(value, PRODUCT_ISSUE_LIMITS.detailsBytes), {
+    message: `details must be at most ${PRODUCT_ISSUE_LIMITS.detailsBytes} UTF-8 bytes`,
+  });
+
+const ProductIssueAttachmentUploadIdsSchema = z
+  .array(
+    z
+      .string()
+      .min(1)
+      .max(PRODUCT_ISSUE_LIMITS.attachmentUploadIdChars)
+      .regex(/^[A-Za-z0-9._-]+$/, "attachment upload ids must be daemon-issued basenames"),
+  )
+  .max(PRODUCT_ISSUE_LIMITS.attachmentCount)
+  .default([])
+  .refine((ids) => new Set(ids).size === ids.length, {
+    message: "attachment upload ids must be unique",
+  });
+
+const PRODUCT_ISSUE_DRAFT_FIELDS = {
+  type: z.enum(PRODUCT_ISSUE_TYPES),
+  title: ProductIssueTitleSchema,
+  details: ProductIssueDetailsSchema,
+  attachmentUploadIds: ProductIssueAttachmentUploadIdsSchema,
+};
+
+/** Reporter-authored content only. Target, labels, source, and environment are not accepted. */
+export const ProductIssueDraftSchema = z.object(PRODUCT_ISSUE_DRAFT_FIELDS).strict();
+export type ProductIssueDraftInput = z.infer<typeof ProductIssueDraftSchema>;
+
+/** One preview/submission opening, shared by the dashboard and authenticated MCP routes. */
+export const ProductIssueRequestSchema = z
+  .object({
+    ...PRODUCT_ISSUE_DRAFT_FIELDS,
+    requestId: z.string().uuid(),
+    client: z.enum(PRODUCT_ISSUE_CLIENTS).default("browser"),
+  })
+  .strict();
+export const ProductIssuePreviewRequestSchema = ProductIssueRequestSchema;
+export const ProductIssueSubmitRequestSchema = ProductIssueRequestSchema;
+export type ProductIssueRequestInput = z.infer<typeof ProductIssueRequestSchema>;
+
+/** MCP identity is transport-owned and added beside the same bounded report request. */
+export const McpProductIssueRequestSchema = z
+  .object({
+    ...PRODUCT_ISSUE_DRAFT_FIELDS,
+    requestId: z.string().uuid(),
+    client: z.enum(PRODUCT_ISSUE_CLIENTS).default("browser"),
+    env: EnvSchema,
+    sessionId: z.string().nullable().optional().default(null),
+    cwd: z.string().nullable().optional().default(null),
+  })
+  .strict();
+export const McpProductIssuePreviewRequestSchema = McpProductIssueRequestSchema;
+export const McpProductIssueSubmitRequestSchema = McpProductIssueRequestSchema;
+
+export const ProductIssueEnvironmentSchema = z.object({
+  missionControlVersion: z.string().min(1).max(100),
+  platform: z.enum(["macOS", "Linux", "Windows", "Other"]),
+  architecture: z.enum(["arm64", "x64", "arm", "ia32", "other"]),
+  client: z.enum(PRODUCT_ISSUE_CLIENTS),
+});
+
+export const ProductIssueAttachmentStateSchema = z.object({
+  enabled: z.boolean(),
+  reason: z.string().nullable(),
+});
+
+export const ProductIssuePreviewSchema = z.object({
+  outcome: z.literal("preview"),
+  requestId: z.string().uuid(),
+  draftIdentity: z.string().regex(/^[0-9a-f]{64}$/),
+  draft: ProductIssueDraftSchema,
+  target: z.string().min(1),
+  labels: z.array(z.string().min(1)),
+  environment: ProductIssueEnvironmentSchema,
+  body: z.string().max(PRODUCT_ISSUE_LIMITS.reportBodyBytes),
+  attachments: ProductIssueAttachmentStateSchema,
+});
+
+const ProductIssueRefusedResultSchema = z.object({
+  outcome: z.literal("refused"),
+  message: z.string().min(1),
+  retrySafe: z.literal(true),
+});
+const ProductIssueConfigurationResultSchema = z.object({
+  outcome: z.literal("configuration"),
+  message: z.string().min(1),
+  retrySafe: z.literal(true),
+});
+const ProductIssueUnknownResultSchema = z.object({
+  outcome: z.literal("unknown"),
+  message: z.string().min(1),
+  retrySafe: z.literal(false),
+});
+
+export const ProductIssuePreviewResponseSchema = z.discriminatedUnion("outcome", [
+  ProductIssuePreviewSchema,
+  ProductIssueRefusedResultSchema,
+  ProductIssueConfigurationResultSchema,
+]);
+
+export const ProductIssueSubmitResultSchema = z.discriminatedUnion("outcome", [
+  z.object({
+    outcome: z.literal("created"),
+    issueUrl: z.string().url(),
+    target: z.string().min(1),
+  }),
+  ProductIssueRefusedResultSchema,
+  ProductIssueConfigurationResultSchema,
+  ProductIssueUnknownResultSchema,
+]);
+
+export const ProductIssuePreflightSchema = z.object({
+  ready: z.boolean(),
+  target: z.string().min(1).nullable(),
+  attachments: ProductIssueAttachmentStateSchema,
+  problems: z.array(
+    z.object({
+      code: z.enum(PRODUCT_ISSUE_PREFLIGHT_PROBLEMS),
+      message: z.string().min(1),
+    }),
+  ),
+});
 
 /**
  * MCP `create_task`: create a backlogged implementation task and optionally bind it

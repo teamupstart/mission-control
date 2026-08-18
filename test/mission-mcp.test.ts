@@ -38,10 +38,12 @@ const {
   missionMcpConfigJson,
   missionMcpDescriptor,
   missionMcpPaths,
+  missionMcpProductIssueClient,
   missionMcpToolName,
   verifyMissionMcpTools,
   verifyMissionMcpToolsForRunningSession,
 } = await import("../src/server/mission-mcp.ts");
+const { PRODUCT_ISSUE_CLIENT_ENV } = await import("../src/shared/product-issues.ts");
 const { mcpServerPath } = await import("../src/server/config.ts");
 const { askChannelArgs, ASK_TOOL } = await import("../src/server/ask-channel.ts");
 const { prepareCodexLaunch } = await import("../src/server/harness/codex/launch.ts");
@@ -78,9 +80,19 @@ test("the descriptor points at the ONE resolved server path with an absolute run
   assert.ok(d, "the bundle exists, so there is a way to launch it");
   assert.equal(d.serverName, "mission-control");
   assert.deepEqual(d.args, [mcpServerPath()], "the packaged-safe resolver, never a second path");
+  assert.equal(
+    d.env[PRODUCT_ISSUE_CLIENT_ENV],
+    "browser",
+    "the Node daemon tells its external MCP child which dashboard client launched it",
+  );
   // The agent launches this as an EXTERNAL process, so a bare `node` off the spawned
   // shell's PATH is not good enough.
   assert.ok(d.command.startsWith("/"), `runtime should be absolute, got ${d.command}`);
+});
+
+test("the launch descriptor preserves Electron client context across the Node child boundary", () => {
+  assert.equal(missionMcpProductIssueClient("43.0.0"), "electron");
+  assert.equal(missionMcpProductIssueClient(undefined), "browser");
 });
 
 test("a missing bundle is null, not a descriptor pointing at nothing", async () => {
@@ -116,6 +128,26 @@ test("the tool vocabulary matches what the MCP server actually registers", () =>
   const registered = [...source.matchAll(/registerTool\(\s*"([a-z_]+)"/g)].map((m) => m[1]!);
   assert.ok(registered.length > 0, "the scrape found nothing - has registerTool been renamed?");
   assert.deepEqual([...MISSION_MCP_TOOLS].sort(), [...registered].sort());
+});
+
+test("product issue registration requires public confirmation and empty attachments", () => {
+  const source = readFileSync(fileURLToPath(new URL("../src/mcp/server.ts", import.meta.url)), "utf8");
+  const start = source.indexOf('server.registerTool(\n  "report_product_issue"');
+  const end = source.indexOf('server.registerTool(\n  "report_status"', start);
+  assert.ok(start >= 0 && end > start, "report_product_issue registration is present");
+  const registration = source.slice(start, end);
+  assert.match(registration, /only after the user explicitly/);
+  assert.match(registration, /public GitHub issue/);
+  assert.match(registration, /Submit public issue/);
+  assert.match(registration, /Screenshots are unavailable/);
+  assert.match(registration, /\.max\(0\)/);
+  assert.match(registration, /new TextEncoder\(\)\.encode\(value\)\.byteLength/);
+  assert.match(registration, /PRODUCT_ISSUE_CLIENT/);
+  assert.doesNotMatch(
+    registration,
+    /process\.versions\.electron/,
+    "the external MCP child cannot infer whether its dashboard owner is Electron",
+  );
 });
 
 test("submit_workflow_evidence publishes bounded text artifacts beside existing images", () => {

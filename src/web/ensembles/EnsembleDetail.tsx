@@ -71,7 +71,7 @@ export function EnsembleDetail({
   /** The member `actionError` was addressed to, when the refused action named one. */
   actionErrorMemberId?: string | null;
   onAction: (body: EnsembleActionBody) => void;
-  onDelete: (confirmId: string) => void;
+  onDelete: () => void;
   onLoadPatch: (artifactId: string) => Promise<EnsembleArtifactPatch | { error: string }>;
   onOpenSession?: (sessionId: string) => void;
   onOpenTask?: (taskId: string) => void;
@@ -392,6 +392,7 @@ export function EnsembleDetail({
           detail={detail}
           pending={actionPending}
           error={actionErrorKind !== "decide" && memberActionError === null ? actionError : null}
+          errorKind={actionErrorKind}
           onAction={onAction}
           onDelete={onDelete}
         />

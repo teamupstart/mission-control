@@ -266,6 +266,13 @@ test("a monetary cost is nullable, because unknown and zero are different facts"
   assert.equal(cost?.notnull, 0);
 });
 
+test("failed ensemble attention acknowledgment is nullable durable run state", () => {
+  const acknowledged = columns("ensemble_runs").find(
+    (column) => column.name === "failure_acknowledged_at",
+  );
+  assert.equal(acknowledged?.notnull, 0);
+});
+
 test("an unresolved evaluation runner and model are nullable", () => {
   const evaluationColumns = columns("ensemble_evaluations");
   assert.equal(evaluationColumns.find((column) => column.name === "runner_id")?.notnull, 0);

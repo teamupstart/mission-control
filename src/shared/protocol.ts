@@ -4760,6 +4760,7 @@ export const EnsembleRunSchema: z.ZodType<EnsembleRun> = z.object({
   outcome: EnsembleOutcomeSchema.nullable(),
   workflowHandoff: EnsembleWorkflowHandoffSchema.nullable(),
   unreadable: EnsembleUnreadableSchema.nullable(),
+  failureAcknowledgedAt: z.number().int().nullable(),
   error: z.string().nullable(),
   createdAt: z.number().int(),
   updatedAt: z.number().int(),
@@ -4917,6 +4918,7 @@ export const EnsembleSummarySchema: z.ZodType<EnsembleSummary> = z.object({
   selectedMemberId: z.string().nullable(),
   outcomeKind: z.enum(ENSEMBLE_OUTCOME_KINDS).nullable(),
   unreadable: EnsembleUnreadableSchema.nullable(),
+  failureAcknowledgedAt: z.number().int().nullable(),
   attention: z.boolean(),
   error: z.string().nullable(),
   createdAt: z.number().int(),
@@ -5021,6 +5023,7 @@ export const EnsembleActionSchema = z.discriminatedUnion("kind", [
     skipWorkflowHandoff: z.boolean().default(false),
   }),
   z.object({ kind: z.literal("cancel"), reason: z.string().max(ENSEMBLE_LIMITS.rationale).nullable().default(null) }),
+  z.object({ kind: z.literal("dismiss_failure") }),
   z.object({ kind: z.literal("restore_artifact"), artifactId: ensembleId }),
 ]);
 export type EnsembleActionBody = z.infer<typeof EnsembleActionSchema>;

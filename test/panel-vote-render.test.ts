@@ -49,6 +49,7 @@ const run: EnsembleRun = {
   outcome: null,
   workflowHandoff: null,
   unreadable: null,
+  failureAcknowledgedAt: null,
   error: null,
   createdAt: 1000,
   updatedAt: 2000,

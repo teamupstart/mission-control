@@ -57,6 +57,7 @@ export const OVERLAY_IDS = {
   recurringMissions: "recurring-missions",
   personaDirective: "persona-directive",
   scoutDelete: "scout-delete",
+  ensembleDelete: "ensemble-delete",
   worktreeAction: "worktree-action",
 } as const;
 

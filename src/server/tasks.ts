@@ -50,6 +50,8 @@ import {
   getTask as getDurableTask,
   historicalTaskWorkEpisodeBindingsForTask,
   primaryRepoPrForTask,
+  reserveRetroFollowup,
+  retroFollowupForTask,
   taskReposFor,
   taskWorkEpisodeForTask,
   workEpisodeRepoPrsForTask,
@@ -142,6 +144,21 @@ export interface CreateTaskInput {
   /** Only add to the backlog (no worktree/session) - dispatch it later. */
   backlog: boolean;
 }
+
+export interface CreateRetroFollowupInput {
+  sourceTask: Task;
+  sourceEpisodeId: string;
+  sourceSessionId: string;
+  title: string;
+  intent: string;
+  agent: AgentType;
+}
+
+export const RETRO_NO_CHANGE_OUTCOME = "Retro complete: no memory changes approved";
+
+export type CompleteRetroNoChangeOutcome =
+  | { ok: true; task: Task; sourceTaskId: string; replayed: boolean }
+  | { ok: false; status: 404 | 409; error: string };
 
 /**
  * The three provenance values a schedule-created task carries, moved as one.
@@ -1379,6 +1396,11 @@ export class TaskManager {
     return this.registry.getTask(id);
   }
 
+  /** A durable lookup for provenance workflows whose completed source may be off the board. */
+  getDurable(id: string): Task | undefined {
+    return getDurableTask(id);
+  }
+
   /** Explicit blockers are enforced on every path that can start a task. */
   dependencyBlockers(task: Task): BacklogBlocker[] {
     return declaredBlockers(task, this.registry.listTasks());
@@ -1718,6 +1740,98 @@ export class TaskManager {
       this.titling.set(task.id, settled);
     }
     return task;
+  }
+
+  /**
+   * Create or recover the one post-merge retro task owned by a source work episode.
+   *
+   * The normalized relation reserves the id first. A crash after that reservation leaves no
+   * second source of task state: retrying reconstructs the ordinary Task under the reserved id,
+   * and `create` verifies that an existing row still describes this exact follow-up.
+   */
+  createRetroFollowup(input: CreateRetroFollowupInput): Task {
+    const reserved = reserveRetroFollowup({
+      sourceTaskId: input.sourceTask.id,
+      sourceEpisodeId: input.sourceEpisodeId,
+      sourceSessionId: input.sourceSessionId,
+      retroTaskId: randomUUID(),
+      now: Date.now(),
+    }).relation;
+    const extraRepoRoots = input.sourceTask.extraRepos.map((repo) => repo.repoRoot);
+    const task = this.create(
+      {
+        repoRoot: input.sourceTask.repoRoot,
+        extraRepoRoots,
+        title: input.title,
+        intent: input.intent,
+        kind: "ship",
+        agent: input.agent,
+        workflowId: null,
+        backlog: true,
+      },
+      { id: reserved.retroTaskId },
+    );
+    // A completed source may remain clickable after the bounded board projection evicted this
+    // older follow-up. Re-admit the durable row before `dispatch` inspects it; the upsert does
+    // not change its status or create another Task.
+    if (!this.registry.getTask(task.id)) this.registry.upsertTask(task);
+    const actualExtraRepos = task.extraRepos.map((repo) => repo.repoRoot);
+    if (
+      actualExtraRepos.length !== extraRepoRoots.length ||
+      actualExtraRepos.some((repo, index) => repo !== extraRepoRoots[index])
+    ) {
+      throw new TaskIdCollisionError(
+        `retro task ${task.id} already exists with a different repository set`,
+      );
+    }
+    return task;
+  }
+
+  /**
+   * Settle exactly the retro follow-up running in the authenticated caller's session.
+   *
+   * There is no caller-supplied task id and no general-purpose outcome. Session attribution
+   * selects the Task, the durable relation proves its special kind, and dependency edges stay
+   * untouched. Replaying the one accepted terminal outcome is a no-op.
+   */
+  async completeRetroNoChange(
+    sessionId: string,
+    cwd: string | null,
+  ): Promise<CompleteRetroNoChangeOutcome> {
+    const task = this.registry.taskForSession(sessionId, cwd);
+    if (!task) {
+      return { ok: false, status: 404, error: "no task is attributed to this session" };
+    }
+    const relation = retroFollowupForTask(task.id);
+    if (!relation) {
+      return {
+        ok: false,
+        status: 409,
+        error: "this session is not running a post-merge retro follow-up task",
+      };
+    }
+    if (task.status === "done") {
+      if (task.outcome !== RETRO_NO_CHANGE_OUTCOME || task.outcomeUrl !== null) {
+        return {
+          ok: false,
+          status: 409,
+          error: "this retro follow-up already completed with a different outcome",
+        };
+      }
+      return { ok: true, task, sourceTaskId: relation.sourceTaskId, replayed: true };
+    }
+    if (task.status !== "dispatching" && task.status !== "running") {
+      return {
+        ok: false,
+        status: 409,
+        error: `this retro follow-up is ${task.status}, so it cannot report a no-change result`,
+      };
+    }
+    const completed = await this.complete(task.id, RETRO_NO_CHANGE_OUTCOME);
+    if (!completed) {
+      return { ok: false, status: 404, error: "the retro follow-up no longer exists" };
+    }
+    return { ok: true, task: completed, sourceTaskId: relation.sourceTaskId, replayed: false };
   }
 
   /**

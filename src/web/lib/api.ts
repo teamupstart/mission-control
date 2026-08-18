@@ -1241,13 +1241,12 @@ export const api = {
    * into. The daemon decides which; there is nothing to send and nothing to choose.
    *
    * The two success arms are worth distinguishing to the person who clicked, which is why the
-   * response body is kept rather than reduced to `ok`: `delivered` means their session now has
-   * an instruction in it, `dispatched` means a task is sitting in the backlog waiting to be
-   * started. Telling them "done" for both would leave the second one waiting for a turn that
-   * is never going to happen.
+   * response body is kept rather than reduced to `ok`: same-session delivery, dead-session
+   * fallback, accepted post-merge launch, and recoverably queued post-merge launch each leave
+   * the operator looking in a different place.
    */
   runRetro: (id: string) =>
-    post<ActionResult & Partial<RetroResponse>>(
+    post<ActionResult & RetroResponse>(
       `/api/sessions/${encodeURIComponent(id)}/retro`,
     ),
   /**

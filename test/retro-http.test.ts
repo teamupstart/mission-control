@@ -9,7 +9,7 @@ const home = mkdtempSync(join(tmpdir(), "mission-retro-http-home-"));
 const repos = mkdtempSync(join(tmpdir(), "mission-retro-http-repos-"));
 process.env.MISSION_HOME = home;
 
-const { openDb } = await import("../src/server/db.ts");
+const { bindTaskWorkEpisode, openDb } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
@@ -17,7 +17,8 @@ const { setSkillsConfig } = await import("../src/server/skills/config.ts");
 const { skillsDirFor } = await import("../src/server/skills/reconcile.ts");
 const { originOf, forgetInjections } = await import("../src/server/injections.ts");
 const { CLAUDE_SKILLS } = await import("../src/shared/harness-capabilities.ts");
-const { RETRO_SKILL, missionSkillDirName } = await import("../src/shared/skills.ts");
+const { PULL_REQUEST_SKILL, RETRO_SKILL, missionSkillDirName } = await import("../src/shared/skills.ts");
+const { COMPLETE_RETRO_NO_CHANGE_TOOL } = await import("../src/server/retro-tool.ts");
 
 type ReviewManager = import("../src/server/reviews.ts").ReviewManager;
 type QueueManager = import("../src/server/queue.ts").QueueManager;
@@ -45,10 +46,12 @@ const HEADERS = { host: "127.0.0.1:7317", "content-type": "application/json" };
 function installRetroSkill(): void {
   const dir = skillsDirFor(CLAUDE_SKILLS);
   mkdirSync(dir, { recursive: true });
-  try {
-    symlinkSync(join(process.cwd(), "skills", RETRO_SKILL), join(dir, missionSkillDirName(RETRO_SKILL)), "dir");
-  } catch {
-    // Already linked by an earlier case in this file.
+  for (const skillId of [RETRO_SKILL, PULL_REQUEST_SKILL]) {
+    try {
+      symlinkSync(join(process.cwd(), "skills", skillId), join(dir, missionSkillDirName(skillId)), "dir");
+    } catch {
+      // Already linked by an earlier case in this file.
+    }
   }
 }
 
@@ -56,7 +59,10 @@ function enableSkills(enabled: boolean): void {
   // No generation is set, so it stays at the schema default of 0 and the reload watermark is
   // skipped: no skill set has changed under a running session here, and that ladder is proven
   // in `skills-required-invoke.test.ts`.
-  setSkillsConfig({ enabled, skills: { [RETRO_SKILL]: enabled } });
+  setSkillsConfig({
+    enabled,
+    skills: { [RETRO_SKILL]: enabled, [PULL_REQUEST_SKILL]: enabled },
+  });
 }
 
 let serial = 0;
@@ -131,6 +137,45 @@ function retro(app: ReturnType<typeof buildApp>, id: string) {
   return app.request(`/api/sessions/${id}/retro`, { method: "POST", headers: HEADERS });
 }
 
+function bindSourceTask(
+  f: ReturnType<typeof fixture>,
+  session: ReturnType<typeof liveSession>,
+  repo: string,
+  mergedAt: number | null,
+) {
+  const task = f.tasks.create({
+    repoRoot: repo,
+    title: `Source work ${f.serial}`,
+    intent: "Ship the source work",
+    kind: "ship",
+    agent: "claude",
+    backlog: true,
+  });
+  const now = Date.now();
+  f.registry.upsertTask({
+    ...task,
+    status: "done",
+    sessionId: session.id,
+    outcome: "merged source work",
+    outcomeUrl: "https://github.example/o/r/pull/40",
+    completedAt: now,
+    updatedAt: now,
+  });
+  bindTaskWorkEpisode({
+    taskId: task.id,
+    episodeId: `source-episode-${f.serial}`,
+    sessionId: session.id,
+    agentSessionId: session.agentSessionId!,
+    branch: "feature/source-work",
+    prUrl: "https://github.example/o/r/pull/40",
+    prHeadSha: "c".repeat(40),
+    mergedAt,
+    boundAt: now - 1_000,
+    updatedAt: now,
+  });
+  return task;
+}
+
 test("a live session is asked to run its own retro, and the turn is attributed to us", async () => {
   installRetroSkill();
   enableSkills(true);
@@ -162,6 +207,109 @@ test("a live session is asked to run its own retro, and the turn is attributed t
   // Attribution: this turn is the daemon's, not the human's. Without it the conversation shows
   // the operator asking for a retrospective they never typed.
   assert.equal(originOf(session.id, payload), "harness");
+});
+
+test("an open work pull request preserves the same-session retro path", async () => {
+  installRetroSkill();
+  enableSkills(true);
+  const f = fixture();
+  const repo = gitRepo(`open-source-${f.serial}`);
+  const session = liveSession(f, repo);
+  const source = bindSourceTask(f, session, repo, null);
+
+  const response = await retro(f.app, session.id);
+  assert.equal(response.status, 200);
+  const body = (await response.json()) as { kind: string; sessionId: string };
+  assert.equal(body.kind, "delivered");
+  assert.equal(body.sessionId, session.id);
+  assert.equal(f.typed.length, 1);
+  assert.equal(f.tasks.get(source.id)?.status, "done", "running a retro never reopens the source");
+});
+
+test("a merged work pull request starts one linked task and duplicate clicks reuse it", async () => {
+  installRetroSkill();
+  enableSkills(true);
+  const f = fixture();
+  const repo = gitRepo(`merged-source-${f.serial}`);
+  const session = liveSession(f, repo);
+  const source = bindSourceTask(f, session, repo, Date.now());
+  let launches = 0;
+  f.tasks.dispatch = async (id, options) => {
+    assert.deepEqual(options?.missionMcp?.tools, [COMPLETE_RETRO_NO_CHANGE_TOOL]);
+    const current = f.tasks.get(id);
+    assert.ok(current);
+    if (current.status === "backlog") {
+      launches += 1;
+      f.registry.upsertTask({ ...current, status: "dispatching", updatedAt: Date.now() });
+    }
+    return { ok: true as const, task: f.tasks.get(id)! };
+  };
+
+  const firstResponse = await retro(f.app, session.id);
+  assert.equal(firstResponse.status, 200);
+  const first = (await firstResponse.json()) as { kind: string; task: Task };
+  assert.equal(first.kind, "started");
+  assert.notEqual(first.task.id, source.id);
+  assert.equal(first.task.repoRoot, source.repoRoot);
+  assert.match(first.task.intent, /pull-request skill/);
+  assert.ok(first.task.intent.includes(COMPLETE_RETRO_NO_CHANGE_TOOL));
+  assert.equal(f.typed.length, 0, "the merged source session receives no retro prompt");
+
+  const replayResponse = await retro(f.app, session.id);
+  assert.equal(replayResponse.status, 200);
+  const replay = (await replayResponse.json()) as { kind: string; task: Task };
+  assert.equal(replay.kind, "started");
+  assert.equal(replay.task.id, first.task.id);
+  assert.equal(launches, 1, "the second click does not launch a second session");
+  assert.equal(
+    f.tasks.list().filter((task) => task.title === first.task.title).length,
+    1,
+    "the second click does not create a second task",
+  );
+  assert.equal(f.tasks.get(source.id)?.status, "done");
+});
+
+test("a retryable post-merge launch refusal returns the linked queued task and reason", async () => {
+  installRetroSkill();
+  enableSkills(true);
+  const f = fixture();
+  const repo = gitRepo(`queued-source-${f.serial}`);
+  const session = liveSession(f, repo);
+  const source = bindSourceTask(f, session, repo, Date.now());
+  f.tasks.dispatch = async (id) => ({
+    ok: false as const,
+    error: "the required MCP bundle needs a rebuild",
+    task: f.tasks.get(id),
+  });
+
+  const response = await retro(f.app, session.id);
+  assert.equal(response.status, 200);
+  const body = (await response.json()) as { kind: string; task: Task; reason: string };
+  assert.equal(body.kind, "queued");
+  assert.equal(body.task.status, "backlog");
+  assert.match(body.reason, /needs a rebuild/);
+  assert.equal(f.tasks.get(source.id)?.status, "done");
+});
+
+test("a post-merge retro fails closed when the pull-request skill is unavailable", async () => {
+  installRetroSkill();
+  setSkillsConfig({
+    enabled: true,
+    skills: { [RETRO_SKILL]: true, [PULL_REQUEST_SKILL]: false },
+  });
+  const f = fixture();
+  const repo = gitRepo(`no-pr-skill-${f.serial}`);
+  const session = liveSession(f, repo);
+  const source = bindSourceTask(f, session, repo, Date.now());
+  const before = f.tasks.list().length;
+
+  const response = await retro(f.app, session.id);
+  assert.equal(response.status, 409);
+  const body = (await response.json()) as { error: string };
+  assert.match(body.error, /pull-request skill/);
+  assert.equal(f.tasks.list().length, before);
+  assert.equal(f.tasks.get(source.id)?.status, "done");
+  enableSkills(true);
 });
 
 test("a disabled retro skill fails closed, and nothing is typed", async () => {

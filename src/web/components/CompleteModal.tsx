@@ -139,7 +139,7 @@ export function CompleteModal({
     // Named rather than silent, and NOT through `error`: "filed as a backlog task because
     // this session cannot be typed into" is a different next move, not a failure, and it is
     // the one case where closing would leave the operator believing a turn is coming.
-    if (result.kind === "dispatched") {
+    if (result.kind === "dispatched" || result.kind === "queued") {
       setNotice(retroOutcome(result));
       return;
     }

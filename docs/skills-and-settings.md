@@ -80,9 +80,11 @@ or rejected, and commit the approved ones into the target repository's
 [`.agents/memory`](repository-memory.md). It is what the retro request delivers into a session,
 and the retro **fails closed while it is switched off** - `POST /api/sessions/:id/retro` answers
 409 with the sentence that names this toggle, whether it would have typed the instruction into a
-live session or filed a retro task for a dead one. Neither happens, because this skill carries
-the human-approval step rather than merely describing it. Switch it on before running a retro.
-The procedure lives in [`skills/retro/SKILL.md`](../skills/retro/SKILL.md).
+live session, filed a retro task for a dead one, or launched a separate follow-up after the work
+pull request merged. Neither happens, because this skill carries the human-approval step rather
+than merely describing it. A post-merge follow-up also requires the **Pull Request** skill so
+approved changes can open their own review. Switch both on for that path. The procedure lives in
+[`skills/retro/SKILL.md`](../skills/retro/SKILL.md).
 
 The opt-in **Phased Plan** row investigates an approved plan against the repository, writes
 merge-aware phase documents beside it, and schedules one dependency-linked backlog task per

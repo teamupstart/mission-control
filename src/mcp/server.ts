@@ -363,6 +363,43 @@ server.registerTool(
   },
 );
 
+// The no-change exit for a POST-MERGE retro follow-up. It accepts no task id, outcome, or
+// dependency instruction: the daemon derives the calling Task from inherited session evidence
+// and refuses the operation unless that Task owns a durable retro-followup relation.
+server.registerTool(
+  "complete_retro_no_change",
+  {
+    title: "Complete a retro with no approved changes",
+    description:
+      "Use only when this post-merge retro follow-up has no approved memory changes. " +
+      "Mission Control completes this retro task without a commit, pull request, or review.",
+    inputSchema: {},
+  },
+  async () => {
+    try {
+      const res = await http("/mcp/retros/no-change", "POST", {
+        env: ENV,
+        sessionId: SESSION_ID,
+        cwd: process.cwd(),
+      });
+      if (!res.ok) {
+        return textResult(
+          `Mission Control refused no-change retro completion (${res.status}): ${await res.text()}`,
+          true,
+        );
+      }
+      const body = (await res.json()) as { replayed?: boolean };
+      return textResult(
+        body.replayed
+          ? "This retro was already completed with no approved memory changes."
+          : "Retro completed with no approved memory changes. No commit or pull request is needed.",
+      );
+    } catch (err) {
+      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
+    }
+  },
+);
+
 // Submit this ensemble member's finished work for comparison. The member NEVER names itself: the
 // daemon derives which member from this session's pane/id/cwd, so the arguments carry only the
 // member's own bounded claims - no ensemble, member, task, session, worktree, artifact or ref id.

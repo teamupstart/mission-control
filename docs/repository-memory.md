@@ -84,10 +84,11 @@ content is untrusted input.
 
 Nothing writes memory automatically, and the daemon never commits. The writer is the
 **retro** - an interactive retrospective over a finished session that proposes at most three
-memories, each of which a human approves, edits, or rejects - and the session itself commits
-the approved ones on its task branch, where they are reviewed in the pull request like any
-other change. The first retro in a repository also creates `.agents/memory/` and adds the
-reference line to the root doc, once and idempotently.
+memories, each of which a human approves, edits, or rejects. While the work pull request is
+open, that session commits approved memories on its existing task branch for the same review.
+After the work pull request merges, a separate linked task gets fresh branches and opens its
+own pull request for approved changes. The first retro in a repository also creates
+`.agents/memory/` and adds the reference line to the root doc, once and idempotently.
 
 A session working on some unrelated feature never touches any of this: the reference line
 would be an unrelated edit in its diff, and a repo without the line is not broken, it is a
@@ -109,13 +110,17 @@ Mission Control's half is one route:
 curl -X POST http://127.0.0.1:7317/api/sessions/<session-id>/retro
 ```
 
-Whether it types into that session or files a task depends on whether the session can still be
-typed into, and the response says which happened. Every status the route can answer with:
+An open current pull request keeps the retro in that session. A merged pull request takes
+priority over whether the session can still receive text and creates or reuses one separate
+follow-up task for that source task and work episode. With no merged review, an unreachable
+session keeps the older backlog fallback. The response says which happened:
 
 | Response | When | What happened |
 |---|---|---|
 | `200 {"kind":"delivered", ...}` | the session is live and the write landed | The shipped **Retro** session action was rendered and typed into it. The session that did the work runs its own retrospective, because it already holds the context a fresh one would have to reconstruct from transcript bytes. |
 | `200 {"kind":"dispatched","task":{...}}` | the session cannot receive a turn | A retro task is filed in the backlog against that session's repository, naming the session, its branch and its pull request. Dispatch it when you want it. |
+| `200 {"kind":"started","task":{...}}` | the source work pull request merged and the linked task launch was accepted | One ordinary follow-up task was created or reused and dispatched immediately with fresh worktrees and branches. The source task stays complete. Repeated clicks return the same task and do not launch a second session. |
+| `200 {"kind":"queued","task":{...},"reason":"..."}` | the linked follow-up exists but launch was synchronously refused in a retryable state | The same task remains in the backlog or in a clean retryable failure. The bounded reason explains what must change; retrying reuses it. |
 | `404` | no session by that id | The registry has no row at all. An *exited* session is not this: it is the dispatch row above, and it is the only place the branch and pull request a retro task must name are still readable. |
 | `409` | the retro skill is off, or there is no repository to file against | The refusal names the reason. Nothing is typed and nothing is filed. |
 | `503` | the session is live but the write did not land | A pane busy with another write, a multiplexer in copy mode, a session mid-reset, an embedded session whose driver rejected the turn, or the skill going stale between rendering the packet and writing it. The error carries what the delivery layer said, and the body also carries `pasted` - see below. |
@@ -137,14 +142,22 @@ That is the same contract [`/inject`](sessions.md) holds, for the same reason: a
 evidence is not evidence, so a route that can know this says it rather than letting a caller
 assume.
 
-**Both arms fail closed on the skill**, including the one that types nothing. The skill is where
+**Every arm fails closed on its skills**, including the ones that type nothing. The retro skill is where
 the human-approval ceremony lives, so a task filed while it is switched off would reach an agent
 holding an intent that names a procedure it cannot load - and the retro's one hard rule, that
 nothing is written a human did not approve, would survive only as prose. The two arms ask the
 question of different agents at different times: the live arm asks whether *this* session can
 run the skill now, reload watermark included; the dispatch arm asks whether the harness it is
 about to pick could run it at launch, where a watermark about some other session's history is
-not evidence.
+not evidence. A post-merge follow-up also requires the **Pull Request** skill because approved
+memory commits have a new review to open rather than an existing review to ride.
+
+If a post-merge retro has no approved memories, its agent calls the bundled
+`complete_retro_no_change` MCP tool. The tool accepts no task id or arbitrary outcome. The daemon
+attributes the live session, proves that its task is the linked retro follow-up, and completes
+only that task with `Retro complete: no memory changes approved`. It creates no commit or pull
+request, does not satisfy dependency edges, and never changes the already-complete source task.
+Repeating the exact call is a no-op.
 
 The delivered packet carries the receiving session's own id, which is how the skill knows
 which transcript to read - the action's prompt is frozen bytes and cannot carry a per-delivery
@@ -197,8 +210,10 @@ opens a pull request, so it never reaches that moment at all, and Complete is th
 anybody is looking at it. It sends the retro and leaves the task open and the session alive,
 because the retro is a turn that session still has to take.
 
-Clicking reports which arm the route took - typed into this session, or filed as a backlog
-task - rather than a bare success, because those are different next moves.
+Clicking reports which arm the route took - typed into this session, filed as a backlog task,
+started as a linked post-merge task, or left recoverably queued - rather than a bare success,
+because those are different next moves. The post-merge messages state that the original task
+remains complete.
 
 Two things this deliberately is **not**: there is no post-GitHub Inspector workflow stage (the
 GitHub Inspector is the completion policy that runs after the graph's End, not a node to hook), and

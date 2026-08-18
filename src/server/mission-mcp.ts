@@ -16,6 +16,7 @@ import { SUBMIT_ENSEMBLE_RESULT_TOOL } from "./ensembles/submission-tool.ts";
 import { PLAN_DECISIONS_TOOL, PLAN_SCHEDULING_TOOL } from "./plans/tools.ts";
 import { SUBMIT_SCOUT_ARTIFACTS_TOOL } from "./scouts/submission-tool.ts";
 import { SUBMIT_WORKFLOW_EVIDENCE_TOOL } from "./workflows/evidence-tool.ts";
+import { COMPLETE_RETRO_NO_CHANGE_TOOL } from "./retro-tool.ts";
 import { run } from "./util/exec.ts";
 
 // The one place that knows how to hand a LAUNCHING agent our own MCP server.
@@ -57,6 +58,7 @@ export const MISSION_MCP_TOOLS = [
   SUBMIT_ENSEMBLE_RESULT_TOOL,
   SUBMIT_SCOUT_ARTIFACTS_TOOL,
   SUBMIT_WORKFLOW_EVIDENCE_TOOL,
+  COMPLETE_RETRO_NO_CHANGE_TOOL,
 ] as const;
 
 export type MissionMcpTool = (typeof MISSION_MCP_TOOLS)[number];

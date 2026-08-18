@@ -183,6 +183,12 @@ Merging itself is unchanged. Each pull request still merges on its own verdict, 
 alone is ready - there is no coordinated cross-repo merge, so siblings can land minutes apart
 and the task's own completion is what tells you the whole piece of work is in.
 
+A post-merge retro follow-up copies this exact repository set from its completed source task,
+but none of the source worktrees, branches, pull-request bindings, or outcomes. Approved memory
+changes therefore open one new pull request per repository changed by the retro, while an
+unchanged attached repository opens none. The source task and all of its merged reviews remain
+complete and untouched.
+
 **Every repository you changed gets its own full review.** When the session's work reaches a
 workflow - the Foreman completion boundary, or your own submit - Mission Control starts one
 review run per repository the task changed, and they run at the same time. A repository the

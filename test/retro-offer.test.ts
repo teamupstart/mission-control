@@ -12,7 +12,7 @@ import {
 } from "../src/web/lib/retro-offer.ts";
 import { ActionBar } from "../src/web/components/ActionBar.tsx";
 import { CompleteModal } from "../src/web/components/CompleteModal.tsx";
-import { mkSession } from "./helpers/session-fixture.ts";
+import { mkSession, mkTask } from "./helpers/session-fixture.ts";
 import { LADDER_SUMMARY } from "./helpers/workflow-ladder.ts";
 import { hasTooltipStarting, tooltipLabels } from "./helpers/markup.ts";
 import { withOverlayHost } from "./helpers/overlay-host.ts";
@@ -132,9 +132,20 @@ test("the Complete backstop drops the timing condition and keeps the worthiness 
   assert.match(backstop!.tooltip, /The task stays open and this session stays alive/);
 });
 
-test("the two success arms are reported as the different next moves they are", () => {
-  assert.match(retroOutcome({ kind: "delivered" }), /Retro sent/);
-  assert.match(retroOutcome({ kind: "dispatched" }), /filed in the backlog/);
+test("the four success arms report their different next moves", () => {
+  const task = mkTask({ title: "Retro: shipped work" });
+  assert.match(retroOutcome({
+    kind: "delivered",
+    sessionId: "s1",
+    payloadSha256: "a".repeat(64),
+    submitVerified: true,
+  }), /Retro sent/);
+  assert.match(retroOutcome({ kind: "dispatched", task }), /filed in the backlog/);
+  assert.match(retroOutcome({ kind: "started", task }), /original task remains complete/);
+  const queued = retroOutcome({ kind: "queued", task, reason: "Skills are disabled." });
+  assert.match(queued, /follow-up queued/);
+  assert.match(queued, /Skills are disabled/);
+  assert.match(queued, /original task remains complete/);
 });
 
 // ---- the request's own state ------------------------------------------------------------

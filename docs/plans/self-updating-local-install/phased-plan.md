@@ -105,7 +105,8 @@ flowchart LR
 
 **Concurrency groups:** none. The chain is strictly sequential, and this is a real constraint rather
 than a presentation order. Phase 2 consumes Phase 1's receipt schema and needs releases to exist to
-test against. Phase 3 consumes Phase 2's `UpdateSnapshot` union and its IPC command names.
+test against. Phase 3 consumes Phase 2's `UpdateSnapshot` union and its check/apply/defer action set;
+the IPC command names are Phase 3's own, not inherited.
 
 **Merge order:** 1, then 2, then 3.
 

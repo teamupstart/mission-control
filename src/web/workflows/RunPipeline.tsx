@@ -37,6 +37,15 @@ import {
   type InheritedPass,
 } from "./run-model.ts";
 
+/** A reviewer or Command whose current attempt has settled and has worklist data to inspect. */
+function opensReviewWorklist(raw: string | undefined): boolean {
+  return raw === "pass"
+    || raw === "fail"
+    || raw === "completed"
+    || raw === "error"
+    || raw === "cancelled";
+}
+
 function PipelineActionsMenu({
   label,
   onFeedback = null,
@@ -115,6 +124,7 @@ export function RunPipeline({
   onToggleNodes,
   directiveFor,
   onOpenPersonaDirective,
+  onOpenNode,
 }: {
   version: WorkflowVersion;
   /** Node id -> runtime status, scoped to the round being viewed. */
@@ -174,6 +184,8 @@ export function RunPipeline({
   directiveFor?: (nodeId: string) => boolean;
   /** Open the run-scoped feedback editor. Supplied only while the run is live. */
   onOpenPersonaDirective?: (nodeId: string) => void;
+  /** Select one settled reviewer or Command in the review worklist below the pipeline. */
+  onOpenNode?: (nodeId: string) => void;
 }): React.JSX.Element {
   const graph = version.graph;
   const pipeline = useMemo(() => projectStages(graph), [graph]);
@@ -253,6 +265,12 @@ export function RunPipeline({
           const directiveActive = member.kind === "persona" && Boolean(
             member.nodeId && directiveFor?.(member.nodeId),
           );
+          const openWorklist = member.kind !== "session_action"
+            && member.nodeId
+            && onOpenNode
+            && opensReviewWorklist(statuses[member.nodeId])
+            ? () => onOpenNode(member.nodeId!)
+            : null;
           const carried = member.nodeId ? inherited?.get(member.nodeId) ?? null : null;
           return {
             key: member.nodeId ?? `${index}:${stageMemberKey(member)}`,
@@ -262,6 +280,7 @@ export function RunPipeline({
             togglable,
             disabled,
             directiveActive,
+            openWorklist,
             carried,
             meta: member.nodeId ? metaFor(member.nodeId) : null,
             status: carried
@@ -305,6 +324,17 @@ export function RunPipeline({
         const openStageFeedback = stageFeedbackNodeId && onOpenPersonaDirective
           ? () => onOpenPersonaDirective(stageFeedbackNodeId)
           : null;
+        // A stage header is an unambiguous worklist target only when it contains one settled
+        // reviewer or Command. Multi-member stages keep their member rows as the precise clicks.
+        const stageWorklistMember = members.length === 1 && members[0]?.openWorklist
+          ? members[0]
+          : null;
+        const openStage = stageWorklistMember?.openWorklist ?? openStageFeedback;
+        const openStageLabel = stageWorklistMember
+          ? `Show ${stageWorklistMember.name} in the review worklist`
+          : openStageFeedback
+            ? `${members.some((member) => member.directiveActive) ? "Edit" : "Add"} critical feedback for ${stageTitle}`
+            : null;
         // A stage is carried only when EVERY member was. A stage half of whose members ran
         // here is a stage that ran, and folding it to "Not re-run" would hide live work.
         const carriedPasses = members.flatMap((member) => member.carried ? [member.carried] : []);
@@ -331,10 +361,8 @@ export function RunPipeline({
                 : null}
               disabled={stageDisabled}
               hasDirective={members.some((member) => member.directiveActive)}
-              onOpen={openStageFeedback}
-              openLabel={openStageFeedback
-                ? `${members.some((member) => member.directiveActive) ? "Edit" : "Add"} critical feedback for ${stageTitle}`
-                : null}
+              onOpen={openStage}
+              openLabel={openStageLabel}
               actions={<PipelineActionsMenu
                 label={stageTitle}
                 onFeedback={openStageFeedback}
@@ -358,12 +386,15 @@ export function RunPipeline({
                     notice={member.directiveActive
                       ? <span className="wf-pipeline-directive-mark">● Critical feedback active</span>
                       : null}
-                    onOpen={member.kind === "persona" && member.nodeId && onOpenPersonaDirective
-                      ? () => onOpenPersonaDirective(member.nodeId!)
-                      : null}
-                    openLabel={member.kind === "persona"
-                      ? `${member.directiveActive ? "Edit" : "Add"} critical feedback for ${member.name}`
-                      : null}
+                    onOpen={member.openWorklist
+                      ?? (member.kind === "persona" && member.nodeId && onOpenPersonaDirective
+                        ? () => onOpenPersonaDirective(member.nodeId!)
+                        : null)}
+                    openLabel={member.openWorklist
+                      ? `Show ${member.name} in the review worklist`
+                      : member.kind === "persona"
+                        ? `${member.directiveActive ? "Edit" : "Add"} critical feedback for ${member.name}`
+                        : null}
                     actions={<PipelineActionsMenu
                       label={member.name}
                       onFeedback={member.kind === "persona" && member.nodeId && onOpenPersonaDirective

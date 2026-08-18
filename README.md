@@ -91,7 +91,8 @@ System profile is never offered to workflows or ensembles as a Persona.
 ## Design reusable review workflows
 
 Workflows and Personas turn the team's review practice into reusable, inspectable building
-blocks. The Line keeps their live runs attached to the fleet.
+blocks. The Line keeps their live runs attached to the fleet. On a run, clicking a settled
+reviewer or Command tile selects that exact result in the review worklist below.
 
 ![Mission Control workflow library](docs/images/workflows.png)
 

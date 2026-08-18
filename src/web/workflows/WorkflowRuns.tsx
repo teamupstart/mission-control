@@ -677,6 +677,18 @@ const nodeOf = (item: WorklistItem): string =>
 
 const SEGMENTS = ["blocking", "passed", "archive"] as const;
 
+/** The first worklist row owned by a pipeline node, in the worklist's displayed priority. */
+export function worklistSelectionForNode(
+  nodeId: string,
+  bySegment: Record<WorklistSegment, WorklistItem[]>,
+): { segment: WorklistSegment; item: WorklistItem } | null {
+  for (const segment of SEGMENTS) {
+    const item = bySegment[segment].find((candidate) => nodeOf(candidate) === nodeId);
+    if (item) return { segment, item };
+  }
+  return null;
+}
+
 /**
  * Where a selection went when the row holding it stopped existing.
  *
@@ -706,12 +718,8 @@ export function followSelection(
   if (!selectedKey.startsWith(prefix)) return null;
   const nodeId = attempts.find((attempt) => attempt.id === selectedKey.slice(prefix.length))?.nodeId;
   if (nodeId === undefined) return null;
-  for (const segment of SEGMENTS) {
-    // Pre-sorted, so the first row this reviewer owns is the one it leads with.
-    const item = bySegment[segment].find((candidate) => nodeOf(candidate) === nodeId);
-    if (item) return { segment, item };
-  }
-  return null;
+  // Pre-sorted, so the first row this reviewer owns is the one it leads with.
+  return worklistSelectionForNode(nodeId, bySegment);
 }
 
 /**
@@ -946,6 +954,7 @@ function RunWorklist({
   reviewerlessVersion,
   personaNodeIds,
   disabledNodeIds,
+  initialNodeId = null,
   onOpenFile,
   onCopyChange,
   changeCopied = false,
@@ -963,6 +972,8 @@ function RunWorklist({
   reviewerlessVersion: boolean;
   personaNodeIds: ReadonlySet<string>;
   disabledNodeIds: readonly string[];
+  /** A settled pipeline tile clicked before this keyed worklist instance mounted. */
+  initialNodeId?: string | null;
   onOpenFile?: (path: string) => void;
   onCopyChange?: (text: string) => void;
   changeCopied?: boolean;
@@ -1092,12 +1103,20 @@ function RunWorklist({
     }));
   const archive: WorklistItem[] = archived
     .map((row): WorklistItem => ({ kind: "change", key: changeKey(row), row }));
+  const bySegment: Record<WorklistSegment, WorklistItem[]> = {
+    blocking,
+    passed: [...passed, ...pending],
+    archive,
+  };
+  const initialSelection = initialNodeId === null
+    ? null
+    : worklistSelectionForNode(initialNodeId, bySegment);
 
   /** The reader's own pick, and the round they made it in. Both, for the scrub rule below. */
   const [chosenSegment, setChosenSegment] = useState<
     { segment: WorklistSegment; round: number | null } | null
-  >(null);
-  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  >(initialSelection ? { segment: initialSelection.segment, round } : null);
+  const [selectedKey, setSelectedKey] = useState<string | null>(initialSelection?.item.key ?? null);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const counts: Record<WorklistSegment, number> = {
     blocking: blocking.length,
@@ -1134,11 +1153,6 @@ function RunWorklist({
     : chosenSegment.round === round || counts[chosenSegment.segment] > 0
       ? chosenSegment.segment
       : autoSegment;
-  const bySegment: Record<WorklistSegment, WorklistItem[]> = {
-    blocking,
-    passed: [...passed, ...pending],
-    archive,
-  };
   /*
    * A selection that no longer resolves ANYWHERE is followed to whatever now represents its
    * reviewer - but only inside THIS ROUND, and the scoping is the whole correctness of it.
@@ -1633,7 +1647,13 @@ export function WorkflowRunView({
     .filter((node) => node.kind === "persona")
     .map((node) => node.id));
   const [directiveNodeId, setDirectiveNodeId] = useState<string | null>(null);
+  const [worklistFocus, setWorklistFocus] = useState<{
+    runId: string;
+    nodeId: string;
+    sequence: number;
+  } | null>(null);
   useEffect(() => setDirectiveNodeId(null), [detail.run.id]);
+  const currentWorklistFocus = worklistFocus?.runId === detail.run.id ? worklistFocus : null;
   const directiveNode = directiveNodeId ? nodeById.get(directiveNodeId) : null;
   const directiveTarget = directiveNode?.kind === "persona" ? directiveNode : null;
   const activeDirective = directiveTarget
@@ -2070,6 +2090,11 @@ export function WorkflowRunView({
             && !["completed", "cancelled", "failed"].includes(detail.run.status)
             ? setDirectiveNodeId
             : undefined}
+          onOpenNode={(nodeId) => setWorklistFocus((current) => ({
+            runId: detail.run.id,
+            nodeId,
+            sequence: (current?.sequence ?? 0) + 1,
+          }))}
         />
       ) : (
         <p className="wf-run-error" role="alert">
@@ -2109,11 +2134,10 @@ export function WorkflowRunView({
 
       <section className="wf-run-section" aria-label="Review worklist">
         <h4>Review worklist</h4>
-        {/* Keyed on the run so selecting another run resets the segment and the selected item in
-            the same commit the detail changes, rather than carrying one run's choice into the
-            next one's list. */}
+        {/* Keyed on the run so selecting another run resets the list, and on a pipeline-tile
+            request so repeated clicks remount with that node as the initial worklist choice. */}
         <RunWorklist
-          key={detail.run.id}
+          key={`${detail.run.id}:${currentWorklistFocus?.sequence ?? 0}`}
           detail={detail}
           round={viewed?.round ?? null}
           attempts={reviewAttempts}
@@ -2123,6 +2147,7 @@ export function WorkflowRunView({
           reviewerlessVersion={reviewerlessVersion}
           personaNodeIds={personaNodeIds}
           disabledNodeIds={detail.run.disabledNodeIds ?? []}
+          initialNodeId={currentWorklistFocus?.nodeId ?? null}
           onOpenFile={onOpenFile}
           onCopyChange={onCopyChange}
           changeCopied={changeCopied}

@@ -269,6 +269,44 @@ test("a merged work pull request starts one linked task and duplicate clicks reu
   assert.equal(f.tasks.get(source.id)?.status, "done");
 });
 
+test("a merged primary review cannot start a retro while an attached source review remains", async () => {
+  installRetroSkill();
+  enableSkills(true);
+  const f = fixture();
+  const repo = gitRepo(`partial-merge-source-${f.serial}`);
+  const session = liveSession(f, repo);
+  const source = bindSourceTask(f, session, repo, Date.now());
+  f.registry.upsertTask({
+    ...source,
+    status: "running",
+    outcome: null,
+    outcomeUrl: null,
+    completedAt: null,
+    updatedAt: Date.now(),
+    extraRepos: [{
+      repoRoot: join(repo, "secondary"),
+      worktreePath: join(repo, "secondary-worktree"),
+      branch: "feature/source-work",
+      provider: "git",
+      worktreeLeaseId: null,
+      baseSha: "d".repeat(40),
+      prUrl: "https://github.example/o/secondary/pull/41",
+      prState: "open",
+      mergedAt: null,
+    }],
+  });
+  const before = f.tasks.list().length;
+
+  const response = await retro(f.app, session.id);
+  assert.equal(response.status, 409);
+  const body = (await response.json()) as { error: string };
+  assert.match(body.error, /source task is still running/i);
+  assert.match(body.error, /every attached repository review/i);
+  assert.equal(f.tasks.list().length, before, "no follow-up is filed before source completion");
+  assert.equal(f.tasks.get(source.id)?.status, "running");
+  assert.equal(f.typed.length, 0);
+});
+
 test("a retryable post-merge launch refusal returns the linked queued task and reason", async () => {
   installRetroSkill();
   enableSkills(true);

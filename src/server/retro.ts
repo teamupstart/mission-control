@@ -247,6 +247,17 @@ async function startPostMergeRetro(
       error: "The merged pull request no longer has its source task, so its retro cannot be linked safely.",
     };
   }
+  // A primary review can merge before an attached repository's review. The durable posture
+  // above answers where a retro would belong, not whether the whole source task has shipped.
+  // Task completion is the existing merge-quorum projection, so wait for that single source of
+  // truth rather than reimplementing the per-repository changed-set rule in retro routing.
+  if (sourceTask.status !== "done") {
+    return {
+      kind: "refused",
+      status: 409,
+      error: `The source task is still ${sourceTask.status}. Wait until it is complete, including every attached repository review, before starting its post-merge retro.`,
+    };
+  }
 
   const requiredSkills = [retroSkillId, PULL_REQUEST_SKILL].filter(
     (skillId): skillId is string => skillId !== null,

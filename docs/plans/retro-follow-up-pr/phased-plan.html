@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Phased implementation: post-merge retro follow-up pull requests</title>
+  <style>
+    :root { color-scheme: light dark; --bg:#f4f2ec; --paper:#fffdf8; --ink:#20251f; --muted:#646b62; --line:#d8d5cb; --accent:#086f5b; --soft:#dceee8; --blue:#315f8d; --shadow:0 18px 48px rgba(44,48,41,.09); }
+    @media (prefers-color-scheme: dark) { :root { --bg:#111512; --paper:#181e1a; --ink:#eef1eb; --muted:#aab2aa; --line:#354038; --accent:#66d3b9; --soft:#193e35; --blue:#92bde4; --shadow:0 18px 48px rgba(0,0,0,.28); } }
+    * { box-sizing:border-box; } body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.62 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif; }
+    main { width:min(1080px,calc(100% - 32px)); margin:32px auto 72px; } article { background:var(--paper); border:1px solid var(--line); border-radius:20px; box-shadow:var(--shadow); overflow:hidden; }
+    header { padding:clamp(30px,6vw,68px); border-bottom:1px solid var(--line); background:linear-gradient(145deg,var(--soft),transparent 74%); }
+    .eyebrow { margin:0 0 12px; color:var(--accent); font-weight:760; letter-spacing:.12em; text-transform:uppercase; font-size:.76rem; }
+    h1 { max-width:850px; margin:0; font:750 clamp(2.2rem,6vw,4.9rem)/.98 ui-serif,Georgia,serif; letter-spacing:-.04em; }
+    .lede { max-width:800px; color:var(--muted); font-size:1.14rem; margin:24px 0 0; }
+    .metric { display:flex; gap:12px; flex-wrap:wrap; margin-top:28px; } .metric span { padding:9px 13px; border:1px solid var(--line); border-radius:999px; background:color-mix(in srgb,var(--paper) 82%,transparent); }
+    .content { padding:clamp(26px,6vw,64px); } section + section { margin-top:50px; }
+    h2 { margin:0 0 18px; font:720 clamp(1.5rem,3vw,2.15rem)/1.15 ui-serif,Georgia,serif; letter-spacing:-.02em; } h3 { margin:26px 0 8px; color:var(--accent); font-size:1.06rem; }
+    p { max-width:840px; margin:10px 0; } ul { max-width:850px; padding-left:1.35rem; } li + li { margin-top:7px; } code { color:var(--blue); font:.92em ui-monospace,SFMono-Regular,Menlo,monospace; }
+    a { color:var(--accent); text-decoration-thickness:.08em; text-underline-offset:.2em; }
+    .table-wrap,.diagram { max-width:100%; overflow-x:auto; border:1px solid var(--line); border-radius:14px; }
+    table { width:100%; min-width:720px; border-collapse:collapse; background:color-mix(in srgb,var(--paper) 93%,var(--soft)); } th,td { padding:14px 16px; text-align:left; vertical-align:top; border-bottom:1px solid var(--line); } th { color:var(--accent); font-size:.78rem; letter-spacing:.05em; text-transform:uppercase; } tr:last-child td { border-bottom:0; }
+    .phase-card { padding:22px; border:1px solid var(--accent); border-radius:16px; background:var(--soft); } .phase-card h3 { margin-top:0; } .phase-card p { margin-bottom:0; }
+    .note { max-width:850px; padding:16px 18px; border-left:4px solid var(--accent); background:var(--soft); border-radius:4px 12px 12px 4px; }
+    .diagram { padding:22px; background:color-mix(in srgb,var(--paper) 92%,var(--soft)); } svg { display:block; width:100%; min-width:700px; height:auto; } .node { fill:var(--paper); stroke:var(--line); stroke-width:1.5; } .node-accent { fill:var(--soft); stroke:var(--accent); stroke-width:2; } .edge { fill:none; stroke:var(--muted); stroke-width:2.4; marker-end:url(#arrow); } .svg-title { fill:var(--ink); font:700 17px ui-sans-serif,system-ui,sans-serif; } .svg-copy { fill:var(--muted); font:13px ui-sans-serif,system-ui,sans-serif; }
+    pre { max-width:100%; overflow:auto; padding:18px; border:1px solid var(--line); border-radius:12px; background:var(--bg); } footer { padding:22px clamp(26px,6vw,64px); border-top:1px solid var(--line); color:var(--muted); font-size:.88rem; }
+    @media (max-width:760px) { main { width:min(100% - 16px,1080px); margin-top:8px; } article { border-radius:14px; } }
+  </style>
+</head>
+<body>
+<main><article>
+  <header>
+    <p class="eyebrow">Merge-aware implementation plan</p>
+    <h1>One complete post-merge retro lifecycle</h1>
+    <p class="lede">A single implementation task owns the durable relation, dispatch boundary, no-change completion, shipping rules, API response, and dashboard explanation.</p>
+    <div class="metric"><span><strong>1</strong> phase</span><span><strong>400–600</strong> estimated production LOC</span><span><strong>0</strong> concurrent siblings</span></div>
+  </header>
+  <div class="content">
+    <section>
+      <h2>Source and adopted decisions</h2>
+      <p>Source plan: <a href="plan.html">rendered plan</a> · <a href="plan.md">Markdown source</a></p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Decision</th><th>Adopted answer</th></tr></thead>
+        <tbody>
+          <tr><td>Every retro gets its own PR?</td><td>No. An open source PR keeps the retro on its existing branch and review.</td></tr>
+          <tr><td>After the work PR merges?</td><td>Create or reuse a separate retro task, dispatch immediately when possible, and ship approved changes in a new PR.</td></tr>
+          <tr><td>Does the click complete the source task?</td><td>No. The source task remains in its existing completed state.</td></tr>
+          <tr><td>How does the retro task complete?</td><td>Its own PR merge, or a verified no-change outcome when no memory is approved.</td></tr>
+          <tr><td>If launch is unavailable?</td><td>Keep the same idempotent task in the backlog and report why.</td></tr>
+          <tr><td>Scheduled implementation model?</td><td>Codex on <code>gpt-5.6-sol</code> with <code>xhigh</code> effort.</td></tr>
+        </tbody>
+      </table></div>
+    </section>
+
+    <section>
+      <h2>Repository findings</h2>
+      <ul>
+        <li><code>src/server/retro.ts</code> currently chooses live delivery before considering task pull-request posture.</li>
+        <li><code>primaryRepoPrForTask</code> already supplies durable merged history across current and historical work episodes.</li>
+        <li>Resumed work can reverse an idle-inferred task completion, so the retro must not continue inside the completed feature task after merge.</li>
+        <li>Historical merge evidence can settle later work if episode identity is blurred. The retro therefore needs its own task episode and PR binding.</li>
+        <li>The retro skill's current “never open a second PR” rule needs an explicit open-versus-merged branch.</li>
+        <li><code>RetroResponse</code> permits additive arms, while existing clients currently assume only delivered or dispatched.</li>
+        <li>No narrow agent-callable outcome exists for a correct retro that produces no commit.</li>
+        <li>The existing Playwright retro-offer spec already drives the real browser-to-daemon flow with fake agents and local hooks.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Why one phase</h2>
+      <p class="note">The estimated 400 to 600 non-test production lines span several layers, but they form one transactional vertical slice. Splitting would publish either tasks that cannot finish without a fake pull request, a UI that cannot explain what the route did, or an MCP completion tool no launched retro can use.</p>
+      <p>The work is larger than the 200-line one-shot threshold, but no independently operable merge boundary reduces risk. Storage, route orchestration, launch outcome, no-change settlement, wire vocabulary, and dashboard behavior must agree in the same merged commit.</p>
+    </section>
+
+    <section>
+      <h2>Phase and dependency</h2>
+      <div class="phase-card">
+        <h3>Phase 1: post-merge retro follow-up lifecycle</h3>
+        <p><a href="phase-1-post-merge-retro-follow-up.md">Open the detailed implementation guide</a>. It owns the durable link, task dispatch, conditional shipping procedure, no-change MCP outcome, response/UI changes, tests, and documentation.</p>
+      </div>
+      <div class="diagram" role="img" aria-label="The implementation phase waits for the planning pull request to merge, then delivers one complete lifecycle.">
+        <svg viewBox="0 0 850 210" xmlns="http://www.w3.org/2000/svg">
+          <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10z" fill="currentColor"/></marker></defs>
+          <rect class="node" x="40" y="57" width="285" height="94" rx="16"/><text class="svg-title" x="182" y="91" text-anchor="middle">Planning PR merged</text><text class="svg-copy" x="182" y="116" text-anchor="middle">Publishes every referenced path</text><text class="svg-copy" x="182" y="136" text-anchor="middle">and satisfies the task dependency</text>
+          <path class="edge" d="M325 104 H510"/>
+          <rect class="node-accent" x="510" y="42" width="300" height="124" rx="16"/><text class="svg-title" x="660" y="78" text-anchor="middle">Phase 1 implementation</text><text class="svg-copy" x="660" y="104" text-anchor="middle">One task · one reviewable PR</text><text class="svg-copy" x="660" y="126" text-anchor="middle">Complete lifecycle, all gates green</text><text class="svg-copy" x="660" y="148" text-anchor="middle">No downstream phase</text>
+        </svg>
+      </div>
+      <p>Only one implementation task is scheduled. It depends directly on the current planning session and cannot release until this planning pull request merges.</p>
+    </section>
+
+    <section>
+      <h2>Contracts Phase 1 owns</h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Contract</th><th>Required shape</th></tr></thead>
+        <tbody>
+          <tr><td>PR split</td><td>Open uses current session; merged uses a linked task and new branch.</td></tr>
+          <tr><td>Source completion</td><td>Creating or running the follow-up never mutates the source task status.</td></tr>
+          <tr><td>Idempotency</td><td>At most one follow-up per source task work episode.</td></tr>
+          <tr><td>Dispatch</td><td>Try immediate ordinary dispatch; preserve the same backlog task on recoverable failure.</td></tr>
+          <tr><td>Shipping</td><td>Approved memory commits use ordinary agent-authored pull-request shipping.</td></tr>
+          <tr><td>No-change</td><td>A narrow MCP operation completes only its calling, durably linked retro task.</td></tr>
+          <tr><td>Wire compatibility</td><td>Preserve <code>delivered</code> and <code>dispatched</code>; append <code>started</code> and <code>queued</code>.</td></tr>
+          <tr><td>Multiple repositories</td><td>Copy the source repository set and open one PR per changed repository.</td></tr>
+        </tbody>
+      </table></div>
+    </section>
+
+    <section>
+      <h2>Audit record</h2>
+      <ul>
+        <li>Every approved decision belongs to Phase 1, including the open-PR exception, original-task immutability, immediate launch, automatic new-PR shipping, and no-change completion.</li>
+        <li>The response is additive, database writes remain daemon-owned, and work-episode identity replaces title-based inference.</li>
+        <li>The phase starts from the default branch after this plan merges and ends in a complete user-visible state.</li>
+        <li>Migration, lifecycle, MCP bundle, shared UI, and browser verification are not deferred.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Final verification</h2>
+      <pre><code>npm run typecheck
+npm run lint
+npm test
+npm run build
+npm run smoke
+npm run test:e2e</code></pre>
+      <p>The detailed phase file is the proposed route, not a specification. The implementation agent uses engineering judgment where the current repository disagrees and records material deviations in the pull request.</p>
+    </section>
+  </div>
+  <footer>Source of truth: <code>docs/plans/retro-follow-up-pr/phased-plan.md</code> · Detailed phase: <a href="phase-1-post-merge-retro-follow-up.md">phase-1-post-merge-retro-follow-up.md</a></footer>
+</article></main>
+</body>
+</html>

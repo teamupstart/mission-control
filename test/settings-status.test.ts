@@ -32,7 +32,10 @@ mkdirSync(bin);
 writeFileSync(join(bin, "gh"), "#!/bin/sh\necho 'gh: boom' 1>&2\nexit 1\n");
 chmodSync(join(bin, "gh"), 0o755);
 process.env.HARNESS_HOME = join(home, "state");
-process.env.PATH = `${bin}:${process.env.PATH ?? ""}`;
+// Keep binary-presence assertions hermetic. Retaining the workstation PATH makes an
+// operator-installed `conduct-ts` turn this test's intentional absent state into present.
+// The fake `gh` above has an absolute /bin/sh shebang, so it needs no host PATH entries.
+process.env.PATH = bin;
 
 const { openDb } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");

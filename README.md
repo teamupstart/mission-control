@@ -13,6 +13,11 @@ what is active, what needs a decision, and what is ready for the next step.
 
 ![Mission Control fleet board](docs/images/fleet-board.png)
 
+Open a session's **Files** tab to browse its workspace. In **Preview** mode, <kbd>↑</kbd>
+and <kbd>↓</kbd> change the selected file instead of moving through the session rail. Press
+<kbd>⇥</kbd> to enter the rendered preview; once it has focus, <kbd>↑</kbd> and <kbd>↓</kbd>
+scroll the page.
+
 ## Dispatch with context
 
 Start a task in the right repository, choose its harness and runtime, and decide whether the

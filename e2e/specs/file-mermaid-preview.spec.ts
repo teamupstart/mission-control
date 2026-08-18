@@ -156,7 +156,10 @@ test("Files Preview renders isolated Mermaid diagrams while Editor keeps exact s
   await dashboard.keyboard.press("ControlOrMeta+a");
   await dashboard.keyboard.insertText(updated);
   await modes.getByRole("button", { name: "Preview" }).click();
-  await second.scrollIntoViewIfNeeded();
+  await expect(async () => {
+    await preview.getByRole("figure", { name: "Mermaid diagram 4" }).scrollIntoViewIfNeeded();
+    await expect(secondFrame.getByText("Updated label")).toBeVisible();
+  }).toPass();
   await expect(second).toHaveAttribute("data-mermaid-state", "rendered");
   await expect(secondFrame.getByText("Updated label")).toBeVisible();
   await expect(secondFrame.getByText("Original label")).toHaveCount(0);

@@ -2416,6 +2416,54 @@ body {
   padding: 0 24px max(64px, var(--cmdbar-clearance, 0px));
 }
 
+.app-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex: none;
+  margin: 0 4px 18px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in oklab, var(--working) 35%, var(--border));
+  border-radius: 10px;
+  background: color-mix(in oklab, var(--working) 9%, var(--panel));
+}
+.app-banner-copy {
+  min-width: 0;
+}
+.app-banner p {
+  margin: 3px 0 0;
+  color: var(--muted);
+  line-height: 1.4;
+}
+.app-banner-actions {
+  display: flex;
+  gap: 8px;
+  flex: none;
+}
+.app-banner-error {
+  border-color: color-mix(in oklab, var(--danger) 42%, var(--border));
+  background: color-mix(in oklab, var(--danger) 9%, var(--panel));
+}
+.app-banner-success {
+  border-color: color-mix(in oklab, var(--idle) 38%, var(--border));
+  background: color-mix(in oklab, var(--idle) 8%, var(--panel));
+}
+.app-console > .app-banner,
+.app-board > .app-banner {
+  margin: 0;
+  border-width: 0 0 1px;
+  border-radius: 0;
+  padding-inline: 22px;
+}
+
+@media (max-width: 640px) {
+  .app-banner {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+
 /* ---- top bar ---- */
 .topbar {
   position: sticky;

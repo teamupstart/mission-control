@@ -118,6 +118,8 @@ import { ContextMenuHost, type ContextMenuHandle } from "./components/ContextMen
 import type { PaletteStores, PaletteTarget } from "./lib/palette-index.ts";
 import { buildSettingsBindings } from "./lib/settings-search.ts";
 import { useRichText } from "./lib/rich-text.ts";
+import { useDesktopUpdates } from "./useDesktopUpdates.ts";
+import { UpdateBanner } from "./components/UpdateBanner.tsx";
 import { useGuidedDispatch } from "./lib/guided-dispatch.ts";
 import {
   SeeWorkTourController,
@@ -235,6 +237,7 @@ interface SeeWorkTourRun {
 }
 
 export function App(): React.JSX.Element {
+  const desktopUpdates = useDesktopUpdates();
   const {
     sessions,
     reviews,
@@ -2884,6 +2887,14 @@ export function App(): React.JSX.Element {
             </div>
           </div>
         </header>
+
+        <UpdateBanner
+          snapshot={desktopUpdates.snapshot}
+          onApply={desktopUpdates.apply}
+          onDefer={desktopUpdates.defer}
+          onCheck={desktopUpdates.check}
+          onDismiss={desktopUpdates.dismiss}
+        />
 
         <AppPageShell
           page={route.page}

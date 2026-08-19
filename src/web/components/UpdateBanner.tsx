@@ -1,7 +1,7 @@
 import type { UpdateSnapshot } from "@shared/update.ts";
 
 interface UpdateBannerProps {
-  snapshot: UpdateSnapshot;
+  snapshot: UpdateSnapshot | null;
   onApply: () => void;
   onDefer: () => void;
   onCheck: () => void;
@@ -17,6 +17,8 @@ function releaseSummary(notes: string): string {
 
 export function UpdateBanner(props: UpdateBannerProps): React.JSX.Element | null {
   const { snapshot } = props;
+
+  if (!snapshot) return null;
 
   if (snapshot.phase === "applying") {
     return (
@@ -58,7 +60,8 @@ export function UpdateBanner(props: UpdateBannerProps): React.JSX.Element | null
     );
   }
 
-  if (snapshot.lastOutcome?.result === "failure") {
+  if ((snapshot.phase === "idle" || snapshot.phase === "disabled")
+    && snapshot.lastOutcome?.result === "failure") {
     return (
       <section className="app-banner app-banner-error" role="status">
         <div className="app-banner-copy">
@@ -73,7 +76,8 @@ export function UpdateBanner(props: UpdateBannerProps): React.JSX.Element | null
     );
   }
 
-  if (snapshot.lastOutcome?.result === "success") {
+  if ((snapshot.phase === "idle" || snapshot.phase === "disabled")
+    && snapshot.lastOutcome?.result === "success") {
     return (
       <section className="app-banner app-banner-success" role="status">
         <strong>Mission Control updated successfully to {snapshot.lastOutcome.targetVersion}.</strong>

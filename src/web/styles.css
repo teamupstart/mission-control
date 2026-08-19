@@ -7252,6 +7252,17 @@ mark.find-hit.is-current {
   border-color: var(--working);
   background: color-mix(in oklab, var(--working) 38%, var(--bg-2));
 }
+/* Foreman is input to the child, but it is not the operator's input. Carry the same
+   purple provenance as Chat all the way through the terminal's node and shell host, then
+   give the payload a bounded reading surface. The surrounding spine remains continuous,
+   so this still reads as terminal traffic rather than a chat bubble pasted into it. */
+.pty-foreman::after {
+  border-color: var(--foreman);
+  background: color-mix(in oklab, var(--foreman) 38%, var(--bg-2));
+}
+.pty-foreman .pty-host {
+  color: var(--foreman);
+}
 /* The agent's node in the agent's own colour, from the inline `--agent-accent` the panel
    already carries - so a third harness is marked in its colour with no rule here. */
 .pty-agent::after {
@@ -7331,6 +7342,119 @@ mark.find-hit.is-current {
    Use the same blue as every other Markdown link while keeping the dotted file underline. */
 .pty-copy.markdown a.workspace-path {
   color: var(--working);
+}
+
+/* Foreman's terminal provenance panel. Its signature is the left rule, borrowed from the
+   inline Foreman episode without borrowing that card's disposition colour: a transcript
+   turn says WHO delivered it, while the fixed review template below says what happened. */
+.pty-foreman-message {
+  margin-top: 8px;
+  border: 1px solid color-mix(in oklab, var(--foreman) 24%, var(--border));
+  border-left: 3px solid var(--foreman);
+  border-radius: 9px;
+  background: color-mix(in oklab, var(--foreman) 8%, var(--bg-2));
+}
+.pty-foreman-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 0 12px;
+  border-bottom: 1px solid color-mix(in oklab, var(--foreman) 18%, var(--border-soft));
+  border-radius: 7px 7px 0 0;
+  background: color-mix(in oklab, var(--foreman) 9%, var(--panel));
+  color: var(--dim);
+  font: 600 10px/1 var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.pty-foreman-mark {
+  color: var(--foreman);
+  font-size: 9px;
+}
+.pty-foreman-badge {
+  color: color-mix(in oklab, var(--foreman) 82%, var(--fg));
+  font-weight: 800;
+}
+.pty-foreman-status {
+  border: 1px solid var(--border-soft);
+  border-radius: 5px;
+  padding: 3px 6px;
+  background: color-mix(in oklab, var(--foreman) 7%, var(--panel));
+  color: var(--muted);
+  letter-spacing: 0.04em;
+}
+.pty-foreman-copy,
+.pty-foreman-review {
+  padding: 12px 14px 14px;
+  color: var(--fg);
+  font: 12.5px/1.65 var(--mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.pty-foreman-review {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  white-space: normal;
+}
+.pty-foreman-review p {
+  margin: 0;
+}
+.pty-foreman-intro {
+  color: var(--muted);
+}
+.pty-foreman-request {
+  color: var(--fg);
+  white-space: pre-wrap;
+}
+.pty-foreman-summary {
+  color: color-mix(in oklab, var(--foreman) 78%, var(--fg));
+  font-weight: 700;
+}
+.pty-foreman-findings {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.pty-foreman-finding {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.pty-foreman-finding-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+.pty-foreman-finding-head strong {
+  color: var(--fg);
+  font-weight: 650;
+}
+.pty-foreman-kind {
+  border: 1px solid color-mix(in oklab, var(--attention) 35%, var(--border));
+  border-radius: 4px;
+  padding: 1px 5px;
+  background: color-mix(in oklab, var(--attention) 8%, var(--bg-2));
+  color: var(--attention);
+}
+.pty-foreman-finding p {
+  padding-left: 22px;
+  color: var(--fg);
+}
+.pty-foreman-finding p > span {
+  color: color-mix(in oklab, var(--foreman) 78%, var(--fg));
+  font-weight: 700;
+}
+.pty-foreman-safety {
+  padding-top: 10px;
+  border-top: 1px solid color-mix(in oklab, var(--foreman) 16%, var(--border-soft));
+  color: var(--muted);
+  white-space: pre-wrap;
 }
 
 /* The folded run: one line closed, the literal commands open. */

@@ -29,6 +29,11 @@ and <kbd>↓</kbd> change the selected file instead of moving through the sessio
 <kbd>⇥</kbd> to enter the rendered preview; once it has focus, <kbd>↑</kbd> and <kbd>↓</kbd>
 scroll the page.
 
+The **Terminal view** keeps every turn in one stream while still distinguishing who sent it.
+Foreman turns carry their purple provenance from the chat log into the terminal, and completion
+reviews separate the original request, each missing item, its suggested fix, and the safety note
+instead of presenting the whole review as one flat paste.
+
 ## Dispatch with context
 
 Start a task in the right repository, choose its harness and runtime, and decide whether the

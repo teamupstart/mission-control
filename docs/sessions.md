@@ -890,7 +890,10 @@ one stream, the way the session actually ran. **Chat** draws a byline per speake
 bubbles, and tool calls as grey chips. In Terminal:
 
 - what you sent is a prompt line, `you@mission ~/repo ❯ ...`, naming whoever typed it - a
-  turn Foreman sent reads `foreman@mission`, never as though you asked for it;
+  turn Foreman sent reads `foreman@mission`, never as though you asked for it. Foreman's
+  purple node, host and bounded message panel carry the same provenance as its chat entry;
+  a completion review also separates its original request, findings, suggested fixes and
+  safety note so the actionable part is scannable without leaving the terminal stream;
 - what the agent said is a block of stdout under a `claude / stdout` header;
 - a run of back-to-back tool calls folds into one record - *claude executed 3 commands* -
   which opens to the literal commands and paths, rather than becoming rows in the log;

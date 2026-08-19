@@ -928,9 +928,10 @@ two PNGs beside it, so it is only as fresh as they are.
 
 `e2e/.artifacts/jira-task-source/` carries three frames
 from `specs/settings-task-sources-jira.spec.ts`, behind the same `MC_E2E_EVIDENCE` flag. The
-spec can prove a field exists, holds a value and survives a reload; the frames are what show
-that the Jira group tiles into the card's existing rhythm, and that the sentence naming a
-missing credential lands somewhere a person will read it.
+spec can prove a field exists, holds a value and survives a reload; it also turns off
+**Allow backlog autopilot** and proves that per-source task default survives the same round
+trip. The frames are what show that the Jira group tiles into the card's existing rhythm,
+and that the sentence naming a missing credential lands somewhere a person will read it.
 
 That last one is the frame two fixes were made for, and neither is visible in a DOM
 assertion alone: the action note moved **below** the buttons that produce it (the card is
@@ -1074,6 +1075,26 @@ Regenerate them with:
 env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   --config e2e/playwright.config.ts \
   e2e/specs/backlog-task-delete.spec.ts \
+  --workers=1 --reporter=list
+```
+
+Attach the generated frames to the pull request; they are never committed.
+
+### Dispatching a parked backlog task
+
+`e2e/.artifacts/dispatch-backlog-autopilot/` carries the two visible states from
+`specs/dispatch-backlog-autopilot.spec.ts`. `01-dispatch-toggle-off.png` shows **Backlog
+details** with **Allow backlog autopilot** off and its parked-task consequence in plain text.
+`02-parked-backlog-card.png` shows the task after **Add to backlog**, with its off switch and
+`autopilot will skip this` consequence visible on the Board. The same run reopens the card and
+proves the editor reads the disabled state back.
+
+Regenerate them with:
+
+```sh
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/dispatch-backlog-autopilot.spec.ts \
   --workers=1 --reporter=list
 ```
 

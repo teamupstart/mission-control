@@ -365,10 +365,13 @@ whenever it is there.
 
 The form leads with the brief: repo, then the task composer, with the crew row (Agent,
 Kind, Model, Effort) beneath them and one shared hint in place of per-field boilerplate.
-**Backlog details** - priority, labels, title, and dependencies - fold behind a summary
-row that names what is set ("no priority · no labels · title summarized · no
-dependencies"), so nothing the draft carries can hide; the fold opens automatically when
-you edit a shelved task or the draft already holds one of them. Dependencies are chips
+**Backlog details** - priority, labels, title, backlog autopilot, and dependencies - fold behind
+a summary row that names what is set ("no priority · no labels · title summarized · autopilot
+on · no dependencies"), so nothing the draft carries can hide; the fold opens automatically
+when you edit a shelved task or the draft already holds one of them. Turn **Allow backlog
+autopilot** off before **Add to backlog** to create the task disabled, where Foreman skips it
+until you enable or manually launch it. **Dispatch now** still launches immediately.
+Dependencies are chips
 with a grouped **+ Add dependency** picker rather than a multi-select listbox, and an
 unmet dependency raises an amber note beside them as well as renaming the primary button.
 The **Single agent / Ensemble** toggle sits in the modal header, since it reshapes the
@@ -801,9 +804,10 @@ Meanwhile work already exists somewhere: open issues, a triage board, an on-call
 a worktree, never resets a checkout and never types into a session. That is what makes
 turning one on a much smaller decision than [GitHub Inspector](inspector-and-shipping.md#inspector-automated-pr-review) or
 [Shipping](inspector-and-shipping.md#shipping-yolo-mode): the worst a broken source can do is put junk in a list you
-then read and delete. Auto-dispatching swept work is deliberately **not** a feature - it is
-a different risk class, and it would need its own gate (an allowlist, a rate limit, a dry
-run) of exactly the kind Foreman carries.
+then read and delete. The sweep itself never auto-dispatches. Once filed, a task follows the
+separately configured [backlog autopilot](work-queues.md#backlog-autopilot-foreman-schedules-the-fleet)
+like any other backlog row. That is why each source can turn **Allow backlog autopilot** off
+and make all of its future tasks arrive parked for review instead.
 
 Work goes the other way exactly once, and only when you send it: **[Push a task to
 GitHub](#push-a-task-to-github)**, from a backlog task's own editor. That is a per-task
@@ -823,7 +827,7 @@ turning it on is consent. Per source:
 | **Files tasks against** | the repo swept tasks are based on, resolved server-side so a typo can't enter |
 | **Sweep every** | how often, clamped to 1 minute - 24 hours. Default 15 minutes |
 | **Most tasks per sweep** | hard cap, default 25. What it drops is logged and reported, never silently truncated |
-| **What a swept task looks like** | the agent, kind, priority and labels every task from this source carries |
+| **What a swept task looks like** | the agent, kind, priority and labels every task from this source carries, plus whether backlog autopilot may schedule it. Turn **Allow backlog autopilot** off to make new tasks from this source arrive [parked](#hold-a-backlog-item-back) for review; they can still be enabled or launched manually |
 | **Sweep now** | run it once, right now, and see what it filed |
 | **Check it works** | can this source reach its upstream with the credential it needs, and does its filter run? Each kind checks - and names - its own: `gh` for GitHub issues, the `jira` CLI or a `JIRA_API_TOKEN` for Jira |
 | **Forget seen items** | make everything this source has filed fileable again |

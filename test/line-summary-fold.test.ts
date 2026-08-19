@@ -55,7 +55,7 @@ function mkSource(over: Partial<TaskSourceInstance> = {}): TaskSourceInstance {
     enabled: true,
     repoRoot: "/repo",
     intervalMs: 15 * 60_000,
-    defaults: { kind: "ship", agent: "claude", priority: null, labels: [] },
+    defaults: { kind: "ship", agent: "claude", priority: null, labels: [], enabled: true },
     maxPerSweep: 25,
     config: {},
     ...over,

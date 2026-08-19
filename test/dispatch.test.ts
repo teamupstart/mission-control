@@ -79,7 +79,12 @@ test("DispatchSchema fills defaults and requires repo + intent", () => {
     assert.equal(ok.data.kind, "ship");
     assert.equal(ok.data.agent, "claude");
     assert.equal(ok.data.backlog, false);
+    assert.equal(ok.data.enabled, true);
   }
+  assert.equal(
+    DispatchSchema.parse({ repoRoot: "/x", intent: "do it", backlog: true, enabled: false }).enabled,
+    false,
+  );
   assert.equal(DispatchSchema.safeParse({ intent: "x" }).success, false);
   assert.equal(DispatchSchema.safeParse({ repoRoot: "/x" }).success, false);
   assert.equal(

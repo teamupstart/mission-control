@@ -396,6 +396,8 @@ export const TaskSourceDefaultsSchema = z.object({
   agent: z.enum(AGENT_TYPES).default("claude"),
   priority: z.enum(TASK_PRIORITIES).nullable().default(null),
   labels: z.array(z.string()).max(MAX_LABELS).default([]).transform(normalizeLabels),
+  /** Whether Foreman's backlog autopilot may schedule tasks this source files. */
+  enabled: z.boolean().default(true),
 });
 export type TaskSourceDefaults = z.infer<typeof TaskSourceDefaultsSchema>;
 

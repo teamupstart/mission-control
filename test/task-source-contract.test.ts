@@ -84,6 +84,17 @@ test("a source ships switched off - adding one is configuration, enabling it is 
   assert.equal(parsed.maxPerSweep, DEFAULT_MAX_PER_SWEEP);
   assert.equal(parsed.defaults.priority, null, "nothing infers a priority");
   assert.deepEqual(parsed.defaults.labels, []);
+  assert.equal(parsed.defaults.enabled, true, "existing sources remain eligible for autopilot");
+});
+
+test("a source can default every swept task to disabled", () => {
+  const parsed = TaskSourceInstanceSchema.parse({
+    id: "s1",
+    kind: "github-issues",
+    repoRoot: "/repo",
+    defaults: { enabled: false },
+  });
+  assert.equal(parsed.defaults.enabled, false);
 });
 
 // A mistyped interval must not let a source hammer someone else's API, nor park itself

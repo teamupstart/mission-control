@@ -177,6 +177,7 @@ test("every field on the form reaches the patch", () => {
     model: "gpt-5.6-sol",
     effort: "xhigh",
     workflowId: "workflow-review",
+    enabled: false,
     dependencies: [{ type: "task", taskId: "prerequisite" }],
   };
   // Attachments are excluded on purpose: they are not a task field, they are how the
@@ -212,4 +213,5 @@ test("a working copy is stale exactly when the row's editable fields moved", () 
   assert.ok(!draftsEqual(seed, draftFromTask(mkTask({ priority: "blocker" }))));
   assert.ok(!draftsEqual(seed, draftFromTask(mkTask({ priority: "low", labels: ["bug"] }))));
   assert.ok(!draftsEqual(seed, draftFromTask(mkTask({ priority: "low", title: "Renamed" }))));
+  assert.ok(!draftsEqual(seed, draftFromTask(mkTask({ priority: "low", enabled: false }))));
 });

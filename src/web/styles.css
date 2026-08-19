@@ -8063,8 +8063,8 @@ mark.find-hit.is-current {
 }
 
 /* ---- schedule switch (may the backlog autopilot take this item?) ----
-   Drawn by `ScheduleSwitch` in session-bits.tsx, on the board's backlog card and on
-   the Sitrep panel's backlog rows.
+   Drawn by `ScheduleSwitch` in session-bits.tsx, on the board's backlog card, in the
+   dispatch form, and on the Sitrep panel's backlog rows.
 
    ON is the quiet state and it HAS to be, because it is the state of every task there
    has ever been: a backlog nobody has parked anything in must not read as a column of
@@ -8898,6 +8898,30 @@ button.dispatch-guided-rung .dispatch-guided-num {
   border-radius: 0 0 8px 8px;
   padding: 12px 12px 14px;
   background: color-mix(in srgb, var(--bg-2) 45%, transparent);
+}
+
+/* The task-level scheduling choice belongs with the backlog metadata, but it is not another
+   text field. A bounded row gives the copy and the same switch used on stored backlog cards
+   one shared click-sized home without making an ordinary on-state look like a warning. */
+.dispatch-autopilot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 9px 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--panel) 70%, transparent);
+}
+.dispatch-autopilot.is-off {
+  border-color: color-mix(in oklab, var(--attention) 28%, var(--border-soft));
+  background: color-mix(in oklab, var(--attention) 6%, var(--panel));
+}
+.dispatch-autopilot-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
 }
 
 /* Dependencies as chips plus one grouped add control, replacing the native multi-select

@@ -1823,12 +1823,15 @@ export function PriorityChip({ priority }: { priority: TaskPriority | null }): R
 export function ScheduleSwitch({
   enabled,
   taskTitle,
+  ariaLabel,
   busy = false,
   onChange,
 }: {
   enabled: boolean;
-  /** Named in the accessible label, so a screen reader hears which card this is. */
+  /** Named in the default accessible label, so a screen reader hears which card this is. */
   taskTitle: string;
+  /** Override for a form where the surrounding label already identifies the task. */
+  ariaLabel?: string;
   /** A request is in flight; the control is inert until it lands. */
   busy?: boolean;
   onChange: (enabled: boolean) => void;
@@ -1845,7 +1848,7 @@ export function ScheduleSwitch({
         className={`task-switch${enabled ? "" : " is-off"}`}
         role="switch"
         aria-checked={enabled}
-        aria-label={`Foreman may schedule ${taskTitle}`}
+        aria-label={ariaLabel ?? `Foreman may schedule ${taskTitle}`}
         disabled={busy}
         onMouseDown={(e) => e.stopPropagation()}
         onClick={(e) => {

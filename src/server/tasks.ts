@@ -124,6 +124,11 @@ export interface CreateTaskInput {
   priority?: TaskPriority | null;
   /** Optional tags, already normalized by the schema that parsed them. */
   labels?: string[];
+  /**
+   * Whether backlog autopilot may schedule this task. Omitted means enabled; task sources
+   * name it when their per-source default parks newly swept work for review.
+   */
+  enabled?: boolean;
   /** Launch this agent on a specific model; omitted follows the harness default. */
   model?: string;
   /** Launch with a specific reasoning effort; omitted follows the harness default. */
@@ -1670,11 +1675,10 @@ export class TaskManager {
       priority: input.priority ?? null,
       labels: input.labels ?? [],
       dependencies,
-      // Always schedulable to begin with, on every path - the form, an MCP call, a task
-      // source sweep. Parking is a decision taken about an item you can already see on
-      // the board, so nothing gets to file work that is invisible to the autopilot
-      // without anyone having said so.
-      enabled: true,
+      // Human and internal callers remain schedulable by default. A task source can make
+      // the opposite choice explicit in its settings, so every item it files arrives on
+      // hold for review without a second, non-atomic update after creation.
+      enabled: input.enabled ?? true,
       // Stored as an override, not a resolved value: unset means the dispatcher asks
       // the harness config at launch time, so shelving a task doesn't freeze the
       // defaults it happened to see (see `resolveDispatchModel` and

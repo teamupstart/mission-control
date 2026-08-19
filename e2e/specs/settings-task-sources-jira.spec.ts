@@ -73,7 +73,7 @@ async function shoot(
   console.log(`CAPTURED e2e/.artifacts/jira-task-source/${name}.png`);
 }
 
-test("a Jira source is addable from the panel, arrives off, and keeps its filter", async ({
+test("a Jira source is addable, keeps its defaults, and can park swept tasks", async ({
   page,
   daemon,
 }) => {
@@ -94,6 +94,22 @@ test("a Jira source is addable from the panel, arrives off, and keeps its filter
 
   // Off, always: adding a source is configuration and turning it on is consent.
   await expect(page.getByRole("checkbox", { name: "Sweep Jira on a schedule" })).not.toBeChecked();
+
+  // Existing behavior stays the default: swept work is eligible for Foreman until the
+  // operator explicitly parks this source's future tasks. The setting is per source and
+  // persists with the other task defaults.
+  const allowAutopilot = page.getByRole("checkbox", {
+    name: "Allow backlog autopilot to schedule swept tasks",
+  });
+  await expect(allowAutopilot).toBeChecked();
+  await allowAutopilot.uncheck();
+  await expect
+    .poll(async () => {
+      const res = await page.request.get(`${daemon.baseURL}/api/task-sources/config`);
+      const body = (await res.json()) as { sources?: { defaults?: { enabled?: boolean } }[] };
+      return body.sources?.[0]?.defaults?.enabled;
+    })
+    .toBe(false);
 
   // Compacting the repository name must not cost the row the action and health description
   // it already carried. The full path is appended to that description and painted on hover.
@@ -148,6 +164,9 @@ test("a Jira source is addable from the panel, arrives off, and keeps its filter
   await page.reload();
   await expect(page.getByLabel("JQL filter")).toHaveValue(JQL);
   await expect(page.getByLabel("Jira site")).toHaveValue("acme.atlassian.net");
+  await expect(
+    page.getByRole("checkbox", { name: "Allow backlog autopilot to schedule swept tasks" }),
+  ).not.toBeChecked();
   await shoot(page, "jira-source-configured");
 });
 

@@ -72,7 +72,7 @@ import {
   type PendingAttachment,
 } from "./ImageDrop.tsx";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
-import { LabelChips } from "./session-bits.tsx";
+import { LabelChips, ScheduleSwitch } from "./session-bits.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 import {
   GuidedPicker,
@@ -234,6 +234,7 @@ function isEmptyDispatchDraft(d: DispatchDraft): boolean {
     d.model === EMPTY_DISPATCH_DRAFT.model &&
     d.effort === EMPTY_DISPATCH_DRAFT.effort &&
     d.workflowId === EMPTY_DISPATCH_DRAFT.workflowId &&
+    d.enabled === EMPTY_DISPATCH_DRAFT.enabled &&
     d.dependencies.length === 0
   );
 }
@@ -2030,6 +2031,9 @@ function DispatchModal({
           workflowId: submitted.workflowId,
           dependencies: submitted.dependencies,
           backlog: !launchesNow,
+          // The switch governs a task left in the backlog. An immediate dispatch is
+          // launching now, so it cannot meaningfully arrive parked.
+          enabled: launchesNow ? true : submitted.enabled,
         });
     // An edit is a save first and a launch second, so the two are two calls: the save
     // has landed by the time the dispatch is asked for, and a refused dispatch leaves
@@ -2300,6 +2304,7 @@ function DispatchModal({
     draft.title.trim() ? "titled" : "title summarized",
     ...(backlogCompatible
       ? [
+          draft.enabled ? "autopilot on" : "autopilot off",
           dependencyCount > 0
             ? `${dependencyCount} ${dependencyCount === 1 ? "dependency" : "dependencies"}`
             : "no dependencies",
@@ -2758,7 +2763,7 @@ function DispatchModal({
                 detailsOpen
                   ? `Collapse the ${backlogCompatible ? "backlog" : "task"} details`
                   : backlogCompatible
-                    ? "Priority, labels, title and dependencies"
+                    ? "Priority, labels, title, backlog autopilot and dependencies"
                     : "Priority, labels and title"
               }
             >
@@ -2828,6 +2833,25 @@ function DispatchModal({
                 </div>
 
                 {titleField}
+
+                {backlogCompatible && (
+                  <div className={`dispatch-autopilot${draft.enabled ? "" : " is-off"}`}>
+                    <span className="dispatch-autopilot-copy">
+                      <span className="field-label">Allow backlog autopilot</span>
+                      <span className="field-hint">
+                        {draft.enabled
+                          ? "Foreman may schedule this task from the backlog."
+                          : "This task stays parked until you dispatch it or turn this back on."}
+                      </span>
+                    </span>
+                    <ScheduleSwitch
+                      enabled={draft.enabled}
+                      taskTitle={draft.title.trim() || "this backlog task"}
+                      ariaLabel="Allow backlog autopilot to schedule this task"
+                      onChange={(enabled) => update({ enabled })}
+                    />
+                  </div>
+                )}
 
                 {backlogCompatible && <div className="field">
                   <span className="field-label">

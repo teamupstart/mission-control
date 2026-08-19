@@ -47,6 +47,11 @@ same task without advancing the pass.
 also finds by name. See
 [the guided pass](docs/dispatch-and-backlog.md#the-guided-pass).
 
+Open **Backlog details** to choose whether Foreman may automatically schedule a task added
+from Dispatch. Turning **Allow backlog autopilot** off parks the new task in the backlog until
+you enable or manually launch it. This switch affects backlog creation only: **Dispatch now**
+still launches the task immediately.
+
 Choose **chat** for an open-ended conversation. It requires an opening message and launches
 immediately from Dispatch, with no backlog, dependencies, generated artifact, archive, or
 automatic after-work action. The session stays yours to continue and complete unless you

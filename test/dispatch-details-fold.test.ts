@@ -1,5 +1,5 @@
 // What is at stake: the dispatch form leads with the brief (repo, task) and folds the
-// backlog bookkeeping (priority, labels, title, dependencies) behind a summary row. The
+// backlog bookkeeping (priority, labels, title, autopilot, dependencies) behind a summary row. The
 // failure this guards against is a fold that HIDES state: a draft carrying a priority or a
 // dependency whose collapsed row does not say so, or an editor that opens with the task's
 // own fields out of reach behind a closed fold.
@@ -25,7 +25,7 @@ test("a fresh dispatch leads with the task and folds the backlog details", () =>
   assert.ok(taskAt >= 0 && crewAt > taskAt, "the task composer leads and the crew row follows");
   // Collapsed, with the summary naming every field it hides - set or not.
   assert.match(html, /aria-expanded="false"/);
-  assert.match(html, /no priority · no labels · title summarized · no dependencies/);
+  assert.match(html, /no priority · no labels · title summarized · autopilot on · no dependencies/);
   // Collapsed means the fields are not rendered, not merely styled away.
   assert.doesNotMatch(html, /placeholder="e\.g\. bug, infra"/);
 });

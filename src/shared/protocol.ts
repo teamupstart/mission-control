@@ -881,6 +881,11 @@ export const DispatchSchema = z
      */
     workflowId: z.string().min(1).max(500).nullable().optional(),
     backlog: z.boolean().optional().default(false),
+    /**
+     * Whether Foreman's backlog autopilot may schedule this task. Defaults on for every
+     * existing caller; the dispatch form can turn it off when it shelves a task for review.
+     */
+    enabled: z.boolean().optional().default(true),
     dependencies: TaskDependenciesSchema.optional().default([]),
     ...TASK_TRIAGE_FIELDS,
   })

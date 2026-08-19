@@ -51,7 +51,7 @@ function mkSource(over: Partial<TaskSourceInstance> = {}): TaskSourceInstance {
     enabled: true,
     repoRoot: "/repo",
     intervalMs: 900_000,
-    defaults: { kind: "ship", agent: "claude", priority: null, labels: [] },
+    defaults: { kind: "ship", agent: "claude", priority: null, labels: [], enabled: true },
     maxPerSweep: 25,
     config: {},
     ...over,
@@ -88,6 +88,7 @@ function fakeTasks(): TaskManager {
         agent: input.agent,
         priority: input.priority ?? null,
         labels: input.labels ?? [],
+        enabled: input.enabled ?? true,
         repoRoot: input.repoRoot,
         source: input.source ?? null,
         status: "backlog",
@@ -115,12 +116,28 @@ test("a sweep files its items into the BACKLOG, never dispatched", async () => {
   assert.equal(report.filed, 1);
   const [task] = listTasks();
   assert.equal(task!.status, "backlog");
+  assert.equal(task!.enabled, true);
   assert.equal(task!.worktreePath, null, "nothing was provisioned");
   assert.deepEqual(task!.source, {
     sourceId: "src-1",
     externalId: "owner/repo#1",
     url: "https://example.test/1",
   });
+});
+
+test("a source can file every task disabled so backlog autopilot leaves it parked", async () => {
+  const report = await ingestSweep(
+    mkSource({
+      defaults: { kind: "ship", agent: "claude", priority: null, labels: [], enabled: false },
+    }),
+    sweep([mkCandidate()]),
+    fakeTasks(),
+    deps,
+  );
+  assert.equal(report.filed, 1);
+  const [task] = listTasks();
+  assert.equal(task!.status, "backlog");
+  assert.equal(task!.enabled, false);
 });
 
 test("a re-sweep of the same item files nothing", async () => {
@@ -203,7 +220,15 @@ test("a candidate whose repoRoot is not a git repo is refused, and stays fileabl
 // invent a priority level or flood a card with tags.
 test("labels and priority go through the shared normalizer", async () => {
   await ingestSweep(
-    mkSource({ defaults: { kind: "ship", agent: "claude", priority: "med", labels: ["swept"] } }),
+    mkSource({
+      defaults: {
+        kind: "ship",
+        agent: "claude",
+        priority: "med",
+        labels: ["swept"],
+        enabled: true,
+      },
+    }),
     sweep([
       mkCandidate({
         labels: ["Type: Bug", "type: bug", "  ", "x".repeat(60)],
@@ -223,7 +248,9 @@ test("labels and priority go through the shared normalizer", async () => {
 
 test("a candidate that says `null` priority is not given the source's default", async () => {
   await ingestSweep(
-    mkSource({ defaults: { kind: "ship", agent: "claude", priority: "high", labels: [] } }),
+    mkSource({
+      defaults: { kind: "ship", agent: "claude", priority: "high", labels: [], enabled: true },
+    }),
     sweep([mkCandidate({ priority: null })]),
     fakeTasks(),
     deps,

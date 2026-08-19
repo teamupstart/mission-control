@@ -782,16 +782,7 @@ test("runs that stopped for one reason fold into one bar, and the strip stops ca
   // claim about all three rather than an artefact of three separately-named fixtures.
   const version = await publishFailingWorkflow(daemon, "Pile review");
   const seeded: SeededRun[] = [];
-  /**
-   * One more run on the pile: dispatch, bind, submit, kill, and wait for the block.
-   *
-   * SEQUENTIAL, and that is a constraint of the fake rather than a preference. `fake-claude`
-   * reports one fixed conversation id per daemon (`MC_E2E_SESSION_ID`), so every session it
-   * launches shares a note key - and `createBinding` allows one active binding per note key.
-   * Two live bindings at once is a 409, so each session has to be orphaned (which releases
-   * its binding) before the next can be bound. The cost is one `EXIT_LINGER_MS` window each,
-   * which is why this spec seeds three and not thirty-one.
-   */
+  /** One more run on the pile: dispatch, bind, submit, kill, and wait for the block. */
   const pile = async (nth: string): Promise<void> => {
     const run = await seedReviewRun(
       dashboard,

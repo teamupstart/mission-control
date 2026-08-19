@@ -36,8 +36,9 @@ const PREVIEW_SCROLL_SCRIPT_HASH = "boIuepZJzJEM7sUoJjNJy7i6nq6MHE3t38Bfnj4GnvM=
  * then CORS-blocks into a white pane. The `navigate-to` CSP directive that was meant to
  * stop this never shipped in any browser. So navigation is claimed here instead: every
  * non-fragment click is cancelled and its href posted up, and the parent decides whether
- * it names a checkout file worth selecting. Fragment links stay native - same-document
- * scrolling is the one navigation the sandbox does correctly.
+ * it names a checkout file worth selecting. Fragment links are cancelled and scrolled by
+ * the bridge so Chromium cannot replace the sandboxed srcdoc with an empty document; an
+ * empty fragment preserves the browser's conventional scroll-to-top behavior explicitly.
  *
  * `composedPath` rather than `target.closest`, because a click inside an open shadow root
  * retargets to the host and a missed anchor here is not a dead link - it is the default
@@ -48,8 +49,8 @@ const PREVIEW_SCROLL_SCRIPT_HASH = "boIuepZJzJEM7sUoJjNJy7i6nq6MHE3t38Bfnj4GnvM=
  * companion artifact, leaving every unclaimed link inert.
  */
 const PREVIEW_LINK_MESSAGE = "mission:file-preview-link";
-const PREVIEW_LINK_SCRIPT = `document.addEventListener("click",event=>{const origin=event.composedPath()[0];const anchor=origin instanceof Element?origin.closest("a[href]"):null;if(!anchor)return;const href=anchor.getAttribute("href");if(!href||href.startsWith("#"))return;event.preventDefault();parent.postMessage({type:"${PREVIEW_LINK_MESSAGE}",href},"*")},true)`;
-const PREVIEW_LINK_SCRIPT_HASH = "ADNimZ0/NOY6W/JTdVdn5R5DYWseUUp14To0zvMfzF4=";
+const PREVIEW_LINK_SCRIPT = `document.addEventListener("click",event=>{const origin=event.composedPath()[0];const anchor=origin instanceof Element?origin.closest("a[href]"):null;if(!anchor)return;const href=anchor.getAttribute("href");if(!href)return;event.preventDefault();if(href.startsWith("#")){const raw=href.slice(1);if(!raw){scrollTo({top:0});return}let id=raw;try{id=decodeURIComponent(raw)}catch{}(document.getElementById(id)||[...document.getElementsByName(id)].find(target=>target instanceof HTMLAnchorElement))?.scrollIntoView();return}parent.postMessage({type:"${PREVIEW_LINK_MESSAGE}",href},"*")},true)`;
+const PREVIEW_LINK_SCRIPT_HASH = "0DQ6IkD0vFcUQsY+X6LP861dP2RW9HXIVdbSAi5MkBk=";
 const PREVIEW_CSP =
   `default-src 'none'; connect-src 'none'; script-src 'sha256-${PREVIEW_SCROLL_SCRIPT_HASH}' 'sha256-${PREVIEW_LINK_SCRIPT_HASH}'; style-src 'unsafe-inline'; img-src data: blob:; ` +
   "font-src data:; form-action 'none'; navigate-to 'none'";

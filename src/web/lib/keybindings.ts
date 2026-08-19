@@ -271,8 +271,8 @@ export const ACTIONS: readonly ActionDef[] = [
   },
   {
     id: "rename",
-    label: "Rename session",
-    description: "Rename the selected session's terminal home (Shift+R).",
+    label: "Rename selected item",
+    description: "Rename the selected session or archived scout (Shift+R).",
     defaultBinding: "shift+r",
     group: "selection",
   },

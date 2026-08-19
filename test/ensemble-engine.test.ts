@@ -206,6 +206,7 @@ test("retrying a failed member appends an attempt and reuses the logical member"
     attempts.map((a) => a.attempt).sort(),
     [1, 2],
   );
+  assert.equal(gateway.created.at(-1)?.title, "Candidate 1 - Try approaches");
 });
 
 test("retrying a member whose wave already succeeded still dispatches it, not leaving it backlog", async () => {

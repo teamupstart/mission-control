@@ -186,6 +186,7 @@ test("busy SDK sessions retain editable text until confirmed idle", async () => 
   const submitted = f.manager.submit(f.id, "follow up after the current turn");
   assert.equal(submitted.delivery, "pending");
   assert.equal(f.registry.getSession(f.id)?.pendingTurns[0]?.text, "follow up after the current turn");
+  assert.equal(f.registry.getGoal(f.id), null, "editable text has not been accepted");
   await tick();
   assert.deepEqual(f.calls, []);
 
@@ -193,6 +194,7 @@ test("busy SDK sessions retain editable text until confirmed idle", async () => 
   await tick();
   assert.deepEqual(f.calls, ["follow up after the current turn"]);
   assert.deepEqual(f.registry.getSession(f.id)?.pendingTurns, []);
+  assert.equal(f.registry.getGoal(f.id)?.prompt, "follow up after the current turn");
   f.manager.stop();
 });
 
@@ -354,6 +356,7 @@ test("a driver busy result returns the claimed row to the editable queue", async
   assert.equal(turn?.revision, 2);
   assert.match(turn?.lastError ?? "", /became busy/);
   assert.deepEqual(f.calls, ["do not steer this into active work"]);
+  assert.equal(f.registry.getGoal(f.id), null, "a refused turn never enters Goal capture");
   f.manager.stop();
   clearPendingTurns(f.key);
 });
@@ -503,6 +506,7 @@ test("SDK ownership changes during acknowledgement preserve uncertainty", async 
   const turn = listPendingTurns(key)[0];
   assert.equal(turn?.state, "uncertain");
   assert.match(turn?.lastError ?? "", /ownership changed/);
+  assert.equal(registry.getGoal(id), null, "an uncertain owner cannot receive the prompt");
   manager.stop();
   clearPendingTurns(key);
 });

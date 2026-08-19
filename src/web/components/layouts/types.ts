@@ -122,8 +122,11 @@ export interface SessionViewProps {
   /** Register the mounted transcript's find surface, so the fleet-wide chord can open
    *  it on whichever conversation is selected. */
   registerFind: (id: string, handle: TranscriptFindHandle | null) => void;
-  /** Register the open detail pane's vertical reader for Console arrow-key scrolling. */
-  registerDetailScroll: (id: string, scroll: ((direction: -1 | 1) => void) | null) => void;
+  /** Register the open detail pane's owner for vertical reader and file-navigation arrows. */
+  registerDetailScroll: (
+    id: string,
+    scroll: ((direction: -1 | 1, fromReader: boolean) => boolean) | null,
+  ) => void;
   /** Register the open detail's tab stepper, so Tab/Shift+Tab can cycle its tabs. Returns
    *  "edge" when there is no next/previous tab (App clamps forward, exits to the rail back). */
   registerReaderTab: (id: string, nav: ((dir: -1 | 1) => "moved" | "edge") | null) => void;

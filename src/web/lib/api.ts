@@ -22,6 +22,7 @@ import type {
   SessionFileSaveResult,
   SessionQueue,
   SkillsView,
+  Task,
   TaskKind,
   TaskPriority,
   TranscriptMessage,
@@ -36,6 +37,7 @@ import type {
   CostTelemetryStatus,
   HarnessesConfig,
   HarnessesConfigPatch,
+  HarnessModelCatalogs,
   InspectorConfig,
   InspectorConfigPatch,
   LlmConfig,
@@ -58,6 +60,7 @@ import type {
   WorktreesConfig,
   WorktreesConfigPatch,
 } from "@shared/protocol.ts";
+import { HarnessModelCatalogsSchema } from "@shared/protocol.ts";
 import type {
   WorktreeActionExecuteResult,
   WorktreeActionPreview,
@@ -179,6 +182,24 @@ export const fetchForemanEpisode = (id: number) =>
 export const fetchBacklogPlan = () => fetchJson<BacklogPlan>("/api/backlog/plan");
 /** Dispatch-time defaults the harness applies to the sessions it launches. */
 export const fetchHarnessesConfig = () => fetchJson<HarnessesConfig>("/api/harnesses/config");
+/**
+ * The complete dispatch-time model catalog, read once by the root browser provider.
+ *
+ * Unlike most optional reads in this module, this response is narrowed at the browser
+ * boundary. A stale tab can be talking to an older daemon, and a malformed aggregate must
+ * degrade to the shipped catalog rather than become three partially trusted picker lists.
+ */
+export async function fetchHarnessModelCatalogs(
+  refresh = false,
+  signal?: AbortSignal,
+): Promise<HarnessModelCatalogs | null> {
+  const value = await fetchJsonWithSignal<unknown>(
+    `/api/harnesses/models${refresh ? "?refresh=1" : ""}`,
+    signal,
+  );
+  const parsed = HarnessModelCatalogsSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
 export const fetchWorktrees = (signal?: AbortSignal) =>
   fetchJsonWithSignal<WorktreeInventory>("/api/worktrees", signal);
 
@@ -1319,6 +1340,17 @@ export const api = {
     post(`/api/reviews/${encodeURIComponent(id)}/resolve`, { action, response, selections }),
   // --- dispatch (agents) ---
   dispatch: (input: DispatchInput) => post(`/api/tasks`, input),
+  /** Launch the fixed, read-only Terra task used only by the See the work tour spike. */
+  startSeeWorkTourDemo: (repoRoot: string) =>
+    post<ActionResult & { task?: Task }>("/api/tours/see-work/dispatch", { repoRoot }),
+  /** Launch the fixed Chat conversation used when the tour starts on an empty fleet. */
+  startSeeWorkTourPreview: (repoRoot: string) =>
+    post<ActionResult & { task?: Task }>("/api/tours/see-work/preview", { repoRoot }),
+  /** Record the fixed Tour demo outcome and close any session the spike launched. */
+  completeSeeWorkTourDemo: (taskId: string) =>
+    post<ActionResult & { task?: Task }>(
+      `/api/tours/see-work/tasks/${encodeURIComponent(taskId)}/complete`,
+    ),
   /**
    * Launch an existing task. Dashboard callers claim `overrideDisabled` for this manual
    * action; without that claim the daemon refuses a parked task.
@@ -1569,6 +1601,14 @@ export const api = {
     post<OpenFileResult & ActionResult>(
       `/api/archives/${encodeURIComponent(archiveKey)}/artifacts/${encodeURIComponent(artifactId)}/open`,
       { target },
+    ),
+
+  /** Change only this machine's display name for an immutable archive. */
+  renameArchive: (archiveKey: string, title: string) =>
+    request<ActionResult & { title?: string }>(
+      "PATCH",
+      `/api/archives/${encodeURIComponent(archiveKey)}`,
+      { title },
     ),
 
   /**

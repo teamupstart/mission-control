@@ -384,6 +384,36 @@ export class ArchiveStore {
     });
   }
 
+  /**
+   * Project a local display name over one immutable bundle title.
+   *
+   * The durable value lives in `ArchiveTitleStore`, never in this disposable table. This
+   * update only makes the current index agree immediately; the reconciler reapplies the
+   * sidecar after any later whole-row replacement or database rebuild.
+   */
+  renameTitle(key: string, rawTitle: string): boolean | null {
+    const title = clip(rawTitle, ARCHIVE_TEXT_LIMITS.title);
+    if (!title) return null;
+    return this.inTransaction(() => {
+      const current = this.db.prepare(`SELECT title FROM archives WHERE key = ?`).get(key) as
+        | { title: string }
+        | undefined;
+      if (!current) return null;
+      if (current.title === title) return false;
+      this.db.prepare(`UPDATE archives SET title = ? WHERE key = ?`).run(title, key);
+
+      // A title is normally the first search segment, but unreadable bundles have none and
+      // future formats need not preserve today's ordinal layout. Replace by KIND and insert
+      // at -1 so the local name is always the first explanation for a matching query.
+      this.db.prepare(`DELETE FROM archive_search_segments WHERE key = ? AND source_kind = 'title'`).run(key);
+      this.db.prepare(
+        `INSERT INTO archive_search_segments (key, ordinal, source_kind, text, text_fold)
+         VALUES (?, -1, 'title', ?, ?)`,
+      ).run(key, title, title.toLowerCase());
+      return true;
+    });
+  }
+
   get(key: string): ArchiveRow | null {
     const row = this.db.prepare(`SELECT * FROM archives WHERE key = ?`).get(key) as unknown as
       | ArchiveRowShape

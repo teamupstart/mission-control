@@ -9,7 +9,7 @@ import {
   SETTINGS_SCOPES,
   type SettingsCategoryId,
 } from "../src/web/lib/settings-registry.ts";
-import { LAYOUTS } from "../src/web/lib/layout.ts";
+import { SELECTABLE_LAYOUTS } from "../src/web/lib/layout.ts";
 import { CONVERSATION_VIEW_OPTIONS } from "../src/web/lib/conversation-view.ts";
 import type { ForemanState } from "../src/web/useForeman.ts";
 import type { CostState } from "../src/web/useCost.ts";
@@ -74,6 +74,7 @@ function render(
       layout: "grid",
       onLayoutChange: () => {},
       settingsStatus: opts.settingsStatus ?? null,
+      onStartSeeWorkTour: () => {},
     }),
   );
 }
@@ -293,29 +294,21 @@ test("every glyph in Settings declares its own size", () => {
   }
 });
 
-test("the layout picker offers every layout, with the live one checked", () => {
+test("the layout picker omits Cards while leaving its live layout state alone", () => {
   const html = render("display");
   assert.deepEqual(
-    LAYOUTS.map((layout) => layout.label),
-    ["Board", "Cards", "Console"],
-    "layouts are ordered alphabetically",
+    SELECTABLE_LAYOUTS.map((layout) => layout.label),
+    ["Board", "Console"],
+    "only supported settings choices are offered",
   );
-  // Every shipped layout is on offer...
-  for (const l of LAYOUTS) assert.ok(html.includes(l.label), `picker missing ${l.label}`);
-  // ...and the one App handed us is the checked radio, not a local guess. Rendering the
-  // panel against `layout: "grid"` must not leave a different mode selected - that is the
-  // bug where the picker and the dashboard behind it disagree about what you're in.
-  // (React emits `checked=""` BEFORE `value`, so the attributes are matched in that order.)
-  // Scoped by `name`, because Display holds a second radio group (the conversation
-  // rendering) and counting every radio in the pane would make this assertion answer to a
-  // control it is not about.
+  // Cards is still renderable for stored grid preferences, but it is no longer a control a
+  // person can choose in Display settings. Scoped by `name`, because Display holds a second
+  // radio group (the conversation rendering).
   const radios = (html.match(/<input[^>]*type="radio"[^>]*>/g) ?? []).filter((i) =>
     i.includes('name="layout"'),
   );
-  const checked = radios.filter((i) => i.includes("checked"));
-  assert.equal(radios.length, LAYOUTS.length, "one radio per layout");
-  assert.equal(checked.length, 1, "exactly one layout is checked");
-  assert.match(checked[0]!, /value="grid"/);
+  assert.equal(radios.length, SELECTABLE_LAYOUTS.length, "one radio per selectable layout");
+  assert.ok(!radios.some((i) => i.includes('value="grid"')), "Cards cannot be enabled from settings");
 });
 
 test("the layout panel is absent from every other category", () => {

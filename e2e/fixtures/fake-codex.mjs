@@ -40,12 +40,14 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 
-/** Fixed so a spec can assert against a known id; the driver only cares that it is stable. */
-const THREAD_ID = process.env.MC_E2E_CODEX_THREAD_ID ?? "01999999-0000-7000-8000-000000000001";
+/** Stable per fake process, so one spec can hold two independent Codex sessions at once. */
+const DEFAULT_THREAD_ID = `01999999-0000-7000-8000-${String(process.pid).padStart(12, "0").slice(-12)}`;
+const THREAD_ID = process.env.MC_E2E_CODEX_THREAD_ID ?? DEFAULT_THREAD_ID;
 const MODEL = "gpt-5-codex-e2e-mock";
 const HELD_TURN = "hold the current turn open";
 const FINAL_ANSWER_HELD_TURN = "hold the current turn open and finish with only a final answer";
 const HELD_TURN_MS = 5_000;
+const SEE_WORK_TOUR_MARKER = "[Mission Control See the work tour demo]";
 /**
  * The prompt that leaves a RUN of executed commands in the rollout.
  *
@@ -401,6 +403,21 @@ function runTurn(turnId, input) {
     turnState.interrupt = () => {
       clearTimeout(turnState.timer);
       // No agent message: the turn was cut off, so it never finished saying anything.
+      finish([]);
+    };
+    openTurn = turnState;
+    return;
+  }
+  // The product-tour task asks a real model to pause before opening Mission Control's MCP
+  // review channel. The browser spec posts the identical review-channel payload directly,
+  // as the MCP bundle itself does, while this cost-free fake holds the agent lifecycle in a
+  // genuine Working state long enough for the Board stop to observe it. Resolution and this
+  // timer then converge on Idle without any model tokens.
+  if (prompt.includes(SEE_WORK_TOUR_MARKER)) {
+    const turnState = { prompts: [prompt] };
+    turnState.timer = setTimeout(() => finish(turnState.prompts), HELD_TURN_MS);
+    turnState.interrupt = () => {
+      clearTimeout(turnState.timer);
       finish([]);
     };
     openTurn = turnState;

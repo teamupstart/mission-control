@@ -131,7 +131,8 @@ Append the service dependency to `buildApp` and wire its singleton in `src/serve
 - `GET /api/product-issues/preflight` returns target, capability state and actionable failures.
 - `POST /api/product-issues/preview` validates the draft, assigns `dashboard`, and returns the exact
   target, fixed labels, allowlisted environment, rendered body, and draft/request identity.
-- `POST /api/product-issues` validates the draft and always calls the service as `dashboard`.
+- Keep `POST /api/product-issues` unavailable in Phase 1. Phase 2 may add dashboard mutation only
+  with proof that its human confirmation completed.
 - `POST /mcp/product-issues/preview` checks the daemon token, resolves the agent session, validates
   the draft, assigns `agent`, and returns the same exact preview shape.
 - `POST /mcp/product-issues` checks the daemon token, resolves the agent session the same way other
@@ -178,7 +179,8 @@ Add or extend focused tests for:
 - stdin body transport and fixed argv;
 - every outcome classification branch and unchanged task-source behavior;
 - target override validation and all preflight failures;
-- dashboard versus MCP preview/mutation source derivation and token enforcement;
+- dashboard preview source derivation, unavailable dashboard mutation, and MCP source/token
+  enforcement;
 - demo-mode inertness and concurrent request claims;
 - production rejection of non-empty attachment lists before runner invocation;
 - injected-capability resolution, byte sniffing, count/aggregate bounds and anticipated argv;
@@ -228,9 +230,10 @@ manual verification may create and close one disposable text-only issue after ch
 ## Downstream handoff
 
 Phase 2 may rely on the shared draft, preview, preflight and result contracts, the dashboard preview
-and mutation routes, the production attachment capability being false and the fixed labels/body
-behavior. It must not reimplement label mapping, body construction, source derivation, preflight or
-retry-safety logic in the browser.
+route, the daemon service, the production attachment capability being false and the fixed
+labels/body behavior. It must add a confirmation-bound dashboard mutation route and must not
+reimplement label mapping, body construction, source derivation, preflight or retry-safety logic in
+the browser.
 
 The future release-follow-up may change only the isolated attachment adapter, capability detection,
 related schemas/copy and tests needed by the stable CLI. It must not weaken public confirmation or
@@ -242,5 +245,11 @@ enable caller-chosen repositories and labels.
   here. The direct UI remains wholly in Phase 2.
 - Compatibility reconciliation: dashboard confirmation reuses `input` reviews rather than adding a
   persisted review kind, so no migration or ReviewModal branch becomes a Phase 2 prerequisite.
+- Review reconciliation: the unauthenticated dashboard mutation route is deferred to Phase 2 so a
+  local caller cannot publish after preview without proof of completed human confirmation.
+- Review reconciliation: preflight paginates the target's complete label collection before checking
+  the required set, so repositories with more than 100 labels do not receive a false refusal.
+- Review reconciliation: launch-scoped MCP registration propagates the daemon's browser or Electron
+  context because the external Node MCP child cannot recover Electron ownership from its own process.
 - Contract reconciliation: `attachmentUploadIds` is present from Phase 1 but production accepts only
   empty lists, which lets Phase 2 render disabled state without inventing a different draft.

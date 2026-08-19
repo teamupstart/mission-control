@@ -13,6 +13,22 @@ what is active, what needs a decision, and what is ready for the next step.
 
 ![Mission Control fleet board](docs/images/fleet-board.png)
 
+The temporary **See the work** product tour starts from the **Help & tours** footer in the
+Settings rail or from **Start See the work tour** in the <kbd>⌘K</kbd> palette's **Do** group.
+If the fleet is empty, the tour starts one temporary Chat conversation and uses its real Board
+drill-in to show the session desk. Its Dispatch sequence
+then fills the real task input, explains the **None** Workflow choice, and waits for the
+operator to click the highlighted **Dispatch now** button while the rest of the form stays
+visible. Its final step opens the real Complete dialog with the outcome prefilled as **Tour
+demo**, so the operator can inspect **Run a retro first** and **Complete & close**. Those dialog
+actions stay disabled during the preview; the tour owns its fixed cleanup and never runs a
+retro.
+
+Open a session's **Files** tab to browse its workspace. In **Preview** mode, <kbd>↑</kbd>
+and <kbd>↓</kbd> change the selected file instead of moving through the session rail. Press
+<kbd>⇥</kbd> to enter the rendered preview; once it has focus, <kbd>↑</kbd> and <kbd>↓</kbd>
+scroll the page.
+
 ## Dispatch with context
 
 Start a task in the right repository, choose its harness and runtime, and decide whether the
@@ -114,6 +130,21 @@ and remote review state visible beside the work that produced it.
 ![Mission Control Foreman settings](docs/images/foreman.png)
 
 ![Mission Control GitHub Inspector settings](docs/images/inspector.png)
+
+## Report a public product issue through an agent
+
+When you explicitly ask an agent to report a Mission Control product issue, the bundled Mission
+MCP server prepares the exact GitHub title, labels, body, and safe environment summary. Mission
+Control then opens that public preview in the dashboard and blocks publication until you select
+**Submit public issue**. Dismissing the review publishes nothing.
+
+Reports are text-only in this release and use your installed, authenticated GitHub CLI. Screenshot
+upload remains disabled until the upstream CLI attachment contract ships and is verified. There is
+not yet a direct dashboard Feedback form or dashboard mutation endpoint; that confirmation-bound
+user-facing path is a separate follow-up.
+
+See [the MCP tool reference](docs/sessions.md#review-channel-mcp) and
+[security boundaries](docs/security.md#public-product-issue-reporting).
 
 ## Watch a pipeline engine you already use
 

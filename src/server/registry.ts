@@ -2333,7 +2333,7 @@ export class Registry extends EventEmitter {
       // `syncSessionsForGoal`, so running it before the emit above would leave that emit
       // shipping the pre-goal object and the card would show the change only on the next
       // unrelated event.
-      this.captureGoalPrompt(next, spec, evt, now);
+      this.captureHookGoalPrompt(next, spec, evt, now);
       // Last of all, and only on the proof-grade signal. `prUrl` alone is a text match
       // that `gh pr view` trips; `prCreated` means the command was `gh pr create`. Nothing
       // persists that distinction, so this firing is the only chance to record that this PR
@@ -5945,14 +5945,36 @@ export class Registry extends EventEmitter {
    * reads neither. A harness whose bridge fires no prompt event answers null throughout,
    * and a session simply has no captured prompt for the refiner to work from.
    */
-  private captureGoalPrompt(s: Session, spec: HookSpec, evt: HookIngest, now: number): void {
+  private captureHookGoalPrompt(s: Session, spec: HookSpec, evt: HookIngest, now: number): void {
     const prompt = spec.promptText(evt);
     if (!prompt) return;
-    const raw = clampPrompt(prompt);
-    const prev = this.getGoal(s.id);
+    this.captureAcceptedPrompt(s.id, prompt, noteKeyFor(s), now);
+  }
+
+  /**
+   * Put one accepted human instruction into the runtime-neutral Goal pipeline.
+   *
+   * Hook adapters decide which hook payload contains a human prompt and SDK callers decide
+   * which acknowledged turns were human-authored. Both meet here, after acceptance. The
+   * expected key is the ownership guard: an SDK send can wait behind another operation, and
+   * a prompt accepted for one native conversation must never seed the Goal of a replacement
+   * conversation that bound while the acknowledgement was in flight.
+   */
+  captureAcceptedPrompt(
+    id: string,
+    prompt: string,
+    expectedNoteKey: string,
+    now = Date.now(),
+  ): SessionGoal | null {
+    const s = this.sessions.get(id);
+    if (!s || noteKeyFor(s) !== expectedNoteKey) return null;
+    const text = prompt.trim();
+    if (!text) return null;
+    const raw = clampPrompt(text);
+    const prev = this.getGoal(id);
     const firstObjective = !prev?.objective;
     const revision = (prev?.promptRevision ?? 0) + 1;
-    this.upsertGoal(s.id, {
+    return this.upsertGoal(id, {
       prompt: raw,
       focus: goalLine(raw),
       relationship: null,

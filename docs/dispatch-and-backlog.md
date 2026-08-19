@@ -752,10 +752,17 @@ launched still follows this card the next time it runs - and a rescheduled task 
 model it was never explicitly pinned with. If a Foreman-launched agent is not using the model
 set here, check tier 2 first - that is the setting overriding it.
 
-All three model lists are maintained in `src/shared/model.ts`; a model released after your
-build isn't in the picker, but a default set elsewhere (a newer build, or a `PUT` to
-`/api/harnesses/config`) still shows and still applies rather than being silently
-dropped.
+Every dispatch-time picker reads the same [browser model catalog](harnesses-and-terminals.md#dispatch-time-model-catalogs).
+Claude Code and Codex keep the shipped rows from `src/shared/model.ts`. Pi instead mirrors every
+model reported by the configured local Pi account, grouped by provider, while the shipped Pi rows
+remain its immediate and failure fallback. The browser performs one aggregate read when it loads,
+and **Retry Pi models** forces a refresh without polling.
+
+Loading or discovery failure never disables a picker or dispatch. A saved value missing from the
+current response, including one set by a newer build or a direct `PUT` to
+`/api/harnesses/config`, remains selected as **not currently reported** and still applies. The
+catalog explains that it is using a last-known or built-in list instead of treating absence as
+revocation.
 
 ### Default effort
 

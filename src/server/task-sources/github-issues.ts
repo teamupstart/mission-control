@@ -11,6 +11,7 @@ import type {
 import { GithubIssuesConfigSchema, TASK_SOURCE_KIND_INFO } from "@shared/task-source.ts";
 import type { TaskPriority } from "@shared/types.ts";
 import { ghBin } from "../config.ts";
+import { githubIssueCreateOutcome } from "../github/issue-create.ts";
 import { run } from "../util/exec.ts";
 import type { RunResult } from "../util/exec.ts";
 
@@ -293,42 +294,34 @@ export function ghIssueCreateArgs(cfg: GithubIssuesConfig, draft: PushDraft): st
  *     not a better one. Unknown, never success and never a retryable refusal.
  */
 export function pushResultFrom(res: RunResult, ctx: PushContext): PushResult {
-  if (res.outcomeUnknown) {
-    return {
-      ref: null,
-      error:
-        "gh issue create did not report back - the issue may exist; check GitHub before retrying",
-      outcomeUnknown: true,
-    };
+  const outcome = githubIssueCreateOutcome(res);
+  switch (outcome.kind) {
+    case "created":
+      return {
+        ref: {
+          sourceId: ctx.sourceId,
+          externalId: externalIdFor(outcome.url),
+          url: outcome.url,
+        },
+        error: null,
+        outcomeUnknown: false,
+      };
+    case "refused":
+      return {
+        ref: null,
+        error: `gh issue create failed${outcome.detail ? `: ${outcome.detail}` : ""}`,
+        outcomeUnknown: false,
+      };
+    case "unknown":
+      return {
+        ref: null,
+        error:
+          outcome.reason === "process"
+            ? "gh issue create did not report back - the issue may exist; check GitHub before retrying"
+            : "gh issue create reported success but printed no issue URL - the issue may exist; check GitHub before retrying",
+        outcomeUnknown: true,
+      };
   }
-  if (res.code !== 0) {
-    const why = (res.stderr || res.stdout).trim().split("\n")[0] ?? "";
-    return {
-      ref: null,
-      error: `gh issue create failed${why ? `: ${why}` : ""}`,
-      outcomeUnknown: false,
-    };
-  }
-  // The URL is the LAST such line, not the first: `gh` prints progress ("Creating issue
-  // in owner/repo") above it, and a future line above the URL must not become the id.
-  const url = res.stdout
-    .split("\n")
-    .map((l) => l.trim())
-    .filter((l) => /^https?:\/\//.test(l))
-    .pop();
-  if (!url) {
-    return {
-      ref: null,
-      error:
-        "gh issue create reported success but printed no issue URL - the issue may exist; check GitHub before retrying",
-      outcomeUnknown: true,
-    };
-  }
-  return {
-    ref: { sourceId: ctx.sourceId, externalId: externalIdFor(url), url },
-    error: null,
-    outcomeUnknown: false,
-  };
 }
 
 /**

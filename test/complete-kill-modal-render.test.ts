@@ -121,6 +121,25 @@ test("a session with no task says so instead of offering an empty completion", (
   assert.doesNotMatch(html, /Unblock the/);
 });
 
+test("the tour preview shows its fixed outcome and both safe completion choices", () => {
+  const html = renderToStaticMarkup(
+    withOverlayHost(
+      createElement(CompleteModal, {
+        session: sessionWithTask(),
+        tasks: [],
+        tourOutcome: "Tour demo",
+        onClose: () => {},
+      }),
+    ),
+  );
+
+  assert.match(html, /value="Tour demo"/);
+  assert.match(html, /Prefilled for the tour/);
+  assert.match(html, /Run a retro first/);
+  assert.match(html, /Complete &amp; close/);
+  assert.ok((html.match(/disabled=""/g) ?? []).length >= 2, html);
+});
+
 test("it states that completing also closes the session", () => {
   // The confirmation the operator asked for: Complete is not just an annotation.
   assert.match(renderComplete(sessionWithTask()), /closes this session/);

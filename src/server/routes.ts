@@ -22,6 +22,9 @@ import {
   DispatchBacklogTaskSchema,
   DispatchSchema,
   ResolveRepoSchema,
+  SEE_WORK_TOUR_DEMO_INTENT,
+  SEE_WORK_TOUR_PREVIEW_INTENT,
+  SeeWorkTourDispatchSchema,
   EditWorkItemSchema,
   FOREMAN_INSTRUCTIONS_CONFLICT_CODE,
   FOREMAN_INSTRUCTIONS_CONFLICT_MESSAGE,
@@ -39,6 +42,8 @@ import {
   InspectorConfigPatchSchema,
   LlmConfigPatchSchema,
   McpCreateTaskSchema,
+  McpProductIssuePreviewRequestSchema,
+  McpProductIssueSubmitRequestSchema,
   ResolveFindingsSchema,
   ShippingConfigPatchSchema,
   HookIngestSchema,
@@ -67,6 +72,7 @@ import {
   SendTextSchema,
   OpenSessionFileSchema,
   ArchiveSearchQuerySchema,
+  RenameArchiveSchema,
   DeleteArchiveSchema,
   OpenArchiveArtifactSchema,
   LaunchSessionTerminalSchema,
@@ -82,6 +88,7 @@ import {
   PromptedWrapupSchema,
   WrapupAskedSchema,
   PushTaskSchema,
+  ProductIssuePreviewRequestSchema,
   PipelineActionSchema,
   PipelineConsoleSchema,
   PipelineForemanEpisodeSchema,
@@ -137,6 +144,10 @@ import type {
   ResolveFindingsResult,
   TaskDependencyInput,
 } from "@shared/protocol.ts";
+import {
+  PRODUCT_ISSUE_LIMITS,
+  type ProductIssueSubmitResult,
+} from "@shared/product-issues.ts";
 import { capturePaneText } from "./discovery/pane-capture.ts";
 import { noteKeyFor } from "./registry.ts";
 import type { Registry } from "./registry.ts";
@@ -195,6 +206,7 @@ import type { AwayWatcher } from "./away/watcher.ts";
 import { getHarnessesConfig, setHarnessesConfig } from "./harnesses.ts";
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
 import type { HarnessModelCatalogService } from "./harness/model-catalog-service.ts";
+import type { ProductIssueService } from "./product-issues.ts";
 import type { WorktreeManager } from "./worktrees/manager.ts";
 import {
   WorktreeOperationError,
@@ -669,6 +681,22 @@ function artifactShortSha(locator: unknown): string | null {
   return null;
 }
 
+function productIssueSubmitResponse(result: ProductIssueSubmitResult): {
+  status: 201 | 502 | 503 | 504;
+  body: ProductIssueSubmitResult;
+} {
+  switch (result.outcome) {
+    case "created":
+      return { status: 201, body: result };
+    case "refused":
+      return { status: 502, body: result };
+    case "configuration":
+      return { status: 503, body: result };
+    case "unknown":
+      return { status: 504, body: result };
+  }
+}
+
 /**
  * Map one submission result to an HTTP status and body, for both the MCP and the manual route.
  *
@@ -801,6 +829,8 @@ export function buildApp(
    * do not exercise catalogs never construct or spawn one.
    */
   modelCatalogs?: HarnessModelCatalogService,
+  /** Daemon-owned public issue writer. Appended last for focused route-test compatibility. */
+  productIssues?: ProductIssueService,
 ): Hono {
   const app = new Hono();
   const terminalLauncher = launchSessionTerminal ?? launchTerminal;
@@ -843,6 +873,41 @@ export function buildApp(
 
   app.get("/api/health", (c) =>
     c.json({ ok: true, service: "mission-control", version: VERSION, pid: process.pid }),
+  );
+
+  // --- public product issue preflight/preview for the future dashboard form ---
+  app.get("/api/product-issues/preflight", async (c) => {
+    if (!productIssues) {
+      return c.json({
+        ready: false,
+        target: null,
+        attachments: { enabled: false, reason: "Product issue service unavailable" },
+        problems: [{ code: "invalid-target", message: "Product issue service unavailable" }],
+      }, 503);
+    }
+    return c.json(await productIssues.preflight());
+  });
+
+  app.post(
+    "/api/product-issues/preview",
+    bodyLimit({
+      maxSize: PRODUCT_ISSUE_LIMITS.requestJsonBytes,
+      onError: (c) => c.json({ error: "Product issue request is too large" }, 413),
+    }),
+    async (c) => {
+      if (!productIssues) {
+        return c.json({
+          outcome: "configuration",
+          message: "Product issue service unavailable",
+          retrySafe: true,
+        } as const, 503);
+      }
+      const parsed = await parseBody(c, ProductIssuePreviewRequestSchema);
+      if (!parsed.ok) return parsed.res;
+      const result = productIssues.preview("dashboard", parsed.data);
+      if (result.outcome === "preview") return c.json(result);
+      return c.json(result, result.outcome === "configuration" ? 503 : 409);
+    },
   );
 
   app.post("/api/worktrees/manual/acquire", async (c) => {
@@ -2089,11 +2154,11 @@ export function buildApp(
   });
   // --- The archive library ---
   //
-  // Five thin adapters over `ArchiveManager`. Nothing here touches the store, the
+  // Thin adapters over `ArchiveManager`. Nothing here touches the store, the
   // filesystem, or a path: a request names an opaque archive key and an opaque artifact id,
   // and the manager is the only thing that turns either into a file. That is what makes
   // "never accept a path from the browser" a property of the design rather than a rule each
-  // of these five has to remember.
+  // of these routes has to remember.
   const archiveLibrary = (): ArchiveManager | null => archives ?? null;
 
   app.get("/api/archives", (c) => {
@@ -2134,6 +2199,22 @@ export function buildApp(
     if (!library) return c.json({ error: "archive library unavailable" }, 503);
     const detail = library.detail(c.req.param("archiveKey"));
     return detail ? c.json(detail) : c.json({ error: "no such archive" }, 404);
+  });
+
+  // Rename only this machine's catalog entry. The immutable manifest and every archived
+  // byte stay untouched; `ArchiveManager` persists the display name beside the library so
+  // rebuilding the disposable index does not lose it.
+  app.patch("/api/archives/:archiveKey", async (c) => {
+    const library = archiveLibrary();
+    if (!library) return c.json({ error: "archive library unavailable" }, 503);
+    const parsed = await parseBody(c, RenameArchiveSchema);
+    if (!parsed.ok) return parsed.res;
+    try {
+      return c.json(await library.renameArchive(c.req.param("archiveKey"), parsed.data.title));
+    } catch (error) {
+      const failure = archiveErrorStatus(error);
+      return c.json({ ok: false, error: failure.message }, failure.status);
+    }
   });
 
   // One archived file's bytes.
@@ -2601,6 +2682,64 @@ export function buildApp(
     return c.json({});
   });
 
+  // --- MCP product issues (token-guarded; source and session are daemon-derived) ---
+  app.post(
+    "/mcp/product-issues/preview",
+    bodyLimit({
+      maxSize: PRODUCT_ISSUE_LIMITS.requestJsonBytes,
+      onError: (c) => c.json({ error: "Product issue request is too large" }, 413),
+    }),
+    async (c) => {
+      if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+      if (!productIssues) {
+        return c.json({
+          outcome: "configuration",
+          message: "Product issue service unavailable",
+          retrySafe: true,
+        } as const, 503);
+      }
+      const parsed = await parseBody(c, McpProductIssuePreviewRequestSchema);
+      if (!parsed.ok) return parsed.res;
+      const { env, sessionId, cwd, ...request } = parsed.data;
+      const session = registry.findSessionByEnv(env, sessionId, cwd);
+      if (!session || session.state === "exited") {
+        return c.json({ error: "no matching active session" }, 404);
+      }
+      const result = productIssues.preview("agent", request);
+      if (result.outcome === "preview") return c.json(result);
+      return c.json(result, result.outcome === "configuration" ? 503 : 409);
+    },
+  );
+
+  app.post(
+    "/mcp/product-issues",
+    bodyLimit({
+      maxSize: PRODUCT_ISSUE_LIMITS.requestJsonBytes,
+      onError: (c) => c.json({ error: "Product issue request is too large" }, 413),
+    }),
+    async (c) => {
+      if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+      if (!productIssues) {
+        return c.json({
+          outcome: "configuration",
+          message: "Product issue service unavailable",
+          retrySafe: true,
+        } as const, 503);
+      }
+      const parsed = await parseBody(c, McpProductIssueSubmitRequestSchema);
+      if (!parsed.ok) return parsed.res;
+      const { env, sessionId, cwd, ...request } = parsed.data;
+      const session = registry.findSessionByEnv(env, sessionId, cwd);
+      if (!session || session.state === "exited") {
+        return c.json({ error: "no matching active session" }, 404);
+      }
+      const response = productIssueSubmitResponse(
+        await productIssues.submit("agent", request),
+      );
+      return c.json(response.body, response.status);
+    },
+  );
+
   // --- MCP review channel (token-guarded) ---
   app.post("/mcp/reviews", async (c) => {
     if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
@@ -2992,7 +3131,7 @@ export function buildApp(
     if (foremanWriteRefused(session, parsed.data.origin)) {
       return c.json({ error: FOREMAN_UNINVITED }, 403);
     }
-    if (parsed.data.submit && pendingTurns) {
+    if (parsed.data.origin === "human" && parsed.data.submit && pendingTurns) {
       const result = pendingTurns.submit(session.id, parsed.data.text);
       return c.json(result, result.ok ? 200 : 409);
     }
@@ -3000,7 +3139,13 @@ export function buildApp(
     // a turn is one acked call, not a paste followed by an Enter that may or may not land.
     // `canMessage` is what the Send box asks, so this arm is what makes that button honest.
     if (session.runtime === "sdk") {
-      const sent = await deliverToDriver(sdkSessions, session, parsed.data.text);
+      const sent = await deliverToDriver(
+        sdkSessions,
+        session,
+        parsed.data.text,
+        undefined,
+        parsed.data.origin,
+      );
       return c.json(
         {
           ok: sent.ok,
@@ -3198,6 +3343,7 @@ export function buildApp(
       parsed.data.text,
       undefined,
       () => registry.promptResourceBlockerForSession(session.id),
+      parsed.data.origin,
     );
     // Only once it landed: a refused or failed delivery is not a turn anybody will read,
     // and claiming it would mis-attribute a LATER turn that happens to repeat the text.
@@ -4773,6 +4919,127 @@ export function buildApp(
       throw error;
     }
     return c.json(task);
+  });
+
+  // Temporary comparison-spike doorway for Chapter 1 of the product tour. This is not a
+  // second dispatch API: the body chooses only a repository, while this route fixes the
+  // harmless prompt, Codex Terra model, no-Workflow posture, and required review tool.
+  app.post("/api/tours/see-work/dispatch", async (c) => {
+    const parsed = await parseBody(c, SeeWorkTourDispatchSchema);
+    if (!parsed.ok) return parsed.res;
+    const resolved = await resolveTaskRepoRoot(parsed.data.repoRoot);
+    if (!resolved.ok) return c.json({ error: resolved.error }, 400);
+
+    const task = tasks.create(
+      {
+        repoRoot: resolved.repoRoot,
+        extraRepoRoots: [],
+        title: "Tour demo",
+        intent: SEE_WORK_TOUR_DEMO_INTENT,
+        kind: "ship",
+        agent: "codex",
+        model: "gpt-5.6-terra",
+        workflowId: null,
+        backlog: true,
+        dependencies: [],
+        priority: null,
+        labels: ["tour-demo"],
+      },
+      undefined,
+      MANUAL_DISPATCH_TASK_CREATE,
+    );
+    const launched = await tasks.dispatch(task.id, {
+      overrideDisabled: true,
+      missionMcp: { tools: ["request_input"] },
+    });
+    if (!launched.ok) {
+      await tasks.complete(task.id, "Tour demo");
+      return c.json({ ok: false, error: launched.error, task: tasks.get(task.id) ?? task }, 409);
+    }
+    return c.json({ ok: true, task: launched.task ?? task });
+  });
+
+  // An empty fleet has no real desk for stop three to reveal. Create one fixed Chat task
+  // through the manual-dispatch capability, which is the only supported way Chat can launch.
+  // The browser still chooses only an existing repository; agent, prompt, kind, Workflow,
+  // and the no-MCP posture remain server-owned.
+  app.post("/api/tours/see-work/preview", async (c) => {
+    const parsed = await parseBody(c, SeeWorkTourDispatchSchema);
+    if (!parsed.ok) return parsed.res;
+    const resolved = await resolveTaskRepoRoot(parsed.data.repoRoot);
+    if (!resolved.ok) return c.json({ error: resolved.error }, 400);
+
+    const task = tasks.create(
+      {
+        repoRoot: resolved.repoRoot,
+        extraRepoRoots: [],
+        title: "Tour conversation",
+        intent: SEE_WORK_TOUR_PREVIEW_INTENT,
+        kind: "chat",
+        agent: "codex",
+        workflowId: null,
+        backlog: false,
+        dependencies: [],
+        priority: null,
+        labels: ["tour-demo", "tour-preview"],
+      },
+      undefined,
+      MANUAL_DISPATCH_TASK_CREATE,
+    );
+    return c.json({ ok: true, task });
+  });
+
+  // The tour's single terminal path for both its Chat preview and live Ship task. A live demo
+  // follows CompleteModal's ordering: record the outcome, then stop the session. An Exit
+  // during provisioning has no session to stop, so cancellation first closes that race.
+  app.post("/api/tours/see-work/tasks/:id/complete", async (c) => {
+    const id = c.req.param("id");
+    const task = tasks.get(id);
+    if (!task) return c.json({ ok: false, error: "no such task" }, 404);
+    const isShipDemo =
+      task.title === "Tour demo" &&
+      task.labels.includes("tour-demo") &&
+      task.intent.startsWith("[Mission Control See the work tour demo]");
+    const isChatPreview =
+      task.title === "Tour conversation" &&
+      task.kind === "chat" &&
+      task.labels.includes("tour-preview") &&
+      task.intent.startsWith("[Mission Control See the work tour conversation]");
+    if (!isShipDemo && !isChatPreview) {
+      return c.json({ ok: false, error: "that task does not belong to the tour" }, 409);
+    }
+
+    let session = task.sessionId ? registry.getSession(task.sessionId) : null;
+    if (!session && task.status !== "done") {
+      const cancelled = await tasks.cancel(id);
+      if (!cancelled.ok) return c.json(cancelled, 500);
+    }
+    const outcome = isChatPreview ? "Tour conversation" : "Tour demo";
+    const completed = await tasks.complete(id, outcome);
+    if (!completed) return c.json({ ok: false, error: "no such task" }, 404);
+    session ??= completed.sessionId ? registry.getSession(completed.sessionId) : null;
+    if (session) {
+      // A finished SDK handle can disappear just before this request reaches the supervisor,
+      // while its registry projection is still inside the normal exit linger. Confirm that
+      // absence through the supervisor, then feed the ordinary driver exit event back through
+      // Registry so session_remove still comes from its one supported eviction path.
+      if (session.runtime === "sdk" && sdkSessions?.handleFor(session.id) === null) {
+        registry.applyDriverEvent(session.id, {
+          kind: "exited",
+          reason: "tour cleanup found no live embedded driver",
+          resumable: false,
+        });
+      } else {
+        const stopped = await requestSessionStop(session, sdkSessions);
+        if (!stopped.ok) {
+          return c.json(
+            { ok: false, error: `task marked done, but the session could not be closed: ${stopped.error ?? "failed"}`, task: completed },
+            500,
+          );
+        }
+      }
+    }
+    return c.json({ ok: true, task: completed });
   });
 
   // Edit a task. A repo change is resolved the same way `POST /api/tasks` resolves one,

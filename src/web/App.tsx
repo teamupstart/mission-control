@@ -3,7 +3,7 @@ import { AGENT_TYPES, type KeepAwakeStatus, type Session, type Task } from "@sha
 import { agentList } from "@shared/agent.ts";
 import { backlogTasks, canCycleMode, canInterruptSession } from "@shared/session.ts";
 import { agentLaunchAction } from "@shared/session-launch.ts";
-import { api } from "./lib/api.ts";
+import { api, fetchRepos } from "./lib/api.ts";
 import { useEventStream } from "./useEventStream.ts";
 import { fitTopbar, observeTopbar } from "./topbarLadder.ts";
 import type { ActionBarHandle } from "./components/ActionBar.tsx";
@@ -59,7 +59,7 @@ import { useLlm } from "./useLlm.ts";
 import { useAlertSettings } from "./lib/alertSettings.ts";
 import { useAwayMode } from "./lib/awayMode.ts";
 import { useStalls } from "./lib/stalls.ts";
-import { detailLayer, useLayoutMode } from "./lib/layout.ts";
+import { detailLayer, useLayoutMode, type LayoutMode } from "./lib/layout.ts";
 import { moveSelection, type ArrowKey } from "./lib/layoutNav.ts";
 import { conversationReveal } from "./lib/conversationReveal.ts";
 import { orderSessions } from "./lib/fleet-order.ts";
@@ -77,7 +77,12 @@ import {
 import type { ActionId } from "./lib/keybindings.ts";
 import { canRenameSession, stateDisplay, type Tone } from "./lib/format.ts";
 import { clearInterrupting, markInterrupting } from "./lib/interrupting.ts";
-import { OverlayHost, OVERLAY_IDS, useOverlayHost } from "./components/Overlay.tsx";
+import {
+  OverlayHost,
+  OverlayRegistration,
+  OVERLAY_IDS,
+  useOverlayHost,
+} from "./components/Overlay.tsx";
 import { FileWindow } from "./components/FileWindow.tsx";
 import { FilePicker } from "./components/FilePicker.tsx";
 import { useSessionFilesStore } from "./lib/sessionFiles.ts";
@@ -89,7 +94,7 @@ import {
   pipelineRunRoute,
   useWorkflowRoute,
 } from "./workflows/useWorkflowRoute.ts";
-import type { LibrarySurface } from "./workflows/useWorkflowRoute.ts";
+import type { LibrarySurface, MissionRoute } from "./workflows/useWorkflowRoute.ts";
 import { PipelineRuns } from "./pipelines/PipelineRuns.tsx";
 import { RunsKindTabs, type RunsKind } from "./pipelines/RunsKindTabs.tsx";
 import { pipelineRunKeyOf, type PipelineRun } from "@shared/pipeline.ts";
@@ -113,6 +118,18 @@ import type { PaletteStores, PaletteTarget } from "./lib/palette-index.ts";
 import { buildSettingsBindings } from "./lib/settings-search.ts";
 import { useRichText } from "./lib/rich-text.ts";
 import { useGuidedDispatch } from "./lib/guided-dispatch.ts";
+import {
+  SeeWorkTourController,
+  type SeeWorkTourNavigation,
+  type SeeWorkTourRuntime,
+} from "./tour/SeeWorkTourController.tsx";
+import { createTourTargetRegistry } from "./tour/target-registry.ts";
+import { TourTargetHost, useOwnedTourTargetRef } from "./tour/target-context.tsx";
+import {
+  captureFocusBookmark,
+  restoreFocusBookmark,
+  type FocusBookmark,
+} from "./tour/focus-containment.ts";
 
 /**
  * The chords that act through the selected session's action bar, and the method each
@@ -198,6 +215,23 @@ const PAGE_SEGMENTS = [
   glyph: string;
   hint: string;
 }[];
+
+interface SeeWorkTourSnapshot {
+  route: MissionRoute;
+  layout: LayoutMode;
+  selectedId: string | null;
+  expandedId: string | null;
+  boardOpen: boolean;
+  filter: string;
+  lineDrawer: LineDrawerStage | null;
+}
+
+interface SeeWorkTourRun {
+  id: string;
+  snapshot: SeeWorkTourSnapshot;
+  sessionId: string | null;
+  focus: FocusBookmark;
+}
 
 export function App(): React.JSX.Element {
   const {
@@ -312,6 +346,33 @@ export function App(): React.JSX.Element {
   // an ensemble and Settings alike, and navigating from it must not close it out from under
   // the navigation it just performed.
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const paletteInvokerRef = useRef<FocusBookmark>(captureFocusBookmark(null));
+  const openPalette = useCallback((): void => {
+    paletteInvokerRef.current = captureFocusBookmark(document.activeElement);
+    setPaletteOpen(true);
+  }, []);
+  /** The one Line drawer state is also part of the temporary tour's restoration snapshot. */
+  const [lineDrawer, setLineDrawer] = useState<LineDrawerStage | null>(null);
+  const tourTargets = useMemo(createTourTargetRegistry, []);
+  const [seeWorkTour, setSeeWorkTour] = useState<SeeWorkTourRun | null>(null);
+  const [seeWorkTourPreviewTaskId, setSeeWorkTourPreviewTaskId] = useState<string | null>(null);
+  const [seeWorkTourPreviewError, setSeeWorkTourPreviewError] = useState<string | null>(null);
+  const [seeWorkTourTaskId, setSeeWorkTourTaskId] = useState<string | null>(null);
+  const [seeWorkTourBriefReady, setSeeWorkTourBriefReady] = useState(false);
+  const [seeWorkTourRepoRoot, setSeeWorkTourRepoRoot] = useState<string | null>(null);
+  const seeWorkTourSequence = useRef(0);
+  const seeWorkTourRef = useRef<SeeWorkTourRun | null>(null);
+  const seeWorkTourPreviewTaskIdRef = useRef<string | null>(null);
+  const seeWorkTourPreviewStartedRef = useRef<string | null>(null);
+  const seeWorkTourTaskIdRef = useRef<string | null>(null);
+  const sessionsRef = useRef(sessions);
+  const tasksRef = useRef(tasks);
+  seeWorkTourRef.current = seeWorkTour;
+  seeWorkTourPreviewTaskIdRef.current = seeWorkTourPreviewTaskId;
+  seeWorkTourTaskIdRef.current = seeWorkTourTaskId;
+  sessionsRef.current = sessions;
+  tasksRef.current = tasks;
+  const dispatchTourRef = useOwnedTourTargetRef<HTMLButtonElement>(tourTargets, "dispatch");
   // The settings control the palette last asked to land on, if any.
   //
   // The anchor is deliberately not in the hash (the settings route is category-only), so it
@@ -442,7 +503,10 @@ export function App(): React.JSX.Element {
   // one mount: `registerFind` replays it and clears it, so revealing a conversation for
   // some other reason later never opens a find nobody asked for.
   const pendingFind = useRef<string | null>(null);
-  const detailScrollers = useRef<Map<string, (direction: -1 | 1) => void>>(new Map());
+  const detailScrollers = useRef<Map<
+    string,
+    (direction: -1 | 1, fromReader: boolean) => boolean
+  >>(new Map());
   // Tab cycles the open detail's tabs (Conversation -> Work queue -> Gate -> Diff -> Files);
   // ConsoleDetail owns that state, so it registers a stepper here that App's global key
   // handler drives. "edge" means there is no further tab that way - forward it clamps, back
@@ -494,13 +558,12 @@ export function App(): React.JSX.Element {
   }, []);
 
   const focusReaderBody = useCallback(() => {
-    // Land on the reader body - the conversation pane the vertical arrows scroll - not the
-    // whole detail section. That is what "Tab selects the conversation window" means: the
-    // ring frames what is being read, and a later native Tab steps into the transcript and
-    // reply box rather than the session title up in the header chrome. Only one detail is
-    // open at a time (console beside the rail, or the board drill-in), so a bare query finds
-    // the right one in either layout.
-    document.querySelector<HTMLElement>(".detail-body")?.focus({ preventScroll: true });
+    // Files Preview has a reader inside the detail body. Enter it directly so the next
+    // vertical arrow scrolls the document; before Tab, those arrows belong to the file list.
+    // Every other tab lands on the body itself, preserving the conversation reader ring.
+    const target = document.querySelector<HTMLElement>(".cdetail .file-preview-reader")
+      ?? document.querySelector<HTMLElement>(".cdetail .detail-body");
+    target?.focus({ preventScroll: true });
   }, []);
 
   const registerActions = useCallback((id: string, handle: ActionBarHandle | null) => {
@@ -539,7 +602,10 @@ export function App(): React.JSX.Element {
     [],
   );
 
-  const registerDetailScroll = useCallback((id: string, scroll: ((direction: -1 | 1) => void) | null) => {
+  const registerDetailScroll = useCallback((
+    id: string,
+    scroll: ((direction: -1 | 1, fromReader: boolean) => boolean) | null,
+  ) => {
     if (scroll) detailScrollers.current.set(id, scroll);
     else detailScrollers.current.delete(id);
   }, []);
@@ -588,6 +654,7 @@ export function App(): React.JSX.Element {
     setEditingTaskId(null);
     setDispatchIntent(null);
   }, []);
+  const closeComplete = useCallback(() => setCompleteSessionId(null), []);
   /**
    * Open the dispatch modal over a backlog task.
    *
@@ -720,6 +787,273 @@ export function App(): React.JSX.Element {
     ],
   );
 
+  const startSeeWorkTour = useCallback((focus = paletteInvokerRef.current): void => {
+    const preferredSession = selectedId && sessions.some((session) => session.id === selectedId)
+      ? selectedId
+      : (sessions[0]?.id ?? null);
+    if (seeWorkTourRef.current) return;
+    const id = `see-work-${++seeWorkTourSequence.current}`;
+    const run: SeeWorkTourRun = {
+      id,
+      snapshot: {
+        route,
+        layout,
+        selectedId,
+        expandedId,
+        boardOpen,
+        filter,
+        lineDrawer,
+      },
+      sessionId: preferredSession,
+      focus,
+    };
+    // Set the ref in the same turn as state so a fast second activation cannot start a
+    // second controller before React commits this one.
+    seeWorkTourRef.current = run;
+    seeWorkTourPreviewTaskIdRef.current = null;
+    seeWorkTourPreviewStartedRef.current = null;
+    setSeeWorkTourPreviewTaskId(null);
+    setSeeWorkTourPreviewError(null);
+    setSeeWorkTourTaskId(null);
+    setSeeWorkTourBriefReady(false);
+    const preferredRepo = preferredSession
+      ? sessions.find((session) => session.id === preferredSession)?.repoRoot ?? null
+      : tasks.find((task) => task.repoRoot)?.repoRoot ?? null;
+    setSeeWorkTourRepoRoot(preferredRepo);
+    setSeeWorkTour(run);
+    if (!preferredRepo) {
+      void fetchRepos().then((repos) => {
+        if (seeWorkTourRef.current?.id !== id) return;
+        const repoRoot = repos[0] ?? null;
+        setSeeWorkTourRepoRoot(repoRoot);
+        if (!repoRoot && preferredSession === null) {
+          setSeeWorkTourPreviewError("No git repository is available for the tour conversation.");
+        }
+      });
+    }
+  }, [boardOpen, expandedId, filter, layout, lineDrawer, route, selectedId, sessions, tasks]);
+
+  // Only an empty fleet needs a synthetic desk. Start its fixed Chat session as soon as the
+  // repository is known, while the operator is reading the Line and Board stops. A late
+  // response after Exit is reclaimed immediately instead of appearing off-screen.
+  useEffect(() => {
+    const run = seeWorkTour;
+    const repoRoot = seeWorkTourRepoRoot;
+    if (
+      !run ||
+      run.sessionId !== null ||
+      !repoRoot ||
+      seeWorkTourPreviewStartedRef.current === run.id
+    ) return;
+    seeWorkTourPreviewStartedRef.current = run.id;
+    void api.startSeeWorkTourPreview(repoRoot).then(async (result) => {
+      const taskId = result.task?.id ?? null;
+      if (!result.ok || !taskId) {
+        if (seeWorkTourRef.current === run) {
+          setSeeWorkTourPreviewError(
+            result.error ?? "Mission Control did not return a tour conversation.",
+          );
+        }
+        return;
+      }
+      if (seeWorkTourRef.current !== run) {
+        await api.completeSeeWorkTourDemo(taskId);
+        return;
+      }
+      seeWorkTourPreviewTaskIdRef.current = taskId;
+      setSeeWorkTourPreviewTaskId(taskId);
+    }).catch((error: unknown) => {
+      if (seeWorkTourRef.current === run) {
+        setSeeWorkTourPreviewError(
+          error instanceof Error ? error.message : "The tour conversation could not start.",
+        );
+      }
+    });
+  }, [seeWorkTour, seeWorkTourRepoRoot]);
+
+  const dispatchSeeWorkTourDemo = useCallback(async (repoRoot: string) => {
+    if (seeWorkTourTaskIdRef.current) {
+      return {
+        ok: true,
+        task: tasksRef.current.find((task) => task.id === seeWorkTourTaskIdRef.current),
+      };
+    }
+    const run = seeWorkTourRef.current;
+    if (!run) return { ok: false, error: "the tour is no longer active" };
+    const result = await api.startSeeWorkTourDemo(repoRoot);
+    const taskId = result.task?.id ?? null;
+    if (!result.ok || !taskId) {
+      return { ok: false, error: result.error ?? "Mission Control did not return a demo task." };
+    }
+    // A slow response can land after Exit. Close that task instead of attaching it to a
+    // newer run or leaving it alive off-screen.
+    if (seeWorkTourRef.current !== run) {
+      await api.completeSeeWorkTourDemo(taskId);
+      return { ok: false, error: "The tour ended while the demo task was starting." };
+    }
+    seeWorkTourTaskIdRef.current = taskId;
+    setSeeWorkTourTaskId(taskId);
+    return result;
+  }, []);
+
+  const seeWorkNavigation = useMemo<SeeWorkTourNavigation | null>(() => {
+    if (!seeWorkTour) return null;
+    const enterFleet = (): boolean => {
+      if (!navigate({ page: "fleet" })) return false;
+      setFilter("");
+      setLineDrawer(null);
+      return true;
+    };
+    return {
+      showLine: () => {
+        if (!enterFleet()) return false;
+        setBoardOpen(false);
+        return true;
+      },
+      showBoard: () => {
+        if (!enterFleet()) return false;
+        setLayout("board");
+        setBoardOpen(false);
+        return true;
+      },
+      showSessionDetail: () => {
+        if (!enterFleet()) return false;
+        setLayout("board");
+        setExpandedId(null);
+        const previewSession = seeWorkTour.sessionId
+          ? sessionsRef.current.find((session) => session.id === seeWorkTour.sessionId) ?? null
+          : sessionsRef.current.find(
+              (session) => session.task?.id === seeWorkTourPreviewTaskIdRef.current,
+            ) ?? null;
+        setSelectedId(previewSession?.id ?? null);
+        setBoardOpen(previewSession !== null);
+        return true;
+      },
+      showDispatch: () => {
+        if (!enterFleet()) return false;
+        closeDispatch();
+        setBoardOpen(false);
+        return true;
+      },
+      showDispatchModal: () => {
+        if (!enterFleet()) return false;
+        setBoardOpen(false);
+        openDispatch();
+        return true;
+      },
+      closeDispatch,
+      writeDemoBrief: () => setSeeWorkTourBriefReady(true),
+      showDemoBoard: () => {
+        if (!enterFleet()) return false;
+        setLayout("board");
+        setFilter("Tour demo");
+        const session = sessionsRef.current.find(
+          (candidate) => candidate.task?.id === seeWorkTourTaskIdRef.current,
+        );
+        setSelectedId(session?.id ?? null);
+        setBoardOpen(false);
+        return true;
+      },
+      showReview: () => {
+        const session = sessionsRef.current.find(
+          (candidate) => candidate.task?.id === seeWorkTourTaskIdRef.current,
+        );
+        if (session) {
+          document.documentElement.dataset.mcTourReview = "true";
+          setReviewSessionId(session.id);
+        }
+        return true;
+      },
+      closeReview: () => {
+        delete document.documentElement.dataset.mcTourReview;
+        setReviewSessionId(null);
+      },
+      showDemoDetail: () => {
+        if (!enterFleet()) return false;
+        setLayout("board");
+        setFilter("Tour demo");
+        const session = sessionsRef.current.find(
+          (candidate) => candidate.task?.id === seeWorkTourTaskIdRef.current,
+        );
+        setSelectedId(session?.id ?? null);
+        setBoardOpen(session != null);
+        return true;
+      },
+      showComplete: () => {
+        const session = sessionsRef.current.find(
+          (candidate) => candidate.task?.id === seeWorkTourTaskIdRef.current,
+        );
+        if (session) setCompleteSessionId(session.id);
+        return true;
+      },
+      closeComplete,
+    };
+  }, [closeComplete, closeDispatch, navigate, openDispatch, seeWorkTour, setLayout]);
+
+  const finishSeeWorkTour = useCallback(async (): Promise<void> => {
+    const run = seeWorkTourRef.current;
+    if (!run) return;
+    // A slow preview or Dispatch response must see the tour as closed while cleanup runs, so
+    // it reclaims its own task instead of attaching it to a controller that is leaving.
+    // Restore the operator's surface before the request as promised, but retain the run and
+    // task ids until every temporary session has actually closed so a refusal can be retried.
+    seeWorkTourRef.current = null;
+    const { snapshot, focus } = run;
+    cancelPending();
+    delete document.documentElement.dataset.mcTourReview;
+    closeComplete();
+    closeDispatch();
+    setReviewSessionId(null);
+    navigate(snapshot.route);
+    setLayout(snapshot.layout);
+    setSelectedId(snapshot.selectedId);
+    setExpandedId(snapshot.expandedId);
+    setBoardOpen(snapshot.boardOpen);
+    setFilter(snapshot.filter);
+    setLineDrawer(snapshot.lineDrawer);
+
+    const taskIds = [
+      seeWorkTourPreviewTaskIdRef.current,
+      seeWorkTourTaskIdRef.current,
+    ].filter((taskId): taskId is string => taskId !== null);
+    const failures: string[] = [];
+    for (const taskId of new Set(taskIds)) {
+      try {
+        const result = await api.completeSeeWorkTourDemo(taskId);
+        if (!result.ok) failures.push(result.error ?? `task ${taskId} could not be closed`);
+      } catch (error) {
+        failures.push(error instanceof Error ? error.message : String(error));
+      }
+    }
+    if (failures.length > 0) {
+      seeWorkTourRef.current = run;
+      throw new Error(failures.join("; "));
+    }
+
+    seeWorkTourPreviewTaskIdRef.current = null;
+    seeWorkTourPreviewStartedRef.current = null;
+    seeWorkTourTaskIdRef.current = null;
+    setSeeWorkTourPreviewTaskId(null);
+    setSeeWorkTourPreviewError(null);
+    setSeeWorkTourTaskId(null);
+    setSeeWorkTourBriefReady(false);
+    setSeeWorkTourRepoRoot(null);
+    setSeeWorkTour(null);
+
+    // Route restoration can remount the invoking control. Try the original node first, then
+    // its semantic replacement for a few frames while the restored page commits.
+    let attempts = 5;
+    let settledFocus: Element | null = null;
+    const restore = (): void => {
+      const restored = restoreFocusBookmark(focus);
+      const active = restored ? document.activeElement : null;
+      const settled = restored && active === settledFocus;
+      settledFocus = active;
+      if (!settled && attempts-- > 0) requestAnimationFrame(restore);
+    };
+    requestAnimationFrame(restore);
+  }, [cancelPending, closeComplete, closeDispatch, navigate, setLayout]);
+
   /**
    * Perform one palette row.
    *
@@ -759,6 +1093,9 @@ export function App(): React.JSX.Element {
           // drawer open it: the dialog asks for the session and the published version itself.
           setWorkflowBindingTarget({});
           return;
+        case "start-see-work-tour":
+          startSeeWorkTour();
+          return;
         case "open-mission":
           onOpenSchedule(target.scheduleId);
           return;
@@ -770,13 +1107,19 @@ export function App(): React.JSX.Element {
         }
       }
     },
-    [navigate, openDispatch, launchEnsemble, onOpenSchedule, paletteBindings],
+    [
+      navigate,
+      openDispatch,
+      launchEnsemble,
+      onOpenSchedule,
+      paletteBindings,
+      startSeeWorkTour,
+    ],
   );
   /**
    * Which Line stage has its drawer open, or null. The one carrier of that fact: the strip
    * reads it for `aria-expanded`, the fleet body renders from it, and `esc` clears it.
    */
-  const [lineDrawer, setLineDrawer] = useState<LineDrawerStage | null>(null);
   /** Every stage button, so closing a drawer can put the keyboard back on the one that opened it. */
   const lineStageButtons = useRef(new Map<LineStageId, HTMLButtonElement>());
   const registerLineStage = useCallback(
@@ -941,7 +1284,6 @@ export function App(): React.JSX.Element {
     setDiffCommit(null);
   }, []);
   const closeReset = useCallback(() => setResetSessionId(null), []);
-  const closeComplete = useCallback(() => setCompleteSessionId(null), []);
   const closeKill = useCallback(() => setKillSessionId(null), []);
   const closeFiles = useCallback(() => {
     if (filesSessionId) files.flush(filesSessionId);
@@ -1304,6 +1646,69 @@ export function App(): React.JSX.Element {
   const modalReviews = modalSession
     ? pendingReviews.filter((r) => r.sessionId === modalSession.id)
     : [];
+  const seeWorkPreviewTask = seeWorkTourPreviewTaskId
+    ? tasks.find((task) => task.id === seeWorkTourPreviewTaskId) ?? null
+    : null;
+  const seeWorkPreviewSession = seeWorkTour?.sessionId
+    ? sessions.find((session) => session.id === seeWorkTour.sessionId) ?? null
+    : seeWorkTourPreviewTaskId
+      ? sessions.find((session) => session.task?.id === seeWorkTourPreviewTaskId) ?? null
+      : null;
+  const seeWorkPreviewFailed = Boolean(
+    seeWorkTourPreviewError ||
+    seeWorkPreviewTask?.status === "failed" ||
+    seeWorkPreviewTask?.status === "cancelled",
+  );
+  const seeWorkDemoTask = seeWorkTourTaskId
+    ? tasks.find((task) => task.id === seeWorkTourTaskId) ?? null
+    : null;
+  const seeWorkDemoSession = seeWorkTourTaskId
+    ? sessions.find((session) => session.task?.id === seeWorkTourTaskId) ?? null
+    : null;
+  const seeWorkDemoReviewPending = seeWorkDemoSession
+    ? pendingReviews.some((review) => review.sessionId === seeWorkDemoSession.id)
+    : false;
+  const seeWorkTourRuntime: SeeWorkTourRuntime = {
+    previewSessionId: seeWorkPreviewSession?.id ?? null,
+    previewPhase: seeWorkPreviewSession
+      ? "ready"
+      : seeWorkPreviewFailed
+        ? "failed"
+        : "launching",
+    previewError: seeWorkTourPreviewError ?? seeWorkPreviewTask?.error ?? null,
+    taskId: seeWorkTourTaskId,
+    sessionId: seeWorkDemoSession?.id ?? null,
+    phase: !seeWorkTourTaskId
+      ? "not-started"
+      : seeWorkDemoTask?.status === "failed" || seeWorkDemoTask?.status === "cancelled"
+        ? "failed"
+        : !seeWorkDemoSession
+          ? "launching"
+          : seeWorkDemoReviewPending
+            ? "needs-you"
+            : stateDisplay(seeWorkDemoSession).tone === "idle"
+              ? "idle"
+              : "working",
+    dispatchOpen,
+    dispatchBriefReady: seeWorkTourBriefReady,
+    dispatchRepoReady: seeWorkTourRepoRoot !== null,
+    completeOpen: Boolean(
+      seeWorkDemoSession && completeSessionId === seeWorkDemoSession.id
+    ),
+    reviewPending: seeWorkDemoReviewPending,
+    reviewOpen: Boolean(
+      seeWorkDemoSession && reviewSessionId === seeWorkDemoSession.id && modalReviews.length > 0
+    ),
+    error: seeWorkDemoTask?.error ?? null,
+  };
+  const seeWorkTourDispatchPreview = seeWorkTour
+    ? {
+        id: seeWorkTour.id,
+        briefReady: seeWorkTourBriefReady,
+        repoRoot: seeWorkTourRepoRoot,
+        dispatch: dispatchSeeWorkTourDemo,
+      }
+    : null;
   const selected = selectedId ? visible.find((s) => s.id === selectedId) ?? null : null;
   const visibleSelectedId = selected?.id ?? null;
   const diffSession = diffSessionId ? sessions.find((s) => s.id === diffSessionId) ?? null : null;
@@ -1580,7 +1985,10 @@ export function App(): React.JSX.Element {
         overlaysRef.current.onlyOpen(OVERLAY_IDS.palette)
       ) {
         e.preventDefault();
-        setPaletteOpen((v) => !v);
+        setPaletteOpen((open) => {
+          if (!open) paletteInvokerRef.current = captureFocusBookmark(document.activeElement);
+          return !open;
+        });
         return;
       }
 
@@ -1786,20 +2194,16 @@ export function App(): React.JSX.Element {
         case "ArrowUp":
         case "ArrowDown": {
           e.preventDefault();
-          // With the keyboard in the reader (console detail or board drill-in), the vertical
-          // arrows scroll the active tab's content - the detail owns the scroll node because
-          // Conversation and Files use different nested containers. On the rail they fall
-          // through to `moveSelection`, which walks the selection a row at a time.
+          // Preview owns vertical arrows before focus enters its rendered page, using them
+          // to walk files. Other tabs claim them only with focus inside the reader. Anything
+          // unclaimed falls through to `moveSelection` and walks the session rail.
           if (
             readerSession &&
-            (e.key === "ArrowUp" || e.key === "ArrowDown") &&
-            target?.closest(".cdetail")
+            (e.key === "ArrowUp" || e.key === "ArrowDown")
           ) {
             const detailScroll = detailScrollers.current.get(readerSession.id);
-            if (detailScroll) {
-              detailScroll(e.key === "ArrowUp" ? -1 : 1);
-              return;
-            }
+            const fromReader = Boolean(target?.closest(".cdetail"));
+            if (detailScroll?.(e.key === "ArrowUp" ? -1 : 1, fromReader)) return;
           }
           const nextId = moveSelection({
             mode: layout,
@@ -2283,6 +2687,7 @@ export function App(): React.JSX.Element {
 
   return (
     <OverlayHost value={overlays}>
+      <TourTargetHost registry={tourTargets} activeTaskId={seeWorkTourTaskId}>
       <ContextMenuHost ref={contextMenuRef} />
       <div className={`app app-${layout}`}>
         <header className="topbar" ref={topbarRef}>
@@ -2416,7 +2821,7 @@ export function App(): React.JSX.Element {
                 onOpenSettings={() => navigate({ page: "settings", category: "foreman" })}
               />
               <Tooltip label={`Dispatch a new agent (${formatChord(bindings.dispatch)})`}>
-                <button className="dispatch-btn" onClick={openDispatch}>
+                <button className="dispatch-btn" onClick={openDispatch} ref={dispatchTourRef}>
                   {/* The keycap REPLACES the decorative glyph rather than sitting beside
                       it: the default chord is "+", so drawing both put a ＋ on each end of
                       one word and read as a rendering fault. Any other chord takes the
@@ -2612,6 +3017,7 @@ export function App(): React.JSX.Element {
                 navigate={navigate}
                 replace={replace}
                 revision={archivesRevision}
+                overlayOpen={overlays.anyOpen}
               />
             ) : null
           }
@@ -2645,7 +3051,10 @@ export function App(): React.JSX.Element {
               harnessesRevision={harnessesRevision}
               worktreesRevision={worktreesRevision}
               workflowSummaries={workflowSummaries}
-              onOpenPalette={() => setPaletteOpen(true)}
+              onOpenPalette={openPalette}
+              onStartSeeWorkTour={() => {
+                startSeeWorkTour(captureFocusBookmark(document.activeElement));
+              }}
               onOpenForemanProfile={() => navigate({
                 page: "library",
                 shelf: "personas",
@@ -2816,6 +3225,9 @@ export function App(): React.JSX.Element {
           <CompleteModal
             session={completeSession}
             tasks={tasks}
+            tourOutcome={
+              completeSession.task?.id === seeWorkTourTaskId ? "Tour demo" : undefined
+            }
             onCompleted={() => onKilled(completeSession.id)}
             onClose={closeComplete}
           />
@@ -2913,6 +3325,20 @@ export function App(): React.JSX.Element {
                 stores={paletteStores}
               />
 
+              {seeWorkTour && seeWorkNavigation && (
+                <OverlayRegistration id={OVERLAY_IDS.seeWorkTour}>
+                  {(isTop) => (
+                    <SeeWorkTourController
+                      registry={tourTargets}
+                      navigation={seeWorkNavigation}
+                      runtime={seeWorkTourRuntime}
+                      isTop={isTop}
+                      onFinish={finishSeeWorkTour}
+                    />
+                  )}
+                </OverlayRegistration>
+              )}
+
               {inboxOpen && (
                 <AttentionInbox
                   fold={attention}
@@ -2926,7 +3352,10 @@ export function App(): React.JSX.Element {
                 <ReviewModal
                   session={modalSession}
                   reviews={modalReviews}
-                  onClose={() => setReviewSessionId(null)}
+                  onClose={() => {
+                    delete document.documentElement.dataset.mcTourReview;
+                    setReviewSessionId(null);
+                  }}
                 />
               )}
 
@@ -2948,6 +3377,7 @@ export function App(): React.JSX.Element {
                     : `count:${settingsStatus?.pipelines.observing ?? 0}`
                 }
                 launchIntent={dispatchIntent}
+                tourDemo={seeWorkTourDispatchPreview}
                 onClose={closeDispatch}
                 onOpenSchedule={onOpenSchedule}
                 onEnsembleLaunched={openEnsembleRun}
@@ -3069,6 +3499,7 @@ export function App(): React.JSX.Element {
           />
         )}
       </div>
+      </TourTargetHost>
     </OverlayHost>
   );
 }

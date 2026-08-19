@@ -2,39 +2,53 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { scrollActiveFileReader } from "../src/web/components/FileWorkspace.tsx";
+import {
+  adjacentFilePath,
+  scrollActiveFileReader,
+} from "../src/web/components/FileWorkspace.tsx";
 
-// The browser path spans App's global key handler and two nested scroll owners. Pin
-// that wiring here: a typecheck alone cannot tell that ArrowDown still reaches
-// moveSelection first, or that Files accidentally scrolls its non-scrolling shell.
+// The browser path spans App's global key handler and two nested arrow owners. Pin
+// that wiring here: a typecheck alone cannot tell that Preview gets first refusal before
+// session movement, or that Files accidentally scrolls its non-scrolling shell.
 const source = (relative: string): string => readFileSync(
   fileURLToPath(new URL(`../src/web/${relative}`, import.meta.url)),
   "utf8",
 );
 
-test("vertical arrows scroll the active detail only once focus is in the reader", () => {
+test("the open detail gets first refusal on vertical arrows before session navigation", () => {
   const app = source("App.tsx");
   const navigation = app.indexOf("const nextId = moveSelection");
   assert.ok(navigation >= 0, "rail navigation branch is gone");
   const branch = app.slice(0, navigation);
-  // The scroll is gated on focus actually being in the reader (`.cdetail` ancestry), for
-  // the console detail AND the board drill-in (readerSession) - not a layout literal or the
-  // lagging zone state. Off the reader the same arrows fall through to moveSelection.
-  assert.match(branch, /\(e\.key === "ArrowUp" \|\| e\.key === "ArrowDown"\) &&\s*target\?\.closest\("\.cdetail"\)/);
+  // The detail receives whether focus is actually inside it. Preview can claim a rail-side
+  // arrow for file selection, while Conversation returns false and lets the same key walk
+  // the session rail.
+  assert.match(branch, /const fromReader = Boolean\(target\?\.closest\("\.cdetail"\)\)/);
   assert.match(branch, /detailScrollers\.current\.get\(readerSession\.id\)/);
-  assert.match(branch, /if \(detailScroll\)[\s\S]*detailScroll\([\s\S]*return/);
+  assert.match(branch, /if \(detailScroll\?\.\([\s\S]*fromReader\)\) return/);
 });
 
-test("Conversation and Files register their actual nested scroll readers", () => {
+test("Conversation and Files register their actual arrow owners", () => {
   const detail = source("components/layouts/ConsoleDetail.tsx");
   assert.match(detail, /transcriptRef\.current\?\.scrollByArrow\(direction\)/);
-  assert.match(detail, /filesRef\.current\?\.scrollByArrow\(direction\)/);
+  assert.match(detail, /filesRef\.current\?\.handleArrow\(direction, fromReader\)/);
+  assert.match(detail, /if \(!fromReader\) return false/);
 
   const transcript = source("components/TranscriptPanel.tsx");
   assert.match(transcript, /logRef\.current[\s\S]*scrollBy\(\{ top:/);
 
   const files = source("components/FileWorkspace.tsx");
   assert.match(files, /scrollActiveFileReader\(root, direction\)/);
+  assert.match(files, /previewable && mode === "preview"/);
+});
+
+test("preview file arrows stop at list edges rather than leaking to session navigation", () => {
+  const paths = ["a.html", "b.md", "c.html"];
+  assert.equal(adjacentFilePath(paths, "b.md", -1), "a.html");
+  assert.equal(adjacentFilePath(paths, "b.md", 1), "c.html");
+  assert.equal(adjacentFilePath(paths, "a.html", -1), null);
+  assert.equal(adjacentFilePath(paths, "c.html", 1), null);
+  assert.equal(adjacentFilePath(paths, "missing.html", 1), "a.html");
 });
 
 function reader(height: number): { element: HTMLElement; moves: number[] } {

@@ -98,7 +98,6 @@ export const SETTINGS_CATEGORIES = [
     keywords: [
       "layout",
       "appearance",
-      "cards",
       "console",
       "board",
       "markdown",

@@ -39,6 +39,15 @@ export const LAYOUTS: { id: LayoutMode; label: string; description: string }[] =
 ];
 
 /**
+ * Layouts an operator may select from Display settings.
+ *
+ * Cards remains in `LAYOUTS` because existing `grid` preferences and the dashboard's
+ * rendering paths still support it. Its retirement is staged: it is deliberately absent
+ * here so Settings cannot turn it on again while that implementation remains in place.
+ */
+export const SELECTABLE_LAYOUTS = LAYOUTS.filter((layout) => layout.id !== "grid");
+
+/**
  * Which piece of state a layout has to drop to put its overview back.
  *
  * The grid's open detail is focus mode, so closing it is `expanded` and the selection

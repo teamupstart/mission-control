@@ -22,7 +22,7 @@ FOREMAN_MATCH := src/server/foreman/worker.ts
 NPM_STAMP := node_modules/.install-stamp
 
 .DEFAULT_GOAL := help
-.PHONY: help init session claude dev desktop start server web up down restart stop-all status logs db build app install-app icons demo demo-fresh test lint check smoke hooks setup
+.PHONY: help init install session claude dev desktop start server web up down restart stop-all status logs db build app install-app icons demo demo-fresh test lint check smoke hooks setup
 
 help: ## List the available commands
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -30,6 +30,14 @@ help: ## List the available commands
 
 init: ## First-run bootstrap: deps, build, and hooks (ARGS="--with-e2e" also checks Chromium)
 	node scripts/init.mjs $(ARGS)
+
+# The USER install, as documented in docs/overview.md. It builds from a clone the updater
+# owns - never this worktree - and leaves a receipt naming what it installed, which is what
+# lets the app keep itself current. `app` and `install-app` below stay the DEVELOPER path:
+# they install this worktree and write no receipt, so a work-in-progress build is never
+# mistaken for a managed install.
+install: ## Install Mission Control.app from a clean, updater-owned clone (ARGS="--ref v1.2.3")
+	node scripts/install-app.mjs $(ARGS)
 
 session: ## Ask the running daemon for a manual worktree lease (e.g. make session ARGS="-- claude")
 	node scripts/new-session.mjs $(ARGS)

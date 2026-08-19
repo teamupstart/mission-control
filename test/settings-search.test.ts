@@ -81,6 +81,7 @@ function renderCategory(category: SettingsCategoryId): string {
       layout: "grid",
       onLayoutChange: () => {},
       settingsStatus: EVERY_CATEGORY,
+      onStartSeeWorkTour: () => {},
     }),
   );
 }

@@ -11,7 +11,11 @@ import {
 } from "node:fs";
 import { basename, join } from "node:path";
 import type { Task, TaskKind } from "@shared/types.ts";
-import { STATE_DIR, mcpServerPath } from "./config.ts";
+import {
+  PRODUCT_ISSUE_CLIENT_ENV,
+  type ProductIssueClient,
+} from "@shared/product-issues.ts";
+import { PORT, STATE_DIR, mcpServerPath } from "./config.ts";
 import { SUBMIT_ENSEMBLE_RESULT_TOOL } from "./ensembles/submission-tool.ts";
 import { PLAN_DECISIONS_TOOL, PLAN_SCHEDULING_TOOL } from "./plans/tools.ts";
 import { SUBMIT_SCOUT_ARTIFACTS_TOOL } from "./scouts/submission-tool.ts";
@@ -54,6 +58,7 @@ export const MISSION_MCP_TOOLS = [
   "request_review",
   PLAN_SCHEDULING_TOOL,
   "request_input",
+  "report_product_issue",
   "report_status",
   SUBMIT_ENSEMBLE_RESULT_TOOL,
   SUBMIT_SCOUT_ARTIFACTS_TOOL,
@@ -166,6 +171,16 @@ async function resolveRuntime(): Promise<{ command: string; env: Record<string, 
 }
 
 /**
+ * The dashboard client that owns this daemon launch, before the MCP server becomes a
+ * separate Node process and loses Electron's version marker.
+ */
+export function missionMcpProductIssueClient(
+  electronVersion: string | undefined,
+): ProductIssueClient {
+  return electronVersion ? "electron" : "browser";
+}
+
+/**
  * How to launch our MCP server on this machine, or NULL when it cannot be launched at all.
  *
  * Null means the bundle is not on disk (`npm run build` never ran, or a packaged build
@@ -186,7 +201,18 @@ export async function missionMcpDescriptor(): Promise<MissionMcpDescriptor | nul
     serverName: MISSION_MCP_SERVER_NAME,
     command: runtime.command,
     args: [server],
-    env: runtime.env,
+    // Codex treats an explicit `mcp_servers.<name>.env` table as the MCP process's whole
+    // routing environment. An empty table therefore drops a non-default daemon's port and
+    // state home, making the tool authenticate to the default daemon and fail its cwd join
+    // with "no matching session". Publish the canonical effective coordinates explicitly;
+    // this is also what lets an isolated demo/test daemon keep its reviews inside its own
+    // state instead of leaking them to the operator daemon.
+    env: {
+      ...runtime.env,
+      MISSION_HOME: STATE_DIR,
+      MISSION_PORT: String(PORT),
+      [PRODUCT_ISSUE_CLIENT_ENV]: missionMcpProductIssueClient(process.versions.electron),
+    },
   };
 }
 

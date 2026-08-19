@@ -233,3 +233,41 @@ export const PR_POLL_MS = Number(envVar("PR_POLL_MS") ?? 20_000);
 export function ghBin(): string {
   return envVar("GH_BIN") || "gh";
 }
+
+export const DEFAULT_PRODUCT_ISSUES_REPO = "mancej/mission-controller-control-issues";
+
+export type ProductIssuesRepoConfig =
+  | { ok: true; repo: string }
+  | { ok: false; repo: null; error: string };
+
+/**
+ * The one public repository product reports may target.
+ *
+ * The environment override exists for downstream forks and isolated tests, never per
+ * request. Exact `owner/name` parsing is what keeps this feature from becoming an arbitrary
+ * issue writer through a crafted body.
+ */
+export function productIssuesRepo(
+  raw: string | undefined = envVar("PRODUCT_ISSUES_REPO"),
+): ProductIssuesRepoConfig {
+  const repo = raw === undefined || raw === "" ? DEFAULT_PRODUCT_ISSUES_REPO : raw;
+  const [owner, name, extra] = repo.split("/");
+  const ownerOk =
+    !!owner &&
+    owner.length <= 39 &&
+    /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/.test(owner);
+  const nameOk =
+    !!name &&
+    name.length <= 100 &&
+    name !== "." &&
+    name !== ".." &&
+    /^[A-Za-z0-9._-]+$/.test(name);
+  if (extra !== undefined || !ownerOk || !nameOk) {
+    return {
+      ok: false,
+      repo: null,
+      error: "MISSION_PRODUCT_ISSUES_REPO must be an exact GitHub owner/name repository",
+    };
+  }
+  return { ok: true, repo };
+}

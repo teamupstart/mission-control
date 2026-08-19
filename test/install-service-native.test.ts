@@ -160,8 +160,10 @@ test("the LaunchAgent entry builds first and runs the daemon at its exact PID", 
   }
 });
 
-test("the LaunchAgent entry stops cleanly when launchd terminates it during the build", async () => {
-  const root = mkdtempSync(join(tmpdir(), "mission-start-service-build-stop-"));
+async function assertBuildStopSignal(testedSignal: NodeJS.Signals): Promise<void> {
+  const root = mkdtempSync(
+    join(tmpdir(), `mission-start-service-build-${testedSignal.toLowerCase()}-`),
+  );
   const scripts = join(root, "scripts");
   const tsxDir = join(root, "node_modules", "tsx");
   const serverDir = join(root, "src", "server");
@@ -175,8 +177,9 @@ test("the LaunchAgent entry stops cleanly when launchd terminates it during the 
     join(scripts, "build-keep-awake-native.mjs"),
     `import { appendFileSync } from "node:fs";\n` +
       `const record = (event) => appendFileSync(process.env.SERVICE_EVENT_LOG, JSON.stringify(event) + "\\n");\n` +
+      `const signal = process.env.SERVICE_TEST_SIGNAL;\n` +
       `record({ stage: "build-start", pid: process.pid });\n` +
-      `process.on("SIGTERM", () => { record({ stage: "build-signal", pid: process.pid }); process.exit(0); });\n` +
+      `process.on(signal, () => { record({ stage: "build-signal", pid: process.pid, signal }); process.exit(0); });\n` +
       `setInterval(() => {}, 1_000);\n`,
   );
   writeFileSync(
@@ -197,7 +200,11 @@ test("the LaunchAgent entry stops cleanly when launchd terminates it during the 
   try {
     const child = spawn(process.execPath, [copiedEntry], {
       cwd: root,
-      env: { ...process.env, SERVICE_EVENT_LOG: eventsPath },
+      env: {
+        ...process.env,
+        SERVICE_EVENT_LOG: eventsPath,
+        SERVICE_TEST_SIGNAL: testedSignal,
+      },
       stdio: "pipe",
     });
     const servicePid = child.pid;
@@ -211,7 +218,7 @@ test("the LaunchAgent entry stops cleanly when launchd terminates it during the 
       recorded = existsSync(eventsPath) ? readFileSync(eventsPath, "utf8") : "";
     }
     assert.match(recorded, /"stage":"build-start"/, "the native build must start");
-    child.kill("SIGTERM");
+    child.kill(testedSignal);
 
     const [code, signal] = (await exitPromise) as [number | null, NodeJS.Signals | null];
     assert.equal(signal, null);
@@ -220,10 +227,20 @@ test("the LaunchAgent entry stops cleanly when launchd terminates it during the 
     const events = readFileSync(eventsPath, "utf8")
       .trim()
       .split("\n")
-      .map((line) => JSON.parse(line) as { stage: string; pid: number });
+      .map(
+        (line) =>
+          JSON.parse(line) as { stage: string; pid: number; signal?: NodeJS.Signals },
+      );
     assert.deepEqual(events.map((event) => event.stage), ["build-start", "build-signal"]);
     assert.notEqual(events[0]!.pid, servicePid, "the bounded build runs as a child");
+    assert.equal(events[1]!.signal, testedSignal);
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+}
+
+test("the LaunchAgent entry stops cleanly on every supported signal during the build", async (t) => {
+  for (const signal of ["SIGTERM", "SIGINT", "SIGHUP", "SIGQUIT"] as const) {
+    await t.test(signal, () => assertBuildStopSignal(signal));
   }
 });

@@ -12,6 +12,7 @@ import { register } from "tsx/esm/api";
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const nativeBuild = join(repo, "scripts", "build-keep-awake-native.mjs");
 const server = join(repo, "src", "server", "index.ts");
+const terminationSignals = ["SIGTERM", "SIGINT", "SIGHUP", "SIGQUIT"];
 
 let buildProcess;
 let requestedSignal;
@@ -26,10 +27,10 @@ function forwardBuildSignal(signal) {
   }
 }
 
-const stopForInterrupt = () => forwardBuildSignal("SIGINT");
-const stopForTermination = () => forwardBuildSignal("SIGTERM");
-process.once("SIGINT", stopForInterrupt);
-process.once("SIGTERM", stopForTermination);
+const stopHandlers = new Map(
+  terminationSignals.map((signal) => [signal, () => forwardBuildSignal(signal)]),
+);
+for (const [signal, handler] of stopHandlers) process.once(signal, handler);
 
 let buildResult;
 try {
@@ -44,8 +45,7 @@ try {
     buildProcess.once("exit", (code, signal) => resolveBuild({ code, signal }));
   });
 } finally {
-  process.off("SIGINT", stopForInterrupt);
-  process.off("SIGTERM", stopForTermination);
+  for (const [signal, handler] of stopHandlers) process.off(signal, handler);
 }
 
 if (requestedSignal) process.exit(0);

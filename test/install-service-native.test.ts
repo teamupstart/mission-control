@@ -13,12 +13,17 @@ import {
 import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { execve } from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const installer = join(repo, "scripts", "install-service.mjs");
 const serviceEntry = join(repo, "scripts", "start-service.mjs");
+
+test("the supported Node runtime exposes the execve primitive used by the service entry", () => {
+  assert.equal(typeof execve, "function");
+});
 
 function plistProgramArguments(plist: string): string[] {
   const block = plist.match(

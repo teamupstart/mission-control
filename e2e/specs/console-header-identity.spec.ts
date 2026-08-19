@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 
 import type { Locator, Page } from "@playwright/test";
@@ -46,11 +46,6 @@ async function shot(locator: Locator, name: string, observed: string): Promise<v
   console.log(`CAPTURED e2e/.artifacts/console-header-identity/${name}.png`);
 }
 
-/** The daemon's loopback token, which the hook ingest route requires. */
-function token(daemon: DaemonHandle): string {
-  return readFileSync(join(daemon.home, "token"), "utf8").trim();
-}
-
 async function put(daemon: DaemonHandle, path: string, body: unknown): Promise<void> {
   const res = await fetch(`${daemon.baseURL}${path}`, {
     method: "PUT",
@@ -73,10 +68,10 @@ interface FleetSession {
  * The dispatched SDK sessions this daemon has, once `count` of them have bound a
  * conversation.
  *
- * Waiting for `agentSessionId` is not belt-and-braces. A goal row is keyed by that id and
- * falls back to the session id while it is still null, so a hook posted in the window
- * before the binding lands writes the objective under a key the session stops reading the
- * moment it binds - and the line appears, then silently vanishes a beat later.
+ * Waiting for `agentSessionId` is not belt-and-braces. A goal row is keyed by that id, and
+ * the accepted launch prompt is deliberately held until the binding lands. Reaching this
+ * boundary means the objective can no longer be written under the synthetic session id and
+ * silently disappear when the native key replaces it.
  */
 async function sessions(daemon: DaemonHandle, count: number): Promise<FleetSession[]> {
   let found: FleetSession[] = [];
@@ -279,26 +274,13 @@ test("the objective reads under the session's name instead of above the transcri
   daemon,
 }) => {
   await dispatch(dashboard, daemon, SHIP, "ship");
-  const [session] = await sessions(daemon, 1);
+  await sessions(daemon, 1);
   const detail = await openDetail(dashboard, daemon, SHIP.title);
 
-  // The fake SDK speaks the agent protocol but does not run the machine-installed Claude
-  // hooks, so the prompt event a real turn sends is supplied here. It is a real hook join on
-  // the agent's own conversation id, not a fixture write behind the registry's back - which
-  // is what makes the objective on screen the daemon's, established the way it always is.
-  const objective = "Give the conversation back the height the header was spending";
-  const hook = await fetch(`${daemon.baseURL}/hooks/UserPromptSubmit`, {
-    method: "POST",
-    headers: { "content-type": "application/json", "x-harness-token": token(daemon) },
-    body: JSON.stringify({
-      agent: session.agent,
-      sessionId: session.agentSessionId,
-      cwd: session.cwd,
-      env: {},
-      prompt: objective,
-    }),
-  });
-  expect(hook.status, await hook.clone().text()).toBe(204);
+  // Turn one came through the Agent SDK, so the accepted dispatch prompt itself is the
+  // objective. This is also the browser regression for losing Goal when no terminal hook
+  // exists: the fake SDK runs no machine-installed hooks at all.
+  const objective = SHIP.intent;
 
   // Under the name, in the identity block - the durable fact reading with the other durable
   // facts. `.detail-title` is the block; the heading and the objective are both inside it.
@@ -332,9 +314,13 @@ test("a full-length objective clips to one line and does not cost the header a r
   // text - and `.detail-head` wraps rather than shrinks, so an objective allowed to set the
   // identity block's intrinsic width would push every chip after it onto a second row. A
   // header that grew a row to save one is not the trade this change makes.
-  await dispatch(dashboard, daemon, SHIP, "ship");
-  const [session] = await sessions(daemon, 1);
-  const detail = await openDetail(dashboard, daemon, SHIP.title);
+  const long =
+    "Give the conversation back the height the console detail header was spending on constants, "
+    + "duplicates and a control that had drifted into the footer where nobody ever looked for it";
+  const task = { title: SHIP.title, intent: long };
+  await dispatch(dashboard, daemon, task, "ship");
+  await sessions(daemon, 1);
+  const detail = await openDetail(dashboard, daemon, task.title);
 
   const head = detail.locator("header.detail-head");
   const headingBox = await detail.getByRole("heading", { name: SHIP.title }).boundingBox();
@@ -343,22 +329,6 @@ test("a full-length objective clips to one line and does not cost the header a r
   expect(chipBefore, "the model pill should be laid out").not.toBeNull();
   // Same row to begin with: this is the state the assertion below has to preserve.
   expect(Math.abs(chipBefore!.y - headingBox!.y)).toBeLessThan(24);
-
-  const long =
-    "Give the conversation back the height the console detail header was spending on constants, "
-    + "duplicates and a control that had drifted into the footer where nobody ever looked for it";
-  const hook = await fetch(`${daemon.baseURL}/hooks/UserPromptSubmit`, {
-    method: "POST",
-    headers: { "content-type": "application/json", "x-harness-token": token(daemon) },
-    body: JSON.stringify({
-      agent: session.agent,
-      sessionId: session.agentSessionId,
-      cwd: session.cwd,
-      env: {},
-      prompt: long,
-    }),
-  });
-  expect(hook.status, await hook.clone().text()).toBe(204);
 
   const objective = detail.locator(".detail-title .goal");
   await expect(objective).toBeVisible();

@@ -37,6 +37,12 @@ import {
  */
 export type SdkInterruptOutcome = "interrupted" | "idle";
 
+/** A human prompt whose driver acknowledgement may seed the Goal for this conversation. */
+export interface AcceptedGoalPrompt {
+  prompt: string;
+  noteKey: string;
+}
+
 const RESTART_CONTINUATION_PROMPT =
   "Mission Control restarted while your previous turn was still in progress. " +
   "Continue that work from the current checkout and conversation. Inspect the current " +
@@ -73,6 +79,10 @@ export class SdkSupervisor {
   private pumps = new Map<string, Promise<void>>();
   private unfinishedTurns = new Map<string, number>();
   private acceptingTurns = new Set<string>();
+  /** Accepted launch-window prompts held until the driver reports their native Goal key. */
+  private pendingLaunchGoalPrompts = new Map<string, string[]>();
+  /** Native key for the original launch generation; absence means a clear discarded it. */
+  private launchGoalNoteKeys = new Map<string, string | null>();
   private stopping = new Set<string>();
   private stopPromises = new Map<string, Promise<void>>();
   /** Sessions with a terminal handoff in flight. See `beginHandoff`. */
@@ -148,6 +158,12 @@ export class SdkSupervisor {
     cwd: string;
     /** Turn one. There is no separate "type the prompt" step for an embedded session. */
     prompt: string;
+    /**
+     * Human-authored part of turn one to preserve as Goal. Dispatch prompts also carry
+     * server-owned manifests and execution contracts, which belong in the driver's context
+     * but not in the objective a card shows. Defaults to the whole prompt for direct callers.
+     */
+    acceptedGoalPrompt?: string;
     model: string | null;
     effort: ThinkingLevel | null;
     permissionMode: PermissionMode | null;
@@ -188,6 +204,7 @@ export class SdkSupervisor {
         repoRoot: input.repoRoot ?? null,
       },
       handle,
+      acceptedInitialPrompt: input.acceptedGoalPrompt ?? input.prompt,
       durable: {
         taskId: input.taskId,
         model: input.model,
@@ -210,6 +227,8 @@ export class SdkSupervisor {
   adopt(input: {
     registration: SdkSessionRegistration;
     handle: SdkSessionHandle;
+    /** A fresh launch's already-accepted turn one, held until `bound` supplies its key. */
+    acceptedInitialPrompt?: string;
     /**
      * What only the ROW needs: the facts a resume has to be cut from, which the dashboard
      * has no question to ask of. Kept apart from the registration rather than folded into
@@ -255,6 +274,10 @@ export class SdkSupervisor {
       registration.id,
       durable.acceptedTurns ?? (durable.turnInProgress ? 1 : 0),
     );
+    if (input.acceptedInitialPrompt?.trim()) {
+      this.pendingLaunchGoalPrompts.set(registration.id, [input.acceptedInitialPrompt]);
+      this.launchGoalNoteKeys.set(registration.id, null);
+    }
     const pump = this.pump(registration.id, handle);
     this.pumps.set(registration.id, pump);
     void pump.catch((err) => {
@@ -304,6 +327,7 @@ export class SdkSupervisor {
     id: string,
     turn: SdkTurn,
     beforeSend?: () => string | null,
+    acceptedGoal?: AcceptedGoalPrompt,
   ): Promise<SdkSendDisposition> {
     return this.serialize(id, async (handle) => {
       const blocked = beforeSend?.();
@@ -317,6 +341,7 @@ export class SdkSupervisor {
       this.acceptingTurns.add(id);
       try {
         const disposition = await handle.send(turn);
+        if (acceptedGoal) this.captureGoalBestEffort(id, acceptedGoal);
         if (disposition === "steered") {
           // Steering joins the active turn instead of creating another completion to wait
           // for. Release this send's pessimistic reservation, while conservatively keeping
@@ -665,6 +690,35 @@ export class SdkSupervisor {
     }
   }
 
+  /** Goal persistence cannot turn an acknowledged driver send into a retryable failure. */
+  private captureGoalBestEffort(id: string, accepted: AcceptedGoalPrompt): void {
+    try {
+      if (accepted.noteKey === id) {
+        // A direct injection can be acknowledged on either side of the first `bound` event.
+        // Before it, preserve ordering behind turn one. After it, use the launch generation's
+        // native key rather than the now-stale synthetic key. A clear deletes that generation
+        // from `launchGoalNoteKeys`, so its late acknowledgement is discarded instead of
+        // leaking into the replacement conversation.
+        if (!this.launchGoalNoteKeys.has(id)) return;
+        const launchNoteKey = this.launchGoalNoteKeys.get(id);
+        if (launchNoteKey === null || launchNoteKey === undefined) {
+          const pending = this.pendingLaunchGoalPrompts.get(id) ?? [];
+          pending.push(accepted.prompt);
+          this.pendingLaunchGoalPrompts.set(id, pending);
+        } else {
+          this.registry.captureAcceptedPrompt(id, accepted.prompt, launchNoteKey);
+        }
+        return;
+      }
+      this.registry.captureAcceptedPrompt(id, accepted.prompt, accepted.noteKey);
+    } catch (err) {
+      console.error(
+        `[sdk] could not capture accepted Goal prompt for ${id}:`,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
+
   private serialize<T>(id: string, op: (handle: SdkSessionHandle) => Promise<T>): Promise<T> {
     const handle = this.handles.get(id);
     const noLiveDriver = () => new Error(`no live driver for session ${id}`);
@@ -849,6 +903,21 @@ export class SdkSupervisor {
         if (evt.kind === "exited") setSdkSessionStatus(id, this.endStatus());
         if (!this.shuttingDown) {
           this.registry.applyDriverEvent(id, evt, { deferIdle });
+          if (evt.kind === "bound") {
+            // A clear replaces the conversation that accepted these launch-window prompts.
+            // Never replay its objective under the replacement's native key.
+            if (evt.cleared) this.launchGoalNoteKeys.delete(id);
+            else if (this.launchGoalNoteKeys.get(id) === null) {
+              this.launchGoalNoteKeys.set(id, evt.agentSessionId);
+            }
+            const prompts = evt.cleared
+              ? []
+              : (this.pendingLaunchGoalPrompts.get(id) ?? []);
+            for (const prompt of prompts) {
+              this.captureGoalBestEffort(id, { prompt, noteKey: evt.agentSessionId });
+            }
+            this.pendingLaunchGoalPrompts.delete(id);
+          }
         }
         if (evt.kind === "exited") break;
       }
@@ -861,6 +930,8 @@ export class SdkSupervisor {
       this.pumps.delete(id);
       this.unfinishedTurns.delete(id);
       this.acceptingTurns.delete(id);
+      this.pendingLaunchGoalPrompts.delete(id);
+      this.launchGoalNoteKeys.delete(id);
       this.stopping.delete(id);
       try {
         setSdkSessionStatus(id, outcome === "failed" ? "failed" : this.endStatus());

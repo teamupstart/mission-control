@@ -589,6 +589,19 @@ export class PendingTurnManager {
           "Session reset began while the SDK was accepting this message.",
         );
       } else {
+        // The driver accepted a human-authored row and the same native conversation still
+        // owns it. Goal capture belongs after both facts, never when the row is merely queued
+        // in Mission Control or when delivery became uncertain.
+        try {
+          this.registry.captureAcceptedPrompt(session.id, turn.text, turn.noteKey);
+        } catch (err) {
+          // The turn already crossed the driver's acknowledgement boundary. A Goal write
+          // failure must not make it retryable and deliver the same human message twice.
+          console.error(
+            `[pending-turns] could not capture accepted Goal prompt for ${session.id}:`,
+            errorMessage(err),
+          );
+        }
         deleteClaimedPendingTurn(turn.id, turn.revision);
         this.journalDelivered(session.id, turn);
       }

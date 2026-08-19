@@ -179,6 +179,10 @@ test("dispatching an agent puts a live session on the fleet", async ({ dashboard
   // Running on the SDK runtime, headless, with a worktree of its own.
   await expect(card).toContainText("Agent SDK");
   await expect(card).toContainText("worktree-pools/");
+  // The driver accepts turn one before it reports the native conversation id. Once that
+  // binding arrives, the same accepted prompt must become the card's Goal. Scoped to the
+  // Goal line because both the title and the activity ticker also derive from this text.
+  await expect(card.locator(".goal")).toHaveText(TASK);
   // The model the fake reported through the SDK's `system/init` frame, proving the card's
   // model line is fed by the driver rather than by a default.
   await expect(card).toContainText("Claude e2e Mock");
@@ -677,11 +681,9 @@ test("Foreman never resurfaces Ship it actions after a scout completes", async (
   }, "PUT");
   await expect(card.getByRole("button", { name: "Run No-Mistakes Review" })).toBeHidden();
 
-  // The fake SDK speaks the agent protocol, but it does not run the machine-installed
-  // Claude hooks. Supply the same prompt and completion events a real turn sends so Foreman
-  // has both a resolved objective and proof that this idle card is instrumented, rather than
-  // relying on the registry's conservative startup defaults. The exact agent conversation id
-  // makes these real hook joins, not fixture-only database mutations.
+  // The SDK acknowledgement already supplied the accepted human prompt and resolved
+  // objective. The fake does not run machine-installed Claude hooks, so supply only the
+  // completion event Foreman needs as proof that this idle card completed a work cycle.
   const token = readFileSync(join(daemon.home, "token"), "utf8").trim();
   const postHook = async (event: string, body: Record<string, unknown>): Promise<void> => {
     const hook = await fetch(`${daemon.baseURL}/hooks/${event}`, {
@@ -697,8 +699,6 @@ test("Foreman never resurfaces Ship it actions after a scout completes", async (
     });
     expect(hook.status, `the ${event} hook was accepted: ${await hook.clone().text()}`).toBe(204);
   };
-  const scoutObjective = "Compare the fleet layouts and report the findings";
-  await postHook("UserPromptSubmit", { prompt: scoutObjective });
   await postHook("Stop", {});
   let completedGeneration: number | null = null;
   await expect.poll(async () => {

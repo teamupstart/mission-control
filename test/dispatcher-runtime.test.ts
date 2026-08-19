@@ -173,6 +173,11 @@ test("with both toggles on, Claude and Codex dispatch through the supervisor wit
         executionAuthorizationContract({ workflowEvidence: false, workflowContinuation: false }),
       ].join("\n\n"),
     );
+    assert.equal(
+      start.acceptedGoalPrompt,
+      `run ${agent} through the embedded runtime`,
+      "the card Goal keeps only the human-authored part of turn one",
+    );
     assert.equal(start.taskId, `task-sdk-${agent}`);
     assert.ok(start.cwd.length > 0);
 

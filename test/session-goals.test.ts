@@ -79,6 +79,33 @@ test("a prompt hook captures the full ask, not the 120-char ticker", () => {
   assert.equal(r.getGoal(s.id)?.prompt, prompt.trim());
 });
 
+test("accepted prompts share one capture path and refuse a stale conversation owner", () => {
+  const r = new Registry();
+  const s = r.registerSdkSession({
+    id: "sdk:accepted-goal",
+    agent: "claude",
+    name: "accepted goal",
+    cwd: "/wt/accepted-goal",
+    agentSessionId: "agent:accepted-goal",
+  });
+
+  assert.equal(
+    r.captureAcceptedPrompt(s.id, "must not land", "agent:replaced"),
+    null,
+  );
+  assert.equal(r.getGoal(s.id), null);
+
+  const captured = r.captureAcceptedPrompt(
+    s.id,
+    "  capture SDK prompts after acknowledgement  ",
+    "agent:accepted-goal",
+  );
+  assert.equal(captured?.prompt, "capture SDK prompts after acknowledgement");
+  assert.equal(captured?.text, "capture SDK prompts after acknowledgement");
+  assert.equal(captured?.promptRevision, 1);
+  assert.equal(r.getSession(s.id)?.goal?.text, "capture SDK prompts after acknowledgement");
+});
+
 test("a background task reporting in never overwrites the captured ask", () => {
   // The common path: 200 of 396 real UserPromptSubmit events are task notifications. If
   // these landed, a goal would be replaced by machinery every time a task finished.

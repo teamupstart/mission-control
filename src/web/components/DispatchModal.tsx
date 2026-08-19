@@ -11,7 +11,11 @@ import {
 } from "@shared/types.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
-import type { HarnessesConfig, TaskDependencyInput } from "@shared/protocol.ts";
+import {
+  SEE_WORK_TOUR_DEMO_INTENT,
+  type HarnessesConfig,
+  type TaskDependencyInput,
+} from "@shared/protocol.ts";
 import { withAttachments } from "@shared/attachments.ts";
 import {
   BACKLOG_TASK_KINDS,
@@ -36,6 +40,7 @@ import {
   fetchPipelineRepos,
   fetchRepos,
   fetchTaskSources,
+  type ActionResult,
 } from "../lib/api.ts";
 import {
   readLastDispatchRepo,
@@ -77,6 +82,7 @@ import {
   type GuidedOption,
 } from "./GuidedDispatch.tsx";
 import { useGuidedDispatch } from "../lib/guided-dispatch.ts";
+import { useTourTargetRef } from "../tour/target-context.tsx";
 import {
   GUIDED_HARNESS_KEYS,
   GUIDED_KIND_KEYS,
@@ -138,6 +144,32 @@ function freshDispatchDraft(): DispatchDraft {
     // Secondary repos widen one task's worktree and write scope. They are never a default
     // for the next task, even though the primary repo deliberately remains sticky.
     extraRepoRoots: [],
+  };
+}
+
+/** Temporary input owned by DispatchLayer while the See the work tour is active. */
+export interface SeeWorkTourDispatchPreview {
+  id: string;
+  briefReady: boolean;
+  repoRoot: string | null;
+  dispatch: (repoRoot: string) => Promise<ActionResult & { task?: Task }>;
+}
+
+interface TourDispatchSlot {
+  id: string;
+  draft: DispatchDraft;
+}
+
+function freshTourDispatchDraft(preview: SeeWorkTourDispatchPreview): DispatchDraft {
+  return {
+    ...EMPTY_DISPATCH_DRAFT,
+    repoRoot: preview.repoRoot ?? "",
+    intent: preview.briefReady ? SEE_WORK_TOUR_DEMO_INTENT : "",
+    title: "Tour demo",
+    kind: "ship",
+    agent: "codex",
+    model: "gpt-5.6-terra",
+    workflowId: null,
   };
 }
 
@@ -381,6 +413,7 @@ export function DispatchLayer({
   harnessesRevision = 0,
   pipelinesRevision = "count:0",
   launchIntent = null,
+  tourDemo = null,
   onClose,
   onOpenSchedule,
   onEnsembleLaunched,
@@ -413,6 +446,8 @@ export function DispatchLayer({
    * place that decides what Ensemble mode means. An intent is a request; the modal applies it.
    */
   launchIntent?: { strategyId: EnsembleStrategyId } | null;
+  /** Isolated draft and fixed submit path used only while the See the work tour is active. */
+  tourDemo?: SeeWorkTourDispatchPreview | null;
   onClose: () => void;
   /** Open Recurring Missions from a generated task's read-only provenance in edit mode. */
   onOpenSchedule?: (scheduleId: string, occurrenceId?: string, scheduledFor?: number) => void;
@@ -420,6 +455,30 @@ export function DispatchLayer({
   onEnsembleLaunched?: (runId: string) => void;
 }): React.JSX.Element | null {
   const [draft, setDraft] = useState<DispatchDraft>(freshDispatchDraft);
+  // The tour demonstrates the real form without borrowing or erasing the operator's draft.
+  // This temporary slot lives beside the owner's existing new/edit slots and disappears when
+  // a later tour id replaces it. It is not a second Dispatch owner or a persisted draft.
+  const [storedTourSlot, setTourSlot] = useState<TourDispatchSlot | null>(() =>
+    tourDemo ? { id: tourDemo.id, draft: freshTourDispatchDraft(tourDemo) } : null,
+  );
+  let tourSlot = storedTourSlot;
+  if (tourDemo) {
+    const nextDraft = tourSlot?.id === tourDemo.id
+      ? {
+          ...tourSlot.draft,
+          ...(tourDemo.repoRoot && !tourSlot.draft.repoRoot.trim()
+            ? { repoRoot: tourDemo.repoRoot }
+            : {}),
+          ...(tourDemo.briefReady && !tourSlot.draft.intent
+            ? { intent: SEE_WORK_TOUR_DEMO_INTENT }
+            : {}),
+        }
+      : freshTourDispatchDraft(tourDemo);
+    if (tourSlot?.id !== tourDemo.id || !draftsEqual(tourSlot.draft, nextDraft)) {
+      tourSlot = { id: tourDemo.id, draft: nextDraft };
+      setTourSlot(tourSlot);
+    }
+  }
   /**
    * The guided pass belongs to the new-dispatch draft, so it has the same lifetime.
    *
@@ -438,8 +497,10 @@ export function DispatchLayer({
   // instance that armed it is gone - a stale closure would compare against
   // whatever the draft held when that instance last rendered.
   const draftRef = useRef(draft);
+  const tourDraftRef = useRef(tourSlot?.draft ?? null);
   const ensembleDraftRef = useRef(ensembleDraft);
   draftRef.current = draft;
+  tourDraftRef.current = tourSlot?.draft ?? null;
   ensembleDraftRef.current = ensembleDraft;
 
   // The working copy of the task being edited, if any, beside the seed it was built
@@ -529,6 +590,18 @@ export function DispatchLayer({
       // most likely to want, and it was remembered before this fired.
       setDraft(freshDispatchDraft());
       setGuidedPass(null);
+      onClose();
+    },
+    [onClose],
+  );
+
+  // A successful tour dispatch consumes only the temporary slot. The operator's draft and
+  // guided-pass progress underneath it are deliberately left byte-for-byte as they were.
+  const onTourSubmitted = useCallback(
+    (submitted: DispatchDraft) => {
+      if (!tourDraftRef.current || !draftsEqual(tourDraftRef.current, submitted)) return;
+      revokeAttachments(tourDraftRef.current.attachments);
+      setTourSlot(null);
       onClose();
     },
     [onClose],
@@ -668,15 +741,25 @@ export function DispatchLayer({
       mode={{ kind: "new" }}
       tasks={tasks}
       sessions={sessions}
-      draft={draft}
-      onDraftChange={setDraft}
-      onAttachmentsChange={onAttachmentsChange}
-      onRevert={onNewRevert}
+      draft={tourDemo && tourSlot ? tourSlot.draft : draft}
+      onDraftChange={tourDemo && tourSlot
+        ? (next) => setTourSlot({ id: tourDemo.id, draft: next })
+        : setDraft}
+      onAttachmentsChange={tourDemo && tourSlot
+        ? (attachments) => setTourSlot({
+            id: tourDemo.id,
+            draft: { ...tourDraftRef.current!, attachments },
+          })
+        : onAttachmentsChange}
+      onRevert={tourDemo ? () => setTourSlot({
+        id: tourDemo.id,
+        draft: freshTourDispatchDraft(tourDemo),
+      }) : onNewRevert}
       onClose={onClose}
-      onSubmitted={onSubmitted}
-      guidedPass={guidedPass}
-      onGuidedPassChange={setGuidedPass}
-      launchMode={launchMode}
+      onSubmitted={tourDemo ? onTourSubmitted : onSubmitted}
+      guidedPass={tourDemo ? NO_GUIDED_PASS : guidedPass}
+      onGuidedPassChange={tourDemo ? undefined : setGuidedPass}
+      launchMode={tourDemo ? "single" : launchMode}
       onLaunchModeChange={chooseLaunchMode}
       ensembleDraft={ensembleDraft}
       onEnsembleDraftChange={setEnsembleDraft}
@@ -687,6 +770,7 @@ export function DispatchLayer({
       foremanEnabled={foremanEnabled}
       harnessesRevision={harnessesRevision}
       pipelinesRevision={pipelinesRevision}
+      tourDemo={tourDemo}
     />
   );
 }
@@ -731,6 +815,7 @@ function DispatchModal({
   foremanEnabled = false,
   harnessesRevision = 0,
   pipelinesRevision = "count:0",
+  tourDemo = null,
 }: {
   mode: DispatchMode;
   tasks: Task[];
@@ -773,9 +858,16 @@ function DispatchModal({
    */
   harnessesRevision?: number;
   pipelinesRevision?: string;
+  /** Fixed, safety-limited submit path while the See the work preview owns this form. */
+  tourDemo?: SeeWorkTourDispatchPreview | null;
 }): React.JSX.Element {
   const { resolve: resolveModels } = useHarnessModelCatalogs();
   const editing = mode.kind === "edit" ? mode.task : null;
+  const tourModalRef = useTourTargetRef<HTMLElement>("dispatch-modal");
+  const tourKindRef = useTourTargetRef<HTMLDivElement>("dispatch-kind");
+  const tourInputRef = useTourTargetRef<HTMLLabelElement>("dispatch-input");
+  const tourWorkflowRef = useTourTargetRef<HTMLDivElement>("dispatch-workflow");
+  const tourSubmitRef = useTourTargetRef<HTMLButtonElement>("dispatch-submit");
   // Ensemble mode is a new-dispatch-only concern, and only when the layer wired the state up.
   const ensembleMode = !editing && launchMode === "ensemble" && ensembleDraft !== undefined;
   const availableTaskKinds =
@@ -1921,7 +2013,9 @@ function DispatchModal({
       ? patch
         ? await api.updateTask(editing.id, patch)
         : { ok: true }
-      : await api.dispatch({
+      : tourDemo
+        ? await tourDemo.dispatch(submitted.repoRoot.trim())
+        : await api.dispatch({
           repoRoot: submitted.repoRoot.trim(),
           extraRepoRoots: attachedRepoRoots(submitted),
           intent,
@@ -1952,7 +2046,7 @@ function DispatchModal({
     // Only from THIS form, not the editor. Reopening a task shelved last week and
     // saving it is a visit to an old decision, not a statement about what to dispatch
     // next, and letting it move the seed would strand the next task in that repo.
-    if (r.ok && !editing) {
+    if (r.ok && !editing && !tourDemo) {
       rememberDispatchRepo(submitted.repoRoot.trim());
     }
     // Clear the draft and close only once the task row exists - the worktree and
@@ -2167,7 +2261,7 @@ function DispatchModal({
   );
 
   const taskField = (
-    <label className={`field${guidedDim}`}>
+    <label ref={tourInputRef} className={`field${guidedDim}`}>
       <span className="field-label">
         {draft.kind === "chat" && !editing ? "What would you like to talk about?" : "Task"}{" "}
         <span className="field-hint">
@@ -2234,6 +2328,7 @@ function DispatchModal({
       }`}
       role="dialog"
       ariaLabel={editing ? "Edit a backlog task" : "Dispatch an agent"}
+      surfaceRef={tourModalRef}
       onEscape={onOverlayEscape}
       onKeyDown={onOverlayKeyDown}
       // Sealed while a submit is in flight, all four dismiss routes at once. A modal
@@ -2447,7 +2542,12 @@ function DispatchModal({
               </label>
               {guidedPickerFor("harness", AGENT_FIELD_TIP)}
             </div>
-            <div className={`dispatch-crew-cell${guidedAnchor("kind")}`}>
+            <div
+              ref={tourKindRef}
+              className={`dispatch-crew-cell${guidedAnchor("kind")}`}
+              role="group"
+              aria-label="Kind selection"
+            >
               <label className={`field${guidedDimUnless("kind")}`}>
                 <span className="field-label">Kind</span>
                 <Tooltip label={KIND_FIELD_TIP}>
@@ -2553,6 +2653,7 @@ function DispatchModal({
             off it rather than off the `<label>` inside it, for the reason the crew cells
             above exist. An absolutely-positioned child takes no grid track. */}
         <div
+          ref={tourWorkflowRef}
           className={`dispatch-workflow${selectedWorkflowId ? " armed" : ""}${guidedDimUnless(
             "afterWork",
           )}${guidedAnchor("afterWork")}`}
@@ -2860,7 +2961,7 @@ function DispatchModal({
         )}
         {/* Ensemble launches immediately and owns its own member backlog wave, so "Add to
             backlog" makes no sense there; its Review/Launch control owns the primary slot. */}
-        {!ensembleMode && backlogCompatible && (
+        {!tourDemo && !ensembleMode && backlogCompatible && (
           <Tooltip label={editing ? "Keep it in the backlog" : "Shelve it without launching an agent"}>
             <button
               className="btn btn-ghost"
@@ -2917,6 +3018,7 @@ function DispatchModal({
             }
           >
             <button
+              ref={tourSubmitRef}
               className={`btn btn-primary${selectedDependenciesUnmet && !editing ? " btn-wait" : ""}`}
               onClick={() => void submit(true)}
               disabled={

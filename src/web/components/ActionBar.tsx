@@ -20,6 +20,7 @@ import {
 } from "../lib/pending-turns.ts";
 import { Keycap } from "./Keycap.tsx";
 import { Tooltip } from "./Tooltip.tsx";
+import { useTourTaskTargetRef } from "../tour/target-context.tsx";
 
 /**
  * Imperative surface an ActionBar registers with the App so keyboard shortcuts
@@ -149,6 +150,10 @@ export function ActionBar({
   const [busy, setBusy] = useState<string | null>(null);
   const [flash, setFlash] = useState<{ text: string; ok: boolean } | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const tourTargetRef = useTourTaskTargetRef<HTMLDivElement>(
+    "session-actions",
+    session.task?.id,
+  );
   const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   function showFlash(next: { text: string; ok: boolean }, duration: number): void {
@@ -420,7 +425,7 @@ export function ActionBar({
   }, [session.id, registerActions]);
 
   return (
-    <div className="actions">
+    <div className="actions" ref={tourTargetRef}>
       {composing ? (
         <div className="compose">
           {session.pendingTurns.length > 0 && (

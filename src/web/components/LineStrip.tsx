@@ -2,6 +2,7 @@ import { Fragment } from "react";
 import type { LineStageId, LineStageSummary, LineSummary } from "@shared/line.ts";
 import { LINE_STAGES, LINE_STAGE_LABELS, lineStage } from "@shared/line.ts";
 import { lineStageHasDrawer } from "../lib/line-targets.ts";
+import { useTourTargetRef } from "../tour/target-context.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
 /**
@@ -120,6 +121,7 @@ export function LineStrip({
   stageRef?: (stage: LineStageId, button: HTMLButtonElement | null) => void;
   onStage: (stage: LineStageId) => void;
 }): React.JSX.Element {
+  const tourRef = useTourTargetRef<HTMLElement>("line");
   // Driven by LINE_STAGES rather than by what arrived, which is what makes the strip
   // survive a version skew in both directions: a daemon that predates a stage this build
   // draws leaves it blank, and one that has grown a seventh has it ignored rather than
@@ -127,7 +129,7 @@ export function LineStrip({
   const folds = LINE_STAGES.map((stage) => lineStage(summary, stage) ?? blankStage(stage));
 
   return (
-    <nav className="line" aria-label="The Line">
+    <nav ref={tourRef} className="line" aria-label="The Line">
       {folds.map((fold, i) => (
         <Fragment key={fold.stage}>
           {i > 0 && (

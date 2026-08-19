@@ -907,6 +907,33 @@ export const DispatchSchema = z
   });
 export type Dispatch = z.infer<typeof DispatchSchema>;
 
+/** The exact brief rendered in Dispatch and enforced by the temporary tour endpoint. */
+export const SEE_WORK_TOUR_DEMO_INTENT = [
+  "[Mission Control See the work tour demo]",
+  "This is a temporary, read-only product-tour demonstration. Do not edit files, run a workflow, send messages, answer reviews, enable Foreman, grant Trust, change settings, commit, push, or create a pull request.",
+  "Wait about three seconds. Then call the Mission Control request_input MCP tool exactly once with the question \"Which review path should this demo take?\" and these two single-select options: \"Looks good\" (Continue the tour without doing more work.) and \"Show me later\" (Acknowledge the choice and do nothing else.).",
+  "After the human answers, acknowledge the selection briefly and do nothing else. Let the session become idle. Do not complete the task and do not run a retrospective; the tour owns cleanup.",
+].join("\n\n");
+
+/** The fixed opening turn for the empty-fleet Chat session shown at the third tour stop. */
+export const SEE_WORK_TOUR_PREVIEW_INTENT = [
+  "[Mission Control See the work tour conversation]",
+  "This is a temporary Chat session used only to show the session desk during a product tour. Do not edit files, run commands, use tools, change settings, or create any external side effect.",
+  "Reply briefly with a welcome and explain that Conversation holds the exchange, Work queue holds follow-up turns, Workflows holds reusable checks, Diff holds changes, and Files holds the checkout. Do nothing else after that reply.",
+].join("\n\n");
+
+/**
+ * The comparison spike's one deliberately narrow dispatch input.
+ *
+ * The browser chooses an existing repository, while the daemon owns every other launch
+ * property. Keeping model, prompt, tools, and outcome off this body prevents a temporary
+ * product-tour route from becoming a second general-purpose dispatcher.
+ */
+export const SeeWorkTourDispatchSchema = z.object({
+  repoRoot: z.string().min(1),
+});
+export type SeeWorkTourDispatch = z.infer<typeof SeeWorkTourDispatchSchema>;
+
 /**
  * Resolve a typed path to a canonical git repo root, so the Foreman allowlist
  * picker can reject a typo before it enters the trusted-repos list.

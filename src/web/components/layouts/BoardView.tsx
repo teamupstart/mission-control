@@ -26,6 +26,7 @@ import {
   PipelineClusterHead,
 } from "../session-bits.tsx";
 import { Tooltip } from "../Tooltip.tsx";
+import { useTourTargetRef } from "../../tour/target-context.tsx";
 
 /**
  * Whether a cluster frame is one an operator has to do something about.
@@ -85,6 +86,8 @@ interface PendingDrop {
  * overview is never lost: you use the board as the board, and the console as the desk.
  */
 export function BoardView(props: SessionViewProps): React.JSX.Element {
+  const boardTourRef = useTourTargetRef<HTMLElement>("board");
+  const detailTourRef = useTourTargetRef<HTMLElement>("session-detail");
   // Empty columns the operator pulled back out of the stash. Deliberately local and
   // un-persisted: it's a "let me look at that for a second", not a setting, and it
   // should not still be in force tomorrow morning.
@@ -199,6 +202,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
 
   return (
     <main
+      ref={boardTourRef}
       className="board"
       data-focus={focusedTone ?? "none"}
       data-dragging={draggingRepo != null ? "task" : undefined}
@@ -450,7 +454,12 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
           the ConsoleDetail inside mounts only when there's a session to read, and is
           clipped while the track is closed. Keyed by id so switching sessions remounts,
           exactly as the console does. */}
-      <aside className="board-detail" aria-hidden={selected == null}>
+      <aside
+        ref={selected ? detailTourRef : undefined}
+        className="board-detail"
+        aria-label={selected ? "Session detail workspace" : undefined}
+        aria-hidden={selected == null}
+      >
         {selected && <ConsoleDetail key={selected.id} view={props} session={selected} />}
       </aside>
     </main>

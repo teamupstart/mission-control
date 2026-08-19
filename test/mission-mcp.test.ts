@@ -85,6 +85,8 @@ test("the descriptor points at the ONE resolved server path with an absolute run
     "browser",
     "the Node daemon tells its external MCP child which dashboard client launched it",
   );
+  assert.equal(d.env.MISSION_HOME, join(home, "state"));
+  assert.equal(d.env.MISSION_PORT, "7317");
   // The agent launches this as an EXTERNAL process, so a bare `node` off the spawned
   // shell's PATH is not good enough.
   assert.ok(d.command.startsWith("/"), `runtime should be absolute, got ${d.command}`);

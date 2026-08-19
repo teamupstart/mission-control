@@ -893,7 +893,11 @@ export class SdkSupervisor {
         if (!this.shuttingDown) {
           this.registry.applyDriverEvent(id, evt, { deferIdle });
           if (evt.kind === "bound") {
-            const prompts = this.pendingLaunchGoalPrompts.get(id) ?? [];
+            // A clear replaces the conversation that accepted these launch-window prompts.
+            // Never replay its objective under the replacement's native key.
+            const prompts = evt.cleared
+              ? []
+              : (this.pendingLaunchGoalPrompts.get(id) ?? []);
             for (const prompt of prompts) {
               this.captureGoalBestEffort(id, { prompt, noteKey: evt.agentSessionId });
             }

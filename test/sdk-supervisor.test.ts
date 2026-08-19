@@ -311,6 +311,46 @@ test("accepted launch-window follow-ups wait for the native Goal key in order", 
   }
 });
 
+test("a clear before the first binding discards the replaced conversation's Goal", async () => {
+  const handle = fakeHandle();
+  handle.clearContext = async () => {
+    handle.push({
+      kind: "bound",
+      agentSessionId: "agent-cleared-before-first-bind",
+      transcriptPath: null,
+      modelId: null,
+      pid: null,
+      cleared: true,
+    });
+  };
+  const fake = withFakeDriver(async () => handle);
+  try {
+    const registry = new Registry();
+    const supervisor = new SdkSupervisor(registry);
+    const session = await supervisor.start(START);
+
+    assert.equal(await supervisor.clearContext(session.id), true);
+    await waitFor(
+      () => registry.getSession(session.id)?.agentSessionId === "agent-cleared-before-first-bind",
+    );
+    assert.equal(registry.getGoal(session.id), null, "the discarded launch prompt stayed discarded");
+
+    await supervisor.send(
+      session.id,
+      { text: "objective for the replacement" },
+      undefined,
+      {
+        prompt: "objective for the replacement",
+        noteKey: "agent-cleared-before-first-bind",
+      },
+    );
+    assert.equal(registry.getGoal(session.id)?.prompt, "objective for the replacement");
+    assert.equal(registry.getGoal(session.id)?.promptRevision, 1);
+  } finally {
+    fake.restore();
+  }
+});
+
 test("a completed turn preserves durability while an accepted follow-up remains", async () => {
   const handle = fakeHandle();
   const intermediateUsage = {

@@ -155,11 +155,11 @@ npm run install-service          # start now + on login
 npm run install-service -- --uninstall
 ```
 
-The LaunchAgent builds the native Keep Awake addon with its configured Node before it starts the
-source daemon as a supervised child. The supervisor forwards termination signals so the daemon's
-orderly shutdown releases its assertion. Build failure is visible in `daemon.log`, and the daemon
-never starts with a missing or stale native artifact. The daemon PID reported by `/api/health` is
-the process that owns the assertion shown by `pmset`; launchd reports the parent supervisor PID.
+The LaunchAgent builds the native Keep Awake addon with its configured Node before it registers
+the tsx loader and imports the source daemon into that same process. Build failure is visible in
+`daemon.log`, and the daemon never starts with a missing or stale native artifact. Because there
+is no daemon child, launchd's service PID is the same PID reported by `/api/health` and shown as
+the assertion owner by `pmset`.
 
 ## Desktop app (macOS)
 

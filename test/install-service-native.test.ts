@@ -29,7 +29,7 @@ function plistProgramArguments(plist: string): string[] {
   return [...block.matchAll(/<string>([^<]*)<\/string>/g)].map((match) => match[1]!);
 }
 
-test("a fresh LaunchAgent enters through the native-build daemon supervisor", () => {
+test("a fresh LaunchAgent enters through the native-build daemon entry", () => {
   const root = mkdtempSync(join(tmpdir(), "mission-install-service-native-"));
   const home = join(root, "home");
   const state = join(root, "state");
@@ -81,7 +81,7 @@ test("a fresh LaunchAgent enters through the native-build daemon supervisor", ()
   }
 });
 
-test("the LaunchAgent entry builds first and forwards termination to the daemon", async () => {
+test("the LaunchAgent entry builds first and runs the daemon at its exact PID", async () => {
   const root = mkdtempSync(join(tmpdir(), "mission-start-service-native-"));
   const scripts = join(root, "scripts");
   const tsxDir = join(root, "node_modules", "tsx");
@@ -100,9 +100,13 @@ test("the LaunchAgent entry builds first and forwards termination to the daemon"
   );
   writeFileSync(
     join(tsxDir, "package.json"),
-    JSON.stringify({ name: "tsx", type: "module", exports: "./index.mjs" }),
+    JSON.stringify({
+      name: "tsx",
+      type: "module",
+      exports: { "./esm/api": "./index.mjs" },
+    }),
   );
-  writeFileSync(join(tsxDir, "index.mjs"), "// fake tsx import hook\n");
+  writeFileSync(join(tsxDir, "index.mjs"), "export const register = () => {};\n");
   writeFileSync(
     server,
     `import { appendFileSync } from "node:fs";\n` +
@@ -143,7 +147,7 @@ test("the LaunchAgent entry builds first and forwards termination to the daemon"
       );
     assert.deepEqual(events.map((event) => event.stage), ["build", "daemon", "signal"]);
     assert.notEqual(events[0]!.pid, servicePid, "the bounded build runs as a child");
-    assert.notEqual(events[1]!.pid, servicePid, "the daemon runs as the supervisor's child");
+    assert.equal(events[1]!.pid, servicePid, "the daemon keeps launchd's exact service PID");
     assert.notEqual(events[1]!.pid, events[0]!.pid, "the build exits before the daemon starts");
     assert.deepEqual(events[1]!.args, [realpathSync(server)]);
     assert.deepEqual(events[2], {

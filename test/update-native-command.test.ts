@@ -23,7 +23,8 @@ test("the app menu and tray expose the same native update command seam", () => {
     /win\?\.isVisible\(\) \? dialog\.showMessageBox\(win, options\) : dialog\.showMessageBox\(options\)/,
   );
   assert.ok(
-    index.indexOf("updater = new UpdateController") < index.indexOf("daemon = await daemonStart"),
+    index.indexOf("updater = new UpdateController") < index.indexOf("const daemon = await daemonStart.ready"),
     "native update commands must remain available even when daemon startup fails",
   );
+  assert.match(index, /before-quit[\s\S]*daemonStart\?\.stop\(\)/);
 });

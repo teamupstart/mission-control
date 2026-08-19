@@ -323,6 +323,7 @@ export class UpdateController {
   private checkPromise: Promise<UpdateSnapshot> | null = null;
   private applyPromise: Promise<boolean> | null = null;
   private commandPromise: Promise<UpdateSnapshot> | null = null;
+  private manualCheckRequested = false;
   private listeners = new Set<(snapshot: UpdateSnapshot) => void>();
   private timer: ReturnType<typeof setTimeout> | null = null;
   private lastBackgroundAttempt = 0;
@@ -427,10 +428,14 @@ export class UpdateController {
   }
 
   check(manual: boolean): Promise<UpdateSnapshot> {
-    if (this.checkPromise) return this.checkPromise;
+    if (this.checkPromise) {
+      if (manual) this.manualCheckRequested = true;
+      return this.checkPromise;
+    }
     if (this.snapshot.phase === "disabled" || this.snapshot.phase === "applying") {
       return Promise.resolve(this.snapshot);
     }
+    this.manualCheckRequested = manual;
     const previousCheckedAt =
       this.snapshot.phase === "idle" ? this.snapshot.lastCheckedAt : this.port.now();
     const currentVersion = this.port.currentVersion();
@@ -459,7 +464,9 @@ export class UpdateController {
       } catch (error) {
         const safe = safeUpdateError(error);
         this.port.log(`update check failed: ${error instanceof Error ? error.message : String(error)}`);
-        if (!manual) return this.publish(idleSnapshot(currentVersion, lastOutcome, previousCheckedAt));
+        if (!this.manualCheckRequested) {
+          return this.publish(idleSnapshot(currentVersion, lastOutcome, previousCheckedAt));
+        }
         return this.publish({
           phase: "error",
           currentVersion,
@@ -469,6 +476,7 @@ export class UpdateController {
           lastOutcome,
         });
       } finally {
+        this.manualCheckRequested = false;
         this.checkPromise = null;
       }
     })();

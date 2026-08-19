@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { startElectronOwnedDaemon } from "../src/main/daemon-policy.ts";
+import { ownElectronDaemonStart, startElectronOwnedDaemon } from "../src/main/daemon-policy.ts";
 
 test("Vite-backed Electron restarts leave the daemon to dev:server", async () => {
   let starts = 0;
@@ -29,4 +29,25 @@ test("packaged Electron still starts or adopts its daemon", async () => {
 
   assert.equal(daemon, owned);
   assert.equal(starts, 1);
+});
+
+test("quitting during daemon startup stops the controller as soon as startup resolves", async () => {
+  let resolveStart!: (daemon: { adopted: boolean; stop: () => void }) => void;
+  let stops = 0;
+  const owned = {
+    adopted: false,
+    stop: () => {
+      stops += 1;
+    },
+  };
+  const pending = new Promise<typeof owned>((resolve) => (resolveStart = resolve));
+  const startup = ownElectronDaemonStart(undefined, () => pending);
+
+  startup.stop();
+  resolveStart(owned);
+
+  assert.equal(await startup.ready, owned);
+  assert.equal(stops, 1);
+  startup.stop();
+  assert.equal(stops, 1, "the ownership stop is idempotent");
 });

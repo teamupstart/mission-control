@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { stateDir } from "@shared/harness-runtime.mjs";
 import { startDaemon, waitForHealthy } from "./daemon.ts";
 import type { DaemonController } from "./daemon.ts";
-import { startElectronOwnedDaemon } from "./daemon-policy.ts";
+import { ownElectronDaemonStart, type DaemonStartOwnership } from "./daemon-policy.ts";
 import { createWindow, getMainWindow, showWindow } from "./window.ts";
 import { installAppMenu } from "./menu.ts";
 import { createTray, destroyTray } from "./tray.ts";
@@ -40,7 +40,7 @@ const paths = {
   trayIcon: join(appRoot, "build", "trayTemplate.png"),
 };
 
-let daemon: DaemonController | null = null;
+let daemonStart: DaemonStartOwnership<DaemonController> | null = null;
 let updater: UpdateController | null = null;
 
 function showIntegrationResult(title: string, message: string): void {
@@ -143,7 +143,7 @@ app.on("before-quit", () => {
   setQuitting(true);
   updater?.stop();
   destroyTray();
-  daemon?.stop();
+  daemonStart?.stop();
 });
 
 app.whenReady().then(async () => {
@@ -156,7 +156,7 @@ app.whenReady().then(async () => {
     cb(permission === "notifications");
   });
 
-  const daemonStart = startElectronOwnedDaemon(process.env.MISSION_DEV_SERVER_URL, () =>
+  daemonStart = ownElectronDaemonStart(process.env.MISSION_DEV_SERVER_URL, () =>
     startDaemon({
       serverEntry: paths.serverEntry,
       webDir: paths.webDir,
@@ -203,6 +203,6 @@ app.whenReady().then(async () => {
 
   // The window retries while the daemon starts. In development, `dev:server` owns the daemon
   // and its hot-reload lifecycle, so this resolves to null.
-  daemon = await daemonStart;
+  const daemon = await daemonStart.ready;
   if (daemon) await waitForHealthy(15000);
 });

@@ -225,6 +225,25 @@ test("background failures return quietly to idle while manual failures are actio
   f.controller.stop();
 });
 
+test("a manual command joining a failing background check still shows the failure", async () => {
+  let fail!: (error: Error) => void;
+  const pending = new Promise<ReleaseInfo>((_resolve, reject) => (fail = reject));
+  const f = fixture({ latestRelease: () => pending });
+  await f.controller.start();
+
+  const background = f.controller.check(false);
+  const manual = f.controller.checkForUpdates();
+  fail(new Error("boom"));
+
+  assert.equal((await background).phase, "error");
+  assert.equal((await manual).phase, "error");
+  assert.equal(
+    f.events.filter((event) => event.startsWith("error-dialog:")).length,
+    1,
+  );
+  f.controller.stop();
+});
+
 test("menu and tray can share one deduplicated command that applies only after acceptance", async () => {
   let choose!: (choice: "apply" | "defer") => void;
   let prompts = 0;

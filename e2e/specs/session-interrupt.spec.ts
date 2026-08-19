@@ -1,4 +1,5 @@
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
@@ -51,17 +52,59 @@ async function shoot(page: Page, name: string): Promise<void> {
   await page.screenshot({ path: `${EVIDENCE}${name}.png` });
 }
 
-async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {
+async function dispatch(
+  page: Page,
+  daemon: DaemonHandle,
+  agent: "claude" | "codex" = "claude",
+): Promise<void> {
   await page.getByRole("button", { name: "Dispatch" }).click();
 
   const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
   await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
   await page.keyboard.press("Escape");
   await dialog.getByPlaceholder("What should this agent do?").fill("exercise the session interrupt");
+  await dialog.locator("select").filter({ hasText: "Claude Code" }).selectOption(agent);
   await dialog.locator("select").filter({ hasText: "finish without a Workflow" }).selectOption("__none");
   await dialog.getByRole("button", { name: "Dispatch now" }).click();
   await expect(dialog).toBeHidden();
 }
+
+test("Ctrl+C keeps an interrupted Codex session idle after late child activity", async ({
+  dashboard,
+  daemon,
+}) => {
+  await dispatch(dashboard, daemon, "codex");
+
+  const card = await selectTheOnlyCard(dashboard);
+  await card.getByRole("button", { name: "Expand conversation" }).click();
+  const composer = card.getByPlaceholder(/^Reply to this session/);
+  await expect(composer).toBeEnabled();
+  await expect(card).toContainText("Agent SDK");
+
+  await composer.fill(HELD_TURN);
+  await composer.press("Enter");
+  await expect(card).toContainText("working");
+
+  await composer.focus();
+  await composer.press(INTERRUPT);
+  const badge = card.locator("span.badge").first();
+  await expect(badge).toHaveText("idle", { timeout: WELL_BEFORE_THE_TURN_WOULD_END });
+
+  await expect
+    .poll(
+      () =>
+        readdirSync(join(daemon.recordDir, "codex")).some((name) =>
+          name.startsWith("late-descendant-"),
+        ),
+      { message: "the fake Codex child should emit activity after the root turn completes" },
+    )
+    .toBe(true);
+  await dashboard.waitForTimeout(250);
+
+  expect(await badge.textContent()).toBe("idle");
+  await expect(composer).toBeFocused();
+  await shoot(dashboard, "codex-stable-idle-after-late-child");
+});
 
 /**
  * Put the keyboard cursor on the fleet's one card, and return it.

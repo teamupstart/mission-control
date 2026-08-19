@@ -899,6 +899,61 @@ test("turn lifecycle drives state, and usage rides turn_done exactly once", asyn
   await drained;
 });
 
+test("late descendant activity cannot restart an interrupted root turn", async () => {
+  const server = new FakeServer(defaultReplies());
+  const { handle, events, drained } = await launch(server);
+  await settle();
+  server.notify("turn/started", { threadId: THREAD.id, turn: { id: "turn-1" } });
+  const CHILD = "019f9b00-aaaa-7000-8000-000000000001";
+  server.notify("item/started", {
+    threadId: THREAD.id,
+    turnId: "turn-1",
+    startedAtMs: 0,
+    item: {
+      type: "subAgentActivity",
+      id: "sa-late",
+      kind: "started",
+      agentThreadId: CHILD,
+      agentPath: "reviewer",
+    },
+  });
+  await settle();
+
+  await handle.interrupt!();
+  server.notify("turn/completed", { threadId: THREAD.id, turn: { id: "turn-1" } });
+  await settle();
+  const completionBoundary = events.length;
+
+  server.notify("item/started", {
+    threadId: CHILD,
+    turnId: "child-turn-1",
+    startedAtMs: 0,
+    item: {
+      type: "commandExecution",
+      id: "late-child-command",
+      command: "npm test",
+      cwd: "/work/repo",
+      processId: null,
+      source: "agent",
+      status: "inProgress",
+      commandActions: [],
+      aggregatedOutput: null,
+      exitCode: null,
+      durationMs: null,
+    },
+  });
+  await settle();
+
+  assert.equal(
+    events
+      .slice(completionBoundary)
+      .some((event) => event.kind === "state" && event.state === "working"),
+    false,
+  );
+  await handle.stop();
+  await drained;
+});
+
 test("a completed final answer ends the turn when lifecycle notifications are lost", async () => {
   const server = new FakeServer(defaultReplies());
   const { handle, events, drained } = await launch(server);

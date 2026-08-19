@@ -9,6 +9,7 @@ import type { MenuItemConstructorOptions } from "electron";
 
 export interface AppMenuHandlers {
   onOpenSettings: () => void;
+  onCheckForUpdates: () => void;
 }
 
 export function installAppMenu(handlers: AppMenuHandlers): void {
@@ -17,6 +18,7 @@ export function installAppMenu(handlers: AppMenuHandlers): void {
       label: app.name,
       submenu: [
         { role: "about" },
+        { label: "Check for Updates…", click: () => handlers.onCheckForUpdates() },
         { type: "separator" },
         {
           label: "Settings…",

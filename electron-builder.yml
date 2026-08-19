@@ -43,6 +43,9 @@ files:
   # copy of them in the app - and `personas/INSPECTOR.md` is a brief the Inspector reads
   # from the repository under review, never from the install.
   - personas/FOREMAN.md
+  # Copied to a temp directory before it outlives and replaces the app bundle.
+  # Keep this as an unbundled plain file with asar disabled.
+  - scripts/apply-update.mjs
   - package.json
   - "!node_modules/**/*"
 

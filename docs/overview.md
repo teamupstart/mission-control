@@ -200,6 +200,11 @@ make install-app    # …and copy THIS worktree's build into /Applications
 `make install-app` writes no receipt, so a work-in-progress build is never mistaken for a
 managed install.
 
+A managed installed app keeps itself current from stable GitHub Releases. Choose **Check for
+Updates…** from the app menu or tray; the app uses the existing authenticated `gh` CLI, asks before
+rebuilding, and restores the previous working bundle if the update cannot complete. See
+[Updates from the installed app](desktop-and-packaging.md#updates-from-the-installed-app).
+
 The app is self-contained: the daemon runs on Electron's bundled Node (with `node:sqlite`),
 so no system `node` is required to run it. On launch it **adopts** an already-running daemon
 (a LaunchAgent or `make up`) instead of starting a second one. Closing the window hides it

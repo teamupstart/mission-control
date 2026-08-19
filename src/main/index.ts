@@ -11,12 +11,18 @@ import { join } from "node:path";
 import { stateDir } from "@shared/harness-runtime.mjs";
 import { startDaemon, waitForHealthy } from "./daemon.ts";
 import type { DaemonController } from "./daemon.ts";
-import { startElectronOwnedDaemon } from "./daemon-policy.ts";
+import { ownElectronDaemonStart, type DaemonStartOwnership } from "./daemon-policy.ts";
 import { createWindow, getMainWindow, showWindow } from "./window.ts";
 import { installAppMenu } from "./menu.ts";
 import { createTray, destroyTray } from "./tray.ts";
 import { installIntegrations, removeIntegrations } from "./integrations.ts";
 import { setQuitting } from "./lifecycle.ts";
+import {
+  createDefaultUpdaterPort,
+  requestUpdateQuit,
+  UpdateController,
+  type UpdateDialogs,
+} from "./updater.ts";
 
 app.setName("Mission Control");
 
@@ -34,7 +40,8 @@ const paths = {
   trayIcon: join(appRoot, "build", "trayTemplate.png"),
 };
 
-let daemon: DaemonController | null = null;
+let daemonStart: DaemonStartOwnership<DaemonController> | null = null;
+let updater: UpdateController | null = null;
 
 function showIntegrationResult(title: string, message: string): void {
   const win = getMainWindow();
@@ -42,6 +49,65 @@ function showIntegrationResult(title: string, message: string): void {
   if (win) void dialog.showMessageBox(win, opts);
   else void dialog.showMessageBox(opts);
 }
+
+async function showNativeMessage(options: Electron.MessageBoxOptions): Promise<Electron.MessageBoxReturnValue> {
+  const win = getMainWindow();
+  return win?.isVisible() ? dialog.showMessageBox(win, options) : dialog.showMessageBox(options);
+}
+
+const updateDialogs: UpdateDialogs = {
+  async available(release) {
+    const response = await showNativeMessage({
+      type: "info",
+      title: "Mission Control update",
+      message: `Mission Control ${release.newVersion} is available`,
+      detail: [release.name, release.notes].filter(Boolean).join("\n\n"),
+      buttons: ["Update Now", "Later"],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true,
+    });
+    return response.response === 0 ? "apply" : "defer";
+  },
+  async upToDate(version) {
+    await showNativeMessage({
+      type: "info",
+      title: "Mission Control update",
+      message: `Mission Control ${version} is up to date`,
+      buttons: ["OK"],
+    });
+  },
+  async applying(version) {
+    await showNativeMessage({
+      type: "info",
+      title: "Mission Control update",
+      message: `An update to Mission Control ${version} is already in progress`,
+      detail: "Mission Control will relaunch when the update attempt finishes.",
+      buttons: ["OK"],
+    });
+  },
+  async error(message) {
+    await showNativeMessage({
+      type: "error",
+      title: "Mission Control update",
+      message: "The update could not be completed",
+      detail: message,
+      buttons: ["OK"],
+    });
+  },
+  async outcome(outcome) {
+    const failed = outcome.result === "failure";
+    await showNativeMessage({
+      type: failed ? "error" : "info",
+      title: "Mission Control update",
+      message: failed
+        ? `Mission Control ${outcome.targetVersion} could not be installed`
+        : `Mission Control was updated to ${outcome.targetVersion}`,
+      ...(failed ? { detail: outcome.message } : {}),
+      buttons: ["OK"],
+    });
+  },
+};
 
 // Reveal the dashboard and tell the renderer to open the Settings panel. Backs
 // both the native "Settings…" menu item (⌘,) and any future app-level trigger.
@@ -70,7 +136,10 @@ function registerIpc(): void {
 
 app.on("second-instance", () => showWindow(paths.preload));
 
-app.on("activate", () => showWindow(paths.preload));
+app.on("activate", () => {
+  showWindow(paths.preload);
+  updater?.onActivate();
+});
 
 // The window hides on close and stays resident (menu bar), so we intentionally
 // do NOT quit when all windows are gone - the tray keeps the app (and alerts)
@@ -81,8 +150,9 @@ app.on("window-all-closed", () => {
 
 app.on("before-quit", () => {
   setQuitting(true);
+  updater?.stop();
   destroyTray();
-  daemon?.stop();
+  daemonStart?.stop();
 });
 
 app.whenReady().then(async () => {
@@ -95,7 +165,7 @@ app.whenReady().then(async () => {
     cb(permission === "notifications");
   });
 
-  daemon = await startElectronOwnedDaemon(process.env.MISSION_DEV_SERVER_URL, () =>
+  daemonStart = ownElectronDaemonStart(process.env.MISSION_DEV_SERVER_URL, () =>
     startDaemon({
       serverEntry: paths.serverEntry,
       webDir: paths.webDir,
@@ -105,15 +175,26 @@ app.whenReady().then(async () => {
     }),
   );
 
-  // Give the daemon a moment to bind before the window loads its origin (the
-  // window also retries, so this is just to avoid a visible "connecting" flash).
-  // In development, `dev:server` owns the daemon and its hot-reload lifecycle.
-  if (daemon) await waitForHealthy(15000);
-
+  // Install the native update path before awaiting daemon health. A broken daemon must not
+  // prevent the user from repairing the packaged app through an update.
   createWindow(paths.preload);
-  installAppMenu({ onOpenSettings: openSettings });
+  updater = new UpdateController(
+    createDefaultUpdaterPort({
+      packaged: app.isPackaged,
+      currentVersion: () => app.getVersion(),
+      helperSource: join(appRoot, "scripts", "apply-update.mjs"),
+      stateDirectory: stateDir(),
+      requestQuit: () => requestUpdateQuit(() => setQuitting(true), () => app.quit()),
+      dialogs: updateDialogs,
+    }),
+  );
+  const updaterStart = updater.start();
+  const onCheckForUpdates = () => void updater?.checkForUpdates();
+
+  installAppMenu({ onOpenSettings: openSettings, onCheckForUpdates });
   createTray(paths.trayIcon, {
     onOpen: () => showWindow(paths.preload),
+    onCheckForUpdates,
     onInstallIntegrations: () => {
       const r = installIntegrations();
       showIntegrationResult(r.ok ? "Integrations installed" : "Install failed", r.message);
@@ -127,4 +208,10 @@ app.whenReady().then(async () => {
       app.quit();
     },
   });
+  void updaterStart;
+
+  // The window retries while the daemon starts. In development, `dev:server` owns the daemon
+  // and its hot-reload lifecycle, so this resolves to null.
+  const daemon = await daemonStart.ready;
+  if (daemon) await waitForHealthy(15000);
 });

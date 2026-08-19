@@ -325,6 +325,7 @@ export class UpdateController {
   private applyPromise: Promise<boolean> | null = null;
   private commandPromise: Promise<UpdateSnapshot> | null = null;
   private applyingNoticePromise: Promise<UpdateSnapshot> | null = null;
+  private releaseDecisionPending = false;
   private manualCheckRequested = false;
   private listeners = new Set<(snapshot: UpdateSnapshot) => void>();
   private timer: ReturnType<typeof setTimeout> | null = null;
@@ -422,6 +423,7 @@ export class UpdateController {
     if (
       this.snapshot.phase !== "disabled" &&
       !this.checkPromise &&
+      !this.releaseDecisionPending &&
       this.port.now() - this.lastBackgroundAttempt >= RECHECK_MS
     ) {
       this.lastBackgroundAttempt = this.port.now();
@@ -434,6 +436,7 @@ export class UpdateController {
       if (manual) this.manualCheckRequested = true;
       return this.checkPromise;
     }
+    if (!manual && this.releaseDecisionPending) return Promise.resolve(this.snapshot);
     if (this.snapshot.phase === "disabled" || this.snapshot.phase === "applying") {
       return Promise.resolve(this.snapshot);
     }
@@ -506,12 +509,18 @@ export class UpdateController {
       const snapshot = await this.check(true);
       switch (snapshot.phase) {
         case "available": {
-          const choice = await this.port.dialogs.available({
-            currentVersion: snapshot.currentVersion,
-            newVersion: snapshot.newVersion,
-            name: snapshot.releaseName,
-            notes: snapshot.releaseNotes,
-          });
+          let choice: "apply" | "defer";
+          this.releaseDecisionPending = true;
+          try {
+            choice = await this.port.dialogs.available({
+              currentVersion: snapshot.currentVersion,
+              newVersion: snapshot.newVersion,
+              name: snapshot.releaseName,
+              notes: snapshot.releaseNotes,
+            });
+          } finally {
+            this.releaseDecisionPending = false;
+          }
           if (choice === "apply") await this.apply();
           else this.defer();
           return this.snapshot;

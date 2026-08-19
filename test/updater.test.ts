@@ -271,6 +271,41 @@ test("menu and tray can share one deduplicated command that applies only after a
   f.controller.stop();
 });
 
+test("a background recheck cannot invalidate an update dialog awaiting acceptance", async () => {
+  let choose!: (choice: "apply" | "defer") => void;
+  let queries = 0;
+  let now = Date.parse("2026-08-19T14:00:00.000Z");
+  const f = fixture({
+    now: () => now,
+    latestRelease: async () => {
+      queries += 1;
+      if (queries > 1) throw new Error("transient background failure");
+      return release();
+    },
+    dialogs: {
+      ...fixture().port.dialogs,
+      available: () => new Promise((resolve) => (choose = resolve)),
+    },
+  });
+  await f.controller.start();
+
+  const command = f.controller.checkForUpdates();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(f.controller.getSnapshot().phase, "available");
+  now += 6 * 60 * 60 * 1000;
+  f.controller.onActivate();
+  await new Promise((resolve) => setImmediate(resolve));
+  const background = await f.controller.check(false);
+  choose("apply");
+  const completed = await command;
+
+  assert.equal(queries, 1);
+  assert.equal(background.phase, "available");
+  assert.equal(completed.phase, "applying");
+  assert.deepEqual(f.events, ["handoff", "quit"]);
+  f.controller.stop();
+});
+
 test("declining an available update hands off nothing", async () => {
   const f = fixture();
   await f.controller.start();

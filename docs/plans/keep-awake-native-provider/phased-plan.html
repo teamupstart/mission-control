@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Native Keep Awake provider - phased implementation</title>
+  <style>
+    :root { color-scheme:light dark; --bg:#f4f6f8; --paper:#fff; --paper2:#f8fafc; --ink:#17202c; --muted:#596779; --line:#d8dee8; --accent:#087f79; --accent2:#7657bd; --good:#137c54; --code:#edf2f7; --shadow:0 18px 50px rgba(30,42,60,.10); font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    @media(prefers-color-scheme:dark){:root{--bg:#090d12;--paper:#111720;--paper2:#151c26;--ink:#eef3f8;--muted:#a7b2c2;--line:#2b3544;--accent:#59d8d0;--accent2:#b9a0ff;--good:#57d79d;--code:#1a2330;--shadow:none}}
+    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);line-height:1.55}main{width:min(1050px,calc(100% - 32px));margin:0 auto;padding:42px 0 64px}header{padding:28px;border:1px solid var(--line);border-radius:18px;background:linear-gradient(135deg,var(--paper),var(--paper2));box-shadow:var(--shadow)}.eyebrow{color:var(--accent);font:700 12px/1 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.12em;text-transform:uppercase}h1{margin:12px 0 10px;font-size:clamp(34px,6vw,56px);line-height:1.04;letter-spacing:-.045em}h2{margin:34px 0 12px;font-size:24px;letter-spacing:-.02em}h3{margin:21px 0 8px;font-size:18px}p{margin:0 0 12px}.lead{max-width:850px;color:var(--muted);font-size:18px}code{padding:.1em .3em;border-radius:5px;background:var(--code);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.9em;overflow-wrap:anywhere}pre{overflow:auto;padding:15px;border:1px solid var(--line);border-radius:10px;background:var(--code)}ul,ol{padding-left:23px}li{margin:7px 0}.facts{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:20px}.fact{padding:16px;border:1px solid var(--line);border-radius:11px;background:var(--paper)}.fact strong{display:block;color:var(--accent);font:750 22px/1 ui-monospace,SFMono-Regular,Menlo,monospace;margin-bottom:8px}.table-wrap,.flow{overflow:auto}table{width:100%;border-collapse:separate;border-spacing:0;border:1px solid var(--line);border-radius:12px;background:var(--paper)}th,td{padding:12px 13px;border-bottom:1px solid var(--line);vertical-align:top;text-align:left;min-width:150px}th{color:var(--muted);font:700 11px/1.2 ui-monospace,SFMono-Regular,Menlo,monospace;text-transform:uppercase;letter-spacing:.08em;background:var(--paper2)}tr:last-child td{border-bottom:0}.flow{padding:12px;border:1px solid var(--line);border-radius:14px;background:var(--paper)}svg{display:block;min-width:650px;width:100%;height:auto}.box{fill:var(--paper2);stroke:var(--line);stroke-width:2}.arrow{fill:none;stroke:var(--accent);stroke-width:2.5;marker-end:url(#arrow)}svg text{fill:var(--ink);font:600 14px Inter,ui-sans-serif,sans-serif;text-anchor:middle}svg .sub{fill:var(--muted);font-size:11px;font-weight:500}.audit{padding:18px;border-left:4px solid var(--accent2);background:var(--paper2);border-radius:0 10px 10px 0}.artifacts a{color:var(--accent)}footer{margin-top:42px;padding-top:18px;border-top:1px solid var(--line);color:var(--muted);font-size:13px}@media(max-width:720px){main{width:min(100% - 20px,1050px);padding-top:14px}header{padding:20px}.facts{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="eyebrow">Merge-aware implementation schedule · 19 August 2026</div>
+    <h1>Native Keep Awake provider</h1>
+    <p class="lead">One vertical implementation phase replaces the killed <code>caffeinate</code> child with a daemon-owned IOKit assertion, packages the native boundary, preserves Linux-safe browser coverage, and proves the lock-screen contract on a real managed Mac.</p>
+    <div class="facts">
+      <div class="fact"><strong>1</strong>implementation phase</div>
+      <div class="fact"><strong>320-480</strong>estimated non-test lines</div>
+      <div class="fact"><strong>1 PR</strong>complete rollback unit</div>
+    </div>
+  </header>
+
+  <section>
+    <h2>Source plan and human decision</h2>
+    <p>Source: <code>docs/plans/keep-awake-native-provider/plan.md</code>.</p>
+    <p>The user selected recommendation 1 from the archived alternatives report and asked to schedule it through the phased-plan workflow. The fixed goal is in-process IOKit owned by the daemon, with normal screen dimming and locking. Electron ownership, synthetic activity, display-sleep inhibition, persistence, and automatic command fallback are out of scope.</p>
+  </section>
+
+  <section>
+    <h2>Investigated repository findings</h2>
+    <ol>
+      <li><code>KeepAwakeManager</code> currently combines transition truth and child mechanics. Extract the provider without creating a second owner.</li>
+      <li><code>provider</code> is live wire state, not persisted, and React does not branch on it. Appending <code>iokit</code> is compatible.</li>
+      <li><code>src/server/index.ts</code> already constructs and stops exactly one manager.</li>
+      <li>The bundle runs under standalone Node 24+ and Electron 43's Node 24 utility process. Stable Node-API serves both.</li>
+      <li>esbuild cannot inline `.node`; packaging includes <code>dist/**/*</code>, so the build must copy a deterministic native artifact.</li>
+      <li>Vite clears only <code>dist/web</code>, leaving <code>dist/native</code> intact.</li>
+      <li><code>node-gyp</code> is transitive only and must become a direct development dependency.</li>
+      <li>Linux CI and Playwright require <code>MISSION_KEEP_AWAKE_BIN</code> to exercise the full UI without touching real power state.</li>
+      <li>Ordinary tests must not call IOKit. Real assertion behavior remains a controlled macOS receipt.</li>
+      <li>No UI, route, SSE event name, database, saved config, or restore path needs to move.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Sizing estimate</h2>
+    <p>Estimated non-test implementation is <strong>320-480 lines</strong>: 90-150 native addon and binding, 60-100 conditional build/copy/loading, 130-190 provider and manager adaptation, and 40-60 shared-type, smoke, package, and runtime-comment work. Tests and product docs are excluded.</p>
+  </section>
+
+  <section>
+    <h2>Phase-count decision</h2>
+    <p>Create exactly one phase. Splitting the addon would land an unused binary and packaging contract. Splitting the manager first would retain the failing provider or create temporary duplicate ownership. The addon, provider switch, package path, proof, docs, and real receipt are one reviewable rollback boundary.</p>
+  </section>
+
+  <section>
+    <h2>Phase graph</h2>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Phase</th><th>Outcome</th><th>Direct dependency</th><th>Concurrency</th></tr></thead>
+      <tbody><tr><td>1. Native macOS assertion provider</td><td>Daemon-owned IOKit assertion, safe package path, unchanged UI/lifecycle, automated gates, and real managed-Mac proof.</td><td>This planning PR merged</td><td>No other implementation phase exists</td></tr></tbody>
+    </table></div>
+    <div class="flow">
+      <svg viewBox="0 0 850 210" role="img" aria-label="Planning pull request merge releases Phase 1, whose reviewable implementation pull request completes the feature.">
+        <defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="var(--accent)"></path></marker></defs>
+        <rect class="box" x="35" y="65" width="210" height="78" rx="12"></rect><text x="140" y="96">Planning PR merged</text><text class="sub" x="140" y="117">publishes every path</text>
+        <rect class="box" x="320" y="48" width="220" height="112" rx="12"></rect><text x="430" y="90">Phase 1</text><text class="sub" x="430" y="112">native provider + package</text><text class="sub" x="430" y="130">tests + docs + receipt</text>
+        <rect class="box" x="615" y="65" width="200" height="78" rx="12"></rect><text x="715" y="96">Implementation PR</text><text class="sub" x="715" y="117">green + reviewable</text>
+        <path class="arrow" d="M245 104 H320"></path><path class="arrow" d="M540 104 H615"></path>
+      </svg>
+    </div>
+  </section>
+
+  <section>
+    <h2>Merge order and release gate</h2>
+    <p>The Phase 1 Mission Control task depends directly on this planning session. It remains backlogged until the planning PR merges these files to the default branch. Phase 1 then lands the complete provider replacement in one implementation PR. No preparation or cleanup phase follows.</p>
+  </section>
+
+  <section>
+    <h2>Cross-phase contracts</h2>
+    <ul>
+      <li>The daemon stays the sole owner in packaged, browser, adopted, standalone, and LaunchAgent modes.</li>
+      <li>Production Darwin defaults to IOKit. The explicit command override is test-only and never an automatic fallback.</li>
+      <li>Only user-idle system sleep is inhibited; display sleep and user activity are never asserted.</li>
+      <li><code>on</code> follows successful create, <code>off</code> follows successful release, and failures stay visible and bounded.</li>
+      <li>Every daemon starts off. The native module is side-effect free on load and uses stable Node-API.</li>
+      <li>Linux does not compile or call IOKit. No database, saved config, route, event name, or UI ownership changes.</li>
+      <li>A denied assertion stops rollout and records evidence instead of invoking evasive alternatives.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Final verification strategy</h2>
+    <ul>
+      <li>Provider and manager unit tests with injected native and command fakes.</li>
+      <li>Existing HTTP, Registry/SSE, reducer, render, and Electron lifecycle tests.</li>
+      <li>Existing Keep Awake Playwright vertical slice through the Linux-safe command fixture.</li>
+      <li><code>npm run typecheck</code>, <code>npm run lint</code>, <code>npm test</code>, <code>npm run build</code>, and <code>npm run smoke</code>.</li>
+      <li><code>npm run package</code> on macOS arm64 and a packaged utility-process load check.</li>
+      <li>A real managed-Mac receipt proving normal lock, continuing work, disable release, crash release, restart off, and no <code>caffeinate</code> child.</li>
+    </ul>
+  </section>
+
+  <section class="audit">
+    <h2>Final compatibility audit</h2>
+    <ul>
+      <li>Every approved source-plan requirement is owned by Phase 1.</li>
+      <li>The provider boundary, native implementation, and package path land together.</li>
+      <li>The explicit command override preserves Linux browser proof without real power changes.</li>
+      <li><code>iokit</code> extends live vocabulary only; no historical row or archive is rewritten.</li>
+      <li>The phase ends operable and has no undocumented cleanup dependency.</li>
+      <li>All task paths will be checked against the pushed planning commit before scheduling.</li>
+    </ul>
+  </section>
+
+  <section class="artifacts">
+    <h2>Artifact index</h2>
+    <ul>
+      <li><a href="plan.md">plan.md</a></li>
+      <li><a href="plan.html">plan.html</a></li>
+      <li><a href="phased-plan.md">phased-plan.md</a></li>
+      <li><a href="phase-1-native-macos-assertion-provider.md">phase-1-native-macos-assertion-provider.md</a></li>
+    </ul>
+  </section>
+
+  <footer>Markdown source of truth: <code>docs/plans/keep-awake-native-provider/phased-plan.md</code></footer>
+</main>
+</body>
+</html>

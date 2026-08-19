@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Native Keep Awake provider plan</title>
+  <style>
+    :root { color-scheme: light dark; --bg:#f4f6f8; --paper:#fff; --paper2:#f8fafc; --ink:#17202c; --muted:#596779; --line:#d8dee8; --accent:#087f79; --accent2:#7657bd; --good:#137c54; --warn:#9a6500; --bad:#b53232; --code:#edf2f7; --shadow:0 18px 50px rgba(30,42,60,.10); font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    @media (prefers-color-scheme: dark) { :root { --bg:#090d12; --paper:#111720; --paper2:#151c26; --ink:#eef3f8; --muted:#a7b2c2; --line:#2b3544; --accent:#59d8d0; --accent2:#b9a0ff; --good:#57d79d; --warn:#f1c66d; --bad:#ff7777; --code:#1a2330; --shadow:none; } }
+    * { box-sizing:border-box; } body { margin:0; background:var(--bg); color:var(--ink); line-height:1.55; } main { width:min(1080px,calc(100% - 32px)); margin:0 auto; padding:42px 0 64px; } header { padding:28px; border:1px solid var(--line); border-radius:18px; background:linear-gradient(135deg,var(--paper),var(--paper2)); box-shadow:var(--shadow); } .eyebrow { color:var(--accent); font:700 12px/1 ui-monospace,SFMono-Regular,Menlo,monospace; letter-spacing:.12em; text-transform:uppercase; } h1 { margin:12px 0 10px; font-size:clamp(34px,6vw,58px); line-height:1.03; letter-spacing:-.045em; } h2 { margin:34px 0 12px; font-size:24px; letter-spacing:-.02em; } h3 { margin:22px 0 8px; font-size:18px; } p { margin:0 0 12px; } .lead { max-width:850px; color:var(--muted); font-size:18px; } .decision { margin-top:20px; padding:16px 18px; border-left:4px solid var(--accent); background:var(--paper2); border-radius:0 10px 10px 0; } code { padding:.1em .3em; border-radius:5px; background:var(--code); color:var(--ink); font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:.9em; overflow-wrap:anywhere; } pre { overflow:auto; padding:15px; border:1px solid var(--line); border-radius:10px; background:var(--code); } pre code { padding:0; background:transparent; } ul,ol { padding-left:23px; } li { margin:7px 0; } .grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:13px; } .card { padding:18px; border:1px solid var(--line); border-radius:12px; background:var(--paper); } .card h3 { margin-top:0; } .flow { margin-top:16px; overflow:auto; border:1px solid var(--line); border-radius:14px; background:var(--paper); padding:12px; } svg { display:block; min-width:760px; width:100%; height:auto; } .box { fill:var(--paper2); stroke:var(--line); stroke-width:2; } .arrow { fill:none; stroke:var(--accent); stroke-width:2.5; marker-end:url(#arrow); } svg text { fill:var(--ink); font:600 13px Inter,ui-sans-serif,sans-serif; text-anchor:middle; } svg .sub { fill:var(--muted); font-size:11px; font-weight:500; } table { width:100%; border-collapse:separate; border-spacing:0; overflow:hidden; border:1px solid var(--line); border-radius:12px; background:var(--paper); } .table-wrap { overflow:auto; } th,td { padding:12px 13px; border-bottom:1px solid var(--line); vertical-align:top; text-align:left; min-width:150px; } th { color:var(--muted); font:700 11px/1.2 ui-monospace,SFMono-Regular,Menlo,monospace; text-transform:uppercase; letter-spacing:.08em; background:var(--paper2); } tr:last-child td { border-bottom:0; } .good { color:var(--good); } .warn { color:var(--warn); } .bad { color:var(--bad); } .sources { color:var(--muted); font-size:13px; } footer { margin-top:42px; padding-top:18px; border-top:1px solid var(--line); color:var(--muted); font-size:13px; } a { color:var(--accent); } @media(max-width:720px){ main{width:min(100% - 20px,1080px);padding-top:14px} header{padding:20px}.grid{grid-template-columns:1fr} }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="eyebrow">Approved engineering plan · 19 August 2026</div>
+    <h1>Native Keep Awake provider</h1>
+    <p class="lead">Replace Mission Control's macOS <code>/usr/bin/caffeinate</code> child with a daemon-owned, in-process IOKit assertion. The display must still dim, turn off, and lock normally while user-idle system sleep is inhibited.</p>
+    <div class="decision"><strong>Selected direction:</strong> option 1 from the Scout report, implemented through a small Darwin-only raw Node-API addon. This is a provider replacement, not a Keep Awake redesign.</div>
+  </header>
+
+  <section>
+    <h2>Outcome</h2>
+    <p>Local agents and recurring work continue behind a locked screen without depending on the process that was observed exiting under <code>SIGKILL</code>. Lid close, manual Sleep, low battery, thermal protection, shutdown, and power loss still win.</p>
+    <p>This is not authorization to evade an intentional endpoint control. If the native assertion is denied or all local sleep inhibition is prohibited, verification stops and reports that boundary.</p>
+  </section>
+
+  <section>
+    <h2>Why change the provider</h2>
+    <p>The current manager starts <code>/usr/bin/caffeinate -i -w &lt;daemon PID&gt;</code>. On the checked managed Mac, that child started and was then terminated with <code>SIGKILL</code>, leaving Mission Control in <code>live · awake failed</code>. The evidence did not establish which process or policy sent the signal.</p>
+    <p>Apple exposes the same narrow behavior through <code>kIOPMAssertionTypePreventUserIdleSystemSleep</code>. Calling it in the daemon removes the observed executable and child-process surface without simulating activity or keeping the display awake.</p>
+  </section>
+
+  <section>
+    <h2>Approved decisions</h2>
+    <div class="grid">
+      <article class="card"><h3>Daemon-owned IOKit</h3><p>Use <code>kIOPMAssertionTypePreventUserIdleSystemSleep</code> with a bounded, human-readable Mission Control reason.</p></article>
+      <article class="card"><h3>No Electron ownership</h3><p><code>powerSaveBlocker</code> cannot uniformly serve browser, adopted-daemon, standalone, and LaunchAgent modes.</p></article>
+      <article class="card"><h3>Test command remains</h3><p>Keep <code>MISSION_KEEP_AWAKE_BIN</code> only as the explicit Linux-safe unit and browser-test provider, never as production fallback.</p></article>
+      <article class="card"><h3>Transient lifecycle</h3><p>Every daemon starts off. Enablement stays explicit and releases on disable, shutdown, crash, or restart.</p></article>
+    </div>
+    <ul>
+      <li>No display-sleep assertion or synthetic user activity.</li>
+      <li>No persistence, automatic retry, or coupling to Away mode or schedules.</li>
+      <li>No command fallback after a native load or IOKit failure.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Current contracts that stay intact</h2>
+    <ul>
+      <li><code>KeepAwakeManager</code> serializes transitions and publishes observations, never request echoes.</li>
+      <li><code>GET /api/keep-awake</code> and <code>PUT /api/keep-awake</code> remain the only control path.</li>
+      <li>Registry snapshot plus <code>keep_awake_status</code> SSE remain the browser's only state source.</li>
+      <li>The control keeps reconnecting precedence and the promise that the screen locks normally.</li>
+      <li>No database row, config key, startup restore, or automatic reacquisition is introduced.</li>
+      <li>The same daemon implementation serves packaged, adopted, browser, standalone, and LaunchAgent modes.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Runtime design</h2>
+    <h3>Native assertion handle</h3>
+    <p>A Darwin-only Objective-C++ addon exposes side-effect-free create and release operations. Create returns an opaque handle only after <code>kIOReturnSuccess</code>. Release deactivates that exact assertion. A finalizer is a leak backstop, while normal disable and shutdown release deterministically. Process death lets macOS remove the process-owned assertion, replacing <code>-w &lt;daemon PID&gt;</code>.</p>
+    <h3>Provider boundary</h3>
+    <p>The manager owns state and serialization. Resolution prefers the explicit command test override, then native IOKit on Darwin, then unsupported. Native failures are visible and never fall back to <code>caffeinate</code>. Append <code>iokit</code> to the live provider union while retaining <code>caffeinate</code> for the fixture.</p>
+    <h3>Request and status flow</h3>
+    <div class="flow">
+      <svg viewBox="0 0 920 250" role="img" aria-label="Existing Keep Awake request flows through the daemon manager to the native Node-API addon and IOKit, then observed status returns through Registry and SSE.">
+        <defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="var(--accent)"></path></marker></defs>
+        <rect class="box" x="24" y="35" width="170" height="70" rx="11"></rect><text x="109" y="65">Keep Awake control</text><text class="sub" x="109" y="84">existing PUT route</text>
+        <rect class="box" x="260" y="35" width="170" height="70" rx="11"></rect><text x="345" y="65">KeepAwakeManager</text><text class="sub" x="345" y="84">one owner</text>
+        <rect class="box" x="496" y="35" width="170" height="70" rx="11"></rect><text x="581" y="65">Node-API addon</text><text class="sub" x="581" y="84">create or release</text>
+        <rect class="box" x="732" y="35" width="164" height="70" rx="11"></rect><text x="814" y="65">macOS IOKit</text><text class="sub" x="814" y="84">return code</text>
+        <rect class="box" x="260" y="160" width="170" height="62" rx="11"></rect><text x="345" y="187">Registry + SSE</text><text class="sub" x="345" y="205">observed status</text>
+        <path class="arrow" d="M194 70 H260"></path><path class="arrow" d="M430 70 H496"></path><path class="arrow" d="M666 70 H732"></path><path class="arrow" d="M581 105 V191 H430"></path><path class="arrow" d="M260 191 H109 V105"></path>
+      </svg>
+    </div>
+  </section>
+
+  <section>
+    <h2>Build and package design</h2>
+    <ul>
+      <li>Declare <code>node-gyp</code> directly and compile only on Darwin.</li>
+      <li>Copy the output to <code>dist/native/keep-awake.node</code>; Vite clears only <code>dist/web</code>.</li>
+      <li>Build before source daemon startup and before the production bundle.</li>
+      <li>Resolve one explicit path from <code>import.meta.url</code> in source and bundled execution.</li>
+      <li>Keep the addon external to esbuild. Existing <code>dist/**/*</code> packaging captures it.</li>
+      <li>Use stable Node-API supported by Node 24 and Electron 43's Node 24 utility process.</li>
+      <li>Fail clearly on unsupported requested Darwin architecture instead of copying a misleading host binary.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Failure and compatibility behavior</h2>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Condition</th><th>Required result</th></tr></thead>
+      <tbody>
+        <tr><td>Addon absent or cannot load on macOS</td><td>Unavailable with bounded reason; no command fallback.</td></tr>
+        <tr><td>IOKit create fails</td><td>Error; UI never claims awake.</td></tr>
+        <tr><td>IOKit release fails</td><td>Error; retain the handle so explicit disable can retry.</td></tr>
+        <tr><td>Daemon exits</td><td>Process-owned assertion disappears; successor starts off.</td></tr>
+        <tr><td>Test command exits</td><td>Existing visible failure and bounded stop behavior remain.</td></tr>
+        <tr><td>Unsupported platform</td><td>Unavailable and no process spawned.</td></tr>
+        <tr><td>Older browser sees <code>iokit</code></td><td>No change because React does not branch on provider.</td></tr>
+      </tbody>
+    </table></div>
+    <p>There is no database, configuration, or downgrade migration. A downgrade cannot inherit the old process-owned assertion.</p>
+  </section>
+
+  <section>
+    <h2>Repository work</h2>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Area</th><th>Planned change</th></tr></thead>
+      <tbody>
+        <tr><td><code>native/keep-awake/</code></td><td>Objective-C++ Node-API source and IOKit binding definition.</td></tr>
+        <tr><td><code>scripts/</code>, <code>package.json</code></td><td>Conditional native build, direct dependency, and dev/build integration.</td></tr>
+        <tr><td><code>src/server/keep-awake.ts</code></td><td>Provider abstraction, native Darwin default, retained command fixture.</td></tr>
+        <tr><td><code>src/server/keep-awake-native.ts</code></td><td>Typed side-effect-free loader and native adapter.</td></tr>
+        <tr><td><code>src/shared/types.ts</code></td><td>Append <code>iokit</code> and update observation comments.</td></tr>
+        <tr><td>Tests and smoke</td><td>Provider selection, native lifecycle, command fixture, artifact load, and existing UI flow.</td></tr>
+        <tr><td>Docs and packaging</td><td>Native owner, revised macOS receipt, and native artifact comments.</td></tr>
+      </tbody>
+    </table></div>
+    <p>Filenames are the proposed route. Implementation may adapt them where the repository shows a simpler compatible path, but daemon ownership and product behavior are fixed.</p>
+  </section>
+
+  <section>
+    <h2>Verification</h2>
+    <h3>Automated</h3>
+    <ul>
+      <li>Injected fake providers only; ordinary tests never call IOKit or alter host power.</li>
+      <li>Cover selection, override precedence, unsupported platforms, create/release errors and retry, concurrency, bounded errors, and shutdown.</li>
+      <li>Keep HTTP, Registry/SSE, render, reducer, and Linux Playwright coverage green.</li>
+      <li>Build the addon on Darwin, skip deliberately on Linux, and load it side-effect free in smoke.</li>
+      <li>Package on macOS arm64 and load it from the Electron utility process.</li>
+    </ul>
+    <h3>Real macOS receipt</h3>
+    <ol>
+      <li>Confirm no <code>caffeinate -i -w</code> process appears.</li>
+      <li>Confirm the Mission Control daemon owns <code>PreventUserIdleSystemSleep</code> and no display assertion.</li>
+      <li>Lock the screen, wait past display sleep, require authentication, and observe continuing non-destructive work.</li>
+      <li>Disable and confirm the assertion disappears.</li>
+      <li>Enable, kill the daemon, and confirm the assertion disappears.</li>
+      <li>Restart off and repeat through packaged, adopted, and LaunchAgent paths.</li>
+    </ol>
+    <p class="warn"><strong>Stop condition:</strong> if endpoint policy denies or terminates the assertion, preserve that evidence and do not add an evasive fallback.</p>
+  </section>
+
+  <section>
+    <h2>Non-goals</h2>
+    <ul>
+      <li>Keeping the display awake, simulating input, or overriding manual and safety sleep causes.</li>
+      <li>Persistence, automatic reacquisition, Electron ownership, Windows/Linux production providers, or remote execution.</li>
+      <li>Changing UI layout, copy, routes, SSE event names, or database state.</li>
+    </ul>
+  </section>
+
+  <section class="sources">
+    <h2>Sources and evidence boundaries</h2>
+    <p>Repository sources: <code>src/server/keep-awake.ts</code>, <code>src/shared/types.ts</code>, <code>src/server/routes.ts</code>, <code>e2e/specs/keep-awake.spec.ts</code>, <code>docs/sessions.md</code>, <code>docs/runbooks/keep-awake.md</code>, and <code>docs/plans/keep-awake/plan.md</code>.</p>
+    <p>Primary API references: <a href="https://developer.apple.com/documentation/iokit/kiopmassertiontypepreventuseridlesystemsleep">Apple assertion semantics</a>, <a href="https://developer.apple.com/documentation/iokit/1557134-iopmassertioncreatewithname">assertion creation</a>, <a href="https://developer.apple.com/documentation/iokit/1557090-iopmassertionrelease">assertion release</a>, and <a href="https://nodejs.org/api/n-api.html">Node-API</a>.</p>
+    <p>The Scout evidence established a <code>SIGKILL</code> of <code>caffeinate</code>, not its sender or policy rationale. Native compatibility remains a hypothesis until controlled live verification succeeds.</p>
+  </section>
+
+  <footer>Markdown source of truth: <code>docs/plans/keep-awake-native-provider/plan.md</code></footer>
+</main>
+</body>
+</html>

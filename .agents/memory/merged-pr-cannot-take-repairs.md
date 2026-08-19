@@ -2,7 +2,7 @@
 category: repo-convention
 date: 2026-08-14
 source-session: sdk:4abfdc3c-97cf-47e5-956e-633d9d154a68
-times-confirmed: 1
+times-confirmed: 2
 ---
 
 # Do not merge while a review workflow is still running

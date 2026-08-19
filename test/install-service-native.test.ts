@@ -13,17 +13,13 @@ import {
 import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { execve } from "node:process";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const installer = join(repo, "scripts", "install-service.mjs");
 const serviceEntry = join(repo, "scripts", "start-service.mjs");
-
-test("the supported Node runtime exposes the execve primitive used by the service entry", () => {
-  assert.equal(typeof execve, "function");
-});
 
 function plistProgramArguments(plist: string): string[] {
   const block = plist.match(
@@ -33,7 +29,7 @@ function plistProgramArguments(plist: string): string[] {
   return [...block.matchAll(/<string>([^<]*)<\/string>/g)].map((match) => match[1]!);
 }
 
-test("a fresh LaunchAgent builds the native addon before replacing itself with the daemon", () => {
+test("a fresh LaunchAgent enters through the native-build daemon supervisor", () => {
   const root = mkdtempSync(join(tmpdir(), "mission-install-service-native-"));
   const home = join(root, "home");
   const state = join(root, "state");
@@ -85,7 +81,7 @@ test("a fresh LaunchAgent builds the native addon before replacing itself with t
   }
 });
 
-test("the LaunchAgent entry builds first and exec-replaces itself with the source daemon", async () => {
+test("the LaunchAgent entry builds first and forwards termination to the daemon", async () => {
   const root = mkdtempSync(join(tmpdir(), "mission-start-service-native-"));
   const scripts = join(root, "scripts");
   const tsxDir = join(root, "node_modules", "tsx");
@@ -110,7 +106,10 @@ test("the LaunchAgent entry builds first and exec-replaces itself with the sourc
   writeFileSync(
     server,
     `import { appendFileSync } from "node:fs";\n` +
-      `appendFileSync(process.env.SERVICE_EVENT_LOG, JSON.stringify({ stage: "daemon", pid: process.pid, args: process.argv.slice(1) }) + "\\n");\n`,
+      `const record = (event) => appendFileSync(process.env.SERVICE_EVENT_LOG, JSON.stringify(event) + "\\n");\n` +
+      `record({ stage: "daemon", pid: process.pid, args: process.argv.slice(1) });\n` +
+      `process.on("SIGTERM", () => { record({ stage: "signal", pid: process.pid, signal: "SIGTERM" }); process.exit(0); });\n` +
+      `setInterval(() => {}, 1_000);\n`,
   );
 
   try {
@@ -121,18 +120,37 @@ test("the LaunchAgent entry builds first and exec-replaces itself with the sourc
     });
     const servicePid = child.pid;
     assert.ok(servicePid, "the service entry must start");
-    const [code, signal] = (await once(child, "exit")) as [number | null, NodeJS.Signals | null];
+    const exitPromise = once(child, "exit");
+
+    const deadline = Date.now() + 3_000;
+    let recorded = "";
+    while (!recorded.includes('"stage":"daemon"') && Date.now() < deadline) {
+      await delay(20);
+      recorded = existsSync(eventsPath) ? readFileSync(eventsPath, "utf8") : "";
+    }
+    assert.match(recorded, /"stage":"daemon"/, "the daemon must record its start");
+    child.kill("SIGTERM");
+
+    const [code, signal] = (await exitPromise) as [number | null, NodeJS.Signals | null];
     assert.equal(signal, null);
     assert.equal(code, 0);
 
     const events = readFileSync(eventsPath, "utf8")
       .trim()
       .split("\n")
-      .map((line) => JSON.parse(line) as { stage: string; pid: number; args?: string[] });
-    assert.deepEqual(events.map((event) => event.stage), ["build", "daemon"]);
+      .map((line) =>
+        JSON.parse(line) as { stage: string; pid: number; args?: string[]; signal?: string },
+      );
+    assert.deepEqual(events.map((event) => event.stage), ["build", "daemon", "signal"]);
     assert.notEqual(events[0]!.pid, servicePid, "the bounded build runs as a child");
-    assert.equal(events[1]!.pid, servicePid, "execve preserves launchd's exact service PID");
+    assert.notEqual(events[1]!.pid, servicePid, "the daemon runs as the supervisor's child");
+    assert.notEqual(events[1]!.pid, events[0]!.pid, "the build exits before the daemon starts");
     assert.deepEqual(events[1]!.args, [realpathSync(server)]);
+    assert.deepEqual(events[2], {
+      stage: "signal",
+      pid: events[1]!.pid,
+      signal: "SIGTERM",
+    });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -1,8 +1,9 @@
 # electron-builder config for the macOS (Apple Silicon) desktop build.
 #
-# The app is fully self-contained from the esbuild bundles under dist/ - the
-# daemon, UI, MCP server, and hook bridge each inline their JS deps, and
-# node:sqlite is a builtin - so no node_modules ship at runtime.
+# The app is fully self-contained from the artifacts under dist/ - the daemon,
+# UI, MCP server, and hook bridge each inline their JS deps, while the daemon's
+# raw Node-API Keep Awake addon ships at dist/native/keep-awake.node. node:sqlite
+# is a builtin, so no node_modules ship at runtime.
 #
 # asar is OFF on purpose: Claude Code launches the satellite scripts
 # (dist/satellites/hook.mjs, dist/mcp/server.mjs) with an EXTERNAL node that
@@ -17,10 +18,10 @@ directories:
   output: release
   buildResources: build
 
-# Only the built bundles + the tray image + the skills catalog + package.json (for
-# "main"/version). node_modules are intentionally excluded: every runtime dep is
-# inlined by esbuild into the dist bundles, and node:sqlite is a builtin, so nothing
-# under node_modules is needed at runtime. This keeps the app ~275MB smaller.
+# Only the built artifacts + the tray image + the skills catalog + package.json
+# (for "main"/version). `dist/**/*` includes the native Keep Awake addon beside
+# the JS bundles. node_modules are intentionally excluded: every JS runtime dep
+# is inlined by esbuild, and node:sqlite is a builtin. This keeps the app ~275MB smaller.
 #
 # `skills/` ships as SOURCE rather than through dist because Claude - not us - is the
 # thing that reads it: the daemon only symlinks `~/.claude/skills/mission-<id>` at it,

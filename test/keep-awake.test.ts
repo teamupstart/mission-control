@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import type { KeepAwakeStatus } from "../src/shared/types.ts";
 import {
   KeepAwakeManager,
-  resolveKeepAwakeBin,
   type KeepAwakeChild,
+  type NativeKeepAwakeBinding,
 } from "../src/server/keep-awake.ts";
 
 /**
@@ -78,13 +78,14 @@ function setup(over: {
   script?: "spawn" | "spawn-error" | ((child: FakeChild) => void);
   obeys?: "sigterm" | "sigkill-only" | "never";
   forceKillAfterMs?: number;
+  loadNativeBinding?: () => NativeKeepAwakeBinding;
 } = {}) {
   const spawns: { bin: string; args: string[]; child: FakeChild }[] = [];
   const statuses: KeepAwakeStatus[] = [];
   const timers = fakeTimers();
   const manager = new KeepAwakeManager({
     platform: over.platform ?? "darwin",
-    override: over.override === undefined ? null : over.override,
+    override: over.override === undefined ? "/usr/bin/caffeinate" : over.override,
     daemonPid: 7317,
     now: () => 1_700_000_000_000,
     spawn: (bin, args) => {
@@ -100,6 +101,7 @@ function setup(over: {
     setTimeoutFn: timers.setTimeoutFn,
     clearTimeoutFn: timers.clearTimeoutFn,
     forceKillAfterMs: over.forceKillAfterMs ?? 50,
+    loadNativeBinding: over.loadNativeBinding,
     onStatus: (s) => statuses.push(s),
   });
   return { manager, spawns, statuses, timers };
@@ -107,18 +109,298 @@ function setup(over: {
 
 // ---- provider resolution ----
 
-test("macOS resolves the absolute caffeinate path; nothing is left to PATH", () => {
-  assert.equal(resolveKeepAwakeBin("darwin", null), "/usr/bin/caffeinate");
+test("macOS native load failure is unsupported and never falls back to the command provider", () => {
+  const { manager, spawns } = setup({
+    override: null,
+    loadNativeBinding: () => {
+      throw new Error("native unavailable");
+    },
+  });
+  const status = manager.status();
+
+  assert.deepEqual(
+    {
+      status: {
+        supported: status.supported,
+        unavailableReason: {
+          present: status.unavailableReason !== null,
+          namesFailure: /native unavailable/i.test(status.unavailableReason ?? ""),
+          bounded: (status.unavailableReason?.length ?? 201) <= 200,
+        },
+        state: status.state,
+        provider: status.provider,
+        since: status.since,
+        error: status.error,
+      },
+      spawns: spawns.length,
+    },
+    {
+      status: {
+        supported: false,
+        unavailableReason: { present: true, namesFailure: true, bounded: true },
+        state: "off",
+        provider: null,
+        since: null,
+        error: null,
+      },
+      spawns: 0,
+    },
+  );
 });
 
-test("an explicit override is the provider under test on any platform", () => {
-  assert.equal(resolveKeepAwakeBin("linux", "/tmp/fake-caffeinate"), "/tmp/fake-caffeinate");
-  assert.equal(resolveKeepAwakeBin("darwin", "/tmp/fake-caffeinate"), "/tmp/fake-caffeinate");
+test("macOS native provider owns the complete transient keep-awake lifecycle", async () => {
+  const handle = { assertion: 42 };
+  const createReasons: string[] = [];
+  const released: unknown[] = [];
+  const { manager, spawns } = setup({
+    override: null,
+    loadNativeBinding: () => ({
+      create: (reason) => {
+        createReasons.push(reason);
+        return handle;
+      },
+      release: (ownedHandle) => released.push(ownedHandle),
+    }),
+  });
+  const initial = manager.status();
+  const enabled = await manager.setEnabled(true);
+  const disabled = await manager.setEnabled(false);
+  const reason = createReasons[0] ?? "";
+
+  assert.deepEqual(
+    {
+      initial,
+      enabled,
+      disabled,
+      native: {
+        creates: createReasons.length,
+        reason: {
+          humanReadable: /mission control/i.test(reason),
+          bounded: reason.length > 0 && reason.length <= 200,
+        },
+        releases: released.length,
+        releasedExactHandle: released[0] === handle,
+      },
+      commandSpawns: spawns.length,
+    },
+    {
+      initial: {
+        supported: true,
+        unavailableReason: null,
+        state: "off",
+        provider: "iokit",
+        since: null,
+        error: null,
+      },
+      enabled: {
+        supported: true,
+        unavailableReason: null,
+        state: "on",
+        provider: "iokit",
+        since: 1_700_000_000_000,
+        error: null,
+      },
+      disabled: {
+        supported: true,
+        unavailableReason: null,
+        state: "off",
+        provider: "iokit",
+        since: null,
+        error: null,
+      },
+      native: {
+        creates: 1,
+        reason: { humanReadable: true, bounded: true },
+        releases: 1,
+        releasedExactHandle: true,
+      },
+      commandSpawns: 0,
+    },
+  );
 });
 
-test("a platform with no provider and no override resolves nothing", () => {
-  assert.equal(resolveKeepAwakeBin("linux", null), null);
-  assert.equal(resolveKeepAwakeBin("win32", null), null);
+test("native create failure is bounded, truthful, and retryable without a command fallback", async () => {
+  let creates = 0;
+  const { manager, spawns } = setup({
+    override: null,
+    loadNativeBinding: () => ({
+      create: () => {
+        creates += 1;
+        throw new Error(`denied ${"x".repeat(5_000)}`);
+      },
+      release: () => assert.fail("a failed create has no handle to release"),
+    }),
+  });
+
+  const first = await manager.setEnabled(true);
+  const second = await manager.setEnabled(true);
+
+  assert.equal(first.state, "error");
+  assert.equal(first.since, null);
+  assert.match(first.error ?? "", /could not start iokit: denied/);
+  assert.ok((first.error?.length ?? 201) <= 200);
+  assert.equal(second.state, "error");
+  assert.equal(creates, 2);
+  assert.equal(spawns.length, 0);
+});
+
+test("native release failure retains the exact handle for a later disable retry", async () => {
+  const handle = Symbol("assertion");
+  const releases: unknown[] = [];
+  const { manager } = setup({
+    override: null,
+    loadNativeBinding: () => ({
+      create: () => handle,
+      release: (ownedHandle) => {
+        releases.push(ownedHandle);
+        if (releases.length === 1) throw new Error("release denied");
+      },
+    }),
+  });
+
+  await manager.setEnabled(true);
+  const failed = await manager.setEnabled(false);
+  const retried = await manager.setEnabled(false);
+
+  assert.equal(failed.state, "error");
+  assert.match(failed.error ?? "", /could not release iokit: release denied/);
+  assert.equal(retried.state, "off");
+  assert.deepEqual(releases, [handle, handle]);
+});
+
+test("enable after a native release error reconciles the retained handle before reacquiring", async () => {
+  const firstHandle = Symbol("first assertion");
+  const secondHandle = Symbol("second assertion");
+  const events: string[] = [];
+  let creates = 0;
+  let releases = 0;
+  const { manager, spawns } = setup({
+    override: null,
+    loadNativeBinding: () => ({
+      create: () => {
+        creates += 1;
+        const handle = creates === 1 ? firstHandle : secondHandle;
+        events.push(`create:${String(handle.description)}`);
+        return handle;
+      },
+      release: (ownedHandle) => {
+        releases += 1;
+        assert.equal(ownedHandle, firstHandle, "the retained assertion is reconciled first");
+        events.push(`release:${String((ownedHandle as symbol).description)}`);
+        if (releases === 1) throw new Error("release denied once");
+      },
+    }),
+  });
+
+  assert.equal((await manager.setEnabled(true)).state, "on");
+  const failedDisable = await manager.setEnabled(false);
+  assert.equal(failedDisable.state, "error");
+
+  // The control derives checked=false from error, so the operator's next click requests true.
+  // That request must not mistake the retained handle for a truthful `on`: release it, then
+  // acquire a fresh assertion and report success only after creation completes.
+  const recovered = await manager.setEnabled(true);
+
+  assert.deepEqual(events, [
+    "create:first assertion",
+    "release:first assertion",
+    "release:first assertion",
+    "create:second assertion",
+  ]);
+  assert.equal(recovered.state, "on");
+  assert.equal(recovered.provider, "iokit");
+  assert.equal(recovered.error, null);
+  assert.equal(creates, 2);
+  assert.equal(spawns.length, 0, "native recovery must never fall back to a command child");
+});
+
+test("failed native reconciliation keeps the retained handle in error without publishing on", async () => {
+  const handle = Symbol("retained assertion");
+  const releases: unknown[] = [];
+  let creates = 0;
+  const { manager, spawns, statuses } = setup({
+    override: null,
+    loadNativeBinding: () => ({
+      create: () => {
+        creates += 1;
+        return handle;
+      },
+      release: (ownedHandle) => {
+        releases.push(ownedHandle);
+        throw new Error("release still denied");
+      },
+    }),
+  });
+
+  await manager.setEnabled(true);
+  assert.equal((await manager.setEnabled(false)).state, "error");
+  const beforeRetry = statuses.length;
+  const retried = await manager.setEnabled(true);
+
+  assert.equal(retried.state, "error");
+  assert.match(retried.error ?? "", /release still denied/);
+  assert.equal(creates, 1, "a failed reconciliation must not create another assertion");
+  assert.deepEqual(releases, [handle, handle]);
+  assert.equal(spawns.length, 0, "a failed reconciliation must not fall back to a command child");
+  assert.deepEqual(
+    statuses.slice(beforeRetry).map((status) => status.state),
+    ["stopping", "error"],
+  );
+});
+
+test("native repeated and opposite requests remain serialized and idempotent", async () => {
+  const handle = Symbol("assertion");
+  let creates = 0;
+  let releases = 0;
+  const { manager } = setup({
+    override: null,
+    loadNativeBinding: () => ({
+      create: () => {
+        creates += 1;
+        return handle;
+      },
+      release: (ownedHandle) => {
+        assert.equal(ownedHandle, handle);
+        releases += 1;
+      },
+    }),
+  });
+
+  const firstOn = manager.setEnabled(true);
+  const secondOn = manager.setEnabled(true);
+  const off = manager.setEnabled(false);
+  const secondOff = manager.setEnabled(false);
+  const states = await Promise.all([firstOn, secondOn, off, secondOff]);
+
+  assert.deepEqual(states.map((status) => status.state), ["on", "on", "off", "off"]);
+  assert.equal(creates, 1);
+  assert.equal(releases, 1);
+});
+
+test("stop releases an active native assertion through the same disable path", async () => {
+  const handle = Symbol("assertion");
+  const releases: unknown[] = [];
+  const { manager } = setup({
+    override: null,
+    loadNativeBinding: () => ({
+      create: () => handle,
+      release: (ownedHandle) => releases.push(ownedHandle),
+    }),
+  });
+
+  await manager.setEnabled(true);
+  await manager.stop();
+
+  assert.deepEqual(releases, [handle]);
+  assert.equal(manager.status().state, "off");
+});
+
+test("an explicit command override takes precedence on Darwin and Linux", () => {
+  for (const platform of ["darwin", "linux"] as const) {
+    const { manager } = setup({ platform, override: "/tmp/fake-caffeinate" });
+    assert.equal(manager.status().supported, true);
+    assert.equal(manager.status().provider, "caffeinate");
+  }
 });
 
 // ---- the exact command ----
@@ -173,7 +455,7 @@ test("on is published only after the child's spawn event, never off the request"
 });
 
 test("an unsupported platform refuses without spawning anything", async () => {
-  const { manager, spawns } = setup({ platform: "linux" });
+  const { manager, spawns } = setup({ platform: "linux", override: null });
   const status = await manager.setEnabled(true);
   assert.equal(status.supported, false);
   assert.equal(status.state, "off");

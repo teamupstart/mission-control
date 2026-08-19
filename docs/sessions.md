@@ -67,22 +67,25 @@ the indicator. Its one switch keeps this Mac from going to sleep just because yo
 away - so long-running agents, Recurring Missions catch-up, and the Foreman keep working
 while the screen is dark.
 
-What it does, exactly: the daemon runs `/usr/bin/caffeinate -i -w <daemon PID>`, which
-prevents **user-idle system sleep** and nothing else. The display still dims and locks on
-your normal schedule. Lid close, choosing Sleep yourself, shutdown, power loss, and the
-thermal and low-battery safeguards all still win - this is an idle-sleep inhibitor, not a
-wake scheduler, and it never keeps the display awake or simulates activity. It does use
-more battery than letting the machine sleep, and the dropdown says so.
+What it does, exactly: the daemon owns an in-process IOKit
+`PreventUserIdleSystemSleep` assertion, which prevents **user-idle system sleep** and
+nothing else. The display still dims and locks on your normal schedule. Lid close,
+choosing Sleep yourself, shutdown, power loss, and the thermal and low-battery safeguards
+all still win - this is an idle-sleep inhibitor, not a wake scheduler, and it never keeps
+the display awake or simulates activity. It does use more battery than letting the machine
+sleep, and the dropdown says so.
 
 While it is on, the indicator reads **`live · awake`** with a purple dot - the word
-carries the mode, so color is never the only signal. If the inhibitor process fails to
-start or exits unexpectedly, the indicator reads **`live · awake failed`** and the
-dropdown carries the bounded error; flipping the switch retries it.
+carries the mode, so color is never the only signal. A native load failure makes the control
+unavailable for that daemon run. If assertion creation or release fails, the indicator reads
+**`live · awake failed`** and the dropdown carries the bounded error. Mission Control does not
+retry automatically or fall back to a command provider; another explicit switch action retries,
+reconciling an exact retained handle before reacquiring when a release failed.
 
 The mode is **deliberately transient**: on until Mission Control quits or restarts, never
 persisted, never reacquired at boot. An orderly shutdown releases the assertion itself,
-and a crash releases it too, because `-w` ties the assertion to the daemon's own
-lifetime. The tradeoff is stated in the dropdown rather than hidden: a daemon restart
+and a crash releases it too because IOKit assertions are owned by the daemon process.
+The tradeoff is stated in the dropdown rather than hidden: a daemon restart
 while you are away returns the mode to off. Keep awake is also independent of
 [Away mode](attention-and-alerts.md#away-mode) - alert delivery and host power are different decisions, and
 neither implies the other.

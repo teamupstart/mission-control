@@ -28,6 +28,7 @@
 // daemon. This runs after `npm run build`, where the artifact is guaranteed to exist.
 
 import { spawn } from "node:child_process";
+import { createRequire } from "node:module";
 import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -157,6 +158,35 @@ async function smokeDaemon() {
     await reap(child);
     await rm(home, { recursive: true, force: true });
   }
+}
+
+/**
+ * Loading the Darwin addon must be side-effect free. Requiring it and checking its
+ * surface proves the artifact path and Node-API ABI without calling `create`, so smoke
+ * never changes the host's power state.
+ */
+async function smokeNativeKeepAwake() {
+  if (process.platform !== "darwin") {
+    console.log(`[smoke] native Keep Awake addon deliberately skipped on ${process.platform}`);
+    return;
+  }
+  const addonPath = resolve("dist/native/keep-awake.node");
+  if (!existsSync(addonPath)) {
+    fail(`the Darwin build is missing ${addonPath}`);
+    return;
+  }
+  let binding;
+  try {
+    binding = createRequire(import.meta.url)(addonPath);
+  } catch (err) {
+    fail(`the native Keep Awake addon could not load (${err instanceof Error ? err.message : err})`);
+    return;
+  }
+  if (typeof binding?.create !== "function" || typeof binding?.release !== "function") {
+    fail("the native Keep Awake addon does not export create and release functions");
+    return;
+  }
+  console.log("[smoke] native Keep Awake addon loads without creating an assertion");
 }
 
 /**
@@ -435,6 +465,7 @@ async function smokeMermaidRenderer() {
   console.log("[smoke] isolated Mermaid renderer exists and stays outside the dashboard entry");
 }
 
+await smokeNativeKeepAwake();
 await smokeDaemon();
 await smokeMcp();
 await smokeSatellitePaths();

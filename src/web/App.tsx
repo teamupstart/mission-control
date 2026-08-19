@@ -3017,6 +3017,7 @@ export function App(): React.JSX.Element {
                 navigate={navigate}
                 replace={replace}
                 revision={archivesRevision}
+                overlayOpen={overlays.anyOpen}
               />
             ) : null
           }

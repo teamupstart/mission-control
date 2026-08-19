@@ -437,6 +437,12 @@ that was already indexed comes back holding a different manifest, Mission Contro
 unreadable rather than choosing which version of history to believe. Mutation means a new
 archive, not a rewritten one.
 
+Renaming in the Scouts page does not mutate that history. It writes a small local display-name
+sidecar under `archives/.metadata/names/<archive-key>.json` and projects that name over the
+manifest title in the catalog, reader and title search. The archive key, manifest, report,
+evidence and digests do not change. Sidecars live outside bundles, survive a deleted and rebuilt
+SQLite index, and travel only when the library metadata is copied too.
+
 Every externally copied bundle is untrusted input. Its manifest is validated for schema,
 version, generated identities, path containment, limits, and digests before a single row is
 written, and its producer label is treated as an unverified claim rather than an identity.
@@ -448,6 +454,7 @@ Everything is loopback-only, behind the daemon's existing boundary.
 ```text
 GET    /api/archives?q=&producer=&repo=&agent=&kind=&status=&from=&to=&cursor=&limit=
 GET    /api/archives/:archiveKey
+PATCH  /api/archives/:archiveKey  {"title":"Local display name"}
 GET    /api/archives/:archiveKey/artifacts/:artifactId
 POST   /api/archives/:archiveKey/artifacts/:artifactId/open
 DELETE /api/archives/:archiveKey
@@ -508,13 +515,18 @@ re-run its own bounded query.
 body and refuses a mismatch before it resolves any path. Then it:
 
 1. atomically renames the bundle into `.trash`,
-2. removes its index rows,
-3. removes the trash entry.
+2. removes its local display-name sidecar,
+3. removes its index rows,
+4. removes the trash entry.
 
 The durable step is the rename, so a crash in the middle leaves an archive that is gone from
 the library and rows the next complete pass prunes; a crash before it leaves the archive
-intact. An interrupted deletion is finished on the next start. A bundle under the legacy root
-is trashed inside that root, so the durable step stays a rename within one directory tree.
+intact. A display-name cleanup failure is returned as an error and remains retryable: the
+index row is kept as a marker, and the durable sidecar itself authorizes a cleanup-only retry
+if reconciliation or a restart removes that row first. A retry also discovers and removes
+the exact key's bundle from `.trash` before it reports success, including after a restart.
+An interrupted deletion is finished on the next start. A bundle under the legacy root is
+trashed inside that root, so the durable step stays a rename within one directory tree.
 
 This removes **a local file and its rows**. It touches no task, no session, and no
 repository, and it makes no claim about copies elsewhere: a two-way sync tool may propagate
@@ -573,7 +585,11 @@ Two different things can be wrong with a key, and they are answered differently:
   labelled `prompt` without replacing that title. Press <kbd>/</kbd> to focus the search box;
   when focus is outside a text field or selector, <kbd>↑</kbd> and <kbd>↓</kbd> open the previous
   or next report in the current results.
-- **The reader** leads with the same short archive title and, for a new bundle, shows the
+- **The reader** leads with the same short archive title and shows it as a rename control.
+  Clicking it or pressing the configured session rename binding,
+  <kbd>⇧</kbd><kbd>R</kbd> by default, opens the same inline editor sessions use. Enter saves,
+  Escape cancels, and a refusal stays in the editor with its reason. The saved name is local
+  metadata as described above; it does not rewrite portable evidence. The reader then shows the
   ordered **Prompt context** before the report: **Original request**, then each human
   **Follow-up** with its recorded delivery time. Prompt text is escaped plain text outside the
   report iframe. When capture omitted older or oversized prompt text, the reader says the

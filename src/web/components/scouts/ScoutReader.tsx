@@ -4,8 +4,9 @@ import type {
   ArchiveArtifactView,
   ArchiveDetail,
 } from "@shared/archives.ts";
+import { ARCHIVE_TEXT_LIMITS } from "@shared/archives.ts";
 import type { OpenTargetId } from "@shared/open-targets.ts";
-import { api } from "../../lib/api.ts";
+import { api, type ActionResult } from "../../lib/api.ts";
 import { formatBytes } from "../../lib/format.ts";
 import {
   HTML_PREVIEW_LINK_MESSAGE,
@@ -16,6 +17,8 @@ import { COPY_FEEDBACK_LABEL, useCopyFeedback } from "../../lib/clipboard.ts";
 import { Markdown } from "../Markdown.tsx";
 import { OpenInMenu } from "../OpenInMenu.tsx";
 import { Tooltip } from "../Tooltip.tsx";
+import { InlineRenameEditor } from "../InlineRenameEditor.tsx";
+import { formatChord, useKeybindings } from "../../lib/keybindings.ts";
 import type { ScoutDeleteTarget } from "./ScoutDeleteModal.tsx";
 import type { ScoutDetailState } from "./useScoutsCatalog.ts";
 import { SCOUT_STATUS_WORD, scoutLabel } from "./scout-labels.ts";
@@ -80,6 +83,10 @@ export function ScoutReader({
   libraryPath,
   onDelete,
   onBack,
+  renaming,
+  onRenameStart,
+  onRenameClose,
+  onRename,
 }: {
   detail: ArchiveDetail | null;
   state: ScoutDetailState;
@@ -87,7 +94,12 @@ export function ScoutReader({
   libraryPath: string | null;
   onDelete: (target: ScoutDeleteTarget, from: HTMLElement) => void;
   onBack: () => void;
+  renaming: boolean;
+  onRenameStart: () => void;
+  onRenameClose: () => void;
+  onRename: (title: string) => Promise<ActionResult>;
 }): React.JSX.Element {
+  const { bindings } = useKeybindings();
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
   const [loaded, setLoaded] = useState<Loaded>({ kind: "loading" });
   const copyBundle = useCopyFeedback({ resetOn: detail?.key ?? null });
@@ -249,7 +261,31 @@ export function ScoutReader({
             </button>
           </Tooltip>
           <p className="scouts-eyebrow">Scout report</p>
-          <h1 className="scouts-question">{scoutLabel(detail)}</h1>
+          {renaming ? (
+            <div className="scouts-question scouts-question-renaming">
+              <InlineRenameEditor
+                initialValue={scoutLabel(detail)}
+                ariaLabel="Rename scout"
+                onSubmit={onRename}
+                onClose={onRenameClose}
+                fallbackError="The scout could not be renamed."
+                maxLength={ARCHIVE_TEXT_LIMITS.title}
+              />
+            </div>
+          ) : (
+            <h1 className="scouts-question" aria-label={scoutLabel(detail)}>
+              <Tooltip label={`Rename "${scoutLabel(detail)}" (${formatChord(bindings.rename)})`}>
+                <button
+                  type="button"
+                  className="card-title-edit scouts-question-edit"
+                  onClick={onRenameStart}
+                >
+                  <span className="card-title-name">{scoutLabel(detail)}</span>
+                  <span className="rename-pencil" aria-hidden>✎</span>
+                </button>
+              </Tooltip>
+            </h1>
+          )}
           {!detail.prompts && detail.question ? (
             // Bundles from before prompt trails still carry the question preview. Keep it
             // visible here instead of making a concise title erase the only request context

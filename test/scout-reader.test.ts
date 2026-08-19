@@ -54,7 +54,7 @@ function detail(over: Partial<ArchiveDetail> = {}): ArchiveDetail {
   };
 }
 
-function render(archive: ArchiveDetail): string {
+function render(archive: ArchiveDetail, renaming = false): string {
   return renderToStaticMarkup(
     createElement(ScoutReader, {
       detail: archive,
@@ -63,6 +63,10 @@ function render(archive: ArchiveDetail): string {
       libraryPath: "/tmp/archives",
       onDelete: () => {},
       onBack: () => {},
+      renaming,
+      onRenameStart: () => {},
+      onRenameClose: () => {},
+      onRename: async () => ({ ok: true }),
     }),
   );
 }
@@ -70,7 +74,7 @@ function render(archive: ArchiveDetail): string {
 test("the scout reader leads with the concise title and renders ordered prompt context as escaped text", () => {
   const html = render(detail());
 
-  assert.match(html, /<h1 class="scouts-question">Concise reconnect finding<\/h1>/);
+  assert.match(html, /<h1 class="scouts-question"[^>]*><button[^>]*>.*Concise reconnect finding.*<\/button>/);
   assert.match(html, /<h2[^>]*>Prompt context<\/h2>/);
   assert.ok(html.indexOf("Original request") < html.indexOf("Follow-up"));
   assert.ok(html.indexOf("Original request") < html.indexOf("scouts-doc"));
@@ -91,11 +95,20 @@ test("the scout reader keeps an older bundle's question visible without inventin
     prompts: null,
   }));
 
-  assert.match(html, /<h1 class="scouts-question">Older concise title<\/h1>/);
+  assert.match(html, /<h1 class="scouts-question"[^>]*><button[^>]*>.*Older concise title.*<\/button>/);
   assert.match(
     html,
     /<p class="scouts-legacy-question">Why did the old reconnect path lose its grant\?<\/p>/,
   );
   assert.doesNotMatch(html, /Prompt context/);
   assert.doesNotMatch(html, /Original request/);
+});
+
+test("the scout reader swaps its title for the shared inline rename editor", () => {
+  const html = render(detail(), true);
+
+  assert.match(html, /aria-label="Rename scout"/);
+  assert.match(html, /value="Concise reconnect finding"/);
+  assert.match(html, /aria-label="Save name"/);
+  assert.match(html, /aria-label="Cancel rename"/);
 });

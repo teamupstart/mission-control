@@ -7462,6 +7462,7 @@ mark.find-hit.is-current {
 
 /* The folded run: one line closed, the literal commands open. */
 .pty-toolrun {
+  max-width: calc(1160px - 24px);
   margin: -6px 0 17px 24px;
 }
 .pty-toolrun > summary {

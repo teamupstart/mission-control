@@ -164,9 +164,16 @@ test("the terminal rendering draws the conversation as one stream", async ({ das
   await expect(card.getByRole("region", { name: "Conversation terminal" })).toHaveCount(0);
   await seedRun(card, card.getByPlaceholder(/^Reply to this session/));
 
-  await useRendering(dashboard, daemon, "terminal");
-  const reopened = dashboard.locator("article.card").first();
-  await openConversation(reopened);
+  await dashboard.setViewportSize({ width: 1920, height: 1080 });
+  await fetch(`${daemon.baseURL}/api/ui/config`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ layout: "console", conversationView: "terminal" }),
+  });
+  await dashboard.reload();
+  const rail = dashboard.getByRole("navigation", { name: "Sessions" });
+  await rail.getByRole("button", { name: /Exercise the Terminal Rendering/i }).click();
+  const reopened = dashboard.locator(".detail-conv");
 
   // The frame: a titlebar naming the window, the agent and the shell it is really on.
   const terminal = reopened.getByRole("region", { name: "Conversation terminal" });
@@ -187,6 +194,16 @@ test("the terminal rendering draws the conversation as one stream", async ({ das
   const record = terminal.locator(".pty-toolrun").filter({ hasText: "executed 3 commands" });
   await expect(record).toBeVisible();
   await expect(record.locator(".turn-tools-lines")).toBeHidden();
+  const [stdoutTimestampRight, toolRunTimestampRight] = await Promise.all([
+    terminal.locator(".pty-speaker").first().locator("time").evaluate((element) =>
+      element.getBoundingClientRect().right),
+    record.locator("summary time").evaluate((element) =>
+      element.getBoundingClientRect().right),
+  ]);
+  expect(
+    Math.abs(stdoutTimestampRight - toolRunTimestampRight),
+    "ordinary stdout and folded tool-run timestamps should share a right edge",
+  ).toBeLessThanOrEqual(1);
   await record.locator("summary").click();
   // Open, it lists the literal command - not the chip's 40-character summary.
   await expect(record.getByText("rg PersonaDirective src test")).toBeVisible();
@@ -213,7 +230,7 @@ test("the terminal rendering draws the conversation as one stream", async ({ das
   // record - the chat log keeps it in a hover tooltip - so a search for it must both count
   // and mark it here. A hit find can see but not highlight, or text on screen find reports
   // zero of, are the two ways this feature lies about a number.
-  await reopened.locator(".card-meta").click();
+  await terminal.locator(".pty-titlebar").click();
   await dashboard.keyboard.press("Meta+f");
   const findBox = reopened.getByRole("searchbox", { name: "Find in conversation" });
   await findBox.fill("--short");

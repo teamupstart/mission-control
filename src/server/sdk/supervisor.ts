@@ -81,6 +81,8 @@ export class SdkSupervisor {
   private acceptingTurns = new Set<string>();
   /** Accepted launch-window prompts held until the driver reports their native Goal key. */
   private pendingLaunchGoalPrompts = new Map<string, string[]>();
+  /** Native key for the original launch generation; absence means a clear discarded it. */
+  private launchGoalNoteKeys = new Map<string, string | null>();
   private stopping = new Set<string>();
   private stopPromises = new Map<string, Promise<void>>();
   /** Sessions with a terminal handoff in flight. See `beginHandoff`. */
@@ -274,6 +276,7 @@ export class SdkSupervisor {
     );
     if (input.acceptedInitialPrompt?.trim()) {
       this.pendingLaunchGoalPrompts.set(registration.id, [input.acceptedInitialPrompt]);
+      this.launchGoalNoteKeys.set(registration.id, null);
     }
     const pump = this.pump(registration.id, handle);
     this.pumps.set(registration.id, pump);
@@ -690,13 +693,21 @@ export class SdkSupervisor {
   /** Goal persistence cannot turn an acknowledged driver send into a retryable failure. */
   private captureGoalBestEffort(id: string, accepted: AcceptedGoalPrompt): void {
     try {
-      // A direct injection can be acknowledged after the card exists but before `bound` is
-      // pumped. Preserve its order behind turn one instead of writing under the synthetic id,
-      // which the card will stop reading as soon as the native conversation key arrives.
-      if (accepted.noteKey === id && this.registry.getSession(id)?.agentSessionId === null) {
-        const pending = this.pendingLaunchGoalPrompts.get(id) ?? [];
-        pending.push(accepted.prompt);
-        this.pendingLaunchGoalPrompts.set(id, pending);
+      if (accepted.noteKey === id) {
+        // A direct injection can be acknowledged on either side of the first `bound` event.
+        // Before it, preserve ordering behind turn one. After it, use the launch generation's
+        // native key rather than the now-stale synthetic key. A clear deletes that generation
+        // from `launchGoalNoteKeys`, so its late acknowledgement is discarded instead of
+        // leaking into the replacement conversation.
+        if (!this.launchGoalNoteKeys.has(id)) return;
+        const launchNoteKey = this.launchGoalNoteKeys.get(id);
+        if (launchNoteKey === null || launchNoteKey === undefined) {
+          const pending = this.pendingLaunchGoalPrompts.get(id) ?? [];
+          pending.push(accepted.prompt);
+          this.pendingLaunchGoalPrompts.set(id, pending);
+        } else {
+          this.registry.captureAcceptedPrompt(id, accepted.prompt, launchNoteKey);
+        }
         return;
       }
       this.registry.captureAcceptedPrompt(id, accepted.prompt, accepted.noteKey);
@@ -895,6 +906,10 @@ export class SdkSupervisor {
           if (evt.kind === "bound") {
             // A clear replaces the conversation that accepted these launch-window prompts.
             // Never replay its objective under the replacement's native key.
+            if (evt.cleared) this.launchGoalNoteKeys.delete(id);
+            else if (this.launchGoalNoteKeys.get(id) === null) {
+              this.launchGoalNoteKeys.set(id, evt.agentSessionId);
+            }
             const prompts = evt.cleared
               ? []
               : (this.pendingLaunchGoalPrompts.get(id) ?? []);
@@ -916,6 +931,7 @@ export class SdkSupervisor {
       this.unfinishedTurns.delete(id);
       this.acceptingTurns.delete(id);
       this.pendingLaunchGoalPrompts.delete(id);
+      this.launchGoalNoteKeys.delete(id);
       this.stopping.delete(id);
       try {
         setSdkSessionStatus(id, outcome === "failed" ? "failed" : this.endStatus());

@@ -311,6 +311,50 @@ test("accepted launch-window follow-ups wait for the native Goal key in order", 
   }
 });
 
+test("a launch-window acknowledgement survives the first binding race", async () => {
+  const handle = fakeHandle();
+  let acknowledge!: () => void;
+  const held = new Promise<void>((resolve) => (acknowledge = resolve));
+  handle.send = async (turn) => {
+    handle.sent.push(turn);
+    await held;
+    return "started";
+  };
+  const fake = withFakeDriver(async () => handle);
+  try {
+    const registry = new Registry();
+    const supervisor = new SdkSupervisor(registry);
+    const session = await supervisor.start(START);
+    const sending = supervisor.send(
+      session.id,
+      { text: "accepted across the binding race" },
+      undefined,
+      { prompt: "accepted across the binding race", noteKey: session.id },
+    );
+    await waitFor(() => handle.sent.length === 1);
+
+    handle.push({
+      kind: "bound",
+      agentSessionId: "agent-bound-during-acknowledgement",
+      transcriptPath: null,
+      modelId: null,
+      pid: null,
+    });
+    await waitFor(
+      () => registry.getSession(session.id)?.agentSessionId
+        === "agent-bound-during-acknowledgement",
+    );
+    acknowledge();
+    await sending;
+
+    assert.equal(registry.getGoal(session.id)?.prompt, "accepted across the binding race");
+    assert.equal(registry.getGoal(session.id)?.promptRevision, 2);
+    assert.equal(registry.getGoal(session.id)?.noteKey, "agent-bound-during-acknowledgement");
+  } finally {
+    fake.restore();
+  }
+});
+
 test("a clear before the first binding discards the replaced conversation's Goal", async () => {
   const handle = fakeHandle();
   handle.clearContext = async () => {

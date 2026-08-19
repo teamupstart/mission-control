@@ -38,6 +38,7 @@ import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { AGENT_TYPES } from "@shared/types.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import type { McpSpec } from "@shared/harness-capabilities.ts";
+import { findSystemNode } from "./system-node.ts";
 
 /**
  * The harness this installer wires. Named once, as a variable, because everything below
@@ -83,20 +84,6 @@ function satellitePaths(): { hook: string; mcp: string } {
 }
 
 /** Try to locate a real `node` via the login shell; empty string if none. */
-function findSystemNode(): string {
-  try {
-    const shell = process.env.SHELL || "/bin/zsh";
-    const out = execFileSync(shell, ["-ilc", "command -v node"], {
-      encoding: "utf8",
-      timeout: 5000,
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-    return out && existsSync(out) ? out : "";
-  } catch {
-    return "";
-  }
-}
-
 /**
  * Prefer a real `node` (lowest per-event overhead - the hook fires on every tool
  * use). Fall back to this app in Node mode (ELECTRON_RUN_AS_NODE) so integrations

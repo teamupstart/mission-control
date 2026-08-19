@@ -33,6 +33,10 @@
 // latest" and filtering afterwards. Both this script and the updater resolve a release tag; if
 // they disagreed, a fresh install and an update from identical repository state would land on
 // different versions.
+//
+// Keep this file's imports static. The detached updater runs it from the updater-owned clone,
+// and checkout may rewrite this file on disk while its process is alive. Node loads the full
+// static module graph before execution; a later dynamic import would break that safety property.
 
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, renameSync, rmSync, statSync } from "node:fs";

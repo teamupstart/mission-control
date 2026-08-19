@@ -17,6 +17,7 @@ interface ReportCounts {
 
 export interface TrayHandlers {
   onOpen: () => void;
+  onCheckForUpdates: () => void;
   onInstallIntegrations: () => void;
   onRemoveIntegrations: () => void;
   onQuit: () => void;
@@ -53,6 +54,7 @@ function render(handlers: TrayHandlers): void {
     { label: summary(c), enabled: false },
     { type: "separator" },
     { label: "Open Dashboard", click: () => handlers.onOpen() },
+    { label: "Check for Updates…", click: () => handlers.onCheckForUpdates() },
     { type: "separator" },
     {
       label: "Start at login",

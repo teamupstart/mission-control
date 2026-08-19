@@ -1,11 +1,15 @@
-import type { SdkSendDisposition, Session } from "@shared/types.ts";
+import type { SdkSendDisposition, Session, TurnOrigin } from "@shared/types.ts";
 import {
   injectPrompt,
   type InjectDeps,
   type InjectResult,
   type PromptWriteGuard,
 } from "../actions.ts";
+import { noteKeyFor } from "../registry.ts";
 import type { SdkSupervisor } from "./supervisor.ts";
+
+/** The two prompt routes' complete authorship vocabulary. */
+export type PromptOrigin = "human" | TurnOrigin;
 
 /**
  * Delivering a turn to an embedded session - the driver arm of `/send` and `/inject`.
@@ -40,6 +44,7 @@ export async function deliverToDriver(
   session: Session,
   text: string,
   beforeSend?: PromptWriteGuard,
+  origin?: PromptOrigin,
 ): Promise<SdkDelivery> {
   const failed = (error: string): SdkDelivery => ({
     ok: false,
@@ -54,7 +59,12 @@ export async function deliverToDriver(
     // The second guard runs inside the supervisor's per-session serialization. The first
     // catches an already-invalid target without entering its send queue; the second closes
     // the window in which a queued reset or handoff could change the conversation.
-    const delivery = await supervisor.send(session.id, { text }, beforeSend);
+    const delivery = await supervisor.send(
+      session.id,
+      { text },
+      beforeSend,
+      origin === "human" ? { prompt: text, noteKey: noteKeyFor(session) } : undefined,
+    );
     return { ok: true, pasted: true, submitVerified: true, delivery };
   } catch (err) {
     return failed(err instanceof Error ? err.message : String(err));
@@ -75,11 +85,12 @@ export async function injectPromptForRuntime(
   text: string,
   deps?: InjectDeps,
   beforeWrite?: PromptWriteGuard,
+  origin?: PromptOrigin,
 ): Promise<InjectResult> {
   if (session.runtime !== "sdk") {
     return injectPrompt(session, text, deps, beforeWrite);
   }
-  return deliverToDriver(supervisor, session, text, beforeWrite);
+  return deliverToDriver(supervisor, session, text, beforeWrite, origin);
 }
 
 /** Bind the daemon's one supervisor into a pane-compatible injector dependency. */

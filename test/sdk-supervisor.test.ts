@@ -163,9 +163,16 @@ test("start persists a row, registers the card, and records the binding", async 
   try {
     const registry = new Registry();
     const supervisor = new SdkSupervisor(registry);
-    const session = await supervisor.start({ ...START, taskId: "task-1" });
+    const driverPrompt = `${START.prompt}\n\nserver-owned launch context`;
+    const session = await supervisor.start({
+      ...START,
+      prompt: driverPrompt,
+      acceptedGoalPrompt: START.prompt,
+      taskId: "task-1",
+    });
 
     assert.ok(session.id.startsWith("sdk:"), "ids are minted, never derived from a pid");
+    assert.equal(fake.calls[0]?.prompt, driverPrompt, "the driver still receives its full context");
     assert.equal(session.runtime, "sdk");
     assert.equal(session.name, "Add a toggle");
     // The row is what a restart is cut from, and it exists before the pump can say anything.
@@ -175,6 +182,7 @@ test("start persists a row, registers the card, and records the binding", async 
     assert.equal(row.model, null, "the launch followed Claude's default");
     assert.equal(row.agentSessionId, null);
     assert.equal(row.turnInProgress, true, "turn one is durable before the pump catches up");
+    assert.equal(registry.getGoal(session.id), null, "the synthetic key never owns turn one");
 
     handle.push({
       kind: "bound",
@@ -184,12 +192,15 @@ test("start persists a row, registers the card, and records the binding", async 
       pid: null,
     });
     await waitFor(() => getSdkSession(session.id)?.agentSessionId === "agent-7");
+    await waitFor(() => registry.getGoal(session.id)?.prompt === START.prompt);
     assert.equal(getSdkSession(session.id)?.status, "running");
     assert.equal(getSdkSession(session.id)?.model, "actual-model");
     // And the card learned the identity the whole file-based read path keys on.
     assert.equal(registry.getSession(session.id)?.agentSessionId, "agent-7");
     assert.equal(registry.getSession(session.id)?.meta?.modelId, "actual-model");
     assert.equal(registry.getSession(session.id)?.hooksSeen, true);
+    assert.equal(registry.getGoal(session.id)?.noteKey, "agent-7");
+    assert.equal(registry.getSession(session.id)?.goal?.text, "add a toggle");
     const boundFresh = registry.getSession(session.id)!;
     assert.equal(boundFresh.state, "starting", "a fresh launch remains active after binding");
     assert.equal(reportBucket(boundFresh), "working");
@@ -200,6 +211,101 @@ test("start persists a row, registers the card, and records the binding", async 
     await supervisor.send(session.id, { text: "one more thing" });
     assert.equal(getSdkSession(session.id)?.turnInProgress, true);
     assert.deepEqual(handle.sent, [{ text: "one more thing" }]);
+    assert.equal(
+      registry.getGoal(session.id)?.prompt,
+      START.prompt,
+      "an untagged automated send does not replace the human Goal",
+    );
+  } finally {
+    fake.restore();
+  }
+});
+
+test("an acknowledged human follow-up updates Goal only for its original conversation", async () => {
+  const handle = fakeHandle();
+  const fake = withFakeDriver(async () => handle);
+  try {
+    const registry = new Registry();
+    const supervisor = new SdkSupervisor(registry);
+    const session = await supervisor.start(START);
+    handle.push({
+      kind: "bound",
+      agentSessionId: "agent-goal-follow-up",
+      transcriptPath: null,
+      modelId: null,
+      pid: null,
+    });
+    await waitFor(() => registry.getGoal(session.id)?.prompt === START.prompt);
+    handle.push({ kind: "turn_done", usage: null });
+    await waitFor(() => getSdkSession(session.id)?.turnInProgress === false);
+
+    assert.equal(
+      await supervisor.send(
+        session.id,
+        { text: "also cover the ownership race" },
+        undefined,
+        { prompt: "also cover the ownership race", noteKey: "agent-goal-follow-up" },
+      ),
+      "started",
+    );
+    assert.equal(registry.getGoal(session.id)?.prompt, "also cover the ownership race");
+    assert.equal(registry.getGoal(session.id)?.promptRevision, 2);
+
+    handle.push({
+      kind: "bound",
+      agentSessionId: "agent-goal-replacement",
+      transcriptPath: null,
+      modelId: null,
+      pid: null,
+      cleared: true,
+    });
+    await waitFor(
+      () => registry.getSession(session.id)?.agentSessionId === "agent-goal-replacement",
+    );
+    await supervisor.send(
+      session.id,
+      { text: "stale acknowledged text" },
+      undefined,
+      { prompt: "stale acknowledged text", noteKey: "agent-goal-follow-up" },
+    );
+    assert.equal(registry.getGoal(session.id), null, "the replacement key rejected stale text");
+  } finally {
+    fake.restore();
+  }
+});
+
+test("accepted launch-window follow-ups wait for the native Goal key in order", async () => {
+  const handle = fakeHandle();
+  const fake = withFakeDriver(async () => handle);
+  try {
+    const registry = new Registry();
+    const supervisor = new SdkSupervisor(registry);
+    const session = await supervisor.start(START);
+
+    await supervisor.send(
+      session.id,
+      { text: "an early human follow-up" },
+      undefined,
+      { prompt: "an early human follow-up", noteKey: session.id },
+    );
+    assert.equal(registry.getGoal(session.id), null, "the synthetic key never receives a Goal");
+
+    handle.push({
+      kind: "bound",
+      agentSessionId: "agent-launch-window",
+      transcriptPath: null,
+      modelId: null,
+      pid: null,
+    });
+    await waitFor(() => registry.getGoal(session.id)?.promptRevision === 2);
+    const goal = registry.getGoal(session.id);
+    assert.equal(goal?.noteKey, "agent-launch-window");
+    assert.equal(goal?.objective, START.prompt);
+    assert.equal(goal?.prompt, "an early human follow-up");
+    assert.deepEqual(goal?.pendingPrompts, [
+      { revision: 1, prompt: START.prompt },
+      { revision: 2, prompt: "an early human follow-up" },
+    ]);
   } finally {
     fake.restore();
   }

@@ -214,23 +214,20 @@ test("a fake-agent chat survives idle and a later turn until Complete and close"
   if (!session) throw new Error("chat session did not bind");
 
   const token = readFileSync(`${daemon.home}/token`, "utf8").trim();
-  for (const [event, extra] of [
-    ["UserPromptSubmit", { prompt: OPENER }],
-    ["Stop", {}],
-  ] as const) {
-    const response = await fetch(`${daemon.baseURL}/hooks/${event}`, {
-      method: "POST",
-      headers: { "content-type": "application/json", "x-harness-token": token },
-      body: JSON.stringify({
-        agent: session.agent,
-        sessionId: session.agentSessionId,
-        cwd: session.cwd,
-        env: {},
-        ...extra,
-      }),
-    });
-    expect(response.status).toBe(204);
-  }
+  // Agent SDK launch already captured the accepted opener. Only the completion hook is
+  // supplied here to establish the instrumentation and work-cycle proof this Foreman case
+  // needs; reposting the opener would create a second human Goal revision that never existed.
+  const response = await fetch(`${daemon.baseURL}/hooks/Stop`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-harness-token": token },
+    body: JSON.stringify({
+      agent: session.agent,
+      sessionId: session.agentSessionId,
+      cwd: session.cwd,
+      env: {},
+    }),
+  });
+  expect(response.status).toBe(204);
 
   await expect.poll(async () => {
     const current = (await api<Array<{

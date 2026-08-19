@@ -198,6 +198,7 @@ test("Claude SDK pipeline dispatch invokes /engineer directly with no terminal o
     name: "Build the SDK path",
     cwd: "/repo/sdk",
     prompt: "/engineer Build the SDK path\nwithout changing the daemon",
+    acceptedGoalPrompt: "Build the SDK path\nwithout changing the daemon",
     model: null,
     effort: null,
     permissionMode: null,

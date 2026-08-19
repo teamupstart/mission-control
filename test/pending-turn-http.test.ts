@@ -45,9 +45,16 @@ function fixture() {
     agentSessionId: `agent:pending-http:${fixtureSerial}`,
   });
   const direct: string[] = [];
+  const acceptedGoals: Array<{ prompt: string; noteKey: string } | undefined> = [];
   const supervisor = {
-    send: async (_id: string, turn: { text: string }) => {
+    send: async (
+      _id: string,
+      turn: { text: string },
+      _beforeSend?: () => string | null,
+      acceptedGoal?: { prompt: string; noteKey: string },
+    ) => {
       direct.push(turn.text);
+      acceptedGoals.push(acceptedGoal);
       return "started" as const;
     },
     sendWhenIdle: async () => "started" as const,
@@ -70,7 +77,7 @@ function fixture() {
     undefined,
     pending,
   );
-  return { registry, session, direct, pending, app };
+  return { registry, session, direct, acceptedGoals, pending, app };
 }
 
 test("send returns the full durable pending row instead of an opaque queued indicator", async () => {
@@ -93,7 +100,7 @@ test("send returns the full durable pending row instead of an opaque queued indi
   f.pending.stop();
 });
 
-test("human inject buffers by default while an explicit workflow boundary stays direct", async () => {
+test("direct SDK delivery tags only acknowledged human text for Goal capture", async () => {
   const f = fixture();
   const buffered = await post(f.app, `/api/sessions/${f.session.id}/inject`, {
     text: "free-form reply",
@@ -103,12 +110,45 @@ test("human inject buffers by default while an explicit workflow boundary stays 
   assert.deepEqual(f.direct, []);
 
   const direct = await post(f.app, `/api/sessions/${f.session.id}/inject`, {
-    text: "work queue wrap-up",
+    text: "human follow-up",
     buffer: false,
   });
   assert.equal(direct.status, 200);
   assert.equal(((await direct.json()) as { delivery: string }).delivery, "started");
-  assert.deepEqual(f.direct, ["work queue wrap-up"]);
+  assert.deepEqual(f.direct, ["human follow-up"]);
+  assert.deepEqual(f.acceptedGoals, [{
+    prompt: "human follow-up",
+    noteKey: f.session.agentSessionId,
+  }]);
+
+  const automated = await post(f.app, `/api/sessions/${f.session.id}/inject`, {
+    text: "workflow repair packet",
+    buffer: false,
+    origin: "workflow",
+  });
+  assert.equal(automated.status, 200);
+  assert.deepEqual(f.direct, ["human follow-up", "workflow repair packet"]);
+  assert.deepEqual(f.acceptedGoals, [
+    { prompt: "human follow-up", noteKey: f.session.agentSessionId },
+    undefined,
+  ]);
+
+  const automatedSend = await post(f.app, `/api/sessions/${f.session.id}/send`, {
+    text: "workflow submitted through send",
+    submit: true,
+    origin: "workflow",
+  });
+  assert.equal(automatedSend.status, 200);
+  assert.deepEqual(f.direct, [
+    "human follow-up",
+    "workflow repair packet",
+    "workflow submitted through send",
+  ]);
+  assert.deepEqual(f.acceptedGoals, [
+    { prompt: "human follow-up", noteKey: f.session.agentSessionId },
+    undefined,
+    undefined,
+  ]);
   f.pending.stop();
 });
 

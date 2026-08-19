@@ -286,8 +286,12 @@ pane string under its title (it wears an `◈ Agent SDK` chip instead), and:
   just as they control a pane-backed one;
 - the transcript still comes from the same session file the interactive CLI reads -
   `~/.claude/projects/…` for Claude, the `~/.codex/sessions/…` rollout for Codex, which
-  `thread/start` hands the daemon directly. Goal, cost and PR state reaches the same card
-  fields through those files and the driver, so those surfaces keep working too;
+  `thread/start` hands the daemon directly. The human-authored task text from the first
+  accepted prompt seeds Goal after the driver reports that native conversation id; launch
+  manifests and execution contracts stay out of the displayed objective. Later accepted
+  human turns enter the same Goal reconciliation queue. Automated Foreman and workflow turns
+  do not replace it. Cost and PR state reach the same card fields through those files and the
+  driver too;
 - **Focus** is replaced by **Continue in terminal** (below).
 
 **What it costs.** The subprocess is the daemon's child, so restarting the daemon interrupts
@@ -1115,7 +1119,9 @@ steering.
 
 An instruction still in the editable pending-turn outbox has not reached this pipeline. Once
 the agent accepts it, the instruction leaves the outbox, enters the reconciliation queue, and
-can update the card's tactical focus immediately.
+can update the card's tactical focus immediately. Agent SDK delivery records that boundary
+directly from the driver's acknowledgement; terminal delivery observes it through the
+harness's prompt hook.
 
 Each reconciliation records one of five relationships:
 
@@ -1149,19 +1155,21 @@ What it deliberately isn't:
   Bash" is not a goal. The goal changes rarely and the ticker changes constantly, which is
   why they no longer share a band.
 - **Not** derived from anything but your prompts. Background task notifications arrive
-  through the same hook and are filtered out; they're actually the majority of it.
+  through the same hook and are filtered out; they're actually the majority of it. Agent SDK
+  deliveries also carry authorship, so Foreman and workflow instructions do not replace your
+  Goal.
 - `/clear` starts a new session, so it wipes the goal; `/compact` keeps the same session
   and leaves it alone.
 
-**Codex cards carry a Goal too**, and both tiers reach them: a Codex session reports your
-prompt over its own `UserPromptSubmit`, and the refiner reads the same rollout file the
-transcript does, so there is a conversation window to summarise from. Tier 1 is what
-starts the whole thing, so this needs the hooks - an uninstrumented Codex session (one you
-started yourself) has no prompt to show and stays blank, the same way an uninstrumented
-Claude session does. Pi can read conversation turns too, so it has no permanent
-`GOAL_UNSUPPORTED` refusal; it does not yet push a prompt event, however, so current Pi
-cards do not seed a Goal. The permanent-refusal map is null for all three harnesses, and
-only agents whose harness can never read turns get an unsupported sentence.
+**Codex cards carry a Goal too**, and both tiers reach them. Agent SDK sessions for Claude
+and Codex capture their accepted launch and human follow-up prompts directly at the driver
+boundary. Terminal sessions capture prompts from their harness hooks; the refiner then reads
+the same transcript or rollout file the conversation pane does. An uninstrumented session
+you started yourself has no prompt to show and stays blank. Pi can read conversation turns
+too, so it has no permanent `GOAL_UNSUPPORTED` refusal; it does not yet push a prompt event,
+however, so current Pi cards do not seed a Goal. The permanent-refusal map is null for all
+three harnesses, and only agents whose harness can never read turns get an unsupported
+sentence.
 
 ### Cost telemetry
 

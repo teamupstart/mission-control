@@ -35,12 +35,28 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 
-/** Fixed so a test can assert against a known id; the driver only cares that it is stable. */
-const SESSION_ID = process.env.MC_E2E_SESSION_ID ?? "e2e00000-0000-4000-8000-000000000001";
 function argvValue(flag) {
   const index = process.argv.indexOf(flag);
   return index >= 0 ? process.argv[index + 1] : undefined;
 }
+
+/**
+ * Stable across a restart, distinct across the isolated worktrees concurrent sessions use.
+ * A fixed id made unrelated cards share note, Goal and workflow ownership in multi-session
+ * browser tests, which no real Claude conversations do. An explicit fixture id or the id on
+ * a resume still wins.
+ */
+function sessionIdForCwd() {
+  const hex = createHash("sha256").update(resolve(process.cwd())).digest("hex");
+  return [
+    hex.slice(0, 8),
+    hex.slice(8, 12),
+    `4${hex.slice(13, 16)}`,
+    `8${hex.slice(17, 20)}`,
+    hex.slice(20, 32),
+  ].join("-");
+}
+const SESSION_ID = process.env.MC_E2E_SESSION_ID ?? argvValue("--resume") ?? sessionIdForCwd();
 
 // An explicit dispatch model is echoed by the real CLI's init frame. Keep the mock label
 // for default launches, but preserve a pinned model so browser specs can exercise the

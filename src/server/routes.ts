@@ -3131,7 +3131,7 @@ export function buildApp(
     if (foremanWriteRefused(session, parsed.data.origin)) {
       return c.json({ error: FOREMAN_UNINVITED }, 403);
     }
-    if (parsed.data.submit && pendingTurns) {
+    if (parsed.data.origin === "human" && parsed.data.submit && pendingTurns) {
       const result = pendingTurns.submit(session.id, parsed.data.text);
       return c.json(result, result.ok ? 200 : 409);
     }
@@ -3139,7 +3139,13 @@ export function buildApp(
     // a turn is one acked call, not a paste followed by an Enter that may or may not land.
     // `canMessage` is what the Send box asks, so this arm is what makes that button honest.
     if (session.runtime === "sdk") {
-      const sent = await deliverToDriver(sdkSessions, session, parsed.data.text);
+      const sent = await deliverToDriver(
+        sdkSessions,
+        session,
+        parsed.data.text,
+        undefined,
+        parsed.data.origin,
+      );
       return c.json(
         {
           ok: sent.ok,
@@ -3337,6 +3343,7 @@ export function buildApp(
       parsed.data.text,
       undefined,
       () => registry.promptResourceBlockerForSession(session.id),
+      parsed.data.origin,
     );
     // Only once it landed: a refused or failed delivery is not a turn anybody will read,
     // and claiming it would mis-attribute a LATER turn that happens to repeat the text.

@@ -103,6 +103,7 @@ test("Ctrl+C keeps an interrupted Codex session idle after late child activity",
 
   expect(await badge.textContent()).toBe("idle");
   await expect(composer).toBeFocused();
+  await shoot(dashboard, "codex-stable-idle-after-late-child");
 });
 
 /**

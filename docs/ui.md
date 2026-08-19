@@ -329,7 +329,9 @@ filter, and open Line drawer before it moves anything. Exit tour, backdrop dismi
 <kbd>Esc</kbd>, completion, and controller errors all restore that snapshot. Every terminal
 path records fixed outcomes and stops both temporary sessions when they exist: `Tour
 conversation` for the empty-fleet Chat preview and `Tour demo` for the Ship walkthrough. Exit
-during provisioning first cancels each launch race and then marks its task done. Neither task
+during provisioning first cancels each launch race and then marks its task done. If cleanup is
+refused, the snapshot still returns immediately and a centered error dialog retains focus with
+**Retry cleanup** until every temporary session closes. Neither task
 edits files, runs workflow Commands, sends application messages beyond the Chat preview's
 fixed opening prompt, answers a review, enables Foreman, changes Trust, saves assets, creates
 a pull request, or runs a retro.

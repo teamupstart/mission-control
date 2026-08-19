@@ -232,7 +232,7 @@ test("the tour dispatches Terra, pauses for a real review, reaches Idle, and com
   await expect(dispatchDialog.getByRole("heading", { name: "Dispatch an agent" })).toBeVisible();
   await expect(dispatchDialog.getByPlaceholder("What should this agent do?")).toBeVisible();
   await expect(dispatchDialog.getByRole("combobox", { name: "After work" })).toBeVisible();
-  const kindSelection = dispatchDialog.getByRole("group", { name: "Kind selection" });
+  const kindSelection = dispatchDialog.getByRole("group", { name: "Task type selection" });
   await expect(kindSelection).toHaveCSS("outline-width", "2px");
   await expect(kindSelection).toHaveCSS("outline-color", "rgb(246, 167, 51)");
   await expect(kindSelection).toHaveCSS("border-radius", "8px");

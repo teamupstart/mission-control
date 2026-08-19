@@ -669,23 +669,25 @@ export function SettingsPage({
           <p className="settings-rail-footer-label" id="settings-help-title">
             Help &amp; tours
           </p>
-          <button
-            type="button"
-            className="settings-tour-start"
-            onClick={onStartSeeWorkTour}
-            aria-label="Start See the work tour"
-          >
-            <span className="settings-tour-start-icon" aria-hidden>
-              ▶
-            </span>
-            <span className="settings-tour-start-copy">
-              <strong>See the work</strong>
-              <small>Start the guided tour</small>
-            </span>
-            <span className="settings-tour-start-arrow" aria-hidden>
-              →
-            </span>
-          </button>
+          <Tooltip label="Tour the fleet, Board, and one session's work desk">
+            <button
+              type="button"
+              className="settings-tour-start"
+              onClick={onStartSeeWorkTour}
+              aria-label="Start See the work tour"
+            >
+              <span className="settings-tour-start-icon" aria-hidden>
+                ▶
+              </span>
+              <span className="settings-tour-start-copy">
+                <strong>See the work</strong>
+                <small>Start the guided tour</small>
+              </span>
+              <span className="settings-tour-start-arrow" aria-hidden>
+                →
+              </span>
+            </button>
+          </Tooltip>
         </div>
       </div>
 

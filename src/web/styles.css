@@ -330,6 +330,7 @@
 body.driver-active .driver-active-element:not(#driver-dummy-element) {
   position: relative !important;
   z-index: 10001 !important;
+  -webkit-app-region: no-drag;
   outline: 2px solid var(--attention) !important;
   outline-offset: 8px !important;
   border-radius: 8px !important;
@@ -352,6 +353,7 @@ html[data-mc-tour-session-tile="true"]
   > .board-col-head {
   position: relative;
   z-index: 10001;
+  -webkit-app-region: no-drag;
   filter: brightness(1.2) saturate(1.04);
 }
 

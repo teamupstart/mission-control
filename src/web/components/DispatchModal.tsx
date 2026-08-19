@@ -2546,7 +2546,7 @@ function DispatchModal({
               ref={tourKindRef}
               className={`dispatch-crew-cell${guidedAnchor("kind")}`}
               role="group"
-              aria-label="Kind selection"
+              aria-label="Task type selection"
             >
               <label className={`field${guidedDimUnless("kind")}`}>
                 <span className="field-label">Kind</span>

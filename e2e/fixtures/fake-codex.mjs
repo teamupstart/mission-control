@@ -47,6 +47,7 @@ const MODEL = "gpt-5-codex-e2e-mock";
 const HELD_TURN = "hold the current turn open";
 const FINAL_ANSWER_HELD_TURN = "hold the current turn open and finish with only a final answer";
 const HELD_TURN_MS = 5_000;
+const LATE_CHILD_THREAD_ID = `01999999-1111-7000-8000-${String(process.pid).padStart(12, "0").slice(-12)}`;
 const SEE_WORK_TOUR_MARKER = "[Mission Control See the work tour demo]";
 /**
  * The prompt that leaves a RUN of executed commands in the rollout.
@@ -394,6 +395,18 @@ function runTurn(turnId, input) {
   // still answer synchronously and keep every other spec's fast path.
   if (prompt === HELD_TURN) {
     const turnState = { prompts: [prompt] };
+    notify("item/started", {
+      threadId: THREAD_ID,
+      turnId,
+      startedAtMs: Date.now(),
+      item: {
+        type: "subAgentActivity",
+        id: `subagent-${turnId}`,
+        kind: "started",
+        agentThreadId: LATE_CHILD_THREAD_ID,
+        agentPath: "reviewer",
+      },
+    });
     // The cancel handle and the completion the interrupt has to emit, held on the turn so
     // `turn/interrupt` can end it the way the real app-server does. Acknowledging that RPC
     // without ending the turn would leave the card working until this timer fired anyway,
@@ -404,6 +417,32 @@ function runTurn(turnId, input) {
       clearTimeout(turnState.timer);
       // No agent message: the turn was cut off, so it never finished saying anything.
       finish([]);
+      setImmediate(() => {
+        notify("item/started", {
+          threadId: LATE_CHILD_THREAD_ID,
+          turnId: `child-${turnId}`,
+          startedAtMs: Date.now(),
+          item: {
+            type: "commandExecution",
+            id: `late-child-command-${turnId}`,
+            command: "npm test",
+            cwd: process.cwd(),
+            processId: null,
+            source: "agent",
+            status: "inProgress",
+            commandActions: [],
+            aggregatedOutput: null,
+            exitCode: null,
+            durationMs: null,
+          },
+        });
+        if (recordDir) {
+          writeFileSync(
+            join(recordDir, "codex", `late-descendant-${Date.now()}-${process.pid}.json`),
+            JSON.stringify({ threadId: LATE_CHILD_THREAD_ID, turnId }, null, 2),
+          );
+        }
+      });
     };
     openTurn = turnState;
     return;

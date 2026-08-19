@@ -886,7 +886,9 @@ class CodexSdkSession implements SdkSessionHandle {
           }
         }
         const activity = itemActivity(item);
-        if (activity) this.out.emit({ kind: "state", state: "working", activity });
+        if (activity && this.activeTurnId) {
+          this.out.emit({ kind: "state", state: "working", activity });
+        }
         if (method === "item/completed") {
           this.notePullRequest(item, threadId);
           // `final_answer` is Codex's own declaration that the root turn is over. Normally

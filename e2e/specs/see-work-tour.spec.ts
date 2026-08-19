@@ -360,12 +360,30 @@ test("Exit during the live demo leaves the task done and no session behind", asy
   dashboard,
   daemon,
 }) => {
-  await startTour(dashboard);
+  await dashboard.goto(`${daemon.baseURL}/#/settings/display`);
+  const start = dashboard.getByRole("button", { name: "Start See the work tour" });
+  await start.click();
   await dispatchTourTask(dashboard);
   const working = step(dashboard, "Working");
   await expect(working).toBeVisible({ timeout: 30_000 });
+  await dashboard.route("**/api/tours/see-work/tasks/*/complete", async (route) => {
+    await route.fulfill({
+      status: 500,
+      contentType: "application/json",
+      body: JSON.stringify({ ok: false, error: "simulated cleanup refusal" }),
+    });
+  }, { times: 1 });
   await working.getByRole("button", { name: "Exit tour" }).click();
-  await expect(working).toBeHidden({ timeout: 30_000 });
+
+  const cleanup = step(dashboard, "Tour cleanup needs attention");
+  await expect(cleanup).toContainText("simulated cleanup refusal");
+  await expect(cleanup).toContainText("restored where you started");
+  await expect.poll(() => dashboard.evaluate(() => location.hash)).toBe("#/settings/display");
+  const retry = cleanup.getByRole("button", { name: "Retry cleanup" });
+  await expect(retry).toBeFocused();
+  await retry.click();
+  await expect(cleanup).toBeHidden({ timeout: 30_000 });
+  await expect(start).toBeFocused();
 
   await expectTourTasksCleaned(daemon, ["Tour conversation", "Tour demo"]);
 });

@@ -4,6 +4,7 @@ import test from "node:test";
 import type { Task } from "../src/shared/types.ts";
 import { Registry } from "../src/server/registry.ts";
 import { buildApp } from "../src/server/routes.ts";
+import type { SdkSupervisor } from "../src/server/sdk/supervisor.ts";
 import type { CreateTaskInput, TaskManager } from "../src/server/tasks.ts";
 
 function tourTask(overrides: Partial<Task> = {}): Task {
@@ -186,4 +187,45 @@ test("the same cleanup doorway recognizes and closes the Chat preview", async ()
   assert.equal(response.status, 200);
   assert.deepEqual(calls, ["cancel", "complete:Tour conversation"]);
   assert.equal(current.outcome, "Tour conversation");
+});
+
+test("tour cleanup reconciles a registered SDK session after its driver is already gone", async () => {
+  const registry = new Registry();
+  const session = registry.registerSdkSession({
+    id: "sdk:tour-cleanup",
+    agent: "codex",
+    name: "Tour demo",
+    cwd: process.cwd(),
+  });
+  let current = tourTask({ sessionId: session.id, status: "running" });
+  const tasks = {
+    get(id: string) { return id === current.id ? current : undefined; },
+    async complete(_id: string, outcome: string) {
+      current = { ...current, status: "done", outcome };
+      return current;
+    },
+  } as unknown as TaskManager;
+  const supervisor = {
+    handleFor: () => null,
+  } as unknown as SdkSupervisor;
+  const app = buildApp(
+    registry,
+    {} as never,
+    tasks,
+    {} as never,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    supervisor,
+  );
+
+  const response = await app.request(`/api/tours/see-work/tasks/${current.id}/complete`, {
+    method: "POST",
+    headers: { host: "127.0.0.1:7317" },
+  });
+  assert.equal(response.status, 200);
+  assert.equal(current.status, "done");
+  assert.equal(registry.getSession(session.id)?.state, "exited");
 });

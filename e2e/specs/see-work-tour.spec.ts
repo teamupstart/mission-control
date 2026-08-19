@@ -279,6 +279,15 @@ test("the tour dispatches Terra, pauses for a real review, reaches Idle, and com
   await expect(dispatchDialog.getByRole("combobox", { name: "Kind" })).toHaveValue("ship");
   await expect(afterWork).toBeVisible();
   await expect(dispatchNow).toBeFocused();
+  const [tourBox, dispatchBox] = await Promise.all([dialog.boundingBox(), dispatchNow.boundingBox()]);
+  if (!tourBox || !dispatchBox) throw new Error("The Dispatch tour stop did not finish laying out");
+  const tourCoversDispatch = !(
+    tourBox.x + tourBox.width <= dispatchBox.x
+    || dispatchBox.x + dispatchBox.width <= tourBox.x
+    || tourBox.y + tourBox.height <= dispatchBox.y
+    || dispatchBox.y + dispatchBox.height <= tourBox.y
+  );
+  expect(tourCoversDispatch).toBe(false);
   await dispatchNow.click();
   await expect(dispatchDialog).toBeHidden();
 

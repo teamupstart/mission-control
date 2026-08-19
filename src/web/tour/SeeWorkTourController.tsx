@@ -51,7 +51,7 @@ interface TourStep {
   target: TourTargetId;
   title: string;
   description: string;
-  side?: "top" | "bottom";
+  side?: "top" | "bottom" | "left" | "right";
   details?: readonly { label: string; description: string }[];
 }
 
@@ -127,6 +127,7 @@ const STEPS: readonly TourStep[] = [
     title: "Dispatch the task",
     description:
       "The launch contract is ready. Click Dispatch now in the modal to schedule the Terra task. The rest of the form stays visible so you can review it before the task leaves.",
+    side: "left",
   },
   {
     target: "demo-task",

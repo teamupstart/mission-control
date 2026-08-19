@@ -13,7 +13,7 @@ import { FILES_DIAGRAM_RENDERERS } from "./markdownDiagramRegistry.tsx";
 import { OpenInMenu } from "./OpenInMenu.tsx";
 import { api } from "../lib/api.ts";
 import { COPY_FEEDBACK_LABEL, useCopyFeedback } from "../lib/clipboard.ts";
-import { useKeybindingHints } from "../lib/keybindings.ts";
+import { isTypingTarget, useKeybindingHints } from "../lib/keybindings.ts";
 import { workspaceAssetPath } from "../lib/workspaceLinks.ts";
 // The sandboxed HTML preview boundary is SHARED with Scouts and lives in one module, so
 // neither surface can quietly weaken the CSP or the sandbox for its own documents.
@@ -134,9 +134,8 @@ export function FileWorkspace({
         || event.shiftKey
         || (event.key !== "e" && event.key !== "p")
       ) return;
-      const target = event.target as HTMLElement | null;
       if (
-        target?.closest("input, textarea, select, [contenteditable='true']")
+        isTypingTarget(event.target)
         || isOverlayOpen?.() === true
       ) return;
       const editorAvailable = previewable && buffer?.document.editable === true;

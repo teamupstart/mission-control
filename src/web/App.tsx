@@ -73,6 +73,7 @@ import {
   chordUsesFunctionKey,
   chordYieldsToSelection,
   formatChord,
+  isTypingTarget,
 } from "./lib/keybindings.ts";
 import type { ActionId } from "./lib/keybindings.ts";
 import { canRenameSession, stateDisplay, type Tone } from "./lib/format.ts";
@@ -1927,7 +1928,7 @@ export function App(): React.JSX.Element {
   useEffect(() => {
     function onKey(e: KeyboardEvent): void {
       const target = e.target as HTMLElement | null;
-      const typing = Boolean(target?.closest("input, textarea, select, [contenteditable='true']"));
+      const typing = isTypingTarget(e.target);
       const chord = chordFromEvent(e);
       if (!chord) return; // a lone modifier press
       // An embedded session surface can own navigation without being a screen-owning

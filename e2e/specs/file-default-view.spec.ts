@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import type { Page } from "@playwright/test";
+import type { Page, Request } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
@@ -236,10 +236,10 @@ test("bare e and p switch modes only in the integrated Files tab", async ({
   daemon,
 }) => {
   await openFilesTab(dashboard, daemon);
-  await dashboard
+  const selectedReport = dashboard
     .getByRole("listbox", { name: "Session files" })
-    .getByRole("option", { name: REPORT })
-    .click();
+    .getByRole("option", { name: REPORT });
+  await selectedReport.click();
 
   const modes = dashboard.getByRole("group", { name: "File view mode" });
   const orderedModes: (string | null)[] = [];
@@ -248,10 +248,18 @@ test("bare e and p switch modes only in the integrated Files tab", async ({
   const editor = modes.locator('button[aria-label="Editor"][aria-pressed="true"]');
   await editor.waitFor();
   orderedModes.push(await editor.getAttribute("aria-label"));
+  let paneFocusRequests = 0;
+  const countPaneFocusRequest = (request: Request) => {
+    if (/^\/api\/sessions\/[^/]+\/focus$/.test(new URL(request.url()).pathname)) {
+      paneFocusRequests += 1;
+    }
+  };
+  dashboard.on("request", countPaneFocusRequest);
   await dashboard.keyboard.press("p");
   const preview = modes.locator('button[aria-label="Preview"][aria-pressed="true"]');
   await preview.waitFor();
   orderedModes.push(await preview.getAttribute("aria-label"));
+  dashboard.off("request", countPaneFocusRequest);
   const integratedHints = await modes.locator("kbd.kb-hint").allTextContents();
   await shoot(dashboard, "file-mode-shortcuts");
 
@@ -266,16 +274,82 @@ test("bare e and p switch modes only in the integrated Files tab", async ({
   expect({
     orderedModes,
     integratedHints,
+    paneFocusRequests,
     extractedMode,
     extractedShortcuts: await extractedModes.locator("[aria-keyshortcuts]").count(),
     extractedHints: await extractedModes.locator("kbd.kb-hint").count(),
   }).toEqual({
     orderedModes: ["Editor", "Preview"],
     integratedHints: ["p", "e"],
+    paneFocusRequests: 0,
     extractedMode: "Preview",
     extractedShortcuts: 0,
     extractedHints: 0,
   });
+});
+
+test("bare e and p remain available inside every valid contenteditable host", async ({
+  dashboard,
+  daemon,
+}) => {
+  await openFilesTab(dashboard, daemon);
+  await dashboard
+    .getByRole("listbox", { name: "Session files" })
+    .getByRole("option", { name: REPORT })
+    .click();
+
+  const modes = dashboard.getByRole("group", { name: "File view mode" });
+  await modes.locator('button[aria-label="Preview"][aria-pressed="true"]').waitFor();
+  await dashboard.evaluate(() => {
+    for (const [label, value] of [
+      ["Empty contenteditable host", ""],
+      ["Plaintext contenteditable host", "plaintext-only"],
+    ]) {
+      const host = document.createElement("div");
+      host.setAttribute("aria-label", label);
+      host.setAttribute("contenteditable", value);
+      host.addEventListener("keydown", (event) => {
+        host.dataset.receivedKeys = `${host.dataset.receivedKeys ?? ""}${event.key}`;
+      });
+      document.body.append(host);
+    }
+  });
+
+  const observations = [];
+  for (const label of ["Empty contenteditable host", "Plaintext contenteditable host"]) {
+    const host = dashboard.locator(`[aria-label="${label}"]`);
+    await host.focus();
+    await dashboard.keyboard.press("e");
+    const modeAfterE = await modes.locator('[aria-pressed="true"]').getAttribute("aria-label");
+    await dashboard.keyboard.press("p");
+    observations.push({
+      label,
+      modeAfterE,
+      modeAfterP: await modes.locator('[aria-pressed="true"]').getAttribute("aria-label"),
+      receivedKeys: await host.getAttribute("data-received-keys"),
+      text: await host.textContent(),
+      focused: await host.evaluate((element) => document.activeElement === element),
+    });
+  }
+
+  expect(observations).toEqual([
+    {
+      label: "Empty contenteditable host",
+      modeAfterE: "Preview",
+      modeAfterP: "Preview",
+      receivedKeys: "ep",
+      text: "ep",
+      focused: true,
+    },
+    {
+      label: "Plaintext contenteditable host",
+      modeAfterE: "Preview",
+      modeAfterP: "Preview",
+      receivedKeys: "ep",
+      text: "ep",
+      focused: true,
+    },
+  ]);
 });
 
 test("source opens in the editor, with no view to toggle to", async ({ dashboard, daemon }) => {

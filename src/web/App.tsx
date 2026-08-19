@@ -993,17 +993,11 @@ export function App(): React.JSX.Element {
   const finishSeeWorkTour = useCallback(async (): Promise<void> => {
     const run = seeWorkTourRef.current;
     if (!run) return;
+    // A slow preview or Dispatch response must see the tour as closed while cleanup runs, so
+    // it reclaims its own task instead of attaching it to a controller that is leaving.
+    // Restore the operator's surface before the request as promised, but retain the run and
+    // task ids until every temporary session has actually closed so a refusal can be retried.
     seeWorkTourRef.current = null;
-    const taskIds = [
-      seeWorkTourPreviewTaskIdRef.current,
-      seeWorkTourTaskIdRef.current,
-    ].filter((taskId): taskId is string => taskId !== null);
-    for (const taskId of new Set(taskIds)) {
-      const result = await api.completeSeeWorkTourDemo(taskId);
-      if (!result.ok) {
-        console.error("See the work demo task cleanup failed", result.error ?? "unknown error");
-      }
-    }
     const { snapshot, focus } = run;
     cancelPending();
     delete document.documentElement.dataset.mcTourReview;
@@ -1017,6 +1011,25 @@ export function App(): React.JSX.Element {
     setBoardOpen(snapshot.boardOpen);
     setFilter(snapshot.filter);
     setLineDrawer(snapshot.lineDrawer);
+
+    const taskIds = [
+      seeWorkTourPreviewTaskIdRef.current,
+      seeWorkTourTaskIdRef.current,
+    ].filter((taskId): taskId is string => taskId !== null);
+    const failures: string[] = [];
+    for (const taskId of new Set(taskIds)) {
+      try {
+        const result = await api.completeSeeWorkTourDemo(taskId);
+        if (!result.ok) failures.push(result.error ?? `task ${taskId} could not be closed`);
+      } catch (error) {
+        failures.push(error instanceof Error ? error.message : String(error));
+      }
+    }
+    if (failures.length > 0) {
+      seeWorkTourRef.current = run;
+      throw new Error(failures.join("; "));
+    }
+
     seeWorkTourPreviewTaskIdRef.current = null;
     seeWorkTourPreviewStartedRef.current = null;
     seeWorkTourTaskIdRef.current = null;
@@ -1030,8 +1043,13 @@ export function App(): React.JSX.Element {
     // Route restoration can remount the invoking control. Try the original node first, then
     // its semantic replacement for a few frames while the restored page commits.
     let attempts = 5;
+    let settledFocus: Element | null = null;
     const restore = (): void => {
-      if (!restoreFocusBookmark(focus) && attempts-- > 0) requestAnimationFrame(restore);
+      const restored = restoreFocusBookmark(focus);
+      const active = restored ? document.activeElement : null;
+      const settled = restored && active === settledFocus;
+      settledFocus = active;
+      if (!settled && attempts-- > 0) requestAnimationFrame(restore);
     };
     requestAnimationFrame(restore);
   }, [cancelPending, closeComplete, closeDispatch, navigate, setLayout]);

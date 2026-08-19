@@ -306,6 +306,15 @@
   color: var(--muted);
 }
 
+/* Cleanup can fail after the operator's route has already been restored, leaving the old
+ * spotlight target unmounted. Keep the retry explanation centered and independent of that
+ * stale geometry until the server confirms every temporary session has closed. */
+.driver-popover.mc-see-work-tour[data-tour-cleanup-error="true"] {
+  position: fixed !important;
+  inset: 50% auto auto 50% !important;
+  transform: translate(-50%, -50%) !important;
+}
+
 .driver-popover.mc-see-work-tour .driver-popover-arrow-side-top {
   border-bottom-color: var(--panel-2);
 }

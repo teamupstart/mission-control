@@ -346,6 +346,7 @@ export function SeeWorkTourController({
   useEffect(() => {
     let disposed = false;
     let stopping = false;
+    let cleanupBlocked = false;
     // Driver's active index updates after a route/target transition commits. React state can
     // arrive inside that window, so keep the controller's requested step as the progression
     // authority instead of letting a refresh jump back to Driver's previous index.
@@ -369,14 +370,49 @@ export function SeeWorkTourController({
       }
     }
 
+    function showCleanupError(error: unknown): void {
+      const popover = popoverRef.current;
+      if (!popover) return;
+      const message = error instanceof Error ? error.message : String(error);
+      delete document.documentElement.dataset.mcTourReview;
+      delete document.documentElement.dataset.mcTourDispatchSurface;
+      delete document.documentElement.dataset.mcTourSessionTile;
+      popover.wrapper.dataset.tourCleanupError = "true";
+      popover.wrapper.setAttribute("role", "dialog");
+      popover.wrapper.setAttribute("aria-modal", "true");
+      popover.arrow.hidden = true;
+      popover.title.textContent = "Tour cleanup needs attention";
+      const detail = document.createElement("p");
+      detail.className = "mc-tour-fallback";
+      detail.setAttribute("role", "status");
+      detail.textContent = `Mission Control restored where you started, but could not close every temporary session: ${message}. Retry cleanup before leaving the tour.`;
+      popover.description.replaceChildren(detail);
+      popover.previousButton.hidden = true;
+      popover.nextButton.hidden = true;
+      const retry = popover.footerButtons.querySelector<HTMLButtonElement>(".mc-tour-exit");
+      if (retry) {
+        retry.disabled = false;
+        retry.textContent = "Retry cleanup";
+        focusRootsRef.current = [popover.wrapper];
+        retry.focus();
+      }
+    }
+
     async function stop(): Promise<void> {
       if (disposed || stopping) return;
       stopping = true;
+      cleanupBlocked = false;
       showStopping();
       try {
         await onFinish();
       } catch (error) {
         console.error("See the work tour cleanup failed", error);
+        if (!disposed) {
+          stopping = false;
+          cleanupBlocked = true;
+          showCleanupError(error);
+        }
+        return;
       }
       if (!disposed) {
         try {
@@ -646,7 +682,7 @@ export function SeeWorkTourController({
     actionsRef.current = {
       refresh: () => {
         const active = driverRef.current;
-        if (!active?.isActive() || stopping) return;
+        if (!active?.isActive() || stopping || cleanupBlocked) return;
         const index = intendedIndex;
         if (index === STEP_INDEX.sessionDetail) {
           moveTo(index);

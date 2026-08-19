@@ -4995,12 +4995,24 @@ export function buildApp(
     if (!completed) return c.json({ ok: false, error: "no such task" }, 404);
     session ??= completed.sessionId ? registry.getSession(completed.sessionId) : null;
     if (session) {
-      const stopped = await requestSessionStop(session, sdkSessions);
-      if (!stopped.ok) {
-        return c.json(
-          { ok: false, error: `task marked done, but the session could not be closed: ${stopped.error ?? "failed"}`, task: completed },
-          500,
-        );
+      // A finished SDK handle can disappear just before this request reaches the supervisor,
+      // while its registry projection is still inside the normal exit linger. Confirm that
+      // absence through the supervisor, then feed the ordinary driver exit event back through
+      // Registry so session_remove still comes from its one supported eviction path.
+      if (session.runtime === "sdk" && sdkSessions?.handleFor(session.id) === null) {
+        registry.applyDriverEvent(session.id, {
+          kind: "exited",
+          reason: "tour cleanup found no live embedded driver",
+          resumable: false,
+        });
+      } else {
+        const stopped = await requestSessionStop(session, sdkSessions);
+        if (!stopped.ok) {
+          return c.json(
+            { ok: false, error: `task marked done, but the session could not be closed: ${stopped.error ?? "failed"}`, task: completed },
+            500,
+          );
+        }
       }
     }
     return c.json({ ok: true, task: completed });

@@ -75,8 +75,8 @@ Paste into the PR (or the change record) the four observations: the assertion li
 step 1, the locked-screen-while-working note from step 2, the empty assertion list from
 step 3, and the post-crash/post-restart off states from steps 4 and 5, each with the
 daemon PID visible. Repeat the enable/disable/restart checks through standalone `npm start`,
-packaged Electron, an adopted daemon, and the LaunchAgent. The LaunchAgent entry builds the native
-addon before it exec-replaces itself with the source daemon, so its PID remains launchd's exact
-service PID. If IOKit denies or terminates the assertion, or endpoint policy prohibits it, stop and
-record the exact return and policy evidence. Do not add a command, input, audio, display, or
-automatic-retry fallback.
+packaged Electron, an adopted daemon, and the LaunchAgent. For the LaunchAgent's build and
+process and PID mechanics, see [Running Mission Control](../overview.md#running-mission-control).
+If IOKit denies or terminates the assertion, or endpoint policy prohibits it, stop and record
+the exact return and policy evidence. Do not add a command, input, audio, display, or automatic
+retry fallback.

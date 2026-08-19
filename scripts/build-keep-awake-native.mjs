@@ -1,30 +1,40 @@
 #!/usr/bin/env node
 
 import { copyFile, mkdir } from "node:fs/promises";
-import { arch, platform } from "node:process";
+import { arch as processArch, platform as processPlatform } from "node:process";
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 
-if (platform !== "darwin") {
-  console.log(`[keep-awake-native] skipped on ${platform}`);
-  process.exit(0);
+export function nativeBuildTarget(platform, arch) {
+  if (platform !== "darwin") return { kind: "skip", platform };
+  if (arch === "arm64" || arch === "x64") return { kind: "build", arch };
+  throw new Error(`keep-awake native build does not support Darwin ${arch}`);
 }
 
-if (arch !== "arm64") {
-  throw new Error(
-    `keep-awake native build supports the packaged macOS arm64 target, not ${arch}`,
+async function main() {
+  const target = nativeBuildTarget(processPlatform, processArch);
+  if (target.kind === "skip") {
+    console.log(`[keep-awake-native] skipped on ${target.platform}`);
+    return;
+  }
+
+  const sourceDir = resolve("native/keep-awake");
+  const nodeGyp = resolve("node_modules/node-gyp/bin/node-gyp.js");
+  const built = resolve(sourceDir, "build/Release/keep_awake.node");
+  const outputDir = resolve("dist/native");
+  const output = resolve(outputDir, "keep-awake.node");
+
+  execFileSync(
+    process.execPath,
+    [nodeGyp, "rebuild", "--directory", sourceDir, `--arch=${target.arch}`],
+    { stdio: "inherit" },
   );
+  await mkdir(outputDir, { recursive: true });
+  await copyFile(built, output);
+  console.log(`[keep-awake-native] built ${target.arch} ${output}`);
 }
 
-const sourceDir = resolve("native/keep-awake");
-const nodeGyp = resolve("node_modules/node-gyp/bin/node-gyp.js");
-const built = resolve(sourceDir, "build/Release/keep_awake.node");
-const outputDir = resolve("dist/native");
-const output = resolve(outputDir, "keep-awake.node");
-
-execFileSync(process.execPath, [nodeGyp, "rebuild", "--directory", sourceDir, "--arch=arm64"], {
-  stdio: "inherit",
-});
-await mkdir(outputDir, { recursive: true });
-await copyFile(built, output);
-console.log(`[keep-awake-native] built ${output}`);
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  await main();
+}

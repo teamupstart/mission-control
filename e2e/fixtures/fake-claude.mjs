@@ -126,6 +126,15 @@ const FAILED_REVIEW = "E2E_FAIL_ENSEMBLE_REVIEW";
  */
 const FAIL_THEN_HOLD_REVIEW = "E2E_FAIL_THEN_HOLD_ENSEMBLE_REVIEW";
 
+/**
+ * The intent marker also reaches Goal refinement after an SDK member accepts its launch prompt.
+ * Only the anonymous comparison packet is allowed to steer the review fixture; otherwise that
+ * unrelated Goal call spends the counter before the first durable review attempt starts.
+ */
+function isEnsembleReviewPrompt(prompt) {
+  return prompt.includes("Rank exactly these submissions, each once:");
+}
+
 /** How many calls the marker's nonce has already taken, incremented and returned. */
 function failThenHoldCount(prompt) {
   const nonce = new RegExp(`${FAIL_THEN_HOLD_REVIEW}:([A-Za-z0-9-]+)`).exec(prompt)?.[1];
@@ -433,12 +442,13 @@ function runHeadlessSdk() {
     if (answered) return;
     answered = true;
     if (!verifyClaudeWorkflowImages(prompt, blocks)) process.exit(1);
-    if (prompt.includes(HELD_REVIEW)) {
+    const ensembleReview = isEnsembleReviewPrompt(prompt);
+    if (ensembleReview && prompt.includes(HELD_REVIEW)) {
       setTimeout(() => process.exit(1), HELD_REVIEW_MS);
       return;
     }
-    if (prompt.includes(FAILED_REVIEW)) process.exit(1);
-    if (prompt.includes(FAIL_THEN_HOLD_REVIEW)) {
+    if (ensembleReview && prompt.includes(FAILED_REVIEW)) process.exit(1);
+    if (ensembleReview && prompt.includes(FAIL_THEN_HOLD_REVIEW)) {
       // Down for the whole infrastructure budget, then in flight and staying there.
       if ((failThenHoldCount(prompt) ?? 1) <= 3) process.exit(1);
       setTimeout(() => process.exit(1), HELD_REVIEW_MS);

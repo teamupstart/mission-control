@@ -2483,21 +2483,21 @@ export interface SettingsStatus {
  * assertion. The one writer is the daemon's `KeepAwakeManager`; the browser's one source
  * is the snapshot plus `keep_awake_status` below.
  *
- * `state` reports what was OBSERVED of the OS child, not what was requested: `on` is
- * reachable only after the inhibitor process actually spawned, and an unexpected exit
- * lands on `error` rather than quietly restarting. That is what lets the live indicator
- * promise it never claims `awake` before the assertion exists or after it is gone.
+ * `state` reports what was OBSERVED of the OS assertion, not what was requested: `on` is
+ * reachable only after the provider confirms the assertion, and a provider failure lands
+ * on `error` rather than being hidden. That is what lets the live indicator promise it
+ * never claims `awake` before the assertion exists or after it is gone.
  */
 export interface KeepAwakeStatus {
-  /** Whether this host has an idle-sleep inhibitor to offer (macOS, or a test override). */
+  /** Whether this host has an idle-sleep inhibitor to offer. */
   supported: boolean;
   /** Why the mode is unavailable, bounded for the wire; null when `supported`. */
   unavailableReason: string | null;
-  /** Observed lifecycle of the OS assertion child. Exhaustive - reducers must switch it. */
+  /** Observed lifecycle of the OS assertion. Exhaustive - reducers must switch it. */
   state: "off" | "starting" | "on" | "stopping" | "error";
   /** Which inhibitor implementation this daemon would run; null when unsupported. */
-  provider: "caffeinate" | null;
-  /** Epoch ms at which the active assertion was confirmed (child spawned); else null. */
+  provider: "caffeinate" | "iokit" | null;
+  /** Epoch ms at which the active assertion was confirmed; else null. */
   since: number | null;
   /** Bounded runtime failure from the last transition or an unexpected exit; else null. */
   error: string | null;
@@ -2677,8 +2677,8 @@ export type ServerEvent =
    */
   | { type: "worktrees_changed" }
   /**
-   * The Keep Awake observation moved - a transition was requested, the OS child spawned
-   * or exited, or a transition failed. Carries the whole status so every open dashboard
+   * The Keep Awake observation moved - a transition was requested, the OS assertion was
+   * acquired or released, or a transition failed. Carries the whole status so every open dashboard
    * converges without a fetch; emitted only when an observable field changed (see
    * `Registry.setKeepAwakeStatus`).
    */

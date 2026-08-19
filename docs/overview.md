@@ -155,6 +155,10 @@ npm run install-service          # start now + on login
 npm run install-service -- --uninstall
 ```
 
+The LaunchAgent builds the native Keep Awake addon with its configured Node before it
+exec-replaces itself with the source daemon. Build failure is visible in `daemon.log`, and the
+daemon never starts with a missing or stale native artifact.
+
 ## Desktop app (macOS)
 
 Prefer a real menu-bar app over a browser tab? Mission Control packages into a native

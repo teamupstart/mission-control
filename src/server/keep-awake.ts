@@ -1,25 +1,33 @@
 import { spawn as nodeSpawn } from "node:child_process";
 import type { KeepAwakeStatus } from "@shared/types.ts";
 import { envVar } from "@shared/harness-runtime.mjs";
+import {
+  loadNativeKeepAwakeBinding,
+  type NativeKeepAwakeBinding,
+} from "./keep-awake-native.ts";
+
+export type { NativeKeepAwakeBinding } from "./keep-awake-native.ts";
 
 /**
- * The daemon's transient idle-sleep inhibitor: one owner for one OS child.
+ * The daemon's transient idle-sleep inhibitor: one owner for one OS assertion.
  *
- * On macOS the child is `/usr/bin/caffeinate -i -w <daemon PID>`. `-i` prevents
- * user-idle SYSTEM sleep and nothing else - the display still dims and locks - and
- * `-w` binds the assertion to this daemon's lifetime, so an exit that never reaches
- * `stop()` (crash, SIGKILL, power loss) still releases it. `-d`, `-u` and `-s` are
- * deliberately absent and must stay absent: they would keep the display awake,
- * impersonate user activity, or change the requested sleep semantics, each of which
- * breaks the promise the UI makes ("the screen can dim and lock normally").
+ * On macOS the daemon itself owns one IOKit
+ * `kIOPMAssertionTypePreventUserIdleSystemSleep` assertion. It prevents user-idle
+ * SYSTEM sleep and nothing else, so the display still dims and locks. The OS removes
+ * the process-owned assertion after a crash or SIGKILL. Display-sleep and synthetic
+ * user-activity assertions are deliberately absent because either would break the UI's
+ * promise that "the screen can dim and lock normally".
+ *
+ * `MISSION_KEEP_AWAKE_BIN` selects the legacy command mechanics only as an explicit
+ * test seam. It is never a production fallback after native loading or IOKit fails.
  *
  * There is intentionally NOTHING durable here. Keep Awake applies only to the current
  * daemon run by an approved human decision: every new manager starts `off`, no config
  * key is written, and nothing reacquires the assertion at boot. The status this class
- * publishes is an OBSERVATION of the child, never an echo of the request - `on` is
- * reachable only after the child's `spawn` event, and an unexpected exit lands on
- * `error` without a restart, so the dashboard cannot claim an assertion the OS is not
- * holding.
+ * publishes is an OBSERVATION of the assertion, never an echo of the request - `on` is
+ * reachable only after the provider confirms acquisition. A command provider's unexpected
+ * exit lands on `error` without a restart, so the dashboard cannot claim an assertion the
+ * OS is not holding.
  */
 
 /** The slice of `ChildProcess` the manager touches, injectable so tests script it. */
@@ -42,10 +50,11 @@ export interface KeepAwakeDeps {
    * power settings.
    */
   override?: string | null;
-  /** The PID `-w` binds the assertion to. Defaults to `process.pid`. */
+  /** The PID `-w` binds the explicit command fixture to. Defaults to `process.pid`. */
   daemonPid?: number;
   now?: () => number;
   spawn?: (bin: string, args: string[]) => KeepAwakeChild;
+  loadNativeBinding?: () => NativeKeepAwakeBinding;
   setTimeoutFn?: (fn: () => void, ms: number) => NodeJS.Timeout;
   clearTimeoutFn?: (t: NodeJS.Timeout) => void;
   /** How long a SIGTERM gets before the SIGKILL fallback, and the fallback's own wait. */
@@ -55,33 +64,25 @@ export interface KeepAwakeDeps {
 }
 
 /**
- * Bound external text before it reaches SSE. Spawn errors carry OS strings of arbitrary
+ * Bound external text before it reaches SSE. Provider errors carry text of arbitrary
  * length and the status rides every snapshot, so an unbounded message would tax each
  * connect for as long as the failure stands.
  */
 const ERROR_MAX_CHARS = 200;
 const DEFAULT_FORCE_KILL_AFTER_MS = 2000;
+const NATIVE_ASSERTION_REASON = "Mission Control is keeping this Mac awake while agent work is active";
 
 function bounded(text: string): string {
   return text.length > ERROR_MAX_CHARS ? `${text.slice(0, ERROR_MAX_CHARS - 1)}…` : text;
 }
 
-/**
- * Which executable this host would run, if any. The override wins everywhere; without
- * one, only Darwin has a provider and it is resolved by ABSOLUTE path - the daemon must
- * never let PATH decide what holds a power assertion.
- */
-export function resolveKeepAwakeBin(
-  platform: NodeJS.Platform,
-  override: string | null,
-): string | null {
-  if (override) return override;
-  if (platform === "darwin") return "/usr/bin/caffeinate";
-  return null;
-}
+type KeepAwakeProvider =
+  | { kind: "command"; bin: string }
+  | { kind: "native"; binding: NativeKeepAwakeBinding }
+  | { kind: "unavailable"; reason: string };
 
 export class KeepAwakeManager {
-  private readonly bin: string | null;
+  private readonly provider: KeepAwakeProvider;
   private readonly daemonPid: number;
   private readonly now: () => number;
   private readonly spawnFn: (bin: string, args: string[]) => KeepAwakeChild;
@@ -92,20 +93,43 @@ export class KeepAwakeManager {
 
   private current: KeepAwakeStatus;
   private child: KeepAwakeChild | null = null;
+  private nativeHandle: unknown;
+  private hasNativeHandle = false;
   /** The child whose exit `disable()` is awaiting - what separates it from a crash. */
   private expectedExit: { child: KeepAwakeChild; resolve: () => void } | null = null;
   /**
    * The transition mutex. Every `setEnabled` chains onto it, so two dashboards clicking
-   * at once cannot interleave a spawn with a kill or produce two children; each queued
+   * at once cannot interleave acquisition with release or produce two assertions; each queued
    * request re-reads the observed state when its turn comes, which is what makes a
-   * repeated request for the already-achieved state a no-op rather than a second child.
+   * repeated request for the already-achieved state a no-op rather than a second assertion.
    */
   private queue: Promise<unknown> = Promise.resolve();
 
   constructor(deps: KeepAwakeDeps = {}) {
     const platform = deps.platform ?? process.platform;
     const override = deps.override === undefined ? envVar("KEEP_AWAKE_BIN") ?? null : deps.override;
-    this.bin = resolveKeepAwakeBin(platform, override);
+    if (override) {
+      this.provider = { kind: "command", bin: override };
+    } else if (platform !== "darwin") {
+      this.provider = {
+        kind: "unavailable",
+        reason: bounded(
+          `Keep awake is unavailable on this system (${platform}) - ` +
+            "the native provider only supports macOS",
+        ),
+      };
+    } else {
+      try {
+        const loadNativeBinding = deps.loadNativeBinding ?? loadNativeKeepAwakeBinding;
+        this.provider = { kind: "native", binding: loadNativeBinding() };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        this.provider = {
+          kind: "unavailable",
+          reason: bounded(`Keep awake native binding is unavailable: ${message}`),
+        };
+      }
+    }
     this.daemonPid = deps.daemonPid ?? process.pid;
     this.now = deps.now ?? Date.now;
     this.spawnFn =
@@ -119,16 +143,14 @@ export class KeepAwakeManager {
     this.forceKillAfterMs = deps.forceKillAfterMs ?? DEFAULT_FORCE_KILL_AFTER_MS;
     this.onStatus = deps.onStatus;
     this.current = {
-      supported: this.bin !== null,
-      unavailableReason:
-        this.bin !== null
-          ? null
-          : bounded(
-              `Keep awake is unavailable on this system (${platform}) - ` +
-                "only the macOS caffeinate provider ships today",
-            ),
+      supported: this.provider.kind !== "unavailable",
+      unavailableReason: this.provider.kind === "unavailable" ? this.provider.reason : null,
       state: "off",
-      provider: this.bin !== null ? "caffeinate" : null,
+      provider: this.provider.kind === "native"
+        ? "iokit"
+        : this.provider.kind === "command"
+          ? "caffeinate"
+          : null,
       since: null,
       error: null,
     };
@@ -152,18 +174,46 @@ export class KeepAwakeManager {
 
   /**
    * The daemon-shutdown half: the disable path, and nothing more. There is no durable
-   * state to write because none exists - `-w <daemon PID>` covers the exits that never
-   * reach this method.
+   * state to write because none exists. IOKit drops a native assertion with its owning
+   * process, while the explicit command fixture's `-w <daemon PID>` covers exits that
+   * never reach this method.
    */
   async stop(): Promise<void> {
     await this.setEnabled(false);
   }
 
   private async enable(): Promise<KeepAwakeStatus> {
-    if (this.bin === null) return this.current;
+    if (this.provider.kind === "unavailable") return this.current;
     if (this.current.state === "on") return this.current;
+    if (this.provider.kind === "native" && this.hasNativeHandle) {
+      // A failed release leaves an exact handle behind while the UI truthfully shows
+      // `error`. Its next switch action asks for `on`; reconcile the retained handle
+      // first, then acquire a fresh assertion. Returning the error again would wedge
+      // the only operator control, while treating the old handle as `on` would guess
+      // whether IOKit had released it despite reporting failure.
+      const reconciled = this.disableNative(this.provider.binding);
+      if (reconciled.state === "error") return reconciled;
+    }
     this.publish({ state: "starting", since: null, error: null });
-    const child = this.spawnFn(this.bin, ["-i", "-w", String(this.daemonPid)]);
+    if (this.provider.kind === "native") {
+      try {
+        this.nativeHandle = this.provider.binding.create(NATIVE_ASSERTION_REASON);
+        this.hasNativeHandle = true;
+      } catch (err) {
+        this.nativeHandle = undefined;
+        this.hasNativeHandle = false;
+        const message = err instanceof Error ? err.message : String(err);
+        this.publish({
+          state: "error",
+          since: null,
+          error: bounded(`could not start iokit: ${message}`),
+        });
+        return this.current;
+      }
+      this.publish({ state: "on", since: this.now(), error: null });
+      return this.current;
+    }
+    const child = this.spawnFn(this.provider.bin, ["-i", "-w", String(this.daemonPid)]);
     this.child = child;
     const outcome = await new Promise<"spawned" | Error>((resolve) => {
       child.on("spawn", () => resolve("spawned"));
@@ -187,6 +237,7 @@ export class KeepAwakeManager {
   }
 
   private async disable(): Promise<KeepAwakeStatus> {
+    if (this.provider.kind === "native") return this.disableNative(this.provider.binding);
     const child = this.child;
     if (!child) {
       // Nothing is running: converge to off, which also clears a standing error - the
@@ -225,6 +276,29 @@ export class KeepAwakeManager {
       });
       return this.current;
     }
+    this.publish({ state: "off", since: null, error: null });
+    return this.current;
+  }
+
+  private disableNative(binding: NativeKeepAwakeBinding): KeepAwakeStatus {
+    if (!this.hasNativeHandle) {
+      if (this.current.state !== "off") this.publish({ state: "off", since: null, error: null });
+      return this.current;
+    }
+    this.publish({ state: "stopping", error: null });
+    try {
+      binding.release(this.nativeHandle);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.publish({
+        state: "error",
+        since: null,
+        error: bounded(`could not release iokit: ${message}`),
+      });
+      return this.current;
+    }
+    this.nativeHandle = undefined;
+    this.hasNativeHandle = false;
     this.publish({ state: "off", since: null, error: null });
     return this.current;
   }

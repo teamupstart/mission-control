@@ -76,7 +76,9 @@ function workingManager(over: { script?: "spawn" | "error"; platform?: NodeJS.Pl
   const statuses: KeepAwakeStatus[] = [];
   const manager = new KeepAwakeManager({
     platform: over.platform ?? "darwin",
-    override: null,
+    // HTTP tests script the explicit command fixture. Unsupported-platform cases
+    // deliberately remove the override so they still exercise provider refusal.
+    override: over.platform && over.platform !== "darwin" ? null : "/usr/bin/caffeinate",
     daemonPid: 7317,
     now: () => 1_700_000_000_000,
     spawn: () => scriptedChild(over.script ?? "spawn"),

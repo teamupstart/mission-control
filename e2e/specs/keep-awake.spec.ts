@@ -9,13 +9,13 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 /**
  * Keep Awake, driven the way an operator meets it: the fleet pulse's live segment opens
- * a dropdown, the switch PUTs to the daemon, the daemon spawns its inhibitor child, and
+ * a dropdown, the switch PUTs to the daemon, the daemon acquires its assertion, and
  * the observed state comes back over SSE to every open window.
  *
  * This is the layer the other three cannot reach. The manager tests prove the exact argv
  * against an injected spawn, the render tests prove each state's markup, the route tests
  * prove the status codes - but only here does a click become a real OS process (the fake
- * `caffeinate` in `fake-agents.ts`, so no test run ever touches host power settings) and
+ * command provider in `fake-agents.ts`, so no test run ever touches host power settings) and
  * only here can two browser windows be proven to converge on one truth without a reload.
  */
 
@@ -39,7 +39,7 @@ const dialog = (page: Page) => page.getByRole("dialog", { name: "Keep awake" });
 const switchIn = (page: Page) =>
   dialog(page).getByRole("switch", { name: "Keep this Mac awake" });
 
-test("the live segment drives caffeinate and every window converges over SSE", async ({
+test("the live segment drives the explicit command fixture and every window converges over SSE", async ({
   dashboard,
   daemon,
 }) => {
@@ -133,9 +133,8 @@ test("a daemon crash never leaves a stale awake claim, and a restart returns off
   await expect(switchIn(dashboard)).toHaveAttribute("aria-checked", "false");
   await expect(dialog(dashboard)).toContainText("Mission Control is reconnecting");
 
-  // The crash-safety backstop, end to end: nothing could run the manager's orderly
-  // stop, so the `-w <daemon PID>` watch is what releases the assertion - the fake
-  // notices its watched pid is gone and exits on its own, exactly as caffeinate would.
+  // The command fixture's crash-safety backstop, end to end: nothing could run the
+  // manager's orderly stop, so its `-w <daemon PID>` watch releases the assertion.
   await expect.poll(() => records(daemon, "exit").length, { timeout: 5_000 }).toBe(1);
 
   // And the approved restart lifecycle: the successor daemon starts with the mode OFF -

@@ -22,8 +22,7 @@ const LABEL = "com.mission-control.daemon";
 const LEGACY_LABELS = ["com.fleet-control.daemon", "com.ai-harness.daemon"];
 const repo = join(dirname(fileURLToPath(import.meta.url)), "..");
 const node = process.execPath;
-const tsx = join(repo, "node_modules", "tsx", "dist", "cli.mjs");
-const entry = join(repo, "src", "server", "index.ts");
+const serviceEntry = join(repo, "scripts", "start-service.mjs");
 const state = stateDir();
 const logFile = join(state, "daemon.log");
 const plistFor = (label) => join(homedir(), "Library", "LaunchAgents", `${label}.plist`);
@@ -68,8 +67,7 @@ const plist = `<?xml version="1.0" encoding="UTF-8"?>
   <key>ProgramArguments</key>
   <array>
     <string>${node}</string>
-    <string>${tsx}</string>
-    <string>${entry}</string>
+    <string>${serviceEntry}</string>
   </array>
   <key>WorkingDirectory</key>
   <string>${repo}</string>

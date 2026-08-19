@@ -38,6 +38,7 @@ import {
 import { toolChip, toolLineTarget, transcriptRows } from "../lib/tools.ts";
 import { useWorkspacePaths, type SessionFilesController } from "../lib/sessionFiles.ts";
 import { mergeConversation } from "../lib/episodes.ts";
+import { parseForemanTerminalReview } from "../lib/foreman-terminal.ts";
 import {
   collectHits,
   hitsInScope,
@@ -1615,9 +1616,10 @@ function TerminalTurn({
   // shipped default, so a rail that could only jump in chat mode would not work for most
   // readers most of the time.
   if (m.role === "user") {
+    const foreman = m.origin === "foreman";
     return (
       <article
-        className={`pty-entry pty-user${flashed ? " is-flashed" : ""}`}
+        className={`pty-entry pty-user${foreman ? " pty-foreman" : ""}${flashed ? " is-flashed" : ""}`}
         aria-label={who}
         data-turn-id={m.id}
       >
@@ -1638,15 +1640,25 @@ function TerminalTurn({
           {/* Never markdown, whatever the formatting preference says: this is the command
               line, and a command line shows what was typed. Highlighting still applies -
               a match must be visible wherever it was counted. */}
-          <span className="pty-command">
-            {textHits.length > 0 ? (
-              <Highlighted text={m.text} hits={textHits} currentKey={currentKey} />
-            ) : (
-              m.text
-            )}
-          </span>
-          <ConversationTimestamp at={m.ts} className="pty-time" />
+          {!foreman && (
+            <span className="pty-command">
+              {textHits.length > 0 ? (
+                <Highlighted text={m.text} hits={textHits} currentKey={currentKey} />
+              ) : (
+                m.text
+              )}
+            </span>
+          )}
+          {!foreman && <ConversationTimestamp at={m.ts} className="pty-time" />}
         </p>
+        {foreman && (
+          <ForemanTerminalMessage
+            text={m.text}
+            ts={m.ts}
+            hits={textHits}
+            currentKey={currentKey}
+          />
+        )}
         {m.tools.length > 0 && <ToolChips tools={m.tools} find={find} lines />}
       </article>
     );
@@ -1684,6 +1696,73 @@ function TerminalTurn({
           does not show. */}
       {m.tools.length > 0 && <ToolChips tools={m.tools} find={find} lines />}
     </article>
+  );
+}
+
+/**
+ * A Foreman-authored terminal turn.
+ *
+ * It remains input on the stream: the shell prompt above says where it went, and the
+ * timeline node keeps its place among the surrounding traffic. The bounded panel only
+ * changes how the machine-authored payload is read. Completion reviews use the fixed
+ * template's real fields; every other message stays literal beneath the same provenance
+ * header, so styling never invents a verdict Foreman did not make.
+ */
+function ForemanTerminalMessage({
+  text,
+  ts,
+  hits,
+  currentKey,
+}: {
+  text: string;
+  ts: number;
+  hits: FindHit[];
+  currentKey: string | null;
+}): React.JSX.Element {
+  const review = parseForemanTerminalReview(text);
+  const highlighted = hits.length > 0;
+  return (
+    <section className="pty-foreman-message" aria-label="Foreman message">
+      <header className="pty-foreman-head">
+        <span className="pty-foreman-mark" aria-hidden>◆</span>
+        <span className="pty-foreman-badge">Foreman</span>
+        <span className="pty-foreman-status">
+          {review ? "review · needs work" : "automated turn"}
+        </span>
+        <ConversationTimestamp at={ts} className="pty-time" />
+      </header>
+      {highlighted ? (
+        <div className="pty-foreman-copy">
+          <Highlighted text={text} hits={hits} currentKey={currentKey} />
+        </div>
+      ) : review ? (
+        <div className="pty-foreman-review">
+          <p className="pty-foreman-intro">{review.intro}</p>
+          <p className="pty-foreman-request">{review.request}</p>
+          <p className="pty-foreman-summary">{review.summary}</p>
+          <div className="pty-foreman-findings">
+            {review.findings.map((finding) => (
+              <section className="pty-foreman-finding" key={finding.number}>
+                <header className="pty-foreman-finding-head">
+                  <span>{finding.number}.</span>
+                  <span className="pty-foreman-kind">[{finding.kind}]</span>
+                  <strong>{finding.path}</strong>
+                </header>
+                <p>
+                  <span>What&apos;s missing:</span> {finding.detail}
+                </p>
+                <p>
+                  <span>Suggested fix:</span> {finding.fix}
+                </p>
+              </section>
+            ))}
+          </div>
+          <p className="pty-foreman-safety">{review.safety}</p>
+        </div>
+      ) : (
+        <div className="pty-foreman-copy">{text}</div>
+      )}
+    </section>
   );
 }
 

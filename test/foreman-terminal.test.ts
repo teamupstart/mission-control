@@ -71,4 +71,13 @@ test("leaves arbitrary or damaged Foreman prose to the literal fallback", () => 
     null,
   );
   assert.equal(parseForemanTerminalReview(ONE_FINDING.replace("Suggested fix:", "Next:")), null);
+  assert.equal(
+    parseForemanTerminalReview(
+      ONE_FINDING.replace(
+        "Add the backlog switch and keep Dispatch now immediate.\n\nOne thing",
+        "Add the backlog switch.\nKeep Dispatch now immediate.\nOne thing",
+      ),
+    ),
+    null,
+  );
 });

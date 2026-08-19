@@ -38,7 +38,11 @@ export function parseForemanTerminalReview(text: string): ForemanTerminalReview 
   const summaryIndex = lines.findIndex((line, index) =>
     index > 1 && /^(?:One thing|\d+ things) still needs? doing before this is finished:$/.test(line),
   );
-  if (summaryIndex < 3 || lines[summaryIndex + 1] !== "") return null;
+  if (
+    summaryIndex < 3 ||
+    lines[summaryIndex - 1] !== "" ||
+    lines[summaryIndex + 1] !== ""
+  ) return null;
 
   const request = lines.slice(2, summaryIndex - 1).join("\n").trim();
   if (!request) return null;

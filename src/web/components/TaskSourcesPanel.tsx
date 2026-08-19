@@ -581,6 +581,28 @@ export function SourceCard({
 
       <div className="ts-defaults">
         <p className="settings-group-label">What a swept task looks like</p>
+        <label className={`settings-toggle${src.defaults.enabled ? " is-on" : ""}`}>
+          <Tooltip label="Set whether Foreman's backlog autopilot may automatically schedule tasks filed by this source">
+            <input
+              type="checkbox"
+              checked={src.defaults.enabled}
+              aria-label="Allow backlog autopilot to schedule swept tasks"
+              onChange={(e) =>
+                onChange({
+                  ...src,
+                  defaults: { ...src.defaults, enabled: e.target.checked },
+                })
+              }
+            />
+          </Tooltip>
+          <span className="settings-toggle-text">
+            <span className="settings-toggle-label">Allow backlog autopilot</span>
+            <span className="settings-toggle-desc">
+              On, Foreman may schedule tasks filed by this source. Off, new tasks arrive
+              parked for review; you can enable or launch them manually.
+            </span>
+          </span>
+        </label>
         <div className="ts-fields">
           <label className="ts-field">
             <span className="ts-field-label">Agent</span>
@@ -964,7 +986,13 @@ export function TaskSourcesPanel({ state }: { state: TaskSourcesState }): React.
       enabled: false,
       repoRoot: res.repoRoot,
       intervalMs: DEFAULT_SWEEP_INTERVAL_MS,
-      defaults: { kind: "ship", agent: "claude", priority: null, labels: [] },
+      defaults: {
+        kind: "ship",
+        agent: "claude",
+        priority: null,
+        labels: [],
+        enabled: true,
+      },
       maxPerSweep: DEFAULT_MAX_PER_SWEEP,
       config: {},
     };

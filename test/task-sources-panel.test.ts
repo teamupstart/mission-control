@@ -38,7 +38,7 @@ function mkSource(over: Partial<TaskSourceInstance> = {}): TaskSourceInstance {
     enabled: false,
     repoRoot: "/repo/widgets",
     intervalMs: 900_000,
-    defaults: { kind: "ship", agent: "claude", priority: null, labels: [] },
+    defaults: { kind: "ship", agent: "claude", priority: null, labels: [], enabled: true },
     maxPerSweep: 25,
     config: {},
     ...over,
@@ -114,6 +114,29 @@ test("task-source defaults offer backlog-compatible kinds and omit chat", () => 
   assert.match(html, /<option value="ship" selected="">ship - deliver a change<\/option>/);
   assert.match(html, /<option value="plan">plan - produce a reviewed plan<\/option>/);
   assert.doesNotMatch(html, /<option value="chat"/);
+});
+
+test("a source can make swept tasks arrive parked for review", () => {
+  const source = mkSource({
+    defaults: { kind: "ship", agent: "claude", priority: null, labels: [], enabled: false },
+  });
+  const html = renderToStaticMarkup(createElement(SourceCard, {
+    src: source,
+    kindLabel: "GitHub issues",
+    status: undefined,
+    repos: [],
+    now: Date.now(),
+    onChange: () => {},
+    onRemove: () => {},
+    state: mkState(viewOf([source])),
+  }));
+
+  assert.match(html, /aria-label="Allow backlog autopilot to schedule swept tasks"/);
+  assert.doesNotMatch(
+    html,
+    /aria-label="Allow backlog autopilot to schedule swept tasks"[^>]*checked/,
+  );
+  assert.match(html, /new tasks arrive\s*parked for review/);
 });
 
 test("a configured source is a compact overview row with its health", () => {

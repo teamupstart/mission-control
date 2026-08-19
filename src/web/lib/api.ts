@@ -1089,6 +1089,8 @@ export interface DispatchInput {
   /** Backlog-task or live-session prerequisites. */
   dependencies?: TaskDependencyInput[];
   backlog?: boolean;
+  /** Whether Foreman's backlog autopilot may schedule a shelved task. */
+  enabled?: boolean;
 }
 
 // ---- Archives ----

@@ -140,6 +140,21 @@ test("a task created through the manager is schedulable", () => {
   assert.equal(created.enabled, true);
 });
 
+test("a task source can explicitly create a parked backlog task", () => {
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+  const created = tasks.create({
+    repoRoot: "/repo",
+    intent: "review this before scheduling it",
+    title: "Explicit title, so nothing is titled asynchronously",
+    kind: "ship",
+    agent: "claude",
+    backlog: true,
+    enabled: false,
+  });
+  assert.equal(created.enabled, false);
+});
+
 test("a parked task carries no dependency blocker of its own", () => {
   // What stops the autopilot is `readyBacklog`, not a synthetic blocker - and the
   // difference is visible here, on the check every manual dispatch path runs. Modelling

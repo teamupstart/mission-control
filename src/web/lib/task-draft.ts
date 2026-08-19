@@ -56,6 +56,8 @@ export type DispatchDraft = {
    * task, null explicitly opts out, and an id selects that published Workflow.
    */
   workflowId: string | null | undefined;
+  /** Whether Foreman's backlog autopilot may schedule the shelved task. */
+  enabled: boolean;
   /** Selected prerequisite ids; the daemon resolves them to durable dependency edges. */
   dependencies: TaskDependencyInput[];
   /** Images dropped on the task box; sent as paths appended to the intent. */
@@ -74,6 +76,7 @@ export const EMPTY_DISPATCH_DRAFT: DispatchDraft = {
   model: "",
   effort: "",
   workflowId: undefined,
+  enabled: true,
   dependencies: [],
   attachments: [],
 };
@@ -116,6 +119,7 @@ export function draftFromTask(t: Task): DispatchDraft {
     model: t.model ?? "",
     effort: t.effort ?? "",
     workflowId: t.workflowId,
+    enabled: t.enabled,
     dependencies: t.dependencies.map((dependency) =>
       dependency.type === "task"
         ? { type: "task" as const, taskId: dependency.taskId }
@@ -154,6 +158,7 @@ export function draftsEqual(a: DispatchDraft, b: DispatchDraft): boolean {
     a.model === b.model &&
     a.effort === b.effort &&
     a.workflowId === b.workflowId &&
+    a.enabled === b.enabled &&
     dependencyInputsEqual(a.dependencies, b.dependencies) &&
     a.attachments.length === b.attachments.length &&
     a.attachments.every((att, i) => att.id === b.attachments[i]!.id)
@@ -227,6 +232,7 @@ export function taskUpdatePatch(task: Task, draft: DispatchDraft, intent: string
   if (draft.workflowId !== undefined && draft.workflowId !== task.workflowId) {
     patch.workflowId = draft.workflowId;
   }
+  if (draft.enabled !== task.enabled) patch.enabled = draft.enabled;
   const storedDependencies: TaskDependencyInput[] = task.dependencies.map((dependency) =>
     dependency.type === "task"
       ? { type: "task", taskId: dependency.taskId }

@@ -25,17 +25,20 @@ import type { TaskSourceInstance } from "../src/shared/task-source.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-settings-status-"));
 const bin = join(home, "bin");
+const fakeGh = join(bin, "gh");
+const previousGhBin = process.env.MISSION_GH_BIN;
+const previousConductorBin = process.env.MISSION_CONDUCTOR_BIN;
 mkdirSync(bin);
 // A `gh` that fails deterministically, so a github-issues sweep records an error and the
 // failing count moves - the transition the red dot exists to show. A non-zero exit becomes
 // `{items: [], error}` (never an empty success), so the sweep returns rather than throws.
-writeFileSync(join(bin, "gh"), "#!/bin/sh\necho 'gh: boom' 1>&2\nexit 1\n");
-chmodSync(join(bin, "gh"), 0o755);
+writeFileSync(fakeGh, "#!/bin/sh\necho 'gh: boom' 1>&2\nexit 1\n");
+chmodSync(fakeGh, 0o755);
 process.env.HARNESS_HOME = join(home, "state");
-// Keep binary-presence assertions hermetic. Retaining the workstation PATH makes an
-// operator-installed `conduct-ts` turn this test's intentional absent state into present.
-// The fake `gh` above has an absolute /bin/sh shebang, so it needs no host PATH entries.
-process.env.PATH = bin;
+process.env.MISSION_GH_BIN = fakeGh;
+// Presence detection has its own binary seam. Point it at a missing fixture path so an
+// operator's installed Conductor cannot flip the status this test promises is absent.
+process.env.MISSION_CONDUCTOR_BIN = join(bin, "no-such-conductor");
 
 const { openDb } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
@@ -47,7 +50,13 @@ const { setShippingConfig } = await import("../src/server/shipping/config.ts");
 const { setTaskSourcesConfig } = await import("../src/server/task-sources/config.ts");
 const { sweepOnce } = await import("../src/server/task-sources/sweeper.ts");
 
-after(() => rmSync(home, { recursive: true, force: true }));
+after(() => {
+  rmSync(home, { recursive: true, force: true });
+  if (previousGhBin === undefined) delete process.env.MISSION_GH_BIN;
+  else process.env.MISSION_GH_BIN = previousGhBin;
+  if (previousConductorBin === undefined) delete process.env.MISSION_CONDUCTOR_BIN;
+  else process.env.MISSION_CONDUCTOR_BIN = previousConductorBin;
+});
 // A fresh config store per test, so one test's armed YOLO does not read into the next. The
 // sweeper's in-memory health map is process-global and is NOT cleared here, so each source
 // carries a UNIQUE id and the compose reads only sources that are in the (cleared) config.
@@ -80,7 +89,7 @@ function ghSource(id: string): TaskSourceInstance {
     enabled: true,
     repoRoot: home,
     intervalMs: 900_000,
-    defaults: { kind: "ship", agent: "claude", priority: null, labels: [] },
+    defaults: { kind: "ship", agent: "claude", priority: null, labels: [], enabled: true },
     maxPerSweep: 25,
     config: {},
   } as TaskSourceInstance;
@@ -90,8 +99,8 @@ const ALL_OFF: SettingsStatus = {
   inspector: { enabled: false, mode: "dry-run" },
   shipping: { autoMerge: false },
   taskSources: { failing: 0 },
-  // No engine on this test's PATH and nothing configured, which is what an ordinary
-  // installation looks like - and the state in which the Conductor rail row does not exist.
+  // No engine at this test's configured binary path and nothing configured, which is what an
+  // ordinary installation looks like and the state in which the Conductor rail row does not exist.
   pipelines: {
     present: false,
     observing: 0,

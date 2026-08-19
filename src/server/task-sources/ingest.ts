@@ -44,7 +44,8 @@ export interface IngestDeps {
  *  4. Cap at `maxPerSweep` and SAY what was dropped - a silent truncation reads as
  *     "that's all there was".
  *  5. Create through `TaskManager.create({…, backlog: true})`, the same path the
- *     dispatch form takes, so titling, SSE emission and persistence are unchanged.
+ *     dispatch form takes, carrying the source's autopilot default so the task's initial
+ *     enabled state is part of the same insert rather than a follow-up write.
  *  6. Record the seen row, in the same transaction as the insert.
  *
  * A swept task always lands in the BACKLOG. Auto-dispatching is a different risk class
@@ -138,7 +139,12 @@ export async function ingestSweep(
       // retrying, so they are not allowed to happen separately.
       transaction(() => {
         remember(inst.id, c.ref.externalId, c.ref.url);
-        tasks.create({ ...parsed.data, repoRoot, source: c.ref });
+        tasks.create({
+          ...parsed.data,
+          repoRoot,
+          source: c.ref,
+          enabled: inst.defaults.enabled,
+        });
       });
       report.filed += 1;
     } catch (err) {

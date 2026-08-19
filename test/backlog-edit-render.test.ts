@@ -84,6 +84,20 @@ test("the editor opens holding the task, not an empty form", () => {
   // (ship / claude) - a scout silently re-armed as a ship is a different job.
   assert.match(html, /<option value="scout" selected=""/);
   assert.match(html, /<option value="codex" selected=""/);
+  assert.match(
+    html,
+    /role="switch" aria-checked="true" aria-label="Allow backlog autopilot to schedule this task"/,
+  );
+});
+
+test("a parked task reopens with backlog autopilot off", () => {
+  const html = editor(mkTask({ enabled: false }));
+  assert.match(html, /Allow backlog autopilot/);
+  assert.match(
+    html,
+    /role="switch" aria-checked="false" aria-label="Allow backlog autopilot to schedule this task"/,
+  );
+  assert.match(html, /stays parked until you dispatch it or turn this back on/);
 });
 
 test("the editor reopens a task on whichever kind it was stored with", () => {
@@ -168,6 +182,7 @@ test("a fresh dispatch is untouched by the edit mode", () => {
   assert.match(html, /Dispatch an agent/);
   assert.match(html, /Add to backlog/);
   assert.doesNotMatch(html, /Edit backlog task/);
+  assert.match(html, /autopilot on/);
 });
 
 test("the dependency picker offers both backlog tasks and active sessions", () => {

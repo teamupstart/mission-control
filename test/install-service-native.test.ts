@@ -29,7 +29,7 @@ function plistProgramArguments(plist: string): string[] {
   return [...block.matchAll(/<string>([^<]*)<\/string>/g)].map((match) => match[1]!);
 }
 
-test("a fresh LaunchAgent enters through the native-build daemon supervisor", () => {
+test("a fresh LaunchAgent enters through the native-build daemon entry", () => {
   const root = mkdtempSync(join(tmpdir(), "mission-install-service-native-"));
   const home = join(root, "home");
   const state = join(root, "state");
@@ -81,7 +81,7 @@ test("a fresh LaunchAgent enters through the native-build daemon supervisor", ()
   }
 });
 
-test("the LaunchAgent entry builds first and forwards termination to the daemon", async () => {
+test("the LaunchAgent entry builds first and runs the daemon at its exact PID", async () => {
   const root = mkdtempSync(join(tmpdir(), "mission-start-service-native-"));
   const scripts = join(root, "scripts");
   const tsxDir = join(root, "node_modules", "tsx");
@@ -100,9 +100,13 @@ test("the LaunchAgent entry builds first and forwards termination to the daemon"
   );
   writeFileSync(
     join(tsxDir, "package.json"),
-    JSON.stringify({ name: "tsx", type: "module", exports: "./index.mjs" }),
+    JSON.stringify({
+      name: "tsx",
+      type: "module",
+      exports: { "./esm/api": "./index.mjs" },
+    }),
   );
-  writeFileSync(join(tsxDir, "index.mjs"), "// fake tsx import hook\n");
+  writeFileSync(join(tsxDir, "index.mjs"), "export const register = () => {};\n");
   writeFileSync(
     server,
     `import { appendFileSync } from "node:fs";\n` +
@@ -143,7 +147,7 @@ test("the LaunchAgent entry builds first and forwards termination to the daemon"
       );
     assert.deepEqual(events.map((event) => event.stage), ["build", "daemon", "signal"]);
     assert.notEqual(events[0]!.pid, servicePid, "the bounded build runs as a child");
-    assert.notEqual(events[1]!.pid, servicePid, "the daemon runs as the supervisor's child");
+    assert.equal(events[1]!.pid, servicePid, "the daemon keeps launchd's exact service PID");
     assert.notEqual(events[1]!.pid, events[0]!.pid, "the build exits before the daemon starts");
     assert.deepEqual(events[1]!.args, [realpathSync(server)]);
     assert.deepEqual(events[2], {
@@ -153,5 +157,90 @@ test("the LaunchAgent entry builds first and forwards termination to the daemon"
     });
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+async function assertBuildStopSignal(testedSignal: NodeJS.Signals): Promise<void> {
+  const root = mkdtempSync(
+    join(tmpdir(), `mission-start-service-build-${testedSignal.toLowerCase()}-`),
+  );
+  const scripts = join(root, "scripts");
+  const tsxDir = join(root, "node_modules", "tsx");
+  const serverDir = join(root, "src", "server");
+  const copiedEntry = join(scripts, "start-service.mjs");
+  const eventsPath = join(root, "events.jsonl");
+  mkdirSync(scripts, { recursive: true });
+  mkdirSync(tsxDir, { recursive: true });
+  mkdirSync(serverDir, { recursive: true });
+  copyFileSync(serviceEntry, copiedEntry);
+  writeFileSync(
+    join(scripts, "build-keep-awake-native.mjs"),
+    `import { appendFileSync } from "node:fs";\n` +
+      `const record = (event) => appendFileSync(process.env.SERVICE_EVENT_LOG, JSON.stringify(event) + "\\n");\n` +
+      `const signal = process.env.SERVICE_TEST_SIGNAL;\n` +
+      `record({ stage: "build-start", pid: process.pid });\n` +
+      `process.on(signal, () => { record({ stage: "build-signal", pid: process.pid, signal }); process.exit(0); });\n` +
+      `setInterval(() => {}, 1_000);\n`,
+  );
+  writeFileSync(
+    join(tsxDir, "package.json"),
+    JSON.stringify({
+      name: "tsx",
+      type: "module",
+      exports: { "./esm/api": "./index.mjs" },
+    }),
+  );
+  writeFileSync(join(tsxDir, "index.mjs"), "export const register = () => {};\n");
+  writeFileSync(
+    join(serverDir, "index.ts"),
+    `import { appendFileSync } from "node:fs";\n` +
+      `appendFileSync(process.env.SERVICE_EVENT_LOG, JSON.stringify({ stage: "daemon", pid: process.pid }) + "\\n");\n`,
+  );
+
+  try {
+    const child = spawn(process.execPath, [copiedEntry], {
+      cwd: root,
+      env: {
+        ...process.env,
+        SERVICE_EVENT_LOG: eventsPath,
+        SERVICE_TEST_SIGNAL: testedSignal,
+      },
+      stdio: "pipe",
+    });
+    const servicePid = child.pid;
+    assert.ok(servicePid, "the service entry must start");
+    const exitPromise = once(child, "exit");
+
+    const deadline = Date.now() + 3_000;
+    let recorded = "";
+    while (!recorded.includes('"stage":"build-start"') && Date.now() < deadline) {
+      await delay(20);
+      recorded = existsSync(eventsPath) ? readFileSync(eventsPath, "utf8") : "";
+    }
+    assert.match(recorded, /"stage":"build-start"/, "the native build must start");
+    child.kill(testedSignal);
+
+    const [code, signal] = (await exitPromise) as [number | null, NodeJS.Signals | null];
+    assert.equal(signal, null);
+    assert.equal(code, 0);
+
+    const events = readFileSync(eventsPath, "utf8")
+      .trim()
+      .split("\n")
+      .map(
+        (line) =>
+          JSON.parse(line) as { stage: string; pid: number; signal?: NodeJS.Signals },
+      );
+    assert.deepEqual(events.map((event) => event.stage), ["build-start", "build-signal"]);
+    assert.notEqual(events[0]!.pid, servicePid, "the bounded build runs as a child");
+    assert.equal(events[1]!.signal, testedSignal);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+test("the LaunchAgent entry stops cleanly on every supported signal during the build", async (t) => {
+  for (const signal of ["SIGTERM", "SIGINT", "SIGHUP", "SIGQUIT"] as const) {
+    await t.test(signal, () => assertBuildStopSignal(signal));
   }
 });

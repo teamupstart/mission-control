@@ -439,6 +439,12 @@ export function isReservedChord(chord: string): boolean {
   return chord === "Tab" || RESERVED_KEYS.has(parseChord(chord).key);
 }
 
+/** True when keyboard input belongs to a native field or an effective contenteditable host. */
+export function isTypingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  return target.closest("input, textarea, select") !== null || target.isContentEditable;
+}
+
 /**
  * True when a chord carries a Command or Control modifier (⌘/⌃).
  *

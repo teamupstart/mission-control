@@ -13,6 +13,7 @@ import { FILES_DIAGRAM_RENDERERS } from "./markdownDiagramRegistry.tsx";
 import { OpenInMenu } from "./OpenInMenu.tsx";
 import { api } from "../lib/api.ts";
 import { COPY_FEEDBACK_LABEL, useCopyFeedback } from "../lib/clipboard.ts";
+import { isTypingTarget, useKeybindingHints } from "../lib/keybindings.ts";
 import { workspaceAssetPath } from "../lib/workspaceLinks.ts";
 // The sandboxed HTML preview boundary is SHARED with Scouts and lives in one module, so
 // neither surface can quietly weaken the CSP or the sandbox for its own documents.
@@ -92,12 +93,14 @@ export function FileWorkspace({
   controller,
   onExtract,
   extracted = false,
+  isOverlayOpen,
   ref,
 }: {
   session: Session;
   controller: SessionFilesController;
   onExtract?: () => void;
   extracted?: boolean;
+  isOverlayOpen?: () => boolean;
   ref?: React.Ref<FileWorkspaceHandle>;
 }): React.JSX.Element {
   const workspaceRef = useRef<HTMLElement>(null);
@@ -109,6 +112,7 @@ export function FileWorkspace({
   const [launchError, setLaunchError] = useState<string | null>(null);
   const [pendingOpen, setPendingOpen] = useState<{ path: string; target: OpenTargetId } | null>(null);
   const focusSelectedFile = useRef(false);
+  const [showKeybindingHints] = useKeybindingHints();
 
   useEffect(() => controller.ensure(session.id), [controller.ensure, session.id]);
   useEffect(
@@ -120,6 +124,34 @@ export function FileWorkspace({
   const buffer = selectedPath ? state?.buffers[selectedPath] : null;
   const mode = state?.mode ?? "preview";
   const previewable = buffer?.document.kind === "html" || buffer?.document.kind === "markdown";
+  useEffect(() => {
+    if (extracted) return;
+    function onKeyDown(event: KeyboardEvent): void {
+      if (
+        event.altKey
+        || event.ctrlKey
+        || event.metaKey
+        || event.shiftKey
+        || (event.key !== "e" && event.key !== "p")
+      ) return;
+      if (
+        isTypingTarget(event.target)
+        || isOverlayOpen?.() === true
+      ) return;
+      const editorAvailable = previewable && buffer?.document.editable === true;
+      if ((event.key === "p" && !previewable) || (event.key === "e" && !editorAvailable)) return;
+
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      if (event.key === "p") {
+        controller.setMode(session.id, "preview");
+      } else {
+        controller.setMode(session.id, "editor");
+      }
+    }
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [buffer?.document.editable, controller.setMode, extracted, isOverlayOpen, previewable, session.id]);
   /*
    * The conflict notice's "Copy local".
    *
@@ -393,8 +425,8 @@ export function FileWorkspace({
           */}
           {previewable && (
             <div className="file-mode" role="group" aria-label="File view mode">
-              <Tooltip label="Render this file rather than showing its source"><button className={mode === "preview" ? "on" : ""} aria-pressed={mode === "preview"} onClick={() => controller.setMode(session.id, "preview")}>Preview</button></Tooltip>
-              <Tooltip label={buffer.document.editable ? "Edit this file's source" : "This file is not editable"}><button className={mode === "editor" ? "on" : ""} aria-pressed={mode === "editor"} disabled={!buffer.document.editable} onClick={() => controller.setMode(session.id, "editor")}>Editor</button></Tooltip>
+              <Tooltip label="Render this file rather than showing its source"><button className={mode === "preview" ? "on" : ""} aria-label="Preview" aria-keyshortcuts={extracted ? undefined : "p"} aria-pressed={mode === "preview"} onClick={() => controller.setMode(session.id, "preview")}>Preview{!extracted && showKeybindingHints && <kbd className="kb-hint">p</kbd>}</button></Tooltip>
+              <Tooltip label={buffer.document.editable ? "Edit this file's source" : "This file is not editable"}><button className={mode === "editor" ? "on" : ""} aria-label="Editor" aria-keyshortcuts={!extracted && buffer.document.editable ? "e" : undefined} aria-pressed={mode === "editor"} disabled={!buffer.document.editable} onClick={() => controller.setMode(session.id, "editor")}>Editor{!extracted && buffer.document.editable && showKeybindingHints && <kbd className="kb-hint">e</kbd>}</button></Tooltip>
             </div>
           )}
           <OpenInMenu disabled={!buffer} busy={launching || pendingOpen !== null} onChoose={openIn} />

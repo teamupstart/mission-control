@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import type { Page } from "@playwright/test";
+import type { Page, Request } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
@@ -229,6 +229,180 @@ test("an HTML report opens rendered, and its source only on request", async ({
   await modes.getByRole("button", { name: "Editor" }).click();
   await expect(dashboard.getByLabel(`Editor for ${REPORT}`)).toContainText("SSE reconnect audit");
   await expect(modes.getByRole("button", { name: "Editor" })).toHaveAttribute("aria-pressed", "true");
+});
+
+test("bare e and p switch modes only in the integrated Files tab", async ({
+  dashboard,
+  daemon,
+}) => {
+  await openFilesTab(dashboard, daemon);
+  const selectedReport = dashboard
+    .getByRole("listbox", { name: "Session files" })
+    .getByRole("option", { name: REPORT });
+  await selectedReport.click();
+
+  const modes = dashboard.getByRole("group", { name: "File view mode" });
+  const orderedModes: (string | null)[] = [];
+  await modes.locator('button[aria-label="Preview"][aria-pressed="true"]').waitFor();
+  await dashboard.keyboard.press("e");
+  const editor = modes.locator('button[aria-label="Editor"][aria-pressed="true"]');
+  await editor.waitFor();
+  orderedModes.push(await editor.getAttribute("aria-label"));
+  let paneFocusRequests = 0;
+  const countPaneFocusRequest = (request: Request) => {
+    if (/^\/api\/sessions\/[^/]+\/focus$/.test(new URL(request.url()).pathname)) {
+      paneFocusRequests += 1;
+    }
+  };
+  dashboard.on("request", countPaneFocusRequest);
+  await dashboard.keyboard.press("p");
+  const preview = modes.locator('button[aria-label="Preview"][aria-pressed="true"]');
+  await preview.waitFor();
+  orderedModes.push(await preview.getAttribute("aria-label"));
+  dashboard.off("request", countPaneFocusRequest);
+  const integratedHints = await modes.locator("kbd.kb-hint").allTextContents();
+  await shoot(dashboard, "file-mode-shortcuts");
+
+  await dashboard.getByRole("button", { name: "Extract files window" }).click();
+  const extracted = dashboard.getByRole("dialog", { name: /Files for / });
+  const extractedModes = extracted.getByRole("group", { name: "File view mode" });
+  await extractedModes.locator('button[aria-label="Preview"][aria-pressed="true"]').waitFor();
+  await dashboard.keyboard.press("e");
+  await dashboard.waitForTimeout(50);
+  const extractedMode = await extractedModes.locator('[aria-pressed="true"]').getAttribute("aria-label");
+
+  expect({
+    orderedModes,
+    integratedHints,
+    paneFocusRequests,
+    extractedMode,
+    extractedShortcuts: await extractedModes.locator("[aria-keyshortcuts]").count(),
+    extractedHints: await extractedModes.locator("kbd.kb-hint").count(),
+  }).toEqual({
+    orderedModes: ["Editor", "Preview"],
+    integratedHints: ["p", "e"],
+    paneFocusRequests: 0,
+    extractedMode: "Preview",
+    extractedShortcuts: 0,
+    extractedHints: 0,
+  });
+});
+
+test("bare e and p remain available inside every valid contenteditable host", async ({
+  dashboard,
+  daemon,
+}) => {
+  await openFilesTab(dashboard, daemon);
+  await dashboard
+    .getByRole("listbox", { name: "Session files" })
+    .getByRole("option", { name: REPORT })
+    .click();
+
+  const modes = dashboard.getByRole("group", { name: "File view mode" });
+  await modes.locator('button[aria-label="Preview"][aria-pressed="true"]').waitFor();
+  await dashboard.evaluate(() => {
+    for (const [label, value] of [
+      ["Empty contenteditable host", ""],
+      ["Plaintext contenteditable host", "plaintext-only"],
+    ]) {
+      const host = document.createElement("div");
+      host.setAttribute("aria-label", label);
+      host.setAttribute("contenteditable", value);
+      host.addEventListener("keydown", (event) => {
+        host.dataset.receivedKeys = `${host.dataset.receivedKeys ?? ""}${event.key}`;
+      });
+      document.body.append(host);
+    }
+  });
+
+  const observations = [];
+  for (const label of ["Empty contenteditable host", "Plaintext contenteditable host"]) {
+    const host = dashboard.locator(`[aria-label="${label}"]`);
+    await host.focus();
+    await dashboard.keyboard.press("e");
+    const modeAfterE = await modes.locator('[aria-pressed="true"]').getAttribute("aria-label");
+    await dashboard.keyboard.press("p");
+    observations.push({
+      label,
+      modeAfterE,
+      modeAfterP: await modes.locator('[aria-pressed="true"]').getAttribute("aria-label"),
+      receivedKeys: await host.getAttribute("data-received-keys"),
+      text: await host.textContent(),
+      focused: await host.evaluate((element) => document.activeElement === element),
+    });
+  }
+
+  expect(observations).toEqual([
+    {
+      label: "Empty contenteditable host",
+      modeAfterE: "Preview",
+      modeAfterP: "Preview",
+      receivedKeys: "ep",
+      text: "ep",
+      focused: true,
+    },
+    {
+      label: "Plaintext contenteditable host",
+      modeAfterE: "Preview",
+      modeAfterP: "Preview",
+      receivedKeys: "ep",
+      text: "ep",
+      focused: true,
+    },
+  ]);
+});
+
+test("an oversized preview does not advertise or act on the unavailable Editor shortcut", async ({
+  dashboard,
+  daemon,
+}) => {
+  await dispatch(dashboard, daemon, "preview a large generated report");
+  const cwd = await sessionCwd(daemon);
+  const largeReport = "docs/reports/large-generated-report/report.html";
+  mkdirSync(join(cwd, "docs", "reports", "large-generated-report"), { recursive: true });
+  writeFileSync(
+    join(cwd, largeReport),
+    `<!doctype html><html><body><h1>Large generated report</h1><!--${"x".repeat(2 * 1024 * 1024)}--></body></html>`
+  );
+
+  await useConsoleLayout(dashboard, daemon);
+  await dashboard
+    .getByRole("navigation", { name: "Sessions" })
+    .getByRole("button", { name: /Preview a Large Generated Report/i })
+    .click();
+  await dashboard
+    .getByRole("tablist", { name: "Session detail" })
+    .getByRole("tab", { name: /Files$/ })
+    .click();
+  const files = dashboard.getByRole("listbox", { name: "Session files" });
+  await files.waitFor();
+  await files.getByRole("option", { name: largeReport }).click();
+
+  const report = dashboard.frameLocator(`iframe[title="Preview of ${largeReport}"]`);
+  const heading = report.getByRole("heading", { name: "Large generated report" });
+  await heading.waitFor();
+  const modes = dashboard.getByRole("group", { name: "File view mode" });
+  const preview = modes.getByRole("button", { name: "Preview" });
+  const editor = modes.getByRole("button", { name: "Editor" });
+  await editor.waitFor();
+  await dashboard.keyboard.press("e");
+  await dashboard.waitForTimeout(50);
+
+  expect({
+    rendered: await heading.isVisible(),
+    editorDisabled: await editor.isDisabled(),
+    editorShortcut: await editor.getAttribute("aria-keyshortcuts"),
+    editorKeycapCount: await editor.locator("kbd.kb-hint").count(),
+    activeModeAfterE: await modes.locator('[aria-pressed="true"]').getAttribute("aria-label"),
+    previewPressed: await preview.getAttribute("aria-pressed"),
+  }).toEqual({
+    rendered: true,
+    editorDisabled: true,
+    editorShortcut: null,
+    editorKeycapCount: 0,
+    activeModeAfterE: "Preview",
+    previewPressed: "true",
+  });
 });
 
 test("source opens in the editor, with no view to toggle to", async ({ dashboard, daemon }) => {

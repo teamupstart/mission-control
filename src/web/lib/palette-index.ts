@@ -132,6 +132,7 @@ export type PaletteTarget =
   | { kind: "dispatch" }
   | { kind: "launch-ensemble"; strategyId: EnsembleStrategyId }
   | { kind: "bind-workflow" }
+  | { kind: "start-see-work-tour" }
   | { kind: "open-mission"; scheduleId: string };
 
 export interface PaletteRow {
@@ -484,15 +485,22 @@ const strategyProvider: PaletteProvider = {
 /**
  * The fixed commands.
  *
- * Every one of these already exists as a single click somewhere: the topbar's Dispatch
- * button, the Library's ＋ New cards, and the binding dialog three surfaces open empty for
- * you to pick a session and a version in. Nothing here is a new capability - the palette is
- * a second doorway onto affordances that shipped already, which is the whole reason the
- * "Do" group can be typed at without reading a manual first.
+ * The production commands already exist as a single click somewhere: the topbar's Dispatch
+ * button, the Library's ＋ New cards, and the binding dialog. The one explicit exception is
+ * the temporary Driver.js comparison spike, whose brief requires a palette-only entry and no
+ * permanent top-bar chrome. Removing that spike removes one row and one target arm.
  */
 const commandProvider: PaletteProvider = {
   id: "commands",
   rows: () => [
+    {
+      id: "command:see-work-tour",
+      kind: "command",
+      title: "Start See the work tour",
+      detail: "Preview how the Fleet, Board, and one session desk fit together.",
+      keywords: ["tour", "product tour", "onboarding", "fleet", "board", "session detail"],
+      target: { kind: "start-see-work-tour" },
+    },
     {
       id: "command:dispatch",
       kind: "command",
@@ -666,6 +674,8 @@ export function paletteRowHint(row: PaletteRow): string {
       return "Open Dispatch already in Ensemble mode on this strategy.";
     case "bind-workflow":
       return "Open the binding dialog to pick a session and a published workflow version.";
+    case "start-see-work-tour":
+      return "Start the temporary guided See the work comparison tour.";
     case "open-mission":
       return "Open Recurring Missions on this schedule's run history.";
   }

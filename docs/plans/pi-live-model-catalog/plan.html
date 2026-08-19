@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pi live model catalog proposal</title>
+<style>
+  :root { color-scheme: dark; --bg:#0d1117; --panel:#151b23; --panel2:#1c2430; --line:#303a48; --text:#f0f4f8; --muted:#a9b4c2; --blue:#66a3ff; --green:#42c98a; --amber:#e7b64c; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif; }
+  @media (prefers-color-scheme: light) { :root { color-scheme:light; --bg:#f5f7fa; --panel:#fff; --panel2:#edf2f7; --line:#d5dde7; --text:#15202d; --muted:#586779; --blue:#246fc2; --green:#157a50; --amber:#986b08; } }
+  * { box-sizing:border-box; } body { margin:0; background:var(--bg); color:var(--text); font:15px/1.62 var(--sans); } main { max-width:1050px; margin:0 auto; padding:56px 28px 110px; }
+  header { padding-bottom:32px; border-bottom:1px solid var(--line); margin-bottom:36px; } .eyebrow { color:var(--muted); font:11px var(--mono); letter-spacing:.13em; text-transform:uppercase; } h1 { margin:10px 0 14px; font-size:clamp(32px,5vw,44px); line-height:1.08; letter-spacing:-.025em; } .status { color:var(--amber); font:12px var(--mono); }
+  h2 { margin:56px 0 10px; padding-top:22px; border-top:1px solid var(--line); font-size:24px; } h3 { margin:31px 0 8px; font-size:18px; } p { max-width:82ch; margin:0 0 14px; } a { color:var(--blue); } code { font:.88em var(--mono); background:var(--panel2); border:1px solid var(--line); border-radius:4px; padding:1px 5px; }
+  ul,ol { max-width:84ch; padding-left:24px; } li { margin:7px 0; } .call { max-width:86ch; padding:16px 18px; margin:22px 0; background:var(--panel); border-left:3px solid var(--green); border-radius:0 8px 8px 0; }
+  .table-wrap { overflow-x:auto; border:1px solid var(--line); border-radius:9px; margin:20px 0; } table { width:100%; border-collapse:collapse; background:var(--panel); } th,td { padding:10px 13px; border-bottom:1px solid var(--line); vertical-align:top; text-align:left; } th { background:var(--panel2); color:var(--muted); font:10.5px var(--mono); letter-spacing:.08em; text-transform:uppercase; } tr:last-child td { border-bottom:0; }
+  figure { overflow-x:auto; margin:27px 0; padding:18px; background:var(--panel); border:1px solid var(--line); border-radius:10px; } svg { display:block; min-width:830px; width:100%; height:auto; } .box { fill:var(--panel2); stroke:var(--line); stroke-width:1.5; } .live { stroke:var(--green); } .fallback { stroke:var(--amber); } .t { fill:var(--text); font:600 14px var(--sans); } .s { fill:var(--muted); font:11.5px var(--sans); } .arrow { stroke:var(--muted); stroke-width:2; fill:none; marker-end:url(#arr); } figcaption { color:var(--muted); font-size:12px; margin-top:12px; }
+  .step { margin:20px 0; padding:17px 19px; background:var(--panel); border:1px solid var(--line); border-radius:9px; } .step h3 { margin:0 0 8px; } .choice { border-left:3px solid var(--blue); padding-left:16px; } .choice.recommended { border-left-color:var(--green); } footer { margin-top:56px; padding-top:20px; border-top:1px solid var(--line); color:var(--muted); font-size:12px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <p class="eyebrow">Technical proposal · 18 August 2026</p>
+    <h1>Pi live model catalog</h1>
+    <p class="status">APPROVED · phased implementation and scheduling requested</p>
+    <p><a href="../../reports/pi-model-catalog-source/report.html">Read the source investigation</a></p>
+  </header>
+
+  <h2>Approved human decisions</h2>
+  <ul>
+    <li><strong>Catalog presentation:</strong> mirror every model Pi reports available, grouped by provider.</li>
+    <li><strong>Implementation follow-up:</strong> create a merge-aware phased plan and schedule its dependency-linked implementation tasks.</li>
+  </ul>
+
+  <h2>Outcome</h2>
+  <div class="call">Mission Control should source Pi model choices from the Pi installation and account it will actually launch, while remaining usable when discovery is unsupported or fails. Selecting a model continues through the existing safe <code>provider/id</code> persistence and launch path.</div>
+
+  <h2>Evidence driving the proposal</h2>
+  <ul>
+    <li><code>src/shared/model.ts</code> compiles four Pi choices into every picker.</li>
+    <li>Pi 0.84.2 reports 38 available models on this machine through both <code>--list-models</code> and RPC <code>get_available_models</code>.</li>
+    <li>Only three shipped rows overlap; 35 Pi-reported rows are missing.</li>
+    <li>The RPC probe returned structured JSON in under one second, used no session, and sent no prompt.</li>
+    <li>All 38 derived <code>provider/id</code> values pass the existing <code>ModelIdSchema</code>.</li>
+    <li>The server harness interface already identifies models as a future harness-owned capability.</li>
+  </ul>
+
+  <h2>Scope</h2>
+  <div class="table-wrap"><table><thead><tr><th>In scope</th><th>Out of scope</th></tr></thead><tbody><tr><td>Harness-owned model capability; structured Pi discovery; one browser catalog store; preserved default and saved values; visible fallbacks; server and Playwright coverage</td><td>Changing persistence or launch; invoking all listed models; dynamic Claude/Codex sourcing in this change; per-model effort redesign; SQLite catalog persistence</td></tr></tbody></table></div>
+
+  <h2>Source and fallback decision</h2>
+  <p>Use Pi RPC as the primary source. The adapter resolves the same Pi binary as dispatch, starts a short-lived no-session process with project-local resources disabled, sends one correlated command, allowlists presentation fields, constructs and validates <code>provider/id</code>, applies measured bounds, and exits without prompting a model.</p>
+  <p>The daemon keeps the last successful result in memory and deduplicates concurrent probes. Missing binary, unsupported command, no provider, invalid output, timeout, or child failure returns the last successful or shipped fallback. Each browser picker then merges its current off-catalog value. Discovery quality must never become a dispatch outage.</p>
+
+  <h2>Changed request flow</h2>
+  <p>Today the browser imports the static catalog directly. After the change, choice production crosses the daemon and the harness registry; selection persistence and launch remain unchanged.</p>
+  <figure>
+    <svg viewBox="0 0 990 320" role="img" aria-labelledby="flow-title flow-desc">
+      <title id="flow-title">Proposed Pi model choice request flow</title>
+      <desc id="flow-desc">The browser requests a catalog from a generic route. The route asks the harness registry, whose Pi capability invokes a no-session RPC probe. Last-success cache and shipped fallback flow back through the registry. Selection then follows the existing persistence and launch path.</desc>
+      <defs><marker id="arr" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="var(--muted)"/></marker></defs>
+      <rect class="box" x="20" y="36" width="174" height="72" rx="9"/><text class="t" x="39" y="63">Browser catalog store</text><text class="s" x="39" y="83">all picker consumers</text><text class="s" x="39" y="98">one resolved list</text>
+      <rect class="box" x="252" y="36" width="174" height="72" rx="9"/><text class="t" x="271" y="63">Harness models API</text><text class="s" x="271" y="83">generic route</text><text class="s" x="271" y="98">typed response</text>
+      <rect class="box" x="484" y="36" width="174" height="72" rx="9"/><text class="t" x="503" y="63">Harness.models</text><text class="s" x="503" y="83">registry capability</text><text class="s" x="503" y="98">forced per harness</text>
+      <rect class="box live" x="716" y="24" width="248" height="96" rx="9"/><text class="t" x="736" y="53">Pi RPC get_available_models</text><text class="s" x="736" y="73">resolved binary · no session</text><text class="s" x="736" y="89">one correlated JSON response</text><text class="s" x="736" y="105">no prompt and no model tokens</text>
+      <path class="arrow" d="M194 72 H252"/><path class="arrow" d="M426 72 H484"/><path class="arrow" d="M658 72 H716"/>
+      <rect class="box" x="484" y="190" width="174" height="72" rx="9"/><text class="t" x="503" y="217">Last-success cache</text><text class="s" x="503" y="237">memory only</text><text class="s" x="503" y="252">deduped probes</text>
+      <rect class="box fallback" x="716" y="190" width="248" height="72" rx="9"/><text class="t" x="736" y="217">Shipped fallback</text><text class="s" x="736" y="237">browser retains saved value</text><text class="s" x="736" y="252">timeout/error path</text>
+      <path class="arrow" d="M840 120 V190"/><path class="arrow" d="M716 226 H658"/><path class="arrow" d="M571 190 V109"/>
+      <text class="s" x="20" y="302">Chosen value continues through existing ModelIdSchema, config/task persistence, and Pi --model provider/id.</text>
+    </svg>
+    <figcaption>The daemon produces choices; it does not change what a choice means.</figcaption>
+  </figure>
+
+  <h2>Implementation sequence</h2>
+  <section class="step"><h3>1. Contract and harness ownership</h3><p>Add bounded shared response types and a required server-side model capability. Claude and Codex answer with shipped data; Pi declares discovery plus fallback. Add exhaustive registry tests.</p></section>
+  <section class="step"><h3>2. Pi structured discovery</h3><p>Test valid RPC, unrelated events, malformed output, wrong IDs, timeout, excessive output, duplicates, unsafe IDs, empty availability, and non-zero exit. Implement exact argv spawning, field allowlisting, validation, and cleanup. Feature-detect by behavior.</p></section>
+  <section class="step"><h3>3. Daemon route and cache</h3><p>Add aggregate <code>GET /api/harnesses/models</code>, live/fallback status, last-success time, bounded diagnostics, concurrent-probe deduplication, and exhaustive response tests. Keep cache in memory.</p></section>
+  <section class="step"><h3>4. Browser store and consumers</h3><p>Fetch once through shared state and feed Harnesses, Dispatch, Schedules, Ensembles, and Foreman's per-harness backlog defaults. Preserve Harness default and saved values. Mirror every Pi-available model, group the complete result by provider, and show a compact fallback note.</p></section>
+  <section class="step"><h3>5. End-to-end behavior and docs</h3><p>Teach the fake Pi binary to answer the RPC probe, add a Playwright option-to-route-to-persisted-value test plus failure fallback, update documentation, and run the required typecheck, lint, build, smoke, and UI gates.</p></section>
+
+  <h2>Compatibility and safety</h2>
+  <ul>
+    <li>Honor <code>MISSION_PI_BIN</code> through the existing resolver.</li>
+    <li>Never invoke a model, create a session, or expose raw auth/model objects.</li>
+    <li>Never load project-local Pi extensions from an arbitrary repository during discovery.</li>
+    <li>Bound time, bytes, rows, IDs, and deduplication before returning a collection.</li>
+    <li>Preserve saved off-catalog values and continue on fallback.</li>
+  </ul>
+
+  <h2>Verification</h2>
+  <ul>
+    <li>Unit tests: RPC framing, mapping, bounds, cleanup, and fallback.</li>
+    <li>Contract/HTTP tests: registry ownership and source/status responses.</li>
+    <li>React rendering: loading, live, fallback, and retained selection.</li>
+    <li>Playwright: dynamic Pi option, exact persisted ID, reload, and failure fallback through the fake binary.</li>
+    <li>No test reaches a real provider or spends model tokens.</li>
+  </ul>
+
+  <h2>Claims and assumptions</h2>
+  <p>Static sourcing, structured account-aware RPC, no-session probing, and schema compatibility are verified. The operator approved mirroring every Pi-available model, grouped by provider. The safe collection bounds and remote dynamic-catalog refresh policy must be measured during implementation before constants are chosen.</p>
+
+  <footer>Markdown source: <code>docs/plans/pi-live-model-catalog/plan.md</code>. This render contains the same proposal and adds only the inline visualization of its stated flow.</footer>
+</main>
+</body>
+</html>

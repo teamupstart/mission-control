@@ -128,6 +128,7 @@ test("schedule provenance rides inside Session.task, and a change to it still em
     title: "Audit dependencies",
     fullTitle: "Audit dependencies",
     kind: "ship" as const,
+    workflowId: null,
     status: "running" as const,
     outcome: null,
     outcomeUrl: null,
@@ -448,7 +449,7 @@ const AGENT_RECORDS: ReadonlyArray<readonly [file: string, type: string]> = [
   ["src/shared/agent.ts", "AgentIdentity"],
   ["src/shared/cost.ts", "string | null"],
   ["src/shared/goal.ts", "string | null"],
-  ["src/shared/model.ts", "readonly ModelChoice[]"],
+  ["src/shared/model.ts", "readonly ShippedHarnessModelChoice[]"],
   // The harness registry, which subsumes what `goal/source.ts` and `config.ts` used to be
   // pinned for: the per-agent `GoalSource` record was the transcript capability spelled
   // twice (the reader now derives from `HARNESSES[agent].transcript.messages`), and

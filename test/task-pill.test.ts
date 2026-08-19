@@ -238,6 +238,14 @@ test("a plan task draws its kind badge on both layouts", () => {
   }
 });
 
+test("a chat task draws its kind badge on both layouts", () => {
+  const session = dispatched({ kind: "chat" });
+  for (const [name, html] of [["card", card(session)], ["console detail", detail(session)]] as const) {
+    assert.match(html, /class="task-kind"[^>]*>chat</, `${name} should draw the chat badge`);
+    assert.ok(html.includes("chat task"), `${name} should keep the badge's tooltip`);
+  }
+});
+
 test("a session named after its task shows that title once, not twice", () => {
   // Given a reason to draw the pill anyway (this task came from a recurring mission), so
   // the missing title is the reduction rather than the absent chip.

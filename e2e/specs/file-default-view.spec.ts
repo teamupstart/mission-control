@@ -48,6 +48,8 @@ const REPORT_HTML = `<!doctype html>
 <html><body>
   <h1>SSE reconnect audit</h1>
   <p id="verdict">Reconnects are bounded</p>
+  <div style="height: 1800px" aria-hidden="true"></div>
+  <p>End of report</p>
   <script>document.getElementById("verdict").textContent = "SCRIPT RAN";</script>
 </body></html>
 `;
@@ -59,8 +61,12 @@ The markdown twin still renders.
 
 const SOURCE_TS = `export const reconnectBudgetMs = 30_000;
 `;
+const AFTER_MD = `# Later report
 
-async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {
+This file follows the HTML report in the file list.
+`;
+
+async function dispatch(page: Page, daemon: DaemonHandle, task = TASK): Promise<void> {
   await page.getByRole("button", { name: "Dispatch" }).click();
   const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
   await expect(dialog).toBeVisible();
@@ -69,7 +75,7 @@ async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {
   // The repo combobox portals its listbox over the Task field and reopens on every
   // keystroke; without this the next fill lands on a covered control.
   await page.keyboard.press("Escape");
-  await dialog.getByPlaceholder("What should this agent do?").fill(TASK);
+  await dialog.getByPlaceholder("What should this agent do?").fill(task);
   await dialog
     .locator("select")
     .filter({ hasText: "finish without a Workflow" })
@@ -118,6 +124,7 @@ async function openFilesTab(page: Page, daemon: DaemonHandle): Promise<void> {
   mkdirSync(join(cwd, "docs", "reports", "sse-reconnect-audit"), { recursive: true });
   writeFileSync(join(cwd, "docs", "reports", "sse-reconnect-audit", "report.html"), REPORT_HTML);
   writeFileSync(join(cwd, "docs", "reports", "sse-reconnect-audit", "notes.md"), NOTES_MD);
+  writeFileSync(join(cwd, "docs", "reports", "sse-reconnect-audit", "z-later.md"), AFTER_MD);
   mkdirSync(join(cwd, "src"), { recursive: true });
   writeFileSync(join(cwd, "src", "reconnect.ts"), SOURCE_TS);
 
@@ -136,7 +143,62 @@ async function openFilesTab(page: Page, daemon: DaemonHandle): Promise<void> {
 
 const REPORT = "docs/reports/sse-reconnect-audit/report.html";
 const NOTES = "docs/reports/sse-reconnect-audit/notes.md";
+const AFTER = "docs/reports/sse-reconnect-audit/z-later.md";
 const SOURCE = "src/reconnect.ts";
+
+test("Preview arrows walk files until Tab moves focus into the rendered page", async ({
+  dashboard,
+  daemon,
+}) => {
+  await openFilesTab(dashboard, daemon);
+  await dispatch(dashboard, daemon, "keep the session rail out of file preview navigation");
+
+  const rail = dashboard.getByRole("navigation", { name: "Sessions" });
+  const reportSession = rail.getByRole("button", { name: /Read a Generated Report/i });
+  const neighbour = rail.getByRole("button", {
+    name: /Keep the Session Rail Out of File Preview Navigation/i,
+  });
+  await expect(neighbour).toBeVisible();
+
+  // Put real DOM focus back on the session rail while leaving its Files tab open. This is
+  // the reported boundary: before the fix, the next arrow selected the neighbouring session.
+  await reportSession.click();
+  await expect(reportSession).toBeFocused();
+  const rows = rail.locator("button.rail-row");
+  const selectedIndex = await rows.evaluateAll((elements) =>
+    elements.findIndex((element) => element.getAttribute("aria-current") === "true")
+  );
+  const lastIndex = (await rows.count()) - 1;
+  const direction = selectedIndex < lastIndex ? "ArrowDown" : "ArrowUp";
+
+  // A previewable file exists on each side of REPORT, so either rail-safe direction lands
+  // on the same HTML target and proves file order rather than session order owns the key.
+  const files = dashboard.getByRole("listbox", { name: "Session files" });
+  const startPath = direction === "ArrowDown" ? NOTES : AFTER;
+  await files.getByRole("option", { name: startPath }).click();
+  await reportSession.click();
+  await dashboard.keyboard.press(direction);
+
+  const selectedReport = files.getByRole("option", { name: REPORT });
+  await expect(selectedReport).toHaveAttribute("aria-selected", "true");
+  await expect(selectedReport).toBeFocused();
+  await expect(reportSession).toHaveAttribute("aria-current", "true");
+  await expect(neighbour).toHaveAttribute("aria-current", "false");
+
+  // Tab crosses the inner Files split, from its file cursor to the rendered document.
+  const frame = dashboard.locator(`iframe[title="Preview of ${REPORT}"]`);
+  await expect(frame).toBeVisible();
+  await dashboard.keyboard.press("Tab");
+  await expect(frame).toBeFocused();
+  await shoot(dashboard, "preview-keyboard-focus");
+
+  const report = dashboard.frameLocator(`iframe[title="Preview of ${REPORT}"]`);
+  expect(await report.locator("body").evaluate(() => window.scrollY)).toBe(0);
+  await dashboard.keyboard.press("ArrowDown");
+  await expect.poll(() => report.locator("body").evaluate(() => window.scrollY)).toBeGreaterThan(0);
+  await expect(selectedReport).toHaveAttribute("aria-selected", "true");
+  await expect(reportSession).toHaveAttribute("aria-current", "true");
+});
 
 test("an HTML report opens rendered, and its source only on request", async ({
   dashboard,

@@ -1,6 +1,7 @@
 import { AGENT_TYPES } from "@shared/types.ts";
 import type { AgentType, PermissionMode, Session } from "@shared/types.ts";
 import { HARNESS_CAPABILITIES } from "@shared/harness-capabilities.ts";
+import { MODEL_CATALOG } from "@shared/model.ts";
 import { resolveBinSpec } from "./bin.ts";
 import type {
   ControlSpec,
@@ -34,6 +35,7 @@ import { piTranscript } from "./pi/transcript.ts";
 import { piDetect } from "./pi/detect.ts";
 import { piBin } from "./pi/bin.ts";
 import { piControl } from "./pi/control.ts";
+import { discoverPiModels } from "./pi/model-catalog.ts";
 
 // The registry of agent harnesses. Extend this; do not start a parallel list.
 //
@@ -94,6 +96,7 @@ export const HARNESSES: Record<AgentType, Harness> = {
     hooks: claudeHooks,
     detect: claudeDetect,
     bin: claudeBin,
+    models: { shipped: MODEL_CATALOG.claude, discover: null },
     tui: claudeTui,
     control: claudeControl,
     // The `@anthropic-ai/claude-agent-sdk` adapter. Non-null here and `"sdk"` in
@@ -140,6 +143,7 @@ export const HARNESSES: Record<AgentType, Harness> = {
     hooks: codexHooks,
     detect: codexDetect,
     bin: codexBin,
+    models: { shipped: MODEL_CATALOG.codex, discover: null },
     tui: codexTui,
     control: codexControl,
     // `codex app-server` over stdio - the only Codex interface whose approvals are
@@ -188,6 +192,12 @@ export const HARNESSES: Record<AgentType, Harness> = {
     hooks: null,
     detect: piDetect,
     bin: piBin,
+    // Resolve inside the closure so every probe observes the same current override chain
+    // as dispatch, without making the Pi adapter import this registry back.
+    models: {
+      shipped: MODEL_CATALOG.pi,
+      discover: (signal) => discoverPiModels(resolveAgentBin("pi"), { signal }),
+    },
     tui: null,
     control: piControl,
     // Phase 6 fills this with pi's `--mode rpc` adapter, which is also where pi first gains

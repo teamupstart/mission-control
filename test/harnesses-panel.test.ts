@@ -247,7 +247,7 @@ test("a default this build doesn't know is still shown as selected", () => {
   // that lie back on the operator's next unrelated edit.
   const html = render({ defaultModel: { claude: "claude-opus-9-9" } });
   assert.match(html, /<option value="claude-opus-9-9" selected/);
-  assert.match(html, /not in this build/);
+  assert.match(html, /not currently reported/);
 });
 
 test("the model pickers are disabled until the first config read lands", () => {

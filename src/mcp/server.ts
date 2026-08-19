@@ -1,5 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { ReviewItem } from "@shared/types.ts";
 import { ENSEMBLE_LIMITS } from "@shared/ensemble.ts";
@@ -13,6 +14,13 @@ import {
   readToken,
 } from "@shared/harness-runtime.mjs";
 import { titleLine } from "@shared/title.ts";
+import {
+  PRODUCT_ISSUE_CLIENT_ENV,
+  PRODUCT_ISSUE_LIMITS,
+  PRODUCT_ISSUE_TYPES,
+  productIssueClientFromEnvironment,
+} from "@shared/product-issues.ts";
+import { reportProductIssueWithConfirmation } from "./product-issues.ts";
 
 // This runs as a stdio MCP server, launched by Claude Code per session. Because
 // it's a child of the agent it inherits the terminal env (TMUX_PANE /
@@ -21,6 +29,9 @@ import { titleLine } from "@shared/title.ts";
 
 const ENV = captureTerminalEnv();
 const SESSION_ID = process.env.CLAUDE_SESSION_ID ?? null;
+const PRODUCT_ISSUE_CLIENT = productIssueClientFromEnvironment(
+  process.env[PRODUCT_ISSUE_CLIENT_ENV],
+);
 
 async function http(
   path: string,
@@ -74,6 +85,15 @@ async function waitForResolution(id: string): Promise<ReviewItem> {
 
 function textResult(text: string, isError = false) {
   return { content: [{ type: "text" as const, text }], isError };
+}
+
+async function responseResult(res: Response): Promise<{ status: number; body: unknown }> {
+  const text = await res.text();
+  try {
+    return { status: res.status, body: JSON.parse(text) as unknown };
+  } catch {
+    return { status: res.status, body: text };
+  }
 }
 
 const server = new McpServer({ name: "mission-control", version: "0.1.0" });
@@ -347,6 +367,84 @@ server.registerTool(
 );
 
 server.registerTool(
+  "report_product_issue",
+  {
+    title: "Report a Mission Control product issue",
+    description:
+      "Prepare a public GitHub issue about Mission Control only after the user explicitly " +
+      "asked you to report it. Mission Control shows the exact public content in the dashboard " +
+      "and BLOCKS until the human selects Submit public issue or dismisses it. Screenshots are " +
+      "unavailable until stable first-party GitHub CLI attachment support ships.",
+    inputSchema: {
+      type: z.enum(PRODUCT_ISSUE_TYPES).describe("The user-selected product report type"),
+      title: z
+        .string()
+        .trim()
+        .min(1)
+        .max(PRODUCT_ISSUE_LIMITS.titleBytes)
+        .refine(
+          (value) => new TextEncoder().encode(value).byteLength <= PRODUCT_ISSUE_LIMITS.titleBytes,
+          `Title must be at most ${PRODUCT_ISSUE_LIMITS.titleBytes} UTF-8 bytes`,
+        )
+        .describe("Short public GitHub issue title"),
+      details: z
+        .string()
+        .trim()
+        .min(1)
+        .max(PRODUCT_ISSUE_LIMITS.detailsBytes)
+        .refine(
+          (value) =>
+            new TextEncoder().encode(value).byteLength <= PRODUCT_ISSUE_LIMITS.detailsBytes,
+          `Details must be at most ${PRODUCT_ISSUE_LIMITS.detailsBytes} UTF-8 bytes`,
+        )
+        .describe("Public report details, including reproduction or desired outcome"),
+      attachmentUploadIds: z
+        .array(z.string().min(1).max(PRODUCT_ISSUE_LIMITS.attachmentUploadIdChars))
+        .max(0)
+        .default([])
+        .describe("Screenshots are unavailable in this release; this list must be empty"),
+    },
+  },
+  async ({ type, title, details, attachmentUploadIds }) => {
+    try {
+      const result = await reportProductIssueWithConfirmation(
+        { type, title, details, attachmentUploadIds },
+        PRODUCT_ISSUE_CLIENT,
+        {
+          requestId: randomUUID,
+          preview: async (request) => responseResult(await http(
+            "/mcp/product-issues/preview",
+            "POST",
+            {
+              env: ENV,
+              sessionId: SESSION_ID,
+              cwd: process.cwd(),
+              ...request,
+            },
+          )),
+          submit: async (request) => responseResult(await http(
+            "/mcp/product-issues",
+            "POST",
+            {
+              env: ENV,
+              sessionId: SESSION_ID,
+              cwd: process.cwd(),
+              ...request,
+            },
+          )),
+          createReview: ({ title: reviewTitle, body, decisions }) =>
+            createReview("input", reviewTitle, body, decisions),
+          waitForResolution,
+        },
+      );
+      return textResult(result.text, result.isError);
+    } catch (err) {
+      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
+    }
+  },
+);
+
+server.registerTool(
   "report_status",
   {
     title: "Report a status line",
@@ -357,6 +455,43 @@ server.registerTool(
     try {
       await http("/mcp/status", "POST", { env: ENV, sessionId: SESSION_ID, activity });
       return textResult("ok");
+    } catch (err) {
+      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
+    }
+  },
+);
+
+// The no-change exit for a POST-MERGE retro follow-up. It accepts no task id, outcome, or
+// dependency instruction: the daemon derives the calling Task from inherited session evidence
+// and refuses the operation unless that Task owns a durable retro-followup relation.
+server.registerTool(
+  "complete_retro_no_change",
+  {
+    title: "Complete a retro with no approved changes",
+    description:
+      "Use only when this post-merge retro follow-up has no approved memory changes. " +
+      "Mission Control completes this retro task without a commit, pull request, or review.",
+    inputSchema: {},
+  },
+  async () => {
+    try {
+      const res = await http("/mcp/retros/no-change", "POST", {
+        env: ENV,
+        sessionId: SESSION_ID,
+        cwd: process.cwd(),
+      });
+      if (!res.ok) {
+        return textResult(
+          `Mission Control refused no-change retro completion (${res.status}): ${await res.text()}`,
+          true,
+        );
+      }
+      const body = (await res.json()) as { replayed?: boolean };
+      return textResult(
+        body.replayed
+          ? "This retro was already completed with no approved memory changes."
+          : "Retro completed with no approved memory changes. No commit or pull request is needed.",
+      );
     } catch (err) {
       return textResult(`Could not reach Mission Control: ${String(err)}`, true);
     }

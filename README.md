@@ -13,10 +13,27 @@ what is active, what needs a decision, and what is ready for the next step.
 
 ![Mission Control fleet board](docs/images/fleet-board.png)
 
+The temporary **See the work** product tour starts from the **Help & tours** footer in the
+Settings rail or from **Start See the work tour** in the <kbd>⌘K</kbd> palette's **Do** group.
+If the fleet is empty, the tour starts one temporary Chat conversation and uses its real Board
+drill-in to show the session desk. Its Dispatch sequence
+then fills the real task input, explains the **None** Workflow choice, and waits for the
+operator to click the highlighted **Dispatch now** button while the rest of the form stays
+visible. Its final step opens the real Complete dialog with the outcome prefilled as **Tour
+demo**, so the operator can inspect **Run a retro first** and **Complete & close**. Those dialog
+actions stay disabled during the preview; the tour owns its fixed cleanup and never runs a
+retro.
+
+Open a session's **Files** tab to browse its workspace. In **Preview** mode, <kbd>↑</kbd>
+and <kbd>↓</kbd> change the selected file instead of moving through the session rail. Press
+<kbd>⇥</kbd> to enter the rendered preview; once it has focus, <kbd>↑</kbd> and <kbd>↓</kbd>
+scroll the page.
+
 ## Dispatch with context
 
-Start a task in the right repository, choose its harness and runtime, and leave it attached
-to the backlog and workflow that will carry it through review.
+Start a task in the right repository, choose its harness and runtime, and decide whether the
+agent should ship, investigate, plan, or simply talk through something with you. Backlog and
+review Workflow controls stay available only where that kind of work supports them.
 
 <kbd>+</kbd> starts the guided pass by default. It asks for the repository, kind, harness and
 what runs after the work, then hands over the same dispatch form with those answers set and
@@ -29,6 +46,11 @@ same task without advancing the pass.
 **Guided** in the modal header and **Settings → Dispatch** control the preference, which ⌘K
 also finds by name. See
 [the guided pass](docs/dispatch-and-backlog.md#the-guided-pass).
+
+Choose **chat** for an open-ended conversation. It requires an opening message and launches
+immediately from Dispatch, with no backlog, dependencies, generated artifact, archive, or
+automatic after-work action. The session stays yours to continue and complete unless you
+explicitly choose a Workflow for that chat.
 
 A task can attach more than one repository. Dispatch it and you get **one** agent session
 holding all of them in shared context: its working directory is the primary repo's worktree,
@@ -85,7 +107,13 @@ System profile is never offered to workflows or ensembles as a Persona.
 ## Design reusable review workflows
 
 Workflows and Personas turn the team's review practice into reusable, inspectable building
-blocks. The Line keeps their live runs attached to the fleet.
+blocks. The Line keeps their live runs attached to the fleet. On a run, clicking a settled
+reviewer or Command tile selects that exact result in the review worklist below.
+
+On **Workflow Runs**, <kbd>↑</kbd> and <kbd>↓</kbd> select and immediately load runs.
+From the selected run, <kbd>Tab</kbd> enters the pipeline; further Tabs or any arrow key move
+between stages. Press <kbd>Enter</kbd> on a completed stage to load its recorded details in the
+Review worklist below.
 
 ![Mission Control workflow library](docs/images/workflows.png)
 
@@ -97,6 +125,21 @@ and remote review state visible beside the work that produced it.
 ![Mission Control Foreman settings](docs/images/foreman.png)
 
 ![Mission Control GitHub Inspector settings](docs/images/inspector.png)
+
+## Report a public product issue through an agent
+
+When you explicitly ask an agent to report a Mission Control product issue, the bundled Mission
+MCP server prepares the exact GitHub title, labels, body, and safe environment summary. Mission
+Control then opens that public preview in the dashboard and blocks publication until you select
+**Submit public issue**. Dismissing the review publishes nothing.
+
+Reports are text-only in this release and use your installed, authenticated GitHub CLI. Screenshot
+upload remains disabled until the upstream CLI attachment contract ships and is verified. There is
+not yet a direct dashboard Feedback form or dashboard mutation endpoint; that confirmation-bound
+user-facing path is a separate follow-up.
+
+See [the MCP tool reference](docs/sessions.md#review-channel-mcp) and
+[security boundaries](docs/security.md#public-product-issue-reporting).
 
 ## Watch a pipeline engine you already use
 
@@ -128,9 +171,14 @@ engine's daemon, park and unpark a feature, authorize one DECIDE re-entry with y
 rationale, watch the daemon's console, and run the re-seal ceremony in a hosted terminal.
 
 The same integration starts at Dispatch. An enabled repository offers the **pipeline** task
-kind, which opens `conduct-ts engineer --idea` in a real terminal and lets conductor own the
-worktree, agent, model, and effort. When that run opens a pull request, GitHub Inspector adopts
-it under pipeline provenance and it joins **Shipped**. **Settings → Conductor → Foreman
+kind. Its shipped host is Claude Agent SDK, which starts a managed Claude session at the
+repository and sends `/engineer <idea>` directly as turn one. **Settings → Conductor → Launch
+runtime** can instead select the explicit Terminal compatibility host, which opens
+`conduct-ts engineer --idea` with live stdin. A failed SDK launch never falls back to Terminal.
+Either host lets conductor own the worktree and downstream agent, model, and effort, and only
+the exact provider projection completes the task. Conductor's background build daemon keeps its
+own tmux supervision. When that run opens a pull request, GitHub Inspector adopts it under
+pipeline provenance and it joins **Shipped**. **Settings → Conductor → Foreman
 triage** can also let Foreman unpark mechanical halts through the same action route the
 dashboard uses. That switch ships off, and every needs-human or unknown halt stays with the
 operator.

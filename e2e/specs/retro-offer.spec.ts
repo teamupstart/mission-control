@@ -7,6 +7,7 @@ import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
+import { writeGhPullRequests, type FakePullRequest } from "../fixtures/fake-agents.ts";
 
 /**
  * The retro OFFER: when the dashboard proposes a retrospective, and what one click delivers.
@@ -34,6 +35,7 @@ import { withDaemonDb } from "../fixtures/daemon-db.ts";
 const EVIDENCE = artifactsDir("retro-offer");
 const TASK = "hold a session worth retrospecting";
 const CORRECTION = "no - reproduce it in docker first, it never fails on the Mac";
+const HELD_TURN = "hold the current turn open";
 
 /**
  * Photograph a state this spec has already asserted on.
@@ -85,8 +87,20 @@ interface SessionRow {
   inspector: { round: number; open: number } | null;
 }
 
+interface TaskRow {
+  id: string;
+  title: string;
+  intent: string;
+  status: string;
+  sessionId: string | null;
+  repoRoot: string;
+}
+
 const sessions = (daemon: DaemonHandle): Promise<SessionRow[]> =>
   api<SessionRow[]>(daemon, "/api/sessions");
+
+const tasks = (daemon: DaemonHandle): Promise<TaskRow[]> =>
+  api<TaskRow[]>(daemon, "/api/tasks");
 
 /**
  * Switch the retro skill on BEFORE anything is dispatched, which is not incidental ordering.
@@ -101,7 +115,7 @@ async function enableRetroSkill(daemon: DaemonHandle): Promise<void> {
   const view = await api<{ skills: Array<{ id: string; enabled: boolean }> }>(
     daemon,
     "/api/skills/config",
-    { enabled: true, skills: { retro: true } },
+    { enabled: true, skills: { retro: true, "pull-request": true } },
     "PUT",
   );
   const retro = view.skills.find((skill) => skill.id === "retro");
@@ -109,6 +123,7 @@ async function enableRetroSkill(daemon: DaemonHandle): Promise<void> {
   // as a 409 from the route with the offer already on screen.
   expect(retro?.enabled, "the retro skill has to be installable for this spec to mean anything")
     .toBe(true);
+  expect(view.skills.find((skill) => skill.id === "pull-request")?.enabled).toBe(true);
 }
 
 async function dispatch(page: Page, daemon: DaemonHandle): Promise<SessionRow> {
@@ -306,6 +321,126 @@ test("a corrected session is offered a retro once its review is clean, and one c
   // the frame is that the offer is there rather than what it does when taken.
   await dashboard.keyboard.press("Escape");
   await expect(complete).toBeHidden();
+});
+
+test("a retro clicked after merge starts one follow-up and keeps the source task complete", async ({
+  dashboard,
+  daemon,
+}) => {
+  await enableRetroSkill(daemon);
+  const session = await dispatch(dashboard, daemon);
+  const card = dashboard.locator("article.card").first();
+
+  await card.getByRole("button", { name: "Expand conversation" }).click();
+  const reply = card.getByPlaceholder(/^Reply to this session/);
+  await reply.fill(CORRECTION);
+  await reply.press("Enter");
+  await expect(card.getByText(`Mock reply to: ${CORRECTION}`)).toBeVisible();
+  await expect
+    .poll(async () => (await sessions(daemon)).find((row) => row.id === session.id)?.retro?.reasons)
+    .toEqual(["corrections"]);
+
+  const pr: FakePullRequest = {
+    cwd: session.cwd,
+    url: "https://github.com/mancej-cyc/ai-harness/pull/479",
+    number: 479,
+    state: "OPEN",
+    createdAt: new Date().toISOString(),
+    mergedAt: null,
+    headRefOid: "0".repeat(40),
+  };
+  writeGhPullRequests(daemon.home, [pr]);
+  await announcePullRequest(daemon, session, pr.url);
+  await expect.poll(async () => (await api<unknown[]>(daemon, "/api/inspector/prs")).length).toBe(1);
+  observeCleanReview(daemon);
+  await refreshInspections(daemon);
+  const retro = card.getByRole("button", { name: "Run retro" });
+  await expect(retro).toBeVisible({ timeout: 30_000 });
+
+  let source: TaskRow | undefined;
+  await expect
+    .poll(async () => {
+      source = (await tasks(daemon)).find((task) => task.sessionId === session.id);
+      return source?.status ?? "";
+    })
+    .toBe("running");
+  // Hold a real fake-agent turn open while the public PR poll observes the merge. A live
+  // working agent is not auto-settled or closed from an intermediate merge, which leaves the
+  // source session present for the explicit click after the task is completed below.
+  await reply.fill(HELD_TURN);
+  await reply.press("Enter");
+  await expect
+    .poll(async () => (await sessions(daemon)).find((row) => row.id === session.id)?.state)
+    .toBe("working");
+  // A working turn can keep the source session alive after its merge. If the normal merge
+  // lifecycle has not already settled the task, complete it through the public task route;
+  // either way the state at click time is the operator-visible post-merge state.
+  if ((await tasks(daemon)).find((task) => task.id === source!.id)?.status !== "done") {
+    await api(
+      daemon,
+      `/api/tasks/${source!.id}/complete`,
+      { outcome: "source work complete" },
+      "POST",
+    );
+  }
+  expect((await tasks(daemon)).find((task) => task.id === source!.id)?.status).toBe("done");
+
+  // Stand in only for what the provider poll observed, as the clean Inspector round above
+  // does. Production's merge recorder stamps these two durable projections together. Both
+  // matter here: the task binding routes the click, while the episode prevents the next
+  // ordinary Registry upsert from truthfully restoring an open observation over a DB-only
+  // shortcut. Written after task completion because that public lifecycle emits its own
+  // final binding upsert first. No live Registry object is seeded by the fixture.
+  withDaemonDb(daemon, (db) => {
+    const mergedAt = Date.now();
+    const episode = db.prepare(
+      `UPDATE session_work_episodes
+       SET pr_url = ?, pr_head_sha = ?, merged_at = ?, updated_at = ?
+       WHERE session_id = ?
+         AND episode_id = (SELECT episode_id FROM task_work_episode_bindings WHERE task_id = ?)`,
+    ).run(pr.url, pr.headRefOid, mergedAt, mergedAt, session.id, source!.id);
+    const binding = db.prepare(
+      `UPDATE task_work_episode_bindings
+       SET pr_url = ?, pr_head_sha = ?, merged_at = ?, updated_at = ? WHERE task_id = ?`,
+    ).run(pr.url, pr.headRefOid, mergedAt, mergedAt, source!.id);
+    expect(Number(episode.changes)).toBe(1);
+    expect(Number(binding.changes)).toBe(1);
+  });
+  await expect(retro).toBeVisible();
+
+  const responsePromise = dashboard.waitForResponse((response) =>
+    response.url().includes("/api/sessions/") && response.url().endsWith("/retro"),
+  );
+  await retro.click();
+  const retroResponse = await responsePromise;
+  expect(await retroResponse.json()).toMatchObject({ kind: "started" });
+  await expect(
+    dashboard.getByText(/Retro started in a new task: .* The original task remains complete\./),
+  ).toBeVisible();
+
+  let followup: TaskRow | undefined;
+  await expect
+    .poll(async () => {
+      const rows = await tasks(daemon);
+      const matches = rows.filter((task) => task.title === `Retro: ${source!.title}`);
+      followup = matches[0];
+      return matches.length;
+    }, { message: "one linked retro task should appear" })
+    .toBe(1);
+  expect(followup?.id).not.toBe(source!.id);
+  expect((await tasks(daemon)).find((task) => task.id === source!.id)?.status).toBe("done");
+  observed("the merged source started one separate retro while remaining complete");
+  await shoot(dashboard, dashboard, "06-post-merge-follow-up-started");
+
+  await expect(retro).toBeEnabled();
+  await retro.click();
+  await expect
+    .poll(async () => {
+      const rows = await tasks(daemon);
+      return rows.filter((task) => task.title === `Retro: ${source!.title}`).map((task) => task.id);
+    }, { message: "the duplicate click should keep the same follow-up task" })
+    .toEqual([followup!.id]);
+  expect((await tasks(daemon)).find((task) => task.id === source!.id)?.status).toBe("done");
 });
 
 test("a session nobody corrected is never offered a retro, however clean its review", async ({

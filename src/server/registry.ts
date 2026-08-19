@@ -884,6 +884,7 @@ export class Registry extends EventEmitter {
       prev.taskSources.failing === status.taskSources.failing &&
       prev.pipelines.present === status.pipelines.present &&
       prev.pipelines.observing === status.pipelines.observing &&
+      (prev.pipelines.launchRuntime ?? null) === (status.pipelines.launchRuntime ?? null) &&
       (prev.pipelines.observedRepoKeys?.length ?? 0) ===
         (status.pipelines.observedRepoKeys?.length ?? 0) &&
       (prev.pipelines.observedRepoKeys ?? []).every(
@@ -5483,6 +5484,7 @@ export class Registry extends EventEmitter {
           title: t.title,
           fullTitle: fullTaskTitle(t.title, t.intent),
           kind: t.kind,
+          workflowId: t.workflowId,
           status: t.status,
           outcome: t.outcome,
           outcomeUrl: t.outcomeUrl,

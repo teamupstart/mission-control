@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Self-updating local install: phased implementation</title>
+  <style>
+    :root { color-scheme: light dark; --bg:#eef1ed; --paper:#fbfcf8; --ink:#15201d; --muted:#65716c; --line:#ced7d1; --accent:#176f5d; --accent2:#bd5d38; --soft:#deeee8; --warm:#f5e2d6; --code:#e9eeea; }
+    @media (prefers-color-scheme: dark) { :root { --bg:#111715; --paper:#19211e; --ink:#edf4ef; --muted:#a7b2ac; --line:#35423d; --accent:#70d1b6; --accent2:#f19670; --soft:#17362e; --warm:#422c24; --code:#222c28; } }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--ink); font:15.5px/1.58 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif; }
+    main { width:min(1160px,calc(100% - 32px)); margin:auto; padding:34px 0 72px; }
+    article { overflow:hidden; background:var(--paper); border:1px solid var(--line); border-radius:20px; box-shadow:0 18px 55px rgba(10,30,24,.08); }
+    header { padding:38px 42px 32px; border-top:8px solid var(--accent); background:linear-gradient(145deg,var(--paper),var(--soft)); }
+    .eyebrow { color:var(--accent); text-transform:uppercase; letter-spacing:.12em; font-size:.76rem; font-weight:800; }
+    h1 { max-width:900px; margin:8px 0 12px; font:760 clamp(2.2rem,5vw,4.2rem)/1 ui-serif,Georgia,serif; }
+    h2 { margin:0 0 14px; font:730 1.5rem/1.2 ui-serif,Georgia,serif; }
+    h3 { margin:0 0 8px; font-size:1.05rem; color:var(--accent); }
+    p { margin:0 0 12px; }
+    a { color:var(--accent); text-underline-offset:3px; }
+    code { background:var(--code); padding:.13em .36em; border-radius:5px; font-size:.9em; }
+    section { padding:28px 42px; border-top:1px solid var(--line); }
+    ul,ol { margin:8px 0 0; padding-left:23px; }
+    li { margin:7px 0; }
+    .status { display:inline-flex; gap:8px; align-items:center; margin-top:12px; padding:6px 11px; border:1px solid var(--accent2); border-radius:99px; color:var(--accent2); font-weight:750; font-size:.78rem; }
+    .decision { border-left:5px solid var(--accent2); background:var(--warm); border-radius:10px; padding:15px 18px; }
+    .metrics { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; margin-top:16px; }
+    .metric { padding:16px; border:1px solid var(--line); border-radius:12px; background:var(--paper); }
+    .metric b { display:block; color:var(--accent); font-size:1.45rem; }
+    .metric span { color:var(--muted); font-size:.9rem; }
+    .flow { overflow-x:auto; margin:16px 0 4px; }
+    svg { display:block; width:100%; min-width:900px; height:auto; }
+    .node { fill:var(--paper); stroke:var(--accent); stroke-width:2; }
+    .node2 { fill:var(--soft); stroke:var(--accent2); stroke-width:2; }
+    .edge { stroke:var(--muted); stroke-width:2.2; fill:none; marker-end:url(#arr); }
+    svg text { fill:var(--ink); font:14px ui-sans-serif,system-ui,sans-serif; }
+    svg .sub { fill:var(--muted); font-size:12px; }
+    .phases { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; }
+    .phase { padding:20px; border:1px solid var(--line); border-radius:14px; background:color-mix(in srgb,var(--paper) 90%,var(--soft)); }
+    .phase .num { color:var(--accent2); font-size:.75rem; text-transform:uppercase; letter-spacing:.1em; font-weight:800; }
+    .phase p { color:var(--muted); }
+    .tag { display:inline-block; margin-top:8px; padding:4px 8px; border-radius:99px; background:var(--soft); color:var(--accent); font-size:.78rem; font-weight:700; }
+    .table-wrap { overflow-x:auto; }
+    table { width:100%; min-width:760px; border-collapse:collapse; }
+    th,td { text-align:left; vertical-align:top; padding:10px 12px; border-bottom:1px solid var(--line); }
+    th { color:var(--muted); font-size:.76rem; text-transform:uppercase; letter-spacing:.07em; }
+    .audit { padding:18px 20px; border:1px solid var(--accent); background:var(--soft); border-radius:14px; }
+    @media (max-width:820px) { main{width:min(100% - 16px,1160px);padding-top:12px}header,section{padding:23px 20px}.metrics,.phases{grid-template-columns:1fr}article{border-radius:14px} }
+  </style>
+</head>
+<body>
+<main><article>
+  <header>
+    <div class="eyebrow">Phased implementation plan</div>
+    <h1>Self-updating local install</h1>
+    <p>Three serial merge units let a cloned repository become an installed macOS app that keeps itself current through the <code>gh</code> CLI, with no Homebrew, no hosted feed, no stored credential, and no Apple signing dependency.</p>
+    <span class="status">Decisions resolved · scheduling after publication</span>
+  </header>
+
+  <section>
+    <h2>Approved decisions</h2>
+    <div class="decision">
+      <p><strong>Install:</strong> clone the repository and run one install script. No Cask, no private tap, no Jamf, no UMT.</p>
+      <p><strong>Update transport:</strong> the <code>gh</code> CLI against this repository's GitHub Releases.</p>
+      <p><strong>Update mechanic:</strong> rebuild from source at the release tag, then swap the app bundle.</p>
+      <p><strong>Source clone:</strong> the updater owns a private clone; the user's own worktree is never touched.</p>
+      <p><strong>Rollout:</strong> no percentage rollout in v1. Recovery is a fix-forward patch release.</p>
+      <p><strong>Signing:</strong> Developer ID signing and notarization are out of scope for v1.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>Why three phases</h2>
+    <p>The estimate is far above the single-phase threshold, so more than one phase is permitted. Three are justified and a fourth is not. Phase 1 defines the receipt and release identity that Phase 2's controller reads. Phase 2 is the highest-risk work in the plan, a process that outlives the app and replaces its own bundle, and it needs to be reviewable and revertible alone. Phase 3 is a genuine vertical slice whose parts are not observable separately.</p>
+    <div class="metrics">
+      <div class="metric"><b>1,100–1,500</b><span>estimated non-test production lines</span></div>
+      <div class="metric"><b>3</b><span>serial reviewable pull requests</span></div>
+      <div class="metric"><b>1</b><span>repository; no cross-repo phase</span></div>
+    </div>
+    <div class="flow" aria-label="Phase dependency graph">
+      <svg viewBox="0 0 980 250" role="img">
+        <defs><marker id="arr" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 Z" fill="currentColor"/></marker></defs>
+        <rect class="node2" x="8" y="20" width="180" height="62" rx="12"/><text x="98" y="46" text-anchor="middle">Planning PR</text><text class="sub" x="98" y="66" text-anchor="middle">these artifacts</text>
+        <path class="edge" d="M98 82 V118 H25"/>
+        <rect class="node" x="25" y="118" width="255" height="104" rx="14"/><text x="152" y="152" text-anchor="middle">Phase 1</text><text class="sub" x="152" y="178" text-anchor="middle">Install path and</text><text class="sub" x="152" y="196" text-anchor="middle">release identity</text>
+        <path class="edge" d="M280 170 H350"/>
+        <rect class="node" x="350" y="118" width="265" height="104" rx="14"/><text x="482" y="152" text-anchor="middle">Phase 2</text><text class="sub" x="482" y="178" text-anchor="middle">Update engine and</text><text class="sub" x="482" y="196" text-anchor="middle">apply helper</text>
+        <path class="edge" d="M615 170 H685"/>
+        <rect class="node" x="685" y="118" width="260" height="104" rx="14"/><text x="815" y="152" text-anchor="middle">Phase 3</text><text class="sub" x="815" y="178" text-anchor="middle">In-app prompt</text><text class="sub" x="815" y="196" text-anchor="middle">and controls</text>
+      </svg>
+    </div>
+    <p><strong>No concurrency groups.</strong> The chain is strictly sequential and that is a real constraint, not a presentation order: Phase 2 consumes Phase 1's receipt schema and needs releases to exist to test against, and Phase 3 consumes Phase 2's state union and IPC names.</p>
+  </section>
+
+  <section>
+    <h2>Implementation phases</h2>
+    <div class="phases">
+      <article class="phase">
+        <div class="num">Phase 1</div>
+        <h3>Install path and release identity</h3>
+        <p>One documented install command establishes an updater-owned clone, builds, installs, and writes a receipt. Release Please gives the repository its first tag, changelog, and GitHub Release.</p>
+        <a href="phase-1-install-and-release-identity.md">Read the phase source</a><br>
+        <span class="tag">Depends on planning session</span>
+      </article>
+      <article class="phase">
+        <div class="num">Phase 2</div>
+        <h3>Update engine and apply helper</h3>
+        <p>The packaged app finds newer releases through <code>gh</code>, prompts natively, and hands off to a detached helper that rebuilds, verifies, swaps, relaunches, and rolls back on failure.</p>
+        <a href="phase-2-update-engine-and-apply.md">Read the phase source</a><br>
+        <span class="tag">Depends on Phase 1</span>
+      </article>
+      <article class="phase">
+        <div class="num">Phase 3</div>
+        <h3>In-app prompt and controls</h3>
+        <p>A full-width dashboard banner makes updates discoverable, lets a user defer or accept, and surfaces a previous failed update. The browser build stays completely unchanged.</p>
+        <a href="phase-3-in-app-prompt.md">Read the phase source</a><br>
+        <span class="tag">Depends on Phase 2</span>
+      </article>
+    </div>
+  </section>
+
+  <section>
+    <h2>Distribution mechanisms ruled out</h2>
+    <p>Investigated internally on 2026-08-18 rather than assumed. Each row is why the original Cask plan does not survive.</p>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Mechanism</th><th>Finding</th><th>Consequence</th></tr></thead>
+      <tbody>
+        <tr><td>Private Homebrew tap</td><td><code>teamupstart/homebrew-upstart</code> exists but is abandoned: last push 2022-06-03, one formula pinned to OpenShift v3.11, no <code>Casks/</code> directory, and bottle URLs pointing at Bintray, which shut down in May 2021.</td><td>Removed. Reviving it would mean building app distribution from zero in a forgotten repository.</td></tr>
+        <tr><td>Homebrew at all</td><td>Homebrew is entitlement-gated: Jira <code>TEAM-542963</code> grants "access to the Homebrew installer in ITSS" through an Okta group.</td><td>A brew-based install cannot assume the user has <code>brew</code>.</td></tr>
+        <tr><td>UMT</td><td>The Upstart Magic Tool distributes CLI commands into an engineer's shell. No manifest or catalog format for applications, and the owning team documents that nobody remains who can maintain it.</td><td>Wrong tool. No GUI app path exists.</td></tr>
+        <tr><td>Jamf Self Service</td><td>The real internal standard for macOS GUI apps, with a working precedent in <code>UNIFYCHANGE-35</code> scoping <code>Factory.pkg</code> by an Okta group.</td><td>Correct destination for a broad fleet, deliberately deferred: it needs a <code>.pkg</code>, an IT ticket per package, and IT ownership of the cadence.</td></tr>
+        <tr><td>Unlisted artifact URLs</td><td>Upstart gates internal HTTP surfaces with VPN and Cloudflare Access under <code>.upst.dev</code>, not unlisted links.</td><td>Retires the original plan's artifact-access recommendation independently of everything above.</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <section>
+    <h2>What the new architecture removes</h2>
+    <p>The change is almost entirely subtractive. Because the app is built on the user's own Mac, it never crosses a download quarantine boundary, so the longest-lead item in the original plan disappears.</p>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Originally required</th><th>Now</th><th>Why</th></tr></thead>
+      <tbody>
+        <tr><td>Developer ID signing, hardened runtime, notarization, stapling</td><td>Not required for v1</td><td>Locally built and ad-hoc signed, as today. Removes the cross-team Apple admin dependency.</td></tr>
+        <tr><td>Hosted artifact origin, <code>latest-mac.yml</code>, checksums</td><td>Removed</td><td><code>gh</code> reads GitHub Releases with credentials the user already has.</td></tr>
+        <tr><td><code>electron-updater</code>, Squirrel.Mac, ZIP payload</td><td>Removed</td><td>The update is a rebuild and a bundle swap, not a binary patch.</td></tr>
+        <tr><td><code>stagingPercentage</code> rollout through 5/25/50/100</td><td>Removed for v1</td><td>Small internal audience; recovery is a fix-forward patch.</td></tr>
+        <tr><td>Cross-repository Cask pull request</td><td>Removed</td><td>Single repository. No phase touches a second one.</td></tr>
+        <tr><td>Release Please owning version, tag, changelog, release</td><td>Retained</td><td>The update check needs a trustworthy version signal.</td></tr>
+        <tr><td><code>setQuitting(true)</code> before the app is replaced</td><td>Retained</td><td>Still load-bearing: hide-on-close would otherwise trap the update.</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <section>
+    <h2>Cross-phase contracts</h2>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Contract</th><th>Owner</th><th>Consumed by</th></tr></thead>
+      <tbody>
+        <tr><td>Install receipt, split across a browser-safe schema module and a separate I/O module: clone path, installed version, release tag, timestamp</td><td>Phase 1</td><td>Phase 2</td></tr>
+        <tr><td>Updater-owned clone, guaranteed clean and updater-exclusive</td><td>Phase 1</td><td>Phase 2</td></tr>
+        <tr><td>Tag equals <code>package.json</code> equals packaged <code>app.getVersion()</code></td><td>Phase 1</td><td>Phase 2</td></tr>
+        <tr><td>Install script: idempotent, accepts a target ref, non-zero on failure</td><td>Phase 1</td><td>Phase 2</td></tr>
+        <tr><td><code>UpdateSnapshot</code> union in <code>src/shared/update.ts</code>, browser-safe</td><td>Phase 2</td><td>Phase 3</td></tr>
+        <tr><td><code>mission:update-*</code> commands and the <code>mission:update-state</code> push</td><td>Phase 3</td><td>none in v1</td></tr>
+        <tr><td>Quit ordering for an update-driven exit</td><td>Phase 2</td><td>Phase 3</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <section>
+    <h2>Final audit</h2>
+    <div class="audit">
+      <p>Every source-plan requirement and approved decision is owned by exactly one phase. Every consumer follows its prerequisite. No concurrency is claimed, because none holds.</p>
+      <p><strong>One defect found and fixed rather than deferred.</strong> Documentation had been scoped only into Phase 1, which would have left the updater and the banner undocumented and broken the definition of done. <code>docs/desktop-and-packaging.md</code> is now scoped into Phases 2 and 3 as well, recorded in both phases' audit records.</p>
+      <p><strong>Inspector round 1.</strong> Three <code>major</code> comments, all addressed. Receipt I/O split into a browser-safe schema module plus a separate I/O module, though the review's premise that <code>src/shared/</code> admits no <code>node:</code> imports is contradicted by <code>harness-runtime.mjs</code> and <code>claude-settings.ts</code>, so the I/O stays there by precedent. The snapshot subscription order was genuinely wrong and is now subscribe-then-read with an out-of-order guard. The native-control E2E gap gained a testable command seam, and <strong>one open question is left for the plan owner</strong> rather than decided unilaterally: whether to move the menu, tray, and dialog into Phase 3 so Phase 2 has no user-visible surface at all.</p>
+      <p><strong>Two risks are carried openly</strong> in Phase 3 rather than resolved on paper: the flat-versus-namespaced preload shape, and the topbar geometry interaction with a new full-width banner. Both are decisions the implementing agent should make against the code, with reasoning recorded in its pull request.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>Sources</h2>
+    <ul>
+      <li><a href="plan.md">Root plan source</a> and its <a href="plan.html">rendered page</a></li>
+      <li><a href="phased-plan.md">This index as markdown</a></li>
+      <li>Retained issue: <a href="https://github.com/mancej-cyc/ai-harness/issues/642">mancej-cyc/ai-harness#642</a>, whose distribution half this supersedes</li>
+    </ul>
+  </section>
+</article></main>
+</body>
+</html>

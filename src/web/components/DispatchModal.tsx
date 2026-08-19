@@ -11,17 +11,22 @@ import {
 } from "@shared/types.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
-import type { HarnessesConfig, TaskDependencyInput } from "@shared/protocol.ts";
+import {
+  SEE_WORK_TOUR_DEMO_INTENT,
+  type HarnessesConfig,
+  type TaskDependencyInput,
+} from "@shared/protocol.ts";
 import { withAttachments } from "@shared/attachments.ts";
 import {
+  BACKLOG_TASK_KINDS,
   MAX_LABELS,
   PRIORITY_LABELS,
   TASK_KIND_INFO,
   TASK_KIND_BEHAVIOR,
   TASK_PRIORITIES,
   hasReviewableDiff,
+  taskKindAllowsBacklog,
 } from "@shared/task.ts";
-import { modelChoicesFor } from "@shared/model.ts";
 import type { EnvironmentCheckView } from "@shared/environment-checks.ts";
 import {
   TASK_SOURCE_KIND_INFO,
@@ -35,6 +40,7 @@ import {
   fetchPipelineRepos,
   fetchRepos,
   fetchTaskSources,
+  type ActionResult,
 } from "../lib/api.ts";
 import {
   readLastDispatchRepo,
@@ -50,6 +56,12 @@ import {
 } from "../lib/task-draft.ts";
 import { formatScheduledFor } from "../lib/schedules.ts";
 import { repoLeaf } from "../lib/format.ts";
+import {
+  ModelCatalogNotice,
+  ModelCatalogOptions,
+  type ResolveHarnessModelCatalog,
+  useHarnessModelCatalogs,
+} from "../model-catalog.tsx";
 import { RepoCombobox } from "./RepoCombobox.tsx";
 import { RepositoryName } from "./RepositoryName.tsx";
 import {
@@ -70,6 +82,7 @@ import {
   type GuidedOption,
 } from "./GuidedDispatch.tsx";
 import { useGuidedDispatch } from "../lib/guided-dispatch.ts";
+import { useTourTargetRef } from "../tour/target-context.tsx";
 import {
   GUIDED_HARNESS_KEYS,
   GUIDED_KIND_KEYS,
@@ -94,6 +107,27 @@ import {
 } from "../ensembles/dispatch/EnsembleDispatch.tsx";
 import { freshEnsembleDraft, type EnsembleDispatchDraft } from "../ensembles/dispatch/config.ts";
 import type { EnsembleStrategyId } from "@shared/ensemble.ts";
+import type { PipelineLaunchRuntime } from "@shared/pipeline.ts";
+
+/** The runtime-specific provider contract shown where a pipeline launch is chosen. */
+export function pipelineDispatchConstraint(runtime: PipelineLaunchRuntime | null): string {
+  if (runtime === "claude-sdk") {
+    return "Claude Agent SDK starts one managed Claude host with /engineer <idea> as turn one. Conductor owns downstream agent, model, and effort choices, and its provider projection owns task completion. Its background build daemon keeps its own tmux supervision.";
+  }
+  if (runtime === "terminal") {
+    return "Terminal opens conduct-ts engineer --idea in a real terminal with live stdin and removes the inherited Claude nesting marker. Conductor owns downstream agent, model, and effort choices, and its provider projection owns task completion.";
+  }
+  return "The daemon has not confirmed which Conductor Engineer host this dispatch will use.";
+}
+
+/** Render leaf kept separate so both runtime explanations are covered without browser effects. */
+export function PipelineDispatchConstraint({
+  runtime,
+}: {
+  runtime: PipelineLaunchRuntime | null;
+}): React.JSX.Element {
+  return <>{pipelineDispatchConstraint(runtime)}</>;
+}
 
 /**
  * What a fresh dispatch form holds: nothing, except the repo the last one went to.
@@ -110,6 +144,32 @@ function freshDispatchDraft(): DispatchDraft {
     // Secondary repos widen one task's worktree and write scope. They are never a default
     // for the next task, even though the primary repo deliberately remains sticky.
     extraRepoRoots: [],
+  };
+}
+
+/** Temporary input owned by DispatchLayer while the See the work tour is active. */
+export interface SeeWorkTourDispatchPreview {
+  id: string;
+  briefReady: boolean;
+  repoRoot: string | null;
+  dispatch: (repoRoot: string) => Promise<ActionResult & { task?: Task }>;
+}
+
+interface TourDispatchSlot {
+  id: string;
+  draft: DispatchDraft;
+}
+
+function freshTourDispatchDraft(preview: SeeWorkTourDispatchPreview): DispatchDraft {
+  return {
+    ...EMPTY_DISPATCH_DRAFT,
+    repoRoot: preview.repoRoot ?? "",
+    intent: preview.briefReady ? SEE_WORK_TOUR_DEMO_INTENT : "",
+    title: "Tour demo",
+    kind: "ship",
+    agent: "codex",
+    model: "gpt-5.6-terra",
+    workflowId: null,
   };
 }
 
@@ -150,6 +210,7 @@ function repoCollision(d: DispatchDraft): string | null {
  */
 const NO_STASH = Symbol("no-stash");
 type StashedWorkflowId = DispatchDraft["workflowId"] | typeof NO_STASH;
+type StashedDependencies = DispatchDraft["dependencies"] | typeof NO_STASH;
 
 /**
  * True when a draft holds nothing worth keeping - so "Clear" has nothing to do.
@@ -256,14 +317,15 @@ type EditSlot = { id: string; seed: DispatchDraft; draft: DispatchDraft };
  * wins); and a plain "Default" in the instant before the config lands, which never
  * claims a model it can't see.
  */
-function defaultModelOptionLabel(
+export function defaultModelOptionLabel(
   agent: AgentType,
   defaults: HarnessesConfig["defaultModel"] | null,
+  resolveModels: ResolveHarnessModelCatalog,
 ): string {
   if (!defaults) return "Default";
   const id = defaults[agent];
   if (!id) return "Default - whatever the harness is set to";
-  const label = modelChoicesFor(agent, id).find((m) => m.id === id)?.label ?? id;
+  const label = resolveModels(agent, id).choices.find((m) => m.id === id)?.label ?? id;
   return `Default - ${label}`;
 }
 
@@ -297,11 +359,15 @@ const AFTER_WORK_FIELD_TIP =
  * for; both render as an option with no second line rather than as a promise the form cannot
  * keep.
  */
-function harnessDefaultsLine(agent: AgentType, defaults: HarnessesConfig | null): string | null {
+export function harnessDefaultsLine(
+  agent: AgentType,
+  defaults: HarnessesConfig | null,
+  resolveModels: ResolveHarnessModelCatalog,
+): string | null {
   if (!defaults) return null;
   const modelId = defaults.defaultModel[agent];
   const model = modelId
-    ? modelChoicesFor(agent, modelId).find((m) => m.id === modelId)?.label ?? modelId
+    ? resolveModels(agent, modelId).choices.find((m) => m.id === modelId)?.label ?? modelId
     : null;
   const effort = defaults.defaultEffort[agent] || null;
   const parts = [model, effort].filter(Boolean);
@@ -347,6 +413,7 @@ export function DispatchLayer({
   harnessesRevision = 0,
   pipelinesRevision = "count:0",
   launchIntent = null,
+  tourDemo = null,
   onClose,
   onOpenSchedule,
   onEnsembleLaunched,
@@ -379,6 +446,8 @@ export function DispatchLayer({
    * place that decides what Ensemble mode means. An intent is a request; the modal applies it.
    */
   launchIntent?: { strategyId: EnsembleStrategyId } | null;
+  /** Isolated draft and fixed submit path used only while the See the work tour is active. */
+  tourDemo?: SeeWorkTourDispatchPreview | null;
   onClose: () => void;
   /** Open Recurring Missions from a generated task's read-only provenance in edit mode. */
   onOpenSchedule?: (scheduleId: string, occurrenceId?: string, scheduledFor?: number) => void;
@@ -386,6 +455,30 @@ export function DispatchLayer({
   onEnsembleLaunched?: (runId: string) => void;
 }): React.JSX.Element | null {
   const [draft, setDraft] = useState<DispatchDraft>(freshDispatchDraft);
+  // The tour demonstrates the real form without borrowing or erasing the operator's draft.
+  // This temporary slot lives beside the owner's existing new/edit slots and disappears when
+  // a later tour id replaces it. It is not a second Dispatch owner or a persisted draft.
+  const [storedTourSlot, setTourSlot] = useState<TourDispatchSlot | null>(() =>
+    tourDemo ? { id: tourDemo.id, draft: freshTourDispatchDraft(tourDemo) } : null,
+  );
+  let tourSlot = storedTourSlot;
+  if (tourDemo) {
+    const nextDraft = tourSlot?.id === tourDemo.id
+      ? {
+          ...tourSlot.draft,
+          ...(tourDemo.repoRoot && !tourSlot.draft.repoRoot.trim()
+            ? { repoRoot: tourDemo.repoRoot }
+            : {}),
+          ...(tourDemo.briefReady && !tourSlot.draft.intent
+            ? { intent: SEE_WORK_TOUR_DEMO_INTENT }
+            : {}),
+        }
+      : freshTourDispatchDraft(tourDemo);
+    if (tourSlot?.id !== tourDemo.id || !draftsEqual(tourSlot.draft, nextDraft)) {
+      tourSlot = { id: tourDemo.id, draft: nextDraft };
+      setTourSlot(tourSlot);
+    }
+  }
   /**
    * The guided pass belongs to the new-dispatch draft, so it has the same lifetime.
    *
@@ -404,8 +497,10 @@ export function DispatchLayer({
   // instance that armed it is gone - a stale closure would compare against
   // whatever the draft held when that instance last rendered.
   const draftRef = useRef(draft);
+  const tourDraftRef = useRef(tourSlot?.draft ?? null);
   const ensembleDraftRef = useRef(ensembleDraft);
   draftRef.current = draft;
+  tourDraftRef.current = tourSlot?.draft ?? null;
   ensembleDraftRef.current = ensembleDraft;
 
   // The working copy of the task being edited, if any, beside the seed it was built
@@ -495,6 +590,18 @@ export function DispatchLayer({
       // most likely to want, and it was remembered before this fired.
       setDraft(freshDispatchDraft());
       setGuidedPass(null);
+      onClose();
+    },
+    [onClose],
+  );
+
+  // A successful tour dispatch consumes only the temporary slot. The operator's draft and
+  // guided-pass progress underneath it are deliberately left byte-for-byte as they were.
+  const onTourSubmitted = useCallback(
+    (submitted: DispatchDraft) => {
+      if (!tourDraftRef.current || !draftsEqual(tourDraftRef.current, submitted)) return;
+      revokeAttachments(tourDraftRef.current.attachments);
+      setTourSlot(null);
       onClose();
     },
     [onClose],
@@ -634,15 +741,25 @@ export function DispatchLayer({
       mode={{ kind: "new" }}
       tasks={tasks}
       sessions={sessions}
-      draft={draft}
-      onDraftChange={setDraft}
-      onAttachmentsChange={onAttachmentsChange}
-      onRevert={onNewRevert}
+      draft={tourDemo && tourSlot ? tourSlot.draft : draft}
+      onDraftChange={tourDemo && tourSlot
+        ? (next) => setTourSlot({ id: tourDemo.id, draft: next })
+        : setDraft}
+      onAttachmentsChange={tourDemo && tourSlot
+        ? (attachments) => setTourSlot({
+            id: tourDemo.id,
+            draft: { ...tourDraftRef.current!, attachments },
+          })
+        : onAttachmentsChange}
+      onRevert={tourDemo ? () => setTourSlot({
+        id: tourDemo.id,
+        draft: freshTourDispatchDraft(tourDemo),
+      }) : onNewRevert}
       onClose={onClose}
-      onSubmitted={onSubmitted}
-      guidedPass={guidedPass}
-      onGuidedPassChange={setGuidedPass}
-      launchMode={launchMode}
+      onSubmitted={tourDemo ? onTourSubmitted : onSubmitted}
+      guidedPass={tourDemo ? NO_GUIDED_PASS : guidedPass}
+      onGuidedPassChange={tourDemo ? undefined : setGuidedPass}
+      launchMode={tourDemo ? "single" : launchMode}
       onLaunchModeChange={chooseLaunchMode}
       ensembleDraft={ensembleDraft}
       onEnsembleDraftChange={setEnsembleDraft}
@@ -653,6 +770,7 @@ export function DispatchLayer({
       foremanEnabled={foremanEnabled}
       harnessesRevision={harnessesRevision}
       pipelinesRevision={pipelinesRevision}
+      tourDemo={tourDemo}
     />
   );
 }
@@ -697,6 +815,7 @@ function DispatchModal({
   foremanEnabled = false,
   harnessesRevision = 0,
   pipelinesRevision = "count:0",
+  tourDemo = null,
 }: {
   mode: DispatchMode;
   tasks: Task[];
@@ -739,13 +858,26 @@ function DispatchModal({
    */
   harnessesRevision?: number;
   pipelinesRevision?: string;
+  /** Fixed, safety-limited submit path while the See the work preview owns this form. */
+  tourDemo?: SeeWorkTourDispatchPreview | null;
 }): React.JSX.Element {
+  const { resolve: resolveModels } = useHarnessModelCatalogs();
   const editing = mode.kind === "edit" ? mode.task : null;
+  const tourModalRef = useTourTargetRef<HTMLElement>("dispatch-modal");
+  const tourKindRef = useTourTargetRef<HTMLDivElement>("dispatch-kind");
+  const tourInputRef = useTourTargetRef<HTMLLabelElement>("dispatch-input");
+  const tourWorkflowRef = useTourTargetRef<HTMLDivElement>("dispatch-workflow");
+  const tourSubmitRef = useTourTargetRef<HTMLButtonElement>("dispatch-submit");
   // Ensemble mode is a new-dispatch-only concern, and only when the layer wired the state up.
   const ensembleMode = !editing && launchMode === "ensemble" && ensembleDraft !== undefined;
+  const availableTaskKinds =
+    mode.kind === "new" && !ensembleMode ? TASK_KINDS : BACKLOG_TASK_KINDS;
+  const backlogCompatible = taskKindAllowsBacklog(draft.kind);
   const [repos, setRepos] = useState<string[]>([]);
   const [reposLoading, setReposLoading] = useState(true);
   const [pipelineRepos, setPipelineRepos] = useState<Set<string>>(new Set());
+  const [pipelineLaunchRuntime, setPipelineLaunchRuntime] =
+    useState<PipelineLaunchRuntime | null>(null);
   // The attach-a-repo control is a two-step (open, then pick) rather than a combobox that
   // is always mounted: an empty repo picker sitting under the primary on every dispatch
   // would read as a second required field. Local rather than drafted - a half-typed path
@@ -996,9 +1128,12 @@ function DispatchModal({
     const behavior = TASK_KIND_BEHAVIOR[kind];
     return behavior.repoAvailability === "workspace" || pipelineRepos.has(draft.repoRoot.trim());
   };
-  const kindUnavailable = !kindAvailable(draft.kind);
+  const kindUnavailable =
+    !availableTaskKinds.includes(draft.kind) || !kindAvailable(draft.kind);
   const offeredKinds = TASK_KINDS.filter(
-    (kind) => kindAvailable(kind) || kind === draft.kind,
+    (kind) =>
+      kind === draft.kind ||
+      (availableTaskKinds.includes(kind) && kindAvailable(kind)),
   );
   const selectedWorkflowBlocked = usesHarness && Boolean(
     selectedWorkflowId
@@ -1045,15 +1180,16 @@ function DispatchModal({
    * selection alone rather than inventing one.
    */
   const stashedWorkflowId = useRef<StashedWorkflowId>(NO_STASH);
+  const stashedDependencies = useRef<StashedDependencies>(NO_STASH);
 
   /**
    * The after-work choice a kind switch carries with it, as a patch fragment.
    *
    * Kind carries this the same way switching harness carries model and effort: the
-   * dependent choice belongs to the kind now selected, not the one it replaced. A scout
-   * investigates and reports and a plan proposes a route - neither sets out to produce a
-   * delivered change to hand off - so choosing either moves the selection to None, which
-   * would otherwise run a review Workflow over a task that has no diff to review.
+   * dependent choice belongs to the kind now selected, not the one it replaced. Scout,
+   * plan, and chat do not set out to produce a delivered change to hand off, so choosing
+   * any of them moves the selection to None. Otherwise a review Workflow would run over a
+   * task that has no planned diff to review.
    *
    * Switching back HANDS BACK the exact choice that was put aside, rather than recomputing
    * the machine default. That is what keeps the reversal lossless, and it is deliberately
@@ -1091,6 +1227,26 @@ function DispatchModal({
     return stashed === NO_STASH ? {} : { workflowId: stashed };
   }
 
+  /** Clear chat's scheduling inputs while preserving a reversible, modal-local copy. */
+  function dependenciesForKind(kind: TaskKind): Partial<DispatchDraft> {
+    if (kind === draft.kind) return {};
+    if (!taskKindAllowsBacklog(kind)) {
+      stashedDependencies.current = draft.dependencies;
+      return { dependencies: [] };
+    }
+    if (!taskKindAllowsBacklog(draft.kind)) {
+      const stashed = stashedDependencies.current;
+      stashedDependencies.current = NO_STASH;
+      return stashed === NO_STASH ? {} : { dependencies: stashed };
+    }
+    return {};
+  }
+
+  function updateDependencies(dependencies: DispatchDraft["dependencies"]): void {
+    stashedDependencies.current = NO_STASH;
+    update({ dependencies });
+  }
+
   /**
    * Everything a kind transition owns, shared by the select and the guided question.
    *
@@ -1099,14 +1255,15 @@ function DispatchModal({
    * form changes shape instead of leaving Dispatch enabled for a request the daemon refuses.
    */
   function selectKind(kind: TaskKind): void {
-    if (kind !== draft.kind && TASK_KIND_BEHAVIOR[kind].launch === "pipeline-terminal") {
+    if (kind !== draft.kind && TASK_KIND_BEHAVIOR[kind].launch === "pipeline") {
       setAddingRepo(false);
       setAddRepoValue("");
     }
     update({
       kind,
       ...afterWorkForKind(kind),
-      ...(kind !== draft.kind && TASK_KIND_BEHAVIOR[kind].launch === "pipeline-terminal"
+      ...dependenciesForKind(kind),
+      ...(kind !== draft.kind && TASK_KIND_BEHAVIOR[kind].launch === "pipeline"
         ? { extraRepoRoots: [] }
         : {}),
     });
@@ -1234,20 +1391,20 @@ function DispatchModal({
     // and arrows through it, so a second list here would be a copy of a control the operator is
     // already looking at. See `answeredBy` on the step.
     repo: [],
-    kind: TASK_KINDS.filter(kindAvailable).map((k) => ({
+    kind: availableTaskKinds.filter(kindAvailable).map((k) => ({
       value: k,
       label: TASK_KIND_INFO[k].label,
       sub: TASK_KIND_INFO[k].blurb,
       hotkey: GUIDED_KIND_KEYS[k],
       // Byte-identical to the Kind `<select>`'s own handler, `afterWorkForKind` and all.
-      // The diffless-kind-clears-after-work rule has one implementation and the pass
-      // calls it - which is why adding `plan` needed no edit on this side at all.
+      // Workflow, dependency, and provider-launch transitions have one implementation,
+      // so the guided pass cannot become a second meaning for Kind.
       commit: () => selectKind(k),
       // A provider-owned launch has no harness or after-work choice. Advance through those
       // registry-inapplicable questions while preserving the ordinary guided state machine.
       advance: (current) => {
         let next = answerGuidedStep(current);
-        if (TASK_KIND_BEHAVIOR[k].launch === "pipeline-terminal") {
+        if (TASK_KIND_BEHAVIOR[k].launch === "pipeline") {
           next = answerGuidedStep(next);
           next = answerGuidedStep(next);
         }
@@ -1258,7 +1415,7 @@ function DispatchModal({
       value: a,
       label: AGENT_IDENTITY[a].label,
       accent: AGENT_IDENTITY[a].accent,
-      sub: harnessDefaultsLine(a, defaults),
+      sub: harnessDefaultsLine(a, defaults, resolveModels),
       hotkey: GUIDED_HARNESS_KEYS[a],
       // And identical to the Agent `<select>`'s, `overridesForAgent` and all - including its
       // guard, which is what keeps confirming the current harness from dropping anything.
@@ -1644,6 +1801,7 @@ function DispatchModal({
     void fetchPipelineRepos().then((answer) => {
       if (!alive) return;
       setPipelineRepos(new Set((answer?.repos ?? []).map((repo) => repo.repoRoot)));
+      setPipelineLaunchRuntime(answer?.launchRuntime ?? null);
     });
     return () => {
       alive = false;
@@ -1815,7 +1973,9 @@ function DispatchModal({
       repoSetBlocked ||
       kindUnavailable ||
       (launchesNow && selectedWorkflowBlocked) ||
-      Boolean(editing && dispatchNow && selectedDependenciesUnmet)
+      Boolean(editing && dispatchNow && selectedDependenciesUnmet) ||
+      (!backlogCompatible &&
+        (!dispatchNow || editing !== null || ensembleMode || draft.dependencies.length > 0))
     ) return;
     setPending(dispatchNow ? "dispatch" : "shelve");
     setError(null);
@@ -1853,7 +2013,9 @@ function DispatchModal({
       ? patch
         ? await api.updateTask(editing.id, patch)
         : { ok: true }
-      : await api.dispatch({
+      : tourDemo
+        ? await tourDemo.dispatch(submitted.repoRoot.trim())
+        : await api.dispatch({
           repoRoot: submitted.repoRoot.trim(),
           extraRepoRoots: attachedRepoRoots(submitted),
           intent,
@@ -1884,7 +2046,7 @@ function DispatchModal({
     // Only from THIS form, not the editor. Reopening a task shelved last week and
     // saving it is a visit to an old decision, not a statement about what to dispatch
     // next, and letting it move the seed would strand the next task in that repo.
-    if (r.ok && !editing) {
+    if (r.ok && !editing && !tourDemo) {
       rememberDispatchRepo(submitted.repoRoot.trim());
     }
     // Clear the draft and close only once the task row exists - the worktree and
@@ -2099,9 +2261,9 @@ function DispatchModal({
   );
 
   const taskField = (
-    <label className={`field${guidedDim}`}>
+    <label ref={tourInputRef} className={`field${guidedDim}`}>
       <span className="field-label">
-        Task{" "}
+        {draft.kind === "chat" && !editing ? "What would you like to talk about?" : "Task"}{" "}
         <span className="field-hint">
           {ensembleMode
             ? "every candidate gets this brief - drop or paste images to attach"
@@ -2112,7 +2274,12 @@ function DispatchModal({
         <textarea
           ref={intentRef}
           className="field-input field-textarea"
-          placeholder="What should this agent do?"
+          placeholder={
+            draft.kind === "chat" && !editing
+              ? "Start the conversation"
+              : "What should this agent do?"
+          }
+          required
           rows={5}
           value={draft.intent}
           onChange={(e) => update({ intent: e.target.value })}
@@ -2131,9 +2298,13 @@ function DispatchModal({
     draft.priority ? PRIORITY_LABELS[draft.priority] : "no priority",
     labels.length > 0 ? labels.join(", ") : "no labels",
     draft.title.trim() ? "titled" : "title summarized",
-    dependencyCount > 0
-      ? `${dependencyCount} ${dependencyCount === 1 ? "dependency" : "dependencies"}`
-      : "no dependencies",
+    ...(backlogCompatible
+      ? [
+          dependencyCount > 0
+            ? `${dependencyCount} ${dependencyCount === 1 ? "dependency" : "dependencies"}`
+            : "no dependencies",
+        ]
+      : []),
   ].join(" · ");
 
   /** Dependency choices not already picked, for the add control's grouped options. */
@@ -2157,6 +2328,7 @@ function DispatchModal({
       }`}
       role="dialog"
       ariaLabel={editing ? "Edit a backlog task" : "Dispatch an agent"}
+      surfaceRef={tourModalRef}
       onEscape={onOverlayEscape}
       onKeyDown={onOverlayKeyDown}
       // Sealed while a submit is in flight, all four dismiss routes at once. A modal
@@ -2370,7 +2542,12 @@ function DispatchModal({
               </label>
               {guidedPickerFor("harness", AGENT_FIELD_TIP)}
             </div>
-            <div className={`dispatch-crew-cell${guidedAnchor("kind")}`}>
+            <div
+              ref={tourKindRef}
+              className={`dispatch-crew-cell${guidedAnchor("kind")}`}
+              role="group"
+              aria-label="Task type selection"
+            >
               <label className={`field${guidedDimUnless("kind")}`}>
                 <span className="field-label">Kind</span>
                 <Tooltip label={KIND_FIELD_TIP}>
@@ -2390,7 +2567,10 @@ function DispatchModal({
                       <option
                         key={k}
                         value={k}
-                        disabled={!kindAvailable(k) && k !== draft.kind}
+                        disabled={
+                          (!availableTaskKinds.includes(k) || !kindAvailable(k)) &&
+                          k !== draft.kind
+                        }
                       >
                         {TASK_KIND_INFO[k].label}
                       </option>
@@ -2409,19 +2589,19 @@ function DispatchModal({
                   disabled={!usesHarness}
                   onChange={(e) => update({ model: e.target.value })}
                 >
-                <option value="">
-                  {defaultModelOptionLabel(draft.agent, defaults?.defaultModel ?? null)}
-                </option>
-                {/* The draft's own id is folded in, for the same reason the Settings picker
-                    folds in the stored default: reopening a shelved task can seed this from a
-                    row naming a model this build's catalog doesn't list, and an unlisted value
-                    renders the select on nothing - reading as "Default" over a task that is
-                    pinned, and saving as one on the next edit. */}
-                  {modelChoicesFor(draft.agent, draft.model).map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.label} - {m.hint}
-                    </option>
-                  ))}
+                  <option value="">
+                    {defaultModelOptionLabel(
+                      draft.agent,
+                      defaults?.defaultModel ?? null,
+                      resolveModels,
+                    )}
+                  </option>
+                  {/* The draft's own id is folded in, for the same reason the Settings picker
+                      folds in the stored default: reopening a shelved task can seed this from a
+                      row naming a model this build's catalog doesn't list, and an unlisted value
+                      renders the select on nothing - reading as "Default" over a task that is
+                      pinned, and saving as one on the next edit. */}
+                  <ModelCatalogOptions catalog={resolveModels(draft.agent, draft.model)} />
                 </select>
               </Tooltip>
             </label>
@@ -2450,8 +2630,11 @@ function DispatchModal({
           <span className={`field-hint dispatch-crew-hint${guidedDim}`}>
             {usesHarness
               ? "Defaults from Settings → Harnesses. Switching agent resets the model and effort overrides."
-              : kindBehavior.constraint}
+              : draft.kind === "pipeline"
+                ? <PipelineDispatchConstraint runtime={pipelineLaunchRuntime} />
+                : kindBehavior.constraint}
           </span>
+          {usesHarness && <ModelCatalogNotice agent={draft.agent} />}
           {kindUnavailable && (
             <span className={`dispatch-workflow-warning${guidedDim}`}>
               This kind is available only when conductor is enabled for the selected repository.
@@ -2470,6 +2653,7 @@ function DispatchModal({
             off it rather than off the `<label>` inside it, for the reason the crew cells
             above exist. An absolutely-positioned child takes no grid track. */}
         <div
+          ref={tourWorkflowRef}
           className={`dispatch-workflow${selectedWorkflowId ? " armed" : ""}${guidedDimUnless(
             "afterWork",
           )}${guidedAnchor("afterWork")}`}
@@ -2553,8 +2737,12 @@ function DispatchModal({
         {selectedWorkflowBlocked && (
           <span className={`dispatch-workflow-warning${guidedDim}`}>
             {!foremanEnabled
-              ? "You can add this task to the backlog, but turn on Foreman before dispatching it—or choose None."
-              : `You can add this task to the backlog, but ${AGENT_IDENTITY[draft.agent].label} cannot detect the completion boundary; choose another agent or None before dispatching.`}
+              ? backlogCompatible
+                ? "You can add this task to the backlog, but turn on Foreman before dispatching it, or choose None."
+                : "Turn on Foreman before dispatching this chat, or choose None."
+              : backlogCompatible
+                ? `You can add this task to the backlog, but ${AGENT_IDENTITY[draft.agent].label} cannot detect the completion boundary; choose another agent or None before dispatching.`
+                : `${AGENT_IDENTITY[draft.agent].label} cannot detect the completion boundary; choose another agent or None before dispatching this chat.`}
           </span>
         )}
         </>
@@ -2568,8 +2756,10 @@ function DispatchModal({
             <Tooltip
               label={
                 detailsOpen
-                  ? "Collapse the backlog details"
-                  : "Priority, labels, title and dependencies"
+                  ? `Collapse the ${backlogCompatible ? "backlog" : "task"} details`
+                  : backlogCompatible
+                    ? "Priority, labels, title and dependencies"
+                    : "Priority, labels and title"
               }
             >
               <button
@@ -2578,7 +2768,9 @@ function DispatchModal({
                 aria-expanded={detailsOpen}
                 onClick={() => setDetailsOpen((open) => !open)}
               >
-                <span className="dispatch-more-title">Backlog details</span>
+                <span className="dispatch-more-title">
+                  {backlogCompatible ? "Backlog details" : "Task details"}
+                </span>
                 {!detailsOpen && <span className="dispatch-more-summary">{backlogSummary}</span>}
                 <span className="dispatch-more-chev" aria-hidden>
                   {detailsOpen ? "▴" : "▾"}
@@ -2637,7 +2829,7 @@ function DispatchModal({
 
                 {titleField}
 
-                <div className="field">
+                {backlogCompatible && <div className="field">
                   <span className="field-label">
                     Dependencies{" "}
                     <span className="field-hint">each waits for its merged PR</span>
@@ -2658,11 +2850,11 @@ function DispatchModal({
                               className="dep-chip-x"
                               aria-label={`Remove dependency: ${label}`}
                               onClick={() =>
-                                update({
-                                  dependencies: draft.dependencies.filter(
+                                updateDependencies(
+                                  draft.dependencies.filter(
                                     (candidate) => dependencyKey(candidate) !== key,
                                   ),
-                                })
+                                )
                               }
                             >
                               ✕
@@ -2678,7 +2870,9 @@ function DispatchModal({
                         aria-label="Add dependency"
                         onChange={(event) => {
                           const option = dependencyByKey.get(event.target.value);
-                          if (option) update({ dependencies: [...draft.dependencies, option.input] });
+                          if (option) {
+                            updateDependencies([...draft.dependencies, option.input]);
+                          }
                         }}
                       >
                         <option value="">+ Add dependency</option>
@@ -2710,7 +2904,7 @@ function DispatchModal({
                       PRs merge.
                     </span>
                   )}
-                </div>
+                </div>}
               </div>
             )}
           </div>
@@ -2767,7 +2961,7 @@ function DispatchModal({
         )}
         {/* Ensemble launches immediately and owns its own member backlog wave, so "Add to
             backlog" makes no sense there; its Review/Launch control owns the primary slot. */}
-        {!ensembleMode && (
+        {!tourDemo && !ensembleMode && backlogCompatible && (
           <Tooltip label={editing ? "Keep it in the backlog" : "Shelve it without launching an agent"}>
             <button
               className="btn btn-ghost"
@@ -2824,6 +3018,7 @@ function DispatchModal({
             }
           >
             <button
+              ref={tourSubmitRef}
               className={`btn btn-primary${selectedDependenciesUnmet && !editing ? " btn-wait" : ""}`}
               onClick={() => void submit(true)}
               disabled={

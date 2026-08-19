@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import {
   listSessionFiles,
+  MAX_SESSION_FILE_ENTRIES,
   MAX_SESSION_EDITOR_BYTES,
   readFileWithinCap,
   readSessionFile,
@@ -27,6 +28,10 @@ async function fixture(): Promise<string> {
   execFileSync("git", ["-C", dir, "init", "-q"]);
   return dir;
 }
+
+test("the session file listing budget covers large checkouts", () => {
+  assert.equal(MAX_SESSION_FILE_ENTRIES, 10_000);
+});
 
 test("lists tracked and untracked non-ignored regular files deterministically", async (t) => {
   const dir = await fixture();

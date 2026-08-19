@@ -12,8 +12,12 @@ import {
   resolveSessionRuntime,
   sdkRuntimeUnsupportedWhy,
 } from "@shared/harness-capabilities.ts";
-import { modelChoicesFor } from "@shared/model.ts";
 import { permissionModeDisplay } from "../lib/format.ts";
+import {
+  ModelCatalogNotice,
+  ModelCatalogOptions,
+  useHarnessModelCatalogs,
+} from "../model-catalog.tsx";
 import type { HarnessesState } from "../useHarnesses.ts";
 import { AgentDot, agentAccentStyle } from "./session-bits.tsx";
 import { Tooltip } from "./Tooltip.tsx";
@@ -151,6 +155,8 @@ function HarnessCard({
   onEffort: (level: ThinkingLevel | null) => void;
   onRuntime: (runtime: SessionRuntime) => void;
 }): React.JSX.Element {
+  const { resolve: resolveModels } = useHarnessModelCatalogs();
+  const models = resolveModels(agent, model);
   const modelId = `harness-model-${agent}`;
   const effortId = `harness-effort-${agent}`;
   const runtimeId = `harness-runtime-${agent}`;
@@ -189,14 +195,7 @@ function HarnessCard({
             aria-label={`Default model for dispatched ${label} sessions`}
           >
             <option value="">Harness default</option>
-            {/* `model` is passed as `extra` so a default set by another build stays
-                selectable here instead of reading as "no model chosen" - and so
-                picking a different row can't silently drop it. */}
-            {modelChoicesFor(agent, model).map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.label} - {m.hint}
-              </option>
-            ))}
+            <ModelCatalogOptions catalog={models} />
           </select>
         </Tooltip>
         <label className="harness-card-field-label" htmlFor={effortId}>
@@ -243,6 +242,7 @@ function HarnessCard({
           </>
         )}
       </div>
+      <ModelCatalogNotice agent={agent} />
       <p className="harness-card-note">
         {model
           ? `Dispatched ${label} sessions are launched with --model ${model}.`

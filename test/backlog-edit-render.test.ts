@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { withOverlayHost } from "./helpers/overlay-host.ts";
-import { TASK_KINDS } from "../src/shared/types.ts";
+import { BACKLOG_TASK_KINDS } from "../src/shared/task.ts";
 import type { Task } from "../src/shared/types.ts";
 import type { TaskSourceInstance } from "../src/shared/task-source.ts";
 import { hasTooltip } from "./helpers/markup.ts";
@@ -95,7 +95,7 @@ test("the editor reopens a task on whichever kind it was stored with", () => {
   // Kind select has no `plan` option opens SILENTLY on `ship`, and saving that form writes
   // the wrong kind back over a task nobody meant to change. That is what a hand-written
   // option list did to this form's two siblings until they were folded onto the registry.
-  for (const kind of TASK_KINDS) {
+  for (const kind of BACKLOG_TASK_KINDS) {
     const html = editor(mkTask({ kind }));
     assert.match(
       html,
@@ -103,6 +103,7 @@ test("the editor reopens a task on whichever kind it was stored with", () => {
       `the editor should reopen a ${kind} task on ${kind}`,
     );
   }
+  assert.doesNotMatch(editor(mkTask()), /<option value="chat"/);
 });
 
 test("effort is selectable immediately after model for both harnesses", () => {

@@ -8,6 +8,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { createElement } from "react";
 import type { WorkflowSummary, WorkflowVersionMetadata } from "../src/shared/workflow.ts";
 import type { PersonaView } from "../src/shared/workflow.ts";
+import type { HarnessModelCatalogs } from "../src/shared/protocol.ts";
 import {
   compatibilityForWorkflowVersion,
   EnsembleDispatch,
@@ -25,6 +26,11 @@ import {
   type EnsembleDispatchDraft,
 } from "../src/web/ensembles/dispatch/config.ts";
 import type { EnsemblePreviewResult } from "../src/web/ensembles/types.ts";
+import {
+  BrowserModelCatalogStore,
+  ModelCatalogProvider,
+  shippedModelCatalogs,
+} from "../src/web/model-catalog.tsx";
 
 const compose = { repoRoot: "/repo", title: "Ship it", intent: "do the thing", attachments: [] };
 
@@ -63,6 +69,7 @@ function render(over: Partial<{
   personas: PersonaView[];
   workflowSummaries: WorkflowSummary[];
   uploading: boolean;
+  modelStore: BrowserModelCatalogStore;
 }> = {}): string {
   const props = {
     ensemble: freshEnsembleDraft(),
@@ -92,7 +99,48 @@ function render(over: Partial<{
       createElement(EnsembleLaunchControls, { launch }),
     );
   }
-  return renderToStaticMarkup(createElement(Harness));
+  const content = createElement(Harness);
+  return renderToStaticMarkup(
+    props.modelStore
+      ? createElement(ModelCatalogProvider, { store: props.modelStore, children: content })
+      : content,
+  );
+}
+
+function livePiStore(): BrowserModelCatalogStore {
+  const current: HarnessModelCatalogs = {
+    ...shippedModelCatalogs(),
+    pi: {
+      choices: [
+        {
+          id: "openai/gpt-5.6-sol",
+          label: "GPT-5.6 Sol",
+          hint: null,
+          provider: "openai",
+          contextWindow: null,
+          reasoning: true,
+          inputModes: ["text"],
+        },
+        {
+          id: "anthropic/claude-sonnet-5",
+          label: "Claude Sonnet 5",
+          hint: null,
+          provider: "anthropic",
+          contextWindow: null,
+          reasoning: true,
+          inputModes: ["text"],
+        },
+      ],
+      source: "live",
+      refreshedAt: "2026-08-18T15:00:00.000Z",
+      problem: null,
+    },
+  };
+  return new BrowserModelCatalogStore(async () => current, {
+    catalogs: current,
+    phase: "ready",
+    pending: false,
+  });
 }
 
 /** A fabricated post-review state, for pinning the footer's reviewed rendering. */
@@ -156,6 +204,25 @@ test("the dispatch renders descriptor-driven strategy segments, lanes, and a two
   assert.match(html, /base pinned at launch/); // the plan strip names the pin
   assert.match(html, /Judged by/); // the evaluator selector (config carries an evaluator)
   assert.match(html, /no workflow/i); // the optional workflow-placement selector
+});
+
+test("Pi ensemble members and the plan strip share the live provider catalog", () => {
+  const draft = freshEnsembleDraft();
+  const members = structuredClone(getConfigPath(draft.config, "members")) as Record<string, unknown>[];
+  members[0] = {
+    ...members[0],
+    agent: "pi",
+    model: "anthropic/claude-sonnet-5",
+  };
+  const html = render({
+    ensemble: { ...draft, config: setConfigPath(draft.config, "members", members) },
+    modelStore: livePiStore(),
+  });
+
+  assert.match(html, /<optgroup label="openai">/);
+  assert.match(html, /<optgroup label="anthropic">/);
+  assert.match(html, /value="anthropic\/claude-sonnet-5" selected/);
+  assert.match(html, /Claude Sonnet 5/);
 });
 
 test("dispatch Persona selectors hide a built-in shadowed by an operator row", () => {

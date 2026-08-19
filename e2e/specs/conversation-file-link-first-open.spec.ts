@@ -12,6 +12,21 @@ const REPORT = "docs/reports/first-open-link/report.html";
 const REPORT_TURN = `Report: ${REPORT}`;
 const EVIDENCE = artifactsDir("conversation-file-link-first-open");
 
+/**
+ * Put the report beyond the former 2,000-entry listing boundary.
+ *
+ * Every path sorts before `docs/reports`, so the old cap omitted the report even though it
+ * was a regular, non-ignored checkout file. Keeping the setup here makes the browser test
+ * prove the user-visible reason for raising the cap instead of only pinning a server number.
+ */
+function seedFilesBeyondOldCap(cwd: string): void {
+  const dir = join(cwd, "cap-fixture");
+  mkdirSync(dir, { recursive: true });
+  for (let i = 0; i <= 2_000; i += 1) {
+    writeFileSync(join(dir, `file-${String(i).padStart(4, "0")}.txt`), "fixture\n");
+  }
+}
+
 async function captureFirstOpen(page: Page): Promise<void> {
   if (process.env.MC_E2E_EVIDENCE !== "1") return;
   mkdirSync(EVIDENCE, { recursive: true });
@@ -50,7 +65,7 @@ async function useBoardTerminal(page: Page, daemon: DaemonHandle): Promise<void>
   await expect(page.locator("main.board")).toBeVisible();
 }
 
-test("a checkout path is clickable on the first Board conversation open", async ({
+test("a report beyond the old file cap is clickable on the first Board conversation open", async ({
   dashboard,
   daemon,
 }) => {
@@ -76,6 +91,7 @@ test("a checkout path is clickable on the first Board conversation open", async 
   }[];
   const session = sessions[0];
   expect(session?.cwd, "the dispatched session has a checkout").toBeTruthy();
+  seedFilesBeyondOldCap(session!.cwd!);
   mkdirSync(join(session!.cwd!, "docs", "reports", "first-open-link"), { recursive: true });
   writeFileSync(join(session!.cwd!, REPORT), "<!doctype html><h1>First-open report</h1>\n");
 

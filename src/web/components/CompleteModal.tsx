@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { Session, Task } from "@shared/types.ts";
 import { api } from "../lib/api.ts";
 import { retroBackstopOffer, retroOutcome } from "../lib/retro-offer.ts";
+import { useTourTaskTargetRef } from "../tour/target-context.tsx";
 import { AgentDot } from "./session-bits.tsx";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
 import { Tooltip } from "./Tooltip.tsx";
@@ -26,18 +27,26 @@ import { Tooltip } from "./Tooltip.tsx";
 export function CompleteModal({
   session,
   tasks,
+  tourOutcome,
   onCompleted,
   onClose,
 }: {
   session: Session;
   /** Every task, to count what this completion would release. */
   tasks: Task[];
+  /**
+   * Read-only outcome shown by the See the work spike. Its presence keeps both terminal
+   * actions inert; the tour controller owns the one fixed completion path.
+   */
+  tourOutcome?: string;
   /** Fired once the task is closed and session shutdown is accepted, so App drops detail. */
   onCompleted?: () => void;
   onClose: () => void;
 }): React.JSX.Element {
   const task = session.task;
-  const [outcome, setOutcome] = useState("");
+  const tourPreview = tourOutcome !== undefined;
+  const [outcome, setOutcome] = useState(tourOutcome ?? "");
+  const tourTargetRef = useTourTaskTargetRef<HTMLElement>("complete-modal", task?.id);
   // Never pre-ticked. Releasing dependents without a merge is a claim only a human can
   // make, so it is always an explicit act.
   //
@@ -68,6 +77,7 @@ export function CompleteModal({
    * once the retro has been through its approvals.
    */
   const retro = retroBackstopOffer(session);
+  const retroLabel = retro?.label ?? (tourPreview ? "Run a retro first" : null);
 
   // Tasks held up by an operator-declared edge onto this one that no merge has closed.
   // Counted here rather than asked of the server: the dashboard already holds every
@@ -84,7 +94,7 @@ export function CompleteModal({
       )
     : [];
 
-  const canComplete = Boolean(task) && !busy;
+  const canComplete = Boolean(task) && !busy && !tourPreview;
 
   async function confirm(): Promise<void> {
     if (!canComplete || !task) return;
@@ -126,7 +136,7 @@ export function CompleteModal({
    * sentence in the same place every other failure here is reported.
    */
   async function runRetro(): Promise<void> {
-    if (busy) return;
+    if (busy || tourPreview) return;
     setBusy(true);
     setError(null);
     setNotice(null);
@@ -139,7 +149,7 @@ export function CompleteModal({
     // Named rather than silent, and NOT through `error`: "filed as a backlog task because
     // this session cannot be typed into" is a different next move, not a failure, and it is
     // the one case where closing would leave the operator believing a turn is coming.
-    if (result.kind === "dispatched") {
+    if (result.kind === "dispatched" || result.kind === "queued") {
       setNotice(retroOutcome(result));
       return;
     }
@@ -153,6 +163,7 @@ export function CompleteModal({
       className="modal complete-modal"
       role="dialog"
       ariaLabel="Complete task and close session"
+      surfaceRef={tourTargetRef}
       closable={!busy}
     >
       <form
@@ -195,9 +206,15 @@ export function CompleteModal({
                   autoFocus
                   value={outcome}
                   disabled={busy}
+                  readOnly={tourPreview}
                   placeholder="Add a note, e.g. shipped in PR #193"
                   onChange={(e) => setOutcome(e.target.value)}
                 />
+                {tourPreview && (
+                  <span className="complete-tour-note">
+                    Prefilled for the tour. The guide owns completion and will not run a retro.
+                  </span>
+                )}
               </label>
 
               {dependents.length > 0 && (
@@ -257,15 +274,21 @@ export function CompleteModal({
           {/* Before the spacer, so it sits on the dialog's own side of the row rather than
               lining up with Cancel and Complete. This is not a third way to answer the
               dialog's question - it is the one thing worth doing BEFORE answering it. */}
-          {retro && (
-            <Tooltip label={retro.tooltip}>
+          {retroLabel && (
+            <Tooltip
+              label={
+                tourPreview
+                  ? "Shown for comparison. This tour will not start a retro."
+                  : retro!.tooltip
+              }
+            >
               <button
                 type="button"
                 className="btn btn-ghost complete-retro"
                 onClick={() => void runRetro()}
-                disabled={busy}
+                disabled={busy || tourPreview}
               >
-                {retro.label}
+                {retroLabel}
               </button>
             </Tooltip>
           )}
@@ -277,12 +300,18 @@ export function CompleteModal({
           </Tooltip>
           <Tooltip
             label={
-              task
+              tourPreview
+                ? "Use Complete tour in the guide to record this fixed outcome"
+                : task
                 ? "Mark the task done, then terminate this agent"
                 : "This session has no task to complete"
             }
           >
-            <button type="submit" className="btn btn-primary" disabled={!canComplete}>
+            <button
+              type="submit"
+              className="btn btn-primary"
+              disabled={!canComplete}
+            >
               {busy ? "Completing…" : "Complete & close"}
             </button>
           </Tooltip>

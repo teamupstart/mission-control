@@ -29,9 +29,12 @@ import { fileURLToPath } from "node:url";
 
 import { DEFAULT_TASK_KIND, TASK_KINDS, type TaskKind } from "../src/shared/types.ts";
 import {
+  BACKLOG_TASK_KINDS,
   TASK_KIND_BEHAVIOR,
   TASK_KIND_INFO,
   hasReviewableDiff,
+  providerOwnsTaskCompletion,
+  taskKindAllowsBacklog,
 } from "../src/shared/task.ts";
 
 const SRC = fileURLToPath(new URL("../src", import.meta.url));
@@ -89,8 +92,8 @@ function sourceFiles(dir: string): string[] {
   });
 }
 
-test("the kinds append pipeline after ship, scout and plan, and the type is derived", () => {
-  assert.deepEqual([...TASK_KINDS], ["ship", "scout", "plan", "pipeline"]);
+test("the kinds preserve the append-only order and derive the type from it", () => {
+  assert.deepEqual([...TASK_KINDS], ["ship", "scout", "plan", "pipeline", "chat"]);
   // Order is a contract, not an accident of how they were typed: it is the order the
   // dispatch form lists the options in, and the order the guided pass offers them.
   assert.equal(TASK_KINDS[0], "ship", "ship leads - it is the default and the common case");
@@ -102,7 +105,7 @@ test("the kinds append pipeline after ship, scout and plan, and the type is deri
   // `(typeof TASK_KINDS)[number]`, so a value the tuple does not hold is not assignable
   // and this file would not compile - which is the assertion.
   const every: readonly TaskKind[] = TASK_KINDS;
-  assert.equal(every.length, 4);
+  assert.equal(every.length, 5);
 });
 
 test("every kind says how it is offered", () => {
@@ -130,7 +133,7 @@ test("the diffless kinds are the ones whose blurb promises no after-work", () =>
   // each other rather than derived from each other on purpose: the blurb is prose that can
   // be reworded, and this fails when a rewording stops matching what the form actually does.
   for (const kind of TASK_KINDS) {
-    const promisesNoAfterWork = TASK_KIND_INFO[kind].blurb.includes("no after-work");
+    const promisesNoAfterWork = TASK_KIND_INFO[kind].blurb.toLowerCase().includes("no after-work");
     assert.equal(
       hasReviewableDiff(kind),
       !promisesNoAfterWork,
@@ -143,17 +146,41 @@ test("the diffless kinds are the ones whose blurb promises no after-work", () =>
   assert.equal(hasReviewableDiff("plan"), false);
   assert.equal(hasReviewableDiff("scout"), false);
   assert.equal(hasReviewableDiff("pipeline"), false);
+  assert.equal(hasReviewableDiff("chat"), false);
 });
 
-test("pipeline is terminal-provider work and never backlog autopilot work", () => {
+test("only chat is excluded from backlog-producing surfaces", () => {
+  assert.deepEqual([...BACKLOG_TASK_KINDS], ["ship", "scout", "plan", "pipeline"]);
+  assert.deepEqual(
+    Object.fromEntries(TASK_KINDS.map((kind) => [kind, taskKindAllowsBacklog(kind)])),
+    { ship: true, scout: true, plan: true, pipeline: true, chat: false },
+  );
+});
+
+test("chat has the approved conversational copy", () => {
+  assert.deepEqual(TASK_KIND_INFO.chat, {
+    label: "chat",
+    blurb: "Talk with an agent without a planned artifact. No after-work.",
+    purpose: "have an open-ended conversation",
+  });
+  assert.deepEqual(TASK_KIND_BEHAVIOR.chat, {
+    repoAvailability: "workspace",
+    launch: "harness",
+    autopilot: false,
+    constraint: null,
+  });
+});
+
+test("pipeline is provider-owned work and never backlog autopilot work", () => {
   assert.deepEqual(TASK_KIND_BEHAVIOR.pipeline, {
     repoAvailability: "pipeline-enabled",
-    launch: "pipeline-terminal",
+    launch: "pipeline",
     autopilot: false,
     constraint:
-      "Pipeline tasks always launch conductor in a real terminal because it reads stdin and refuses nested SDK sessions. " +
-      "Conductor owns its agent, model, and effort; attached repos, after-work workflows, and backlog autopilot do not apply.",
+      "Pipeline tasks use Conductor's configured Engineer host. Conductor owns its downstream agent, model, and effort; attached repos, after-work workflows, and backlog autopilot do not apply.",
   });
+  assert.equal(providerOwnsTaskCompletion("pipeline"), true);
+  assert.equal(providerOwnsTaskCompletion("ship"), false);
 });
 
 /**

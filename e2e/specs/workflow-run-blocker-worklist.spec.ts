@@ -196,7 +196,12 @@ async function directReviewer(page: Page, reviewer: string, marker: string): Pro
   const editor = page.getByRole("dialog", { name: "Guide this reviewer's future rounds" });
   await expect(editor).toBeVisible();
   await editor.getByLabel(`Feedback for ${reviewer}`).fill(`${marker}. Apply the exception.`);
-  await editor.getByRole("button", { name: "Save for future rounds" }).click();
+  const save = editor.getByRole("button", { name: "Save for future rounds" });
+  await expect(save).toBeEnabled();
+  await expect(save).toHaveCSS("color", "rgb(29, 19, 5)");
+  await expect(save).toHaveCSS("background-color", "rgb(246, 167, 51)");
+  await shoot(editor, "05-enabled-save-action");
+  await save.click();
   await expect(editor).toBeHidden();
 }
 
@@ -205,6 +210,9 @@ async function openNextRound(page: Page): Promise<void> {
   const primary = page.locator("header.wf-run-head button.btn-primary");
   await expect(primary).toHaveText("Preview fresh evidence");
   await primary.click();
+  await page.getByRole("dialog", { name: "Preview fresh evidence" })
+    .getByRole("button", { name: "Preview fresh evidence" })
+    .click();
   await expect(primary).toHaveText("Preview unchanged", { timeout: 40_000 });
   await primary.click();
   await page.getByRole("dialog").getByRole("button", { name: "Preview unchanged" }).click();
@@ -248,7 +256,9 @@ test("the worklist leads with what the run asks for, and a pass costs a count", 
   // The three things a person can do about one change without leaving the rail. The disable
   // names the reviewer the SELECTED row belongs to, which is what makes two identically-worded
   // objections separately actionable.
-  await expect(worklist.getByRole("button", { name: "Copy this change" })).toBeVisible();
+  const copyChange = worklist.getByRole("button", { name: "Copy this change" });
+  await expect(copyChange).toBeVisible();
+  await expect(copyChange).toHaveCSS("color", "rgb(231, 235, 241)");
   await expect(worklist.getByRole("button", { name: "Give this reviewer feedback" })).toBeVisible();
   await expect(worklist.getByRole("button", { name: /^Disable E2E / })).toBeVisible();
 

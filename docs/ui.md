@@ -47,7 +47,7 @@ reads it:
 | ☰ Backlog | **Drawer** - the queue in the order autopilot would take it, with the triage moves on each row, escalating to the [Sitrep](attention-and-alerts.md#roundup) |
 | ▶ Working | The fleet, with the filter cleared - so the count and the cards agree again |
 | ⌁ Review | **Drawer** - one ladder per live run |
-| ⧉ Decide | **Drawer** - the condensed decision dossier, one row per live ensemble, with confirmed cancellation |
+| ⧉ Decide | **Drawer** - the condensed decision dossier, one row per live ensemble, with confirmed cancellation; its header also counts unacknowledged failed runs until they are dismissed from the full ensemble page |
 | ⚑ Shipped | **Drawer** - the week's adopted pull requests, newest first, escalating to the [Ship log](library-and-line.md#the-ship-log) |
 
 Hovering a stage gives you what it is for, plus its sentence in full - the visible line is
@@ -100,7 +100,7 @@ on a failed call would be lying about the queue it is describing.
 | Drawer | Each row says | Escalates to |
 |--------|---------------|--------------|
 | **Review** | The session, the workflow and version, the repair round, a compact pipeline of chips (evidence → reviewers → session action → GitHub Inspector), and what the run is doing - **including why it stopped**, as `Blocked · session gone`. A run stopped on *you* is marked amber; a run that has stopped and will not move on its own is marked red. Three or more runs stopped for the *same* reason are one bar instead of three rows. A run an ensemble handed off wears its **⧉ from an ensemble** provenance, which opens that ensemble | The one remedy that run's state actually takes - `Dismiss`, `Retry`, `Resubmit`, `Restart…`, or `Dismiss all` for a bar - then `Open run` → `#/runs/:id`, `All runs →` → `#/runs`, and `Bind a workflow…` opens the binding dialog |
-| **Decide** | What was at stake, elapsed, the candidate progress dots, and what the run wants next. The ones awaiting an answer sort first | `Decide` (awaiting an answer) or `Open full dossier` → `#/ensembles/:id`, `All ensembles →` → `#/ensembles` |
+| **Decide** | What was at stake, elapsed, the candidate progress dots, and what the run wants next. The ones awaiting an answer sort first. A terminal failure remains in the header attention count until **Dismiss failure** acknowledges it without deleting its history | `Decide` (awaiting an answer) or `Open full dossier` → `#/ensembles/:id`, `All ensembles →` → `#/ensembles` |
 | **Backlog** | One queued task: its title (which reopens the [Dispatch](dispatch-and-backlog.md#dispatch-an-agent) form over it), its kind, agent and age, and the marks for its state - **next up**, what it is waiting on, **parked**. The ready band is in [plan order](work-queues.md#backlog-autopilot-foreman-schedules-the-fleet), so the top row is what autopilot takes next; blocked and parked follow. **next up** is a button: it opens the [planner](#the-autopilot-planner), which says why that row is the row | `Launch now` dispatches it into a fresh worktree, the switch parks or resumes it, the picker sets its priority, and a dead prerequisite resolves from the row it is blocking. The footer carries the [autopilot switch and its readout](#the-autopilot-planner), and `Sitrep →` opens the [Roundup](attention-and-alerts.md#roundup) |
 | **Intake** | Each source's last sweep and what it filed, or the error it failed with; each mission's cadence, next firing, and health | `Settings` → task sources, `Open` → [Recurring Missions](recurring-missions.md#recurring-missions) |
 | **Shipped** | One adopted pull request: its merge state as a **mark and a word** (merged / open / gone), its title - falling back to the branch, then to its own number - over `owner/repo#N`, the session that opened it, and when. Newest adoption first, over the same rolling seven days the count above it is folded from. Chips in the header split the week **All / Merged / Open / Gone** with their counts, and are toggles | The pull request itself on GitHub, and `Ship log →` → [`#/shipped`](library-and-line.md#the-ship-log) |
@@ -230,7 +230,7 @@ chip** and a second line saying what the thing is, or what it is doing right now
 | Group | Kinds | The second line says |
 | --- | --- | --- |
 | **Jump to** | `page`, `workflow`, `run`, `ensemble`, `persona`, `action`, `mission` | The authored fact for an asset (version and reviewer count, provider and model, cadence); the **live state** for a run or an ensemble - the same sentence its own page reads, and for a run the session it is reviewing, so four runs of one workflow are four different rows |
-| **Do** | `strategy`, `command` | Launch an ensemble on a strategy, dispatch an agent, bind a workflow to a session, or open a blank draft on a Library shelf |
+| **Do** | `strategy`, `command` | Launch an ensemble on a strategy, dispatch an agent, bind a workflow to a session, open a blank draft on a Library shelf, or start the temporary **See the work** comparison tour |
 | **Settings** | `setting` | The category and what the control does, plus its current value where the palette can flip it |
 
 Rows that need an answer - an ensemble awaiting your decision, a mission that is unhealthy, a
@@ -253,9 +253,10 @@ guessing. Before you type anything it previews what needs you, then everything y
 
 Two things it deliberately does not do. It **never fetches**: every row is built from the live
 SSE collections the dashboard already holds, so typing a letter is not a network event and the
-palette can never be more stale than the page beside it. And it **only ever opens a door that
-already exists** - every "Do" row lands on the same modal a button somewhere else opens, and
-every "Jump to" row on a route the app publishes.
+palette can never be more stale than the page beside it. Production rows **only open doors that
+already exist**: every production "Do" row lands on the same modal a button somewhere else
+opens, and every "Jump to" row on a route the app publishes. The temporary tour row below is
+the explicit comparison-spike exception.
 
 The `page` kind has exactly one member, and that is a statement about the app rather than an
 unfinished list: the [Ship log](library-and-line.md#the-ship-log) is the only full page with no door in the
@@ -274,18 +275,91 @@ Sources card points too. Sessions and backlog tasks are not searchable kinds yet
 borrows its session's name, but that is a label, not an index - and they are the next kinds
 the provider registry behind the palette is built to take.
 
-## Layout (cards, console, or board)
+### Comparison spike: See the work
 
-The same fleet, three shapes. **Settings → Display → Layout** (the ⚙ gear, or <kbd>⌘</kbd><kbd>,</kbd>)
-switches between them live, and the choice persists per machine:
+**See the work** in the Settings rail's **Help & tours** footer, or **Start See the work tour**
+in the palette's **Do** group, runs an isolated evaluation of `driver.js@1.8.0`. It is
+user-started only. There is no first-run trigger, progress storage, new top-bar control, or
+chapter beyond this one guided sequence:
+
+1. **Fleet and the Line** spotlights the permanent pipeline strip.
+2. **Board View** switches through the existing layout owner and spotlights the real Board.
+3. **Session detail** opens an existing session's Board drill-in and describes Conversation,
+   Work queue, Workflows, Diff, and Files as one desk. When the tour starts on an empty fleet,
+   it launches one fixed temporary Chat conversation in the first available repository while
+   the first two stops are shown, then opens that real session here. The prompt asks only for
+   a short orientation to the five desk surfaces and explicitly forbids tools, commands, and
+   file changes. If the Chat launch, session, or target is unavailable, the same labelled
+   dialog is centered and keeps Back, Next, and Exit tour available.
+4. **Open Dispatch** spotlights the existing Dispatch control, then opens the real modal.
+5. **Choose the kind** spotlights the modal's existing Kind selector and explains Chat as an
+   open-ended conversation, Scout as an investigation without a diff, Plan as a reviewed plan
+   that can schedule its work, and Ship as delivery of a reviewable change.
+6. **Brief ready** fills and spotlights the real task input while the modal keeps Repo and Crew
+   visible. The temporary tour draft is isolated from the operator's saved Dispatch draft.
+7. **Choose what follows** spotlights the real **After work** selector with **None** selected
+   and explains that Workflows run reusable review and follow-up steps after an agent finishes.
+8. **Dispatch the task** spotlights the real **Dispatch now** button without dimming the rest
+   of the form. The operator clicks that button to schedule one fixed read-only Ship task on
+   Codex pinned to `gpt-5.6-terra`. This is a real model call and can spend model tokens. On an
+   empty fleet, the temporary Chat conversation is a separate real model call using Codex's
+   configured default model. Each temporary daemon route accepts only a repository; it owns
+   the prompt, kind, and no-Workflow posture. Only the Ship route grants the required
+   `request_input` MCP tool.
+9. **Working** spotlights that task's real Board tile while its session runs.
+10. **Needs You** follows the same tile when the agent's review request reaches the existing
+   Mission Control review channel.
+11. **Choose and submit** opens the real review modal and pauses until the operator selects an
+   option and submits. The response tells the demo session to do no more work.
+12. **Idle** follows the tile after the answered session settles.
+13. **Complete or run a retro** spotlights the existing detail action row and explains that a
+   retro keeps the task open while the session proposes memories for review.
+14. **Complete the tour** opens the real Complete dialog with `Tour demo` prefilled as its
+   generic Outcome note. The dialog shows **Run a retro first** and **Complete & close**, but
+   keeps both inert during the tour. **Complete tour** records the fixed outcome and closes the
+   session without running a retro.
+
+The tour skin echoes the Line rather than introducing a new product surface. An amber frame
+traces the active area, while the coachmark uses the existing panel tokens, a quiet amber wash,
+and a fourteen-segment pipeline rail in its header. Past segments stay muted amber, the current
+segment glows, and the footer keeps Exit separate from the Back and primary actions.
+
+The controller snapshots the route, layout, selection, Cards expansion, Board drill-in,
+filter, and open Line drawer before it moves anything. Exit tour, backdrop dismissal,
+<kbd>Esc</kbd>, completion, and controller errors all restore that snapshot. Every terminal
+path records fixed outcomes and stops both temporary sessions when they exist: `Tour
+conversation` for the empty-fleet Chat preview and `Tour demo` for the Ship walkthrough. Exit
+during provisioning first cancels each launch race and then marks its task done. If cleanup is
+refused, the snapshot still returns immediately and a centered error dialog retains focus with
+**Retry cleanup** until every temporary session closes. Neither task
+edits files, runs workflow Commands, sends application messages beyond the Chat preview's
+fixed opening prompt, answers a review, enables Foreman, changes Trust, saves assets, creates
+a pull request, or runs a retro.
+
+**Comparison finding:** Driver.js supplies spotlight geometry, bounded `waitForElement`
+progression, a centered missing-target fallback, labelled dialog semantics, and initial focus,
+but version 1.8.0 does not contain Tab inside the popover and its built-in close affordance is
+icon-only. A narrow React adapter adds modal and progress semantics, an explicit Exit tour
+button, Tab and Shift+Tab containment, invoker focus restoration, and registration with Mission
+Control's overlay stack. The real review modal temporarily becomes the top registered layer;
+the adapter extends containment across that modal and the coachmark while leaving Escape to
+peel the review before the tour. Its `onDestroyed` hook can also be skipped when an immediate
+exit occurs before the active step is committed, so the adapter finalizes its own exit paths
+directly. This is an adapter around the library, not a general tooltip or tour engine.
+Reduced-motion preference turns off both Driver.js animation and the spike's transitions.
+
+## Layout (console or board in Settings)
+
+The same fleet has three supported shapes. **Settings → Display → Layout** (the ⚙ gear, or <kbd>⌘</kbd><kbd>,</kbd>)
+currently lets you switch live between the two non-Cards layouts, and the choice persists per machine:
 
 | Layout | Shape | Good for |
 |--------|-------|----------|
-| **Cards** (default) | Every session a card in a responsive grid; one expands in place to fill the screen. | The general case, and the most detail per session without clicking. |
 | **Console** | A dense rail of every session with one always-open detail pane beside it. | Working *one* session while keeping an eye on the rest - the conversation is permanent, not a click away. |
 | **Board** | A column per state; clicking a card - or pressing <kbd>Enter</kbd> on the one the arrow keys are on - drills that column into the console's detail. | Reading the fleet's shape at a glance. "How many need me" is a column's height, not eight badges. |
 
-Switching layouts does not change the underlying sessions. Controls repeated across
+Existing Cards preferences remain supported while that layout is retired, but Cards is no
+longer an option in Display settings. Switching layouts does not change the underlying sessions. Controls repeated across
 surfaces come from the *same* leaf pieces so their behavior stays aligned. What changes is
 how they're arranged - dense overview surfaces select a subset, while Console and the
 Board's drill-in expose the complete detail - and the console's permanent conversation
@@ -567,7 +641,7 @@ membership is the whole test - not what the name looks like. Every file the File
 lists is reachable, with no excluded extension and no excluded shape, so `Makefile`,
 `.env`, `gradlew` and `docs/My Plan.md` link exactly like `src/App.tsx` does, while a word
 that is merely path-shaped does not. The set of files is the same one the Files tab shows
-you (`git ls-files`, tracked plus untracked, capped at 2000 entries), so a path the tab
+you (`git ls-files`, tracked plus untracked, capped at 10,000 entries), so a path the tab
 cannot show you is never offered as one you can open.
 
 Matching runs on whole words: a name is never linked inside a longer one, and where
@@ -654,7 +728,7 @@ names the layouts where a shortcut's target exists:
 
 | Key | Action | Scope |
 |-----|--------|-------|
-| <kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> | Around the grid in **Cards**; in **Console** and the **Board** drill-in <kbd>↑</kbd>/<kbd>↓</kbd> walk the rail selection, or scroll the reader's active tab once you <kbd>Tab</kbd> into it (and move through files while its inline Diff reader is focused); along and across the columns in the **Board** overview. With nothing selected, the first arrow selects the first session | Anywhere |
+| <kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> | Around the grid in **Cards**; in **Console** and the **Board** drill-in <kbd>↑</kbd>/<kbd>↓</kbd> walk the rail selection, or scroll the reader's active tab once you <kbd>Tab</kbd> into it (and move through files while its inline Diff reader is focused); along and across the columns in the **Board** overview. On **Scouts**, <kbd>↑</kbd>/<kbd>↓</kbd> open the adjacent report in the current results when focus is outside a text field or selector. With nothing selected, the first arrow selects the first session | Anywhere |
 | <kbd>Tab</kbd> | **Console & board drill-in:** step into the open detail and one tab right each press - Conversation → Work queue → Workflows → Diff → Files - clamping at the last rather than tabbing away. The reader takes a soft ring and <kbd>↑</kbd>/<kbd>↓</kbd> scroll whichever tab shows; <kbd>⇧</kbd><kbd>Tab</kbd> walks back, and from the conversation (or <kbd>Esc</kbd>) hands the keyboard to the rail | Open detail (Console or Board) |
 | <kbd>Enter</kbd> | Open the selected session's detail. **Cards**: focus-expands or collapses the selected card. **Board**: opens the drill-in. Console already shows the selected session. On a focused link or button Enter activates that instead, as it always does | Anywhere |
 | <kbd>Esc</kbd> | Peel back exactly one layer per press - first close whatever's open on top of the grid (a panel, a dialog, the away digest), then leave a focused text box, then collapse an expanded card (**Cards**), hand a Console reader back to its rail, or leave the drill-in with the cursor still on it (**Board**), then deselect. In guided dispatch's Repo step, the first press closes the repo list and leaves the pass for the ordinary form; a second closes the modal | Anywhere |
@@ -662,17 +736,21 @@ names the layouts where a shortcut's target exists:
 | <kbd>f</kbd> | Open **Fleet** | Anywhere |
 | <kbd>w</kbd> | Open the **Library** | Anywhere |
 | <kbd>r</kbd> | Open **Workflow Runs** | Anywhere |
+| <kbd>↑</kbd> <kbd>↓</kbd> | Select the previous or next workflow run and load it immediately in the reader | Workflow Runs rail |
+| <kbd>Tab</kbd> | From the selected run, enter the workflow at its first authored stage. Further Tabs advance through the stages | Workflow Runs rail and pipeline |
+| <kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> | Select the previous or next authored stage | Workflow Runs pipeline |
+| <kbd>Enter</kbd> | Load a completed stage's recorded details in the Review worklist | Workflow Runs pipeline |
 | <kbd>⇧</kbd><kbd>S</kbd> | Open **Scouts** - the archive of finished investigations | Anywhere |
 | <kbd>⇧</kbd><kbd>P</kbd> | Open or close **Sitrep** | Fleet |
 | <kbd>+</kbd> | Start the guided dispatch pass. <kbd>Tab</kbd> reaches the ordinary form in one key | Anywhere |
 | type, <kbd>↑</kbd><kbd>↓</kbd>, <kbd>Enter</kbd> | Filter repositories by name, move through the matches and take one | Guided dispatch: Repo |
-| <kbd>p</kbd> / <kbd>t</kbd> / <kbd>l</kbd> | Choose ship / scout / plan | Guided dispatch: Kind |
+| <kbd>p</kbd> / <kbd>t</kbd> / <kbd>l</kbd> / <kbd>c</kbd> | Choose ship / scout / plan / chat | Guided dispatch: Kind |
 | <kbd>c</kbd> / <kbd>x</kbd> / <kbd>i</kbd> | Choose Claude Code / Codex / Pi | Guided dispatch: Harness |
 | <kbd>d</kbd> / <kbd>n</kbd> / printed letter | Choose the dispatch default, None or a published Workflow | Guided dispatch: After work |
 | <kbd>1</kbd>…<kbd>9</kbd> | Take that position in Kind, Harness or After work. Digits type into the filter during Repo | Guided dispatch |
 | <kbd>Backspace</kbd> | Delete a Repo-filter character, or go back one question from a later step | Guided dispatch |
 | <kbd>Tab</kbd> | Leave the guided pass, keep every answer and focus the task box | Guided dispatch |
-| <kbd>/</kbd> | Focus the filter box (sessions, plus the board's backlog) | Anywhere |
+| <kbd>/</kbd> | Focus the filter box (sessions, plus the board's backlog), or **Scouts** search while on that page | Anywhere |
 | <kbd>⌘</kbd><kbd>K</kbd> | Open [the palette](#the-palette-k) over workflows, runs, ensembles, Personas, actions, missions and settings - it opens where you are and never navigates to open; press again to close | Anywhere |
 | <kbd>⇧</kbd><kbd>F10</kbd> or the Menu key | Open the [context menu](#context-menus) for the focused item or text field | Anywhere |
 | <kbd>e</kbd> | On the **Board** overview, show the selected card's full workflow or collapse it back to the active-rung preview. This is the keyboard equivalent of **Show full workflow** / **Collapse workflow** and never opens Conversation or another session-detail tab | Selected Board card with a workflow |

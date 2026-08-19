@@ -3,6 +3,7 @@ import type {
   PipelineActionResult,
   PipelineConsole,
   PipelineDaemonState,
+  PipelineInstallerCandidate,
   PipelineProbe,
   PipelineProviderId,
   PipelineRepoRegistrationResult,
@@ -148,6 +149,25 @@ export interface PipelineProvider {
   /** Register a canonical repository through the provider's own CLI. Never throws. */
   registerRepo(repoRoot: string): Promise<PipelineRepoRegistrationResult>;
   /**
+   * Optional interactive installation from provider-verified local source.
+   *
+   * Discovery executes no checkout code. `terminalArgv` repeats the verification immediately
+   * before returning provider-owned argv, so a stale remote or marker is refused before the
+   * terminal layer sees it.
+   */
+  installer?: {
+    candidates(repoRoots: readonly string[]): Promise<PipelineInstallerCandidate[]>;
+    terminalArgv(checkout: string): Promise<
+      | {
+          candidate: PipelineInstallerCandidate;
+          argv: string[];
+          cwd: string;
+          title: string;
+        }
+      | { refused: string }
+    >;
+  };
+  /**
    * Read every run in one repository, from the provider's files alone.
    *
    * Spawns nothing. That is what makes the watch loop cheap enough to run on a cadence,
@@ -253,6 +273,8 @@ export interface PipelineProvider {
     intent: string,
     repoRoot: string,
   ): Promise<{ argv: string[]; cwd: string } | { refused: string }>;
+  /** Turn one for the provider's managed SDK host. No terminal command is nested inside it. */
+  taskPrompt(intent: string): string;
 }
 
 /** What a control verb acts on. `slug` is null for a repository-scoped verb. */

@@ -1,0 +1,72 @@
+name: Release
+
+# Release Please owns this repository's version, changelog, tag, and GitHub Release.
+#
+# Why this exists at all: the packaged app compares its own `package.json` version against the
+# newest stable GitHub Release to decide whether an update is available. Before this workflow
+# the version had been 0.1.0 since the first commit and no tag, changelog, or Release had ever
+# existed, so there was nothing to compare against.
+#
+# How it works: every push to the default branch updates (or opens) a single release pull
+# request that bumps `package.json`, `package-lock.json`, and a GENERATED `CHANGELOG.md` from
+# the conventional-commit squash titles merged since the last release. Merging that pull
+# request is the release: the next run of this workflow sees the release commit, creates the
+# `vX.Y.Z` tag, and publishes the GitHub Release.
+#
+# `.release-please-manifest.json` is bootstrapped at 0.1.0 - the version already in
+# `package.json` - rather than left for the action to infer, because there is no tag history to
+# infer it from and an invented first version would not match the shipped app.
+#
+# Two things this deliberately does NOT do:
+#
+#   * It does not publish to npm. The package is private and the artifact is a macOS app built
+#     on the user's own machine.
+#   * It does not build the dmg. The tag it pushes is created with GITHUB_TOKEN, and GitHub does
+#     not start workflow runs from those, so `ci.yml`'s `package` job does not fire here and
+#     cannot race this job. Packaging a tag stays a manual `workflow_dispatch`, which is what it
+#     already was.
+#
+# `CHANGELOG.md` is generated. Never hand-edit it.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+# Never cancel a release in flight: a cancelled run can leave the tag pushed and the Release
+# unpublished, which is exactly the state the updater cannot read.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    name: release-please
+    steps:
+      - name: Open or update the release pull request, and release when one is merged
+        id: release
+        uses: googleapis/release-please-action@v4
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+      # The version equality the updater depends on, checked against the tag that was actually
+      # created rather than against the pull request that proposed it. This runs after the
+      # Release exists, so it is a loud failure rather than a gate - the same assertion also
+      # runs in `ci.yml`'s `package` job, which is where it blocks an artifact.
+      - name: Check out the released tag
+        if: ${{ steps.release.outputs.release_created }}
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ steps.release.outputs.tag_name }}
+
+      - name: Assert the tag, package.json, and lockfile agree
+        if: ${{ steps.release.outputs.release_created }}
+        env:
+          TAG: ${{ steps.release.outputs.tag_name }}
+        run: node scripts/assert-release-version.mjs "$TAG"

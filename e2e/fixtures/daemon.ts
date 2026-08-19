@@ -1,12 +1,30 @@
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { ghPullRequestsPath, writeFakeAgents } from "./fake-agents.ts";
-import { writeFakeConductor, type FakeConductor } from "./conductor.ts";
+import {
+  ghPullRequestsPath,
+  piCatalogControlPath,
+  writeFakeAgents,
+} from "./fake-agents.ts";
+import {
+  FAKE_CONDUCTOR_VERSION,
+  seedConductorInstallerCheckout,
+  writeFakeConductor,
+  type FakeConductor,
+} from "./conductor.ts";
 
 /**
  * A real Mission Control daemon, isolated from the operator's machine, for a browser to drive.
@@ -52,6 +70,10 @@ export interface DaemonHandle {
    * so a spec cannot introduce one afterwards.
    */
   conductor: FakeConductor;
+  /** Verified local source checkout seeded only for guided-installer specs. */
+  conductorCheckout: string | null;
+  /** Make the initially missing fake engine resolve on the next real provider probe. */
+  installFakeConductor(): void;
   /** Start the real standalone Foreman worker against this isolated daemon and fake agents. */
   startForeman(): Promise<void>;
   /**
@@ -191,6 +213,21 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
   mkdirSync(workspace, { recursive: true });
   const repo = seedRepo(workspace, "demo-repo");
   const secondRepo = seedRepo(workspace, "second-repo");
+  const conductorCheckout =
+    extraEnv.MC_E2E_CONDUCTOR_CHECKOUT === "1"
+      ? seedConductorInstallerCheckout(seedRepo(workspace, "ai-conductor"))
+      : null;
+  const startsMissing = extraEnv.MC_E2E_CONDUCTOR_STARTS_MISSING === "1";
+  const installRoot = join(home, "installed-conductor");
+  const installBin = join(installRoot, "bin/conduct-ts");
+
+  const installFakeConductor = (): void => {
+    if (!startsMissing) return;
+    mkdirSync(join(installRoot, "bin"), { recursive: true });
+    copyFileSync(conductor.bin, installBin);
+    chmodSync(installBin, 0o755);
+    writeFileSync(join(installRoot, "VERSION"), `${FAKE_CONDUCTOR_VERSION}\n`);
+  };
 
   const isolatedEnv = {
     ...process.env,
@@ -232,13 +269,16 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     // observation of somebody's real work. `AI_CONDUCTOR_REGISTRY` closes the other door:
     // the probe falls back to the registry FILE when the CLI cannot answer, and that file
     // lives in the operator's home unless it is pointed somewhere throwaway.
-    MISSION_CONDUCTOR_BIN: conductor.bin,
+    MISSION_CONDUCTOR_BIN: startsMissing ? installBin : conductor.bin,
     AI_CONDUCTOR_REGISTRY: conductor.registryPath,
     MC_E2E_CONDUCTOR_PROJECTS: conductor.projectsPath,
     // Where that fake records the verbs it is asked for. Set for every daemon so a spec only
     // has to read the file; a daemon that never spawns a control verb simply leaves it absent.
     MC_E2E_CONDUCTOR_LOG: conductor.logPath,
     MC_E2E_RECORD_DIR: recordDir,
+    // Re-read on every prompt-free Pi catalog probe so a spec can move from live discovery
+    // to failure across a daemon restart without ever allowing a launch-shaped invocation.
+    MC_E2E_PI_CATALOG_CONTROL: piCatalogControlPath(home),
     // Where that fake reads its scripted pull requests from. Set for every daemon so a spec
     // only has to write the file; absent content simply means "no pull requests anywhere",
     // which is what every spec that does not script one already expects.
@@ -461,6 +501,8 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     secondRepo,
     ghPrsPath: ghPullRequestsPath(home),
     conductor,
+    conductorCheckout,
+    installFakeConductor,
     readLog: () => log,
     startForeman,
     crash,

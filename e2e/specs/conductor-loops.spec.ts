@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 
 import type { Locator, Page } from "@playwright/test";
 
@@ -54,6 +55,7 @@ async function request<T>(
 async function enablePipelines(
   daemon: DaemonHandle,
   foremanMechanicalTriage = false,
+  launchRuntime: "claude-sdk" | "terminal" = "claude-sdk",
 ): Promise<void> {
   writeConductorProjects(daemon.home, [
     { name: "demo-repo", path: daemon.repo },
@@ -61,16 +63,109 @@ async function enablePipelines(
   ]);
   await request(daemon, "/api/pipelines/config", "PUT", {
     enabled: true,
+    launchRuntime,
     foremanMechanicalTriage,
     repos: [{ provider: "ai-conductor", repoRoot: daemon.repo, enabled: true }],
   });
 }
 
-test("guided dispatch offers pipeline only in an enabled repo and launches a real terminal home", async ({
+/** User prompts recorded by the cost-free Claude SDK fixture for one checkout. */
+function sdkPrompts(daemon: DaemonHandle): string[] {
+  const project = join(
+    daemon.home,
+    ".claude",
+    "projects",
+    daemon.repo.replace(/[/.]/g, "-"),
+  );
+  try {
+    return readdirSync(project)
+      .filter((name) => name.endsWith(".jsonl"))
+      .flatMap((name) => readFileSync(join(project, name), "utf8").trim().split("\n"))
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as { message?: { role?: string; content?: unknown } })
+      .filter((entry) => entry.message?.role === "user")
+      .map((entry) => entry.message?.content)
+      .filter((content): content is string => typeof content === "string");
+  } catch {
+    return [];
+  }
+}
+
+test("SDK pipeline dispatch invokes Engineer directly and stays provider-owned", async ({
   dashboard,
   daemon,
 }) => {
   await enablePipelines(daemon);
+
+  await dashboard.getByRole("button", { name: "Dispatch" }).click();
+  const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
+  const repo = dialog.getByPlaceholder("search repos or type a path…");
+  const kind = dialog.getByRole("combobox", { name: "Kind", exact: true });
+  await repo.fill(daemon.repo);
+  await dashboard.keyboard.press("Escape");
+
+  await dialog.getByRole("button", { name: "Add another repo" }).click();
+  await dialog.getByPlaceholder("repo to attach…").fill(daemon.secondRepo);
+  await dashboard.keyboard.press("Escape");
+  await dialog.getByRole("button", { name: "Attach repo" }).click();
+  await kind.selectOption("pipeline");
+
+  await expect(dialog.getByRole("combobox", { name: "Agent", exact: true })).toBeDisabled();
+  await expect(dialog.getByRole("combobox", { name: "Model", exact: true })).toBeDisabled();
+  await expect(dialog.getByRole("combobox", { name: /Effort/ })).toBeDisabled();
+  await expect(dialog.getByRole("combobox", { name: "After work", exact: true })).toBeDisabled();
+  await expect(dialog.getByRole("button", { name: "Add another repo" })).toBeHidden();
+  await expect(
+    dialog.getByRole("button", { name: `Detach repo: ${daemon.secondRepo}` }),
+  ).toHaveCount(0);
+  await expect(dialog.getByText(/Claude Agent SDK starts one managed Claude host/)).toBeVisible();
+  await expect(dialog.getByText(/\/engineer <idea> as turn one/)).toBeVisible();
+  await expect(dialog.getByText(/provider projection owns task completion/)).toBeVisible();
+  await expect(dialog.getByText(/background build daemon keeps its own tmux supervision/)).toBeVisible();
+  await shoot(dashboard, "04-sdk-pipeline-dispatch", dialog);
+
+  const intent = "Build the SDK-hosted pipeline route";
+  await dialog.getByPlaceholder("What should this agent do?").fill(intent);
+  await dialog.getByRole("button", { name: "Dispatch now" }).click();
+  await expect(dialog).toBeHidden();
+
+  await expect
+    .poll(
+      async () =>
+        (
+          await request<Array<{
+            kind: string;
+            status: string;
+            sessionId: string | null;
+            homeName: string | null;
+            pipelineRun: { provider: string; repoRoot: string; slug: string } | null;
+          }>>(daemon, "/api/tasks")
+        ).find((task) => task.kind === "pipeline"),
+      { message: "the pipeline task should own a running SDK session" },
+    )
+    .toMatchObject({
+      kind: "pipeline",
+      status: "running",
+      sessionId: expect.stringMatching(/^sdk:/),
+      homeName: null,
+      pipelineRun: {
+        provider: "ai-conductor",
+        repoRoot: daemon.repo,
+        slug: "build-the-sdk-hosted-pipeline-route",
+      },
+    });
+  await expect
+    .poll(() => sdkPrompts(daemon), {
+      message: "the SDK host should receive the direct Engineer command as turn one",
+    })
+    .toContain(`/engineer ${intent}`);
+});
+
+test("guided dispatch offers pipeline only in an enabled repo and launches a real terminal home", async ({
+  dashboard,
+  daemon,
+}) => {
+  await enablePipelines(daemon, false, "terminal");
 
   await dashboard.getByRole("button", { name: "Dispatch" }).click();
   const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
@@ -107,8 +202,11 @@ test("guided dispatch offers pipeline only in an enabled repo and launches a rea
   ).toHaveCount(0);
   await expect(dialog.getByRole("combobox", { name: "Agent", exact: true })).toBeDisabled();
   await expect(dialog.getByRole("combobox", { name: "Model", exact: true })).toBeDisabled();
-  await expect(dialog.getByText(/always launch conductor in a real terminal/)).toBeVisible();
-  await expect(dialog.getByText(/refuses nested SDK sessions/)).toBeVisible();
+  await expect(dialog.getByRole("combobox", { name: /Effort/ })).toBeDisabled();
+  await expect(dialog.getByRole("combobox", { name: "After work", exact: true })).toBeDisabled();
+  await expect(dialog.getByText(/Terminal opens conduct-ts engineer --idea/)).toBeVisible();
+  await expect(dialog.getByText(/live stdin and removes the inherited Claude nesting marker/)).toBeVisible();
+  await expect(dialog.getByText(/provider projection owns task completion/)).toBeVisible();
   await shoot(dashboard, "01-pipeline-dispatch", dialog);
 
   const intent = "Ship the phase six pipeline weave";
@@ -120,14 +218,30 @@ test("guided dispatch offers pipeline only in an enabled repo and launches a rea
     .poll(
       async () =>
         (
-          await request<Array<{ kind: string; status: string; homeName: string | null }>>(
+          await request<Array<{
+            kind: string;
+            status: string;
+            sessionId: string | null;
+            homeName: string | null;
+            pipelineRun: { provider: string; repoRoot: string; slug: string } | null;
+          }>>(
             daemon,
             "/api/tasks",
           )
         ).find((task) => task.kind === "pipeline"),
       { message: "the pipeline task should own a running terminal home" },
     )
-    .toMatchObject({ kind: "pipeline", status: "running", homeName: expect.any(String) });
+    .toMatchObject({
+      kind: "pipeline",
+      status: "running",
+      sessionId: null,
+      homeName: expect.any(String),
+      pipelineRun: {
+        provider: "ai-conductor",
+        repoRoot: daemon.repo,
+        slug: "ship-the-phase-six-pipeline-weave",
+      },
+    });
 
 });
 

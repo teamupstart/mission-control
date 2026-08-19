@@ -144,7 +144,7 @@ async function seedApprovedRun(page: Page, daemon: DaemonHandle): Promise<string
   return submitted.run.id;
 }
 
-test("a completed run lists its reviewers and no structural attempts", async ({
+test("a completed run lists its reviewers, and its tiles select their worklist data", async ({
   dashboard,
   daemon,
 }) => {
@@ -202,10 +202,23 @@ test("a completed run lists its reviewers and no structural attempts", async ({
   await expect(section.locator("details.wf-run-packet").first())
     .toContainText("2 of 2 reviewers reported");
 
+  // A settled member tile is a direct index into the worklist. Start on the first reviewer,
+  // then click the second reviewer's pipeline tile and prove both the rail and full detail move.
+  const riskRow = rows.filter({ hasText: REVIEWER.risk });
+  const evidenceRow = rows.filter({ hasText: REVIEWER.evidence });
+  await riskRow.click();
+  await expect(riskRow).toHaveAttribute("aria-current", "true");
+  const evidenceTile = strip.locator("li.wf-pipeline-reviewer")
+    .filter({ hasText: REVIEWER.evidence });
+  await evidenceTile.getByRole("button").click();
+  await expect(evidenceRow).toHaveAttribute("aria-current", "true");
+  await expect(riskRow).toHaveAttribute("aria-current", "false");
+  await expect(worklist.locator("article.wf-run-verdict")).toContainText(REVIEWER.evidence);
+
   if (process.env.MC_E2E_EVIDENCE) {
     mkdirSync(EVIDENCE, { recursive: true });
     // eslint-disable-next-line no-console
-    console.log("OBSERVED two reviewer cards and zero structural attempt cards");
+    console.log("OBSERVED a completed reviewer tile selected that reviewer's full worklist data");
     await dashboard.screenshot({
       path: `${EVIDENCE}workflow-run-reviewer-verdicts.png`,
       fullPage: true,

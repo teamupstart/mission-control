@@ -22,6 +22,7 @@ import type {
   SessionFileSaveResult,
   SessionQueue,
   SkillsView,
+  Task,
   TaskKind,
   TaskPriority,
   TranscriptMessage,
@@ -36,6 +37,7 @@ import type {
   CostTelemetryStatus,
   HarnessesConfig,
   HarnessesConfigPatch,
+  HarnessModelCatalogs,
   InspectorConfig,
   InspectorConfigPatch,
   LlmConfig,
@@ -50,6 +52,7 @@ import type {
   UiConfigPatch,
   UiConfigView,
   PipelinesConfigPatch,
+  PipelineInstallerLaunchBody,
   TaskSourcesConfigPatch,
   UpdateTask,
   TaskDependencyInput,
@@ -57,6 +60,7 @@ import type {
   WorktreesConfig,
   WorktreesConfigPatch,
 } from "@shared/protocol.ts";
+import { HarnessModelCatalogsSchema } from "@shared/protocol.ts";
 import type {
   WorktreeActionExecuteResult,
   WorktreeActionPreview,
@@ -95,9 +99,11 @@ import type {
   PipelineActionResult,
   PipelineConsoleRequest,
   PipelineConsoleResult,
+  PipelineInstallerCandidatesResult,
+  PipelineInstallerLaunchResult,
   PipelineProviderId,
   PipelineRepoRegistrationResponse,
-  PipelineRepoStatus,
+  PipelineReposView,
   PipelineRunDetail,
   PipelinesView,
 } from "@shared/pipeline.ts";
@@ -109,7 +115,7 @@ import type {
 } from "@shared/archives.ts";
 import type { AwayBufferSummary, AwayDigest } from "@shared/away-buffer.ts";
 import type { Stall } from "@shared/stall.ts";
-import type { PersonaDefaultsView } from "@shared/workflow.ts";
+import type { PersonaDefaultsView, WorkflowUploadEvidenceLocator } from "@shared/workflow.ts";
 
 export interface ActionResult {
   ok: boolean;
@@ -176,6 +182,24 @@ export const fetchForemanEpisode = (id: number) =>
 export const fetchBacklogPlan = () => fetchJson<BacklogPlan>("/api/backlog/plan");
 /** Dispatch-time defaults the harness applies to the sessions it launches. */
 export const fetchHarnessesConfig = () => fetchJson<HarnessesConfig>("/api/harnesses/config");
+/**
+ * The complete dispatch-time model catalog, read once by the root browser provider.
+ *
+ * Unlike most optional reads in this module, this response is narrowed at the browser
+ * boundary. A stale tab can be talking to an older daemon, and a malformed aggregate must
+ * degrade to the shipped catalog rather than become three partially trusted picker lists.
+ */
+export async function fetchHarnessModelCatalogs(
+  refresh = false,
+  signal?: AbortSignal,
+): Promise<HarnessModelCatalogs | null> {
+  const value = await fetchJsonWithSignal<unknown>(
+    `/api/harnesses/models${refresh ? "?refresh=1" : ""}`,
+    signal,
+  );
+  const parsed = HarnessModelCatalogsSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
 export const fetchWorktrees = (signal?: AbortSignal) =>
   fetchJsonWithSignal<WorktreeInventory>("/api/worktrees", signal);
 
@@ -337,7 +361,17 @@ export async function setPipelinesConfig(
  * polling while its tab is open should cost.
  */
 export const fetchPipelineRepos = () =>
-  fetchJson<{ repos: PipelineRepoStatus[] }>("/api/pipelines/repos");
+  fetchJson<PipelineReposView>("/api/pipelines/repos");
+
+/** Ephemeral, provider-verified local source checkouts eligible for guided installation. */
+export const fetchPipelineInstallers = (provider: PipelineProviderId) =>
+  fetchJson<PipelineInstallerCandidatesResult>(
+    `/api/pipelines/installers?provider=${encodeURIComponent(provider)}`,
+  );
+
+/** Open the reverified upstream installer in the selected hosted terminal. */
+export const openPipelineInstaller = (body: PipelineInstallerLaunchBody) =>
+  post<ActionResult & PipelineInstallerLaunchResult>("/api/pipelines/install", body);
 /**
  * One run's gate evidence, read from the engine's files at request time.
  *
@@ -976,15 +1010,30 @@ export const fetchTerminalTargets = () =>
  */
 export async function uploadImage(
   file: File,
-): Promise<{ ok: true; upload: Attachment } | { ok: false; error: string }> {
+): Promise<
+  | { ok: true; upload: Attachment; uploadId: string; bytes: number }
+  | { ok: false; error: string }
+> {
   try {
     const body = new FormData();
     body.append("file", file);
     const res = await fetch("/api/uploads", { method: "POST", body });
-    const data = (await res.json().catch(() => ({}))) as Partial<Attachment> & { error?: string };
+    const data = (await res.json().catch(() => ({}))) as Partial<Attachment> & {
+      uploadId?: string;
+      bytes?: number;
+      error?: string;
+    };
     if (!res.ok) return { ok: false, error: data.error ?? `HTTP ${res.status}` };
     if (!data.path || !data.name) return { ok: false, error: "upload returned no path" };
-    return { ok: true, upload: { path: data.path, name: data.name } };
+    if (!data.uploadId || !Number.isInteger(data.bytes) || (data.bytes ?? 0) <= 0) {
+      return { ok: false, error: "upload returned no workflow locator" };
+    }
+    return {
+      ok: true,
+      upload: { path: data.path, name: data.name },
+      uploadId: data.uploadId,
+      bytes: data.bytes!,
+    };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
@@ -1213,13 +1262,12 @@ export const api = {
    * into. The daemon decides which; there is nothing to send and nothing to choose.
    *
    * The two success arms are worth distinguishing to the person who clicked, which is why the
-   * response body is kept rather than reduced to `ok`: `delivered` means their session now has
-   * an instruction in it, `dispatched` means a task is sitting in the backlog waiting to be
-   * started. Telling them "done" for both would leave the second one waiting for a turn that
-   * is never going to happen.
+   * response body is kept rather than reduced to `ok`: same-session delivery, dead-session
+   * fallback, accepted post-merge launch, and recoverably queued post-merge launch each leave
+   * the operator looking in a different place.
    */
   runRetro: (id: string) =>
-    post<ActionResult & Partial<RetroResponse>>(
+    post<ActionResult & RetroResponse>(
       `/api/sessions/${encodeURIComponent(id)}/retro`,
     ),
   /**
@@ -1290,6 +1338,17 @@ export const api = {
     post(`/api/reviews/${encodeURIComponent(id)}/resolve`, { action, response, selections }),
   // --- dispatch (agents) ---
   dispatch: (input: DispatchInput) => post(`/api/tasks`, input),
+  /** Launch the fixed, read-only Terra task used only by the See the work tour spike. */
+  startSeeWorkTourDemo: (repoRoot: string) =>
+    post<ActionResult & { task?: Task }>("/api/tours/see-work/dispatch", { repoRoot }),
+  /** Launch the fixed Chat conversation used when the tour starts on an empty fleet. */
+  startSeeWorkTourPreview: (repoRoot: string) =>
+    post<ActionResult & { task?: Task }>("/api/tours/see-work/preview", { repoRoot }),
+  /** Record the fixed Tour demo outcome and close any session the spike launched. */
+  completeSeeWorkTourDemo: (taskId: string) =>
+    post<ActionResult & { task?: Task }>(
+      `/api/tours/see-work/tasks/${encodeURIComponent(taskId)}/complete`,
+    ),
   /**
    * Launch an existing task. Dashboard callers claim `overrideDisabled` for this manual
    * action; without that claim the daemon refuses a parked task.
@@ -1472,10 +1531,14 @@ export const api = {
     post(`/api/sessions/${encodeURIComponent(id)}/queue/${encodeURIComponent(itemId)}/approve`),
   setWrapupAnswer: (id: string, answer: string | null) =>
     put(`/api/sessions/${encodeURIComponent(id)}/queue/wrapup`, { answer }),
-  startBuiltinReview: (id: string, requestId: string) =>
+  startBuiltinReview: (
+    id: string,
+    requestId: string,
+    evidence: WorkflowUploadEvidenceLocator[] = [],
+  ) =>
     post<{ run?: { id: string } } & ActionResult>(
       `/api/sessions/${encodeURIComponent(id)}/workflow-review`,
-      { requestId },
+      { requestId, evidence },
     ),
   reattachQueue: (id: string, noteKey: string) =>
     post(`/api/sessions/${encodeURIComponent(id)}/queue/reattach`, { noteKey }),

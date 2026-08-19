@@ -9,7 +9,7 @@
 // Kind is not optional; every task names one registered launch contract, and `ship` is the
 // default.
 
-import { DEFAULT_TASK_KIND } from "./types.ts";
+import { DEFAULT_TASK_KIND, TASK_KINDS } from "./types.ts";
 import type { Session, Task, TaskKind, TaskPriority } from "./types.ts";
 
 /**
@@ -24,7 +24,7 @@ import type { Session, Task, TaskKind, TaskPriority } from "./types.ts";
  * against; this is the copy half, kept out of `types.ts` for the reason `AGENT_IDENTITY`
  * is kept out of it - what a thing is called is not what a thing is.
  *
- * `Record<TaskKind, …>` is the enforcement: a fourth kind does not compile until it has
+ * `Record<TaskKind, …>` is the enforcement: a new kind does not compile until it has
  * said how it is offered. One record rather than parallel records over the same domain,
  * matching `AGENT_IDENTITY` - the registry the select directly above the Kind select
  * renders from - because these are one question ("what is this choice?") asked of one
@@ -79,6 +79,11 @@ export const TASK_KIND_INFO: Record<TaskKind, TaskKindInfo> = {
     blurb: "Start conductor's SDLC pipeline. Conductor owns its worktree and PR; no after-work.",
     purpose: "run a conductor pipeline",
   },
+  chat: {
+    label: "chat",
+    blurb: "Talk with an agent without a planned artifact. No after-work.",
+    purpose: "have an open-ended conversation",
+  },
 };
 
 /** The launch and scheduling rules every surface must apply to a task kind. */
@@ -86,7 +91,7 @@ export interface TaskKindBehavior {
   /** Which repository catalog may offer this kind. */
   repoAvailability: "workspace" | "pipeline-enabled";
   /** Who owns the launched process and runtime choices. */
-  launch: "harness" | "pipeline-terminal";
+  launch: "harness" | "pipeline";
   /** Whether Foreman's backlog loop may pick this kind unattended. */
   autopilot: boolean;
   /** A short, operator-facing explanation of non-default launch constraints. */
@@ -119,13 +124,23 @@ export const TASK_KIND_BEHAVIOR: Record<TaskKind, TaskKindBehavior> = {
   },
   pipeline: {
     repoAvailability: "pipeline-enabled",
-    launch: "pipeline-terminal",
+    launch: "pipeline",
     autopilot: false,
     constraint:
-      "Pipeline tasks always launch conductor in a real terminal because it reads stdin and refuses nested SDK sessions. " +
-      "Conductor owns its agent, model, and effort; attached repos, after-work workflows, and backlog autopilot do not apply.",
+      "Pipeline tasks use Conductor's configured Engineer host. Conductor owns its downstream agent, model, and effort; attached repos, after-work workflows, and backlog autopilot do not apply.",
+  },
+  chat: {
+    repoAvailability: "workspace",
+    launch: "harness",
+    autopilot: false,
+    constraint: null,
   },
 };
+
+/** Whether the external provider projection, rather than a host session, owns completion. */
+export function providerOwnsTaskCompletion(kind: TaskKind): boolean {
+  return TASK_KIND_BEHAVIOR[kind].launch === "pipeline";
+}
 
 /** Whether Foreman's unattended backlog loop may schedule this kind. */
 export function allowsBacklogAutopilot(kind: TaskKind): boolean {
@@ -143,7 +158,7 @@ export function allowsBacklogAutopilot(kind: TaskKind): boolean {
  *
  * A `Record` and not `kind !== "ship"`: those happen to agree today and are not the same
  * claim. `ship` is the default kind, which is why the pill stays silent for it; having a
- * diff is why an after-work Workflow can run over it. A fourth kind that produced a diff
+ * diff is why an after-work Workflow can run over it. A new kind that produced a diff
  * without being the default would have to answer these two questions differently, and the
  * record is what makes it answer this one at all.
  */
@@ -152,6 +167,7 @@ const KIND_PRODUCES_A_DIFF: Record<TaskKind, boolean> = {
   scout: false,
   plan: false,
   pipeline: false,
+  chat: false,
 };
 
 /**
@@ -164,6 +180,25 @@ const KIND_PRODUCES_A_DIFF: Record<TaskKind, boolean> = {
 export function hasReviewableDiff(kind: TaskKind): boolean {
   return KIND_PRODUCES_A_DIFF[kind];
 }
+
+/** Whether this kind can be stored in the backlog or produced by backlog automation. */
+const KIND_ALLOWS_BACKLOG: Record<TaskKind, boolean> = {
+  ship: true,
+  scout: true,
+  plan: true,
+  pipeline: true,
+  chat: false,
+};
+
+export const TASK_KIND_BACKLOG_REFUSAL =
+  "Chat tasks must be launched immediately from Dispatch.";
+
+export function taskKindAllowsBacklog(kind: TaskKind): boolean {
+  return KIND_ALLOWS_BACKLOG[kind];
+}
+
+/** Task kinds offered by surfaces that can only create or edit backlog work. */
+export const BACKLOG_TASK_KINDS = TASK_KINDS.filter(taskKindAllowsBacklog);
 
 /**
  * The priorities, in ascending urgency. Array order is picker order, sort order, and
@@ -290,7 +325,7 @@ const NO_PILL: TaskPillParts = { kind: null, title: null, silent: true };
  * chose says anything, so `ship` is the silent one and every other kind is drawn.
  *
  * Written as "not the default" rather than as a list of the kinds that are drawn, so a
- * fourth kind is offered on the same reasoning without an edit here. The reasoning is
+ * new kind is offered on the same reasoning without an edit here. The reasoning is
  * about `ship` being what you get by not choosing, which is a property of `ship`.
  *
  * The title is a duplicate because `dispatcher.ts` names a dispatched session after its

@@ -57,7 +57,9 @@ export const OVERLAY_IDS = {
   recurringMissions: "recurring-missions",
   personaDirective: "persona-directive",
   scoutDelete: "scout-delete",
+  ensembleDelete: "ensemble-delete",
   worktreeAction: "worktree-action",
+  seeWorkTour: "see-work-tour",
 } as const;
 
 export type OverlayId = (typeof OVERLAY_IDS)[keyof typeof OVERLAY_IDS];
@@ -170,6 +172,42 @@ export function OverlayHost({
   );
 }
 
+/**
+ * Register one screen-owning surface that renders outside the shared backdrop primitive.
+ *
+ * Driver.js owns the spotlight and popover DOM for the comparison spike, so wrapping it in
+ * `<Overlay>` would paint two backdrops and two dialogs. This is the deliberately narrow seam:
+ * registration and top-of-stack truth still come from this module, while the third-party
+ * controller owns its own DOM and Escape handler. The render callback is what lets that handler
+ * respect one-Escape-one-layer if another registered overlay is ever mounted above it.
+ */
+export function OverlayRegistration({
+  id,
+  children,
+}: {
+  id: string;
+  children: (isTop: boolean) => React.ReactNode;
+}): React.JSX.Element {
+  const isTop = useOverlayRegistration(id);
+  return <>{children(isTop)}</>;
+}
+
+function useOverlayRegistration(id: string): boolean {
+  const register = useContext(OverlayRegisterContext);
+  const stack = useContext(OverlayStackContext);
+  const tokenRef = useRef<symbol | null>(null);
+  tokenRef.current ??= Symbol(id);
+  const token = tokenRef.current;
+  if (!register) {
+    throw new Error(
+      `Overlay registration "${id}" was rendered outside <OverlayHost>. An overlay that isn't ` +
+        `registered isn't counted as open, which leaves the global key handler live behind it.`,
+    );
+  }
+  useRegistrationEffect(() => register(token, id), [register, token, id]);
+  return stack.length > 0 && stack[stack.length - 1]?.token === token;
+}
+
 export function Overlay({
   id,
   onClose,
@@ -180,6 +218,7 @@ export function Overlay({
   closable = true,
   onEscape,
   onKeyDown,
+  surfaceRef,
   children,
 }: {
   /** Stable identity for this overlay, so a toggle shortcut can recognise its own. */
@@ -205,6 +244,8 @@ export function Overlay({
    * every render.
    */
   onKeyDown?: (e: KeyboardEvent) => void;
+  /** Semantic owner ref for narrow integrations such as the product-tour spotlight. */
+  surfaceRef?: (element: HTMLElement | null) => void;
   /**
    * Gives the topmost overlay one chance to peel an internal layer before Escape closes
    * the overlay itself. Return true to claim that press. This remains behind `closable`,
@@ -213,28 +254,7 @@ export function Overlay({
   onEscape?: (e: KeyboardEvent) => boolean;
   children: React.ReactNode;
 }): React.JSX.Element {
-  const register = useContext(OverlayRegisterContext);
-  const stack = useContext(OverlayStackContext);
-  // One token per Overlay INSTANCE, so identity survives re-renders but is never shared
-  // with another overlay that happens to carry the same id.
-  const tokenRef = useRef<symbol | null>(null);
-  tokenRef.current ??= Symbol(id);
-  const token = tokenRef.current;
-  if (!register) {
-    throw new Error(
-      `<Overlay id="${id}"> was rendered outside <OverlayHost>. An overlay that isn't ` +
-        `registered isn't counted as open, which leaves the global key handler live and ` +
-        `lets grid shortcuts act on the card behind it.`,
-    );
-  }
-
-  useRegistrationEffect(() => register(token, id), [register, token, id]);
-
-  // Last registered wins. Nothing in the app stacks overlays today (opening one closes
-  // the other in the same commit), but nothing PREVENTED it either, and a stray second
-  // listener would close two layers on one Escape. Compared by token, not id: ids are not
-  // guaranteed unique, and two overlays sharing one would otherwise both be "topmost".
-  const isTop = stack.length > 0 && stack[stack.length - 1]?.token === token;
+  const isTop = useOverlayRegistration(id);
 
   useEffect(() => {
     if (!isTop) return;
@@ -253,6 +273,7 @@ export function Overlay({
   return (
     <div className="modal-backdrop" onClick={() => closable && onClose()}>
       <Tag
+        ref={surfaceRef}
         className={className}
         role={role}
         aria-label={ariaLabel}

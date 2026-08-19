@@ -168,7 +168,7 @@ export class Dispatcher {
       /** Server-owned immutable graph check; kept injectable so this launch layer stays DB-free. */
       workflowEvidenceEnabled?: (task: Pick<Task, "kind" | "workflowId">) => boolean;
       resolveRuntime?: typeof resolveDispatchRuntime;
-      /** Provider-owned terminal argv for a pipeline task. */
+      /** Provider-owned launch facts for a pipeline task. */
       pipelineLaunch?: typeof pipelineTaskLaunch;
       /** Terminal-home launch seam for focused pipeline dispatch tests. */
       spawn?: typeof spawnUniquely;
@@ -615,7 +615,9 @@ export class Dispatcher {
           error:
             alive === true
               ? embedded === true
-                ? `${message} - its session and worktree were kept; open or Cancel it`
+                ? task.kind === "pipeline"
+                  ? `${message} - its managed session was kept; Focus or Cancel it`
+                  : `${message} - its session and worktree were kept; open or Cancel it`
                 : `${message} - its terminal home and worktree were kept; Focus or Cancel it`
               : `${message} - and no terminal backend could say whether the agent survived, so its worktree was kept; Focus or Cancel it`,
         });
@@ -630,7 +632,7 @@ export class Dispatcher {
     }
   }
 
-  /** Launch conductor itself, leaving worktree creation and agent prompting to the engine. */
+  /** Launch Conductor's Engineer host, leaving provider worktree creation to the engine. */
   private async dispatchPipeline(taskId: string, task: Task): Promise<void> {
     if (task.extraRepos.length > 0) {
       throw new Error("a pipeline task owns one enabled conductor repository; detach the other repos");
@@ -660,8 +662,47 @@ export class Dispatcher {
     }
 
     // This write is the ownership boundary. It is synchronous and durable, so another
-    // dispatch sees the claim before this one yields to the terminal launcher.
+    // dispatch sees the claim before this one yields to either host launcher.
     this.patch(taskId, { pipelineRun: launch.pipelineRun });
+
+    if (launch.launchRuntime === "claude-sdk") {
+      const supervisor = this.deps.supervisor;
+      if (!supervisor) {
+        throw new Error("this build has no session supervisor, so it cannot launch Conductor through Claude Agent SDK");
+      }
+      const mcp = await (this.deps.missionMcpDescriptor ?? missionMcpDescriptor)();
+      const session = await supervisor.start({
+        agent: "claude",
+        name: task.title.trim() || launch.cwd,
+        cwd: launch.cwd,
+        prompt: launch.prompt,
+        model: null,
+        effort: null,
+        permissionMode: null,
+        mcp,
+        extraDirs: [],
+        taskId,
+        gitBranch: null,
+        gitRoot: launch.cwd,
+        repoRoot: launch.cwd,
+      });
+      if (await this.abortIfSettled(taskId)) {
+        // Cancel can land while the SDK driver is starting, before Task.sessionId exists.
+        // The returned session is still this launch's responsibility and must not leak.
+        await supervisor.stop(session.id).catch(() => {});
+        return;
+      }
+      this.patch(taskId, {
+        status: "running",
+        sessionId: session.id,
+        homeName: null,
+        terminalResourceId: null,
+      });
+      // Cover both driver-binding orders, as ordinary embedded dispatch does. A bound
+      // session is linked now; a later `bound` event sees Task.sessionId and links then.
+      this.registry.bindTaskToWorkEpisode(taskId, session.id);
+      return;
+    }
 
     const label = sessionLabel(task.title);
     const shortId = taskId.slice(0, 6);

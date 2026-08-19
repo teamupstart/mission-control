@@ -1,5 +1,6 @@
 import type { BacklogPlan, BacklogPlanEntry, Task } from "./types.ts";
 import { backlogTasks } from "./session.ts";
+import { taskKindAllowsBacklog } from "./task.ts";
 
 // The backlog autopilot's predicates, defined once - the same reason
 // `foremanAllowlisted` and `reportBucket` live in src/shared rather than being
@@ -90,7 +91,7 @@ export const PLANNABLE_LIMIT = 400;
  * `readyBacklog` is the single gate that decides what actually runs.
  */
 export function plannableBacklog(tasks: Task[]): Task[] {
-  return backlogTasks(tasks).slice(0, PLANNABLE_LIMIT);
+  return backlogTasks(tasks).filter((task) => taskKindAllowsBacklog(task.kind)).slice(0, PLANNABLE_LIMIT);
 }
 
 /**
@@ -278,7 +279,9 @@ function declaredReachable(
  * neither action path needs a second copy of the scheduling gate.
  */
 export function readyBacklog(tasks: Task[], plan: BacklogPlan | null): Task[] {
-  const backlog = backlogTasks(tasks).filter((t) => t.enabled);
+  const backlog = backlogTasks(tasks).filter(
+    (task) => task.enabled && taskKindAllowsBacklog(task.kind),
+  );
   const index = backlogIndex(tasks, plan);
   // Consumed as they are placed, so a plan that names the same task twice cannot put it
   // in the result twice, and what is left over is exactly the unnamed tail.

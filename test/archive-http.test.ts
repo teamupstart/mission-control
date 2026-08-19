@@ -509,6 +509,29 @@ test("a rename queued behind deletion cannot retain a name for the deleted archi
   assert.equal(manager.detail(written.key)?.title, "Fresh archive with the reused key");
 });
 
+test("a rename cannot persist a title after its bundle was removed externally", async () => {
+  const { manager, root } = harness();
+  const written = writeScoutBundle(root, { title: "Archive removed outside Mission Control" });
+  await settle(manager);
+  rmSync(written.dir, { recursive: true, force: true });
+
+  await assert.rejects(
+    manager.renameArchive(written.key, "Name that must not outlive the bundle"),
+    (error: unknown) => error instanceof ArchiveError && error.status === 404,
+  );
+  const sidecar = join(root, ".metadata", "names", `${written.key}.json`);
+  assert.equal(existsSync(sidecar), false, "filesystem revalidation happens before the sidecar write");
+
+  await manager.reconcileNow();
+  writeScoutBundle(root, {
+    producerId: written.producerId,
+    archiveId: written.archiveId,
+    title: "Fresh archive after external removal",
+  });
+  await settle(manager);
+  assert.equal(manager.detail(written.key)?.title, "Fresh archive after external removal");
+});
+
 test("a rename compensates when reconciliation removes its archive during the sidecar write", async () => {
   const root = newLibrary();
   let sidecarWritten!: () => void;

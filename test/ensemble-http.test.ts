@@ -202,6 +202,55 @@ test("POST /api/ensembles/:id/actions decides through the manager and reaches co
   assert.equal(conflict.status, 409);
 });
 
+test("POST /api/ensembles/:id/actions dismisses only failed-run attention and keeps its history", async () => {
+  const { store, manager, app } = build();
+  const failed = store.createRun(
+    runInsert(decidePlan(2, 2), {
+      sourceKey: "dismiss-failure",
+      status: "failed",
+    }),
+  ).run;
+  const running = store.createRun(
+    runInsert(decidePlan(2, 2), {
+      sourceKey: "dismiss-running",
+      status: "running",
+    }),
+  ).run;
+  manager.publish(failed.id);
+  manager.publish(running.id);
+
+  const before = await req(app, "/api/ensembles", undefined, "GET");
+  const beforeBody = (await before.json()) as {
+    ensembles: Array<{ id: string; attention: boolean; failureAcknowledgedAt: number | null }>;
+  };
+  const beforeFailed = beforeBody.ensembles.find((run) => run.id === failed.id);
+  assert.equal(beforeFailed?.attention, true);
+  assert.equal(beforeFailed?.failureAcknowledgedAt, null);
+
+  const dismissed = await req(app, `/api/ensembles/${failed.id}/actions`, {
+    kind: "dismiss_failure",
+  });
+  assert.equal(dismissed.status, 200);
+  const dismissedBody = (await dismissed.json()) as {
+    summary: { attention: boolean; failureAcknowledgedAt: number | null };
+  };
+  assert.equal(dismissedBody.summary.attention, false);
+  assert.equal(typeof dismissedBody.summary.failureAcknowledgedAt, "number");
+  assert.equal(store.getRun(failed.id)?.status, "failed", "the failed run is retained");
+  assert.equal(typeof store.getRun(failed.id)?.failureAcknowledgedAt, "number");
+
+  const replay = await req(app, `/api/ensembles/${failed.id}/actions`, {
+    kind: "dismiss_failure",
+  });
+  assert.equal(replay.status, 200, "dismissal is safe to replay after a lost response");
+
+  const wrongState = await req(app, `/api/ensembles/${running.id}/actions`, {
+    kind: "dismiss_failure",
+  });
+  assert.equal(wrongState.status, 409);
+  assert.equal(store.getRun(running.id)?.failureAcknowledgedAt, null);
+});
+
 // ---- the artifact patch route's two cheaper questions ----------------------------------
 //
 // `?path=` and `?filesOnly=1` exist so a compare surface does not have to buy N whole patches

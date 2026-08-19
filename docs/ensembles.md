@@ -155,7 +155,8 @@ The public API is one localhost surface: `GET /api/ensembles` (compact summaries
 `POST /api/ensembles/preview` (a side-effect-free launch/budget/handoff estimate that shares
 create's exact validation), `POST /api/ensembles` (idempotent create and launch on a stable request
 id), `GET /api/ensembles/:id` (bounded detail), `POST /api/ensembles/:id/actions` (one discriminated
-action covering decide, resolve-finalization, retry, withdraw, cancel and restore), the bounded
+action covering decide, resolve-finalization, retry, withdraw, cancel, failed-run dismissal and
+restore), the bounded
 artifact evidence/patch and manual-member-submission routes under that run, and
 `DELETE /api/ensembles/:id` (explicit terminal-history-and-ref deletion, confirmed by echoing the
 run id, which never deletes a task or linked workflow state and resumes the same remaining refs
@@ -249,7 +250,8 @@ rationale is in [`docs/plans/best-of-n-swarm-dispatch/plan.md`](plans/best-of-n-
    request id: a lost response and a retry return the same run, never a second fleet.
 3. The daemon pins **one full base commit** and launches 2-5 ordinary member tasks from it - every
    candidate starts byte-identical. Each is a normal session in Cards, Console and Board, marked
-   with an **E** chip that opens the run.
+   with an **E** chip that opens the run. Its task title starts with **Candidate N -** so sibling
+   tasks remain identifiable wherever titles are truncated or scanned in a list.
 4. Each candidate implements and tests alone. Its prompt forbids pushing, opening a PR, or running
    the shipping gate, and tells it to **submit** when ready.
 5. A member submits through the launch-scoped `submit_ensemble_result` MCP tool (or the manual
@@ -566,10 +568,12 @@ Finalization reaps loser **worktrees** but never loser **refs** - every candidat
 kept after completion or cancellation, and a **Restore** action can create a fresh task from any of
 them. The **winner's** worktree is never reaped by finalization at all, on either promotion path.
 There is **no time-based pruning** in v1: a snapshot is deleted only through the explicit **Delete
-ensemble** action (confirmed by echoing the run id), which removes the run's private refs and
-history. **Deletion is irreversible** - the refs are the only copy of a loser's work. Deleting an
-ensemble never touches a task or any linked workflow state, and it resumes the same remaining refs
-after a crash.
+ensemble** action. The dashboard opens a confirmation dialog that names the run and the exact
+consequence without asking the operator to type its internal id; the API still requires the URL id
+echoed in the body as a defense-in-depth contract. Deletion removes the run's private refs and
+history and is **irreversible** - the refs are the only copy of a loser's work. Deleting an ensemble
+never touches a task or any linked workflow state, and it resumes the same remaining refs after a
+crash.
 
 ## Costs
 
@@ -586,12 +590,14 @@ the Away digest. Each is edge-triggered by stable run identity, so a reconnect o
 re-announces a decision you already saw. An ensemble toast deep-links to
 `#/ensembles/<id>`.
 
-A run needs your attention when it is **failed**, **cancelling**, parked on a **decision**,
-**unreadable** - or when **a member is waiting on your answer**. That last one is a question on a
-member's own session (a review from the ask channel, or a dialog on its pane), and it lights the run
-up wherever attention is read: the run row's dot, its attention-first sort, and the Away digest's
-count. It closes the disagreement where the candidate's card was red and asking a question while the
-run it belongs to still reported *working*.
+A run needs your attention when it is an **unacknowledged failure**, **cancelling**, parked on a
+**decision**, **unreadable** - or when **a member is waiting on your answer**. **Dismiss failure**
+keeps the terminal run, its timeline and its snapshot refs while retiring only that failed-run
+attention signal; the acknowledgment is durable across restarts. That last member-owned cause is a
+question on a member's own session (a review from the ask channel, or a dialog on its pane), and it
+lights the run up wherever attention is read: the run row's dot, its attention-first sort, and the
+Away digest's count. It closes the disagreement where the candidate's card was red and asking a
+question while the run it belongs to still reported *working*.
 
 **A blocked member deliberately raises no alert of its own.** That member's session already fires
 the ordinary session-level review / needs-input alert, so a second ensemble notification would be
@@ -634,7 +640,9 @@ Every effect is persist-before-act, so a daemon restart resumes rather than rest
   to cancel. What survives is the evidence - each submitted snapshot remains a private ref under
   `refs/mission-control/ensembles/`, and its diff is re-derived from the shared git dir, so the
   Artifacts and comparison views keep working for as long as the run is retained. The way on from a
-  failed run is to read those artifacts and start a new run, not to revive this one.
+  failed run is to read those artifacts and start a new run, not to revive this one. Once the
+  failure has been seen, **Dismiss failure** removes it from the Library and Decide attention
+  rollups without deleting that retained evidence.
 - A review that cannot **reach** a model - a spawn failure, a timeout, a provider blip - spends its
   own bounded budget rather than the evaluator's, waits longer before each retry (1s, then 4s), and
   after three of them **parks** the run instead of failing it. This is the one review outcome that

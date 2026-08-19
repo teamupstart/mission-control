@@ -18,6 +18,7 @@ import {
   type RecommendationChoice,
 } from "../lib/foreman-review.ts";
 import { Tooltip } from "./Tooltip.tsx";
+import { useTourTaskTargetRef } from "../tour/target-context.tsx";
 
 /**
  * Modal for acting on a session's pending reviews. A diff or plan is approved or
@@ -40,13 +41,21 @@ export function ReviewModal({
   reviews: ReviewItem[];
   onClose: () => void;
 }): React.JSX.Element {
+  const tourTargetRef = useTourTaskTargetRef<HTMLElement>("review-modal", session.task?.id);
   // Close automatically once the session has no more pending reviews.
   useEffect(() => {
     if (reviews.length === 0) onClose();
   }, [reviews.length, onClose]);
 
   return (
-    <Overlay id={OVERLAY_IDS.reviews} onClose={onClose} className="modal review-modal">
+    <Overlay
+      id={OVERLAY_IDS.reviews}
+      onClose={onClose}
+      className="modal review-modal"
+      role="dialog"
+      ariaLabel="Review request"
+      surfaceRef={tourTargetRef}
+    >
       <header className="modal-head">
         <div>
           <AgentDot agent={session.agent} />

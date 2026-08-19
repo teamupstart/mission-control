@@ -9,7 +9,10 @@ import {
   type PipelineActionResult,
   type PipelineRun,
 } from "../src/shared/pipeline.ts";
-import { conductorEngineerArgv } from "../src/server/pipelines/conductor/index.ts";
+import {
+  conductorEngineerArgv,
+  conductorEngineerPrompt,
+} from "../src/server/pipelines/conductor/index.ts";
 import {
   pipelineAutomationAction,
   runPipelineTriage,
@@ -23,6 +26,39 @@ import { getTask as getDurableTask } from "../src/server/db.ts";
 import { setPipelinesConfig } from "../src/server/pipelines/config.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import { mkMuxHandle, mkTask } from "./helpers/session-fixture.ts";
+
+type SdkSupervisor = import("../src/server/sdk/supervisor.ts").SdkSupervisor;
+type Session = import("../src/shared/types.ts").Session;
+
+/** Records the fixed SDK launch facts while registering a real dashboard session. */
+function fakeSupervisor(registry: Registry) {
+  const starts: Parameters<SdkSupervisor["start"]>[0][] = [];
+  const stopped: string[] = [];
+  const supervisor = {
+    starts,
+    stopped,
+    async start(input: Parameters<SdkSupervisor["start"]>[0]): Promise<Session> {
+      starts.push(input);
+      return registry.registerSdkSession({
+        id: `sdk:pipeline-${starts.length}`,
+        agent: input.agent,
+        name: input.name,
+        cwd: input.cwd,
+        agentSessionId: `claude-pipeline-${starts.length}`,
+        gitBranch: input.gitBranch,
+        gitRoot: input.gitRoot,
+        repoRoot: input.repoRoot,
+      });
+    },
+    async stop(id: string): Promise<void> {
+      stopped.push(id);
+    },
+    taskLiveness: () => null,
+    liveSessionForTask: () => null,
+    handleFor: () => null,
+  };
+  return supervisor as typeof supervisor & SdkSupervisor;
+}
 
 function run(haltClass = "mechanical"): PipelineRun {
   return {
@@ -75,6 +111,7 @@ test("a pipeline task launches the provider in its repository without an agent b
   const dispatcher = new Dispatcher(registry, async () => assert.fail("no worktree is owned"), {
     pipelineLaunch: async () => ({
       ok: true,
+      launchRuntime: "terminal",
       cwd: "/repo/demo",
       argv: [
         "/usr/bin/env",
@@ -110,6 +147,189 @@ test("a pipeline task launches the provider in its repository without an agent b
   assert.equal(task?.homeName, "Run conductor");
   assert.equal(task?.sessionId, null);
   assert.deepEqual(task?.pipelineRun, link);
+});
+
+test("Claude SDK pipeline dispatch invokes /engineer directly with no terminal or worktree", async () => {
+  const registry = new Registry();
+  registry.upsertTask(
+    mkTask({
+      id: "pipeline-sdk",
+      agent: "codex",
+      kind: "pipeline",
+      repoRoot: "/repo/sdk",
+      intent: "Build the SDK path\nwithout changing the daemon",
+      title: "Build the SDK path",
+    }),
+  );
+  const link = {
+    provider: "ai-conductor" as const,
+    repoRoot: "/repo/sdk",
+    slug: "build-the-sdk-path-without-changing-the-daemon",
+  };
+  const supervisor = fakeSupervisor(registry);
+  const mcp = {
+    serverName: "mission-control",
+    command: "/usr/bin/node",
+    args: ["/dist/mcp/server.mjs"],
+    env: { MISSION_TOKEN: "fixture" },
+  };
+  let spawned = false;
+  const dispatcher = new Dispatcher(registry, async () => assert.fail("no worktree is owned"), {
+    supervisor,
+    missionMcpDescriptor: async () => mcp,
+    pipelineLaunch: async () => ({
+      ok: true,
+      launchRuntime: "claude-sdk",
+      cwd: "/repo/sdk",
+      prompt: conductorEngineerPrompt("Build the SDK path\nwithout changing the daemon"),
+      pipelineRun: link,
+    }),
+    spawn: async () => {
+      spawned = true;
+      return "unreachable";
+    },
+  });
+
+  await dispatcher.dispatch("pipeline-sdk");
+
+  assert.equal(spawned, false);
+  assert.deepEqual(supervisor.starts, [{
+    agent: "claude",
+    name: "Build the SDK path",
+    cwd: "/repo/sdk",
+    prompt: "/engineer Build the SDK path\nwithout changing the daemon",
+    model: null,
+    effort: null,
+    permissionMode: null,
+    mcp,
+    extraDirs: [],
+    taskId: "pipeline-sdk",
+    gitBranch: null,
+    gitRoot: "/repo/sdk",
+    repoRoot: "/repo/sdk",
+  }]);
+  const task = registry.getTask("pipeline-sdk");
+  assert.equal(task?.status, "running");
+  assert.equal(task?.sessionId, "sdk:pipeline-1");
+  assert.equal(task?.homeName, null);
+  assert.equal(task?.worktreePath, null);
+  assert.deepEqual(task?.extraRepos, []);
+  assert.deepEqual(task?.pipelineRun, link);
+  assert.equal(registry.workEpisodeForTask("pipeline-sdk")?.sessionId, "sdk:pipeline-1");
+});
+
+test("SDK preflight and start failures never fall back to Terminal", async () => {
+  for (const mode of ["missing", "rejected"] as const) {
+    const registry = new Registry();
+    registry.upsertTask(
+      mkTask({
+        id: `pipeline-sdk-${mode}`,
+        kind: "pipeline",
+        repoRoot: `/repo/${mode}`,
+        intent: "No fallback",
+      }),
+    );
+    let spawned = false;
+    const supervisor = mode === "rejected"
+      ? ({
+          start: async () => {
+            throw new Error("Claude SDK launch refused by fixture");
+          },
+          taskLiveness: () => false,
+        } as unknown as SdkSupervisor)
+      : undefined;
+    const dispatcher = new Dispatcher(registry, undefined, {
+      supervisor,
+      missionMcpDescriptor: async () => null,
+      pipelineLaunch: async () => ({
+        ok: true,
+        launchRuntime: "claude-sdk",
+        cwd: `/repo/${mode}`,
+        prompt: "/engineer No fallback",
+        pipelineRun: {
+          provider: "ai-conductor",
+          repoRoot: `/repo/${mode}`,
+          slug: "no-fallback",
+        },
+      }),
+      spawn: async () => {
+        spawned = true;
+        return "unreachable";
+      },
+    });
+
+    await dispatcher.dispatch(`pipeline-sdk-${mode}`);
+    const task = registry.getTask(`pipeline-sdk-${mode}`);
+    assert.equal(spawned, false, mode);
+    assert.equal(task?.status, "failed", mode);
+    assert.match(
+      task?.error ?? "",
+      mode === "missing" ? /no session supervisor/ : /Claude SDK launch refused by fixture/,
+      mode,
+    );
+    assert.equal(task?.homeName, null, mode);
+  }
+});
+
+test("cancellation during SDK start stops the newly created Engineer host", async () => {
+  const registry = new Registry();
+  registry.upsertTask(
+    mkTask({
+      id: "pipeline-sdk-cancel",
+      kind: "pipeline",
+      repoRoot: "/repo/cancel",
+      intent: "Cancel while starting",
+    }),
+  );
+  let release!: (session: Session) => void;
+  let markStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
+  const stopped: string[] = [];
+  const supervisor = {
+    start: () => new Promise<Session>((resolve) => {
+      release = resolve;
+      markStarted();
+    }),
+    async stop(id: string) {
+      stopped.push(id);
+    },
+    taskLiveness: () => null,
+  } as unknown as SdkSupervisor;
+  const dispatcher = new Dispatcher(registry, undefined, {
+    supervisor,
+    missionMcpDescriptor: async () => null,
+    pipelineLaunch: async () => ({
+      ok: true,
+      launchRuntime: "claude-sdk",
+      cwd: "/repo/cancel",
+      prompt: "/engineer Cancel while starting",
+      pipelineRun: {
+        provider: "ai-conductor",
+        repoRoot: "/repo/cancel",
+        slug: "cancel-while-starting",
+      },
+    }),
+    spawn: async () => assert.fail("Terminal fallback is forbidden"),
+  });
+
+  const dispatching = dispatcher.dispatch("pipeline-sdk-cancel");
+  await started;
+  const current = registry.getTask("pipeline-sdk-cancel")!;
+  registry.upsertTask({ ...current, status: "cancelled", updatedAt: Date.now() });
+  const session = registry.registerSdkSession({
+    id: "sdk:pipeline-cancelled",
+    agent: "claude",
+    name: "cancelled",
+    cwd: "/repo/cancel",
+  });
+  release(session);
+  await dispatching;
+
+  assert.deepEqual(stopped, [session.id]);
+  assert.equal(registry.getTask("pipeline-sdk-cancel")?.status, "cancelled");
+  assert.equal(registry.getTask("pipeline-sdk-cancel")?.sessionId, null);
 });
 
 test("an unreadable provider key space refuses before the terminal host starts", async (t) => {
@@ -216,6 +436,7 @@ test("running and dispatching tasks refuse a second active owner before terminal
     const dispatcher = new Dispatcher(registry, undefined, {
       pipelineLaunch: async () => ({
         ok: true,
+        launchRuntime: "terminal",
         cwd: repoRoot,
         argv: ["/bin/conduct-ts", "engineer", "--idea", "Same run"],
         pipelineRun: link,
@@ -271,6 +492,7 @@ test("different repository and slug identities may launch beside active pipeline
   const dispatcher = new Dispatcher(registry, undefined, {
     pipelineLaunch: async () => ({
       ok: true,
+      launchRuntime: "terminal",
       cwd: repoRoot,
       argv: ["/bin/conduct-ts", "engineer", "--idea", "Target run"],
       pipelineRun: link,
@@ -286,6 +508,199 @@ test("different repository and slug identities may launch beside active pipeline
   assert.equal(spawned, 1);
   assert.equal(registry.getTask("pipeline-distinct-target")?.status, "running");
   assert.deepEqual(registry.getTask("pipeline-distinct-target")?.pipelineRun, link);
+});
+
+function registerPipelineSdkHost(
+  registry: Registry,
+  taskId: string,
+  link: { provider: "ai-conductor"; repoRoot: string; slug: string },
+): string {
+  const sessionId = `sdk:${taskId}`;
+  registry.registerSdkSession({
+    id: sessionId,
+    agent: "claude",
+    name: taskId,
+    cwd: link.repoRoot,
+    initialState: "idle",
+    agentSessionId: `agent-${taskId}`,
+    gitBranch: `feat/${link.slug}`,
+    gitRoot: link.repoRoot,
+    repoRoot: link.repoRoot,
+  });
+  registry.upsertTask(
+    mkTask({
+      id: taskId,
+      kind: "pipeline",
+      repoRoot: link.repoRoot,
+      status: "running",
+      sessionId,
+      pipelineRun: link,
+    }),
+  );
+  registry.bindTaskToWorkEpisode(taskId, sessionId);
+  return sessionId;
+}
+
+test("idle and merged SDK host evidence cannot complete a provider-owned pipeline task", () => {
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+  const link = {
+    provider: "ai-conductor" as const,
+    repoRoot: "/repo/provider-completion",
+    slug: "provider-completion",
+  };
+  const sessionId = registerPipelineSdkHost(registry, "pipeline-provider-completion", link);
+  const url = "https://github.com/example/repo/pull/42";
+
+  registry.applyDriverEvent(sessionId, { kind: "pr_created", urls: [url] });
+  registry.reconcilePrMerges(new Map([[url, Date.now()]]));
+  tasks.reconcileMergedTasks();
+
+  const task = registry.getTask("pipeline-provider-completion");
+  assert.equal(task?.status, "running");
+  assert.equal(task?.outcome, null);
+  assert.equal(task?.outcomeUrl, null);
+  assert.equal(task?.sessionId, sessionId);
+});
+
+test("an SDK host loss fails before its exact run exists and ignores a different run", () => {
+  for (const projection of ["none", "different"] as const) {
+    const registry = new Registry();
+    new TaskManager(registry);
+    const link = {
+      provider: "ai-conductor" as const,
+      repoRoot: `/repo/host-loss-${projection}`,
+      slug: "expected-run",
+    };
+    const sessionId = registerPipelineSdkHost(registry, `pipeline-host-loss-${projection}`, link);
+    if (projection === "different") {
+      registry.initializePipelineRuns([{
+        ...run(),
+        repoRoot: link.repoRoot,
+        slug: "different-run",
+        group: "building",
+        halt: null,
+      }]);
+    }
+
+    registry.emit("event", { type: "session_remove", id: sessionId });
+
+    const task = registry.getTask(`pipeline-host-loss-${projection}`);
+    assert.equal(task?.status, "failed", projection);
+    assert.equal(task?.sessionId, null, projection);
+    assert.match(task?.error ?? "", /host ended before Conductor created pipeline run "expected-run"/, projection);
+  }
+});
+
+test("an SDK host loss after the exact provider run appears clears only the stale host", () => {
+  const registry = new Registry();
+  new TaskManager(registry);
+  const link = {
+    provider: "ai-conductor" as const,
+    repoRoot: "/repo/provider-took-over",
+    slug: "provider-took-over",
+  };
+  const sessionId = registerPipelineSdkHost(registry, "pipeline-provider-took-over", link);
+  registry.initializePipelineRuns([{
+    ...run(),
+    repoRoot: link.repoRoot,
+    slug: link.slug,
+    group: "building",
+    halt: null,
+  }]);
+
+  registry.emit("event", { type: "session_remove", id: sessionId });
+
+  const task = registry.getTask("pipeline-provider-took-over");
+  assert.equal(task?.status, "running");
+  assert.equal(task?.sessionId, null);
+  assert.equal(task?.error, null);
+  assert.deepEqual(task?.pipelineRun, link);
+});
+
+test("a processed projection settles an SDK-hosted task with the provider pull request", () => {
+  const registry = new Registry();
+  new TaskManager(registry);
+  const link = {
+    provider: "ai-conductor" as const,
+    repoRoot: "/repo/sdk-processed",
+    slug: "sdk-processed",
+  };
+  const sessionId = registerPipelineSdkHost(registry, "pipeline-sdk-processed", link);
+  const prUrl = "https://github.com/example/sdk-processed/pull/51";
+
+  registry.upsertPipelineRun({
+    ...run(),
+    repoRoot: link.repoRoot,
+    slug: link.slug,
+    group: "processed",
+    halt: null,
+    prUrl,
+  });
+
+  const task = registry.getTask("pipeline-sdk-processed");
+  assert.equal(task?.status, "done");
+  assert.equal(task?.outcomeUrl, prUrl);
+  assert.equal(task?.sessionId, sessionId, "completion does not tear down the managed host");
+});
+
+test("cancelling a running SDK pipeline stops its managed host without a worktree", async () => {
+  const registry = new Registry();
+  const stopped: string[] = [];
+  const supervisor = {
+    handleFor: () => ({}),
+    async stop(id: string) {
+      stopped.push(id);
+    },
+    taskLiveness: () => true,
+  } as unknown as SdkSupervisor;
+  const tasks = new TaskManager(registry, undefined, supervisor);
+  const link = {
+    provider: "ai-conductor" as const,
+    repoRoot: "/repo/cancel-running",
+    slug: "cancel-running",
+  };
+  const sessionId = registerPipelineSdkHost(registry, "pipeline-cancel-running", link);
+
+  const result = await tasks.cancel("pipeline-cancel-running");
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(stopped, [sessionId]);
+  assert.equal(registry.getTask("pipeline-cancel-running")?.status, "cancelled");
+});
+
+test("startup keeps a hostless SDK task when its exact provider run is active", () => {
+  const registry = new Registry();
+  const link = {
+    provider: "ai-conductor" as const,
+    repoRoot: "/repo/startup-provider",
+    slug: "startup-provider",
+  };
+  registry.initializePipelineRuns([{
+    ...run(),
+    repoRoot: link.repoRoot,
+    slug: link.slug,
+    group: "building",
+    halt: null,
+  }]);
+  registry.upsertTask(
+    mkTask({
+      id: "pipeline-startup-provider",
+      kind: "pipeline",
+      repoRoot: link.repoRoot,
+      status: "running",
+      sessionId: "sdk:gone-on-restart",
+      pipelineRun: link,
+    }),
+  );
+  new TaskManager(registry);
+
+  registry.applyDiscovery([]);
+
+  const task = registry.getTask("pipeline-startup-provider");
+  assert.equal(task?.status, "running");
+  assert.equal(task?.sessionId, null);
+  assert.deepEqual(task?.pipelineRun, link);
 });
 
 test("a legacy pipeline child binds its durable run and the processed projection settles the task", () => {

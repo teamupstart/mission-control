@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { Session } from "@shared/types.ts";
 import type {
   EvidenceRef,
   PersonaVerdict,
@@ -10,7 +11,9 @@ import type {
   WorkflowRunStatus,
   WorkflowRunSummary,
   WorkflowEventPage,
+  WorkflowEvidenceImage,
   WorkflowLlmCallPage,
+  WorkflowUploadEvidenceLocator,
 } from "@shared/workflow.ts";
 import {
   formatCheckCommand,
@@ -31,9 +34,14 @@ import {
 import { Tooltip } from "../components/Tooltip.tsx";
 import { workflowRunTone } from "../components/session-bits.tsx";
 import { COPY_FEEDBACK_LABEL, useCopyFeedback } from "../lib/clipboard.ts";
-import { relativeTime, repoLeaf } from "../lib/format.ts";
+import { formatBytes, relativeTime, repoLeaf } from "../lib/format.ts";
 import type { WorkflowRunFilters } from "./useWorkflowRoute.ts";
 import { requestWorkflowVersionOpen } from "./workflowSelection.ts";
+import {
+  useWorkflowEvidenceDraft,
+  workflowBindingEvidenceOwner,
+  workflowEvidenceScopes,
+} from "./WorkflowEvidenceComposer.tsx";
 import type { ChangeWorklistRow, ChangeWorklistState } from "./run-model.ts";
 import {
   actionBlockSentence,
@@ -96,6 +104,7 @@ import {
 } from "./run-actions.ts";
 import { useRunActions } from "./run-action-store.ts";
 import { createWorkflowLoadCommitBarrier } from "./workflow-load-commit.ts";
+import { moveWorkflowRunSelection } from "./run-navigation.ts";
 
 /**
  * Watching a run.
@@ -122,6 +131,160 @@ import { createWorkflowLoadCommitBarrier } from "./workflow-load-commit.ts";
 
 function when(timestamp: number): string {
   return new Date(timestamp).toLocaleString();
+}
+
+function LazyWorkflowEvidenceImage({
+  runId,
+  image,
+}: {
+  runId: string;
+  image: WorkflowEvidenceImage;
+}): React.JSX.Element {
+  const frame = useRef<HTMLDivElement>(null);
+  const [load, setLoad] = useState(false);
+  const [url, setUrl] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    if (load || image.availability !== "retained") return;
+    const node = frame.current;
+    if (!node || typeof IntersectionObserver === "undefined") return;
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) setLoad(true);
+    }, { rootMargin: "240px" });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [image.availability, load]);
+  useEffect(() => {
+    if (!load || image.availability !== "retained") return;
+    let live = true;
+    void fetch(
+      `/api/workflow-runs/${encodeURIComponent(runId)}/images/${encodeURIComponent(image.id)}`,
+    ).then(async (response) => {
+      if (!response.ok) {
+        const body = await response.json().catch(() => null) as { error?: string } | null;
+        throw new Error(body?.error ?? `Image body could not be loaded (${response.status})`);
+      }
+      return response.blob();
+    }).then((blob) => {
+      const next = URL.createObjectURL(blob);
+      if (!live) {
+        URL.revokeObjectURL(next);
+        return;
+      }
+      setUrl(next);
+    }).catch((caught) => {
+      if (live) setError(caught instanceof Error ? caught.message : "Image body could not be loaded");
+    });
+    return () => { live = false; };
+  }, [image.availability, image.id, load, runId]);
+  useEffect(() => () => {
+    if (url) URL.revokeObjectURL(url);
+  }, [url]);
+  return (
+    <div ref={frame} className="wf-image-frame">
+      {image.availability === "pruned" ? (
+        <span className="wf-image-pruned" aria-label={`${image.displayName} body pruned`}>Body pruned</span>
+      ) : url ? (
+        <img src={url} alt={image.caption} />
+      ) : error ? (
+        <span className="wf-image-error" role="alert">{error}</span>
+      ) : (
+        <Tooltip label={`Load the retained body for ${image.displayName}`}>
+          <button type="button" className="text-btn" onClick={() => setLoad(true)}>
+            {load ? "Loading image…" : "Load image"}
+          </button>
+        </Tooltip>
+      )}
+    </div>
+  );
+}
+
+function SubmissionImageEvidence({
+  runId,
+  images,
+  scopeOptions,
+  canRestage,
+  onRestage,
+}: {
+  runId: string;
+  images: WorkflowEvidenceImage[];
+  scopeOptions: readonly { value: string; label: string }[];
+  canRestage: boolean;
+  onRestage?: (image: WorkflowEvidenceImage, clientItemId: string) => Promise<void>;
+}): React.JSX.Element {
+  const [busy, setBusy] = useState<string | null>(null);
+  const [restaged, setRestaged] = useState<Set<string>>(() => new Set());
+  const [error, setError] = useState<string | null>(null);
+  const itemIds = useRef(new Map<string, string>());
+  const scopeLabel = (scope: string): string =>
+    scopeOptions.find((option) => option.value === scope)?.label ?? scope;
+  return (
+    <section className="wf-run-section wf-image-evidence">
+      <header className="wf-run-section-head">
+        <h4>Image evidence</h4>
+        <span className="wf-run-meta">
+          {images.length} image{images.length === 1 ? "" : "s"} frozen for this submission
+        </span>
+      </header>
+      {images.length === 0 ? (
+        <p className="wf-run-empty">No image evidence was attached to this submission.</p>
+      ) : (
+        <ol className="wf-image-ledger">
+          {images.map((image) => (
+            <li key={image.id} className={`wf-image-record is-${image.availability}`}>
+              <LazyWorkflowEvidenceImage runId={runId} image={image} />
+              <div className="wf-image-record-body">
+                <div className="wf-image-record-head">
+                  <strong>{image.caption}</strong>
+                  <span className={`workflow-chip workflow-${image.availability === "retained" ? "completed" : "stopped"}`}>
+                    {image.availability}
+                  </span>
+                </div>
+                <p>{image.displayName}</p>
+                <dl>
+                  <div><dt>Scope</dt><dd>{scopeLabel(image.repositoryScope)}</dd></div>
+                  <div><dt>Type</dt><dd>{image.mimeType}</dd></div>
+                  <div><dt>Size</dt><dd>{formatBytes(image.bytes)}</dd></div>
+                  <div><dt>Digest</dt><dd><code>{image.sha256}</code></dd></div>
+                </dl>
+                {image.availability === "pruned" && (
+                  <p className="wf-run-pruned">
+                    Raw body pruned {image.prunedAt ? when(image.prunedAt) : "by retention policy"}.
+                    Caption, scope, MIME, size, and SHA-256 remain auditable.
+                  </p>
+                )}
+                {image.availability === "retained" && canRestage && onRestage && (
+                  <Tooltip label="Stage these exact retained bytes, caption, and scope for the next fresh review">
+                    <button
+                      type="button"
+                      className="btn btn-ghost"
+                      disabled={busy === image.id || restaged.has(image.id)}
+                      onClick={() => {
+                        let clientItemId = itemIds.current.get(image.id);
+                        if (!clientItemId) {
+                          clientItemId = `history-${crypto.randomUUID()}`;
+                          itemIds.current.set(image.id, clientItemId);
+                        }
+                        setBusy(image.id);
+                        setError(null);
+                        void onRestage(image, clientItemId).then(
+                          () => setRestaged((current) => new Set(current).add(image.id)),
+                          (caught) => setError(caught instanceof Error ? caught.message : "Could not stage retained image"),
+                        ).finally(() => setBusy(null));
+                      }}
+                    >
+                      {restaged.has(image.id) ? "Ready for next review" : "Use in next review"}
+                    </button>
+                  </Tooltip>
+                )}
+              </div>
+            </li>
+          ))}
+        </ol>
+      )}
+      {error && <p className="wf-run-error" role="alert">{error}</p>}
+    </section>
+  );
 }
 
 const EXTERNAL_SOURCE_LABELS: Record<WorkflowExternalSource["kind"], string> = {
@@ -515,6 +678,27 @@ const nodeOf = (item: WorklistItem): string =>
 
 const SEGMENTS = ["blocking", "passed", "archive"] as const;
 
+/** The first worklist row owned by any requested pipeline node, in displayed priority. */
+export function worklistSelectionForNodes(
+  nodeIds: readonly string[],
+  bySegment: Record<WorklistSegment, WorklistItem[]>,
+): { segment: WorklistSegment; item: WorklistItem } | null {
+  const requested = new Set(nodeIds);
+  for (const segment of SEGMENTS) {
+    const item = bySegment[segment].find((candidate) => requested.has(nodeOf(candidate)));
+    if (item) return { segment, item };
+  }
+  return null;
+}
+
+/** The first worklist row owned by one pipeline node, in the worklist's displayed priority. */
+export function worklistSelectionForNode(
+  nodeId: string,
+  bySegment: Record<WorklistSegment, WorklistItem[]>,
+): { segment: WorklistSegment; item: WorklistItem } | null {
+  return worklistSelectionForNodes([nodeId], bySegment);
+}
+
 /**
  * Where a selection went when the row holding it stopped existing.
  *
@@ -544,12 +728,8 @@ export function followSelection(
   if (!selectedKey.startsWith(prefix)) return null;
   const nodeId = attempts.find((attempt) => attempt.id === selectedKey.slice(prefix.length))?.nodeId;
   if (nodeId === undefined) return null;
-  for (const segment of SEGMENTS) {
-    // Pre-sorted, so the first row this reviewer owns is the one it leads with.
-    const item = bySegment[segment].find((candidate) => nodeOf(candidate) === nodeId);
-    if (item) return { segment, item };
-  }
-  return null;
+  // Pre-sorted, so the first row this reviewer owns is the one it leads with.
+  return worklistSelectionForNode(nodeId, bySegment);
 }
 
 /**
@@ -784,6 +964,7 @@ function RunWorklist({
   reviewerlessVersion,
   personaNodeIds,
   disabledNodeIds,
+  initialNodeIds = [],
   onOpenFile,
   onCopyChange,
   changeCopied = false,
@@ -801,6 +982,8 @@ function RunWorklist({
   reviewerlessVersion: boolean;
   personaNodeIds: ReadonlySet<string>;
   disabledNodeIds: readonly string[];
+  /** Settled pipeline nodes requested before this keyed worklist instance mounted. */
+  initialNodeIds?: readonly string[];
   onOpenFile?: (path: string) => void;
   onCopyChange?: (text: string) => void;
   changeCopied?: boolean;
@@ -930,12 +1113,18 @@ function RunWorklist({
     }));
   const archive: WorklistItem[] = archived
     .map((row): WorklistItem => ({ kind: "change", key: changeKey(row), row }));
+  const bySegment: Record<WorklistSegment, WorklistItem[]> = {
+    blocking,
+    passed: [...passed, ...pending],
+    archive,
+  };
+  const initialSelection = worklistSelectionForNodes(initialNodeIds, bySegment);
 
   /** The reader's own pick, and the round they made it in. Both, for the scrub rule below. */
   const [chosenSegment, setChosenSegment] = useState<
     { segment: WorklistSegment; round: number | null } | null
-  >(null);
-  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  >(initialSelection ? { segment: initialSelection.segment, round } : null);
+  const [selectedKey, setSelectedKey] = useState<string | null>(initialSelection?.item.key ?? null);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const counts: Record<WorklistSegment, number> = {
     blocking: blocking.length,
@@ -972,11 +1161,6 @@ function RunWorklist({
     : chosenSegment.round === round || counts[chosenSegment.segment] > 0
       ? chosenSegment.segment
       : autoSegment;
-  const bySegment: Record<WorklistSegment, WorklistItem[]> = {
-    blocking,
-    passed: [...passed, ...pending],
-    archive,
-  };
   /*
    * A selection that no longer resolves ANYWHERE is followed to whatever now represents its
    * reviewer - but only inside THIS ROUND, and the scoping is the whole correctness of it.
@@ -1376,6 +1560,8 @@ export function WorkflowRunView({
   onToggleNodesDisabled,
   onSetPersonaDirective,
   onRemovePersonaDirective,
+  evidenceScopeOptions = [{ value: "repo-01", label: "Primary repository" }],
+  onRestageImage,
   actionError = null,
   isActionPending = () => false,
 }: {
@@ -1392,7 +1578,7 @@ export function WorkflowRunView({
    * family, because the page resolves the request id that keeps an unchanged resubmit inside its
    * round, and `run-again`, because the run it creates is a different one to route to.
    */
-  onNextMove?: (move: RunNextMove) => void;
+  onNextMove?: (move: RunNextMove, evidence?: WorkflowUploadEvidenceLocator[]) => void;
   onCancel: () => Promise<void>;
   /** Destructive confirmations, hosted by the overlay registry rather than `window.confirm`. */
   onConfirm?: (request: WorkflowConfirmRequest) => void;
@@ -1448,6 +1634,11 @@ export function WorkflowRunView({
   onToggleNodesDisabled?: (nodeIds: string[], disabled: boolean) => void;
   onSetPersonaDirective?: (nodeId: string, feedback: string, intentKey: string) => void;
   onRemovePersonaDirective?: (nodeId: string, revision: number) => void;
+  evidenceScopeOptions?: readonly { value: string; label: string }[];
+  onRestageImage?: (
+    image: WorkflowEvidenceImage,
+    clientItemId: string,
+  ) => Promise<void>;
   actionError?: string | null;
   isActionPending?: (id: RunActionId) => boolean;
 }): React.JSX.Element {
@@ -1464,7 +1655,13 @@ export function WorkflowRunView({
     .filter((node) => node.kind === "persona")
     .map((node) => node.id));
   const [directiveNodeId, setDirectiveNodeId] = useState<string | null>(null);
+  const [worklistFocus, setWorklistFocus] = useState<{
+    runId: string;
+    nodeIds: readonly string[];
+    sequence: number;
+  } | null>(null);
   useEffect(() => setDirectiveNodeId(null), [detail.run.id]);
+  const currentWorklistFocus = worklistFocus?.runId === detail.run.id ? worklistFocus : null;
   const directiveNode = directiveNodeId ? nodeById.get(directiveNodeId) : null;
   const directiveTarget = directiveNode?.kind === "persona" ? directiveNode : null;
   const activeDirective = directiveTarget
@@ -1510,6 +1707,9 @@ export function WorkflowRunView({
   const contextUnreadable = contextRound !== null
     && detail.contextState === "captured"
     && context === null;
+  const submissionImages = viewed
+    ? detail.evidenceImages?.find((group) => group.submissionId === viewed.id)?.images ?? []
+    : [];
   const inspectorGate = detail.inspectorGate;
   const spentGateCondition = spentInspectorGateCondition(detail);
   const spentGateStatus = spentInspectorGateStatus(detail);
@@ -1704,7 +1904,7 @@ export function WorkflowRunView({
                   }
                   onConfirm({
                     ...nextMove.confirm,
-                    onConfirm: () => onNextMove(nextMove),
+                    onConfirm: (evidence) => onNextMove(nextMove, evidence),
                   });
                 }}
               >
@@ -1898,6 +2098,16 @@ export function WorkflowRunView({
             && !["completed", "cancelled", "failed"].includes(detail.run.status)
             ? setDirectiveNodeId
             : undefined}
+          onOpenNode={(nodeId) => setWorklistFocus((current) => ({
+            runId: detail.run.id,
+            nodeIds: [nodeId],
+            sequence: (current?.sequence ?? 0) + 1,
+          }))}
+          onOpenStage={(nodeIds) => setWorklistFocus((current) => ({
+            runId: detail.run.id,
+            nodeIds: [...nodeIds],
+            sequence: (current?.sequence ?? 0) + 1,
+          }))}
         />
       ) : (
         <p className="wf-run-error" role="alert">
@@ -1937,11 +2147,10 @@ export function WorkflowRunView({
 
       <section className="wf-run-section" aria-label="Review worklist">
         <h4>Review worklist</h4>
-        {/* Keyed on the run so selecting another run resets the segment and the selected item in
-            the same commit the detail changes, rather than carrying one run's choice into the
-            next one's list. */}
+        {/* Keyed on the run so selecting another run resets the list, and on a pipeline-tile
+            request so repeated clicks remount with that node as the initial worklist choice. */}
         <RunWorklist
-          key={detail.run.id}
+          key={`${detail.run.id}:${currentWorklistFocus?.sequence ?? 0}`}
           detail={detail}
           round={viewed?.round ?? null}
           attempts={reviewAttempts}
@@ -1951,6 +2160,7 @@ export function WorkflowRunView({
           reviewerlessVersion={reviewerlessVersion}
           personaNodeIds={personaNodeIds}
           disabledNodeIds={detail.run.disabledNodeIds ?? []}
+          initialNodeIds={currentWorklistFocus?.nodeIds ?? []}
           onOpenFile={onOpenFile}
           onCopyChange={onCopyChange}
           changeCopied={changeCopied}
@@ -2217,6 +2427,15 @@ export function WorkflowRunView({
           <h4>Intent and evidence not captured</h4>
           <p className="wf-run-empty">This submission stopped before its immutable context snapshot was recorded.</p>
         </section>
+      )}
+      {viewed && (
+        <SubmissionImageEvidence
+          runId={detail.run.id}
+          images={submissionImages}
+          scopeOptions={evidenceScopeOptions}
+          canRestage={detail.binding.state === "active" && !detail.externalSource}
+          onRestage={onRestageImage}
+        />
       )}
       {detail.contextState === "corrupt" && (
         <section className="wf-run-section">
@@ -2536,6 +2755,7 @@ export function WorkflowRunsEmpty({
 
 export function WorkflowRuns({
   runs,
+  sessions = [],
   selectedRunId,
   filters,
   onSelectRun,
@@ -2546,6 +2766,8 @@ export function WorkflowRuns({
   onBindWorkflow,
 }: {
   runs: WorkflowRunSummary[];
+  /** Live session projections issue the primary-first repository slots used by evidence scope. */
+  sessions?: Session[];
   selectedRunId: string | null;
   filters?: WorkflowRunFilters;
   onSelectRun: (id: string) => void;
@@ -2585,8 +2807,20 @@ export function WorkflowRuns({
   const mounted = useRef(false);
   const listGeneration = useRef(0);
   const selectedIndex = useRef(0);
+  const page = useRef<HTMLElement>(null);
+  const runRows = useRef(new Map<string, HTMLButtonElement>());
+  const pendingKeyboardFocus = useRef<string | null>(null);
   const selected = selectedRunId ?? ordered[0]?.id ?? null;
   const selectedSummary = ordered.find((run) => run.id === selected) ?? null;
+  const evidenceSession = sessions.find((session) => session.id === detail?.binding.sessionId) ?? null;
+  const evidenceScopeSet = useMemo(
+    () => workflowEvidenceScopes(evidenceSession, detail?.summary.repoRoot),
+    [evidenceSession, detail?.summary.repoRoot],
+  );
+  const evidenceDraft = useWorkflowEvidenceDraft(
+    workflowBindingEvidenceOwner(detail?.binding.id),
+    evidenceScopeSet.defaultScope,
+  );
   const listPage = async (cursor: string | null, append: boolean): Promise<void> => {
     const generation = ++listGeneration.current;
     setListLoading(true);
@@ -2653,6 +2887,72 @@ export function WorkflowRuns({
     ) return;
     onSelectRun(ordered[Math.min(selectedIndex.current, ordered.length - 1)]!.id);
   }, [detail?.run.id, onSelectRun, ordered, runs, selectedRunId]);
+  /**
+   * The Runs page owns its two keyboard zones while it is mounted. Vertical arrows on the rail
+   * select and load a run immediately; Tab on that selected row crosses into the first authored
+   * stage. Once focus is in the reader, the pipeline owns its own arrows and tabs.
+   *
+   * Inputs keep their native arrows, and a dialog owns every key while it is open. The global
+   * App handler deliberately stands down off the Fleet, so this listener has no competing
+   * session cursor to suppress.
+   */
+  useEffect(() => {
+    const ids = ordered.map((run) => run.id);
+    function onKey(event: KeyboardEvent): void {
+      if (
+        event.defaultPrevented
+        || confirm !== null
+      ) return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("input, textarea, select, [contenteditable='true'], [role='dialog']")) {
+        return;
+      }
+      if (
+        event.key === "Tab"
+        && !event.shiftKey
+        && !event.altKey
+        && !event.ctrlKey
+        && !event.metaKey
+        && target?.closest(".wf-run-row") === (selected ? runRows.current.get(selected) : null)
+      ) {
+        const firstStage = page.current?.querySelector<HTMLElement>(
+          '.wf-run-reader [data-focus-key="run-stage:0"]',
+        );
+        if (!firstStage) return;
+        event.preventDefault();
+        firstStage.focus({ preventScroll: true });
+        firstStage.scrollIntoView({ block: "nearest", inline: "nearest" });
+        return;
+      }
+      if (
+        (event.key !== "ArrowUp" && event.key !== "ArrowDown")
+        || event.altKey
+        || event.ctrlKey
+        || event.metaKey
+        || event.shiftKey
+        || target?.closest(".wf-run-reader")
+      ) return;
+      if (ids.length === 0) return;
+      const next = moveWorkflowRunSelection(ids, selected, event.key);
+      event.preventDefault();
+      if (!next || next === selected) return;
+      pendingKeyboardFocus.current = next;
+      onSelectRun(next);
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [confirm, onSelectRun, ordered, selected]);
+  // Keep route, DOM focus, and the independently scrolling rail on the same row after a key.
+  // Non-keyboard arrivals still scroll a bookmarked or palette-selected run into view, but do
+  // not steal focus from the control that opened it.
+  useEffect(() => {
+    if (!selected) return;
+    const row = runRows.current.get(selected);
+    row?.scrollIntoView({ block: "nearest" });
+    if (pendingKeyboardFocus.current !== selected || !row) return;
+    pendingKeyboardFocus.current = null;
+    row.focus({ preventScroll: true });
+  }, [ordered.length, selected]);
   useEffect(() => {
     loadCommit.current.commit(committedLoadGeneration);
   }, [committedLoadGeneration]);
@@ -2747,7 +3047,11 @@ export function WorkflowRuns({
     }
   };
 
-  const resubmit = async (unchanged: boolean): Promise<void> => {
+  const resubmit = async (
+    unchanged: boolean,
+    evidence: WorkflowUploadEvidenceLocator[] = [],
+    actionId = "resubmit",
+  ): Promise<void> => {
     if (!detail) return;
     /*
      * Replaying the refused submission's own request id is what keeps an unchanged resubmission
@@ -2763,8 +3067,18 @@ export function WorkflowRuns({
      *
      * `null` means no revivable submission, which is a correct answer rather than a failure: a
      * fresh id is what the daemon accepts there.
-     */
-    const replay = unchanged ? refusedUnchangedRequestId(detail) : null;
+    */
+    if (!unchanged) {
+      actionController.run(actionId, async (requestId) => {
+        await workflowRequest(`/api/workflow-runs/${detail.run.id}/resubmit`, {
+          method: "POST",
+          body: JSON.stringify({ requestId, resubmitUnchanged: false, evidence }),
+        });
+        evidenceDraft.clear();
+      });
+      return;
+    }
+    const replay = refusedUnchangedRequestId(detail);
     const requestId = replay ?? crypto.randomUUID();
     setError(null);
     try {
@@ -2916,7 +3230,7 @@ export function WorkflowRuns({
   }
 
   return (
-    <section className="workflow-runs">
+    <section ref={page} className="workflow-runs">
       <aside className="wf-run-rail">
         {listError && <p className="wf-run-error" role="alert">{listError}</p>}
         <div className="wf-run-chips" role="group" aria-label="Filter runs by state">
@@ -3001,34 +3315,43 @@ export function WorkflowRuns({
             <p>Clear a filter or wait for a matching run.</p>
           </div>
         )}
-        {ordered.map((run) => (
-          <Tooltip key={run.id} label={`Open this ${run.workflowName} run - ${runStatusLabel(run.status)}`}>
-            <button
-              className={`wf-run-row${selected === run.id ? " active" : ""}`}
-              onClick={() => onSelectRun(run.id)}
-            >
-              <span className="wf-run-row-head">
-                <strong>{run.workflowName}</strong>
-                <span className="wf-run-version">v{run.workflowVersion}</span>
-              </span>
-              <span className={`workflow-chip workflow-${workflowRunTone(run)}`}>
-                {runStatusLabel(run.status)}
-              </span>
-              <span className="wf-run-row-session">{run.noteKey}</span>
-              {run.repoRoot && (
-                <span className="wf-run-row-repo">{repoLeaf(run.repoRoot)}</span>
-              )}
-              {run.gate !== "none" && (
-                <span className="wf-run-row-gate">
-                  GitHub Inspector: {run.gate.replaceAll("_", " ")}
-                  {run.gatePrNumber ? ` · #${run.gatePrNumber}` : ""}
-                  {run.gateHeadShort ? ` · ${run.gateHeadShort}` : ""}
-                </span>
-              )}
-              <small>{relativeTime(run.updatedAt)}</small>
-            </button>
-          </Tooltip>
-        ))}
+        <div className="wf-run-list" role="list" aria-label="Workflow runs">
+          {ordered.map((run) => (
+            <div role="listitem" key={run.id}>
+              <Tooltip label={`Open this ${run.workflowName} run - ${runStatusLabel(run.status)}`}>
+                <button
+                  ref={(node) => {
+                    if (node) runRows.current.set(run.id, node);
+                    else runRows.current.delete(run.id);
+                  }}
+                  aria-current={selected === run.id}
+                  className={`wf-run-row${selected === run.id ? " active" : ""}`}
+                  onClick={() => onSelectRun(run.id)}
+                >
+                  <span className="wf-run-row-head">
+                    <strong>{run.workflowName}</strong>
+                    <span className="wf-run-version">v{run.workflowVersion}</span>
+                  </span>
+                  <span className={`workflow-chip workflow-${workflowRunTone(run)}`}>
+                    {runStatusLabel(run.status)}
+                  </span>
+                  <span className="wf-run-row-session">{run.noteKey}</span>
+                  {run.repoRoot && (
+                    <span className="wf-run-row-repo">{repoLeaf(run.repoRoot)}</span>
+                  )}
+                  {run.gate !== "none" && (
+                    <span className="wf-run-row-gate">
+                      GitHub Inspector: {run.gate.replaceAll("_", " ")}
+                      {run.gatePrNumber ? ` · #${run.gatePrNumber}` : ""}
+                      {run.gateHeadShort ? ` · ${run.gateHeadShort}` : ""}
+                    </span>
+                  )}
+                  <small>{relativeTime(run.updatedAt)}</small>
+                </button>
+              </Tooltip>
+            </div>
+          ))}
+        </div>
         {nextCursor && (
           <Tooltip label="Load the next page of Workflow run history">
             <button
@@ -3069,9 +3392,9 @@ export function WorkflowRuns({
              * unchanged resubmission inside the round it is repairing. Sending it generically
              * would mint a fresh id and burn a repair round every time.
              */
-            onNextMove={(move) => {
+            onNextMove={(move, evidence = []) => {
               if (move.kind === "resubmit" || move.kind === "resubmit-unchanged") {
-                void resubmit(move.kind === "resubmit-unchanged");
+                void resubmit(move.kind === "resubmit-unchanged", evidence, move.id);
                 return;
               }
               /*
@@ -3100,8 +3423,9 @@ export function WorkflowRuns({
                   // body is the one this intent made, so it is the one to open.
                   const started = await workflowRequest<{ run: { id: string } }>(move.path, {
                     method: "POST",
-                    body: JSON.stringify({ requestId, ...move.body }),
+                    body: JSON.stringify({ requestId, ...move.body, evidence }),
                   });
+                  evidenceDraft.clear();
                   onSelectRun(started.run.id);
                 });
                 return;
@@ -3210,6 +3534,22 @@ export function WorkflowRuns({
                 ),
               );
             }}
+            evidenceScopeOptions={evidenceScopeSet.options}
+            onRestageImage={async (image, clientItemId) => {
+              await workflowRequest(
+                `/api/workflow-bindings/${encodeURIComponent(detail.binding.id)}/evidence/reattach`,
+                {
+                  method: "POST",
+                  body: JSON.stringify({
+                    imageId: image.id,
+                    clientItemId,
+                    caption: image.caption,
+                    repositoryScope: image.repositoryScope,
+                  }),
+                },
+              );
+              evidenceDraft.refreshStaged();
+            }}
             actionError={error ?? actionController.error}
             isActionPending={actionController.isPending}
             onOpenSession={() => {
@@ -3223,7 +3563,13 @@ export function WorkflowRuns({
         )}
       </div>
       {confirm && (
-        <WorkflowConfirmModal request={confirm} onClose={() => setConfirm(null)} />
+        <WorkflowConfirmModal
+          request={confirm}
+          onClose={() => setConfirm(null)}
+          evidence={confirm.captureEvidence
+            ? { controller: evidenceDraft, scopes: evidenceScopeSet.options }
+            : undefined}
+        />
       )}
     </section>
   );

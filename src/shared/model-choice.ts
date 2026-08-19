@@ -63,6 +63,6 @@ export function resolveModelChoice(
 }
 
 // The claude-only `MODEL_SUGGESTIONS` list that used to sit here is gone with its last
-// reader. Which ids a field offers is a question about a PROVIDER, so it is answered by
-// `modelChoicesFor(runner, …)` (`@shared/model.ts`) - a hardcoded list here could only
-// ever have been Claude's, and `ModelField` renders it for whichever runner is selected.
+// reader. Which ids a field offers is a question about a PROVIDER, so the browser catalog
+// answers it from the aggregate harness response. A hardcoded list here could only ever
+// have been Claude's, while `ModelField` also serves Codex and Pi call sites.

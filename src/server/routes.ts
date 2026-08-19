@@ -10,6 +10,7 @@ import {
   AwayConfigPatchSchema,
   BacklogPlanSchema,
   CompleteTaskSchema,
+  CompleteRetroNoChangeSchema,
   CreatePersonaSchema,
   ImportPersonaSchema,
   ReimportPersonaSchema,
@@ -21,6 +22,9 @@ import {
   DispatchBacklogTaskSchema,
   DispatchSchema,
   ResolveRepoSchema,
+  SEE_WORK_TOUR_DEMO_INTENT,
+  SEE_WORK_TOUR_PREVIEW_INTENT,
+  SeeWorkTourDispatchSchema,
   EditWorkItemSchema,
   FOREMAN_INSTRUCTIONS_CONFLICT_CODE,
   FOREMAN_INSTRUCTIONS_CONFLICT_MESSAGE,
@@ -32,10 +36,14 @@ import {
   ForemanPlannerRetryClaimSchema,
   ForemanPlannerRetrySchema,
   HarnessesConfigPatchSchema,
+  HarnessModelCatalogQuerySchema,
+  HarnessModelCatalogsSchema,
   UiConfigPatchSchema,
   InspectorConfigPatchSchema,
   LlmConfigPatchSchema,
   McpCreateTaskSchema,
+  McpProductIssuePreviewRequestSchema,
+  McpProductIssueSubmitRequestSchema,
   ResolveFindingsSchema,
   ShippingConfigPatchSchema,
   HookIngestSchema,
@@ -80,9 +88,11 @@ import {
   PromptedWrapupSchema,
   WrapupAskedSchema,
   PushTaskSchema,
+  ProductIssuePreviewRequestSchema,
   PipelineActionSchema,
   PipelineConsoleSchema,
   PipelineForemanEpisodeSchema,
+  PipelineInstallerLaunchSchema,
   PipelineRepoRegistrationSchema,
   PipelinesConfigPatchSchema,
   SkillsConfigPatchSchema,
@@ -134,6 +144,10 @@ import type {
   ResolveFindingsResult,
   TaskDependencyInput,
 } from "@shared/protocol.ts";
+import {
+  PRODUCT_ISSUE_LIMITS,
+  type ProductIssueSubmitResult,
+} from "@shared/product-issues.ts";
 import { capturePaneText } from "./discovery/pane-capture.ts";
 import { noteKeyFor } from "./registry.ts";
 import type { Registry } from "./registry.ts";
@@ -148,6 +162,7 @@ import type {
 } from "@shared/types.ts";
 import { ReviewResolutionError, type ReviewManager } from "./reviews.ts";
 import {
+  MANUAL_DISPATCH_TASK_CREATE,
   ScoutArchiveNotReadyError,
   TaskDependencyError,
   TaskStatusConflictError,
@@ -190,6 +205,8 @@ import { summarizeBuffer } from "@shared/away-buffer.ts";
 import type { AwayWatcher } from "./away/watcher.ts";
 import { getHarnessesConfig, setHarnessesConfig } from "./harnesses.ts";
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
+import type { HarnessModelCatalogService } from "./harness/model-catalog-service.ts";
+import type { ProductIssueService } from "./product-issues.ts";
 import type { WorktreeManager } from "./worktrees/manager.ts";
 import {
   WorktreeOperationError,
@@ -214,6 +231,8 @@ import type { TaskSourcesView } from "@shared/task-source.ts";
 import { getPipelinesConfig, setPipelinesConfig } from "./pipelines/config.ts";
 import {
   activePipelineRepoStatuses,
+  pipelineInstallerCandidates,
+  pipelineInstallerLaunch,
   pipelineConsoleLaunch,
   pipelineConsoleName,
   pipelineRepoStatuses,
@@ -229,6 +248,7 @@ import {
   type PipelineActionResult,
   type PipelineConsoleResult,
   type PipelineForemanView,
+  type PipelineInstallerLaunchResult,
   type PipelinesView,
 } from "@shared/pipeline.ts";
 import { schedulePipelineRefresh } from "./pipelines/index.ts";
@@ -661,6 +681,22 @@ function artifactShortSha(locator: unknown): string | null {
   return null;
 }
 
+function productIssueSubmitResponse(result: ProductIssueSubmitResult): {
+  status: 201 | 502 | 503 | 504;
+  body: ProductIssueSubmitResult;
+} {
+  switch (result.outcome) {
+    case "created":
+      return { status: 201, body: result };
+    case "refused":
+      return { status: 502, body: result };
+    case "configuration":
+      return { status: 503, body: result };
+    case "unknown":
+      return { status: 504, body: result };
+  }
+}
+
 /**
  * Map one submission result to an HTTP status and body, for both the MCP and the manual route.
  *
@@ -788,6 +824,13 @@ export function buildApp(
   worktrees?: WorktreeManager,
   /** Singleton projection/action owner for Settings > Worktrees. */
   worktreeOperations?: WorktreeOperationsService,
+  /**
+   * Daemon-owned model discovery/cache service. Appended last so focused route tests that
+   * do not exercise catalogs never construct or spawn one.
+   */
+  modelCatalogs?: HarnessModelCatalogService,
+  /** Daemon-owned public issue writer. Appended last for focused route-test compatibility. */
+  productIssues?: ProductIssueService,
 ): Hono {
   const app = new Hono();
   const terminalLauncher = launchSessionTerminal ?? launchTerminal;
@@ -830,6 +873,41 @@ export function buildApp(
 
   app.get("/api/health", (c) =>
     c.json({ ok: true, service: "mission-control", version: VERSION, pid: process.pid }),
+  );
+
+  // --- public product issue preflight/preview for the future dashboard form ---
+  app.get("/api/product-issues/preflight", async (c) => {
+    if (!productIssues) {
+      return c.json({
+        ready: false,
+        target: null,
+        attachments: { enabled: false, reason: "Product issue service unavailable" },
+        problems: [{ code: "invalid-target", message: "Product issue service unavailable" }],
+      }, 503);
+    }
+    return c.json(await productIssues.preflight());
+  });
+
+  app.post(
+    "/api/product-issues/preview",
+    bodyLimit({
+      maxSize: PRODUCT_ISSUE_LIMITS.requestJsonBytes,
+      onError: (c) => c.json({ error: "Product issue request is too large" }, 413),
+    }),
+    async (c) => {
+      if (!productIssues) {
+        return c.json({
+          outcome: "configuration",
+          message: "Product issue service unavailable",
+          retrySafe: true,
+        } as const, 503);
+      }
+      const parsed = await parseBody(c, ProductIssuePreviewRequestSchema);
+      if (!parsed.ok) return parsed.res;
+      const result = productIssues.preview("dashboard", parsed.data);
+      if (result.outcome === "preview") return c.json(result);
+      return c.json(result, result.outcome === "configuration" ? 503 : 409);
+    },
   );
 
   app.post("/api/worktrees/manual/acquire", async (c) => {
@@ -1671,6 +1749,21 @@ export function buildApp(
       c.req.param("clientItemId"),
     );
     return staged ? c.json(staged) : c.json({ error: "no such workflow binding" }, 404);
+  });
+  app.get("/api/sessions/:id/workflow-evidence", (c) => {
+    const manager = workflowManager();
+    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+    const staged = manager.stagedEvidenceForSession(c.req.param("id"));
+    return staged ? c.json(staged) : c.json({ error: "no such live workflow session" }, 404);
+  });
+  app.delete("/api/sessions/:id/workflow-evidence/:clientItemId", (c) => {
+    const manager = workflowManager();
+    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+    const staged = manager.removeStagedEvidenceForSession(
+      c.req.param("id"),
+      c.req.param("clientItemId"),
+    );
+    return staged ? c.json(staged) : c.json({ error: "no such live workflow session" }, 404);
   });
   app.post("/api/workflow-bindings/:id/evidence/reattach", async (c) => {
     const manager = workflowManager();
@@ -2589,6 +2682,64 @@ export function buildApp(
     return c.json({});
   });
 
+  // --- MCP product issues (token-guarded; source and session are daemon-derived) ---
+  app.post(
+    "/mcp/product-issues/preview",
+    bodyLimit({
+      maxSize: PRODUCT_ISSUE_LIMITS.requestJsonBytes,
+      onError: (c) => c.json({ error: "Product issue request is too large" }, 413),
+    }),
+    async (c) => {
+      if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+      if (!productIssues) {
+        return c.json({
+          outcome: "configuration",
+          message: "Product issue service unavailable",
+          retrySafe: true,
+        } as const, 503);
+      }
+      const parsed = await parseBody(c, McpProductIssuePreviewRequestSchema);
+      if (!parsed.ok) return parsed.res;
+      const { env, sessionId, cwd, ...request } = parsed.data;
+      const session = registry.findSessionByEnv(env, sessionId, cwd);
+      if (!session || session.state === "exited") {
+        return c.json({ error: "no matching active session" }, 404);
+      }
+      const result = productIssues.preview("agent", request);
+      if (result.outcome === "preview") return c.json(result);
+      return c.json(result, result.outcome === "configuration" ? 503 : 409);
+    },
+  );
+
+  app.post(
+    "/mcp/product-issues",
+    bodyLimit({
+      maxSize: PRODUCT_ISSUE_LIMITS.requestJsonBytes,
+      onError: (c) => c.json({ error: "Product issue request is too large" }, 413),
+    }),
+    async (c) => {
+      if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+      if (!productIssues) {
+        return c.json({
+          outcome: "configuration",
+          message: "Product issue service unavailable",
+          retrySafe: true,
+        } as const, 503);
+      }
+      const parsed = await parseBody(c, McpProductIssueSubmitRequestSchema);
+      if (!parsed.ok) return parsed.res;
+      const { env, sessionId, cwd, ...request } = parsed.data;
+      const session = registry.findSessionByEnv(env, sessionId, cwd);
+      if (!session || session.state === "exited") {
+        return c.json({ error: "no matching active session" }, 404);
+      }
+      const response = productIssueSubmitResponse(
+        await productIssues.submit("agent", request),
+      );
+      return c.json(response.body, response.status);
+    },
+  );
+
   // --- MCP review channel (token-guarded) ---
   app.post("/mcp/reviews", async (c) => {
     if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
@@ -2644,6 +2795,18 @@ export function buildApp(
       if (error instanceof TaskDependencyError) return c.json({ error: error.message }, 409);
       throw error;
     }
+  });
+
+  app.post("/mcp/retros/no-change", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, CompleteRetroNoChangeSchema);
+    if (!parsed.ok) return parsed.res;
+    const { env, sessionId, cwd } = parsed.data;
+    const session = registry.findSessionByEnv(env, sessionId, cwd);
+    if (!session) return c.json({ error: "no matching active session" }, 404);
+    const result = await tasks.completeRetroNoChange(session.id, cwd);
+    if (!result.ok) return c.json({ error: result.error }, result.status);
+    return c.json({ task: result.task, sourceTaskId: result.sourceTaskId, replayed: result.replayed });
   });
 
   app.get("/mcp/reviews/:id/wait", async (c) => {
@@ -3181,13 +3344,13 @@ export function buildApp(
     return c.json(r, r.ok ? 200 : 500);
   });
 
-  // Ask a session to run its own retrospective, or file one when it cannot.
+  // Ask a session to run its own retrospective, or create the appropriate follow-up Task.
   //
   // No request body, deliberately: there is exactly one retro and nothing about it is a
-  // parameter. What the daemon does is decided by the session's own state - a live session is
-  // typed into, a dead one gets a task filed against its repository - and neither is a choice a
-  // caller may override, because "type into that session" is not a request a caller can make
-  // true. See `runRetro` for the delivery composition and the R3 fallback.
+  // parameter. What the daemon does is decided by durable pull-request posture first: a merged
+  // work review gets one linked, immediately dispatched Task, while a current open review keeps
+  // the same-session delivery. With no merged source posture, an unreachable session gets the
+  // existing backlog fallback. None is a choice the caller may override. See `runRetro`.
   //
   // 404 is the session, and it means the registry has no row at all: an EXITED session is not a
   // 404 here, it is the fallback's ordinary input, and it is the only place the branch and pull
@@ -4183,6 +4346,15 @@ export function buildApp(
 
   // --- Harnesses: dispatch-time defaults for launched sessions (localhost only) ---
   app.get("/api/harnesses/config", (c) => c.json(getHarnessesConfig()));
+  app.get("/api/harnesses/models", async (c) => {
+    if (!modelCatalogs) return c.json({ error: "Harness model catalog service unavailable" }, 503);
+    const query = HarnessModelCatalogQuerySchema.safeParse(c.req.query());
+    if (!query.success) return c.json({ error: query.error.message }, 400);
+    const result = await modelCatalogs.getCatalogs({ refresh: query.data.refresh === "1" });
+    const parsed = HarnessModelCatalogsSchema.safeParse(result);
+    if (!parsed.success) return c.json({ error: "Harness model catalog response was invalid" }, 500);
+    return c.json(parsed.data);
+  });
   app.put("/api/harnesses/config", async (c) => {
     const parsed = await parseBody(c, HarnessesConfigPatchSchema);
     if (!parsed.ok) return parsed.res;
@@ -4284,10 +4456,9 @@ export function buildApp(
 
   // --- Pipelines: observing an external SDLC engine (localhost only) ---
   //
-  // Two reads and one write, and every one of them is about CONSENT. Nothing here starts,
-  // stops, pauses or advances anything: the projection is built from the engine's own files
-  // by the watcher, and the engine's CLI is the only thing that may change them. The verbs
-  // that spawn it arrive in a later phase and will land beside these.
+  // Detection, registration, observation consent, and guided installation remain separate
+  // facts. Provider-owned commands are composed behind typed routes; the browser never sends
+  // argv, and the watcher remains a reader of provider-owned files.
   //
   // The probe is the one subprocess in this neighbourhood, and it is cached behind a TTL
   // because the panel polls - `refresh=1` is the panel's own "Check again", which is an
@@ -4321,6 +4492,62 @@ export function buildApp(
     });
   });
 
+  /** Verified local source checkouts eligible for this provider's interactive installer. */
+  app.get("/api/pipelines/installers", async (c) => {
+    const provider = c.req.query("provider") ?? "";
+    if (!isPipelineProviderId(provider)) {
+      return c.json({ error: "no such pipeline provider" }, 400);
+    }
+    return c.json(await pipelineInstallerCandidates(provider, await listRepos()));
+  });
+
+  /**
+   * Open the provider's upstream installer in a visible selected terminal.
+   *
+   * Workspace-catalog membership and every trust marker are checked in this request. Only provider,
+   * checkout, and backend came from the browser; the provider owns argv/cwd/title and the
+   * daemon owns the trusted hold-open shell wrapper.
+   */
+  app.post("/api/pipelines/install", async (c) => {
+    const parsed = await parseBody(c, PipelineInstallerLaunchSchema);
+    if (!parsed.ok) return parsed.res;
+    const body = parsed.data;
+    const launch = await pipelineInstallerLaunch(body.provider, body.checkout, await listRepos());
+    if (!launch.ok) {
+      const answer: PipelineInstallerLaunchResult = {
+        ok: false,
+        provider: body.provider,
+        checkout: body.checkout,
+        outcome: "refused",
+        label: "",
+        detail: launch.error,
+      };
+      return c.json(answer, 409);
+    }
+
+    const hold =
+      `${shellCommand(launch.argv)}\n` +
+      `status=$?\n` +
+      `printf '\\n[installer exited %s] press enter to close ' "$status"\n` +
+      `read -r _\n`;
+    const result = await terminalLauncher(body.backend, {
+      name: launch.title,
+      cwd: launch.cwd,
+      argv: [process.env.SHELL || "/bin/sh", "-c", hold],
+    });
+    const answer: PipelineInstallerLaunchResult = {
+      ok: result.ok,
+      provider: body.provider,
+      checkout: launch.candidate.checkout,
+      outcome: result.ok ? "opened" : result.status === 504 ? "maybe-opening" : "refused",
+      label: result.label,
+      detail: result.ok
+        ? "Installer terminal opened. Finish the interactive installer there, then check again."
+        : (result.error ?? `${result.label} could not open the installer terminal.`),
+    };
+    return result.ok ? c.json(answer) : c.json(answer, result.status as 404 | 409 | 502 | 504);
+  });
+
   /**
    * The repositories being READ, for the Pipelines rail's group headings.
    *
@@ -4330,7 +4557,13 @@ export function buildApp(
    * engine spawn behind a rail that only needs to know whether a daemon is alive - on a
    * cadence, for as long as the tab is on screen.
    */
-  app.get("/api/pipelines/repos", (c) => c.json({ repos: activePipelineRepoStatuses() }));
+  app.get("/api/pipelines/repos", (c) => {
+    const config = getPipelinesConfig();
+    return c.json({
+      repos: activePipelineRepoStatuses(config),
+      launchRuntime: config.launchRuntime,
+    });
+  });
 
   /**
    * One run's gate evidence, read from the engine's files at request time.
@@ -4392,6 +4625,7 @@ export function buildApp(
     }
     setPipelinesConfig({
       enabled: parsed.data.enabled,
+      launchRuntime: parsed.data.launchRuntime,
       foremanMechanicalTriage: parsed.data.foremanMechanicalTriage,
       repos,
     });
@@ -4668,12 +4902,137 @@ export function buildApp(
     }
     let task;
     try {
-      task = tasks.create({ ...parsed.data, repoRoot, extraRepoRoots, workflowId });
+      task = tasks.create(
+        { ...parsed.data, repoRoot, extraRepoRoots, workflowId },
+        undefined,
+        MANUAL_DISPATCH_TASK_CREATE,
+      );
     } catch (error) {
       if (error instanceof TaskDependencyError) return c.json({ error: error.message }, 409);
       throw error;
     }
     return c.json(task);
+  });
+
+  // Temporary comparison-spike doorway for Chapter 1 of the product tour. This is not a
+  // second dispatch API: the body chooses only a repository, while this route fixes the
+  // harmless prompt, Codex Terra model, no-Workflow posture, and required review tool.
+  app.post("/api/tours/see-work/dispatch", async (c) => {
+    const parsed = await parseBody(c, SeeWorkTourDispatchSchema);
+    if (!parsed.ok) return parsed.res;
+    const resolved = await resolveTaskRepoRoot(parsed.data.repoRoot);
+    if (!resolved.ok) return c.json({ error: resolved.error }, 400);
+
+    const task = tasks.create(
+      {
+        repoRoot: resolved.repoRoot,
+        extraRepoRoots: [],
+        title: "Tour demo",
+        intent: SEE_WORK_TOUR_DEMO_INTENT,
+        kind: "ship",
+        agent: "codex",
+        model: "gpt-5.6-terra",
+        workflowId: null,
+        backlog: true,
+        dependencies: [],
+        priority: null,
+        labels: ["tour-demo"],
+      },
+      undefined,
+      MANUAL_DISPATCH_TASK_CREATE,
+    );
+    const launched = await tasks.dispatch(task.id, {
+      overrideDisabled: true,
+      missionMcp: { tools: ["request_input"] },
+    });
+    if (!launched.ok) {
+      await tasks.complete(task.id, "Tour demo");
+      return c.json({ ok: false, error: launched.error, task: tasks.get(task.id) ?? task }, 409);
+    }
+    return c.json({ ok: true, task: launched.task ?? task });
+  });
+
+  // An empty fleet has no real desk for stop three to reveal. Create one fixed Chat task
+  // through the manual-dispatch capability, which is the only supported way Chat can launch.
+  // The browser still chooses only an existing repository; agent, prompt, kind, Workflow,
+  // and the no-MCP posture remain server-owned.
+  app.post("/api/tours/see-work/preview", async (c) => {
+    const parsed = await parseBody(c, SeeWorkTourDispatchSchema);
+    if (!parsed.ok) return parsed.res;
+    const resolved = await resolveTaskRepoRoot(parsed.data.repoRoot);
+    if (!resolved.ok) return c.json({ error: resolved.error }, 400);
+
+    const task = tasks.create(
+      {
+        repoRoot: resolved.repoRoot,
+        extraRepoRoots: [],
+        title: "Tour conversation",
+        intent: SEE_WORK_TOUR_PREVIEW_INTENT,
+        kind: "chat",
+        agent: "codex",
+        workflowId: null,
+        backlog: false,
+        dependencies: [],
+        priority: null,
+        labels: ["tour-demo", "tour-preview"],
+      },
+      undefined,
+      MANUAL_DISPATCH_TASK_CREATE,
+    );
+    return c.json({ ok: true, task });
+  });
+
+  // The tour's single terminal path for both its Chat preview and live Ship task. A live demo
+  // follows CompleteModal's ordering: record the outcome, then stop the session. An Exit
+  // during provisioning has no session to stop, so cancellation first closes that race.
+  app.post("/api/tours/see-work/tasks/:id/complete", async (c) => {
+    const id = c.req.param("id");
+    const task = tasks.get(id);
+    if (!task) return c.json({ ok: false, error: "no such task" }, 404);
+    const isShipDemo =
+      task.title === "Tour demo" &&
+      task.labels.includes("tour-demo") &&
+      task.intent.startsWith("[Mission Control See the work tour demo]");
+    const isChatPreview =
+      task.title === "Tour conversation" &&
+      task.kind === "chat" &&
+      task.labels.includes("tour-preview") &&
+      task.intent.startsWith("[Mission Control See the work tour conversation]");
+    if (!isShipDemo && !isChatPreview) {
+      return c.json({ ok: false, error: "that task does not belong to the tour" }, 409);
+    }
+
+    let session = task.sessionId ? registry.getSession(task.sessionId) : null;
+    if (!session && task.status !== "done") {
+      const cancelled = await tasks.cancel(id);
+      if (!cancelled.ok) return c.json(cancelled, 500);
+    }
+    const outcome = isChatPreview ? "Tour conversation" : "Tour demo";
+    const completed = await tasks.complete(id, outcome);
+    if (!completed) return c.json({ ok: false, error: "no such task" }, 404);
+    session ??= completed.sessionId ? registry.getSession(completed.sessionId) : null;
+    if (session) {
+      // A finished SDK handle can disappear just before this request reaches the supervisor,
+      // while its registry projection is still inside the normal exit linger. Confirm that
+      // absence through the supervisor, then feed the ordinary driver exit event back through
+      // Registry so session_remove still comes from its one supported eviction path.
+      if (session.runtime === "sdk" && sdkSessions?.handleFor(session.id) === null) {
+        registry.applyDriverEvent(session.id, {
+          kind: "exited",
+          reason: "tour cleanup found no live embedded driver",
+          resumable: false,
+        });
+      } else {
+        const stopped = await requestSessionStop(session, sdkSessions);
+        if (!stopped.ok) {
+          return c.json(
+            { ok: false, error: `task marked done, but the session could not be closed: ${stopped.error ?? "failed"}`, task: completed },
+            500,
+          );
+        }
+      }
+    }
+    return c.json({ ok: true, task: completed });
   });
 
   // Edit a task. A repo change is resolved the same way `POST /api/tasks` resolves one,

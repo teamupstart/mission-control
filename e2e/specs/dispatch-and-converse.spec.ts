@@ -432,8 +432,11 @@ test("Ship it starts No-Mistakes Review through the workflow route", async ({
   // The card is still settling around this button; click it once it has stopped moving.
   await settled(card);
   await review.click();
+  const confirmation = dashboard.getByRole("dialog", { name: "Run No-Mistakes Review" });
+  await expect(confirmation).toBeVisible();
+  await confirmation.getByRole("button", { name: "Run review" }).click();
   const sent = await request;
-  expect(sent.postDataJSON()).toEqual({ requestId: expect.any(String) });
+  expect(sent.postDataJSON()).toEqual({ requestId: expect.any(String), evidence: [] });
   if (process.env.MC_E2E_EVIDENCE) {
     mkdirSync(EVIDENCE, { recursive: true });
     // eslint-disable-next-line no-console

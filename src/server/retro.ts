@@ -1,8 +1,9 @@
 import { canMessage } from "@shared/pane.ts";
 import { HARNESS_CAPABILITIES, skillLoadingAgents } from "@shared/harness-capabilities.ts";
 import { MEMORY_DIR } from "@shared/memory.ts";
+import { PULL_REQUEST_SKILL } from "@shared/skills.ts";
 import type { RetroResponse } from "@shared/protocol.ts";
-import type { AgentType, Session } from "@shared/types.ts";
+import type { AgentType, Session, Task } from "@shared/types.ts";
 import { BUILTIN_SESSION_ACTIONS, RETRO_SESSION_ACTION_ID } from "./workflows/builtin-session-actions.ts";
 import { renderSessionAction } from "./workflows/feedback.ts";
 import { requiredSkillCommand, skillInvocationForAgent } from "./skills/invoke.ts";
@@ -11,6 +12,14 @@ import { injectPromptForRuntime } from "./sdk/deliver.ts";
 import { resolveTaskRepoRoot } from "./repos.ts";
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
 import type { TaskManager } from "./tasks.ts";
+import {
+  retroFollowupForSource,
+  retroPrPostureForTask,
+  taskWorkEpisodeForSession,
+  type RetroPrPosture,
+  type TaskWorkEpisodeBinding,
+} from "./db.ts";
+import { COMPLETE_RETRO_NO_CHANGE_TOOL } from "./retro-tool.ts";
 
 // Delivering the retro on demand, which is the one session action a human asks for directly.
 //
@@ -31,8 +40,8 @@ import type { TaskManager } from "./tasks.ts";
 // is the source plan's, and it keeps the daemon out of git either way: a task is a row, and the
 // agent it launches is what commits.
 //
-// BOTH arms fail closed on the retro skill, and the second one is the easier to get wrong. It
-// types nothing, so it looks like it has nothing to gate - but the skill is where the
+// Every arm fails closed on the skills it names, and the task arms are the easier ones to get
+// wrong. They type nothing, so it looks like they have nothing to gate - but the skill is where the
 // human-approval ceremony lives, so a task filed while the skill is off would reach an agent
 // holding an intent that names a procedure it cannot load. The arms ask different questions of
 // the same config, because they are about different agents at different times: the live arm
@@ -81,6 +90,9 @@ export interface RetroDeps {
   remember?: typeof recordInjection;
   /** Injected so a route test never shells out to git. Returns the task's main checkout. */
   resolveRepoRoot?: typeof resolveTaskRepoRoot;
+  /** Durable seams for focused routing tests; production always reads the database. */
+  sourceBindingForSession?: typeof taskWorkEpisodeForSession;
+  retroPostureForTask?: typeof retroPrPostureForTask;
 }
 
 /** The shipped Retro action, resolved from the build rather than from the operator library.
@@ -95,11 +107,11 @@ function retroAction() {
 }
 
 /**
- * Deliver the retro into a live session, or file it as a task when it can no longer be typed.
+ * Route a retro by durable review posture, then by whether its source session is reachable.
  *
- * The live arm is first because it is the one the source plan chose (R1): the session that did
- * the work holds the context the retrospective is about, and a fresh session has to
- * reconstruct all of it from transcript bytes.
+ * A current open pull request keeps the source session and its context. A merged review moves
+ * branch and review ownership into one linked Task before reachability is considered. With no
+ * merged posture, an unreachable session retains the original backlog fallback.
  */
 export async function runRetro(session: Session, deps: RetroDeps): Promise<RetroResult> {
   const action = retroAction();
@@ -109,6 +121,17 @@ export async function runRetro(session: Session, deps: RetroDeps): Promise<Retro
       status: 500,
       error: "This build ships no retro session action.",
     };
+  }
+
+  // An OPEN current review remains the source session's review, so it falls through to the
+  // existing delivery path below. A MERGED review cannot accept another commit: branch and
+  // review ownership move together into one linked follow-up Task while the source stays done.
+  const sourceBinding = (deps.sourceBindingForSession ?? taskWorkEpisodeForSession)(session.id);
+  if (sourceBinding) {
+    const posture = (deps.retroPostureForTask ?? retroPrPostureForTask)(sourceBinding.taskId);
+    if (posture?.kind === "merged") {
+      return startPostMergeRetro(session, posture, action.requiredSkillId, deps);
+    }
   }
 
   // "Gone" for a retro's purposes is "cannot be typed into", not "absent from the registry".
@@ -209,6 +232,157 @@ function staleSkill(
     : `The ${requiredSkillId} skill's invocation changed while this retro was being prepared.`;
 }
 
+/** Start or recover the separate task that owns a retrospective after its work PR merged. */
+async function startPostMergeRetro(
+  session: Session,
+  posture: Extract<RetroPrPosture, { kind: "merged" }>,
+  retroSkillId: string | null,
+  deps: RetroDeps,
+): Promise<RetroResult> {
+  const sourceTask = deps.tasks.getDurable(posture.binding.taskId);
+  if (!sourceTask) {
+    return {
+      kind: "refused",
+      status: 409,
+      error: "The merged pull request no longer has its source task, so its retro cannot be linked safely.",
+    };
+  }
+  // A primary review can merge before an attached repository's review. The durable posture
+  // above answers where a retro would belong, not whether the whole source task has shipped.
+  // Task completion is the existing merge-quorum projection, so wait for that single source of
+  // truth rather than reimplementing the per-repository changed-set rule in retro routing.
+  if (sourceTask.status !== "done") {
+    return {
+      kind: "refused",
+      status: 409,
+      error: `The source task is still ${sourceTask.status}. Wait until it is complete, including every attached repository review, before starting its post-merge retro.`,
+    };
+  }
+
+  const requiredSkills = [retroSkillId, PULL_REQUEST_SKILL].filter(
+    (skillId): skillId is string => skillId !== null,
+  );
+  const existingRelation = retroFollowupForSource(sourceTask.id, posture.binding.episodeId);
+  const existingTask = existingRelation
+    ? deps.tasks.getDurable(existingRelation.retroTaskId)
+    : undefined;
+  if (existingTask && ["dispatching", "running", "done"].includes(existingTask.status)) {
+    return { kind: "started", task: existingTask };
+  }
+  if (
+    existingTask &&
+    (existingTask.status === "cancelled" ||
+      (existingTask.status === "failed" &&
+        (existingTask.worktreePath !== null ||
+          existingTask.homeName !== null ||
+          existingTask.sessionId !== null ||
+          existingTask.extraRepos.some((repo) => repo.worktreePath !== null))))
+  ) {
+    return {
+      kind: "refused",
+      status: 409,
+      error: `The linked retro task is ${existingTask.status} and still needs operator cleanup; a duplicate task was not created.`,
+    };
+  }
+  const runner = retroRunner(session, requiredSkills, deps, existingTask?.agent);
+  if ("problem" in runner) {
+    if (existingTask) {
+      return {
+        kind: "queued",
+        task: existingTask,
+        reason: boundedReason(runner.problem),
+      };
+    }
+    return {
+      kind: "refused",
+      status: 409,
+      error: `${runner.problem} A post-merge retro needs both its approval procedure and its own pull-request shipping procedure.`,
+    };
+  }
+
+  let task: Task;
+  try {
+    task = deps.tasks.createRetroFollowup({
+      sourceTask,
+      sourceEpisodeId: posture.binding.episodeId,
+      sourceSessionId: posture.binding.sessionId,
+      title: `Retro: ${sourceTask.title}`.slice(0, 120),
+      intent: postMergeRetroIntent(session, sourceTask, posture.binding, posture.prUrl),
+      agent: runner.agent,
+    });
+  } catch (error) {
+    return {
+      kind: "refused",
+      status: 500,
+      error: `The linked retro task could not be created safely: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+
+  const dispatched = await deps.tasks.dispatch(task.id, {
+    missionMcp: { tools: [COMPLETE_RETRO_NO_CHANGE_TOOL] },
+  });
+  if (dispatched.ok) return { kind: "started", task: dispatched.task };
+
+  const current = dispatched.task ?? deps.tasks.get(task.id) ?? task;
+  const cleanRetry =
+    current.status === "backlog" ||
+    (current.status === "failed" &&
+      current.worktreePath === null &&
+      current.homeName === null &&
+      current.sessionId === null &&
+      current.extraRepos.every((repo) => repo.worktreePath === null));
+  if (cleanRetry) {
+    return { kind: "queued", task: current, reason: boundedReason(dispatched.error) };
+  }
+  return {
+    kind: "refused",
+    status: 409,
+    error: `The linked retro task exists but cannot be launched safely: ${dispatched.error}`,
+  };
+}
+
+function boundedReason(reason: string): string {
+  return reason.trim().slice(0, 400) || "the task could not be launched yet";
+}
+
+/** A self-contained brief for an agent that did not perform the source work. */
+function postMergeRetroIntent(
+  clickedSession: Session,
+  sourceTask: Task,
+  sourceBinding: TaskWorkEpisodeBinding,
+  mergedPrUrl: string,
+): string {
+  const repoRoots = [sourceTask.repoRoot, ...sourceTask.extraRepos.map((repo) => repo.repoRoot)];
+  const facts = [
+    `Source task: ${sourceTask.title} (${sourceTask.id})`,
+    `Source work episode: ${sourceBinding.episodeId}`,
+    `Source session: ${clickedSession.name} (${clickedSession.id})`,
+    sourceBinding.branch ? `Source branch: ${sourceBinding.branch}` : null,
+    `Merged pull request: ${mergedPrUrl}`,
+    clickedSession.cwd ? `Former worktree: ${clickedSession.cwd}` : null,
+    `Repository set: ${repoRoots.join(", ")}`,
+  ].filter((line): line is string => line !== null);
+  return [
+    "Run the retrospective for the completed Mission Control work named below. The work pull",
+    "request has already merged, so this is a separate follow-up task with fresh branches and",
+    "must never reopen, reassign, or rewrite the source task.",
+    "",
+    ...facts,
+    "",
+    "Invoke the retro skill and follow its approval ceremony. Propose at most three memories",
+    `and write only what the human explicitly approves into the appropriate ${MEMORY_DIR}.`,
+    "Use the source transcript when available; otherwise reconstruct from the merged changes,",
+    "review conversation, and corrections, and state that limitation in the proposals.",
+    "",
+    "If the human approves memory changes, commit them as this task's agent-authored work, invoke",
+    "the pull-request skill, and open or update this task's own pull request in each repository",
+    "that changed. Never add commits to the already-merged source branch or pull request.",
+    "",
+    `If no memory is approved or the proposals are dismissed, call ${COMPLETE_RETRO_NO_CHANGE_TOOL}.`,
+    "Do not create an empty commit, open a pull request, or request review for a no-change retro.",
+  ].join("\n");
+}
+
 /**
  * The R3 fallback: file a retro task against the repository the dead session worked in.
  *
@@ -228,7 +402,7 @@ async function dispatchRetroTask(
   requiredSkillId: string | null,
   deps: RetroDeps,
 ): Promise<RetroResult> {
-  const runner = retroRunner(session, requiredSkillId, deps);
+  const runner = retroRunner(session, requiredSkillId ? [requiredSkillId] : [], deps);
   if ("problem" in runner) {
     return {
       kind: "refused",
@@ -289,32 +463,42 @@ async function dispatchRetroTask(
  */
 function retroRunner(
   session: Session,
-  requiredSkillId: string | null,
+  requiredSkillIds: readonly string[],
   deps: RetroDeps,
+  requiredAgent?: AgentType,
 ): { agent: AgentType } | { problem: string } {
   // No required skill means nothing to prove, and the session's own harness is the honest
   // default. Unreachable for the shipped action, which always requires one.
-  if (!requiredSkillId) return { agent: session.agent };
+  if (requiredSkillIds.length === 0) return { agent: requiredAgent ?? session.agent };
 
   const loaders = skillLoadingAgents();
-  const candidates = HARNESS_CAPABILITIES[session.agent].skills
-    ? [session.agent, ...loaders.filter((agent) => agent !== session.agent)]
-    : loaders;
+  const candidates = requiredAgent
+    ? [requiredAgent]
+    : HARNESS_CAPABILITIES[session.agent].skills
+      ? [session.agent, ...loaders.filter((agent) => agent !== session.agent)]
+      : loaders;
   if (candidates.length === 0) {
     return {
-      problem: `No harness in this build loads Mission Control skills, so the ${requiredSkillId} `
-        + "skill has nowhere to run.",
+      problem: `No harness in this build loads Mission Control skills, so ${requiredSkillIds.join(" and ")} `
+        + "skills have nowhere to run.",
     };
   }
 
   const resolve = deps.skillForAgent ?? skillInvocationForAgent;
   let problem: string | null = null;
   for (const agent of candidates) {
-    const resolved = resolve(agent, requiredSkillId);
-    if (resolved.ok) return { agent };
-    problem ??= resolved.message;
+    let ready = true;
+    for (const skillId of requiredSkillIds) {
+      const resolved = resolve(agent, skillId);
+      if (!resolved.ok) {
+        problem ??= resolved.message;
+        ready = false;
+        break;
+      }
+    }
+    if (ready) return { agent };
   }
-  return { problem: problem ?? `The ${requiredSkillId} skill is unavailable.` };
+  return { problem: problem ?? `The ${requiredSkillIds.join(" and ")} skills are unavailable.` };
 }
 
 /**

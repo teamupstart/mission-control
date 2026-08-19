@@ -908,6 +908,8 @@ export interface EnsembleRun {
   /** The optional post-selection Workflow handoff, pinned at creation, or null when none was chosen. */
   workflowHandoff: EnsembleWorkflowHandoff | null;
   unreadable: EnsembleUnreadable | null;
+  /** When the operator retired a failed run's attention signal without deleting its history. */
+  failureAcknowledgedAt: number | null;
   error: string | null;
   createdAt: number;
   updatedAt: number;
@@ -1266,6 +1268,8 @@ export interface EnsembleSummary {
   outcomeKind: EnsembleOutcomeKind | null;
   /** The recoverability signal: set when this build cannot execute the stored snapshot. */
   unreadable: EnsembleUnreadable | null;
+  /** Durable failed-run acknowledgment, carried so every attention surface derives identically. */
+  failureAcknowledgedAt: number | null;
   /** Derived: this run is failed, cancelling, unreadable, awaiting a decision, or has a blocked member. */
   attention: boolean;
   error: string | null;
@@ -1348,6 +1352,7 @@ export type EnsembleAction =
     }
   | { kind: "resolve_finalization"; skipWorkflowHandoff: boolean }
   | { kind: "cancel"; reason: string | null }
+  | { kind: "dismiss_failure" }
   | { kind: "restore_artifact"; artifactId: string };
 
 /**
@@ -1456,6 +1461,8 @@ export function missingDriverKeys(plan: CompiledEnsemblePlan): string[] {
 export function ensembleNeedsAttention(input: {
   status: EnsembleStatus | null;
   unreadable: EnsembleUnreadable | null;
+  /** Acknowledgment retires only the `failed` cause; unreadable and live causes still win. */
+  failureAcknowledgedAt?: number | null;
   /**
    * Optional with a 0 default, so a caller holding only durable row state - the store, a
    * persisted-row reader - compiles and reads unchanged. A run whose MEMBER is blocked needs
@@ -1471,7 +1478,11 @@ export function ensembleNeedsAttention(input: {
   if (input.unreadable !== null) return true;
   if (input.status === null) return true;
   if ((input.membersNeedingInput ?? 0) > 0) return true;
-  return input.status === "failed" || input.status === "awaiting_decision" || input.status === "cancelling";
+  return (
+    (input.status === "failed" && input.failureAcknowledgedAt == null) ||
+    input.status === "awaiting_decision" ||
+    input.status === "cancelling"
+  );
 }
 
 /**

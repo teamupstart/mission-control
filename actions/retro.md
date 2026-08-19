@@ -21,7 +21,9 @@ well-confirmed one into AGENTS.md, counts as a proposal.
 
 The approved ones are committed as files under `.agents/memory` in the repository each is
 about - the one you are standing in, unless this session worked in several - on the branch
-that repository is already on, so they are reviewed with the work they came from.
+that repository is already on. This session action is delivered only while that review can
+still accept the memory commit. A retro filed as a separate task follows the task intent and
+ships its own pull request instead.
 
 ## What not to do
 
@@ -32,6 +34,6 @@ that repository is already on, so they are reviewed with the work they came from
 - Do not restate what AGENTS.md already says, and do not catalogue a fact about the feature
   you just built. A memory earns its place by being non-obvious and repeatedly costly.
 - Do not cut a branch, merge anything, or sweep unrelated working-tree changes into the
-  commit. Each repository's branch already has a review in flight; the memory rides that
-  repository's pull request rather than opening a second one for it.
+  commit. On this same-session path, each repository's memory rides that repository's open
+  pull request rather than opening a second one for it.
 - Do not add an agent as a commit co-author.

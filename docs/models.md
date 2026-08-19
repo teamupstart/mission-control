@@ -33,8 +33,11 @@ shipped default**. Clearing a field means "fall back", never "run with no model"
 `--model` inherits whatever the CLI happens to default to, which is the priciest tier available
 and is not recorded anywhere. The panel prints which of the three won, because an environment
 variable set in the daemon's shell outranks the box and would otherwise be invisible from the
-browser. Any id the selected provider's CLI accepts works; the fields are free text, not a fixed
-list, with suggestions offered for whichever provider is in force.
+browser. Each field is a select backed by the same browser model catalog as dispatch. Claude and
+Codex remain on their shipped static rows; this change does not discover either provider's models
+dynamically. A value saved by another version or through configuration remains selected as **not
+currently reported** instead of being dropped, so catalog loading or failure cannot rewrite the
+configured model.
 
 The title, goal, digest, and Workflow-context jobs are best-effort calls with a deterministic
 fallback, so a missing or logged-out provider degrades their output rather than failing a

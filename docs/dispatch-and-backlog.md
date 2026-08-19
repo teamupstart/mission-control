@@ -33,25 +33,35 @@ calling an unverified task running.
 
 An enabled conductor repository offers one different launch owner: **pipeline**. It creates
 the ordinary durable task row, derives conductor's canonical idea slug, and stores that exact
-provider run identity before it opens `conduct-ts engineer --idea "<intent>"` in a real terminal
-rooted at the repository. Dispatch refuses an intent with no canonical slug, an unreadable
-provider run set, a worktree already using the slug, or another live Mission Control task that
-already owns the same provider, repository, and slug. A retry clears the old identity and
-recomputes it from the current intent and provider configuration.
+provider run identity before it starts the configured Engineer host. Dispatch refuses an intent
+with no canonical slug, an unreadable provider run set, a worktree already using the slug, or
+another live Mission Control task that already owns the same provider, repository, and slug. A
+retry clears the old identity and recomputes it from the current intent and provider configuration.
 
-Mission Control does not provision its own worktree or inject a prompt because conductor owns
-both. The launch removes inherited `CLAUDECODE` before the engine starts; conductor refuses
-nested agent sessions and reads a real stdin. For the same reason Agent, Model, Effort, attached
-repositories, After work, and Agent SDK runtime do not apply. Pipeline tasks also stay out of
-Foreman's backlog autopilot. The provider's later agent sessions join the projected run through
-their worktree, exactly like a pipeline started outside Mission Control.
+The shipped host is **Claude Agent SDK**. Mission Control starts one managed Claude session at the
+repository and sends the exact `/engineer <intent>` command as turn one. It creates no Mission
+Control worktree or terminal home. **Settings → Conductor → Launch runtime** can instead select
+**Terminal**, which keeps the compatibility path: `conduct-ts engineer --idea "<intent>"` opens in
+a real terminal rooted at the repository, with live stdin and inherited `CLAUDECODE` removed so
+Conductor is not nested inside the daemon's Claude session. An SDK preflight or launch error fails
+the task visibly and never falls back to Terminal. This setting controls only the Engineer host;
+Conductor's background build daemon keeps its own tmux supervision.
 
-The task remains independent of any one child session and reaches done only when its exact
-provider projection becomes processed. Its pull request becomes the outcome link, while the
-terminal home stays recorded until standard cleanup releases it. A terminal task saved by an
-older build with no precomputed run identity can still bind once when a child in that terminal
-home appears inside a projected provider worktree. A discovered child can confirm a matching
-prebound identity, but cannot replace it with a different run.
+Conductor owns worktree creation and every downstream agent, model, and effort choice in both
+modes. Agent, Model, Effort, attached repositories, After work, and the generic runtime picker
+therefore remain unavailable for Pipeline. Pipeline tasks also stay out of Foreman's backlog
+autopilot. The SDK host is the task's current session, so Focus, questions, cancellation, and
+restart recovery use the ordinary managed-session paths. A Terminal task instead records its
+home and no session id.
+
+Neither host is a completion authority. An idle or merged SDK host cannot finish the task, and a
+host disappearing after the exact run appears only removes the stale session pointer. The task
+reaches done only when its exact provider projection becomes processed, at which point its pull
+request becomes the outcome link. A lost SDK host fails the task if that exact run never appeared.
+The Terminal home stays recorded until standard cleanup releases it. A Terminal task saved by an
+older build with no precomputed run identity can still bind once when a child in that home appears
+inside a projected provider worktree. A discovered child can confirm a matching prebound identity,
+but cannot replace it with a different run.
 
 ## The guided pass
 
@@ -62,7 +72,7 @@ then hands over the ordinary form with the answers set and the caret in the task
 | Step | Choices | Keys |
 |---|---|---|
 | **Repo** | every repository in the workspace, seeded from the last dispatch | type to filter by repository name, <kbd>↑</kbd><kbd>↓</kbd> to move, <kbd>↵</kbd> to take the highlighted repository |
-| **Kind** | ship, scout, plan, plus pipeline in a conductor-enabled repository | <kbd>p</kbd>, <kbd>t</kbd>, <kbd>l</kbd>, <kbd>e</kbd>, arrows plus <kbd>↵</kbd>, or a position digit |
+| **Kind** | ship, scout, plan, pipeline in a conductor-enabled repository, and chat | <kbd>p</kbd>, <kbd>t</kbd>, <kbd>l</kbd>, <kbd>e</kbd>, <kbd>c</kbd>, arrows plus <kbd>↵</kbd>, or a position digit |
 | **Harness** | Claude Code, Codex, Pi | <kbd>c</kbd>, <kbd>x</kbd>, <kbd>i</kbd>, arrows plus <kbd>↵</kbd>, or a position digit |
 | **After work** | dispatch default, None, or any active published Workflow | <kbd>d</kbd>, <kbd>n</kbd>, the printed Workflow letter, arrows plus <kbd>↵</kbd>, or a position digit |
 
@@ -106,7 +116,7 @@ successful **Dispatch now** or **Add to backlog** starts the next task with a fr
 **It is a different way to fill the form, never a second opinion about what a dispatch
 means.** Every answer is written through the same control the form offers, so the rules below
 still apply exactly as they are written - including the kind-to-after-work rule, which is why
-Kind is asked before After work: by the time that question is on screen a scout or a plan has
+Kind is asked before After work: by the time that question is on screen a scout, plan, or chat has
 already moved the selection to **None**, and the question says so - naming the kind you just
 chose - rather than silently landing there.
 
@@ -173,6 +183,12 @@ Merging itself is unchanged. Each pull request still merges on its own verdict, 
 alone is ready - there is no coordinated cross-repo merge, so siblings can land minutes apart
 and the task's own completion is what tells you the whole piece of work is in.
 
+A post-merge retro follow-up copies this exact repository set from its completed source task,
+but none of the source worktrees, branches, pull-request bindings, or outcomes. Approved memory
+changes therefore open one new pull request per repository changed by the retro, while an
+unchanged attached repository opens none. The source task and all of its merged reviews remain
+complete and untouched.
+
 **Every repository you changed gets its own full review.** When the session's work reaches a
 workflow - the Foreman completion boundary, or your own submit - Mission Control starts one
 review run per repository the task changed, and they run at the same time. A repository the
@@ -222,14 +238,26 @@ each new binding takes the newest immutable version shipped at the time (see
 form can override that choice for one task, including an explicit **None** that finishes
 without a Workflow.
 
-Choosing **scout** or **plan** under **Kind** moves that selection to **None** for you,
-because neither sets out to deliver a change and so neither has a diff for a review Workflow
+Choosing **scout**, **plan**, or **chat** under **Kind** moves that selection to **None** for
+you, because none sets out to deliver a change and so none has a diff for a review Workflow
 to run over. Switching back to **ship** hands back the exact choice the switch put aside, so
-the reversal loses nothing - including through both diffless kinds in a row, where the
+the reversal loses nothing, including through several diffless kinds in a row where the
 selection you started with is what comes back. It is a default rather than a lock: pick a
-Workflow after choosing scout or plan and it sticks, and a choice you make by hand is never
+Workflow after choosing one of those kinds and it sticks, and a choice you make by hand is never
 reverted by a later kind switch. This is a behavior of the dispatch form, so it applies to
 the kind you pick there and not to the inheriting paths below.
+
+**chat** starts a conversation rather than a delivery. The task box becomes **What would you
+like to talk about?**, and that opener is required and delivered exactly as written. A chat
+launches immediately from the manual single-agent Dispatch form. It cannot be added to the
+backlog, carry dependencies, be created by a Recurring Mission or task source, or be selected
+for an Ensemble member. Mission Control adds no task-kind prompt appendix, Mission MCP tool,
+artifact, or archive contract.
+
+With **After work** left at **None**, chat completion stays human-ended. Foreman can recognize
+that the agent has answered, but it does not offer or send an automatic completion action; the
+session stays live for later turns until you choose **Complete**. If you explicitly select a
+Workflow, that Workflow follows the same completion boundary and safeguards as other work.
 
 **scout** also changes what "finished" means for that task: a scout is asked, in its own
 prompt, to write one self-contained static page at `docs/reports/<slug>/report.html`
@@ -280,15 +308,15 @@ pull request is still adopted by
 projection and appears in Shipped.
 The same projected run is also the task's completion boundary: the first child agent proves
 the durable task-to-run join for a task created by an older build. New dispatches persist the
-provider, repository, and canonical idea slug before their terminal starts. A processed exact
-projection settles either form without assigning the task to a child session. Opening a pull
-request concludes the provider run but does not by itself satisfy declared task dependencies,
-which retain their merge-only rule.
+provider, repository, and canonical idea slug before their configured Engineer host starts. A
+processed exact projection settles either runtime without treating the SDK host or a downstream
+child as the completion owner. Opening a pull request concludes the provider run but does not by
+itself satisfy declared task dependencies, which retain their merge-only rule.
 
 Once the task has a session, this selection is frozen so the task row and
 the already-armed Workflow cannot disagree. MCP-created tasks, task-source sweeps, and
-Recurring Missions inherit the same machine default when they create an ordinary task,
-whatever their kind.
+Recurring Missions inherit the same machine default when they create an ordinary task of a
+kind those surfaces support.
 Internal Ensemble member and replacement tasks opt out because an Ensemble's optional
 Workflow belongs only at its final N-to-one handoff.
 
@@ -317,7 +345,7 @@ The new session then shows up on the grid like any other, with an **intent chip*
 task it is running. A terminal-runtime session stays out of the way until you click
 **Focus**; an Agent SDK session has no tab and offers **Continue in terminal** instead.
 Choose **Add to backlog** instead of **Dispatch now** to shelve a task without launching
-it yet.
+it yet. Chat is the exception: only **Dispatch now** is offered.
 
 That chip states only what the session's own name does not. A dispatch names the session
 after its task, so the title is usually already the heading above the chip and is not
@@ -325,7 +353,7 @@ repeated inside it; you see it there when the two differ, which is what an agent
 finished one task and taken another looks like. The **kind** is drawn for every kind except
 **ship** - `ship` is the default every dispatch, sweep, Recurring Mission and MCP call
 takes, so a badge on every card said nothing, and no badge now means `ship`. A kind you
-chose on purpose - **scout** or **plan** - is worth reading, so it is drawn.
+chose on purpose, including **scout**, **plan**, or **chat**, is worth reading, so it is drawn.
 
 Which means the chip is often not drawn at all, and that is the point rather than an
 omission: an ordinary running ship task on the session it named has nothing to add to the
@@ -344,7 +372,8 @@ you edit a shelved task or the draft already holds one of them. Dependencies are
 with a grouped **+ Add dependency** picker rather than a multi-select listbox, and an
 unmet dependency raises an amber note beside them as well as renaming the primary button.
 The **Single agent / Ensemble** toggle sits in the modal header, since it reshapes the
-whole dialog.
+whole dialog. Chat calls the fold **Task details** and omits dependencies because they would
+turn an immediate conversation into backlog work.
 
 **Dependencies** can be selected from tasks already in the backlog and from active
 sessions. They are durable scheduling constraints, not notes: if any selected dependency
@@ -720,10 +749,17 @@ launched still follows this card the next time it runs - and a rescheduled task 
 model it was never explicitly pinned with. If a Foreman-launched agent is not using the model
 set here, check tier 2 first - that is the setting overriding it.
 
-All three model lists are maintained in `src/shared/model.ts`; a model released after your
-build isn't in the picker, but a default set elsewhere (a newer build, or a `PUT` to
-`/api/harnesses/config`) still shows and still applies rather than being silently
-dropped.
+Every dispatch-time picker reads the same [browser model catalog](harnesses-and-terminals.md#dispatch-time-model-catalogs).
+Claude Code and Codex keep the shipped rows from `src/shared/model.ts`. Pi instead mirrors every
+model reported by the configured local Pi account, grouped by provider, while the shipped Pi rows
+remain its immediate and failure fallback. The browser performs one aggregate read when it loads,
+and **Retry Pi models** forces a refresh without polling.
+
+Loading or discovery failure never disables a picker or dispatch. A saved value missing from the
+current response, including one set by a newer build or a direct `PUT` to
+`/api/harnesses/config`, remains selected as **not currently reported** and still applies. The
+catalog explains that it is using a last-known or built-in list instead of treating absence as
+revocation.
 
 ### Default effort
 

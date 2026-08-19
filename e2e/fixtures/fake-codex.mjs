@@ -34,17 +34,20 @@
  * Every notification is matched on `params.threadId` (`isCurrentThread`), so all of them
  * carry it.
  */
-import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 
-/** Fixed so a spec can assert against a known id; the driver only cares that it is stable. */
-const THREAD_ID = process.env.MC_E2E_CODEX_THREAD_ID ?? "01999999-0000-7000-8000-000000000001";
+/** Stable per fake process, so one spec can hold two independent Codex sessions at once. */
+const DEFAULT_THREAD_ID = `01999999-0000-7000-8000-${String(process.pid).padStart(12, "0").slice(-12)}`;
+const THREAD_ID = process.env.MC_E2E_CODEX_THREAD_ID ?? DEFAULT_THREAD_ID;
 const MODEL = "gpt-5-codex-e2e-mock";
 const HELD_TURN = "hold the current turn open";
 const FINAL_ANSWER_HELD_TURN = "hold the current turn open and finish with only a final answer";
 const HELD_TURN_MS = 5_000;
+const SEE_WORK_TOUR_MARKER = "[Mission Control See the work tour demo]";
 /**
  * The prompt that leaves a RUN of executed commands in the rollout.
  *
@@ -88,6 +91,113 @@ if (recordDir) {
     join(recordDir, "codex", `invocation-${Date.now()}-${process.pid}.json`),
     JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd() }, null, 2),
   );
+}
+
+function workflowImageManifest(prompt) {
+  const lines = prompt.split("\n");
+  const start = lines.findIndex((line) => /^`{3,}workflow-image-manifest-untrusted$/.test(line));
+  if (start < 0) return [];
+  const fence = lines[start].match(/^`+/)?.[0] ?? "```";
+  const end = lines.indexOf(fence, start + 1);
+  if (end < 0) return [];
+  try {
+    const parsed = JSON.parse(lines.slice(start + 1, end).join("\n"));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Identify the MIME from the pixels Codex received, independently of the prompt manifest. */
+function rasterMimeType(bytes) {
+  const ascii = (offset, value) => bytes.subarray(offset, offset + value.length).toString("ascii") === value;
+  if (
+    bytes.length >= 8
+    && bytes[0] === 0x89
+    && ascii(1, "PNG\r\n\x1a\n")
+  ) return "image/png";
+  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "image/jpeg";
+  if (ascii(0, "GIF87a") || ascii(0, "GIF89a")) return "image/gif";
+  if (ascii(0, "RIFF") && ascii(8, "WEBP")) return "image/webp";
+  return null;
+}
+
+function codexWorkflowAnswer(prompt) {
+  if (prompt.includes("E2E_FAIL_VERDICT")) {
+    return JSON.stringify({
+      verdict: "fail",
+      summary: "Deterministic Codex e2e objection",
+      requestedChanges: [{
+        title: "E2E Codex requested change",
+        rationale: "This Codex reviewer is scripted to object",
+        evidence: [{ kind: "goal", quote: "deterministic e2e evidence" }],
+      }],
+      confidence: 0.9,
+    });
+  }
+  if (prompt.includes("E2E_PASS_VERDICT")) {
+    return JSON.stringify({
+      verdict: "pass",
+      summary: "Deterministic Codex e2e approval",
+      approvalDetails: { reason: "This Codex reviewer received native image pixels", evidence: [] },
+      confidence: 0.9,
+    });
+  }
+  return "E2E Codex Mock";
+}
+
+/** The workflow provider path is `codex exec --image ... -`, not the live app-server wire. */
+if (process.argv[2] === "exec") {
+  await new Promise((done) => {
+    const imagePaths = [];
+    for (let index = 3; index < process.argv.length; index++) {
+      if (process.argv[index] === "--image" && process.argv[index + 1]) {
+        imagePaths.push(process.argv[++index]);
+      }
+    }
+    const chunks = [];
+    process.stdin.on("data", (chunk) => chunks.push(chunk));
+    process.stdin.on("end", () => {
+      const prompt = Buffer.concat(chunks).toString("utf8");
+      const manifest = workflowImageManifest(prompt);
+      const observed = imagePaths.map((path) => {
+        const bytes = readFileSync(path);
+        return {
+          mimeType: rasterMimeType(bytes),
+          bytes: bytes.byteLength,
+          sha256: createHash("sha256").update(bytes).digest("hex"),
+        };
+      });
+      const valid = manifest.length === observed.length && observed.every((image, index) =>
+        image.bytes === manifest[index]?.bytes
+        && image.sha256 === manifest[index]?.sha256
+        && image.mimeType === manifest[index]?.mimeType);
+      if (recordDir && manifest.length > 0) {
+        writeFileSync(
+          join(recordDir, "codex", `workflow-image-boundary-${Date.now()}-${process.pid}.json`),
+          JSON.stringify({ valid, manifest, observed, imagePathCount: imagePaths.length }, null, 2),
+        );
+      }
+      if (!valid) {
+        process.stderr.write("fake-codex: workflow image bytes did not match --image inputs (MIME or digest)\n");
+        process.exitCode = 1;
+        done();
+        return;
+      }
+      process.stdout.write(`${JSON.stringify({ type: "thread.started", thread_id: "fake-workflow-codex" })}\n`);
+      process.stdout.write(`${JSON.stringify({
+        type: "item.completed",
+        item: { type: "agent_message", text: codexWorkflowAnswer(prompt) },
+      })}\n`);
+      process.stdout.write(`${JSON.stringify({
+        type: "turn.completed",
+        usage: { input_tokens: 120, cached_input_tokens: 0, output_tokens: 40 },
+      })}\n`);
+      done();
+    });
+    process.stdin.resume();
+  });
+  process.exit(process.exitCode ?? 0);
 }
 
 // `spawnAppServer` is the only caller and it always leads with this word. Failing loudly
@@ -293,6 +403,21 @@ function runTurn(turnId, input) {
     turnState.interrupt = () => {
       clearTimeout(turnState.timer);
       // No agent message: the turn was cut off, so it never finished saying anything.
+      finish([]);
+    };
+    openTurn = turnState;
+    return;
+  }
+  // The product-tour task asks a real model to pause before opening Mission Control's MCP
+  // review channel. The browser spec posts the identical review-channel payload directly,
+  // as the MCP bundle itself does, while this cost-free fake holds the agent lifecycle in a
+  // genuine Working state long enough for the Board stop to observe it. Resolution and this
+  // timer then converge on Idle without any model tokens.
+  if (prompt.includes(SEE_WORK_TOUR_MARKER)) {
+    const turnState = { prompts: [prompt] };
+    turnState.timer = setTimeout(() => finish(turnState.prompts), HELD_TURN_MS);
+    turnState.interrupt = () => {
+      clearTimeout(turnState.timer);
       finish([]);
     };
     openTurn = turnState;

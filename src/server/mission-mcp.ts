@@ -11,11 +11,16 @@ import {
 } from "node:fs";
 import { basename, join } from "node:path";
 import type { Task, TaskKind } from "@shared/types.ts";
-import { STATE_DIR, mcpServerPath } from "./config.ts";
+import {
+  PRODUCT_ISSUE_CLIENT_ENV,
+  type ProductIssueClient,
+} from "@shared/product-issues.ts";
+import { PORT, STATE_DIR, mcpServerPath } from "./config.ts";
 import { SUBMIT_ENSEMBLE_RESULT_TOOL } from "./ensembles/submission-tool.ts";
 import { PLAN_DECISIONS_TOOL, PLAN_SCHEDULING_TOOL } from "./plans/tools.ts";
 import { SUBMIT_SCOUT_ARTIFACTS_TOOL } from "./scouts/submission-tool.ts";
 import { SUBMIT_WORKFLOW_EVIDENCE_TOOL } from "./workflows/evidence-tool.ts";
+import { COMPLETE_RETRO_NO_CHANGE_TOOL } from "./retro-tool.ts";
 import { run } from "./util/exec.ts";
 
 // The one place that knows how to hand a LAUNCHING agent our own MCP server.
@@ -53,10 +58,12 @@ export const MISSION_MCP_TOOLS = [
   "request_review",
   PLAN_SCHEDULING_TOOL,
   "request_input",
+  "report_product_issue",
   "report_status",
   SUBMIT_ENSEMBLE_RESULT_TOOL,
   SUBMIT_SCOUT_ARTIFACTS_TOOL,
   SUBMIT_WORKFLOW_EVIDENCE_TOOL,
+  COMPLETE_RETRO_NO_CHANGE_TOOL,
 ] as const;
 
 export type MissionMcpTool = (typeof MISSION_MCP_TOOLS)[number];
@@ -92,7 +99,7 @@ export interface MissionMcpRequirement {
  * prompt - which reads as an agent that simply sat there.
  *
  * `Record<TaskKind, …>` rather than a chain of comparisons, matching `KIND_CONTRACT` in
- * `task-contract.ts`: a fourth kind does not compile until it has said what its launch needs,
+ * `task-contract.ts`: a new kind does not compile until it has said what its launch needs,
  * including saying it needs nothing. `ship` is that empty case and it is not a placeholder -
  * it is the reason every existing dispatch's argv is unchanged.
  */
@@ -101,6 +108,7 @@ const KIND_MISSION_MCP_TOOLS: Record<TaskKind, readonly MissionMcpTool[]> = {
   scout: [SUBMIT_SCOUT_ARTIFACTS_TOOL],
   plan: [PLAN_DECISIONS_TOOL, PLAN_SCHEDULING_TOOL],
   pipeline: [],
+  chat: [],
 };
 
 /**
@@ -163,6 +171,16 @@ async function resolveRuntime(): Promise<{ command: string; env: Record<string, 
 }
 
 /**
+ * The dashboard client that owns this daemon launch, before the MCP server becomes a
+ * separate Node process and loses Electron's version marker.
+ */
+export function missionMcpProductIssueClient(
+  electronVersion: string | undefined,
+): ProductIssueClient {
+  return electronVersion ? "electron" : "browser";
+}
+
+/**
  * How to launch our MCP server on this machine, or NULL when it cannot be launched at all.
  *
  * Null means the bundle is not on disk (`npm run build` never ran, or a packaged build
@@ -183,7 +201,18 @@ export async function missionMcpDescriptor(): Promise<MissionMcpDescriptor | nul
     serverName: MISSION_MCP_SERVER_NAME,
     command: runtime.command,
     args: [server],
-    env: runtime.env,
+    // Codex treats an explicit `mcp_servers.<name>.env` table as the MCP process's whole
+    // routing environment. An empty table therefore drops a non-default daemon's port and
+    // state home, making the tool authenticate to the default daemon and fail its cwd join
+    // with "no matching session". Publish the canonical effective coordinates explicitly;
+    // this is also what lets an isolated demo/test daemon keep its reviews inside its own
+    // state instead of leaking them to the operator daemon.
+    env: {
+      ...runtime.env,
+      MISSION_HOME: STATE_DIR,
+      MISSION_PORT: String(PORT),
+      [PRODUCT_ISSUE_CLIENT_ENV]: missionMcpProductIssueClient(process.versions.electron),
+    },
   };
 }
 

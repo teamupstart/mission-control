@@ -651,6 +651,25 @@ scope, or Mission Control destination. `repositoryScope: "all"` is authorized on
 received that scope, and every daemon-side validation above still applies. Registration remains
 optional and never replaces code or test evidence.
 
+The dashboard uses one **Image evidence** composer anywhere a person can capture a new
+submission: the initial **Preview** in the binding dialog, **Ship it** and No-Mistakes review
+from a session card, **Run again** or **Preview again**, and every fresh repair resubmission.
+Choose files, drop them, or paste a screenshot; then give every image a caption and a repository
+scope. Session-registered images and text artifacts appear in the same packet and can be removed
+before capture, including in the initial binding dialog before that conversation has a binding.
+The daemon resolves that initial packet from the live session, so creating a placeholder binding
+is not required and a stale registration cannot reach the first review unseen. The dashboard
+blocks submission while an upload is pending or failed, a caption
+or scope is missing, registered evidence cannot be read, or the packet exceeds 8 images, 5 MiB
+per image, or 20 MiB in aggregate. PNG, JPEG, static GIF, and WebP are accepted. Closing a dialog
+or receiving a failed request keeps the draft intact for correction and retry. Once accepted,
+the count and byte total shown in the composer become part of that immutable submission.
+
+**Resubmit unchanged snapshot** is deliberately different. It replays exactly the images named
+by the previous submission and offers no fresh-image composer; the confirmation states that
+exact count. Choose the fresh resubmission path when the next review needs new or replacement
+screenshots, even when the repository HEAD has not changed.
+
 Submission creation reserves the applicable staged generation. A multi-repository completion
 copies `all` evidence into every sibling submission and keeps slot-scoped evidence in that
 repository's run. Inside the existing conversation capture lock, each reserved source is
@@ -737,6 +756,14 @@ SessionAction ids beside the older human-facing Persona names and Action wait re
 resolve same-name shadows and identify one action stage exactly; the browser never fetches every
 workflow to reconstruct either answer.
 
+Each submission in run detail has its own image-evidence ledger. It records the thumbnail,
+caption, repository scope, full sha256 digest, byte size, MIME type, and whether the retained
+body still exists. Image bodies load lazily through the authenticated dashboard route and the
+browser releases their object URLs when the ledger leaves the page. Retention cleanup changes
+the body to **Pruned** without erasing the metadata or digest that explains what reviewers saw.
+A retained image offers **Use in next review**, which stages a fresh immutable copy in the
+binding's composer. A pruned image keeps its audit record but cannot be reused.
+
 ### Watching a run
 
 Everything below describes the **Workflows** tab of the Runs page, which is the whole page
@@ -780,7 +807,15 @@ refreshes from the compact SSE summary's `updatedAt` signal; the SSE payload its
 The **Runs** tab reads a run on **the pipeline it was authored on** - the same Session,
 stages and End the Pipeline view draws, with a live status on every member. Reviewers show
 queued, reviewing, passed, or changes requested; Checks show their corresponding command
-state. A stage this round did not run because an earlier one already passed it reads a neutral
+state. Click a settled reviewer or Command tile to select that node's result in the review
+worklist below. A single-member stage header does the same; a multi-member stage keeps the
+choice on each member so the pointer target is unambiguous. Session actions stay in their own
+section because they report a lifecycle rather than a verdict. <kbd>↑</kbd> and <kbd>↓</kbd>
+move through the run rail and load each selection in the reader immediately, with no Enter
+step. From the selected run, <kbd>Tab</kbd> enters the first authored stage. Further Tabs or any
+arrow key move between stages, and <kbd>Enter</kbd> on a completed stage loads that stage's
+first recorded member detail, in worklist priority order, in the Review worklist below. A
+stage this round did not run because an earlier one already passed it reads a neutral
 grey **Not re-run**, and carries a **✓ Passed in Round 1 · evidence 1** line naming the round
 that earned the pass; pressing that line scrubs straight to it. The chip is deliberately not
 green - it speaks for the round on screen, where nothing executed - and the tick on the
@@ -861,6 +896,8 @@ cites or "No file cited"; the round it was raised in, the rounds it has been ope
 evidence count; the rationale in full and the quotes behind it. From there a person can **copy
 that one change, open its file, give that reviewer feedback, or switch that reviewer off** -
 the last two only while the run can still be affected. Previous and Next walk the segment.
+Selecting a settled reviewer or Command in the pipeline above switches to the matching segment
+and first row for that node, so the explanation behind a passed or failed stage is one click.
 
 A **stalemate card** sits at the foot of the rail when a reviewer has failed consecutive rounds,
 in the ladder's own words: *"Code Risk Reviewer has failed 10 rounds running."*

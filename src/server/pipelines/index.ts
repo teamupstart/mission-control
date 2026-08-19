@@ -1,4 +1,5 @@
 import {
+  MAX_PIPELINE_INSTALLER_CANDIDATES,
   PIPELINE_PROVIDER_IDS,
   PIPELINE_SPEND_ROLES,
   PIPELINE_SPEND_WRITERS,
@@ -10,7 +11,10 @@ import {
   type PipelineAction,
   type PipelineActionResult,
   type PipelineConsole,
+  type PipelineInstallerCandidate,
+  type PipelineInstallerCandidatesResult,
   type PipelineProbe,
+  type PipelinesConfig,
   type PipelineProviderId,
   type PipelineRepoRegistrationResult,
   type PipelineRepoStatus,
@@ -208,10 +212,26 @@ export async function pipelineTaskLaunch(
   repoRoot: string,
   intent: string,
 ): Promise<
-  | { ok: true; argv: string[]; cwd: string; pipelineRun: PipelineRunLink }
+  | {
+      ok: true;
+      launchRuntime: "terminal";
+      argv: string[];
+      cwd: string;
+      pipelineRun: PipelineRunLink;
+    }
+  | {
+      ok: true;
+      launchRuntime: "claude-sdk";
+      prompt: string;
+      cwd: string;
+      pipelineRun: PipelineRunLink;
+    }
   | { ok: false; error: string }
 > {
-  const matches = activePipelineRepos(getPipelinesConfig()).filter(
+  // One config read owns both consent and runtime. A concurrent Settings write applies to
+  // the next dispatch instead of changing the host after this launch has been composed.
+  const config = getPipelinesConfig();
+  const matches = activePipelineRepos(config).filter(
     (repo) => repo.repoRoot === repoRoot,
   );
   if (matches.length === 0) {
@@ -238,10 +258,20 @@ export async function pipelineTaskLaunch(
     };
   }
 
+  if (config.launchRuntime === "claude-sdk") {
+    return {
+      ok: true,
+      launchRuntime: config.launchRuntime,
+      prompt: provider.taskPrompt(intent),
+      cwd: repoRoot,
+      pipelineRun: identity,
+    };
+  }
+
   const launch = await provider.taskArgv(intent, repoRoot);
   return "refused" in launch
     ? { ok: false, error: launch.refused }
-    : { ok: true, ...launch, pipelineRun: identity };
+    : { ok: true, launchRuntime: config.launchRuntime, ...launch, pipelineRun: identity };
 }
 
 /**
@@ -253,9 +283,11 @@ export async function pipelineTaskLaunch(
  * nothing is reading has no runs to group and would draw an empty heading that no control
  * on the page can explain.
  */
-export function activePipelineRepoStatuses(): PipelineRepoStatus[] {
+export function activePipelineRepoStatuses(
+  config: PipelinesConfig = getPipelinesConfig(),
+): PipelineRepoStatus[] {
   const active = new Set(
-    activePipelineRepos(getPipelinesConfig()).map((repo) =>
+    activePipelineRepos(config).map((repo) =>
       pipelineRepoKey(repo.provider, repo.repoRoot),
     ),
   );
@@ -558,6 +590,90 @@ export async function registerPipelineRepo(
   repoRoot: string,
 ): Promise<PipelineRepoRegistrationResult> {
   return PIPELINE_PROVIDERS[provider].registerRepo(repoRoot);
+}
+
+/** Read one provider's optional, ephemeral installer candidates from the workspace catalog. */
+export async function pipelineInstallerCandidates(
+  provider: PipelineProviderId,
+  repoRoots: readonly string[],
+): Promise<PipelineInstallerCandidatesResult> {
+  const installer = PIPELINE_PROVIDERS[provider].installer;
+  if (!installer) {
+    return {
+      provider,
+      supported: false,
+      detail: "This pipeline provider does not offer guided installation from local source.",
+      candidates: [],
+    };
+  }
+  try {
+    const candidates = await installer.candidates(repoRoots);
+    const byCheckout = new Map<string, PipelineInstallerCandidate>();
+    for (const candidate of candidates) {
+      if (candidate.provider !== provider || byCheckout.has(candidate.checkout)) continue;
+      byCheckout.set(candidate.checkout, candidate);
+      if (byCheckout.size === MAX_PIPELINE_INSTALLER_CANDIDATES) break;
+    }
+    const bounded = [...byCheckout.values()];
+    return {
+      provider,
+      supported: true,
+      detail:
+        bounded.length > 0
+          ? `${bounded.length} verified local installer ${bounded.length === 1 ? "checkout" : "checkouts"} found.`
+          : "No verified local installer checkout was found in the workspace catalog.",
+      candidates: bounded,
+    };
+  } catch {
+    return {
+      provider,
+      supported: true,
+      detail: "Mission Control could not verify local installer checkouts.",
+      candidates: [],
+    };
+  }
+}
+
+export type PipelineInstallerPreparation =
+  | {
+      ok: true;
+      candidate: PipelineInstallerCandidate;
+      argv: string[];
+      cwd: string;
+      title: string;
+    }
+  | { ok: false; error: string };
+
+/** Re-check catalog membership and provider evidence immediately before a terminal launch. */
+export async function pipelineInstallerLaunch(
+  provider: PipelineProviderId,
+  checkout: string,
+  repoRoots: readonly string[],
+): Promise<PipelineInstallerPreparation> {
+  const installer = PIPELINE_PROVIDERS[provider].installer;
+  if (!installer) return { ok: false, error: "This provider has no guided installer." };
+  const read = await pipelineInstallerCandidates(provider, repoRoots);
+  const candidate = read.candidates.find((entry) => entry.checkout === checkout);
+  if (!candidate) {
+    return {
+      ok: false,
+      error: "That checkout is no longer a verified installer candidate in the workspace catalog.",
+    };
+  }
+  try {
+    const launch = await installer.terminalArgv(candidate.checkout);
+    if ("refused" in launch) return { ok: false, error: launch.refused };
+    if (
+      launch.candidate.provider !== provider ||
+      launch.candidate.checkout !== candidate.checkout ||
+      launch.cwd !== candidate.checkout
+    ) {
+      return { ok: false, error: "The provider did not confirm the selected checkout." };
+    }
+    return { ok: true, ...launch };
+  } catch {
+    return { ok: false, error: "The provider could not reverify that installer checkout." };
+  }
 }
 
 /**

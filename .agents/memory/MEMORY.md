@@ -3,9 +3,9 @@
 - [topbar-page-segment-guards](topbar-page-segment-guards.md) - adding a page segment to the
   title bar breaks four guards in four layers, and the `library.spec.ts` segment-count
   assertion fails only on CI.
-- [review-evidence-needs-the-pr](review-evidence-needs-the-pr.md) - a review round cannot see
-  output pasted into a reply, so evidence has to reach the pull request; imagery is not an
-  exception, and a binary attaches through the signed-in browser rather than being committed.
+- [review-evidence-needs-the-pr](review-evidence-needs-the-pr.md) - workflow Personas read the
+  submission's bounded transcript evidence, while human PR reviewers need separate PR
+  attachments; native registered images reach Personas directly and are never committed.
 - [workflow-evidence-needs-live-artifacts](workflow-evidence-needs-live-artifacts.md) -
   No-Mistakes snapshots do not import PR comments; render UI evidence and completed command
   output in the current turn as well as attaching it to the PR.

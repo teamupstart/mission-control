@@ -72,6 +72,11 @@ import {
 } from "./worktrees/legacy-treehouse.ts";
 import { WorktreeOperationsService } from "./worktrees/operations.ts";
 import { nativeWorktreeOwnerReferenced } from "./worktrees/owners.ts";
+import { HarnessModelCatalogService } from "./harness/model-catalog-service.ts";
+import {
+  PRODUCT_ISSUE_ATTACHMENTS_DISABLED,
+  ProductIssueService,
+} from "./product-issues.ts";
 
 openDb();
 // Only the daemon can read app_config. The Foreman imports the same runner in a separate
@@ -453,6 +458,16 @@ const keepAwake = new KeepAwakeManager({
 });
 registry.setKeepAwakeStatus(keepAwake.status());
 
+// One in-memory owner for live Pi discovery, freshness, and last-success fallback. It is
+// deliberately not persisted and is shared by every dashboard request through the route.
+const modelCatalogs = new HarnessModelCatalogService();
+
+// The only external writer for public product reports. Production attachment execution is
+// deliberately impossible until the upstream-release follow-up replaces this capability.
+const productIssues = new ProductIssueService({
+  attachments: PRODUCT_ISSUE_ATTACHMENTS_DISABLED,
+});
+
 const app = buildApp(
   registry,
   reviews,
@@ -474,6 +489,8 @@ const app = buildApp(
   workflowCommands,
   worktrees,
   worktreeOperations,
+  modelCatalogs,
+  productIssues,
 );
 
 // In production the daemon serves the built SPA; in dev, Vite serves it and
@@ -566,6 +583,10 @@ async function shutdown(): Promise<void> {
   stopRetroWorthiness();
   stopUsage();
   stopGoalRefiner();
+  // Abort Pi model discovery now, then await its TERM-to-KILL cleanup before exiting.
+  // Starting the stop before longer subsystem drains ensures the child cannot be left
+  // behind if shutdown reaches the explicit process.exit below.
+  const stopModelCatalogs = modelCatalogs.stop();
   // Stopping the refiner only stops it STARTING runs; one already in flight is a detached
   // process that outlives us and would go on burning tokens for a card nobody is watching.
   // `claude-cli.ts` hooks `process.exit` for the same reason, but this path calls it
@@ -602,6 +623,7 @@ async function shutdown(): Promise<void> {
   // own `-w <daemon PID>` covers every exit that never reaches this line, so this is the
   // orderly half of a two-part cleanup, not the only one.
   await keepAwake.stop();
+  await stopModelCatalogs;
   server.close();
   process.exit(0);
 }

@@ -1399,14 +1399,25 @@ would be reported as such rather than silently skipped.)
 >   `MISSION_MCP_TOOLS` exactly, in either direction.
 
 This registers a stdio MCP server (`src/mcp/server.ts`) that each session launches. It exposes
-six review-channel tools, plus three task-scoped submission tools a session receives only when
-its work needs one: [`submit_ensemble_result`](ensembles.md#multi-agent-ensembles) for an
+the standard review, reporting, and status tools, plus task-scoped submission tools a session
+receives only when its work needs one: [`submit_ensemble_result`](ensembles.md#multi-agent-ensembles) for an
 ensemble member, [`submit_scout_artifacts`](archives.md) for a scout, and
 `submit_workflow_evidence` for a workflow-bound ship task whose immutable graph contains a
 Persona. The workflow tool registers contained gitignored screenshots and focused UTF-8 text
 or log artifacts by issued repository slot or across all applicable repositories before task
 completion. It never tells the agent to commit evidence. A ship task without such a workflow
 keeps its prior Mission MCP launch and receives no evidence instructions:
+
+Registered evidence is visible in the session card's shared **Image evidence** composer before
+**Ship it** or the built-in No-Mistakes review starts. A person can remove a stale registration,
+add screenshots by choosing, dropping, or pasting, and assign captions and repository scopes
+without moving the files into git. The same conversation-owned list appears in the initial
+workflow binding dialog before a binding exists, so the first review cannot capture an unseen
+stale item. The composer keeps unfinished uploads and edits across a
+closed confirmation or a failed submission, then clears only after the daemon accepts the
+review request.
+
+The MCP tools are:
 
 - `share_plan(title, plan)` - show a markdown plan (non-blocking)
 - `request_plan_decisions(title, plan, decisions)` - show a plan with selectable
@@ -1422,6 +1433,13 @@ keeps its prior Mission MCP launch and receives no evidence instructions:
   With `options` the human gets clickable choices (radios, or checkboxes with
   `multiSelect`, plus an optional free-text "Other") and can dismiss a stale set without
   submitting it; without them, a text box
+- `report_product_issue(type, title, details, attachmentUploadIds?)` - only after the user
+  explicitly asks for a Mission Control product report, prepare a public GitHub issue and
+  **block** on a dashboard review containing the exact daemon-derived repository, labels, body,
+  and safe environment summary. The only publishing choice is **Submit public issue**; Dismiss
+  and any non-human or malformed answer publish nothing. Reports are text-only in this release,
+  so `attachmentUploadIds` must be empty. Success returns the exact issue URL, a CLI refusal says
+  retrying is safe, and an unknown outcome says to check GitHub before trying again
 - `report_status(activity)` - update the session's activity line
 - `submit_workflow_evidence(images?, artifacts?)` - register bounded gitignored screenshots
   and UTF-8 text or log files for the selected Persona workflow. Every item supplies a stable

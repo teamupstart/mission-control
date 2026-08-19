@@ -243,15 +243,19 @@ export function ConsoleDetail({
   }, [view.workflowsTabRequest, session.id]);
 
   useEffect(() => {
-    const scroll = (direction: -1 | 1): void => {
+    const scroll = (direction: -1 | 1, fromReader: boolean): boolean => {
+      if (tab === "files") {
+        const handled = filesRef.current?.handleArrow(direction, fromReader) ?? false;
+        if (handled) return true;
+      }
+      if (!fromReader) return false;
       if (tab === "conversation") {
         transcriptRef.current?.scrollByArrow(direction);
-      } else if (tab === "files") {
-        filesRef.current?.scrollByArrow(direction);
       } else {
         const el = paneRef.current;
         if (el) el.scrollBy({ top: direction * Math.max(80, el.clientHeight * 0.18) });
       }
+      return true;
     };
     view.registerDetailScroll(session.id, scroll);
     return () => view.registerDetailScroll(session.id, null);
@@ -382,6 +386,7 @@ export function ConsoleDetail({
   useEffect(() => {
     const order = tabs.map((t) => t.id);
     const nav = (dir: -1 | 1): "moved" | "edge" => {
+      if (tab === "files" && dir === 1 && filesRef.current?.focusPreview()) return "moved";
       const nextTab = order[order.indexOf(tab) + dir];
       if (!nextTab) return "edge";
       setTab(nextTab);
@@ -704,6 +709,7 @@ export function ConsoleDetail({
           <div ref={paneRef} className="detail-pane">
             <WorkQueue
               session={session}
+              workflowBinding={workflowBinding}
               foremanMode={view.foremanMode}
               foremanEnabled={view.foremanEnabled}
               allowlisted={allowlisted}

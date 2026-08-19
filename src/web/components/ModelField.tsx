@@ -1,6 +1,10 @@
 import type { ModelChoiceSpec, ResolvedModel } from "@shared/model-choice.ts";
 import type { AgentType } from "@shared/types.ts";
-import { modelChoicesFor } from "@shared/model.ts";
+import {
+  ModelCatalogNotice,
+  ModelCatalogOptions,
+  useHarnessModelCatalogs,
+} from "../model-catalog.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
 // The one input in this app for "which model does this call spawn with?".
@@ -74,8 +78,9 @@ export function ModelField({
   spec: ModelChoiceSpec;
   value: string;
   resolved: ResolvedModel | undefined;
-  // `AgentType`, not `LlmRunnerId`: this drives `modelChoicesFor` and `AGENT_IDENTITY`, both
-  // AgentType questions. Foreman's own model fields pass an LlmRunnerId (claude|codex, a subset)
+  // `AgentType`, not `LlmRunnerId`: this drives the shared harness catalog and
+  // `AGENT_IDENTITY`, both AgentType questions. Foreman's own model fields pass an
+  // LlmRunnerId (claude|codex, a subset)
   // and the backlog-task field passes the task's harness - which can be pi, a harness that is
   // not a runner. Typing it as the runner axis conflated "which provider does Foreman's work"
   // with "which harness's model catalog"; pi surfaced it. See `todo/pi-harness.md`.
@@ -90,6 +95,8 @@ export function ModelField({
   blurb?: "block" | "hover";
 }): React.JSX.Element {
   const note = modelSourceNote(resolved, spec.envVar);
+  const { resolve: resolveModels } = useHarnessModelCatalogs();
+  const models = resolveModels(runner, value);
   return (
     <div className="foreman-model-row" data-anchor={anchor ?? undefined}>
       <label className="foreman-model-label" htmlFor={id}>
@@ -104,13 +111,10 @@ export function ModelField({
           onChange={(e) => onCommit(e.target.value)}
         >
           <option value="">Default - {resolved?.id ?? spec.fallback}</option>
-          {modelChoicesFor(runner, value).map((model) => (
-            <option key={model.id} value={model.id}>
-              {model.label} - {model.hint}
-            </option>
-          ))}
+          <ModelCatalogOptions catalog={models} />
         </select>
       </Tooltip>
+      <ModelCatalogNotice agent={runner} />
       {blurb === "block" && <p className="settings-hint foreman-model-blurb">{spec.blurb}</p>}
       {note && <p className="foreman-model-source">{note}</p>}
     </div>
@@ -123,7 +127,7 @@ export function ModelField({
  *
  * It used to name three ids in prose because the fields were free text and a `<datalist>`
  * is browser chrome this theme can't touch. `ModelField` is a `<select>` over
- * `modelChoicesFor(runner, …)` now, so the ids are IN the picker and repeating them here
+ * the shared browser catalog now, so the ids are IN the picker and repeating them here
  * would be the same list twice - what is left to say is which provider's list it is.
  *
  */

@@ -171,6 +171,7 @@ export function SettingsPage({
   worktreesRevision = 0,
   workflowSummaries = [],
   onOpenPalette,
+  onStartSeeWorkTour,
   onOpenForemanProfile,
   jump = null,
 }: {
@@ -234,6 +235,8 @@ export function SettingsPage({
    * of its own - there is one input over everything, and this page is not a second one.
    */
   onOpenPalette?: () => void;
+  /** Start the user-invoked See the work tour from the rail's permanent learning entry. */
+  onStartSeeWorkTour: () => void;
   /** Leave Settings for Foreman's fixed System profile in Library. */
   onOpenForemanProfile?: () => void;
   /**
@@ -657,6 +660,34 @@ export function SettingsPage({
               ))}
             </div>
           ))}
+        </div>
+        <div
+          className="settings-rail-footer"
+          role="group"
+          aria-labelledby="settings-help-title"
+        >
+          <p className="settings-rail-footer-label" id="settings-help-title">
+            Help &amp; tours
+          </p>
+          <Tooltip label="Tour the fleet, Board, and one session's work desk">
+            <button
+              type="button"
+              className="settings-tour-start"
+              onClick={onStartSeeWorkTour}
+              aria-label="Start See the work tour"
+            >
+              <span className="settings-tour-start-icon" aria-hidden>
+                ▶
+              </span>
+              <span className="settings-tour-start-copy">
+                <strong>See the work</strong>
+                <small>Start the guided tour</small>
+              </span>
+              <span className="settings-tour-start-arrow" aria-hidden>
+                →
+              </span>
+            </button>
+          </Tooltip>
         </div>
       </div>
 

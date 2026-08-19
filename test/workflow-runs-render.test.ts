@@ -30,6 +30,7 @@ import {
   WorkflowRunView,
   WorkflowRunsEmpty,
   followSelection,
+  worklistSelectionForNode,
 } from "../src/web/workflows/WorkflowRuns.tsx";
 import {
   carriedStatus,
@@ -466,13 +467,17 @@ test("a check row and its stage use deterministic status vocabulary", () => {
       ],
     },
   };
-  const pipeline = (status: string): string => renderToStaticMarkup(createElement(RunPipeline, {
+  const pipeline = (
+    status: string,
+    extra: Partial<Parameters<typeof RunPipeline>[0]> = {},
+  ): string => renderToStaticMarkup(createElement(RunPipeline, {
     version: checkVersion,
     statuses: { "check-typecheck": status },
     session: { tone: "running", label: "Under review" },
     end: { tone: "waiting", label: "Not reached" },
     metaFor: () => null,
     repair: null,
+    ...extra,
   }));
 
   const running = pipeline("running");
@@ -482,6 +487,12 @@ test("a check row and its stage use deterministic status vocabulary", () => {
   const errored = pipeline("error");
   assert.match(errored, /Command failed to run/);
   assert.doesNotMatch(errored, /Provider error/);
+
+  const completed = pipeline("completed", {
+    onOpenNode: () => undefined,
+    onOpenStage: () => undefined,
+  });
+  assert.match(completed, /Press Enter to load this stage in the review worklist/);
 });
 
 test("the round scrubber defaults to the latest round and scopes what it says", () => {
@@ -574,6 +585,61 @@ test("a waiting run offers ONE primary move, the context controls, and cancel", 
   assert.match(html, /status truncated/);
   assert.match(html, /Join and gate packet/);
   assertNoGraphIds(html);
+});
+
+test("image evidence is an auditable per-submission ledger with retained and pruned states", () => {
+  const base = runningDetail();
+  const html = render({
+    ...base,
+    evidenceImages: [{
+      submissionId: "submission-2",
+      images: [
+        {
+          id: "image-retained",
+          ordinal: 0,
+          displayName: "dashboard.png",
+          caption: "Composer with caption and repository scope",
+          repositoryScope: "repo-01",
+          mimeType: "image/png",
+          bytes: 2048,
+          sha256: "a".repeat(64),
+          availability: "retained",
+          prunedAt: null,
+          createdAt: 8,
+        },
+        {
+          id: "image-pruned",
+          ordinal: 1,
+          displayName: "old-dashboard.webp",
+          caption: "Historical evidence whose body aged out",
+          repositoryScope: "all",
+          mimeType: "image/webp",
+          bytes: 4096,
+          sha256: "b".repeat(64),
+          availability: "pruned",
+          prunedAt: 9,
+          createdAt: 7,
+        },
+      ],
+    }],
+  }, {
+    evidenceScopeOptions: [
+      { value: "all", label: "All repositories" },
+      { value: "repo-01", label: "app (primary)" },
+    ],
+    onRestageImage: async () => {},
+  });
+  assert.match(html, /2 images frozen for this submission/);
+  assert.match(html, /Composer with caption and repository scope/);
+  assert.match(html, /app \(primary\)/);
+  assert.match(html, new RegExp("a{64}"));
+  assert.match(html, /Use in next review/);
+  assert.match(html, /Historical evidence whose body aged out/);
+  assert.match(html, /Raw body pruned/);
+  assert.match(html, /Caption, scope, MIME, size, and SHA-256 remain auditable/);
+  assert.equal((html.match(/Use in next review/g) ?? []).length, 1);
+  // Static rendering never fetches bodies: the authenticated route is reached lazily in view.
+  assert.doesNotMatch(html, /src="\/api\/workflow-runs/);
 });
 
 /**
@@ -1817,6 +1883,22 @@ test("active Persona feedback marks only its target and opens from the row", () 
   assertNoGraphIds(html);
 });
 
+test("settled pipeline members open their matching review worklist data", () => {
+  const html = render(runningDetail(), {
+    roundId: "submission-1",
+    onSetPersonaDirective: () => {},
+    onRemovePersonaDirective: () => {},
+  });
+
+  assert.equal(hasTooltip(html, "Show Quality reviewer in the review worklist"), true);
+  assert.equal(hasTooltip(html, "Show Security reviewer in the review worklist"), true);
+  // Critical feedback remains in the existing actions menu after the settled tile's primary
+  // click becomes the evidence-navigation affordance.
+  assert.match(html, /Actions for Quality reviewer/);
+  assert.match(html, /Add critical feedback/);
+  assertNoGraphIds(html);
+});
+
 test("Persona feedback click targets require both mutation handlers", () => {
   const detail = runningDetail();
   const setOnly = render(detail, { onSetPersonaDirective: () => {} });
@@ -2486,6 +2568,20 @@ function changeItem(key: string, nodeId: string): WorklistItem {
 
 const emptySegments = (): Record<WorklistSegment, WorklistItem[]> =>
   ({ blocking: [], passed: [], archive: [] });
+
+test("a pipeline node selects its first row in worklist priority order", () => {
+  const segments = emptySegments();
+  segments.passed = [changeItem(`${REVIEWER_NODE}\n\npassed`, REVIEWER_NODE)];
+  segments.blocking = [
+    changeItem(`${REVIEWER_NODE}\n\nfirst blocker`, REVIEWER_NODE),
+    changeItem(`${REVIEWER_NODE}\n\nsecond blocker`, REVIEWER_NODE),
+  ];
+
+  const selected = worklistSelectionForNode(REVIEWER_NODE, segments);
+  assert.equal(selected?.segment, "blocking");
+  assert.equal(selected?.item.key, `change:${REVIEWER_NODE}\n\nfirst blocker`);
+  assert.equal(worklistSelectionForNode("missing-node", segments), null);
+});
 
 test("a selected reviewer that reports a failing verdict is followed to the change it raised", () => {
   const waiting = pendingAttempt("attempt-slow");

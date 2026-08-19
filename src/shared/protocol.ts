@@ -1,6 +1,12 @@
 import { z } from "zod";
 import { WRAPUP_MODES, WRAPUP_TRIGGERS } from "./queue.ts";
-import { MAX_LABELS, TASK_PRIORITIES, normalizeLabels } from "./task.ts";
+import {
+  MAX_LABELS,
+  TASK_KIND_BACKLOG_REFUSAL,
+  TASK_PRIORITIES,
+  normalizeLabels,
+  taskKindAllowsBacklog,
+} from "./task.ts";
 import {
   PipelineActionRequestSchema,
   PipelineConsoleRequestSchema,
@@ -15,6 +21,12 @@ import { RASTER_IMAGE_MIME_TYPES } from "./images.ts";
 import { LLM_SPEND_ROLES } from "./llm-spend.ts";
 import { OPEN_TARGET_IDS } from "./open-targets.ts";
 import {
+  PRODUCT_ISSUE_CLIENTS,
+  PRODUCT_ISSUE_LIMITS,
+  PRODUCT_ISSUE_PREFLIGHT_PROBLEMS,
+  PRODUCT_ISSUE_TYPES,
+} from "./product-issues.ts";
+import {
   ARCHIVE_INDEX_STATUSES,
   ARCHIVE_KINDS,
   ARCHIVE_SEARCH_LIMITS,
@@ -28,6 +40,7 @@ import { TERMINAL_BACKEND_IDS } from "./terminal.ts";
 import { AGENT_TYPES, SESSION_RUNTIMES, TASK_KINDS, THINKING_LEVELS } from "./types.ts";
 import type { AgentType, SessionRuntime, Task } from "./types.ts";
 import { supportsEffort } from "./harness-capabilities.ts";
+import { HARNESS_MODEL_INPUT_MODES } from "./model.ts";
 import { INSPECTOR_LIMITS } from "./inspector.ts";
 import {
   DEFAULT_WORKFLOW_BINDING_DEFAULTS,
@@ -471,6 +484,150 @@ export const CreateReviewSchema = z
   });
 export type CreateReview = z.infer<typeof CreateReviewSchema>;
 
+// ---- public product issue reporting --------------------------------------------------
+
+const productIssueUtf8 = new TextEncoder();
+const productIssueUtf8AtMost = (value: string, max: number): boolean =>
+  productIssueUtf8.encode(value).byteLength <= max;
+
+const ProductIssueTitleSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(PRODUCT_ISSUE_LIMITS.titleBytes)
+  .refine((value) => productIssueUtf8AtMost(value, PRODUCT_ISSUE_LIMITS.titleBytes), {
+    message: `title must be at most ${PRODUCT_ISSUE_LIMITS.titleBytes} UTF-8 bytes`,
+  });
+
+const ProductIssueDetailsSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(PRODUCT_ISSUE_LIMITS.detailsBytes)
+  .refine((value) => productIssueUtf8AtMost(value, PRODUCT_ISSUE_LIMITS.detailsBytes), {
+    message: `details must be at most ${PRODUCT_ISSUE_LIMITS.detailsBytes} UTF-8 bytes`,
+  });
+
+const ProductIssueAttachmentUploadIdsSchema = z
+  .array(
+    z
+      .string()
+      .min(1)
+      .max(PRODUCT_ISSUE_LIMITS.attachmentUploadIdChars)
+      .regex(/^[A-Za-z0-9._-]+$/, "attachment upload ids must be daemon-issued basenames"),
+  )
+  .max(PRODUCT_ISSUE_LIMITS.attachmentCount)
+  .default([])
+  .refine((ids) => new Set(ids).size === ids.length, {
+    message: "attachment upload ids must be unique",
+  });
+
+const PRODUCT_ISSUE_DRAFT_FIELDS = {
+  type: z.enum(PRODUCT_ISSUE_TYPES),
+  title: ProductIssueTitleSchema,
+  details: ProductIssueDetailsSchema,
+  attachmentUploadIds: ProductIssueAttachmentUploadIdsSchema,
+};
+
+/** Reporter-authored content only. Target, labels, source, and environment are not accepted. */
+export const ProductIssueDraftSchema = z.object(PRODUCT_ISSUE_DRAFT_FIELDS).strict();
+export type ProductIssueDraftInput = z.infer<typeof ProductIssueDraftSchema>;
+
+/** One preview/submission opening, shared by the dashboard and authenticated MCP routes. */
+export const ProductIssueRequestSchema = z
+  .object({
+    ...PRODUCT_ISSUE_DRAFT_FIELDS,
+    requestId: z.string().uuid(),
+    client: z.enum(PRODUCT_ISSUE_CLIENTS).default("browser"),
+  })
+  .strict();
+export const ProductIssuePreviewRequestSchema = ProductIssueRequestSchema;
+export const ProductIssueSubmitRequestSchema = ProductIssueRequestSchema;
+export type ProductIssueRequestInput = z.infer<typeof ProductIssueRequestSchema>;
+
+/** MCP identity is transport-owned and added beside the same bounded report request. */
+export const McpProductIssueRequestSchema = z
+  .object({
+    ...PRODUCT_ISSUE_DRAFT_FIELDS,
+    requestId: z.string().uuid(),
+    client: z.enum(PRODUCT_ISSUE_CLIENTS).default("browser"),
+    env: EnvSchema,
+    sessionId: z.string().nullable().optional().default(null),
+    cwd: z.string().nullable().optional().default(null),
+  })
+  .strict();
+export const McpProductIssuePreviewRequestSchema = McpProductIssueRequestSchema;
+export const McpProductIssueSubmitRequestSchema = McpProductIssueRequestSchema;
+
+export const ProductIssueEnvironmentSchema = z.object({
+  missionControlVersion: z.string().min(1).max(100),
+  platform: z.enum(["macOS", "Linux", "Windows", "Other"]),
+  architecture: z.enum(["arm64", "x64", "arm", "ia32", "other"]),
+  client: z.enum(PRODUCT_ISSUE_CLIENTS),
+});
+
+export const ProductIssueAttachmentStateSchema = z.object({
+  enabled: z.boolean(),
+  reason: z.string().nullable(),
+});
+
+export const ProductIssuePreviewSchema = z.object({
+  outcome: z.literal("preview"),
+  requestId: z.string().uuid(),
+  draftIdentity: z.string().regex(/^[0-9a-f]{64}$/),
+  draft: ProductIssueDraftSchema,
+  target: z.string().min(1),
+  labels: z.array(z.string().min(1)),
+  environment: ProductIssueEnvironmentSchema,
+  body: z.string().max(PRODUCT_ISSUE_LIMITS.reportBodyBytes),
+  attachments: ProductIssueAttachmentStateSchema,
+});
+
+const ProductIssueRefusedResultSchema = z.object({
+  outcome: z.literal("refused"),
+  message: z.string().min(1),
+  retrySafe: z.literal(true),
+});
+const ProductIssueConfigurationResultSchema = z.object({
+  outcome: z.literal("configuration"),
+  message: z.string().min(1),
+  retrySafe: z.literal(true),
+});
+const ProductIssueUnknownResultSchema = z.object({
+  outcome: z.literal("unknown"),
+  message: z.string().min(1),
+  retrySafe: z.literal(false),
+});
+
+export const ProductIssuePreviewResponseSchema = z.discriminatedUnion("outcome", [
+  ProductIssuePreviewSchema,
+  ProductIssueRefusedResultSchema,
+  ProductIssueConfigurationResultSchema,
+]);
+
+export const ProductIssueSubmitResultSchema = z.discriminatedUnion("outcome", [
+  z.object({
+    outcome: z.literal("created"),
+    issueUrl: z.string().url(),
+    target: z.string().min(1),
+  }),
+  ProductIssueRefusedResultSchema,
+  ProductIssueConfigurationResultSchema,
+  ProductIssueUnknownResultSchema,
+]);
+
+export const ProductIssuePreflightSchema = z.object({
+  ready: z.boolean(),
+  target: z.string().min(1).nullable(),
+  attachments: ProductIssueAttachmentStateSchema,
+  problems: z.array(
+    z.object({
+      code: z.enum(PRODUCT_ISSUE_PREFLIGHT_PROBLEMS),
+      message: z.string().min(1),
+    }),
+  ),
+});
+
 /**
  * MCP `create_task`: create a backlogged implementation task and optionally bind it
  * to the session making the call. The daemon resolves that session from the same
@@ -494,6 +651,18 @@ export const McpCreateTaskSchema = z
     { path: ["dependsOnTaskIds"], message: "at most 50 task dependencies are allowed" },
   );
 export type McpCreateTask = z.infer<typeof McpCreateTaskSchema>;
+
+/**
+ * Identity added by the bundled MCP bridge when a retro follow-up reports no approved change.
+ * There is intentionally no task id and no caller-controlled outcome: the daemon attributes
+ * the live session, then permits this operation only for its linked retro follow-up Task.
+ */
+export const CompleteRetroNoChangeSchema = z.object({
+  env: EnvSchema,
+  sessionId: z.string().nullable().optional().default(null),
+  cwd: z.string().nullable().optional().default(null),
+}).strict();
+export type CompleteRetroNoChange = z.infer<typeof CompleteRetroNoChangeSchema>;
 
 /**
  * What the human picked for one decision, echoed back by option id.
@@ -606,6 +775,77 @@ export const ModelIdSchema = z
   // Test: `dispatch-model.test.ts`.
   .regex(/^[a-zA-Z0-9][a-zA-Z0-9._/-]*$/, "model id must be alphanumeric with . _ - / only");
 
+/** Bounds for the aggregate harness model catalog carried over HTTP. */
+export const HARNESS_MODEL_CATALOG_LIMITS = {
+  choices: 512,
+  labelChars: 120,
+  hintChars: 160,
+  providerChars: 64,
+  contextWindow: 100_000_000,
+  inputModes: 2,
+} as const;
+
+export const HARNESS_MODEL_CATALOG_SOURCES = ["shipped", "live", "cached", "fallback"] as const;
+export type HarnessModelCatalogSource = (typeof HARNESS_MODEL_CATALOG_SOURCES)[number];
+
+/** Stable diagnostics only. Child output and error text never enter this vocabulary. */
+export const HARNESS_MODEL_CATALOG_PROBLEMS = [
+  "unsupported",
+  "unavailable",
+  "invalid_response",
+  "rpc_failed",
+  "process_failed",
+  "timeout",
+  "output_limit",
+] as const;
+export type HarnessModelCatalogProblem = (typeof HARNESS_MODEL_CATALOG_PROBLEMS)[number];
+
+export const HarnessModelChoiceSchema = z
+  .object({
+    id: ModelIdSchema,
+    label: z.string().min(1).max(HARNESS_MODEL_CATALOG_LIMITS.labelChars),
+    hint: z.string().max(HARNESS_MODEL_CATALOG_LIMITS.hintChars).nullable(),
+    provider: z.string().min(1).max(HARNESS_MODEL_CATALOG_LIMITS.providerChars).nullable(),
+    contextWindow: z
+      .number()
+      .int()
+      .positive()
+      .max(HARNESS_MODEL_CATALOG_LIMITS.contextWindow)
+      .nullable(),
+    reasoning: z.boolean().nullable(),
+    inputModes: z
+      .array(z.enum(HARNESS_MODEL_INPUT_MODES))
+      .max(HARNESS_MODEL_CATALOG_LIMITS.inputModes),
+  })
+  .strict();
+export type HarnessModelCatalogChoice = z.infer<typeof HarnessModelChoiceSchema>;
+
+export const HarnessModelCatalogSchema = z
+  .object({
+    choices: z
+      .array(HarnessModelChoiceSchema)
+      .min(1)
+      .max(HARNESS_MODEL_CATALOG_LIMITS.choices),
+    source: z.enum(HARNESS_MODEL_CATALOG_SOURCES),
+    refreshedAt: z.string().datetime().nullable(),
+    problem: z.enum(HARNESS_MODEL_CATALOG_PROBLEMS).nullable(),
+  })
+  .strict();
+export type HarnessModelCatalog = z.infer<typeof HarnessModelCatalogSchema>;
+
+const harnessModelCatalogShape = Object.fromEntries(
+  AGENT_TYPES.map((agent) => [agent, HarnessModelCatalogSchema]),
+) as Record<AgentType, typeof HarnessModelCatalogSchema>;
+
+/** One catalog for every harness, with neither missing nor future/unknown keys accepted. */
+export const HarnessModelCatalogsSchema = z.object(harnessModelCatalogShape).strict();
+export type HarnessModelCatalogs = z.infer<typeof HarnessModelCatalogsSchema>;
+
+/** The only query form supported by `GET /api/harnesses/models`. */
+export const HarnessModelCatalogQuerySchema = z
+  .object({ refresh: z.literal("1").optional() })
+  .strict();
+
 /**
  * Dispatch (or shelve) a new agent: launch an agent in an isolated worktree of
  * `repoRoot` with `intent` as its first prompt. `backlog: true` only adds it to
@@ -647,8 +887,52 @@ export const DispatchSchema = z
   .refine((o) => o.effort === undefined || supportsEffort(o.agent, o.effort), {
     path: ["effort"],
     message: "reasoning effort is not supported by this harness",
+  })
+  .superRefine((o, ctx) => {
+    if (taskKindAllowsBacklog(o.kind)) return;
+    if (o.backlog) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["backlog"],
+        message: TASK_KIND_BACKLOG_REFUSAL,
+      });
+    }
+    if (o.dependencies.length > 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["dependencies"],
+        message: TASK_KIND_BACKLOG_REFUSAL,
+      });
+    }
   });
 export type Dispatch = z.infer<typeof DispatchSchema>;
+
+/** The exact brief rendered in Dispatch and enforced by the temporary tour endpoint. */
+export const SEE_WORK_TOUR_DEMO_INTENT = [
+  "[Mission Control See the work tour demo]",
+  "This is a temporary, read-only product-tour demonstration. Do not edit files, run a workflow, send messages, answer reviews, enable Foreman, grant Trust, change settings, commit, push, or create a pull request.",
+  "Wait about three seconds. Then call the Mission Control request_input MCP tool exactly once with the question \"Which review path should this demo take?\" and these two single-select options: \"Looks good\" (Continue the tour without doing more work.) and \"Show me later\" (Acknowledge the choice and do nothing else.).",
+  "After the human answers, acknowledge the selection briefly and do nothing else. Let the session become idle. Do not complete the task and do not run a retrospective; the tour owns cleanup.",
+].join("\n\n");
+
+/** The fixed opening turn for the empty-fleet Chat session shown at the third tour stop. */
+export const SEE_WORK_TOUR_PREVIEW_INTENT = [
+  "[Mission Control See the work tour conversation]",
+  "This is a temporary Chat session used only to show the session desk during a product tour. Do not edit files, run commands, use tools, change settings, or create any external side effect.",
+  "Reply briefly with a welcome and explain that Conversation holds the exchange, Work queue holds follow-up turns, Workflows holds reusable checks, Diff holds changes, and Files holds the checkout. Do nothing else after that reply.",
+].join("\n\n");
+
+/**
+ * The comparison spike's one deliberately narrow dispatch input.
+ *
+ * The browser chooses an existing repository, while the daemon owns every other launch
+ * property. Keeping model, prompt, tools, and outcome off this body prevents a temporary
+ * product-tour route from becoming a second general-purpose dispatcher.
+ */
+export const SeeWorkTourDispatchSchema = z.object({
+  repoRoot: z.string().min(1),
+});
+export type SeeWorkTourDispatch = z.infer<typeof SeeWorkTourDispatchSchema>;
 
 /**
  * Resolve a typed path to a canonical git repo root, so the Foreman allowlist
@@ -780,7 +1064,10 @@ export const UpdateTaskSchema = z
     extraRepoRoots: z.array(z.string().min(1)).max(8).optional(),
     intent: z.string().min(1).optional(),
     title: z.string().optional(),
-    kind: z.enum(TASK_KINDS).optional(),
+    kind: z
+      .enum(TASK_KINDS)
+      .refine(taskKindAllowsBacklog, TASK_KIND_BACKLOG_REFUSAL)
+      .optional(),
     agent: z.enum(AGENT_TYPES).optional(),
     enabled: z.boolean().optional(),
     priority: z.enum(TASK_PRIORITIES).nullable().optional(),
@@ -1947,6 +2234,21 @@ export const PipelineRepoRegistrationSchema = z.object({
 export type PipelineRepoRegistrationBody = z.infer<typeof PipelineRepoRegistrationSchema>;
 
 /**
+ * Open one provider-owned interactive installer in a selected hosted terminal.
+ *
+ * Strict on purpose. The browser selects three typed facts and nothing else; argv, shell
+ * text, flags, environment, cwd, and title are composed and reverified by the daemon.
+ */
+export const PipelineInstallerLaunchSchema = z
+  .object({
+    provider: z.enum(PIPELINE_PROVIDER_IDS),
+    checkout: z.string().min(1).max(4096),
+    backend: z.enum(TERMINAL_BACKEND_IDS),
+  })
+  .strict();
+export type PipelineInstallerLaunchBody = z.infer<typeof PipelineInstallerLaunchSchema>;
+
+/**
  * One control verb aimed at an external SDLC engine, and one request for a hosted terminal.
  *
  * Aliased here rather than defined here for `PipelinesConfigPatchSchema`'s reason: the cross-
@@ -2799,7 +3101,9 @@ export type InjectPrompt = z.infer<typeof InjectPromptSchema>;
  * `delivered` is the source plan's R1: the session that did the work was asked to run its own
  * retrospective, and the next thing a human sees is that session talking to them. `dispatched`
  * is R3, taken when the session can no longer be typed into: a retro task is filed against the
- * repository, and the next thing a human sees is a backlog card.
+ * repository, and the next thing a human sees is a backlog card. `started` and `queued`
+ * are the post-merge split: both name the one separate follow-up task while distinguishing
+ * an accepted launch from a synchronous launch refusal that left the task recoverable.
  *
  * A `kind` field rather than a shape test, so a caller never has to infer which happened from
  * which fields are present. The union may GAIN arms and fields; a published arm keeps its
@@ -2817,7 +3121,9 @@ export type RetroResponse =
      */
     submitVerified: boolean;
   }
-  | { kind: "dispatched"; task: Task };
+  | { kind: "dispatched"; task: Task }
+  | { kind: "started"; task: Task }
+  | { kind: "queued"; task: Task; reason: string };
 
 /** CAS guard for a pending-turn action selected from the current session projection. */
 export const PendingTurnRevisionSchema = z.object({
@@ -4703,6 +5009,7 @@ export const EnsembleRunSchema: z.ZodType<EnsembleRun> = z.object({
   outcome: EnsembleOutcomeSchema.nullable(),
   workflowHandoff: EnsembleWorkflowHandoffSchema.nullable(),
   unreadable: EnsembleUnreadableSchema.nullable(),
+  failureAcknowledgedAt: z.number().int().nullable(),
   error: z.string().nullable(),
   createdAt: z.number().int(),
   updatedAt: z.number().int(),
@@ -4860,6 +5167,7 @@ export const EnsembleSummarySchema: z.ZodType<EnsembleSummary> = z.object({
   selectedMemberId: z.string().nullable(),
   outcomeKind: z.enum(ENSEMBLE_OUTCOME_KINDS).nullable(),
   unreadable: EnsembleUnreadableSchema.nullable(),
+  failureAcknowledgedAt: z.number().int().nullable(),
   attention: z.boolean(),
   error: z.string().nullable(),
   createdAt: z.number().int(),
@@ -4964,6 +5272,7 @@ export const EnsembleActionSchema = z.discriminatedUnion("kind", [
     skipWorkflowHandoff: z.boolean().default(false),
   }),
   z.object({ kind: z.literal("cancel"), reason: z.string().max(ENSEMBLE_LIMITS.rationale).nullable().default(null) }),
+  z.object({ kind: z.literal("dismiss_failure") }),
   z.object({ kind: z.literal("restore_artifact"), artifactId: ensembleId }),
 ]);
 export type EnsembleActionBody = z.infer<typeof EnsembleActionSchema>;
@@ -5006,7 +5315,10 @@ const ScheduleTemplateSchema = z
     title: z.string().trim().min(1).max(200),
     intent: z.string().trim().min(1),
     repoRoot: z.string().min(1),
-    kind: z.enum(TASK_KINDS).default("ship"),
+    kind: z
+      .enum(TASK_KINDS)
+      .refine(taskKindAllowsBacklog, TASK_KIND_BACKLOG_REFUSAL)
+      .default("ship"),
     agent: z.enum(AGENT_TYPES).default("claude"),
     priority: z.enum(TASK_PRIORITIES).nullable().default(null),
     labels: z.array(z.string()).max(MAX_LABELS).default([]).transform(normalizeLabels),

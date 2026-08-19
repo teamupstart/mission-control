@@ -15,12 +15,83 @@ import {
 import { OVERLAY_IDS, Overlay } from "../components/Overlay.tsx";
 import { Tooltip } from "../components/Tooltip.tsx";
 import { workflowRequest } from "./workflowApi.ts";
+import {
+  WorkflowEvidenceComposer,
+  type WorkflowEvidenceDraftController,
+  useWorkflowEvidenceDraft,
+  workflowEvidenceScopes,
+  workflowEvidenceSubmission,
+  workflowSessionEvidenceOwner,
+} from "./WorkflowEvidenceComposer.tsx";
 
 export interface WorkflowBindingTarget {
   sessionId?: string;
   workflowVersionId?: string;
   workflowId?: string;
   bindingDefaults?: WorkflowBindingDefaults;
+}
+
+interface WorkflowBindingDialogSharedProps {
+  sessions: Session[];
+  workflows: WorkflowSummary[];
+  onClose: () => void;
+  onRun: (id: string) => void;
+  foremanEnabled?: boolean;
+  promptedWrapupEnabled?: boolean;
+}
+
+/**
+ * Keep the session-owned browser draft above the transient overlay. The host stays mounted
+ * when the dialog closes, so an accidental close preserves uploads, captions, scopes, and
+ * their object URLs until the daemon accepts them or the selected session changes.
+ */
+export function WorkflowBindingDialogHost({
+  target,
+  sessions,
+  workflows,
+  onClose,
+  onRun,
+  foremanEnabled = false,
+  promptedWrapupEnabled = false,
+}: WorkflowBindingDialogSharedProps & {
+  target: WorkflowBindingTarget | null;
+}): React.JSX.Element | null {
+  const live = useMemo(
+    () => sessions.filter((session) => session.state !== "exited" && session.state !== "stopping"),
+    [sessions],
+  );
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  const selectionStillAvailable = selectedSessionId === ""
+    || live.some((session) => session.id === selectedSessionId);
+  const sessionId = target?.sessionId
+    ?? (selectionStillAvailable ? selectedSessionId! : live[0]?.id ?? "");
+  const ownerSessionId = target ? sessionId : selectionStillAvailable ? selectedSessionId : null;
+  const session = live.find((item) => item.id === ownerSessionId) ?? null;
+  const evidenceScopeSet = useMemo(() => workflowEvidenceScopes(session), [session]);
+  const evidenceDraft = useWorkflowEvidenceDraft(
+    workflowSessionEvidenceOwner(ownerSessionId),
+    evidenceScopeSet.defaultScope,
+  );
+
+  useEffect(() => {
+    if (target && selectedSessionId !== sessionId) setSelectedSessionId(sessionId);
+  }, [selectedSessionId, sessionId, target]);
+
+  if (!target) return null;
+  return (
+    <WorkflowBindingDialog
+      target={target}
+      sessions={sessions}
+      workflows={workflows}
+      sessionId={sessionId}
+      onSessionIdChange={setSelectedSessionId}
+      evidenceDraft={evidenceDraft}
+      onClose={onClose}
+      onRun={onRun}
+      foremanEnabled={foremanEnabled}
+      promptedWrapupEnabled={promptedWrapupEnabled}
+    />
+  );
 }
 
 export function workflowBindingSelection(
@@ -65,18 +136,18 @@ export function WorkflowBindingDialog({
   target,
   sessions,
   workflows,
+  sessionId,
+  onSessionIdChange,
+  evidenceDraft,
   onClose,
   onRun,
   foremanEnabled = false,
   promptedWrapupEnabled = false,
-}: {
+}: WorkflowBindingDialogSharedProps & {
   target: WorkflowBindingTarget;
-  sessions: Session[];
-  workflows: WorkflowSummary[];
-  onClose: () => void;
-  onRun: (id: string) => void;
-  foremanEnabled?: boolean;
-  promptedWrapupEnabled?: boolean;
+  sessionId: string;
+  onSessionIdChange: (sessionId: string) => void;
+  evidenceDraft: WorkflowEvidenceDraftController;
 }): React.JSX.Element {
   const live = useMemo(
     () =>
@@ -89,7 +160,6 @@ export function WorkflowBindingDialog({
     () => workflows.filter((workflow) => workflow.currentVersionId && workflow.archivedAt === null),
     [workflows],
   );
-  const [sessionId, setSessionId] = useState(target.sessionId ?? live[0]?.id ?? "");
   /**
    * Empty until the caller pins a version or this conversation's own binding is known.
    *
@@ -228,6 +298,9 @@ export function WorkflowBindingDialog({
     () => workflowBindingSelection(bindings, session, versionId),
     [bindings, session, versionId],
   );
+  const evidenceScopeSet = useMemo(() => workflowEvidenceScopes(session), [session]);
+  const evidenceSubmission = workflowEvidenceSubmission(evidenceDraft, evidenceScopeSet.options);
+  const previewIntent = useRef<{ key: string; requestId: string } | null>(null);
   /*
    * Resolved the same way the version is NAMED, rather than by `currentVersionId` equality.
    *
@@ -372,6 +445,7 @@ export function WorkflowBindingDialog({
 
   const perform = async (preview: boolean): Promise<void> => {
     if (busy) return;
+    if (preview && !evidenceSubmission.ready) return;
     setBusy(true);
     setError(null);
     try {
@@ -385,9 +459,20 @@ export function WorkflowBindingDialog({
         `/api/workflow-bindings/${binding.id}/submit`,
         {
           method: "POST",
-          body: JSON.stringify({ requestId: crypto.randomUUID() }),
+          body: JSON.stringify({
+            requestId: (() => {
+              const key = `${sessionId}:${versionId}:${triggerMode}:${deliveryMode}:${maxRepairRounds}`;
+              if (previewIntent.current?.key !== key) {
+                previewIntent.current = { key, requestId: crypto.randomUUID() };
+              }
+              return previewIntent.current.requestId;
+            })(),
+            evidence: evidenceSubmission.locators,
+          }),
         },
       );
+      evidenceDraft.clear();
+      previewIntent.current = null;
       onClose();
       onRun(result.run.id);
     } catch (caught) {
@@ -427,7 +512,7 @@ export function WorkflowBindingDialog({
               // A different conversation has a different answer to "what is bound here", so the
               // previous session's hand-pick stops standing in the way of hydrating this one.
               versionPickedByHand.current = false;
-              setSessionId(event.target.value);
+              onSessionIdChange(event.target.value);
             }}
           >
             <option value="">Choose a live session</option>
@@ -561,6 +646,11 @@ export function WorkflowBindingDialog({
           </div>
         </dl>
       )}
+      <WorkflowEvidenceComposer
+        controller={evidenceDraft}
+        scopes={evidenceScopeSet.options}
+        disabled={busy}
+      />
       {error && <p className="wf-error" role="alert">{error}</p>}
       <footer className="modal-actions">
         <Tooltip label="Attach the workflow to this session without starting a run">
@@ -571,7 +661,7 @@ export function WorkflowBindingDialog({
         <Tooltip label="Attach the workflow and take an evidence snapshot to review now">
           <button
             className="btn"
-            disabled={busy || !canSubmit}
+            disabled={busy || !canSubmit || !evidenceSubmission.ready}
             onClick={() => void perform(true)}
           >
           {busy

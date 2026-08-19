@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { TaskSourcesPanel } from "../src/web/components/TaskSourcesPanel.tsx";
+import { SourceCard, TaskSourcesPanel } from "../src/web/components/TaskSourcesPanel.tsx";
 import type { TaskSourceInstance, TaskSourcesView } from "../src/shared/task-source.ts";
 import type { TaskSourcesState } from "../src/web/useTaskSources.ts";
 
@@ -96,6 +96,24 @@ test("an answered, empty config says nothing is being swept", () => {
   const html = render(viewOf([]));
   assert.match(html, /No sources yet - nothing is being swept/);
   assert.doesNotMatch(html, /ts-unknown/);
+});
+
+test("task-source defaults offer backlog-compatible kinds and omit chat", () => {
+  const source = mkSource();
+  const html = renderToStaticMarkup(createElement(SourceCard, {
+    src: source,
+    kindLabel: "GitHub issues",
+    status: undefined,
+    repos: [],
+    now: Date.now(),
+    onChange: () => {},
+    onRemove: () => {},
+    state: mkState(viewOf([source])),
+  }));
+
+  assert.match(html, /<option value="ship" selected="">ship - deliver a change<\/option>/);
+  assert.match(html, /<option value="plan">plan - produce a reviewed plan<\/option>/);
+  assert.doesNotMatch(html, /<option value="chat"/);
 });
 
 test("a configured source is a compact overview row with its health", () => {

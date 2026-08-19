@@ -314,6 +314,7 @@ function run(over: Partial<EnsembleRun> = {}): EnsembleRun {
     outcome: null,
     workflowHandoff: null,
     unreadable: null,
+    failureAcknowledgedAt: null,
     error: null,
     createdAt: 1,
     updatedAt: 1,
@@ -341,6 +342,24 @@ test("attention is derived once, so the daemon and the browser cannot disagree",
   assert.equal(ensembleNeedsAttention({ status: "running", unreadable: null }), false);
   assert.equal(ensembleNeedsAttention({ status: "completed", unreadable: null }), false);
   assert.equal(ensembleNeedsAttention({ status: "failed", unreadable: null }), true);
+  assert.equal(
+    ensembleNeedsAttention({
+      status: "failed",
+      unreadable: null,
+      failureAcknowledgedAt: 1_700_000_000_000,
+    }),
+    false,
+    "an acknowledged failure stays in history without continuing to ask for attention",
+  );
+  assert.equal(
+    ensembleNeedsAttention({
+      status: "failed",
+      unreadable: { reason: "x", fields: [] },
+      failureAcknowledgedAt: 1_700_000_000_000,
+    }),
+    true,
+    "acknowledging failure never hides an independently unreadable run",
+  );
   assert.equal(ensembleNeedsAttention({ status: "awaiting_decision", unreadable: null }), true);
   assert.equal(ensembleNeedsAttention({ status: null, unreadable: null }), true);
   assert.equal(
@@ -484,6 +503,7 @@ test("summary, detail, and event wire schemas match their shared contracts", () 
     selectedMemberId: null,
     outcomeKind: null,
     unreadable: null,
+    failureAcknowledgedAt: null,
     attention: false,
     error: null,
     createdAt: 1,
@@ -655,6 +675,7 @@ test("the operator authorities are one closed union a new strategy must not need
   assert.equal(EnsembleActionSchema.safeParse({ kind: "retry_stage", stageId: "stage-1" }).success, true);
   assert.equal(EnsembleActionSchema.safeParse({ kind: "retry_member", memberId: "m" }).success, true);
   assert.equal(EnsembleActionSchema.safeParse({ kind: "cancel" }).success, true);
+  assert.equal(EnsembleActionSchema.safeParse({ kind: "dismiss_failure" }).success, true);
   assert.equal(EnsembleActionSchema.safeParse({ kind: "resolve_finalization" }).success, true);
   // A decision carries its idempotency key, the state it expects, its selection, and an explicit
   // destructive confirmation - the last the literal `true`, so finalization is never reachable by

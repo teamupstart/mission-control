@@ -19,7 +19,13 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
  * No model tokens: the Persona is answered by the fake agent, and the Command is `sh`.
  */
 
-const NODE = { session: "session-node", check: "check-node", persona: "persona-node", end: "end-node" };
+const NODE = {
+  session: "session-node",
+  check: "check-node",
+  persona: "persona-node",
+  join: "join-node",
+  end: "end-node",
+};
 const REVIEWER = "E2E agreeable reviewer";
 
 async function api<T>(daemon: DaemonHandle, path: string, body?: unknown, method?: string): Promise<T> {
@@ -94,15 +100,18 @@ async function seedFailingCheckRun(page: Page, daemon: DaemonHandle): Promise<st
         { id: NODE.session, kind: "session", position: { x: 0, y: 0 } },
         { id: NODE.check, kind: "check", slot: "test", position: { x: 220, y: 0 } },
         { id: NODE.persona, kind: "persona", personaId: persona.id, position: { x: 220, y: 140 } },
-        { id: NODE.end, kind: "end", outcome: "Approved", position: { x: 440, y: 70 } },
+        { id: NODE.join, kind: "all_pass", position: { x: 440, y: 70 } },
+        { id: NODE.end, kind: "end", outcome: "Approved", position: { x: 660, y: 70 } },
       ],
       edges: [
         { id: "e-check", source: NODE.session, sourcePort: "submitted", target: NODE.check, targetPort: "activate" },
         { id: "e-persona", source: NODE.session, sourcePort: "submitted", target: NODE.persona, targetPort: "activate" },
-        { id: "e-check-pass", source: NODE.check, sourcePort: "pass", target: NODE.end, targetPort: "terminal" },
-        { id: "e-check-fail", source: NODE.check, sourcePort: "fail", target: NODE.session, targetPort: "return_for_changes" },
-        { id: "e-persona-pass", source: NODE.persona, sourcePort: "pass", target: NODE.end, targetPort: "terminal" },
-        { id: "e-persona-fail", source: NODE.persona, sourcePort: "fail", target: NODE.session, targetPort: "return_for_changes" },
+        { id: "e-check-pass", source: NODE.check, sourcePort: "pass", target: NODE.join, targetPort: "result" },
+        { id: "e-check-fail", source: NODE.check, sourcePort: "fail", target: NODE.join, targetPort: "result" },
+        { id: "e-persona-pass", source: NODE.persona, sourcePort: "pass", target: NODE.join, targetPort: "result" },
+        { id: "e-persona-fail", source: NODE.persona, sourcePort: "fail", target: NODE.join, targetPort: "result" },
+        { id: "e-join-pass", source: NODE.join, sourcePort: "pass", target: NODE.end, targetPort: "terminal" },
+        { id: "e-join-fail", source: NODE.join, sourcePort: "fail", target: NODE.session, targetPort: "return_for_changes" },
       ],
     },
   });
@@ -197,4 +206,30 @@ test("a failed command gate is the blocker, and keeps its exit code and output",
   await segments.getByRole("button", { name: "Passed 1" }).click();
   await expect(worklist.locator("button.wf-run-worklist-row")).toHaveCount(1);
   await expect(worklist).toContainText(REVIEWER);
+
+  // The failed Command tile returns the rail to Blocking and selects the exact output that
+  // explains the red stage, even after the reader moved to another segment.
+  const checkTile = dashboard.locator(".wf-pipeline-strip li.wf-pipeline-reviewer.is-check");
+  await checkTile.getByRole("button", { name: /^Command test Failed/ }).click();
+  await expect(segments.getByRole("button", { name: "Blocking 1" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await expect(row).toHaveAttribute("aria-current", "true");
+  await expect(card.locator("pre.wf-run-check-output")).toContainText("E2E CHECK BOOM");
+
+  // A completed Command phase is keyboard-openable too. Move the worklist away first so
+  // Enter has to load this stage's blocking test detail rather than merely leave the default
+  // selection untouched.
+  await segments.getByRole("button", { name: "Passed 1" }).click();
+  await expect(worklist).toContainText(REVIEWER);
+  const stages = dashboard.locator(".wf-run-reader .wf-pipeline-stage-head");
+  await expect(stages).toHaveCount(1);
+  await stages.focus();
+  await dashboard.keyboard.press("Enter");
+  await expect(segments.getByRole("button", { name: "Blocking 1" }))
+    .toHaveAttribute("aria-pressed", "true");
+  await expect(row).toHaveAttribute("aria-current", "true");
+  await expect(worklist.locator("article.wf-run-check pre.wf-run-check-output"))
+    .toContainText("E2E CHECK BOOM");
 });

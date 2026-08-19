@@ -771,11 +771,15 @@ export class ArchiveManager {
    * those two steps therefore heals on the next reconciliation instead of losing the name.
    */
   async renameArchive(key: string, rawTitle: string): Promise<{ ok: true; title: string }> {
-    if (!parseArchiveKey(key)) throw new ArchiveError("no such archive", 404);
+    const identity = parseArchiveKey(key);
+    if (!identity) throw new ArchiveError("no such archive", 404);
     return this.withMutation(key, async () => {
-      // Recheck after waiting: a delete ahead of this rename owns both the bundle and its
-      // sidecar, so the queued rename must not recreate local metadata for a gone archive.
+      // Recheck both projections after waiting. A managed delete ahead of this rename removes
+      // the row, while an external filesystem removal can leave that disposable row behind
+      // until reconciliation. Neither case may create metadata that a later same-key bundle
+      // would inherit.
       if (!this.store.get(key)) throw new ArchiveError("no such archive", 404);
+      await this.resolveBundleDir(identity.producerId, identity.archiveId);
       let title: string;
       try {
         title = await this.titleStore.set(key, rawTitle);

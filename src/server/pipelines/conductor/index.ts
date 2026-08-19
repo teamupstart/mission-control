@@ -22,6 +22,7 @@ import { conductorConsoleArgv, runConductorControl } from "./control.ts";
 import { normalizeConductorRun } from "./normalize.ts";
 import { conductorBin, probeConductor } from "./probe.ts";
 import { registerConductorRepo } from "./register.ts";
+import { conductorInstallerCandidates, conductorInstallerTerminalArgv } from "./installer.ts";
 import { resolveBinPath } from "../../util/exec.ts";
 import {
   MAX_RUNS_PER_REPO,
@@ -346,6 +347,11 @@ export function conductorEngineerArgv(bin: string, intent: string): string[] {
   return ["/usr/bin/env", "-u", "CLAUDECODE", bin, "engineer", "--idea", intent];
 }
 
+/** Turn one for a Claude Agent SDK Engineer host, preserving the idea bytes after the prefix. */
+export function conductorEngineerPrompt(intent: string): string {
+  return `/engineer ${intent}`;
+}
+
 /**
  * Conductor's canonical idea key, copied from its Engineer plan/worktree contract.
  *
@@ -390,6 +396,10 @@ export const CONDUCTOR_PROVIDER: PipelineProvider = {
   binForPresence: conductorBin,
   probe: probeConductor,
   registerRepo: registerConductorRepo,
+  installer: {
+    candidates: conductorInstallerCandidates,
+    terminalArgv: conductorInstallerTerminalArgv,
+  },
   readRepo: readConductorRepo,
   knownRunSlugs: conductorRunSlugs,
   readRunDetail: readConductorRunDetail,
@@ -397,4 +407,5 @@ export const CONDUCTOR_PROVIDER: PipelineProvider = {
   consoleArgv: conductorConsole,
   taskIdentity: conductorTaskIdentity,
   taskArgv: conductorTask,
+  taskPrompt: conductorEngineerPrompt,
 };

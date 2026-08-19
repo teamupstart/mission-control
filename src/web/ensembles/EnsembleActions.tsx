@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { EnsembleActionBody } from "@shared/protocol.ts";
 import { ensembleIsTerminal, ensembleReviewIsInfrastructureBlocked } from "@shared/ensemble.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
+import { EnsembleDeleteModal } from "./EnsembleDeleteModal.tsx";
 import type { EnsembleRunDetailResponse } from "./types.ts";
 
 /**
@@ -10,14 +11,15 @@ import type { EnsembleRunDetailResponse } from "./types.ts";
  * retry, resolve-finalization and delete for free. The decision (`decide`) is not here: it is
  * strategy-specific and lives in the result renderer.
  *
- * Destructive actions confirm inline, in the detail, with no unregistered overlay. Delete
- * demands the run id echoed back, and says plainly that Tasks and any linked Workflow survive
- * while the private ensemble refs and history do not.
+ * Destructive live-run actions confirm inline in the detail. Permanent deletion uses the shared
+ * registered overlay so the consequence can be read without making a person transcribe an
+ * internal id. Failed-run dismissal is separate because it keeps all history and refs.
  */
 export function EnsembleActions({
   detail,
   pending,
   error,
+  errorKind = null,
   onAction,
   onDelete,
 }: {
@@ -25,8 +27,9 @@ export function EnsembleActions({
   /** The action currently in flight (its `kind`), or null. Disables the surface while set. */
   pending: string | null;
   error: string | null;
+  errorKind?: string | null;
   onAction: (body: EnsembleActionBody) => void;
-  onDelete: (confirmId: string) => void;
+  onDelete: () => void;
 }): React.JSX.Element {
   const { run } = detail;
   const status = run.status;
@@ -74,12 +77,11 @@ export function EnsembleActions({
   const [confirmCancel, setConfirmCancel] = useState(false);
   const [confirmSkipHandoff, setConfirmSkipHandoff] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const [deleteEcho, setDeleteEcho] = useState("");
   const busy = pending !== null;
 
   return (
     <div className="ensemble-actions" aria-label="Run actions">
-      {error && (
+      {error && errorKind !== "delete" && (
         <p className="ensemble-error" role="alert">
           {error}
         </p>
@@ -122,6 +124,17 @@ export function EnsembleActions({
           <Tooltip label="Cancel active members; keep submitted snapshots and history">
             <button className="btn btn-ghost danger" disabled={busy} onClick={() => setConfirmCancel(true)}>
               Cancel run…
+            </button>
+          </Tooltip>
+        )}
+        {status === "failed" && run.failureAcknowledgedAt === null && (
+          <Tooltip label="Keep this run's history and remove its failure from needs attention">
+            <button
+              className="btn btn-ghost"
+              disabled={busy}
+              onClick={() => onAction({ kind: "dismiss_failure" })}
+            >
+              {pending === "dismiss_failure" ? "Dismissing…" : "Dismiss failure"}
             </button>
           </Tooltip>
         )}
@@ -195,41 +208,13 @@ export function EnsembleActions({
       )}
 
       {confirmDelete && (
-        <div className="ensemble-inline-confirm" role="group" aria-label="Confirm delete">
-          <p>
-            This deletes the run's history and its private snapshot refs. The member Tasks and any
-            linked Workflow run are not touched. Type the run id to confirm.
-          </p>
-          <input
-            className="ensemble-delete-echo"
-            value={deleteEcho}
-            placeholder={run.id}
-            aria-label="Run id"
-            onChange={(event) => setDeleteEcho(event.target.value)}
-          />
-          <div className="ensemble-action-row">
-            <Tooltip label="Permanently delete this run's history and private refs">
-              <button
-                className="btn btn-primary danger"
-                disabled={busy || deleteEcho.trim() !== run.id}
-                onClick={() => onDelete(run.id)}
-              >
-                {pending === "delete" ? "Deleting…" : "Delete permanently"}
-              </button>
-            </Tooltip>
-            <Tooltip label="Keep this run's history">
-              <button
-                className="btn btn-ghost"
-                onClick={() => {
-                  setConfirmDelete(false);
-                  setDeleteEcho("");
-                }}
-              >
-                Keep history
-              </button>
-            </Tooltip>
-          </div>
-        </div>
+        <EnsembleDeleteModal
+          run={run}
+          busy={pending === "delete"}
+          error={errorKind === "delete" ? error : null}
+          onClose={() => setConfirmDelete(false)}
+          onConfirm={onDelete}
+        />
       )}
     </div>
   );

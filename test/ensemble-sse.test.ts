@@ -137,6 +137,7 @@ test("the live channel carries a compact summary and nothing a detail read owns"
     "completedAt",
     "createdAt",
     "error",
+    "failureAcknowledgedAt",
     "id",
     "launchedMembers",
     "maxMembers",

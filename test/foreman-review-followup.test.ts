@@ -490,6 +490,7 @@ function mkMultiRepoSession(repoPrs: TaskRepoPrSummary[], over: Partial<Session>
     title: "cross-repo change",
     fullTitle: "cross-repo change",
     kind: "ship",
+    workflowId: null,
     status: "running",
     outcome: null,
     outcomeUrl: null,

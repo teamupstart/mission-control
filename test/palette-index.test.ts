@@ -103,6 +103,7 @@ function ensemble(over: Partial<EnsembleSummary> = {}): EnsembleSummary {
     selectedMemberId: null,
     outcomeKind: null,
     unreadable: null,
+    failureAcknowledgedAt: null,
     attention: true,
     error: null,
     createdAt: NOW,
@@ -441,10 +442,20 @@ test("every strategy the build can launch is offered, and only through Dispatch"
   assert.ok(rows.some((row) => row.title.includes("Best of N")));
 });
 
-test("the fixed commands only reach affordances that already exist in one step", () => {
+test("the fixed commands include the isolated tour spike beside existing affordances", () => {
   const rows = paletteRows(stores()).filter((row) => row.kind === "command");
   const targets = rows.map((row) => row.target.kind).sort();
-  assert.deepEqual(targets, ["bind-workflow", "dispatch", "route", "route", "route"]);
+  assert.deepEqual(targets, [
+    "bind-workflow",
+    "dispatch",
+    "route",
+    "route",
+    "route",
+    "start-see-work-tour",
+  ]);
+  const tour = find(rows, "command:see-work-tour");
+  assert.equal(tour.title, "Start See the work tour");
+  assert.equal(tour.target.kind, "start-see-work-tour");
   // The three routes are the Library's own ＋ New cards, which is the whole rule: the palette
   // is a second doorway onto shipped affordances, never a new capability.
   const creating = rows.filter((row) => row.target.kind === "route");

@@ -8,10 +8,15 @@ import type {
 } from "@shared/schedules.ts";
 import { SCHEDULE_CATCHUP_CREATE_CAP } from "@shared/schedules.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
-import { AGENT_TYPES, TASK_KINDS } from "@shared/types.ts";
+import { AGENT_TYPES } from "@shared/types.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
-import { MAX_LABELS, PRIORITY_LABELS, TASK_KIND_INFO, TASK_PRIORITIES } from "@shared/task.ts";
-import { modelChoicesFor } from "@shared/model.ts";
+import {
+  BACKLOG_TASK_KINDS,
+  MAX_LABELS,
+  PRIORITY_LABELS,
+  TASK_KIND_INFO,
+  TASK_PRIORITIES,
+} from "@shared/task.ts";
 import {
   createSchedule,
   fetchRepos,
@@ -32,6 +37,11 @@ import {
   type CadenceForm,
   type CadencePreset,
 } from "../../lib/schedules.ts";
+import {
+  ModelCatalogNotice,
+  ModelCatalogOptions,
+  useHarnessModelCatalogs,
+} from "../../model-catalog.tsx";
 import { RepoCombobox } from "../RepoCombobox.tsx";
 import { LabelChips } from "../session-bits.tsx";
 import { Tooltip } from "../Tooltip.tsx";
@@ -147,6 +157,7 @@ export function ScheduleEditor({
   onDirtyChange?: (dirty: boolean) => void;
   onBusyChange?: (busy: boolean) => void;
 }): React.JSX.Element {
+  const { resolve: resolveModels } = useHarnessModelCatalogs();
   const [draft, setDraft] = useState<EditorDraft>(() =>
     schedule ? draftFromSchedule(schedule) : emptyDraft(),
   );
@@ -375,7 +386,7 @@ export function ScheduleEditor({
                       select is the only thing on this row that says what a kind IS - the
                       dispatch form can afford the blurb beside the option, and this
                       cannot. */}
-                  {TASK_KINDS.map((kind) => (
+                  {BACKLOG_TASK_KINDS.map((kind) => (
                     <option key={kind} value={kind}>
                       {`${TASK_KIND_INFO[kind].label} - ${TASK_KIND_INFO[kind].purpose}`}
                     </option>
@@ -427,11 +438,7 @@ export function ScheduleEditor({
                   onChange={(event) => update({ model: event.target.value })}
                 >
                   <option value="">harness default</option>
-                  {modelChoicesFor(draft.agent, draft.model).map((choice) => (
-                    <option key={choice.id} value={choice.id}>
-                      {choice.label} - {choice.hint}
-                    </option>
-                  ))}
+                  <ModelCatalogOptions catalog={resolveModels(draft.agent, draft.model)} />
                 </select>
               </Tooltip>
             </Field>
@@ -453,6 +460,7 @@ export function ScheduleEditor({
               </Tooltip>
             </Field>
           </div>
+          <ModelCatalogNotice agent={draft.agent} />
         </FormSection>
 
         <FormSection

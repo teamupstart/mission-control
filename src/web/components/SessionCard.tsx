@@ -562,6 +562,7 @@ export function SessionCard({
           {queueOpen && (
             <WorkQueue
               session={session}
+              workflowBinding={workflowBinding}
               foremanMode={foremanMode}
               foremanEnabled={foremanEnabled}
               allowlisted={allowlisted(session, foremanAllowlist)}

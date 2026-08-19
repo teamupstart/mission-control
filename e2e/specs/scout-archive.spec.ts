@@ -47,6 +47,8 @@ const OLDER_QUESTION = "Why did the older reconnect path lose its grant?";
 const OLDER_REPORT = "The older archive report remains readable without prompt metadata.";
 const EVIDENCE = artifactsDir("scout-prompt-context");
 const RENAME_EVIDENCE = artifactsDir("scout-rename");
+const SHORTCUT_EVIDENCE = artifactsDir("scouts-shortcuts");
+const FRAGMENT_EVIDENCE = artifactsDir("scout-fragment-links");
 /** Visible text that exists ONLY inside the report the fake writes. */
 const FINDING = "the resume path never replayed the repository grant";
 /** Turns the fake into a scout that writes its page and deliberately never submits it. */
@@ -395,6 +397,31 @@ async function capturePromptEvidence(page: Page, name: string): Promise<void> {
   console.log(`CAPTURED e2e/.artifacts/scout-prompt-context/${name}.png`);
 }
 
+/** A reviewer-visible frame of the keyboard handoff from State to Scouts search. */
+async function captureShortcutEvidence(page: Page): Promise<void> {
+  if (process.env.MC_E2E_EVIDENCE !== "1") return;
+  mkdirSync(SHORTCUT_EVIDENCE, { recursive: true });
+  await page.screenshot({
+    path: `${SHORTCUT_EVIDENCE}slash-focus-from-state-selector.png`,
+    animations: "disabled",
+  });
+  // eslint-disable-next-line no-console
+  console.log("CAPTURED e2e/.artifacts/scouts-shortcuts/slash-focus-from-state-selector.png");
+}
+
+/** The Scout report remains rendered after its fragment link scrolls to the target. */
+async function captureFragmentEvidence(page: Page): Promise<void> {
+  if (process.env.MC_E2E_EVIDENCE !== "1") return;
+  mkdirSync(FRAGMENT_EVIDENCE, { recursive: true });
+  await page.mouse.move(0, 0);
+  await page.screenshot({
+    path: `${FRAGMENT_EVIDENCE}scout-fragment-target.png`,
+    animations: "disabled",
+  });
+  // eslint-disable-next-line no-console
+  console.log("CAPTURED e2e/.artifacts/scout-fragment-links/scout-fragment-target.png");
+}
+
 test("Scouts is reachable from the topbar, its shortcut, and the command palette", async ({
   dashboard,
 }) => {
@@ -505,6 +532,70 @@ test("an archived scout renames inline with the session binding and keeps its bu
       name: renamedTitle,
     }),
   ).toBeVisible();
+});
+
+test("Scouts arrows load adjacent reports and slash focuses its search", async ({
+  dashboard,
+  daemon,
+}) => {
+  const older = writeScoutBundle(join(daemon.home, "scouts"), {
+    title: "Older keyboard scout",
+    createdAt: "2026-08-12T18:42:11.000Z",
+    completedAt: "2026-08-12T18:50:03.000Z",
+  });
+  const newer = writeScoutBundle(join(daemon.home, "scouts"), {
+    title: "Newer keyboard scout",
+    createdAt: "2026-08-13T18:42:11.000Z",
+    completedAt: "2026-08-13T18:50:03.000Z",
+  });
+  await expect.poll(() => archives(daemon).then((rows) => rows.length), { timeout: 20_000 }).toBe(2);
+
+  await dashboard.getByRole("button", { name: /^Scouts/ }).click();
+  const scoutsRail = rail(dashboard);
+  const search = scoutsRail.getByPlaceholder("Search titles, prompts, findings, reports, files...");
+  const reader = dashboard.getByRole("region", { name: "Scout report" });
+  await expect(reader.getByRole("heading", { level: 1, name: newer.manifest.archive.title })).toBeVisible();
+
+  await dashboard.keyboard.press("ArrowDown");
+  await expect(reader.getByRole("heading", { level: 1, name: older.manifest.archive.title })).toBeVisible();
+  await expect(dashboard).toHaveURL(new RegExp(`#\\/scouts\\/${older.key}`));
+
+  await dashboard.keyboard.press("ArrowUp");
+  await expect(reader.getByRole("heading", { level: 1, name: newer.manifest.archive.title })).toBeVisible();
+  await expect(dashboard).toHaveURL(new RegExp(`#\\/scouts\\/${newer.key}`));
+
+  await dashboard.keyboard.press("/");
+  await expect(search).toBeFocused();
+
+  // `/` is a Scouts-page shortcut even when an in-page control owns focus: the operator
+  // can abandon a filter choice and immediately start searching without a mouse click.
+  await scoutsRail.getByLabel("State").focus();
+  await dashboard.keyboard.press("/");
+  await expect(search).toBeFocused();
+  await captureShortcutEvidence(dashboard);
+});
+
+test("a Scout report fragment link scrolls to and keeps rendering its target", async ({
+  dashboard,
+  daemon,
+}) => {
+  writeScoutBundle(join(daemon.home, "scouts"), {
+    title: "Scout report fragment navigation",
+    reportHtml: `<!doctype html><html><body>
+      <h1>Scout fragment report</h1>
+      <a href="#target">Jump to target</a>
+      <div style="height: 2000px"></div>
+      <h2 id="target">Scout fragment target</h2>
+    </body></html>`,
+  });
+  await expect.poll(() => archives(daemon).then((rows) => rows.length), { timeout: 20_000 }).toBe(1);
+
+  await dashboard.getByRole("button", { name: /^Scouts/ }).click();
+  const report = dashboard.frameLocator('iframe[title^="Report"]');
+  await report.getByRole("link", { name: "Jump to target" }).click();
+
+  await expect(report.getByRole("heading", { name: "Scout fragment target" })).toBeInViewport();
+  await captureFragmentEvidence(dashboard);
 });
 
 test("a finished scout keeps its concise title and ordered human prompt context", async ({

@@ -232,6 +232,7 @@ export function sanitizeLogLine(line: string): string {
     .replace(/Authorization\s*:\s*[^\s]+(?:\s+[^\s]+)?/gi, "Authorization: <redacted>")
     .replace(/\b(?:gh[opusr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+)\b/g, "<redacted-token>")
     .replace(/\b(token|access_token|auth)\s*[=:]\s*[^\s]+/gi, "$1=<redacted>")
+    .replace(/\bfile:\/\/\/[^\s"')]+/g, "file://<path>")
     .replace(/(^|[\s"'(=])\/(?:[^\s"'),]+\/?)+/g, "$1<path>");
 }
 

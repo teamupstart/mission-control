@@ -326,6 +326,8 @@ test("release notes and diagnostics leave only bounded plain safe text", () => {
   const notes = sanitizeReleaseNotes(`# Title\n<script>bad()</script>\n[link](https://secret)\n${"x".repeat(5000)}`);
   assert.doesNotMatch(notes, /<script>|https:\/\//);
   assert.ok(notes.length <= 4000);
-  const log = sanitizeLogLine("Authorization: Bearer abc gho_secret /Users/person/private token=hush");
-  assert.doesNotMatch(log, /abc|gho_secret|\/Users\/person|hush/);
+  const log = sanitizeLogLine(
+    "Authorization: Bearer abc gho_secret /Users/person/private token=hush at file:///private/tmp/install-app.mjs:13",
+  );
+  assert.doesNotMatch(log, /abc|gho_secret|\/Users\/person|\/private\/tmp|hush/);
 });

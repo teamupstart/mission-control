@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { parseArgs, runApplyUpdate } from "../scripts/apply-update.mjs";
+import { parseArgs, runApplyUpdate, sanitizeDiagnostic } from "../scripts/apply-update.mjs";
 
 function args(stateDirectory: string) {
   return {
@@ -127,6 +127,14 @@ test("helper argv is explicit and complete", () => {
     },
   );
   assert.match(String(parseArgs(["--target-tag", "v1.2.4"]).problem), /missing/);
+});
+
+test("helper diagnostics redact absolute paths including file URLs", () => {
+  const diagnostic = sanitizeDiagnostic(
+    "failed at /Users/person/clone and file:///private/tmp/install-app.mjs:13 token=hush",
+  );
+  assert.doesNotMatch(diagnostic, /\/Users\/person|\/private\/tmp|hush/);
+  assert.match(diagnostic, /<path>/);
 });
 
 test("the copied helper recognizes an aliased direct-execution path", async (t) => {

@@ -63,6 +63,9 @@ function fixture(over: Partial<UpdaterPort> = {}) {
       upToDate: async () => {
         events.push("up-to-date-dialog");
       },
+      applying: async (version) => {
+        events.push(`applying-dialog:${version}`);
+      },
       error: async (message) => {
         events.push(`error-dialog:${message}`);
       },
@@ -319,6 +322,34 @@ test("an apply already in flight cannot spawn a second helper", async () => {
   assert.equal(first, second);
   finish();
   assert.equal(await first, true);
+  f.controller.stop();
+});
+
+test("a manual command reports when an update is already being applied", async () => {
+  let finish!: () => void;
+  const applyingVersions: string[] = [];
+  const f = fixture({
+    handoff: () => new Promise<void>((resolve) => (finish = resolve)),
+    dialogs: {
+      ...fixture().port.dialogs,
+      available: async () => "apply",
+      applying: async (version) => {
+        applyingVersions.push(version);
+      },
+    },
+  });
+  await f.controller.start();
+
+  const acceptedUpdateCommand = f.controller.checkForUpdates();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(f.controller.getSnapshot().phase, "applying");
+  const repeatedCommand = f.controller.checkForUpdates();
+  assert.notEqual(repeatedCommand, acceptedUpdateCommand);
+  assert.equal((await repeatedCommand).phase, "applying");
+  assert.deepEqual(applyingVersions, ["1.2.4"]);
+
+  finish();
+  assert.equal((await acceptedUpdateCommand).phase, "applying");
   f.controller.stop();
 });
 

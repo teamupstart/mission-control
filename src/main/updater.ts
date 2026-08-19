@@ -49,6 +49,7 @@ export interface UpdateDialogs {
     notes: string;
   }): Promise<"apply" | "defer">;
   upToDate(version: string): Promise<void>;
+  applying(version: string): Promise<void>;
   error(message: string): Promise<void>;
   outcome(outcome: UpdateApplyOutcome): Promise<void>;
 }
@@ -323,6 +324,7 @@ export class UpdateController {
   private checkPromise: Promise<UpdateSnapshot> | null = null;
   private applyPromise: Promise<boolean> | null = null;
   private commandPromise: Promise<UpdateSnapshot> | null = null;
+  private applyingNoticePromise: Promise<UpdateSnapshot> | null = null;
   private manualCheckRequested = false;
   private listeners = new Set<(snapshot: UpdateSnapshot) => void>();
   private timer: ReturnType<typeof setTimeout> | null = null;
@@ -483,28 +485,57 @@ export class UpdateController {
     return this.checkPromise;
   }
 
+  private reportApplying(version: string): Promise<UpdateSnapshot> {
+    if (this.applyingNoticePromise) return this.applyingNoticePromise;
+    this.applyingNoticePromise = this.port.dialogs
+      .applying(version)
+      .then(() => this.snapshot)
+      .finally(() => {
+        this.applyingNoticePromise = null;
+      });
+    return this.applyingNoticePromise;
+  }
+
   /** Shared command seam used by both the app menu and tray. */
   checkForUpdates(): Promise<UpdateSnapshot> {
+    if (this.snapshot.phase === "applying") {
+      return this.reportApplying(this.snapshot.newVersion);
+    }
     if (this.commandPromise) return this.commandPromise;
     this.commandPromise = (async () => {
       const snapshot = await this.check(true);
-      if (snapshot.phase === "available") {
-        const choice = await this.port.dialogs.available({
-          currentVersion: snapshot.currentVersion,
-          newVersion: snapshot.newVersion,
-          name: snapshot.releaseName,
-          notes: snapshot.releaseNotes,
-        });
-        if (choice === "apply") await this.apply();
-        else this.defer();
-      } else if (snapshot.phase === "up-to-date") {
-        await this.port.dialogs.upToDate(snapshot.currentVersion);
-      } else if (snapshot.phase === "error") {
-        await this.port.dialogs.error(snapshot.message);
-      } else if (snapshot.phase === "disabled") {
-        await this.port.dialogs.error(snapshot.reason);
+      switch (snapshot.phase) {
+        case "available": {
+          const choice = await this.port.dialogs.available({
+            currentVersion: snapshot.currentVersion,
+            newVersion: snapshot.newVersion,
+            name: snapshot.releaseName,
+            notes: snapshot.releaseNotes,
+          });
+          if (choice === "apply") await this.apply();
+          else this.defer();
+          return this.snapshot;
+        }
+        case "up-to-date":
+          await this.port.dialogs.upToDate(snapshot.currentVersion);
+          return this.snapshot;
+        case "error":
+          await this.port.dialogs.error(snapshot.message);
+          return this.snapshot;
+        case "disabled":
+          await this.port.dialogs.error(snapshot.reason);
+          return this.snapshot;
+        case "applying":
+          return this.reportApplying(snapshot.newVersion);
+        case "idle":
+        case "checking":
+          await this.port.dialogs.error(
+            "The update check did not finish. Check the update log and try again.",
+          );
+          return this.snapshot;
       }
-      return this.snapshot;
+      const unhandled: never = snapshot;
+      return unhandled;
     })().finally(() => {
       this.commandPromise = null;
     });

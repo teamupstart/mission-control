@@ -77,6 +77,15 @@ const updateDialogs: UpdateDialogs = {
       buttons: ["OK"],
     });
   },
+  async applying(version) {
+    await showNativeMessage({
+      type: "info",
+      title: "Mission Control update",
+      message: `An update to Mission Control ${version} is already in progress`,
+      detail: "Mission Control will relaunch when the update attempt finishes.",
+      buttons: ["OK"],
+    });
+  },
   async error(message) {
     await showNativeMessage({
       type: "error",

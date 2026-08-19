@@ -22,6 +22,7 @@ import type {
   SessionFileSaveResult,
   SessionQueue,
   SkillsView,
+  Task,
   TaskKind,
   TaskPriority,
   TranscriptMessage,
@@ -1337,6 +1338,17 @@ export const api = {
     post(`/api/reviews/${encodeURIComponent(id)}/resolve`, { action, response, selections }),
   // --- dispatch (agents) ---
   dispatch: (input: DispatchInput) => post(`/api/tasks`, input),
+  /** Launch the fixed, read-only Terra task used only by the See the work tour spike. */
+  startSeeWorkTourDemo: (repoRoot: string) =>
+    post<ActionResult & { task?: Task }>("/api/tours/see-work/dispatch", { repoRoot }),
+  /** Launch the fixed Chat conversation used when the tour starts on an empty fleet. */
+  startSeeWorkTourPreview: (repoRoot: string) =>
+    post<ActionResult & { task?: Task }>("/api/tours/see-work/preview", { repoRoot }),
+  /** Record the fixed Tour demo outcome and close any session the spike launched. */
+  completeSeeWorkTourDemo: (taskId: string) =>
+    post<ActionResult & { task?: Task }>(
+      `/api/tours/see-work/tasks/${encodeURIComponent(taskId)}/complete`,
+    ),
   /**
    * Launch an existing task. Dashboard callers claim `overrideDisabled` for this manual
    * action; without that claim the daemon refuses a parked task.

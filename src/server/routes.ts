@@ -22,6 +22,9 @@ import {
   DispatchBacklogTaskSchema,
   DispatchSchema,
   ResolveRepoSchema,
+  SEE_WORK_TOUR_DEMO_INTENT,
+  SEE_WORK_TOUR_PREVIEW_INTENT,
+  SeeWorkTourDispatchSchema,
   EditWorkItemSchema,
   FOREMAN_INSTRUCTIONS_CONFLICT_CODE,
   FOREMAN_INSTRUCTIONS_CONFLICT_MESSAGE,
@@ -4892,6 +4895,115 @@ export function buildApp(
       throw error;
     }
     return c.json(task);
+  });
+
+  // Temporary comparison-spike doorway for Chapter 1 of the product tour. This is not a
+  // second dispatch API: the body chooses only a repository, while this route fixes the
+  // harmless prompt, Codex Terra model, no-Workflow posture, and required review tool.
+  app.post("/api/tours/see-work/dispatch", async (c) => {
+    const parsed = await parseBody(c, SeeWorkTourDispatchSchema);
+    if (!parsed.ok) return parsed.res;
+    const resolved = await resolveTaskRepoRoot(parsed.data.repoRoot);
+    if (!resolved.ok) return c.json({ error: resolved.error }, 400);
+
+    const task = tasks.create(
+      {
+        repoRoot: resolved.repoRoot,
+        extraRepoRoots: [],
+        title: "Tour demo",
+        intent: SEE_WORK_TOUR_DEMO_INTENT,
+        kind: "ship",
+        agent: "codex",
+        model: "gpt-5.6-terra",
+        workflowId: null,
+        backlog: true,
+        dependencies: [],
+        priority: null,
+        labels: ["tour-demo"],
+      },
+      undefined,
+      MANUAL_DISPATCH_TASK_CREATE,
+    );
+    const launched = await tasks.dispatch(task.id, {
+      overrideDisabled: true,
+      missionMcp: { tools: ["request_input"] },
+    });
+    if (!launched.ok) {
+      await tasks.complete(task.id, "Tour demo");
+      return c.json({ ok: false, error: launched.error, task: tasks.get(task.id) ?? task }, 409);
+    }
+    return c.json({ ok: true, task: launched.task ?? task });
+  });
+
+  // An empty fleet has no real desk for stop three to reveal. Create one fixed Chat task
+  // through the manual-dispatch capability, which is the only supported way Chat can launch.
+  // The browser still chooses only an existing repository; agent, prompt, kind, Workflow,
+  // and the no-MCP posture remain server-owned.
+  app.post("/api/tours/see-work/preview", async (c) => {
+    const parsed = await parseBody(c, SeeWorkTourDispatchSchema);
+    if (!parsed.ok) return parsed.res;
+    const resolved = await resolveTaskRepoRoot(parsed.data.repoRoot);
+    if (!resolved.ok) return c.json({ error: resolved.error }, 400);
+
+    const task = tasks.create(
+      {
+        repoRoot: resolved.repoRoot,
+        extraRepoRoots: [],
+        title: "Tour conversation",
+        intent: SEE_WORK_TOUR_PREVIEW_INTENT,
+        kind: "chat",
+        agent: "codex",
+        workflowId: null,
+        backlog: false,
+        dependencies: [],
+        priority: null,
+        labels: ["tour-demo", "tour-preview"],
+      },
+      undefined,
+      MANUAL_DISPATCH_TASK_CREATE,
+    );
+    return c.json({ ok: true, task });
+  });
+
+  // The tour's single terminal path for both its Chat preview and live Ship task. A live demo
+  // follows CompleteModal's ordering: record the outcome, then stop the session. An Exit
+  // during provisioning has no session to stop, so cancellation first closes that race.
+  app.post("/api/tours/see-work/tasks/:id/complete", async (c) => {
+    const id = c.req.param("id");
+    const task = tasks.get(id);
+    if (!task) return c.json({ ok: false, error: "no such task" }, 404);
+    const isShipDemo =
+      task.title === "Tour demo" &&
+      task.labels.includes("tour-demo") &&
+      task.intent.startsWith("[Mission Control See the work tour demo]");
+    const isChatPreview =
+      task.title === "Tour conversation" &&
+      task.kind === "chat" &&
+      task.labels.includes("tour-preview") &&
+      task.intent.startsWith("[Mission Control See the work tour conversation]");
+    if (!isShipDemo && !isChatPreview) {
+      return c.json({ ok: false, error: "that task does not belong to the tour" }, 409);
+    }
+
+    let session = task.sessionId ? registry.getSession(task.sessionId) : null;
+    if (!session && task.status !== "done") {
+      const cancelled = await tasks.cancel(id);
+      if (!cancelled.ok) return c.json(cancelled, 500);
+    }
+    const outcome = isChatPreview ? "Tour conversation" : "Tour demo";
+    const completed = await tasks.complete(id, outcome);
+    if (!completed) return c.json({ ok: false, error: "no such task" }, 404);
+    session ??= completed.sessionId ? registry.getSession(completed.sessionId) : null;
+    if (session) {
+      const stopped = await requestSessionStop(session, sdkSessions);
+      if (!stopped.ok) {
+        return c.json(
+          { ok: false, error: `task marked done, but the session could not be closed: ${stopped.error ?? "failed"}`, task: completed },
+          500,
+        );
+      }
+    }
+    return c.json({ ok: true, task: completed });
   });
 
   // Edit a task. A repo change is resolved the same way `POST /api/tasks` resolves one,

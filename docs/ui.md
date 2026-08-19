@@ -230,7 +230,7 @@ chip** and a second line saying what the thing is, or what it is doing right now
 | Group | Kinds | The second line says |
 | --- | --- | --- |
 | **Jump to** | `page`, `workflow`, `run`, `ensemble`, `persona`, `action`, `mission` | The authored fact for an asset (version and reviewer count, provider and model, cadence); the **live state** for a run or an ensemble - the same sentence its own page reads, and for a run the session it is reviewing, so four runs of one workflow are four different rows |
-| **Do** | `strategy`, `command` | Launch an ensemble on a strategy, dispatch an agent, bind a workflow to a session, or open a blank draft on a Library shelf |
+| **Do** | `strategy`, `command` | Launch an ensemble on a strategy, dispatch an agent, bind a workflow to a session, open a blank draft on a Library shelf, or start the temporary **See the work** comparison tour |
 | **Settings** | `setting` | The category and what the control does, plus its current value where the palette can flip it |
 
 Rows that need an answer - an ensemble awaiting your decision, a mission that is unhealthy, a
@@ -253,9 +253,10 @@ guessing. Before you type anything it previews what needs you, then everything y
 
 Two things it deliberately does not do. It **never fetches**: every row is built from the live
 SSE collections the dashboard already holds, so typing a letter is not a network event and the
-palette can never be more stale than the page beside it. And it **only ever opens a door that
-already exists** - every "Do" row lands on the same modal a button somewhere else opens, and
-every "Jump to" row on a route the app publishes.
+palette can never be more stale than the page beside it. Production rows **only open doors that
+already exist**: every production "Do" row lands on the same modal a button somewhere else
+opens, and every "Jump to" row on a route the app publishes. The temporary tour row below is
+the explicit comparison-spike exception.
 
 The `page` kind has exactly one member, and that is a statement about the app rather than an
 unfinished list: the [Ship log](library-and-line.md#the-ship-log) is the only full page with no door in the
@@ -273,6 +274,77 @@ Task sources appear under Settings rather than as their own kind, which is where
 Sources card points too. Sessions and backlog tasks are not searchable kinds yet - a run row
 borrows its session's name, but that is a label, not an index - and they are the next kinds
 the provider registry behind the palette is built to take.
+
+### Comparison spike: See the work
+
+**See the work** in the Settings rail's **Help & tours** footer, or **Start See the work tour**
+in the palette's **Do** group, runs an isolated evaluation of `driver.js@1.8.0`. It is
+user-started only. There is no first-run trigger, progress storage, new top-bar control, or
+chapter beyond this one guided sequence:
+
+1. **Fleet and the Line** spotlights the permanent pipeline strip.
+2. **Board View** switches through the existing layout owner and spotlights the real Board.
+3. **Session detail** opens an existing session's Board drill-in and describes Conversation,
+   Work queue, Workflows, Diff, and Files as one desk. When the tour starts on an empty fleet,
+   it launches one fixed temporary Chat conversation in the first available repository while
+   the first two stops are shown, then opens that real session here. The prompt asks only for
+   a short orientation to the five desk surfaces and explicitly forbids tools, commands, and
+   file changes. If the Chat launch, session, or target is unavailable, the same labelled
+   dialog is centered and keeps Back, Next, and Exit tour available.
+4. **Open Dispatch** spotlights the existing Dispatch control, then opens the real modal.
+5. **Choose the kind** spotlights the modal's existing Kind selector and explains Chat as an
+   open-ended conversation, Scout as an investigation without a diff, Plan as a reviewed plan
+   that can schedule its work, and Ship as delivery of a reviewable change.
+6. **Brief ready** fills and spotlights the real task input while the modal keeps Repo and Crew
+   visible. The temporary tour draft is isolated from the operator's saved Dispatch draft.
+7. **Choose what follows** spotlights the real **After work** selector with **None** selected
+   and explains that Workflows run reusable review and follow-up steps after an agent finishes.
+8. **Dispatch the task** spotlights the real **Dispatch now** button without dimming the rest
+   of the form. The operator clicks that button to schedule one fixed read-only Ship task on
+   Codex pinned to `gpt-5.6-terra`. This is a real model call and can spend model tokens. On an
+   empty fleet, the temporary Chat conversation is a separate real model call using Codex's
+   configured default model. Each temporary daemon route accepts only a repository; it owns
+   the prompt, kind, and no-Workflow posture. Only the Ship route grants the required
+   `request_input` MCP tool.
+9. **Working** spotlights that task's real Board tile while its session runs.
+10. **Needs You** follows the same tile when the agent's review request reaches the existing
+   Mission Control review channel.
+11. **Choose and submit** opens the real review modal and pauses until the operator selects an
+   option and submits. The response tells the demo session to do no more work.
+12. **Idle** follows the tile after the answered session settles.
+13. **Complete or run a retro** spotlights the existing detail action row and explains that a
+   retro keeps the task open while the session proposes memories for review.
+14. **Complete the tour** opens the real Complete dialog with `Tour demo` prefilled as its
+   generic Outcome note. The dialog shows **Run a retro first** and **Complete & close**, but
+   keeps both inert during the tour. **Complete tour** records the fixed outcome and closes the
+   session without running a retro.
+
+The tour skin echoes the Line rather than introducing a new product surface. An amber frame
+traces the active area, while the coachmark uses the existing panel tokens, a quiet amber wash,
+and a fourteen-segment pipeline rail in its header. Past segments stay muted amber, the current
+segment glows, and the footer keeps Exit separate from the Back and primary actions.
+
+The controller snapshots the route, layout, selection, Cards expansion, Board drill-in,
+filter, and open Line drawer before it moves anything. Exit tour, backdrop dismissal,
+<kbd>Esc</kbd>, completion, and controller errors all restore that snapshot. Every terminal
+path records fixed outcomes and stops both temporary sessions when they exist: `Tour
+conversation` for the empty-fleet Chat preview and `Tour demo` for the Ship walkthrough. Exit
+during provisioning first cancels each launch race and then marks its task done. Neither task
+edits files, runs workflow Commands, sends application messages beyond the Chat preview's
+fixed opening prompt, answers a review, enables Foreman, changes Trust, saves assets, creates
+a pull request, or runs a retro.
+
+**Comparison finding:** Driver.js supplies spotlight geometry, bounded `waitForElement`
+progression, a centered missing-target fallback, labelled dialog semantics, and initial focus,
+but version 1.8.0 does not contain Tab inside the popover and its built-in close affordance is
+icon-only. A narrow React adapter adds modal and progress semantics, an explicit Exit tour
+button, Tab and Shift+Tab containment, invoker focus restoration, and registration with Mission
+Control's overlay stack. The real review modal temporarily becomes the top registered layer;
+the adapter extends containment across that modal and the coachmark while leaving Escape to
+peel the review before the tour. Its `onDestroyed` hook can also be skipped when an immediate
+exit occurs before the active step is committed, so the adapter finalizes its own exit paths
+directly. This is an adapter around the library, not a general tooltip or tour engine.
+Reduced-motion preference turns off both Driver.js animation and the spike's transitions.
 
 ## Layout (console or board in Settings)
 

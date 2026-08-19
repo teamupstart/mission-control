@@ -23,6 +23,7 @@ import { canAcceptTask, dropTaskOnSession } from "./BacklogColumn.tsx";
 import { Tooltip } from "../Tooltip.tsx";
 import { WorkflowLadderPanel } from "../../workflows/WorkflowLadder.tsx";
 import type { WorkflowDisclosureHandle } from "./types.ts";
+import { useIsTourTask, useTourTaskTargetRef } from "../../tour/target-context.tsx";
 
 /**
  * A session shrunk to what you'd triage by, without opening it: who it is, what it's
@@ -92,13 +93,18 @@ export function SessionTile({
   const held = heldBy !== null;
   const [over, setOver] = useState(false);
   const [workflowExpanded, setWorkflowExpanded] = useState(false);
+  const tourTargetRef = useTourTaskTargetRef<HTMLDivElement>("demo-task", session.task?.id);
+  const isTourTask = useIsTourTask(session.task?.id);
   const toggleWorkflowExpanded = useCallback(
     () => setWorkflowExpanded((expanded) => !expanded),
     [],
   );
   const setTileRef = useCallback(
-    (el: HTMLDivElement | null) => registerEl?.(session.id, el),
-    [registerEl, session.id],
+    (el: HTMLDivElement | null) => {
+      registerEl?.(session.id, el);
+      tourTargetRef(el);
+    },
+    [registerEl, session.id, tourTargetRef],
   );
   useEffect(() => setWorkflowExpanded(false), [workflowRunId]);
   useEffect(() => {
@@ -120,7 +126,9 @@ export function SessionTile({
         selected ? " selected" : ""
       }${held ? " is-held" : ""}${
         droppable ? " can-drop" : ""
-      }${over ? " drop-over" : ""}${workflowExpanded ? " workflow-expanded" : ""}`}
+      }${over ? " drop-over" : ""}${workflowExpanded ? " workflow-expanded" : ""}${
+        isTourTask ? " mc-tour-task" : ""
+      }`}
       onDragOver={(e) => {
         if (!droppable) return;
         e.preventDefault();

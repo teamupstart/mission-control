@@ -74,6 +74,7 @@ function render(
       layout: "grid",
       onLayoutChange: () => {},
       settingsStatus: opts.settingsStatus ?? null,
+      onStartSeeWorkTour: () => {},
     }),
   );
 }

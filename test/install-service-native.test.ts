@@ -159,3 +159,71 @@ test("the LaunchAgent entry builds first and runs the daemon at its exact PID", 
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("the LaunchAgent entry stops cleanly when launchd terminates it during the build", async () => {
+  const root = mkdtempSync(join(tmpdir(), "mission-start-service-build-stop-"));
+  const scripts = join(root, "scripts");
+  const tsxDir = join(root, "node_modules", "tsx");
+  const serverDir = join(root, "src", "server");
+  const copiedEntry = join(scripts, "start-service.mjs");
+  const eventsPath = join(root, "events.jsonl");
+  mkdirSync(scripts, { recursive: true });
+  mkdirSync(tsxDir, { recursive: true });
+  mkdirSync(serverDir, { recursive: true });
+  copyFileSync(serviceEntry, copiedEntry);
+  writeFileSync(
+    join(scripts, "build-keep-awake-native.mjs"),
+    `import { appendFileSync } from "node:fs";\n` +
+      `const record = (event) => appendFileSync(process.env.SERVICE_EVENT_LOG, JSON.stringify(event) + "\\n");\n` +
+      `record({ stage: "build-start", pid: process.pid });\n` +
+      `process.on("SIGTERM", () => { record({ stage: "build-signal", pid: process.pid }); process.exit(0); });\n` +
+      `setInterval(() => {}, 1_000);\n`,
+  );
+  writeFileSync(
+    join(tsxDir, "package.json"),
+    JSON.stringify({
+      name: "tsx",
+      type: "module",
+      exports: { "./esm/api": "./index.mjs" },
+    }),
+  );
+  writeFileSync(join(tsxDir, "index.mjs"), "export const register = () => {};\n");
+  writeFileSync(
+    join(serverDir, "index.ts"),
+    `import { appendFileSync } from "node:fs";\n` +
+      `appendFileSync(process.env.SERVICE_EVENT_LOG, JSON.stringify({ stage: "daemon", pid: process.pid }) + "\\n");\n`,
+  );
+
+  try {
+    const child = spawn(process.execPath, [copiedEntry], {
+      cwd: root,
+      env: { ...process.env, SERVICE_EVENT_LOG: eventsPath },
+      stdio: "pipe",
+    });
+    const servicePid = child.pid;
+    assert.ok(servicePid, "the service entry must start");
+    const exitPromise = once(child, "exit");
+
+    const deadline = Date.now() + 3_000;
+    let recorded = "";
+    while (!recorded.includes('"stage":"build-start"') && Date.now() < deadline) {
+      await delay(20);
+      recorded = existsSync(eventsPath) ? readFileSync(eventsPath, "utf8") : "";
+    }
+    assert.match(recorded, /"stage":"build-start"/, "the native build must start");
+    child.kill("SIGTERM");
+
+    const [code, signal] = (await exitPromise) as [number | null, NodeJS.Signals | null];
+    assert.equal(signal, null);
+    assert.equal(code, 0);
+
+    const events = readFileSync(eventsPath, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { stage: string; pid: number });
+    assert.deepEqual(events.map((event) => event.stage), ["build-start", "build-signal"]);
+    assert.notEqual(events[0]!.pid, servicePid, "the bounded build runs as a child");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

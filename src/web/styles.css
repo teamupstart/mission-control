@@ -4315,6 +4315,9 @@ body {
 .file-toolbar-spacer { flex: 1; }
 .file-mode { display: flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
 .file-mode button {
+  display: flex;
+  align-items: center;
+  gap: 5px;
   border: 0;
   padding: 5px 8px;
   color: var(--muted);

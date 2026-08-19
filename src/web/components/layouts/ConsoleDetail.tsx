@@ -769,6 +769,7 @@ export function ConsoleDetail({
                 session={session}
                 controller={view.files}
                 onExtract={() => view.onOpenFiles(session.id)}
+                isOverlayOpen={view.isOverlayOpen}
               />
             ) : (
               <p className="detail-empty">No working directory to browse.</p>

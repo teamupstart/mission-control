@@ -231,6 +231,53 @@ test("an HTML report opens rendered, and its source only on request", async ({
   await expect(modes.getByRole("button", { name: "Editor" })).toHaveAttribute("aria-pressed", "true");
 });
 
+test("bare e and p switch modes only in the integrated Files tab", async ({
+  dashboard,
+  daemon,
+}) => {
+  await openFilesTab(dashboard, daemon);
+  await dashboard
+    .getByRole("listbox", { name: "Session files" })
+    .getByRole("option", { name: REPORT })
+    .click();
+
+  const modes = dashboard.getByRole("group", { name: "File view mode" });
+  const orderedModes: (string | null)[] = [];
+  await modes.locator('button[aria-label="Preview"][aria-pressed="true"]').waitFor();
+  await dashboard.keyboard.press("e");
+  const editor = modes.locator('button[aria-label="Editor"][aria-pressed="true"]');
+  await editor.waitFor();
+  orderedModes.push(await editor.getAttribute("aria-label"));
+  await dashboard.keyboard.press("p");
+  const preview = modes.locator('button[aria-label="Preview"][aria-pressed="true"]');
+  await preview.waitFor();
+  orderedModes.push(await preview.getAttribute("aria-label"));
+  const integratedHints = await modes.locator("kbd.kb-hint").allTextContents();
+  await shoot(dashboard, "file-mode-shortcuts");
+
+  await dashboard.getByRole("button", { name: "Extract files window" }).click();
+  const extracted = dashboard.getByRole("dialog", { name: /Files for / });
+  const extractedModes = extracted.getByRole("group", { name: "File view mode" });
+  await extractedModes.locator('button[aria-label="Preview"][aria-pressed="true"]').waitFor();
+  await dashboard.keyboard.press("e");
+  await dashboard.waitForTimeout(50);
+  const extractedMode = await extractedModes.locator('[aria-pressed="true"]').getAttribute("aria-label");
+
+  expect({
+    orderedModes,
+    integratedHints,
+    extractedMode,
+    extractedShortcuts: await extractedModes.locator("[aria-keyshortcuts]").count(),
+    extractedHints: await extractedModes.locator("kbd.kb-hint").count(),
+  }).toEqual({
+    orderedModes: ["Editor", "Preview"],
+    integratedHints: ["p", "e"],
+    extractedMode: "Preview",
+    extractedShortcuts: 0,
+    extractedHints: 0,
+  });
+});
+
 test("source opens in the editor, with no view to toggle to", async ({ dashboard, daemon }) => {
   await openFilesTab(dashboard, daemon);
   const files = dashboard.getByRole("listbox", { name: "Session files" });

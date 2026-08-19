@@ -589,7 +589,10 @@ their normal browser behavior, and resolved paths outside the checkout never ope
 Markdown open in Preview by default, while every other file type opens in the editor - so a
 generated page a session links to is read as the page it is, and source is read as source. The
 Preview and Editor buttons publish which of the two is showing as their pressed state, so the
-view a file landed in is legible to a screen reader and not only to the eye. HTML preview
+view a file landed in is legible to a screen reader and not only to the eye. While the integrated
+Files tab is open, press <kbd>p</kbd> for Preview or <kbd>e</kbd> for Editor. These fixed,
+tab-local shortcuts may overlap actions on other surfaces, and they stand down while you are
+typing or while an overlay is open. HTML preview
 remains inert: its document renders immediately, then a bounded set of checkout-local
 stylesheets is inlined through the contained file reader without granting the sandbox scripts
 or network access. A slow stylesheet read therefore delays styling, not the document itself.
@@ -778,8 +781,8 @@ names the layouts where a shortcut's target exists:
 | <kbd>⌥</kbd><kbd>↑</kbd> <kbd>⌥</kbd><kbd>↓</kbd> | Move the focused reviewer within its stage | [Workflows](workflows.md#workflows-and-personas) → Pipeline |
 | <kbd>Delete</kbd> | Remove the focused reviewer or stage, after a confirmation naming what goes | [Workflows](workflows.md#workflows-and-personas) → Pipeline |
 
-Every shortcut except the arrow keys, <kbd>Enter</kbd>, <kbd>Esc</kbd> and the dedicated Menu key is
-**customizable**. Open **Settings** - the ⚙ gear in the top bar, or (in the desktop app)
+Every shortcut managed by the shortcut list is **customizable**. Open **Settings** - the ⚙ gear
+in the top bar, or (in the desktop app)
 **Mission Control → Settings…** / <kbd>⌘</kbd><kbd>,</kbd> - then click a shortcut and press the new key
 (optionally with <kbd>⌘</kbd> / <kbd>⌃</kbd> / <kbd>⌥</kbd> / <kbd>⇧</kbd>). On a letter,
 <kbd>⇧</kbd> counts as a modifier - <kbd>⇧</kbd><kbd>O</kbd> is a binding in its own right and
@@ -791,8 +794,9 @@ the override and leaves the shortcut unset until its default is free. The arrow 
 <kbd>Enter</kbd>, <kbd>Esc</kbd>, the Menu key and bare <kbd>Tab</kbd> drive structural navigation
 and can't be reassigned; <kbd>⇧</kbd><kbd>F10</kbd> is the customizable context-menu action and
 <kbd>⇧</kbd><kbd>Tab</kbd> remains bindable. The pipeline
-editor's four rows above are in-surface keys rather than fleet chords - they only exist
-while a card in that strip has focus - so they are fixed for the same reason.
+editor's four rows above and the Files tab's <kbd>p</kbd> / <kbd>e</kbd> controls are in-surface
+keys rather than fleet chords - they only exist while their surface is active - so they are fixed
+for the same reason.
 
 ### Keycaps on the buttons
 

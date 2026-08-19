@@ -1781,6 +1781,7 @@ export function App(): React.JSX.Element {
     registerLaunchers,
     registerFind,
     registerDetailScroll,
+    isOverlayOpen,
     registerReaderTab,
     renamingId,
     onRenameStart: setRenamingId,

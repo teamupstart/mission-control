@@ -127,6 +127,8 @@ export interface SessionViewProps {
     id: string,
     scroll: ((direction: -1 | 1, fromReader: boolean) => boolean) | null,
   ) => void;
+  /** Read App's live overlay registry before a tab-local shortcut acts. */
+  isOverlayOpen?: () => boolean;
   /** Register the open detail's tab stepper, so Tab/Shift+Tab can cycle its tabs. Returns
    *  "edge" when there is no next/previous tab (App clamps forward, exits to the rail back). */
   registerReaderTab: (id: string, nav: ((dir: -1 | 1) => "moved" | "edge") | null) => void;

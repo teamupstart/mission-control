@@ -352,6 +352,59 @@ test("bare e and p remain available inside every valid contenteditable host", as
   ]);
 });
 
+test("an oversized preview does not advertise or act on the unavailable Editor shortcut", async ({
+  dashboard,
+  daemon,
+}) => {
+  await dispatch(dashboard, daemon, "preview a large generated report");
+  const cwd = await sessionCwd(daemon);
+  const largeReport = "docs/reports/large-generated-report/report.html";
+  mkdirSync(join(cwd, "docs", "reports", "large-generated-report"), { recursive: true });
+  writeFileSync(
+    join(cwd, largeReport),
+    `<!doctype html><html><body><h1>Large generated report</h1><!--${"x".repeat(2 * 1024 * 1024)}--></body></html>`
+  );
+
+  await useConsoleLayout(dashboard, daemon);
+  await dashboard
+    .getByRole("navigation", { name: "Sessions" })
+    .getByRole("button", { name: /Preview a Large Generated Report/i })
+    .click();
+  await dashboard
+    .getByRole("tablist", { name: "Session detail" })
+    .getByRole("tab", { name: /Files$/ })
+    .click();
+  const files = dashboard.getByRole("listbox", { name: "Session files" });
+  await files.waitFor();
+  await files.getByRole("option", { name: largeReport }).click();
+
+  const report = dashboard.frameLocator(`iframe[title="Preview of ${largeReport}"]`);
+  const heading = report.getByRole("heading", { name: "Large generated report" });
+  await heading.waitFor();
+  const modes = dashboard.getByRole("group", { name: "File view mode" });
+  const preview = modes.getByRole("button", { name: "Preview" });
+  const editor = modes.getByRole("button", { name: "Editor" });
+  await editor.waitFor();
+  await dashboard.keyboard.press("e");
+  await dashboard.waitForTimeout(50);
+
+  expect({
+    rendered: await heading.isVisible(),
+    editorDisabled: await editor.isDisabled(),
+    editorShortcut: await editor.getAttribute("aria-keyshortcuts"),
+    editorKeycapCount: await editor.locator("kbd.kb-hint").count(),
+    activeModeAfterE: await modes.locator('[aria-pressed="true"]').getAttribute("aria-label"),
+    previewPressed: await preview.getAttribute("aria-pressed"),
+  }).toEqual({
+    rendered: true,
+    editorDisabled: true,
+    editorShortcut: null,
+    editorKeycapCount: 0,
+    activeModeAfterE: "Preview",
+    previewPressed: "true",
+  });
+});
+
 test("source opens in the editor, with no view to toggle to", async ({ dashboard, daemon }) => {
   await openFilesTab(dashboard, daemon);
   const files = dashboard.getByRole("listbox", { name: "Session files" });

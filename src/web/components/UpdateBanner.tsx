@@ -1,4 +1,5 @@
 import type { UpdateSnapshot } from "@shared/update.ts";
+import { Tooltip } from "./Tooltip.tsx";
 
 interface UpdateBannerProps {
   snapshot: UpdateSnapshot | null;
@@ -37,9 +38,13 @@ export function UpdateBanner(props: UpdateBannerProps): React.JSX.Element | null
         </div>
         <div className="app-banner-actions">
           {snapshot.manual && snapshot.retryable && (
-            <button type="button" className="btn btn-primary" onClick={props.onCheck}>Retry</button>
+            <Tooltip label="Check for the update again">
+              <button type="button" className="btn btn-primary" onClick={props.onCheck}>Retry</button>
+            </Tooltip>
           )}
-          <button type="button" className="btn btn-ghost" onClick={props.onDismiss}>Dismiss</button>
+          <Tooltip label="Hide this update error">
+            <button type="button" className="btn btn-ghost" onClick={props.onDismiss}>Dismiss</button>
+          </Tooltip>
         </div>
       </section>
     );
@@ -53,8 +58,12 @@ export function UpdateBanner(props: UpdateBannerProps): React.JSX.Element | null
           <p>{releaseSummary(snapshot.releaseNotes)}</p>
         </div>
         <div className="app-banner-actions">
-          <button type="button" className="btn btn-primary" onClick={props.onApply}>Update Now</button>
-          <button type="button" className="btn btn-ghost" onClick={props.onDefer}>Later</button>
+          <Tooltip label={`Install Mission Control ${snapshot.newVersion} now`}>
+            <button type="button" className="btn btn-primary" onClick={props.onApply}>Update Now</button>
+          </Tooltip>
+          <Tooltip label="Hide this update until the next check">
+            <button type="button" className="btn btn-ghost" onClick={props.onDefer}>Later</button>
+          </Tooltip>
         </div>
       </section>
     );
@@ -69,8 +78,12 @@ export function UpdateBanner(props: UpdateBannerProps): React.JSX.Element | null
           <p>{snapshot.lastOutcome.message}</p>
         </div>
         <div className="app-banner-actions">
-          <button type="button" className="btn btn-primary" onClick={props.onCheck}>Retry</button>
-          <button type="button" className="btn btn-ghost" onClick={props.onDismiss}>Dismiss</button>
+          <Tooltip label="Check for the update again">
+            <button type="button" className="btn btn-primary" onClick={props.onCheck}>Retry</button>
+          </Tooltip>
+          <Tooltip label="Hide this update failure">
+            <button type="button" className="btn btn-ghost" onClick={props.onDismiss}>Dismiss</button>
+          </Tooltip>
         </div>
       </section>
     );
@@ -82,7 +95,9 @@ export function UpdateBanner(props: UpdateBannerProps): React.JSX.Element | null
       <section className="app-banner app-banner-success" role="status">
         <strong>Mission Control updated successfully to {snapshot.lastOutcome.targetVersion}.</strong>
         <div className="app-banner-actions">
-          <button type="button" className="btn btn-ghost" onClick={props.onDismiss}>Dismiss</button>
+          <Tooltip label="Hide this update confirmation">
+            <button type="button" className="btn btn-ghost" onClick={props.onDismiss}>Dismiss</button>
+          </Tooltip>
         </div>
       </section>
     );

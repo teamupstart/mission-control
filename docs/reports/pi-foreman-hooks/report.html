@@ -1,0 +1,616 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Investigation of Pi compatibility with Mission Control after-work workflows and Foreman Complete detection">
+  <title>Pi and the missing Foreman boundary | Mission Control investigation</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --page: #eef0e9;
+      --paper: #fffdf6;
+      --ink: #17231d;
+      --muted: #5c6961;
+      --line: #c9cec4;
+      --forest: #173f34;
+      --forest-2: #245e4d;
+      --mint: #b9dcc6;
+      --lime: #dceea2;
+      --amber: #c8792b;
+      --amber-pale: #fae7c9;
+      --red: #a1443e;
+      --red-pale: #f6dfd8;
+      --blue: #315f78;
+      --code: #10251e;
+      --shadow: 0 20px 55px rgba(23, 35, 29, .14);
+      --display: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+      --body: "Avenir Next", Avenir, "Segoe UI", sans-serif;
+      --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --page: #101814;
+        --paper: #17221d;
+        --ink: #eef4ec;
+        --muted: #afbbb3;
+        --line: #405148;
+        --forest: #102a22;
+        --forest-2: #63aa8f;
+        --mint: #315d4b;
+        --lime: #b8cf72;
+        --amber: #e0a05a;
+        --amber-pale: #4b3723;
+        --red: #e88d83;
+        --red-pale: #4b2b28;
+        --blue: #82b5cf;
+        --code: #0c1712;
+        --shadow: 0 20px 55px rgba(0, 0, 0, .34);
+      }
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        linear-gradient(rgba(36, 94, 77, .055) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(36, 94, 77, .055) 1px, transparent 1px),
+        var(--page);
+      background-size: 28px 28px;
+      font-family: var(--body);
+      font-size: 16px;
+      line-height: 1.62;
+    }
+
+    a { color: var(--forest-2); text-underline-offset: .2em; }
+    a:hover { color: var(--amber); }
+    a:focus-visible { outline: 3px solid var(--amber); outline-offset: 4px; }
+    code, pre, .eyebrow, .tag, th, .rail-title { font-family: var(--mono); }
+    code { font-size: .92em; }
+
+    .shell {
+      width: min(1440px, calc(100% - 32px));
+      margin: 24px auto 72px;
+      display: grid;
+      grid-template-columns: 238px minmax(0, 1fr);
+      gap: 28px;
+      align-items: start;
+    }
+
+    .rail {
+      position: sticky;
+      top: 24px;
+      max-height: calc(100vh - 48px);
+      overflow: auto;
+      padding: 22px 18px;
+      color: #edf7f1;
+      background: #132f27;
+      border-top: 5px solid #b8d578;
+      box-shadow: var(--shadow);
+    }
+    .rail-title {
+      margin: 0 0 17px;
+      color: #c8e092;
+      font-size: .7rem;
+      font-weight: 700;
+      letter-spacing: .16em;
+      text-transform: uppercase;
+    }
+    .rail nav { display: grid; gap: 3px; }
+    .rail a {
+      padding: 6px 9px;
+      color: #dceae2;
+      border-left: 2px solid transparent;
+      text-decoration: none;
+      font-size: .84rem;
+      line-height: 1.25;
+    }
+    .rail a:hover { color: white; border-left-color: #e0a05a; }
+    .rail .stamp {
+      margin: 20px 8px 0;
+      padding-top: 16px;
+      color: #a9bcb1;
+      border-top: 1px solid rgba(255, 255, 255, .17);
+      font: .72rem/1.55 var(--mono);
+    }
+
+    main {
+      min-width: 0;
+      overflow: hidden;
+      background: var(--paper);
+      border-top: 5px solid var(--forest-2);
+      box-shadow: var(--shadow);
+    }
+    .hero {
+      position: relative;
+      overflow: hidden;
+      padding: clamp(44px, 7vw, 90px) clamp(26px, 7vw, 88px) 64px;
+      color: #f2f8f4;
+      background: #173f34;
+    }
+    .hero::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      opacity: .12;
+      background: repeating-linear-gradient(135deg, transparent 0 49px, white 50px 51px);
+    }
+    .hero::after {
+      content: "";
+      position: absolute;
+      right: -170px;
+      bottom: -250px;
+      width: 570px;
+      height: 570px;
+      border: 84px solid rgba(220, 238, 162, .16);
+      border-radius: 50%;
+    }
+    .hero > * { position: relative; z-index: 1; }
+    .eyebrow {
+      margin: 0 0 20px;
+      color: #cce59a;
+      font-size: .74rem;
+      font-weight: 700;
+      letter-spacing: .18em;
+      text-transform: uppercase;
+    }
+    h1, h2, h3 { font-family: var(--display); font-weight: 600; }
+    h1 {
+      max-width: 900px;
+      margin: 0;
+      font-size: clamp(3rem, 8vw, 6.8rem);
+      line-height: .92;
+      letter-spacing: -.055em;
+    }
+    h1 span { display: block; color: #dceea2; }
+    .lede {
+      max-width: 760px;
+      margin: 30px 0 0;
+      color: #d8e7df;
+      font-size: clamp(1.06rem, 2vw, 1.3rem);
+    }
+    .verdict {
+      width: min(800px, 100%);
+      margin-top: 36px;
+      padding: 18px 21px;
+      color: #14251e;
+      background: #dceea2;
+      border-left: 6px solid #e0a05a;
+      box-shadow: 0 14px 32px rgba(0, 0, 0, .22);
+    }
+    .verdict strong { display: block; margin-bottom: 4px; font: 700 .78rem var(--mono); text-transform: uppercase; letter-spacing: .11em; }
+    .verdict p { margin: 0; font-weight: 600; }
+
+    .facts {
+      position: relative;
+      z-index: 2;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      margin: -25px clamp(18px, 5vw, 58px) 0;
+      background: var(--paper);
+      border: 1px solid var(--line);
+      box-shadow: 0 12px 28px rgba(23, 35, 29, .11);
+    }
+    .fact { padding: 22px 23px; border-right: 1px solid var(--line); }
+    .fact:last-child { border: 0; }
+    .fact strong { display: block; color: var(--forest-2); font: 700 1.28rem var(--mono); }
+    .fact span { color: var(--muted); font-size: .83rem; }
+
+    .content { padding: 50px clamp(22px, 6vw, 76px) 82px; }
+    section { margin-top: 78px; scroll-margin-top: 28px; }
+    section:first-child { margin-top: 12px; }
+    h2 {
+      margin: 0 0 17px;
+      color: var(--forest-2);
+      font-size: clamp(2rem, 4vw, 3.35rem);
+      line-height: 1.02;
+      letter-spacing: -.035em;
+    }
+    h3 { margin: 0 0 8px; font-size: 1.34rem; line-height: 1.22; }
+    p, li { max-width: 80ch; }
+    .section-note { color: var(--muted); font-size: 1.04rem; }
+    .tag {
+      display: inline-block;
+      margin-bottom: 8px;
+      color: var(--forest-2);
+      font-size: .72rem;
+      font-weight: 700;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+    }
+
+    .answer-grid, .card-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+      margin-top: 25px;
+    }
+    .answer, .card {
+      padding: 22px;
+      background: color-mix(in srgb, var(--mint) 24%, var(--paper));
+      border-top: 4px solid var(--forest-2);
+    }
+    .answer.no { background: var(--red-pale); border-color: var(--red); }
+    .answer p, .card p { margin: 0; }
+
+    .callout {
+      margin: 27px 0;
+      padding: 19px 22px;
+      background: var(--amber-pale);
+      border-left: 5px solid var(--amber);
+    }
+    .callout p { margin: 5px 0 0; }
+    .callout.danger { background: var(--red-pale); border-color: var(--red); }
+
+    .flow {
+      margin: 30px 0;
+      padding: 18px;
+      overflow-x: auto;
+      background: color-mix(in srgb, var(--mint) 17%, var(--paper));
+      border: 1px solid var(--line);
+    }
+    .flow svg { display: block; width: 100%; min-width: 820px; height: auto; }
+    .flow text { font-family: var(--mono); }
+    .flow-caption { margin: 12px 2px 0; color: var(--muted); font-size: .85rem; }
+
+    table {
+      width: 100%;
+      margin: 28px 0;
+      border-collapse: collapse;
+      font-size: .92rem;
+    }
+    th, td { padding: 13px 14px; vertical-align: top; border: 1px solid var(--line); text-align: left; }
+    th { color: #f4faf6; background: #173f34; font-size: .74rem; letter-spacing: .08em; text-transform: uppercase; }
+    td:first-child { font-weight: 650; }
+    .yes { color: var(--forest-2); font-weight: 750; }
+    .nope { color: var(--red); font-weight: 750; }
+
+    .steps { counter-reset: step; display: grid; gap: 13px; margin: 26px 0 0; padding: 0; list-style: none; }
+    .steps li {
+      position: relative;
+      min-height: 76px;
+      padding: 15px 18px 15px 78px;
+      background: color-mix(in srgb, var(--mint) 18%, var(--paper));
+      border: 1px solid var(--line);
+    }
+    .steps li::before {
+      counter-increment: step;
+      content: counter(step, decimal-leading-zero);
+      position: absolute;
+      left: 18px;
+      top: 15px;
+      color: var(--amber);
+      font: 700 1.25rem var(--mono);
+    }
+    .steps strong { display: block; margin-bottom: 2px; }
+
+    pre {
+      overflow: auto;
+      padding: 18px 20px;
+      color: #e8f3ec;
+      background: var(--code);
+      border-left: 5px solid var(--lime);
+      font-size: .84rem;
+      line-height: 1.55;
+    }
+    .evidence-list li { margin: 8px 0; }
+    footer {
+      margin-top: 80px;
+      padding-top: 24px;
+      color: var(--muted);
+      border-top: 1px solid var(--line);
+      font-size: .82rem;
+    }
+
+    @media (max-width: 900px) {
+      .shell { display: block; width: min(100% - 20px, 900px); margin-top: 10px; }
+      .rail { position: static; max-height: none; margin-bottom: 14px; }
+      .rail nav { grid-template-columns: repeat(2, 1fr); }
+      .facts, .answer-grid, .card-grid { grid-template-columns: 1fr; }
+      .fact { border-right: 0; border-bottom: 1px solid var(--line); }
+    }
+
+    @media print {
+      body { background: white; color: black; }
+      .shell { display: block; width: 100%; margin: 0; }
+      .rail { display: none; }
+      main { box-shadow: none; }
+      .hero { break-after: avoid; }
+      section, .card, .answer, table { break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <aside class="rail" aria-label="Report navigation">
+      <p class="rail-title">Investigation map</p>
+      <nav>
+        <a href="#answer">Short answer</a>
+        <a href="#failure">Why it fails</a>
+        <a href="#pi-now">What Pi provides</a>
+        <a href="#plugin">Would a plugin fix it?</a>
+        <a href="#adapter">Smallest solution</a>
+        <a href="#recommendation">Recommendation</a>
+        <a href="#limits">Limits</a>
+        <a href="#evidence">Evidence</a>
+      </nav>
+      <p class="stamp">Mission Control<br>Pi 0.84.2<br>20 Aug 2026</p>
+    </aside>
+
+    <main>
+      <header class="hero">
+        <p class="eyebrow">Compatibility investigation / after-work workflows</p>
+        <h1>Pi has the event.<span>Mission Control lacks the adapter.</span></h1>
+        <p class="lede">The error is not saying Pi cannot finish work. It says Mission Control cannot currently attribute Pi's start and settled boundaries strongly enough to let Foreman advance a verified queue and trigger an after-work workflow.</p>
+        <div class="verdict">
+          <strong>Bottom line</strong>
+          <p>A purpose-built Pi extension plus a thin Mission Control hook declaration is the best first move. Installing an unrelated plugin is not enough, but a full Pi RPC driver is probably unnecessary for this feature.</p>
+        </div>
+      </header>
+
+      <div class="facts" aria-label="Key findings">
+        <div class="fact"><strong>0.84.2</strong><span>Pi version inspected locally</span></div>
+        <div class="fact"><strong>agent_settled</strong><span>Current Pi lifecycle event with the right intent</span></div>
+        <div class="fact"><strong>0 packages</strong><span>Installed according to <code>pi list</code></span></div>
+      </div>
+
+      <div class="content">
+        <section id="answer">
+          <span class="tag">Answer first</span>
+          <h2>Your instinct is mostly right</h2>
+          <p class="section-note">Pi should be made compatible at the edge. Mission Control does not need a new workflow engine or a Pi-specific queue.</p>
+          <div class="answer-grid">
+            <article class="answer">
+              <h3>Yes: use a Pi extension</h3>
+              <p>Pi extensions can observe session and agent lifecycle events, read Pi's session identity, and make network requests. That is enough to bridge Pi into Mission Control's existing authenticated hook endpoint.</p>
+            </article>
+            <article class="answer no">
+              <h3>No: installation alone is not sufficient today</h3>
+              <p>Mission Control explicitly declares Pi hooks and work queues as unsupported. Even a correctly posting extension would be ignored until a small Pi hook specification and capability declaration are added.</p>
+            </article>
+          </div>
+          <div class="callout">
+            <strong>Practical interpretation</strong>
+            <p>This looks like a narrow compatibility package with a narrow MC adapter, not a major MC-side redesign. The adapter is still real work, but the common transport, authentication, session overlay, work-cycle normalization, Foreman logic, and Workflow trigger already exist.</p>
+          </div>
+        </section>
+
+        <section id="failure">
+          <span class="tag">Declared limitation</span>
+          <h2>Why it fails now</h2>
+          <p>The visible message comes from a deliberate preflight check. Before dispatching a task with an after-work Workflow, Mission Control requires both a hook definition and a Foreman work-queue definition for the selected harness. Pi currently has neither, so dispatch stops before the work begins. See <a href="../../../src/server/workflows/manager.ts">workflow manager, lines 695-712</a>.</p>
+
+          <div class="flow" role="img" aria-label="Current Pi event flow stops before Foreman because Mission Control has no Pi hook specification or work queue capability">
+            <svg viewBox="0 0 1080 300" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <defs>
+                <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+                  <path d="M0,0 L0,6 L9,3 z" fill="#547266"/>
+                </marker>
+              </defs>
+              <text x="30" y="34" fill="currentColor" font-size="15" font-weight="700">CURRENT PATH</text>
+              <rect x="30" y="58" width="188" height="80" rx="4" fill="#173f34"/>
+              <text x="124" y="89" fill="#f4faf6" font-size="16" text-anchor="middle">Pi finishes a turn</text>
+              <text x="124" y="113" fill="#cce59a" font-size="12" text-anchor="middle">transcript is written</text>
+              <line x1="218" y1="98" x2="310" y2="98" stroke="#547266" stroke-width="3" marker-end="url(#arrow)"/>
+              <rect x="312" y="58" width="210" height="80" rx="4" fill="#a1443e"/>
+              <text x="417" y="88" fill="#fff" font-size="16" text-anchor="middle">No pushed hook</text>
+              <text x="417" y="113" fill="#ffe9e6" font-size="12" text-anchor="middle">HARNESSES.pi.hooks = null</text>
+              <line x1="522" y1="98" x2="615" y2="98" stroke="#a1443e" stroke-width="3" stroke-dasharray="8 6"/>
+              <text x="569" y="84" fill="#a1443e" font-size="24" text-anchor="middle">×</text>
+              <rect x="617" y="58" width="190" height="80" rx="4" fill="#dde3db" stroke="#98a39c"/>
+              <text x="712" y="88" fill="#46554c" font-size="16" text-anchor="middle">Foreman Complete</text>
+              <text x="712" y="113" fill="#5c6961" font-size="12" text-anchor="middle">cannot be verified</text>
+              <line x1="807" y1="98" x2="900" y2="98" stroke="#98a39c" stroke-width="3" stroke-dasharray="8 6"/>
+              <rect x="902" y="58" width="148" height="80" rx="4" fill="#dde3db" stroke="#98a39c"/>
+              <text x="976" y="88" fill="#46554c" font-size="16" text-anchor="middle">Workflow</text>
+              <text x="976" y="113" fill="#5c6961" font-size="12" text-anchor="middle">not armed</text>
+
+              <rect x="30" y="188" width="1020" height="76" rx="4" fill="#fae7c9" stroke="#c8792b"/>
+              <text x="55" y="218" fill="#6e4218" font-size="14" font-weight="700">DECLARED REASON</text>
+              <text x="55" y="243" fill="#50351d" font-size="14">A transcript can show that output exists, but it does not authoritatively identify when this queued item was picked up and when its automatic continuations fully stopped.</text>
+            </svg>
+            <p class="flow-caption">The block is intentional. Foreman will not infer queue progress from silence or from transcript content alone.</p>
+          </div>
+
+          <p>The capability registry states the reason directly: Pi pushes no hooks, so Foreman has no signal for pickup or finish and cannot verify a queue. It adds that Pi's rich transcript may prove work happened, but not the authorship of the pickup. See <a href="../../../src/shared/harness-capabilities.ts">harness capabilities, lines 667-672</a>.</p>
+          <p>The queue state machine enforces the same rule. A session that has never reported a hook cannot supply either boundary, so the queue cannot advance. See <a href="../../../src/server/foreman/queue-machine.ts">Foreman queue machine, lines 343-358</a>. Task-level after-work bindings are always pinned to the <code>foreman_complete</code> trigger, so there is no weaker fallback hidden behind the UI. See <a href="../../../src/server/workflows/manager.ts">workflow manager, lines 760-785</a>.</p>
+        </section>
+
+        <section id="pi-now">
+          <span class="tag">New evidence</span>
+          <h2>Pi now exposes the boundary MC was missing</h2>
+          <p>Mission Control's existing comments were measured against earlier Pi versions and correctly record that Pi uses in-process TypeScript extensions rather than Claude-style shell hooks. The locally installed Pi is now version <code>0.84.2</code>, and its current extension API includes a higher-level <code>agent_settled</code> event.</p>
+          <div class="card-grid">
+            <article class="card">
+              <h3><code>before_agent_start</code></h3>
+              <p>Occurs before an agent run and includes the prompt. This is a strong candidate for “work picked up.”</p>
+            </article>
+            <article class="card">
+              <h3><code>agent_settled</code></h3>
+              <p>Occurs after the run has fully settled, with no automatic retry, compaction, or queued continuation left. This is the best candidate for “work completed.”</p>
+            </article>
+            <article class="card">
+              <h3>Session identity</h3>
+              <p>The extension context exposes <code>getSessionId()</code>, <code>getSessionFile()</code>, and the working directory, which are enough to associate events with the launched MC session.</p>
+            </article>
+            <article class="card">
+              <h3>Network bridge</h3>
+              <p>An extension runs in process and can use <code>fetch</code>. It can post lifecycle events to the loopback daemon with MC's existing hook token.</p>
+            </article>
+          </div>
+          <p>These capabilities are documented in Pi's current <a href="https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/extensions.md">extension documentation</a> and <a href="https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/extensions/types.ts">extension event types</a>. The same settled event is exposed by Pi's <a href="https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/rpc.md">RPC mode</a>, but an extension can receive it without making Mission Control own a full RPC process.</p>
+          <div class="callout">
+            <strong>Why <code>agent_settled</code>, not only <code>agent_end</code>?</strong>
+            <p>An agent run may still be followed by retry, compaction, or queued continuation. Pi declares <code>agent_settled</code> only after those automatic paths are exhausted, which matches the semantic boundary Foreman needs much more closely.</p>
+          </div>
+        </section>
+
+        <section id="plugin">
+          <span class="tag">Plugin question</span>
+          <h2>Would installing plugins fix it?</h2>
+          <table>
+            <thead>
+              <tr><th>Option</th><th>Works now?</th><th>Reason</th></tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Generic Pi notification or lifecycle plugin</td>
+                <td class="nope">No</td>
+                <td>It does not know MC's token, payload, session binding, or normalized work-cycle contract.</td>
+              </tr>
+              <tr>
+                <td>Purpose-built MC extension, installed with no MC change</td>
+                <td class="nope">No</td>
+                <td>MC currently returns early for Pi events because its Pi hook specification is null, and workflow dispatch refuses Pi because its work queue is null.</td>
+              </tr>
+              <tr>
+                <td>Purpose-built MC extension plus thin MC adapter</td>
+                <td class="yes">Likely yes</td>
+                <td>The extension supplies the events; the adapter tells existing MC machinery how to interpret them.</td>
+              </tr>
+              <tr>
+                <td>Full Pi RPC driver</td>
+                <td class="yes">Yes, but larger</td>
+                <td>It could own lifecycle and identity end to end, but it adds a new runtime path that is not justified until the extension approach is disproved.</td>
+              </tr>
+            </tbody>
+          </table>
+          <p>Pi does support installable packages from npm, Git, or local paths through <code>pi install &lt;source&gt;</code>; the package system is described in Pi's <a href="https://github.com/earendil-works/pi/issues/645">official package-management design</a>. However, <code>pi list</code> on this machine reports no installed packages, and this investigation did not find an existing Mission Control bridge package.</p>
+          <div class="callout danger">
+            <strong>Important distinction</strong>
+            <p>The missing “hooks” are not dormant APIs that appear when any plugin is installed. They are a protocol agreement between a Pi extension and Mission Control. Both ends must agree on event names, identity, authentication, and work-cycle meaning.</p>
+          </div>
+        </section>
+
+        <section id="adapter">
+          <span class="tag">Proposed seam</span>
+          <h2>The smallest compatible design</h2>
+          <div class="flow" role="img" aria-label="Proposed Pi compatibility flow from Pi lifecycle events through a small extension and existing Mission Control hook infrastructure to Foreman Complete and the after-work workflow">
+            <svg viewBox="0 0 1080 330" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <defs>
+                <marker id="arrow2" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+                  <path d="M0,0 L0,6 L9,3 z" fill="#547266"/>
+                </marker>
+              </defs>
+              <text x="30" y="34" fill="currentColor" font-size="15" font-weight="700">PROPOSED THIN BRIDGE</text>
+              <rect x="28" y="58" width="170" height="95" rx="4" fill="#173f34"/>
+              <text x="113" y="87" fill="#f4faf6" font-size="15" text-anchor="middle">Pi lifecycle</text>
+              <text x="113" y="111" fill="#cce59a" font-size="11" text-anchor="middle">before_agent_start</text>
+              <text x="113" y="130" fill="#cce59a" font-size="11" text-anchor="middle">agent_settled</text>
+              <line x1="198" y1="105" x2="252" y2="105" stroke="#547266" stroke-width="3" marker-end="url(#arrow2)"/>
+
+              <rect x="254" y="58" width="184" height="95" rx="4" fill="#315f78"/>
+              <text x="346" y="87" fill="#fff" font-size="15" text-anchor="middle">Pi MC extension</text>
+              <text x="346" y="111" fill="#ddecf4" font-size="11" text-anchor="middle">identity + token</text>
+              <text x="346" y="130" fill="#ddecf4" font-size="11" text-anchor="middle">small authenticated POST</text>
+              <line x1="438" y1="105" x2="492" y2="105" stroke="#547266" stroke-width="3" marker-end="url(#arrow2)"/>
+
+              <rect x="494" y="58" width="184" height="95" rx="4" fill="#c8792b"/>
+              <text x="586" y="87" fill="#fff" font-size="15" text-anchor="middle">Existing hook route</text>
+              <text x="586" y="111" fill="#fff3e7" font-size="11" text-anchor="middle">POST /hooks/:event</text>
+              <text x="586" y="130" fill="#fff3e7" font-size="11" text-anchor="middle">x-harness-token</text>
+              <line x1="678" y1="105" x2="732" y2="105" stroke="#547266" stroke-width="3" marker-end="url(#arrow2)"/>
+
+              <rect x="734" y="58" width="148" height="95" rx="4" fill="#245e4d"/>
+              <text x="808" y="87" fill="#fff" font-size="15" text-anchor="middle">Pi HookSpec</text>
+              <text x="808" y="111" fill="#ddf1e8" font-size="11" text-anchor="middle">tiny MC addition</text>
+              <text x="808" y="130" fill="#ddf1e8" font-size="11" text-anchor="middle">normalize signals</text>
+              <line x1="882" y1="105" x2="936" y2="105" stroke="#547266" stroke-width="3" marker-end="url(#arrow2)"/>
+
+              <rect x="938" y="58" width="114" height="95" rx="4" fill="#173f34"/>
+              <text x="995" y="87" fill="#fff" font-size="14" text-anchor="middle">Registry</text>
+              <text x="995" y="111" fill="#cce59a" font-size="11" text-anchor="middle">work cycle</text>
+              <text x="995" y="130" fill="#cce59a" font-size="11" text-anchor="middle">hooksSeen</text>
+
+              <line x1="995" y1="153" x2="995" y2="209" stroke="#547266" stroke-width="3" marker-end="url(#arrow2)"/>
+              <rect x="742" y="211" width="310" height="78" rx="4" fill="#dceea2" stroke="#75923c"/>
+              <text x="897" y="242" fill="#243415" font-size="15" text-anchor="middle">Foreman Complete</text>
+              <text x="897" y="266" fill="#3c5223" font-size="11" text-anchor="middle">existing after-work Workflow fires</text>
+
+              <rect x="28" y="211" width="626" height="78" rx="4" fill="#edf3ee" stroke="#9eaaa2"/>
+              <text x="50" y="241" fill="#33443a" font-size="13" font-weight="700">UNCHANGED MC CORE</text>
+              <text x="50" y="265" fill="#53635a" font-size="12">Hook schema, loopback authentication, registry overlay, queue machine, Foreman, and Workflow execution remain shared.</text>
+            </svg>
+            <p class="flow-caption">Pi-specific code lives at the two edges: an extension inside Pi and a small event mapping inside the harness registry.</p>
+          </div>
+
+          <h3>Pi-side extension responsibilities</h3>
+          <ul>
+            <li>On <code>session_start</code>, report <code>agent: "pi"</code>, Pi's session ID, session file, working directory, and terminal identity.</li>
+            <li>Map <code>before_agent_start</code> or <code>agent_start</code> to work started. The former also carries the prompt.</li>
+            <li>Map <code>agent_settled</code> to work completed.</li>
+            <li>Report <code>session_shutdown</code> so MC can close or rotate identity cleanly.</li>
+            <li>Read the existing local hook token and post to the existing loopback route with a short timeout and fail-safe behavior.</li>
+          </ul>
+
+          <h3>Mission Control responsibilities</h3>
+          <ul>
+            <li>Add a Pi <code>HookSpec</code> that maps those lifecycle names to the existing session states and normalized work-cycle signals.</li>
+            <li>Declare Pi's <code>workQueue</code> capability once the bridge is available.</li>
+            <li>Provide a stable installation or launch path, preferably a globally installed package or an explicit <code>--extension</code> path controlled by MC.</li>
+            <li>Fail closed when an after-work Workflow is requested but the extension has not reported its first hook.</li>
+          </ul>
+
+          <p>The receiving route already accepts a vendor-neutral hook payload and authenticates <code>POST /hooks/:event</code> with <code>x-harness-token</code>. See <a href="../../../src/shared/protocol.ts">shared hook protocol, lines 158-213</a> and <a href="../../../src/server/routes.ts">server route, lines 2595-2606</a>. The registry already converts a harness-specific hook spec into shared session state and work-cycle signals. See <a href="../../../src/server/registry.ts">registry hook application, lines 2180-2279</a>.</p>
+          <pre><code>Pi event                 Normalized meaning
+session_start            bind exact Pi session identity
+before_agent_start       work_started
+agent_settled            work_completed
+session_shutdown         session_exited</code></pre>
+        </section>
+
+        <section id="recommendation">
+          <span class="tag">Recommended next move</span>
+          <h2>Prove the thin bridge before considering RPC</h2>
+          <ol class="steps">
+            <li><strong>Build a local proof extension.</strong> Load it with <code>pi -e</code> first. Have it report only session start, run start, settled, and shutdown.</li>
+            <li><strong>Add the minimum Pi hook mapping in MC.</strong> Reuse the generic hook route, token, registry, and normalized work-cycle machinery. Do not add a second Pi-only queue or completion path.</li>
+            <li><strong>Test identity and absence behavior.</strong> Verify the launched <code>--session-id</code> is the ID Pi reports, and verify an uninstalled extension blocks an after-work dispatch instead of silently running without review.</li>
+            <li><strong>Run one real end-to-end Workflow.</strong> Exercise pickup, one ordinary tool-using turn, settlement, Foreman Complete, and after-work execution.</li>
+            <li><strong>Escalate only on evidence.</strong> If <code>agent_settled</code> is not stable enough under retries, compaction, or queued follow-ups, then revisit the larger RPC driver plan.</li>
+          </ol>
+          <div class="callout">
+            <strong>Preferred packaging</strong>
+            <p>A global Pi package is the best fit for operator-started and MC-started sessions. A project-local package makes coverage depend on repository trust and configuration. An MC-supplied <code>--extension</code> path is also viable if MC should own the exact bridge version.</p>
+          </div>
+        </section>
+
+        <section id="limits">
+          <span class="tag">Confidence and gaps</span>
+          <h2>What this investigation did not prove</h2>
+          <ul>
+            <li>No custom extension was installed or executed, and no after-work Workflow was run end to end.</li>
+            <li>Pi's official 0.84.2 docs and installed type declarations define <code>agent_settled</code> with the desired semantics, but its behavior was not stress-tested against every retry, compaction, extension, and queued-follow-up combination.</li>
+            <li>No existing Mission Control bridge package was found in targeted searches. That is evidence of absence in the places checked, not proof that no private or unpublished implementation exists.</li>
+            <li>The exact install-health handshake still needs design. Merely declaring Pi capable globally would make dispatch optimistic unless MC also verifies that the extension is active for this session.</li>
+          </ul>
+          <p>These are appropriate spike risks. None requires a major MC change before the extension path can be tested.</p>
+        </section>
+
+        <section id="evidence">
+          <span class="tag">Sources inspected</span>
+          <h2>Evidence trail</h2>
+          <ul class="evidence-list">
+            <li><a href="../../../src/shared/harness-capabilities.ts">MC harness capabilities</a>: Pi <code>workQueue</code> is explicitly null and explains why.</li>
+            <li><a href="../../../src/server/harness/index.ts">MC harness registry</a>: Pi hooks are explicitly null; its transcript and native launch identity are documented separately.</li>
+            <li><a href="../../../src/server/workflows/manager.ts">MC workflow manager</a>: dispatch rejects agents without hooks and a work queue; task Workflows bind to <code>foreman_complete</code>.</li>
+            <li><a href="../../../src/server/foreman/queue-machine.ts">MC Foreman queue machine</a>: no observed hook means no reliable pickup or completion signal.</li>
+            <li><a href="../../../src/shared/protocol.ts">MC hook protocol</a>, <a href="../../../src/server/routes.ts">hook route</a>, and <a href="../../../src/server/registry.ts">registry application</a>: the shared receiving pipeline is already present.</li>
+            <li><a href="../../../todo/pi-harness.md">Original Pi harness probe</a>: describes the earlier extension gap and names a POSTing Pi extension as the follow-on for operator-started sessions.</li>
+            <li>Local executable: <code>/opt/homebrew/bin/pi</code>, version <code>0.84.2</code>; <code>pi list</code> reported “No packages installed.”</li>
+            <li>Installed Pi docs and declarations: <code>/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/docs/extensions.md</code> and <code>dist/core/extensions/types.d.ts</code>.</li>
+            <li>Official Pi sources: <a href="https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/extensions.md">extensions</a>, <a href="https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/extensions/types.ts">event types</a>, <a href="https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/rpc.md">RPC mode</a>, and <a href="https://github.com/earendil-works/pi/issues/645">package management</a>.</li>
+          </ul>
+        </section>
+
+        <footer>
+          <p>Investigation only. No Mission Control or Pi implementation was changed. Generated for the Mission Control checkout on 20 August 2026.</p>
+        </footer>
+      </div>
+    </main>
+  </div>
+</body>
+</html>

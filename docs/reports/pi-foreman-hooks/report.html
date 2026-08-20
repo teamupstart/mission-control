@@ -539,36 +539,44 @@
 
           <h3>Pi-side extension responsibilities</h3>
           <ul>
-            <li>On <code>session_start</code>, report <code>agent: "pi"</code>, Pi's session ID, session file, working directory, and terminal identity.</li>
+            <li>On <code>session_start</code>, perform an awaited registration handshake carrying <code>agent: "pi"</code>, Pi's session ID, session file, working directory, and terminal identity.</li>
             <li>Map <code>before_agent_start</code> or <code>agent_start</code> to work started. The former also carries the prompt.</li>
             <li>Map <code>agent_settled</code> to work completed.</li>
-            <li>Report <code>session_shutdown</code> so MC can close or rotate identity cleanly.</li>
-            <li>Read the existing local hook token and post to the existing loopback route with a short timeout and fail-safe behavior.</li>
+            <li>Report <code>session_shutdown</code> with its reason so MC can distinguish extension reload and session replacement from actual process termination.</li>
+            <li>Read the existing local hook token and post to the existing loopback route with a short timeout. In a Workflow-required launch, keep a local ready flag false until registration succeeds and use Pi's <code>input</code> event to handle the positional task prompt without invoking the model if registration failed.</li>
           </ul>
 
           <h3>Mission Control responsibilities</h3>
           <ul>
             <li>Add a Pi <code>HookSpec</code> that maps those lifecycle names to the existing session states and normalized work-cycle signals.</li>
             <li>Declare Pi's <code>workQueue</code> capability once the bridge is available.</li>
-            <li>Provide a stable installation or launch path, preferably a globally installed package or an explicit <code>--extension</code> path controlled by MC.</li>
-            <li>Fail closed when an after-work Workflow is requested but the extension has not reported its first hook.</li>
+            <li>Provide a stable installation or launch path, preferably an explicit <code>--extension</code> path controlled by MC so availability can be checked before launch. A global package needs an equivalent package-resolution preflight.</li>
+            <li>For an after-work Workflow, fail before launch if that preflight cannot resolve the bridge. After launch, wait for the bounded <code>session_start</code> registration before arming the Workflow. Do not require a hook before launching Pi. If registration fails, the extension's <code>input</code> guard consumes the positional task prompt without model work and MC fails the launch.</li>
           </ul>
 
           <p>The receiving route already accepts a vendor-neutral hook payload and authenticates <code>POST /hooks/:event</code> with <code>x-harness-token</code>. See <a href="../../../src/shared/protocol.ts">shared hook protocol, lines 158-213</a> and <a href="../../../src/server/routes.ts">server route, lines 2595-2606</a>. The registry already converts a harness-specific hook spec into shared session state and work-cycle signals. See <a href="../../../src/server/registry.ts">registry hook application, lines 2180-2279</a>.</p>
-          <pre><code>Pi event                 Normalized meaning
-session_start            bind exact Pi session identity
-before_agent_start       work_started
-agent_settled            work_completed
-session_shutdown         session_exited</code></pre>
+          <pre><code>Pi event and reason                         Normalized meaning
+session_start: startup | reload             extension_ready; bind current Pi identity
+session_start: new | resume | fork          rebind Pi identity; keep terminal session alive
+before_agent_start                          work_started
+agent_settled                               work_completed
+session_shutdown: reload | new | resume     runtime_replacing; await next session_start
+session_shutdown: fork                      runtime_replacing; await fork session_start
+session_shutdown: quit                      exit_intent only; process lifecycle confirms exit</code></pre>
+          <div class="callout">
+            <strong><code>session_shutdown</code> is not a process-exit event</strong>
+            <p>Pi emits it whenever the current extension runtime is torn down, including <code>/reload</code>, <code>/new</code>, <code>/resume</code>, and <code>/fork</code>. The bridge must carry <code>event.reason</code>. Reload and replacement reasons keep the MC terminal session alive and wait for the following <code>session_start</code>; even <code>quit</code> is only exit intent until the existing terminal or process lifecycle confirms termination.</p>
+          </div>
         </section>
 
         <section id="recommendation">
           <span class="tag">Recommended next move</span>
           <h2>Prove the thin bridge before considering RPC</h2>
           <ol class="steps">
-            <li><strong>Build a local proof extension.</strong> Load it with <code>pi -e</code> first. Have it report only session start, run start, settled, and shutdown.</li>
+            <li><strong>Build a local proof extension.</strong> Load it with <code>pi -e</code> first. Have it report session start, run start, settled, and reason-bearing shutdown events.</li>
             <li><strong>Add the minimum Pi hook mapping in MC.</strong> Reuse the generic hook route, token, registry, and normalized work-cycle machinery. Do not add a second Pi-only queue or completion path.</li>
-            <li><strong>Test identity and absence behavior.</strong> Verify the launched <code>--session-id</code> is the ID Pi reports, and verify an uninstalled extension blocks an after-work dispatch instead of silently running without review.</li>
+            <li><strong>Test identity and absence behavior.</strong> Verify the launched <code>--session-id</code> is the ID Pi reports. Verify an absent extension fails the pre-launch check, and a failed startup registration makes the extension consume the positional prompt without invoking the model while MC fails the launch.</li>
+            <li><strong>Test runtime replacement.</strong> Exercise <code>/reload</code>, <code>/new</code>, <code>/resume</code>, and <code>/fork</code>. Each shutdown/start pair must preserve the live MC terminal session while updating only the Pi runtime identity that changed.</li>
             <li><strong>Run one real end-to-end Workflow.</strong> Exercise pickup, one ordinary tool-using turn, settlement, Foreman Complete, and after-work execution.</li>
             <li><strong>Escalate only on evidence.</strong> If <code>agent_settled</code> is not stable enough under retries, compaction, or queued follow-ups, then revisit the larger RPC driver plan.</li>
           </ol>
@@ -585,7 +593,7 @@ session_shutdown         session_exited</code></pre>
             <li>No custom extension was installed or executed, and no after-work Workflow was run end to end.</li>
             <li>Pi's official 0.84.2 docs and installed type declarations define <code>agent_settled</code> with the desired semantics, but its behavior was not stress-tested against every retry, compaction, extension, and queued-follow-up combination.</li>
             <li>No existing Mission Control bridge package was found in targeted searches. That is evidence of absence in the places checked, not proof that no private or unpublished implementation exists.</li>
-            <li>The exact install-health handshake still needs design. Merely declaring Pi capable globally would make dispatch optimistic unless MC also verifies that the extension is active for this session.</li>
+            <li>The wire shape for the two-stage health contract still needs design: resolve the extension before launch, then require its bounded <code>session_start</code> registration before Workflow arming. The extension-side <code>input</code> guard must be proven against Pi's positional launch prompt.</li>
           </ul>
           <p>These are appropriate spike risks. None requires a major MC change before the extension path can be tested.</p>
         </section>

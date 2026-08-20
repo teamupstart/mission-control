@@ -273,7 +273,7 @@ test("the driver emits turn deltas from Claude's cumulative result snapshots", a
 
   const result = (
     uuid: string,
-    totalCost: number,
+    totalCost: number | null,
     input: number,
     output: number,
   ): ClaudeSdkMessage => ({
@@ -311,16 +311,52 @@ test("the driver emits turn deltas from Claude's cumulative result snapshots", a
     3,
   );
 
+  // Cost can be temporarily absent even while Claude keeps reporting cumulative tokens.
+  // The unknown result advances those token baselines but must not erase the last priced
+  // baseline, or the next $20 query total would be recorded as $20 instead of $7.
+  query.emit(result("result-3", null, 1_500, 180));
+  const unpriced = (await collect(handle.events, (event) => event.kind === "turn_done"))
+    .find((event) => event.kind === "turn_done");
+  assert.equal(unpriced?.kind === "turn_done" && unpriced.usage?.costUsd, null);
+  assert.equal(unpriced?.kind === "turn_done" && unpriced.usage?.input, 250);
+  assert.equal(
+    unpriced?.kind === "turn_done" && unpriced.usage?.models?.[0]?.reportedCostUsd,
+    null,
+  );
+
+  query.emit(result("result-4", 20, 1_800, 220));
+  const repriced = (await collect(handle.events, (event) => event.kind === "turn_done"))
+    .find((event) => event.kind === "turn_done");
+  assert.equal(repriced?.kind === "turn_done" && repriced.usage?.costUsd, 7);
+  assert.equal(repriced?.kind === "turn_done" && repriced.usage?.input, 300);
+  assert.equal(
+    repriced?.kind === "turn_done" && repriced.usage?.models?.[0]?.reportedCostUsd,
+    7,
+  );
+
+  // An unknown-cost result with lower tokens is observably a fresh query window. Do not
+  // carry the old $20 across that reset: the next priced result is all new spend.
+  query.emit(result("result-5", null, 10, 5));
+  await collect(handle.events, (event) => event.kind === "turn_done");
+  query.emit(result("result-6", 25, 100, 15));
+  const afterReset = (await collect(handle.events, (event) => event.kind === "turn_done"))
+    .find((event) => event.kind === "turn_done");
+  assert.equal(afterReset?.kind === "turn_done" && afterReset.usage?.costUsd, 25);
+  assert.equal(
+    afterReset?.kind === "turn_done" && afterReset.usage?.models?.[0]?.reportedCostUsd,
+    25,
+  );
+
   // A new Claude identity is a new accounting window. Its first counters may happen to be
   // larger than the old window's last ones, so value comparison alone cannot detect it.
   query.emit({
-    ...result("result-3", 20, 2_000, 300),
+    ...result("result-7", 30, 3_000, 400),
     session_id: "agent-new-accounting-window",
   } as ClaudeSdkMessage);
   const rebound = (await collect(handle.events, (event) => event.kind === "turn_done"))
     .find((event) => event.kind === "turn_done");
-  assert.equal(rebound?.kind === "turn_done" && rebound.usage?.costUsd, 20);
-  assert.equal(rebound?.kind === "turn_done" && rebound.usage?.input, 2_000);
+  assert.equal(rebound?.kind === "turn_done" && rebound.usage?.costUsd, 30);
+  assert.equal(rebound?.kind === "turn_done" && rebound.usage?.input, 3_000);
 
   query.end();
 });

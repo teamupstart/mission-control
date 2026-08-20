@@ -869,8 +869,12 @@ class ClaudeSdkSession implements SdkSessionHandle {
       const usage = cumulative ? claudeUsageDelta(cumulative, this.cumulativeUsage) : null;
       // Advance only from a snapshot the ledger can actually accept. Otherwise a result
       // missing its UUID would be subtracted from the next identifiable one and disappear
-      // from durable spend entirely.
-      if (cumulative?.turnId && cumulative.models?.length) this.cumulativeUsage = cumulative;
+      // from durable spend entirely. Keep last-known costs when this accepted snapshot has
+      // only token counters: the next priced cumulative result must still subtract the last
+      // priced total instead of treating the temporary unknown as zero.
+      if (cumulative?.turnId && cumulative.models?.length) {
+        this.cumulativeUsage = claudeUsageBaseline(cumulative, this.cumulativeUsage);
+      }
       this.out.emit({ kind: "turn_done", usage });
       this.refreshRateLimits();
       return;
@@ -965,6 +969,53 @@ function cumulativeUsageReset(current: SdkUsage, previous: SdkUsage): boolean {
     (current.reasoningOutput ?? 0) < (previous.reasoningOutput ?? 0) ||
     (current.costUsd !== null && previous.costUsd !== null && current.costUsd < previous.costUsd)
   );
+}
+
+/** Whether one model's counters prove its cumulative accounting window restarted. */
+function cumulativeModelUsageReset(
+  current: LlmSpendModelUsage,
+  previous: LlmSpendModelUsage,
+): boolean {
+  return (
+    current.input < previous.input ||
+    current.output < previous.output ||
+    current.reasoningOutput < previous.reasoningOutput ||
+    current.cacheRead < previous.cacheRead ||
+    current.cacheWrite < previous.cacheWrite ||
+    (
+      current.reportedCostUsd !== null &&
+      previous.reportedCostUsd !== null &&
+      current.reportedCostUsd < previous.reportedCostUsd
+    )
+  );
+}
+
+/**
+ * Advance cumulative counters without forgetting the last price the provider knew.
+ *
+ * Claude may omit cost from one otherwise valid result and resume reporting it later. That
+ * unknown turn must keep its null delta, but storing null as the next baseline would make the
+ * later query-to-date price subtract from zero. Token counters still advance normally while
+ * scalar and per-model costs carry forward. An observable reset clears those remembered costs
+ * so a new accounting window still contributes its whole first priced result.
+ */
+function claudeUsageBaseline(current: SdkUsage, previous: SdkUsage | null): SdkUsage {
+  if (!previous || cumulativeUsageReset(current, previous)) return current;
+  const previousModels = new Map(previous.models?.map((model) => [model.modelId, model]) ?? []);
+  const models = current.models?.map((model) => {
+    const prior = previousModels.get(model.modelId);
+    const reset = prior ? cumulativeModelUsageReset(model, prior) : false;
+    return {
+      ...model,
+      reportedCostUsd:
+        model.reportedCostUsd ?? (reset ? null : prior?.reportedCostUsd ?? null),
+    };
+  });
+  return {
+    ...current,
+    costUsd: current.costUsd ?? previous.costUsd,
+    ...(models ? { models } : {}),
+  };
 }
 
 /**

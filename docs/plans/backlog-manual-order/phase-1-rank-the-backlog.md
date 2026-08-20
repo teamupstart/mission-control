@@ -320,6 +320,12 @@ Same change, not a follow-up:
   `rankBetween` midpoint, and `null` for adjacent integers; `renormalize` preserving order;
   `byBacklogRank` with nulls, ties, and the full tie-break chain; and **no `NaN`** from two
   unranked rows.
+- `test/backlog-rank.test.ts` - **`byBacklogRank` is a strict total order**, asserted as a
+  property rather than by example, over a fixture covering `null`, negative, zero and very large
+  ranks with duplicate `createdAt`: antisymmetric, transitive, never `NaN`, and never 0 for two
+  distinct rows. Assert explicitly that **a ranked row sorts before an unranked one whatever
+  their `createdAt`** - the mixed case is the one an intuitive single-subtraction comparator gets
+  backwards, and a by-example test that happens to use a younger unranked row would pass anyway.
 - `test/backlog-rank.test.ts` - **the unranked-row regression, stated as the rule it protects.**
   Insert a backlog row with `backlog_rank IS NULL` (as an older build would), then file a new
   task: the new task must sort **below** it, not above. Also: `healUnrankedBacklog` places

@@ -123,8 +123,10 @@ route.
 
 ```ts
 export function byBacklogRank(a: Task, b: Task): number {
-  const rank = (a.backlogRank ?? Infinity) - (b.backlogRank ?? Infinity);
-  if (rank !== 0 && Number.isFinite(rank)) return rank;
+  const ar = a.backlogRank ?? Infinity;
+  const br = b.backlogRank ?? Infinity;
+  if (ar !== br && Number.isFinite(ar - br)) return ar - br;
+  if (ar !== br) return ar === Infinity ? 1 : -1;
   return a.createdAt - b.createdAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 }
 ```
@@ -137,6 +139,15 @@ surface together and none of them can drift.
 The tie-break chain is total on purpose. Two rows can share a rank (a backfill collision, a
 restored backup, a null), and a comparator that returned 0 there would let the same two cards
 swap places between renders for no reason a human could see.
+
+**The two-step comparison is the load-bearing part, and the obvious one-liner is wrong.**
+Writing it as a single `(a.backlogRank ?? Infinity) - (b.backlogRank ?? Infinity)` and guarding
+the result with `Number.isFinite` looks equivalent and is not: a finite rank minus `Infinity` is
+`-Infinity`, the guard rejects it, and the comparison falls through to `createdAt` - so an old
+unranked row sorts *ahead* of every ranked one, which is the exact opposite of the rule. Hence
+the explicit `ar !== br` branch that returns `1`/`-1` for the mixed case, and only then the
+`createdAt` fallback for two rows that genuinely tie. `Infinity - Infinity` is `NaN`, and a
+`NaN`-returning comparator sorts unpredictably, which the same structure avoids.
 
 `byPriorityThenAge` survives in exactly one role - **the migration backfill**, which orders
 the backlog once on the day the column is added. Nothing calls it after that. It keeps its

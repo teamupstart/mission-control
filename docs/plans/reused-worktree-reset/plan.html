@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Reset reused worktrees before dispatch</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f2f0e9;
+      --paper: #fffdf8;
+      --ink: #20251f;
+      --muted: #697067;
+      --line: #d8d3c7;
+      --green: #166349;
+      --green-soft: #e4f2ea;
+      --blue: #285f89;
+      --blue-soft: #e4eff7;
+      --amber: #8b5a0a;
+      --amber-soft: #fff0ce;
+      --red: #963b3b;
+      --red-soft: #f8e5e2;
+      --code: #eee9df;
+      --shadow: 0 18px 54px rgba(48, 42, 31, .10);
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #111613;
+        --paper: #19201b;
+        --ink: #eef2ed;
+        --muted: #a9b2aa;
+        --line: #3a443c;
+        --green: #75d3aa;
+        --green-soft: #173a2d;
+        --blue: #8dc5ed;
+        --blue-soft: #1b3548;
+        --amber: #efbf69;
+        --amber-soft: #443517;
+        --red: #ef9b96;
+        --red-soft: #472827;
+        --code: #273029;
+        --shadow: none;
+      }
+    }
+    * { box-sizing: border-box; }
+    html { background: var(--bg); }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 12% 0%, color-mix(in srgb, var(--green-soft) 75%, transparent), transparent 34rem),
+        var(--bg);
+      font: 16px/1.6 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main { width: min(1080px, calc(100% - 32px)); margin: 32px auto 64px; }
+    article { background: var(--paper); border: 1px solid var(--line); border-radius: 22px; box-shadow: var(--shadow); overflow: hidden; }
+    header { padding: clamp(30px, 6vw, 64px); border-bottom: 1px solid var(--line); }
+    .eyebrow { margin: 0 0 12px; color: var(--green); font-size: .76rem; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; }
+    h1 { max-width: 850px; margin: 0; font-size: clamp(2rem, 5vw, 4.35rem); line-height: 1.02; letter-spacing: -.045em; }
+    .status { display: inline-block; margin-top: 20px; padding: 5px 10px; border-radius: 999px; color: var(--green); background: var(--green-soft); font-size: .82rem; font-weight: 800; }
+    .decision { margin-top: 26px; padding: 20px 22px; border: 1px solid color-mix(in srgb, var(--green) 32%, var(--line)); border-left: 6px solid var(--green); border-radius: 12px; background: var(--green-soft); font-size: 1.1rem; }
+    section { padding: 34px clamp(24px, 6vw, 62px); border-bottom: 1px solid var(--line); }
+    section:last-child { border-bottom: 0; }
+    h2 { margin: 0 0 16px; font-size: 1.48rem; letter-spacing: -.02em; }
+    h3 { margin: 27px 0 9px; font-size: 1.04rem; }
+    p { margin: 10px 0; }
+    ol, ul { padding-left: 1.25rem; }
+    li + li { margin-top: 8px; }
+    code { padding: .12rem .34rem; border-radius: 5px; background: var(--code); font: .88em/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    pre { margin: 16px 0 0; padding: 18px; overflow-x: auto; border-radius: 12px; background: var(--code); }
+    pre code { padding: 0; background: transparent; }
+    .callout { margin: 18px 0 0; padding: 18px 20px; border-radius: 12px; background: var(--blue-soft); border: 1px solid color-mix(in srgb, var(--blue) 30%, var(--line)); }
+    .callout strong { color: var(--blue); }
+    .warn { background: var(--amber-soft); border-color: color-mix(in srgb, var(--amber) 35%, var(--line)); }
+    .warn strong { color: var(--amber); }
+    .flow { overflow-x: auto; padding: 8px 0 2px; }
+    svg { display: block; width: 980px; max-width: none; height: 275px; }
+    .node { fill: var(--paper); stroke: var(--line); stroke-width: 2; }
+    .node.good { fill: var(--green-soft); stroke: var(--green); }
+    .node.external { fill: var(--blue-soft); stroke: var(--blue); }
+    .node.gate { fill: var(--amber-soft); stroke: var(--amber); }
+    .arrow { stroke: var(--muted); stroke-width: 2.4; fill: none; marker-end: url(#arrow); }
+    .arrow.pin { stroke: var(--blue); stroke-dasharray: 7 5; }
+    .svg-title { fill: var(--ink); font: 700 14px ui-sans-serif, sans-serif; }
+    .svg-copy { fill: var(--muted); font: 12px ui-sans-serif, sans-serif; }
+    .svg-label { fill: var(--muted); font: 700 11px ui-sans-serif, sans-serif; letter-spacing: .04em; text-transform: uppercase; }
+    .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; }
+    table { width: 100%; min-width: 780px; border-collapse: collapse; }
+    th, td { padding: 13px 15px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); }
+    th { color: var(--muted); background: color-mix(in srgb, var(--code) 65%, transparent); font-size: .75rem; letter-spacing: .08em; text-transform: uppercase; }
+    tr:last-child td { border-bottom: 0; }
+    .limits { color: var(--muted); }
+    footer { padding: 20px clamp(24px, 6vw, 62px); color: var(--muted); font-size: .86rem; }
+  </style>
+</head>
+<body>
+  <main>
+    <article>
+      <header>
+        <p class="eyebrow">Implementation plan</p>
+        <h1>Reset reused worktrees before dispatch</h1>
+        <span class="status">Approved for phased implementation and scheduling</span>
+        <p>Dashboard decision recorded 2026-08-20: create the phased implementation plan and schedule its dependency-linked task.</p>
+        <div class="decision">
+          <strong>Decision:</strong> ordinary unpinned tasks start from a freshly fetched, frozen remote-default SHA, and native pool slots must be clean and detached before their lease is finalized. Explicit pinned bases remain exact and bypass remote-default selection.
+        </div>
+      </header>
+
+      <section>
+        <h2>What the investigation established</h2>
+        <p>The affected task was not scheduled over another live task or session. It held the slot's only active lease. The reused checkout reached the requested commit but retained the previous occupant's branch and upstream because native reset does not detach <code>HEAD</code>.</p>
+        <p>When the agent renamed that inherited feature branch, the registry's valid branch-takeover guard started a new work episode and invalidated the task binding. The prevention boundary belongs in dispatch and allocator verification, not in weaker ownership rules.</p>
+        <div class="callout">
+          <strong>Contract mismatch:</strong> <code>docs/worktrees-and-checks.md</code> describes native slots as exact-commit, detached worktrees. New slots satisfy that contract; warm-slot reset and verification do not.
+        </div>
+      </section>
+
+      <section>
+        <h2>Dispatch flow after the change</h2>
+        <div class="flow" aria-label="Flow from task dispatch through remote base resolution, worktree reset, verification, and agent launch">
+          <svg viewBox="0 0 980 275" role="img" aria-labelledby="flow-title flow-desc">
+            <title id="flow-title">A task is launched only after its base is frozen and its worktree is proven detached</title>
+            <desc id="flow-desc">Task Dispatcher fetches the remote default unless the caller supplied an exact pin, Worktree Manager reserves a slot, native Git detaches and resets it, verification checks the invariant, and only then is the agent spawned.</desc>
+            <defs>
+              <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"></path>
+              </marker>
+            </defs>
+            <path class="arrow" d="M174 116 H204"></path>
+            <path class="arrow" d="M374 116 H404"></path>
+            <path class="arrow" d="M574 116 H604"></path>
+            <path class="arrow" d="M774 116 H804"></path>
+            <path class="arrow pin" d="M84 225 C84 260 489 260 489 181"></path>
+            <rect class="node" x="4" y="65" width="170" height="102" rx="13"></rect>
+            <text class="svg-title" x="20" y="92">Task Dispatcher</text>
+            <text class="svg-copy" x="20" y="116">Resolve every repo base</text>
+            <text class="svg-copy" x="20" y="137">before taking a lease</text>
+            <rect class="node external" x="204" y="65" width="170" height="102" rx="13"></rect>
+            <text class="svg-title" x="220" y="92">Git origin</text>
+            <text class="svg-copy" x="220" y="116">Fetch + prove HEAD</text>
+            <text class="svg-copy" x="220" y="137">Freeze current SHA</text>
+            <rect class="node" x="404" y="65" width="170" height="102" rx="13"></rect>
+            <text class="svg-title" x="420" y="92">Worktree Manager</text>
+            <text class="svg-copy" x="420" y="116">Reserve one exact slot</text>
+            <text class="svg-copy" x="420" y="137">for the frozen SHA</text>
+            <rect class="node good" x="604" y="65" width="170" height="102" rx="13"></rect>
+            <text class="svg-title" x="620" y="92">Native Git reset</text>
+            <text class="svg-copy" x="620" y="116">Force-detach, reset,</text>
+            <text class="svg-copy" x="620" y="137">clean nonignored files</text>
+            <rect class="node gate" x="804" y="65" width="170" height="102" rx="13"></rect>
+            <text class="svg-title" x="820" y="92">Verification gate</text>
+            <text class="svg-copy" x="820" y="116">Exact, clean, detached</text>
+            <text class="svg-copy" x="820" y="137">then spawn the agent</text>
+            <rect class="node external" x="4" y="200" width="160" height="54" rx="12"></rect>
+            <text class="svg-title" x="20" y="224">Explicit pin</text>
+            <text class="svg-copy" x="20" y="244">Bypasses remote fetch</text>
+            <text class="svg-label" x="380" y="247">exact SHA path</text>
+          </svg>
+        </div>
+        <ol>
+          <li>Verify an explicit pin or fetch and freeze each repository's remote-default SHA.</li>
+          <li>Reserve an exclusive slot for that exact commit.</li>
+          <li>Create the slot detached, or force-detach and reset a warm slot.</li>
+          <li>Verify identity, exact HEAD, cleanliness, empty occupancy, and detached HEAD.</li>
+          <li>Persist all task resources and spawn the agent only after every repository passes.</li>
+        </ol>
+        <p>Any failed fetch, reset, or proof stops before launch. An explicit pinned dispatch enters at slot reservation with its supplied SHA.</p>
+      </section>
+
+      <section>
+        <h2>Required behavior</h2>
+        <h3>Resolve bases before provisioning</h3>
+        <ul>
+          <li>Run a bounded <code>git remote</code> listing. Only a successful listing that omits the exact name <code>origin</code> establishes no origin; a timeout, spawn failure, overflow, signal, or nonzero result fails dispatch.</li>
+          <li>With a configured <code>origin</code>, fetch it, then query or refresh the remote's current HEAD symref before freezing its remote-tracking commit. Fetch alone does not refresh a stale local <code>origin/HEAD</code>.</li>
+          <li>A configured-origin fetch, current-HEAD query, or resolution failure is a dispatch failure, not permission to use stale local state.</li>
+          <li>A repository that genuinely has no <code>origin</code> keeps local-repository support by freezing its current local <code>HEAD</code>.</li>
+          <li>Resolve all primary and attached repository bases before taking the first tree.</li>
+          <li>Keep an explicit pinned SHA unchanged, including ensemble and check paths.</li>
+        </ul>
+        <h3>Detach as part of native reset</h3>
+        <ul>
+          <li>Force-detach the checkout at the exact requested SHA before the destructive reset and clean.</li>
+          <li>Preserve the old local branch ref. Pool reuse should release a branch name from the checkout, not move or delete it.</li>
+          <li>Keep <code>git clean -fd</code>, never <code>-fdx</code>, so ignored dependencies and build caches remain warm.</li>
+          <li>Contain this behavior in <code>NativeWorktreeGit.reset</code>; do not change ensemble snapshot restoration semantics.</li>
+        </ul>
+        <h3>Fail closed on verification</h3>
+        <ul>
+          <li>Add detached state to native inspection.</li>
+          <li>Require detached state before both <code>finalizeLease</code> and <code>completeRelease</code>.</li>
+          <li>Quarantine an attached or unprovable slot. Do not persist it to the task or spawn the agent.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Implementation surface</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Area</th><th>Planned change</th></tr></thead>
+            <tbody>
+              <tr><td><code>src/server/dispatcher.ts</code></td><td>Resolve and freeze ordinary remote-default bases before provisioning all task repositories; preserve explicit pins.</td></tr>
+              <tr><td><code>src/server/worktrees/git.ts</code></td><td>Force-detach native reset at the exact SHA and expose detached state through inspection.</td></tr>
+              <tr><td><code>src/server/actions.ts</code> or the selected shared Git seam</td><td>Refresh or query the current remote HEAD for both dispatch and native Return without trusting stale local <code>origin/HEAD</code>.</td></tr>
+              <tr><td><code>src/server/worktrees/manager.ts</code></td><td>Require detached state before lease finalization and before a returned slot becomes available.</td></tr>
+              <tr><td><code>test/dispatch-pinned-base.test.ts</code> and dispatcher tests</td><td>Add task-dispatch remote-default coverage while retaining the low-level provisioner's local-HEAD default and explicit-pin coverage.</td></tr>
+              <tr><td><code>test/multi-repo-provisioning.test.ts</code></td><td>Prove per-repository base resolution and all-or-nothing failure.</td></tr>
+              <tr><td><code>test/worktree-manager.test.ts</code></td><td>Reproduce a branch-attached warm slot and prove detached, exact, clean, cache-warm reuse.</td></tr>
+              <tr><td><code>docs/worktrees-and-checks.md</code></td><td>Document base selection, no-origin behavior, fetch failure, and detached verification.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="callout warn">
+          <strong>Intentionally unchanged:</strong> the ownership-episode branch transition rule remains strict. No schema, wire contract, settings UI, or live-record repair is part of this fix.
+        </div>
+      </section>
+
+      <section>
+        <h2>Regression and validation bar</h2>
+        <ol>
+          <li>Reused attached slot becomes detached and reports <code>branch: null</code>.</li>
+          <li>Old branch ref is preserved at its prior commit.</li>
+          <li>Return reaches fresh remote default, removes nonignored residue, preserves ignored caches, and detaches.</li>
+          <li>Attached or unprovable detached state quarantines and cannot finalize a lease.</li>
+          <li>Stale local <code>main</code> does not beat newly fetched remote default.</li>
+          <li>A server default switch from <code>main</code> to <code>trunk</code> is honored even when local <code>origin/HEAD</code> is stale.</li>
+          <li>Configured-origin fetch or current-HEAD query failure leaves no worktree or agent.</li>
+          <li>No-origin repositories still use frozen local <code>HEAD</code>, but a failed or unknown origin probe fails closed.</li>
+          <li>Explicit pins remain exact after remote advancement.</li>
+          <li>Multi-repository base resolution is per repo and all-or-nothing.</li>
+          <li>The first agent-created feature branch stays in the bound work episode.</li>
+        </ol>
+        <p>The exported low-level <code>provisionWorktree()</code> helper keeps its current local-HEAD default when no exact base is passed. Production <code>TaskDispatcher</code> owns the new remote-default policy and passes the resolved SHA into that helper.</p>
+        <pre><code>node --test --import ./test/setup-state.mjs --import tsx test/worktree-manager.test.ts
+node --test --import ./test/setup-state.mjs --import tsx test/dispatch-pinned-base.test.ts
+node --test --import ./test/setup-state.mjs --import tsx test/multi-repo-provisioning.test.ts
+npm run typecheck
+npm run lint
+npm test
+npm run build
+npm run smoke</code></pre>
+      </section>
+
+      <section>
+        <h2>Delivery shape</h2>
+        <p>Ship this as one atomic implementation task. Base resolution, native reset, detached verification, tests, and documentation form one invariant. Splitting them would permit an intermediate merge where a task can still launch from a Git state the dispatcher or registry interprets incorrectly.</p>
+        <p>The task must not alter current live task/session records, delete branch refs, remove worktrees, or retroactively repair cancelled tasks.</p>
+      </section>
+
+      <section class="limits">
+        <h2>Established and not established</h2>
+        <p><strong>Established:</strong> exclusive ownership, inherited branch state, the rename-to-invalidation sequence, missing detached reset and verification, and the difference between Return's remote-default target and acquisition's local-HEAD target.</p>
+        <p><strong>Not established:</strong> the fix has not yet been implemented or reproduced in a test, fetch latency was not benchmarked, and no live cancelled-task or session record was repaired.</p>
+      </section>
+
+      <footer>Rendered from <code>docs/plans/reused-worktree-reset/plan.md</code>. No external resources or runtime scripts are required.</footer>
+    </article>
+  </main>
+</body>
+</html>

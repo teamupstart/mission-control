@@ -68,6 +68,17 @@ on the owning row, never current configuration. Native release remains condition
 occupancy-gated, and clearing a task's worktree facts is atomic with recording the successful
 release. Historical rows that name Treehouse retain their provider-specific cleanup path.
 
+A terminal task that still holds a worktree also carries a durable activity clock. The daemon
+observes the aggregate Git-visible state of its primary and every attached checkout - HEAD, the
+whole index, tracked worktree changes, and non-ignored untracked files - and records the
+fingerprint plus a 30-day deadline in `task_worktree_retention`. The clock has one boundary per
+task: the newest change in any of its trees protects the whole set. `tasks.updated_at` is not an
+activity signal and must never be used as one. The observation service reclaims nothing; it is
+structurally incapable of it, and automatic reclamation at the deadline is a separate change that
+will consume this ledger through `TaskManager.reclaim()`. An unreadable tree records a bounded
+reason and moves no deadline, and a set of resources nothing has successfully observed yet has no
+row at all - a first observation is what starts a window, never a pre-existing timestamp.
+
 Manual development sessions acquire and return native leases through the daemon's loopback API.
 The client does not create an independent inventory, and shell exit does not imply return.
 
@@ -82,7 +93,7 @@ After provisioning, dispatch branches once:
 
 An invalid stored runtime falls back to terminal and reports what was dropped. If SDK was requested but no supervisor exists, fail instead of silently changing runtime.
 
-A dispatch that declares required Mission MCP tools fails on both arms unless the launch carries the registration **and** the built bundle publishes those tools, established by one real `initialize` + `tools/list` handshake cached per build. Fail before the agent spawns: a scout that cannot call `submit_scout_artifacts`, or a member that cannot call `submit_ensemble_result`, cannot finish its task at all, and the existence check alone cannot see a stale `dist/`. A dispatch declaring no tools never spawns the probe and is unaffected.
+A dispatch that declares required Mission MCP tools fails on both arms unless the launch carries the registration **and** the built bundle publishes those tools, established by one real `initialize` + `tools/list` handshake cached per build. Fail before the agent spawns: a scout that cannot call `submit_scout_artifacts`, or a member that cannot call `submit_ensemble_result`, cannot finish its task normally, and the existence check alone cannot see a stale `dist/`. A human may explicitly confirm closing a scout without its report after seeing the archive warning; automatic completion remains gated. A dispatch declaring no tools never spawns the probe and is unaffected.
 
 ## Harnesses and terminals
 

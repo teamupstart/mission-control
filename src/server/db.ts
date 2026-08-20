@@ -36,6 +36,8 @@ import type {
   CostBasis,
   SessionGoal,
   SessionNote,
+  PromptedDirectHandoff,
+  PromptedDirectHandoffKind,
   SessionQueue,
   Task,
   TaskPriority,
@@ -55,6 +57,7 @@ import { readCheapAction, readDivergence, readSkipReason } from "@shared/foreman
 import { askPreviewForWire } from "@shared/foreman-ask.ts";
 import type { CheapAction, Divergence, SkipReason } from "@shared/foreman.ts";
 import { normalizeLabels } from "@shared/task.ts";
+import { isRetentionCandidate, taskResourceGeneration } from "./task-resource-generation.ts";
 
 /**
  * Durable state. Live sessions are intentionally NOT persisted - they're rebuilt
@@ -1702,6 +1705,13 @@ export function openDb(): DatabaseSync {
       prompted_activity_at INTEGER,       -- historical activity watermark, compatibility only
       prompted_legacy_cutover_generation INTEGER, -- conservative ceiling for ambiguous legacy guards
       prompted_consumed_generation INTEGER, -- latest work-cycle generation handled
+      -- The prompted DIRECT SHIPPING latch: which handoff was made, the intent episode
+      -- that authorized it, and the generation spent making it. Written only in the same
+      -- statement that consumes that generation, so it can never claim a handoff that
+      -- was not paid for. See consumePromptedGeneration below.
+      prompted_direct_handoff_kind TEXT,
+      prompted_direct_handoff_episode TEXT,
+      prompted_direct_handoff_generation INTEGER,
       updated_at      INTEGER NOT NULL
     );
 
@@ -2620,6 +2630,70 @@ export function openDb(): DatabaseSync {
     -- plain INSERT OR IGNORE still answers to both without naming a conflict target.
     CREATE UNIQUE INDEX IF NOT EXISTS idx_pipeline_events_observation
       ON pipeline_events(provider, repo_root, slug, source, fingerprint, producer_seq);
+
+    -- The task-worktree retention ledger: how long a TERMINAL task's checkouts have gone
+    -- without a Git-visible change, and when that makes them reclaimable.
+    --
+    -- One row per task, and it is the ONLY durable activity clock for this. tasks.updated_at
+    -- is not one and cannot be made into one: dependency reconciliation, pull request polling
+    -- and title edits all move it without anyone touching a checkout, while an agent editing a
+    -- file in a worktree moves nothing on the row at all. So the clock is kept where it can be
+    -- derived from the checkouts themselves, and re-derived after a restart.
+    --
+    -- The row is not created when the task ends. It is created at the FIRST SUCCESSFUL
+    -- OBSERVATION of a set of resources, and that is the rollout safety mechanism rather than
+    -- laziness: no timestamp this database already holds can prove when a pre-existing tree
+    -- was last touched, so every tree that existed before this shipped is seeded at the moment
+    -- it is first read and gets one full, final grace period from there.
+    CREATE TABLE IF NOT EXISTS task_worktree_retention (
+      task_id         TEXT PRIMARY KEY,
+      -- The RESOURCE GENERATION this observation was taken against - taskResourceGeneration's
+      -- digest over the task's attempt boundary and every cleanup-relevant resource fact. Not a
+      -- second source of truth about those facts (nothing reads them back out of it); it is the
+      -- answer to one question asked before any write: "is the thing I observed still the thing
+      -- the task owns?" A re-dispatch, a reschedule, a replaced path, a re-leased slot or a
+      -- released terminal home all change it, and an observation whose generation no longer
+      -- matches is discarded rather than carried onto whatever replaced it.
+      generation      TEXT NOT NULL,
+      -- The aggregate Git-visible fingerprint across every worktree the task owns, combined in
+      -- persisted repository-position order. A digest and nothing else: no path, no file
+      -- content, no Git output. Comparing it with the next observation's is the whole of "did
+      -- anything change".
+      fingerprint     TEXT NOT NULL,
+      -- When the fingerprint last CHANGED - the activity boundary the 30-day rule counts from.
+      -- Seeded at first observation (see above) and reset by any changed fingerprint. An
+      -- unknown read never moves it, because "we could not look" is not evidence of quiet.
+      last_changed_at INTEGER NOT NULL,
+      -- When a successful observation last happened. Diagnostic: it says the clock is being
+      -- read, which is the difference between a tree that is genuinely quiet and one nothing
+      -- has managed to probe for a week.
+      observed_at     INTEGER NOT NULL,
+      -- last_changed_at plus the retention window. Stored rather than computed on read so the
+      -- boundary a restart resumes from is the one that was actually granted, even if the
+      -- window's value ever changes.
+      cleanup_due_at  INTEGER NOT NULL,
+      -- Everything from here down is Phase 2's claim/retry state, declared now so activating
+      -- automatic reclamation needs no second migration. Phase 1 writes 'observing' and NULL
+      -- to all of it and never transitions a claim; task-worktree-retention.ts has no
+      -- reference to any cleanup path, and its tests assert that.
+      cleanup_state   TEXT NOT NULL DEFAULT 'observing',
+      claim_token     TEXT,
+      claimed_at      INTEGER,
+      last_attempt_at INTEGER,
+      retry_at        INTEGER,
+      -- Bounded internal diagnosis of the last failed observation or cleanup. Truncated on
+      -- write, never widened onto the wire, and never the original error MESSAGE - a
+      -- filesystem error stringifies to "EACCES: permission denied, open '<path>'", and git
+      -- names paths in its diagnostics, so a message written through verbatim would make this
+      -- column a record of filenames the ledger otherwise never holds. Producers send a
+      -- bounded classification instead; see readFailureClass in git/worktree-activity.ts.
+      last_error      TEXT,
+      updated_at      INTEGER NOT NULL
+    );
+    -- Phase 2 selects due rows by time. Cheap, and it keeps that scan off a table walk once a
+    -- long-lived install has a row per terminal task it ever ran.
+    CREATE INDEX IF NOT EXISTS idx_task_worktree_retention_due
+      ON task_worktree_retention(cleanup_due_at);
   `);
   db.exec(inFlightIndexSql());
   migrate(db);
@@ -2982,6 +3056,22 @@ function migrate(d: DatabaseSync): void {
   // generation has been consumed yet; legacy rows are bootstrapped lazily only when their
   // historical `prompted_goal` still matches the resolved intent.
   addColumn(d, "foreman_queues", "prompted_consumed_generation", "INTEGER");
+
+  // The prompted direct-shipping latch. `prompted_consumed_generation` answers "has this
+  // settled completion been handled", which by design re-arms on the NEXT generation so a
+  // background task notification or an item-less Workflow repair packet can complete under
+  // unchanged human intent. Direct shipping cannot use that guard: the instruction it types
+  // is itself what produces the next generation, so a generation-only guard re-arms on the
+  // turn it caused and types the instruction again.
+  //
+  // These three columns record the handoff against the human INTENT EPISODE instead. NULL on
+  // every upgraded row, which is the truthful answer for a queue written before the latch
+  // existed: no handoff is recorded, so the exact-payload Goal guard in
+  // `decidePromptedWrapup` remains the compatibility backstop for one already-shipped
+  // episode, exactly as it was before this column.
+  addColumn(d, "foreman_queues", "prompted_direct_handoff_kind", "TEXT");
+  addColumn(d, "foreman_queues", "prompted_direct_handoff_episode", "TEXT");
+  addColumn(d, "foreman_queues", "prompted_direct_handoff_generation", "INTEGER");
 
   // `decisions`: the structured questions of a `plan-decisions` review, as a JSON
   // array. Added to `reviews` after it shipped, so an upgraded DB only gets it via
@@ -5565,6 +5655,11 @@ export function deleteTask(id: string): void {
   d.prepare(`DELETE FROM work_episode_prs WHERE task_id = ?`).run(id);
   d.prepare(`DELETE FROM task_work_episode_bindings WHERE task_id = ?`).run(id);
   d.prepare(`DELETE FROM historical_task_work_episode_bindings WHERE task_id = ?`).run(id);
+  // The retention ledger is keyed on a task that is about to stop existing. Left behind it
+  // would be an orphan whose generation can never match anything again - harmless, but the
+  // table would then only ever grow, and `listOrphanedTaskWorktreeRetentionIds` would be
+  // cleaning up after this function forever instead of after genuine surprises.
+  d.prepare(`DELETE FROM task_worktree_retention WHERE task_id = ?`).run(id);
   d.prepare(`DELETE FROM tasks WHERE id = ?`).run(id);
 }
 
@@ -5609,9 +5704,24 @@ export function loadRecentTerminalTasks(limit: number): Task[] {
 export function loadResourceHoldingTerminalTasks(): Task[] {
   const rows = openDb()
     .prepare(
-       `SELECT * FROM tasks
-       WHERE status IN ('done','failed','cancelled')
-         AND (worktree_path IS NOT NULL OR home_name IS NOT NULL)`,
+      // The EXISTS clause is the ATTACHED half, and it is not a widening for its own sake.
+      // Multi-repo teardown clears each repository's recorded path as that repository's tree
+      // is actually released, so a run that released the primary and then failed on a second
+      // repository leaves a terminal row with `worktree_path IS NULL` and a real checkout
+      // still on disk under `task_repos`. Without this clause that task was not loaded on
+      // restart at all: nothing reconciled the survivor, nothing offered to clean it up, and
+      // the slot it holds was leaked for as long as the row lived. `taskHasWorktrees` is the
+      // same predicate in TypeScript - see `src/shared/task-repos.ts`.
+      `SELECT * FROM tasks t
+       WHERE t.status IN ('done','failed','cancelled')
+         AND (
+           t.worktree_path IS NOT NULL
+           OR t.home_name IS NOT NULL
+           OR EXISTS (
+             SELECT 1 FROM task_repos r
+             WHERE r.task_id = t.id AND r.worktree_path IS NOT NULL
+           )
+         )`,
     )
     .all() as unknown as TaskRow[];
   return rowsToTasks(rows);
@@ -5671,6 +5781,282 @@ export function taskHasPrCarryingBinding(taskId: string): boolean {
     )
     .get(taskId, taskId) as { present: number } | undefined;
   return row !== undefined;
+}
+
+// ---- task worktree retention: the durable Git-visible activity clock ----
+//
+// Read the `task_worktree_retention` CREATE TABLE above before touching any of this. Two
+// rules, and both are about not fabricating quiet:
+//
+//  1. A row is only ever written from a SUCCESSFUL observation. An unknown read - Git failed,
+//     a path vanished, output was too large to trust - records diagnosis and nothing else. It
+//     can never create a row, and it can never move `last_changed_at` or `cleanup_due_at`.
+//  2. Every write is guarded by the generation the observation was taken against. A pass that
+//     started before a task was re-dispatched cannot land its fingerprint on the replacement.
+
+/** Bytes of diagnosis kept on a ledger row. Long enough to name a cause, short enough to store. */
+const RETENTION_ERROR_LIMIT = 500;
+
+/** One retention ledger row, exactly as stored. Internal server state - never the wire. */
+export interface TaskWorktreeRetentionRow {
+  taskId: string;
+  generation: string;
+  fingerprint: string;
+  lastChangedAt: number;
+  observedAt: number;
+  cleanupDueAt: number;
+  cleanupState: string;
+  claimToken: string | null;
+  claimedAt: number | null;
+  lastAttemptAt: number | null;
+  retryAt: number | null;
+  lastError: string | null;
+  updatedAt: number;
+}
+
+interface TaskWorktreeRetentionDbRow {
+  task_id: string;
+  generation: string;
+  fingerprint: string;
+  last_changed_at: number;
+  observed_at: number;
+  cleanup_due_at: number;
+  cleanup_state: string;
+  claim_token: string | null;
+  claimed_at: number | null;
+  last_attempt_at: number | null;
+  retry_at: number | null;
+  last_error: string | null;
+  updated_at: number;
+}
+
+function toRetentionRow(row: TaskWorktreeRetentionDbRow): TaskWorktreeRetentionRow {
+  return {
+    taskId: row.task_id,
+    generation: row.generation,
+    fingerprint: row.fingerprint,
+    lastChangedAt: row.last_changed_at,
+    observedAt: row.observed_at,
+    cleanupDueAt: row.cleanup_due_at,
+    cleanupState: row.cleanup_state,
+    claimToken: row.claim_token,
+    claimedAt: row.claimed_at,
+    lastAttemptAt: row.last_attempt_at,
+    retryAt: row.retry_at,
+    lastError: row.last_error,
+    updatedAt: row.updated_at,
+  };
+}
+
+export function getTaskWorktreeRetention(taskId: string): TaskWorktreeRetentionRow | null {
+  const row = openDb()
+    .prepare(`SELECT * FROM task_worktree_retention WHERE task_id = ?`)
+    .get(taskId) as unknown as TaskWorktreeRetentionDbRow | undefined;
+  return row ? toRetentionRow(row) : null;
+}
+
+/** Every ledger row, one query. The observer's whole-table view for diagnosis and pruning. */
+export function listTaskWorktreeRetention(): TaskWorktreeRetentionRow[] {
+  const rows = openDb()
+    .prepare(`SELECT * FROM task_worktree_retention ORDER BY cleanup_due_at ASC`)
+    .all() as unknown as TaskWorktreeRetentionDbRow[];
+  return rows.map(toRetentionRow);
+}
+
+/**
+ * Rows whose deadline has arrived - Phase 2's work queue, and Phase 1's proof that the clock
+ * it persists is readable in the shape the next phase needs.
+ *
+ * Nothing in this phase acts on the result. It is exported and tested now so that activating
+ * cleanup adds a consumer rather than a second query with a subtly different predicate.
+ */
+export function listDueTaskWorktreeRetention(now: number): TaskWorktreeRetentionRow[] {
+  const rows = openDb()
+    .prepare(
+      `SELECT * FROM task_worktree_retention
+       WHERE cleanup_due_at <= ? AND (retry_at IS NULL OR retry_at <= ?)
+       ORDER BY cleanup_due_at ASC`,
+    )
+    .all(now, now) as unknown as TaskWorktreeRetentionDbRow[];
+  return rows.map(toRetentionRow);
+}
+
+/**
+ * Ledger rows that no longer describe anything: the task was deleted out from under them, it
+ * is no longer terminal (a reschedule put it back in the backlog), or it holds no worktree at
+ * all any more.
+ *
+ * One query rather than a row-per-task probe, and answered from SQLite rather than from the
+ * registry's in-memory map on purpose - the map is bounded and evicts, so "the registry does
+ * not have it" is not proof a task is gone, and deleting a live task's clock would silently
+ * hand it a fresh 30-day grace period.
+ *
+ * The worktree half mirrors `taskHasWorktrees`: primary path, or any attached row's.
+ */
+export function listOrphanedTaskWorktreeRetentionIds(): string[] {
+  const rows = openDb()
+    .prepare(
+      `SELECT l.task_id AS task_id FROM task_worktree_retention l
+       LEFT JOIN tasks t ON t.id = l.task_id
+       WHERE t.id IS NULL
+          OR t.status NOT IN ('done','failed','cancelled')
+          OR (
+            t.worktree_path IS NULL
+            AND NOT EXISTS (
+              SELECT 1 FROM task_repos r
+              WHERE r.task_id = t.id AND r.worktree_path IS NOT NULL
+            )
+          )`,
+    )
+    .all() as unknown as Array<{ task_id: string }>;
+  return rows.map((r) => r.task_id);
+}
+
+export function deleteTaskWorktreeRetention(taskId: string): void {
+  openDb().prepare(`DELETE FROM task_worktree_retention WHERE task_id = ?`).run(taskId);
+}
+
+/** What one observation did to the ledger. Returned so a caller can log or assert it. */
+export type RetentionObservationOutcome =
+  /** No row existed for this generation: the conservative full window starts NOW. */
+  | "seeded"
+  /** A row existed for a DIFFERENT generation: it described other resources, so it is replaced
+   *  and the conservative full window starts now for the current ones. */
+  | "replaced"
+  /** Same generation, different fingerprint: Git-visible work happened, so the clock resets. */
+  | "changed"
+  /** Same generation, same fingerprint: only `observed_at` moves. */
+  | "unchanged"
+  /** An unknown read against an existing matching row: diagnosis recorded, clock untouched. */
+  | "unknown-recorded"
+  /** An unknown read with no matching row to annotate: nothing is written at all. */
+  | "unknown-skipped"
+  /**
+   * The task no longer owns the resources this observation was taken against, as re-derived
+   * INSIDE the write transaction. Nothing is written - see the note on the guard below.
+   */
+  | "generation-moved";
+
+export interface RetentionObservationInput {
+  taskId: string;
+  /** `taskResourceGeneration(task)` for the task as it was read for this observation. */
+  generation: string;
+  /** The aggregate fingerprint, or null when the probe could not produce a trustworthy one. */
+  fingerprint: string | null;
+  /** Bounded diagnosis for an unknown read. Ignored when `fingerprint` is present. */
+  reason?: string | null;
+  now: number;
+  /** How long a quiet tree is kept. Passed in so policy lives with the observer, not here. */
+  retentionMs: number;
+}
+
+/**
+ * Apply one observation to the ledger, atomically.
+ *
+ * The four success transitions and the two unknown ones are here in one transaction rather
+ * than as six exported writers because they are decided by a COMPARISON with the row that is
+ * already there - split across calls, a concurrent pass could read "no row" and then insert
+ * over a row another pass had just seeded, handing a tree a second full grace period.
+ *
+ * Nothing here can move a cleanup claim. `cleanup_state`, `claim_token` and `claimed_at` are
+ * written only as the inert defaults a new or replaced row carries; an existing row's claim
+ * columns are left exactly as found. That is Phase 1's zero-cleanup boundary expressed in the
+ * one place that could otherwise cross it.
+ *
+ * The caller's generation is re-derived HERE, from the task as it stands inside this
+ * transaction, and a mismatch writes nothing. That is deliberately a second check: the observer
+ * already re-read the task before calling, but that check protects the write only for as long
+ * as nothing can run between the two - which is true today (both calls are synchronous, and the
+ * daemon is the only writer) and is exactly the kind of invariant that a later refactor
+ * silently repeals. A stale fingerprint landing on a re-dispatched task hands a brand new
+ * checkout an age it never lived, and the phase that consumes this ledger deletes on that age,
+ * so the guard belongs where the write happens rather than where the caller last looked.
+ */
+export function recordTaskWorktreeObservation(
+  input: RetentionObservationInput,
+): { outcome: RetentionObservationOutcome; row: TaskWorktreeRetentionRow | null } {
+  const d = openDb();
+  const { taskId, generation, fingerprint, now, retentionMs } = input;
+  const error = input.reason ? input.reason.slice(0, RETENTION_ERROR_LIMIT) : null;
+  d.exec("BEGIN IMMEDIATE");
+  try {
+    const existing = d
+      .prepare(`SELECT * FROM task_worktree_retention WHERE task_id = ?`)
+      .get(taskId) as unknown as TaskWorktreeRetentionDbRow | undefined;
+
+    // Does the task STILL own what this observation describes? Asked of the row as it is right
+    // now, under the same transaction that is about to write, so no interleaving between the
+    // question and the answer is possible regardless of what the caller did or did not check.
+    // A task that vanished, went non-terminal, released its last checkout, or was re-dispatched
+    // all land here, and all of them write nothing at all.
+    const current = getTask(taskId);
+    if (
+      !current
+      || !isRetentionCandidate(current)
+      || taskResourceGeneration(current) !== generation
+    ) {
+      d.exec("COMMIT");
+      return { outcome: "generation-moved", row: existing ? toRetentionRow(existing) : null };
+    }
+
+    if (fingerprint === null) {
+      // An unreadable tree is not a quiet tree. Record why, move nothing, and - when there is
+      // no row for this generation - write nothing at all, because a row invented from a
+      // failed read would be a deadline derived from an observation that never happened.
+      if (!existing || existing.generation !== generation) {
+        d.exec("COMMIT");
+        return { outcome: "unknown-skipped", row: existing ? toRetentionRow(existing) : null };
+      }
+      d.prepare(
+        `UPDATE task_worktree_retention SET last_error = ?, updated_at = ? WHERE task_id = ?`,
+      ).run(error, now, taskId);
+      const row = d
+        .prepare(`SELECT * FROM task_worktree_retention WHERE task_id = ?`)
+        .get(taskId) as unknown as TaskWorktreeRetentionDbRow;
+      d.exec("COMMIT");
+      return { outcome: "unknown-recorded", row: toRetentionRow(row) };
+    }
+
+    let outcome: RetentionObservationOutcome;
+    if (!existing) outcome = "seeded";
+    else if (existing.generation !== generation) outcome = "replaced";
+    else if (existing.fingerprint !== fingerprint) outcome = "changed";
+    else outcome = "unchanged";
+
+    if (outcome === "unchanged") {
+      d.prepare(
+        `UPDATE task_worktree_retention SET observed_at = ?, last_error = NULL, updated_at = ?
+         WHERE task_id = ?`,
+      ).run(now, now, taskId);
+    } else if (outcome === "changed") {
+      d.prepare(
+        `UPDATE task_worktree_retention
+         SET fingerprint = ?, last_changed_at = ?, observed_at = ?, cleanup_due_at = ?,
+             last_error = NULL, updated_at = ?
+         WHERE task_id = ?`,
+      ).run(fingerprint, now, now, now + retentionMs, now, taskId);
+    } else {
+      // Seed and replace are the same write: a generation nobody has successfully observed
+      // before starts its window now, whether or not some other generation's row was sitting
+      // in its place. REPLACE rather than UPDATE so the claim columns of the row being
+      // superseded cannot survive onto resources they were never claimed against.
+      d.prepare(
+        `INSERT OR REPLACE INTO task_worktree_retention
+           (task_id, generation, fingerprint, last_changed_at, observed_at, cleanup_due_at,
+            cleanup_state, claim_token, claimed_at, last_attempt_at, retry_at, last_error,
+            updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'observing', NULL, NULL, NULL, NULL, NULL, ?)`,
+      ).run(taskId, generation, fingerprint, now, now, now + retentionMs, now);
+    }
+    const row = d
+      .prepare(`SELECT * FROM task_worktree_retention WHERE task_id = ?`)
+      .get(taskId) as unknown as TaskWorktreeRetentionDbRow;
+    d.exec("COMMIT");
+    return { outcome, row: toRetentionRow(row) };
+  } catch (err) {
+    d.exec("ROLLBACK");
+    throw err;
+  }
 }
 
 // ---- task sources: what has already been filed ----
@@ -7801,6 +8187,9 @@ interface QueueRow {
   prompted_activity_at: number | null;
   prompted_legacy_cutover_generation: number | null;
   prompted_consumed_generation: number | null;
+  prompted_direct_handoff_kind: string | null;
+  prompted_direct_handoff_episode: string | null;
+  prompted_direct_handoff_generation: number | null;
   updated_at: number;
 }
 
@@ -7823,8 +8212,24 @@ function toQueueRow(r: QueueRow): Omit<SessionQueue, "items"> {
     promptedActivityAt: r.prompted_activity_at,
     promptedLegacyCutoverGeneration: r.prompted_legacy_cutover_generation,
     promptedConsumedGeneration: r.prompted_consumed_generation,
+    promptedDirectHandoff: toPromptedDirectHandoff(r),
     updatedAt: r.updated_at,
   };
+}
+
+/**
+ * The three latch columns as the one all-or-nothing fact they are.
+ *
+ * A partially-set triple is not a handoff anyone can act on, so it reads back as none at
+ * all rather than as a latch with a missing field. Only `consumePromptedGeneration` writes
+ * these, and it writes all three together, so a partial row means a hand-edited database.
+ */
+function toPromptedDirectHandoff(r: QueueRow): PromptedDirectHandoff | null {
+  const kind = r.prompted_direct_handoff_kind;
+  const episodeKey = r.prompted_direct_handoff_episode;
+  const generation = r.prompted_direct_handoff_generation;
+  if (kind !== "direct-ship" || !episodeKey || generation === null) return null;
+  return { kind, episodeKey, generation };
 }
 
 interface QueueItemRow {
@@ -7894,8 +8299,9 @@ export function upsertQueue(q: Omit<SessionQueue, "items">): void {
       `INSERT INTO foreman_queues
          (note_key, cwd, branch, wrapup_asked_at, wrapup_answer, prompted_goal,
           prompted_evidence, prompted_activity_at, prompted_legacy_cutover_generation,
-          prompted_consumed_generation, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          prompted_consumed_generation, prompted_direct_handoff_kind,
+          prompted_direct_handoff_episode, prompted_direct_handoff_generation, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(note_key) DO UPDATE SET
          cwd=excluded.cwd, branch=excluded.branch, wrapup_asked_at=excluded.wrapup_asked_at,
          wrapup_answer=excluded.wrapup_answer, prompted_goal=excluded.prompted_goal,
@@ -7903,6 +8309,9 @@ export function upsertQueue(q: Omit<SessionQueue, "items">): void {
          prompted_activity_at=excluded.prompted_activity_at,
          prompted_legacy_cutover_generation=excluded.prompted_legacy_cutover_generation,
          prompted_consumed_generation=excluded.prompted_consumed_generation,
+         prompted_direct_handoff_kind=excluded.prompted_direct_handoff_kind,
+         prompted_direct_handoff_episode=excluded.prompted_direct_handoff_episode,
+         prompted_direct_handoff_generation=excluded.prompted_direct_handoff_generation,
          updated_at=excluded.updated_at`,
     )
     .run(
@@ -7916,6 +8325,9 @@ export function upsertQueue(q: Omit<SessionQueue, "items">): void {
       q.promptedActivityAt,
       q.promptedLegacyCutoverGeneration,
       q.promptedConsumedGeneration,
+      q.promptedDirectHandoff?.kind ?? null,
+      q.promptedDirectHandoff?.episodeKey ?? null,
+      q.promptedDirectHandoff?.generation ?? null,
       q.updatedAt,
     );
 }
@@ -7991,6 +8403,23 @@ export interface ConsumePromptedGenerationInput {
   sessionCwd: string | null;
   generation: number;
   ask: boolean;
+  /**
+   * Record a prompted handoff in the SAME statement that consumes the generation, or
+   * null to consume without recording one.
+   *
+   * MARK BEFORE INJECT. Foreman calls this immediately before it types the direct
+   * shipping instruction, never after: a crash between the two must leave the handoff
+   * recorded, because a retried direct injection is a second push on a branch that may
+   * already have one. The existing human Ship it? fallback is the recovery, and it is
+   * the only one - nothing here retries an injection.
+   *
+   * `episodeKey` is the authorizing INTENT episode rather than the generation, because
+   * the instruction itself makes the agent work and park, which completes the next
+   * generation under exactly the same human intent. A generation-keyed latch would
+   * re-arm on the turn it caused. Workflow claims pass null: claiming a Complete
+   * workflow is not a direct-shipping handoff and must not latch one.
+   */
+  directHandoff: { kind: PromptedDirectHandoffKind; episodeKey: string } | null;
   now: number;
 }
 
@@ -8007,15 +8436,20 @@ export function consumePromptedGeneration(
   d: DatabaseSync = openDb(),
 ): boolean {
   const ask = input.ask ? 1 : 0;
+  const handoffKind = input.directHandoff?.kind ?? null;
+  const handoffEpisode = input.directHandoff?.episodeKey ?? null;
   const result = d.prepare(
     `INSERT INTO foreman_queues (
        note_key, cwd, branch, wrapup_asked_at, wrapup_answer, prompted_goal,
        prompted_evidence, prompted_activity_at, prompted_legacy_cutover_generation,
-       prompted_consumed_generation, updated_at
+       prompted_consumed_generation, prompted_direct_handoff_kind,
+       prompted_direct_handoff_episode, prompted_direct_handoff_generation, updated_at
      )
      SELECT ?, ?, NULL,
             CASE WHEN ? = 1 THEN ? ELSE NULL END,
-            NULL, NULL, NULL, NULL, NULL, generation, ?
+            NULL, NULL, NULL, NULL, NULL, generation,
+            ?, ?, CASE WHEN ? IS NULL THEN NULL ELSE generation END,
+            ?
        FROM session_work_cycles
       WHERE logical_key = ?
         AND generation = ?
@@ -8027,6 +8461,19 @@ export function consumePromptedGeneration(
         )
      ON CONFLICT(note_key) DO UPDATE SET
        prompted_consumed_generation = excluded.prompted_consumed_generation,
+       -- COALESCE, not assignment: a consumption that makes no handoff must not ERASE
+       -- one. It would be erasing the record of an instruction that was already typed,
+       -- and the next tick would type it again. Preserving is safe because eligibility
+       -- compares the stored episode against the current one, so a stale latch under a
+       -- newer episode is already inert. All three move together or none do, so the
+       -- triple can never be left half-written.
+       prompted_direct_handoff_kind = COALESCE(
+         excluded.prompted_direct_handoff_kind, foreman_queues.prompted_direct_handoff_kind),
+       prompted_direct_handoff_episode = COALESCE(
+         excluded.prompted_direct_handoff_episode, foreman_queues.prompted_direct_handoff_episode),
+       prompted_direct_handoff_generation = COALESCE(
+         excluded.prompted_direct_handoff_generation,
+         foreman_queues.prompted_direct_handoff_generation),
        wrapup_asked_at = CASE
          WHEN ? = 1 THEN excluded.wrapup_asked_at ELSE foreman_queues.wrapup_asked_at END,
        wrapup_answer = CASE
@@ -8045,6 +8492,9 @@ export function consumePromptedGeneration(
     input.sessionCwd,
     ask,
     input.now,
+    handoffKind,
+    handoffEpisode,
+    handoffKind,
     input.now,
     input.noteKey,
     input.generation,
@@ -8113,7 +8563,10 @@ export function countOpenQueueItems(noteKey: string): number {
  * nothing has touched since `cutoff`.
  *
  * The second branch collects rows that hold NOTHING: no items and no wrap-up or
- * prompted compatibility/current guard fields, regardless of age. `ensureQueue` mints a row for any
+ * prompted compatibility/current guard fields - the direct-shipping latch included,
+ * so a row whose only content is "Foreman already shipped this episode" is never
+ * collected out from under the episode it retires - regardless of age. `ensureQueue` mints
+ * a row for any
  * session whose wrap-up state is merely touched, and the `prompted` trigger touches
  * every session it ever considers, so this is now the common shape of a row rather than
  * a rarity. Waiting out `cutoff` for a row with nothing in it buys no safety: there is
@@ -8143,6 +8596,7 @@ export function pruneDeadQueues(liveKeys: Set<string>, cutoff: number): number {
                 AND q.prompted_activity_at IS NULL
                 AND q.prompted_legacy_cutover_generation IS NULL
                 AND q.prompted_consumed_generation IS NULL
+                AND q.prompted_direct_handoff_kind IS NULL
                 AND NOT EXISTS (
                   SELECT 1 FROM foreman_queue_items i WHERE i.note_key = q.note_key
                 )

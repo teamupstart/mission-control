@@ -40,6 +40,7 @@ import type {
   Session,
   SessionDiff,
   SessionGoal,
+  PromptedDirectHandoffKind,
   SessionIntentGuard,
   SessionNote,
   SessionQueue,
@@ -1329,19 +1330,28 @@ export class ForemanClient implements ForemanActions {
     if (!res.ok) throw new Error(`setWrapupAnswer ${sessionId} -> ${res.status}`);
   }
 
-  /** Consume one expected completed work-cycle generation, optionally raising its ask. */
+  /**
+   * Consume one expected completed work-cycle generation, optionally raising its ask or
+   * recording the direct-shipping handoff that is about to be typed.
+   *
+   * `directHandoff` reaches the daemon over this route precisely because Foreman never
+   * writes SQLite. The daemon stamps it inside the same compare-and-consume statement,
+   * which is what makes "marked before injected" a property of one transaction rather
+   * than of two requests a crash can land between.
+   */
   async consumePromptedGeneration(
     sessionId: string,
     logicalKey: string,
     generation: number,
     expectedIntent: SessionIntentGuard,
-    opts?: { ask?: boolean },
+    opts?: { ask?: boolean; directHandoff?: PromptedDirectHandoffKind },
   ): Promise<void> {
     const res = await send("POST", `/api/sessions/${enc(sessionId)}/queue/wrapup/prompted`, {
       logicalKey,
       generation,
       expectedIntent,
       ...(opts?.ask ? { ask: true } : {}),
+      ...(opts?.directHandoff ? { directHandoff: opts.directHandoff } : {}),
     });
     if (!res.ok) throw new Error(`consumePromptedGeneration ${sessionId} -> ${res.status}`);
   }

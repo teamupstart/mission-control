@@ -10,9 +10,9 @@ import { PLAN_DECISIONS_TOOL, PLAN_SCHEDULING_TOOL } from "./tools.ts";
  * of restating them.
  *
  * That is the deliberate difference from `scouts/prompt.ts`, and it follows from the two
- * contracts being enforced by different things. A scout's report is SERVER-enforced: the task
- * cannot reach `done` until a page has been captured and verified, so its requirement had to
- * hold with every skill switched off - which meant restating the skill in the appendix. A plan
+ * contracts being enforced by different things. A scout's report is SERVER-enforced: normal
+ * completion cannot reach `done` until a page has been captured and verified, so its requirement
+ * had to hold with every skill switched off - which meant restating the skill in the appendix. A plan
  * has no such gate. It is finished when a human says the plan is right, so the procedure can
  * stay where it is already written, in `skills/html-plans/SKILL.md`, and this appendix's job
  * is to guarantee the agent reaches it rather than to be a second copy of it.

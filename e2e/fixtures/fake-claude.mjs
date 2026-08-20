@@ -786,7 +786,7 @@ function answerAsked(requestId, response) {
   answer([prompt]);
 }
 
-/** How many `result` frames this fake has emitted, so each carries a distinct turn uuid. */
+/** How many `result` frames this fake has emitted, for UUIDs and cumulative query totals. */
 let results = 0;
 
 /**
@@ -803,28 +803,30 @@ let results = 0;
  * is the WRITE tier and `cacheReadInputTokens` the read one, and `input_tokens` on the flat
  * block excludes both - the conventions the ledger's columns assume.
  *
- * Costs are round and small so a spec can assert exact rendered strings: $2.50 a turn.
+ * Costs are round and small so a spec can assert exact rendered strings: $2.50 a turn. The
+ * values returned here grow with every result because the real streaming SDK reports totals
+ * for the whole `query()` call, not a standalone delta for the turn that just ended.
  */
 function turnUsage() {
   results += 1;
   return {
     uuid: `${SESSION_ID}-result-${results}`,
-    total_cost_usd: 2.5,
+    total_cost_usd: 2.5 * results,
     num_turns: results,
     modelUsage: {
       [MODEL]: {
-        inputTokens: 1_000,
-        outputTokens: 500,
-        cacheReadInputTokens: 20_000,
-        cacheCreationInputTokens: 3_000,
-        costUSD: 2.5,
+        inputTokens: 1_000 * results,
+        outputTokens: 500 * results,
+        cacheReadInputTokens: 20_000 * results,
+        cacheCreationInputTokens: 3_000 * results,
+        costUSD: 2.5 * results,
       },
     },
     usage: {
-      input_tokens: 1_000,
-      output_tokens: 500,
-      cache_read_input_tokens: 20_000,
-      cache_creation_input_tokens: 3_000,
+      input_tokens: 1_000 * results,
+      output_tokens: 500 * results,
+      cache_read_input_tokens: 20_000 * results,
+      cache_creation_input_tokens: 3_000 * results,
     },
   };
 }

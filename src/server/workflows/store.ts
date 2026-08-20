@@ -7268,6 +7268,11 @@ export class WorkflowStore {
       sessionCwd,
       generation: expectedWorkCycle.generation,
       ask: false,
+      // A Workflow claim is not a direct-shipping handoff. Foreman submits the bound
+      // Workflow and never types the direct PR instruction here, so latching one would
+      // permanently disarm prompted completion for this intent episode against an action
+      // that was never taken.
+      directHandoff: null,
       now,
     }, this.db);
   }

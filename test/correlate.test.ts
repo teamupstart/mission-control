@@ -129,10 +129,14 @@ test("excludes the CLI subprocess of an embedded session we spawned ourselves", 
   const sdkArgv =
     "/Users/me/.local/bin/claude --output-format stream-json --verbose --input-format" +
     " stream-json --model claude-opus-5 --permission-prompt-tool stdio --resume=f07285ee";
+  // Relative fixture pids cannot collide with the test worker's real pid. A hard-coded
+  // child pid once equalled process.pid on CI and turned this into a self-parent row.
+  const firstChildPid = process.pid + 1;
+  const secondChildPid = process.pid + 2;
   const input: DiscoveryInput = {
     procs: [
-      proc({ pid: 66148, ppid: process.pid, tty: "ttys000", command: sdkArgv, startMs: 1000 }),
-      proc({ pid: 66223, ppid: process.pid, tty: "ttys000", command: sdkArgv, startMs: 1001 }),
+      proc({ pid: firstChildPid, ppid: process.pid, tty: "ttys000", command: sdkArgv, startMs: 1000 }),
+      proc({ pid: secondChildPid, ppid: process.pid, tty: "ttys000", command: sdkArgv, startMs: 1001 }),
     ],
     terminals: terminals([], [emuPane({ tty: "ttys000", tabTitle: "Investigate Conductor" })]),
   };
@@ -141,10 +145,12 @@ test("excludes the CLI subprocess of an embedded session we spawned ourselves", 
 
 test("excludes an agent we spawned through a shim, not just a direct child", () => {
   // Descent, not parentage: the rule has to survive anything we put between us and the agent.
+  const shimPid = process.pid + 1;
+  const agentPid = process.pid + 2;
   const input: DiscoveryInput = {
     procs: [
-      proc({ pid: 7000, ppid: process.pid, tty: "ttys7", command: "node scripts/shim.mjs", agent: null, agentNative: false }),
-      proc({ pid: 7001, ppid: 7000, tty: "ttys7", command: "claude" }),
+      proc({ pid: shimPid, ppid: process.pid, tty: "ttys7", command: "node scripts/shim.mjs", agent: null, agentNative: false }),
+      proc({ pid: agentPid, ppid: shimPid, tty: "ttys7", command: "claude" }),
     ],
     terminals: terminals([], [emuPane({ tty: "ttys7", tabTitle: "make restart" })]),
   };

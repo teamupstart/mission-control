@@ -37,7 +37,13 @@ import {
 } from "./archives.ts";
 import { SCOUT_REPORT_PATH_SHAPE, SCOUT_SUBMISSION_LIMITS, scoutReportSlug } from "./scouts.ts";
 import { TERMINAL_BACKEND_IDS } from "./terminal.ts";
-import { AGENT_TYPES, SESSION_RUNTIMES, TASK_KINDS, THINKING_LEVELS } from "./types.ts";
+import {
+  AGENT_TYPES,
+  PROMPTED_DIRECT_HANDOFF_KINDS,
+  SESSION_RUNTIMES,
+  TASK_KINDS,
+  THINKING_LEVELS,
+} from "./types.ts";
 import type { AgentType, SessionRuntime, Task } from "./types.ts";
 import { supportsEffort } from "./harness-capabilities.ts";
 import { HARNESS_MODEL_INPUT_MODES } from "./model.ts";
@@ -1011,12 +1017,19 @@ export type KeepAwakeRequest = z.infer<typeof KeepAwakeRequestSchema>;
  * backlog with `ready: 0` in which every chain rooted in a cancelled task. This is that
  * way out, and it is deliberately an explicit, confirmed act rather than a side effect
  * of any status change.
+ *
+ * `confirmIncompleteScout` is a second, narrower confirmation. A scout still attempts to
+ * publish and verify its report first. When that is not possible, the daemon refuses the
+ * first completion with the exact archive problems; only a repeated request carrying this
+ * flag may close the task without a complete archive. Keeping the default false prevents
+ * non-interactive completion and older clients from silently dropping the scout deliverable.
  */
 export const CompleteTaskSchema = z.object({
   outcome: z.string().min(1),
   outcomeUrl: z.string().url().optional(),
   satisfyDependents: z.boolean().optional().default(false),
   requireStopped: z.boolean().optional().default(false),
+  confirmIncompleteScout: z.boolean().optional().default(false),
 });
 export type CompleteTask = z.infer<typeof CompleteTaskSchema>;
 
@@ -3056,6 +3069,15 @@ const SessionIntentGuardSchema = z.object({
 );
 
 /**
+ * Which automated prompted handoff a consumption is authorizing, if any.
+ *
+ * Derived from the shared registry rather than restated, the same way `AGENT_TYPES` and
+ * `SESSION_RUNTIMES` are, so the wire vocabulary, the union and the column can never
+ * become three different lists.
+ */
+export const PromptedDirectHandoffKindSchema = z.enum(PROMPTED_DIRECT_HANDOFF_KINDS);
+
+/**
  * Consume one completed work-cycle generation for the `prompted` trigger.
  *
  * The daemon compares every field again at the write boundary. A worker result from a
@@ -3070,7 +3092,18 @@ export const PromptedWrapupSchema = z.object({
   // card in one durable write. If that write fails, neither fact lands and the worker
   // can retry the whole verified boundary on its next unhurried tick.
   ask: z.boolean().optional().default(false),
-});
+  // The caller is about to type the direct shipping instruction, and wants that fact
+  // recorded in the SAME write that consumes the generation. Mark-before-inject: if
+  // this write fails nothing was typed, and if the injection then fails the handoff is
+  // still recorded, because a retried direct injection IS the double push.
+  //
+  // A constrained kind rather than a boolean so the durable row says which handoff it
+  // was. Foreman supplies it over this route; Foreman never writes SQLite itself.
+  directHandoff: PromptedDirectHandoffKindSchema.nullable().optional().default(null),
+}).refine(
+  (body) => !(body.ask && body.directHandoff),
+  { message: "A prompted consumption cannot both raise the Ship it? card and hand off to direct shipping" },
+);
 export type PromptedWrapup = z.infer<typeof PromptedWrapupSchema>;
 
 /**

@@ -250,6 +250,19 @@ export interface EffortSpec {
   levelsFor(modelId: string | null): readonly ThinkingLevel[];
   /** Exact argv fragment that applies one level to a newly launched session. */
   launchArgs(level: ThinkingLevel): readonly string[];
+  /**
+   * WHEN an embedded driver's accepted level actually takes effect.
+   *
+   * `"now"` means the driver moves the conversation it is already running, so the change
+   * is observable as soon as the call returns. `"next-turn"` means the level rides the
+   * next turn the driver starts and the running one keeps its old value - the card must
+   * say the selection is pending rather than claim it applied. `null` is a harness with
+   * no embedded effort control at all.
+   *
+   * Declared here, and read by the route, so "does this accepted change need a pending
+   * projection" is a fact about the harness rather than a branch on an agent name.
+   */
+  driverApplies: "now" | "next-turn" | null;
   /** The harness's own session-scoped effort control, or null when it has none. */
   sessionPicker:
     | {
@@ -472,6 +485,9 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
       levels: THINKING_LEVELS,
       levelsFor: () => THINKING_LEVELS,
       launchArgs: (level) => ["--effort", level],
+      // `applyFlagSettings({ effortLevel })` on the live query object: the SDK moves the
+      // conversation it is already running, so the route observes the change immediately.
+      driverApplies: "now",
       sessionPicker: {
         kind: "horizontal",
         command: "/model",
@@ -589,6 +605,11 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
       // `-c` parses its value as TOML, falling back to a raw string. The level is a
       // closed enum, so every value rendered here is valid for that parser.
       launchArgs: (level) => ["-c", `model_reasoning_effort=${level}`],
+      // `effort` is a `turn/start` parameter. `turn/steer` has no such field, so a level
+      // chosen while a turn is running - and a level chosen while none is - both land on
+      // the NEXT turn this driver starts, and the rollout's next `turn_context` is what
+      // confirms it.
+      driverApplies: "next-turn",
       sessionPicker: {
         kind: "shortcuts",
         composerReady: codexComposerReady,
@@ -683,6 +704,9 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
       levels: THINKING_LEVELS,
       levelsFor: () => THINKING_LEVELS,
       launchArgs: (level) => ["--thinking", level],
+      // Null because pi has no embedded driver effort control to describe - its
+      // `SdkSessionHandle.setEffort` is null and the supervisor refuses the call.
+      driverApplies: null,
       // Pi's Shift+Tab walks one direction through seven values, including `off` and
       // `minimal`, so neither existing live-picker shape can drive it faithfully.
       sessionPicker: null,

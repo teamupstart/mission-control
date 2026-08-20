@@ -37,9 +37,9 @@ process.env.MISSION_MCP_SERVER = join(home, "no-such-mcp-bundle.mjs");
 const { Registry } = await import("../src/server/registry.ts");
 const { Dispatcher } = await import("../src/server/dispatcher.ts");
 const { openDb, getForemanInvite } = await import("../src/server/db.ts");
-const { executionAuthorizationContract } = await import("../src/server/execution-authorization.ts");
 const { setHarnessesConfig, resolveDispatchRuntime } = await import("../src/server/harnesses.ts");
 const { MISSION_MCP_TOOLS } = await import("../src/server/mission-mcp.ts");
+const { withTaskKindContract } = await import("../src/server/task-contract.ts");
 const { HarnessesConfigSchema } = await import("../src/shared/protocol.ts");
 
 type SdkSupervisor = import("../src/server/sdk/supervisor.ts").SdkSupervisor;
@@ -161,17 +161,15 @@ test("with both toggles on, Claude and Codex dispatch through the supervisor wit
   assert.deepEqual(supervisor.starts.map((start) => start.agent), ["claude", "codex"]);
   for (const agent of ["claude", "codex"] as const) {
     const start = supervisor.starts.find((candidate) => candidate.agent === agent)!;
+    const task = registry.getTask(`task-sdk-${agent}`)!;
     // The task's own title, unsanitized: `sessionLabel` cuts a name to a terminal backend's
     // grammar, and there is no terminal here to satisfy.
     assert.equal(start.name, `Exercise ${agent} SDK dispatch`);
-    // The exact intent remains turn one's prefix, followed by the same server-owned
-    // authorization contract that terminal dispatch receives.
+    // The exact intent remains turn one's prefix, followed by the same server-owned kind
+    // contract that terminal dispatch receives.
     assert.equal(
       start.prompt,
-      [
-        `run ${agent} through the embedded runtime`,
-        executionAuthorizationContract({ workflowEvidence: false, workflowContinuation: false }),
-      ].join("\n\n"),
+      withTaskKindContract(task, `run ${agent} through the embedded runtime`),
     );
     assert.equal(
       start.acceptedGoalPrompt,
@@ -181,7 +179,6 @@ test("with both toggles on, Claude and Codex dispatch through the supervisor wit
     assert.equal(start.taskId, `task-sdk-${agent}`);
     assert.ok(start.cwd.length > 0);
 
-    const task = registry.getTask(`task-sdk-${agent}`)!;
     assert.equal(task.status, "running");
     assert.match(task.sessionId ?? "", /^sdk:/);
     // No terminal home was spawned, so there is no name or pane resource to record.

@@ -60,6 +60,18 @@ export function CompleteModal({
   const [satisfy, setSatisfy] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** Archive problems the daemon has verified and the operator may explicitly accept. */
+  const [scoutWarning, setScoutWarning] = useState<{
+    sessionId: string;
+    taskId: string;
+    problems: string[];
+  } | null>(null);
+  // A modal can stay mounted while its live session snapshot changes. Never let one
+  // scout's warning authorize a later task or work episode that happens to reuse it.
+  const activeScoutWarning =
+    scoutWarning?.sessionId === session.id && scoutWarning.taskId === task?.id
+      ? scoutWarning.problems
+      : null;
   /** A success worth saying out loud - today, only the retro that became a backlog task. */
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -108,9 +120,16 @@ export function CompleteModal({
       outcome.trim() || "completed",
       undefined,
       satisfy,
+      undefined,
+      activeScoutWarning !== null,
     );
     if (!completed.ok) {
       setBusy(false);
+      if (completed.confirmIncompleteScout && completed.problems?.length) {
+        setScoutWarning({ sessionId: session.id, taskId: task.id, problems: completed.problems });
+        return;
+      }
+      setScoutWarning(null);
       setError(completed.error ?? "could not complete the task");
       return;
     }
@@ -124,6 +143,11 @@ export function CompleteModal({
       return;
     }
     onCompleted?.();
+    close();
+  }
+
+  function close(): void {
+    setScoutWarning(null);
     onClose();
   }
 
@@ -153,13 +177,13 @@ export function CompleteModal({
       setNotice(retroOutcome(result));
       return;
     }
-    onClose();
+    close();
   }
 
   return (
     <Overlay
       id={OVERLAY_IDS.complete}
-      onClose={onClose}
+      onClose={close}
       className="modal complete-modal"
       role="dialog"
       ariaLabel="Complete task and close session"
@@ -179,7 +203,7 @@ export function CompleteModal({
               type="button"
               className="icon-btn"
               aria-label="Close"
-              onClick={onClose}
+              onClick={close}
               disabled={busy}
             >
               ✕
@@ -266,6 +290,13 @@ export function CompleteModal({
             </p>
           )}
 
+          {activeScoutWarning && (
+            <div className="complete-warning" role="alert">
+              <strong>No scout report will be archived.</strong>
+              <p>{activeScoutWarning.join("; ")}</p>
+              <p>Close without a report only if you do not need this scout's findings in Scouts.</p>
+            </div>
+          )}
           {error && <p className="complete-error">{error}</p>}
           {notice && <p className="complete-notice" role="status">{notice}</p>}
         </div>
@@ -294,7 +325,7 @@ export function CompleteModal({
           )}
           <span className="actions-spacer" />
           <Tooltip label="Leave the task and the agent alone">
-            <button type="button" className="btn btn-ghost" onClick={onClose} disabled={busy}>
+            <button type="button" className="btn btn-ghost" onClick={close} disabled={busy}>
               Cancel
             </button>
           </Tooltip>
@@ -302,6 +333,8 @@ export function CompleteModal({
             label={
               tourPreview
                 ? "Use Complete tour in the guide to record this fixed outcome"
+                : activeScoutWarning
+                  ? "Confirm that this task may close without an archived scout report"
                 : task
                 ? "Mark the task done, then terminate this agent"
                 : "This session has no task to complete"
@@ -309,10 +342,14 @@ export function CompleteModal({
           >
             <button
               type="submit"
-              className="btn btn-primary"
+              className={`btn ${activeScoutWarning ? "btn-danger" : "btn-primary"}`}
               disabled={!canComplete}
             >
-              {busy ? "Completing…" : "Complete & close"}
+              {busy
+                ? "Completing…"
+                : activeScoutWarning
+                  ? "Close without report"
+                  : "Complete & close"}
             </button>
           </Tooltip>
         </footer>

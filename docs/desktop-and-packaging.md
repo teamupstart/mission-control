@@ -94,12 +94,17 @@ none.
 ## Updates from the installed app
 
 A managed app checks the canonical repository's stable GitHub Releases through the already
-authenticated `gh` CLI. Choose **Check for Updates…** from either the application menu or the
-tray. A native dialog reports that the app is current or shows the newer version and plain-text
-release notes, with **Update Now** and **Later** choices. The native path works while the dashboard
-window is hidden. The app also checks after a short startup delay, every six hours with jitter,
-and once after returning from a long sleep; background failures stay quiet and are written to the
-local update log.
+authenticated `gh` CLI. When a newer version is available, the dashboard shows a full-width banner
+with the version, a shortened plain-text release summary, and **Update Now** and **Later** controls.
+Applying briefly says that Mission Control is preparing the update; deferring hides the banner until
+the next scheduled check or launch. The banner is part of the Electron-only preload capability: the
+plain browser dashboard has no update bridge, renders no update banner, and starts no update check.
+
+Choose **Check for Updates…** from either the application menu or the tray for an immediate manual
+check. A native dialog reports that the app is current or offers the same **Update Now** and **Later**
+choice. This native path remains available while the dashboard window is hidden. The app also checks
+after a short startup delay, every six hours with jitter, and once after returning from a long sleep;
+background failures stay quiet and are written to the local update log.
 
 Updates are deliberately inert in development, on Intel Macs, without a managed-install receipt,
 without a system Node.js binary, or when `--from-origin` installed a non-canonical repository. A
@@ -116,9 +121,11 @@ build, version verification, and the atomic bundle swap.
 
 The helper relaunches the installed bundle by its exact path. A build, verification, swap, outcome,
 or relaunch failure restores both the previous app and its receipt before relaunching it. The result
-is stored in the versioned `update-outcome.json` marker and shown once on the next launch. Diagnostic
-output goes to the rotating `update.log` in the state directory, with credentials and absolute paths
-redacted.
+is stored in the versioned `update-outcome.json` marker. On the next launch, the native dialog and
+dashboard banner report a safe success or failure summary; a failure is therefore visible without
+opening the local log. **Retry** runs a fresh check, while **Dismiss** hides that result until update
+state changes. Diagnostic output remains only in the rotating `update.log` in the state directory,
+with credentials and absolute paths redacted.
 
 This updates only the packaged application and its updater-owned clone. A separately installed
 daemon LaunchAgent still runs from the repository path recorded in its plist and is not changed by

@@ -12,7 +12,9 @@ import type { LlmSpendModelUsage } from "@shared/llm-spend.ts";
 // carries `modelUsage`, `usage`, `total_cost_usd` and `session_id` with byte-identical
 // names and nesting to the headless envelope, because both are the same struct serialized
 // by the same CLI. The `uuid` the stream adds is the only difference that matters here, and
-// it belongs to the caller that has one (see `claudeEnvelopeTurnId`).
+// it belongs to the caller that has one (see `claudeEnvelopeTurnId`). The values themselves
+// are one-shot totals in the first transport and query-to-date totals in the streaming one;
+// the SDK adapter converts the latter to deltas after this shared parser has read them.
 //
 // Keeping the reader here is what stops the two from drifting. They previously could not
 // drift because only one of them read usage at all - the SDK driver threw the frame away
@@ -96,12 +98,13 @@ export function claudeEnvelopeModels(
 }
 
 /**
- * The dedup identity of one turn, as the SDK's `result` frame supplies it.
+ * The dedup identity of one result, as the SDK's `result` frame supplies it.
  *
- * `uuid` is per-FRAME, so it is per-turn: a session emits one `result` per turn and a fresh
- * uuid on each. That is exactly the identity `usage_ledger.window_end_ns` wants from a
- * driver - the ledger's unique index is (note_key, model_id, query_source, window_end_ns),
- * so keying on it makes re-recording the same turn a conflict rather than a second row.
+ * A session emits one `result` per turn and a fresh uuid on each. The usage values on that
+ * frame are cumulative for the SDK `query()`, so the uuid does not make them per-turn. Once
+ * the driver differences the snapshot, however, it is exactly the identity
+ * `usage_ledger.window_end_ns` wants: re-recording the same result becomes a conflict rather
+ * than a second row.
  *
  * Null rather than a synthesized fallback when the frame carries none. A counter would be
  * the obvious substitute and is the wrong one: it restarts at zero when the daemon does, so

@@ -3592,6 +3592,12 @@ export function buildApp(
         effort: null,
       }, 409);
     }
+    // Stamped the instant the driver's own call RESOLVES, not after the route gets back to
+    // publishing. Codex can start the first turn that carries the new level inside that gap,
+    // and a later stamp would make its `turn_context` look older than the acceptance it is
+    // evidence for - so the one record able to settle the selection would be refused and the
+    // chip would stay pending through a turn already running the new level.
+    let acceptedAt: number | null = null;
     const r = session.runtime === "sdk"
       ? await (async () => {
           // The DRIVER gate, not the pane one: a `shortcuts` picker's one-step-at-a-time
@@ -3607,6 +3613,7 @@ export function buildApp(
           }
           try {
             await sdkSessions.setEffort(session.id, parsed.data.effort);
+            acceptedAt = Date.now();
             return { ok: true, effort: parsed.data.effort };
           } catch (err) {
             return {
@@ -3625,18 +3632,46 @@ export function buildApp(
               current.transcriptPath === session.transcriptPath;
           },
         });
-    if (
-      r.ok &&
-      (session.runtime === "terminal" || session.agent !== "codex") &&
-      !registry.recordObservedSessionEffort(session.id, r.effort, session)
-    ) {
+    // WHEN an accepted level takes effect is a fact about the harness, declared once on
+    // `EffortSpec.driverApplies`, not a branch on an agent name. A pane walk always
+    // applies now - it types into the harness's own picker - so only a driver can defer.
+    //
+    // Deferred means the level rides the driver's next turn: the running one keeps the
+    // old level and a steered follow-up joins it, so the card goes on reporting what the
+    // conversation is ACTUALLY on and the selection is published beside it as pending.
+    // The rollout's next `turn_context` is what retires it.
+    const deferred =
+      session.runtime === "sdk" &&
+      harnessFor(session.agent).effort?.driverApplies === "next-turn";
+    const published = !r.ok
+      ? true
+      : deferred
+        // Both measurements come from HERE, and neither may be taken inside the registry:
+        // `baseline` is the revision this decision was made against, captured before the
+        // driver was asked (a poll landing while the call waited its turn would otherwise
+        // become the baseline), and `acceptedAt` is when the driver said yes. The fallback
+        // covers the arm that never reached a driver at all - `driverEffortTargetResult`
+        // short-circuits only when there is nothing left to change, where the record
+        // retires the selection and neither measurement is read.
+        ? registry.recordPendingSessionEffort(
+            session.id,
+            r.effort,
+            { revision: baseline, at: acceptedAt ?? Date.now() },
+            session,
+          )
+        : registry.recordObservedSessionEffort(session.id, r.effort, session);
+    if (!published) {
       return c.json({
         ok: false,
         error: "the live effort changed, but the session identity changed before it could be published",
         effort: null,
       }, 409);
     }
-    return c.json(r, r.ok ? 200 : 409);
+    // Reported from the PROJECTION rather than from `deferred`, so the one deferred case
+    // that settles immediately - choosing back the level the conversation is already on -
+    // does not announce a pending change nothing is waiting for.
+    const pending = deferred && registry.getSession(session.id)?.pendingEffort === r.effort;
+    return c.json({ ...r, ...(r.ok ? { pending } : {}) }, r.ok ? 200 : 409);
   });
 
   // Preview what a reset-to-origin would discard (fetches origin; localhost read).
@@ -3904,6 +3939,12 @@ export function buildApp(
   // matching Ship it? card too; splitting those writes can spend a verified generation
   // and then permanently lose its question on a daemon error. The Registry rechecks the
   // logical key, generation and resolved intent at this daemon-owned write boundary.
+  //
+  // `directHandoff` records, in that same statement, that Foreman is about to type the
+  // direct shipping instruction. It is a request field rather than a second call because
+  // the ordering IS the safety property: the mark must be durable before anything types,
+  // and a failed or ambiguous injection afterwards is never retried - the human Ship it?
+  // card is the only recovery. Foreman asks for the stamp here; only the daemon writes it.
   app.post("/api/sessions/:id/queue/wrapup/prompted", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
@@ -5234,6 +5275,7 @@ export function buildApp(
         parsed.data.outcomeUrl,
         parsed.data.satisfyDependents,
         parsed.data.requireStopped,
+        parsed.data.confirmIncompleteScout,
       );
     } catch (error) {
       if (error instanceof TaskStatusConflictError) return c.json({ error: error.message }, 409);
@@ -5242,7 +5284,11 @@ export function buildApp(
       // usually several paths at once. 422 would read as "malformed request"; the request was
       // fine, the world was not ready.
       if (error instanceof ScoutArchiveNotReadyError) {
-        return c.json({ error: error.message, problems: error.problems }, 409);
+        return c.json({
+          error: error.message,
+          problems: error.problems,
+          confirmIncompleteScout: true,
+        }, 409);
       }
       throw error;
     }

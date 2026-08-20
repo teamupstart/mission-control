@@ -54,6 +54,7 @@ function view(over: Partial<SessionViewProps> = {}): SessionViewProps {
     consoleZone: "rail",
     onConsoleZoneChange: () => {},
     onSelect: () => {},
+    onCursorTo: () => {},
     onDeselect: () => {},
     expandedId: null,
     onToggleExpand: () => {},

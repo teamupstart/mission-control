@@ -9,6 +9,7 @@ import type { PromptedConfig, PromptedInput } from "../src/server/foreman/prompt
 import { VERIFY_FAILURE_CAP, tickTargets } from "../src/server/foreman/queue-machine.ts";
 import type { QueueVerdict } from "../src/server/foreman/queue-machine.ts";
 import { isWrapupPayload, WRAPUP_PR } from "../src/shared/queue.ts";
+import { PromptedWrapupSchema } from "../src/shared/protocol.ts";
 import type { ReportBucket } from "../src/shared/session.ts";
 import type {
   GapSeverity,
@@ -103,6 +104,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     prChecks: null,
     meta: null,
     effortBaselineReady: false,
+    pendingEffort: null,
     note: null,
     cost: null,
     goal: { text: "Add retry handling.", source: "model", updatedAt: NOW },
@@ -128,6 +130,7 @@ function mkQueue(over: Partial<SessionQueue> = {}): SessionQueue {
     promptedActivityAt: null,
     promptedLegacyCutoverGeneration: null,
     promptedConsumedGeneration: null,
+    promptedDirectHandoff: null,
     updatedAt: 0,
     items: [],
     ...over,
@@ -393,6 +396,122 @@ test("THE RE-ARM: consumption is per completed work cycle, not per intent revisi
   assert.equal(laterCycle.kind === "check" && laterCycle.episodeKey, "intent:1:1");
 });
 
+test("THE DIRECT-SHIPPING LATCH: a handed-off intent episode never ships twice", () => {
+  // The reported loop, as a table. Foreman verified episode `intent:1:1`, consumed
+  // generation 1 and typed the direct PR instruction. That instruction makes the agent
+  // commit, push, open a PR and follow CI, and its settled Stop completes generation 2
+  // under the human's UNCHANGED intent - so every generation-keyed guard is legitimately
+  // re-armed at this point, and the trigger fired again.
+  const shipped = mkQueue({
+    promptedConsumedGeneration: 1,
+    promptedDirectHandoff: { kind: "direct-ship", episodeKey: "intent:1:1", generation: 1 },
+  });
+  const afterShipping = mkSession({
+    workCycle: {
+      logicalKey: "agent-1",
+      generation: 2,
+      active: false,
+      completedAt: NOW - 10_000,
+      updatedAt: NOW - 10_000,
+    },
+  });
+
+  // Without the latch this is a `check` - see THE RE-ARM above, which asserts exactly
+  // that on the same two fixtures minus the handoff. That behaviour is CORRECT and is
+  // deliberately preserved: it is what lets a background task notification or an
+  // item-less Workflow repair packet complete a later generation. The latch is narrower
+  // than "reject every later generation" on purpose.
+  const again = decide({ queue: shipped, session: afterShipping });
+  assert.equal(again.kind, "skip", "the shipping response re-armed the direct handoff");
+
+  // A skip, not a retire: the later generation is not the stale thing here, the episode
+  // is. Retiring would spend a generation the trigger has no business spending, and
+  // costs a write per settled turn for as long as the human stays on this objective.
+  assert.equal(again.kind === "skip" && again.why.includes("direct shipping"), true);
+
+  // The SDK Goal is still the human's, which is the whole reason the exact-payload guard
+  // could not see this. Asserted here so a change to goal capture that starts storing
+  // Foreman's payload does not quietly make this test pass for the other reason.
+  assert.equal(isWrapupPayload(mkIntent().prompt ?? ""), false);
+
+  // A later accepted human prompt advances promptRevision, which advances the episode
+  // key - and that alone re-arms completion, with nothing clearing the stored handoff.
+  const nextEpisode = decide({
+    queue: shipped,
+    session: afterShipping,
+    intent: mkIntent({
+      prompt: "now add metrics",
+      focus: "Add metrics",
+      relationship: "amend",
+      objective: `${GOAL} and add metrics`,
+      objectiveVersion: 2,
+      promptRevision: 2,
+      resolvedPromptRevision: 2,
+    }),
+  });
+  assert.equal(nextEpisode.kind, "check", "a new human episode must re-arm completion");
+  assert.equal(nextEpisode.kind === "check" && nextEpisode.episodeKey, "intent:2:2");
+
+  // A latch left by an EARLIER episode is inert against the current one, which is what
+  // makes preserving it across later consumptions safe rather than sticky.
+  const stale = mkQueue({
+    promptedConsumedGeneration: 1,
+    promptedDirectHandoff: { kind: "direct-ship", episodeKey: "intent:1:1", generation: 1 },
+  });
+  const currentEpisode = decide({
+    queue: stale,
+    session: afterShipping,
+    intent: mkIntent({
+      objectiveVersion: 3,
+      promptRevision: 4,
+      resolvedPromptRevision: 4,
+    }),
+  });
+  assert.equal(currentEpisode.kind, "check");
+
+  // And no latch at all - an upgraded row, or a session Foreman only ever asked about -
+  // leaves the trigger exactly as it was before this guard existed.
+  assert.equal(
+    decide({ queue: mkQueue({ promptedConsumedGeneration: 1 }), session: afterShipping }).kind,
+    "check",
+    "an unlatched queue must stay eligible on a later generation",
+  );
+});
+
+test("the prompted consume wire contract constrains the handoff it can authorize", () => {
+  const base = {
+    logicalKey: "agent-1",
+    generation: 1,
+    expectedIntent: {
+      objective: GOAL,
+      objectiveVersion: 1,
+      promptRevision: 1,
+      episodeKey: "intent:1:1",
+    },
+  };
+
+  // Absent means "consume only". Every existing caller - the ask, the hold, the retire,
+  // the Workflow claim - sends nothing new and must keep meaning exactly what it meant.
+  const plain = PromptedWrapupSchema.safeParse(base);
+  assert.equal(plain.success, true);
+  assert.equal(plain.success && plain.data.directHandoff, null);
+
+  const shipping = PromptedWrapupSchema.safeParse({ ...base, directHandoff: "direct-ship" });
+  assert.equal(shipping.success && shipping.data.directHandoff, "direct-ship");
+
+  // A constrained kind, not a free string: an unrecognised handoff would reach the durable
+  // column and read back as a latch nobody can explain.
+  assert.equal(PromptedWrapupSchema.safeParse({ ...base, directHandoff: "ship-it" }).success, false);
+
+  // Raising the Ship it? card and handing off to direct shipping are opposite answers to
+  // the same question. Accepting both would stamp a handoff for an instruction the human
+  // was simultaneously being asked to approve.
+  assert.equal(
+    PromptedWrapupSchema.safeParse({ ...base, ask: true, directHandoff: "direct-ship" }).success,
+    false,
+  );
+});
+
 test("missing, active, or mismatched work-cycle state fails closed", () => {
   assert.equal(decide({ session: mkSession({ workCycle: undefined }) }).kind, "skip");
   assert.equal(
@@ -417,6 +536,7 @@ test("legacy intent and evidence fields are not an active fallback trigger", () 
         promptedEvidence: null,
         promptedActivityAt: null,
         promptedConsumedGeneration: null,
+        promptedDirectHandoff: null,
       }),
     }).kind,
     "check",

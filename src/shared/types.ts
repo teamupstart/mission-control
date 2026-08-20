@@ -588,6 +588,26 @@ export interface Session {
   /** A passive read has established the effort baseline for this exact live identity. */
   effortBaselineReady: boolean;
   /**
+   * An effort the operator chose, the harness ACCEPTED, and the conversation has not run
+   * under yet - null whenever `meta.thinkingLevel` is already the live answer.
+   *
+   * It exists because "accepted" and "applied" are not the same event on every harness.
+   * Claude's driver applies a level to the conversation it is already running, so its
+   * change is observed the moment the route returns. Codex's rides the next `turn/start`
+   * and a running turn cannot be moved onto it: a steered follow-up joins the turn that
+   * is going, which keeps the OLD level, and the rollout keeps appending `turn_context`
+   * records saying so. Writing the selection into `meta.thinkingLevel` there would claim
+   * the current turn changed when it did not, and leaving it nowhere at all made the chip
+   * silently revert on the next routine rollout read.
+   *
+   * Which harnesses can produce one is declared by `EffortSpec.driverApplies`, not by
+   * agent name. Server-owned and in-memory: the registry sets it, and clears it when a
+   * later `turn_context` confirms the level, contradicts it, changes model, or the
+   * session rebinds. A daemon restart drops it - the durable `sdk_sessions.effort` column
+   * is what carries the accepted level across one, and the next turn re-asserts it.
+   */
+  pendingEffort: ThinkingLevel | null;
+  /**
    * This session's API-equivalent estimate, denormalized off the usage ledger and keyed on
    * the same stable note key as `note` and `goal` - never on `id`, which re-mints on
    * every restart while the ledger is meant to outlive the session.
@@ -1269,8 +1289,57 @@ export interface SessionQueue {
   promptedLegacyCutoverGeneration: number | null;
   /** Latest completed work-cycle generation consumed by prompted completion. */
   promptedConsumedGeneration: number | null;
+  /**
+   * The prompted direct-shipping handoff this queue has already made, or null when it
+   * has made none under the currently recorded intent episode.
+   *
+   * WHY THIS EXISTS, AND WHY IT IS NOT `promptedConsumedGeneration`.
+   *
+   * Consuming a generation says "Foreman has answered this settled completion". It
+   * deliberately does NOT say "and a human is now the only one who may re-open the
+   * question", because a later generation under unchanged human intent is a legitimate
+   * new opportunity - a background task notification landing its result, an item-less
+   * Live Workflow repair packet being worked. Those must stay eligible.
+   *
+   * Injecting the direct-shipping instruction is different in kind. The instruction
+   * itself makes the agent work and then park, which completes the NEXT generation, so
+   * a guard keyed only on generations re-arms on the very turn it caused and injects
+   * again. The handoff is authorized by the human INTENT EPISODE, not by any one
+   * generation, so that is what is recorded here.
+   */
+  promptedDirectHandoff: PromptedDirectHandoff | null;
   updatedAt: number;
   items: WorkItem[];
+}
+
+/**
+ * Which prompted handoff a queue made. Constrained rather than a free string so a row
+ * stays self-describing if a second automated handoff is ever added beside direct
+ * shipping - an existing row then reads as the handoff it actually was, instead of as
+ * an untyped latch whose meaning has to be inferred from when it was written.
+ */
+export const PROMPTED_DIRECT_HANDOFF_KINDS = ["direct-ship"] as const;
+export type PromptedDirectHandoffKind = (typeof PROMPTED_DIRECT_HANDOFF_KINDS)[number];
+
+/**
+ * One recorded prompted handoff: the kind, the intent episode that authorized it, and
+ * the work-cycle generation that was consumed to make it.
+ *
+ * Modeled as one nullable object rather than three nullable columns' worth of fields
+ * because the three are written together or not at all. A partially-set triple has no
+ * meaning, and the type is the cheapest place to say so.
+ */
+export interface PromptedDirectHandoff {
+  kind: PromptedDirectHandoffKind;
+  /**
+   * The resolved `SessionIntentGuard.episodeKey` that authorized the handoff. Eligibility
+   * compares this against the CURRENT resolved episode, which is what re-arms naturally:
+   * a later accepted human prompt advances promptRevision (and so the episode key), and a
+   * context clear rotates the logical key onto a different queue row entirely.
+   */
+  episodeKey: string;
+  /** The work-cycle generation consumed in the same atomic write. */
+  generation: number;
 }
 
 /**
@@ -2912,9 +2981,16 @@ export interface SessionFileEntry {
   path: string;
 }
 
-export type SessionFileKind = "html" | "markdown" | "text" | "binary" | "oversized";
+export type SessionFileKind = "html" | "markdown" | "image" | "text" | "binary" | "oversized";
 
-/** A file opened through the daemon's contained, UTF-8-only reader. */
+export interface SessionFileImagePreview {
+  /** Browser-decodable media type selected from the shared image-extension registry. */
+  mediaType: string;
+  /** Exact bounded bytes from this read, kept self-contained rather than exposed by a second route. */
+  dataUrl: string;
+}
+
+/** A file opened through the daemon's contained, size-bounded reader. */
 export interface SessionFileDocument {
   path: string;
   kind: SessionFileKind;
@@ -2925,6 +3001,8 @@ export interface SessionFileDocument {
   language: string;
   revision: string;
   error: string | null;
+  /** Present only for browser-renderable image documents. */
+  image?: SessionFileImagePreview;
 }
 
 export interface SessionFileSaveResult {

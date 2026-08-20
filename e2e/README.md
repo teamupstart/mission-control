@@ -426,16 +426,26 @@ The three matter together. The difference between the first and the last is a da
 a struck-through level and five words, and getting them confused means an operator believes
 a level took effect on work that ran without it.
 
-Regenerate them with:
+`effort-next-turn/focused-playwright-transcript.txt` is that run's own output. Under
+`MC_E2E_EVIDENCE` the spec narrates each milestone as its assertion lands - the live level
+read off the rollout, the turn going busy, the choice, how many times the active turn
+refreshed the card's metadata without the pending state moving, and the settle after the
+next turn. A bare pass line proves the spec ran and says nothing about what it watched; these
+lines are emitted by the run itself, so the transcript is a record of the flow rather than a
+summary written afterwards.
+
+Regenerate the frames and the transcript with:
 
 ```sh
+mkdir -p e2e/.artifacts/effort-next-turn
 env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   --config e2e/playwright.config.ts \
   e2e/specs/effort-next-turn.spec.ts \
-  --workers=1 --reporter=list
+  --workers=1 --reporter=list \
+  | tee e2e/.artifacts/effort-next-turn/focused-playwright-transcript.txt
 ```
 
-Attach the generated frames to the pull request; they are never committed.
+Attach the generated frames and transcript to the pull request; they are never committed.
 
 ### Accepted SDK stop
 

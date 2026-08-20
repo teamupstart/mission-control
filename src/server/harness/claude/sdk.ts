@@ -333,6 +333,16 @@ class ClaudeSdkSession implements SdkSessionHandle {
   /** The actual model reported by Claude's init frame, retained across a /clear rebind. */
   private modelId: string | null = null;
   /**
+   * The preceding query-to-date usage snapshot, used to recover one turn's delta.
+   *
+   * Claude's streaming-input SDK keeps one `query()` alive across turns. Every `result`
+   * repeats the totals for that whole query, so sending those snapshots straight to the
+   * append-only ledger makes turn two include turn one again, turn three include both, and
+   * so on. Retaining the last snapshot here keeps that vendor-specific counter behavior at
+   * the adapter boundary. The registry continues to receive an ordinary per-turn delta.
+   */
+  private cumulativeUsage: SdkUsage | null = null;
+  /**
    * Tool ids whose Bash input opened a pull request, awaiting the URL its output prints.
    *
    * Two halves of one fact, and both are required: the COMMAND is the authorship evidence
@@ -855,7 +865,13 @@ class ClaudeSdkSession implements SdkSessionHandle {
     }
     if (message.type === "result") {
       this.turnActive = false;
-      this.out.emit({ kind: "turn_done", usage: claudeTurnUsage(message, this.modelId) });
+      const cumulative = claudeTurnUsage(message, this.modelId);
+      const usage = cumulative ? claudeUsageDelta(cumulative, this.cumulativeUsage) : null;
+      // Advance only from a snapshot the ledger can actually accept. Otherwise a result
+      // missing its UUID would be subtracted from the next identifiable one and disappear
+      // from durable spend entirely.
+      if (cumulative?.turnId && cumulative.models?.length) this.cumulativeUsage = cumulative;
+      this.out.emit({ kind: "turn_done", usage });
       this.refreshRateLimits();
       return;
     }
@@ -863,6 +879,10 @@ class ClaudeSdkSession implements SdkSessionHandle {
 
   private bind(agentSessionId: string): void {
     if (!agentSessionId || agentSessionId === this.agentSessionId) return;
+    // A changed Claude identity is a new accounting window. `/clear` is the normal route,
+    // and its next result starts its cumulative counters over. Forgetting the old baseline
+    // is therefore as important as following the new transcript and note key below.
+    if (this.agentSessionId !== null) this.cumulativeUsage = null;
     this.agentSessionId = agentSessionId;
     const cleared = this.clearing;
     this.clearing = false;
@@ -880,10 +900,10 @@ class ClaudeSdkSession implements SdkSessionHandle {
 }
 
 /**
- * A `result` frame's usage, in both the display shape and the ledger shape.
+ * A `result` frame's query-to-date usage, in both display and ledger shapes.
  *
  * This function is why Claude session spend exists at all. The frame has always carried
- * `total_cost_usd`, `modelUsage` and a per-turn `uuid`; the driver used to emit
+ * `total_cost_usd`, `modelUsage` and a per-result `uuid`; the driver used to emit
  * `turn_done` with `usage: null` and drop all of it, on the premise that OpenTelemetry was
  * Claude's one ledger writer and would record the same turn independently. That premise is
  * what broke: a CLI whose metrics pipeline is inert - an export the daemon never receives,
@@ -896,8 +916,8 @@ class ClaudeSdkSession implements SdkSessionHandle {
  * showing one model, so the flat view names the conversation's model while `models` keeps
  * every id that actually served a request. The ledger reads `models`; the chip reads the rest.
  *
- * Returns null when the frame identifies no turn or reports no usage, which the registry
- * treats as "nothing to write" rather than a zero-cost turn.
+ * Returns null when the frame reports no usage. A frame without a UUID still returns the
+ * display view, but omits the ledger view because its eventual delta cannot be deduplicated.
  */
 export function claudeTurnUsage(
   message: ClaudeSdkMessage,
@@ -909,7 +929,7 @@ export function claudeTurnUsage(
   const turnId = claudeEnvelopeTurnId(envelope);
   const total = (key: keyof LlmSpendModelUsage): number =>
     models.reduce((sum, m) => sum + (typeof m[key] === "number" ? (m[key] as number) : 0), 0);
-  // The turn's cost is the envelope's own total when it reports one. Summing the per-model
+  // The query's cost is the envelope's own total when it reports one. Summing the per-model
   // figures is the fallback and not the default, because a model whose `costUSD` came back
   // null would silently make the sum read as a complete total that is short by one model.
   const reported = envelope.total_cost_usd;
@@ -927,6 +947,75 @@ export function claudeTurnUsage(
     modelId: boundModelId ?? models[0]?.modelId ?? null,
     costUsd,
     ...(turnId ? { turnId, models } : {}),
+  };
+}
+
+/** A cumulative counter's new contribution, tolerating a provider-side reset. */
+function cumulativeDelta(current: number, previous: number): number {
+  return current >= previous ? current - previous : current;
+}
+
+/** Whether any query-wide counter proves the provider started a new accounting window. */
+function cumulativeUsageReset(current: SdkUsage, previous: SdkUsage): boolean {
+  return (
+    current.input < previous.input ||
+    current.output < previous.output ||
+    current.cacheRead < previous.cacheRead ||
+    current.cacheWrite < previous.cacheWrite ||
+    (current.reasoningOutput ?? 0) < (previous.reasoningOutput ?? 0) ||
+    (current.costUsd !== null && previous.costUsd !== null && current.costUsd < previous.costUsd)
+  );
+}
+
+/**
+ * Convert two Claude query-to-date snapshots into the newest turn's usage.
+ *
+ * The first snapshot contributes its whole value. Later snapshots contribute only their
+ * increase. A lower current value means Claude reset that counter, so the current value is
+ * the new contribution rather than a negative delta. The result keeps the newest frame UUID:
+ * it remains the durable replay key for this delta even though it was never the boundary of
+ * the cumulative figures on the wire.
+ */
+export function claudeUsageDelta(
+  current: SdkUsage,
+  previous: SdkUsage | null,
+): SdkUsage {
+  if (!previous || cumulativeUsageReset(current, previous)) return current;
+  const previousModels = new Map(previous?.models?.map((model) => [model.modelId, model]) ?? []);
+  const models = current.models?.map((model) => {
+    const prior = previousModels.get(model.modelId);
+    return {
+      ...model,
+      input: cumulativeDelta(model.input, prior?.input ?? 0),
+      output: cumulativeDelta(model.output, prior?.output ?? 0),
+      reasoningOutput: cumulativeDelta(model.reasoningOutput, prior?.reasoningOutput ?? 0),
+      cacheRead: cumulativeDelta(model.cacheRead, prior?.cacheRead ?? 0),
+      cacheWrite: cumulativeDelta(model.cacheWrite, prior?.cacheWrite ?? 0),
+      reportedCostUsd:
+        model.reportedCostUsd === null
+          ? null
+          : cumulativeDelta(model.reportedCostUsd, prior?.reportedCostUsd ?? 0),
+    };
+  });
+  return {
+    input: cumulativeDelta(current.input, previous?.input ?? 0),
+    output: cumulativeDelta(current.output, previous?.output ?? 0),
+    cacheRead: cumulativeDelta(current.cacheRead, previous?.cacheRead ?? 0),
+    cacheWrite: cumulativeDelta(current.cacheWrite, previous?.cacheWrite ?? 0),
+    ...(current.reasoningOutput !== undefined
+      ? {
+          reasoningOutput: cumulativeDelta(
+            current.reasoningOutput,
+            previous?.reasoningOutput ?? 0,
+          ),
+        }
+      : {}),
+    modelId: current.modelId,
+    costUsd:
+      current.costUsd === null
+        ? null
+        : cumulativeDelta(current.costUsd, previous?.costUsd ?? 0),
+    ...(current.turnId && models ? { turnId: current.turnId, models } : {}),
   };
 }
 

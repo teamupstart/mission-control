@@ -379,6 +379,13 @@ export function headlessAnswer(prompt) {
 
 /** How many turns this process has finished, so each one's usage differs a little. */
 let turnsFinished = 0;
+const cumulativeUsage = {
+  inputTokens: 0,
+  outputTokens: 0,
+  cacheReadInputTokens: 0,
+  cacheCreationInputTokens: 0,
+  costUSD: 0,
+};
 
 /**
  * A stable 0-10 offset derived from this session's own id, so two CARDS differ too.
@@ -408,32 +415,31 @@ const USAGE_OFFSET = [...SESSION_ID].reduce((sum, ch) => sum + ch.charCodeAt(0),
  * here per turn rather than per process.
  *
  * The figures are invented, and that is the honest part of a demo whose model calls never
- * happened - they are plausible rather than arbitrary (one mid-size turn on Sonnet, cache-heavy
- * the way a real second turn is) and they vary per turn so a card's total is not a multiple.
+ * happened. Each turn's increment is plausible rather than arbitrary, then added to the
+ * query-to-date counters the real streaming SDK reports.
  */
 export function turnUsage() {
   turnsFinished += 1;
   const n = turnsFinished + USAGE_OFFSET;
-  const inputTokens = 3_400 + n * 820;
-  const outputTokens = 900 + n * 240;
-  const cacheReadInputTokens = 48_000 + n * 5_500;
-  const cacheCreationInputTokens = 6_200 + n * 400;
+  cumulativeUsage.inputTokens += 3_400 + n * 820;
+  cumulativeUsage.outputTokens += 900 + n * 240;
+  cumulativeUsage.cacheReadInputTokens += 48_000 + n * 5_500;
+  cumulativeUsage.cacheCreationInputTokens += 6_200 + n * 400;
   // Priced, not left null: an unpriced row takes the WHOLE fleet figure to "unpriced" rather
   // than to a smaller number (`fleetEstimatedCostSince` returns null when any row is unknown).
-  const costUSD = Number((0.31 + n * 0.17).toFixed(4));
+  cumulativeUsage.costUSD = Number(
+    (cumulativeUsage.costUSD + Number((0.31 + n * 0.17).toFixed(4))).toFixed(4),
+  );
   return {
     uuid: randomUUID(),
-    total_cost_usd: costUSD,
+    total_cost_usd: cumulativeUsage.costUSD,
+    num_turns: turnsFinished,
     modelUsage: {
       // The BOUND model, so the ledger charges the card for the model the card says it is
       // running. A real id here would read better in the cost drawer's per-model breakdown and
       // would be the one line of this demo that lied about which model did the work.
       [MODEL]: {
-        inputTokens,
-        outputTokens,
-        cacheReadInputTokens,
-        cacheCreationInputTokens,
-        costUSD,
+        ...cumulativeUsage,
       },
     },
   };

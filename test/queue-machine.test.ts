@@ -150,6 +150,7 @@ function mkQueue(items: WorkItem[], over: Partial<SessionQueue> = {}): SessionQu
     promptedActivityAt: null,
     promptedLegacyCutoverGeneration: null,
     promptedConsumedGeneration: null,
+    promptedDirectHandoff: null,
     updatedAt: 0,
     items,
     ...over,

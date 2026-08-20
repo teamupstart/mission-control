@@ -198,6 +198,7 @@ function mkFake(
       promptedActivityAt: null,
       promptedLegacyCutoverGeneration: null,
       promptedConsumedGeneration: null,
+      promptedDirectHandoff: null,
       updatedAt: 0,
       items,
     }),

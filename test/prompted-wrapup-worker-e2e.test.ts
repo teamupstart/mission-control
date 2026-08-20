@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { VERIFY_FAILURE_CAP } from "../src/server/foreman/queue-machine.ts";
+import { isWrapupPayload } from "../src/shared/queue.ts";
 import type { Session, SessionQueue } from "../src/shared/types.ts";
 import { mkMuxHandle, mkTaskSummary } from "./helpers/session-fixture.ts";
 
@@ -238,6 +239,7 @@ function mkQueue(cwd: string, over: Partial<SessionQueue> = {}): SessionQueue {
     promptedActivityAt: null,
     promptedLegacyCutoverGeneration: null,
     promptedConsumedGeneration: null,
+    promptedDirectHandoff: null,
     updatedAt: 0,
     items: [],
     ...over,
@@ -587,6 +589,7 @@ test("an explicit chat Workflow reaches ordinary verification and claims that Wo
       queue = {
         ...queue,
         promptedConsumedGeneration: body.expectedWorkCycle.generation,
+        promptedDirectHandoff: null,
         updatedAt: Date.now(),
       };
       return {
@@ -600,6 +603,7 @@ test("an explicit chat Workflow reaches ordinary verification and claims that Wo
       queue = {
         ...queue,
         promptedConsumedGeneration: body.generation,
+        promptedDirectHandoff: null,
         updatedAt: Date.now(),
       };
       return { status: 200, json: { ok: true } };
@@ -672,7 +676,7 @@ test("an empty diff consumes its generation without calling the verifier", async
     if (p === "/api/sessions/s1/transcript/size") return { status: 200, json: { size: 100 } };
     if (p === "/api/sessions/s1/queue/wrapup/prompted") {
       const body = JSON.parse(raw) as { generation: number };
-      queue = { ...queue, promptedConsumedGeneration: body.generation, updatedAt: Date.now() };
+      queue = { ...queue, promptedConsumedGeneration: body.generation, promptedDirectHandoff: null, updatedAt: Date.now() };
       consumedAt = Date.now();
       return { status: 200, json: queue };
     }
@@ -734,7 +738,7 @@ test("direct wrap-up consumes the expected generation before injecting", async (
     }
     if (p === "/api/sessions/s1/queue/wrapup/prompted") {
       const body = JSON.parse(raw) as { generation: number };
-      queue = { ...queue, promptedConsumedGeneration: body.generation, updatedAt: Date.now() };
+      queue = { ...queue, promptedConsumedGeneration: body.generation, promptedDirectHandoff: null, updatedAt: Date.now() };
       return { status: 200, json: queue };
     }
     if (p === "/api/sessions/s1/inject") {
@@ -761,6 +765,203 @@ test("direct wrap-up consumes the expected generation before injecting", async (
   assert.ok(stub.calls.indexOf(consume[0]!) < stub.calls.indexOf(inject[0]!), "injected before consume");
   assert.equal(queue.promptedConsumedGeneration, 1);
   assert.equal(claudeCalls(fake.log).length, 1, out);
+});
+
+test("a direct shipping handoff fires once per human episode, and re-arms on the next", async () => {
+  // THE REPORTED LOOP, end to end and across every real boundary it crossed.
+  //
+  // Human episode `intent:1:1` completes generation 1. Foreman verifies, consumes that
+  // generation, records the direct handoff and types the Straight-to-PR instruction. The
+  // agent then commits, pushes, opens a PR and follows CI - and PARKS, which completes
+  // generation 2 under COMPLETELY UNCHANGED human intent, because the injected payload
+  // arrives with origin `foreman` and is correctly excluded from the human-owned Goal.
+  //
+  // Every guard that existed before this fix is honestly re-armed at that point: the
+  // generation moved, the intent did not, and the Goal text is the human's ask rather
+  // than Foreman's payload, so the exact-payload loop guard finds nothing to match. The
+  // trigger fired again and pushed a second time. The latch is what stops it, and the
+  // last phase here proves it stops only THIS episode: a later accepted human prompt
+  // resolving to `intent:2:2` must ship again.
+  const repo = tmp("pw-repo-");
+  const fake = mkFakeClaude({ fail: false });
+  const session = mkSession(repo);
+  let queue = mkQueue(repo);
+  // `intent:1:1` until the human types again, at which point `intent:2:2`.
+  let episode: 1 | 2 = 1;
+  // The durable work-cycle generation. The injected instruction advances it, exactly as
+  // the agent's shipping turn does in production.
+  let generation = 1;
+  let completedAt = Date.now() - 120_000;
+  const injectedPayloads: string[] = [];
+  let firstInjectAt = 0;
+  let secondInjectAt = 0;
+
+  const stub = await startStub((req, url, raw) => {
+    const p = url.pathname;
+    if (p === "/api/foreman/config") {
+      return { status: 200, json: cfg({ mode: "live", repoAllowlist: [repo], wrapup: "pr" }) };
+    }
+    if (p === "/api/foreman/heartbeat") return { status: 200, json: { leader: true } };
+    if (p === "/api/sessions") {
+      return {
+        status: 200,
+        json: [{
+          ...session,
+          lastSeen: Date.now(),
+          lastActivity: completedAt,
+          workCycle: {
+            logicalKey: "agent-1",
+            generation,
+            active: false,
+            completedAt,
+            updatedAt: completedAt,
+          },
+        }],
+      };
+    }
+    if (p === "/api/reviews") return { status: 200, json: [] };
+    if (p === "/api/queues") return { status: 200, json: [] };
+    if (p === "/api/sessions/s1/queue") return { status: 200, json: queue };
+    if (p === "/api/sessions/s1/goal") {
+      // THE POINT OF #660, preserved: the Goal is the HUMAN's, in both episodes. The
+      // Foreman payload injected below never becomes the objective, so nothing here can
+      // be recognised by comparing Goal text against the wrap-up payload.
+      return {
+        status: 200,
+        json: episode === 1
+          ? goalRecord
+          : {
+              ...goalRecord,
+              prompt: "now also add a metrics counter",
+              focus: "Add a metrics counter",
+              objective: `${GOAL} and add a metrics counter`,
+              relationship: "amend",
+              objectiveVersion: 2,
+              promptRevision: 2,
+              resolvedPromptRevision: 2,
+            },
+      };
+    }
+    if (p === "/api/sessions/s1/diff") {
+      return {
+        status: 200,
+        json: {
+          ok: true,
+          patch: "diff --git a/up.ts b/up.ts\n+retry();\n",
+          truncated: false,
+          headSha: `sha-${generation}`,
+        },
+      };
+    }
+    if (p === "/api/sessions/s1/transcript/size") return { status: 200, json: { size: generation * 100 } };
+    if (p === "/api/sessions/s1/transcript") {
+      return {
+        status: 200,
+        json: { messages: [{ role: "user", text: GOAL, tools: [] }], truncated: false },
+      };
+    }
+    if (p === "/api/sessions/s1/standards") return { status: 200, json: { docs: [], truncated: false } };
+    if (p === "/api/sessions/s1/workflow-completion") {
+      return { status: 200, json: { claimed: false, reason: "no_binding" } };
+    }
+    if (p === "/api/sessions/s1/queue/wrapup/prompted") {
+      const body = JSON.parse(raw) as { generation: number; directHandoff?: string | null };
+      // The daemon's compare-and-consume boundary, modeled faithfully: the handoff is
+      // stamped in the SAME write that consumes the generation, and a later consumption
+      // never erases it.
+      queue = {
+        ...queue,
+        promptedConsumedGeneration: body.generation,
+        promptedDirectHandoff: body.directHandoff === "direct-ship"
+          ? {
+              kind: "direct-ship",
+              episodeKey: `intent:${episode}:${episode}`,
+              generation: body.generation,
+            }
+          : queue.promptedDirectHandoff,
+        updatedAt: Date.now(),
+      };
+      return { status: 200, json: queue };
+    }
+    if (p === "/api/sessions/s1/inject") {
+      injectedPayloads.push((JSON.parse(raw) as { text?: string }).text ?? "");
+      if (injectedPayloads.length === 1) firstInjectAt = Date.now();
+      else secondInjectAt = Date.now();
+      // The instruction commits, pushes, opens the PR and follows CI, then the session
+      // parks: a NEW completed generation, under unchanged human intent. This is the
+      // turn every generation-keyed guard legitimately re-arms on.
+      completedAt = Date.now();
+      generation += 1;
+      return { status: 200, json: { ok: true } };
+    }
+    if (p === "/api/sessions/s1/queue/wrapup") return { status: 200, json: queue };
+    return { status: 200, json: null };
+  });
+
+  // Phase one: ship once, then hold the worker open for a full idle cadence with the
+  // shipping response's completed generation sitting there, armed as far as every other
+  // guard is concerned. A second inject in this window is the bug.
+  const first = await runWorker({
+    port: stub.port,
+    claudeBin: fake.bin,
+    claudeLog: fake.log,
+    ms: 25_000,
+    until: () => firstInjectAt !== 0 && Date.now() - firstInjectAt >= IDLE_SETTLE_MS,
+  });
+
+  assert.equal(injectedPayloads.length, 1, `the direct instruction was typed twice\n${first}`);
+  assert.equal(isWrapupPayload(injectedPayloads[0]!.trim()), true, first);
+  assert.equal(generation, 2, "the injected instruction must complete a later generation");
+  assert.deepEqual(
+    queue.promptedDirectHandoff,
+    { kind: "direct-ship", episodeKey: "intent:1:1", generation: 1 },
+    "the handoff must be recorded against the intent episode that authorized it",
+  );
+
+  const consume = stub.to("POST", "/api/sessions/s1/queue/wrapup/prompted");
+  assert.equal(consume.length, 1, first);
+  assert.equal(
+    (consume[0]!.body as { directHandoff?: string }).directHandoff,
+    "direct-ship",
+    "the shipping consume must ask for the handoff stamp",
+  );
+  assert.ok(
+    stub.calls.indexOf(consume[0]!) <
+      stub.calls.indexOf(stub.to("POST", "/api/sessions/s1/inject")[0]!),
+    "the handoff must be durable BEFORE anything types",
+  );
+  // The expensive half of the loop, and the one an operator actually pays for: the
+  // second tick must not re-verify either. The latch is read in the pure decision,
+  // above every evidence read and the model call.
+  assert.equal(claudeCalls(fake.log).length, 1, `the shipping turn re-entered the verifier\n${first}`);
+  assert.equal(stub.to("GET", "/api/sessions/s1/diff").length, 1, first);
+
+  // Phase two: the human types again. That advances promptRevision, so the resolved
+  // episode becomes `intent:2:2` - and completion re-arms with nothing clearing the
+  // stored handoff. A restart is folded in here on purpose: the worker below is a fresh
+  // process reading the same durable row, which is the only state that carries over.
+  episode = 2;
+  completedAt = Date.now();
+  generation += 1;
+  const second = await runWorker({
+    port: stub.port,
+    claudeBin: fake.bin,
+    claudeLog: fake.log,
+    ms: 25_000,
+    until: () => secondInjectAt !== 0 && Date.now() - secondInjectAt >= IDLE_SETTLE_MS,
+  });
+  await stub.close();
+
+  assert.equal(
+    injectedPayloads.length,
+    2,
+    `a new human episode did not re-arm direct shipping\n${second}`,
+  );
+  assert.deepEqual(
+    queue.promptedDirectHandoff,
+    { kind: "direct-ship", episodeKey: "intent:2:2", generation: 3 },
+    "the second handoff must latch its own episode",
+  );
 });
 
 test("an incomplete prompted hold re-arms on a task-notification turn and claims one workflow", async () => {
@@ -867,6 +1068,7 @@ test("an incomplete prompted hold re-arms on a task-notification turn and claims
       queue = {
         ...queue,
         promptedConsumedGeneration: body.generation,
+        promptedDirectHandoff: null,
         updatedAt: Date.now(),
       };
       phase = "task-notification";
@@ -877,6 +1079,7 @@ test("an incomplete prompted hold re-arms on a task-notification turn and claims
       queue = {
         ...queue,
         promptedConsumedGeneration: body.expectedWorkCycle.generation,
+        promptedDirectHandoff: null,
         updatedAt: Date.now(),
       };
       claimedAt = Date.now();
@@ -1066,6 +1269,7 @@ test("a Manual binding blocks Straight to PR and a failed card write stays retry
       queue = {
         ...queue,
         promptedConsumedGeneration: body.generation,
+        promptedDirectHandoff: null,
         updatedAt: Date.now(),
         wrapupAskedAt: Date.now(),
         wrapupAnswer: null,
@@ -1157,6 +1361,7 @@ test("a broken verifier gives up after the strike cap, at one strike per unhurri
       queue = {
         ...queue,
         promptedConsumedGeneration: body.generation,
+        promptedDirectHandoff: null,
         updatedAt: Date.now(),
       };
       return { status: 200, json: { ok: true } };

@@ -80,6 +80,7 @@ test("a queue row round-trips and upserts in place", () => {
     promptedActivityAt: null,
     promptedLegacyCutoverGeneration: null,
     promptedConsumedGeneration: null,
+    promptedDirectHandoff: null,
     updatedAt: 1,
   });
   assert.equal(getQueueRow("k1")?.cwd, "/repo");
@@ -95,6 +96,7 @@ test("a queue row round-trips and upserts in place", () => {
     promptedActivityAt: null,
     promptedLegacyCutoverGeneration: 3,
     promptedConsumedGeneration: null,
+    promptedDirectHandoff: null,
     updatedAt: 2,
   });
   const r = getQueueRow("k1");
@@ -154,6 +156,7 @@ test("a legacy prompted guard without an activity watermark records a cutover ce
       promptedGoal: string | null;
       promptedLegacyCutoverGeneration: number | null;
       promptedConsumedGeneration: number | null;
+      promptedDirectHandoff: unknown;
     };
     legacyNull: {
       promptedLegacyCutoverGeneration: number | null;
@@ -168,6 +171,11 @@ test("a legacy prompted guard without an activity watermark records a cutover ce
   assert.equal(result.legacy.promptedLegacyCutoverGeneration, 1, "the current cycle fails closed");
   assert.equal(result.legacyNull.promptedLegacyCutoverGeneration, null);
   assert.equal(result.legacyNull.promptedConsumedGeneration, null);
+  // The direct-shipping latch columns arrive by ALTER on a table that predates them, so
+  // an upgraded row must read as "no handoff recorded" rather than failing the write or
+  // inventing one. That is the truthful answer: this row was written before Foreman could
+  // record a handoff, and the exact-payload Goal guard remains its compatibility backstop.
+  assert.equal(result.legacy.promptedDirectHandoff, null, "an upgraded row records no handoff");
   const restarted = execFileSync(
     process.execPath,
     [
@@ -204,6 +212,7 @@ test("a matching legacy watermark bootstraps only the completion it observed", (
     promptedActivityAt: 21,
     promptedLegacyCutoverGeneration: null,
     promptedConsumedGeneration: null,
+    promptedDirectHandoff: null,
     updatedAt: 22,
   });
 
@@ -227,6 +236,7 @@ test("an ambiguous legacy ceiling blocks its cycle but naturally allows the next
     promptedActivityAt: null,
     promptedLegacyCutoverGeneration: null,
     promptedConsumedGeneration: null,
+    promptedDirectHandoff: null,
     updatedAt: 50,
   });
 
@@ -238,6 +248,7 @@ test("an ambiguous legacy ceiling blocks its cycle but naturally allows the next
       sessionCwd: "/repo",
       generation: 1,
       ask: false,
+      directHandoff: null,
       now: 51,
     }),
     false,
@@ -252,6 +263,7 @@ test("an ambiguous legacy ceiling blocks its cycle but naturally allows the next
       sessionCwd: "/repo",
       generation: 2,
       ask: false,
+      directHandoff: null,
       now: 54,
     }),
     true,
@@ -260,31 +272,140 @@ test("an ambiguous legacy ceiling blocks its cycle but naturally allows the next
   assert.equal(getQueueRow(key)?.promptedConsumedGeneration, 2);
 });
 
+test("the direct-shipping handoff is stamped by the consume, and only by it", () => {
+  const key = "prompted-direct-handoff";
+  markWorkCycleActive(key, 10);
+  completeWorkCycle(key, 11, 11);
+
+  // A consumption that makes no handoff records none. Both Workflow claims and every
+  // ask/hold/retire path go through here, so this is the default and it must stay clean:
+  // latching on a handoff that never happened would permanently disarm the trigger.
+  assert.equal(
+    consumePromptedGeneration({ noteKey: key, sessionCwd: "/repo", generation: 1, ask: false, directHandoff: null, now: 12 }),
+    true,
+  );
+  assert.equal(getQueueRow(key)?.promptedDirectHandoff, null);
+
+  // The direct shipping path stamps the latch and consumes the generation in ONE
+  // statement. Mark-before-inject is a property of this transaction: Foreman calls it
+  // before it types, and never retries the injection afterwards.
+  markWorkCycleActive(key, 13);
+  completeWorkCycle(key, 14, 14);
+  assert.equal(
+    consumePromptedGeneration({
+      noteKey: key,
+      sessionCwd: "/repo",
+      generation: 2,
+      ask: false,
+      directHandoff: { kind: "direct-ship", episodeKey: "intent:1:1" },
+      now: 15,
+    }),
+    true,
+  );
+  assert.deepEqual(getQueueRow(key)?.promptedDirectHandoff, {
+    kind: "direct-ship",
+    episodeKey: "intent:1:1",
+    generation: 2,
+  });
+
+  // The shipping instruction's own settled turn completes generation 3. This layer is a
+  // compare-and-set on the GENERATION and nothing else, so it accepts that consumption -
+  // suppressing the episode is `decidePromptedWrapup`'s job, above, and duplicating it
+  // here would also block the legitimate later consumers (a Workflow claim, a retire).
+  // What this layer owes is that consuming does not ERASE the latch: that would erase
+  // the record of an instruction already typed into the pane, and the next tick would
+  // type it again.
+  markWorkCycleActive(key, 16);
+  completeWorkCycle(key, 17, 17);
+  assert.equal(
+    consumePromptedGeneration({ noteKey: key, sessionCwd: "/repo", generation: 3, ask: false, directHandoff: null, now: 18 }),
+    true,
+  );
+  assert.deepEqual(
+    getQueueRow(key)?.promptedDirectHandoff,
+    { kind: "direct-ship", episodeKey: "intent:1:1", generation: 2 },
+    "a later consumption must never erase a recorded handoff",
+  );
+});
+
+test("a failed direct consume records no handoff at all", () => {
+  // The other half of mark-before-inject: if the mark does not land, Foreman aborts and
+  // types nothing. A row that recorded the handoff anyway would disarm a session that
+  // was never shipped, and the human Ship it? fallback would never be offered either.
+  const key = "prompted-direct-refused";
+  markWorkCycleActive(key, 20);
+  completeWorkCycle(key, 21, 21);
+  upsertQueueItem(mkItem({ id: "direct-blocked", noteKey: key }));
+  assert.equal(
+    consumePromptedGeneration({
+      noteKey: key,
+      sessionCwd: "/repo",
+      generation: 1,
+      ask: false,
+      directHandoff: { kind: "direct-ship", episodeKey: "intent:1:1" },
+      now: 22,
+    }),
+    false,
+    "drain precedence still refuses the write",
+  );
+  assert.equal(getQueueRow(key)?.promptedDirectHandoff ?? null, null);
+  assert.equal(getQueueRow(key)?.promptedConsumedGeneration ?? null, null);
+});
+
+test("a re-attached queue never carries another conversation's handoff", () => {
+  // Episode keys are per-conversation counters (`intent:<objectiveVersion>:<promptRevision>`),
+  // so a source row's `intent:1:1` would collide with the target conversation's own first
+  // episode and silently disarm prompted completion on work it never shipped.
+  const from = "rekey-handoff-from";
+  markWorkCycleActive(from, 30);
+  completeWorkCycle(from, 31, 31);
+  assert.equal(
+    consumePromptedGeneration({
+      noteKey: from,
+      sessionCwd: "/repo",
+      generation: 1,
+      ask: false,
+      directHandoff: { kind: "direct-ship", episodeKey: "intent:1:1" },
+      now: 32,
+    }),
+    true,
+  );
+  const row = getQueueRow(from);
+  assert.equal(row?.promptedDirectHandoff?.kind, "direct-ship");
+
+  rekeyQueue(
+    from,
+    { ...row!, noteKey: "rekey-handoff-to", promptedDirectHandoff: null, updatedAt: 33 },
+    [],
+  );
+  assert.equal(getQueueRow("rekey-handoff-to")?.promptedDirectHandoff ?? null, null);
+});
+
 test("prompted consumption is an exact-generation compare-and-set with an atomic ask", () => {
   const key = "prompted-cas";
   markWorkCycleActive(key, 10);
   completeWorkCycle(key, 11, 11);
 
   assert.equal(
-    consumePromptedGeneration({ noteKey: key, sessionCwd: "/repo", generation: 1, ask: false, now: 12 }),
+    consumePromptedGeneration({ noteKey: key, sessionCwd: "/repo", generation: 1, ask: false, directHandoff: null, now: 12 }),
     true,
   );
   assert.equal(getQueueRow(key)?.promptedConsumedGeneration, 1);
   assert.equal(
-    consumePromptedGeneration({ noteKey: key, sessionCwd: "/repo", generation: 1, ask: false, now: 13 }),
+    consumePromptedGeneration({ noteKey: key, sessionCwd: "/repo", generation: 1, ask: false, directHandoff: null, now: 13 }),
     false,
     "the same generation cannot be consumed twice",
   );
 
   markWorkCycleActive(key, 14);
   assert.equal(
-    consumePromptedGeneration({ noteKey: key, sessionCwd: "/repo", generation: 1, ask: true, now: 15 }),
+    consumePromptedGeneration({ noteKey: key, sessionCwd: "/repo", generation: 1, ask: true, directHandoff: null, now: 15 }),
     false,
     "a stale result cannot consume while newer work is active",
   );
   completeWorkCycle(key, 16, 16);
   assert.equal(
-    consumePromptedGeneration({ noteKey: key, sessionCwd: "/repo", generation: 2, ask: true, now: 17 }),
+    consumePromptedGeneration({ noteKey: key, sessionCwd: "/repo", generation: 2, ask: true, directHandoff: null, now: 17 }),
     true,
   );
   assert.equal(getQueueRow(key)?.promptedConsumedGeneration, 2);
@@ -294,7 +415,7 @@ test("prompted consumption is an exact-generation compare-and-set with an atomic
   completeWorkCycle(key, 19, 19);
   upsertQueueItem(mkItem({ id: "prompted-queued", noteKey: key }));
   assert.equal(
-    consumePromptedGeneration({ noteKey: key, sessionCwd: "/repo", generation: 3, ask: false, now: 20 }),
+    consumePromptedGeneration({ noteKey: key, sessionCwd: "/repo", generation: 3, ask: false, directHandoff: null, now: 20 }),
     false,
     "queued work keeps drain precedence at the write boundary",
   );
@@ -325,6 +446,7 @@ test("legacy prompted bootstrap refuses an active work cycle with an older compl
     promptedActivityAt: 13,
     promptedLegacyCutoverGeneration: null,
     promptedConsumedGeneration: null,
+    promptedDirectHandoff: null,
     updatedAt: 14,
   });
 
@@ -351,6 +473,7 @@ test("legacy prompted bootstrap does not consume a completion newer than its bou
     promptedActivityAt: 21,
     promptedLegacyCutoverGeneration: null,
     promptedConsumedGeneration: null,
+    promptedDirectHandoff: null,
     updatedAt: 22,
   });
   markWorkCycleActive(key, 23);
@@ -364,6 +487,7 @@ test("legacy prompted bootstrap does not consume a completion newer than its bou
       sessionCwd: "/repo",
       generation: 2,
       ask: false,
+      directHandoff: null,
       now: 25,
     }),
     true,
@@ -386,11 +510,12 @@ test("prompted consumption never moves a consumed generation backward", () => {
     promptedActivityAt: null,
     promptedLegacyCutoverGeneration: null,
     promptedConsumedGeneration: 2,
+    promptedDirectHandoff: null,
     updatedAt: 12,
   });
 
   assert.equal(
-    consumePromptedGeneration({ noteKey: key, sessionCwd: "/repo", generation: 1, ask: false, now: 13 }),
+    consumePromptedGeneration({ noteKey: key, sessionCwd: "/repo", generation: 1, ask: false, directHandoff: null, now: 13 }),
     false,
   );
   assert.equal(getQueueRow(key)?.promptedConsumedGeneration, 2);
@@ -606,6 +731,7 @@ test("deleting an item and a queue row leaves nothing behind", () => {
     promptedActivityAt: null,
     promptedLegacyCutoverGeneration: null,
     promptedConsumedGeneration: null,
+    promptedDirectHandoff: null,
     updatedAt: 1,
   });
   upsertQueueItem(mkItem({ id: "doomed", noteKey: "gone" }));
@@ -651,7 +777,7 @@ test("the single-flight index is rebuilt when its predicate drifts from the shar
   // `verifying` item in one queue is rejected by the db, not merely by hope.
   const guard = run(`const db = await import("./src/server/db.ts");
     db.openDb();
-    db.upsertQueue({ noteKey: "drift", cwd: null, branch: null, wrapupAskedAt: null, wrapupAnswer: null, promptedGoal: null, promptedEvidence: null, promptedActivityAt: null, promptedLegacyCutoverGeneration: null, promptedConsumedGeneration: null, updatedAt: 0 });
+    db.upsertQueue({ noteKey: "drift", cwd: null, branch: null, wrapupAskedAt: null, wrapupAnswer: null, promptedGoal: null, promptedEvidence: null, promptedActivityAt: null, promptedLegacyCutoverGeneration: null, promptedConsumedGeneration: null, promptedDirectHandoff: null, updatedAt: 0 });
     const mk = (id, seq) => ({ id, noteKey: "drift", seq, intent: "i", state: "verifying", round: 0,
       baseSha: null, transcriptAnchor: null, gaps: [], sendAttempts: 0, verifyFailures: 0,
       escalationReason: null, lastVerdict: null, approvedAt: null, proposedPayload: null,
@@ -698,7 +824,7 @@ test("a single-flight rebuild that CANNOT succeed keeps the old index and still 
     const d = db.openDb();
     d.exec("DROP INDEX one_inflight_per_queue;");
     d.exec("CREATE UNIQUE INDEX one_inflight_per_queue ON foreman_queue_items(note_key) WHERE state IN ('sending','awaiting_pickup','in_progress');");
-    db.upsertQueue({ noteKey: "stuck", cwd: null, branch: null, wrapupAskedAt: null, wrapupAnswer: null, promptedGoal: null, promptedEvidence: null, promptedActivityAt: null, promptedLegacyCutoverGeneration: null, promptedConsumedGeneration: null, updatedAt: 0 });
+    db.upsertQueue({ noteKey: "stuck", cwd: null, branch: null, wrapupAskedAt: null, wrapupAnswer: null, promptedGoal: null, promptedEvidence: null, promptedActivityAt: null, promptedLegacyCutoverGeneration: null, promptedConsumedGeneration: null, promptedDirectHandoff: null, updatedAt: 0 });
     const mk = (id, seq) => ({ id, noteKey: "stuck", seq, intent: "i", state: "verifying", round: 0,
       baseSha: null, transcriptAnchor: null, gaps: [], sendAttempts: 0, verifyFailures: 0,
       escalationReason: null, lastVerdict: null, approvedAt: null, proposedPayload: null,
@@ -723,7 +849,7 @@ test("a single-flight rebuild that CANNOT succeed keeps the old index and still 
 });
 
 test("rekeyQueue moves a whole queue onto a new key", () => {
-  upsertQueue({ noteKey: "rk-from", cwd: "/r", branch: "b", wrapupAskedAt: 7, wrapupAnswer: null, promptedGoal: null, promptedEvidence: null, promptedActivityAt: null, promptedLegacyCutoverGeneration: null, promptedConsumedGeneration: null, updatedAt: 1 });
+  upsertQueue({ noteKey: "rk-from", cwd: "/r", branch: "b", wrapupAskedAt: 7, wrapupAnswer: null, promptedGoal: null, promptedEvidence: null, promptedActivityAt: null, promptedLegacyCutoverGeneration: null, promptedConsumedGeneration: null, promptedDirectHandoff: null, updatedAt: 1 });
   const a = mkItem({ noteKey: "rk-from", seq: 0, intent: "first" });
   const b = mkItem({ noteKey: "rk-from", seq: 1, intent: "second" });
   upsertQueueItem(a);
@@ -731,7 +857,7 @@ test("rekeyQueue moves a whole queue onto a new key", () => {
 
   rekeyQueue(
     "rk-from",
-    { noteKey: "rk-to", cwd: "/r", branch: "b", wrapupAskedAt: 7, wrapupAnswer: null, promptedGoal: null, promptedEvidence: null, promptedActivityAt: null, promptedLegacyCutoverGeneration: null, promptedConsumedGeneration: null, updatedAt: 2 },
+    { noteKey: "rk-to", cwd: "/r", branch: "b", wrapupAskedAt: 7, wrapupAnswer: null, promptedGoal: null, promptedEvidence: null, promptedActivityAt: null, promptedLegacyCutoverGeneration: null, promptedConsumedGeneration: null, promptedDirectHandoff: null, updatedAt: 2 },
     [
       { ...a, noteKey: "rk-to", seq: 0 },
       { ...b, noteKey: "rk-to", seq: 1 },
@@ -752,7 +878,7 @@ test("rekeyQueue ROLLS BACK a half-applied move - the batch is never split", () 
   // leaves some items re-keyed under a queue row that may already be deleted and the
   // rest on the old key: a split no reader models, and one the re-attach button can't
   // repair, since the hint it keys off is computed from the very rows that got moved.
-  upsertQueue({ noteKey: "rb-from", cwd: "/r", branch: "b", wrapupAskedAt: null, wrapupAnswer: null, promptedGoal: null, promptedEvidence: null, promptedActivityAt: null, promptedLegacyCutoverGeneration: null, promptedConsumedGeneration: null, updatedAt: 1 });
+  upsertQueue({ noteKey: "rb-from", cwd: "/r", branch: "b", wrapupAskedAt: null, wrapupAnswer: null, promptedGoal: null, promptedEvidence: null, promptedActivityAt: null, promptedLegacyCutoverGeneration: null, promptedConsumedGeneration: null, promptedDirectHandoff: null, updatedAt: 1 });
   const good = mkItem({ noteKey: "rb-from", seq: 0, intent: "keep me" });
   const also = mkItem({ noteKey: "rb-from", seq: 1, intent: "and me" });
   upsertQueueItem(good);
@@ -763,7 +889,7 @@ test("rekeyQueue ROLLS BACK a half-applied move - the batch is never split", () 
   assert.throws(() =>
     rekeyQueue(
       "rb-from",
-      { noteKey: "rb-to", cwd: "/r", branch: "b", wrapupAskedAt: null, wrapupAnswer: null, promptedGoal: null, promptedEvidence: null, promptedActivityAt: null, promptedLegacyCutoverGeneration: null, promptedConsumedGeneration: null, updatedAt: 2 },
+      { noteKey: "rb-to", cwd: "/r", branch: "b", wrapupAskedAt: null, wrapupAnswer: null, promptedGoal: null, promptedEvidence: null, promptedActivityAt: null, promptedLegacyCutoverGeneration: null, promptedConsumedGeneration: null, promptedDirectHandoff: null, updatedAt: 2 },
       [
         { ...good, noteKey: "rb-to", seq: 0 },
         { ...also, noteKey: "rb-to", seq: 1, intent: null as unknown as string },
@@ -789,7 +915,7 @@ test("rekeyQueue ROLLS BACK a half-applied move - the batch is never split", () 
 // ingest and SSE, so the floor rose with use and never came back down.
 
 function seedRow(key: string, cwd: string, updatedAt: number): void {
-  upsertQueue({ noteKey: key, cwd, branch: "b", wrapupAskedAt: null, wrapupAnswer: null, promptedGoal: null, promptedEvidence: null, promptedActivityAt: null, promptedLegacyCutoverGeneration: null, promptedConsumedGeneration: null, updatedAt });
+  upsertQueue({ noteKey: key, cwd, branch: "b", wrapupAskedAt: null, wrapupAnswer: null, promptedGoal: null, promptedEvidence: null, promptedActivityAt: null, promptedLegacyCutoverGeneration: null, promptedConsumedGeneration: null, promptedDirectHandoff: null, updatedAt });
 }
 
 test("listQueueRowsForCwd returns only that cwd's queues", () => {
@@ -875,10 +1001,10 @@ test("pruneDeadQueues collects an EMPTY row at any age, but keeps one holding wr
 
   // ...but each guard field alone is state worth keeping: an unanswered Ship it? card,
   // a human's answer, a legacy prompt guard, or a conservative migration ceiling.
-  upsertQueue({ noteKey: "keep-ask", cwd: "/k", branch: "b", wrapupAskedAt: 500, wrapupAnswer: null, promptedGoal: null, promptedEvidence: null, promptedActivityAt: null, promptedLegacyCutoverGeneration: null, promptedConsumedGeneration: null, updatedAt: Date.now() });
-  upsertQueue({ noteKey: "keep-answer", cwd: "/k", branch: "b", wrapupAskedAt: null, wrapupAnswer: "ship directly", promptedGoal: null, promptedEvidence: null, promptedActivityAt: null, promptedLegacyCutoverGeneration: null, promptedConsumedGeneration: null, updatedAt: Date.now() });
-  upsertQueue({ noteKey: "keep-goal", cwd: "/k", branch: "b", wrapupAskedAt: null, wrapupAnswer: null, promptedGoal: "ship the uploader", promptedEvidence: null, promptedActivityAt: null, promptedLegacyCutoverGeneration: null, promptedConsumedGeneration: null, updatedAt: Date.now() });
-  upsertQueue({ noteKey: "keep-cutover", cwd: "/k", branch: "b", wrapupAskedAt: null, wrapupAnswer: null, promptedGoal: null, promptedEvidence: null, promptedActivityAt: null, promptedLegacyCutoverGeneration: 1, promptedConsumedGeneration: null, updatedAt: Date.now() });
+  upsertQueue({ noteKey: "keep-ask", cwd: "/k", branch: "b", wrapupAskedAt: 500, wrapupAnswer: null, promptedGoal: null, promptedEvidence: null, promptedActivityAt: null, promptedLegacyCutoverGeneration: null, promptedConsumedGeneration: null, promptedDirectHandoff: null, updatedAt: Date.now() });
+  upsertQueue({ noteKey: "keep-answer", cwd: "/k", branch: "b", wrapupAskedAt: null, wrapupAnswer: "ship directly", promptedGoal: null, promptedEvidence: null, promptedActivityAt: null, promptedLegacyCutoverGeneration: null, promptedConsumedGeneration: null, promptedDirectHandoff: null, updatedAt: Date.now() });
+  upsertQueue({ noteKey: "keep-goal", cwd: "/k", branch: "b", wrapupAskedAt: null, wrapupAnswer: null, promptedGoal: "ship the uploader", promptedEvidence: null, promptedActivityAt: null, promptedLegacyCutoverGeneration: null, promptedConsumedGeneration: null, promptedDirectHandoff: null, updatedAt: Date.now() });
+  upsertQueue({ noteKey: "keep-cutover", cwd: "/k", branch: "b", wrapupAskedAt: null, wrapupAnswer: null, promptedGoal: null, promptedEvidence: null, promptedActivityAt: null, promptedLegacyCutoverGeneration: 1, promptedConsumedGeneration: null, promptedDirectHandoff: null, updatedAt: Date.now() });
 
   pruneDeadQueues(new Set(), 1);
   assert.ok(getQueueRow("keep-ask"), "an unanswered ask still has to render");

@@ -199,6 +199,40 @@ export function decidePromptedWrapup(input: PromptedInput): PromptedCandidate {
   }
 
   const episodeKey = resolvedIntent.episodeKey;
+
+  // 10. THE DIRECT-SHIPPING LATCH. Foreman already handed this intent episode to the
+  //     direct PR instruction, so the question "should Foreman ship this?" has been
+  //     asked and answered for it. Nothing below - no verifier, no verdict - can make
+  //     asking it a second time correct.
+  //
+  //     WHY STEP 9 IS NOT ENOUGH, and why this is not the same guard twice. Step 9 asks
+  //     whether the Goal text IS Foreman's payload, which only holds where goal capture
+  //     stored Foreman's own prompt as the objective. It does not on the SDK sessions
+  //     this bug was reported on: the injected payload arrives with origin `foreman` and
+  //     is correctly excluded from the human-owned Goal, so the Goal stays the human's
+  //     original ask and the text comparison finds nothing. Step 9 stays as the
+  //     compatibility backstop for rows written before this latch existed and for any
+  //     path that does capture the payload; this is the durable guard.
+  //
+  //     WHY THE EPISODE AND NOT THE GENERATION. The instruction Foreman typed makes the
+  //     agent commit, push, open a PR and follow CI, and then park - which completes a
+  //     LATER generation under completely unchanged human intent. Latching on the
+  //     generation that authorized the handoff would therefore re-arm on the very turn
+  //     the handoff caused, which is this bug. Human intent is the thing that actually
+  //     authorizes a shipping handoff, so the episode key is the thing that latches.
+  //
+  //     RE-ARM IS THE COMPARISON, not a sweep: a later accepted human prompt advances
+  //     `promptRevision` and so the episode key, and a context clear rotates the logical
+  //     key onto a different queue row. Both leave this false without anything clearing it.
+  //
+  //     A `skip`, deliberately, and not a `retire`: retiring would consume the later
+  //     generation, and the generation is not what is stale here - the episode is. This
+  //     costs one structural comparison per tick and no model call, and the moment intent
+  //     advances the trigger is armed again.
+  if (queue?.promptedDirectHandoff?.episodeKey === episodeKey) {
+    return { kind: "skip", why: "Foreman already handed this instruction to direct shipping" };
+  }
+
   const logicalKey = session.agentSessionId ?? session.id;
   const cycle = session.workCycle;
   if (

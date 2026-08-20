@@ -1269,8 +1269,57 @@ export interface SessionQueue {
   promptedLegacyCutoverGeneration: number | null;
   /** Latest completed work-cycle generation consumed by prompted completion. */
   promptedConsumedGeneration: number | null;
+  /**
+   * The prompted direct-shipping handoff this queue has already made, or null when it
+   * has made none under the currently recorded intent episode.
+   *
+   * WHY THIS EXISTS, AND WHY IT IS NOT `promptedConsumedGeneration`.
+   *
+   * Consuming a generation says "Foreman has answered this settled completion". It
+   * deliberately does NOT say "and a human is now the only one who may re-open the
+   * question", because a later generation under unchanged human intent is a legitimate
+   * new opportunity - a background task notification landing its result, an item-less
+   * Live Workflow repair packet being worked. Those must stay eligible.
+   *
+   * Injecting the direct-shipping instruction is different in kind. The instruction
+   * itself makes the agent work and then park, which completes the NEXT generation, so
+   * a guard keyed only on generations re-arms on the very turn it caused and injects
+   * again. The handoff is authorized by the human INTENT EPISODE, not by any one
+   * generation, so that is what is recorded here.
+   */
+  promptedDirectHandoff: PromptedDirectHandoff | null;
   updatedAt: number;
   items: WorkItem[];
+}
+
+/**
+ * Which prompted handoff a queue made. Constrained rather than a free string so a row
+ * stays self-describing if a second automated handoff is ever added beside direct
+ * shipping - an existing row then reads as the handoff it actually was, instead of as
+ * an untyped latch whose meaning has to be inferred from when it was written.
+ */
+export const PROMPTED_DIRECT_HANDOFF_KINDS = ["direct-ship"] as const;
+export type PromptedDirectHandoffKind = (typeof PROMPTED_DIRECT_HANDOFF_KINDS)[number];
+
+/**
+ * One recorded prompted handoff: the kind, the intent episode that authorized it, and
+ * the work-cycle generation that was consumed to make it.
+ *
+ * Modeled as one nullable object rather than three nullable columns' worth of fields
+ * because the three are written together or not at all. A partially-set triple has no
+ * meaning, and the type is the cheapest place to say so.
+ */
+export interface PromptedDirectHandoff {
+  kind: PromptedDirectHandoffKind;
+  /**
+   * The resolved `SessionIntentGuard.episodeKey` that authorized the handoff. Eligibility
+   * compares this against the CURRENT resolved episode, which is what re-arms naturally:
+   * a later accepted human prompt advances promptRevision (and so the episode key), and a
+   * context clear rotates the logical key onto a different queue row entirely.
+   */
+  episodeKey: string;
+  /** The work-cycle generation consumed in the same atomic write. */
+  generation: number;
 }
 
 /**

@@ -30,7 +30,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { LlmRunner } from "../src/shared/llm.ts";
-import type { Session, SessionQueue } from "../src/shared/types.ts";
+import type { PromptedDirectHandoff, Session, SessionQueue } from "../src/shared/types.ts";
 import type { InjectDeps, PromptWriteGuard } from "../src/server/actions.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
 
@@ -389,6 +389,7 @@ function guard(noteKey: string): {
   wrapupAnswer: string | null;
   promptedGoal: string | null;
   promptedConsumedGeneration: number | null;
+  promptedDirectHandoff: PromptedDirectHandoff | null;
 } {
   const row = getQueueRow(noteKey);
   return {
@@ -396,6 +397,7 @@ function guard(noteKey: string): {
     wrapupAnswer: row?.wrapupAnswer ?? null,
     promptedGoal: row?.promptedGoal ?? null,
     promptedConsumedGeneration: row?.promptedConsumedGeneration ?? null,
+    promptedDirectHandoff: row?.promptedDirectHandoff ?? null,
   };
 }
 
@@ -587,6 +589,14 @@ test("an item-less session resumes prompted completion through a new natural wor
     }));
     assert.equal(next.claimed, true, "the naturally completed second generation was refused");
     assert.equal(guard(h.noteKey).promptedConsumedGeneration, 2);
+    // A Workflow claim is not a direct-shipping handoff. Latching one here would disarm
+    // every later repair round in this intent episode against an instruction Foreman
+    // never typed - which is the mirror image of the loop the latch exists to close.
+    assert.equal(
+      guard(h.noteKey).promptedDirectHandoff,
+      null,
+      "a Foreman Complete claim must not latch the direct-PR handoff",
+    );
     assert.equal(h.store.latestSubmission(runId)?.round, 3);
   } finally {
     h.stop();

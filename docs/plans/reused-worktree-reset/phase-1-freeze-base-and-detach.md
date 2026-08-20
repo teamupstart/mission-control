@@ -75,8 +75,9 @@ In `src/server/dispatcher.ts`, add a focused helper that returns a full frozen S
 3. If `origin` is proven absent, call the existing local `headCommit()` path and fail if no full commit can be resolved.
 4. If it exists, run `git fetch origin` with the network timeout already used for Git fetches.
 5. Treat an unknown, timed-out, overflowed, signalled, or nonzero configured-origin fetch as a dispatch error. Do not fall back to local HEAD.
-6. Resolve the remote default with the existing `remoteDefaultRef()` rules, then resolve its commit to a full SHA and verify it is a commit.
-7. Keep explicit `options.baseSha` on the existing `verifyPinnedBase()` path and do not fetch the remote default for that primary repository.
+6. After fetch, query or refresh the remote's current HEAD symref with a bounded network operation such as `git ls-remote --symref origin HEAD` or `git remote set-head origin --auto`. Do not trust the checkout's cached `refs/remotes/origin/HEAD`, because fetch does not update it when the server changes its default branch.
+7. Require a successful, well-formed current HEAD pointing at a branch fetched into `refs/remotes/origin/*`, then resolve that remote-tracking commit to one full SHA. A failed, unknown, malformed, or unresolvable result aborts dispatch.
+8. Keep explicit `options.baseSha` on the existing `verifyPinnedBase()` path and do not fetch or query the remote default for that primary repository.
 
 Resolve the complete base map before provisioning:
 
@@ -85,6 +86,8 @@ Resolve the complete base map before provisioning:
 - deduplicate identical repository roots before fetching if the task model can contain them, or preserve a deterministic sequential resolution order to avoid competing fetch locks.
 
 Pass those exact SHAs through `provisionAll()` into every `provisionWorktree()` call. Leave the direct-call null behavior and `headCommit()` fallback inside `provisionWorktree()` intact.
+
+Use the same current-remote-HEAD proof in `NativeWorktreeGit.fetchDefaultSha()` so Return also resets to the server's current default rather than a cached historical default. Prefer one shared pure parser or one shared helper where module boundaries and injected Git execution permit it; do not create divergent parsing rules for dispatch and Return.
 
 ### 2. Extend native inspection with detached state
 
@@ -135,7 +138,9 @@ In `test/worktree-manager.test.ts`:
 In dispatcher-focused tests:
 
 - create a bare or local origin whose default advances while the main checkout remains stale, and prove an ordinary task base resolves to the fresh remote SHA;
+- change the bare origin's advertised HEAD from `main` to `trunk` while the clone's local `origin/HEAD` remains stale, then prove both ordinary dispatch resolution and native Return select `trunk`;
 - prove a configured-origin fetch failure occurs before provisioning or spawn;
+- prove a failed, unknown, malformed, or unresolvable current remote-HEAD query fails before provisioning or spawn;
 - prove a failed or unknown `git remote` listing fails before provisioning or spawn and cannot select the no-origin fallback;
 - prove a repo with no origin resolves local HEAD;
 - prove an explicit pin wins without being replaced by the newer remote default;
@@ -166,6 +171,7 @@ Do not restate the test preload command outside `AGENTS.md` beyond the phase's v
 - Git branches: prior branch refs are preserved. Only checkout attachment changes.
 - Warm caches: ignored files survive because cleaning remains `git clean -fd`.
 - Failure behavior: origin-probe failure, configured-origin fetch failure, and detached-state uncertainty fail before agent launch; pool ambiguity quarantines rather than falls back.
+- Remote-default compatibility: both dispatch and Return prove the server's current default after fetch and never rely only on cached `origin/HEAD`.
 
 ## Tests and verification
 
@@ -218,3 +224,4 @@ Future work must not silently restore local-HEAD selection for scheduled tasks, 
 - 2026-08-20: Confirmed one phase owns every source-plan requirement. No earlier or later contract exists to reconcile.
 - 2026-08-20: Confirmed the shared ensemble reset helper remains unchanged and registry ownership rotation remains outside scope.
 - 2026-08-20: Incorporated Inspector feedback by defining origin absence as a successful remote listing without `origin`; every failed or unknown probe now fails closed.
+- 2026-08-20: Incorporated Inspector round 2 by requiring a refreshed or queried remote HEAD after fetch, shared by dispatch and Return, with regression coverage for a `main` to `trunk` default switch.

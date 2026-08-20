@@ -6,7 +6,7 @@ Dashboard decision recorded 2026-08-20: create the phased implementation plan an
 
 ## Decision
 
-Before an ordinary unpinned task is launched, resolve a fresh full commit ID from the repository's remote default branch, provision every task worktree at that ID, and require every native pool slot to be clean and detached before its lease is finalized. For most repositories the target is `origin/main`; the implementation must honor `origin/HEAD` so repositories whose default branch is `master`, `release/next`, or another name behave correctly.
+Before an ordinary unpinned task is launched, resolve a fresh full commit ID from the repository's remote default branch, provision every task worktree at that ID, and require every native pool slot to be clean and detached before its lease is finalized. For most repositories the target is `origin/main`; the implementation must honor the server-advertised HEAD so repositories whose default branch is `master`, `release/next`, or another name behave correctly even after a default-branch rename.
 
 Explicit pinned bases remain exact and bypass remote-default selection. This preserves ensemble comparisons, workflow checks, and any caller that intentionally requests a historical commit.
 
@@ -32,8 +32,8 @@ Add one task-dispatch base resolver and use it for the primary repository and ea
 
 - If the caller supplies a pinned full SHA, verify it exactly as today and use it unchanged.
 - Otherwise, run a bounded `git remote` listing. Only a successful listing that omits the exact name `origin` may establish that the repository has no origin. A timeout, spawn failure, overflow, signal, or nonzero probe result fails dispatch.
-- With an `origin`, fetch it, resolve its remote default ref through the existing `remoteDefaultRef` rules, and freeze the result to one full SHA.
-- If a configured `origin` cannot be fetched or its default cannot be resolved, fail dispatch before any worktree is leased or any agent is spawned. Do not silently use a stale local branch.
+- With an `origin`, fetch it, then query or refresh the remote's current HEAD symref before resolving the remote-tracking branch to one full SHA. A plain fetch is insufficient because it does not refresh a stale local `origin/HEAD` after the server changes its default branch.
+- If a configured `origin` cannot be fetched, its current HEAD symref cannot be proved, or that ref cannot be resolved to the fetched commit, fail dispatch before any worktree is leased or any agent is spawned. Do not silently use a stale local branch or stale `origin/HEAD`.
 - If the repository genuinely has no `origin`, retain local-repository support by freezing the current local `HEAD`. This is the only unpinned fallback.
 - Resolve all repository bases before provisioning the first tree so a multi-repository task stays all-or-nothing.
 
@@ -81,6 +81,7 @@ Any failed fetch, reset, or proof stops before step 5. Explicit pinned dispatche
 | --- | --- |
 | `src/server/dispatcher.ts` | Resolve and freeze bases before provisioning; use remote default for ordinary tasks, preserve exact pins, and pre-resolve all attached repositories. |
 | `src/server/worktrees/git.ts` | Make native reset force-detach at the exact SHA; report detached state from inspection. |
+| `src/server/actions.ts` or the shared Git seam selected during implementation | Provide one fail-closed way to refresh or query the current remote HEAD for both dispatch and native Return without trusting stale local `origin/HEAD`. |
 | `src/server/worktrees/manager.ts` | Require detached state before finalizing a lease and before marking a returned slot available. |
 | `test/dispatch-pinned-base.test.ts` and dispatcher tests | Add task-dispatch remote-default coverage while retaining the low-level provisioner's local-HEAD default and explicit-pin coverage. |
 | `test/multi-repo-provisioning.test.ts` | Prove each unpinned repository resolves its own remote default before any tree is taken. |
@@ -98,11 +99,12 @@ The implementation is complete only with focused tests for these cases:
 3. Return fetches the remote default, removes nonignored residue, preserves ignored caches, and leaves the available slot detached.
 4. A detached-state probe failure or an attached result quarantines the slot and prevents lease finalization.
 5. An ordinary task whose local `main` is stale starts from the newly fetched `origin` default SHA.
-6. A configured-origin fetch failure fails before any worktree or agent is created.
-7. A repository with no `origin` still starts from its frozen local `HEAD`, but a failed or unknown origin-existence probe fails closed instead of taking that fallback.
-8. An explicit pinned base remains selected even when the remote default advances.
-9. Each repository in a multi-repository task resolves its own base, and a failure in any repository leaves no lease behind.
-10. After a detached task launch, observing the agent's first feature branch updates the existing work episode without cancelling or unbinding the task.
+6. If the server-side default changes from `main` to `trunk` while local `origin/HEAD` still names `main`, dispatch and Return select the freshly proved `trunk` commit.
+7. A configured-origin fetch or remote-HEAD query failure fails before any worktree or agent is created.
+8. A repository with no `origin` still starts from its frozen local `HEAD`, but a failed or unknown origin-existence probe fails closed instead of taking that fallback.
+9. An explicit pinned base remains selected even when the remote default advances.
+10. Each repository in a multi-repository task resolves its own base, and a failure in any repository leaves no lease behind.
+11. After a detached task launch, observing the agent's first feature branch updates the existing work episode without cancelling or unbinding the task.
 
 The exported low-level `provisionWorktree()` helper retains its current rule when called without an exact base: freeze the current local `HEAD`. Production `TaskDispatcher` owns the new remote-default policy and passes the resolved SHA into that helper. This keeps local tooling and direct provisioning compatible while making scheduled tasks deterministic.
 

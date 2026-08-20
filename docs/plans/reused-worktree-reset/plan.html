@@ -137,8 +137,8 @@
             <text class="svg-copy" x="20" y="137">before taking a lease</text>
             <rect class="node external" x="204" y="65" width="170" height="102" rx="13"></rect>
             <text class="svg-title" x="220" y="92">Git origin</text>
-            <text class="svg-copy" x="220" y="116">Fetch default ref</text>
-            <text class="svg-copy" x="220" y="137">Freeze full SHA</text>
+            <text class="svg-copy" x="220" y="116">Fetch + prove HEAD</text>
+            <text class="svg-copy" x="220" y="137">Freeze current SHA</text>
             <rect class="node" x="404" y="65" width="170" height="102" rx="13"></rect>
             <text class="svg-title" x="420" y="92">Worktree Manager</text>
             <text class="svg-copy" x="420" y="116">Reserve one exact slot</text>
@@ -172,8 +172,8 @@
         <h3>Resolve bases before provisioning</h3>
         <ul>
           <li>Run a bounded <code>git remote</code> listing. Only a successful listing that omits the exact name <code>origin</code> establishes no origin; a timeout, spawn failure, overflow, signal, or nonzero result fails dispatch.</li>
-          <li>With a configured <code>origin</code>, fetch it, resolve <code>origin/HEAD</code> with the existing main/master fallbacks, and freeze a full SHA.</li>
-          <li>A configured-origin fetch or resolution failure is a dispatch failure, not permission to use stale local state.</li>
+          <li>With a configured <code>origin</code>, fetch it, then query or refresh the remote's current HEAD symref before freezing its remote-tracking commit. Fetch alone does not refresh a stale local <code>origin/HEAD</code>.</li>
+          <li>A configured-origin fetch, current-HEAD query, or resolution failure is a dispatch failure, not permission to use stale local state.</li>
           <li>A repository that genuinely has no <code>origin</code> keeps local-repository support by freezing its current local <code>HEAD</code>.</li>
           <li>Resolve all primary and attached repository bases before taking the first tree.</li>
           <li>Keep an explicit pinned SHA unchanged, including ensemble and check paths.</li>
@@ -201,6 +201,7 @@
             <tbody>
               <tr><td><code>src/server/dispatcher.ts</code></td><td>Resolve and freeze ordinary remote-default bases before provisioning all task repositories; preserve explicit pins.</td></tr>
               <tr><td><code>src/server/worktrees/git.ts</code></td><td>Force-detach native reset at the exact SHA and expose detached state through inspection.</td></tr>
+              <tr><td><code>src/server/actions.ts</code> or the selected shared Git seam</td><td>Refresh or query the current remote HEAD for both dispatch and native Return without trusting stale local <code>origin/HEAD</code>.</td></tr>
               <tr><td><code>src/server/worktrees/manager.ts</code></td><td>Require detached state before lease finalization and before a returned slot becomes available.</td></tr>
               <tr><td><code>test/dispatch-pinned-base.test.ts</code> and dispatcher tests</td><td>Add task-dispatch remote-default coverage while retaining the low-level provisioner's local-HEAD default and explicit-pin coverage.</td></tr>
               <tr><td><code>test/multi-repo-provisioning.test.ts</code></td><td>Prove per-repository base resolution and all-or-nothing failure.</td></tr>
@@ -222,7 +223,8 @@
           <li>Return reaches fresh remote default, removes nonignored residue, preserves ignored caches, and detaches.</li>
           <li>Attached or unprovable detached state quarantines and cannot finalize a lease.</li>
           <li>Stale local <code>main</code> does not beat newly fetched remote default.</li>
-          <li>Configured-origin fetch failure leaves no worktree or agent.</li>
+          <li>A server default switch from <code>main</code> to <code>trunk</code> is honored even when local <code>origin/HEAD</code> is stale.</li>
+          <li>Configured-origin fetch or current-HEAD query failure leaves no worktree or agent.</li>
           <li>No-origin repositories still use frozen local <code>HEAD</code>, but a failed or unknown origin probe fails closed.</li>
           <li>Explicit pins remain exact after remote advancement.</li>
           <li>Multi-repository base resolution is per repo and all-or-nothing.</li>

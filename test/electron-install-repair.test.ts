@@ -8,6 +8,7 @@ import {
   readFileSync,
   readlinkSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -56,5 +57,36 @@ test("the pretest does not invent a framework payload or change other platforms"
     );
   } finally {
     rmSync(incomplete, { recursive: true, force: true });
+  }
+});
+
+test("the pretest refuses every unexpected resolving framework entry", () => {
+  for (const kind of ["file", "directory", "symlink"] as const) {
+    const corruptRoot = mkdtempSync(join(tmpdir(), `mission-electron-${kind}-`));
+    const corruptFramework = join(
+      corruptRoot,
+      "node_modules/electron/dist/Electron.app/Contents/Frameworks/Electron Framework.framework",
+    );
+    const corruptPayload = join(corruptFramework, "Versions/Current/Electron Framework");
+    const corruptLink = join(corruptFramework, "Electron Framework");
+
+    try {
+      mkdirSync(join(corruptFramework, "Versions/Current"), { recursive: true });
+      writeFileSync(corruptPayload, "framework payload");
+      if (kind === "file") writeFileSync(corruptLink, "not a framework link");
+      if (kind === "directory") mkdirSync(corruptLink);
+      if (kind === "symlink") {
+        writeFileSync(join(corruptFramework, "unrelated"), "unrelated payload");
+        symlinkSync("unrelated", corruptLink);
+      }
+
+      assert.throws(
+        () => ensureElectronFramework(corruptRoot, "darwin"),
+        /refusing to replace unexpected Electron framework entry/i,
+        kind,
+      );
+    } finally {
+      rmSync(corruptRoot, { recursive: true, force: true });
+    }
   }
 });

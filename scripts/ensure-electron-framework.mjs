@@ -4,7 +4,6 @@ import {
   existsSync,
   lstatSync,
   readlinkSync,
-  rmSync,
   symlinkSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -37,21 +36,25 @@ export function ensureElectronFramework(repoRoot, platform = process.platform) {
   const linkPath = join(frameworkDir, FRAMEWORK_LINK);
   const targetPath = join(frameworkDir, FRAMEWORK_TARGET);
 
-  if (existsSync(linkPath)) return "present";
+  const entry = lstatSync(linkPath, { throwIfNoEntry: false });
+  if (entry) {
+    const canonicalLink =
+      entry.isSymbolicLink() && readlinkSync(linkPath) === FRAMEWORK_TARGET;
+    if (!canonicalLink) {
+      throw new Error(`refusing to replace unexpected Electron framework entry at ${linkPath}`);
+    }
+    if (!existsSync(targetPath)) {
+      throw new Error(
+        `Electron's macOS framework payload is incomplete at ${targetPath}; run npm install again`,
+      );
+    }
+    return "present";
+  }
+
   if (!existsSync(targetPath)) {
     throw new Error(
       `Electron's macOS framework payload is incomplete at ${targetPath}; run npm install again`,
     );
-  }
-
-  const entry = lstatSync(linkPath, { throwIfNoEntry: false });
-  if (entry) {
-    const canonicalBrokenLink =
-      entry.isSymbolicLink() && readlinkSync(linkPath) === FRAMEWORK_TARGET;
-    if (!canonicalBrokenLink) {
-      throw new Error(`refusing to replace unexpected Electron framework entry at ${linkPath}`);
-    }
-    rmSync(linkPath);
   }
 
   symlinkSync(FRAMEWORK_TARGET, linkPath);

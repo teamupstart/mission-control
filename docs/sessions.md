@@ -1469,6 +1469,15 @@ instruction to create a pull request, an explicit no-PR instruction still wins, 
 other repositories, and other external writes remain unauthorized. Prompt authorization is
 also separate from sandbox approval posture and does not widen it.
 
+A newly delivered ship task narrows that standing authorization for its initial implementation
+turn. The agent implements and verifies the change, reports that the work is complete, and
+stops without committing, pushing, opening or updating a pull request, or waiting for pull
+request CI. That settled completion is the handoff to Foreman. Foreman either starts the
+selected workflow or sends the direct pull-request follow-up; a workflow can later deliver its
+own Pull Request action. Only that later Foreman or workflow instruction starts the commit,
+push, pull-request, and CI work. This keeps a bound workflow ahead of shipping without taking
+away the standing authorization the later instruction needs.
+
 When `submit_workflow_evidence` is exposed, the prompt likewise authorizes the exact
 server-validated call for task-produced, checkout-relative files and issued repository scopes.
 That includes `repositoryScope: "all"` only when Mission Control issued it. The agent calls the

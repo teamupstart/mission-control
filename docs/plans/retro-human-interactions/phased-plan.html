@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Single-phase implementation plan for counting human review interactions toward Mission Control Retro eligibility">
+  <title>Phased implementation: Human review interactions make Retro eligible</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #edf1ed; --paper: #fffdf8; --ink: #17221c; --muted: #607067;
+      --line: #c8d2ca; --green: #176147; --green-soft: #dceee5;
+      --gold: #9c6512; --gold-soft: #f8ebce; --blue: #245e83; --code: #eff3ef;
+      --shadow: 0 20px 58px rgba(24, 42, 32, .13);
+      --sans: "Avenir Next", Avenir, "Segoe UI", system-ui, sans-serif;
+      --serif: "Iowan Old Style", Palatino, Georgia, serif;
+      --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #101713; --paper: #18211c; --ink: #eff5f0; --muted: #acbbb1;
+        --line: #3b4a40; --green: #82d1ad; --green-soft: #203c30;
+        --gold: #efb75d; --gold-soft: #3f311d; --blue: #8cc8ec; --code: #101713;
+        --shadow: 0 20px 58px rgba(0, 0, 0, .34);
+      }
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0; color: var(--ink); background:
+        linear-gradient(rgba(60, 98, 76, .055) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(60, 98, 76, .055) 1px, transparent 1px), var(--bg);
+      background-size: 28px 28px; font: 16px/1.64 var(--sans);
+    }
+    a { color: var(--blue); text-underline-offset: .2em; }
+    code, pre, .eyebrow, .tag, th { font-family: var(--mono); }
+    .shell { width: min(1180px, calc(100% - 28px)); margin: 28px auto 74px; display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 24px; align-items: start; }
+    nav { position: sticky; top: 20px; max-height: calc(100vh - 40px); overflow: auto; padding: 18px; background: #153629; color: #edf8f1; border-top: 5px solid #79c7a3; box-shadow: var(--shadow); }
+    nav strong { display: block; margin-bottom: 13px; color: #96d8b9; font: 700 .72rem var(--mono); letter-spacing: .14em; text-transform: uppercase; }
+    nav a { display: block; padding: 5px 7px; color: #d8e9df; text-decoration: none; border-left: 2px solid transparent; font-size: .84rem; line-height: 1.3; }
+    nav a:hover { border-left-color: #efb75d; color: white; }
+    nav .source { margin-top: 16px; padding-top: 14px; border-top: 1px solid rgba(255,255,255,.2); color: #96d8b9; }
+    article { min-width: 0; background: var(--paper); border-top: 6px solid var(--green); box-shadow: var(--shadow); }
+    header { padding: clamp(36px, 7vw, 78px); border-bottom: 1px solid var(--line); }
+    .eyebrow { margin: 0 0 16px; color: var(--green); font-size: .74rem; font-weight: 700; letter-spacing: .15em; text-transform: uppercase; }
+    h1, h2, h3 { font-family: var(--serif); line-height: 1.08; }
+    h1 { max-width: 900px; margin: 0; font-size: clamp(3rem, 7.5vw, 6rem); letter-spacing: -.05em; }
+    .lede { max-width: 790px; margin: 26px 0 0; color: var(--muted); font-size: 1.14rem; }
+    .decision { margin-top: 30px; padding: 18px 21px; background: var(--green-soft); border-left: 5px solid var(--green); }
+    main { padding: 10px clamp(24px, 6vw, 68px) 72px; }
+    section { margin-top: 64px; scroll-margin-top: 26px; }
+    h2 { margin: 0 0 18px; font-size: clamp(2rem, 4vw, 3.2rem); letter-spacing: -.03em; }
+    h3 { margin: 30px 0 8px; font-size: 1.4rem; }
+    p, ul, ol { max-width: 84ch; }
+    li + li { margin-top: 7px; }
+    .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 13px; margin: 24px 0; }
+    .card { padding: 18px; border: 1px solid var(--line); background: color-mix(in srgb, var(--paper) 90%, var(--green-soft)); }
+    .card strong { display: block; margin-bottom: 6px; font-size: 1.05rem; }
+    .tag { display: inline-block; margin-bottom: 10px; padding: 3px 8px; border-radius: 999px; color: var(--green); background: var(--green-soft); font-size: .7rem; font-weight: 700; }
+    .callout { margin: 24px 0; padding: 18px 20px; border-left: 5px solid var(--gold); background: var(--gold-soft); }
+    .scroll, .diagram { max-width: 100%; overflow-x: auto; }
+    .diagram { margin: 25px 0; border: 1px solid var(--line); background: var(--code); }
+    .diagram svg { display: block; width: 100%; min-width: 800px; height: auto; }
+    .diagram text { fill: var(--ink); font-family: var(--sans); }
+    .diagram .small { fill: var(--muted); font-size: 13px; }
+    .diagram .box { fill: var(--paper); stroke: var(--line); stroke-width: 2; }
+    .diagram .new { fill: var(--green-soft); stroke: var(--green); stroke-width: 3; }
+    .diagram .arrow { fill: none; stroke: var(--muted); stroke-width: 2.5; marker-end: url(#arr); }
+    table { width: 100%; min-width: 760px; border-collapse: collapse; }
+    th, td { padding: 13px 14px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { color: var(--muted); font-size: .75rem; letter-spacing: .08em; text-transform: uppercase; }
+    pre { overflow: auto; padding: 16px 18px; border: 1px solid var(--line); background: var(--code); font-size: .86rem; }
+    footer { padding: 24px clamp(24px, 6vw, 68px); border-top: 1px solid var(--line); color: var(--muted); font-size: .88rem; }
+    @media (max-width: 850px) { .shell { display: block; } nav { position: static; margin-bottom: 18px; } nav a { display: inline-block; } .cards { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <nav aria-label="Phased plan contents">
+      <strong>Phased plan</strong>
+      <a href="#findings">Findings</a>
+      <a href="#sizing">Sizing</a>
+      <a href="#phase">Phase 1</a>
+      <a href="#flow">Delivery flow</a>
+      <a href="#contracts">Contracts</a>
+      <a href="#verification">Verification</a>
+      <a href="#audit">Audit</a>
+      <a class="source" href="phased-plan.md">Open Markdown source</a>
+      <a href="phase-1-human-review-retro-worthiness.md">Open Phase 1 detail</a>
+      <a href="plan.html">Open source plan</a>
+    </nav>
+
+    <article>
+      <header>
+        <p class="eyebrow">Merge-aware implementation plan · 20 August 2026</p>
+        <h1>Human review interactions make Retro eligible</h1>
+        <p class="lede">One vertical implementation phase connects authoritative human-resolved reviews to the existing Registry projection, restores the signal after restart, and proves the browser consequence.</p>
+        <div class="decision"><strong>Approved direction:</strong> preserve <code>RetroReason = "corrections"</code>, keep Inspector as a separate gate, and treat durable review authorship as the authority for dashboard decisions.</div>
+      </header>
+
+      <main>
+        <section id="findings">
+          <h2>Repository findings</h2>
+          <div class="cards">
+            <div class="card"><span class="tag">OWNER</span><strong>ReviewManager</strong>Both MCP settlements and born-settled SDK answers converge here.</div>
+            <div class="card"><span class="tag">AUTHORITY</span><strong>isHumanResolvedReview</strong>Already defines the accepted actor and terminal statuses for durable and live reads.</div>
+            <div class="card"><span class="tag">PROJECTION</span><strong>Registry</strong>Owns <code>Session.retro</code>, the current in-memory signal, and eviction cleanup.</div>
+          </div>
+          <ul>
+            <li>Pure SDK and MCP tool results are intentionally removed from parsed transcripts, so transcript scanning cannot recover these human answers.</li>
+            <li>Resolved reviews persist in SQLite but are not restored into the Registry at startup.</li>
+            <li>Terminal <code>applyDiscovery</code> and SDK <code>registerSdkSession</code> are the two session-introduction paths where a bounded durable lookup belongs.</li>
+            <li>The browser offer predicate is already correct once <code>Session.retro</code> is populated.</li>
+          </ul>
+          <div class="callout"><strong>Scope correction:</strong> the observed SDK question exposed a shared protocol gap. The implementation must cover all human-resolved review kinds, not special-case <code>AskUserQuestion</code>.</div>
+        </section>
+
+        <section id="sizing">
+          <h2>Sizing and phase count</h2>
+          <p>Estimated non-test production effort is <strong>55 to 110 lines</strong>: one database existence helper, one bounded Registry hydration seam, review publication calls through the existing signal, and small copy and documentation changes.</p>
+          <p>The work is sensitive to ordering and attribution, but it is one compact vertical slice. The estimate is below 200 production lines, so this plan has exactly one implementation phase and one one-shot Mission Control task.</p>
+          <p>Splitting live settlement from restart restoration would create a merged state that fails the same product promise after a daemon restart.</p>
+        </section>
+
+        <section id="phase">
+          <h2>Phase 1</h2>
+          <div class="scroll">
+            <table>
+              <thead><tr><th>Outcome</th><th>Direct dependencies</th><th>Execution</th></tr></thead>
+              <tbody><tr><td>Live and restored sessions derive the existing <code>corrections</code> reason from authoritative human-resolved reviews; the browser proves the offer appears after a clean Inspector review.</td><td>This planning session and its merged artifacts.</td><td>One-shot</td></tr></tbody>
+            </table>
+          </div>
+          <h3>Implementation sequence</h3>
+          <ol>
+            <li>Add a bounded per-session SQLite existence predicate using the shared human review statuses.</li>
+            <li>Hydrate the existing Registry signal when a terminal or SDK session is first introduced.</li>
+            <li>Mark the live session only after successful delivery and durable human settlement.</li>
+            <li>Clarify the reason copy and owner documentation around human steering.</li>
+            <li>Prove the SDK dashboard-answer path in Playwright while retaining the typed-correction case.</li>
+          </ol>
+          <p><a href="phase-1-human-review-retro-worthiness.md">Read the standalone Phase 1 implementation brief</a>.</p>
+        </section>
+
+        <section id="flow">
+          <h2>Delivery flow</h2>
+          <div class="diagram" role="img" aria-label="The planning pull request releases one implementation task, which produces the feature pull request">
+            <svg viewBox="0 0 940 260" xmlns="http://www.w3.org/2000/svg">
+              <defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="currentColor"/></marker></defs>
+              <rect class="box" x="35" y="75" width="240" height="100" rx="8"/>
+              <text x="155" y="115" text-anchor="middle" font-size="19" font-weight="700">Planning PR merged</text>
+              <text class="small" x="155" y="142" text-anchor="middle">publishes approved contracts</text>
+              <rect class="new" x="350" y="75" width="240" height="100" rx="8"/>
+              <text x="470" y="115" text-anchor="middle" font-size="19" font-weight="700">Phase 1 task</text>
+              <text class="small" x="470" y="142" text-anchor="middle">one-shot implementation</text>
+              <rect class="box" x="665" y="75" width="240" height="100" rx="8"/>
+              <text x="785" y="115" text-anchor="middle" font-size="19" font-weight="700">Feature PR merged</text>
+              <text class="small" x="785" y="142" text-anchor="middle">behavior and proof land together</text>
+              <path class="arrow" d="M275 125H350"/>
+              <path class="arrow" d="M590 125H665"/>
+            </svg>
+          </div>
+          <p>There are no parallel groups. The implementation task depends directly on this planning session and remains backlogged until the plan is merged to the default branch.</p>
+        </section>
+
+        <section id="contracts">
+          <h2>Compatibility contracts</h2>
+          <ul>
+            <li><code>isHumanResolvedReview</code> remains the review authorship authority.</li>
+            <li>The durable settle completes before the Registry is marked.</li>
+            <li>Restoration is per introduced live session and cleanup remains tied to <code>session_remove</code>.</li>
+            <li>The transcript scanner continues to own attributed text turns and feeds the same Registry signal.</li>
+            <li><code>Session.retro</code>, the <code>corrections</code> reason, and the browser <code>retroOffer</code> predicate remain wire-compatible.</li>
+            <li>Inspector cleanliness remains an independent timing gate.</li>
+          </ul>
+        </section>
+
+        <section id="verification">
+          <h2>Verification strategy</h2>
+          <ol>
+            <li>Focused Node tests cover live settlement, SDK recording, actor and status negatives, failed delivery or persistence, restart hydration, and eviction.</li>
+            <li>Existing transcript and offer-predicate tests keep the original evidence source and gate intact.</li>
+            <li>Playwright answers the fake SDK agent's question through the dashboard, observes the existing retro reason, supplies a clean fake Inspector result, and asserts <strong>Run retro</strong> appears without a composer correction.</li>
+            <li>Typecheck, lint, build, smoke, the targeted browser spec, CI, and review gates all pass before merge.</li>
+          </ol>
+        </section>
+
+        <section id="audit">
+          <h2>Phase audit</h2>
+          <ul>
+            <li>Every source-plan requirement belongs to Phase 1.</li>
+            <li>No test-only, documentation-only, migration-only, or cleanup phase exists.</li>
+            <li>No intermediate merge adds a second source of truth or half-restored eligibility.</li>
+            <li>No cross-repository work or concurrency claim exists.</li>
+          </ul>
+          <p><strong>20 August 2026:</strong> reconciled the plan with both review settlement paths, both session-introduction paths, durable conversation reads, Registry cleanup, and required browser coverage. No later phase is expected to repair an intermediate state.</p>
+        </section>
+      </main>
+
+      <footer>Rendered from <a href="phased-plan.md">phased-plan.md</a>. The detailed phase file is an implementation route, not a substitute for repository truth discovered during execution.</footer>
+    </article>
+  </div>
+</body>
+</html>

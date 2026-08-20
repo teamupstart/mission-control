@@ -15,6 +15,20 @@ const EVIDENCE = artifactsDir("effort-next-turn");
  * a small tag. Taken inside the regression rather than by a separate scripted walk, so the
  * picture and the measurement cannot drift apart.
  */
+/**
+ * Narrate one milestone into the run's own output.
+ *
+ * The retained transcript is otherwise a single pass line, which proves the spec ran and
+ * says nothing about WHAT it watched. These lines are emitted by the run itself as each
+ * assertion lands, so the transcript is a record of the flow rather than a summary someone
+ * typed afterwards. Behind the same flag as the frames, so ordinary runs stay quiet.
+ */
+function note(message: string): void {
+  if (!process.env.MC_E2E_EVIDENCE) return;
+  // eslint-disable-next-line no-console
+  console.log(`    · ${message}`);
+}
+
 async function shoot(page: Page, target: Locator, name: string): Promise<void> {
   if (!process.env.MC_E2E_EVIDENCE) return;
   mkdirSync(EVIDENCE, { recursive: true });
@@ -101,6 +115,7 @@ test("a Codex effort chosen mid-turn reads as pending and settles on the next tu
   await expect(chip).toHaveAccessibleName("Reasoning effort: medium. Change effort for this session", {
     timeout: 30_000,
   });
+  note("live effort read off the rollout: medium, no pending state");
 
   // A genuinely busy driver. From here until it finishes, every level the operator picks is
   // a statement about a turn that has not started.
@@ -111,6 +126,7 @@ test("a Codex effort chosen mid-turn reads as pending and settles on the next tu
   await expect(
     card.locator(".turn-user:not(.pending-turn)").getByText(HELD_TURN, { exact: true }),
   ).toBeVisible({ timeout: 30_000 });
+  note("a turn is now running - any level chosen from here cannot reach it");
 
   await chip.click();
   const menu = dashboard.getByRole("menu", { name: "Reasoning effort" });
@@ -126,6 +142,7 @@ test("a Codex effort chosen mid-turn reads as pending and settles on the next tu
   );
   await expect(chip).toContainText("next turn");
   await expect(chip).toContainText("high");
+  note("chose high mid-turn; chip reads 'medium -> high  NEXT TURN'");
 
   // The menu carries the sentence the chip has no room for, and gives the two levels
   // different sub-labels - one set for the next turn, one running on this one.
@@ -133,6 +150,7 @@ test("a Codex effort chosen mid-turn reads as pending and settles on the next tu
   await expect(menu).toBeVisible();
   await expect(menu.getByText("applies from the next turn").first()).toBeVisible();
   await expect(menu.getByText("Running on this turn")).toBeVisible();
+  note("menu names both levels: high set for the next turn, medium running on this one");
   await shoot(dashboard, menu, "effort-pending-menu");
   // Closed by the chip rather than by Escape: Escape is a fleet-wide binding and would
   // collapse the conversation this test is still reading out of.
@@ -155,9 +173,11 @@ test("a Codex effort chosen mid-turn reads as pending and settles on the next tu
       { message: "the running turn should refresh the card's metadata", timeout: 20_000 },
     )
     .toBeGreaterThanOrEqual(3);
+  note(`active turn refreshed the card's metadata ${seen.size} times (context ${[...seen].join("%, ")}%)`);
   await expect(chip).toHaveAccessibleName(
     "Reasoning effort: medium on this turn, high from the next turn. Change effort for this session",
   );
+  note("pending state survived every one of those refreshes - THE REGRESSION");
   await shoot(dashboard, chip, "effort-pending-mid-turn");
 
   // The turn ENDS, and that alone still settles nothing: no new turn has started, so Codex
@@ -168,6 +188,7 @@ test("a Codex effort chosen mid-turn reads as pending and settles on the next tu
   await expect(chip).toHaveAccessibleName(
     "Reasoning effort: medium on this turn, high from the next turn. Change effort for this session",
   );
+  note("held turn finished; still pending, because no NEW turn has started yet");
 
   // The next turn starts. It carries `effort: high`, Codex writes the `turn_context` saying
   // so, and the daemon reads it back - which is the only evidence that ever existed.
@@ -177,5 +198,6 @@ test("a Codex effort chosen mid-turn reads as pending and settles on the next tu
     timeout: 30_000,
   });
   await expect(chip).not.toContainText("next turn");
+  note("next turn started and wrote its turn_context: chip settled to plain 'high'");
   await shoot(dashboard, chip, "effort-settled-next-turn");
 });

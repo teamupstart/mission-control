@@ -108,9 +108,10 @@ In `migrate(d)`, beside the `priority`/`labels`/`enabled` block near line 2837:
 ```ts
 if (addColumn(d, "tasks", "backlog_rank", "INTEGER")) backfillBacklogRank(d);
 d.exec("CREATE INDEX IF NOT EXISTS idx_tasks_backlog_rank ON tasks(status, backlog_rank)");
-// NOT gated on the addColumn return: the backfill runs once, but a row can go NULL long
-// after it. See "Why unranked rows must be healed rather than tolerated" below.
-healUnrankedBacklog(d);
+// NOT gated on the addColumn return: the backfill runs once, but a row can go NULL - or
+// out of range - long after it. See "Why a degenerate rank space must be repaired rather
+// than tolerated" below.
+if (rankDegenerate(d)) normalizeBacklogRanks(d);
 ```
 
 The index goes in `migrate`, never in the `CREATE TABLE` block - that block does not run on an
@@ -143,7 +144,9 @@ Then thread the column through the upsert (**column list, placeholder count, `DO
 and the positional `.run(...)` args - all four**) and through `rowToTask`. Read it defensively, and validate rather than cast:
 `Number.isSafeInteger(r.backlog_rank) ? r.backlog_rank : null`. `typeof === "number"` is not
 enough - a REAL, a fraction and `NaN` all satisfy it, and each would poison the allocator's
-arithmetic. Anything rejected becomes unranked, which `healUnrankedBacklog` then places.
+arithmetic. Anything rejected reads as unranked, which `normalizeBacklogRanks` then places -
+and note that this read-path check does not protect the allocator, which asks `rankDegenerate`
+of the column directly. See the append-ceiling note.
 
 ### 3. `src/shared/task.ts` - the comparator
 
@@ -191,22 +194,31 @@ internal edges. Update `plannableBacklog`'s comment too - its 400-item head is n
 New file. Pure functions plus small `DatabaseSync`-taking helpers, no manager state.
 
 - `RANK_STEP = 1024`.
-- `healUnrankedBacklog(d)` - give a rank to every `status='backlog'` row whose `backlog_rank`
-  **IS NULL**, placing them below all ranked rows in `created_at` order. Returns the ids it
-  touched. See the note below - this is load-bearing, not tidying.
-- `appendRank(d)` - `healUnrankedBacklog` first, then `max(backlog_rank) + RANK_STEP` over
-  `status='backlog'`, or `RANK_STEP` when the backlog is empty.
+- `MAX_RANK = Number.MAX_SAFE_INTEGER - RANK_STEP` - the append ceiling.
+- `rankDegenerate(d)` - true when the backlog's rank space cannot be appended to safely: **any**
+  `status='backlog'` row has a NULL rank, a non-safe-integer rank, or `max(backlog_rank)` is
+  above `MAX_RANK`. One `SELECT`, no writes.
+- `normalizeBacklogRanks(d)` - rewrite **every** backlog row's rank to `(i + 1) * RANK_STEP` in
+  `byBacklogRank` order. Returns the ids it touched so the caller can publish a `task_upsert`
+  for each. This is the single repair: it heals unranked rows, discards unsafe ones, and resets
+  the ceiling in one pass.
+- `appendRank(d)` - `if (rankDegenerate(d)) normalizeBacklogRanks(d)` **first**, then
+  `max(backlog_rank) + RANK_STEP` over `status='backlog'`, or `RANK_STEP` when the backlog is
+  empty. After normalization `max` is `count * RANK_STEP`, so the append is always safe.
 - `rankBetween(before, after)` - the midpoint; `null` when there is no integer strictly between
-  them, which is the caller's signal to renormalize.
-- `renormalize(d)` - rewrite every backlog row's rank at `RANK_STEP` spacing in current
-  `byBacklogRank` order.
-- `MAX_RANK = Number.MAX_SAFE_INTEGER - RANK_STEP` - the append ceiling. `appendRank`
-  renormalizes first when `max(backlog_rank)` is above it, then appends. See the note below.
+  them, which is the caller's signal to normalize.
 
-Renormalization returns the ids it touched so the caller can publish a `task_upsert` for each.
-It is the rare path; the common move writes one row.
+There is **one** repair operation, deliberately. An earlier draft of this plan had two - a
+targeted "heal the NULLs" and a separate ceiling renormalize - and they raced: both were
+specified to run "first" inside `appendRank`, and healing places unranked rows *below* every
+ranked row, which means **above** the current maximum. So on a backlog holding both an
+out-of-range rank and a NULL row, healing would compute `unsafe max + RANK_STEP` and write more
+unsafe values before the ceiling check ever ran. Collapsing them removes the ordering hazard
+rather than documenting it, and costs nothing: `byBacklogRank` already sorts NULLs last, so a
+full renormalize *is* a heal - the unranked rows sort to the end and receive the highest ranks,
+which is exactly where an unplaced arrival belongs.
 
-#### Why unranked rows must be healed rather than tolerated
+#### Why a degenerate rank space must be repaired rather than tolerated
 
 An unranked row is not a harmless row that "sorts to the bottom". It **breaks the
 bottom-insertion rule for every task filed after it**:
@@ -221,39 +233,35 @@ opposite of what the plan promises. The backfill cannot repair this on its own: 
 `addColumn`'s did-it-add return and therefore runs exactly once, so a row that goes NULL *after*
 the migration stays NULL forever.
 
-Unranked rows are reachable in practice. Any writer that does not set the column produces one -
-an older build opening a newer database (the migrations are idempotent, so this is supported),
-a restored or hand-edited row, a future insert path that forgets the field.
+Degenerate rows are reachable in practice. Any writer that does not set the column produces a
+NULL - an older build opening a newer database (the migrations are idempotent, so this is
+supported), a restored or hand-edited row, a future insert path that forgets the field. The same
+routes can produce an out-of-range or fractional rank.
 
-`healUnrankedBacklog` therefore runs in **two** places, and both are no-ops once the backlog is
-clean:
+`rankDegenerate` + `normalizeBacklogRanks` therefore run in **two** places, and both are
+`SELECT`-only no-ops once the backlog is clean:
 
-- **In `migrate()`, unconditionally** - not gated on `addColumn`'s return. One
-  `UPDATE ... WHERE backlog_rank IS NULL AND status='backlog'` per daemon start, normally
-  matching zero rows.
-- **Inside `appendRank`'s transaction** - so a row that appeared *since* startup is placed
-  before the append reads `max`, closing the window the migration-time pass cannot see.
+- **In `migrate()`, unconditionally** - not gated on `addColumn`'s return, because the backfill
+  runs once and a row can go degenerate long after it.
+- **Inside `appendRank`'s transaction, before it reads `max`** - so a row that appeared *since*
+  startup is repaired first, closing the window the migration-time pass cannot see.
 
-`created_at` order among the unranked set, and below every ranked row, because such a row never
-had a place and the bottom is where an unplaced arrival belongs.
-
-The effect is that the system **converges to zero unranked rows**, and the comparator's `NULL`
-branch becomes a pure safety net for a row observed mid-heal rather than a state the ordering
-rules depend on.
+The system therefore **converges to a clean rank space**, and the comparator's `NULL` branch
+becomes a pure safety net for a row observed mid-repair rather than a state the ordering rules
+depend on.
 
 #### The append ceiling, and which limit actually binds
 
 `appendRank` is the only operation that raises the maximum rank - a midpoint is strictly between
-two existing values, and `renormalize` compacts to `count * RANK_STEP` - so the ceiling is only
+two existing values, and normalization compacts to `count * RANK_STEP` - so the ceiling is only
 ever approached one `RANK_STEP` at a time, and it drops whenever the top-ranked task leaves the
 backlog.
 
 **Organic growth cannot reach it.** At `RANK_STEP = 1024` it takes ~8.8e12 appends to reach
 `Number.MAX_SAFE_INTEGER`, which is ~24 million years at a thousand task creations a day. The
-guard below is therefore not for the counter running up; it is for a rank that arrives from
-**outside the allocator**, which is the reachable case: a restored backup, a hand-edited row, or
-a future writer that sets the column itself. This plan already concedes such rows exist - it is
-why the comparator's tie-break is total.
+guard is therefore not for the counter running up; it is for a rank that arrives from **outside
+the allocator**, which is the reachable case: a restored backup, a hand-edited row, or a future
+writer that sets the column itself.
 
 **The binding limit is `Number.MAX_SAFE_INTEGER` (2^53-1), not SQLite's signed 64-bit range.**
 `Task.backlogRank` crosses the wire as a JSON `number`, so integer precision is lost at 2^53
@@ -261,17 +269,12 @@ while SQLite is still storing exact integers - about a thousandfold earlier. A g
 the int64 boundary would be guarding a limit that cannot be reached without having already
 silently corrupted the ranks it was meant to protect.
 
-Two cheap defences, both no-ops in the steady state:
-
-- **`appendRank` renormalizes when `max(backlog_rank) > MAX_RANK`**, then appends. Renormalizing
-  returns the maximum to `count * RANK_STEP`, so one pass always clears it.
-- **`rowToTask` validates rather than casts.** A rank is accepted only when
-  `Number.isSafeInteger(r.backlog_rank)`; anything else - a REAL, a fraction, `NaN`, a value past
-  the safe range - reads as `null`, i.e. unranked, and `healUnrankedBacklog` then gives it a real
-  place at the bottom. This is the same posture `rowToTask` already takes with `kind`, where the
-  column is unconstrained TEXT and an unknown value is validated down rather than cast into typed
-  code. A bare `typeof === "number"` check would let every one of those through, since they are
-  all `typeof number`.
+**Validation has to live on the write path, not only the read path.** `rowToTask` mapping an
+unsafe value to `null` protects what the daemon *serves*; it does nothing for the allocator,
+which reads `max(backlog_rank)` **in SQL** and never passes through `rowToTask`. That is why
+`rankDegenerate` asks its question of the column directly. `normalizeBacklogRanks` then orders
+through the same validated mapping the wire uses - an unsafe rank reads as unranked and sorts
+last - so the read path and the write path cannot disagree about what a rank is.
 
 ### 7. `src/server/tasks.ts` - assignment and the move
 
@@ -353,7 +356,8 @@ Same change, not a follow-up:
 ## Tests
 
 - `test/backlog-rank.test.ts` (new) - `appendRank` on an empty and a populated backlog;
-  `rankBetween` midpoint, and `null` for adjacent integers; `renormalize` preserving order;
+  `rankBetween` midpoint, and `null` for adjacent integers; `normalizeBacklogRanks` preserving
+  order;
   `byBacklogRank` with nulls, ties, and the full tie-break chain; and **no `NaN`** from two
   unranked rows.
 - `test/backlog-rank.test.ts` - **`byBacklogRank` is a strict total order**, asserted as a
@@ -363,15 +367,18 @@ Same change, not a follow-up:
   their `createdAt`** - the mixed case is the one an intuitive single-subtraction comparator gets
   backwards, and a by-example test that happens to use a younger unranked row would pass anyway.
 - `test/backlog-rank.test.ts` - **the append ceiling.** With a backlog row seeded at
-  `MAX_RANK + 1` (as a restored or hand-edited row could be), `appendRank` renormalizes and the
-  new task still lands last with a safe-integer rank. Plus `rowToTask` mapping a REAL, a
+  `MAX_RANK + 1` (as a restored or hand-edited row could be), `appendRank` normalizes and the
+  new task still lands last with a safe-integer rank. **And the combined case the single
+  operation exists for:** an out-of-range ranked row *and* a NULL row in the same backlog, where
+  a repair that healed before checking the ceiling would write a second unsafe value. Plus `rowToTask` mapping a REAL, a
   fraction, `NaN` and an out-of-safe-range integer to `null` rather than passing them through.
 - `test/backlog-rank.test.ts` - **the unranked-row regression, stated as the rule it protects.**
   Insert a backlog row with `backlog_rank IS NULL` (as an older build would), then file a new
-  task: the new task must sort **below** it, not above. Also: `healUnrankedBacklog` places
-  unranked rows below every ranked row in `created_at` order, is a no-op on a clean backlog, and
-  leaves no NULL-ranked backlog row behind. Assert the same through `migrate()` on a database
-  that already has the column but a NULL row in it - the case the one-shot backfill cannot see.
+  task: the new task must sort **below** it, not above. Also: `normalizeBacklogRanks` places
+  unranked rows below every ranked row, `rankDegenerate` is false on a clean backlog and true for
+  each of NULL / non-safe-integer / above-`MAX_RANK`, and no NULL-ranked backlog row survives.
+  Assert the same through `migrate()` on a database that already has the column but a NULL row in
+  it - the case the one-shot backfill cannot see.
 - `test/backlog-plan.test.ts` (extend) - the load-bearing invariant: over a table of backlogs and
   plans, every task `readyBacklog` returns has zero unmet edges, so no ready pair can be ordered
   by a dependency. Plus: a reorder does not change `planStale`.
@@ -427,9 +434,10 @@ Phase 2 may rely on, and **must not change**:
 - `Task.backlogRank`, `byBacklogRank`, and `backlogTasks` sorting by it.
 - `readyBacklog` as filter-only.
 - The move buttons and their `aria-label` wording, which the phase-1 e2e spec selects by.
-- `RANK_STEP` and the allocation semantics, including that a collision renormalizes rather than
-  failing, that `appendRank` heals unranked rows before it reads `max`, and that it renormalizes
-  rather than appending past `MAX_RANK`.
+- `RANK_STEP`, `MAX_RANK`, and the allocation semantics: a collision normalizes rather than
+  failing, and `appendRank` repairs a degenerate rank space **before** it reads `max`, through
+  the single `normalizeBacklogRanks` operation rather than a heal and a renormalize that could
+  order badly against each other.
 
 Phase 2 owns, and phase 1 must not pre-empt: any drop target, drag-state, drop-indicator or
 `dragover`/`dragleave`/`drop` handler in `BacklogColumn`, and the CSS for them. Phase 1 leaves

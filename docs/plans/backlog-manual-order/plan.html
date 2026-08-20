@@ -343,9 +343,12 @@
     to sort last, because <code>appendRank</code> gives the <em>next</em> arrival a finite rank
     and finite sorts above NULL. One unranked row would therefore push every task filed after it
     above itself, which is the opposite of the bottom-insertion rule. So
-    <code>healUnrankedBacklog</code> gives any unranked backlog row a rank below every ranked
-    one, in <code>created_at</code> order; it runs unconditionally at daemon start and again
-    inside <code>appendRank</code>, and is a no-op once the backlog is clean. The comparator's
+    one repair, <code>normalizeBacklogRanks</code>, rewrites the whole backlog's ranks at
+    <code>RANK_STEP</code> spacing in <code>byBacklogRank</code> order - which sorts unranked rows
+    last, so it heals them, discards out-of-range values and resets the append ceiling in a single
+    pass. It runs when the rank space is degenerate, at daemon start and again inside
+    <code>appendRank</code> before it reads <code>max</code>, and is a <code>SELECT</code>-only
+    no-op once the backlog is clean. The comparator's
     NULL branch is then a safety net rather than a state the ordering depends on.
   </div>
   <p><code>CREATE INDEX IF NOT EXISTS idx_tasks_backlog_rank ON tasks(status, backlog_rank)</code>

@@ -86,9 +86,11 @@ order the board already showed and upgrade day changes nothing visible.
 older build opening a newer database, a restored row - cannot simply be left to sort last,
 because `appendRank` gives the *next* arrival a finite rank and finite sorts above NULL. One
 unranked row would therefore push every task filed after it above itself, which is the opposite
-of the bottom-insertion rule. So `healUnrankedBacklog` gives any unranked backlog row a rank
-below every ranked one, in `created_at` order; it runs unconditionally at daemon start and again
-inside `appendRank`, and is a no-op once the backlog is clean. The comparator's NULL branch is
+of the bottom-insertion rule. So one repair, `normalizeBacklogRanks`, rewrites the whole
+backlog's ranks at `RANK_STEP` spacing in `byBacklogRank` order - which sorts unranked rows last,
+so it heals them, discards out-of-range values and resets the append ceiling in a single pass. It
+runs when the rank space is degenerate, at daemon start and again inside `appendRank` before it
+reads `max`, and is a `SELECT`-only no-op once the backlog is clean. The comparator's NULL branch is
 then a safety net rather than a state the ordering depends on.
 
 `CREATE INDEX IF NOT EXISTS idx_tasks_backlog_rank ON tasks(status, backlog_rank)` goes in the

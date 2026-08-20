@@ -30,6 +30,7 @@ import { heldHomeNames, homeAlive, homeNameRules, killHome, launchHome } from ".
 import type { Registry } from "./registry.ts";
 import { verifyHeadIs } from "./git/ensemble-snapshot.ts";
 import { freshRemoteDefaultSha, originConfigured } from "./git/remote-default.ts";
+import { FULL_SHA } from "./workflows/commit-id.ts";
 import {
   kindMissionMcpRequirement,
   missionMcpDescriptor,
@@ -1451,7 +1452,7 @@ async function headCommit(dir: string): Promise<string | null> {
     timeoutMs: GIT_PREFLIGHT_TIMEOUT_MS,
   });
   const sha = r.stdout.trim();
-  return r.code === 0 && /^[0-9a-f]{40}$/.test(sha) ? sha : null;
+  return r.code === 0 && FULL_SHA.test(sha) ? sha : null;
 }
 
 /**

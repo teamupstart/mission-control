@@ -347,15 +347,58 @@ test("only a well-formed symref line names a default branch", () => {
   // The other half of the same answer, and the half that makes the freeze current.
   const sha = "9".repeat(40);
   assert.equal(parseLsRemoteHeadSha(`ref: refs/heads/main\tHEAD\n${sha}\tHEAD\n`), sha);
+  // BOTH widths git produces. A repository created with `--object-format=sha256` advertises
+  // 64-character ids everywhere, and a 40-only rule here would read a perfectly healthy
+  // SHA-256 remote as having supplied no commit id - refusing every unpinned dispatch and
+  // every native Return in that repository, silently and identically. `FULL_SHA` owns this
+  // question for the whole repo precisely because the same defect was already found once,
+  // in the pin path.
+  const wide = "a1b2c3d4".repeat(8);
+  assert.equal(wide.length, 64);
+  assert.equal(parseLsRemoteHeadSha(`ref: refs/heads/main\tHEAD\n${wide}\tHEAD\n`), wide);
   for (const malformed of [
     "",
     "ref: refs/heads/main\tHEAD\n",
     `${sha}\trefs/heads/main\n`,
     "nonsense\tHEAD\n",
     `${sha.slice(0, 12)}\tHEAD\n`,
+    // Between the two widths is not a width git produces.
+    `${"b".repeat(52)}\tHEAD\n`,
+    `${"c".repeat(65)}\tHEAD\n`,
   ]) {
     assert.equal(parseLsRemoteHeadSha(malformed), null, `should not name a commit: ${malformed}`);
   }
+});
+
+test("a SHA-256 repository resolves its remote default like any other", async () => {
+  // End to end against a real `--object-format=sha256` repository, so the 64-character ids
+  // come from git rather than from a fixture's idea of one. Skipped only if this git cannot
+  // create one at all, which is what a build older than the format looks like.
+  let origin: string;
+  try {
+    origin = join(home, "sha256-origin");
+    execFileSync("git", ["init", "-q", "--bare", "-b", "main", "--object-format=sha256", origin], {
+      stdio: "pipe",
+    });
+  } catch {
+    return; // this git does not support SHA-256 repositories
+  }
+  const seed = join(home, "sha256-seed");
+  mkdirSync(seed, { recursive: true });
+  execFileSync("git", ["init", "-q", "-b", "main", "--object-format=sha256", seed]);
+  git(seed, "config", "user.email", "t@test");
+  git(seed, "config", "user.name", "t");
+  writeFileSync(join(seed, "file.txt"), "base\n");
+  git(seed, "add", "-A");
+  git(seed, "commit", "-qm", "base");
+  git(seed, "remote", "add", "origin", origin);
+  git(seed, "push", "-q", "origin", "main");
+  const clone = join(home, "sha256-clone");
+  execFileSync("git", ["clone", "-q", origin, clone]);
+
+  const head = git(seed, "rev-parse", "HEAD");
+  assert.equal(head.length, 64, "fixture did not produce a SHA-256 repository");
+  assert.equal(await resolveDispatchBase(clone), head);
 });
 
 // ---- freezing every repository before the first tree is taken ---------------------------

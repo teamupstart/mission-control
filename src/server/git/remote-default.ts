@@ -1,4 +1,5 @@
 import { run } from "../util/exec.ts";
+import { FULL_SHA } from "../workflows/commit-id.ts";
 
 /**
  * Probing a repository's remote default branch, fail-closed.
@@ -87,7 +88,12 @@ export function parseLsRemoteHeadSha(stdout: string): string | null {
     const [oid, name] = line.split("\t");
     if (name?.trim() !== "HEAD") continue;
     const sha = oid?.trim() ?? "";
-    if (/^[0-9a-f]{40}$/.test(sha)) return sha;
+    // `FULL_SHA`, never a private 40-hex rule: a repository created with
+    // `--object-format=sha256` advertises 64-character ids everywhere, and a narrower
+    // spelling here would refuse every unpinned dispatch and every native Return in one as
+    // though origin had supplied no commit at all. That module owns the width question for
+    // exactly this reason - see its note on the same defect found in the pin path.
+    if (FULL_SHA.test(sha)) return sha;
   }
   return null;
 }
@@ -173,7 +179,7 @@ export async function currentRemoteDefaultSha(
     return failure(`git rev-parse ${ref}`, resolved);
   }
   const local = resolved.stdout.trim();
-  if (resolved.code !== 0 || !/^[0-9a-f]{40}$/.test(local)) {
+  if (resolved.code !== 0 || !FULL_SHA.test(local)) {
     return {
       ok: false,
       reason: `origin's default branch ${branch} is not in this repository's remote-tracking refs`,

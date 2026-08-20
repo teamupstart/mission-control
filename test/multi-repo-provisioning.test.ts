@@ -19,6 +19,12 @@ import { join } from "node:path";
 const home = mkdtempSync(join(tmpdir(), "mission-multirepo-provision-"));
 // Set before importing anything that resolves the state dir - WORKTREES_DIR hangs off it.
 process.env.HARNESS_HOME = join(home, "state");
+// A binary that exists, so bin resolution cannot be what fails. `resolveBinPath` runs at the
+// very top of `dispatch`, before any of the behaviour under test, so a machine without the
+// real CLI installed - every CI runner - would otherwise fail the base-freezing case below
+// with "agent binary not found" and never reach the refusal it is about. The same reason
+// multi-repo-dispatch.test.ts sets these.
+process.env.MISSION_CLAUDE_BIN = "/bin/echo";
 
 const { WORKTREES_DIR } = await import("../src/server/config.ts");
 const {
@@ -36,7 +42,10 @@ const { mkTask } = await import("./helpers/session-fixture.ts");
 
 openDb();
 
-after(() => rmSync(home, { recursive: true, force: true }));
+after(() => {
+  rmSync(home, { recursive: true, force: true });
+  delete process.env.MISSION_CLAUDE_BIN;
+});
 
 function git(dir: string, ...args: string[]): string {
   return execFileSync("git", ["-C", dir, ...args], { stdio: "pipe" }).toString().trim();

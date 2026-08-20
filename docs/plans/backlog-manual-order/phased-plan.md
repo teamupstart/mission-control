@@ -27,7 +27,7 @@ lands at the bottom until somebody moves it.** `plan.md` argues why.
 
 Verified against the checkout before the boundaries were drawn. Two findings shaped the split.
 
-1. **`backlogTasks` (`src/shared/session.ts:62`) is a single chokepoint.** The board column, the
+1. **`backlogTasks` (`src/shared/session.ts`) is a single chokepoint.** The board column, the
    Sitrep, the Line drawer, `line-summary.ts`, `report.ts`, `foreman/config.ts`,
    `plannableBacklog` and `readyBacklog` all read through it. Changing one comparator moves every
    surface together, and none of them can drift apart.

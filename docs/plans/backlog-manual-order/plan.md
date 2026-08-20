@@ -18,15 +18,15 @@ the **bottom**, because nothing that files itself gets to jump the queue you arr
 
 The backlog has three orderings and none of them is the operator's.
 
-1. `backlogTasks` (`src/shared/session.ts:63`) sorts by `byPriorityThenAge` - priority first,
+1. `backlogTasks` (`src/shared/session.ts`) sorts by `byPriorityThenAge` - priority first,
    oldest first inside a priority. This is the order the **board column draws**.
-2. `readyBacklog` (`src/shared/backlog.ts:281`) walks the **stored plan's entry order** first
+2. `readyBacklog` (`src/shared/backlog.ts`) walks the **stored plan's entry order** first
    and appends whatever the plan does not name, oldest first. This is the order the
-   **scheduler decides from** (`backlog-machine.ts:346`) and the order `nextUpTaskId` marks
+   **scheduler decides from** (`backlog-machine.ts` (`decideBacklogTick`) and the order `nextUpTaskId` marks
    `next up` from.
 3. The plan's entry order is a **topological sort whose tie-break is the model's own array
-   order** (`topoOrder`, `src/server/foreman/backlog-plan.ts:276`). The planner prompt is
-   never shown a task's priority (`buildBacklogPrompt`, `backlog-prompt.ts:64`).
+   order** (`topoOrder`, `src/server/foreman/backlog-plan.ts` (`topoOrder`). The planner prompt is
+   never shown a task's priority (`buildBacklogPrompt`, `backlog-prompt.ts` (`buildBacklogPrompt`).
 
 Put together: **for any item the plan covers, the priority chip changes where the card is
 drawn and does not change what Foreman takes next.** Two independent ready items are ordered
@@ -40,7 +40,7 @@ construction - if it existed, the dependent would not be ready. So the ready lis
 topological consideration of its own: any total order over it is dependency-safe, and today
 that order is simply the model's. Replacing it with the operator's costs nothing structural.
 
-`backlog-plan.ts:269` already says this out loud: *"`readyBacklog` filters on blockers rather
+`topoOrder`'s doc comment in `backlog-plan.ts` already says this out loud: *"`readyBacklog` filters on blockers rather
 than position, so this ordering is a READOUT more than a schedule."* This plan makes the
 readout the operator's, and leaves the plan doing the one thing only it can do - supplying
 inferred edges.
@@ -73,7 +73,7 @@ model call, and cannot make the plan stale.
 ### `tasks.backlog_rank` - the column
 
 `addColumn(d, "tasks", "backlog_rank", "INTEGER")` in `migrate()`, nullable, beside the
-`priority`/`labels`/`enabled` block at `db.ts:2837`. Named `backlog_rank` rather than `rank`
+`priority`/`labels`/`enabled` block at `db.ts` (the `priority`/`labels`/`enabled` block in `migrate`. Named `backlog_rank` rather than `rank`
 because `RANK` is a SQLite window-function keyword and a bare `rank` in a future query reads
 ambiguously; named on the wire as `backlogRank` for the same reason.
 
@@ -157,7 +157,7 @@ tested across every dependency state, and the equivalence is worth a test of its
 ### The one place ordering is not the whole answer
 
 `decideBacklogTick` has two action paths and they read the ready list differently
-(`backlog-machine.ts:395-412`):
+(`decideBacklogTick`'s assign and dispatch paths in `backlog-machine.ts`):
 
 - **dispatch** takes `candidates[0]` - strictly the head, so it follows your order exactly.
 - **assign** scans the list for the first item that has a free agent *in its repo, on its
@@ -374,7 +374,7 @@ reopen a settled question.
 
 **A swept `P0` lands at the bottom and stays there until somebody moves it.** That is a real
 loss of a behaviour that exists today: `priorityFrom` maps a GitHub label onto a task priority
-(`task-sources/github-issues.ts:115`), `priorityFromJira` does the same for Jira, and today
+(`task-sources/github-issues.ts` (`priorityFor`), `priorityFromJira` does the same for Jira, and today
 that mapping lifts the task in the column on its own.
 
 It is accepted rather than mitigated, and the reason is the point of the whole feature. An

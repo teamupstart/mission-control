@@ -43,45 +43,45 @@ Verified against the current checkout. Where a finding contradicts `plan.md`, th
 
 - **There is no backlog table.** A backlog item is a `Task` with `status = 'backlog'`. All
   ordering is in-memory; the SQL only ever orders by timestamps
-  (`db.ts:5571` `listTasks()` is `ORDER BY created_at DESC`).
-- **`backlogTasks` (`src/shared/session.ts:62-64`) is the single chokepoint.** The board column,
+  (`db.ts` (`listTasks` `listTasks()` is `ORDER BY created_at DESC`).
+- **`backlogTasks` (`src/shared/session.ts`) is the single chokepoint.** The board column,
   `ReportPanel`, `App.tsx`'s `visibleBacklog`, `line-summary.ts`, `report.ts`,
   `foreman/config.ts`, `plannableBacklog` and `readyBacklog` all read through it. One edit moves
   every surface together.
-- **`readyBacklog` (`src/shared/backlog.ts:281`) ends with**
+- **`readyBacklog` (`src/shared/backlog.ts`) ends with**
   `.filter((t) => blockersIn(t, index).length === 0)`. Every ready item therefore has zero unmet
   edges, so the ready set has no internal edges and any total order over it is dependency-safe.
   This is the fact the whole phase rests on - pin it with a test rather than a comment.
-- **`backlog-plan.ts:269` already documents the plan's order as "a READOUT more than a
+- **`topoOrder`'s doc comment in `backlog-plan.ts` already documents the plan's order as "a READOUT more than a
   schedule."** Removing the plan-walk from `readyBacklog` does not contradict that comment; it
   completes it. Update the comment to say what now decides position.
 - **`sanitizePlan` still emits `topoOrder`.** Leave it. The stored entry order stops being read
   for position but remains a coherent readout, and `NextUpPlanner` still quotes each entry's
   `reason`. Do not delete the ordering from the writer in this phase; that is churn with no
   reader change behind it.
-- **Migrations are idempotent and re-run on every open** (`migrate(d)`, `db.ts:2648`).
-  `addColumn` (`db.ts:3406`) returns `true` **only when it actually added the column**, which is
-  the repo's established hook for a one-time backfill - `migrateTaskHomeName` (`db.ts:3110`) is
+- **Migrations are idempotent and re-run on every open** (`migrate(d)`, `db.ts` (`migrate`).
+  `addColumn` (`db.ts`) returns `true` **only when it actually added the column**, which is
+  the repo's established hook for a one-time backfill - `migrateTaskHomeName` (`db.ts`) is
   the worked example to follow.
 - **The task upsert is one long positional `INSERT ... ON CONFLICT DO UPDATE`**
-  (`db.ts:4472-4520`). Adding a column means editing the column list, the `VALUES` placeholder
+  (the `INSERT INTO tasks ... ON CONFLICT` statement in `db.ts`). Adding a column means editing the column list, the `VALUES` placeholder
   count, the `DO UPDATE SET` list and the positional `.run(...)` arguments - four places that
-  must stay in step. `rowToTask` (`db.ts:4379`) is the read side.
-- **`Registry.listTasks()` returns Map insertion order, unsorted** (`registry.ts:5205`), and
+  must stay in step. `rowToTask` (`db.ts`) is the read side.
+- **`Registry.listTasks()` returns Map insertion order, unsorted** (`registry.ts` (`Registry.listTasks`), and
   `GET /api/tasks` serves it raw. Ordering is a predicate concern, not a route concern - so the
   route needs no `ORDER BY` and the Foreman worker gets the new order for free through
   `backlogTasks`.
 - **The Foreman worker never opens SQLite.** It reads `GET /api/tasks` over loopback
-  (`foreman/client.ts:1011`) and decides with the shared predicates. Once `backlogRank` is on the
+  (`foreman/client.ts`) and decides with the shared predicates. Once `backlogRank` is on the
   wire, the worker needs **no change at all**.
 - **Every automatic creator already funnels through `TaskManager.create`** with `backlog: true`:
-  `task-sources/ingest.ts:129`, `schedules/manager.ts:1085`, `retro.ts:436`,
-  `ensembles/member-launch.ts:37`, `ensembles/finalize-deps.ts:165`, and `POST /mcp/tasks`
-  (`routes.ts:2790`). Assigning the rank in `create` therefore covers "synced items go to the
+  `task-sources/ingest.ts` (`ingestSweep`, `schedules/manager.ts`, `retro.ts`,
+  `ensembles/member-launch.ts`, `ensembles/finalize-deps.ts`, and `POST /mcp/tasks`
+  (`routes.ts` (`POST /mcp/tasks`). Assigning the rank in `create` therefore covers "synced items go to the
   bottom" for all of them with one edit and no per-caller work.
-- **`reschedule` (`tasks.ts:3236`) reuses the same row**, setting `status` back to `backlog`. It
+- **`reschedule` (`tasks.ts`) reuses the same row**, setting `status` back to `backlog`. It
   is not a new task, which is why the plan says a re-entering task keeps the rank it has.
-- **`isAnnotationOnlyUpdate` (`protocol.ts:1093`) counts patch keys** and must not learn about
+- **`isAnnotationOnlyUpdate` (`protocol.ts`) counts patch keys** and must not learn about
   rank: rank does not travel on `UpdateTaskSchema` at all.
 
 ## Implementation steps, in execution order
@@ -220,7 +220,7 @@ export const ReorderTaskSchema = z.discriminatedUnion("position", [
 ```
 
 An anchor, not an index: an index is a claim about a list the caller last saw, and the daemon's
-list has moved on. `POST /api/tasks/:id/reorder` beside its siblings around `routes.ts:5202`,
+list has moved on. `POST /api/tasks/:id/reorder` beside its siblings around `routes.ts` (beside `POST /api/tasks/:id/cancel`,
 returning the updated `Task` on 200 like `dispatch`/`assign`/`complete`.
 
 | Code | When |
@@ -234,13 +234,13 @@ operator can see, not a silent no-op.
 
 ### 9. `src/web/lib/api.ts` + `BacklogColumn.tsx` - the first caller
 
-`api.reorderTask(id, body)` beside `updateTask` (`api.ts:1368`).
+`api.reorderTask(id, body)` beside `updateTask` (`api.ts` (beside `updateTask`).
 
 Four controls on the card. They are ordinary focusable `<button>`s with `aria-label`s naming the
 task - `Move "Fix the flaky test" to top` - because the app selects by role and label and
 **never** by `data-testid`.
 
-Two hazards the existing card already teaches, both in `BacklogColumn.tsx:263-297`:
+Two hazards the existing card already teaches, both visible on the priority `<select>` in `BacklogColumn.tsx`:
 
 - The card is `draggable`, so a control inside it must `stopPropagation` on **`mousedown`** or
   the browser starts a drag instead of activating the control.
@@ -253,14 +253,14 @@ than late. Disable `Move up`/`Move to top` on the first card and their opposites
 
 ### 10. Copy that stops being true
 
-- `BacklogDrawer.tsx:39` - decision 1 of its header comment states plan-entry order as the rule
+- `BacklogDrawer.tsx` - decision 1 of its header comment states plan-entry order as the rule
   in force. Rewrite it for rank order.
-- `NextUpPlanner.tsx:142` - "`readyBacklog` walks Foreman's plan first". Rewrite. The head row is
+- `NextUpPlanner.tsx` - its rule-in-force comment says "`readyBacklog` walks Foreman's plan first". Rewrite. The head row is
   now the head **because that is where the operator put it**; the planner's `reason` is still
   worth quoting, for why the *dependencies* are what they are, but it is no longer the answer to
   "why this one first".
-- `src/web/lib/backlog-copy.ts:69,129` - same two claims.
-- `src/shared/backlog.ts` and `backlog-plan.ts:269` doc comments, as above.
+- `src/web/lib/backlog-copy.ts` - `plannerFacts` and its ready-band note make the same two claims.
+- The doc comments in `src/shared/backlog.ts` and on `topoOrder` in `backlog-plan.ts`, as above.
 
 ### 11. Docs
 

@@ -43,29 +43,29 @@ Phase 1 merged, so the following exist on the default branch and are consumed un
 ## Repository findings
 
 - **The drag already exists and already means something.** `BacklogCard`
-  (`BacklogColumn.tsx:214-230`) is `draggable`, sets
+  (`BacklogColumn.tsx` (`BacklogCard`'s `onDragStart`) is `draggable`, sets
   `e.dataTransfer.setData("application/x-mission-task", task.id)` and
   `effectAllowed = "move"`, and calls `onDragging(repoRoot)` so the board can light up the tiles
-  that could accept it. `SessionTile` (`SessionTile.tsx:132,143`) is the only drop target today,
-  gated by `canAcceptTask` (`BacklogColumn.tsx:426`).
+  that could accept it. `SessionTile` (`SessionTile.tsx` (its `onDragOver` and `onDrop`) is the only drop target today,
+  gated by `canAcceptTask` (`BacklogColumn.tsx`).
 - **So this phase adds a second kind of drop target for the same payload.** No new MIME type: a
   second payload would mean the card has to decide at `dragstart` what the drag is *for*, which
   is exactly the mode this design avoids. The drop target decides.
-- **`onDragging(null)` for a multi-repo task is load-bearing** (`BacklogColumn.tsx:227`): a
+- **`onDragging(null)` for a multi-repo task is load-bearing** (`BacklogColumn.tsx` (`BacklogCard`'s `onDragStart`): a
   multi-repo card announces no repo so no tile lights up, because those tasks are dispatch-only.
   **The column's own gaps must still accept it** - reordering a multi-repo task is fine, only
   assigning it is not. Do not gate the column's drop targets on the repo the card announced.
 - **The column body is `div.board-col-body`** holding `tasks.map(...)` of `BacklogCard`
-  (`BacklogColumn.tsx:106-120`), with a `board-col-empty` paragraph when the list is empty. The
+  (the `tasks.map` in the column body of `BacklogColumn.tsx`), with a `board-col-empty` paragraph when the list is empty. The
   gaps are inserted into that map.
-- **`tasks` arrives pre-sorted** from `App.tsx:1507` (`backlogTasks`, then the filter box). The
-  column does not sort and must not start - `test/task-triage-render.test.ts:141` pins that.
+- **`tasks` arrives pre-sorted** from `App.tsx` (`visibleBacklog`) (`backlogTasks`, then the filter box). The
+  column does not sort and must not start - `test/task-triage-render.test.ts` pins that.
   **Consequence:** when the filter box is narrowing the list, the card visually above another is
   not necessarily its neighbour in the real backlog. Anchoring on the **adjacent visible card's
   id** is still correct, because the route places relative to that anchor in the real list, which
   is what the operator pointed at.
 - **`dragover` must call `preventDefault()`** or the browser refuses the drop - the same thing
-  `SessionTile.tsx:132` already does.
+  `SessionTile.tsx` (its `onDragOver` already does.
 - **`dragleave` fires when moving onto a child element**, which makes a naive
   `onDragEnter`/`onDragLeave` pair flicker. Keep the active gap in state keyed by the gap's
   index and set it on `dragover` rather than tracking enter/leave counts.

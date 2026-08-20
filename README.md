@@ -1,8 +1,8 @@
 # Mission Control
 
 Mission Control is a local control plane for teams running Claude Code, Codex, and Pi.
-It brings the sessions, tasks, conversations, reviews, workflows, and delivery signals
-that normally live across terminal panes into one live dashboard.
+It brings sessions, tasks, conversations, reviews, workflows, and delivery signals from
+terminal panes into one live dashboard.
 
 This repository is internal. It is not licensed for public distribution.
 

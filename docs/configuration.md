@@ -158,6 +158,13 @@ The `make` wrappers for the build and verification commands - `make build`, `mak
 prerequisites. So they install in a tree that has never been installed, re-install after a
 pull or a branch switch moves either manifest, and do nothing at all the rest of the time.
 
+Before the full or focused Electron test suite starts, its npm pretest probes the installed
+Electron binary in Node mode. This loads the platform framework rather than trusting only the
+installer's small marker files. If the generated runtime is truncated or otherwise cannot
+load, the pretest replaces that package's `dist` directory from Electron's checksum-verified
+download cache and probes it again. An operator-supplied `ELECTRON_OVERRIDE_DIST_PATH` is never
+modified; a broken override fails with a diagnostic instead.
+
 The stamp is what makes the second of those work: make is satisfied by any target that
 exists, and `node_modules/` exists forever once anything has been installed into it - so
 depending on the directory would install once and then silently run the gates against stale

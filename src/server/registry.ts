@@ -64,7 +64,8 @@ import { noteAwaitsYou } from "@shared/foreman.ts";
 import { reportBucket } from "@shared/session.ts";
 import { goalLine, resolvedSessionIntent, sessionIntentMatches } from "@shared/goal.ts";
 import { fullTaskTitle } from "@shared/title.ts";
-import { taskRepoPrSummaries, taskRepoRefs } from "@shared/task-repos.ts";
+import { taskHasWorktrees, taskRepoPrSummaries, taskRepoRefs } from "@shared/task-repos.ts";
+import { isTerminalTask } from "@shared/task-status.ts";
 import { capabilitiesFor, workQueueBlockedReason } from "@shared/harness-capabilities.ts";
 import { canWriteTo, muxHandle, paneToken, terminalHomeNames, terminalResourceId, terminalResourceIds, tmuxPaneToken, weztermPaneToken } from "@shared/pane.ts";
 import type { EmulatorHandle, MuxHandle, TerminalHandle } from "@shared/terminal.ts";
@@ -5493,8 +5494,16 @@ export class Registry extends EventEmitter {
     // Only evict fully-cleaned terminal tasks. A failed-but-alive task still holds
     // a worktree + terminal home and decorates its live card, so it must never be
     // evicted (that would orphan its resources and drop the card's chip).
+    //
+    // `taskHasWorktrees` rather than `!t.worktreePath`, and the difference is a shape the
+    // product reaches: multi-repo teardown clears each repository's path as that tree is
+    // actually released, so a run that released the primary and then failed on an attached
+    // repository leaves a terminal task whose primary path is null and whose attached
+    // checkout is still on disk. Reading the primary alone called that task fully cleaned
+    // and evicted it - orphaning a real worktree, and taking with it the durable activity
+    // clock's only in-memory candidate.
     const evictable = [...this.tasks.values()].filter(
-      (t) => isTerminalTask(t.status) && !t.worktreePath && !t.homeName,
+      (t) => isTerminalTask(t.status) && !taskHasWorktrees(t) && !t.homeName,
     );
     if (evictable.length <= RECENT_TERMINAL_TASKS) return;
     evictable.sort((a, b) => b.updatedAt - a.updatedAt);
@@ -7133,10 +7142,7 @@ export function summarizeQueue(
 
 // ---- pure helpers ----
 
-/** A task in a terminal state has no further lifecycle - safe to evict from memory. */
-function isTerminalTask(status: Task["status"]): boolean {
-  return status === "done" || status === "failed" || status === "cancelled";
-}
+
 
 /**
  * The task statuses a merged pull request can still decide.

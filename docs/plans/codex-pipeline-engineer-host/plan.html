@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Codex Pipeline Engineer Host</title>
+  <style>
+    :root{color-scheme:light dark;--bg:#f4f6fb;--paper:#fff;--ink:#172033;--muted:#5e687d;--line:#dce2ef;--brand:#5b4bdb;--brand2:#0b8071;--soft:#eeecff;--ok:#e5f7f2;--warn:#fff5d8;--code:#eef1f7}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.6 ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.page{max-width:1120px;margin:0 auto;padding:44px 24px 72px}.hero,.card{background:var(--paper);border:1px solid var(--line);border-radius:18px;box-shadow:0 12px 34px rgba(33,42,70,.06)}.hero{padding:38px 42px;margin-bottom:22px;background:linear-gradient(135deg,var(--paper),var(--soft))}.eyebrow{color:var(--brand);font-weight:800;letter-spacing:.12em;text-transform:uppercase;font-size:12px}h1{font-size:clamp(34px,5vw,58px);line-height:1.03;letter-spacing:-.045em;margin:8px 0 16px;max-width:850px}h2{font-size:24px;line-height:1.2;margin:0 0 14px}.lead{font-size:19px;max-width:870px;margin:0;color:var(--muted)}.answer{display:grid;grid-template-columns:1.2fr .8fr;gap:22px;margin-bottom:22px}.card{padding:28px}.verdict{border-left:5px solid var(--brand2)}.pill{display:inline-block;border-radius:999px;padding:4px 10px;background:var(--ok);color:#086558;font-size:12px;font-weight:800}.callout{background:var(--warn);border-radius:12px;padding:14px 16px;margin-top:16px}code{background:var(--code);border-radius:5px;padding:.1em .35em;font-size:.93em}a{color:var(--brand);font-weight:700}ul,ol{padding-left:22px}li+li{margin-top:7px}.flow{overflow:auto;margin-top:15px;border:1px solid var(--line);border-radius:14px;background:var(--paper);padding:12px}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:22px;margin:22px 0}.full{grid-column:1/-1}table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;vertical-align:top;border-bottom:1px solid var(--line);padding:10px 8px}th{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.06em}.metric{font-size:32px;font-weight:850;letter-spacing:-.04em}.muted{color:var(--muted)}.links{display:flex;gap:18px;flex-wrap:wrap;margin-top:18px}.footer{color:var(--muted);font-size:13px;margin-top:22px;text-align:center}@media(max-width:760px){.page{padding:20px 14px 50px}.hero,.card{padding:23px}.answer,.grid{grid-template-columns:1fr}h1{font-size:38px}.lead{font-size:17px}}@media(prefers-color-scheme:dark){:root{--bg:#10131b;--paper:#171c28;--ink:#eff2fa;--muted:#acb5c8;--line:#30384a;--brand:#b0a7ff;--brand2:#67d5c4;--soft:#221f3c;--ok:#123d37;--warn:#463918;--code:#262d3d}.hero,.card{box-shadow:none}.pill{color:#9af0df}}
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="hero">
+      <div class="eyebrow">Approved implementation plan</div>
+      <h1>Codex Pipeline Engineer Host</h1>
+      <p class="lead">Let each Pipeline task choose Claude or Codex as its managed Engineer host. Codex runs through Mission Control's existing SDK session and invokes the Engineer skill directly.</p>
+      <div class="links"><a href="phased-plan.html">Phase map</a><a href="phase-1-provider-neutral-pipeline-engineer-host.html">Implementation contract</a><a href="plan.md">Markdown source</a></div>
+    </header>
+    <section class="answer">
+      <article class="card verdict">
+        <span class="pill">Answer</span>
+        <h2><code>conduct-ts engineer</code> is not required</h2>
+        <p>The managed route starts a Claude or Codex SDK session, then sends that host's native Engineer skill invocation plus the task intent. The skill uses deterministic <code>conduct-ts</code> primitives internally as needed, but Mission Control does not launch the standalone Engineer command.</p>
+        <div class="callout">Terminal remains an explicit Claude-only compatibility route. A managed SDK failure fails visibly and never falls back to Terminal.</div>
+      </article>
+      <aside class="card">
+        <div class="eyebrow">Plan shape</div>
+        <div class="metric">1 phase</div>
+        <p class="muted">About 190 non-test lines across the shared contract, dispatcher, UI, and docs. One phase prevents the UI and server from disagreeing during rollout.</p>
+        <p><strong>Scheduled host:</strong><br>Codex · GPT-5.6-Sol · high effort</p>
+      </aside>
+    </section>
+    <section class="card">
+      <h2>Target dispatch flow</h2>
+      <div class="flow">
+        <svg viewBox="0 0 1020 230" width="100%" role="img" aria-label="Pipeline dispatch flows from the operator Agent choice through managed SDK validation to the AI Conductor provider projection">
+          <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#5b4bdb"/></marker></defs>
+          <g fill="none" stroke="#5b4bdb" stroke-width="3" marker-end="url(#arrow)"><path d="M190 76H275"/><path d="M445 76H530"/><path d="M700 76H785"/><path d="M870 116V166H700"/></g>
+          <g font-family="ui-sans-serif,system-ui" text-anchor="middle">
+            <g><rect x="20" y="28" width="170" height="96" rx="15" fill="#eeecff" stroke="#5b4bdb"/><text x="105" y="62" fill="#172033" font-size="15" font-weight="700">Dispatch Pipeline</text><text x="105" y="87" fill="#5e687d" font-size="13">Choose Claude</text><text x="105" y="106" fill="#5e687d" font-size="13">or Codex</text></g>
+            <g><rect x="275" y="28" width="170" height="96" rx="15" fill="#e5f7f2" stroke="#0b8071"/><text x="360" y="62" fill="#172033" font-size="15" font-weight="700">Validate host</text><text x="360" y="87" fill="#5e687d" font-size="13">SDK + Engineer</text><text x="360" y="106" fill="#5e687d" font-size="13">skill capability</text></g>
+            <g><rect x="530" y="28" width="170" height="96" rx="15" fill="#eeecff" stroke="#5b4bdb"/><text x="615" y="62" fill="#172033" font-size="15" font-weight="700">Start SDK</text><text x="615" y="87" fill="#5e687d" font-size="13">agent: task.agent</text><text x="615" y="106" fill="#5e687d" font-size="13">native skill grammar</text></g>
+            <g><rect x="785" y="28" width="170" height="96" rx="15" fill="#e5f7f2" stroke="#0b8071"/><text x="870" y="62" fill="#172033" font-size="15" font-weight="700">Engineer skill</text><text x="870" y="87" fill="#5e687d" font-size="13">Spec and handoff</text><text x="870" y="106" fill="#5e687d" font-size="13">via Conductor</text></g>
+            <g><rect x="445" y="166" width="255" height="48" rx="14" fill="#fff5d8" stroke="#b67a00"/><text x="572" y="195" fill="#172033" font-size="14" font-weight="700">Provider projection owns completion</text></g>
+          </g>
+        </svg>
+      </div>
+    </section>
+    <section class="grid">
+      <article class="card">
+        <h2>Decisions</h2>
+        <ol>
+          <li><code>task.agent</code> is authoritative for managed Pipeline hosts.</li>
+          <li>Eligible hosts come from shared SDK and skill capabilities, not a second agent list.</li>
+          <li>Canonical runtime becomes <code>agent-sdk</code>; legacy <code>claude-sdk</code> input migrates on read.</li>
+          <li>Model and effort remain host defaults; Conductor owns downstream choices.</li>
+          <li>Terminal is Claude-only and rejects mismatched task data.</li>
+        </ol>
+      </article>
+      <article class="card">
+        <h2>Acceptance</h2>
+        <ul>
+          <li>Standard and guided Dispatch can select Codex for Pipeline.</li>
+          <li>The dispatcher starts the fake Codex SDK and preserves the intent in turn one.</li>
+          <li>Claude uses the same provider-neutral path.</li>
+          <li>No managed failure invokes Terminal.</li>
+          <li>Provider completion and run reservation remain unchanged.</li>
+        </ul>
+      </article>
+      <article class="card full">
+        <h2>Implementation surfaces</h2>
+        <table><thead><tr><th>Surface</th><th>Change</th></tr></thead><tbody>
+          <tr><td><code>src/shared/pipeline.ts</code></td><td>Canonical managed runtime plus legacy migration.</td></tr>
+          <tr><td><code>src/shared/harness-capabilities.ts</code></td><td>Shared eligibility for SDK plus invocable Engineer skill.</td></tr>
+          <tr><td><code>src/server/pipelines/index.ts</code><br><code>src/server/dispatcher.ts</code></td><td>Provider-neutral resolution, native skill prompt composition, selected SDK host, and server refusal paths.</td></tr>
+          <tr><td><code>src/web/components/DispatchModal.tsx</code></td><td>Managed Agent selection, guided flow, disabled model/effort, and runtime-specific guidance.</td></tr>
+          <tr><td><code>src/web/components/ConductorPanel.tsx</code></td><td>Managed Agent SDK setting and compatibility explanation.</td></tr>
+          <tr><td><code>e2e/specs/conductor-loops.spec.ts</code></td><td>End-user reproduction and Codex launch proof through the built UI.</td></tr>
+        </tbody></table>
+      </article>
+      <article class="card">
+        <h2>Required checks</h2>
+        <p>Focused Pipeline contract, HTTP, dispatcher, Settings, and Playwright tests, followed by typecheck, lint, full unit tests, build, and visual inspection at desktop and narrow widths.</p>
+      </article>
+      <article class="card">
+        <h2>Not in this task</h2>
+        <p>No AI Conductor source changes, standalone Codex launcher, Recurring Missions support, backlog autopilot, Pi host, model/effort controls, or completion-policy changes.</p>
+      </article>
+    </section>
+    <p class="footer">Plan prepared for Mission Control scheduling · ai-harness</p>
+  </main>
+</body>
+</html>

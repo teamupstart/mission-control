@@ -588,6 +588,26 @@ export interface Session {
   /** A passive read has established the effort baseline for this exact live identity. */
   effortBaselineReady: boolean;
   /**
+   * An effort the operator chose, the harness ACCEPTED, and the conversation has not run
+   * under yet - null whenever `meta.thinkingLevel` is already the live answer.
+   *
+   * It exists because "accepted" and "applied" are not the same event on every harness.
+   * Claude's driver applies a level to the conversation it is already running, so its
+   * change is observed the moment the route returns. Codex's rides the next `turn/start`
+   * and a running turn cannot be moved onto it: a steered follow-up joins the turn that
+   * is going, which keeps the OLD level, and the rollout keeps appending `turn_context`
+   * records saying so. Writing the selection into `meta.thinkingLevel` there would claim
+   * the current turn changed when it did not, and leaving it nowhere at all made the chip
+   * silently revert on the next routine rollout read.
+   *
+   * Which harnesses can produce one is declared by `EffortSpec.driverApplies`, not by
+   * agent name. Server-owned and in-memory: the registry sets it, and clears it when a
+   * later `turn_context` confirms the level, contradicts it, changes model, or the
+   * session rebinds. A daemon restart drops it - the durable `sdk_sessions.effort` column
+   * is what carries the accepted level across one, and the next turn re-asserts it.
+   */
+  pendingEffort: ThinkingLevel | null;
+  /**
    * This session's API-equivalent estimate, denormalized off the usage ledger and keyed on
    * the same stable note key as `note` and `goal` - never on `id`, which re-mints on
    * every restart while the ledger is meant to outlive the session.

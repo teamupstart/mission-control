@@ -34,8 +34,8 @@ import { planPagePath } from "./capture-scopes.ts";
  *
  * ## Why this planner degrades where a scout's refuses
  *
- * A scout's submitted report is the deliverable, it is an untracked file, and a scout cannot
- * be marked done without it - so refusing a capture is how the agent is told to fix its
+ * A scout's submitted report is the deliverable, it is an untracked file, and normal completion
+ * does not mark it done without one - so refusing a capture is how the agent is told to fix its
  * report, and the loop closes. A plan is the opposite on all three counts: it is committed,
  * it lands in a pull request, its task completes on Foreman's ordinary boundary, and there is
  * no submission to correct. Refusing a capture over the CONTENT of a page the agent wrote

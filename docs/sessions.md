@@ -286,7 +286,9 @@ pane string under its title (it wears an `◈ Agent SDK` chip instead), and:
   tool is left enabled - the MCP ask-channel redirect exists because a menu on a child's
   terminal is unreadable, and here it is not;
 - the permission-mode and reasoning-effort pickers control the live embedded conversation,
-  just as they control a pane-backed one;
+  just as they control a pane-backed one - though on Codex a reasoning-effort selection
+  takes effect when the next turn starts rather than immediately, which the effort badge
+  [says on its face](#levels-that-apply-on-the-next-turn);
 - the transcript still comes from the same session file the interactive CLI reads -
   `~/.claude/projects/…` for Claude, the `~/.codex/sessions/…` rollout for Codex, which
   `thread/start` hands the daemon directly. The human-authored task text from the first
@@ -673,6 +675,35 @@ native session-only control; it never changes that harness card's **Effort** sel
 **Settings → Harnesses** or what future sessions start with. Until the current model and
 effort have a trustworthy passive baseline, or when the pane cannot be written, the badge
 stays read-only. The same picker appears on Cards, in Console detail, and on Board tiles.
+
+#### Levels that apply on the next turn
+
+Not every harness can move a conversation it is already having. Claude changes the running
+conversation, so its badge simply reads the new level. **An embedded Codex session applies
+reasoning effort when it STARTS a turn**, and a turn already under way cannot be moved onto
+a new level - so a level chosen there takes effect on the next turn.
+
+The badge says so rather than pretending either way. It reads `medium → high` with a
+**next turn** tag and a dashed outline, meaning the conversation is running `medium` and
+`high` is set for the turn after this one; the picker repeats the sentence above its
+options. Two consequences are worth knowing:
+
+- **A reply you send while the badge is pending joins the turn that is running**, and that
+  turn keeps its old level. Wait for the session to go idle if you want the new level to
+  apply to what you are about to ask for.
+- **Nothing about the badge reverts on its own.** It stays pending until the session
+  actually starts a turn, however long that takes and however often the rest of the card
+  refreshes. When that turn starts, the badge settles on whatever the session really ran -
+  normally the level you chose, or, if something else changed it in the meantime (a
+  `/model` in a terminal on the same conversation, say), on that instead.
+
+Changing your mind while a level is pending is a normal change: pick the level the
+conversation is currently running and the pending one is dropped, so the next turn stays
+where it is. Changing the model, clearing the context, or the session rebinding to a new
+conversation all drop a pending level too - it was a promise about a conversation that no
+longer applies. A pending level is not remembered across a daemon restart; the level itself
+is (it is stored with the embedded session and re-asserted on the next turn), so the badge
+settles as soon as that turn runs.
 
 ### Session status colors
 
@@ -1469,6 +1500,15 @@ instruction to create a pull request, an explicit no-PR instruction still wins, 
 other repositories, and other external writes remain unauthorized. Prompt authorization is
 also separate from sandbox approval posture and does not widen it.
 
+A newly delivered ship task narrows that standing authorization for its initial implementation
+turn. The agent implements and verifies the change, reports that the work is complete, and
+stops without committing, pushing, opening or updating a pull request, or waiting for pull
+request CI. That settled completion is the handoff to Foreman. Foreman either starts the
+selected workflow or sends the direct pull-request follow-up; a workflow can later deliver its
+own Pull Request action. Only that later Foreman or workflow instruction starts the commit,
+push, pull-request, and CI work. This keeps a bound workflow ahead of shipping without taking
+away the standing authorization the later instruction needs.
+
 When `submit_workflow_evidence` is exposed, the prompt likewise authorizes the exact
 server-validated call for task-produced, checkout-relative files and issued repository scopes.
 That includes `repositoryScope: "all"` only when Mission Control issued it. The agent calls the
@@ -1485,6 +1525,28 @@ Each option-based question or plan decision set is an independent review. Dismis
 only that review, persists without a fabricated answer, and releases its blocked tool call.
 These reviews keep the session under **Needs you** while any set remains pending; submitting
 or dismissing the final set clears that review-based signal.
+
+**A blocking tool waits as long as you do, and asking twice does not queue twice.** Every tool
+marked **block** above is waiting on a person, which can be minutes or hours. The MCP client in
+front of it does not wait that long on its own: it abandons the tool call on its own timeout and
+hands the model an error for a question that is still on screen and still answerable, and the
+model's natural recovery is to ask again word for word. Two things keep that from reaching you:
+
+- While it waits, the daemon's long poll reports in to the client after every round trip, as a
+  standard MCP **progress notification** against the token that client supplied. A client that
+  receives one restarts its timeout for that request, so a wait that keeps reporting in is never
+  abandoned for taking too long. A client that asks for no progress gets none, and simply behaves
+  as it did before.
+- If a retry happens anyway - a client that ignores progress, a dropped connection, a daemon
+  restart - **an identical ask from the same session, while the first is still unanswered,
+  re-attaches to the question that is already open** rather than opening a second one. You see
+  one card, you answer it once, and every call still listening is released by that one answer.
+
+The re-attach is deliberately narrow: it matches only a **pending** review with the same kind,
+the same wording, and the same offered options. A question you already answered is never reused,
+so an agent that legitimately asks the same thing again later gets a fresh card; a different
+session's identical question is never folded into yours; and changing the options makes it a
+different question, because the options are what you are choosing between.
 
 **Your answer stays in the conversation.** Submitting a review writes a gold entry into that
 session's conversation, at the point in time you answered. What the entry shows depends on
@@ -1536,6 +1598,15 @@ keep the built-in tool because its questions already arrive as structured driver
 see [Session runtimes](#session-runtimes-terminal-or-the-agent-sdk). Either way the answer
 lands in the session's conversation as the same gold entry - the two channels differ in how
 the question reaches you, not in what is written down afterwards.
+
+A Codex Agent SDK launch that successfully registers the bundled Mission MCP server also
+appends one developer instruction: when the operator needs to review alternatives, select an
+option, or answer another discrete multiple-choice question, call `request_input` with
+`options` and wait for the response instead of presenting the choices only as prose and
+ending the turn. Mission Control reads Codex's effective configured developer instruction
+first and preserves it ahead of this appendix. If the MCP server is unavailable, or that
+effective instruction cannot be read safely, the appendix is omitted so the launch never
+points Codex at an unavailable tool or replaces the operator's customization.
 
 For the terminal runtime, four flags go on together or not at all
 (`src/server/ask-channel.ts`): `--mcp-config`

@@ -2416,6 +2416,54 @@ body {
   padding: 0 24px max(64px, var(--cmdbar-clearance, 0px));
 }
 
+.app-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex: none;
+  margin: 0 4px 18px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in oklab, var(--working) 35%, var(--border));
+  border-radius: 10px;
+  background: color-mix(in oklab, var(--working) 9%, var(--panel));
+}
+.app-banner-copy {
+  min-width: 0;
+}
+.app-banner p {
+  margin: 3px 0 0;
+  color: var(--muted);
+  line-height: 1.4;
+}
+.app-banner-actions {
+  display: flex;
+  gap: 8px;
+  flex: none;
+}
+.app-banner-error {
+  border-color: color-mix(in oklab, var(--danger) 42%, var(--border));
+  background: color-mix(in oklab, var(--danger) 9%, var(--panel));
+}
+.app-banner-success {
+  border-color: color-mix(in oklab, var(--idle) 38%, var(--border));
+  background: color-mix(in oklab, var(--idle) 8%, var(--panel));
+}
+.app-console > .app-banner,
+.app-board > .app-banner {
+  margin: 0;
+  border-width: 0 0 1px;
+  border-radius: 0;
+  padding-inline: 22px;
+}
+
+@media (max-width: 640px) {
+  .app-banner {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+
 /* ---- top bar ---- */
 .topbar {
   position: sticky;
@@ -3814,6 +3862,31 @@ body {
   font-size: 9px;
   opacity: 0.85;
 }
+/* An accepted level the conversation has not run yet. Dashed, because the chip is making
+   a promise about the next turn rather than reporting the current one, and the two must not
+   look alike at a glance across a board of cards. */
+.rt-think-pending {
+  border-style: dashed;
+}
+.rt-think-was {
+  color: var(--dim);
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+.rt-think-arrow {
+  color: var(--dim);
+  font-size: 9px;
+}
+.rt-think-next {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 1px 4px;
+  border-radius: 3px;
+  color: var(--dim);
+  background: color-mix(in oklab, var(--dim) 16%, transparent);
+}
 .rt-think-low {
   --think-color: var(--idle);
 }
@@ -4661,6 +4734,14 @@ body {
   .file-notice { flex-wrap: wrap; }
 }
 /* A failed walk explains itself here rather than closing the popover on a lie. */
+/* The sentence the chip has no room for: WHY the selected option is not the running one.
+   Sits above the options so it is read before one is chosen, not after. */
+.mode-pop-note {
+  margin: 2px 6px 6px;
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: var(--dim);
+}
 .mode-pop-err {
   margin: 4px 6px 2px;
   font-size: 10.5px;
@@ -9552,6 +9633,21 @@ select:not([multiple]) option:focus-visible {
 .kill-error {
   margin: 8px 0 0;
   color: #e5877f;
+}
+/* A recoverable scout contract violation, presented as the question it now is. The second
+   action turns danger-red; this copy stays amber so it reads as a warning, not a failure. */
+.complete-warning {
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in oklab, var(--attention) 42%, var(--border));
+  border-radius: 7px;
+  background: color-mix(in oklab, var(--attention) 8%, var(--panel-2));
+  color: var(--attention);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.complete-warning p {
+  margin: 4px 0 0;
 }
 /* A settled OUTCOME, not a failure - the retro that became a backlog task because the
    session could not be typed into. It sits where the error does and must not read like

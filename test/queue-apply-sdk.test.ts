@@ -105,6 +105,7 @@ function mkSdkSession(over: Partial<Session> = {}): Session {
     prChecks: null,
     meta: null,
     effortBaselineReady: false,
+    pendingEffort: null,
     note: null,
     cost: null,
     goal: null,

@@ -27,6 +27,7 @@ function props(sessions: Session[]): SessionViewProps {
     consoleZone: "rail",
     onConsoleZoneChange: () => {},
     onSelect: () => {},
+    onCursorTo: () => {},
     onDeselect: () => {},
     expandedId: null,
     onToggleExpand: () => {},

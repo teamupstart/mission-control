@@ -62,6 +62,12 @@ immediately from Dispatch, with no backlog, dependencies, generated artifact, ar
 automatic after-work action. The session stays yours to continue and complete unless you
 explicitly choose a Workflow for that chat.
 
+Choose **scout** for an investigation whose durable answer belongs in Scouts. Mission Control
+normally verifies that report before completion. If it is missing or incomplete, the first
+**Complete & close** attempt changes nothing and shows what the scout still owes; an explicit
+**Close without report** confirmation can close the task when preserving that answer is not
+needed.
+
 A task can attach more than one repository. Dispatch it and you get **one** agent session
 holding all of them in shared context: its working directory is the primary repo's worktree,
 each attached repo gets a worktree of its own, and the agent is granted write access to every
@@ -103,9 +109,8 @@ actions, and preview-first cleanup without replacing task, check, Git, or proces
 
 ## Build the operating system around the work
 
-The Library keeps reusable workflows, personas, session actions, ensemble strategies, mission
-sources, and the commands behind each standard gate together rather than burying them in
-individual terminals.
+The Library centralizes reusable workflows, personas, session actions, ensemble strategies,
+mission sources, and gate commands.
 
 **Library → Personas → Foreman** is the fixed System profile for Foreman's exact standing
 guidance. Its name, policy, safeguards, models, and authority remain owned by Mission Control

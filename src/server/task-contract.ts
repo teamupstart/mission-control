@@ -18,8 +18,9 @@ import {
  *
  * A REGISTRY over the kinds rather than a chain of `if`s, so that adding a kind's contract
  * means adding one entry here and nowhere else, and so that a kind added without a contract
- * does not compile. `ship` returns null because it has no KIND-specific appendix. Every task
- * still receives the shared execution authorization below.
+ * does not compile. `ship` owns the completion handoff that keeps pull-request work behind
+ * Foreman or the selected workflow. Every task still receives the shared execution
+ * authorization below.
  *
  * The appendix is a SUFFIX, always. Whatever the caller already composed - the repo manifest
  * on a multi-repo dispatch, Pi's repository-memory pointer - is context the agent needs BEFORE
@@ -61,8 +62,15 @@ export interface TaskContractInputs {
  * `Record<TaskKind, …>` is the enforcement, matching `TASK_KIND_INFO`: a new kind does not
  * compile until it has said what its delivery contract is, including saying it is nothing.
  */
+const SHIP_COMPLETION_HANDOFF = [
+  "## Ship task completion handoff",
+  "Implement and verify the requested change, then report that the work is complete and end this turn.",
+  "During this initial task turn, do not commit, push, create or update a pull request, or wait for pull-request CI, even if the task request or repository instructions normally include those steps.",
+  "Mission Control owns what happens after this completion. Foreman will either start the task's selected workflow or send a later instruction for the direct pull-request path. Only an instruction delivered after this handoff, from Foreman or the workflow, starts commit, push, pull-request, and CI follow-through.",
+].join("\n");
+
 const KIND_CONTRACT: Record<TaskKind, (task: Task, inputs: TaskContractInputs) => string | null> = {
-  ship: () => null,
+  ship: () => SHIP_COMPLETION_HANDOFF,
   scout: (task, inputs) => scoutReportAppendix(scoutRepoSlots(task, inputs.fallbackRoot ?? null)),
   plan: (task, inputs) => planContractAppendix(requirePlanSkills(task, inputs)),
   pipeline: () => null,
@@ -93,7 +101,8 @@ function requirePlanSkills(task: Task, inputs: TaskContractInputs): PlanSkillInv
  * `composedIntent` is whatever the caller has already built - the repo manifest prefix on a
  * multi-repo dispatch, the repository-memory pointer on Pi, the raw intent on an assignment.
  * Composing here rather than in each caller is what makes the ordering deterministic. Broad
- * authorization comes before narrower kind instructions, so the scout's later no-PR rule wins.
+ * authorization comes before narrower kind instructions, so the scout's no-PR rule and the
+ * ship task's completion handoff remain authoritative for their initial turns.
  */
 export function withTaskKindContract(
   task: Task,

@@ -19,7 +19,7 @@ import type {
   SessionRequest,
   SessionRequestAnswer,
 } from "../types.ts";
-import { AppServerClient, type AppServerTransport } from "./app-server/client.ts";
+import { AppServerClient } from "./app-server/client.ts";
 import type {
   AskForApproval,
   ApprovalsReviewer,
@@ -94,6 +94,19 @@ const ACCEPT_LABEL = "Yes";
 const ACCEPT_ALWAYS_LABEL = "Yes, and don't ask again";
 const DECLINE_LABEL = "No";
 const FINAL_ANSWER_COMPLETION_GRACE_MS = 250;
+
+/**
+ * The launch-scoped appendix that keeps a requested choice inside Mission Control.
+ *
+ * This is a developer instruction rather than `baseInstructions`: the latter replaces
+ * Codex's model-specific base prompt. The app-server also treats a request-level developer
+ * instruction as an override, not an append, so launch reads and preserves the effective
+ * configured value before adding this text below.
+ */
+const MISSION_CONTROL_REVIEW_INSTRUCTION =
+  "When the operator must review alternatives, select an option, or answer any discrete " +
+  "multiple-choice question, call the Mission Control request_input MCP tool with options " +
+  "and wait for the response. Do not only present the choices as prose and end the turn.";
 
 /**
  * What a `permissionMode` MEANS to the app-server, and the exact inverse of what
@@ -312,6 +325,7 @@ interface LaunchConfig {
   model: string | null;
   effort: ThinkingLevel | null;
   permissionMode: PermissionMode | null;
+  developerInstructions: string | null;
 }
 
 /**
@@ -1320,6 +1334,9 @@ function threadStartParams(config: LaunchConfig): ThreadStartParams {
   return {
     cwd: config.cwd,
     ...(config.model ? { model: config.model } : {}),
+    ...(config.developerInstructions
+      ? { developerInstructions: config.developerInstructions }
+      : {}),
     ...(posture
       ? {
           approvalPolicy: posture.approvalPolicy,
@@ -1328,6 +1345,23 @@ function threadStartParams(config: LaunchConfig): ThreadStartParams {
         }
       : {}),
   };
+}
+
+/** The narrow part of `config/read` this adapter consumes before starting a thread. */
+interface ConfigReadResult {
+  config: {
+    developer_instructions?: string | null;
+  };
+}
+
+/** Parse at the app-server boundary: undefined means unsafe to override, null means absent. */
+function configuredDeveloperInstructions(result: unknown): string | null | undefined {
+  if (typeof result !== "object" || result === null || !("config" in result)) return undefined;
+  const config = (result as { config?: unknown }).config;
+  if (typeof config !== "object" || config === null) return undefined;
+  const value = (config as { developer_instructions?: unknown }).developer_instructions;
+  if (value !== undefined && value !== null && typeof value !== "string") return undefined;
+  return typeof value === "string" && value.length > 0 ? value : null;
 }
 
 /**
@@ -1371,6 +1405,7 @@ export function codexSdkSpec(deps: CodexSdkDeps = defaultCodexSdkDeps): SdkSpec 
         model: opts.model,
         effort: opts.effort,
         permissionMode: opts.permissionMode,
+        developerInstructions: null,
       };
       let session: CodexSdkSession | null = null;
       const client = new AppServerClient(transport, {
@@ -1390,6 +1425,30 @@ export function codexSdkSpec(deps: CodexSdkDeps = defaultCodexSdkDeps): SdkSpec 
           },
         };
         await client.request<InitializeResponse>("initialize", params);
+        if (opts.mcp) {
+          try {
+            const read = await client.request<ConfigReadResult>("config/read", {
+              cwd: opts.cwd,
+              includeLayers: false,
+            });
+            const configured = configuredDeveloperInstructions(read);
+            if (configured === undefined) {
+              console.warn(
+                "[sdk] codex config/read returned invalid developer_instructions; " +
+                  "Mission Control review routing was not added",
+              );
+            } else {
+              config.developerInstructions = configured
+                ? `${configured}\n\n${MISSION_CONTROL_REVIEW_INSTRUCTION}`
+                : MISSION_CONTROL_REVIEW_INSTRUCTION;
+            }
+          } catch (err) {
+            console.warn(
+              "[sdk] codex config/read failed; Mission Control review routing was not added:",
+              err instanceof Error ? err.message : String(err),
+            );
+          }
+        }
         if (opts.resume) {
           const resumeParams: ThreadResumeParams = {
             threadId: opts.resume,

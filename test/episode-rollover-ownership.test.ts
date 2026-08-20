@@ -179,6 +179,13 @@ test("a detached-HEAD session keeps its task when the agent cuts its own branch"
   // invalidating ownership, and cancelled the still-working task - so the PR it then merged was
   // recorded against an episode no task pointed at, its Complete button dead and its dependents
   // stranded behind a stopped blocker.
+  //
+  // `branch: null` is the fixture's whole premise, and the allocator is what guarantees it:
+  // a native lease is only finalized once Git has been asked and answered that the slot's
+  // HEAD is detached (see worktree-manager.test.ts). A slot that reached the right commit
+  // while still holding the previous occupant's branch would start this session on a real
+  // feature branch, and its first branch of its own would then be branch-to-branch - a
+  // genuine takeover, correctly rolled, cancelling a task that had done nothing wrong.
   const { registry, switchesBranch, SID, TASK } = dispatched(FIRST_ID, { startBranch: null });
   const before = registry.workEpisodeForTask(TASK)!;
   assert.equal(before.branch, null, "the fixture did not start on a detached HEAD");

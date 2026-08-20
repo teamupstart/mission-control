@@ -55,6 +55,16 @@ const FILE_READ_LIMIT = 1024 * 1024 * 1024;
 const REASON_LIMIT = 200;
 
 /**
+ * How many checkouts deep this will follow a nested repository before refusing.
+ *
+ * A submodule is its own checkout and gets its own full fingerprint (see `pathContentIdentity`),
+ * and a submodule may itself contain one. The bound exists so a pathological chain cannot turn
+ * one observation into an unbounded walk; past it the answer is `unknown`, which holds the tree
+ * rather than declaring a depth nobody looked at to be quiet.
+ */
+const MAX_NESTED_CHECKOUT_DEPTH = 8;
+
+/**
  * One worktree's, or one task's, Git-visible identity.
  *
  * `known` carries a hex digest and nothing else. `unknown` carries a short internal reason and
@@ -216,6 +226,7 @@ function splitNul(text: string): string[] {
 export async function worktreeActivityFingerprint(
   worktreePath: string,
   deps: WorktreeActivityDeps = defaultWorktreeActivityDeps,
+  depth = 0,
 ): Promise<ActivityFingerprint> {
   const hash = createHash("sha256");
 
@@ -275,7 +286,7 @@ export async function worktreeActivityFingerprint(
   for (const entry of entries) {
     hash.update(`${entry.code}\0${entry.path}\0`);
     if (!entry.readContent) continue;
-    const content = await pathContentIdentity(join(worktreePath, entry.path), deps);
+    const content = await pathContentIdentity(join(worktreePath, entry.path), deps, depth);
     if (content.kind === "unknown") return content;
     hash.update(`${content.digest}\0`);
   }
@@ -340,6 +351,7 @@ function parseStatus(text: string): StatusEntry[] | null {
 async function pathContentIdentity(
   path: string,
   deps: WorktreeActivityDeps,
+  depth: number,
 ): Promise<{ kind: "known"; digest: string } | { kind: "unknown"; reason: string }> {
   let stat: Awaited<ReturnType<typeof lstat>>;
   try {
@@ -359,7 +371,27 @@ async function pathContentIdentity(
     }
   }
   if (stat.isDirectory()) {
-    return { kind: "known", digest: "dir" };
+    // A directory reaching here is a CHECKOUT, in both of the two ways status can produce one:
+    // a submodule whose contents differ, and an untracked nested repository (`?? nested/`),
+    // which Git reports as a single entry and refuses to descend into even with `-uall`.
+    //
+    // Both must be fingerprinted as the repositories they are. A constant digest here was a
+    // real hole: once a submodule is dirty its parent's status stays ` M sub` and the parent's
+    // gitlink stays put, so every later edit AND every commit inside it left the parent
+    // fingerprint identical - an agent working steadily in a submodule looked exactly like an
+    // abandoned tree, and a stable digest is what eventually authorizes deletion.
+    //
+    // Recursing gives the nested checkout the same four-part treatment as the top-level one -
+    // its HEAD, its whole index, its tracked changes, its untracked files - so a commit inside
+    // it moves the parent digest through the nested HEAD, and a dirty file through the nested
+    // worktree section. Its own `.gitignore` still applies at its own level, so a submodule's
+    // warm caches stay excluded exactly as the parent's are.
+    if (depth >= MAX_NESTED_CHECKOUT_DEPTH) {
+      return { kind: "unknown", reason: "nested checkouts are deeper than the probe follows" };
+    }
+    const nested = await worktreeActivityFingerprint(path, deps, depth + 1);
+    if (nested.kind === "unknown") return nested;
+    return { kind: "known", digest: `nested:${nested.digest}` };
   }
   if (!stat.isFile()) {
     // A fifo, socket or device is not something a digest can stand for, and pretending

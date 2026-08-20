@@ -215,6 +215,57 @@ test("a conflicted merge fingerprints stably, with all three index stages", asyn
   assert.notEqual(await digest(dir), conflicted);
 });
 
+test("work inside a dirty submodule keeps moving the parent fingerprint", async () => {
+  // The hole this closes: once a submodule is dirty, the parent's status stays ` M sub` and its
+  // gitlink stays put, so a constant digest for the submodule directory made every LATER edit
+  // and every commit inside it invisible to the parent. An agent working steadily in a submodule
+  // fingerprinted exactly like an abandoned tree - and a digest that stops moving is what
+  // eventually authorizes deletion.
+  const sub = mkRepo("sub-origin");
+  const parent = mkRepo("sub-parent");
+  git(parent, "-c", "protocol.file.allow=always", "submodule", "add", "-q", sub, "sub");
+  git(parent, "commit", "-qm", "add submodule");
+
+  const clean = await digest(parent);
+  writeFileSync(join(parent, "sub", "tracked.txt"), "dirty\n");
+  const dirty = await digest(parent);
+  assert.notEqual(dirty, clean, "a submodule going dirty is visible to the parent");
+
+  // Each of these three leaves the parent's own status and gitlink completely unchanged, which
+  // is exactly why each needs its own assertion.
+  writeFileSync(join(parent, "sub", "tracked.txt"), "dirtier\n");
+  const edited = await digest(parent);
+  assert.notEqual(edited, dirty, "a second edit inside a dirty submodule is still activity");
+
+  git(join(parent, "sub"), "commit", "-qam", "inside");
+  const committed = await digest(parent);
+  assert.notEqual(committed, edited, "a commit inside a submodule is still activity");
+
+  writeFileSync(join(parent, "sub", "untracked.txt"), "scratch\n");
+  const untracked = await digest(parent);
+  assert.notEqual(untracked, committed, "an untracked file inside a submodule is still activity");
+
+  // And the submodule's own ignore rules still apply at its own level, so a warm cache down
+  // there cannot pin the parent open forever either.
+  writeFileSync(join(parent, "sub", "build.log"), "noise\n");
+  assert.equal(await digest(parent), untracked, "ignored churn inside a submodule changes nothing");
+});
+
+test("an untracked nested repository is fingerprinted, not flattened to a constant", async () => {
+  // Git reports a nested repo as one `?? nested/` entry and refuses to descend into it even
+  // with `-uall`, so it reaches the same directory branch a submodule does.
+  const parent = mkRepo("nested-parent");
+  const nested = join(parent, "nested");
+  mkdirSync(nested, { recursive: true });
+  git(nested, "init", "-q", "-b", "main");
+  git(nested, "config", "user.email", "test@example.com");
+  git(nested, "config", "user.name", "Test");
+  writeFileSync(join(nested, "work.txt"), "one\n");
+  const first = await digest(parent);
+  writeFileSync(join(nested, "work.txt"), "two\n");
+  assert.notEqual(await digest(parent), first, "work in an untracked nested repo is activity");
+});
+
 test("an unborn HEAD fingerprints stably instead of pinning the tree on unknown", async () => {
   const dir = join(root, "unborn");
   mkdirSync(dir, { recursive: true });

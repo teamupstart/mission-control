@@ -39,6 +39,9 @@ async function shoot(page: Page, name: string): Promise<void> {
   mkdirSync(EVIDENCE, { recursive: true });
   // Off every control first: `Tooltip` portals a bubble under a resting pointer.
   await page.mouse.move(0, 0);
+  // Let the disclosure's own transition settle. A frame taken mid-expand photographs the
+  // ladder half-faded, which reads as a rendering fault in a picture meant for pixel review.
+  await page.waitForTimeout(500);
   await page.screenshot({ path: `${EVIDENCE}${name}.png` });
   // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/board-tile-workflow-click/${name}.png`);
@@ -160,6 +163,11 @@ test("an expanded workflow on a Board tile selects it, then follows its run", as
   // The full ladder, not the collapsed peek - this is the region the bug was about.
   await expect(tile.locator(".wf-ladder-open")).toBeVisible();
   await expect(tile).not.toHaveClass(/selected/);
+  await expect(dashboard.locator(".board-detail")).toHaveAttribute("aria-hidden", "true");
+
+  // Frame 1 of the sequence a reviewer reads: expanded, and NOT selected. This is the state the
+  // bug left you stuck in - every click into the ladder below returned you to exactly this.
+  await shoot(dashboard, "01-expanded-not-selected");
 
   // The panel's own background: the ladder's stage list, aimed between its rows rather than at
   // a rung's controls. This is the click that used to do nothing at all.
@@ -170,15 +178,27 @@ test("an expanded workflow on a Board tile selects it, then follows its run", as
   // being read are both still on screen for the second click.
   await expect(tile).toHaveClass(/selected/);
   await expect(tile).toHaveClass(/workflow-expanded/);
+  await expect(tile.getByRole("button", { name: "Collapse workflow" })).toBeVisible();
   await expect(dashboard.locator("main.board")).toHaveAttribute("data-focus", "none");
+  // The drill-in specifically: `.board-detail` is the track the console detail mounts into,
+  // and it stays closed. This is the assertion behind "selects, and only selects".
+  await expect(dashboard.locator(".board-detail")).toHaveAttribute("aria-hidden", "true");
   expect(new URL(dashboard.url()).hash).not.toContain("/runs/");
 
-  await shoot(dashboard, "expanded-workflow-selected");
+  // Frame 2: the same tile, now the board's cursor, with the ladder still expanded and no
+  // console detail beside it.
+  await shoot(dashboard, "02-first-click-selects");
 
   // The same click again, now that the tile is the cursor, follows the run into Runs.
   await ladder.click({ position: { x: 4, y: 4 } });
   await expect(dashboard).toHaveURL(new RegExp(`#/runs/${runId}`));
   await expect(dashboard.getByRole("list", { name: "Workflow runs" })).toBeVisible();
+  // The run it landed on is THIS run, not a neighbour that happens to head the list.
+  await expect(dashboard.getByRole("list", { name: "Workflow runs" }))
+    .toContainText("Tile click review");
+
+  // Frame 3: the run's own page, reached by the second click alone.
+  await shoot(dashboard, "03-second-click-opens-run");
 });
 
 test("controls inside an expanded workflow keep answering their own clicks", async ({

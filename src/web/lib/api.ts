@@ -136,6 +136,15 @@ export interface AssignResult extends ActionResult {
   resetConfirm?: AssignResetConfirm;
 }
 
+/**
+ * A scout completion refusal that is also a confirmation prompt. The daemon includes the
+ * problems it just verified so the operator confirms this exact missing archive state.
+ */
+export interface CompleteTaskResult extends ActionResult {
+  confirmIncompleteScout?: boolean;
+  problems?: string[];
+}
+
 /** GET a JSON endpoint, returning null on any failure (for optional UI data). */
 async function fetchJson<T>(path: string): Promise<T | null> {
   try {
@@ -1413,12 +1422,14 @@ export const api = {
     outcomeUrl?: string,
     satisfyDependents?: boolean,
     requireStopped?: boolean,
+    confirmIncompleteScout?: boolean,
   ) =>
-    post(`/api/tasks/${encodeURIComponent(id)}/complete`, {
+    post<CompleteTaskResult>(`/api/tasks/${encodeURIComponent(id)}/complete`, {
       outcome,
       outcomeUrl,
       ...(satisfyDependents ? { satisfyDependents: true } : {}),
       ...(requireStopped ? { requireStopped: true } : {}),
+      ...(confirmIncompleteScout ? { confirmIncompleteScout: true } : {}),
     }),
   deleteTask: (id: string) => del(`/api/tasks/${encodeURIComponent(id)}`),
   /**

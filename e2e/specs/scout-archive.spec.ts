@@ -49,6 +49,7 @@ const EVIDENCE = artifactsDir("scout-prompt-context");
 const RENAME_EVIDENCE = artifactsDir("scout-rename");
 const SHORTCUT_EVIDENCE = artifactsDir("scouts-shortcuts");
 const FRAGMENT_EVIDENCE = artifactsDir("scout-fragment-links");
+const CLOSE_WARNING_EVIDENCE = artifactsDir("scout-close-warning");
 /** Visible text that exists ONLY inside the report the fake writes. */
 const FINDING = "the resume path never replayed the repository grant";
 /** Turns the fake into a scout that writes its page and deliberately never submits it. */
@@ -240,7 +241,7 @@ test("a dispatched scout is told to write a report, and archives it, with skills
   await expect(card).not.toContainText("PR #");
 });
 
-test("a scout that has not submitted a report cannot be completed, and keeps its checkout", async ({
+test("a scout without a report warns first, then closes only after confirmation", async ({
   dashboard,
   daemon,
 }) => {
@@ -260,18 +261,59 @@ test("a scout that has not submitted a report cannot be completed, and keeps its
   await expect(dialog).toBeVisible();
   await dialog.getByRole("button", { name: "Complete & close" }).click();
 
-  // The modal stays open carrying the daemon's own sentence, naming the path and the tool -
-  // which is the whole affordance: the operator can see what the agent still owes.
+  // The first request changes nothing and turns the refusal into an explicit warning. It
+  // names the missing contract and replaces the ordinary action with the narrower choice.
   await expect(dialog).toBeVisible();
+  await expect(dialog).toContainText("No scout report will be archived.");
   await expect(dialog).toContainText("docs/reports/<slug>/report.html");
   await expect(dialog).toContainText("submit_scout_artifacts");
+  await expect(dialog.getByRole("button", { name: "Complete & close" })).toHaveCount(0);
+  const confirm = dialog.getByRole("button", { name: "Close without report" });
+  await expect(confirm).toBeVisible();
+  if (process.env.MC_E2E_EVIDENCE === "1") {
+    mkdirSync(CLOSE_WARNING_EVIDENCE, { recursive: true });
+    await dialog.screenshot({
+      path: join(CLOSE_WARNING_EVIDENCE, "confirm-close-without-report.png"),
+      animations: "disabled",
+    });
+    // eslint-disable-next-line no-console
+    console.log("CAPTURED e2e/.artifacts/scout-close-warning/confirm-close-without-report.png");
+  }
 
-  // And nothing was lost to the attempt: the task is still live, on its own worktree, so the
-  // agent can still be told to finish the job.
-  await dashboard.getByRole("button", { name: "Close" }).first().click();
-  await expect(dialog).toBeHidden();
+  // Until the second click, the task and checkout remain live so Cancel is still a real exit.
   await expect(card).toContainText("worktree-pools/");
-  await expect(card.getByRole("button", { name: "Complete" })).toBeVisible();
+  expect(await archives(daemon), "the warning does not invent an archive").toHaveLength(0);
+
+  // Leaving the decision clears its authority. Reopening must start from the ordinary
+  // request again, not carry the prior scout's confirmation into another modal use.
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await expect(dialog).toBeHidden();
+  await complete.click();
+  await expect(dialog).toBeVisible();
+  await expect(dialog).not.toContainText("No scout report will be archived.");
+  await expect(dialog.getByRole("button", { name: "Close without report" })).toHaveCount(0);
+  await dialog.getByRole("button", { name: "Complete & close" }).click();
+  await expect(dialog).toContainText("No scout report will be archived.");
+  const reopenedConfirm = dialog.getByRole("button", { name: "Close without report" });
+  await expect(reopenedConfirm).toBeVisible();
+
+  await reopenedConfirm.click();
+  await expect(dialog).toBeHidden({ timeout: 10_000 });
+
+  await expect
+    .poll(async () => {
+      const res = await fetch(`${daemon.baseURL}/api/tasks`);
+      const tasks = (await res.json()) as Array<{ kind: string; status: string }>;
+      return tasks.find((candidate) => candidate.kind === "scout")?.status ?? null;
+    })
+    .toBe("done");
+  await expect
+    .poll(async () => {
+      const res = await fetch(`${daemon.baseURL}/api/sessions`);
+      return ((await res.json()) as FleetSession[]).length;
+    }, { timeout: 20_000, message: "the confirmed close should finish stopping the scout" })
+    .toBe(0);
+  expect(await archives(daemon), "confirmed completion still publishes no fake report").toHaveLength(0);
 });
 
 test("a report the daemon refuses is reported to the scout and archives nothing", async ({

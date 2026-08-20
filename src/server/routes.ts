@@ -5269,6 +5269,7 @@ export function buildApp(
         parsed.data.outcomeUrl,
         parsed.data.satisfyDependents,
         parsed.data.requireStopped,
+        parsed.data.confirmIncompleteScout,
       );
     } catch (error) {
       if (error instanceof TaskStatusConflictError) return c.json({ error: error.message }, 409);
@@ -5277,7 +5278,11 @@ export function buildApp(
       // usually several paths at once. 422 would read as "malformed request"; the request was
       // fine, the world was not ready.
       if (error instanceof ScoutArchiveNotReadyError) {
-        return c.json({ error: error.message, problems: error.problems }, 409);
+        return c.json({
+          error: error.message,
+          problems: error.problems,
+          confirmIncompleteScout: true,
+        }, 409);
       }
       throw error;
     }

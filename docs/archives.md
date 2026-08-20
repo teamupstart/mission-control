@@ -206,7 +206,14 @@ Two things are established, and they are different questions:
 
 Either one failing refuses the launch or the assignment, naming the tool and `npm run build`.
 The alternative is the failure this replaces: a scout that writes a finished report and then
-has nowhere to hand it over, with no error, no warning, and a task that never reaches **done**.
+has nowhere to hand it over, with no error or warning.
+
+Normal completion still verifies a complete archive first. If no complete report can be
+published, the first **Complete & close** attempt changes nothing and shows the daemon's exact
+archive problems as a warning. The operator may then cancel so the scout can correct its report,
+or explicitly choose **Close without report**. That confirmed exit marks the task done without
+inventing a transcript-derived report; no older client or automatic completion path can take it
+because the confirmation flag defaults to false.
 
 **An assignment asks a third question, because it targets an agent that is already running.**
 That agent's MCP server is a child it spawned at launch, holding whatever the bundle contained
@@ -243,13 +250,14 @@ Hidden entries (`.DS_Store`, an editor swap file) cannot be represented inside a
 so they are skipped; if the report actually links to one, the whole capture is refused rather
 than published with a dead link.
 
-### Completion waits for the archive
+### Normal completion waits for the archive
 
-A scout cannot be marked **done** until its bundle exists, has been verified, and is
+A scout's first completion attempt requires its bundle to exist, be verified, and be
 `complete`. A missing submission, an invalid report, a changed file, or a limit crossed leaves
 the task exactly as it was - still running, still holding its session and its checkout - and
-returns the exact problem. Indexing is not part of that: the bundle is durable before the
-database knows about it, and a failed index is retried in the background.
+returns the exact problem. The dashboard then offers the explicit **Close without report**
+confirmation described above. Indexing is not part of the normal gate: the bundle is durable
+before the database knows about it, and a failed index is retried in the background.
 
 Nothing else is a fallback. There is no completion from the conversation, the last assistant
 message, or the set of changed files.
@@ -329,10 +337,10 @@ Three consequences worth stating:
 
 A plan task that wrote no plan - the human read where it was going, said no, and stopped -
 tears its checkout down cleanly. This is the one place plan capture deliberately parts from
-scout capture, which cannot happen: a scout has to submit a report before it can finish, so a
-scout arriving at cleanup with nothing is an anomaly worth holding a worktree over. A plan is
-not, and treating it the same way would strand that worktree with nothing anyone could do
-about it.
+scout capture: an ordinary scout finish has a submitted report, so a scout arriving at cleanup
+with nothing is an anomaly worth holding a worktree over. The separate, confirmed close without
+a report leaves its checkout for the same explicit cleanup path. A plan is not an anomaly, and
+treating it the same way would strand that worktree with nothing anyone could do about it.
 
 For the same reason, a plan page that **is** there but cannot lead a bundle - it fetches
 something on open, or it crossed a size limit - produces an honest `partial` that keeps the

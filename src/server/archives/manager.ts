@@ -332,7 +332,7 @@ export class ArchiveManager {
         problems: [
           publishedIncomplete
             ? "this scout's archive is incomplete - its primary HTML report is missing - and a " +
-              "published archive cannot be rewritten, so this task cannot be marked done."
+              "published archive cannot be rewritten, so normal completion is not ready."
             : `this scout has not submitted a report yet. Write a self-contained static page at ` +
               `${SCOUT_REPORT_PATH_SHAPE} and call the ${SUBMIT_SCOUT_ARTIFACTS_TOOL} tool with its ` +
               `path and a short summary, then mark the task done.`,
@@ -346,8 +346,8 @@ export class ArchiveManager {
         ok: false,
         conflict: false,
         problems: [
-          "this scout's archive is incomplete - its primary HTML report is missing, so the task " +
-            "cannot be marked done.",
+          "this scout's archive is incomplete - its primary HTML report is missing, so normal " +
+            "completion is not ready.",
         ],
       };
     }
@@ -378,8 +378,8 @@ export class ArchiveManager {
    * The same last-chance guarantee a scout gets, reached through the same five teardown paths,
    * with two differences that both follow from what a plan is.
    *
-   * **Nothing to capture is a success.** A scout cannot complete without an archive, so a
-   * scout reaching cleanup with no evidence is a real anomaly. A plan task can legitimately
+   * **Nothing to capture is a success.** A scout's normal completion requires an archive, so
+   * a scout reaching cleanup with no evidence is a real anomaly. A plan task can legitimately
    * finish having written nothing - the human read it, said no, and stopped - and the naive
    * generalization, reusing the scout refusal, would wedge that task's worktree permanently
    * with no way for anyone to clear it. So an empty discovery reserves nothing and returns
@@ -480,8 +480,8 @@ export class ArchiveManager {
       // This listener fires while the task is still `running` or `dispatching` - that is the
       // condition `subjectForExitingSession` selects for. For a scout that is the end of the
       // work by definition: the report is an untracked file, the session that would have
-      // submitted it is gone, and completion cannot happen without an archive, so capturing
-      // now loses nothing and saves evidence that is otherwise about to be unreachable.
+      // submitted it is gone, and automatic completion cannot happen without an archive, so
+      // capturing now loses nothing and saves evidence that is otherwise about to be unreachable.
       //
       // For a plan it is not the end of the work, and an archive is IMMUTABLE. Publishing
       // here would freeze whatever the checkout held at the moment a session went away as

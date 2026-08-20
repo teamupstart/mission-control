@@ -491,6 +491,7 @@ function viewFor(session: Session): SessionViewProps {
     consoleZone: "rail",
     onConsoleZoneChange: () => {},
     onSelect: () => {},
+    onCursorTo: () => {},
     onDeselect: () => {},
     expandedId: null,
     onToggleExpand: () => {},

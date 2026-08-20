@@ -63,6 +63,15 @@ export interface SessionViewProps {
   consoleZone: "rail" | "detail";
   onConsoleZoneChange: (zone: "rail" | "detail") => void;
   onSelect: (id: string) => void;
+  /**
+   * Move the selection cursor to a session WITHOUT opening its detail.
+   *
+   * What the arrow keys have always done, offered to a pointer. Only one surface needs it:
+   * a Board tile's expanded workflow panel, whose first click says "this session" and whose
+   * second says "that run" - and drilling in on the first would replace the tile (and the
+   * ladder being read) with the rail row, leaving the second click nowhere to land.
+   */
+  onCursorTo: (id: string) => void;
   /** Close the current detail: reverses the board drill-in or empties the console. */
   onDeselect: () => void;
   /** Open detail id: grid focus mode, console selection, or the board's drill-in. */

@@ -22,6 +22,7 @@ import {
   WorkflowChip,
   workflowRunTone,
 } from "../components/session-bits.tsx";
+import { isDragSelection, isSurfaceClick } from "../lib/pointer.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
 import { Keycap } from "../components/Keycap.tsx";
 import { CarriedProvenance, Rung, type PipelineStatus } from "./pipeline-bits.tsx";
@@ -567,6 +568,14 @@ export function WorkflowLadder({
 export interface WorkflowTileDisclosureState {
   expanded: boolean;
   onExpandedChange: (expanded: boolean) => void;
+  /**
+   * A click that landed on this panel's own surface rather than on a control inside it.
+   *
+   * The panel still refuses to let such a click bubble to the tile - an expanded ladder is
+   * tall enough that "anywhere in here opens the console" would fire on every miss - so the
+   * host says here what its background should mean instead. Null keeps the old silence.
+   */
+  onSurfaceClick?: (() => void) | null;
 }
 
 function WorkflowTileDisclosure({
@@ -575,6 +584,7 @@ function WorkflowTileDisclosure({
   onOpenRun,
   expanded,
   onExpandedChange,
+  onSurfaceClick = null,
   regionId,
   loadError = false,
   children,
@@ -584,6 +594,7 @@ function WorkflowTileDisclosure({
   onOpenRun: () => void;
   expanded: boolean;
   onExpandedChange: (expanded: boolean) => void;
+  onSurfaceClick?: (() => void) | null;
   regionId: string;
   loadError?: boolean;
   children: React.ReactNode;
@@ -591,7 +602,17 @@ function WorkflowTileDisclosure({
   return (
     <section
       className={`tile-workflow-disclosure${expanded ? " is-expanded" : ""}`}
-      onClick={(event) => event.stopPropagation()}
+      // The stop stays: this panel is the tallest thing on a tile, and letting a stray click
+      // inside it bubble would make every miss open the console. What changes is that a miss
+      // is no longer nothing - the host is asked what its own surface means, and only for
+      // clicks no control inside here already answers.
+      onClick={(event) => {
+        event.stopPropagation();
+        if (!onSurfaceClick) return;
+        if (isDragSelection(window.getSelection())) return;
+        if (!isSurfaceClick(event.target as Element | null)) return;
+        onSurfaceClick();
+      }}
       onDoubleClick={(event) => event.stopPropagation()}
     >
       <div className="tile-workflow-content" id={regionId}>
@@ -732,6 +753,7 @@ export function WorkflowLadderPanel({
             onOpenRun={onOpenRun}
             expanded={tileDisclosure.expanded}
             onExpandedChange={tileDisclosure.onExpandedChange}
+            onSurfaceClick={tileDisclosure.onSurfaceClick ?? null}
             regionId={disclosureRegionId}
           >
             {feedback}
@@ -758,6 +780,7 @@ export function WorkflowLadderPanel({
             onOpenRun={onOpenRun}
             expanded={tileDisclosure.expanded}
             onExpandedChange={tileDisclosure.onExpandedChange}
+            onSurfaceClick={tileDisclosure.onSurfaceClick ?? null}
             regionId={disclosureRegionId}
             loadError
           >
@@ -902,6 +925,7 @@ export function WorkflowLadderPanel({
               onOpenRun={onOpenRun}
               expanded={tileDisclosure.expanded}
               onExpandedChange={tileDisclosure.onExpandedChange}
+              onSurfaceClick={tileDisclosure.onSurfaceClick ?? null}
               regionId={disclosureRegionId}
             >
               {ladder}

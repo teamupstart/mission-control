@@ -150,6 +150,7 @@ function defaultReplies(overrides: Record<string, unknown> = {}) {
   let turns = 0;
   return {
     initialize: { userAgent: "codex/0.145.0", codexHome: "/Users/x/.codex" },
+    "config/read": { config: { developer_instructions: null }, origins: {} },
     "thread/start": threadResponse(THREAD),
     "thread/resume": threadResponse(THREAD),
     "turn/start": () => ({ turn: { id: `turn-${++turns}`, status: "inProgress" } }),
@@ -217,6 +218,35 @@ test("a launch initializes, starts a thread, binds it, and delivers turn one", a
 
   await handle.stop();
   await drained;
+});
+
+test("a launch routes discrete review choices through Mission Control request_input", async (t) => {
+  const server = new FakeServer(
+    defaultReplies({
+      "config/read": {
+        config: { developer_instructions: "Keep this operator instruction." },
+        origins: {},
+      },
+    }),
+  );
+  const { handle, drained } = await launch(server, {
+    mcp: {
+      serverName: "mission-control",
+      command: "/usr/bin/node",
+      args: ["/d/mcp.mjs"],
+      env: {},
+    },
+  });
+  t.after(async () => {
+    await handle.stop();
+    await drained;
+  });
+
+  const start = server.calls("thread/start")[0]?.params as Record<string, unknown>;
+  assert.match(
+    String(start.developerInstructions),
+    /Keep this operator instruction\.[\s\S]*(?:review alternatives|multiple-choice|discrete choices)[\s\S]*request_input[\s\S]*options[\s\S]*(?:do not|never)[\s\S]*choices[\s\S]*prose[\s\S]*end the turn/i,
+  );
 });
 
 test("a launch with no permission mode sends no posture at all", async () => {

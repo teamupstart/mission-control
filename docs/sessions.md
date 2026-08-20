@@ -1486,6 +1486,28 @@ only that review, persists without a fabricated answer, and releases its blocked
 These reviews keep the session under **Needs you** while any set remains pending; submitting
 or dismissing the final set clears that review-based signal.
 
+**A blocking tool waits as long as you do, and asking twice does not queue twice.** Every tool
+marked **block** above is waiting on a person, which can be minutes or hours. The MCP client in
+front of it does not wait that long on its own: it abandons the tool call on its own timeout and
+hands the model an error for a question that is still on screen and still answerable, and the
+model's natural recovery is to ask again word for word. Two things keep that from reaching you:
+
+- While it waits, the daemon's long poll reports in to the client after every round trip, as a
+  standard MCP **progress notification** against the token that client supplied. A client that
+  receives one restarts its timeout for that request, so a wait that keeps reporting in is never
+  abandoned for taking too long. A client that asks for no progress gets none, and simply behaves
+  as it did before.
+- If a retry happens anyway - a client that ignores progress, a dropped connection, a daemon
+  restart - **an identical ask from the same session, while the first is still unanswered,
+  re-attaches to the question that is already open** rather than opening a second one. You see
+  one card, you answer it once, and every call still listening is released by that one answer.
+
+The re-attach is deliberately narrow: it matches only a **pending** review with the same kind,
+the same wording, and the same offered options. A question you already answered is never reused,
+so an agent that legitimately asks the same thing again later gets a fresh card; a different
+session's identical question is never folded into yours; and changing the options makes it a
+different question, because the options are what you are choosing between.
+
 **Your answer stays in the conversation.** Submitting a review writes a gold entry into that
 session's conversation, at the point in time you answered. What the entry shows depends on
 how you were asked:
@@ -1536,6 +1558,15 @@ keep the built-in tool because its questions already arrive as structured driver
 see [Session runtimes](#session-runtimes-terminal-or-the-agent-sdk). Either way the answer
 lands in the session's conversation as the same gold entry - the two channels differ in how
 the question reaches you, not in what is written down afterwards.
+
+A Codex Agent SDK launch that successfully registers the bundled Mission MCP server also
+appends one developer instruction: when the operator needs to review alternatives, select an
+option, or answer another discrete multiple-choice question, call `request_input` with
+`options` and wait for the response instead of presenting the choices only as prose and
+ending the turn. Mission Control reads Codex's effective configured developer instruction
+first and preserves it ahead of this appendix. If the MCP server is unavailable, or that
+effective instruction cannot be read safely, the appendix is omitted so the launch never
+points Codex at an unavailable tool or replaces the operator's customization.
 
 For the terminal runtime, four flags go on together or not at all
 (`src/server/ask-channel.ts`): `--mcp-config`

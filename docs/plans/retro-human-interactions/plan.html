@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Plan to count human review interactions toward Mission Control Retro eligibility">
+  <title>Count human review interactions toward Retro</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #edf1ed;
+      --paper: #fffdf8;
+      --ink: #17221c;
+      --muted: #607067;
+      --line: #c8d2ca;
+      --green: #176147;
+      --green-soft: #dceee5;
+      --gold: #9c6512;
+      --gold-soft: #f8ebce;
+      --red: #98433d;
+      --red-soft: #f3dfdc;
+      --blue: #245e83;
+      --code: #eff3ef;
+      --shadow: 0 20px 58px rgba(24, 42, 32, .13);
+      --sans: "Avenir Next", Avenir, "Segoe UI", system-ui, sans-serif;
+      --serif: "Iowan Old Style", Palatino, Georgia, serif;
+      --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #101713;
+        --paper: #18211c;
+        --ink: #eff5f0;
+        --muted: #acbbb1;
+        --line: #3b4a40;
+        --green: #82d1ad;
+        --green-soft: #203c30;
+        --gold: #efb75d;
+        --gold-soft: #3f311d;
+        --red: #f09a91;
+        --red-soft: #442824;
+        --blue: #8cc8ec;
+        --code: #101713;
+        --shadow: 0 20px 58px rgba(0, 0, 0, .34);
+      }
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        linear-gradient(rgba(60, 98, 76, .055) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(60, 98, 76, .055) 1px, transparent 1px),
+        var(--bg);
+      background-size: 28px 28px;
+      font: 16px/1.64 var(--sans);
+    }
+    a { color: var(--blue); text-underline-offset: .2em; }
+    code, pre, .eyebrow, .tag, th { font-family: var(--mono); }
+    .shell { width: min(1180px, calc(100% - 28px)); margin: 28px auto 74px; display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 24px; align-items: start; }
+    nav { position: sticky; top: 20px; max-height: calc(100vh - 40px); overflow: auto; padding: 18px; background: #153629; color: #edf8f1; border-top: 5px solid #79c7a3; box-shadow: var(--shadow); }
+    nav strong { display: block; margin-bottom: 13px; color: #96d8b9; font: 700 .72rem var(--mono); letter-spacing: .14em; text-transform: uppercase; }
+    nav a { display: block; padding: 5px 7px; color: #d8e9df; text-decoration: none; border-left: 2px solid transparent; font-size: .84rem; line-height: 1.3; }
+    nav a:hover { border-left-color: #efb75d; color: white; }
+    nav .source { margin-top: 16px; padding-top: 14px; border-top: 1px solid rgba(255,255,255,.2); color: #96d8b9; }
+    article { min-width: 0; background: var(--paper); border-top: 6px solid var(--green); box-shadow: var(--shadow); }
+    header { padding: clamp(36px, 7vw, 78px); border-bottom: 1px solid var(--line); }
+    .eyebrow { margin: 0 0 16px; color: var(--green); font-size: .74rem; font-weight: 700; letter-spacing: .15em; text-transform: uppercase; }
+    h1, h2, h3 { font-family: var(--serif); line-height: 1.08; }
+    h1 { max-width: 850px; margin: 0; font-size: clamp(3rem, 7.5vw, 6rem); letter-spacing: -.05em; }
+    .lede { max-width: 760px; margin: 26px 0 0; color: var(--muted); font-size: 1.14rem; }
+    .decision { margin-top: 30px; padding: 18px 21px; background: var(--green-soft); border-left: 5px solid var(--green); }
+    .decision strong { color: var(--green); }
+    main { padding: 10px clamp(24px, 6vw, 68px) 72px; }
+    section { margin-top: 64px; scroll-margin-top: 26px; }
+    h2 { margin: 0 0 18px; font-size: clamp(2rem, 4vw, 3.2rem); letter-spacing: -.03em; }
+    h3 { margin: 30px 0 8px; font-size: 1.4rem; }
+    p, ul, ol { max-width: 82ch; }
+    li + li { margin-top: 7px; }
+    .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 13px; margin: 24px 0; }
+    .card { padding: 18px; border: 1px solid var(--line); background: color-mix(in srgb, var(--paper) 90%, var(--green-soft)); }
+    .card strong { display: block; margin-bottom: 6px; font-size: 1.05rem; }
+    .tag { display: inline-block; margin-bottom: 10px; padding: 3px 8px; border-radius: 999px; color: var(--green); background: var(--green-soft); font-size: .7rem; font-weight: 700; }
+    .callout { margin: 24px 0; padding: 18px 20px; border-left: 5px solid var(--gold); background: var(--gold-soft); }
+    .callout strong { color: var(--gold); }
+    .diagram, .scroll { max-width: 100%; overflow-x: auto; }
+    .diagram { margin: 25px 0; border: 1px solid var(--line); background: var(--code); }
+    .diagram svg { display: block; width: 100%; min-width: 920px; height: auto; }
+    .diagram text { fill: var(--ink); font-family: var(--sans); }
+    .diagram .small { fill: var(--muted); font-size: 13px; }
+    .diagram .box { fill: var(--paper); stroke: var(--line); stroke-width: 2; }
+    .diagram .new { fill: var(--green-soft); stroke: var(--green); stroke-width: 3; }
+    .diagram .gate { fill: var(--gold-soft); stroke: var(--gold); stroke-width: 2; }
+    .diagram .arrow { fill: none; stroke: var(--muted); stroke-width: 2.5; marker-end: url(#arr); }
+    table { width: 100%; min-width: 700px; border-collapse: collapse; }
+    th, td { padding: 13px 14px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { color: var(--muted); font-size: .75rem; letter-spacing: .08em; text-transform: uppercase; }
+    pre { overflow: auto; padding: 16px 18px; border: 1px solid var(--line); background: var(--code); font-size: .86rem; }
+    footer { padding: 24px clamp(24px, 6vw, 68px); border-top: 1px solid var(--line); color: var(--muted); font-size: .88rem; }
+    @media (max-width: 850px) { .shell { display: block; } nav { position: static; margin-bottom: 18px; } nav a { display: inline-block; } .cards { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <nav aria-label="Plan contents">
+      <strong>Plan contents</strong>
+      <a href="#problem">Problem</a>
+      <a href="#goal">Goal</a>
+      <a href="#requirements">Requirements</a>
+      <a href="#design">Proposed design</a>
+      <a href="#flow">Data flow</a>
+      <a href="#compatibility">Compatibility</a>
+      <a href="#tests">Tests</a>
+      <a href="#docs">Documentation</a>
+      <a href="#non-goals">Non-goals</a>
+      <a href="#risks">Risks</a>
+      <a href="#completion">Completion</a>
+      <a class="source" href="plan.md">Open Markdown source</a>
+      <a href="phased-plan.html">Open phased plan</a>
+    </nav>
+
+    <article>
+      <header>
+        <p class="eyebrow">Approved engineering plan · 20 August 2026</p>
+        <h1>Count human review interactions toward Retro</h1>
+        <p class="lede">Make dashboard-mediated human decisions count as the same retro-worthiness evidence as a human text turn, live and after restart, while preserving the existing authorship and Inspector gates.</p>
+        <div class="decision"><strong>Decision recorded:</strong> proceed directly to phased implementation planning. No product choices remain open.</div>
+      </header>
+
+      <main>
+        <section id="problem">
+          <h2>Problem</h2>
+          <p>Mission Control shows <strong>Run retro</strong> only when a session is worth cataloguing and GitHub Inspector has finished cleanly. The <code>corrections</code> reason currently comes only from parsed transcript text.</p>
+          <div class="cards">
+            <div class="card"><span class="tag">SDK</span><strong>AskUserQuestion</strong>A human answer becomes a pure <code>tool_result</code>, which the transcript parser deliberately drops.</div>
+            <div class="card"><span class="tag">MCP</span><strong>request_input</strong>Terminal answers and plan decisions also return as tool results, not ordinary text turns.</div>
+            <div class="card"><span class="tag">DURABLE</span><strong>reviews table</strong>The same decisions are already persisted with <code>resolved_by = 'human'</code> and replayed in the conversation.</div>
+          </div>
+          <p>The finished <strong>Add keybinding for To review button</strong> session exposed the gap. The human answered two design questions, PR #689 passed a clean Inspector review, and the session still returned <code>retro: null</code>.</p>
+        </section>
+
+        <section id="goal">
+          <h2>Goal</h2>
+          <p>Offer Retro after meaningful human steering through any supported conversation channel:</p>
+          <ul>
+            <li>ordinary human transcript text;</li>
+            <li>a human-resolved SDK question recorded as a review; or</li>
+            <li>a human-resolved MCP review such as <code>request_input</code> or <code>request_plan_decisions</code>.</li>
+          </ul>
+          <p>The result must be immediate while the daemon is running and reconstructible after a daemon restart.</p>
+        </section>
+
+        <section id="requirements">
+          <h2>Requirements</h2>
+          <ol>
+            <li>Count a review only when <code>isHumanResolvedReview(review)</code> is true.</li>
+            <li>Count human answered, approved, rejected, and dismissed reviews.</li>
+            <li>Exclude pending, Foreman-resolved, orphaned, refused, and half-written reviews.</li>
+            <li>Update the owning live session through the Registry's existing one-way signal.</li>
+            <li>Restore the same signal from durable human reviews when a terminal or SDK session is reconstructed.</li>
+            <li>Bound restoration to sessions introduced into the live Registry, not all historical ids.</li>
+            <li>Keep transcript scanning as the typed-text owner and preserve automated-delivery attribution.</li>
+            <li>Preserve the <code>corrections</code> wire value and current <code>Session.retro</code> shape.</li>
+            <li>Leave Inspector timing unchanged.</li>
+            <li>Describe the reason as human steering so the copy covers questions as well as corrections.</li>
+          </ol>
+        </section>
+
+        <section id="design">
+          <h2>Proposed design</h2>
+          <h3>One eligibility signal, two evidence sources</h3>
+          <p>Keep one Registry-owned, one-way session flag. Feed it from the transcript poller for ordinary human text and from <code>ReviewManager</code> after a review is durably settled, published, and proven human.</p>
+          <p>Do not parse raw tool results as conversation. The review already owns the question, selections, actor, and settlement status.</p>
+
+          <h3>Restart restoration</h3>
+          <p>Add a focused database existence predicate for one session id. Consult it only when the Registry first introduces that terminal or SDK session row, then seed the same in-memory flag before deriving <code>Session.retro</code>.</p>
+          <div class="callout"><strong>Bounded by live sessions:</strong> do not load every historical review session id into the Registry constructor.</div>
+
+          <h3>Live settlement ordering</h3>
+          <ol>
+            <li>Deliver the answer where delivery is required.</li>
+            <li>Commit the settled review row.</li>
+            <li>Publish the review update.</li>
+            <li>Mark the live session retro-worthy when the settled review is human-authored.</li>
+          </ol>
+          <p>Failed delivery, failed persistence, or a dangling review with no session row must not retain a new signal.</p>
+        </section>
+
+        <section id="flow">
+          <h2>Data flow</h2>
+          <div class="diagram" role="img" aria-label="Human dashboard decisions and transcript text converge on one Registry retro signal before the Inspector gate">
+            <svg viewBox="0 0 1120 470" xmlns="http://www.w3.org/2000/svg">
+              <defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="currentColor"/></marker></defs>
+              <rect class="box" x="35" y="55" width="205" height="78" rx="8"/>
+              <text x="138" y="86" text-anchor="middle" font-size="17" font-weight="700">Human dashboard answer</text>
+              <text class="small" x="138" y="109" text-anchor="middle">SDK or MCP review</text>
+              <rect class="box" x="35" y="255" width="205" height="78" rx="8"/>
+              <text x="138" y="286" text-anchor="middle" font-size="17" font-weight="700">Human transcript text</text>
+              <text class="small" x="138" y="309" text-anchor="middle">beyond opening brief</text>
+              <rect class="box" x="310" y="55" width="205" height="78" rx="8"/>
+              <text x="412" y="86" text-anchor="middle" font-size="17" font-weight="700">Durable review</text>
+              <text class="small" x="412" y="109" text-anchor="middle">resolved by human</text>
+              <rect class="box" x="310" y="255" width="205" height="78" rx="8"/>
+              <text x="412" y="286" text-anchor="middle" font-size="17" font-weight="700">Transcript scanner</text>
+              <text class="small" x="412" y="309" text-anchor="middle">attributed human turn</text>
+              <rect class="new" x="590" y="155" width="220" height="88" rx="8"/>
+              <text x="700" y="190" text-anchor="middle" font-size="18" font-weight="700">Registry interaction signal</text>
+              <text class="small" x="700" y="216" text-anchor="middle">one owner, one-way</text>
+              <rect class="box" x="870" y="155" width="210" height="88" rx="8"/>
+              <text x="975" y="190" text-anchor="middle" font-size="18" font-weight="700">Session.retro</text>
+              <text class="small" x="975" y="216" text-anchor="middle">corrections</text>
+              <rect class="gate" x="870" y="315" width="210" height="88" rx="8"/>
+              <text x="975" y="350" text-anchor="middle" font-size="18" font-weight="700">Inspector gate</text>
+              <text class="small" x="975" y="376" text-anchor="middle">clean shows Run retro</text>
+              <path class="arrow" d="M240 94H310"/>
+              <path class="arrow" d="M240 294H310"/>
+              <path class="arrow" d="M515 94C555 94 552 182 590 190"/>
+              <path class="arrow" d="M515 294C555 294 552 217 590 208"/>
+              <path class="arrow" d="M810 199H870"/>
+              <path class="arrow" d="M975 243V315"/>
+              <text class="small" x="548" y="115" text-anchor="middle">new link</text>
+            </svg>
+          </div>
+          <p>Before this change, the durable review does not feed the Registry interaction signal.</p>
+        </section>
+
+        <section id="compatibility">
+          <h2>Compatibility and ownership</h2>
+          <ul>
+            <li><code>ReviewManager</code> remains the review lifecycle owner and knows a settle committed.</li>
+            <li><code>isHumanResolvedReview</code> remains the authorship predicate.</li>
+            <li><code>Registry</code> remains the session projection owner.</li>
+            <li>SQLite remains daemon-only; this adds a read helper, not a migration.</li>
+            <li><code>retroOffer</code> stays the one browser predicate.</li>
+            <li><code>RetroReason</code> stays append-compatible by retaining <code>corrections</code>.</li>
+          </ul>
+        </section>
+
+        <section id="tests">
+          <h2>Tests and evidence</h2>
+          <ul>
+            <li>Human ordinary and SDK review answers update <code>Session.retro</code> live.</li>
+            <li>Foreman, pending, orphaned, refused, failed, and half-written paths do not.</li>
+            <li>A fresh Registry restores worthiness from a durable human review.</li>
+            <li>Session eviction removes the in-memory signal.</li>
+            <li>Playwright shows <strong>Run retro</strong> after an SDK question answer and clean fake Inspector review, with no composer correction.</li>
+            <li>The existing typed-text path and clean-review timing gate remain intact.</li>
+          </ul>
+          <p>The browser proof belongs in <code>e2e/specs/retro-offer.spec.ts</code> and uses the existing fake Claude question path, so it spends no model tokens and reaches no external GitHub service.</p>
+        </section>
+
+        <section id="docs">
+          <h2>Documentation</h2>
+          <p>Update <code>docs/repository-memory.md</code> and the retro evidence note in <code>e2e/README.md</code> so human steering may arrive as transcript text or a human-resolved review. Update tooltip assertions when “corrected” becomes “steered.”</p>
+        </section>
+
+        <section id="non-goals">
+          <h2>Non-goals</h2>
+          <ul>
+            <li>Automatically running a retro or making every clean session eligible.</li>
+            <li>Counting permission prompts or Foreman decisions.</li>
+            <li>Parsing raw tool results as conversation text.</li>
+            <li>Adding a persisted retro table or column.</li>
+            <li>Changing post-merge routing, skill gates, or Inspector semantics.</li>
+          </ul>
+        </section>
+
+        <section id="risks">
+          <h2>Risks and mitigations</h2>
+          <div class="scroll"><table><thead><tr><th>Risk</th><th>Mitigation</th></tr></thead><tbody>
+            <tr><td>Foreman is mistaken for the human</td><td>Reuse <code>isHumanResolvedReview</code>; never infer from status alone.</td></tr>
+            <tr><td>A failed answer lights Retro</td><td>Mark only after delivery and durable settlement succeed.</td></tr>
+            <tr><td>Restart restoration grows without bound</td><td>Query per introduced live session and clear on normal removal.</td></tr>
+            <tr><td>Two UI eligibility rules emerge</td><td>Both evidence paths feed one Registry signal; the browser reads only <code>Session.retro</code>.</td></tr>
+            <tr><td>The tooltip becomes misleading</td><td>Describe human steering while retaining the compatible wire id.</td></tr>
+          </tbody></table></div>
+        </section>
+
+        <section id="completion">
+          <h2>Completion criteria</h2>
+          <p>A session like <strong>Add keybinding for To review button</strong> gains <code>retro.reasons = ["corrections"]</code> after the human answers its dashboard question, keeps that reason across restart, and shows <strong>Run retro</strong> when Inspector is clean, while non-human and unsuccessful paths remain ineligible.</p>
+        </section>
+      </main>
+
+      <footer>Markdown is authoritative: <a href="plan.md">plan.md</a>. Implementation split: <a href="phased-plan.html">phased-plan.html</a>.</footer>
+    </article>
+  </div>
+</body>
+</html>

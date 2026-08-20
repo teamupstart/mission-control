@@ -150,7 +150,7 @@ npx tsx scripts/measure-inspector-prompt.ts # size the GitHub Inspector review p
 On macOS, `npm test` and `npm run test:electron` validate Electron's framework link before
 starting their suites. If a copied dependency tree contains the complete framework payload
 but is missing only Electron's standard top-level link, the pretest restores that link. An
-incomplete payload is refused with an instruction to reinstall dependencies.
+absent payload is refused with an instruction to reinstall dependencies.
 
 The same lease and pool policy are visible under **Settings > Worktrees**. The panel can set
 default and per-repository native enablement, maximum capacity, and an operator-authored setup
@@ -162,6 +162,13 @@ The `make` wrappers for the build and verification commands - `make build`, `mak
 (`node_modules/.install-stamp`) that carries `package.json` and `package-lock.json` as its
 prerequisites. So they install in a tree that has never been installed, re-install after a
 pull or a branch switch moves either manifest, and do nothing at all the rest of the time.
+
+After that link check, the pretest probes the installed Electron binary in Node mode. This
+loads the platform framework rather than trusting only the installer marker files. If the
+generated runtime is truncated or otherwise cannot load, the pretest replaces that package's
+`dist` directory from Electron's checksum-verified download cache and probes it again. An
+operator-supplied `ELECTRON_OVERRIDE_DIST_PATH` is never modified; a broken override fails with
+a diagnostic instead.
 
 The stamp is what makes the second of those work: make is satisfied by any target that
 exists, and `node_modules/` exists forever once anything has been installed into it - so

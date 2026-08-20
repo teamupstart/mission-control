@@ -30,6 +30,7 @@ import { withDaemonDb } from "../fixtures/daemon-db.ts";
  */
 
 const TASK = "write a haiku about flexbox";
+const FOLLOW_UP = "write one more about grid";
 
 const EVIDENCE = artifactsDir("session-spend");
 
@@ -89,7 +90,7 @@ async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {
   await expect(page.locator("article.card")).toHaveCount(1);
 }
 
-test("a dispatched session's turn puts real money in the topbar", async ({
+test("successive cumulative SDK results add only incremental spend", async ({
   dashboard,
   daemon,
 }) => {
@@ -105,13 +106,25 @@ test("a dispatched session's turn puts real money in the topbar", async ({
   await expect(chip).toBeVisible();
   await expect(chip).toContainText("≈$2.50");
 
+  // A second result is cumulative for this query: the fake reports $5.00 and 49,000 tokens,
+  // not another standalone $5.00 turn. The ledger must therefore add only the $2.50 and 24,500
+  // token delta. Summing the snapshots themselves, which was the production bug, would render
+  // $7.50 and 74k here.
+  const card = dashboard.locator("article.card").first();
+  await card.getByRole("button", { name: "Expand conversation" }).click();
+  const reply = card.getByPlaceholder(/^Reply to this session/);
+  await expect(reply).toBeEnabled();
+  await reply.fill(FOLLOW_UP);
+  await reply.press("Enter");
+  await expect(chip).toContainText("≈$5.00");
+
   // The bar at rest, photographed BEFORE the click. Taken afterwards it catches a sliver of the
   // open popover along its bottom edge, because the popover is anchored inside the header's own
   // box - which makes a capture meant to show the chip alone look like a rendering fault.
   await capture(
     dashboard.locator("header.topbar"),
-    "topbar-chip-session.png",
-    "the topbar chip carries ≈$2.50 from a driven session, with no OTel exporter involved",
+    "topbar-chip-cumulative-session.png",
+    "after cumulative $2.50 then $5.00 SDK results, the topbar carries the correct $5.00 total rather than $7.50",
   );
 
   await chip.click();
@@ -120,20 +133,20 @@ test("a dispatched session's turn puts real money in the topbar", async ({
 
   // The line that was empty in the bug. Scoped inside the popover because `Tooltip` portals a
   // hidden copy of each tip into the body, so an unscoped text locator matches twice.
-  await expect(popover.locator(".spend-row", { hasText: "Fleet today" })).toContainText("≈$2.50");
+  await expect(popover.locator(".spend-row", { hasText: "Fleet today" })).toContainText("≈$5.00");
   // Tokens ride the same rows, so the breakdown is proof the per-model view was read and not
-  // just the total: 1,000 input + 500 output + 20,000 cache read + 3,000 cache write = 24,500,
-  // which `compactTokens` rounds to the nearest thousand.
-  await expect(popover.locator(".spend-row", { hasText: "Tokens today" })).toContainText("25k");
+  // just the total: two 24,500-token deltas are 49,000. Summing the cumulative snapshots would
+  // display 74k, so this assertion catches the same error independently of cost.
+  await expect(popover.locator(".spend-row", { hasText: "Tokens today" })).toContainText("49k");
 
   // And it is SESSION spend, not the automation line. The distinction is the whole complaint:
   // automation was the only thing being counted.
   await expect(popover.locator(".spend-row.is-automation")).toHaveCount(0);
 
   await capture(
-    popover,
-    "spend-popover-session.png",
-    "Fleet today reads ≈$2.50 and Tokens today 25k, earned by one dispatched turn, with no Automation line",
+    dashboard,
+    "cumulative-sdk-spend-corrected.png",
+    "the task card and Spend today popover show $5.00 and 49k after cumulative $2.50/$5.00 SDK snapshots, not the buggy $7.50/74k",
   );
 });
 

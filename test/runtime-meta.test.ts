@@ -377,6 +377,243 @@ test("a rebind clears transcript baseline identity before publication", () => {
   assert.equal(metaOf(r)?.thinkingLevel, "high");
 });
 
+// ---- an accepted level the conversation has not run yet ----
+//
+// Codex's driver puts `effort` on `turn/start`; `turn/steer` has no such field. So a level
+// chosen while a turn is running is a promise about the NEXT turn, and every rollout read
+// until then describes the turn that is going - correctly, with the old level. These pin
+// what that projection is defended against and what retires it.
+
+const codexRead = (
+  thinkingLevel: "high" | "xhigh" | "max",
+  effortRevision: string,
+  over: Partial<RuntimeMetaRead> = {},
+): RuntimeMetaRead => ({
+  modelId: "gpt-5.6-sol",
+  contextTokens: 20_000,
+  contextWindow: 258_400,
+  contextPct: 8,
+  longContext: false,
+  thinkingLevel,
+  effortRevision,
+  ...over,
+});
+
+/**
+ * Rollout timestamps, relative to the wall clock the registry compares them against.
+ *
+ * These are not decoration. A `turn_context` only settles a pending selection if it was
+ * written AFTER the driver accepted, and "after" is measured against `Date.now()` - Codex
+ * stamps these records with the same machine's clock as the daemon reading them back. A
+ * fixture pinned to a fixed calendar date would be permanently in the past and could never
+ * settle anything, which is the shape of the bug this guard exists to prevent.
+ */
+const NOW = Date.now();
+const at = (offsetMs: number): string => new Date(NOW + offsetMs).toISOString();
+/** The turn that was already running when the operator opened the picker. */
+const RUNNING_TURN = at(-60_000);
+/** A turn that starts after the selection was accepted - the one that can answer for it. */
+const NEXT_TURN = at(60_000);
+/**
+ * What the route hands the registry: the revision it snapshotted before asking the driver,
+ * and the instant the driver's call resolved. Both are the CALLER's measurements - the
+ * registry may take neither for itself.
+ */
+const accepted = (revision: string | null = RUNNING_TURN, atMs = NOW) => ({ revision, at: atMs });
+
+function pendingSeeded(): InstanceType<typeof Registry> {
+  const r = new Registry();
+  r.applyDiscovery([disco({ agent: "codex", agentSessionId: "thread-1", transcriptPath: "/tmp/roll.jsonl" })]);
+  r.applyRuntimeMeta("s1", codexRead("high", RUNNING_TURN), "codex-rollout");
+  recordBaseline(r, RUNNING_TURN);
+  assert.equal(r.recordPendingSessionEffort("s1", "max", accepted(), r.getSession("s1")!), true);
+  assert.equal(r.getSession("s1")?.pendingEffort, "max");
+  return r;
+}
+
+test("a pending effort is not a claim about the running turn", () => {
+  const r = pendingSeeded();
+  // The card keeps reporting the level the conversation is ACTUALLY on. That is the whole
+  // reason this is a second field and not a write to `meta.thinkingLevel`.
+  assert.equal(metaOf(r)?.thinkingLevel, "high");
+});
+
+test("a pending effort survives the running turn's own newer metadata", () => {
+  const r = pendingSeeded();
+  // Same `turn_context` behind every one of these; only the usage moved. `updatedAt`
+  // advances on each, which is exactly what used to drop the selection.
+  for (const pct of [11, 17, 24]) {
+    r.applyRuntimeMeta("s1", codexRead("high", RUNNING_TURN, { contextPct: pct }), "codex-rollout");
+    assert.equal(r.getSession("s1")?.pendingEffort, "max", `context ${pct}%`);
+  }
+  // An UNORDERABLE revision is not evidence either - a harness whose revisions are opaque
+  // record ids can never prove a turn started, so it must not be able to retire one.
+  r.applyRuntimeMeta("s1", codexRead("high", "turn-uuid-9"), "codex-rollout");
+  assert.equal(r.getSession("s1")?.pendingEffort, "max");
+});
+
+test("the next turn_context settles a pending effort, kept or not", () => {
+  const kept = pendingSeeded();
+  kept.applyRuntimeMeta("s1", codexRead("max", NEXT_TURN), "codex-rollout");
+  assert.equal(kept.getSession("s1")?.pendingEffort, null);
+  assert.equal(metaOf(kept)?.thinkingLevel, "max");
+
+  const broken = pendingSeeded();
+  broken.applyRuntimeMeta("s1", codexRead("xhigh", NEXT_TURN), "codex-rollout");
+  assert.equal(broken.getSession("s1")?.pendingEffort, null, "a turn ran and did not take it");
+  assert.equal(metaOf(broken)?.thinkingLevel, "xhigh");
+});
+
+test("a model change retires a pending effort without waiting for a turn", () => {
+  const r = pendingSeeded();
+  // Levels are a fact about the model - `levelsFor` narrows them per model id - so a
+  // promise made for the old one says nothing about the new one.
+  r.applyRuntimeMeta(
+    "s1",
+    codexRead("high", RUNNING_TURN, { modelId: "gpt-5.6-luna" }),
+    "codex-rollout",
+  );
+  assert.equal(r.getSession("s1")?.pendingEffort, null);
+});
+
+test("a rebind and a context clear each drop a pending effort", () => {
+  const rebound = pendingSeeded();
+  rebound.applyStatus({ tmuxPane: "%3" }, "thread-2", "rebound");
+  assert.equal(rebound.getSession("s1")?.pendingEffort, null);
+  // ...and it does not come back on the next read of the NEW conversation.
+  rebound.applyRuntimeMeta("s1", codexRead("high", RUNNING_TURN), "codex-rollout");
+  assert.equal(rebound.getSession("s1")?.pendingEffort, null);
+
+  const cleared = pendingSeeded();
+  cleared.clearObservedSessionEffort("s1");
+  assert.equal(cleared.getSession("s1")?.pendingEffort, null);
+  assert.equal(cleared.getSession("s1")?.effortBaselineReady, false);
+});
+
+test("choosing back the level the conversation is on retires a pending effort", () => {
+  const r = pendingSeeded();
+  assert.equal(r.recordPendingSessionEffort("s1", "high", accepted(), r.getSession("s1")!), true);
+  assert.equal(r.getSession("s1")?.pendingEffort, null, "nothing is left for a next turn to change");
+});
+
+test("a pending effort is refused when the session moved under the caller", () => {
+  const r = pendingSeeded();
+  const stale = { agentSessionId: "thread-0", transcriptPath: "/tmp/roll.jsonl" };
+  assert.equal(r.recordPendingSessionEffort("s1", "xhigh", accepted(), stale), false);
+  assert.equal(r.getSession("s1")?.pendingEffort, "max", "the earlier selection is untouched");
+  assert.equal(r.recordPendingSessionEffort("gone", "xhigh", accepted()), false);
+});
+
+test("a pending effort change emits the session, so the chip is not waiting on a poll", () => {
+  const r = pendingSeeded();
+  const seen: string[] = [];
+  r.on("event", (e: ServerEvent) => {
+    if (e.type === "session_upsert" && e.session.id === "s1") seen.push(String(e.session.pendingEffort));
+  });
+  r.recordPendingSessionEffort("s1", "xhigh", accepted(), r.getSession("s1")!);
+  assert.deepEqual(seen, ["xhigh"]);
+  // Idempotent: recording the same selection again changes nothing and says nothing.
+  r.recordPendingSessionEffort("s1", "xhigh", accepted(), r.getSession("s1")!);
+  assert.deepEqual(seen, ["xhigh"]);
+  r.applyRuntimeMeta("s1", codexRead("xhigh", NEXT_TURN), "codex-rollout");
+  assert.deepEqual(seen, ["xhigh", "null"]);
+});
+
+test("a turn that started before the driver accepted cannot settle a pending effort", () => {
+  // The hazard of measuring the baseline BEFORE the driver call, which is where it has to
+  // be measured: a driver call is serialized behind whatever the supervisor already has in
+  // flight, so a send can start a turn while the effort request is still travelling. That
+  // turn was necessarily started with the OLD level - it is not evidence about the
+  // selection, and retiring the selection against it is the original no-op bug exactly.
+  const r = new Registry();
+  r.applyDiscovery([disco({ agent: "codex", agentSessionId: "thread-1", transcriptPath: "/tmp/roll.jsonl" })]);
+  r.applyRuntimeMeta("s1", codexRead("high", RUNNING_TURN), "codex-rollout");
+  recordBaseline(r, RUNNING_TURN);
+  // Snapshot taken before the driver was asked, exactly as the route takes it.
+  const snapshot = RUNNING_TURN;
+  // A turn starts while the request is in flight, later than the snapshot and earlier than
+  // the moment the driver accepted.
+  const inFlightTurn = at(-1_000);
+  assert.equal(
+    r.recordPendingSessionEffort("s1", "max", accepted(snapshot, NOW), r.getSession("s1")!),
+    true,
+  );
+
+  r.applyRuntimeMeta("s1", codexRead("high", inFlightTurn), "codex-rollout");
+  assert.equal(
+    r.getSession("s1")?.pendingEffort,
+    "max",
+    "a turn older than the acceptance says nothing about the level it could not have carried",
+  );
+
+  // The first turn that could actually have carried it does settle it.
+  r.applyRuntimeMeta("s1", codexRead("max", NEXT_TURN), "codex-rollout");
+  assert.equal(r.getSession("s1")?.pendingEffort, null);
+  assert.equal(metaOf(r)?.thinkingLevel, "max");
+});
+
+test("the eligible turn settles a pending effort even if it started before the record call", () => {
+  // The reviewed race, in the other direction. Codex can start the first turn that carries
+  // the new level between its driver call resolving and the route reaching the registry -
+  // a poll, a microtask, a busy event loop. That turn's `turn_context` is stamped inside
+  // the gap, so a `Date.now()` taken HERE would date the acceptance after the very record
+  // that answers for it, refuse it, and hold the chip pending through a turn already
+  // running the new level. The acceptance instant is therefore the caller's.
+  const r = new Registry();
+  r.applyDiscovery([disco({ agent: "codex", agentSessionId: "thread-1", transcriptPath: "/tmp/roll.jsonl" })]);
+  r.applyRuntimeMeta("s1", codexRead("high", RUNNING_TURN), "codex-rollout");
+  recordBaseline(r, RUNNING_TURN);
+
+  // The driver resolved five seconds ago; the eligible turn started a second later; only
+  // now does the route get back to publishing.
+  const acceptedAt = NOW - 5_000;
+  const eligibleTurn = at(-4_000);
+  assert.equal(
+    r.recordPendingSessionEffort("s1", "max", accepted(RUNNING_TURN, acceptedAt), r.getSession("s1")!),
+    true,
+  );
+
+  r.applyRuntimeMeta("s1", codexRead("max", eligibleTurn), "codex-rollout");
+  assert.equal(r.getSession("s1")?.pendingEffort, null, "the turn that carried it must be able to settle it");
+  assert.equal(metaOf(r)?.thinkingLevel, "max");
+});
+
+test("a turn_context written at the exact acceptance instant still settles", () => {
+  // The boundary is inclusive on purpose: these stamps have millisecond resolution and a
+  // turn starting in the same millisecond the driver returned did carry the new level.
+  const r = new Registry();
+  r.applyDiscovery([disco({ agent: "codex", agentSessionId: "thread-1", transcriptPath: "/tmp/roll.jsonl" })]);
+  r.applyRuntimeMeta("s1", codexRead("high", RUNNING_TURN), "codex-rollout");
+  recordBaseline(r, RUNNING_TURN);
+  const acceptedAt = NOW - 5_000;
+  r.recordPendingSessionEffort("s1", "max", accepted(RUNNING_TURN, acceptedAt), r.getSession("s1")!);
+
+  r.applyRuntimeMeta("s1", codexRead("max", new Date(acceptedAt).toISOString()), "codex-rollout");
+  assert.equal(r.getSession("s1")?.pendingEffort, null);
+});
+
+test("the pending baseline is the caller's snapshot, not whatever the poller has since read", () => {
+  // The reviewed race: a poll landing between the snapshot and the record would otherwise
+  // become the baseline, and the change would then need a turn after THAT one - so a level
+  // the very next turn applied would sit on the card as pending until some third turn ran.
+  const r = new Registry();
+  r.applyDiscovery([disco({ agent: "codex", agentSessionId: "thread-1", transcriptPath: "/tmp/roll.jsonl" })]);
+  r.applyRuntimeMeta("s1", codexRead("high", RUNNING_TURN), "codex-rollout");
+  recordBaseline(r, RUNNING_TURN);
+  const snapshot = RUNNING_TURN;
+
+  // The poller moves `runtimeEffortRevisions` on before the selection is recorded.
+  const polled = at(30_000);
+  r.applyRuntimeMeta("s1", codexRead("high", polled), "codex-rollout");
+  assert.equal(r.recordPendingSessionEffort("s1", "max", accepted(snapshot), r.getSession("s1")!), true);
+
+  // A turn between the snapshot and that poll still settles it, because the snapshot is
+  // what the selection was measured against.
+  r.applyRuntimeMeta("s1", codexRead("max", at(40_000)), "codex-rollout");
+  assert.equal(r.getSession("s1")?.pendingEffort, null);
+  assert.equal(metaOf(r)?.thinkingLevel, "max");
+});
+
 test("meta only emits when a displayed value actually changes", () => {
   const r = seeded();
   let upserts = 0;

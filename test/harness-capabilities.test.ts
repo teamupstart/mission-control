@@ -316,6 +316,83 @@ test("each harness with session-only effort control renders a live picker", () =
   assert.match(unready, /Reasoning effort: high/);
 });
 
+test("when a level takes effect is declared by the harness, not inferred from its name", () => {
+  // The route branches on this rather than on `agent === "codex"`. Every harness that has
+  // an effort spec has to answer, so a fourth one cannot land with the question unasked.
+  const declared = Object.fromEntries(
+    AGENT_TYPES.map((agent) => {
+      const effort = capabilitiesFor(agent).effort;
+      return [agent, effort ? effort.driverApplies : "no-effort-spec"];
+    }),
+  );
+  assert.deepEqual(declared, {
+    // `applyFlagSettings` moves the running conversation.
+    claude: "now",
+    // `effort` is a `turn/start` parameter and `turn/steer` has none.
+    codex: "next-turn",
+    // No embedded driver at all - `SdkSessionHandle.setEffort` is null.
+    pi: null,
+  });
+});
+
+test("a Codex SDK chip says its level is pending rather than claiming the turn changed", () => {
+  const session = mkSession({
+    agent: "codex",
+    runtime: "sdk",
+    meta: meta({ modelId: "gpt-5.6-sol", thinkingLevel: "high" }),
+    pendingEffort: "xhigh",
+  });
+  const html = renderToStaticMarkup(createElement(EffortPicker, { session }));
+  // Both levels, and which is which: the turn that is running is still on `high`.
+  assert.match(html, /Reasoning effort: high on this turn, xhigh from the next turn/);
+  assert.match(html, /next turn/);
+  assert.match(html, /rt-think-pending/);
+  assert.match(html, /rt-think-xhigh/, "the chip leads with the level that was chosen");
+
+  // ...and with nothing pending the chip is exactly what it always was.
+  const settled = renderToStaticMarkup(
+    createElement(EffortPicker, { session: { ...session, pendingEffort: null } }),
+  );
+  assert.match(settled, /Reasoning effort: high\. Change effort for this session/);
+  assert.doesNotMatch(settled, /rt-think-pending/);
+  assert.doesNotMatch(settled, /next turn/);
+});
+
+test("a pending effort equal to the running level is not drawn as pending", () => {
+  // The registry retires this case itself, so the chip only has to not invent a promise
+  // out of a projection that agrees with the card.
+  const html = renderToStaticMarkup(
+    createElement(EffortPicker, {
+      session: mkSession({
+        agent: "codex",
+        runtime: "sdk",
+        meta: meta({ modelId: "gpt-5.6-sol", thinkingLevel: "high" }),
+        pendingEffort: "high",
+      }),
+    }),
+  );
+  assert.doesNotMatch(html, /rt-think-pending/);
+  assert.match(html, /Reasoning effort: high\. Change effort for this session/);
+});
+
+test("a read-only chip still says a pending level is pending", () => {
+  // No pane, no baseline - the control is gone but the FACT is not, and this is the
+  // surface a Board tile falls back to.
+  const html = renderToStaticMarkup(
+    createElement(EffortPicker, {
+      session: mkSession({
+        agent: "codex",
+        runtime: "sdk",
+        effortBaselineReady: false,
+        meta: meta({ modelId: "gpt-5.6-sol", thinkingLevel: "high" }),
+        pendingEffort: "xhigh",
+      }),
+    }),
+  );
+  assert.doesNotMatch(html, /Change effort for this session/);
+  assert.match(html, /Reasoning effort: xhigh, applying from the next turn/);
+});
+
 test("a newer conflicting metadata read clears an optimistic effort", () => {
   const optimistic = { level: "max" as const, modelId: "claude-opus-4-8", updatedAt: 10 };
   assert.equal(reconcileOptimisticEffort(optimistic, "high", "claude-opus-4-8", 10), optimistic);

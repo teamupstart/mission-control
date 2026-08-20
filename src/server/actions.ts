@@ -417,8 +417,13 @@ export function driverEffortTargetResult(
   if (!levels.includes(target)) {
     return { ok: false, error: `${target} effort is not offered for this model`, effort: null };
   }
-  // Nothing to change, and saying so beats spending a turn parameter on it.
-  if (session.meta?.thinkingLevel === target) return { ok: true, effort: target };
+  // Nothing to change, and saying so beats spending a turn parameter on it - unless a
+  // DIFFERENT level is already promised to the next turn. Then the conversation's current
+  // level is not what the driver is holding, and short-circuiting here would leave that
+  // other level to arrive on a turn the operator has just chosen against.
+  if (session.meta?.thinkingLevel === target && session.pendingEffort === null) {
+    return { ok: true, effort: target };
+  }
   return null;
 }
 

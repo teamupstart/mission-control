@@ -597,7 +597,273 @@ test("a Codex SDK mode change updates the card after the driver accepts it", asy
   });
   assert.equal(effort.status, 200);
   assert.deepEqual(supervisor.efforts, ["sdk:codex-controls:max"]);
+  // The card still reports what the RUNNING turn is on. Codex puts effort on `turn/start`
+  // and a turn already going cannot be moved onto it, so claiming `max` here would be a
+  // fact the very next rollout read contradicts.
   assert.equal(registry.getSession("sdk:codex-controls")?.meta?.thinkingLevel, "high");
+  // ...and the accepted level is published BESIDE it rather than dropped, which is the
+  // whole difference: a card that says nothing is a control that looks like a no-op.
+  assert.equal(registry.getSession("sdk:codex-controls")?.pendingEffort, "max");
+  assert.equal(((await effort.json()) as { pending?: boolean }).pending, true);
+});
+
+test("a Codex SDK session's pending effort outlives the running turn's own metadata", async () => {
+  const rolloutPath = join(home, "codex-pending-rollout.jsonl");
+  const rollout = (records: string[]) => writeFileSync(rolloutPath, `${records.join("\n")}\n`);
+  const head = JSON.stringify({
+    type: "session_meta",
+    timestamp: "2026-07-25T12:00:00.000Z",
+    payload: { id: "thread-p", cwd: "/wt/codex", timestamp: "2026-07-25T12:00:00.000Z" },
+  });
+  const turnOne = JSON.stringify({
+    type: "turn_context",
+    timestamp: "2026-07-25T12:00:01.000Z",
+    payload: { model: "gpt-5.6-sol", effort: "high" },
+  });
+  rollout([head, turnOne]);
+
+  const registry = new Registry();
+  registry.registerSdkSession({
+    id: "sdk:codex-pending",
+    agent: "codex",
+    name: "Codex pending",
+    cwd: "/wt/codex",
+    permissionMode: "askForApproval",
+  });
+  registry.applyDriverEvent("sdk:codex-pending", {
+    kind: "bound",
+    agentSessionId: "thread-p",
+    transcriptPath: rolloutPath,
+    modelId: "gpt-5.6-sol",
+    pid: 321,
+  });
+  const read = (thinkingLevel: "high" | "max", effortRevision: string, contextPct: number) => ({
+    modelId: "gpt-5.6-sol",
+    contextTokens: contextPct * 1000,
+    contextWindow: 258_400,
+    contextPct,
+    longContext: false,
+    thinkingLevel,
+    effortRevision,
+  });
+  registry.applyRuntimeMeta("sdk:codex-pending", read("high", "2026-07-25T12:00:01.000Z", 8), "transcript");
+
+  const supervisor = fakeSupervisor();
+  const app = mkApp(registry, supervisor);
+  const res = await app.request("/api/sessions/sdk:codex-pending/effort", {
+    method: "POST",
+    headers: HEADERS,
+    body: JSON.stringify({ effort: "max" }),
+  });
+  assert.equal(res.status, 200);
+  assert.equal(registry.getSession("sdk:codex-pending")?.pendingEffort, "max");
+
+  // THE REGRESSION. The active turn goes on appending `token_count` records, so the poller
+  // keeps producing reads with a newer `SessionMeta.updatedAt` and the SAME `turn_context`
+  // behind them. Every one of those describes the turn that is running, which really is
+  // still on `high` - none of them is evidence about the turn that has not started.
+  for (const pct of [12, 19, 27]) {
+    registry.applyRuntimeMeta("sdk:codex-pending", read("high", "2026-07-25T12:00:01.000Z", pct), "transcript");
+    assert.equal(registry.getSession("sdk:codex-pending")?.pendingEffort, "max", `pct ${pct}`);
+    assert.equal(registry.getSession("sdk:codex-pending")?.meta?.thinkingLevel, "high");
+  }
+
+  // The next turn starts and Codex writes the record that can answer. Now the promise is
+  // kept, the card moves, and there is nothing left pending.
+  rollout([
+    head,
+    turnOne,
+    JSON.stringify({
+      type: "turn_context",
+      timestamp: "2026-07-25T12:05:00.000Z",
+      payload: { model: "gpt-5.6-sol", effort: "max" },
+    }),
+  ]);
+  registry.applyRuntimeMeta("sdk:codex-pending", read("max", "2026-07-25T12:05:00.000Z", 31), "transcript");
+  assert.equal(registry.getSession("sdk:codex-pending")?.meta?.thinkingLevel, "max");
+  assert.equal(registry.getSession("sdk:codex-pending")?.pendingEffort, null);
+});
+
+test("changing back to the running level while another is pending still reaches the driver", async () => {
+  const rolloutPath = join(home, "codex-pending-undo.jsonl");
+  writeFileSync(
+    rolloutPath,
+    [
+      JSON.stringify({
+        type: "session_meta",
+        timestamp: "2026-07-25T12:00:00.000Z",
+        payload: { id: "thread-u", cwd: "/wt/codex", timestamp: "2026-07-25T12:00:00.000Z" },
+      }),
+      JSON.stringify({
+        type: "turn_context",
+        timestamp: "2026-07-25T12:00:01.000Z",
+        payload: { model: "gpt-5.6-sol", effort: "high" },
+      }),
+      "",
+    ].join("\n"),
+  );
+  const registry = new Registry();
+  registry.registerSdkSession({
+    id: "sdk:codex-undo",
+    agent: "codex",
+    name: "Codex undo",
+    cwd: "/wt/codex",
+    permissionMode: "askForApproval",
+  });
+  registry.applyDriverEvent("sdk:codex-undo", {
+    kind: "bound",
+    agentSessionId: "thread-u",
+    transcriptPath: rolloutPath,
+    modelId: "gpt-5.6-sol",
+    pid: 777,
+  });
+  registry.applyRuntimeMeta(
+    "sdk:codex-undo",
+    {
+      modelId: "gpt-5.6-sol",
+      contextTokens: 20_000,
+      contextWindow: 258_400,
+      contextPct: 8,
+      longContext: false,
+      thinkingLevel: "high",
+      effortRevision: "2026-07-25T12:00:01.000Z",
+    },
+    "transcript",
+  );
+  const supervisor = fakeSupervisor();
+  const app = mkApp(registry, supervisor);
+  const set = (effort: string) =>
+    app.request("/api/sessions/sdk:codex-undo/effort", {
+      method: "POST",
+      headers: HEADERS,
+      body: JSON.stringify({ effort }),
+    });
+
+  assert.equal((await set("max")).status, 200);
+  assert.equal(registry.getSession("sdk:codex-undo")?.pendingEffort, "max");
+
+  // Changing their mind back. The conversation is on `high`, so "nothing to change" LOOKS
+  // right - and is not: the driver is holding `max` for its next turn, and a short-circuit
+  // here would let that arrive on the very turn the operator just chose against.
+  const undo = await set("high");
+  assert.equal(undo.status, 200);
+  assert.deepEqual(supervisor.efforts, ["sdk:codex-undo:max", "sdk:codex-undo:high"]);
+  assert.equal(registry.getSession("sdk:codex-undo")?.pendingEffort, null);
+  assert.equal(((await undo.json()) as { pending?: boolean }).pending, false);
+
+  // With nothing pending, the same request IS a no-op and does not spend a driver call.
+  assert.equal((await set("high")).status, 200);
+  assert.deepEqual(supervisor.efforts, ["sdk:codex-undo:max", "sdk:codex-undo:high"]);
+});
+
+test("a next turn that did NOT take the pending effort retires it rather than holding it for ever", async () => {
+  const rolloutPath = join(home, "codex-pending-refused.jsonl");
+  writeFileSync(
+    rolloutPath,
+    [
+      JSON.stringify({
+        type: "session_meta",
+        timestamp: "2026-07-25T12:00:00.000Z",
+        payload: { id: "thread-r", cwd: "/wt/codex", timestamp: "2026-07-25T12:00:00.000Z" },
+      }),
+      JSON.stringify({
+        type: "turn_context",
+        timestamp: "2026-07-25T12:00:01.000Z",
+        payload: { model: "gpt-5.6-sol", effort: "high" },
+      }),
+      "",
+    ].join("\n"),
+  );
+  const registry = new Registry();
+  registry.registerSdkSession({
+    id: "sdk:codex-refused",
+    agent: "codex",
+    name: "Codex refused",
+    cwd: "/wt/codex",
+    permissionMode: "askForApproval",
+  });
+  registry.applyDriverEvent("sdk:codex-refused", {
+    kind: "bound",
+    agentSessionId: "thread-r",
+    transcriptPath: rolloutPath,
+    modelId: "gpt-5.6-sol",
+    pid: 654,
+  });
+  const meta = (thinkingLevel: "high" | "xhigh" | "max", effortRevision: string) => ({
+    modelId: "gpt-5.6-sol",
+    contextTokens: 20_000,
+    contextWindow: 258_400,
+    contextPct: 8,
+    longContext: false,
+    thinkingLevel,
+    effortRevision,
+  });
+  registry.applyRuntimeMeta("sdk:codex-refused", meta("high", "2026-07-25T12:00:01.000Z"), "transcript");
+  const app = mkApp(registry, fakeSupervisor());
+  assert.equal(
+    (await app.request("/api/sessions/sdk:codex-refused/effort", {
+      method: "POST",
+      headers: HEADERS,
+      body: JSON.stringify({ effort: "max" }),
+    })).status,
+    200,
+  );
+  assert.equal(registry.getSession("sdk:codex-refused")?.pendingEffort, "max");
+
+  // A later `turn_context` naming something else - an operator's `/model` in a terminal
+  // beside this one, a config the driver lost. A turn HAS run since, so this read settles
+  // the question; holding `max` past it would keep promising a turn that already happened.
+  registry.applyRuntimeMeta("sdk:codex-refused", meta("xhigh", "2026-07-25T12:06:00.000Z"), "transcript");
+  assert.equal(registry.getSession("sdk:codex-refused")?.meta?.thinkingLevel, "xhigh");
+  assert.equal(registry.getSession("sdk:codex-refused")?.pendingEffort, null);
+});
+
+test("a Claude SDK session still publishes its effort immediately and pends nothing", async () => {
+  const registry = new Registry();
+  registry.registerSdkSession({ id: "sdk:claude-effort", agent: "claude", name: "Claude", cwd: "/wt/c" });
+  const transcript = join(home, "claude-effort.jsonl");
+  writeFileSync(
+    transcript,
+    `${JSON.stringify({
+      type: "assistant",
+      uuid: "u-1",
+      timestamp: "2026-07-25T12:00:01.000Z",
+      message: { model: "claude-opus-4-8", usage: { input_tokens: 10, output_tokens: 2 } },
+    })}\n`,
+  );
+  registry.applyDriverEvent("sdk:claude-effort", {
+    kind: "bound",
+    agentSessionId: "claude-thread",
+    transcriptPath: transcript,
+    modelId: "claude-opus-4-8",
+    pid: 99,
+  });
+  registry.applyRuntimeMeta(
+    "sdk:claude-effort",
+    {
+      modelId: "claude-opus-4-8",
+      contextTokens: 1000,
+      contextWindow: 200_000,
+      contextPct: 1,
+      longContext: false,
+      thinkingLevel: "high",
+      effortRevision: "u-1",
+    },
+    "transcript",
+  );
+  const supervisor = fakeSupervisor();
+  const res = await mkApp(registry, supervisor).request("/api/sessions/sdk:claude-effort/effort", {
+    method: "POST",
+    headers: HEADERS,
+    body: JSON.stringify({ effort: "max" }),
+  });
+  assert.equal(res.status, 200);
+  assert.equal(((await res.json()) as { pending?: boolean }).pending, false);
+  assert.deepEqual(supervisor.efforts, ["sdk:claude-effort:max"]);
+  // `applyFlagSettings` moves the conversation Claude is already running, so "accepted"
+  // and "applied" are the same event and there is nothing to pend.
+  assert.equal(registry.getSession("sdk:claude-effort")?.meta?.thinkingLevel, "max");
+  assert.equal(registry.getSession("sdk:claude-effort")?.pendingEffort, null);
 });
 
 test("a handoff with no identity to resume from is refused before anything is stopped", async () => {

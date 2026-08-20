@@ -213,6 +213,7 @@ function mkSession(cwd: string, over: Partial<Session> = {}): Session {
     prChecks: null,
     meta: null,
     effortBaselineReady: false,
+    pendingEffort: null,
     note: null,
     cost: null,
     goal: { text: "Add retry handling.", source: "model", updatedAt: now },

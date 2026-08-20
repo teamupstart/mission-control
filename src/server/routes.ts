@@ -3625,18 +3625,34 @@ export function buildApp(
               current.transcriptPath === session.transcriptPath;
           },
         });
-    if (
-      r.ok &&
-      (session.runtime === "terminal" || session.agent !== "codex") &&
-      !registry.recordObservedSessionEffort(session.id, r.effort, session)
-    ) {
+    // WHEN an accepted level takes effect is a fact about the harness, declared once on
+    // `EffortSpec.driverApplies`, not a branch on an agent name. A pane walk always
+    // applies now - it types into the harness's own picker - so only a driver can defer.
+    //
+    // Deferred means the level rides the driver's next turn: the running one keeps the
+    // old level and a steered follow-up joins it, so the card goes on reporting what the
+    // conversation is ACTUALLY on and the selection is published beside it as pending.
+    // The rollout's next `turn_context` is what retires it.
+    const deferred =
+      session.runtime === "sdk" &&
+      harnessFor(session.agent).effort?.driverApplies === "next-turn";
+    const published = !r.ok
+      ? true
+      : deferred
+        ? registry.recordPendingSessionEffort(session.id, r.effort, session)
+        : registry.recordObservedSessionEffort(session.id, r.effort, session);
+    if (!published) {
       return c.json({
         ok: false,
         error: "the live effort changed, but the session identity changed before it could be published",
         effort: null,
       }, 409);
     }
-    return c.json(r, r.ok ? 200 : 409);
+    // Reported from the PROJECTION rather than from `deferred`, so the one deferred case
+    // that settles immediately - choosing back the level the conversation is already on -
+    // does not announce a pending change nothing is waiting for.
+    const pending = deferred && registry.getSession(session.id)?.pendingEffort === r.effort;
+    return c.json({ ...r, ...(r.ok ? { pending } : {}) }, r.ok ? 200 : 409);
   });
 
   // Preview what a reset-to-origin would discard (fetches origin; localhost read).

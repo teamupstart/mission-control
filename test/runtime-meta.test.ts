@@ -377,6 +377,126 @@ test("a rebind clears transcript baseline identity before publication", () => {
   assert.equal(metaOf(r)?.thinkingLevel, "high");
 });
 
+// ---- an accepted level the conversation has not run yet ----
+//
+// Codex's driver puts `effort` on `turn/start`; `turn/steer` has no such field. So a level
+// chosen while a turn is running is a promise about the NEXT turn, and every rollout read
+// until then describes the turn that is going - correctly, with the old level. These pin
+// what that projection is defended against and what retires it.
+
+const codexRead = (
+  thinkingLevel: "high" | "xhigh" | "max",
+  effortRevision: string,
+  over: Partial<RuntimeMetaRead> = {},
+): RuntimeMetaRead => ({
+  modelId: "gpt-5.6-sol",
+  contextTokens: 20_000,
+  contextWindow: 258_400,
+  contextPct: 8,
+  longContext: false,
+  thinkingLevel,
+  effortRevision,
+  ...over,
+});
+
+function pendingSeeded(): InstanceType<typeof Registry> {
+  const r = new Registry();
+  r.applyDiscovery([disco({ agent: "codex", agentSessionId: "thread-1", transcriptPath: "/tmp/roll.jsonl" })]);
+  r.applyRuntimeMeta("s1", codexRead("high", "2026-07-25T12:00:01.000Z"), "codex-rollout");
+  recordBaseline(r, "2026-07-25T12:00:01.000Z");
+  assert.equal(r.recordPendingSessionEffort("s1", "max", r.getSession("s1")!), true);
+  assert.equal(r.getSession("s1")?.pendingEffort, "max");
+  return r;
+}
+
+test("a pending effort is not a claim about the running turn", () => {
+  const r = pendingSeeded();
+  // The card keeps reporting the level the conversation is ACTUALLY on. That is the whole
+  // reason this is a second field and not a write to `meta.thinkingLevel`.
+  assert.equal(metaOf(r)?.thinkingLevel, "high");
+});
+
+test("a pending effort survives the running turn's own newer metadata", () => {
+  const r = pendingSeeded();
+  // Same `turn_context` behind every one of these; only the usage moved. `updatedAt`
+  // advances on each, which is exactly what used to drop the selection.
+  for (const pct of [11, 17, 24]) {
+    r.applyRuntimeMeta("s1", codexRead("high", "2026-07-25T12:00:01.000Z", { contextPct: pct }), "codex-rollout");
+    assert.equal(r.getSession("s1")?.pendingEffort, "max", `context ${pct}%`);
+  }
+  // An UNORDERABLE revision is not evidence either - a harness whose revisions are opaque
+  // record ids can never prove a turn started, so it must not be able to retire one.
+  r.applyRuntimeMeta("s1", codexRead("high", "turn-uuid-9"), "codex-rollout");
+  assert.equal(r.getSession("s1")?.pendingEffort, "max");
+});
+
+test("the next turn_context settles a pending effort, kept or not", () => {
+  const kept = pendingSeeded();
+  kept.applyRuntimeMeta("s1", codexRead("max", "2026-07-25T12:09:00.000Z"), "codex-rollout");
+  assert.equal(kept.getSession("s1")?.pendingEffort, null);
+  assert.equal(metaOf(kept)?.thinkingLevel, "max");
+
+  const broken = pendingSeeded();
+  broken.applyRuntimeMeta("s1", codexRead("xhigh", "2026-07-25T12:09:00.000Z"), "codex-rollout");
+  assert.equal(broken.getSession("s1")?.pendingEffort, null, "a turn ran and did not take it");
+  assert.equal(metaOf(broken)?.thinkingLevel, "xhigh");
+});
+
+test("a model change retires a pending effort without waiting for a turn", () => {
+  const r = pendingSeeded();
+  // Levels are a fact about the model - `levelsFor` narrows them per model id - so a
+  // promise made for the old one says nothing about the new one.
+  r.applyRuntimeMeta(
+    "s1",
+    codexRead("high", "2026-07-25T12:00:01.000Z", { modelId: "gpt-5.6-luna" }),
+    "codex-rollout",
+  );
+  assert.equal(r.getSession("s1")?.pendingEffort, null);
+});
+
+test("a rebind and a context clear each drop a pending effort", () => {
+  const rebound = pendingSeeded();
+  rebound.applyStatus({ tmuxPane: "%3" }, "thread-2", "rebound");
+  assert.equal(rebound.getSession("s1")?.pendingEffort, null);
+  // ...and it does not come back on the next read of the NEW conversation.
+  rebound.applyRuntimeMeta("s1", codexRead("high", "2026-07-25T12:00:01.000Z"), "codex-rollout");
+  assert.equal(rebound.getSession("s1")?.pendingEffort, null);
+
+  const cleared = pendingSeeded();
+  cleared.clearObservedSessionEffort("s1");
+  assert.equal(cleared.getSession("s1")?.pendingEffort, null);
+  assert.equal(cleared.getSession("s1")?.effortBaselineReady, false);
+});
+
+test("choosing back the level the conversation is on retires a pending effort", () => {
+  const r = pendingSeeded();
+  assert.equal(r.recordPendingSessionEffort("s1", "high", r.getSession("s1")!), true);
+  assert.equal(r.getSession("s1")?.pendingEffort, null, "nothing is left for a next turn to change");
+});
+
+test("a pending effort is refused when the session moved under the caller", () => {
+  const r = pendingSeeded();
+  const stale = { agentSessionId: "thread-0", transcriptPath: "/tmp/roll.jsonl" };
+  assert.equal(r.recordPendingSessionEffort("s1", "xhigh", stale), false);
+  assert.equal(r.getSession("s1")?.pendingEffort, "max", "the earlier selection is untouched");
+  assert.equal(r.recordPendingSessionEffort("gone", "xhigh"), false);
+});
+
+test("a pending effort change emits the session, so the chip is not waiting on a poll", () => {
+  const r = pendingSeeded();
+  const seen: string[] = [];
+  r.on("event", (e: ServerEvent) => {
+    if (e.type === "session_upsert" && e.session.id === "s1") seen.push(String(e.session.pendingEffort));
+  });
+  r.recordPendingSessionEffort("s1", "xhigh", r.getSession("s1")!);
+  assert.deepEqual(seen, ["xhigh"]);
+  // Idempotent: recording the same selection again changes nothing and says nothing.
+  r.recordPendingSessionEffort("s1", "xhigh", r.getSession("s1")!);
+  assert.deepEqual(seen, ["xhigh"]);
+  r.applyRuntimeMeta("s1", codexRead("xhigh", "2026-07-25T12:09:00.000Z"), "codex-rollout");
+  assert.deepEqual(seen, ["xhigh", "null"]);
+});
+
 test("meta only emits when a displayed value actually changes", () => {
   const r = seeded();
   let upserts = 0;

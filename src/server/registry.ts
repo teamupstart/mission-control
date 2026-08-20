@@ -469,6 +469,23 @@ function isLaterEffortRevision(previous: string | null, next: string | null): bo
   return Number.isFinite(previousTime) && Number.isFinite(nextTime) && nextTime > previousTime;
 }
 
+/**
+ * Whether a passive read proves a turn began after an effort selection was accepted.
+ *
+ * Normally that is a strictly later `turn_context` timestamp than the one measured when
+ * the selection landed. When no revision could be measured at all - a rollout with usage
+ * records but no `turn_context` yet - the first record to appear IS the first turn since,
+ * so its own timestamp is compared against the moment of the request instead.
+ */
+function turnRanSince(
+  pending: { effortRevision: string | null; requestedAt: number },
+  effortRevision: string | null,
+): boolean {
+  if (pending.effortRevision !== null) return isLaterEffortRevision(pending.effortRevision, effortRevision);
+  const observed = effortRevision === null ? Number.NaN : Date.parse(effortRevision);
+  return Number.isFinite(observed) && observed >= pending.requestedAt;
+}
+
 /** Hook-derived state for a session, applied over passive discovery. */
 interface HookOverlay {
   /**
@@ -642,6 +659,30 @@ export class Registry extends EventEmitter {
     verifiedAt: number;
   }>();
   private runtimeEffortRevisions = new Map<string, string | null>();
+  /**
+   * An accepted effort the conversation has NOT run under yet, keyed by session id, for
+   * the harnesses whose `EffortSpec.driverApplies` is `"next-turn"`.
+   *
+   * The sibling of `observedEfforts` and deliberately not the same thing. That map holds a
+   * level the harness is CONFIRMED to be on and defends it against a passive read that has
+   * not proved it is newer. This one holds a level the harness has merely PROMISED, and
+   * defends nothing about `meta.thinkingLevel` - the running turn really is still on the
+   * old level, so the card keeps saying so and the pending value is published beside it.
+   *
+   * `effortRevision` is the newest `turn_context` timestamp at the moment the selection was
+   * accepted, which is what makes settling it evidence rather than a timer: only a rollout
+   * read carrying a LATER one has seen a turn start since, and that record's own effort
+   * says whether the promise was kept. A generic `SessionMeta.updatedAt` cannot - the
+   * active turn refreshes it on every `token_count`, all of them describing the old level.
+   */
+  private pendingEfforts = new Map<string, {
+    effort: ThinkingLevel;
+    agentSessionId: string | null;
+    transcriptPath: string | null;
+    modelId: string | null;
+    effortRevision: string | null;
+    requestedAt: number;
+  }>();
   private statusLineTimestamps = new Map<string, number>();
   private effortFreshnessGuards = new Map<string, {
     agentSessionId: string | null;
@@ -1610,6 +1651,7 @@ export class Registry extends EventEmitter {
       prChecks: prev?.prChecks ?? null,
       meta: prev?.meta ?? null,
       effortBaselineReady: prev?.effortBaselineReady ?? false,
+      pendingEffort: prev?.pendingEffort ?? null,
       cost: null,
       note: null,
       goal: null,
@@ -1795,6 +1837,7 @@ export class Registry extends EventEmitter {
       prChecks: null,
       meta: null,
       effortBaselineReady: false,
+      pendingEffort: null,
       cost: null,
       note: null,
       goal: null,
@@ -2534,14 +2577,71 @@ export class Registry extends EventEmitter {
     return true;
   }
 
+  /**
+   * Record an accepted effort the conversation has NOT run under yet.
+   *
+   * The sibling of `recordObservedSessionEffort` for a harness whose driver applies the
+   * level on its next turn (`EffortSpec.driverApplies === "next-turn"`). It deliberately
+   * leaves `meta.thinkingLevel` alone: the running turn is still on the old level, and a
+   * steered follow-up joins that turn rather than starting a new one, so claiming
+   * otherwise would be a lie the next rollout read would contradict.
+   *
+   * Choosing the level the session is ALREADY on retires any outstanding selection rather
+   * than recording a new one - there is nothing left for a next turn to change.
+   *
+   * Returns false when the session moved out from under the caller, which is the same
+   * 409 its observed twin produces.
+   */
+  recordPendingSessionEffort(
+    sessionId: string,
+    effort: ThinkingLevel | null,
+    expected?: Pick<Session, "agentSessionId" | "transcriptPath">,
+  ): boolean {
+    const s = this.sessions.get(sessionId);
+    if (
+      !s ||
+      !effort ||
+      (expected &&
+        expected.agentSessionId !== null &&
+        expected.agentSessionId !== s.agentSessionId) ||
+      (expected &&
+        expected.transcriptPath !== null &&
+        expected.transcriptPath !== s.transcriptPath)
+    ) return false;
+    const pending = effort === (s.meta?.thinkingLevel ?? null) ? null : effort;
+    if (pending === null) {
+      this.pendingEfforts.delete(sessionId);
+    } else {
+      this.pendingEfforts.set(sessionId, {
+        effort: pending,
+        agentSessionId: s.agentSessionId,
+        transcriptPath: s.transcriptPath,
+        modelId: s.meta?.modelId ?? null,
+        effortRevision: this.runtimeEffortRevisions.get(sessionId) ?? null,
+        requestedAt: Date.now(),
+      });
+    }
+    if (s.pendingEffort === pending) return true;
+    const updated: Session = { ...s, pendingEffort: pending };
+    this.sessions.set(sessionId, updated);
+    this.emitSession(updated);
+    return true;
+  }
+
   clearObservedSessionEffort(sessionId: string): void {
     this.clearSessionEffortTracking(sessionId);
     const s = this.sessions.get(sessionId);
-    if (!s || (!s.effortBaselineReady && (!s.meta || s.meta.thinkingLevel === null))) return;
+    if (
+      !s ||
+      (!s.effortBaselineReady &&
+        s.pendingEffort === null &&
+        (!s.meta || s.meta.thinkingLevel === null))
+    ) return;
     const updated: Session = {
       ...s,
       meta: s.meta ? { ...s.meta, thinkingLevel: null } : null,
       effortBaselineReady: false,
+      pendingEffort: null,
     };
     this.sessions.set(sessionId, updated);
     this.emitSession(updated);
@@ -4838,8 +4938,18 @@ export class Registry extends EventEmitter {
     const meta = statusLineHasPrecedence && s.meta
       ? { ...s.meta, thinkingLevel: reconciled.meta.thinkingLevel }
       : reconciled.meta;
-    const changed = !metaDisplayEqual(s.meta, meta) || !s.effortBaselineReady;
-    const next: Session = { ...s, meta, effortBaselineReady: true };
+    const pendingEffort = this.reconcilePendingEffort(
+      sessionId,
+      meta,
+      s.agentSessionId,
+      s.transcriptPath,
+      read.effortRevision,
+    );
+    const changed =
+      !metaDisplayEqual(s.meta, meta) ||
+      !s.effortBaselineReady ||
+      s.pendingEffort !== pendingEffort;
+    const next: Session = { ...s, meta, effortBaselineReady: true, pendingEffort };
     this.sessions.set(sessionId, next);
     if (changed) this.emitSession(next);
   }
@@ -5048,6 +5158,47 @@ export class Registry extends EventEmitter {
     };
   }
 
+  /**
+   * Decide what an accepted-but-unapplied effort is worth in the light of one passive read.
+   *
+   * The question is never "is this read newer" - the active turn refreshes
+   * `SessionMeta.updatedAt` on every `token_count` and every one of those reads describes
+   * the OLD level. It is "has a turn STARTED since the selection was accepted", and the
+   * only thing that answers it is a `turn_context` record: Codex appends one per turn and
+   * `effortRevision` is its ISO timestamp. A read carrying a later one has seen the next
+   * turn begin, so its own effort settles the promise either way - kept, and the card's
+   * level has already caught up; or contradicted (a terminal `/model`, a config change, a
+   * harness that refused), and holding the selection longer would be the same lie the
+   * pending projection exists to avoid.
+   *
+   * A model change retires it without waiting: effort levels are a fact about the model,
+   * so a selection made for the old one is not a promise about the new one.
+   */
+  private reconcilePendingEffort(
+    sessionId: string,
+    meta: SessionMeta,
+    agentSessionId: string | null,
+    transcriptPath: string | null,
+    effortRevision: string | null,
+  ): ThinkingLevel | null {
+    const pending = this.pendingEfforts.get(sessionId);
+    if (!pending) return null;
+    const identityChanged =
+      (pending.agentSessionId !== null &&
+        agentSessionId !== null &&
+        agentSessionId !== pending.agentSessionId) ||
+      (pending.transcriptPath !== null &&
+        transcriptPath !== null &&
+        transcriptPath !== pending.transcriptPath);
+    const modelChanged =
+      pending.modelId !== null && meta.modelId !== null && meta.modelId !== pending.modelId;
+    if (!identityChanged && !modelChanged && !turnRanSince(pending, effortRevision)) {
+      return pending.effort;
+    }
+    this.pendingEfforts.delete(sessionId);
+    return null;
+  }
+
   private guardEffortFreshness(
     sessionId: string,
     currentEffort: ThinkingLevel | null,
@@ -5098,6 +5249,7 @@ export class Registry extends EventEmitter {
       this.clearSessionEffortTracking(next.id);
       this.permissionModeFreshnessGuards.delete(next.id);
       next.effortBaselineReady = false;
+      next.pendingEffort = null;
     }
     return rebound;
   }
@@ -5106,6 +5258,9 @@ export class Registry extends EventEmitter {
     this.observedEfforts.delete(sessionId);
     this.runtimeEffortRevisions.delete(sessionId);
     this.effortFreshnessGuards.delete(sessionId);
+    // A promise made to one conversation says nothing about the next one, and the
+    // baseline it was measured against is going with it.
+    this.pendingEfforts.delete(sessionId);
   }
 
   // ---- reviews (used by phase 3) ----
@@ -7241,6 +7396,7 @@ export const SESSION_FIELD_COMPARATORS: SessionFieldComparators = {
   // context% doesn't re-render the meter. See `metaDisplayEqual`.
   meta: metaDisplayEqual,
   effortBaselineReady: byValue,
+  pendingEffort: byValue,
   // A nested object the chip renders as a unit, so structural. Not `alwaysEqual` despite
   // being written only by the ingest: a session that binds its agent session id LATE
   // rotates its note key, and `mergeDiscovered` / `applyHook` / `applyStatusLine` each

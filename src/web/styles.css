@@ -3814,6 +3814,31 @@ body {
   font-size: 9px;
   opacity: 0.85;
 }
+/* An accepted level the conversation has not run yet. Dashed, because the chip is making
+   a promise about the next turn rather than reporting the current one, and the two must not
+   look alike at a glance across a board of cards. */
+.rt-think-pending {
+  border-style: dashed;
+}
+.rt-think-was {
+  color: var(--dim);
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+.rt-think-arrow {
+  color: var(--dim);
+  font-size: 9px;
+}
+.rt-think-next {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 1px 4px;
+  border-radius: 3px;
+  color: var(--dim);
+  background: color-mix(in oklab, var(--dim) 16%, transparent);
+}
 .rt-think-low {
   --think-color: var(--idle);
 }
@@ -4661,6 +4686,14 @@ body {
   .file-notice { flex-wrap: wrap; }
 }
 /* A failed walk explains itself here rather than closing the popover on a lie. */
+/* The sentence the chip has no room for: WHY the selected option is not the running one.
+   Sits above the options so it is read before one is chosen, not after. */
+.mode-pop-note {
+  margin: 2px 6px 6px;
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: var(--dim);
+}
 .mode-pop-err {
   margin: 4px 6px 2px;
   font-size: 10.5px;

@@ -46,7 +46,28 @@ const THREAD_ID = process.env.MC_E2E_CODEX_THREAD_ID ?? DEFAULT_THREAD_ID;
 const MODEL = "gpt-5-codex-e2e-mock";
 const HELD_TURN = "hold the current turn open";
 const FINAL_ANSWER_HELD_TURN = "hold the current turn open and finish with only a final answer";
-const HELD_TURN_MS = 5_000;
+/**
+ * How long `HELD_TURN` keeps a turn open.
+ *
+ * Overridable because one spec needs a genuinely long working stretch: proving a pending
+ * reasoning effort survives the ACTIVE turn's own metadata means watching several rollout
+ * refreshes go by while that turn is still running, and five seconds is not enough room to
+ * see three of them and still finish. Every other spec keeps the shipped value.
+ */
+const HELD_TURN_MS = Number(process.env.MC_E2E_CODEX_HELD_TURN_MS ?? 5_000);
+/**
+ * The reasoning effort this Codex records in its rollout, or unset for the default fake.
+ *
+ * Everything this flag turns on is a rollout record real Codex always writes and this fake
+ * did not: a `turn_context` per turn (model + effort + an ISO timestamp, which is the
+ * `effortRevision` the daemon orders reads by) and `token_count` events while a turn runs.
+ * It is a FLAG rather than the default because those two records are exactly what makes a
+ * card grow a model pill, an effort chip and a context meter - so switching them on for
+ * every spec would change what every other spec's session looks like. Off, this file writes
+ * the same bytes it always did.
+ */
+const RECORDED_EFFORT = process.env.MC_E2E_CODEX_EFFORT ?? null;
+const CONTEXT_WINDOW = 272_000;
 const LATE_CHILD_THREAD_ID = `01999999-1111-7000-8000-${String(process.pid).padStart(12, "0").slice(-12)}`;
 const SEE_WORK_TOUR_MARKER = "[Mission Control See the work tour demo]";
 /**
@@ -260,6 +281,49 @@ function appendRollout(type, message) {
   );
 }
 
+/**
+ * The record `parseRolloutMeta` reads a model, an effort and an effort REVISION off.
+ *
+ * Codex appends one per turn, which is what makes "has a turn started since?" answerable at
+ * all: its `timestamp` is the only ordering token the daemon has, and a turn already running
+ * never gets a second one. Written at the top of each turn, from the effort that turn was
+ * STARTED with - `turn/steer` carries no effort, so a steered follow-up leaves this alone.
+ */
+function appendTurnContext(effort) {
+  appendFileSync(
+    rolloutPath,
+    `${JSON.stringify({
+      timestamp: new Date().toISOString(),
+      type: "turn_context",
+      payload: { cwd: process.cwd(), model: MODEL, effort, summary: "auto" },
+    })}\n`,
+  );
+}
+
+/**
+ * The usage record a running turn keeps appending.
+ *
+ * The reason this fake writes it at all: it moves `SessionMeta.updatedAt` and the context
+ * meter WITHOUT a new `turn_context` behind it, which is precisely the refresh that used to
+ * throw away a pending effort selection. A spec cannot meet that case without these.
+ */
+function appendTokenCount(tokens) {
+  appendFileSync(
+    rolloutPath,
+    `${JSON.stringify({
+      timestamp: new Date().toISOString(),
+      type: "event_msg",
+      payload: {
+        type: "token_count",
+        info: {
+          last_token_usage: { total_tokens: tokens },
+          model_context_window: CONTEXT_WINDOW,
+        },
+      },
+    })}\n`,
+  );
+}
+
 /** One `response_item` record, the envelope every non-`event_msg` rollout record wears. */
 function appendItem(payload) {
   appendFileSync(
@@ -340,9 +404,13 @@ const textOf = (input) =>
     .map((part) => part.text)
     .join("\n");
 
-function runTurn(turnId, input) {
+function runTurn(turnId, input, effort) {
   const prompt = textOf(input);
 
+  // Ahead of the user message, as Codex writes it: the turn's context is established
+  // before its first item. `effort` is what THIS turn was started with, so a level chosen
+  // while the previous turn was running first appears here.
+  if (RECORDED_EFFORT) appendTurnContext(effort ?? RECORDED_EFFORT);
   appendRollout("user_message", prompt);
   notify("turn/started", { threadId: THREAD_ID, turn: turnOf(turnId, "inProgress") });
   notify("thread/status/changed", {
@@ -351,6 +419,7 @@ function runTurn(turnId, input) {
   });
 
   const finish = (prompts, finalAnswerOnly = false) => {
+    clearInterval(openTurn?.usage);
     openTurn = null;
     for (const answered of prompts) appendRollout("agent_message", replyTo(answered));
     if (finalAnswerOnly) {
@@ -407,6 +476,14 @@ function runTurn(turnId, input) {
         agentPath: "reviewer",
       },
     });
+    // The running turn's own metadata, refreshing under a card that must not lose a
+    // pending effort to it. Deliberately faster than the daemon's poll, so a spec sees
+    // several distinct reads rather than one.
+    if (RECORDED_EFFORT) {
+      let used = 20_000;
+      turnState.usage = setInterval(() => appendTokenCount((used += 9_000)), 700);
+      turnState.usage.unref?.();
+    }
     // The cancel handle and the completion the interrupt has to emit, held on the turn so
     // `turn/interrupt` can end it the way the real app-server does. Acknowledging that RPC
     // without ending the turn would leave the card working until this timer fired anyway,
@@ -415,6 +492,7 @@ function runTurn(turnId, input) {
     turnState.timer = setTimeout(() => finish(turnState.prompts), HELD_TURN_MS);
     turnState.interrupt = () => {
       clearTimeout(turnState.timer);
+      clearInterval(turnState.usage);
       // No agent message: the turn was cut off, so it never finished saying anything.
       finish([]);
       setImmediate(() => {
@@ -498,7 +576,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         approvalPolicy: params?.approvalPolicy ?? "onRequest",
         approvalsReviewer: params?.approvalsReviewer ?? "user",
         sandbox: { type: "workspaceWrite" },
-        reasoningEffort: null,
+        reasoningEffort: RECORDED_EFFORT,
       });
       return;
     case "turn/start": {
@@ -510,7 +588,8 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       // then re-adopt an already-finished turn and leave the card working for ever. The
       // real server cannot invert these two; neither may this.
       respond(id, { turn: turnOf(turnId, "inProgress") });
-      setImmediate(() => runTurn(turnId, params?.input));
+      const effort = params?.effort ?? null;
+      setImmediate(() => runTurn(turnId, params?.input, effort));
       return;
     }
     case "turn/steer": {

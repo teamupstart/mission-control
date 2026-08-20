@@ -249,6 +249,51 @@ test("terminal pipeline normalizes a stale non-Claude agent before dispatch", as
     .toMatchObject({ agent: "claude", kind: "pipeline", status: "running" });
 });
 
+test("an open pipeline dispatch follows a live host runtime change", async ({
+  dashboard,
+  daemon,
+}) => {
+  await enablePipelines(daemon);
+
+  await dashboard.getByRole("button", { name: "Dispatch" }).click();
+  const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
+  const agent = dialog.getByRole("combobox", { name: "Agent", exact: true });
+  const kind = dialog.getByRole("combobox", { name: "Kind", exact: true });
+  await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
+  await dashboard.keyboard.press("Escape");
+
+  await kind.selectOption("pipeline");
+  await agent.selectOption("codex");
+  await expect(agent).toBeEnabled();
+  await expect(agent).toHaveValue("codex");
+
+  await enablePipelines(daemon, false, "terminal");
+
+  await expect(dialog.getByText(/Terminal is Claude-only/)).toBeVisible();
+  await expect(agent).toBeDisabled();
+  await expect(agent).toHaveValue("claude");
+  await shoot(dashboard, "07-terminal-pipeline-live-runtime-normalized", dialog);
+
+  await dialog
+    .getByPlaceholder("What should this agent do?")
+    .fill("Follow the live terminal pipeline host setting");
+  await dialog.getByRole("button", { name: "Dispatch now" }).click();
+  await expect(dialog).toBeHidden();
+
+  await expect
+    .poll(
+      async () =>
+        (
+          await request<Array<{ agent: string; kind: string; status: string }>>(
+            daemon,
+            "/api/tasks",
+          )
+        ).find((task) => task.kind === "pipeline"),
+      { message: "the live runtime change should dispatch the normalized Claude host" },
+    )
+    .toMatchObject({ agent: "claude", kind: "pipeline", status: "running" });
+});
+
 test("guided dispatch offers pipeline only in an enabled repo and launches a real terminal home", async ({
   dashboard,
   daemon,

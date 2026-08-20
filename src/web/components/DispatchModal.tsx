@@ -1321,6 +1321,22 @@ function DispatchModal({
     return agent === draft.agent ? {} : { model: "", effort: "" };
   }
 
+  // Pipeline host constraints can change while this modal stays open. Kind selection applies
+  // the same rule immediately, while this effect preserves it when a live config refresh moves
+  // an existing Pipeline draft between the managed SDK and Claude-only Terminal hosts.
+  useEffect(() => {
+    const normalizedAgent = pipelineAgentForKindTransition(
+      draft.kind,
+      pipelineLaunchRuntime,
+      draft.agent,
+    );
+    if (normalizedAgent === draft.agent) return;
+    update({
+      agent: normalizedAgent,
+      ...overridesForAgent(normalizedAgent),
+    });
+  }, [draft.agent, draft.kind, pipelineLaunchRuntime]);
+
   // ---- the guided pass ----------------------------------------------------------------
   //
   // A phase of THIS dialog, not a second one: `OVERLAY_IDS.dispatch` keeps its single entry

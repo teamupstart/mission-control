@@ -5,6 +5,7 @@ import {
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   readlinkSync,
   rmSync,
   writeFileSync,
@@ -23,6 +24,16 @@ const frameworkDir = join(
 );
 const payload = join(frameworkDir, "Versions/Current/Electron Framework");
 const link = join(frameworkDir, "Electron Framework");
+
+test("both published Electron test commands run the framework preflight", () => {
+  const packageJson = JSON.parse(
+    readFileSync(join(import.meta.dirname, "..", "package.json"), "utf8"),
+  ) as { scripts: Record<string, string> };
+  const preflight = "node scripts/ensure-electron-framework.mjs";
+
+  assert.equal(packageJson.scripts.pretest, preflight);
+  assert.equal(packageJson.scripts["pretest:electron"], preflight);
+});
 
 test("the macOS pretest restores a missing Electron framework link", () => {
   mkdirSync(join(frameworkDir, "Versions/Current"), { recursive: true });

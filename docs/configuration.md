@@ -147,10 +147,10 @@ node scripts/codex-app-server-bindings.mjs  # regenerate app-server types from t
 npx tsx scripts/measure-inspector-prompt.ts # size the GitHub Inspector review prompt on this checkout
 ```
 
-On macOS, `npm test` validates Electron's framework link before starting the suite. If a
-copied dependency tree contains the complete framework payload but is missing only Electron's
-standard top-level link, the pretest restores that link. An incomplete payload is refused
-with an instruction to reinstall dependencies.
+On macOS, `npm test` and `npm run test:electron` validate Electron's framework link before
+starting their suites. If a copied dependency tree contains the complete framework payload
+but is missing only Electron's standard top-level link, the pretest restores that link. An
+incomplete payload is refused with an instruction to reinstall dependencies.
 
 The same lease and pool policy are visible under **Settings > Worktrees**. The panel can set
 default and per-repository native enablement, maximum capacity, and an operator-authored setup

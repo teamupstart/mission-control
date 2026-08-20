@@ -144,9 +144,8 @@ Control then opens that public preview in the dashboard and blocks publication u
 **Submit public issue**. Dismissing the review publishes nothing.
 
 Reports are text-only in this release and use your installed, authenticated GitHub CLI. Screenshot
-upload remains disabled until the upstream CLI attachment contract ships and is verified. There is
-not yet a direct dashboard Feedback form or dashboard mutation endpoint; that confirmation-bound
-user-facing path is a separate follow-up.
+upload remains disabled until the upstream CLI attachment contract ships and is verified. The
+dashboard has no Feedback form or mutation endpoint yet; that path is a separate follow-up.
 
 See [the MCP tool reference](docs/sessions.md#review-channel-mcp) and
 [security boundaries](docs/security.md#public-product-issue-reporting).

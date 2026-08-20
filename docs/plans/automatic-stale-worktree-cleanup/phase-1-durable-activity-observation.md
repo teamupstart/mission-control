@@ -16,8 +16,10 @@ or removes a Git worktree.
 - Direct dependency: the planning pull request containing `plan.md`, `phased-plan.md`, and this
   phase file is merged.
 - No implementation-phase dependency.
-- Read `docs/agent-guides/architecture.md`, `docs/agent-guides/change-contracts.md`,
-  `docs/worktrees-and-checks.md`, and the source plan before editing.
+- Governing references are the [source plan](./plan.md),
+  [architecture guide](../../agent-guides/architecture.md),
+  [change contracts](../../agent-guides/change-contracts.md), and
+  [worktree operations](../../worktrees-and-checks.md).
 
 ## Scope
 
@@ -245,3 +247,6 @@ fingerprint privacy, and the Phase 1 zero-truncation semantics.
   terminal-home identity through restart settlement, and uses the same aggregate probe before its
   own mutations and again at the destructive boundary. No Phase 1 schema, clock, or ownership
   contract requires a workaround.
+- Inspector documentation-safety audit on 2026-08-20: entry criteria now provide neutral governing
+  reference links instead of directing an implementation agent to open files from pull-request
+  content.

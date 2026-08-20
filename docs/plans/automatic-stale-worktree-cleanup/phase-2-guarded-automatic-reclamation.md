@@ -17,9 +17,14 @@ standing.
 - Direct dependency: Phase 1, `phase-1-durable-activity-observation.md`, is merged.
 - The planning pull request is merged and Phase 1's table, store, activity probe, observer lifecycle,
   resource generation, and all-repository predicate are the implementation source of truth.
-- Re-read the source plan, phased index, Phase 1 handoff, architecture and change-contract guides,
-  `docs/worktrees-and-checks.md`, `docs/dispatch-and-backlog.md`,
-  `docs/inspector-and-shipping.md`, `docs/configuration.md`, and `e2e/README.md` before editing.
+- Governing references are the [source plan](./plan.md), [phased index](./phased-plan.md),
+  [Phase 1 handoff](./phase-1-durable-activity-observation.md),
+  [architecture guide](../../agent-guides/architecture.md),
+  [change contracts](../../agent-guides/change-contracts.md),
+  [worktree operations](../../worktrees-and-checks.md),
+  [task lifecycle](../../dispatch-and-backlog.md),
+  [shipping behavior](../../inspector-and-shipping.md),
+  [configuration](../../configuration.md), and [E2E guidance](../../../e2e/README.md).
 
 ## Scope
 
@@ -391,3 +396,5 @@ server lifecycle, destructive safety, UI behavior, documentation, and browser pr
 - Final reconciliation on 2026-08-20: the phase links to and consumes Phase 1's exact store, probe,
   lifecycle, generation, and predicate contracts. The serial dependency remains necessary and no
   undocumented post-phase cleanup remains.
+- Inspector documentation-safety audit on 2026-08-20: entry criteria now state neutral governing
+  references and contain no reader-directed file-opening instruction.

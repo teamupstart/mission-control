@@ -59,7 +59,10 @@ live task. The retention policy should begin from the terminal task row and must
 session-eviction path.</li>
 <li>Restart reconciliation currently tears down a task immediately when its recorded terminal home is
 proven gone. The 30-day rule must replace that destructive branch: reconcile the task to a
-terminal state, retain its resource facts, and let the retention service own the cleanup deadline.</li>
+terminal state, retain its resource facts, and let the retention service own the cleanup deadline.
+Because clearing the proven-dead session binding changes the resource generation, a matching
+ledger row must adopt that known reconciliation mutation without moving its existing activity
+boundary or deadline.</li>
 <li>Several existing resource checks consider only the primary worktree and terminal home. Candidate
 loading, startup reconciliation, in-memory terminal pruning, removal, and the dashboard cleanup
 affordance must also recognize a task whose only remaining resource is an attached-repository
@@ -108,14 +111,21 @@ next eligible cleanup time, and the latest cleanup attempt/error. A new dispatch
 worktree starts a new generation so it cannot inherit an earlier checkout&#x27;s age. The daemon scans
 only terminal tasks with resources, bounds concurrent probes, and serializes cleanup per repository
 so a large stale fleet cannot recreate the startup cleanup convoy.</p>
+<p>Not every generation transition represents new work. When startup reconciliation proves the
+recorded session is gone, it must atomically settle the task and compare-and-swap a matching ledger
+row from the pre-settlement generation to the post-settlement generation while preserving the
+fingerprint, activity boundary, and deadline. An absent row still receives the conservative first
+observation period. A mismatched task aborts the transition for a fresh read. If a fresh read proves
+that an existing row belongs to a different external generation, ordinary successful observation
+replaces it and explicitly starts the conservative period for the current resources.</p>
 <p>At or after the deadline, the sweeper re-reads the task and its Git state before calling
 <code>TaskManager.reclaim()</code>. The reclaim path validates the claimed generation before quiescence or
 archive work can mutate terminal/session ownership. Immediately before teardown it compares a
 stable snapshot of status, attempt, worktree paths, providers, and leases plus a fresh fingerprint.
 A changed external generation or fingerprint cancels the attempt and records a fresh 30-day
-boundary; cleanup-caused terminal/session changes do not invalidate their own claim. A successful
-reclaim removes the retention row after the task update has durably cleared every released
-worktree.</p>
+boundary; lifecycle-owned generation changes from proven restart settlement or reserved cleanup are
+adopted without moving a valid activity boundary. A successful reclaim removes the retention row
+after the task update has durably cleared every released worktree.</p>
 <h3 id="why-it-fits">Why it fits</h3>
 <ul>
 <li>Matches the daemon-only SQLite boundary and the existing timer, startup reconciliation, and
@@ -142,10 +152,11 @@ operation.</p>
 <figure class="diagram" role="group" aria-labelledby="retention-flow-caption">
   <svg viewBox="0 0 1180 420" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="retention-flow-title retention-flow-desc">
     <title id="retention-flow-title">Durable task worktree retention flow</title>
-    <desc id="retention-flow-desc">A terminal task is observed into a durable Git fingerprint ledger. Changed work receives a new deadline. Due unchanged work is revalidated and reclaimed through TaskManager. Failures retain ownership and retry.</desc>
+    <desc id="retention-flow-desc">A terminal task is observed into a durable Git fingerprint ledger. Restart settlement atomically adopts a proven-dead session generation without moving its deadline. Changed work receives a new deadline. Due unchanged work is revalidated and reclaimed through TaskManager. Failures retain ownership and retry.</desc>
     <defs><marker id="root-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z" class="arrow-fill"/></marker></defs>
     <text x="28" y="31" class="diagram-kicker">ONE TASK-LEVEL CLOCK ACROSS EVERY ATTACHED REPOSITORY</text>
     <g class="node base"><rect x="28" y="62" width="210" height="92" rx="15"/><text x="48" y="91" class="title">Terminal task</text><text x="48" y="116" class="sub">done · failed · cancelled</text><text x="48" y="136" class="sub">still owns a worktree</text></g>
+    <g class="node base"><rect x="28" y="182" width="240" height="70" rx="15"/><text x="48" y="211" class="title">Restart settlement</text><text x="48" y="234" class="sub">adopt generation · keep deadline</text></g>
     <g class="node observe"><rect x="290" y="62" width="230" height="92" rx="15"/><text x="310" y="91" class="title">Retention observer</text><text x="310" y="116" class="sub">HEAD · index · tracked edits</text><text x="310" y="136" class="sub">non-ignored untracked work</text></g>
     <g class="node ledger"><rect x="572" y="62" width="222" height="92" rx="15"/><text x="592" y="91" class="title">Durable ledger</text><text x="592" y="116" class="sub">generation · fingerprint</text><text x="592" y="136" class="sub">last change · due time</text></g>
     <g class="node change"><rect x="846" y="46" width="290" height="70" rx="15"/><text x="866" y="76" class="title">Change observed</text><text x="866" y="99" class="sub">start a fresh 30-day period</text></g>
@@ -153,10 +164,10 @@ operation.</p>
     <g class="node reclaim"><rect x="572" y="282" width="222" height="92" rx="15"/><text x="592" y="311" class="title">TaskManager.reclaim()</text><text x="592" y="336" class="sub">quiesce · archive · final Git guard</text><text x="592" y="356" class="sub">recorded provider teardown</text></g>
     <g class="node success"><rect x="290" y="282" width="230" height="92" rx="15"/><text x="310" y="311" class="title">Released</text><text x="310" y="336" class="sub">clear durable resource facts</text><text x="310" y="356" class="sub">emit ordinary task update</text></g>
     <g class="node retry"><rect x="846" y="282" width="290" height="92" rx="15"/><text x="866" y="311" class="title">Uncertain or partial</text><text x="866" y="336" class="sub">keep remaining ownership</text><text x="866" y="356" class="sub">bounded error and retry</text></g>
-    <path d="M238 108H290" class="arrow"/><path d="M520 108H572" class="arrow"/><path d="M794 92H846" class="arrow"/><path d="M794 126C824 126 816 195 846 195" class="arrow"/><path d="M991 230V251C991 271 814 258 794 306" class="arrow"/><path d="M572 328H520" class="arrow"/><path d="M794 328H846" class="arrow retry-arrow"/><path d="M991 282V247" class="arrow retry-arrow"/>
+    <path d="M238 108H290" class="arrow"/><path d="M520 108H572" class="arrow"/><path d="M794 92H846" class="arrow"/><path d="M794 126C824 126 816 195 846 195" class="arrow"/><path d="M991 230V251C991 271 814 258 794 306" class="arrow"/><path d="M572 328H520" class="arrow"/><path d="M794 328H846" class="arrow retry-arrow"/><path d="M991 282V247" class="arrow retry-arrow"/><path d="M148 182V154" class="arrow"/><path d="M268 217C400 217 484 170 572 134" class="arrow"/>
     <text x="818" y="79" class="label">changed</text><text x="817" y="166" class="label">stable</text>
   </svg>
-  <figcaption id="retention-flow-caption">The retention service owns time and evidence. TaskManager remains the sole owner of destructive task cleanup.</figcaption>
+  <figcaption id="retention-flow-caption">The retention service owns time and evidence, including deadline-preserving restart adoption. TaskManager remains the sole owner of destructive task cleanup.</figcaption>
 </figure></div>
 <p>The key ownership direction is:</p>
 <p><code>terminal task -&gt; retention sweeper -&gt; TaskManager.reclaim() -&gt; provider-aware worktree teardown</code>.</p>
@@ -167,9 +178,12 @@ operation.</p>
 <li>Add a migration-backed retention ledger keyed by task ID. Store a resource-generation token,
 aggregate fingerprint, <code>last_changed_at</code>, <code>observed_at</code>, <code>cleanup_due_at</code>, attempt time, retry time,
 and bounded error text.</li>
-<li>Build the generation from the task&#x27;s dispatch identity and its ordered path/provider/lease tuple.
-Re-dispatch, reschedule, partial release, or attached-repository replacement invalidates stale
-observations.</li>
+<li>Build the generation from the task&#x27;s dispatch identity, terminal home/resource/session identity,
+and its ordered path/provider/lease tuple. Re-dispatch, reschedule, partial release, or
+attached-repository replacement invalidates stale observations.</li>
+<li>Add a compare-and-swap adoption transition for lifecycle-owned generation changes. It may change
+only the generation while preserving the fingerprint, <code>last_changed_at</code>, and <code>cleanup_due_at</code> for
+an exact pre-mutation task and ledger match.</li>
 <li>Keep internal fingerprints off the global browser snapshot. Expose only bounded cleanup status if
 the existing task surface needs to explain a pending retry.</li>
 </ul>
@@ -190,7 +204,9 @@ pre-feature tree receives the same full final 30-day grace period.</li>
 30-day policy has no off switch in the initial release; changing pool reconciliation cadence must
 not disable retention.</li>
 <li>Replace restart&#x27;s immediate teardown for a proven-dead task home with terminal settlement that
-preserves its resource facts. Automatic teardown after restart then follows the same persisted
+preserves its resource facts. Commit the task settlement and matching ledger-generation adoption
+in one SQLite transaction so clearing the dead session binding cannot create an unseen generation
+or move an existing deadline. Automatic teardown after restart then follows the same persisted
 deadline as cleanup after a live <code>session_remove</code>.</li>
 <li>Limit simultaneous Git probes and allow at most one cleanup touching a physical repository. Reuse
 or extract the repository-key queue already used to prevent startup cleanup convoys.</li>
@@ -223,7 +239,8 @@ including dirty, staged, untracked, committed, and unpushed states.</li>
 <li>A multi-repository task uses the newest activity across all trees and reclaims through one
 task-level operation.</li>
 <li>A re-dispatch or path/lease change invalidates an in-flight observation.</li>
-<li>Daemon restart preserves the deadline and resumes due retries without duplicate cleanup.</li>
+<li>Daemon restart preserves the deadline when settlement clears a proven-dead session binding and
+resumes due retries without duplicate cleanup.</li>
 <li>Partial provider failure clears only released trees and retries the remaining resource facts.</li>
 <li>Unknown Git state or process occupancy never reads as inactivity and never drops durable ownership.</li>
 <li>Native, disposable Git, and exact historical Treehouse resources follow their recorded providers.</li>
@@ -242,7 +259,7 @@ event, and proves a recent edit postpones it. Fake agents remain mandatory.</li>
 <code>npm run test:e2e</code> after the build.</li>
 </ul>
 <h2 id="risks-and-mitigations">Risks and mitigations</h2>
-<div class="table-wrap"><table><thead><tr><th>Risk</th><th>Mitigation</th></tr></thead><tbody><tr><td>Local work is deleted by design</td><td>Make the fixed 30-day rule explicit in task/worktree docs and use a Git-visible clock that resets on staged, unstaged, untracked, or committed work.</td></tr><tr><td>Metadata churn prevents cleanup forever</td><td>Exclude ignored files and task/UI bookkeeping from the activity signal.</td></tr><tr><td>A stale observation targets a replacement lease</td><td>Validate the claimed generation before cleanup mutation, then compare stable status/attempt/path/provider/lease ownership and a fresh fingerprint immediately before teardown.</td></tr><tr><td>Cleanup blocks dispatch</td><td>Bound probes and serialize destructive work per repository without queueing an entire fleet ahead of foreground acquisition.</td></tr><tr><td>Provider or process state is uncertain</td><td>Keep durable resource facts, record a bounded failure, and retry. Changes and unpushed commits are not blockers, but unknown ownership or occupancy remains one.</td></tr><tr><td>Upgrade deletes old work immediately</td><td>Seed every unseen resource generation at its first successful observation, granting every pre-feature tree one final full 30-day window.</td></tr><tr><td>Retention metadata grows forever</td><td>Delete ledger rows after complete reclaim or task removal, and reconcile orphaned rows on startup.</td></tr></tbody></table></div>
+<div class="table-wrap"><table><thead><tr><th>Risk</th><th>Mitigation</th></tr></thead><tbody><tr><td>Local work is deleted by design</td><td>Make the fixed 30-day rule explicit in task/worktree docs and use a Git-visible clock that resets on staged, unstaged, untracked, or committed work.</td></tr><tr><td>Metadata churn prevents cleanup forever</td><td>Exclude ignored files and task/UI bookkeeping from the activity signal.</td></tr><tr><td>A stale observation targets a replacement lease</td><td>Validate the claimed generation before cleanup mutation, then compare stable status/attempt/path/provider/lease ownership and a fresh fingerprint immediately before teardown.</td></tr><tr><td>Restart settlement looks like a new generation</td><td>Atomically adopt the exact pre-settlement generation into the settled task generation without moving its valid fingerprint or deadline.</td></tr><tr><td>Cleanup blocks dispatch</td><td>Bound probes and serialize destructive work per repository without queueing an entire fleet ahead of foreground acquisition.</td></tr><tr><td>Provider or process state is uncertain</td><td>Keep durable resource facts, record a bounded failure, and retry. Changes and unpushed commits are not blockers, but unknown ownership or occupancy remains one.</td></tr><tr><td>Upgrade deletes old work immediately</td><td>Seed every unseen resource generation at its first successful observation, granting every pre-feature tree one final full 30-day window.</td></tr><tr><td>Retention metadata grows forever</td><td>Delete ledger rows after complete reclaim or task removal, and reconcile orphaned rows on startup.</td></tr></tbody></table></div>
 <h2 id="non-goals">Non-goals</h2>
 <ul>
 <li>Cleaning arbitrary Git worktrees that Mission Control does not own.</li>

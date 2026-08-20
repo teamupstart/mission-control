@@ -119,6 +119,12 @@ Hash the canonical serialization rather than persisting it as another source of 
 Any dispatch, reschedule, path replacement, lease replacement, or terminal ownership replacement
 must produce a new generation. Pure task metadata and pull request polling must not.
 
+A different generation is not by itself proof of new Git-visible activity. Phase 2 may add one
+guarded adoption operation for a lifecycle mutation it owns, including clearing a session binding
+that restart reconciliation has proven dead. That operation must require the exact prior task and
+ledger generation and preserve the fingerprint, activity boundary, and deadline. Every unclaimed
+external generation still follows ordinary replacement and first-observation rules.
+
 ### 4. Implement the Git-visible activity probe
 
 Add a focused module such as `src/server/git/worktree-activity.ts`. The exact implementation may
@@ -233,7 +239,8 @@ observer lifecycle, and all-repository predicate. It may add claims and cleanup 
 must not add another timer, activity clock, repository enumerator, Git parser, or cleanup path.
 
 Phase 2 must preserve first-observation grace, unknown-read safety, bounded concurrency, internal
-fingerprint privacy, and the Phase 1 zero-truncation semantics.
+fingerprint privacy, the Phase 1 zero-truncation semantics, and a valid deadline when its own restart
+settlement changes only proven-dead session identity.
 
 ## Cross-phase audit record
 
@@ -243,10 +250,12 @@ fingerprint privacy, and the Phase 1 zero-truncation semantics.
   remain wholly assigned to Phase 2.
 - Multi-repository audit: candidate load and pruning land here because Phase 2 cannot consume a
   ledger for attached-only survivors if Registry has already forgotten them.
-- Final reconciliation on 2026-08-20: Phase 2 consumes the reserved claim/retry fields, preserves
-  terminal-home identity through restart settlement, and uses the same aggregate probe before its
-  own mutations and again at the destructive boundary. No Phase 1 schema, clock, or ownership
-  contract requires a workaround.
+- Final reconciliation on 2026-08-20: Phase 2 consumes the reserved claim/retry fields, atomically
+  adopts its proven-dead restart session settlement without moving the Phase 1 activity boundary,
+  and uses the same aggregate probe before its own mutations and again at the destructive boundary.
+  No Phase 1 schema, clock, or ownership contract requires a workaround.
 - Inspector documentation-safety audit on 2026-08-20: entry criteria now provide neutral governing
   reference links instead of directing an implementation agent to open files from pull-request
   content.
+- Inspector restart audit on 2026-08-20: a lifecycle-owned generation adoption is explicitly distinct
+  from external replacement, so clearing a proven-dead session cannot grant a new grace period.

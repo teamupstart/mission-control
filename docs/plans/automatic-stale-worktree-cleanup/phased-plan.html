@@ -49,7 +49,9 @@ unstaged content and local commits that were never pushed.</li>
 service does not call the native allocator, Treehouse, terminal backends, or <code>git worktree remove</code> directly.</li>
 <li>Restart reconciliation currently performs immediate teardown when a task&#x27;s terminal home is
 proven gone. Phase 2 replaces that destructive branch with terminal settlement plus retention;
-otherwise restart would bypass the approved 30-day boundary.</li>
+otherwise restart would bypass the approved 30-day boundary. Because Phase 1&#x27;s generation
+includes bound session identity, Phase 2 atomically adopts the exact pre-settlement ledger row
+into the settled generation without moving an existing activity boundary or deadline.</li>
 <li>Candidate loading and in-memory pruning currently miss a terminal task whose only remaining
 resource is an attached-repository worktree. Phase 1 establishes one shared all-repository
 predicate and makes durable observation cover that partial-cleanup shape. Phase 2 applies the
@@ -124,6 +126,8 @@ stoppable during daemon shutdown. It does not depend on <code>MISSION_WORKTREE_S
 </ul>
 <p>Phase 2 owns these additions:</p>
 <ul>
+<li>an atomic restart-settlement transition that compare-and-swaps the exact task and pre-settlement
+generation into the post-settlement generation while preserving a valid fingerprint and deadline;</li>
 <li>a compare-and-swap claim plus exact generation/fingerprint validation before quiescence or archive
 work can mutate terminal/session identity;</li>
 <li>a final stable task-attempt/worktree-ownership snapshot and fingerprint revalidation immediately
@@ -166,6 +170,8 @@ terminal task loses its cleanup affordance after the server reclaims the real na
 <li>Phase 2 validates the complete generation before its own mutations, then uses stable worktree
 ownership plus the fingerprint at the destructive boundary so quiescence cannot invalidate its
 own claim.</li>
+<li>Restart settlement adopts the proven-dead session-binding mutation in the same transaction as the
+task update, so a valid Phase 1 deadline cannot become a new first-observation grace period.</li>
 <li>Startup recovery, live <code>session_remove</code>, manual cleanup, and automatic cleanup converge on the
 existing task lifecycle and provider-aware teardown.</li>
 <li>Multi-repository partial-release shapes are covered from durable load through UI removal.</li>

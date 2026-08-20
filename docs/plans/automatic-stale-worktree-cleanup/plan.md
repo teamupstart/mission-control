@@ -43,6 +43,9 @@ Git-visible change resets the full 30-day window.
 - Restart reconciliation currently tears down a task immediately when its recorded terminal home is
   proven gone. The 30-day rule must replace that destructive branch: reconcile the task to a
   terminal state, retain its resource facts, and let the retention service own the cleanup deadline.
+  Because clearing the proven-dead session binding changes the resource generation, a matching
+  ledger row must adopt that known reconciliation mutation without moving its existing activity
+  boundary or deadline.
 - Several existing resource checks consider only the primary worktree and terminal home. Candidate
   loading, startup reconciliation, in-memory terminal pruning, removal, and the dashboard cleanup
   affordance must also recognize a task whose only remaining resource is an attached-repository
@@ -94,14 +97,22 @@ worktree starts a new generation so it cannot inherit an earlier checkout's age.
 only terminal tasks with resources, bounds concurrent probes, and serializes cleanup per repository
 so a large stale fleet cannot recreate the startup cleanup convoy.
 
+Not every generation transition represents new work. When startup reconciliation proves the
+recorded session is gone, it must atomically settle the task and compare-and-swap a matching ledger
+row from the pre-settlement generation to the post-settlement generation while preserving the
+fingerprint, activity boundary, and deadline. An absent row still receives the conservative first
+observation period. A mismatched task aborts the transition for a fresh read. If a fresh read proves
+that an existing row belongs to a different external generation, ordinary successful observation
+replaces it and explicitly starts the conservative period for the current resources.
+
 At or after the deadline, the sweeper re-reads the task and its Git state before calling
 `TaskManager.reclaim()`. The reclaim path validates the claimed generation before quiescence or
 archive work can mutate terminal/session ownership. Immediately before teardown it compares a
 stable snapshot of status, attempt, worktree paths, providers, and leases plus a fresh fingerprint.
 A changed external generation or fingerprint cancels the attempt and records a fresh 30-day
-boundary; cleanup-caused terminal/session changes do not invalidate their own claim. A successful
-reclaim removes the retention row after the task update has durably cleared every released
-worktree.
+boundary; lifecycle-owned generation changes from proven restart settlement or reserved cleanup are
+adopted without moving a valid activity boundary. A successful reclaim removes the retention row
+after the task update has durably cleared every released worktree.
 
 ### Why it fits
 
@@ -130,6 +141,8 @@ operation.
 ```mermaid
 flowchart LR
   A[Durable session removal or recorded completion] --> B[Terminal task still owns worktree]
+  R[Restart proves recorded session gone] --> S[Atomically settle task and adopt matching ledger generation]
+  S --> B
   B --> C[Retention sweeper observes aggregate Git fingerprint]
   C -->|fingerprint changed| D[Persist new last-changed time and 30-day deadline]
   C -->|unchanged until deadline| E[Preflight task, generation, paths, leases, and fingerprint]
@@ -154,9 +167,12 @@ The sweeper never calls native reset, Treehouse return, or `git worktree remove`
 - Add a migration-backed retention ledger keyed by task ID. Store a resource-generation token,
   aggregate fingerprint, `last_changed_at`, `observed_at`, `cleanup_due_at`, attempt time, retry time,
   and bounded error text.
-- Build the generation from the task's dispatch identity and its ordered path/provider/lease tuple.
-  Re-dispatch, reschedule, partial release, or attached-repository replacement invalidates stale
-  observations.
+- Build the generation from the task's dispatch identity, terminal home/resource/session identity,
+  and its ordered path/provider/lease tuple. Re-dispatch, reschedule, partial release, or
+  attached-repository replacement invalidates stale observations.
+- Add a compare-and-swap adoption transition for lifecycle-owned generation changes. It may change
+  only the generation while preserving the fingerprint, `last_changed_at`, and `cleanup_due_at` for
+  an exact pre-mutation task and ledger match.
 - Keep internal fingerprints off the global browser snapshot. Expose only bounded cleanup status if
   the existing task surface needs to explain a pending retry.
 
@@ -177,7 +193,9 @@ The sweeper never calls native reset, Treehouse return, or `git worktree remove`
   30-day policy has no off switch in the initial release; changing pool reconciliation cadence must
   not disable retention.
 - Replace restart's immediate teardown for a proven-dead task home with terminal settlement that
-  preserves its resource facts. Automatic teardown after restart then follows the same persisted
+  preserves its resource facts. Commit the task settlement and matching ledger-generation adoption
+  in one SQLite transaction so clearing the dead session binding cannot create an unseen generation
+  or move an existing deadline. Automatic teardown after restart then follows the same persisted
   deadline as cleanup after a live `session_remove`.
 - Limit simultaneous Git probes and allow at most one cleanup touching a physical repository. Reuse
   or extract the repository-key queue already used to prevent startup cleanup convoys.
@@ -211,7 +229,8 @@ The sweeper never calls native reset, Treehouse return, or `git worktree remove`
 - A multi-repository task uses the newest activity across all trees and reclaims through one
   task-level operation.
 - A re-dispatch or path/lease change invalidates an in-flight observation.
-- Daemon restart preserves the deadline and resumes due retries without duplicate cleanup.
+- Daemon restart preserves the deadline when settlement clears a proven-dead session binding and
+  resumes due retries without duplicate cleanup.
 - Partial provider failure clears only released trees and retries the remaining resource facts.
 - Unknown Git state or process occupancy never reads as inactivity and never drops durable ownership.
 - Native, disposable Git, and exact historical Treehouse resources follow their recorded providers.
@@ -236,6 +255,7 @@ The sweeper never calls native reset, Treehouse return, or `git worktree remove`
 | Local work is deleted by design | Make the fixed 30-day rule explicit in task/worktree docs and use a Git-visible clock that resets on staged, unstaged, untracked, or committed work. |
 | Metadata churn prevents cleanup forever | Exclude ignored files and task/UI bookkeeping from the activity signal. |
 | A stale observation targets a replacement lease | Validate the claimed generation before cleanup mutation, then compare stable status/attempt/path/provider/lease ownership and a fresh fingerprint immediately before teardown. |
+| Restart settlement looks like a new generation | Atomically adopt the exact pre-settlement generation into the settled task generation without moving its valid fingerprint or deadline. |
 | Cleanup blocks dispatch | Bound probes and serialize destructive work per repository without queueing an entire fleet ahead of foreground acquisition. |
 | Provider or process state is uncertain | Keep durable resource facts, record a bounded failure, and retry. Changes and unpushed commits are not blockers, but unknown ownership or occupancy remains one. |
 | Upgrade deletes old work immediately | Seed every unseen resource generation at its first successful observation, granting every pre-feature tree one final full 30-day window. |

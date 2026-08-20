@@ -31,7 +31,9 @@ state as a retry instead of permission to delete.
    remove` directly.
 2. Restart reconciliation currently performs immediate teardown when a task's terminal home is
    proven gone. Phase 2 replaces that destructive branch with terminal settlement plus retention;
-   otherwise restart would bypass the approved 30-day boundary.
+   otherwise restart would bypass the approved 30-day boundary. Because Phase 1's generation
+   includes bound session identity, Phase 2 atomically adopts the exact pre-settlement ledger row
+   into the settled generation without moving an existing activity boundary or deadline.
 3. Candidate loading and in-memory pruning currently miss a terminal task whose only remaining
    resource is an attached-repository worktree. Phase 1 establishes one shared all-repository
    predicate and makes durable observation cover that partial-cleanup shape. Phase 2 applies the
@@ -109,6 +111,8 @@ Phase 1 owns these contracts and Phase 2 consumes them without creating alternat
 
 Phase 2 owns these additions:
 
+- an atomic restart-settlement transition that compare-and-swaps the exact task and pre-settlement
+  generation into the post-settlement generation while preserving a valid fingerprint and deadline;
 - a compare-and-swap claim plus exact generation/fingerprint validation before quiescence or archive
   work can mutate terminal/session identity;
 - a final stable task-attempt/worktree-ownership snapshot and fingerprint revalidation immediately
@@ -157,6 +161,8 @@ terminal task loses its cleanup affordance after the server reclaims the real na
 - Phase 2 validates the complete generation before its own mutations, then uses stable worktree
   ownership plus the fingerprint at the destructive boundary so quiescence cannot invalidate its
   own claim.
+- Restart settlement adopts the proven-dead session-binding mutation in the same transaction as the
+  task update, so a valid Phase 1 deadline cannot become a new first-observation grace period.
 - Startup recovery, live `session_remove`, manual cleanup, and automatic cleanup converge on the
   existing task lifecycle and provider-aware teardown.
 - Multi-repository partial-release shapes are covered from durable load through UI removal.

@@ -99,9 +99,11 @@ The state machine must support:
 5. unknown final observation or cleanup refusal, which keeps the last valid activity boundary and
    enters retry with bounded error and `retry_at`;
 6. partial automatic release, which adopts the exact generation and fingerprint of the resources
-   still standing while preserving the already-due activity boundary; and
+   still standing while preserving the already-due activity boundary;
 7. an abandoned claim after daemon death, which becomes retryable on startup without a duplicate
-   concurrent cleanup.
+   concurrent cleanup; and
+8. proven-dead restart settlement, which adopts the exact post-settlement generation while
+   preserving a matching row's fingerprint, activity boundary, and deadline.
 
 A reserved cleanup can legitimately stop or clear terminal/session ownership before an archive or
 provider refusal leaves the worktree standing. Treat that like cleanup-caused partial release:
@@ -179,6 +181,8 @@ unknown terminal backends.
 
 When the unchanged launch is confidently proven gone:
 
+- re-read and freeze the pre-settlement task attempt, worktree paths, providers, leases, terminal
+  identity, session binding, and computed generation;
 - settle `running` or `dispatching` to `failed` with the existing honest restart explanation;
 - preserve `done` and `cancelled` status, outcome, and task error;
 - clear only a session binding that the existing reconciliation contract proves gone;
@@ -186,9 +190,19 @@ When the unchanged launch is confidently proven gone:
 - retain every primary and attached worktree/provider/lease fact without calling archive settlement
   or teardown.
 
-The retention service will observe that terminal resource generation and grant a full period if it
-has no valid row. A retained scout report remains in the tree and is archived later by the shared
-reclaim core immediately before actual teardown.
+If the ledger has a row matching the frozen pre-settlement generation, persist the task settlement
+and compare-and-swap that row to the computed post-settlement generation in one SQLite transaction.
+Preserve its fingerprint, `last_changed_at`, `cleanup_due_at`, and retry age; abandoned-claim
+recovery still owns any claim-state transition. If no row exists, settle normally and let the first
+successful observation grant the conservative full period. If the task no longer matches, abort
+and re-read without committing either write. If the task remains exact but a fresh read proves the
+row belongs to another external generation, settle the task without adopting that row; ordinary
+successful observation replaces it under the explicit external-generation rule. Publish the
+Registry task update only after the applicable transaction commits.
+
+The ordinary observer must recognize the adopted row as the current generation rather than an
+unseen one. A retained scout report remains in the tree and is archived later by the shared reclaim
+core immediately before actual teardown.
 
 Update startup tests to prove a dead terminal home no longer frees a worktree immediately, that an
 attached-only task is reconciled and observed, and that live or unknown ownership remains untouched.
@@ -275,6 +289,9 @@ Do not edit archived backups, generated documentation, or `CHANGELOG.md`.
 - Automatic claim writes use SQLite compare-and-swap conditions, not an in-memory flag alone.
   TaskManager's reservation closes in-process lifecycle overlap; the ledger closes timer/restart
   overlap. Both are required.
+- Restart settlement and matching generation adoption share one SQLite transaction. A crash cannot
+  expose a settled task with the old matching generation and cause the next observation to move a
+  valid deadline. An absent row remains eligible for ordinary first-observation seeding.
 - A crash during provider teardown is uncertain. On restart, reconcile actual task/provider facts
   first, then retry the abandoned claim. Do not assume the prior command had no effect.
 - Existing Task JSON gains only the nullable safe summary. Old persisted tasks derive null when no
@@ -307,7 +324,10 @@ Extend Phase 1 tests and existing task/provider suites to cover:
 - partial primary or attached release adopting the remaining generation without a new 30-day grace;
 - native, disposable Git, and exact legacy Treehouse dispatch through recorded provider ownership;
 - same-repository cleanup serialization with disjoint progress and no unbounded foreground convoy;
-- restart settlement retaining a dead agent's primary and attached trees; and
+- restart settlement retaining a dead agent's primary and attached trees;
+- a restart that clears a proven-dead session binding adopting the post-settlement generation without
+  moving an existing `last_changed_at` or `cleanup_due_at`, including reopen after the transaction;
+- a settlement task/ledger compare-and-swap mismatch aborting without a half-applied task update; and
 - manual cleanup continuing to work before expiry.
 
 Use or extend `test/task-startup-cleanup.test.ts`, provider cleanup tests, task route tests, Phase 1
@@ -355,8 +375,8 @@ npm run test:e2e
   full persisted 30-day period and a fresh final validation matches.
 - Staged, unstaged, untracked, local-commit, and unpushed state resets but never permanently exempts
   a tree.
-- Restart cannot immediately reclaim a task tree, reset a valid existing clock, or duplicate an
-  abandoned cleanup.
+- Restart cannot immediately reclaim a task tree, reset a valid existing clock when it clears a
+  proven-dead session binding, or duplicate an abandoned cleanup.
 - Unknown ownership, Git, process, archive, or provider state preserves durable facts and retries.
 - Partial cleanup clears only released resources and retries the remainder without granting the
   cleanup operation itself a new grace period.
@@ -398,3 +418,6 @@ server lifecycle, destructive safety, UI behavior, documentation, and browser pr
   undocumented post-phase cleanup remains.
 - Inspector documentation-safety audit on 2026-08-20: entry criteria now state neutral governing
   references and contain no reader-directed file-opening instruction.
+- Inspector restart audit on 2026-08-20: the settled task and matching ledger generation now move in
+  one transaction, preserving the prior fingerprint and deadline instead of triggering a second
+  first-observation grace period.

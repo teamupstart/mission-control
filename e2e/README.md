@@ -138,6 +138,25 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   --workers=1 --reporter=list
 ```
 
+### Closing a scout without a report
+
+`e2e/.artifacts/scout-close-warning/confirm-close-without-report.png` captures the first
+**Complete & close** refusal after a scout omits its report. The dialog keeps the daemon's
+exact report path and submission-tool guidance, presents it as an amber warning, and replaces
+the ordinary primary action with the explicit red **Close without report** confirmation. The
+same run proves the first click changes nothing and the second closes the task without
+inventing an archive.
+
+Regenerate it with:
+
+```sh
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/scout-archive.spec.ts \
+  -g 'warns first' \
+  --workers=1 --reporter=list
+```
+
 ### Full workflow graph canvas
 
 `e2e/.artifacts/workflow-graph/workflow-graph-full-canvas.png` is captured

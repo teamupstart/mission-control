@@ -60,6 +60,8 @@ export function CompleteModal({
   const [satisfy, setSatisfy] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** Archive problems the daemon has verified and the operator may explicitly accept. */
+  const [scoutWarning, setScoutWarning] = useState<string[] | null>(null);
   /** A success worth saying out loud - today, only the retro that became a backlog task. */
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -108,9 +110,16 @@ export function CompleteModal({
       outcome.trim() || "completed",
       undefined,
       satisfy,
+      undefined,
+      scoutWarning !== null,
     );
     if (!completed.ok) {
       setBusy(false);
+      if (completed.confirmIncompleteScout && completed.problems?.length) {
+        setScoutWarning(completed.problems);
+        return;
+      }
+      setScoutWarning(null);
       setError(completed.error ?? "could not complete the task");
       return;
     }
@@ -266,6 +275,13 @@ export function CompleteModal({
             </p>
           )}
 
+          {scoutWarning && (
+            <div className="complete-warning" role="alert">
+              <strong>No scout report will be archived.</strong>
+              <p>{scoutWarning.join("; ")}</p>
+              <p>Close without a report only if you do not need this scout's findings in Scouts.</p>
+            </div>
+          )}
           {error && <p className="complete-error">{error}</p>}
           {notice && <p className="complete-notice" role="status">{notice}</p>}
         </div>
@@ -302,6 +318,8 @@ export function CompleteModal({
             label={
               tourPreview
                 ? "Use Complete tour in the guide to record this fixed outcome"
+                : scoutWarning
+                  ? "Confirm that this task may close without an archived scout report"
                 : task
                 ? "Mark the task done, then terminate this agent"
                 : "This session has no task to complete"
@@ -309,10 +327,14 @@ export function CompleteModal({
           >
             <button
               type="submit"
-              className="btn btn-primary"
+              className={`btn ${scoutWarning ? "btn-danger" : "btn-primary"}`}
               disabled={!canComplete}
             >
-              {busy ? "Completing…" : "Complete & close"}
+              {busy
+                ? "Completing…"
+                : scoutWarning
+                  ? "Close without report"
+                  : "Complete & close"}
             </button>
           </Tooltip>
         </footer>

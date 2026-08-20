@@ -1011,12 +1011,19 @@ export type KeepAwakeRequest = z.infer<typeof KeepAwakeRequestSchema>;
  * backlog with `ready: 0` in which every chain rooted in a cancelled task. This is that
  * way out, and it is deliberately an explicit, confirmed act rather than a side effect
  * of any status change.
+ *
+ * `confirmIncompleteScout` is a second, narrower confirmation. A scout still attempts to
+ * publish and verify its report first. When that is not possible, the daemon refuses the
+ * first completion with the exact archive problems; only a repeated request carrying this
+ * flag may close the task without a complete archive. Keeping the default false prevents
+ * non-interactive completion and older clients from silently dropping the scout deliverable.
  */
 export const CompleteTaskSchema = z.object({
   outcome: z.string().min(1),
   outcomeUrl: z.string().url().optional(),
   satisfyDependents: z.boolean().optional().default(false),
   requireStopped: z.boolean().optional().default(false),
+  confirmIncompleteScout: z.boolean().optional().default(false),
 });
 export type CompleteTask = z.infer<typeof CompleteTaskSchema>;
 

@@ -62,6 +62,12 @@ immediately from Dispatch, with no backlog, dependencies, generated artifact, ar
 automatic after-work action. The session stays yours to continue and complete unless you
 explicitly choose a Workflow for that chat.
 
+Choose **scout** for an investigation whose durable answer belongs in Scouts. Mission Control
+normally verifies that report before completion. If it is missing or incomplete, the first
+**Complete & close** attempt changes nothing and shows what the scout still owes; an explicit
+**Close without report** confirmation can close the task when preserving that answer is not
+needed.
+
 A task can attach more than one repository. Dispatch it and you get **one** agent session
 holding all of them in shared context: its working directory is the primary repo's worktree,
 each attached repo gets a worktree of its own, and the agent is granted write access to every

@@ -9553,6 +9553,21 @@ select:not([multiple]) option:focus-visible {
   margin: 8px 0 0;
   color: #e5877f;
 }
+/* A recoverable scout contract violation, presented as the question it now is. The second
+   action turns danger-red; this copy stays amber so it reads as a warning, not a failure. */
+.complete-warning {
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in oklab, var(--attention) 42%, var(--border));
+  border-radius: 7px;
+  background: color-mix(in oklab, var(--attention) 8%, var(--panel-2));
+  color: var(--attention);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.complete-warning p {
+  margin: 4px 0 0;
+}
 /* A settled OUTCOME, not a failure - the retro that became a backlog task because the
    session could not be typed into. It sits where the error does and must not read like
    one, which is the whole reason it is a separate node rather than reused copy. */

@@ -3592,6 +3592,12 @@ export function buildApp(
         effort: null,
       }, 409);
     }
+    // Stamped the instant the driver's own call RESOLVES, not after the route gets back to
+    // publishing. Codex can start the first turn that carries the new level inside that gap,
+    // and a later stamp would make its `turn_context` look older than the acceptance it is
+    // evidence for - so the one record able to settle the selection would be refused and the
+    // chip would stay pending through a turn already running the new level.
+    let acceptedAt: number | null = null;
     const r = session.runtime === "sdk"
       ? await (async () => {
           // The DRIVER gate, not the pane one: a `shortcuts` picker's one-step-at-a-time
@@ -3607,6 +3613,7 @@ export function buildApp(
           }
           try {
             await sdkSessions.setEffort(session.id, parsed.data.effort);
+            acceptedAt = Date.now();
             return { ok: true, effort: parsed.data.effort };
           } catch (err) {
             return {
@@ -3639,12 +3646,19 @@ export function buildApp(
     const published = !r.ok
       ? true
       : deferred
-        // `baseline` rather than whatever the passive poller has since read: it is the
-        // revision this decision was made against, captured above before the driver was
-        // asked. A poll landing while the driver call waited its turn would otherwise
-        // become the baseline, and the change would read as pending for one turn longer
-        // than it actually was - or for a turn that had already applied it.
-        ? registry.recordPendingSessionEffort(session.id, r.effort, baseline, session)
+        // Both measurements come from HERE, and neither may be taken inside the registry:
+        // `baseline` is the revision this decision was made against, captured before the
+        // driver was asked (a poll landing while the call waited its turn would otherwise
+        // become the baseline), and `acceptedAt` is when the driver said yes. The fallback
+        // covers the arm that never reached a driver at all - `driverEffortTargetResult`
+        // short-circuits only when there is nothing left to change, where the record
+        // retires the selection and neither measurement is read.
+        ? registry.recordPendingSessionEffort(
+            session.id,
+            r.effort,
+            { revision: baseline, at: acceptedAt ?? Date.now() },
+            session,
+          )
         : registry.recordObservedSessionEffort(session.id, r.effort, session);
     if (!published) {
       return c.json({

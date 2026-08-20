@@ -475,13 +475,14 @@ function isLaterEffortRevision(previous: string | null, next: string | null): bo
  * TWO conditions, and the second is what makes the snapshot in `recordPendingSessionEffort`
  * safe to take BEFORE the driver call rather than after it.
  *
- * The record has to post-date the moment the driver accepted, because a turn can start
- * while the request is still in flight - serialized behind an in-flight send, say - and
- * that turn was necessarily started with the OLD level. Settling against it would retire
- * the selection on evidence from a turn that could not have carried it. Codex writes these
- * timestamps from the same machine's clock as the daemon reading them (it is a child of
- * that daemon), so the comparison is sound; skew in the wrong direction costs one more turn
- * before the card settles and never settles it falsely.
+ * The record has to post-date the instant the driver accepted - which the CALLER measures
+ * when its driver call resolves, never this method - because a turn can start while the
+ * request is still in flight, serialized behind an in-flight send, and that turn was
+ * necessarily started with the OLD level. Settling against it would retire the selection on
+ * evidence from a turn that could not have carried it. Codex writes these timestamps from
+ * the same machine's clock as the daemon reading them (it is a child of that daemon), so
+ * the comparison is sound; skew in the wrong direction costs one more turn before the card
+ * settles and never settles it falsely.
  *
  * And it has to be strictly later than the revision measured when the selection landed,
  * which is the ordinary case and the only one when the clocks agree. When no revision could
@@ -489,11 +490,11 @@ function isLaterEffortRevision(previous: string | null, next: string | null): bo
  * record to appear IS the first turn since, and the acceptance check alone answers.
  */
 function turnRanSince(
-  pending: { effortRevision: string | null; requestedAt: number },
+  pending: { effortRevision: string | null; acceptedAt: number },
   effortRevision: string | null,
 ): boolean {
   const observed = effortRevision === null ? Number.NaN : Date.parse(effortRevision);
-  if (!Number.isFinite(observed) || observed < pending.requestedAt) return false;
+  if (!Number.isFinite(observed) || observed < pending.acceptedAt) return false;
   return pending.effortRevision === null || isLaterEffortRevision(pending.effortRevision, effortRevision);
 }
 
@@ -692,7 +693,7 @@ export class Registry extends EventEmitter {
     transcriptPath: string | null;
     modelId: string | null;
     effortRevision: string | null;
-    requestedAt: number;
+    acceptedAt: number;
   }>();
   private statusLineTimestamps = new Map<string, number>();
   private effortFreshnessGuards = new Map<string, {
@@ -2600,13 +2601,25 @@ export class Registry extends EventEmitter {
    * Choosing the level the session is ALREADY on retires any outstanding selection rather
    * than recording a new one - there is nothing left for a next turn to change.
    *
-   * `revision` is the caller's own SNAPSHOT of the newest `turn_context`, taken before the
-   * driver was asked. It is a parameter rather than a read of `runtimeEffortRevisions`
-   * because that map belongs to the passive poller: a driver call can be serialized behind
-   * an in-flight send, and a poll landing inside that window would move the map to a turn
-   * that started while the request was still travelling. Recording THAT as the baseline
-   * asks for a turn after it, so a change the following turn already applied would sit on
-   * the card as pending until some third turn happened to run.
+   * BOTH halves of `accepted` are the caller's measurements, and neither may be taken here.
+   *
+   * `revision` is its snapshot of the newest `turn_context`, taken before the driver was
+   * asked, rather than a read of `runtimeEffortRevisions` - that map belongs to the passive
+   * poller, and a driver call can be serialized behind an in-flight send, so a poll landing
+   * inside that window would move it onto a turn that started while the request was still
+   * travelling. Recording THAT as the baseline asks for a turn after it, so a change the
+   * following turn already applied would sit on the card as pending until some third turn
+   * happened to run.
+   *
+   * `at` is the instant the driver ACCEPTED, taken the moment its call resolved. A
+   * `Date.now()` here would be later than that by however long the route took to reach this
+   * line - and Codex can start the first eligible turn inside that gap. Its `turn_context`
+   * would then pre-date the recorded acceptance, `turnRanSince` would refuse the one record
+   * that could answer, and the chip would stay pending through a turn that was already
+   * running the new level. Resolution time is also the tightest lower bound that is SAFE:
+   * the setting was certainly applied at or before it, so a turn after it certainly carries
+   * the new level, and the cost of being conservative is a settle one turn late rather than
+   * a selection retired on a turn that could not have carried it.
    *
    * Returns false when the session moved out from under the caller, which is the same
    * 409 its observed twin produces.
@@ -2614,7 +2627,7 @@ export class Registry extends EventEmitter {
   recordPendingSessionEffort(
     sessionId: string,
     effort: ThinkingLevel | null,
-    revision: string | null,
+    accepted: { revision: string | null; at: number },
     expected?: Pick<Session, "agentSessionId" | "transcriptPath">,
   ): boolean {
     const s = this.sessions.get(sessionId);
@@ -2637,8 +2650,8 @@ export class Registry extends EventEmitter {
         agentSessionId: s.agentSessionId,
         transcriptPath: s.transcriptPath,
         modelId: s.meta?.modelId ?? null,
-        effortRevision: revision,
-        requestedAt: Date.now(),
+        effortRevision: accepted.revision,
+        acceptedAt: accepted.at,
       });
     }
     if (s.pendingEffort === pending) return true;

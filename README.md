@@ -103,9 +103,8 @@ actions, and preview-first cleanup without replacing task, check, Git, or proces
 
 ## Build the operating system around the work
 
-The Library keeps reusable workflows, personas, session actions, ensemble strategies, mission
-sources, and the commands behind each standard gate together rather than burying them in
-individual terminals.
+The Library centralizes reusable workflows, personas, session actions, ensemble strategies,
+mission sources, and gate commands.
 
 **Library → Personas → Foreman** is the fixed System profile for Foreman's exact standing
 guidance. Its name, policy, safeguards, models, and authority remain owned by Mission Control

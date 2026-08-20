@@ -42,10 +42,12 @@ import {
   type PipelinePhase,
 } from "../src/shared/pipeline.ts";
 import { LLM_SPEND_ROLES } from "../src/shared/llm-spend.ts";
+import { AGENT_TYPES } from "../src/shared/types.ts";
 import {
-  conductorEngineerPrompt,
-  conductorIdeaSlug,
-} from "../src/server/pipelines/conductor/index.ts";
+  skillCommand,
+  supportsSdkSkillInvocation,
+} from "../src/shared/harness-capabilities.ts";
+import { conductorIdeaSlug } from "../src/server/pipelines/conductor/index.ts";
 import { PIPELINE_PROVIDERS } from "../src/server/pipelines/providers.ts";
 
 // What is at stake: `src/shared/pipeline.ts` is a cross-phase contract - phases 2 to 6 are
@@ -225,7 +227,6 @@ test("the projection key is the engine's own identity, and separates its three p
 test("every provider derives a complete task identity through the provider contract", () => {
   for (const id of PIPELINE_PROVIDER_IDS) {
     assert.equal(typeof PIPELINE_PROVIDERS[id].taskIdentity, "function", id);
-    assert.equal(typeof PIPELINE_PROVIDERS[id].taskPrompt, "function", id);
   }
   assert.deepEqual(
     PIPELINE_PROVIDERS["ai-conductor"].taskIdentity("Build the release train", "/repo/a"),
@@ -237,12 +238,27 @@ test("every provider derives a complete task identity through the provider contr
   );
 });
 
-test("the SDK Engineer prompt is direct and preserves every idea byte after its prefix", () => {
+test("managed Pipeline hosts are capability-derived and preserve native Engineer prompt bytes", () => {
   const intent = "Build this; keep $HOME and `pwd` literal\nThen ask me.";
-  assert.equal(conductorEngineerPrompt(intent), `/engineer ${intent}`);
-  assert.equal(
-    PIPELINE_PROVIDERS["ai-conductor"].taskPrompt(intent),
-    `/engineer ${intent}`,
+  assert.deepEqual(
+    AGENT_TYPES.map((agent) => {
+      const eligible = supportsSdkSkillInvocation(agent, "engineer");
+      const command = skillCommand(agent, "engineer");
+      return {
+        agent,
+        eligible,
+        prompt: eligible && command ? `${command} ${intent}` : null,
+      };
+    }),
+    [
+      { agent: "claude", eligible: true, prompt: `/engineer ${intent}` },
+      {
+        agent: "codex",
+        eligible: true,
+        prompt: `$engineer - run this skill now. ${intent}`,
+      },
+      { agent: "pi", eligible: false, prompt: null },
+    ],
   );
 });
 
@@ -278,14 +294,28 @@ test("the consent config ships off, and defaults over a blob an older build wrot
   // object is what `getAppConfig` returns for a key nothing has written.
   const shipped = PipelinesConfigSchema.parse({});
   assert.equal(shipped.enabled, false);
-  assert.equal(shipped.launchRuntime, "claude-sdk");
   assert.equal(shipped.foremanMechanicalTriage, false);
   assert.deepEqual(shipped.repos, []);
-  assert.deepEqual([...PIPELINE_LAUNCH_RUNTIMES], ["claude-sdk", "terminal"]);
-
-  for (const launchRuntime of PIPELINE_LAUNCH_RUNTIMES) {
-    assert.equal(PipelinesConfigSchema.parse({ launchRuntime }).launchRuntime, launchRuntime);
-  }
+  const parsedLaunchRuntime = (launchRuntime: string): string => {
+    const parsed = PipelinesConfigSchema.safeParse({ launchRuntime });
+    return parsed.success ? parsed.data.launchRuntime : "rejected";
+  };
+  assert.deepEqual(
+    {
+      canonical: parsedLaunchRuntime("agent-sdk"),
+      default: shipped.launchRuntime,
+      legacy: parsedLaunchRuntime("claude-sdk"),
+      runtimes: [...PIPELINE_LAUNCH_RUNTIMES],
+      terminal: parsedLaunchRuntime("terminal"),
+    },
+    {
+      canonical: "agent-sdk",
+      default: "agent-sdk",
+      legacy: "agent-sdk",
+      runtimes: ["agent-sdk", "terminal"],
+      terminal: "terminal",
+    },
+  );
 
   // A repository arrives OFF even when the caller says nothing: adding is configuration,
   // enabling is consent.

@@ -147,10 +147,13 @@ node scripts/codex-app-server-bindings.mjs  # regenerate app-server types from t
 npx tsx scripts/measure-inspector-prompt.ts # size the GitHub Inspector review prompt on this checkout
 ```
 
-On macOS, `npm test` and `npm run test:electron` validate Electron's framework link before
-starting their suites. If a copied dependency tree contains the complete framework payload
-but is missing only Electron's standard top-level link, the pretest restores that link. An
-incomplete payload is refused with an instruction to reinstall dependencies.
+Before `npm test` or `npm run test:electron` starts, its pretest probes the installed Electron
+binary in Node mode. This loads the platform framework rather than trusting only the installer's
+small marker files. If the generated runtime is truncated or otherwise cannot load, the pretest
+replaces that package's `dist` directory from Electron's checksum-verified download cache and
+probes it again. An operator-supplied `ELECTRON_OVERRIDE_DIST_PATH` is never modified; a broken
+override fails with a diagnostic instead. On macOS, the pretest then validates Electron's
+framework link and restores that link when the complete payload is present.
 
 The same lease and pool policy are visible under **Settings > Worktrees**. The panel can set
 default and per-repository native enablement, maximum capacity, and an operator-authored setup

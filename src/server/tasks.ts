@@ -1367,7 +1367,7 @@ export class TaskManager {
     this.registry.upsertTask({
       ...t,
       status: "failed",
-      error: `the Claude Agent SDK host ended before Conductor created pipeline run${expected}`,
+      error: `the managed Agent SDK host ended before Conductor created pipeline run${expected}`,
       sessionId: null,
       updatedAt: Date.now(),
     });

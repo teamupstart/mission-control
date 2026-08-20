@@ -62,7 +62,7 @@ function probe(over: Partial<PipelineProbe> = {}): PipelineProbe {
 function answered(over: Partial<PipelinesView> = {}): ConductorState {
   return {
     view: {
-      config: { enabled: false, launchRuntime: "claude-sdk", foremanMechanicalTriage: false, repos: [] },
+      config: { enabled: false, launchRuntime: "agent-sdk", foremanMechanicalTriage: false, repos: [] },
       probes: [probe()],
       status: [],
       ...over,
@@ -124,14 +124,14 @@ test("the panel ships off, and says which of the three reasons applies", () => {
 
   // Master on, nothing consented to: a different sentence, because the next move differs.
   const armedButEmpty = render(
-    answered({ config: { enabled: true, launchRuntime: "claude-sdk", foremanMechanicalTriage: false, repos: [] } }),
+    answered({ config: { enabled: true, launchRuntime: "agent-sdk", foremanMechanicalTriage: false, repos: [] } }),
   );
   assert.match(armedButEmpty, /On, but no repository is switched on/);
 
   // Master on, one repository consented to.
   const live = render(
     answered({
-      config: { enabled: true, launchRuntime: "claude-sdk", foremanMechanicalTriage: false, repos: [{ provider: "ai-conductor", repoRoot: "/w/demo", enabled: true }] },
+      config: { enabled: true, launchRuntime: "agent-sdk", foremanMechanicalTriage: false, repos: [{ provider: "ai-conductor", repoRoot: "/w/demo", enabled: true }] },
     }),
   );
   assert.match(live, /On - reading 1 repository/);
@@ -139,9 +139,9 @@ test("the panel ships off, and says which of the three reasons applies", () => {
 
 test("Launch runtime renders SDK as the default and Terminal as an explicit stored choice", () => {
   const sdk = render(answered());
-  const sdkRadio = (sdk.match(/<input[^>]*name="conductor-launch-runtime"[^>]*value="claude-sdk"[^>]*>/) ?? [])[0] ?? "";
+  const sdkRadio = (sdk.match(/<input[^>]*name="conductor-launch-runtime"[^>]*value="agent-sdk"[^>]*>/) ?? [])[0] ?? "";
   assert.match(sdkRadio, /checked/);
-  assert.match(sdk, /Claude Agent SDK - the shipped default, with no terminal fallback/);
+  assert.match(sdk, /Managed Agent SDK - the shipped default, with no Terminal fallback/);
   assert.match(sdk, /background build daemon keeps its own tmux supervision/);
 
   const terminal = render(
@@ -156,14 +156,16 @@ test("Launch runtime renders SDK as the default and Terminal as an explicit stor
   );
   const terminalRadio = (terminal.match(/<input[^>]*name="conductor-launch-runtime"[^>]*value="terminal"[^>]*>/) ?? [])[0] ?? "";
   assert.match(terminalRadio, /checked/);
-  assert.match(terminal, /Terminal - the explicit compatibility host/);
+  assert.match(terminal, /Terminal - the explicit Claude-only compatibility host/);
 });
 
 test("pipeline dispatch renders the selected host contract without offering a fallback", () => {
   const sdk = renderToStaticMarkup(
-    createElement(PipelineDispatchConstraint, { runtime: "claude-sdk" }),
+    createElement(PipelineDispatchConstraint, { runtime: "agent-sdk" }),
   );
-  assert.match(sdk, /managed Claude host with \/engineer &lt;idea&gt; as turn one/);
+  assert.match(sdk, /selected Claude or Codex host with its Engineer skill as turn one/);
+  assert.match(sdk, /harness&#x27;s configured defaults/);
+  assert.match(sdk, /managed launch failure does not fall back to Terminal/);
   assert.match(sdk, /provider projection owns task completion/);
   assert.match(sdk, /background build daemon keeps its own tmux supervision/);
   assert.doesNotMatch(sdk, /fallback/i);
@@ -301,7 +303,7 @@ test("a version this build could not derive says so rather than inventing one", 
 test("a repository row carries its path, its switch and its health", () => {
   const html = render(
     answered({
-      config: { enabled: true, launchRuntime: "claude-sdk", foremanMechanicalTriage: false, repos: [{ provider: "ai-conductor", repoRoot: "/w/demo", enabled: true }] },
+      config: { enabled: true, launchRuntime: "agent-sdk", foremanMechanicalTriage: false, repos: [{ provider: "ai-conductor", repoRoot: "/w/demo", enabled: true }] },
       probes: [
         probe({
           projects: [{ name: "demo", path: "/w/demo", remote: null, status: "registered" }],
@@ -415,7 +417,7 @@ test("a repository the engine has forgotten stays listed while its consent stand
   // Otherwise the consent would be in force with nothing on screen that could withdraw it.
   const repos = offeredRepos(
     ["/w/workspace-only", "/w/demo"],
-    { enabled: true, launchRuntime: "claude-sdk", foremanMechanicalTriage: false, repos: [{ provider: "ai-conductor", repoRoot: "/w/de-registered", enabled: true }] },
+    { enabled: true, launchRuntime: "agent-sdk", foremanMechanicalTriage: false, repos: [{ provider: "ai-conductor", repoRoot: "/w/de-registered", enabled: true }] },
     [probe({ projects: [{ name: "demo", path: "/w/demo", remote: null, status: "registered" }] })],
   );
   assert.deepEqual(repos.map((r) => r.repoRoot), ["/w/de-registered", "/w/demo", "/w/workspace-only"]);

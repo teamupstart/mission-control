@@ -10,7 +10,7 @@ import {
   type ThinkingLevel,
 } from "@shared/types.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
-import { capabilitiesFor } from "@shared/harness-capabilities.ts";
+import { capabilitiesFor, supportsSdkSkillInvocation } from "@shared/harness-capabilities.ts";
 import {
   SEE_WORK_TOUR_DEMO_INTENT,
   type HarnessesConfig,
@@ -111,11 +111,11 @@ import type { PipelineLaunchRuntime } from "@shared/pipeline.ts";
 
 /** The runtime-specific provider contract shown where a pipeline launch is chosen. */
 export function pipelineDispatchConstraint(runtime: PipelineLaunchRuntime | null): string {
-  if (runtime === "claude-sdk") {
-    return "Claude Agent SDK starts one managed Claude host with /engineer <idea> as turn one. Conductor owns downstream agent, model, and effort choices, and its provider projection owns task completion. Its background build daemon keeps its own tmux supervision.";
+  if (runtime === "agent-sdk") {
+    return "Managed Agent SDK starts the selected Claude or Codex host with its Engineer skill as turn one. The host uses that harness's configured defaults; Conductor owns downstream agent, model, and effort choices, and its provider projection owns task completion. A managed launch failure does not fall back to Terminal. Its background build daemon keeps its own tmux supervision.";
   }
   if (runtime === "terminal") {
-    return "Terminal opens conduct-ts engineer --idea in a real terminal with live stdin and removes the inherited Claude nesting marker. Conductor owns downstream agent, model, and effort choices, and its provider projection owns task completion.";
+    return "Terminal is Claude-only and opens conduct-ts engineer --idea in a real terminal with live stdin and removes the inherited Claude nesting marker. Conductor owns downstream agent, model, and effort choices, and its provider projection owns task completion.";
   }
   return "The daemon has not confirmed which Conductor Engineer host this dispatch will use.";
 }
@@ -1125,6 +1125,10 @@ function DispatchModal({
     : null;
   const kindBehavior = TASK_KIND_BEHAVIOR[draft.kind];
   const usesHarness = kindBehavior.launch === "harness";
+  const managedPipeline = draft.kind === "pipeline" && pipelineLaunchRuntime === "agent-sdk";
+  const selectableAgents = managedPipeline
+    ? AGENT_TYPES.filter((agent) => supportsSdkSkillInvocation(agent, "engineer"))
+    : AGENT_TYPES;
   const kindAvailable = (kind: TaskKind): boolean => {
     const behavior = TASK_KIND_BEHAVIOR[kind];
     return behavior.repoAvailability === "workspace" || pipelineRepos.has(draft.repoRoot.trim());
@@ -1260,12 +1264,24 @@ function DispatchModal({
       setAddingRepo(false);
       setAddRepoValue("");
     }
+    const normalizedPipelineAgent =
+      kind === "pipeline" &&
+      pipelineLaunchRuntime === "agent-sdk" &&
+      !supportsSdkSkillInvocation(draft.agent, "engineer")
+        ? EMPTY_DISPATCH_DRAFT.agent
+        : null;
     update({
       kind,
       ...afterWorkForKind(kind),
       ...dependenciesForKind(kind),
       ...(kind !== draft.kind && TASK_KIND_BEHAVIOR[kind].launch === "pipeline"
         ? { extraRepoRoots: [] }
+        : {}),
+      ...(normalizedPipelineAgent
+        ? {
+            agent: normalizedPipelineAgent,
+            ...overridesForAgent(normalizedPipelineAgent),
+          }
         : {}),
     });
   }
@@ -1401,18 +1417,21 @@ function DispatchModal({
       // Workflow, dependency, and provider-launch transitions have one implementation,
       // so the guided pass cannot become a second meaning for Kind.
       commit: () => selectKind(k),
-      // A provider-owned launch has no harness or after-work choice. Advance through those
-      // registry-inapplicable questions while preserving the ordinary guided state machine.
+      // A terminal provider launch has no harness or after-work choice. A managed launch
+      // keeps the harness question because its selected Agent SDK host is part of the task.
       advance: (current) => {
         let next = answerGuidedStep(current);
-        if (TASK_KIND_BEHAVIOR[k].launch === "pipeline") {
+        if (
+          TASK_KIND_BEHAVIOR[k].launch === "pipeline" &&
+          pipelineLaunchRuntime !== "agent-sdk"
+        ) {
           next = answerGuidedStep(next);
           next = answerGuidedStep(next);
         }
         return next;
       },
     })),
-    harness: AGENT_TYPES.map((a) => ({
+    harness: selectableAgents.map((a) => ({
       value: a,
       label: AGENT_IDENTITY[a].label,
       accent: AGENT_IDENTITY[a].accent,
@@ -1421,6 +1440,12 @@ function DispatchModal({
       // And identical to the Agent `<select>`'s, `overridesForAgent` and all - including its
       // guard, which is what keeps confirming the current harness from dropping anything.
       commit: () => update({ agent: a, ...overridesForAgent(a) }),
+      ...(managedPipeline
+        ? {
+            advance: (current: GuidedPass) =>
+              answerGuidedStep(answerGuidedStep(current)),
+          }
+        : {}),
     })),
     afterWork: afterWorkOptions,
   };
@@ -2520,7 +2545,7 @@ function DispatchModal({
                     <select
                       className="field-input"
                       value={draft.agent}
-                      disabled={!usesHarness}
+                      disabled={!usesHarness && !managedPipeline}
                       // Switching harness drops model and effort overrides with it: neither
                       // selection is portable across harnesses. Back to the defaults, which are
                       // per-agent and always right for the harness now chosen.
@@ -2536,7 +2561,7 @@ function DispatchModal({
                         operator has no way to pick: a hand-written pair of options is a
                         list that goes stale silently, with the new agent dispatchable
                         everywhere except the modal that dispatches. */}
-                      {AGENT_TYPES.map((a) => (
+                      {selectableAgents.map((a) => (
                         <option key={a} value={a}>
                           {AGENT_IDENTITY[a].label}
                         </option>
@@ -2587,7 +2612,9 @@ function DispatchModal({
             </div>
             <label className={`field${guidedDim}`}>
               <span className="field-label">Model</span>
-              <Tooltip label="Pin the model this task's agent launches with, overriding the harness default">
+              <Tooltip label={managedPipeline
+                ? "The Engineer host uses this harness's configured default; Conductor owns downstream model selection"
+                : "Pin the model this task's agent launches with, overriding the harness default"}>
                 <select
                   className="field-input"
                   value={draft.model}
@@ -2612,7 +2639,9 @@ function DispatchModal({
             </label>
             <label className={`field${guidedDim}`}>
               <span className="field-label">Effort</span>
-              <Tooltip label="How much reasoning effort this task's agent spends, overriding the harness default">
+              <Tooltip label={managedPipeline
+                ? "The Engineer host uses this harness's configured default; Conductor owns downstream effort selection"
+                : "How much reasoning effort this task's agent spends, overriding the harness default"}>
                 <select
                   className="field-input"
                   value={draft.effort}

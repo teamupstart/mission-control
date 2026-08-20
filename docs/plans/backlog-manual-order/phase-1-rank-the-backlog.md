@@ -140,8 +140,10 @@ TypeScript table into SQL and nothing else will notice them drifting. A test ass
 agree.
 
 Then thread the column through the upsert (**column list, placeholder count, `DO UPDATE SET`,
-and the positional `.run(...)` args - all four**) and through `rowToTask`. Read it defensively:
-`typeof r.backlog_rank === "number" ? r.backlog_rank : null`.
+and the positional `.run(...)` args - all four**) and through `rowToTask`. Read it defensively, and validate rather than cast:
+`Number.isSafeInteger(r.backlog_rank) ? r.backlog_rank : null`. `typeof === "number"` is not
+enough - a REAL, a fraction and `NaN` all satisfy it, and each would poison the allocator's
+arithmetic. Anything rejected becomes unranked, which `healUnrankedBacklog` then places.
 
 ### 3. `src/shared/task.ts` - the comparator
 
@@ -198,6 +200,8 @@ New file. Pure functions plus small `DatabaseSync`-taking helpers, no manager st
   them, which is the caller's signal to renormalize.
 - `renormalize(d)` - rewrite every backlog row's rank at `RANK_STEP` spacing in current
   `byBacklogRank` order.
+- `MAX_RANK = Number.MAX_SAFE_INTEGER - RANK_STEP` - the append ceiling. `appendRank`
+  renormalizes first when `max(backlog_rank)` is above it, then appends. See the note below.
 
 Renormalization returns the ids it touched so the caller can publish a `task_upsert` for each.
 It is the rare path; the common move writes one row.
@@ -236,6 +240,38 @@ had a place and the bottom is where an unplaced arrival belongs.
 The effect is that the system **converges to zero unranked rows**, and the comparator's `NULL`
 branch becomes a pure safety net for a row observed mid-heal rather than a state the ordering
 rules depend on.
+
+#### The append ceiling, and which limit actually binds
+
+`appendRank` is the only operation that raises the maximum rank - a midpoint is strictly between
+two existing values, and `renormalize` compacts to `count * RANK_STEP` - so the ceiling is only
+ever approached one `RANK_STEP` at a time, and it drops whenever the top-ranked task leaves the
+backlog.
+
+**Organic growth cannot reach it.** At `RANK_STEP = 1024` it takes ~8.8e12 appends to reach
+`Number.MAX_SAFE_INTEGER`, which is ~24 million years at a thousand task creations a day. The
+guard below is therefore not for the counter running up; it is for a rank that arrives from
+**outside the allocator**, which is the reachable case: a restored backup, a hand-edited row, or
+a future writer that sets the column itself. This plan already concedes such rows exist - it is
+why the comparator's tie-break is total.
+
+**The binding limit is `Number.MAX_SAFE_INTEGER` (2^53-1), not SQLite's signed 64-bit range.**
+`Task.backlogRank` crosses the wire as a JSON `number`, so integer precision is lost at 2^53
+while SQLite is still storing exact integers - about a thousandfold earlier. A guard placed at
+the int64 boundary would be guarding a limit that cannot be reached without having already
+silently corrupted the ranks it was meant to protect.
+
+Two cheap defences, both no-ops in the steady state:
+
+- **`appendRank` renormalizes when `max(backlog_rank) > MAX_RANK`**, then appends. Renormalizing
+  returns the maximum to `count * RANK_STEP`, so one pass always clears it.
+- **`rowToTask` validates rather than casts.** A rank is accepted only when
+  `Number.isSafeInteger(r.backlog_rank)`; anything else - a REAL, a fraction, `NaN`, a value past
+  the safe range - reads as `null`, i.e. unranked, and `healUnrankedBacklog` then gives it a real
+  place at the bottom. This is the same posture `rowToTask` already takes with `kind`, where the
+  column is unconstrained TEXT and an unknown value is validated down rather than cast into typed
+  code. A bare `typeof === "number"` check would let every one of those through, since they are
+  all `typeof number`.
 
 ### 7. `src/server/tasks.ts` - assignment and the move
 
@@ -326,6 +362,10 @@ Same change, not a follow-up:
   distinct rows. Assert explicitly that **a ranked row sorts before an unranked one whatever
   their `createdAt`** - the mixed case is the one an intuitive single-subtraction comparator gets
   backwards, and a by-example test that happens to use a younger unranked row would pass anyway.
+- `test/backlog-rank.test.ts` - **the append ceiling.** With a backlog row seeded at
+  `MAX_RANK + 1` (as a restored or hand-edited row could be), `appendRank` renormalizes and the
+  new task still lands last with a safe-integer rank. Plus `rowToTask` mapping a REAL, a
+  fraction, `NaN` and an out-of-safe-range integer to `null` rather than passing them through.
 - `test/backlog-rank.test.ts` - **the unranked-row regression, stated as the rule it protects.**
   Insert a backlog row with `backlog_rank IS NULL` (as an older build would), then file a new
   task: the new task must sort **below** it, not above. Also: `healUnrankedBacklog` places
@@ -373,6 +413,8 @@ A single test file needs the suite's loader:
 - A database that predates the column opens, backfills once, and shows the order it showed before.
 - A swept task arrives at the bottom - including when an unranked row is already sitting there.
 - No `status='backlog'` row is left with a NULL rank after a daemon start.
+- Every rank the daemon writes is a safe integer, and a row carrying anything else is re-placed
+  rather than trusted.
 - Docs match the implementation - no surface still claims priority sorts the backlog.
 
 ## Downstream handoff
@@ -386,7 +428,8 @@ Phase 2 may rely on, and **must not change**:
 - `readyBacklog` as filter-only.
 - The move buttons and their `aria-label` wording, which the phase-1 e2e spec selects by.
 - `RANK_STEP` and the allocation semantics, including that a collision renormalizes rather than
-  failing, and that `appendRank` heals unranked rows before it reads `max`.
+  failing, that `appendRank` heals unranked rows before it reads `max`, and that it renormalizes
+  rather than appending past `MAX_RANK`.
 
 Phase 2 owns, and phase 1 must not pre-empt: any drop target, drag-state, drop-indicator or
 `dragover`/`dragleave`/`drop` handler in `BacklogColumn`, and the CSS for them. Phase 1 leaves

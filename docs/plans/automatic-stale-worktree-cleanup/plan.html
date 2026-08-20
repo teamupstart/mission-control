@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="description" content="Reclaim terminal task worktrees after 30 days without a Git-visible change, even when local work is staged, unstaged, committed, or never pushed.">
+  <title>Automatic stale task worktree cleanup</title>
+  <style>
+    :root{color-scheme:light dark;--canvas:#e9edf0;--paper:#fffdfa;--paper2:#f5f3ef;--ink:#18242d;--muted:#64717a;--line:#cbd2d7;--navy:#17354a;--blue:#276b87;--blue-soft:#dcecf1;--coral:#b9533d;--coral-soft:#f6e2dc;--green:#34705a;--green-soft:#deeee7;--amber:#9a6925;--amber-soft:#f5ead6;--code:#17242c;--code-ink:#eff7fa;--shadow:0 24px 72px rgba(24,45,58,.13);--display:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;--body:"Avenir Next",Avenir,"Segoe UI",sans-serif;--mono:"SFMono-Regular",Consolas,"Liberation Mono",monospace}
+    *{box-sizing:border-box}html{scroll-behavior:smooth;background:var(--canvas)}body{margin:0;min-width:0;color:var(--ink);background:radial-gradient(circle at 90% 0,rgba(185,83,61,.13),transparent 31rem),linear-gradient(rgba(23,53,74,.035) 1px,transparent 1px),linear-gradient(90deg,rgba(23,53,74,.035) 1px,transparent 1px),var(--canvas);background-size:auto,30px 30px,30px 30px,auto;font:16px/1.66 var(--body)}a{color:var(--blue);text-underline-offset:.2em}a:hover{color:var(--coral)}code,pre,.eyebrow,th,.chip{font-family:var(--mono)}.shell{width:min(1240px,calc(100% - 28px));margin:22px auto 72px;overflow:hidden;background:var(--paper);border-top:7px solid var(--coral);box-shadow:var(--shadow)}header{position:relative;overflow:hidden;padding:clamp(42px,8vw,88px) clamp(24px,7vw,82px) 56px;color:#f4f8fa;background:linear-gradient(128deg,#142e40 0%,#1c4c62 58%,#276b72 100%)}header:after{content:"30";position:absolute;right:clamp(-30px,2vw,24px);top:-80px;color:rgba(255,255,255,.07);font:800 clamp(15rem,31vw,28rem)/1 var(--mono);letter-spacing:-.14em}header>*{position:relative;z-index:1}.eyebrow{margin:0 0 18px;color:#f0b5a6;font-size:.74rem;font-weight:800;letter-spacing:.16em;text-transform:uppercase}h1,h2,h3{font-family:var(--display);font-weight:600}h1{max-width:910px;margin:0;font-size:clamp(3rem,7vw,6.1rem);line-height:.94;letter-spacing:-.047em}.lede{max-width:850px;margin:26px 0 0;color:#d8e8ed;font-size:1.14rem}.chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:24px}.chip{padding:7px 11px;border:1px solid rgba(255,255,255,.24);border-radius:999px;color:#eef7f8;background:rgba(255,255,255,.07);font-size:.7rem;font-weight:700;letter-spacing:.04em}.layout{display:grid;grid-template-columns:220px minmax(0,1fr);gap:32px;padding:28px clamp(16px,4vw,50px) 78px}nav{position:sticky;top:16px;align-self:start;max-height:calc(100vh - 32px);overflow:auto;padding:14px;border:1px solid var(--line);background:var(--paper2)}nav strong{display:block;margin:0 8px 9px;color:var(--muted);font:800 .68rem/1.2 var(--mono);letter-spacing:.12em;text-transform:uppercase}nav a{display:block;padding:6px 8px;border-radius:5px;color:var(--muted);font-size:.78rem;text-decoration:none}nav a:hover{color:var(--ink);background:var(--blue-soft)}main{min-width:0}article{min-width:0}h2{margin:58px 0 17px;padding-top:14px;border-top:1px solid var(--line);color:var(--navy);font-size:clamp(1.9rem,4vw,2.9rem);line-height:1.08;letter-spacing:-.03em;scroll-margin-top:18px}h2:first-child{margin-top:10px;border-top:0}h3{margin:34px 0 10px;color:var(--navy);font-size:1.48rem;scroll-margin-top:18px}p,li{max-width:89ch}p{margin:11px 0}li{margin:6px 0}strong{color:var(--navy)}.table-wrap,.code-wrap,.diagram{width:100%;max-width:100%;overflow-x:auto;margin:24px 0}table{width:100%;min-width:780px;border-collapse:collapse;font-size:.91rem}th,td{padding:11px 13px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}th{color:#f3f7f9;background:var(--navy);font-size:.7rem;letter-spacing:.05em;text-transform:uppercase}tbody tr:nth-child(even){background:var(--paper2)}:not(pre)>code{padding:.12em .34em;border-radius:4px;color:#194d63;background:var(--blue-soft);font-size:.9em;overflow-wrap:anywhere}pre{margin:0;padding:18px 20px;color:var(--code-ink);background:var(--code);font-size:.84rem;line-height:1.58;white-space:pre;overflow:auto}.diagram{padding:18px;border:1px solid var(--line);background:var(--paper2)}.diagram svg{display:block;width:100%;min-width:930px;height:auto}.diagram figcaption{max-width:89ch;margin:12px 10px 2px;color:var(--muted);font-size:.87rem}.diagram text{font-family:var(--mono);text-anchor:start}.diagram .diagram-kicker{fill:var(--blue);font-size:11px;font-weight:800;letter-spacing:.1em}.diagram .node rect{fill:var(--paper);stroke:var(--line);stroke-width:2.2}.diagram .node.observe rect,.diagram .node.ledger rect{fill:var(--blue-soft);stroke:var(--blue)}.diagram .node.change rect,.diagram .node.success rect{fill:var(--green-soft);stroke:var(--green)}.diagram .node.claim rect,.diagram .node.reclaim rect{fill:var(--coral-soft);stroke:var(--coral)}.diagram .node.retry rect{fill:var(--amber-soft);stroke:var(--amber)}.diagram .title{fill:var(--ink);font:700 14px var(--body)}.diagram .sub{fill:var(--muted);font-size:10.5px}.diagram .num{fill:var(--blue);font-size:11px;font-weight:800;letter-spacing:.09em}.diagram .arrow{fill:none;stroke:var(--blue);stroke-width:2.3;marker-end:url(#root-arrow)}.diagram .retry-arrow{stroke:var(--amber);stroke-dasharray:6 5}.diagram .arrow-fill{fill:var(--blue)}.diagram .label,.diagram .note{fill:var(--muted);font-size:10px}footer{display:flex;justify-content:space-between;gap:20px;padding:24px clamp(22px,6vw,72px);border-top:1px solid var(--line);color:var(--muted);background:var(--paper2);font:11px/1.5 var(--mono)}
+    @media(max-width:900px){.layout{grid-template-columns:1fr}.layout nav{position:static;display:flex;gap:4px;max-height:none;overflow-x:auto}.layout nav strong{display:none}.layout nav a{white-space:nowrap}}@media(max-width:560px){.shell{width:min(100% - 14px,1240px);margin-top:7px}.layout{padding-inline:12px}footer{display:block}footer span{display:block;margin:4px 0}}@media(prefers-color-scheme:dark){:root{--canvas:#0f1518;--paper:#182126;--paper2:#121a1f;--ink:#e9eff2;--muted:#a6b2b8;--line:#38464e;--navy:#b8dce9;--blue:#75bfd7;--blue-soft:#203943;--coral:#ee9079;--coral-soft:#3c2927;--green:#7fc4a5;--green-soft:#20382f;--amber:#e4b56f;--amber-soft:#392f20;--code:#0b1216;--code-ink:#eff7fa;--shadow:0 24px 72px rgba(0,0,0,.42)}tbody tr:nth-child(even){background:#202b30}:not(pre)>code{color:#d9f1f8}.diagram .node rect{fill:#182126}}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media print{body{background:#fff}.shell{width:100%;margin:0;box-shadow:none}.layout{display:block}.layout nav{display:none}.diagram svg{min-width:0}footer{display:none}}
+  </style>
+</head>
+<body><div class="shell">
+  <header><p class="eyebrow">Approved Mission Control plan · 20 August 2026</p><h1>Automatic stale task worktree cleanup</h1><p class="lede">Reclaim terminal task worktrees after 30 days without a Git-visible change, even when local work is staged, unstaged, committed, or never pushed.</p><div class="chips"><span class="chip">approved</span><span class="chip">30 inactive days</span><span class="chip">terminal tasks</span><span class="chip">durable Git-state sweep</span></div></header>
+  <div class="layout"><nav aria-label="Plan sections"><strong>Plan sections</strong><a href="#goal">Goal</a>
+<a href="#adopted-decisions">Adopted decisions</a>
+<a href="#repository-findings">Repository findings</a>
+<a href="#approved-policy">Approved policy</a>
+<a href="#target-design-durable-git-state-sweep">Target design: durable Git-state sweep</a>
+<a href="#target-flow">Target flow</a>
+<a href="#implementation-outline">Implementation outline</a>
+<a href="#verification">Verification</a>
+<a href="#risks-and-mitigations">Risks and mitigations</a>
+<a href="#non-goals">Non-goals</a>
+<a href="#approval-record">Approval record</a></nav><main><article>
+<p><strong>Status:</strong> Approved on 2026-08-20<br/>
+<strong>Retention rule:</strong> 30 days without a Git-visible worktree change<br/>
+<strong>Scope:</strong> Worktrees still owned by terminal Mission Control tasks<br/>
+<strong>Implementation sequence:</strong> <a href="./phased-plan.md"><code>phased-plan.md</code></a> (<a href="./phased-plan.html">rendered</a>)</p>
+<h2 id="goal">Goal</h2>
+<p>Mission Control should automatically reclaim a task&#x27;s worktrees after 30 days without a
+Git-visible change when either:</p>
+<ul>
+<li>the task&#x27;s agent exited without recording completion and the task settled into a terminal state;</li>
+<li>the task completed but still retains one or more worktrees; or</li>
+<li>a cancelled or failed cleanup left a terminal task holding a primary or attached-repository
+worktree.</li>
+</ul>
+<p>Cleanup is intentionally destructive at the retention boundary. Staged changes, unstaged changes,
+untracked files, local commits, and commits that were never pushed do not exempt the tree. A new
+Git-visible change resets the full 30-day window.</p>
+<h2 id="adopted-decisions">Adopted decisions</h2>
+<div class="table-wrap"><table><thead><tr><th>Decision</th><th>Selected requirement</th><th>Consequence</th></tr></thead><tbody><tr><td>Cleanup operating model</td><td>Durable Git-state sweep</td><td>The daemon persists Git-visible activity and deadlines, bounds its observations, and delegates due cleanup to <code>TaskManager.reclaim()</code>.</td></tr><tr><td>Implementation follow-up</td><td>Create phased implementation plan</td><td>Repository-verified merge phases and dependency-gated implementation tasks are written beside this plan.</td></tr></tbody></table></div>
+<h2 id="repository-findings">Repository findings</h2>
+<ul>
+<li><code>TaskManager</code> already owns task lifecycle and the provider-aware <code>reclaim()</code> operation. That path
+quiesces the launched agent, settles required archives, handles every attached repository, calls
+<code>teardownWorktree()</code>, and clears only the resources that were actually released.</li>
+<li><code>WorktreeManager</code> owns native slot allocation and release. Its recurring maintenance currently
+reconciles allocator state and leaked Workflow check leases, but it does not decide how long a
+terminal task retains its work.</li>
+<li>Native, disposable Git, and historical Treehouse worktrees must continue to clean up through the
+provider and exact lease identity stored on the task. A stale cleanup must not infer a provider
+from current settings.</li>
+<li>A durable <code>session_remove</code>, not a transient session whose state merely reads <code>exited</code>, settles a
+live task. The retention policy should begin from the terminal task row and must not add a second
+session-eviction path.</li>
+<li>Restart reconciliation currently tears down a task immediately when its recorded terminal home is
+proven gone. The 30-day rule must replace that destructive branch: reconcile the task to a
+terminal state, retain its resource facts, and let the retention service own the cleanup deadline.</li>
+<li>Several existing resource checks consider only the primary worktree and terminal home. Candidate
+loading, startup reconciliation, in-memory terminal pruning, removal, and the dashboard cleanup
+affordance must also recognize a task whose only remaining resource is an attached-repository
+worktree after partial teardown.</li>
+<li>Today the product deliberately preserves a terminal task&#x27;s dirty or unpushed tree for an explicit
+<strong>Clean up</strong> action. This proposal changes that contract after 30 inactive days while preserving
+the existing manual action during the grace period.</li>
+<li><code>Task.updatedAt</code> is not a worktree activity clock. Task metadata, dependency reconciliation, pull
+request observation, and other bookkeeping can move it without any checkout change, while a local
+edit can leave it untouched.</li>
+<li>Multi-repository tasks are reclaimed as one task-level operation. The retention clock therefore
+needs to observe the primary and all attached worktrees, and the newest change in any one of them
+protects the complete set for another 30 days.</li>
+</ul>
+<h2 id="approved-policy">Approved policy</h2>
+<ol>
+<li><strong>Eligibility is task-owned.</strong> Only <code>done</code>, <code>failed</code>, or <code>cancelled</code> tasks that still name at least
+one worktree are candidates. <code>backlog</code>, <code>dispatching</code>, and <code>running</code> tasks are never age-reclaimed.</li>
+<li><strong>Git-visible activity resets the clock.</strong> Observe the aggregate state of every task worktree:
+HEAD, staged content, tracked unstaged content, and non-ignored untracked files. Ignored warm
+dependencies and build caches do not keep a task alive.</li>
+<li><strong>Push state is irrelevant.</strong> A local commit changes the fingerprint and restarts the clock when
+it is created. Whether that commit is pushed, merged, or attached to a pull request does not block
+cleanup once the new clock expires.</li>
+<li><strong>One task has one retention boundary.</strong> Canonically combine the per-repository fingerprints in
+persisted repository-position order. Any changed tree resets the deadline for all trees.</li>
+<li><strong>Cleanup reuses <code>TaskManager.reclaim()</code>.</strong> Do not reset a slot, remove a Git worktree, stop a
+terminal home, or clear task fields from the sweeper itself.</li>
+<li><strong>Uncertainty retries instead of forgetting.</strong> Unknown process occupancy, an unreadable Git
+state, an unavailable legacy provider, or a partial multi-repository release keeps the remaining
+path and lease facts durable. Retry with bounded backoff and report the failure.</li>
+<li><strong>There is no confirmation at expiry.</strong> The existing manual preview remains available before the
+deadline, but the automatic path treats the 30-day policy as the authorization to discard local
+work.</li>
+<li><strong>Rollout is conservative for existing trees.</strong> Seed the clock at the first successful
+observation of each previously unseen resource generation. Existing timestamps cannot establish
+prior Git-visible activity, so every pre-feature worktree receives one final full 30-day grace
+period.</li>
+</ol>
+<h2 id="target-design-durable-git-state-sweep">Target design: durable Git-state sweep</h2>
+<p>Add a daemon-owned task-worktree retention sweeper. On startup and on a bounded
+cadence, it selects resource-holding terminal tasks, reads a deterministic aggregate Git-state
+fingerprint, and compares it with a small persisted retention ledger.</p>
+<p>The ledger records the task&#x27;s current resource generation, last fingerprint, last observed change,
+next eligible cleanup time, and the latest cleanup attempt/error. A new dispatch or replacement
+worktree starts a new generation so it cannot inherit an earlier checkout&#x27;s age. The daemon scans
+only terminal tasks with resources, bounds concurrent probes, and serializes cleanup per repository
+so a large stale fleet cannot recreate the startup cleanup convoy.</p>
+<p>At or after the deadline, the sweeper re-reads the task and its Git state immediately before calling
+<code>TaskManager.reclaim()</code>. A changed generation, status, path, lease, or fingerprint cancels that
+attempt and records a fresh 30-day boundary. A successful reclaim removes the retention row after
+the task update has durably cleared every released worktree.</p>
+<h3 id="why-it-fits">Why it fits</h3>
+<ul>
+<li>Matches the daemon-only SQLite boundary and the existing timer, startup reconciliation, and
+provider ownership patterns.</li>
+<li>Survives daemon restarts without relying on open file handles or in-memory timers.</li>
+<li>Detects commits, staging, unstaged edits, and untracked work with the same Git semantics on macOS
+and Linux.</li>
+<li>Provides one place to bound concurrency, persist retry state, test a fake clock, and explain why a
+tree has or has not been reclaimed.</li>
+</ul>
+<h3 id="tradeoffs">Tradeoffs</h3>
+<ul>
+<li>Each observation spends Git and filesystem reads on every eligible task worktree.</li>
+<li>A change made and fully reverted between two observations is not retained as activity because the
+observable state returned to the prior fingerprint. No work remains to preserve in that case.</li>
+<li>The fingerprint implementation must be careful with large untracked files. Hash Git-visible
+identity and bounded file metadata/content in a way that detects edits without reading ignored
+caches or loading whole repositories into memory.</li>
+</ul>
+<h2 id="target-flow">Target flow</h2>
+<p>Keep the policy in the task domain and use the worktree subsystem only through the existing reclaim
+operation.</p>
+<div>
+<figure class="diagram" role="group" aria-labelledby="retention-flow-caption">
+  <svg viewBox="0 0 1180 420" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="retention-flow-title retention-flow-desc">
+    <title id="retention-flow-title">Durable task worktree retention flow</title>
+    <desc id="retention-flow-desc">A terminal task is observed into a durable Git fingerprint ledger. Changed work receives a new deadline. Due unchanged work is revalidated and reclaimed through TaskManager. Failures retain ownership and retry.</desc>
+    <defs><marker id="root-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z" class="arrow-fill"/></marker></defs>
+    <text x="28" y="31" class="diagram-kicker">ONE TASK-LEVEL CLOCK ACROSS EVERY ATTACHED REPOSITORY</text>
+    <g class="node base"><rect x="28" y="62" width="210" height="92" rx="15"/><text x="48" y="91" class="title">Terminal task</text><text x="48" y="116" class="sub">done · failed · cancelled</text><text x="48" y="136" class="sub">still owns a worktree</text></g>
+    <g class="node observe"><rect x="290" y="62" width="230" height="92" rx="15"/><text x="310" y="91" class="title">Retention observer</text><text x="310" y="116" class="sub">HEAD · index · tracked edits</text><text x="310" y="136" class="sub">non-ignored untracked work</text></g>
+    <g class="node ledger"><rect x="572" y="62" width="222" height="92" rx="15"/><text x="592" y="91" class="title">Durable ledger</text><text x="592" y="116" class="sub">generation · fingerprint</text><text x="592" y="136" class="sub">last change · due time</text></g>
+    <g class="node change"><rect x="846" y="46" width="290" height="70" rx="15"/><text x="866" y="76" class="title">Change observed</text><text x="866" y="99" class="sub">start a fresh 30-day period</text></g>
+    <g class="node claim"><rect x="846" y="160" width="290" height="70" rx="15"/><text x="866" y="190" class="title">Deadline reached</text><text x="866" y="213" class="sub">claim and revalidate exact facts</text></g>
+    <g class="node reclaim"><rect x="572" y="282" width="222" height="92" rx="15"/><text x="592" y="311" class="title">TaskManager.reclaim()</text><text x="592" y="336" class="sub">archive · quiesce · teardown</text><text x="592" y="356" class="sub">recorded provider authority</text></g>
+    <g class="node success"><rect x="290" y="282" width="230" height="92" rx="15"/><text x="310" y="311" class="title">Released</text><text x="310" y="336" class="sub">clear durable resource facts</text><text x="310" y="356" class="sub">emit ordinary task update</text></g>
+    <g class="node retry"><rect x="846" y="282" width="290" height="92" rx="15"/><text x="866" y="311" class="title">Uncertain or partial</text><text x="866" y="336" class="sub">keep remaining ownership</text><text x="866" y="356" class="sub">bounded error and retry</text></g>
+    <path d="M238 108H290" class="arrow"/><path d="M520 108H572" class="arrow"/><path d="M794 92H846" class="arrow"/><path d="M794 126C824 126 816 195 846 195" class="arrow"/><path d="M991 230V251C991 271 814 258 794 306" class="arrow"/><path d="M572 328H520" class="arrow"/><path d="M794 328H846" class="arrow retry-arrow"/><path d="M991 282V247" class="arrow retry-arrow"/>
+    <text x="818" y="79" class="label">changed</text><text x="817" y="166" class="label">stable</text>
+  </svg>
+  <figcaption id="retention-flow-caption">The retention service owns time and evidence. TaskManager remains the sole owner of destructive task cleanup.</figcaption>
+</figure></div>
+<p>The key ownership direction is:</p>
+<p><code>terminal task -&gt; retention sweeper -&gt; TaskManager.reclaim() -&gt; provider-aware worktree teardown</code>.</p>
+<p>The sweeper never calls native reset, Treehouse return, or <code>git worktree remove</code> directly.</p>
+<h2 id="implementation-outline">Implementation outline</h2>
+<h3 id="1-durable-retention-state">1. Durable retention state</h3>
+<ul>
+<li>Add a migration-backed retention ledger keyed by task ID. Store a resource-generation token,
+aggregate fingerprint, <code>last_changed_at</code>, <code>observed_at</code>, <code>cleanup_due_at</code>, attempt time, retry time,
+and bounded error text.</li>
+<li>Build the generation from the task&#x27;s dispatch identity and its ordered path/provider/lease tuple.
+Re-dispatch, reschedule, partial release, or attached-repository replacement invalidates stale
+observations.</li>
+<li>Keep internal fingerprints off the global browser snapshot. Expose only bounded cleanup status if
+the existing task surface needs to explain a pending retry.</li>
+</ul>
+<h3 id="2-git-visible-activity-probe">2. Git-visible activity probe</h3>
+<ul>
+<li>Create one server-side Git helper that produces a deterministic, streaming fingerprint from HEAD,
+staged state, tracked unstaged state, and non-ignored untracked files.</li>
+<li>Exclude ignored files so warm dependencies, compiler caches, and logs do not pin a task forever.</li>
+<li>Return <code>unknown</code> rather than a clean-looking value when Git identity, a path, or required metadata
+cannot be read.</li>
+<li>Seed every previously unobserved resource generation at its first successful observation. Existing
+task timestamps and checkout file timestamps cannot prove the last Git-visible change, so every
+pre-feature tree receives the same full final 30-day grace period.</li>
+</ul>
+<h3 id="3-sweeper-and-cleanup-serialization">3. Sweeper and cleanup serialization</h3>
+<ul>
+<li>Run one pass after task/session startup reconciliation and then at a bounded daemon cadence. The
+30-day policy has no off switch in the initial release; changing pool reconciliation cadence must
+not disable retention.</li>
+<li>Replace restart&#x27;s immediate teardown for a proven-dead task home with terminal settlement that
+preserves its resource facts. Automatic teardown after restart then follows the same persisted
+deadline as cleanup after a live <code>session_remove</code>.</li>
+<li>Limit simultaneous Git probes and allow at most one cleanup touching a physical repository. Reuse
+or extract the repository-key queue already used to prevent startup cleanup convoys.</li>
+<li>Re-read the current task and fingerprint at the destructive boundary. Claim the ledger row with a
+compare-and-swap generation before calling <code>TaskManager.reclaim()</code> so overlapping passes cannot
+reclaim twice.</li>
+<li>Persist failures with exponential backoff capped at one day. Keep retrying until all task-owned
+worktrees are released or the task&#x27;s resource generation changes.</li>
+</ul>
+<h3 id="4-product-behavior-and-documentation">4. Product behavior and documentation</h3>
+<ul>
+<li>Keep the existing <strong>Clean up</strong> action available throughout the grace period.</li>
+<li>When automatic reclaim succeeds, the normal task update removes the stale worktree/cleanup
+affordance from every open dashboard without adding browser polling.</li>
+<li>Surface a bounded “automatic cleanup retrying” explanation only when a due task still holds a
+resource after an error. Do not overwrite a completed task&#x27;s outcome or a failure reason with
+maintenance diagnostics.</li>
+<li>Update the task lifecycle, worktree operations, and configuration documentation to replace the
+current “explicit cleanup forever” contract with the 30-day retention rule.</li>
+</ul>
+<h2 id="verification">Verification</h2>
+<h3 id="unit-and-integration-coverage">Unit and integration coverage</h3>
+<ul>
+<li>A terminal <code>done</code>, <code>failed</code>, or <code>cancelled</code> task with a stable fingerprint is reclaimed at 30 days,
+including dirty, staged, untracked, committed, and unpushed states.</li>
+<li>A change at day 29 resets the deadline for another 30 days.</li>
+<li>Running, dispatching, and backlog tasks are never candidates.</li>
+<li>A multi-repository task uses the newest activity across all trees and reclaims through one
+task-level operation.</li>
+<li>A re-dispatch or path/lease change invalidates an in-flight observation.</li>
+<li>Daemon restart preserves the deadline and resumes due retries without duplicate cleanup.</li>
+<li>Partial provider failure clears only released trees and retries the remaining resource facts.</li>
+<li>Unknown Git state or process occupancy never reads as inactivity and never drops durable ownership.</li>
+<li>Native, disposable Git, and exact historical Treehouse resources follow their recorded providers.</li>
+<li>Existing pre-ledger tasks receive a defensible baseline or the conservative final grace period.</li>
+<li>A large same-repository stale set is serialized so new dispatch acquisition is not trapped behind
+an unbounded cleanup convoy.</li>
+</ul>
+<h3 id="repository-gates">Repository gates</h3>
+<ul>
+<li>Add focused <code>node:test</code> coverage for fingerprinting, ledger migration, eligibility, deadlines,
+retries, restart recovery, partial cleanup, and repository serialization.</li>
+<li>Because automatic cleanup changes what a person sees on a task card, add a Playwright spec that
+advances an injected clock, observes the existing cleanup affordance disappear after the server
+event, and proves a recent edit postpones it. Fake agents remain mandatory.</li>
+<li>Run <code>npm test</code>, <code>npm run typecheck</code>, <code>npm run lint</code>, <code>npm run build</code>, <code>npm run smoke</code>, and
+<code>npm run test:e2e</code> after the build.</li>
+</ul>
+<h2 id="risks-and-mitigations">Risks and mitigations</h2>
+<div class="table-wrap"><table><thead><tr><th>Risk</th><th>Mitigation</th></tr></thead><tbody><tr><td>Local work is deleted by design</td><td>Make the fixed 30-day rule explicit in task/worktree docs and use a Git-visible clock that resets on staged, unstaged, untracked, or committed work.</td></tr><tr><td>Metadata churn prevents cleanup forever</td><td>Exclude ignored files and task/UI bookkeeping from the activity signal.</td></tr><tr><td>A stale observation targets a replacement lease</td><td>Compare task status, resource generation, ordered paths, providers, leases, and fingerprint at the destructive boundary.</td></tr><tr><td>Cleanup blocks dispatch</td><td>Bound probes and serialize destructive work per repository without queueing an entire fleet ahead of foreground acquisition.</td></tr><tr><td>Provider or process state is uncertain</td><td>Keep durable resource facts, record a bounded failure, and retry. Changes and unpushed commits are not blockers, but unknown ownership or occupancy remains one.</td></tr><tr><td>Upgrade deletes old work immediately</td><td>Derive a trustworthy historical baseline when possible; otherwise grant one final 30-day observation window.</td></tr><tr><td>Retention metadata grows forever</td><td>Delete ledger rows after complete reclaim or task removal, and reconcile orphaned rows on startup.</td></tr></tbody></table></div>
+<h2 id="non-goals">Non-goals</h2>
+<ul>
+<li>Cleaning arbitrary Git worktrees that Mission Control does not own.</li>
+<li>Applying task retention to manual development leases or Workflow check leases.</li>
+<li>Changing the 30-day duration per repository or per task in the first release.</li>
+<li>Preserving local patches, creating rescue branches, pushing commits, or opening pull requests before
+automatic cleanup.</li>
+<li>Treating ignored dependency/cache churn as user activity.</li>
+<li>Adding a second session-eviction, provider-selection, or worktree-removal path.</li>
+</ul>
+<h2 id="approval-record">Approval record</h2>
+<p>On 2026-08-20, the human selected the durable Git-state sweep and requested a phased implementation
+plan. The filesystem-watcher and external-runner alternatives are no longer implementation options.</p></article></main></div>
+  <footer><span>Source: docs/plans/automatic-stale-worktree-cleanup/plan.md</span><span>Self-contained · no external requests</span></footer>
+</div></body></html>

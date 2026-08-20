@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="description" content="First establish a durable observation-only activity ledger. Then activate guarded provider-aware reclamation, retries, dashboard behavior, documentation, and browser proof.">
+  <title>Automatic stale cleanup: implementation phases</title>
+  <style>
+    :root{color-scheme:light dark;--canvas:#e9edf0;--paper:#fffdfa;--paper2:#f5f3ef;--ink:#18242d;--muted:#64717a;--line:#cbd2d7;--navy:#17354a;--blue:#276b87;--blue-soft:#dcecf1;--coral:#b9533d;--coral-soft:#f6e2dc;--green:#34705a;--green-soft:#deeee7;--amber:#9a6925;--amber-soft:#f5ead6;--code:#17242c;--code-ink:#eff7fa;--shadow:0 24px 72px rgba(24,45,58,.13);--display:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;--body:"Avenir Next",Avenir,"Segoe UI",sans-serif;--mono:"SFMono-Regular",Consolas,"Liberation Mono",monospace}
+    *{box-sizing:border-box}html{scroll-behavior:smooth;background:var(--canvas)}body{margin:0;min-width:0;color:var(--ink);background:radial-gradient(circle at 90% 0,rgba(185,83,61,.13),transparent 31rem),linear-gradient(rgba(23,53,74,.035) 1px,transparent 1px),linear-gradient(90deg,rgba(23,53,74,.035) 1px,transparent 1px),var(--canvas);background-size:auto,30px 30px,30px 30px,auto;font:16px/1.66 var(--body)}a{color:var(--blue);text-underline-offset:.2em}a:hover{color:var(--coral)}code,pre,.eyebrow,th,.chip{font-family:var(--mono)}.shell{width:min(1240px,calc(100% - 28px));margin:22px auto 72px;overflow:hidden;background:var(--paper);border-top:7px solid var(--coral);box-shadow:var(--shadow)}header{position:relative;overflow:hidden;padding:clamp(42px,8vw,88px) clamp(24px,7vw,82px) 56px;color:#f4f8fa;background:linear-gradient(128deg,#142e40 0%,#1c4c62 58%,#276b72 100%)}header:after{content:"30";position:absolute;right:clamp(-30px,2vw,24px);top:-80px;color:rgba(255,255,255,.07);font:800 clamp(15rem,31vw,28rem)/1 var(--mono);letter-spacing:-.14em}header>*{position:relative;z-index:1}.eyebrow{margin:0 0 18px;color:#f0b5a6;font-size:.74rem;font-weight:800;letter-spacing:.16em;text-transform:uppercase}h1,h2,h3{font-family:var(--display);font-weight:600}h1{max-width:910px;margin:0;font-size:clamp(3rem,7vw,6.1rem);line-height:.94;letter-spacing:-.047em}.lede{max-width:850px;margin:26px 0 0;color:#d8e8ed;font-size:1.14rem}.chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:24px}.chip{padding:7px 11px;border:1px solid rgba(255,255,255,.24);border-radius:999px;color:#eef7f8;background:rgba(255,255,255,.07);font-size:.7rem;font-weight:700;letter-spacing:.04em}.layout{display:grid;grid-template-columns:220px minmax(0,1fr);gap:32px;padding:28px clamp(16px,4vw,50px) 78px}nav{position:sticky;top:16px;align-self:start;max-height:calc(100vh - 32px);overflow:auto;padding:14px;border:1px solid var(--line);background:var(--paper2)}nav strong{display:block;margin:0 8px 9px;color:var(--muted);font:800 .68rem/1.2 var(--mono);letter-spacing:.12em;text-transform:uppercase}nav a{display:block;padding:6px 8px;border-radius:5px;color:var(--muted);font-size:.78rem;text-decoration:none}nav a:hover{color:var(--ink);background:var(--blue-soft)}main{min-width:0}article{min-width:0}h2{margin:58px 0 17px;padding-top:14px;border-top:1px solid var(--line);color:var(--navy);font-size:clamp(1.9rem,4vw,2.9rem);line-height:1.08;letter-spacing:-.03em;scroll-margin-top:18px}h2:first-child{margin-top:10px;border-top:0}h3{margin:34px 0 10px;color:var(--navy);font-size:1.48rem;scroll-margin-top:18px}p,li{max-width:89ch}p{margin:11px 0}li{margin:6px 0}strong{color:var(--navy)}.table-wrap,.code-wrap,.diagram{width:100%;max-width:100%;overflow-x:auto;margin:24px 0}table{width:100%;min-width:780px;border-collapse:collapse;font-size:.91rem}th,td{padding:11px 13px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}th{color:#f3f7f9;background:var(--navy);font-size:.7rem;letter-spacing:.05em;text-transform:uppercase}tbody tr:nth-child(even){background:var(--paper2)}:not(pre)>code{padding:.12em .34em;border-radius:4px;color:#194d63;background:var(--blue-soft);font-size:.9em;overflow-wrap:anywhere}pre{margin:0;padding:18px 20px;color:var(--code-ink);background:var(--code);font-size:.84rem;line-height:1.58;white-space:pre;overflow:auto}.diagram{padding:18px;border:1px solid var(--line);background:var(--paper2)}.diagram svg{display:block;width:100%;min-width:930px;height:auto}.diagram figcaption{max-width:89ch;margin:12px 10px 2px;color:var(--muted);font-size:.87rem}.diagram text{font-family:var(--mono);text-anchor:start}.diagram .diagram-kicker{fill:var(--blue);font-size:11px;font-weight:800;letter-spacing:.1em}.diagram .node rect{fill:var(--paper);stroke:var(--line);stroke-width:2.2}.diagram .node.observe rect,.diagram .node.ledger rect{fill:var(--blue-soft);stroke:var(--blue)}.diagram .node.change rect,.diagram .node.success rect{fill:var(--green-soft);stroke:var(--green)}.diagram .node.claim rect,.diagram .node.reclaim rect{fill:var(--coral-soft);stroke:var(--coral)}.diagram .node.retry rect{fill:var(--amber-soft);stroke:var(--amber)}.diagram .title{fill:var(--ink);font:700 14px var(--body)}.diagram .sub{fill:var(--muted);font-size:10.5px}.diagram .num{fill:var(--blue);font-size:11px;font-weight:800;letter-spacing:.09em}.diagram .arrow{fill:none;stroke:var(--blue);stroke-width:2.3;marker-end:url(#root-arrow)}.diagram .retry-arrow{stroke:var(--amber);stroke-dasharray:6 5}.diagram .arrow-fill{fill:var(--blue)}.diagram .label,.diagram .note{fill:var(--muted);font-size:10px}footer{display:flex;justify-content:space-between;gap:20px;padding:24px clamp(22px,6vw,72px);border-top:1px solid var(--line);color:var(--muted);background:var(--paper2);font:11px/1.5 var(--mono)}
+    @media(max-width:900px){.layout{grid-template-columns:1fr}.layout nav{position:static;display:flex;gap:4px;max-height:none;overflow-x:auto}.layout nav strong{display:none}.layout nav a{white-space:nowrap}}@media(max-width:560px){.shell{width:min(100% - 14px,1240px);margin-top:7px}.layout{padding-inline:12px}footer{display:block}footer span{display:block;margin:4px 0}}@media(prefers-color-scheme:dark){:root{--canvas:#0f1518;--paper:#182126;--paper2:#121a1f;--ink:#e9eff2;--muted:#a6b2b8;--line:#38464e;--navy:#b8dce9;--blue:#75bfd7;--blue-soft:#203943;--coral:#ee9079;--coral-soft:#3c2927;--green:#7fc4a5;--green-soft:#20382f;--amber:#e4b56f;--amber-soft:#392f20;--code:#0b1216;--code-ink:#eff7fa;--shadow:0 24px 72px rgba(0,0,0,.42)}tbody tr:nth-child(even){background:#202b30}:not(pre)>code{color:#d9f1f8}.diagram .node rect{fill:#182126}}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media print{body{background:#fff}.shell{width:100%;margin:0;box-shadow:none}.layout{display:block}.layout nav{display:none}.diagram svg{min-width:0}footer{display:none}}
+  </style>
+</head>
+<body><div class="shell">
+  <header><p class="eyebrow">Repository-verified implementation sequence · 20 August 2026</p><h1>Automatic stale cleanup: implementation phases</h1><p class="lede">First establish a durable observation-only activity ledger. Then activate guarded provider-aware reclamation, retries, dashboard behavior, documentation, and browser proof.</p><div class="chips"><span class="chip">2 serial phases</span><span class="chip">1,000-1,500 production lines</span><span class="chip">phase 1 non-destructive</span><span class="chip">phase 2 activates cleanup</span></div></header>
+  <div class="layout"><nav aria-label="Plan sections"><strong>Plan sections</strong><a href="#outcome">Outcome</a>
+<a href="#incorporated-human-decisions">Incorporated human decisions</a>
+<a href="#repository-verified-decisions">Repository-verified decisions</a>
+<a href="#effort-and-phase-count-rationale">Effort and phase-count rationale</a>
+<a href="#phase-graph">Phase graph</a>
+<a href="#cross-phase-contracts">Cross-phase contracts</a>
+<a href="#merge-order">Merge order</a>
+<a href="#final-verification-strategy">Final verification strategy</a>
+<a href="#complete-plan-audit">Complete-plan audit</a></nav><main><article>
+<p><strong>Source plan:</strong> <a href="./plan.md"><code>plan.md</code></a><br/>
+<strong>Approved direction:</strong> Durable Git-state sweep<br/>
+<strong>Repository scope:</strong> Mission Control only<br/>
+<strong>Phase count:</strong> 2, executed serially</p>
+<h2 id="outcome">Outcome</h2>
+<p>Mission Control will reclaim every worktree still owned by a <code>done</code>, <code>failed</code>, or <code>cancelled</code>
+task after 30 days without a Git-visible change. Staged, unstaged, untracked, committed, and
+unpushed work all reset the clock when they change, but none block cleanup when that new clock
+expires.</p>
+<p>The implementation keeps destructive authority in <code>TaskManager.reclaim()</code>, persists enough
+observation state to survive restarts, and treats unknown Git, process, provider, or ownership
+state as a retry instead of permission to delete.</p>
+<h2 id="incorporated-human-decisions">Incorporated human decisions</h2>
+<ul>
+<li>Use a daemon-owned durable Git-state sweep, not a filesystem watcher or an external runner.</li>
+<li>Keep one task-level deadline across the primary and every attached repository.</li>
+<li>Automatically discard local work after the fixed 30-day inactive period, including staged or
+unstaged content and local commits that were never pushed.</li>
+<li>Create implementation phases and schedule them behind this planning session.</li>
+</ul>
+<h2 id="repository-verified-decisions">Repository-verified decisions</h2>
+<ol>
+<li><code>TaskManager.reclaim()</code> and <code>teardownWorktree()</code> remain the only cleanup path. The retention
+service does not call the native allocator, Treehouse, terminal backends, or <code>git worktree remove</code> directly.</li>
+<li>Restart reconciliation currently performs immediate teardown when a task&#x27;s terminal home is
+proven gone. Phase 2 replaces that destructive branch with terminal settlement plus retention;
+otherwise restart would bypass the approved 30-day boundary.</li>
+<li>Candidate loading and in-memory pruning currently miss a terminal task whose only remaining
+resource is an attached-repository worktree. Phase 1 establishes one shared all-repository
+predicate and makes durable observation cover that partial-cleanup shape. Phase 2 applies the
+same predicate to cleanup, removal, and UI behavior.</li>
+<li><code>Task.updatedAt</code>, task completion time, worktree creation time, and filesystem modification
+times cannot prove the last Git-visible activity. The first successful observation of every
+previously unseen resource generation starts a full final 30-day grace period.</li>
+<li>The worktree manager&#x27;s maintenance cadence is configurable and can be disabled. Retention gets
+its own daemon lifecycle and fixed internal cadence, with injected clock and scheduler seams for
+tests but no public off switch.</li>
+<li>The current startup cleanup queue already proves the required per-repository serialization
+model. Phase 2 extracts or extends that mechanism so automatic cleanup cannot form a
+same-repository convoy or bypass foreground acquisition priority.</li>
+</ol>
+<h2 id="effort-and-phase-count-rationale">Effort and phase-count rationale</h2>
+<p>Estimated production change: <strong>1,000 to 1,500 lines</strong>, excluding tests and documentation.</p>
+<p>Assumptions behind the estimate:</p>
+<ul>
+<li>350 to 500 lines for a streaming Git/index/worktree fingerprint and its error model;</li>
+<li>250 to 400 lines for the SQLite ledger, projection helpers, observer lifecycle, and resource
+generation logic;</li>
+<li>250 to 400 lines for claim/retry orchestration, race guards, and <code>TaskManager</code> integration; and</li>
+<li>150 to 250 lines for the safe browser summary, all-repository UI behavior, and lifecycle copy.</li>
+</ul>
+<p>Two phases are justified even though one phase is the default above 200 lines. Combining them
+would ask one agent and one review to validate Git parsing, streaming file reads, a migration,
+restart recovery, destructive compare-and-swap cleanup, provider-aware partial failure, browser
+state, and an end-to-end timer flow at once. Phase 1 is independently operable: it observes and
+persists the exact clock inputs without deleting anything, starts the conservative rollout grace
+period, and can be inspected in real databases before destructive activation. Phase 2 consumes
+that durable evidence and is the only phase that authorizes automatic deletion.</p>
+<p>The split is not by application layer. Each phase includes the persistence, lifecycle wiring,
+tests, and compatibility changes needed for its own behavior. A smaller third phase for UI, tests,
+or documentation would not be independently valuable and would weaken the activation review.</p>
+<h2 id="phase-graph">Phase graph</h2>
+<div class="table-wrap"><table><thead><tr><th>Phase</th><th>Name</th><th>Delivers</th><th>Direct dependency</th><th>Merge condition</th></tr></thead><tbody><tr><td>1</td><td><a href="./phase-1-durable-activity-observation.md">Durable activity observation</a></td><td>Stable aggregate fingerprints, durable deadlines, all-repository candidate ownership, and a non-destructive recurring observer</td><td>Planning PR merged</td><td>Observation survives restart and cannot reclaim a tree</td></tr><tr><td>2</td><td><a href="./phase-2-guarded-automatic-reclamation.md">Guarded automatic reclamation</a></td><td>Due cleanup, final revalidation, partial-failure retry, dashboard explanation, lifecycle documentation, and browser proof</td><td>Phase 1 merged</td><td>Full 30-day behavior passes unit, runtime, and E2E gates</td></tr></tbody></table></div>
+<div>
+<figure class="diagram" role="group" aria-labelledby="phase-flow-caption">
+  <svg viewBox="0 0 1120 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="phase-flow-title phase-flow-desc">
+    <title id="phase-flow-title">Two serial implementation phases</title>
+    <desc id="phase-flow-desc">The approved planning pull request releases an observation-only foundation. Once that phase merges, guarded automatic reclamation activates destructive cleanup with user interface and browser proof.</desc>
+    <defs><marker id="root-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z" class="arrow-fill"/></marker></defs>
+    <text x="28" y="31" class="diagram-kicker">SERIAL MERGE ORDER · DESTRUCTIVE AUTHORITY ARRIVES ONLY IN PHASE 2</text>
+    <g class="node base"><rect x="28" y="78" width="220" height="128" rx="17"/><text x="50" y="110" class="num">PLAN</text><text x="50" y="143" class="title">Approved plan</text><text x="50" y="169" class="sub">durable sweep selected</text><text x="50" y="190" class="sub">artifacts merged first</text></g>
+    <g class="node observe"><rect x="326" y="62" width="318" height="160" rx="17"/><text x="350" y="96" class="num">PHASE 01</text><text x="350" y="130" class="title">Durable activity observation</text><text x="350" y="157" class="sub">streaming Git fingerprint</text><text x="350" y="179" class="sub">SQLite deadline ledger</text><text x="350" y="201" class="sub">zero destructive dependency</text></g>
+    <g class="node reclaim"><rect x="722" y="62" width="370" height="160" rx="17"/><text x="746" y="96" class="num">PHASE 02</text><text x="746" y="130" class="title">Guarded automatic reclamation</text><text x="746" y="157" class="sub">claim · final revalidation · retry</text><text x="746" y="179" class="sub">TaskManager provider teardown</text><text x="746" y="201" class="sub">dashboard · docs · Playwright</text></g>
+    <path d="M248 142H326" class="arrow"/><path d="M644 142H722" class="arrow"/>
+    <text x="28" y="266" class="note">No concurrent implementation phases. Phase 2 consumes Phase 1's schema, generation, probe, observer, and all-repository predicate.</text>
+  </svg>
+  <figcaption id="phase-flow-caption">The first merge begins the conservative clock without deletion. The second merge activates the complete user contract.</figcaption>
+</figure></div>
+<p>There is one concurrency group per phase. Phase 2 directly depends on Phase 1, so no
+implementation phases may run concurrently.</p>
+<h2 id="cross-phase-contracts">Cross-phase contracts</h2>
+<p>Phase 1 owns these contracts and Phase 2 consumes them without creating alternatives:</p>
+<ul>
+<li><code>taskHasWorktrees(task)</code> or the repository&#x27;s chosen equivalent enumerates primary and attached
+resource facts through <code>taskRepoRefs()</code>.</li>
+<li>A resource generation is deterministic over the task attempt and every cleanup-relevant fact:
+ordered repository position, canonical root and worktree path, recorded provider and lease,
+dispatch boundary, terminal home, terminal resource, and bound session identity.</li>
+<li>The activity fingerprint represents HEAD, complete index state, tracked worktree changes, and
+non-ignored untracked paths across all task worktrees. It stores no file content and returns an
+explicit unknown result if a required read cannot be trusted.</li>
+<li>The ledger is the only durable activity clock. Its row is keyed by task ID and carries generation,
+fingerprint, last change, last observation, due time, cleanup claim/attempt state, retry time, and
+bounded internal error.</li>
+<li>First observation seeds <code>last_changed_at</code> at observation time. A later changed fingerprint resets
+it. Unknown observations never advance or fabricate a change boundary.</li>
+<li>Observation is serialized per task, bounded across the daemon, non-overlapping by pass, and
+stoppable during daemon shutdown. It does not depend on <code>MISSION_WORKTREE_SWEEP_MS</code>.</li>
+</ul>
+<p>Phase 2 owns these additions:</p>
+<ul>
+<li>a compare-and-swap claim over the exact generation and fingerprint before destructive work;</li>
+<li>a final task and fingerprint revalidation immediately before <code>teardownWorktree()</code>;</li>
+<li>a shared repository-key cleanup queue and a <code>TaskManager</code> reservation that close overlap with
+manual reclaim, reschedule, remove, and another automatic pass;</li>
+<li>retry state that preserves the due boundary across an automatic partial release while adopting
+the generation of the resources still standing; and</li>
+<li>a bounded browser-safe retention summary. Internal hashes, paths beyond existing task fields,
+claim tokens, and raw provider errors never enter the SSE snapshot.</li>
+</ul>
+<h2 id="merge-order">Merge order</h2>
+<ol>
+<li>Merge Phase 1. Its observer begins the final grace period but cannot delete or return a tree.</li>
+<li>Rebase Phase 2 on the merged Phase 1 contracts. Do not duplicate the ledger, fingerprint, or
+lifecycle scheduler.</li>
+<li>Merge Phase 2 only after its destructive-race tests and browser flow pass.</li>
+</ol>
+<h2 id="final-verification-strategy">Final verification strategy</h2>
+<p>Phase 1 proves deterministic activity detection, migration safety, restart durability, candidate
+coverage, bounded concurrency, and a zero-cleanup invariant. Phase 2 proves the full retention
+state machine, destructive-boundary races, provider-aware partial release, restart recovery,
+dashboard updates, and real native-worktree reuse.</p>
+<p>The final branch runs:</p>
+<div class="code-wrap"><pre><code class="language-sh">npm run typecheck
+npm run lint
+npm test
+npm run build
+npm run smoke
+npm run test:e2e
+</code></pre></div>
+<p>The Playwright suite must use the existing fake-agent boundary and built dashboard/daemon. It must
+show both sides of the user contract: recent Git-visible activity postpones cleanup, and an aged
+terminal task loses its cleanup affordance after the server reclaims the real native worktree.</p>
+<h2 id="complete-plan-audit">Complete-plan audit</h2>
+<ul>
+<li>Every approved policy item is owned by one of the two phases.</li>
+<li>Phase 1 cannot perform destructive work and therefore cannot outrun its observations.</li>
+<li>Phase 2 consumes Phase 1&#x27;s ledger and probe instead of introducing a second clock or Git parser.</li>
+<li>Startup recovery, live <code>session_remove</code>, manual cleanup, and automatic cleanup converge on the
+existing task lifecycle and provider-aware teardown.</li>
+<li>Multi-repository partial-release shapes are covered from durable load through UI removal.</li>
+<li>Tests, user-visible copy, and documentation ship with the phase that activates deletion.</li>
+</ul></article></main></div>
+  <footer><span>Source: docs/plans/automatic-stale-worktree-cleanup/phased-plan.md</span><span>Self-contained · no external requests</span></footer>
+</div></body></html>

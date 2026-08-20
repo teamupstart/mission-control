@@ -94,10 +94,14 @@ worktree starts a new generation so it cannot inherit an earlier checkout's age.
 only terminal tasks with resources, bounds concurrent probes, and serializes cleanup per repository
 so a large stale fleet cannot recreate the startup cleanup convoy.
 
-At or after the deadline, the sweeper re-reads the task and its Git state immediately before calling
-`TaskManager.reclaim()`. A changed generation, status, path, lease, or fingerprint cancels that
-attempt and records a fresh 30-day boundary. A successful reclaim removes the retention row after
-the task update has durably cleared every released worktree.
+At or after the deadline, the sweeper re-reads the task and its Git state before calling
+`TaskManager.reclaim()`. The reclaim path validates the claimed generation before quiescence or
+archive work can mutate terminal/session ownership. Immediately before teardown it compares a
+stable snapshot of status, attempt, worktree paths, providers, and leases plus a fresh fingerprint.
+A changed external generation or fingerprint cancels the attempt and records a fresh 30-day
+boundary; cleanup-caused terminal/session changes do not invalidate their own claim. A successful
+reclaim removes the retention row after the task update has durably cleared every released
+worktree.
 
 ### Why it fits
 
@@ -128,10 +132,10 @@ flowchart LR
   A[Durable session removal or recorded completion] --> B[Terminal task still owns worktree]
   B --> C[Retention sweeper observes aggregate Git fingerprint]
   C -->|fingerprint changed| D[Persist new last-changed time and 30-day deadline]
-  C -->|unchanged until deadline| E[Re-read task, generation, paths, leases, and fingerprint]
-  E --> F[TaskManager.reclaim]
+  C -->|unchanged until deadline| E[Preflight task, generation, paths, leases, and fingerprint]
+  E --> F[Reserve TaskManager.reclaim]
   F --> G[Archive gate and agent quiescence]
-  G --> H[Provider-aware teardown for every repository]
+  G --> H[Final stable ownership and fingerprint guard, then provider-aware teardown]
   H --> I[Clear released resource facts and emit task update]
   H -->|uncertain or partial failure| J[Keep remaining facts, record error, retry]
   J --> E
@@ -177,9 +181,11 @@ The sweeper never calls native reset, Treehouse return, or `git worktree remove`
   deadline as cleanup after a live `session_remove`.
 - Limit simultaneous Git probes and allow at most one cleanup touching a physical repository. Reuse
   or extract the repository-key queue already used to prevent startup cleanup convoys.
-- Re-read the current task and fingerprint at the destructive boundary. Claim the ledger row with a
-  compare-and-swap generation before calling `TaskManager.reclaim()` so overlapping passes cannot
-  reclaim twice.
+- Re-read the current task, generation, and fingerprint before any cleanup mutation. Claim the
+  ledger row with compare-and-swap, reserve the task in `TaskManager`, and validate that generation
+  before quiescence/archive work. Immediately before teardown, compare the stable worktree ownership
+  snapshot and a fresh fingerprint; do not make the first generation comparison after operations
+  that can legitimately change terminal/session identity.
 - Persist failures with exponential backoff capped at one day. Keep retrying until all task-owned
   worktrees are released or the task's resource generation changes.
 
@@ -229,10 +235,10 @@ The sweeper never calls native reset, Treehouse return, or `git worktree remove`
 | --- | --- |
 | Local work is deleted by design | Make the fixed 30-day rule explicit in task/worktree docs and use a Git-visible clock that resets on staged, unstaged, untracked, or committed work. |
 | Metadata churn prevents cleanup forever | Exclude ignored files and task/UI bookkeeping from the activity signal. |
-| A stale observation targets a replacement lease | Compare task status, resource generation, ordered paths, providers, leases, and fingerprint at the destructive boundary. |
+| A stale observation targets a replacement lease | Validate the claimed generation before cleanup mutation, then compare stable status/attempt/path/provider/lease ownership and a fresh fingerprint immediately before teardown. |
 | Cleanup blocks dispatch | Bound probes and serialize destructive work per repository without queueing an entire fleet ahead of foreground acquisition. |
 | Provider or process state is uncertain | Keep durable resource facts, record a bounded failure, and retry. Changes and unpushed commits are not blockers, but unknown ownership or occupancy remains one. |
-| Upgrade deletes old work immediately | Derive a trustworthy historical baseline when possible; otherwise grant one final 30-day observation window. |
+| Upgrade deletes old work immediately | Seed every unseen resource generation at its first successful observation, granting every pre-feature tree one final full 30-day window. |
 | Retention metadata grows forever | Delete ledger rows after complete reclaim or task removal, and reconcile orphaned rows on startup. |
 
 ## Non-goals

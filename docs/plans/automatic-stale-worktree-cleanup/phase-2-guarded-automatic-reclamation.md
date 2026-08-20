@@ -54,8 +54,11 @@ standing.
   facts, and emits the task update the dashboard consumes. Automatic cleanup must share this core.
 - The current public reclaim method has asynchronous gaps before `teardownWorktree()`. A due sweep
   that validates only before entering it can race a reschedule, path replacement, manual cleanup,
-  or a last local edit. The final guard belongs inside `TaskManager`, after quiescence/archive work
-  and immediately before teardown.
+  or a last local edit. `TaskManager` needs two guards with different inputs: validate the complete
+  claimed generation and fingerprint before quiescence/archive work, then compare the stable
+  task-attempt/worktree-ownership snapshot plus a fresh fingerprint immediately before teardown.
+  The second guard must not compare terminal/session fields that the reserved cleanup itself may
+  have changed.
 - `StartupCleanupQueue` in `src/server/tasks.ts` already serializes jobs that touch the same canonical
   repositories while allowing disjoint repositories to progress. Reuse or extract it; do not add an
   unrelated queue with different key semantics.
@@ -95,6 +98,11 @@ The state machine must support:
 7. an abandoned claim after daemon death, which becomes retryable on startup without a duplicate
    concurrent cleanup.
 
+A reserved cleanup can legitimately stop or clear terminal/session ownership before an archive or
+provider refusal leaves the worktree standing. Treat that like cleanup-caused partial release:
+adopt the post-attempt generation under the same claim and preserve the due boundary when the stable
+attempt/worktree ownership and fingerprint did not change. It is not new user activity.
+
 Use exponential retry backoff capped at one day, plus enough deterministic injection to test it.
 The recurring observer remains the one scheduler. A changed fingerprint has priority over an old
 retry: changed work gets a new 30-day period, not an immediate retry inherited from prior state.
@@ -112,7 +120,8 @@ confirmation behavior.
 The automatic call must accept or close over:
 
 - the claimed task ID, generation, and fingerprint;
-- a final validation callback backed by Phase 1's aggregate probe; and
+- a pre-mutation validation callback plus a final validation callback backed by Phase 1's aggregate
+  probe;
 - a structured result channel that distinguishes reclaimed, activity changed, ownership changed,
   unknown validation, archive refusal, provider/occupancy failure, and partial release.
 
@@ -124,11 +133,19 @@ conflict without performing a second teardown.
 For the automatic path, in execution order:
 
 1. verify the task is still `done`, `failed`, or `cancelled` and still has a worktree;
-2. quiesce any launched agent and settle required archives through the existing methods;
-3. re-read the task and recompute its resource generation;
-4. run the final aggregate probe against the current recorded paths;
-5. require exact generation and fingerprint equality with the active ledger claim; and
+2. re-read the task, run a fresh pre-mutation aggregate probe, require exact generation and
+   fingerprint equality with the active ledger claim, and freeze the stable status/attempt plus
+   ordered worktree path/provider/lease snapshot;
+3. quiesce any launched agent and settle required archives through the existing methods;
+4. re-read the task and require the stable snapshot to match, allowing only terminal/session changes
+   caused by this reserved cleanup;
+5. run the final aggregate probe against those exact recorded worktree paths and require its
+   fingerprint to match the active claim; and
 6. only then call `teardownWorktree()` through the existing provider-aware code.
+
+Never defer the complete-generation comparison until after quiescence. The generation deliberately
+contains terminal-home, terminal-resource, and session identity, so a post-quiescence-only check can
+reject the cleanup's own expected mutations forever.
 
 Release the task reservation in `finally`. Move `autoCompleted` mutation and other one-way in-memory
 changes after final validation so an aborted automatic attempt does not alter task lifecycle state.
@@ -181,6 +198,9 @@ After the TaskManager result, the retention service must re-read the task:
   `cleanup_due_at = now + 30 days`.
 - On external status, attempt, path, provider, lease, home, resource, or session replacement, abandon
   the claim and let observation seed the new generation. Never apply the old due time to it.
+- On terminal/session identity changed by this reserved cleanup while stable attempt/worktree
+  ownership and Git state remain equal, adopt the post-attempt generation and preserve the due
+  boundary for retry. Do not classify the cleanup's own mutation as an external replacement.
 - On automatic partial release, use the active claim token to adopt only the still-recorded resource
   generation, preserve the due boundary, store the current aggregate fingerprint for remaining
   worktrees, and enter bounded retry.
@@ -273,6 +293,8 @@ Extend Phase 1 tests and existing task/provider suites to cover:
 - fresh successful validation immediately before teardown;
 - activity, generation, status, path, provider, lease, home, resource, or session change during the
   reclaim gaps aborting without teardown;
+- quiescence changing terminal/session identity without causing the attempt to self-abort, while a
+  genuinely external replacement still aborts;
 - simultaneous automatic passes and manual reclaim producing one teardown;
 - reschedule/remove overlap refusing stale automatic authority;
 - daemon death with an active claim and safe retry after reopen;
@@ -359,6 +381,9 @@ server lifecycle, destructive safety, UI behavior, documentation, and browser pr
   cleanup is available, rather than in observation-only Phase 1.
 - Partial-failure audit: the active claim distinguishes cleanup-caused generation shrinkage from an
   external replacement, so retry age and replacement safety do not conflict.
+- Inspector audit on 2026-08-20: generation validation moved before quiescence/archive work, with a
+  separate stable ownership and fingerprint guard immediately before teardown. This prevents the
+  reclaim path from rejecting terminal/session mutations it caused itself.
 - UI audit: the nullable summary is derived from the ledger, rides existing whole-task events, and
   excludes internal hashes and raw errors.
 - Final audit: all source-plan requirements not delivered by Phase 1 are assigned to this phase,

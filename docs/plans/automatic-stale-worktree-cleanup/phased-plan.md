@@ -109,8 +109,10 @@ Phase 1 owns these contracts and Phase 2 consumes them without creating alternat
 
 Phase 2 owns these additions:
 
-- a compare-and-swap claim over the exact generation and fingerprint before destructive work;
-- a final task and fingerprint revalidation immediately before `teardownWorktree()`;
+- a compare-and-swap claim plus exact generation/fingerprint validation before quiescence or archive
+  work can mutate terminal/session identity;
+- a final stable task-attempt/worktree-ownership snapshot and fingerprint revalidation immediately
+  before `teardownWorktree()`;
 - a shared repository-key cleanup queue and a `TaskManager` reservation that close overlap with
   manual reclaim, reschedule, remove, and another automatic pass;
 - retry state that preserves the due boundary across an automatic partial release while adopting
@@ -152,6 +154,9 @@ terminal task loses its cleanup affordance after the server reclaims the real na
 - Every approved policy item is owned by one of the two phases.
 - Phase 1 cannot perform destructive work and therefore cannot outrun its observations.
 - Phase 2 consumes Phase 1's ledger and probe instead of introducing a second clock or Git parser.
+- Phase 2 validates the complete generation before its own mutations, then uses stable worktree
+  ownership plus the fingerprint at the destructive boundary so quiescence cannot invalidate its
+  own claim.
 - Startup recovery, live `session_remove`, manual cleanup, and automatic cleanup converge on the
   existing task lifecycle and provider-aware teardown.
 - Multi-repository partial-release shapes are covered from durable load through UI removal.

@@ -124,8 +124,10 @@ stoppable during daemon shutdown. It does not depend on <code>MISSION_WORKTREE_S
 </ul>
 <p>Phase 2 owns these additions:</p>
 <ul>
-<li>a compare-and-swap claim over the exact generation and fingerprint before destructive work;</li>
-<li>a final task and fingerprint revalidation immediately before <code>teardownWorktree()</code>;</li>
+<li>a compare-and-swap claim plus exact generation/fingerprint validation before quiescence or archive
+work can mutate terminal/session identity;</li>
+<li>a final stable task-attempt/worktree-ownership snapshot and fingerprint revalidation immediately
+before <code>teardownWorktree()</code>;</li>
 <li>a shared repository-key cleanup queue and a <code>TaskManager</code> reservation that close overlap with
 manual reclaim, reschedule, remove, and another automatic pass;</li>
 <li>retry state that preserves the due boundary across an automatic partial release while adopting
@@ -161,6 +163,9 @@ terminal task loses its cleanup affordance after the server reclaims the real na
 <li>Every approved policy item is owned by one of the two phases.</li>
 <li>Phase 1 cannot perform destructive work and therefore cannot outrun its observations.</li>
 <li>Phase 2 consumes Phase 1&#x27;s ledger and probe instead of introducing a second clock or Git parser.</li>
+<li>Phase 2 validates the complete generation before its own mutations, then uses stable worktree
+ownership plus the fingerprint at the destructive boundary so quiescence cannot invalidate its
+own claim.</li>
 <li>Startup recovery, live <code>session_remove</code>, manual cleanup, and automatic cleanup converge on the
 existing task lifecycle and provider-aware teardown.</li>
 <li>Multi-repository partial-release shapes are covered from durable load through UI removal.</li>

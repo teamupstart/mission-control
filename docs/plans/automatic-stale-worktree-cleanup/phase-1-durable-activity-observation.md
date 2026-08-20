@@ -242,5 +242,6 @@ fingerprint privacy, and the Phase 1 zero-truncation semantics.
 - Multi-repository audit: candidate load and pruning land here because Phase 2 cannot consume a
   ledger for attached-only survivors if Registry has already forgotten them.
 - Final reconciliation on 2026-08-20: Phase 2 consumes the reserved claim/retry fields, preserves
-  terminal-home identity through restart settlement, and uses the same aggregate probe at the
-  destructive boundary. No Phase 1 schema, clock, or ownership contract requires a workaround.
+  terminal-home identity through restart settlement, and uses the same aggregate probe before its
+  own mutations and again at the destructive boundary. No Phase 1 schema, clock, or ownership
+  contract requires a workaround.

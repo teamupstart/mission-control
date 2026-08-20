@@ -286,7 +286,9 @@ pane string under its title (it wears an `◈ Agent SDK` chip instead), and:
   tool is left enabled - the MCP ask-channel redirect exists because a menu on a child's
   terminal is unreadable, and here it is not;
 - the permission-mode and reasoning-effort pickers control the live embedded conversation,
-  just as they control a pane-backed one;
+  just as they control a pane-backed one - though on Codex a reasoning-effort selection
+  takes effect when the next turn starts rather than immediately, which the effort badge
+  [says on its face](#levels-that-apply-on-the-next-turn);
 - the transcript still comes from the same session file the interactive CLI reads -
   `~/.claude/projects/…` for Claude, the `~/.codex/sessions/…` rollout for Codex, which
   `thread/start` hands the daemon directly. The human-authored task text from the first
@@ -673,6 +675,35 @@ native session-only control; it never changes that harness card's **Effort** sel
 **Settings → Harnesses** or what future sessions start with. Until the current model and
 effort have a trustworthy passive baseline, or when the pane cannot be written, the badge
 stays read-only. The same picker appears on Cards, in Console detail, and on Board tiles.
+
+#### Levels that apply on the next turn
+
+Not every harness can move a conversation it is already having. Claude changes the running
+conversation, so its badge simply reads the new level. **An embedded Codex session applies
+reasoning effort when it STARTS a turn**, and a turn already under way cannot be moved onto
+a new level - so a level chosen there takes effect on the next turn.
+
+The badge says so rather than pretending either way. It reads `medium → high` with a
+**next turn** tag and a dashed outline, meaning the conversation is running `medium` and
+`high` is set for the turn after this one; the picker repeats the sentence above its
+options. Two consequences are worth knowing:
+
+- **A reply you send while the badge is pending joins the turn that is running**, and that
+  turn keeps its old level. Wait for the session to go idle if you want the new level to
+  apply to what you are about to ask for.
+- **Nothing about the badge reverts on its own.** It stays pending until the session
+  actually starts a turn, however long that takes and however often the rest of the card
+  refreshes. When that turn starts, the badge settles on whatever the session really ran -
+  normally the level you chose, or, if something else changed it in the meantime (a
+  `/model` in a terminal on the same conversation, say), on that instead.
+
+Changing your mind while a level is pending is a normal change: pick the level the
+conversation is currently running and the pending one is dropped, so the next turn stays
+where it is. Changing the model, clearing the context, or the session rebinding to a new
+conversation all drop a pending level too - it was a promise about a conversation that no
+longer applies. A pending level is not remembered across a daemon restart; the level itself
+is (it is stored with the embedded session and re-asserted on the next turn), so the badge
+settles as soon as that turn runs.
 
 ### Session status colors
 

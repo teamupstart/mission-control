@@ -1255,8 +1255,18 @@ export const api = {
    */
   setMode: (id: string, mode: PermissionMode) =>
     post(`/api/sessions/${encodeURIComponent(id)}/mode`, { mode }),
+  /**
+   * Apply a reasoning effort to one live session.
+   *
+   * `pending` on a successful answer means the harness ACCEPTED the level for its next
+   * turn and the conversation is still running the old one - the daemon has published that
+   * on `Session.pendingEffort`, so the caller must not hold a local copy of it.
+   */
   setEffort: (id: string, effort: import("@shared/types.ts").ThinkingLevel) =>
-    post(`/api/sessions/${encodeURIComponent(id)}/effort`, { effort }),
+    post<ActionResult & { pending?: boolean }>(
+      `/api/sessions/${encodeURIComponent(id)}/effort`,
+      { effort },
+    ),
   reset: (id: string, clear = true) =>
     post(`/api/sessions/${encodeURIComponent(id)}/reset`, { clear }),
   /**

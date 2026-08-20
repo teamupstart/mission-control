@@ -32,6 +32,15 @@ export function reconcileOptimisticEffort(
  * The live reasoning-effort chip. Unlike launch defaults, this opens the selected
  * harness's own `/model` picker and commits its session-only choice, so a running
  * session changes without changing what future sessions start with.
+ *
+ * Two levels can be true at once here, and conflating them is what made this chip revert.
+ * `reported` is what the conversation is RUNNING under, read back off the harness's own
+ * file. `session.pendingEffort` is a level the harness accepted but has not run yet -
+ * Codex's driver puts effort on `turn/start`, and a turn already going cannot be moved
+ * onto it, so its rollout keeps appending records naming the old level for as long as that
+ * turn lasts. The server owns that projection and retires it against the next
+ * `turn_context`; the chip's job is only to say both, rather than to pick one and be
+ * contradicted by a routine metadata refresh.
  */
 export function EffortPicker({ session }: { session: Session }): React.JSX.Element | null {
   const reported = session.meta?.thinkingLevel ?? null;
@@ -51,7 +60,14 @@ export function EffortPicker({ session }: { session: Session }): React.JSX.Eleme
     setOptimistic((value) => reconcileOptimisticEffort(value, reported, modelId, reportedAt));
   }, [optimistic, reported, modelId, reportedAt]);
 
+  // What the conversation is on now, and what it will be on next - never merged. The
+  // reachability list is asked about the LIVE level, because that is where a harness with
+  // a one-step picker would actually be walking from.
   const level = optimistic?.level ?? reported;
+  const pending = session.pendingEffort !== null && session.pendingEffort !== level
+    ? session.pendingEffort
+    : null;
+  const shown = pending ?? level;
   const levels = sessionEffortLevels(session.agent, modelId, level);
   // Delivery intent, like the mode picker beside it: the TUI walk is one way to apply a
   // level, a driver's own control is another.
@@ -93,11 +109,11 @@ export function EffortPicker({ session }: { session: Session }): React.JSX.Eleme
     };
   }, [open, place]);
 
-  if (!level) return null;
-  if (!canPick || levels.length === 0) return <EffortChip level={level} />;
+  if (!shown) return null;
+  if (!canPick || levels.length === 0) return <EffortChip level={shown} pending={pending !== null} />;
 
   async function choose(next: ThinkingLevel): Promise<void> {
-    if (next === level) {
+    if (next === shown) {
       setOpen(false);
       return;
     }
@@ -106,20 +122,35 @@ export function EffortPicker({ session }: { session: Session }): React.JSX.Eleme
     const result = await api.setEffort(session.id, next);
     setBusy(null);
     if (result.ok) {
-      setOptimistic({ level: next, modelId, updatedAt: reportedAt });
+      // A DEFERRED change has a server-owned projection (`session.pendingEffort`), emitted
+      // before this response was written. Holding a browser-local copy of it beside that
+      // would be a second source of truth for the same fact, and the browser's copy is the
+      // one with no way to learn it was superseded.
+      setOptimistic(result.pending ? null : { level: next, modelId, updatedAt: reportedAt });
       setOpen(false);
     } else {
       setError(result.error ?? "couldn't change effort");
     }
   }
 
+  const chipLabel = pending
+    ? `Reasoning effort: ${level ?? "unknown"} on this turn, ${pending} from the next turn. ` +
+      `Change effort for this session`
+    : `Reasoning effort: ${shown}. Change effort for this session`;
+  const chipTooltip = pending
+    ? `Reasoning effort: ${pending} is set and applies from the next turn; this turn is ` +
+      `still running ${level ?? "an unknown level"} - click to change it for this session`
+    : `Reasoning effort: ${shown} - click to change it for this session`;
+
   return (
     <>
-      <Tooltip label={`Reasoning effort: ${level} - click to change it for this session`}>
+      <Tooltip label={chipTooltip}>
       <button
         ref={chipRef}
-        className={`rt-pill rt-think rt-think-${level} rt-think-btn${open ? " open" : ""}`}
-        aria-label={`Reasoning effort: ${level}. Change effort for this session`}
+        className={`rt-pill rt-think rt-think-${shown} rt-think-btn${open ? " open" : ""}${
+          pending ? " rt-think-pending" : ""
+        }`}
+        aria-label={chipLabel}
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={(e) => {
@@ -131,7 +162,16 @@ export function EffortPicker({ session }: { session: Session }): React.JSX.Eleme
         <span className="rt-think-glyph" aria-hidden>
           ✦
         </span>
-        {level}
+        {pending && level && (
+          <>
+            <span className="rt-think-was">{level}</span>
+            <span className="rt-think-arrow" aria-hidden>
+              →
+            </span>
+          </>
+        )}
+        {shown}
+        {pending && <span className="rt-think-next">next turn</span>}
         <span className="mode-caret" aria-hidden>
           ⌄
         </span>
@@ -149,8 +189,15 @@ export function EffortPicker({ session }: { session: Session }): React.JSX.Eleme
             style={{ width: WIDTH, ...anchor }}
             onClick={(e) => e.stopPropagation()}
           >
+            {pending && (
+              <p className="mode-pop-note">
+                {pending} is set and applies from the next turn. This turn keeps running{" "}
+                {level}; a follow-up message joins it rather than starting a new one.
+              </p>
+            )}
             {levels.map((option) => {
-              const active = option === level;
+              const active = option === shown;
+              const live = option === level && pending !== null;
               return (
                 <Tooltip key={option} label={`Set this session's reasoning effort to ${option}`}>
                 <button
@@ -163,7 +210,13 @@ export function EffortPicker({ session }: { session: Session }): React.JSX.Eleme
                   <span className={`mode-opt-dot rt-think rt-think-${option}`} aria-hidden />
                   <span className="mode-opt-text">
                     <span className="mode-opt-label">{option}</span>
-                    <span className="mode-opt-desc">Apply to this session only</span>
+                    <span className="mode-opt-desc">
+                      {active && pending
+                        ? "Set - applies from the next turn"
+                        : live
+                          ? "Running on this turn"
+                          : "Apply to this session only"}
+                    </span>
                   </span>
                   {busy === option && <span className="mode-opt-spin" aria-label="changing" />}
                   {active && busy === null && <span className="mode-opt-check" aria-hidden>✓</span>}
@@ -179,12 +232,25 @@ export function EffortPicker({ session }: { session: Session }): React.JSX.Eleme
   );
 }
 
-function EffortChip({ level }: { level: ThinkingLevel }): React.JSX.Element {
+function EffortChip({
+  level,
+  pending = false,
+}: {
+  level: ThinkingLevel;
+  pending?: boolean;
+}): React.JSX.Element {
   return (
-    <Tooltip label={`Reasoning effort: ${level}`}>
-      <span className={`rt-pill rt-think rt-think-${level}`}>
+    <Tooltip
+      label={
+        pending
+          ? `Reasoning effort: ${level}, applying from the next turn`
+          : `Reasoning effort: ${level}`
+      }
+    >
+      <span className={`rt-pill rt-think rt-think-${level}${pending ? " rt-think-pending" : ""}`}>
         <span className="rt-think-glyph" aria-hidden>✦</span>
         {level}
+        {pending && <span className="rt-think-next">next turn</span>}
       </span>
     </Tooltip>
   );

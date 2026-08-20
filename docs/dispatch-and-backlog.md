@@ -261,10 +261,11 @@ Workflow, that Workflow follows the same completion boundary and safeguards as o
 
 **scout** also changes what "finished" means for that task: a scout is asked, in its own
 prompt, to write one self-contained static page at `docs/reports/<slug>/report.html`
-and submit it, and it cannot be marked done until Mission Control has captured and verified
-that page into a durable [scout archive](archives.md). Its worktree is not reclaimed
-until that archive exists either, so the answer survives the checkout. No pull request is
-expected, and the conversation is not archived.
+and submit it. Normal completion waits until Mission Control has captured and verified that
+page into a durable [scout archive](archives.md). If the report is unavailable, the operator
+must separately confirm **Close without report** after seeing the archive warning. Its worktree
+is not reclaimed by completion, so the answer remains available for explicit cleanup. No pull
+request is expected, and the conversation is not archived.
 
 **plan** changes what the agent is told, the way scout does, and in the opposite direction. A
 plan task's intent arrives exactly as you wrote it, followed by a contract that hands the work

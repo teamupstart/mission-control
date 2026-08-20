@@ -272,6 +272,31 @@ test("a scout cannot be marked done before it has submitted a report", async () 
   assert.equal(after.outcome, null);
 });
 
+test("a scout can be marked done after explicitly confirming the missing report", async () => {
+  const h = harness();
+  const { repoRoot, worktreePath: cwd } = makeWorktree();
+  const task = mkScout({ worktreePath: cwd, repoRoot, provider: "git", branch: null });
+  h.registry.upsertTask(task);
+
+  const done = await h.tasks.complete(
+    task.id,
+    "closed without a report",
+    undefined,
+    false,
+    false,
+    true,
+  );
+
+  assert.equal(done?.status, "done");
+  assert.equal(done?.outcome, "closed without a report");
+  assert.equal(done?.worktreePath, cwd, "completion still does not reclaim the checkout");
+  assert.equal(
+    h.scouts.captureJobsForTask(task.id).length,
+    0,
+    "confirmation does not invent an archive",
+  );
+});
+
 test("a scout becomes done once its archive is published and verified", async () => {
   const h = harness();
   const { repoRoot, worktreePath: cwd } = makeWorktree({ "docs/reports/resume/report.html": validReportHtml() });

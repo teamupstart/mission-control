@@ -161,7 +161,11 @@ test("Enter opens session detail while Expand only toggles the Board workflow ca
 
 test("the persisted expand action now describes the Board workflow disclosure", () => {
   const expand = ACTIONS.find((action) => action.id === "expand");
-  assert.equal(expand?.defaultBinding, "e");
+  // `v`, not the `e` it shipped with: the review queue took `e` when its badge got a
+  // chord, and this action moved rather than colliding - `computeResolved` claims chords
+  // in registry order, so a second action defaulting to `e` would have resolved to
+  // nothing and drawn no keycap at all.
+  assert.equal(expand?.defaultBinding, "v");
   assert.equal(expand?.label, "Toggle workflow details");
   assert.match(expand?.description ?? "", /without opening its session detail/);
 });

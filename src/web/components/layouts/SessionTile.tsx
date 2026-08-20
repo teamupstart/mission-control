@@ -40,6 +40,7 @@ export function SessionTile({
   session,
   selected = false,
   onOpen,
+  onCursorTo,
   registerEl,
   draggingRepo,
   onDropped,
@@ -58,6 +59,8 @@ export function SessionTile({
   /** The board's arrow-key cursor. Selection does not open the tile until Enter. */
   selected?: boolean;
   onOpen: () => void;
+  /** Make this tile the board's cursor without opening it. See `onSurfaceClick` below. */
+  onCursorTo?: () => void;
   registerEl?: (id: string, el: HTMLElement | null) => void;
   draggingRepo: string | null;
   onDropped: () => void;
@@ -228,6 +231,21 @@ export function SessionTile({
           tileDisclosure={{
             expanded: workflowExpanded,
             onExpandedChange: setWorkflowExpanded,
+            // Two clicks, because this panel's background has two honest meanings and the
+            // tile's own selection is what tells them apart. An expanded ladder is most of
+            // the tile, and a click into it used to mean nothing at all - the tile you
+            // aimed at did not even become the cursor. So the first click selects it, the
+            // way a click on the goal line or the activity ticker above it would.
+            //
+            // Selects rather than opens, and that is the whole reason `onCursorTo` exists:
+            // drilling in morphs this column into the console rail, which replaces the tile
+            // - and the ladder being read - with a rail row, leaving the second click
+            // nowhere to land. Once the tile IS the cursor that question is answered, and
+            // the next click into the same area can only be about the run on screen: it
+            // follows that run into Runs, the same destination as the collapsed peek link
+            // and the ladder's own "Open run" button.
+            onSurfaceClick: () =>
+              selected ? onOpenWorkflowRun?.(workflowRun.id) : (onCursorTo ?? onOpen)(),
           }}
         />
       )}

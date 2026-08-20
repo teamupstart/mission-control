@@ -105,6 +105,19 @@ settled completion. The reconciled intent remains an independent staleness guard
 transcript fingerprint remains proof and claim idempotency; neither one creates a new lifecycle
 opportunity. A new prompt without a later completed work cycle does not re-arm completion.
 
+**Straight to PR is latched per human episode, not per work cycle.** The instruction it types
+makes the agent commit, push, open a pull request and follow CI, and then park - which completes
+a *later* work-cycle generation under completely unchanged human intent. A guard that counted
+only generations would therefore re-arm on the very turn the instruction caused and send it
+again. So when Foreman hands a session to direct shipping, the same atomic write that consumes
+the generation also records the handoff against the reconciled **intent episode**, and prompted
+completion stays quiet for that episode however many generations follow. Recording happens
+*before* anything is typed, and a failed or ambiguous injection is never retried automatically:
+the **Ship it?** card is the recovery, exactly as it is for a send that could not be delivered.
+Type a new instruction and completion re-arms on the next episode; clearing the context rotates
+the session onto a fresh key that has made no handoff at all. Only direct shipping latches -
+submitting a bound **Foreman Complete** Workflow does not, so its repair rounds keep working.
+
 If Claude resumes the same objective from a background task notification, that notification
 remains excluded from the human Goal, while its later settled Stop completes a new work-cycle
 generation and opens one new verification. The same natural start-and-complete path follows a

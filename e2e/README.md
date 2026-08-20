@@ -76,6 +76,7 @@ Regenerate both with:
 
 ```sh
 mkdir -p e2e/.artifacts/dispatch-restart-recovery
+set -o pipefail   # or the pipe below reports tee's success, not Playwright's
 env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   --config e2e/playwright.config.ts \
   e2e/specs/dispatch-restart-recovery.spec.ts \
@@ -95,6 +96,7 @@ Regenerate the frames and transcript with:
 
 ```sh
 mkdir -p e2e/.artifacts/native-worktree-dispatch
+set -o pipefail   # or the pipe below reports tee's success, not Playwright's
 env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   --config e2e/playwright.config.ts \
   e2e/specs/native-worktree-dispatch.spec.ts \
@@ -135,6 +137,25 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   --config e2e/playwright.config.ts \
   e2e/specs/scout-archive.spec.ts \
   -g 'renames inline' \
+  --workers=1 --reporter=list
+```
+
+### Closing a scout without a report
+
+`e2e/.artifacts/scout-close-warning/confirm-close-without-report.png` captures the first
+**Complete & close** refusal after a scout omits its report. The dialog keeps the daemon's
+exact report path and submission-tool guidance, presents it as an amber warning, and replaces
+the ordinary primary action with the explicit red **Close without report** confirmation. The
+same run proves the first click changes nothing and the second closes the task without
+inventing an archive.
+
+Regenerate it with:
+
+```sh
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/scout-archive.spec.ts \
+  -g 'warns first' \
   --workers=1 --reporter=list
 ```
 
@@ -387,6 +408,47 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   e2e/specs/foreman-planner-health.spec.ts \
   --workers=1 --reporter=list
 ```
+
+### An effort that applies on the next turn
+
+`e2e/.artifacts/effort-next-turn/` holds three frames and the transcript of the run that
+produced them. The frames settle the one thing an accessible name cannot: whether a person
+reading a card can tell "this is your level" from "this will be your level".
+
+- `effort-pending-mid-turn.png` - the chip while a Codex turn is running, reading
+  `medium → high` with the **next turn** tag and a dashed outline, taken after the run has
+  already watched three metadata refreshes go by without it reverting.
+- `effort-pending-menu.png` - the same chip's menu open, where the sentence the chip has no
+  room for is written out and the two options carry different sub-labels: one is set for
+  the next turn, the other is what this turn is running.
+- `effort-settled-next-turn.png` - the chip after the next turn actually started, back to a
+  plain `high` with no tag and a solid outline.
+
+All three matter together. The difference between the first and the last is a dashed border,
+a struck-through level and the two words `next turn`, and getting them confused means an
+operator believes a level took effect on work that ran without it.
+
+`effort-next-turn/focused-playwright-transcript.txt` is that run's own output. Under
+`MC_E2E_EVIDENCE` the spec narrates each milestone as its assertion lands - the live level
+read off the rollout, the turn going busy, the choice, how many times the active turn
+refreshed the card's metadata without the pending state moving, and the settle after the
+next turn. A bare pass line proves the spec ran and says nothing about what it watched; these
+lines are emitted by the run itself, so the transcript is a record of the flow rather than a
+summary written afterwards.
+
+Regenerate the frames and the transcript with:
+
+```sh
+mkdir -p e2e/.artifacts/effort-next-turn
+set -o pipefail   # or the pipe below reports tee's success, not Playwright's
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/effort-next-turn.spec.ts \
+  --workers=1 --reporter=list \
+  | tee e2e/.artifacts/effort-next-turn/focused-playwright-transcript.txt
+```
+
+Attach the generated frames and transcript to the pull request; they are never committed.
 
 ### Accepted SDK stop
 

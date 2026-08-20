@@ -162,7 +162,13 @@ export function applyFileLoadSuccess(
   }
   return {
     ...state,
-    mode: selected && doc.kind !== "html" && doc.kind !== "markdown" ? "editor" : state.mode,
+    mode: selected
+      ? doc.kind === "image"
+        ? "preview"
+        : doc.kind === "html" || doc.kind === "markdown"
+          ? state.mode
+          : "editor"
+      : state.mode,
     openError: selected ? null : state.openError,
     buffers: {
       ...state.buffers,

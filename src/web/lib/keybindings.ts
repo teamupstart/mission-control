@@ -49,7 +49,8 @@ export type ActionId =
   // Appended, never inserted: these ids key persisted overrides in
   // `app_config.ui.keybindings`, so moving one would silently reassign somebody's rebinding
   // to a different action.
-  | "scouts";
+  | "scouts"
+  | "review";
 
 export interface ActionDef {
   id: ActionId;
@@ -145,13 +146,29 @@ export const ACTIONS: readonly ActionDef[] = [
     group: "global",
   },
   {
+    // A review waiting on you is the most urgent thing a session can be, and the badge
+    // that says so is already a button - this is that button's chord. It reads the
+    // session's own `pendingReviews`, so it stays unclaimed on a fleet with nothing
+    // waiting and never steals `e` from a card that has no queue to open.
+    id: "review",
+    label: "Open reviews",
+    description:
+      "Open the review queue waiting on you - on the selected session, or on the first one asking.",
+    defaultBinding: "e",
+    group: "selection",
+  },
+  {
     // The id predates the Board's in-place workflow disclosure and is persisted in
     // `app_config.ui.keybindings`, so keep it stable while narrowing what the action means.
+    //
+    // Its default moved `e` -> `v` when the review queue took `e`. The id is what
+    // persisted overrides key on, so an operator who had already rebound this keeps their
+    // chord; only the untouched default moved.
     id: "expand",
     label: "Toggle workflow details",
     description:
       "Show or collapse the selected Board card's full workflow without opening its session detail.",
-    defaultBinding: "e",
+    defaultBinding: "v",
     group: "selection",
   },
   {

@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Phased implementation: Hide launch instructions</title>
+<style>
+  :root { --bg:#fff; --surface:#f6f8fb; --fg:#17202a; --muted:#5f6b78; --border:#d9e0e8; --soft:#e8edf2; --accent:#8857d9; --accent-soft:#f2ebff; --link:#0b68c7; --code:#f2f4f7; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#0c1015; --surface:#141a21; --fg:#e8edf3; --muted:#9ba7b5; --border:#2a3440; --soft:#202a35; --accent:#b995f4; --accent-soft:#271c3b; --link:#73b6ff; --code:#151b22; } }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:48px 24px 72px; background:var(--bg); color:var(--fg); font:16px/1.62 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; }
+  main { max-width:920px; margin:0 auto; }
+  h1 { margin:0 0 8px; font-size:clamp(30px,5vw,42px); line-height:1.1; letter-spacing:-.025em; }
+  h2 { margin:42px 0 14px; padding-bottom:8px; border-bottom:1px solid var(--soft); font-size:23px; }
+  h3 { margin:28px 0 9px; font-size:18px; }
+  p { margin:10px 0; } ul,ol { padding-left:24px; } li { margin:6px 0; }
+  a { color:var(--link); } code { padding:2px 5px; border:1px solid var(--soft); border-radius:5px; background:var(--code); font:.88em ui-monospace,SFMono-Regular,Menlo,monospace; }
+  .eyebrow { margin:0 0 10px; color:var(--accent); font-size:12px; font-weight:750; letter-spacing:.09em; text-transform:uppercase; }
+  .lede { color:var(--muted); font-size:18px; }
+  .status { display:inline-block; margin:18px 0 8px; padding:5px 11px; border-radius:999px; color:var(--accent); background:var(--accent-soft); font-size:12px; font-weight:720; letter-spacing:.04em; text-transform:uppercase; }
+  .callout { margin:18px 0; padding:18px 20px; border:1px solid var(--border); border-left:4px solid var(--accent); border-radius:10px; background:var(--surface); }
+  .table-wrap,.code-wrap { max-width:100%; overflow-x:auto; }
+  table { width:100%; min-width:760px; border-collapse:collapse; }
+  th,td { padding:12px 14px; border:1px solid var(--border); text-align:left; vertical-align:top; }
+  th { background:var(--surface); font-size:13px; }
+  pre { margin:14px 0; padding:14px 16px; overflow-x:auto; border:1px solid var(--border); border-radius:10px; background:var(--code); }
+  pre code { padding:0; border:0; background:transparent; }
+  figure { margin:22px 0; padding:14px; overflow-x:auto; border:1px solid var(--border); border-radius:12px; background:var(--surface); }
+  figure svg { display:block; width:100%; min-width:700px; height:auto; }
+  figcaption { margin:8px 4px 0; color:var(--muted); font-size:13px; }
+  .box { fill:var(--bg); stroke:var(--border); stroke-width:1.5; } .box-accent { fill:var(--accent-soft); stroke:var(--accent); stroke-width:1.8; }
+  .title { fill:var(--fg); font:650 13px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; } .sub { fill:var(--muted); font:11px ui-monospace,Menlo,monospace; }
+  .arrow { stroke:var(--accent); stroke-width:2; fill:none; } .head { fill:var(--accent); }
+  @media (max-width:700px) { body { padding:30px 16px 56px; } }
+</style>
+</head>
+<body>
+<main>
+  <p class="eyebrow">Mission Control implementation plan</p>
+  <h1>Hide launch instructions from conversations</h1>
+  <p class="lede">One durable, reviewable vertical slice from launch capture through native transcript projection and browser verification.</p>
+  <span class="status">Ready to publish and schedule</span>
+
+  <h2>Source of truth</h2>
+  <ul>
+    <li>Approved product plan: <code>docs/plans/hidden-launch-instructions/plan.md</code></li>
+    <li>Decision: <strong>show only the human task request</strong> while preserving the complete prompt for the agent and server evidence consumers.</li>
+    <li>Follow-up: create the phased plan and schedule its task.</li>
+  </ul>
+  <p>The product plan is authoritative for behavior. This index and its linked phase describe the repository-verified route.</p>
+
+  <h2>Investigated findings</h2>
+  <ol>
+    <li><strong>One normalized contract:</strong> Claude, Codex, and Pi all produce <code>TranscriptMessage</code>; provider-native file mutation is unnecessary.</li>
+    <li><strong>Two launch facts:</strong> the dispatcher holds both the full composed prompt and original <code>Task.intent</code>. Pi fingerprints its final memory-pointer-prefixed text.</li>
+    <li><strong>Different timing:</strong> terminal launch can stage before injection; SDK marker state must be durable before registration and its event pump.</li>
+    <li><strong>Existing identity lifecycle:</strong> <code>noteKeyFor</code> moves from provisional to native identity. Launch state moves only on that initial bind, never across <code>/clear</code>.</li>
+    <li><strong>Existing overlay:</strong> transcript attribution already adds non-destructive metadata after native parsing.</li>
+    <li><strong>Several browser consumers:</strong> Chat, Native, find, and Yours must share one projected message array.</li>
+    <li><strong>Byte-based paging:</strong> browser history and SSE offsets remain based on unprojected native transcript bytes.</li>
+    <li><strong>Existing E2E seam:</strong> <code>dispatch-and-converse.spec.ts</code> covers the real dashboard-to-fake-agent round trip without model spend.</li>
+    <li><strong>Pipeline split:</strong> the SDK arm launches a streamable agent conversation and is covered. The terminal arm launches the Conductor host with no agent conversation or transcript turn to mark.</li>
+  </ol>
+
+  <h2>Design reconciliation</h2>
+  <div class="callout">
+    <p>Store a fingerprint of the complete normalized launch text plus its human display projection. Preserve the native message id, role, timestamp, and tools when substituting visible text.</p>
+    <p>Do not use <code>origin: "harness"</code>. Origin is authorship; launch presentation is a display projection of one accepted human request plus platform context.</p>
+  </div>
+
+  <h2>Sizing and phase count</h2>
+  <p>Estimated non-test production change: <strong>190-270 lines</strong>, excluding documentation and tests.</p>
+  <p>Create <strong>one phase and one one-shot implementation task</strong>. The estimate straddles 200 lines, but splitting the vertical slice would merge dead metadata or a wire consumer with no producer. One pull request is the smallest operable and reviewable unit.</p>
+
+  <h2>Phase table</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Phase</th><th>Outcome</th><th>Direct prerequisites</th><th>Task shape</th></tr></thead>
+    <tbody><tr><td><a href="phase-1-durable-launch-presentation.md">Phase 1: Durable launch presentation</a></td><td>Human task request in Chat, Native, find, and Yours; full prompt retained for agent and server consumers</td><td>Planning session and artifact PR</td><td>One-shot ship task</td></tr></tbody>
+  </table></div>
+
+  <h2>Dependency graph</h2>
+  <figure>
+    <svg viewBox="0 0 780 170" role="img" aria-label="The planning pull request publishes the artifacts, which releases the one durable launch presentation implementation phase, whose merge delivers the feature.">
+      <defs><marker id="ah" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path class="head" d="M0 0 L7 3 L0 6 Z" /></marker></defs>
+      <rect class="box" x="24" y="45" width="200" height="68" rx="9" /><text class="title" x="124" y="75" text-anchor="middle">Planning PR</text><text class="sub" x="124" y="94" text-anchor="middle">publishes artifact paths</text>
+      <rect class="box-accent" x="290" y="35" width="220" height="88" rx="9" /><text class="title" x="400" y="68" text-anchor="middle">Phase 1</text><text class="sub" x="400" y="89" text-anchor="middle">marker · wire · UI · E2E</text><text class="sub" x="400" y="106" text-anchor="middle">one reviewable pull request</text>
+      <rect class="box" x="576" y="45" width="180" height="68" rx="9" /><text class="title" x="666" y="75" text-anchor="middle">Feature delivered</text><text class="sub" x="666" y="94" text-anchor="middle">no later phases</text>
+      <path class="arrow" d="M224 79 H286" marker-end="url(#ah)" /><path class="arrow" d="M510 79 H572" marker-end="url(#ah)" />
+    </svg>
+    <figcaption>The implementation task is also directly gated on the active planning session.</figcaption>
+  </figure>
+
+  <h2>Concurrency and merge order</h2>
+  <p>There is one phase, so there are no concurrent groups or inter-phase edges. Its task depends directly on this planning session and stays backlogged until the artifact pull request merges.</p>
+
+  <h2>Cross-phase contracts</h2>
+  <ul>
+    <li>Native transcripts and agent delivery remain unchanged.</li>
+    <li>Only fresh Mission Control-managed launches receive presentation metadata.</li>
+    <li>The marker survives restart and initial binding, but not <code>/clear</code>.</li>
+    <li>All server evidence readers retain the complete prompt.</li>
+    <li>Chat, Native, find, and Yours share one identity-preserving projection.</li>
+    <li>Unmarked messages retain current behavior.</li>
+    <li>Transcript paging and reconnect remain byte-based on native text.</li>
+  </ul>
+
+  <h2>Final verification strategy</h2>
+  <ul>
+    <li>Failing-first Playwright reproduction through real dashboard dispatch and the fake SDK agent.</li>
+    <li>Persistence, identity movement, dispatcher, supervisor, attribution, projection, find, and Yours tests.</li>
+    <li>Manual, assigned, resumed, cleared, and historical compatibility cases.</li>
+    <li>Provider-boundary evidence proving the full composed prompt was accepted.</li>
+    <li>Typecheck, lint, focused tests, build, smoke, focused Playwright, and repository-required broader suites.</li>
+  </ul>
+
+  <h2>Final audit</h2>
+  <ul>
+    <li>Phase 1 owns every approved requirement and no rejected presentation.</li>
+    <li>No provider-specific UI branch or second transcript truth is introduced.</li>
+    <li>No later cleanup or documentation phase is needed.</li>
+    <li>The dependency graph contains only the planning-session publication edge.</li>
+    <li>Inspector reconciliation confirms that pipeline SDK conversations are covered and the terminal Conductor host is not a missing conversation seam.</li>
+  </ul>
+</main>
+</body>
+</html>

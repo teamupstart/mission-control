@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Task } from "../src/shared/types.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
+import { taskHasWorktrees } from "../src/shared/task-repos.ts";
 
 // Point the daemon's state dir at a throwaway home BEFORE anything reads config,
 // so this test never touches the real ~/.mission-control db. config.ts resolves the
@@ -172,6 +173,69 @@ test("prune never evicts terminal tasks that still hold resources", () => {
   }
   assert.ok(r.getTask("alive-fail"), "a failed task with a worktree is never evicted");
   assert.ok(r.getTask("cancelled-home"), "a cancelled task with a terminal home is never evicted");
+});
+
+test("an attached-only survivor of a partial teardown is still a resource holder", () => {
+  // The half-released shape: multi-repo teardown cleared the PRIMARY path as that tree was
+  // actually released, then failed on the attached repository - whose checkout is still on
+  // disk. Reading `worktree_path` alone called this task fully cleaned, so nothing reloaded
+  // it on restart and nothing offered to clean it up.
+  upsertTask(mkTask({
+    id: "attached-only",
+    status: "failed",
+    worktreePath: null,
+    homeName: null,
+    extraRepos: [{
+      repoRoot: "/other",
+      worktreePath: "/wt/attached",
+      branch: "harness/attached",
+      provider: "git",
+      worktreeLeaseId: null,
+      baseSha: null,
+      prUrl: null,
+      prState: null,
+      mergedAt: null,
+    }],
+  }));
+  const loaded = loadResourceHoldingTerminalTasks().find((t) => t.id === "attached-only");
+  assert.equal(loaded?.extraRepos[0]?.worktreePath, "/wt/attached");
+  assert.ok(taskHasWorktrees(loaded!), "the shared predicate agrees with the SQL");
+
+  // And a task with NO tree anywhere is still not loaded, so the clause widened the query by
+  // exactly the survivor and nothing else.
+  upsertTask(mkTask({ id: "fully-clean", status: "done", worktreePath: null, homeName: null }));
+  assert.ok(!loadResourceHoldingTerminalTasks().some((t) => t.id === "fully-clean"));
+  deleteTask("attached-only");
+  deleteTask("fully-clean");
+});
+
+test("prune keeps a terminal task whose only remaining tree is an attached repository", () => {
+  const r = new Registry();
+  r.upsertTask(mkTask({
+    id: "attached-survivor",
+    status: "cancelled",
+    updatedAt: 1,
+    worktreePath: null,
+    homeName: null,
+    extraRepos: [{
+      repoRoot: "/other",
+      worktreePath: "/wt/attached",
+      branch: "harness/attached",
+      provider: "git",
+      worktreeLeaseId: null,
+      baseSha: null,
+      prUrl: null,
+      prState: null,
+      mergedAt: null,
+    }],
+  }));
+  for (let i = 0; i < 60; i++) {
+    r.upsertTask(mkTask({ id: `pushout-${i}`, status: "done", updatedAt: 2000 + i }));
+  }
+  assert.ok(
+    r.getTask("attached-survivor"),
+    "an attached-only owner must stay in memory - evicting it orphans a real worktree",
+  );
 });
 
 test("a backlog task (no worktree) never decorates a session", () => {

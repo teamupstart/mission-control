@@ -340,6 +340,8 @@ interface CompletionInput {
   outcomeUrl?: string;
   satisfyDependents: boolean;
   requireStopped: boolean;
+  /** A human has accepted the archive problems returned by a prior completion attempt. */
+  confirmIncompleteScout: boolean;
   /**
    * The session whose idleness this completion was INFERRED from, or null for a stated one.
    *
@@ -737,6 +739,7 @@ export class TaskManager {
         // merge-only satisfaction rule.
         satisfyDependents: false,
         requireStopped: false,
+        confirmIncompleteScout: false,
         inferredFrom: null,
       });
     }
@@ -859,6 +862,7 @@ export class TaskManager {
       outcomeUrl: outcome.url,
       satisfyDependents: false,
       requireStopped: false,
+      confirmIncompleteScout: false,
       inferredFrom: s.id,
     });
   }
@@ -1106,6 +1110,7 @@ export class TaskManager {
           outcomeUrl: outcome.url,
           satisfyDependents: true,
           requireStopped: false,
+          confirmIncompleteScout: false,
           inferredFrom: null,
         });
       }
@@ -1321,6 +1326,7 @@ export class TaskManager {
           outcomeUrl: outcome.url,
           satisfyDependents: false,
           requireStopped: false,
+          confirmIncompleteScout: false,
           inferredFrom: null,
         },
         (problems) => this.settleAgentGone(t.id, problems),
@@ -2381,11 +2387,11 @@ export class TaskManager {
       return { ok: false, error: pane.error ?? "that agent's pane cannot take a prompt", scope: "session" };
     }
 
-    // A scout cannot finish without submitting its report through our MCP server, and an
-    // assignment cannot change an already-running process's launch allowlist - so if the
+    // A scout cannot finish its normal contract without submitting its report through our MCP
+    // server, and an assignment cannot change an already-running process's launch allowlist - so if the
     // bundle it would have to call is not on this machine at all, the assignment is refused
     // HERE, before the reset. The alternative is an agent whose checkout has just been wiped
-    // working towards a task it can provably never complete.
+    // working towards a task it can provably never complete normally.
     //
     // The bundle's presence is what can honestly be established: whether THIS session's launch
     // registered it is a property of a process we did not necessarily start. A dispatched
@@ -2902,12 +2908,14 @@ export class TaskManager {
     outcomeUrl?: string,
     satisfyDependents = false,
     requireStopped = false,
+    confirmIncompleteScout = false,
   ): Promise<Task | null> {
     return this.runCompletion(id, {
       outcome,
       outcomeUrl,
       satisfyDependents,
       requireStopped,
+      confirmIncompleteScout,
       inferredFrom: null,
     });
   }
@@ -2964,11 +2972,11 @@ export class TaskManager {
    * 3. finish through the same synchronous write every other completion uses, which re-reads
    *    and re-validates the row: a cancel or a reschedule can land inside a capture.
    *
-   * Step 2 is a refusal rather than a fallback. There is no transcript to fall back TO: the
-   * archive contract is one submitted HTML page, and manufacturing an archive from
-   * conversation text would publish something nobody wrote as the durable answer to the
-   * question. So a scout with no report stays nonterminal, keeps its session and checkout,
-   * and gets the exact correction back.
+   * Step 2 is a refusal on the first request rather than a fallback. There is no transcript
+   * to fall back to: the archive contract is one submitted HTML page, and manufacturing an
+   * archive from conversation text would publish something nobody wrote as the durable answer
+   * to the question. An explicitly confirmed request may still close the task without that
+   * archive, after the operator has seen the exact problems and accepted the missing record.
    */
   private async completeScout(
     id: string,
@@ -2978,7 +2986,9 @@ export class TaskManager {
     const before = this.scoutCompletionSnapshot(id, input.requireStopped);
     if (!before) return null;
     const ready = await gate.ensureReady(id);
-    if (!ready.ok) throw new ScoutArchiveNotReadyError(ready.problems);
+    if (!ready.ok && !input.confirmIncompleteScout) {
+      throw new ScoutArchiveNotReadyError(ready.problems);
+    }
     this.assertScoutCompletionUnchanged(id, input.requireStopped, before);
     return this.finishCompletion(id, input);
   }

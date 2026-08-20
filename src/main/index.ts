@@ -23,6 +23,7 @@ import {
   UpdateController,
   type UpdateDialogs,
 } from "./updater.ts";
+import type { UpdateSnapshot } from "../shared/update.ts";
 
 app.setName("Mission Control");
 
@@ -42,6 +43,7 @@ const paths = {
 
 let daemonStart: DaemonStartOwnership<DaemonController> | null = null;
 let updater: UpdateController | null = null;
+let stopUpdateSubscription: (() => void) | null = null;
 
 function showIntegrationResult(title: string, message: string): void {
   const win = getMainWindow();
@@ -119,7 +121,14 @@ function openSettings(): void {
   else wc.send("mission:open-settings");
 }
 
-function registerIpc(): void {
+function pushUpdateSnapshot(snapshot: UpdateSnapshot): void {
+  const wc = getMainWindow()?.webContents;
+  if (!wc) return;
+  if (wc.isLoading()) wc.once("did-finish-load", () => wc.send("mission:update-state", snapshot));
+  else wc.send("mission:update-state", snapshot);
+}
+
+function registerIpc(updateController: UpdateController): void {
   ipcMain.handle("mission:version", () => app.getVersion());
   ipcMain.handle("mission:open-external", (_e, url: string) => shell.openExternal(url));
   ipcMain.handle("mission:install-integrations", () => {
@@ -132,6 +141,10 @@ function registerIpc(): void {
     showIntegrationResult("Integrations", r.message);
     return r;
   });
+  ipcMain.handle("mission:update-get-state", () => updateController.getSnapshot());
+  ipcMain.handle("mission:update-check", () => updateController.check(true));
+  ipcMain.handle("mission:update-apply", () => updateController.apply());
+  ipcMain.handle("mission:update-defer", () => updateController.defer());
 }
 
 app.on("second-instance", () => showWindow(paths.preload));
@@ -150,14 +163,14 @@ app.on("window-all-closed", () => {
 
 app.on("before-quit", () => {
   setQuitting(true);
+  stopUpdateSubscription?.();
+  stopUpdateSubscription = null;
   updater?.stop();
   destroyTray();
   daemonStart?.stop();
 });
 
 app.whenReady().then(async () => {
-  registerIpc();
-
   // Auto-grant the Notification permission for the daemon/Vite origin so the
   // dashboard's "Enable desktop alerts" resolves to `granted` (OS-level delivery
   // is still governed by System Settings → Notifications → Mission Control).
@@ -188,6 +201,8 @@ app.whenReady().then(async () => {
       dialogs: updateDialogs,
     }),
   );
+  registerIpc(updater);
+  stopUpdateSubscription = updater.subscribe(pushUpdateSnapshot);
   const updaterStart = updater.start();
   const onCheckForUpdates = () => void updater?.checkForUpdates();
 

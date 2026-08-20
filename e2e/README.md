@@ -1164,7 +1164,7 @@ Attach the generated frames to the pull request; they are never committed.
 
 ### The retro offer appearing, and being taken
 
-`e2e/.artifacts/retro-offer/` carries five frames and the run's own stdout from
+`e2e/.artifacts/retro-offer/` carries seven frames and the run's own stdout from
 `specs/retro-offer.spec.ts`, behind the same `MC_E2E_EVIDENCE` flag. The change is a control
 that **appears**, so the pair either side of that is the point: `01-no-offer-yet.png` is a
 fresh session's action row, and `02-offer-on-the-card.png` is the same row once a human has
@@ -1179,10 +1179,18 @@ by whether the session earned the offer - the backstop sits on the dialog's own 
 footer, away from Cancel and Complete & close, because it is not a third answer to the
 dialog's question.
 
+`06-post-merge-follow-up-started.png` is the click taken after the pull request merged: the
+flash naming the linked follow-up task, with the source task still complete beside it.
+
+`07-offer-earned-by-answering-a-question.png` is the same control earned the OTHER way: that
+session's human typed no correction at all, they answered the agent's own `AskUserQuestion`
+form in the dashboard, and the daemon read the durable human-resolved review. Its case runs
+with `MISSION_RETRO_SCAN_MS=0`, so the transcript scanner cannot have supplied the answer.
+
 That the offer is **absent** the rest of the time is checkable in the DOM as a count; that it
 reads as an offer rather than as a permanently disabled control is legible only here.
 
-Regenerate all six with:
+Regenerate all seven with:
 
 ```sh
 set -o pipefail   # or the pipe below reports tee's success, not Playwright's

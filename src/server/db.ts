@@ -3646,6 +3646,40 @@ export function loadHumanResolvedReviews(sessionId: string, limit = 500): Review
   return rows.map(rowToReview).filter(isHumanResolvedReview);
 }
 
+/**
+ * Has this session had at least one review a HUMAN settled?
+ *
+ * The existence half of `loadHumanResolvedReviews`, and it exists because retro worthiness
+ * asks a yes/no question that the conversation query answers by materializing up to 500 rows
+ * with every column on them. This runs once per session the Registry newly introduces - a
+ * daemon restart is the case it is for, since a human decision made yesterday is still the
+ * evidence that this session was steered - so the row bodies would be read and thrown away.
+ *
+ * The filter is spelled from the SAME `HUMAN_REVIEW_STATUSES` set for the same reason the
+ * conversation query is: two hand-written status lists drift, and the drift would be a
+ * session that replays your answer in its log while claiming nobody steered it. `resolved_by`
+ * is asserted rather than inferred from the status, exactly as `isHumanResolvedReview` does -
+ * Foreman settles reviews through the same route the dashboard does, and its decisions are
+ * not human steering.
+ *
+ * `SELECT 1 ... LIMIT 1` over the existing `idx_reviews_session` index, so no migration and
+ * no new index are needed for it.
+ */
+export function hasHumanResolvedReview(sessionId: string): boolean {
+  const statuses = [...HUMAN_REVIEW_STATUSES];
+  return Boolean(
+    openDb()
+      .prepare(
+        `SELECT 1 FROM reviews
+          WHERE session_id = ?
+            AND resolved_by = 'human'
+            AND status IN (${statuses.map(() => "?").join(", ")})
+          LIMIT 1`,
+      )
+      .get(sessionId, ...statuses),
+  );
+}
+
 /** Human-resolved plan/input records retained as workflow intent evidence. */
 export function loadResolvedWorkflowReviews(sessionId: string, limit = 100): ReviewItem[] {
   const rows = openDb()

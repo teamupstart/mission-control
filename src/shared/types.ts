@@ -2413,11 +2413,17 @@ export interface InspectorSummary {
 /**
  * Why a finished session is worth a retrospective.
  *
- * Two reasons, and they are the two the source plan named: the human corrected the agent in
- * the transcript, or the Inspector raised findings that were then resolved. Both describe
+ * Two reasons, and they are the two the source plan named: the human STEERED the agent, or
+ * the Inspector raised findings that were then resolved. Both describe
  * something that was LEARNED - a correction the next session should not need, a defect the
  * repository could have warned about - which is exactly what a repository memory is for. A
  * clean run nobody had to steer teaches nothing, and gets no offer.
+ *
+ * `corrections` is the wire spelling of the first, and it is broader than its name: steering
+ * arrives either as a human turn in the transcript beyond the opening brief or as a review
+ * the human settled - an answered question, an approved plan, a set of decisions - which no
+ * transcript carries, because those land in the JSONL as pure tool results. One reason for
+ * both, because they are one fact about the session and the offer asks one question of it.
  *
  * The values are display vocabulary rather than persisted vocabulary: nothing writes them to
  * SQLite, so they may be renamed. They still reach the browser, so a build that does not
@@ -2431,7 +2437,7 @@ export type RetroReason = (typeof RETRO_REASONS)[number];
  * The per-session retro-worthiness signal, denormalized onto a Session like `inspector`.
  *
  * A list rather than one reason because both can hold at once and they say different things
- * to the person deciding whether to spend a turn on it: "you corrected this agent four times"
+ * to the person deciding whether to spend a turn on it: "you steered this agent four times"
  * and "the review found things" are separate arguments for the same ceremony. The summary is
  * only ever present when `reasons` is non-empty; absence IS "not worth retrospecting".
  */

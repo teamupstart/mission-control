@@ -24,6 +24,12 @@ import { writeGhPullRequests, type FakePullRequest } from "../fixtures/fake-agen
  * request, the offer appearing over SSE, the click, the route, and the instruction landing in
  * the conversation the browser is rendering.
  *
+ * Worthiness has TWO evidence sources and both are covered, because they are one signal and a
+ * change that swapped one for the other would look identical from either case alone: a typed
+ * correction the transcript scanner reads, and a review the human settled - the last case in
+ * this file, where the agent's own `AskUserQuestion` is answered from the dashboard and no
+ * correction is typed at all.
+ *
  * Stood in for, and only ever the PROVIDER's answer: what the Inspector's poll saw on GitHub.
  * A review ROUND is written straight into the ledger the way the poller would, exactly as
  * `ship-log.spec.ts` and `workflow-pull-request-mismatch.spec.ts` do - e2e reaches no network,
@@ -35,6 +41,8 @@ import { writeGhPullRequests, type FakePullRequest } from "../fixtures/fake-agen
 const EVIDENCE = artifactsDir("retro-offer");
 const TASK = "hold a session worth retrospecting";
 const CORRECTION = "no - reproduce it in docker first, it never fails on the Mac";
+/** The prompt `fake-claude.mjs` answers by raising a real `AskUserQuestion` and blocking. */
+const ASK_TURN = "ask me which linter to use";
 const HELD_TURN = "hold the current turn open";
 
 /**
@@ -277,7 +285,9 @@ test("a corrected session is offered a retro once its review is clean, and one c
   // e2e/README.md), so a card-scoped locator never sees it and a page-scoped `getByText`
   // matches the visible bubble as well.
   await expect(
-    dashboard.locator(".tt-desc", { hasText: "Offered because you corrected it during the work" }),
+    dashboard.locator(".tt-desc", {
+      hasText: "Offered because you steered it during the work, by correcting it or answering its question",
+    }),
   ).toBeAttached();
   observed("the offer reached the card over SSE, naming the reason it is being made");
   await shoot(card, dashboard, "02-offer-on-the-card");
@@ -489,4 +499,85 @@ test("a session nobody corrected is never offered a retro, however clean its rev
   ).toBe(0);
   observed("the Complete dialog offers no retro for a session nobody corrected");
   await shoot(dialog, dashboard, "04-complete-without-a-backstop");
+});
+
+/**
+ * The OTHER way a human steers a session, and the one no transcript can carry.
+ *
+ * A driver-run session keeps Claude's native `AskUserQuestion`, so answering it resolves the
+ * callback the agent is blocked on and lands in the JSONL as a pure `tool_result` - which
+ * every harness parser drops as machine noise. The observed failure was a finished session
+ * ("Add keybinding for To review button") whose operator answered two dashboard questions,
+ * whose pull request the Inspector reviewed clean, and whose card offered no retro at all.
+ *
+ * `MISSION_RETRO_SCAN_MS: "0"` switches transcript scanning OFF for this daemon, which is
+ * what makes the case airtight rather than merely plausible. The prompt that makes the fake
+ * CLI ask is itself typed into the composer - it has to be, since that is how a real ask is
+ * provoked - so with the scanner running, a green result would prove nothing about the review
+ * feed. With it off, the durable human-resolved review is the only thing that can possibly
+ * light the offer.
+ */
+test.describe("steered by answering, not by typing a correction", () => {
+  test.use({ daemonEnv: { MISSION_RETRO_SCAN_MS: "0" } });
+
+  test("answering the agent's own question earns the retro offer once the review is clean", async ({
+    dashboard,
+    daemon,
+  }) => {
+    await enableRetroSkill(daemon);
+    const session = await dispatch(dashboard, daemon);
+    const card = dashboard.locator("article.card").first();
+    await expectNoRetroOffer(card);
+
+    // Provoke the real `can_use_tool` request and answer the real form the dashboard draws
+    // for one, through the same route a person's click takes.
+    await card.getByRole("button", { name: "Expand conversation" }).click();
+    const composer = card.getByPlaceholder(/^Reply to this session/);
+    await expect(composer).toBeEnabled();
+    await composer.fill(ASK_TURN);
+    await composer.press("Enter");
+    const form = card.locator(".pane-dialog");
+    await expect(form).toBeVisible({ timeout: 30_000 });
+    // Deliberately not the first row of either question: a spec that picks the default passes
+    // just as well against a form that ignores the click.
+    await form.getByRole("radio", { name: /eslint/ }).click();
+    await form.getByRole("checkbox", { name: /tests/ }).click();
+    await form.getByRole("button", { name: "Submit answers" }).click();
+    await expect(form).toBeHidden({ timeout: 30_000 });
+    observed("the agent's own question was answered from the dashboard");
+
+    // The claim: worthiness with no transcript scan running at all, so the durable
+    // human-resolved review is the only thing that can have produced it.
+    await expect
+      .poll(async () => (await sessions(daemon)).find((s) => s.id === session.id)?.retro?.reasons, {
+        timeout: 30_000,
+        message: "answering the question is steering, and rides the session payload",
+      })
+      .toEqual(["corrections"]);
+
+    // Worthy, but the timing half has not arrived - the same independence the typed case
+    // proves, on the other evidence source.
+    await expectNoRetroOffer(card);
+    observed("a steered session with no pull request is still not offered a retro");
+
+    await announcePullRequest(daemon, session, "https://github.com/mancej-cyc/ai-harness/pull/480");
+    await expect.poll(async () => (await api<unknown[]>(daemon, "/api/inspector/prs")).length).toBe(1);
+    observeCleanReview(daemon);
+    await refreshInspections(daemon);
+    await expect
+      .poll(async () => (await sessions(daemon)).find((s) => s.id === session.id)?.inspector?.round)
+      .toBe(1);
+
+    const retro = card.getByRole("button", { name: "Run retro" });
+    await expect(retro).toBeVisible({ timeout: 30_000 });
+    // And it explains itself in language that is true of what this operator actually did.
+    // "You corrected it" was a sentence about a turn they never typed.
+    await expect(
+      dashboard.locator(".tt-desc", {
+        hasText: "Offered because you steered it during the work, by correcting it or answering its question",
+      }),
+    ).toBeAttached();
+    observed("the offer reached the card, earned by an answered question alone");
+    await shoot(card, dashboard, "07-offer-earned-by-answering-a-question");
+  });
 });

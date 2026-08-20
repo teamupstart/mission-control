@@ -23,6 +23,28 @@ export class ReviewResolutionError extends Error {}
  * human resolves it from the UI, which unblocks every waiter. This is the
  * generalized approval and input channel for agents.
  */
+/**
+ * Do two asks offer the human the same choice?
+ *
+ * Compared through a canonical serialization rather than `deepEqual` on the parsed value,
+ * because the two sides are the same JSON payload sent twice and re-parsed - identical in
+ * content, and with no guarantee of identical key order or of which optional keys survived
+ * as `undefined`. Sorting keys and dropping `undefined` makes the comparison about what the
+ * human would read, which is the only thing that decides whether these are one question.
+ */
+function sameDecisions(a: PlanDecision[] | null | undefined, b: PlanDecision[] | null): boolean {
+  return canonical(a ?? null) === canonical(b);
+}
+
+function canonical(value: unknown): string {
+  return JSON.stringify(value, (_key, v: unknown) => {
+    if (v === null || typeof v !== "object" || Array.isArray(v)) return v;
+    const entries = Object.entries(v as Record<string, unknown>).filter(([, x]) => x !== undefined);
+    entries.sort(([x], [y]) => (x < y ? -1 : x > y ? 1 : 0));
+    return Object.fromEntries(entries);
+  });
+}
+
 export class ReviewManager {
   private waiters = new Map<string, Set<Waiter>>();
 
@@ -49,6 +71,38 @@ export class ReviewManager {
     this.registry.onSessionsObserved(() => this.orphanReviewsWithNoLiveSession());
   }
 
+  /**
+   * Open a question and publish it - or hand back the identical one already open.
+   *
+   * The re-attach is the whole point, and it is not a nicety. Every tool that lands here
+   * (`request_input`, `request_plan_decisions`, `request_review`) BLOCKS until a human
+   * decides, for as long as that takes. The MCP client in front of it does not wait that
+   * long: it abandons the tool call on its own timeout and hands the model an error, and
+   * the model's natural recovery is to ask the identical question again. Nothing here
+   * could tell that retry from a fresh ask - a new UUID per call, no dedup key on the
+   * table - so the abandoned row stayed pending BESIDE its own retry and the operator was
+   * shown the same prompt twice, with no way to tell which of the two still had an agent
+   * listening behind it. The live database records the pattern plainly: the duplicate
+   * pairs cluster 293-325 seconds apart with a byte-identical body, which is a client
+   * timeout and not a human-meaningful interval.
+   *
+   * So an identical ask from the same session, while the first is still unanswered, is
+   * treated as what it is - the same question - and returns the existing row untouched.
+   * The retry then long-polls the ORIGINAL review, and `wait` keeps a SET of waiters per
+   * id, so answering the one card the operator sees unblocks every call still holding on.
+   *
+   * Scoped to PENDING deliberately, which is what makes this safe rather than sticky. A
+   * question the human already settled is not a match, so an agent that legitimately asks
+   * the same thing again later gets a fresh card; the collapse only ever covers the window
+   * where a second card would have been unanswerable noise anyway. And the two asks it
+   * refuses to collapse are the two it must: a different session's, and one whose offered
+   * options differ, since the options are what the human is actually choosing between.
+   *
+   * This is a floor, not the fix for the timeout itself - it makes a retry HARMLESS rather
+   * than preventing one. The MCP side keeps the call alive so the retry mostly does not
+   * happen (`src/mcp/server.ts`), but that depends on a client honouring progress
+   * notifications, and this does not depend on anything.
+   */
   create(
     sessionId: string,
     kind: ReviewKind,
@@ -56,6 +110,11 @@ export class ReviewManager {
     body: string,
     decisions: PlanDecision[] | null = null,
   ): ReviewItem {
+    const existing = this.registry
+      .pendingReviews(sessionId)
+      .find((r) => r.kind === kind && r.title === title && r.body === body && sameDecisions(r.decisions, decisions));
+    if (existing) return existing;
+
     const review: ReviewItem = {
       id: randomUUID(),
       sessionId,

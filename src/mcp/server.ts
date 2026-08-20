@@ -38,6 +38,7 @@ async function http(
   method: string,
   body?: unknown,
   scoutCredential = false,
+  signal?: AbortSignal,
 ): Promise<Response> {
   const headers: Record<string, string> = {
     "content-type": "application/json",
@@ -51,6 +52,7 @@ async function http(
     method,
     headers,
     body: body ? JSON.stringify(body) : undefined,
+    signal,
   });
 }
 
@@ -73,13 +75,73 @@ async function createReview(
   return ((await res.json()) as { id: string }).id;
 }
 
-/** Long-poll the daemon until the human resolves the review. */
-async function waitForResolution(id: string): Promise<ReviewItem> {
+/**
+ * What the caller hands `waitForResolution` so the call can outlive a human's coffee break.
+ *
+ * Structural rather than the SDK's `RequestHandlerExtra`, because only these three members
+ * are used and naming them here is what documents why the tool passes `extra` down at all.
+ */
+type BlockingCall = {
+  signal: AbortSignal;
+  _meta?: { progressToken?: string | number };
+  sendNotification: (n: {
+    method: "notifications/progress";
+    params: { progressToken: string | number; progress: number; message?: string };
+  }) => Promise<void>;
+};
+
+/**
+ * Tell the client we are still here, once per long-poll round trip.
+ *
+ * The tools that block do so on a HUMAN, who may take minutes or hours. The MCP client in
+ * front of them does not wait that long on its own: it abandons the tool call on its own
+ * timeout - five minutes, in the duplicates the live database recorded - and hands the model
+ * an error for a question the operator can still see and still answer. What the model does
+ * next is ask again, which is where the duplicate cards came from.
+ *
+ * A progress notification is the protocol's own answer to this: a client that receives one
+ * MUST restart its timeout for that request, so a wait that keeps reporting in is never
+ * abandoned for taking too long. It is only ever sent against the `progressToken` the client
+ * itself supplied - a client that wants no progress sends none, and gets none.
+ *
+ * Best-effort on purpose. No token, no `sendNotification`, or a notification that fails to
+ * send, and the wait carries on exactly as it did before; the failure this guards is a slow
+ * human, and dropping a heartbeat must never be worse than not having one. The floor under
+ * it is `ReviewManager.create`, which makes the retry harmless when this does not land.
+ */
+function heartbeat(call?: BlockingCall): () => void {
+  if (!call) return () => {};
+  const progressToken = call._meta?.progressToken;
+  if (progressToken === undefined) return () => {};
+  let progress = 0;
+  return () => {
+    void call
+      .sendNotification({
+        method: "notifications/progress",
+        params: { progressToken, progress: ++progress, message: "Waiting on your answer" },
+      })
+      .catch(() => {});
+  };
+}
+
+/**
+ * Long-poll the daemon until the human resolves the review.
+ *
+ * `call` is optional so a caller with nothing to report in can still wait; passing it buys
+ * two things. The heartbeat above, and an exit: without a signal this loop re-polls every
+ * thirty seconds FOR EVER, including long after the client cancelled the tool call and threw
+ * away whatever it returns, so an abandoned ask left a poller hammering the daemon for the
+ * rest of the session's life. Aborting the in-flight fetch ends it at the cancellation.
+ */
+async function waitForResolution(id: string, call?: BlockingCall): Promise<ReviewItem> {
+  const beat = heartbeat(call);
   for (;;) {
-    const res = await http(`/mcp/reviews/${id}/wait`, "GET");
+    if (call?.signal.aborted) throw new Error("the client cancelled this request");
+    const res = await http(`/mcp/reviews/${id}/wait`, "GET", undefined, false, call?.signal);
     if (!res.ok) throw new Error(`harness wait ${res.status}`);
     const review = (await res.json()) as ReviewItem;
     if (review.status !== "pending") return review;
+    beat();
   }
 }
 
@@ -165,10 +227,10 @@ server.registerTool(
         .describe("The decision points to present"),
     },
   },
-  async ({ title, plan, decisions }) => {
+  async ({ title, plan, decisions }, extra) => {
     try {
       const id = await createReview("plan-decisions", title, plan, decisions);
-      const review = await waitForResolution(id);
+      const review = await waitForResolution(id, extra);
       if (review.status === "dismissed") {
         return textResult("Decision request dismissed without a response.");
       }
@@ -193,10 +255,10 @@ server.registerTool(
       diff: z.string().describe("A unified or git diff"),
     },
   },
-  async ({ title, diff }) => {
+  async ({ title, diff }, extra) => {
     try {
       const id = await createReview("diff", title, diff);
-      const review = await waitForResolution(id);
+      const review = await waitForResolution(id, extra);
       if (review.status === "orphaned") {
         return textResult("Review channel went away before a human answered.", true);
       }
@@ -326,7 +388,7 @@ server.registerTool(
         .describe("Adds a free-text 'Other' field for an answer outside the options"),
     },
   },
-  async ({ question, options, multiSelect, allowOther }) => {
+  async ({ question, options, multiSelect, allowOther }, extra) => {
     try {
       // Option ids are positional and generated here rather than asked of the agent. The
       // human's answer comes back as LABELS (see `formatResponse`), so an id is only ever a
@@ -352,7 +414,7 @@ server.registerTool(
       // on a task card are cut the same way; a question already short enough comes back
       // unchanged, which keeps the equal case genuinely equal and still de-duplicated.
       const id = await createReview("input", titleLine(question), question, decisions);
-      const review = await waitForResolution(id);
+      const review = await waitForResolution(id, extra);
       if (review.status === "dismissed") {
         return textResult("Input request dismissed without a response.");
       }
@@ -405,7 +467,7 @@ server.registerTool(
         .describe("Screenshots are unavailable in this release; this list must be empty"),
     },
   },
-  async ({ type, title, details, attachmentUploadIds }) => {
+  async ({ type, title, details, attachmentUploadIds }, extra) => {
     try {
       const result = await reportProductIssueWithConfirmation(
         { type, title, details, attachmentUploadIds },
@@ -434,7 +496,7 @@ server.registerTool(
           )),
           createReview: ({ title: reviewTitle, body, decisions }) =>
             createReview("input", reviewTitle, body, decisions),
-          waitForResolution,
+          waitForResolution: (id: string) => waitForResolution(id, extra),
         },
       );
       return textResult(result.text, result.isError);

@@ -80,9 +80,16 @@ ambiguously; named on the wire as `backlogRank` for the same reason.
 Nullable is deliberate: `addColumn` returns true only when it actually added, which is the
 repo's existing hook for a **one-time backfill**. On the add, every existing `status='backlog'`
 row is numbered in its current `byPriorityThenAge` order, so the column arrives describing the
-order the board already showed and upgrade day changes nothing visible. A row that is still
-null afterwards (a task written by an older daemon against a newer schema) sorts to the
-bottom, which is where an unranked arrival belongs anyway.
+order the board already showed and upgrade day changes nothing visible.
+
+**An unranked row is healed, not tolerated.** A row that goes NULL after the migration - an
+older build opening a newer database, a restored row - cannot simply be left to sort last,
+because `appendRank` gives the *next* arrival a finite rank and finite sorts above NULL. One
+unranked row would therefore push every task filed after it above itself, which is the opposite
+of the bottom-insertion rule. So `healUnrankedBacklog` gives any unranked backlog row a rank
+below every ranked one, in `created_at` order; it runs unconditionally at daemon start and again
+inside `appendRank`, and is a no-op once the backlog is clean. The comparator's NULL branch is
+then a safety net rather than a state the ordering depends on.
 
 `CREATE INDEX IF NOT EXISTS idx_tasks_backlog_rank ON tasks(status, backlog_rank)` goes in the
 migration next to its column, per the change contract - not in the CREATE block, which does

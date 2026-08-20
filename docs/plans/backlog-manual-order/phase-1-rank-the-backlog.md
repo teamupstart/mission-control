@@ -108,6 +108,9 @@ In `migrate(d)`, beside the `priority`/`labels`/`enabled` block near line 2837:
 ```ts
 if (addColumn(d, "tasks", "backlog_rank", "INTEGER")) backfillBacklogRank(d);
 d.exec("CREATE INDEX IF NOT EXISTS idx_tasks_backlog_rank ON tasks(status, backlog_rank)");
+// NOT gated on the addColumn return: the backfill runs once, but a row can go NULL long
+// after it. See "Why unranked rows must be healed rather than tolerated" below.
+healUnrankedBacklog(d);
 ```
 
 The index goes in `migrate`, never in the `CREATE TABLE` block - that block does not run on an
@@ -186,8 +189,11 @@ internal edges. Update `plannableBacklog`'s comment too - its 400-item head is n
 New file. Pure functions plus small `DatabaseSync`-taking helpers, no manager state.
 
 - `RANK_STEP = 1024`.
-- `appendRank(d)` - `max(backlog_rank) + RANK_STEP` over `status='backlog'`, or `RANK_STEP` when
-  the backlog is empty.
+- `healUnrankedBacklog(d)` - give a rank to every `status='backlog'` row whose `backlog_rank`
+  **IS NULL**, placing them below all ranked rows in `created_at` order. Returns the ids it
+  touched. See the note below - this is load-bearing, not tidying.
+- `appendRank(d)` - `healUnrankedBacklog` first, then `max(backlog_rank) + RANK_STEP` over
+  `status='backlog'`, or `RANK_STEP` when the backlog is empty.
 - `rankBetween(before, after)` - the midpoint; `null` when there is no integer strictly between
   them, which is the caller's signal to renormalize.
 - `renormalize(d)` - rewrite every backlog row's rank at `RANK_STEP` spacing in current
@@ -195,6 +201,41 @@ New file. Pure functions plus small `DatabaseSync`-taking helpers, no manager st
 
 Renormalization returns the ids it touched so the caller can publish a `task_upsert` for each.
 It is the rare path; the common move writes one row.
+
+#### Why unranked rows must be healed rather than tolerated
+
+An unranked row is not a harmless row that "sorts to the bottom". It **breaks the
+bottom-insertion rule for every task filed after it**:
+
+1. `byBacklogRank` sorts `NULL` as `Infinity`, so an unranked row sits last.
+2. `appendRank` hands the next arrival `max(backlog_rank) + RANK_STEP`, which is **finite**.
+3. Finite sorts above `Infinity`, so that arrival lands *above* the unranked row - second to
+   last, not last.
+
+So one unranked row silently demotes itself below everything that comes after it, which is the
+opposite of what the plan promises. The backfill cannot repair this on its own: it is hung off
+`addColumn`'s did-it-add return and therefore runs exactly once, so a row that goes NULL *after*
+the migration stays NULL forever.
+
+Unranked rows are reachable in practice. Any writer that does not set the column produces one -
+an older build opening a newer database (the migrations are idempotent, so this is supported),
+a restored or hand-edited row, a future insert path that forgets the field.
+
+`healUnrankedBacklog` therefore runs in **two** places, and both are no-ops once the backlog is
+clean:
+
+- **In `migrate()`, unconditionally** - not gated on `addColumn`'s return. One
+  `UPDATE ... WHERE backlog_rank IS NULL AND status='backlog'` per daemon start, normally
+  matching zero rows.
+- **Inside `appendRank`'s transaction** - so a row that appeared *since* startup is placed
+  before the append reads `max`, closing the window the migration-time pass cannot see.
+
+`created_at` order among the unranked set, and below every ranked row, because such a row never
+had a place and the bottom is where an unplaced arrival belongs.
+
+The effect is that the system **converges to zero unranked rows**, and the comparator's `NULL`
+branch becomes a pure safety net for a row observed mid-heal rather than a state the ordering
+rules depend on.
 
 ### 7. `src/server/tasks.ts` - assignment and the move
 
@@ -279,6 +320,12 @@ Same change, not a follow-up:
   `rankBetween` midpoint, and `null` for adjacent integers; `renormalize` preserving order;
   `byBacklogRank` with nulls, ties, and the full tie-break chain; and **no `NaN`** from two
   unranked rows.
+- `test/backlog-rank.test.ts` - **the unranked-row regression, stated as the rule it protects.**
+  Insert a backlog row with `backlog_rank IS NULL` (as an older build would), then file a new
+  task: the new task must sort **below** it, not above. Also: `healUnrankedBacklog` places
+  unranked rows below every ranked row in `created_at` order, is a no-op on a clean backlog, and
+  leaves no NULL-ranked backlog row behind. Assert the same through `migrate()` on a database
+  that already has the column but a NULL row in it - the case the one-shot backfill cannot see.
 - `test/backlog-plan.test.ts` (extend) - the load-bearing invariant: over a table of backlogs and
   plans, every task `readyBacklog` returns has zero unmet edges, so no ready pair can be ordered
   by a dependency. Plus: a reorder does not change `planStale`.
@@ -318,7 +365,8 @@ A single test file needs the suite's loader:
 - All of the above green; `npm run test:e2e` included, because UI surfaces changed.
 - Reordering with the keyboard changes what Foreman schedules next, proven in the browser.
 - A database that predates the column opens, backfills once, and shows the order it showed before.
-- A swept task arrives at the bottom.
+- A swept task arrives at the bottom - including when an unranked row is already sitting there.
+- No `status='backlog'` row is left with a NULL rank after a daemon start.
 - Docs match the implementation - no surface still claims priority sorts the backlog.
 
 ## Downstream handoff
@@ -332,7 +380,7 @@ Phase 2 may rely on, and **must not change**:
 - `readyBacklog` as filter-only.
 - The move buttons and their `aria-label` wording, which the phase-1 e2e spec selects by.
 - `RANK_STEP` and the allocation semantics, including that a collision renormalizes rather than
-  failing.
+  failing, and that `appendRank` heals unranked rows before it reads `max`.
 
 Phase 2 owns, and phase 1 must not pre-empt: any drop target, drag-state, drop-indicator or
 `dragover`/`dragleave`/`drop` handler in `BacklogColumn`, and the CSS for them. Phase 1 leaves

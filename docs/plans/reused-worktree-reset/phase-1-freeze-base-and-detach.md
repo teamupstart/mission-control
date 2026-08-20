@@ -70,12 +70,13 @@ Both manager verification sites must require `detached === true` before their co
 
 In `src/server/dispatcher.ts`, add a focused helper that returns a full frozen SHA for an ordinary unpinned task repository.
 
-1. Probe whether `origin` is configured in the repository.
-2. If it is absent, call the existing local `headCommit()` path and fail if no full commit can be resolved.
-3. If it exists, run `git fetch origin` with the network timeout already used for Git fetches.
-4. Treat an unknown, timed-out, overflowed, signalled, or nonzero configured-origin fetch as a dispatch error. Do not fall back to local HEAD.
-5. Resolve the remote default with the existing `remoteDefaultRef()` rules, then resolve its commit to a full SHA and verify it is a commit.
-6. Keep explicit `options.baseSha` on the existing `verifyPinnedBase()` path and do not fetch the remote default for that primary repository.
+1. Run a bounded `git remote` listing and parse its successful output as exact remote names.
+2. Only a successful listing that omits the exact name `origin` establishes an origin-less repository. A timeout, spawn failure, overflow, signal, outcome-unknown flag, or nonzero exit aborts dispatch instead of selecting local HEAD.
+3. If `origin` is proven absent, call the existing local `headCommit()` path and fail if no full commit can be resolved.
+4. If it exists, run `git fetch origin` with the network timeout already used for Git fetches.
+5. Treat an unknown, timed-out, overflowed, signalled, or nonzero configured-origin fetch as a dispatch error. Do not fall back to local HEAD.
+6. Resolve the remote default with the existing `remoteDefaultRef()` rules, then resolve its commit to a full SHA and verify it is a commit.
+7. Keep explicit `options.baseSha` on the existing `verifyPinnedBase()` path and do not fetch the remote default for that primary repository.
 
 Resolve the complete base map before provisioning:
 
@@ -135,6 +136,7 @@ In dispatcher-focused tests:
 
 - create a bare or local origin whose default advances while the main checkout remains stale, and prove an ordinary task base resolves to the fresh remote SHA;
 - prove a configured-origin fetch failure occurs before provisioning or spawn;
+- prove a failed or unknown `git remote` listing fails before provisioning or spawn and cannot select the no-origin fallback;
 - prove a repo with no origin resolves local HEAD;
 - prove an explicit pin wins without being replaced by the newer remote default;
 - prove all attached-repository bases are resolved before the first provision call, and a later repository failure leaves no lease;
@@ -163,7 +165,7 @@ Do not restate the test preload command outside `AGENTS.md` beyond the phase's v
 - Direct provisioning and local repositories: low-level null-base behavior remains local HEAD; production TaskDispatcher supplies the new remote-default SHA.
 - Git branches: prior branch refs are preserved. Only checkout attachment changes.
 - Warm caches: ignored files survive because cleaning remains `git clean -fd`.
-- Failure behavior: configured-origin fetch failure and detached-state uncertainty fail before agent launch; pool ambiguity quarantines rather than falls back.
+- Failure behavior: origin-probe failure, configured-origin fetch failure, and detached-state uncertainty fail before agent launch; pool ambiguity quarantines rather than falls back.
 
 ## Tests and verification
 
@@ -215,3 +217,4 @@ Future work must not silently restore local-HEAD selection for scheduled tasks, 
 - 2026-08-20: Reconciled the source plan with direct `provisionWorktree()` call sites. Remote-default policy remains in TaskDispatcher so low-level local-only callers stay compatible.
 - 2026-08-20: Confirmed one phase owns every source-plan requirement. No earlier or later contract exists to reconcile.
 - 2026-08-20: Confirmed the shared ensemble reset helper remains unchanged and registry ownership rotation remains outside scope.
+- 2026-08-20: Incorporated Inspector feedback by defining origin absence as a successful remote listing without `origin`; every failed or unknown probe now fails closed.

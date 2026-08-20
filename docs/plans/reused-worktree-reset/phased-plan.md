@@ -70,6 +70,7 @@ Although there is only one phase, these boundaries are explicit for review and f
 Phase 1 owns behavior, tests, and documentation together. Its pull request must demonstrate:
 
 - task-dispatch base selection for fresh remote default, configured-origin failure, no-origin fallback, explicit pin precedence, and attached repositories;
+- fail-closed handling when the bounded origin-existence probe itself fails or has an unknown outcome;
 - branch-attached warm-slot reset that preserves the old branch ref while leasing detached at the requested SHA;
 - exact, clean, detached verification on acquisition and Return, including quarantine on failure;
 - the first real agent branch is adopted by the existing work episode rather than cancelling the task;
@@ -82,6 +83,7 @@ No Playwright run is required unless the implementation unexpectedly changes a v
 - Every approved source-plan behavior is owned by Phase 1.
 - The submitted scheduling decision is incorporated and has no unresolved alternative.
 - The low-level provisioner compatibility found during phasing is recorded in both the source plan and Phase 1.
+- Inspector feedback was incorporated by making origin absence provable only through a successful remote listing; probe failure cannot select local HEAD.
 - No concurrent phase can conflict because there is one phase.
 - No later cleanup phase is required to make the repository operable.
 - The phase does not depend on a schema migration, generated output, another repository, or an unpublished API.

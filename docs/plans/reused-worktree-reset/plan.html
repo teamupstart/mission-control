@@ -171,6 +171,7 @@
         <h2>Required behavior</h2>
         <h3>Resolve bases before provisioning</h3>
         <ul>
+          <li>Run a bounded <code>git remote</code> listing. Only a successful listing that omits the exact name <code>origin</code> establishes no origin; a timeout, spawn failure, overflow, signal, or nonzero result fails dispatch.</li>
           <li>With a configured <code>origin</code>, fetch it, resolve <code>origin/HEAD</code> with the existing main/master fallbacks, and freeze a full SHA.</li>
           <li>A configured-origin fetch or resolution failure is a dispatch failure, not permission to use stale local state.</li>
           <li>A repository that genuinely has no <code>origin</code> keeps local-repository support by freezing its current local <code>HEAD</code>.</li>
@@ -222,7 +223,7 @@
           <li>Attached or unprovable detached state quarantines and cannot finalize a lease.</li>
           <li>Stale local <code>main</code> does not beat newly fetched remote default.</li>
           <li>Configured-origin fetch failure leaves no worktree or agent.</li>
-          <li>No-origin repositories still use frozen local <code>HEAD</code>.</li>
+          <li>No-origin repositories still use frozen local <code>HEAD</code>, but a failed or unknown origin probe fails closed.</li>
           <li>Explicit pins remain exact after remote advancement.</li>
           <li>Multi-repository base resolution is per repo and all-or-nothing.</li>
           <li>The first agent-created feature branch stays in the bound work episode.</li>

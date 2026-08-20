@@ -31,7 +31,7 @@ That mismatch explains the incident: the reused slot reached the requested commi
 Add one task-dispatch base resolver and use it for the primary repository and each attached repository before taking any worktree lease.
 
 - If the caller supplies a pinned full SHA, verify it exactly as today and use it unchanged.
-- Otherwise, inspect whether an `origin` remote exists.
+- Otherwise, run a bounded `git remote` listing. Only a successful listing that omits the exact name `origin` may establish that the repository has no origin. A timeout, spawn failure, overflow, signal, or nonzero probe result fails dispatch.
 - With an `origin`, fetch it, resolve its remote default ref through the existing `remoteDefaultRef` rules, and freeze the result to one full SHA.
 - If a configured `origin` cannot be fetched or its default cannot be resolved, fail dispatch before any worktree is leased or any agent is spawned. Do not silently use a stale local branch.
 - If the repository genuinely has no `origin`, retain local-repository support by freezing the current local `HEAD`. This is the only unpinned fallback.
@@ -99,7 +99,7 @@ The implementation is complete only with focused tests for these cases:
 4. A detached-state probe failure or an attached result quarantines the slot and prevents lease finalization.
 5. An ordinary task whose local `main` is stale starts from the newly fetched `origin` default SHA.
 6. A configured-origin fetch failure fails before any worktree or agent is created.
-7. A repository with no `origin` still starts from its frozen local `HEAD`.
+7. A repository with no `origin` still starts from its frozen local `HEAD`, but a failed or unknown origin-existence probe fails closed instead of taking that fallback.
 8. An explicit pinned base remains selected even when the remote default advances.
 9. Each repository in a multi-repository task resolves its own base, and a failure in any repository leaves no lease behind.
 10. After a detached task launch, observing the agent's first feature branch updates the existing work episode without cancelling or unbinding the task.

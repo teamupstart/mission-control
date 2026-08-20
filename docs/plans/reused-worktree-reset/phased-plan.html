@@ -111,6 +111,7 @@
         <h2>Repository findings incorporated</h2>
         <ol>
           <li>Remote-default policy belongs in <code>TaskDispatcher</code>; the low-level <code>provisionWorktree()</code> helper keeps its local-HEAD default for direct callers.</li>
+          <li>Only a successful remote listing can establish that <code>origin</code> is absent; probe failure or uncertainty aborts dispatch.</li>
           <li>All attached-repository bases must resolve before the first lease.</li>
           <li>Pool reset detaches before invoking the existing hard-reset and <code>clean -fd</code> helper, preserving the old branch ref and ignored caches.</li>
           <li>Detached state becomes an independently observed manager gate on acquisition and Return.</li>
@@ -135,6 +136,7 @@
         <ul>
           <li>Every approved requirement is owned by Phase 1.</li>
           <li>The scheduling decision is incorporated with no unresolved alternative.</li>
+          <li>Inspector feedback is incorporated in the fail-closed origin-probe contract.</li>
           <li>No schema, generated output, other repository, or unpublished API is required.</li>
           <li>No later cleanup phase is needed to leave the repository operable.</li>
         </ul>

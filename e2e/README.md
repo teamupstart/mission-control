@@ -409,9 +409,9 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
 
 ### An effort that applies on the next turn
 
-`e2e/.artifacts/effort-next-turn/` holds the pair that settles the one thing an accessible
-name cannot: whether a person reading a card can tell "this is your level" from "this will
-be your level".
+`e2e/.artifacts/effort-next-turn/` holds three frames and the transcript of the run that
+produced them. The frames settle the one thing an accessible name cannot: whether a person
+reading a card can tell "this is your level" from "this will be your level".
 
 - `effort-pending-mid-turn.png` - the chip while a Codex turn is running, reading
   `medium → high` with the **next turn** tag and a dashed outline, taken after the run has
@@ -422,9 +422,9 @@ be your level".
 - `effort-settled-next-turn.png` - the chip after the next turn actually started, back to a
   plain `high` with no tag and a solid outline.
 
-The three matter together. The difference between the first and the last is a dashed border,
-a struck-through level and five words, and getting them confused means an operator believes
-a level took effect on work that ran without it.
+All three matter together. The difference between the first and the last is a dashed border,
+a struck-through level and the two words `next turn`, and getting them confused means an
+operator believes a level took effect on work that ran without it.
 
 `effort-next-turn/focused-playwright-transcript.txt` is that run's own output. Under
 `MC_E2E_EVIDENCE` the spec narrates each milestone as its assertion lands - the live level

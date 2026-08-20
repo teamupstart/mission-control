@@ -1,0 +1,569 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Plan: Manual backlog order</title>
+<style>
+  :root {
+    --bg: #ffffff; --bg-2: #f5f7fa; --fg: #1a1f27; --muted: #5d6775;
+    --border: #d9dee6; --border-soft: #e6eaf0; --accent: #b46a00; --link: #0b6bcb;
+    --code-bg: #f2f4f8; --panel: #ffffff; --panel-2: #eef1f6; --ok: #157347;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0b0e13; --bg-2: #12161d; --fg: #e7ebf1; --muted: #939eae;
+      --border: #232a34; --border-soft: #1b2129; --accent: #f6a733; --link: #6aa9ee;
+      --code-bg: #12161d; --panel: #0f131a; --panel-2: #161b23; --ok: #4ade80;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    padding: 48px 24px;
+  }
+  main { max-width: 860px; margin: 0 auto; }
+  h1 { font-size: 29px; line-height: 1.2; margin: 0 0 8px; letter-spacing: -0.01em; }
+  h2 { font-size: 21px; margin: 40px 0 12px; padding-bottom: 6px; border-bottom: 1px solid var(--border-soft); }
+  h3 { font-size: 16px; margin: 24px 0 8px; }
+  a { color: var(--link); }
+  code {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 0.88em; background: var(--code-bg); padding: 1.5px 5px; border-radius: 5px;
+    border: 1px solid var(--border-soft);
+  }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--border-soft); border-radius: 10px;
+    padding: 12px 14px; overflow-x: auto; font-size: 13px; line-height: 1.5;
+  }
+  pre code { background: none; border: 0; padding: 0; font-size: 13px; }
+  .status {
+    display: inline-block; font-size: 12px; font-weight: 640; text-transform: uppercase;
+    letter-spacing: 0.05em; color: var(--accent);
+    background: color-mix(in oklab, var(--accent) 14%, transparent);
+    padding: 3px 10px; border-radius: 999px; margin-bottom: 20px;
+  }
+  ul, ol { padding-left: 22px; }
+  li { margin: 5px 0; }
+  strong { font-weight: 660; }
+  .muted { color: var(--muted); }
+  .scroll-x { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; margin: 14px 0; font-size: 14px; min-width: 520px; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border-soft); vertical-align: top; }
+  th { color: var(--muted); font-weight: 640; font-size: 12.5px; text-transform: uppercase; letter-spacing: 0.04em; }
+  figure { margin: 22px 0; }
+  figure svg { max-width: 100%; height: auto; display: block; }
+  figcaption { color: var(--muted); font-size: 13px; margin-top: 8px; }
+  .box { border: 1px solid var(--border); border-radius: 12px; padding: 2px 16px 14px; margin: 16px 0; background: var(--bg-2); }
+  .box h3 { margin-top: 14px; }
+  .why { border-left: 3px solid var(--accent); padding: 2px 0 2px 14px; margin: 16px 0; color: var(--muted); }
+  .why strong { color: var(--fg); }
+  .rule {
+    border: 1px solid var(--accent); border-radius: 12px; padding: 14px 18px; margin: 20px 0;
+    background: color-mix(in oklab, var(--accent) 8%, transparent); font-size: 17px;
+  }
+  /* diagram primitives */
+  .d-box { fill: var(--panel-2); stroke: var(--border); stroke-width: 1; }
+  .d-hi  { fill: color-mix(in oklab, var(--accent) 14%, transparent); stroke: var(--accent); stroke-width: 1; }
+  .d-t   { fill: var(--fg); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 13px; font-weight: 620; }
+  .d-s   { fill: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; }
+  .d-l   { fill: var(--muted); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 11.5px; }
+  .d-a   { stroke: var(--muted); stroke-width: 1.4; fill: none; }
+  .d-a-hi { stroke: var(--accent); stroke-width: 1.8; fill: none; }
+  .d-life { stroke: var(--border); stroke-width: 1; stroke-dasharray: 4 4; }
+  .d-head { fill: var(--muted); }
+  .d-head-hi { fill: var(--accent); }
+</style>
+</head><body>
+<main>
+  <h1>Plan: Manual backlog order</h1>
+  <p class="muted">Drag a backlog item above another and Foreman takes it first. Work that
+    files itself - a task source sweep, a recurring mission, a retro follow-up, an MCP
+    <code>create_task</code> - lands at the bottom.</p>
+  <span class="status">Proposed · needs decisions</span>
+  <p class="muted">Related:
+    <a href="../backlog-autopilot/plan.md">backlog-autopilot</a> ·
+    <a href="../dispatch/plan.md">dispatch</a> ·
+    <a href="../foreman/plan.md">foreman</a>
+  </p>
+
+  <h2>Goal</h2>
+  <p>Let a human say what should run first by putting it first. Dragging a backlog item above
+    another makes Foreman take it first, and dragging it down makes Foreman take it later -
+    with one stated exception, dependencies, which still gate everything. Work that arrives on
+    its own lands at the <strong>bottom</strong>, because nothing that files itself gets to
+    jump the queue you arranged.</p>
+
+  <h2>What is true today, and why this is worth doing</h2>
+  <p>The backlog has three orderings and none of them is the operator's.</p>
+  <ol>
+    <li><code>backlogTasks</code> (<code>src/shared/session.ts:63</code>) sorts by
+      <code>byPriorityThenAge</code>. This is the order the <strong>board column draws</strong>.</li>
+    <li><code>readyBacklog</code> (<code>src/shared/backlog.ts:281</code>) walks the
+      <strong>stored plan's entry order</strong> first and appends whatever the plan does not
+      name, oldest first. This is the order the <strong>scheduler decides from</strong>
+      (<code>backlog-machine.ts:346</code>) and the order <code>nextUpTaskId</code> marks
+      <em>next up</em> from.</li>
+    <li>The plan's entry order is a <strong>topological sort whose tie-break is the model's own
+      array order</strong> (<code>topoOrder</code>, <code>backlog-plan.ts:276</code>). The
+      planner prompt is never shown a task's priority
+      (<code>buildBacklogPrompt</code>, <code>backlog-prompt.ts:64</code>).</li>
+  </ol>
+
+  <div class="why">
+    <strong>For any item the plan covers, the priority chip changes where the card is drawn
+    and does not change what Foreman takes next.</strong> Two independent ready items are
+    ordered by a model that was never told which one you care about. The column and the
+    scheduler disagree, and the column is the one that looks authoritative.
+  </div>
+
+  <p>There is a second fact that makes the fix small. <code>readyBacklog</code> ends with
+    <code>.filter((t) =&gt; blockersIn(t, index).length === 0)</code>, so <strong>every item in
+    the ready list has no unmet dependency at all</strong>. An edge from one ready item to
+    another is impossible by construction - if it existed, the dependent would not be ready. So
+    the ready list needs no topological consideration of its own: any total order over it is
+    dependency-safe, and today that order is simply the model's. Replacing it with the
+    operator's costs nothing structural.</p>
+
+  <p><code>backlog-plan.ts:269</code> already says this out loud: <em>"<code>readyBacklog</code>
+    filters on blockers rather than position, so this ordering is a READOUT more than a
+    schedule."</em> This plan makes the readout the operator's, and leaves the plan doing the
+    one thing only it can do - supplying inferred edges.</p>
+
+  <h2>The rule, in one sentence</h2>
+  <div class="rule">
+    Foreman takes the <strong>highest ready item in the order you arranged</strong>; an item
+    with an unsatisfied prerequisite is not ready, and an item that arrives on its own arrives
+    at the bottom.
+  </div>
+
+  <h2>What the human does</h2>
+  <ul>
+    <li><strong>Drag a card up or down the Backlog column.</strong> It stays where you dropped
+      it, and the <em>next up</em> mark moves with it if it landed at the top of the ready set.</li>
+    <li><strong>Move it without a mouse.</strong> Every card carries <em>Move up</em>,
+      <em>Move down</em>, <em>Move to top</em> and <em>Move to bottom</em>, reachable from the
+      keyboard, so the gesture is not mouse-only and the Playwright spec drives the same route
+      a drag does.</li>
+    <li><strong>Read the order and believe it.</strong> The Backlog column, the Line's Backlog
+      drawer, the Sitrep's backlog section and the scheduler all read one list in one order.</li>
+  </ul>
+  <p>Nothing about parking, priority chips, labels, <em>launch anyway</em> or drag-to-assign
+    changes.</p>
+
+  <h2>The flow that changes</h2>
+  <p><strong>Before.</strong> The operator writes a priority chip. The chip changes
+    <code>backlogTasks</code>, which the board draws. Separately, Foreman's planner reads the
+    backlog through a model, and the stored plan's entry order is what <code>readyBacklog</code>
+    hands the scheduler. The operator's input reaches the drawing and not the schedule.</p>
+
+  <figure>
+    <svg viewBox="0 0 760 268" role="img" aria-label="Before: the operator's priority chip reaches only the board column, while the stored plan's entry order decides the schedule.">
+      <defs>
+        <marker id="ah" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+          <path d="M0,0 L8,4 L0,8 z" class="d-head"/>
+        </marker>
+      </defs>
+      <rect x="20"  y="20"  width="200" height="46" rx="9" class="d-box"/>
+      <text x="120" y="40" class="d-t" text-anchor="middle">Operator</text>
+      <text x="120" y="56" class="d-s" text-anchor="middle">priority chip</text>
+
+      <rect x="280" y="20"  width="200" height="46" rx="9" class="d-box"/>
+      <text x="380" y="40" class="d-t" text-anchor="middle">backlogTasks</text>
+      <text x="380" y="56" class="d-s" text-anchor="middle">priority, then age</text>
+
+      <rect x="540" y="20"  width="200" height="46" rx="9" class="d-box"/>
+      <text x="640" y="40" class="d-t" text-anchor="middle">Board column</text>
+      <text x="640" y="56" class="d-s" text-anchor="middle">drawn order</text>
+
+      <rect x="20"  y="110" width="200" height="46" rx="9" class="d-box"/>
+      <text x="120" y="130" class="d-t" text-anchor="middle">Foreman planner</text>
+      <text x="120" y="146" class="d-s" text-anchor="middle">one model call</text>
+
+      <rect x="280" y="110" width="200" height="46" rx="9" class="d-box"/>
+      <text x="380" y="130" class="d-t" text-anchor="middle">Stored plan</text>
+      <text x="380" y="146" class="d-s" text-anchor="middle">entry order + edges</text>
+
+      <rect x="540" y="110" width="200" height="46" rx="9" class="d-box"/>
+      <text x="640" y="130" class="d-t" text-anchor="middle">readyBacklog</text>
+      <text x="640" y="146" class="d-s" text-anchor="middle">plan order first</text>
+
+      <rect x="540" y="200" width="200" height="46" rx="9" class="d-box"/>
+      <text x="640" y="220" class="d-t" text-anchor="middle">backlog-machine</text>
+      <text x="640" y="236" class="d-s" text-anchor="middle">scheduled order</text>
+
+      <path d="M220,43 L272,43" class="d-a" marker-end="url(#ah)"/>
+      <path d="M480,43 L532,43" class="d-a" marker-end="url(#ah)"/>
+      <path d="M220,133 L272,133" class="d-a" marker-end="url(#ah)"/>
+      <path d="M480,133 L532,133" class="d-a" marker-end="url(#ah)"/>
+      <path d="M640,156 L640,192" class="d-a" marker-end="url(#ah)"/>
+
+      <path d="M640,66 L640,88" stroke="var(--border)" stroke-width="1.4" stroke-dasharray="5 4" fill="none"/>
+      <line x1="628" y1="82" x2="652" y2="98" stroke="var(--muted)" stroke-width="1.4"/>
+      <line x1="652" y1="82" x2="628" y2="98" stroke="var(--muted)" stroke-width="1.4"/>
+      <text x="618" y="94" class="d-l" text-anchor="end">what you set never reaches the schedule</text>
+    </svg>
+    <figcaption>Before. Two independent chains: the operator's priority chip orders the
+      drawing, and a model's array order orders the schedule.</figcaption>
+  </figure>
+
+  <p><strong>After.</strong> The operator writes a rank through one route. The rank is on the
+    task row, arrives at every dashboard and at the Foreman worker through the ordinary task
+    snapshot, and is the order <code>readyBacklog</code> returns. The planner still runs, and
+    its output is consumed for <strong>edges only</strong> - <code>blockersIn</code> reads it,
+    <code>readyBacklog</code> no longer walks it for position.</p>
+
+  <figure>
+    <svg viewBox="0 0 760 268" role="img" aria-label="After: the operator's rank orders backlogTasks and readyBacklog, while the stored plan supplies dependency edges only.">
+      <defs>
+        <marker id="ah2" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+          <path d="M0,0 L8,4 L0,8 z" class="d-head"/>
+        </marker>
+        <marker id="ah2a" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+          <path d="M0,0 L8,4 L0,8 z" class="d-head-hi"/>
+        </marker>
+      </defs>
+      <rect x="20"  y="20"  width="200" height="46" rx="9" class="d-hi"/>
+      <text x="120" y="40" class="d-t" text-anchor="middle">Operator</text>
+      <text x="120" y="56" class="d-s" text-anchor="middle">drag / move</text>
+
+      <rect x="280" y="20"  width="200" height="46" rx="9" class="d-hi"/>
+      <text x="380" y="40" class="d-t" text-anchor="middle">POST /api/tasks/:id/</text>
+      <text x="380" y="56" class="d-t" text-anchor="middle">reorder</text>
+
+      <rect x="540" y="20"  width="200" height="46" rx="9" class="d-hi"/>
+      <text x="640" y="40" class="d-t" text-anchor="middle">tasks.backlog_rank</text>
+      <text x="640" y="56" class="d-s" text-anchor="middle">one row, one event</text>
+
+      <rect x="20"  y="110" width="200" height="46" rx="9" class="d-box"/>
+      <text x="120" y="130" class="d-t" text-anchor="middle">backlogTasks</text>
+      <text x="120" y="146" class="d-s" text-anchor="middle">rank (board draws it too)</text>
+
+      <rect x="280" y="110" width="200" height="46" rx="9" class="d-box"/>
+      <text x="380" y="130" class="d-t" text-anchor="middle">readyBacklog</text>
+      <text x="380" y="146" class="d-s" text-anchor="middle">rank order, blocked dropped</text>
+
+      <rect x="540" y="110" width="200" height="46" rx="9" class="d-box"/>
+      <text x="640" y="130" class="d-t" text-anchor="middle">backlog-machine</text>
+      <text x="640" y="146" class="d-s" text-anchor="middle">scheduled order</text>
+
+      <rect x="20"  y="200" width="200" height="46" rx="9" class="d-box"/>
+      <text x="120" y="220" class="d-t" text-anchor="middle">Foreman planner</text>
+      <text x="120" y="236" class="d-s" text-anchor="middle">one model call</text>
+
+      <rect x="280" y="200" width="200" height="46" rx="9" class="d-box"/>
+      <text x="380" y="220" class="d-t" text-anchor="middle">Stored plan</text>
+      <text x="380" y="236" class="d-s" text-anchor="middle">edges only</text>
+
+      <path d="M220,43 L272,43"  class="d-a-hi" marker-end="url(#ah2a)"/>
+      <path d="M480,43 L532,43"  class="d-a-hi" marker-end="url(#ah2a)"/>
+      <path d="M640,66 L640,88 L120,88 L120,102" class="d-a-hi" marker-end="url(#ah2a)"/>
+      <path d="M220,133 L272,133" class="d-a" marker-end="url(#ah2)"/>
+      <path d="M480,133 L532,133" class="d-a" marker-end="url(#ah2)"/>
+      <path d="M220,223 L272,223" class="d-a" marker-end="url(#ah2)"/>
+      <path d="M380,200 L380,164" class="d-a" marker-end="url(#ah2)"/>
+      <text x="392" y="186" class="d-l">blockersIn - edges, never position</text>
+    </svg>
+    <figcaption>After. One chain, in the accent colour: what you set is what the scheduler
+      reads. The planner keeps the job only it can do.</figcaption>
+  </figure>
+
+  <p>The reorder round trip touches no model and no scheduler state:</p>
+
+  <figure>
+    <svg viewBox="0 0 760 330" role="img" aria-label="Sequence: the dashboard posts a reorder, the daemon writes the rank in one transaction and publishes task_upsert, and the Foreman worker picks the new order up on its next four-second task read. No model call.">
+      <defs>
+        <marker id="ah3" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+          <path d="M0,0 L8,4 L0,8 z" class="d-head"/>
+        </marker>
+      </defs>
+      <rect x="20"  y="14" width="140" height="34" rx="8" class="d-box"/>
+      <text x="90"  y="36" class="d-t" text-anchor="middle">Dashboard</text>
+      <rect x="230" y="14" width="140" height="34" rx="8" class="d-box"/>
+      <text x="300" y="36" class="d-t" text-anchor="middle">Daemon</text>
+      <rect x="430" y="14" width="120" height="34" rx="8" class="d-box"/>
+      <text x="490" y="36" class="d-t" text-anchor="middle">SQLite</text>
+      <rect x="610" y="14" width="130" height="34" rx="8" class="d-box"/>
+      <text x="675" y="36" class="d-t" text-anchor="middle">Foreman worker</text>
+
+      <line x1="90"  y1="48" x2="90"  y2="300" class="d-life"/>
+      <line x1="300" y1="48" x2="300" y2="300" class="d-life"/>
+      <line x1="490" y1="48" x2="490" y2="300" class="d-life"/>
+      <line x1="675" y1="48" x2="675" y2="300" class="d-life"/>
+
+      <path d="M90,86 L294,86"   class="d-a" marker-end="url(#ah3)"/>
+      <text x="96"  y="80" class="d-l">POST /api/tasks/:id/reorder {position, anchorTaskId}</text>
+
+      <path d="M300,124 L484,124" class="d-a" marker-end="url(#ah3)"/>
+      <text x="306" y="118" class="d-l">place rank in one transaction</text>
+
+      <path d="M490,158 L306,158" class="d-a" marker-end="url(#ah3)"/>
+      <text x="484" y="152" class="d-l" text-anchor="end">updated task</text>
+
+      <path d="M300,196 L96,196"  class="d-a" marker-end="url(#ah3)"/>
+      <text x="294" y="190" class="d-l" text-anchor="end">200 Task, then task_upsert (SSE, every dashboard)</text>
+
+      <path d="M675,238 L306,238" class="d-a" marker-end="url(#ah3)"/>
+      <text x="669" y="232" class="d-l" text-anchor="end">GET /api/tasks (4s tick)</text>
+
+      <path d="M300,272 L669,272" class="d-a" marker-end="url(#ah3)"/>
+      <text x="306" y="266" class="d-l">tasks including backlogRank</text>
+
+      <rect x="430" y="288" width="310" height="30" rx="8" class="d-hi"/>
+      <text x="585" y="308" class="d-l" text-anchor="middle" style="fill: var(--fg)">no model call · planStale unchanged</text>
+    </svg>
+    <figcaption>The note is the point: <code>planStale</code> is coverage, not a fingerprint,
+      so moving a card costs zero model calls. That is why rank lives on the task and not in
+      the plan.</figcaption>
+  </figure>
+
+  <h2>Architecture</h2>
+  <p>Five edits, three of them one-liners. The load-bearing decision is that <strong>rank is a
+    fact on the task row, not a fact in the stored plan</strong> - so a reorder is a single-row
+    write, costs no model call, and cannot make the plan stale.</p>
+
+  <h3><code>tasks.backlog_rank</code> - the column</h3>
+  <p><code>addColumn(d, "tasks", "backlog_rank", "INTEGER")</code> in <code>migrate()</code>,
+    nullable, beside the <code>priority</code>/<code>labels</code>/<code>enabled</code> block at
+    <code>db.ts:2837</code>. Named <code>backlog_rank</code> rather than <code>rank</code>
+    because <code>RANK</code> is a SQLite window-function keyword and a bare <code>rank</code>
+    in a future query reads ambiguously; named <code>backlogRank</code> on the wire for the
+    same reason.</p>
+  <p>Nullable is deliberate: <code>addColumn</code> returns true only when it actually added,
+    which is the repo's existing hook for a <strong>one-time backfill</strong>. On the add,
+    every existing <code>status='backlog'</code> row is numbered in its current
+    <code>byPriorityThenAge</code> order, so the column arrives describing the order the board
+    already showed and upgrade day changes nothing visible. A row still null afterwards sorts
+    to the bottom, which is where an unranked arrival belongs anyway.</p>
+  <p><code>CREATE INDEX IF NOT EXISTS idx_tasks_backlog_rank ON tasks(status, backlog_rank)</code>
+    goes in the migration next to its column, per the change contract - not in the CREATE block,
+    which does not run on an existing database.</p>
+
+  <h3>Rank allocation - <code>src/server/backlog-rank.ts</code></h3>
+  <p>Sparse integers, <code>RANK_STEP = 1024</code>. Appending is
+    <code>max(backlog_rank) + RANK_STEP</code>. Inserting between two neighbours is their
+    midpoint. When two neighbours are adjacent integers there is no midpoint, so the whole
+    backlog is <strong>renormalized</strong> to <code>RANK_STEP</code> spacing in the same
+    transaction and the placement is retried once.</p>
+  <div class="why">
+    <strong>Why not rewrite every rank on every move?</strong> It is simpler to reason about and
+    rejected on write amplification: a move would <code>UPDATE</code> every backlog row and
+    publish a <code>task_upsert</code> for each, so one drag on a 300-item backlog is 300 events
+    to every connected dashboard. Sparse integers make the common move one row and one event,
+    and pay the full rewrite only on the rare collision.
+  </div>
+  <p>Allocation runs <strong>inside the daemon</strong>, in <code>TaskManager</code>, under the
+    same write path everything else uses. The Foreman worker never touches SQLite and does not
+    here either.</p>
+
+  <h3><code>Task.backlogRank</code> on the wire</h3>
+  <p><code>number | null</code> on the <code>Task</code> type, persisted and read back in
+    <code>db.ts</code>'s task upsert and row mapper. It is <strong>not</strong> accepted on
+    <code>DispatchSchema</code> or <code>UpdateTaskSchema</code> - a rank is never something a
+    creating caller names, because "where in the queue" is a statement about the queue and not
+    about the task. It changes through exactly one route.</p>
+
+  <h3>The comparator</h3>
+<pre><code>export function byBacklogRank(a: Task, b: Task): number {
+  const rank = (a.backlogRank ?? Infinity) - (b.backlogRank ?? Infinity);
+  if (rank !== 0 &amp;&amp; Number.isFinite(rank)) return rank;
+  return a.createdAt - b.createdAt || (a.id &lt; b.id ? -1 : a.id &gt; b.id ? 1 : 0);
+}</code></pre>
+  <p><code>backlogTasks</code> sorts by this instead of <code>byPriorityThenAge</code>. That is
+    the single chokepoint - the board column, the Sitrep, the drawer's blocked and parked bands,
+    <code>plannableBacklog</code>'s 400-item head and <code>readyBacklog</code>'s base list all
+    read through it, so one edit moves every surface together and none of them can drift.</p>
+  <p>The tie-break chain is total on purpose. Two rows can share a rank (a backfill collision, a
+    restored backup, a null), and a comparator that returned 0 there would let the same two
+    cards swap places between renders for no reason a human could see.</p>
+  <p><code>byPriorityThenAge</code> stays exported and stays tested - it is what the migration
+    backfill sorts by, and what a "Sort by priority" action would rewrite ranks from.</p>
+
+  <h3><code>readyBacklog</code> - the plan supplies edges, rank supplies order</h3>
+<pre><code>export function readyBacklog(tasks: Task[], plan: BacklogPlan | null): Task[] {
+  const index = backlogIndex(tasks, plan);
+  return backlogTasks(tasks)
+    .filter((task) =&gt; task.enabled &amp;&amp; taskKindAllowsBacklog(task.kind))
+    .filter((task) =&gt; blockersIn(task, index).length === 0);
+}</code></pre>
+  <p>The plan-walking loop goes. <code>plan</code> is still a parameter and still load-bearing:
+    <code>backlogIndex</code> reads it for the inferred edges every blocker question is asked
+    against. What it stops doing is deciding position, which is the change.</p>
+  <p>This is safe for the reason argued above - a ready item has no unmet edge, so the ready
+    set has no internal edges to respect. It is not safe by luck: <code>blockersIn</code> is the
+    guard, it is tested across every dependency state, and the equivalence is worth a test of
+    its own.</p>
+
+  <h3>The one place ordering is not the whole answer</h3>
+  <p><code>decideBacklogTick</code> has two action paths and they read the ready list
+    differently (<code>backlog-machine.ts:395-412</code>):</p>
+  <ul>
+    <li><strong>dispatch</strong> takes <code>candidates[0]</code> - strictly the head, so it
+      follows your order exactly.</li>
+    <li><strong>assign</strong> scans the list for the first item that has a free agent
+      <em>in its repo, on its harness</em> - so if the head is a Codex task in repo A and the
+      only free agent is a Claude agent in repo B, a lower item is assigned first.</li>
+  </ul>
+  <p>That is pre-existing and it is a genuine trade: strict head-first would leave a free agent
+    idle rather than let a lower item pass. The plan does not change it silently either way -
+    see the open decisions.</p>
+
+  <h3><code>POST /api/tasks/:id/reorder</code> - the one route</h3>
+<pre><code>export const ReorderTaskSchema = z.discriminatedUnion("position", [
+  z.object({ position: z.literal("top") }),
+  z.object({ position: z.literal("bottom") }),
+  z.object({ position: z.literal("before"), anchorTaskId: z.string().min(1) }),
+  z.object({ position: z.literal("after"),  anchorTaskId: z.string().min(1) }),
+]);</code></pre>
+  <p>An anchor rather than an index, because an index is a claim about a list the caller last
+    saw and the daemon's list has moved on since. Status codes follow the sibling routes'
+    contract:</p>
+  <div class="scroll-x">
+  <table>
+    <thead><tr><th>Code</th><th>When</th></tr></thead>
+    <tbody>
+      <tr><td><code>404</code></td><td>no such task, or no such anchor</td></tr>
+      <tr><td><code>409</code></td><td>the task is not in the backlog, the anchor is not in the backlog, or the anchor is the task itself - a card that dispatched between the drag and the drop is a state conflict the operator can see, not a silent no-op</td></tr>
+      <tr><td><code>200</code></td><td>the updated <code>Task</code>, like its <code>dispatch</code>/<code>assign</code>/<code>complete</code> siblings, so the caller reads the new rank off the reply instead of racing its own <code>task_upsert</code></td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p>Placement, renormalization and the resulting <code>task_upsert</code> publish happen in one
+    transaction, so two dashboards dragging at once produce two orderings that are each a real
+    ordering, and never a half-applied one.</p>
+
+  <h3>The board and the drawer</h3>
+  <p><code>BacklogColumn</code> gains a drop target <em>between</em> cards. The card is already
+    <code>draggable</code> and already carries <code>application/x-mission-task</code>, and
+    <code>SessionTile</code> already accepts that payload - so one drag can end in two places,
+    and <strong>which drop target it lands on decides which thing happens</strong>: an agent
+    tile assigns, a gap in the column reorders. No second payload type, no handle, no mode.</p>
+  <p>Two details the existing card already teaches. The priority <code>&lt;select&gt;</code>
+    stops <code>mousedown</code> because the card is <code>draggable</code>; the new move
+    buttons need the same treatment. And the card is click-to-edit, so they need
+    <code>onClick</code> stopped too or a move would open the dispatch modal on the way past.</p>
+  <p>The move buttons are ordinary focusable controls with <code>aria-label</code>s naming the
+    task - <em>Move "Fix the flaky test" up</em> - because the app selects by role and label and
+    never by <code>data-testid</code>, and because a reorder that only exists as a mouse gesture
+    is a reorder half the surfaces cannot test and some people cannot perform.</p>
+  <p><code>BacklogDrawer</code> needs no ordering change - its ready band is
+    <code>readyBacklog</code> verbatim and follows automatically - but its header comment
+    currently states plan-entry order as the rule in force, and <code>NextUpPlanner</code>
+    explains the head row by quoting the planner's <code>reason</code>. Both say something that
+    stops being true. The planner's reason stays worth quoting (it is why the
+    <em>dependencies</em> are what they are); what the head row now needs to say first is that
+    it is the head because it is where you put it.</p>
+
+  <h2>What does not change</h2>
+  <ul>
+    <li><strong>Dependencies still gate.</strong> <code>blockersIn</code>, declared and
+      inferred, is untouched. Dragging a blocked item to the top makes it the first thing to run
+      <em>when it unblocks</em>, and until then the card reads blocked exactly as it does now.
+      Operator-declared edges remain unoverridable; <em>launch anyway</em> on an inferred-only
+      block is unchanged.</li>
+    <li><strong>Parking is unchanged.</strong> A parked item keeps its rank and its place in the
+      column; it is simply not in the ready set. <code>plannableBacklog</code> still keeps
+      parked items in the planner's input for the reason it always did - hiding one deletes the
+      inferred edges pointing at it.</li>
+    <li><strong>The 400-item planning head</strong> is still
+      <code>.slice(0, PLANNABLE_LIMIT)</code>, now over rank order, which is an improvement: the
+      items you put at the top are the ones that get a dependency read, rather than the ones a
+      priority chip happened to lift.</li>
+    <li><strong>Capacity, allowlist, mode, the free-agent predicate, serial fallback</strong> -
+      all untouched.</li>
+    <li><strong>Priority chips, labels, the Sitrep's markdown copy</strong> keep rendering.</li>
+  </ul>
+
+  <h2>Edge cases, decided</h2>
+  <ul>
+    <li><strong>A task re-entering the backlog</strong> (<code>reschedule</code>, a
+      restart-recovered dispatch that never provisioned) keeps the rank it already has, so a
+      recovered dispatch reappears where it was rather than at the bottom of a queue it never
+      left. A task that never had one is appended.</li>
+    <li><strong>Multi-repo tasks</strong> rank like any other. They are dispatch-only, so they
+      can be the head and be passed over by the assign path, which is already how they
+      behave.</li>
+    <li><strong>A rank on a non-backlog row</strong> is left alone rather than nulled. Nothing
+      reads it outside <code>backlogTasks</code>, and keeping it is what makes the bullet above
+      one line instead of a state machine.</li>
+    <li><strong>Two dashboards, one anchor.</strong> Both moves succeed and the second one wins
+      its own placement. There is no lock and no version field: the anchor is re-read inside the
+      transaction, so the result is always a real ordering of the real backlog.</li>
+    <li><strong>The <em>next up</em> mark</strong> is still <code>readyBacklog[0]</code>, so it
+      follows the drag with no separate computation to drift.</li>
+  </ul>
+
+  <h2>Testing</h2>
+  <p><code>test/</code> for everything that is a function, <code>e2e/</code> for the gesture -
+    the repo's line, not a new one.</p>
+  <ul>
+    <li><code>test/backlog-rank.test.ts</code> - append, midpoint, the adjacent-neighbour
+      renormalize and its retry, <code>top</code>/<code>bottom</code>, a null rank sorting last,
+      and the total tie-break chain.</li>
+    <li><code>test/backlog-plan.test.ts</code> (extend) - the load-bearing equivalence: for any
+      backlog and any plan, every task in <code>readyBacklog</code> has zero unmet edges, so no
+      ready pair can be ordered by a dependency. Plus: a reorder does not change
+      <code>planStale</code>.</li>
+    <li><code>test/backlog-machine.test.ts</code> (extend) - dispatch takes the top-ranked ready
+      item; reordering changes which item is dispatched with no replan; the assign path's
+      behaviour is pinned either way once the decision below lands.</li>
+    <li><code>test/task-triage.test.ts</code> / <code>task-triage-render.test.ts</code> (extend)
+      - <code>backlogTasks</code> orders by rank, and the column still does not sort for
+      itself.</li>
+    <li><code>test/backlog-reorder-http.test.ts</code> - the route through
+      <code>buildApp</code>: 404 on a missing task and a missing anchor, 409 on a dispatched
+      task, a dispatched anchor and a self-anchor, 200 returning the moved task, and the
+      placement surviving a reopen.</li>
+    <li><code>test/db-*</code> (extend) - the backfill runs exactly once, orders by
+      <code>byPriorityThenAge</code>, and an already-migrated database is not renumbered on the
+      next open.</li>
+    <li><code>e2e/specs/backlog-reorder.spec.ts</code> - the requirement, end to end and with no
+      model tokens spent: file three backlog tasks, move the third to the top through the UI,
+      confirm the column and the Line drawer both read the new order and the <em>next up</em>
+      mark moved, then let autopilot launch and confirm it took the one that was moved up. A
+      second case drags a card onto an agent tile to prove the assign gesture still works from
+      the same drag. A third drives the move with the keyboard alone.</li>
+  </ul>
+
+  <h2>Documentation</h2>
+  <p>Same change, not a follow-up: <code>docs/dispatch-and-backlog.md</code> (the priority
+    table's "Sorts" column stops being the whole story), <code>docs/work-queues.md</code> (the
+    autopilot section's ordering sentences), <code>docs/foreman.md</code> where it describes
+    what the planner's order decides, and this plan's own file.</p>
+
+  <h2>Out of scope</h2>
+  <ul>
+    <li><strong>Per-repo or per-agent sub-orders.</strong> One backlog, one order.</li>
+    <li><strong>Ranking anything but the backlog.</strong> Sessions, reviews, work queues and
+      pipelines each have their own ordering and none of them is this.</li>
+    <li><strong>Teaching the planner about rank.</strong> The prompt stays as it is. The model
+      is asked for edges; the order is the operator's and does not need a model's opinion folded
+      into it.</li>
+    <li><strong>Auto-ranking from priority on every write.</strong> A "Sort by priority" action
+      that rewrites ranks once, on demand, is one of the decisions below; a rule that re-sorted
+      continuously would take the order back off the human this plan is handing it to.</li>
+    <li><strong>Bulk multi-select drag.</strong> One card at a time.</li>
+  </ul>
+
+  <h2>Open decisions</h2>
+  <div class="box">
+    <p>These are the choices this plan does not make for you. Each is presented as a selectable
+      option in the Mission Control dashboard review.</p>
+    <ol>
+      <li><strong>How priority and manual order coexist.</strong> Rank as the only order with
+        priority demoted to annotation is the simplest thing a person can hold in their head,
+        and it is a real removal: a swept <code>P0</code> would land at the bottom until you
+        move it. The alternative keeps priority as a coarse band with rank ordering inside it,
+        which preserves today's semantics at the cost of a drag that sometimes refuses to go
+        where you dropped it.</li>
+      <li><strong>The reorder gesture</strong> - drag plus keyboard, a dedicated handle, or
+        buttons only.</li>
+      <li><strong>The assign path's scan</strong>, described above - strict order against
+        keeping a free agent busy.</li>
+      <li><strong>Rank allocation</strong> - sparse-with-renormalize against full renumber.</li>
+    </ol>
+  </div>
+</main>
+</body></html>

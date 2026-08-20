@@ -472,18 +472,29 @@ function isLaterEffortRevision(previous: string | null, next: string | null): bo
 /**
  * Whether a passive read proves a turn began after an effort selection was accepted.
  *
- * Normally that is a strictly later `turn_context` timestamp than the one measured when
- * the selection landed. When no revision could be measured at all - a rollout with usage
- * records but no `turn_context` yet - the first record to appear IS the first turn since,
- * so its own timestamp is compared against the moment of the request instead.
+ * TWO conditions, and the second is what makes the snapshot in `recordPendingSessionEffort`
+ * safe to take BEFORE the driver call rather than after it.
+ *
+ * The record has to post-date the moment the driver accepted, because a turn can start
+ * while the request is still in flight - serialized behind an in-flight send, say - and
+ * that turn was necessarily started with the OLD level. Settling against it would retire
+ * the selection on evidence from a turn that could not have carried it. Codex writes these
+ * timestamps from the same machine's clock as the daemon reading them (it is a child of
+ * that daemon), so the comparison is sound; skew in the wrong direction costs one more turn
+ * before the card settles and never settles it falsely.
+ *
+ * And it has to be strictly later than the revision measured when the selection landed,
+ * which is the ordinary case and the only one when the clocks agree. When no revision could
+ * be measured at all - a rollout with usage records but no `turn_context` yet - the first
+ * record to appear IS the first turn since, and the acceptance check alone answers.
  */
 function turnRanSince(
   pending: { effortRevision: string | null; requestedAt: number },
   effortRevision: string | null,
 ): boolean {
-  if (pending.effortRevision !== null) return isLaterEffortRevision(pending.effortRevision, effortRevision);
   const observed = effortRevision === null ? Number.NaN : Date.parse(effortRevision);
-  return Number.isFinite(observed) && observed >= pending.requestedAt;
+  if (!Number.isFinite(observed) || observed < pending.requestedAt) return false;
+  return pending.effortRevision === null || isLaterEffortRevision(pending.effortRevision, effortRevision);
 }
 
 /** Hook-derived state for a session, applied over passive discovery. */
@@ -2589,12 +2600,21 @@ export class Registry extends EventEmitter {
    * Choosing the level the session is ALREADY on retires any outstanding selection rather
    * than recording a new one - there is nothing left for a next turn to change.
    *
+   * `revision` is the caller's own SNAPSHOT of the newest `turn_context`, taken before the
+   * driver was asked. It is a parameter rather than a read of `runtimeEffortRevisions`
+   * because that map belongs to the passive poller: a driver call can be serialized behind
+   * an in-flight send, and a poll landing inside that window would move the map to a turn
+   * that started while the request was still travelling. Recording THAT as the baseline
+   * asks for a turn after it, so a change the following turn already applied would sit on
+   * the card as pending until some third turn happened to run.
+   *
    * Returns false when the session moved out from under the caller, which is the same
    * 409 its observed twin produces.
    */
   recordPendingSessionEffort(
     sessionId: string,
     effort: ThinkingLevel | null,
+    revision: string | null,
     expected?: Pick<Session, "agentSessionId" | "transcriptPath">,
   ): boolean {
     const s = this.sessions.get(sessionId);
@@ -2617,7 +2637,7 @@ export class Registry extends EventEmitter {
         agentSessionId: s.agentSessionId,
         transcriptPath: s.transcriptPath,
         modelId: s.meta?.modelId ?? null,
-        effortRevision: this.runtimeEffortRevisions.get(sessionId) ?? null,
+        effortRevision: revision,
         requestedAt: Date.now(),
       });
     }

@@ -3639,7 +3639,12 @@ export function buildApp(
     const published = !r.ok
       ? true
       : deferred
-        ? registry.recordPendingSessionEffort(session.id, r.effort, session)
+        // `baseline` rather than whatever the passive poller has since read: it is the
+        // revision this decision was made against, captured above before the driver was
+        // asked. A poll landing while the driver call waited its turn would otherwise
+        // become the baseline, and the change would read as pending for one turn longer
+        // than it actually was - or for a turn that had already applied it.
+        ? registry.recordPendingSessionEffort(session.id, r.effort, baseline, session)
         : registry.recordObservedSessionEffort(session.id, r.effort, session);
     if (!published) {
       return c.json({

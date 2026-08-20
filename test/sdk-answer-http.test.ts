@@ -607,6 +607,14 @@ test("a Codex SDK mode change updates the card after the driver accepts it", asy
   assert.equal(((await effort.json()) as { pending?: boolean }).pending, true);
 });
 
+/**
+ * A `turn_context` written after the driver accepted, in the clock the registry compares
+ * against. Codex stamps these with the same machine's clock as the daemon reading them, so
+ * a settling record is genuinely in the near future of the request - a fixed calendar date
+ * would be permanently in the past and could never settle anything.
+ */
+const nextTurnRevision = (): string => new Date(Date.now() + 60_000).toISOString();
+
 test("a Codex SDK session's pending effort outlives the running turn's own metadata", async () => {
   const rolloutPath = join(home, "codex-pending-rollout.jsonl");
   const rollout = (records: string[]) => writeFileSync(rolloutPath, `${records.join("\n")}\n`);
@@ -670,16 +678,17 @@ test("a Codex SDK session's pending effort outlives the running turn's own metad
 
   // The next turn starts and Codex writes the record that can answer. Now the promise is
   // kept, the card moves, and there is nothing left pending.
+  const settles = nextTurnRevision();
   rollout([
     head,
     turnOne,
     JSON.stringify({
       type: "turn_context",
-      timestamp: "2026-07-25T12:05:00.000Z",
+      timestamp: settles,
       payload: { model: "gpt-5.6-sol", effort: "max" },
     }),
   ]);
-  registry.applyRuntimeMeta("sdk:codex-pending", read("max", "2026-07-25T12:05:00.000Z", 31), "transcript");
+  registry.applyRuntimeMeta("sdk:codex-pending", read("max", settles, 31), "transcript");
   assert.equal(registry.getSession("sdk:codex-pending")?.meta?.thinkingLevel, "max");
   assert.equal(registry.getSession("sdk:codex-pending")?.pendingEffort, null);
 });
@@ -813,7 +822,7 @@ test("a next turn that did NOT take the pending effort retires it rather than ho
   // A later `turn_context` naming something else - an operator's `/model` in a terminal
   // beside this one, a config the driver lost. A turn HAS run since, so this read settles
   // the question; holding `max` past it would keep promising a turn that already happened.
-  registry.applyRuntimeMeta("sdk:codex-refused", meta("xhigh", "2026-07-25T12:06:00.000Z"), "transcript");
+  registry.applyRuntimeMeta("sdk:codex-refused", meta("xhigh", nextTurnRevision()), "transcript");
   assert.equal(registry.getSession("sdk:codex-refused")?.meta?.thinkingLevel, "xhigh");
   assert.equal(registry.getSession("sdk:codex-refused")?.pendingEffort, null);
 });

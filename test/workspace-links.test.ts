@@ -69,11 +69,17 @@ test("allows external protocols through Markdown while blocking active-content U
   }
 });
 
-test("HTML and Markdown default to preview without treating ordinary source as previewable", () => {
-  for (const path of ["index.html", "page.HTM", "README.md", "guide.markdown", "old.mdown"]) {
+test("HTML, Markdown, and common browser images default to preview", () => {
+  for (const path of [
+    "index.html", "page.HTM", "README.md", "guide.markdown", "old.mdown", "still.apng",
+    "photo.avif", "scan.bmp", "motion.gif", "favicon.ico", "photo.jfif", "photo.jpeg",
+    "photo.jpg", "screen.PNG", "diagram.svg", "render.webp",
+  ]) {
     assert.equal(pathDefaultsToPreview(path), true, path);
   }
-  assert.equal(pathDefaultsToPreview("src/App.tsx"), false);
+  for (const path of ["src/App.tsx", "photo.tiff", "raw.heic", "no-extension"]) {
+    assert.equal(pathDefaultsToPreview(path), false, path);
+  }
 });
 
 test("bare path detection spans the token an agent typed, punctuation excluded", () => {

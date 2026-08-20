@@ -585,9 +585,11 @@ Links in a formatted transcript that resolve inside that session's checkout open
 same session's Files workspace. Console and Board reveal their integrated Files tab; Cards
 reuse the extracted Files window. Checkout-relative links and absolute paths beneath the
 checkout are accepted, including optional line and column suffixes. External links keep
-their normal browser behavior, and resolved paths outside the checkout never open. HTML and
-Markdown open in Preview by default, while every other file type opens in the editor - so a
-generated page a session links to is read as the page it is, and source is read as source. The
+their normal browser behavior, and resolved paths outside the checkout never open. HTML,
+Markdown, and browser image formats (APNG, AVIF, BMP, GIF, ICO, JPEG, PNG, SVG, and WebP) open
+in Preview by default, while other file types open in the editor - so a generated page or image
+a session links to is read as its rendered output, and source is read as source. Raster images are
+read only; SVG keeps its source Editor alongside Preview. The
 Preview and Editor buttons publish which of the two is showing as their pressed state, so the
 view a file landed in is legible to a screen reader and not only to the eye. While the integrated
 Files tab is open, press <kbd>p</kbd> for Preview or <kbd>e</kbd> for Editor. These fixed,

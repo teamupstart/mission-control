@@ -1,3 +1,5 @@
+import { browserImageMediaTypeForPath } from "@shared/browser-images.ts";
+
 export interface WorkspaceFileTarget {
   /** Checkout-relative path accepted by the session file API. */
   path: string;
@@ -110,7 +112,8 @@ export function workspaceFileTarget(
 }
 
 export function pathDefaultsToPreview(filePath: string): boolean {
-  return /\.(?:html?|md|markdown|mdown)$/i.test(filePath);
+  return /\.(?:html?|md|markdown|mdown)$/i.test(filePath)
+    || browserImageMediaTypeForPath(filePath) !== null;
 }
 
 /**
@@ -121,9 +124,10 @@ export function pathDefaultsToPreview(filePath: string): boolean {
  * that resolves candidates pays a lookup for each.
  */
 const KNOWN_PATH_EXTENSIONS = new Set([
-  "bash", "c", "cc", "cjs", "cpp", "css", "go", "h", "hpp", "html", "java", "js", "json",
-  "jsx", "kt", "kts", "md", "mdx", "mjs", "php", "py", "rb", "rs", "scss", "sh", "sql",
-  "svg", "swift", "toml", "ts", "tsx", "txt", "xml", "yaml", "yml", "zsh",
+  "apng", "avif", "bash", "bmp", "c", "cc", "cjs", "cpp", "css", "gif", "go", "h", "hpp",
+  "html", "ico", "java", "jfif", "jpeg", "jpg", "js", "json", "jsx", "kt", "kts", "md",
+  "mdx", "mjs", "php", "png", "py", "rb", "rs", "scss", "sh", "sql", "svg", "swift",
+  "toml", "ts", "tsx", "txt", "webp", "xml", "yaml", "yml", "zsh",
 ]);
 
 const LEADING_TOKEN_PUNCTUATION = new Set(["`", "'", "\"", "(", "[", "{", "<"]);

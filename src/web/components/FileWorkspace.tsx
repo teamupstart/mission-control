@@ -47,7 +47,7 @@ function scrollElement(element: HTMLElement, direction: -1 | 1): void {
 
 export function scrollActiveFileReader(root: ParentNode, direction: -1 | 1): boolean {
   const contentReaders = root.querySelectorAll<HTMLElement>(
-    ".file-content .cm-scroller, .file-content .file-markdown-preview, .file-content .file-compare pre",
+    ".file-content .cm-scroller, .file-content .file-markdown-preview, .file-content .file-image-preview, .file-content .file-compare pre",
   );
   if (contentReaders.length > 0) {
     contentReaders.forEach((element) => scrollElement(element, direction));
@@ -79,7 +79,7 @@ export function adjacentFilePath(
 
 function previewReader(root: ParentNode): HTMLElement | null {
   return root.querySelector<HTMLElement>(
-    ".file-content .html-preview, .file-content .file-markdown-preview",
+    ".file-content .html-preview, .file-content .file-markdown-preview, .file-content .file-image-preview",
   );
 }
 
@@ -123,7 +123,9 @@ export function FileWorkspace({
   const selectedPath = state?.selectedPath ?? null;
   const buffer = selectedPath ? state?.buffers[selectedPath] : null;
   const mode = state?.mode ?? "preview";
-  const previewable = buffer?.document.kind === "html" || buffer?.document.kind === "markdown";
+  const previewable = buffer?.document.kind === "html"
+    || buffer?.document.kind === "markdown"
+    || buffer?.document.kind === "image";
   useEffect(() => {
     if (extracted) return;
     function onKeyDown(event: KeyboardEvent): void {
@@ -195,6 +197,12 @@ export function FileWorkspace({
   const previewText = buffer && preparedPreview?.path === buffer.document.path
     ? preparedPreview.text
     : (buffer?.text ?? "");
+  const imageSource = useMemo(() => {
+    if (mode !== "preview" || buffer?.document.kind !== "image") return null;
+    return buffer.document.image?.mediaType === "image/svg+xml" && buffer.document.text !== null
+      ? `data:image/svg+xml;charset=utf-8,${encodeURIComponent(buffer.text)}`
+      : (buffer.document.image?.dataUrl ?? null);
+  }, [buffer, mode]);
   useEffect(() => {
     let live = true;
     const abort = new AbortController();
@@ -420,8 +428,8 @@ export function FileWorkspace({
           {/*
             `aria-pressed` and not the class alone: which of the two views a file opened in
             is the state a reader of this toolbar most needs, and a highlight is invisible
-            to a screen reader and unassertable from a browser test. It is the only
-            published signal that an HTML file lands on Preview and source lands on Editor.
+            to a screen reader and unassertable from a browser test. It is the published
+            signal that a rendered document lands on Preview and source lands on Editor.
           */}
           {previewable && (
             <div className="file-mode" role="group" aria-label="File view mode">
@@ -439,7 +447,7 @@ export function FileWorkspace({
           {!selectedPath && <p className="file-empty">Choose a file from the checkout.</p>}
           {selectedPath && state?.openError && <p className="file-error">{state.openError}</p>}
           {selectedPath && !buffer && !state?.openError && <p className="file-empty">Loading {selectedPath}…</p>}
-          {buffer && buffer.document.text == null && <p className="file-empty">{buffer.document.error ?? "This file cannot be opened."}</p>}
+          {buffer && buffer.document.text == null && buffer.document.kind !== "image" && <p className="file-empty">{buffer.document.error ?? "This file cannot be opened."}</p>}
           {buffer?.document.text != null && buffer.document.kind === "html" && mode === "preview" && (
             <iframe className="html-preview file-preview-reader" tabIndex={-1} title={`Preview of ${buffer.document.path}`} sandbox={HTML_PREVIEW_SANDBOX} srcDoc={htmlPreviewSource(previewText)} />
           )}
@@ -452,6 +460,14 @@ export function FileWorkspace({
                 {previewText}
               </Markdown>
             </article>
+          )}
+          {buffer?.document.kind === "image" && mode === "preview" && imageSource && (
+            <div className="file-image-preview file-preview-reader" tabIndex={-1} aria-label={`Preview of ${buffer.document.path}`}>
+              <img src={imageSource} alt={buffer.document.path} />
+            </div>
+          )}
+          {buffer?.document.kind === "image" && mode === "preview" && !imageSource && (
+            <p className="file-empty">Image preview is unavailable.</p>
           )}
           {buffer?.document.text != null && (!previewable || mode === "editor") && !comparing && (
             <FileEditor

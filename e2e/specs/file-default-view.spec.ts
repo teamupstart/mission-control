@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import type { Page, Request } from "@playwright/test";
@@ -124,6 +124,10 @@ async function openFilesTab(page: Page, daemon: DaemonHandle): Promise<void> {
   mkdirSync(join(cwd, "docs", "reports", "sse-reconnect-audit"), { recursive: true });
   writeFileSync(join(cwd, "docs", "reports", "sse-reconnect-audit", "report.html"), REPORT_HTML);
   writeFileSync(join(cwd, "docs", "reports", "sse-reconnect-audit", "notes.md"), NOTES_MD);
+  writeFileSync(
+    join(cwd, "docs", "reports", "sse-reconnect-audit", "zz-preview.png"),
+    readFileSync(join(process.cwd(), "docs", "images", "foreman.png")),
+  );
   writeFileSync(join(cwd, "docs", "reports", "sse-reconnect-audit", "z-later.md"), AFTER_MD);
   mkdirSync(join(cwd, "src"), { recursive: true });
   writeFileSync(join(cwd, "src", "reconnect.ts"), SOURCE_TS);
@@ -143,6 +147,7 @@ async function openFilesTab(page: Page, daemon: DaemonHandle): Promise<void> {
 
 const REPORT = "docs/reports/sse-reconnect-audit/report.html";
 const NOTES = "docs/reports/sse-reconnect-audit/notes.md";
+const IMAGE = "docs/reports/sse-reconnect-audit/zz-preview.png";
 const AFTER = "docs/reports/sse-reconnect-audit/z-later.md";
 const SOURCE = "src/reconnect.ts";
 
@@ -229,6 +234,32 @@ test("an HTML report opens rendered, and its source only on request", async ({
   await modes.getByRole("button", { name: "Editor" }).click();
   await expect(dashboard.getByLabel(`Editor for ${REPORT}`)).toContainText("SSE reconnect audit");
   await expect(modes.getByRole("button", { name: "Editor" })).toHaveAttribute("aria-pressed", "true");
+});
+
+test("a PNG opens as a fitted, read-only image preview", async ({ dashboard, daemon }) => {
+  await openFilesTab(dashboard, daemon);
+  const files = dashboard.getByRole("listbox", { name: "Session files" });
+
+  // Reproduce the cross-file transition: source puts the shared workspace mode in Editor,
+  // then the raster load must normalize it because a PNG has no Editor fallback.
+  await files.getByRole("option", { name: SOURCE }).click();
+  await expect(dashboard.getByLabel(`Editor for ${SOURCE}`)).toContainText("reconnectBudgetMs");
+  await files.getByRole("option", { name: IMAGE }).click();
+
+  const preview = dashboard.getByLabel(`Preview of ${IMAGE}`);
+  const image = preview.getByRole("img", { name: IMAGE });
+  await expect(image).toBeVisible();
+  await expect.poll(() => image.evaluate((element) => (element as HTMLImageElement).naturalWidth))
+    .toBeGreaterThan(0);
+  await expect(image).toHaveAttribute("src", /^data:image\/png;base64,/);
+  await expect.poll(() => image.evaluate((element) => getComputedStyle(element).objectFit))
+    .toBe("contain");
+
+  const modes = dashboard.getByRole("group", { name: "File view mode" });
+  await expect(modes.getByRole("button", { name: "Preview" })).toHaveAttribute("aria-pressed", "true");
+  await expect(modes.getByRole("button", { name: "Editor" })).toBeDisabled();
+  await expect(dashboard.getByText("Read only", { exact: true })).toBeVisible();
+  await shoot(dashboard, "png-opens-in-preview");
 });
 
 test("bare e and p switch modes only in the integrated Files tab", async ({

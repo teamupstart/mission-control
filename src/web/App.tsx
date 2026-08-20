@@ -63,6 +63,7 @@ import { detailLayer, useLayoutMode, type LayoutMode } from "./lib/layout.ts";
 import { moveSelection, type ArrowKey } from "./lib/layoutNav.ts";
 import { conversationReveal } from "./lib/conversationReveal.ts";
 import { orderSessions } from "./lib/fleet-order.ts";
+import { reviewShortcutTarget } from "./lib/review-shortcut.ts";
 import { heldSessionIds, ownBindingBySession } from "./lib/held.ts";
 import { foldAttention } from "./lib/attention.ts";
 import {
@@ -2382,6 +2383,19 @@ export function App(): React.JSX.Element {
         setResetSessionId(sel.id);
         return;
       }
+      // The review queue. The same click the attention-toned badge on the card performs,
+      // and deliberately the same TARGET rule: the selected session when it is the one
+      // asking, otherwise the first session in grid order that is. Unclaimed - no
+      // `preventDefault` - when nothing anywhere is waiting, so a bare `e` on a quiet
+      // fleet stays the browser's.
+      if (chord === bindings.review) {
+        const target = reviewShortcutTarget(visible, selectedId);
+        if (!target) return;
+        e.preventDefault();
+        if (target.refocus) focusSession(target.sessionId);
+        setReviewSessionId(target.sessionId);
+        return;
+      }
       const launcher = LAUNCHER_ACTIONS.find(([id]) => chord === bindings[id]);
       if (launcher) {
         const sel = selectedId ? visible.find((session) => session.id === selectedId) : null;
@@ -2479,6 +2493,10 @@ export function App(): React.JSX.Element {
     // was the third place a new overlay used to have to be remembered, and the one with no
     // visible symptom when it was missed.
     // No `lineDrawer` entry either, for the same reason: the guard reads `lineDrawerRef`.
+    // No `focusSession` entry: it is a plain function, so listing it would re-subscribe on
+    // every render. It is safe to close over because everything it reads that can go stale
+    // - `navigate` and `layout` - is already a dependency here, so the copy this listener
+    // holds is rebuilt whenever either of them moves.
   }, [visible, selectedId, selected, consoleZone, expandedId, boardOpen, renamingId, toggleExpand, bindings, layout, files.ensure, requestFilesTab, requestConversationTab, requestWorkflowsTab, showLauncherFocusError, openDiff, route.page, navigate, focusReaderRail, focusReaderBody, closeLineDrawer]);
 
   // Run the chord the board's overview had to open a detail for. Deferred for the same

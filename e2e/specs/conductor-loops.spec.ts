@@ -211,6 +211,43 @@ test("guided managed Agent SDK pipeline asks for an eligible harness", async ({
   await expect(dialog.getByRole("combobox", { name: "After work", exact: true })).toBeDisabled();
 });
 
+test("terminal pipeline normalizes a stale non-Claude agent before dispatch", async ({
+  dashboard,
+  daemon,
+}) => {
+  await enablePipelines(daemon, false, "terminal");
+
+  await dashboard.getByRole("button", { name: "Dispatch" }).click();
+  const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
+  const agent = dialog.getByRole("combobox", { name: "Agent", exact: true });
+  const kind = dialog.getByRole("combobox", { name: "Kind", exact: true });
+  await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
+  await dashboard.keyboard.press("Escape");
+
+  await agent.selectOption("codex");
+  await kind.selectOption("pipeline");
+
+  await expect(agent).toBeDisabled();
+  await expect(agent).toHaveValue("claude");
+
+  await dialog.getByPlaceholder("What should this agent do?").fill("Run the terminal pipeline host");
+  await dialog.getByRole("button", { name: "Dispatch now" }).click();
+  await expect(dialog).toBeHidden();
+
+  await expect
+    .poll(
+      async () =>
+        (
+          await request<Array<{ agent: string; kind: string; status: string }>>(
+            daemon,
+            "/api/tasks",
+          )
+        ).find((task) => task.kind === "pipeline"),
+      { message: "the terminal pipeline task should carry the normalized Claude host" },
+    )
+    .toMatchObject({ agent: "claude", kind: "pipeline", status: "running" });
+});
+
 test("guided dispatch offers pipeline only in an enabled repo and launches a real terminal home", async ({
   dashboard,
   daemon,
@@ -221,6 +258,7 @@ test("guided dispatch offers pipeline only in an enabled repo and launches a rea
   const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
   const repo = dialog.getByPlaceholder("search repos or type a path…");
   const kind = dialog.getByRole("combobox", { name: "Kind", exact: true });
+  const agent = dialog.getByRole("combobox", { name: "Agent", exact: true });
 
   await repo.fill(daemon.secondRepo);
   await dashboard.keyboard.press("Escape");
@@ -237,6 +275,8 @@ test("guided dispatch offers pipeline only in an enabled repo and launches a rea
   await expect(
     dialog.getByRole("button", { name: `Detach repo: ${daemon.secondRepo}` }),
   ).toBeVisible();
+  await agent.selectOption("pi");
+  await expect(agent).toHaveValue("pi");
 
   await dialog.getByRole("switch", { name: "Guided" }).click();
   await expect(repo).toBeFocused();
@@ -250,7 +290,8 @@ test("guided dispatch offers pipeline only in an enabled repo and launches a rea
   await expect(
     dialog.getByRole("button", { name: `Detach repo: ${daemon.secondRepo}` }),
   ).toHaveCount(0);
-  await expect(dialog.getByRole("combobox", { name: "Agent", exact: true })).toBeDisabled();
+  await expect(agent).toBeDisabled();
+  await expect(agent).toHaveValue("claude");
   await expect(dialog.getByRole("combobox", { name: "Model", exact: true })).toBeDisabled();
   await expect(dialog.getByRole("combobox", { name: /Effort/ })).toBeDisabled();
   await expect(dialog.getByRole("combobox", { name: "After work", exact: true })).toBeDisabled();

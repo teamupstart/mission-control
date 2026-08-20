@@ -4,7 +4,10 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import { ConductorPanel, detectionReading, offeredRepos, repoHealthLine } from "../src/web/components/ConductorPanel.tsx";
-import { PipelineDispatchConstraint } from "../src/web/components/DispatchModal.tsx";
+import {
+  PipelineDispatchConstraint,
+  pipelineAgentForKindTransition,
+} from "../src/web/components/DispatchModal.tsx";
 import { configWithObservation, type ConductorState } from "../src/web/useConductor.ts";
 import type { PipelineProbe, PipelinesView } from "../src/shared/pipeline.ts";
 
@@ -176,6 +179,19 @@ test("pipeline dispatch renders the selected host contract without offering a fa
   assert.match(terminal, /conduct-ts engineer --idea in a real terminal with live stdin/);
   assert.match(terminal, /inherited Claude nesting marker/);
   assert.match(terminal, /provider projection owns task completion/);
+});
+
+test("pipeline kind transitions keep only agents the effective host can launch", () => {
+  assert.equal(pipelineAgentForKindTransition("pipeline", "terminal", "codex"), "claude");
+  assert.equal(pipelineAgentForKindTransition("pipeline", "terminal", "pi"), "claude");
+  assert.equal(pipelineAgentForKindTransition("pipeline", "terminal", "claude"), "claude");
+
+  assert.equal(pipelineAgentForKindTransition("pipeline", "agent-sdk", "pi"), "claude");
+  assert.equal(pipelineAgentForKindTransition("pipeline", "agent-sdk", "codex"), "codex");
+  assert.equal(pipelineAgentForKindTransition("pipeline", "agent-sdk", "claude"), "claude");
+
+  assert.equal(pipelineAgentForKindTransition("ship", "terminal", "codex"), "codex");
+  assert.equal(pipelineAgentForKindTransition("pipeline", null, "pi"), "pi");
 });
 
 test("the panel says the integration never writes, which the word conductor invites you to assume", () => {

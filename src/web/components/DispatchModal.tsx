@@ -129,6 +129,20 @@ export function PipelineDispatchConstraint({
   return <>{pipelineDispatchConstraint(runtime)}</>;
 }
 
+/** Keep the persisted task agent valid when Pipeline changes who owns the host choice. */
+export function pipelineAgentForKindTransition(
+  kind: TaskKind,
+  runtime: PipelineLaunchRuntime | null,
+  agent: AgentType,
+): AgentType {
+  if (kind !== "pipeline") return agent;
+  if (runtime === "terminal") return "claude";
+  if (runtime === "agent-sdk" && !supportsSdkSkillInvocation(agent, "engineer")) {
+    return EMPTY_DISPATCH_DRAFT.agent;
+  }
+  return agent;
+}
+
 /**
  * What a fresh dispatch form holds: nothing, except the repo the last one went to.
  *
@@ -1264,12 +1278,11 @@ function DispatchModal({
       setAddingRepo(false);
       setAddRepoValue("");
     }
-    const normalizedPipelineAgent =
-      kind === "pipeline" &&
-      pipelineLaunchRuntime === "agent-sdk" &&
-      !supportsSdkSkillInvocation(draft.agent, "engineer")
-        ? EMPTY_DISPATCH_DRAFT.agent
-        : null;
+    const normalizedPipelineAgent = pipelineAgentForKindTransition(
+      kind,
+      pipelineLaunchRuntime,
+      draft.agent,
+    );
     update({
       kind,
       ...afterWorkForKind(kind),
@@ -1277,7 +1290,7 @@ function DispatchModal({
       ...(kind !== draft.kind && TASK_KIND_BEHAVIOR[kind].launch === "pipeline"
         ? { extraRepoRoots: [] }
         : {}),
-      ...(normalizedPipelineAgent
+      ...(normalizedPipelineAgent !== draft.agent
         ? {
             agent: normalizedPipelineAgent,
             ...overridesForAgent(normalizedPipelineAgent),

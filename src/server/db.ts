@@ -55,6 +55,7 @@ import { readCheapAction, readDivergence, readSkipReason } from "@shared/foreman
 import { askPreviewForWire } from "@shared/foreman-ask.ts";
 import type { CheapAction, Divergence, SkipReason } from "@shared/foreman.ts";
 import { normalizeLabels } from "@shared/task.ts";
+import { isRetentionCandidate, taskResourceGeneration } from "./task-resource-generation.ts";
 
 /**
  * Durable state. Live sessions are intentionally NOT persisted - they're rebuilt
@@ -5901,7 +5902,12 @@ export type RetentionObservationOutcome =
   /** An unknown read against an existing matching row: diagnosis recorded, clock untouched. */
   | "unknown-recorded"
   /** An unknown read with no matching row to annotate: nothing is written at all. */
-  | "unknown-skipped";
+  | "unknown-skipped"
+  /**
+   * The task no longer owns the resources this observation was taken against, as re-derived
+   * INSIDE the write transaction. Nothing is written - see the note on the guard below.
+   */
+  | "generation-moved";
 
 export interface RetentionObservationInput {
   taskId: string;
@@ -5928,6 +5934,15 @@ export interface RetentionObservationInput {
  * written only as the inert defaults a new or replaced row carries; an existing row's claim
  * columns are left exactly as found. That is Phase 1's zero-cleanup boundary expressed in the
  * one place that could otherwise cross it.
+ *
+ * The caller's generation is re-derived HERE, from the task as it stands inside this
+ * transaction, and a mismatch writes nothing. That is deliberately a second check: the observer
+ * already re-read the task before calling, but that check protects the write only for as long
+ * as nothing can run between the two - which is true today (both calls are synchronous, and the
+ * daemon is the only writer) and is exactly the kind of invariant that a later refactor
+ * silently repeals. A stale fingerprint landing on a re-dispatched task hands a brand new
+ * checkout an age it never lived, and the phase that consumes this ledger deletes on that age,
+ * so the guard belongs where the write happens rather than where the caller last looked.
  */
 export function recordTaskWorktreeObservation(
   input: RetentionObservationInput,
@@ -5940,6 +5955,21 @@ export function recordTaskWorktreeObservation(
     const existing = d
       .prepare(`SELECT * FROM task_worktree_retention WHERE task_id = ?`)
       .get(taskId) as unknown as TaskWorktreeRetentionDbRow | undefined;
+
+    // Does the task STILL own what this observation describes? Asked of the row as it is right
+    // now, under the same transaction that is about to write, so no interleaving between the
+    // question and the answer is possible regardless of what the caller did or did not check.
+    // A task that vanished, went non-terminal, released its last checkout, or was re-dispatched
+    // all land here, and all of them write nothing at all.
+    const current = getTask(taskId);
+    if (
+      !current
+      || !isRetentionCandidate(current)
+      || taskResourceGeneration(current) !== generation
+    ) {
+      d.exec("COMMIT");
+      return { outcome: "generation-moved", row: existing ? toRetentionRow(existing) : null };
+    }
 
     if (fingerprint === null) {
       // An unreadable tree is not a quiet tree. Record why, move nothing, and - when there is

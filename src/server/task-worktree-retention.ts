@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import {
   deleteTaskWorktreeRetention,
   getTask,
@@ -12,8 +11,9 @@ import {
   type ActivityFingerprint,
 } from "./git/worktree-activity.ts";
 import { unref } from "./util/timers.ts";
-import { isTerminalTask } from "@shared/task-status.ts";
-import { taskHasWorktrees, taskRepoRefs } from "@shared/task-repos.ts";
+// Re-exported below: the generation and the eligibility rule live in their own module because
+// the database writer derives them too, inside the transaction that protects a ledger row.
+import { isRetentionCandidate, taskResourceGeneration } from "./task-resource-generation.ts";
 import type { Task } from "@shared/types.ts";
 
 // The daemon's durable, task-level worktree activity clock.
@@ -39,6 +39,8 @@ import type { Task } from "@shared/types.ts";
 //  - An unreadable tree records a reason and moves no deadline.
 //  - A stale pass cannot write onto resources that were replaced while it was running.
 
+export { isRetentionCandidate, taskResourceGeneration };
+
 /** How long a terminal task's checkouts survive without a Git-visible change. */
 export const RETENTION_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 
@@ -55,56 +57,6 @@ export const RETENTION_OBSERVE_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 /** How many checkouts are probed at once. Bounded so a large stale fleet stays background work. */
 export const RETENTION_PROBE_CONCURRENCY = 4;
-
-/**
- * The identity of everything a cleanup of this task would ACT ON, as one digest.
- *
- * It exists to answer, before any ledger write, "is what I observed still what the task owns?"
- * A pass that probed a tree, then took a second on three other tasks, must not land that
- * fingerprint on a task that was re-dispatched in between - the new checkout would inherit an
- * age it never lived, and in the next phase that is a deletion.
- *
- * What goes in is exactly the cleanup-relevant facts, and each is here for a reason:
- *
- *  - `id` and `dispatchedAt` - the ATTEMPT. A rescheduled task that runs again is a new tree
- *    even if it happens to land on the same path.
- *  - every repository's position, root, recorded worktree path, provider and native lease -
- *    the tuple teardown itself reads. A slot returned and re-leased at the same path under a
- *    new lease id is a different tree wearing the same name, and a partial release that
- *    cleared one repository's path is a different set of resources than the one observed.
- *  - `homeName`, `terminalResourceId`, `sessionId` - terminal ownership, which reclaim can stop
- *    or clear. A generation blind to them would survive a mutation that changed what cleanup
- *    would do.
- *
- * What is deliberately OUT: title, intent, labels, dependencies, outcome, pull request state,
- * `updatedAt`. All of them move under ordinary bookkeeping, and any of them in here would
- * restart a task's grace period every time the PR poller ran.
- *
- * Hashed rather than stored verbatim, because this is a comparison key and not a second source
- * of truth about resources - nothing may ever read a path back out of it.
- */
-export function taskResourceGeneration(task: Task): string {
-  const canonical = JSON.stringify({
-    id: task.id,
-    dispatchedAt: task.dispatchedAt,
-    homeName: task.homeName,
-    terminalResourceId: task.terminalResourceId,
-    sessionId: task.sessionId,
-    repos: taskRepoRefs(task).map((ref) => [
-      ref.position,
-      ref.repoRoot,
-      ref.worktreePath,
-      ref.provider,
-      ref.worktreeLeaseId,
-    ]),
-  });
-  return createHash("sha256").update(canonical).digest("hex");
-}
-
-/** Is this task one the retention clock is allowed to run for at all? */
-export function isRetentionCandidate(task: Task): boolean {
-  return isTerminalTask(task.status) && taskHasWorktrees(task);
-}
 
 /**
  * Everything the observer can do, stated as data.

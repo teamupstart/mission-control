@@ -6,7 +6,9 @@ import {
   mkdirSync,
   mkdtempSync,
   rmSync,
+  statSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -301,6 +303,34 @@ test("an unborn HEAD fingerprints stably instead of pinning the tree on unknown"
   assert.equal(await digest(dir), first);
   writeFileSync(join(dir, "new.txt"), "hello\n");
   assert.notEqual(await digest(dir), first, "work in an unborn checkout is still activity");
+});
+
+test("observing never writes the index, so it cannot contend with a person's git", async () => {
+  // `git status` is not inherently read-only: with a stale stat cache it refreshes the index and
+  // writes it back, taking `.git/index.lock`. That is the exact lock a `git add` or `git commit`
+  // needs, and this probe runs unattended against trees somebody may still be working in.
+  const dir = mkRepo("no-locks");
+  writeFileSync(join(dir, "extra.txt"), "content\n");
+  git(dir, "add", "-A");
+  git(dir, "commit", "-qm", "second");
+  await digest(dir);
+
+  const indexPath = join(dir, ".git", "index");
+  const before = statSync(indexPath).mtimeMs;
+  // Invalidate the stat cache without changing any content - the state that makes a plain
+  // `git status` rewrite the index.
+  const future = new Date(Date.now() + 60_000);
+  utimesSync(join(dir, "tracked.txt"), future, future);
+  utimesSync(join(dir, "extra.txt"), future, future);
+
+  const after = await digest(dir);
+  assert.equal(
+    statSync(indexPath).mtimeMs,
+    before,
+    "the probe refreshed the index - it must run with optional locks disabled",
+  );
+  // And a stat-only change is correctly NOT activity: no Git-visible content moved.
+  assert.equal(after, await digest(dir));
 });
 
 test("a missing path, a non-repository, and a nested path are unknown - never clean", async () => {

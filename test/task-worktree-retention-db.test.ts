@@ -39,6 +39,7 @@ assert.ok(existsSync(dbPath), "the child built a database to upgrade");
   pre.close();
 }
 
+const { taskResourceGeneration } = await import("../src/server/task-resource-generation.ts");
 const {
   openDb,
   upsertTask,
@@ -61,10 +62,19 @@ const NOW = 1_700_000_000_000;
 const mkTask = (over: Partial<Task> = {}): Task =>
   baseTask({ status: "done", worktreePath: "/wt/a", ...over });
 
+/**
+ * One observation, defaulting to the generation the stored task ACTUALLY has.
+ *
+ * Derived rather than hard-coded because the writer re-derives it inside its own transaction
+ * and refuses anything else - a test that invented a generation string would be testing the
+ * rejection path on every call.
+ */
 function observe(over: Partial<Parameters<typeof recordTaskWorktreeObservation>[0]> = {}) {
+  const taskId = over.taskId ?? "t-obs";
+  const stored = getTask(taskId);
   return recordTaskWorktreeObservation({
-    taskId: "t-obs",
-    generation: "gen-1",
+    taskId,
+    generation: stored ? taskResourceGeneration(stored) : "no-such-task",
     fingerprint: "fp-1",
     now: NOW,
     retentionMs: WINDOW,
@@ -136,18 +146,77 @@ test("an unknown read with no matching row writes nothing - a failed read invent
 
 test("a new resource generation replaces the row and starts a fresh window", () => {
   const redispatch = NOW + 50 * DAY;
-  const { outcome, row } = observe({ now: redispatch, generation: "gen-2", fingerprint: "fp-3" });
+  // A real re-dispatch: a new attempt onto a new checkout.
+  upsertTask(mkTask({ id: "t-obs", worktreePath: "/wt/b", dispatchedAt: 4242 }));
+  const { outcome, row } = observe({ now: redispatch, fingerprint: "fp-3" });
   assert.equal(outcome, "replaced");
-  assert.equal(row?.generation, "gen-2");
+  assert.equal(row?.generation, taskResourceGeneration(getTask("t-obs")!));
   assert.equal(row?.lastChangedAt, redispatch, "a replacement tree cannot inherit an older age");
   assert.equal(row?.cleanupDueAt, redispatch + WINDOW);
   assert.equal(row?.lastError, null, "the superseded row's diagnosis does not survive");
 });
 
+test("an observation whose task moved underneath it is refused by the writer", () => {
+  // The check/write race, closed where the write happens. The caller validated the generation
+  // and then - before the ledger write - the task was re-dispatched. Nothing may be written:
+  // the fingerprint in hand describes trees the task no longer owns, and letting it land would
+  // hand a brand new checkout an age it never lived.
+  upsertTask(mkTask({ id: "t-race", worktreePath: "/wt/race", dispatchedAt: 1 }));
+  observe({ taskId: "t-race", fingerprint: "fp-race" });
+  const before = getTaskWorktreeRetention("t-race");
+  assert.ok(before, "the race fixture has a settled clock to protect");
+  const stale = taskResourceGeneration(getTask("t-race")!);
+
+  upsertTask(mkTask({ id: "t-race", worktreePath: "/wt/race-2", dispatchedAt: 9999 }));
+  const moved = recordTaskWorktreeObservation({
+    taskId: "t-race",
+    generation: stale,
+    fingerprint: "fp-from-the-old-tree",
+    now: NOW + 60 * DAY,
+    retentionMs: WINDOW,
+  });
+  assert.equal(moved.outcome, "generation-moved");
+  const after = getTaskWorktreeRetention("t-race");
+  assert.equal(after?.fingerprint, before.fingerprint, "the stale fingerprint did not land");
+  assert.equal(after?.lastChangedAt, before.lastChangedAt);
+  assert.equal(after?.cleanupDueAt, before.cleanupDueAt);
+  assert.equal(after?.generation, before.generation);
+
+  // The same refusal covers a task that stopped qualifying, and an unknown read on a moved one.
+  upsertTask(mkTask({ id: "t-race", status: "running", worktreePath: "/wt/race-2" }));
+  assert.equal(observe({ taskId: "t-race", fingerprint: "fp-x" }).outcome, "generation-moved");
+  assert.equal(
+    recordTaskWorktreeObservation({
+      taskId: "t-race",
+      generation: stale,
+      fingerprint: null,
+      reason: "unreadable",
+      now: NOW,
+      retentionMs: WINDOW,
+    }).outcome,
+    "generation-moved",
+  );
+  assert.equal(getTaskWorktreeRetention("t-race")?.fingerprint, before.fingerprint);
+
+  // And a task that no longer exists at all.
+  deleteTask("t-race");
+  assert.equal(
+    recordTaskWorktreeObservation({
+      taskId: "t-race",
+      generation: stale,
+      fingerprint: "fp-y",
+      now: NOW,
+      retentionMs: WINDOW,
+    }).outcome,
+    "generation-moved",
+  );
+  assert.equal(getTaskWorktreeRetention("t-race"), null, "deleteTask took the row with it");
+});
+
 test("a successful observation clears a previous unknown's diagnosis", () => {
-  observe({ now: NOW + 51 * DAY, generation: "gen-2", fingerprint: null, reason: "transient" });
+  observe({ now: NOW + 51 * DAY, fingerprint: null, reason: "transient" });
   assert.ok(getTaskWorktreeRetention("t-obs")?.lastError);
-  observe({ now: NOW + 52 * DAY, generation: "gen-2", fingerprint: "fp-3" });
+  observe({ now: NOW + 52 * DAY, fingerprint: "fp-3" });
   assert.equal(getTaskWorktreeRetention("t-obs")?.lastError, null);
 });
 
@@ -190,7 +259,7 @@ test("orphans are the rows that no longer describe anything, in one query", () =
     }],
   }));
   for (const id of ["t-rescheduled", "t-released", "t-attached-only"]) {
-    observe({ taskId: id, generation: `gen-${id}` });
+    observe({ taskId: id });
   }
   assert.deepEqual(listOrphanedTaskWorktreeRetentionIds(), []);
 

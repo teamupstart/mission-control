@@ -210,6 +210,40 @@ test("a re-dispatch during the probe abandons the observation instead of retarge
   assert.equal(row?.lastChangedAt, NOW);
 });
 
+test("a re-dispatch between the observer's check and the write is refused by the writer", async () => {
+  // The narrower race: the observer re-read the task and the generation still matched, and the
+  // task was replaced before the ledger write landed. The observer's own check cannot see that
+  // - so the writer re-derives the generation inside its own transaction and refuses. This
+  // drives the REAL `recordTaskWorktreeObservation`, with the re-dispatch injected in the only
+  // window that exists between the two.
+  const task = mkT({ id: "o-write-race", worktreePath: "/wt/before", dispatchedAt: 1 });
+  upsertTask(task);
+  // Swap the task out at the last possible moment, exactly as a re-dispatch would.
+  const raced = new TaskWorktreeRetentionObserver({
+    listTasks: () => [task],
+    reloadTask: getTask,
+    probe: async () => ({ kind: "known", digest: "fp-old-tree" }),
+    record: (input) => {
+      upsertTask({ ...task, worktreePath: "/wt/after", dispatchedAt: 2 });
+      return recordTaskWorktreeObservation(input);
+    },
+    listOrphans: listOrphanedTaskWorktreeRetentionIds,
+    deleteRow: deleteTaskWorktreeRetention,
+    now: () => NOW,
+    intervalMs: RETENTION_OBSERVE_INTERVAL_MS,
+    retentionMs: RETENTION_WINDOW_MS,
+    concurrency: 1,
+    schedule: () => () => {},
+  });
+  const result = await raced.runPass();
+  assert.equal(result.outcomes["generation-moved"], 1, "the write was refused, not applied");
+  assert.equal(
+    getTaskWorktreeRetention("o-write-race"),
+    null,
+    "no clock was seeded for a tree the task no longer owns",
+  );
+});
+
 test("the generation moves for every cleanup-relevant fact and for none of the bookkeeping", () => {
   const base = mkT({
     id: "o-gen",

@@ -229,6 +229,7 @@ test("terminal pipeline normalizes a stale non-Claude agent before dispatch", as
 
   await expect(agent).toBeDisabled();
   await expect(agent).toHaveValue("claude");
+  await shoot(dashboard, "06-terminal-pipeline-agent-normalized", dialog);
 
   await dialog.getByPlaceholder("What should this agent do?").fill("Run the terminal pipeline host");
   await dialog.getByRole("button", { name: "Dispatch now" }).click();

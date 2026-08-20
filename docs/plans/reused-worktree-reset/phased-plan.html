@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Phased implementation: reset reused worktrees before dispatch</title>
+  <style>
+    :root { color-scheme: light dark; --bg:#f2f0e9; --paper:#fffdf8; --ink:#20251f; --muted:#697067; --line:#d8d3c7; --green:#166349; --green-soft:#e4f2ea; --blue:#285f89; --blue-soft:#e4eff7; --amber:#8b5a0a; --amber-soft:#fff0ce; --code:#eee9df; --shadow:0 18px 54px rgba(48,42,31,.10); }
+    @media (prefers-color-scheme: dark) { :root { --bg:#111613; --paper:#19201b; --ink:#eef2ed; --muted:#a9b2aa; --line:#3a443c; --green:#75d3aa; --green-soft:#173a2d; --blue:#8dc5ed; --blue-soft:#1b3548; --amber:#efbf69; --amber-soft:#443517; --code:#273029; --shadow:none; } }
+    * { box-sizing:border-box; }
+    html { background:var(--bg); }
+    body { margin:0; color:var(--ink); background:radial-gradient(circle at 12% 0%,color-mix(in srgb,var(--blue-soft) 76%,transparent),transparent 34rem),var(--bg); font:16px/1.6 ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    main { width:min(1060px,calc(100% - 32px)); margin:32px auto 64px; }
+    article { background:var(--paper); border:1px solid var(--line); border-radius:22px; box-shadow:var(--shadow); overflow:hidden; }
+    header { padding:clamp(30px,6vw,64px); border-bottom:1px solid var(--line); }
+    .eyebrow { margin:0 0 12px; color:var(--blue); font-size:.76rem; font-weight:800; letter-spacing:.14em; text-transform:uppercase; }
+    h1 { max-width:880px; margin:0; font-size:clamp(2rem,5vw,4.2rem); line-height:1.03; letter-spacing:-.045em; }
+    .status { display:inline-block; margin-top:20px; padding:5px 10px; border-radius:999px; color:var(--green); background:var(--green-soft); font-size:.82rem; font-weight:800; }
+    .lede { margin-top:25px; padding:20px 22px; border-left:6px solid var(--green); border-radius:12px; background:var(--green-soft); font-size:1.1rem; }
+    section { padding:34px clamp(24px,6vw,62px); border-bottom:1px solid var(--line); }
+    section:last-child { border-bottom:0; }
+    h2 { margin:0 0 16px; font-size:1.48rem; letter-spacing:-.02em; }
+    h3 { margin:26px 0 9px; font-size:1.04rem; }
+    p { margin:10px 0; }
+    ol,ul { padding-left:1.25rem; }
+    li+li { margin-top:8px; }
+    code { padding:.12rem .34rem; border-radius:5px; background:var(--code); font:.88em/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+    pre { margin:16px 0 0; padding:18px; overflow-x:auto; border-radius:12px; background:var(--code); }
+    pre code { padding:0; background:transparent; }
+    .table-wrap { overflow-x:auto; border:1px solid var(--line); border-radius:12px; }
+    table { width:100%; min-width:720px; border-collapse:collapse; }
+    th,td { padding:13px 15px; text-align:left; vertical-align:top; border-bottom:1px solid var(--line); }
+    th { color:var(--muted); background:color-mix(in srgb,var(--code) 65%,transparent); font-size:.75rem; letter-spacing:.08em; text-transform:uppercase; }
+    tr:last-child td { border-bottom:0; }
+    .flow { overflow-x:auto; padding:8px 0 2px; }
+    svg { display:block; width:820px; max-width:none; height:220px; }
+    .node { fill:var(--paper); stroke:var(--line); stroke-width:2; }
+    .node.good { fill:var(--green-soft); stroke:var(--green); }
+    .node.external { fill:var(--blue-soft); stroke:var(--blue); }
+    .arrow { stroke:var(--muted); stroke-width:2.5; fill:none; marker-end:url(#arrow); }
+    .svg-title { fill:var(--ink); font:700 15px ui-sans-serif,sans-serif; }
+    .svg-copy { fill:var(--muted); font:13px ui-sans-serif,sans-serif; }
+    .callout { margin:18px 0 0; padding:18px 20px; border-radius:12px; background:var(--amber-soft); border:1px solid color-mix(in srgb,var(--amber) 35%,var(--line)); }
+    .callout strong { color:var(--amber); }
+    footer { padding:20px clamp(24px,6vw,62px); color:var(--muted); font-size:.86rem; }
+  </style>
+</head>
+<body>
+  <main>
+    <article>
+      <header>
+        <p class="eyebrow">Phased implementation index</p>
+        <h1>Reset reused worktrees before dispatch</h1>
+        <span class="status">One phase, one scheduled task</span>
+        <div class="lede">An ordinary scheduled task freezes a fresh remote-default base before provisioning, and no native slot can be leased or returned as available unless it is clean, exact, and detached. Explicit pinned bases remain exact.</div>
+      </header>
+
+      <section>
+        <h2>Source and incorporated decision</h2>
+        <ul>
+          <li>Approved source: <code>docs/plans/reused-worktree-reset/plan.md</code></li>
+          <li>Human decision submitted 2026-08-20: create the phased implementation plan and schedule its dependency-linked task.</li>
+          <li>Investigation: <code>docs/reports/stale-worktree-session-close/report.html</code></li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Sizing and phase count</h2>
+        <p>Estimated production change: <strong>90 to 150 materially changed or added non-test lines</strong>. This covers dispatch base resolution, native detached inspection/reset, and manager verification. It excludes tests and documentation.</p>
+        <p>The estimate is below 200 lines and all changes form one lifecycle invariant. The phase-sizing rule therefore requires exactly one implementation phase and one one-shot task.</p>
+        <div class="callout"><strong>Why not split:</strong> separating base resolution from detachment would create an intermediate merge where a task can still launch from a Git state the registry interprets incorrectly.</div>
+      </section>
+
+      <section>
+        <h2>Dependency graph and merge order</h2>
+        <div class="flow" aria-label="Single phase dependency graph">
+          <svg viewBox="0 0 820 220" role="img" aria-labelledby="graph-title graph-desc">
+            <title id="graph-title">Planning pull request gates one implementation task</title>
+            <desc id="graph-desc">The planning session publishes the plan files in a pull request. Its merge releases Phase 1, whose pull request completes the feature.</desc>
+            <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10z" fill="currentColor"></path></marker></defs>
+            <path class="arrow" d="M250 108 H292"></path>
+            <path class="arrow" d="M528 108 H570"></path>
+            <rect class="node external" x="8" y="50" width="242" height="116" rx="14"></rect>
+            <text class="svg-title" x="27" y="82">Planning session + PR</text>
+            <text class="svg-copy" x="27" y="108">Publishes every durable</text>
+            <text class="svg-copy" x="27" y="130">path named by the task</text>
+            <rect class="node good" x="292" y="50" width="236" height="116" rx="14"></rect>
+            <text class="svg-title" x="311" y="82">Phase 1 task + PR</text>
+            <text class="svg-copy" x="311" y="108">Freeze remote base and</text>
+            <text class="svg-copy" x="311" y="130">prove detached leases</text>
+            <rect class="node" x="570" y="50" width="242" height="116" rx="14"></rect>
+            <text class="svg-title" x="589" y="82">Feature complete</text>
+            <text class="svg-copy" x="589" y="108">One operable merge, no</text>
+            <text class="svg-copy" x="589" y="130">follow-up repair phase</text>
+          </svg>
+        </div>
+        <p>There are no concurrency groups or inter-phase merge choices. The implementation task stays backlogged until the planning PR merges.</p>
+      </section>
+
+      <section>
+        <h2>Phase table</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Phase</th><th>Outcome</th><th>Direct prerequisites</th><th>Task shape</th></tr></thead>
+            <tbody><tr><td><code>phase-1-freeze-base-and-detach.md</code></td><td>Scheduled tasks launch from the intended frozen base, and native slots cannot cross task boundaries with a branch attached.</td><td>This planning session and its plan-publication PR</td><td>One-shot implementation task</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section>
+        <h2>Repository findings incorporated</h2>
+        <ol>
+          <li>Remote-default policy belongs in <code>TaskDispatcher</code>; the low-level <code>provisionWorktree()</code> helper keeps its local-HEAD default for direct callers.</li>
+          <li>All attached-repository bases must resolve before the first lease.</li>
+          <li>Pool reset detaches before invoking the existing hard-reset and <code>clean -fd</code> helper, preserving the old branch ref and ignored caches.</li>
+          <li>Detached state becomes an independently observed manager gate on acquisition and Return.</li>
+          <li>The registry's branch ownership rotation and ensemble snapshot restore semantics remain unchanged.</li>
+        </ol>
+      </section>
+
+      <section>
+        <h2>Cross-phase contracts and final verification</h2>
+        <ul>
+          <li><code>TaskDispatcher</code> owns scheduled-task base policy.</li>
+          <li><code>WorktreeManager</code> owns lease transitions and quarantine.</li>
+          <li><code>NativeWorktreeGit</code> owns pool reset and detached observation.</li>
+          <li>Explicit pins, old branch refs, local-only provisioning, and ignored caches remain compatible.</li>
+          <li>Focused regression tests, typecheck, lint, full unit suite, build, and smoke must pass.</li>
+        </ul>
+        <p>No Playwright run is required unless implementation introduces a visible UI change.</p>
+      </section>
+
+      <section>
+        <h2>Final compatibility audit</h2>
+        <ul>
+          <li>Every approved requirement is owned by Phase 1.</li>
+          <li>The scheduling decision is incorporated with no unresolved alternative.</li>
+          <li>No schema, generated output, other repository, or unpublished API is required.</li>
+          <li>No later cleanup phase is needed to leave the repository operable.</li>
+        </ul>
+      </section>
+
+      <footer>Rendered from <code>docs/plans/reused-worktree-reset/phased-plan.md</code>. Phase detail remains in <code>phase-1-freeze-base-and-detach.md</code>.</footer>
+    </article>
+  </main>
+</body>
+</html>

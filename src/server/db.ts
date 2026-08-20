@@ -2673,8 +2673,11 @@ export function openDb(): DatabaseSync {
       last_attempt_at INTEGER,
       retry_at        INTEGER,
       -- Bounded internal diagnosis of the last failed observation or cleanup. Truncated on
-      -- write and never widened onto the wire: it can name a provider's complaint, and a task's
-      -- own fields already carry every path a reader is entitled to.
+      -- write, never widened onto the wire, and never the original error MESSAGE - a
+      -- filesystem error stringifies to "EACCES: permission denied, open '<path>'", and git
+      -- names paths in its diagnostics, so a message written through verbatim would make this
+      -- column a record of filenames the ledger otherwise never holds. Producers send a
+      -- bounded classification instead; see readFailureClass in git/worktree-activity.ts.
       last_error      TEXT,
       updated_at      INTEGER NOT NULL
     );

@@ -24,7 +24,12 @@ import { taskRepoRefs, type TaskRepoRef, type TaskRepoSource } from "@shared/tas
 //     in full or refused outright. A capped read would produce a digest that stops changing
 //     once a file grows past the cap, which is the same failure as (1) wearing a hash.
 //  3. **Nothing is stored but the digest.** No path, no file content, no Git output survives
-//     this module. The ledger keeps a hash; a reader entitled to paths reads them off the task.
+//     this module - and that includes its ERROR text, which is where such things leak from.
+//     A failure is reported as a bounded classification (`readFailureClass`), never as the
+//     original message: `String(err)` on a filesystem error reads
+//     `EACCES: permission denied, open '<path>'`, and git names paths freely in its
+//     diagnostics. The ledger would then persist the name of an untracked file it otherwise
+//     never holds. It keeps a hash; a reader entitled to paths reads them off the task.
 //
 // It is also strictly READ-ONLY, and that takes one deliberate flag rather than good intentions.
 // Nothing here fetches or writes a ref - but `git status` is not inherently read-only: when its
@@ -57,6 +62,45 @@ const FILE_READ_LIMIT = 1024 * 1024 * 1024;
 
 /** Bytes of diagnosis carried out of a failed probe. */
 const REASON_LIMIT = 200;
+
+/** The `code` this module puts on its own refusal to read an oversized file. */
+export const FILE_TOO_LARGE = "ACTIVITY_FILE_TOO_LARGE";
+
+/**
+ * The codes a probe failure may be reported as, and nothing else.
+ *
+ * An ALLOWLIST rather than "whatever `err.code` says", because the value is persisted: an
+ * unrecognised code is reported as `unknown` rather than passed through, so a future error
+ * carrying something path-shaped in `code` cannot reach the ledger by default.
+ */
+const REPORTABLE_ERROR_CODES: ReadonlySet<string> = new Set([
+  FILE_TOO_LARGE,
+  "EACCES",
+  "EPERM",
+  "ENOENT",
+  "EISDIR",
+  "ENOTDIR",
+  "ELOOP",
+  "ENAMETOOLONG",
+  "EMFILE",
+  "ENFILE",
+  "ENOMEM",
+  "EBUSY",
+  "EIO",
+  "ETIMEDOUT",
+]);
+
+/**
+ * What went wrong, as a bounded token safe to persist.
+ *
+ * The whole of the error that survives this module. It answers "what CLASS of thing failed",
+ * which is what a stuck probe needs to be diagnosable, without carrying the one detail that
+ * would turn the ledger into a record of filenames.
+ */
+export function readFailureClass(err: unknown): string {
+  const code = (err as { code?: unknown } | null)?.code;
+  return typeof code === "string" && REPORTABLE_ERROR_CODES.has(code) ? code : "unknown";
+}
 
 /**
  * How many checkouts deep this will follow a nested repository before refusing.
@@ -109,8 +153,6 @@ export interface WorktreeActivityDeps {
 
 export interface GitStreamResult {
   code: number | null;
-  /** stderr, bounded - only ever used to explain an `unknown`. */
-  stderr: string;
   /** The command produced more than `GIT_OUTPUT_LIMIT` bytes and was killed. */
   overflowed: boolean;
   /** The child died rather than answering (timeout, signal, spawn refusal). */
@@ -136,7 +178,6 @@ function gitStream(
   return new Promise((resolve) => {
     let seen = 0;
     let overflowed = false;
-    let stderr = "";
     let settled = false;
     let child: ReturnType<typeof spawn>;
     const finish = (result: GitStreamResult): void => {
@@ -147,7 +188,7 @@ function gitStream(
     };
     const timer = setTimeout(() => {
       child?.kill("SIGKILL");
-      finish({ code: null, stderr, overflowed, died: true });
+      finish({ code: null, overflowed, died: true });
     }, GIT_READ_TIMEOUT_MS);
     timer.unref?.();
     try {
@@ -158,8 +199,10 @@ function gitStream(
         // git chooses to invoke on its own inherits it too.
         env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
       });
-    } catch (err) {
-      finish({ code: null, stderr: String(err), overflowed: false, died: true });
+    } catch {
+      // A spawn refusal (no git on PATH, EAGAIN, a cwd that vanished) is reported as a died
+      // child and nothing more: the error's message would name the cwd.
+      finish({ code: null, overflowed: false, died: true });
       return;
     }
     child.stdout?.on("data", (chunk: Buffer) => {
@@ -173,19 +216,17 @@ function gitStream(
       }
       if (!overflowed) onChunk(chunk);
     });
-    child.stderr?.on("data", (chunk: Buffer) => {
-      if (stderr.length < REASON_LIMIT) stderr += chunk.toString("utf8");
-    });
-    child.on("error", (err) => {
-      finish({ code: null, stderr: String(err), overflowed, died: true });
+    // DRAINED, never read. A child whose stderr pipe fills would block, so it has to be
+    // consumed - but git names paths freely in its diagnostics ("error: unable to read
+    // '<path>'"), and the only place this module's failures go is a persisted ledger column.
+    // Discarding here is what makes "no Git output survives" a property of the code rather
+    // than a promise about how carefully each caller formats a message.
+    child.stderr?.resume();
+    child.on("error", () => {
+      finish({ code: null, overflowed, died: true });
     });
     child.on("close", (code, signal) => {
-      finish({
-        code,
-        stderr: stderr.slice(0, REASON_LIMIT),
-        overflowed,
-        died: signal !== null && !overflowed,
-      });
+      finish({ code, overflowed, died: signal !== null && !overflowed });
     });
   });
 }
@@ -200,7 +241,12 @@ async function hashFileInto(path: string, hash: Hash, limit: number): Promise<vo
     // stable-looking fingerprint over a file somebody is actively writing.
     if (seen > limit) {
       stream.destroy();
-      throw new Error("file exceeds the activity read limit");
+      // Carries a `code` so the refusal survives classification as itself rather than as
+      // `unknown` - "this tree holds a file too big to fingerprint" is a different operational
+      // problem from "this tree could not be read".
+      throw Object.assign(new Error("file exceeds the activity read limit"), {
+        code: FILE_TOO_LARGE,
+      });
     }
     hash.update(buf);
   }
@@ -287,7 +333,7 @@ export async function worktreeActivityFingerprint(
     hash.update(chunk));
   if (index.overflowed) return unknown("index listing exceeded the safe output bound");
   if (index.died) return unknown("index listing did not complete");
-  if (index.code !== 0) return unknown(`index listing failed: ${index.stderr.trim()}`);
+  if (index.code !== 0) return unknown(`index listing failed (exit ${index.code})`);
 
   // 3. Worktree status.
   const status = await capture(deps, worktreePath, [
@@ -427,7 +473,7 @@ async function pathContentIdentity(
   try {
     await deps.hashFile(path, hash, FILE_READ_LIMIT);
   } catch (err) {
-    return { kind: "unknown", reason: `a file could not be read: ${String(err)}` };
+    return { kind: "unknown", reason: `a file could not be read (${readFailureClass(err)})` };
   }
   return { kind: "known", digest: hash.digest("hex") };
 }
@@ -458,7 +504,7 @@ async function capture(
   if (result.overflowed) return fail(`git ${args[0]} exceeded the safe output bound`);
   if (result.died) return fail(`git ${args[0]} did not complete`);
   if (result.code !== 0) {
-    return fail(`git ${args[0]} exit ${result.code}: ${result.stderr.trim()}`, true);
+    return fail(`git ${args[0]} exit ${result.code}`, true);
   }
   return { kind: "text", text: Buffer.concat(chunks).toString("utf8") };
 }

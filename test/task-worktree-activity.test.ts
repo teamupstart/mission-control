@@ -22,6 +22,7 @@ const {
   worktreeActivityFingerprint,
   taskActivityFingerprint,
   defaultWorktreeActivityDeps,
+  FILE_TOO_LARGE,
 } = await import("../src/server/git/worktree-activity.ts");
 
 // The fingerprint is the only thing standing between "this tree is quiet" and, one phase from
@@ -353,9 +354,9 @@ test("a missing path, a non-repository, and a nested path are unknown - never cl
 test("a git command that dies, overflows, or fails is unknown rather than a digest", async () => {
   const dir = mkRepo("failures");
   for (const [label, over] of [
-    ["a died child", { code: null, stderr: "", overflowed: false, died: true }],
-    ["an overflow", { code: null, stderr: "", overflowed: true, died: false }],
-    ["a non-zero exit", { code: 128, stderr: "fatal", overflowed: false, died: false }],
+    ["a died child", { code: null, overflowed: false, died: true }],
+    ["an overflow", { code: null, overflowed: true, died: false }],
+    ["a non-zero exit", { code: 128, overflowed: false, died: false }],
   ] as const) {
     const result = await worktreeActivityFingerprint(dir, {
       ...defaultWorktreeActivityDeps,
@@ -376,10 +377,68 @@ test("a file too large to read is unknown, not a stable digest", async () => {
   const result = await worktreeActivityFingerprint(dir, {
     ...defaultWorktreeActivityDeps,
     hashFile: async () => {
-      throw new Error("file exceeds the activity read limit");
+      throw Object.assign(new Error("file exceeds the activity read limit"), {
+        code: FILE_TOO_LARGE,
+      });
     },
   });
   assert.equal(result.kind, "unknown");
+  // Classified as itself: "too big to fingerprint" is a different operational problem from
+  // "could not be read", and the ledger should be able to tell them apart.
+  assert.equal(result.kind === "unknown" && result.reason.includes(FILE_TOO_LARGE), true);
+});
+
+test("a probe failure never carries a filename into what gets persisted", async () => {
+  // `last_error` is a persisted column, and `String(err)` on a filesystem error reads
+  // "EACCES: permission denied, open '<path>'". An unreadable UNTRACKED file would therefore
+  // persist its own name - a detail the ledger otherwise never holds, since the task row
+  // carries the worktree path and nothing below it.
+  const dir = mkRepo("no-leak");
+  const secret = "very-private-filename.txt";
+  writeFileSync(join(dir, secret), "content\n");
+  const denied = await worktreeActivityFingerprint(dir, {
+    ...defaultWorktreeActivityDeps,
+    hashFile: async () => {
+      throw Object.assign(
+        new Error(`EACCES: permission denied, open '${join(dir, secret)}'`),
+        { code: "EACCES" },
+      );
+    },
+  });
+  assert.equal(denied.kind, "unknown");
+  const reason = denied.kind === "unknown" ? denied.reason : "";
+  assert.equal(reason.includes(secret), false, "the filename must not survive into the reason");
+  assert.equal(reason.includes(dir), false, "nor may the path");
+  assert.equal(reason.includes("EACCES"), true, "but the CLASS of failure is still reported");
+
+  // An unrecognised code is reported as `unknown` rather than passed through, so a future
+  // error carrying something path-shaped in `code` cannot reach the ledger by default.
+  const odd = await worktreeActivityFingerprint(dir, {
+    ...defaultWorktreeActivityDeps,
+    hashFile: async () => {
+      throw Object.assign(new Error("nope"), { code: `/private/${secret}` });
+    },
+  });
+  const oddReason = odd.kind === "unknown" ? odd.reason : "";
+  assert.equal(oddReason.includes(secret), false);
+  assert.equal(oddReason.includes("unknown"), true);
+});
+
+test("git's own stderr never reaches a persisted reason", async () => {
+  // git names paths freely ("error: unable to read '<path>'"), so the module drains stderr
+  // without reading it - the guarantee is structural rather than a formatting convention.
+  const dir = mkRepo("no-stderr");
+  const result = await worktreeActivityFingerprint(dir, {
+    ...defaultWorktreeActivityDeps,
+    gitStream: async (cwd, args, onChunk) =>
+      args[0] === "ls-files"
+        ? { code: 128, overflowed: false, died: false }
+        : defaultWorktreeActivityDeps.gitStream(cwd, args, onChunk),
+  });
+  assert.equal(result.kind, "unknown");
+  const reason = result.kind === "unknown" ? result.reason : "";
+  assert.equal(reason.includes("128"), true, "the exit code is still reported");
+  assert.equal(reason.includes(dir), false);
 });
 
 test("a task's fingerprint spans every repository and is ordered by position", async () => {

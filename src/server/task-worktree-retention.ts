@@ -7,6 +7,7 @@ import {
 } from "./db.ts";
 import {
   defaultWorktreeActivityDeps,
+  readFailureClass,
   taskActivityFingerprint,
   type ActivityFingerprint,
 } from "./git/worktree-activity.ts";
@@ -218,7 +219,9 @@ export class TaskWorktreeRetentionObserver {
     try {
       fingerprint = await this.deps.probe(task);
     } catch (err) {
-      fingerprint = { kind: "unknown", reason: `probe threw: ${String(err)}` };
+      // Classified, never `String(err)`: a filesystem error's message carries the path of the
+      // file it failed on, and this reason is persisted. See `readFailureClass`.
+      fingerprint = { kind: "unknown", reason: `probe threw (${readFailureClass(err)})` };
     }
     if (this.stopped) return null;
 

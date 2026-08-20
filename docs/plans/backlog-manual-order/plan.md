@@ -1,6 +1,6 @@
 # Plan: Manual backlog order
 
-Status: proposed
+Status: accepted - decisions taken, phases to follow
 Owner: ai-harness
 Related: [`../backlog-autopilot/plan.md`](../backlog-autopilot/plan.md) (the scheduler this
 reorders the input of), [`../dispatch/plan.md`](../dispatch/plan.md) (the backlog and the two
@@ -60,7 +60,9 @@ prerequisite is not ready, and an item that arrives on its own arrives at the bo
 - **Read the order and believe it.** The Backlog column, the Line's Backlog drawer, the
   Sitrep's backlog section and the scheduler all read one list in one order.
 
-Nothing about parking, priority chips, labels, launch-anyway or drag-to-assign changes.
+Nothing about parking, labels, launch-anyway or drag-to-assign changes. The priority chip
+keeps its picker and its colour and stops deciding position - the one deliberate behaviour
+change, taken at review and argued below.
 
 ## Architecture
 
@@ -129,8 +131,9 @@ The tie-break chain is total on purpose. Two rows can share a rank (a backfill c
 restored backup, a null), and a comparator that returned 0 there would let the same two cards
 swap places between renders for no reason a human could see.
 
-`byPriorityThenAge` stays exported and stays tested - it is what the migration backfill sorts
-by, and it is what a "Sort by priority" action would rewrite ranks from.
+`byPriorityThenAge` survives in exactly one role - **the migration backfill**, which orders
+the backlog once on the day the column is added. Nothing calls it after that. It keeps its
+tests because that one call has to be right, and it keeps its export for no other reason.
 
 ### `readyBacklog` - the plan supplies edges, rank supplies order
 
@@ -161,9 +164,10 @@ tested across every dependency state, and the equivalence is worth a test of its
   harness* - so if the head is a Codex task in repo A and the only free agent is a Claude
   agent in repo B, a lower item is assigned first.
 
-That is pre-existing and it is a genuine trade: strict head-first would leave a free agent
-idle rather than let a lower item pass. The plan does not change it silently either way - see
-the open decisions below.
+That is pre-existing and it is **kept** (see the decisions below). Strict head-first would
+honour your order absolutely and leave a free agent idle rather than let a lower item pass,
+which is the worse trade. It is the one exception to the rule at the top of this plan, so it
+is written into the docs rather than left to be discovered.
 
 ### `POST /api/tasks/:id/reorder` - the one route
 
@@ -284,7 +288,9 @@ costs zero model calls. That is why rank lives on the task and not in the plan.
   which is an improvement: the items you put at the top are the ones that get a dependency
   read, rather than the ones a priority chip happened to lift.
 - **Capacity, allowlist, mode, the free-agent predicate, serial fallback** - all untouched.
-- **Priority chips, labels, the Sitrep's markdown copy** keep rendering.
+- **Priority chips and labels keep rendering**, on every surface that draws them today, and
+  the Sitrep's markdown copy still carries both. What changes is only that the chip no longer
+  moves a card - see the decisions below.
 
 ## Edge cases, decided
 
@@ -313,8 +319,9 @@ new one.
   plan, every task in `readyBacklog` has zero unmet edges, so no ready pair can be ordered by
   a dependency. Plus: a reorder does not change `planStale`.
 - `test/backlog-machine.test.ts` (extend) - dispatch takes the top-ranked ready item;
-  reordering changes which item is dispatched with no replan; the assign path's behaviour is
-  pinned either way once the decision below lands.
+  reordering changes which item is dispatched with no replan; and the assign path's exception
+  is pinned as kept - a lower ready item with a matching free agent is assigned ahead of a head
+  that has none, which is the one place the order is deliberately not absolute.
 - `test/task-triage.test.ts` / `task-triage-render.test.ts` (extend) - `backlogTasks` orders
   by rank, and the column still does not sort for itself.
 - `test/backlog-reorder-http.test.ts` - the route through `buildApp`: 404 on a missing task
@@ -343,21 +350,45 @@ plan's own file.
   their own ordering and none of them is this.
 - **Teaching the planner about rank.** The prompt stays as it is. The model is asked for
   edges; the order is the operator's and does not need a model's opinion folded into it.
-- **Auto-ranking from priority on every write.** A "Sort by priority" action that rewrites
-  ranks once, on demand, is discussed in the decisions below; a rule that re-sorted
-  continuously would take the order back off the human this plan is handing it to.
+- **Any bulk re-sort, including "Sort by priority".** It was offered at review and not taken.
+  A one-click rewrite of every rank is easy to press by accident and impossible to undo, and a
+  rule that re-sorted continuously would take the order back off the human this plan is handing
+  it to. If hand-ordering proves to be the wrong amount of work, that is the moment to design
+  an undoable bulk re-triage - with evidence for what it should do.
 - **Bulk multi-select drag.** One card at a time.
 
-## Open decisions
+## Decisions taken
 
-These are the choices this plan does not make for you; each is presented in the dashboard
-review.
+Four choices were open when this plan went for review. All four are resolved; the plan body
+above is written as the resolution, and the reasoning is kept here so a later reader does not
+reopen a settled question.
 
-1. **How priority and manual order coexist.** Rank as the only order with priority demoted to
-   annotation is the simplest thing a person can hold in their head, and it is a real removal:
-   a swept `P0` would land at the bottom until you move it. The alternative keeps priority as
-   a coarse band with rank ordering inside it, which preserves today's semantics at the cost
-   of a drag that sometimes refuses to go where you dropped it.
-2. **The reorder gesture.**
-3. **The assign path's scan**, described above.
-4. **Rank allocation**, sparse-with-renormalize against full renumber.
+| Decision | Taken | Why |
+|---|---|---|
+| **Priority vs manual order** | **Rank is the only order. Priority is pure annotation.** | What you see is the order, full stop. The chip still colours the card and still filters, and it never moves anything. The accepted cost is stated below. |
+| **The reorder gesture** | **Drag in the column, plus keyboard move controls.** | The drag is the one already on the card; the drop target decides whether it assigns or reorders. The buttons are what make it accessible and Playwright-drivable. |
+| **The assign path's scan** | **Keep it.** Dispatch takes your head; assign may take a lower item that has a free agent. | The no-change option. Strict head-first would idle a free Claude agent while the head is a Codex task in another repo. Documented as the one exception to the rule. |
+| **Rank allocation** | **Sparse integers, renormalize on collision.** | One row and one `task_upsert` per move. A full rewrite is trivially correct and pushes 300 events per drag on a 300-item backlog. |
+
+### The accepted cost of "priority is annotation"
+
+**A swept `P0` lands at the bottom and stays there until somebody moves it.** That is a real
+loss of a behaviour that exists today: `priorityFrom` maps a GitHub label onto a task priority
+(`task-sources/github-issues.ts:115`), `priorityFromJira` does the same for Jira, and today
+that mapping lifts the task in the column on its own.
+
+It is accepted rather than mitigated, and the reason is the point of the whole feature. An
+order that a sweep can rearrange is not an order you set - it is an order you and a cron loop
+share, and the next surprise is a P0 you had deliberately put at position 20 jumping back to
+the top overnight. The chip is not wasted: it is exactly the signal you scan the column for
+when deciding what to drag, and it still filters and still colours.
+
+**A "Sort by priority" button was offered and not taken.** It stays out of scope rather than
+becoming a follow-up: a one-click bulk rewrite of every rank is easy to press by accident and
+impossible to undo, and nothing in the plan needs it. If reordering by hand turns out to be
+the wrong amount of work in practice, that is the point to design an undoable bulk re-triage,
+with evidence for what it should do.
+
+`byPriorityThenAge` therefore survives in exactly one role: **the migration backfill**. It
+orders the backlog once, on the day the column is added, so upgrade day changes nothing
+visible - and then nothing calls it again. It keeps its tests for that reason.

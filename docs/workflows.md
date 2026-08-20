@@ -801,7 +801,13 @@ Click the compact preview to open that exact run's complete evidence and timelin
 **Collapse workflow** returns to the preview. Press <kbd>e</kbd> on the selected tile to toggle
 those same controls without opening the session detail. These controls do
 not open the session or leave the Board. **Open run** inside the expanded ladder reaches the same
-run as the compact preview. The preview fetches run detail when its tile mounts and
+run as the compact preview.
+
+Clicking the expanded ladder's own background - anywhere that is not one of its controls - reads
+in two steps. The first click selects that tile, and only selects it: the ladder stays open and
+the Board does not drill in, because drilling in replaces the tile with its console rail row. On
+the tile that is already selected, the next click into the same area opens that run in Runs, the
+same destination as **Open run** and the compact preview. The preview fetches run detail when its tile mounts and
 refreshes from the compact SSE summary's `updatedAt` signal; the SSE payload itself is unchanged.
 
 The **Runs** tab reads a run on **the pipeline it was authored on** - the same Session,

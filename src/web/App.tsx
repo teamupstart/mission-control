@@ -1758,6 +1758,9 @@ export function App(): React.JSX.Element {
             setBoardOpen(true);
           }
         : setSelectedId,
+    // Selection alone, with no drill-in and no expansion, on every layout. The board is the
+    // one caller today (a tile's workflow panel), and it wants exactly what an arrow key does.
+    onCursorTo: setSelectedId,
     onDeselect: layout === "board" ? () => setBoardOpen(false) : () => setSelectedId(null),
     expandedId: expandedForView,
     onToggleExpand: toggleExpand,

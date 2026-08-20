@@ -27,6 +27,7 @@ export function mkSessionView(
     consoleZone: "rail",
     onConsoleZoneChange: () => {},
     onSelect: () => {},
+    onCursorTo: () => {},
     onDeselect: () => {},
     expandedId: session.id,
     onToggleExpand: () => {},

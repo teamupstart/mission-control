@@ -107,8 +107,13 @@ test("the offer explains itself, naming the reason it is being made", () => {
   assert.match(both!.tooltip, /nothing is written or committed until you do/);
   assert.match(
     both!.tooltip,
-    /Offered because you corrected it during the work, and GitHub Inspector raised findings/,
+    /Offered because you steered it during the work, by correcting it or answering its question, and GitHub Inspector raised findings/,
   );
+  // The `corrections` clause names STEERING rather than correction, because the daemon sets
+  // that reason for a human-resolved review as well as for a typed correction. An operator
+  // whose only intervention was answering a question was previously told the offer was about
+  // something they never did.
+  assert.doesNotMatch(both!.tooltip, /you corrected it during the work/);
 });
 
 test("a reason this build does not know still explains the offer it is attached to", () => {

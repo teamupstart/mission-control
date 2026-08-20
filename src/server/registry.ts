@@ -22,6 +22,7 @@ import type {
   SessionCost,
   SessionMeta,
   SessionGoal,
+  PromptedDirectHandoffKind,
   SessionIntentGuard,
   SessionGoalSummary,
   SessionNote,
@@ -6700,6 +6701,7 @@ export class Registry extends EventEmitter {
       promptedActivityAt: row?.promptedActivityAt ?? null,
       promptedLegacyCutoverGeneration: row?.promptedLegacyCutoverGeneration ?? null,
       promptedConsumedGeneration: row?.promptedConsumedGeneration ?? null,
+      promptedDirectHandoff: row?.promptedDirectHandoff ?? null,
       updatedAt: row?.updatedAt ?? 0,
       items,
     };
@@ -6791,6 +6793,9 @@ export class Registry extends EventEmitter {
       promptedActivityAt: prev?.promptedActivityAt ?? null,
       promptedLegacyCutoverGeneration: prev?.promptedLegacyCutoverGeneration ?? null,
       promptedConsumedGeneration: prev?.promptedConsumedGeneration ?? null,
+      // Carried through, never re-derived: this row's whole purpose here is to refresh
+      // cwd/branch, and dropping the latch would re-arm a direct handoff that already ran.
+      promptedDirectHandoff: prev?.promptedDirectHandoff ?? null,
       updatedAt: now,
     });
     return key;
@@ -6855,6 +6860,8 @@ export class Registry extends EventEmitter {
       generation: number;
       expectedIntent: SessionIntentGuard;
       ask: boolean;
+      /** Record a direct-shipping handoff in the same write, or null to consume only. */
+      directHandoff: PromptedDirectHandoffKind | null;
     },
     now = Date.now(),
   ): boolean {
@@ -6884,6 +6891,13 @@ export class Registry extends EventEmitter {
       sessionCwd: session.cwd,
       generation: input.generation,
       ask: input.ask,
+      // The authorizing episode is the one this boundary just RE-VERIFIED against the
+      // live goal, not the one the caller sent. `sessionIntentMatches` above already
+      // refused a stale guard, so the two are equal here - taking it from the verified
+      // guard keeps it that way if either side ever grows a field.
+      directHandoff: input.directHandoff
+        ? { kind: input.directHandoff, episodeKey: input.expectedIntent.episodeKey }
+        : null,
       now,
     });
     if (consumed) this.syncSessionsForQueue(input.logicalKey);
@@ -7053,6 +7067,14 @@ export class Registry extends EventEmitter {
         promptedActivityAt: row.promptedActivityAt,
         promptedLegacyCutoverGeneration: row.promptedLegacyCutoverGeneration,
         promptedConsumedGeneration: row.promptedConsumedGeneration,
+        // DROPPED, not carried. Every other guard on this row is a statement about the
+        // SOURCE logical key's own lifecycle, and re-keying moves it wholesale. The
+        // direct-shipping latch is a statement about an INTENT EPISODE, and episode keys
+        // are per-conversation counters (`intent:<objectiveVersion>:<promptRevision>`) -
+        // so the source's `intent:1:1` would collide with the target conversation's own
+        // first episode and silently disarm prompted completion on work it never shipped.
+        // A re-attached queue has made no handoff on behalf of its new session.
+        promptedDirectHandoff: null,
         updatedAt: now,
       },
       items.map((i, n) => ({ ...i, noteKey: toKey, seq: base + n, updatedAt: now })),

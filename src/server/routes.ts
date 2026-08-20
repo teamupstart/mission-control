@@ -3939,6 +3939,12 @@ export function buildApp(
   // matching Ship it? card too; splitting those writes can spend a verified generation
   // and then permanently lose its question on a daemon error. The Registry rechecks the
   // logical key, generation and resolved intent at this daemon-owned write boundary.
+  //
+  // `directHandoff` records, in that same statement, that Foreman is about to type the
+  // direct shipping instruction. It is a request field rather than a second call because
+  // the ordering IS the safety property: the mark must be durable before anything types,
+  // and a failed or ambiguous injection afterwards is never retried - the human Ship it?
+  // card is the only recovery. Foreman asks for the stamp here; only the daemon writes it.
   app.post("/api/sessions/:id/queue/wrapup/prompted", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);

@@ -36,6 +36,8 @@ import type {
   CostBasis,
   SessionGoal,
   SessionNote,
+  PromptedDirectHandoff,
+  PromptedDirectHandoffKind,
   SessionQueue,
   Task,
   TaskPriority,
@@ -1703,6 +1705,13 @@ export function openDb(): DatabaseSync {
       prompted_activity_at INTEGER,       -- historical activity watermark, compatibility only
       prompted_legacy_cutover_generation INTEGER, -- conservative ceiling for ambiguous legacy guards
       prompted_consumed_generation INTEGER, -- latest work-cycle generation handled
+      -- The prompted DIRECT SHIPPING latch: which handoff was made, the intent episode
+      -- that authorized it, and the generation spent making it. Written only in the same
+      -- statement that consumes that generation, so it can never claim a handoff that
+      -- was not paid for. See consumePromptedGeneration below.
+      prompted_direct_handoff_kind TEXT,
+      prompted_direct_handoff_episode TEXT,
+      prompted_direct_handoff_generation INTEGER,
       updated_at      INTEGER NOT NULL
     );
 
@@ -3047,6 +3056,22 @@ function migrate(d: DatabaseSync): void {
   // generation has been consumed yet; legacy rows are bootstrapped lazily only when their
   // historical `prompted_goal` still matches the resolved intent.
   addColumn(d, "foreman_queues", "prompted_consumed_generation", "INTEGER");
+
+  // The prompted direct-shipping latch. `prompted_consumed_generation` answers "has this
+  // settled completion been handled", which by design re-arms on the NEXT generation so a
+  // background task notification or an item-less Workflow repair packet can complete under
+  // unchanged human intent. Direct shipping cannot use that guard: the instruction it types
+  // is itself what produces the next generation, so a generation-only guard re-arms on the
+  // turn it caused and types the instruction again.
+  //
+  // These three columns record the handoff against the human INTENT EPISODE instead. NULL on
+  // every upgraded row, which is the truthful answer for a queue written before the latch
+  // existed: no handoff is recorded, so the exact-payload Goal guard in
+  // `decidePromptedWrapup` remains the compatibility backstop for one already-shipped
+  // episode, exactly as it was before this column.
+  addColumn(d, "foreman_queues", "prompted_direct_handoff_kind", "TEXT");
+  addColumn(d, "foreman_queues", "prompted_direct_handoff_episode", "TEXT");
+  addColumn(d, "foreman_queues", "prompted_direct_handoff_generation", "INTEGER");
 
   // `decisions`: the structured questions of a `plan-decisions` review, as a JSON
   // array. Added to `reviews` after it shipped, so an upgraded DB only gets it via
@@ -8162,6 +8187,9 @@ interface QueueRow {
   prompted_activity_at: number | null;
   prompted_legacy_cutover_generation: number | null;
   prompted_consumed_generation: number | null;
+  prompted_direct_handoff_kind: string | null;
+  prompted_direct_handoff_episode: string | null;
+  prompted_direct_handoff_generation: number | null;
   updated_at: number;
 }
 
@@ -8184,8 +8212,24 @@ function toQueueRow(r: QueueRow): Omit<SessionQueue, "items"> {
     promptedActivityAt: r.prompted_activity_at,
     promptedLegacyCutoverGeneration: r.prompted_legacy_cutover_generation,
     promptedConsumedGeneration: r.prompted_consumed_generation,
+    promptedDirectHandoff: toPromptedDirectHandoff(r),
     updatedAt: r.updated_at,
   };
+}
+
+/**
+ * The three latch columns as the one all-or-nothing fact they are.
+ *
+ * A partially-set triple is not a handoff anyone can act on, so it reads back as none at
+ * all rather than as a latch with a missing field. Only `consumePromptedGeneration` writes
+ * these, and it writes all three together, so a partial row means a hand-edited database.
+ */
+function toPromptedDirectHandoff(r: QueueRow): PromptedDirectHandoff | null {
+  const kind = r.prompted_direct_handoff_kind;
+  const episodeKey = r.prompted_direct_handoff_episode;
+  const generation = r.prompted_direct_handoff_generation;
+  if (kind !== "direct-ship" || !episodeKey || generation === null) return null;
+  return { kind, episodeKey, generation };
 }
 
 interface QueueItemRow {
@@ -8255,8 +8299,9 @@ export function upsertQueue(q: Omit<SessionQueue, "items">): void {
       `INSERT INTO foreman_queues
          (note_key, cwd, branch, wrapup_asked_at, wrapup_answer, prompted_goal,
           prompted_evidence, prompted_activity_at, prompted_legacy_cutover_generation,
-          prompted_consumed_generation, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          prompted_consumed_generation, prompted_direct_handoff_kind,
+          prompted_direct_handoff_episode, prompted_direct_handoff_generation, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(note_key) DO UPDATE SET
          cwd=excluded.cwd, branch=excluded.branch, wrapup_asked_at=excluded.wrapup_asked_at,
          wrapup_answer=excluded.wrapup_answer, prompted_goal=excluded.prompted_goal,
@@ -8264,6 +8309,9 @@ export function upsertQueue(q: Omit<SessionQueue, "items">): void {
          prompted_activity_at=excluded.prompted_activity_at,
          prompted_legacy_cutover_generation=excluded.prompted_legacy_cutover_generation,
          prompted_consumed_generation=excluded.prompted_consumed_generation,
+         prompted_direct_handoff_kind=excluded.prompted_direct_handoff_kind,
+         prompted_direct_handoff_episode=excluded.prompted_direct_handoff_episode,
+         prompted_direct_handoff_generation=excluded.prompted_direct_handoff_generation,
          updated_at=excluded.updated_at`,
     )
     .run(
@@ -8277,6 +8325,9 @@ export function upsertQueue(q: Omit<SessionQueue, "items">): void {
       q.promptedActivityAt,
       q.promptedLegacyCutoverGeneration,
       q.promptedConsumedGeneration,
+      q.promptedDirectHandoff?.kind ?? null,
+      q.promptedDirectHandoff?.episodeKey ?? null,
+      q.promptedDirectHandoff?.generation ?? null,
       q.updatedAt,
     );
 }
@@ -8352,6 +8403,23 @@ export interface ConsumePromptedGenerationInput {
   sessionCwd: string | null;
   generation: number;
   ask: boolean;
+  /**
+   * Record a prompted handoff in the SAME statement that consumes the generation, or
+   * null to consume without recording one.
+   *
+   * MARK BEFORE INJECT. Foreman calls this immediately before it types the direct
+   * shipping instruction, never after: a crash between the two must leave the handoff
+   * recorded, because a retried direct injection is a second push on a branch that may
+   * already have one. The existing human Ship it? fallback is the recovery, and it is
+   * the only one - nothing here retries an injection.
+   *
+   * `episodeKey` is the authorizing INTENT episode rather than the generation, because
+   * the instruction itself makes the agent work and park, which completes the next
+   * generation under exactly the same human intent. A generation-keyed latch would
+   * re-arm on the turn it caused. Workflow claims pass null: claiming a Complete
+   * workflow is not a direct-shipping handoff and must not latch one.
+   */
+  directHandoff: { kind: PromptedDirectHandoffKind; episodeKey: string } | null;
   now: number;
 }
 
@@ -8368,15 +8436,20 @@ export function consumePromptedGeneration(
   d: DatabaseSync = openDb(),
 ): boolean {
   const ask = input.ask ? 1 : 0;
+  const handoffKind = input.directHandoff?.kind ?? null;
+  const handoffEpisode = input.directHandoff?.episodeKey ?? null;
   const result = d.prepare(
     `INSERT INTO foreman_queues (
        note_key, cwd, branch, wrapup_asked_at, wrapup_answer, prompted_goal,
        prompted_evidence, prompted_activity_at, prompted_legacy_cutover_generation,
-       prompted_consumed_generation, updated_at
+       prompted_consumed_generation, prompted_direct_handoff_kind,
+       prompted_direct_handoff_episode, prompted_direct_handoff_generation, updated_at
      )
      SELECT ?, ?, NULL,
             CASE WHEN ? = 1 THEN ? ELSE NULL END,
-            NULL, NULL, NULL, NULL, NULL, generation, ?
+            NULL, NULL, NULL, NULL, NULL, generation,
+            ?, ?, CASE WHEN ? IS NULL THEN NULL ELSE generation END,
+            ?
        FROM session_work_cycles
       WHERE logical_key = ?
         AND generation = ?
@@ -8388,6 +8461,19 @@ export function consumePromptedGeneration(
         )
      ON CONFLICT(note_key) DO UPDATE SET
        prompted_consumed_generation = excluded.prompted_consumed_generation,
+       -- COALESCE, not assignment: a consumption that makes no handoff must not ERASE
+       -- one. It would be erasing the record of an instruction that was already typed,
+       -- and the next tick would type it again. Preserving is safe because eligibility
+       -- compares the stored episode against the current one, so a stale latch under a
+       -- newer episode is already inert. All three move together or none do, so the
+       -- triple can never be left half-written.
+       prompted_direct_handoff_kind = COALESCE(
+         excluded.prompted_direct_handoff_kind, foreman_queues.prompted_direct_handoff_kind),
+       prompted_direct_handoff_episode = COALESCE(
+         excluded.prompted_direct_handoff_episode, foreman_queues.prompted_direct_handoff_episode),
+       prompted_direct_handoff_generation = COALESCE(
+         excluded.prompted_direct_handoff_generation,
+         foreman_queues.prompted_direct_handoff_generation),
        wrapup_asked_at = CASE
          WHEN ? = 1 THEN excluded.wrapup_asked_at ELSE foreman_queues.wrapup_asked_at END,
        wrapup_answer = CASE
@@ -8406,6 +8492,9 @@ export function consumePromptedGeneration(
     input.sessionCwd,
     ask,
     input.now,
+    handoffKind,
+    handoffEpisode,
+    handoffKind,
     input.now,
     input.noteKey,
     input.generation,
@@ -8474,7 +8563,10 @@ export function countOpenQueueItems(noteKey: string): number {
  * nothing has touched since `cutoff`.
  *
  * The second branch collects rows that hold NOTHING: no items and no wrap-up or
- * prompted compatibility/current guard fields, regardless of age. `ensureQueue` mints a row for any
+ * prompted compatibility/current guard fields - the direct-shipping latch included,
+ * so a row whose only content is "Foreman already shipped this episode" is never
+ * collected out from under the episode it retires - regardless of age. `ensureQueue` mints
+ * a row for any
  * session whose wrap-up state is merely touched, and the `prompted` trigger touches
  * every session it ever considers, so this is now the common shape of a row rather than
  * a rarity. Waiting out `cutoff` for a row with nothing in it buys no safety: there is
@@ -8504,6 +8596,7 @@ export function pruneDeadQueues(liveKeys: Set<string>, cutoff: number): number {
                 AND q.prompted_activity_at IS NULL
                 AND q.prompted_legacy_cutover_generation IS NULL
                 AND q.prompted_consumed_generation IS NULL
+                AND q.prompted_direct_handoff_kind IS NULL
                 AND NOT EXISTS (
                   SELECT 1 FROM foreman_queue_items i WHERE i.note_key = q.note_key
                 )

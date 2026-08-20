@@ -159,6 +159,7 @@ test("prompted consumption survives delivery; only a natural work cycle re-arms 
     promptedActivityAt: 9,
     promptedLegacyCutoverGeneration: null,
     promptedConsumedGeneration: 2,
+    promptedDirectHandoff: null,
     updatedAt: 10,
   });
 

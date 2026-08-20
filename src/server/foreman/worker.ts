@@ -1,6 +1,13 @@
 import { randomUUID } from "node:crypto";
 import type { ForemanConfig } from "@shared/protocol.ts";
-import type { AgentType, ReviewItem, Session, SessionQueue, WorkItem } from "@shared/types.ts";
+import type {
+  AgentType,
+  PromptedDirectHandoffKind,
+  ReviewItem,
+  Session,
+  SessionQueue,
+  WorkItem,
+} from "@shared/types.ts";
 import { activePaneDialog, reportBucket } from "@shared/session.ts";
 import {
   ForemanClient,
@@ -193,7 +200,7 @@ async function consumePromptedCycle(
   client: ForemanClient,
   session: Session,
   candidate: Extract<PromptedCandidate, { kind: "check" | "retire" }>,
-  opts?: { ask?: boolean },
+  opts?: { ask?: boolean; directHandoff?: PromptedDirectHandoffKind },
 ): Promise<boolean> {
   const expectedIntent = {
     objective: candidate.objective,
@@ -1518,7 +1525,22 @@ async function processPromptedWrapup(
   // as NOT advanced, and counts a strike: nothing was written, and the generation is still
   // armed, so claiming progress would spend a full evidence gather plus a model call
   // per BETWEEN_MS against a session whose only broken part is one endpoint.
-  if (!(await consumePromptedCycle(client, current.session, current.candidate))) return false;
+  //
+  // On the shipping path the SAME write also latches the direct handoff against this
+  // intent episode. Consuming the generation alone is not enough to disarm this trigger,
+  // and deliberately so: the instruction below makes the agent commit, push, open a PR
+  // and follow CI, and its settled Stop completes a LATER generation under the human's
+  // unchanged intent - so a generation-only guard re-arms on the very turn the injection
+  // caused and types the instruction again. That was the loop. One request, so a crash
+  // between "recorded" and "typed" leaves the handoff recorded rather than repeatable.
+  if (
+    !(await consumePromptedCycle(
+      client,
+      current.session,
+      current.candidate,
+      plan.kind === "auto-wrapup" ? { directHandoff: "direct-ship" } : undefined,
+    ))
+  ) return false;
 
   if (plan.kind === "hold") {
     log(`${session.name}: prompted wrap-up held - ${oneLine(plan.why)}`);

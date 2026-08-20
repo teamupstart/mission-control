@@ -25,6 +25,10 @@ import { ReviewManager } from "./reviews.ts";
 import { TaskManager } from "./tasks.ts";
 import { QueueManager } from "./queue.ts";
 import { startPoller } from "./discovery/poller.ts";
+import {
+  defaultRetentionObserverDeps,
+  TaskWorktreeRetentionObserver,
+} from "./task-worktree-retention.ts";
 import { SdkSupervisor } from "./sdk/supervisor.ts";
 import { PendingTurnManager } from "./pending-turns.ts";
 import { runtimePromptInjector } from "./sdk/deliver.ts";
@@ -386,6 +390,20 @@ setLlmSpendSink((report) => {
   if (recordSpendReport(report).kind === "recorded") registry.applyAutomationUsage();
 });
 const stopPoller = startPoller(registry);
+// The durable worktree activity clock. Non-destructive by construction: it records when each
+// terminal task's checkouts last changed in a way Git can see, and the 30-day deadline that
+// implies, and it reclaims nothing - see `task-worktree-retention.ts`.
+//
+// Started behind the discovery gate rather than here-and-now, and the ordering is the contract:
+// `onSessionsObserved` is the first COMPLETED sweep, which is when session/task reconciliation
+// has settled who owns which worktree. A pass before it would seed windows against ownership
+// that is still being rebuilt. Registered AFTER the TaskManager and workflow twins above so
+// their reconstruction runs first, exactly as ensemble recovery does.
+const retentionObserver = new TaskWorktreeRetentionObserver({
+  listTasks: () => registry.listTasks(),
+  ...defaultRetentionObserverDeps,
+});
+registry.onSessionsObserved(() => retentionObserver.start());
 // Off unless MISSION_AGENTS_SHADOW_MS is set; returns a no-op stopper when disabled.
 const stopAgentsShadow = startAgentsShadow(registry);
 const stopPrPoller = startPrPoller(registry);
@@ -610,6 +628,10 @@ async function shutdown(): Promise<void> {
   ensembles.stop();
   away.stop();
   stopHeadlessPruner();
+  // Before `worktrees.stop()`, for the reason the workflow engine is: a probe in flight is
+  // reading checkouts the allocator is about to reconcile, and one still running past that
+  // would report "unreadable" about trees that were healthy when it started.
+  await retentionObserver.stop();
   await worktrees.stop();
   stopSkillsReloader();
   stopTaskSources();

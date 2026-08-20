@@ -286,8 +286,8 @@ pane string under its title (it wears an `◈ Agent SDK` chip instead), and:
   tool is left enabled - the MCP ask-channel redirect exists because a menu on a child's
   terminal is unreadable, and here it is not;
 - the permission-mode and reasoning-effort pickers control the live embedded conversation,
-  just as they control a pane-backed one - though on Codex both take effect when the next
-  turn starts rather than immediately, which the effort badge
+  just as they control a pane-backed one - though on Codex a reasoning-effort selection
+  takes effect when the next turn starts rather than immediately, which the effort badge
   [says on its face](#levels-that-apply-on-the-next-turn);
 - the transcript still comes from the same session file the interactive CLI reads -
   `~/.claude/projects/…` for Claude, the `~/.codex/sessions/…` rollout for Codex, which

@@ -38,6 +38,8 @@ delivery, transcript normalization, browser projection, documentation, and end-t
 - Backfilling old conversations by guessing that their first user turn was a launch.
 - Changing Goal derivation, transcript paging limits, SSE byte anchors, or evidence retention.
 - Adding a collapsed launch receipt or a reveal control.
+- Marking the terminal Conductor pipeline host, which has no directly streamable agent conversation
+  or transcript turn. Pipeline tasks using the SDK launch arm remain in scope.
 
 ## Repository findings and inherited contracts
 
@@ -272,3 +274,5 @@ metadata, overload authorship, or move visibility decisions into provider-specif
   there are no concurrent or downstream phases.
 - Final audit: tests, documentation, migration behavior, and cleanup/pruning live with the behavior
   they introduce, so no unplanned cleanup phase is required.
+- Inspector reconciliation: the root plan and this phase now agree that pipeline SDK launches are
+  covered, while the terminal Conductor host has no conversation surface to classify.

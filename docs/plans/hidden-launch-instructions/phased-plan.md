@@ -52,6 +52,10 @@ implementation route verified against the current repository.
    dashboard, daemon, driver, native transcript, SSE stream, and conversation UI without spending
    model tokens. It is the closest end-user reproduction and already records the fake provider's
    accepted launch payload.
+9. **Pipeline launch paths split before a conversation exists.** A pipeline task using the SDK
+   launches a directly streamable Claude conversation and has the same marker need as ordinary SDK
+   dispatch. The terminal pipeline arm launches the Conductor host, not an agent conversation, and
+   records `sessionId: null`; there is no conversation turn on that path for this feature to mark.
 
 ## Design reconciliation
 
@@ -142,3 +146,5 @@ Phase 1 owns every verification layer needed for its behavior:
 - There is no second source of transcript truth and no provider-specific UI branch.
 - No later cleanup or documentation phase is required to make Phase 1 operable.
 - The dependency graph contains only the required planning-session publication edge.
+- Inspector reconciliation: clarified that pipeline SDK conversations are covered while the
+  terminal Conductor host has no conversation surface and is not a missing launch-marker seam.

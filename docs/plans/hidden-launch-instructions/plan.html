@@ -157,8 +157,9 @@
   </div>
 
   <h2>Shared technical design</h2>
+  <p>The approved presentation uses one control-plane foundation across every supported harness.</p>
   <h3>Classify at the delivery boundary</h3>
-  <p>Record an exact non-empty launch prompt at terminal dispatch, Pi's positional launch, embedded SDK dispatch, and pipeline-host launch. Do not classify:</p>
+  <p>Record an exact non-empty launch prompt at terminal task dispatch, Pi's positional launch, ordinary embedded SDK dispatch, and pipeline tasks that directly launch an SDK agent conversation. The terminal Conductor pipeline host is not itself a streamable agent conversation, so it has no conversation turn to classify and remains unchanged. Do not classify:</p>
   <ul>
     <li>a task assigned into an already-running conversation;</li>
     <li>a human follow-up;</li>

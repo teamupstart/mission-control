@@ -59,6 +59,7 @@
     <li><strong>Several browser consumers:</strong> Chat, Native, find, and Yours must share one projected message array.</li>
     <li><strong>Byte-based paging:</strong> browser history and SSE offsets remain based on unprojected native transcript bytes.</li>
     <li><strong>Existing E2E seam:</strong> <code>dispatch-and-converse.spec.ts</code> covers the real dashboard-to-fake-agent round trip without model spend.</li>
+    <li><strong>Pipeline split:</strong> the SDK arm launches a streamable agent conversation and is covered. The terminal arm launches the Conductor host with no agent conversation or transcript turn to mark.</li>
   </ol>
 
   <h2>Design reconciliation</h2>
@@ -118,6 +119,7 @@
     <li>No provider-specific UI branch or second transcript truth is introduced.</li>
     <li>No later cleanup or documentation phase is needed.</li>
     <li>The dependency graph contains only the planning-session publication edge.</li>
+    <li>Inspector reconciliation confirms that pipeline SDK conversations are covered and the terminal Conductor host is not a missing conversation seam.</li>
   </ul>
 </main>
 </body>

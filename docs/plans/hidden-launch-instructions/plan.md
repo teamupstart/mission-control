@@ -72,13 +72,15 @@ Trade-offs:
 
 ## Shared technical design
 
-All three product options use the same control-plane foundation.
+The approved presentation uses one control-plane foundation across every supported harness.
 
 ### 1. Classify at the delivery boundary
 
 At each fresh-launch seam, record that the exact non-empty prompt is a launch turn before or as it
-crosses into the runtime. Cover terminal dispatch, Pi's positional launch prompt, embedded SDK
-dispatch, and pipeline-host launches. Do not classify:
+crosses into the runtime. Cover terminal task dispatch, Pi's positional launch prompt, ordinary
+embedded SDK dispatch, and pipeline tasks that directly launch an SDK agent conversation. The
+terminal Conductor pipeline host is not itself a streamable agent conversation, so it has no
+conversation turn to classify and remains unchanged. Do not classify:
 
 - a task assigned into an already-running conversation;
 - a human follow-up;

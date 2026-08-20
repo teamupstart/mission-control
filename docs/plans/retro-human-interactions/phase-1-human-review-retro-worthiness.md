@@ -17,9 +17,9 @@ paths that fail for the same protocol reason.
   [`plan.md`](plan.md), [`phased-plan.md`](phased-plan.md), and this phase file must merge before
   implementation dispatch.
 - The implementation starts from the default branch containing those artifacts.
-- Read the repository root `AGENTS.md`, `.agents/memory/MEMORY.md`,
+- Governing repository guidance is maintained in the root `AGENTS.md`, `.agents/memory/MEMORY.md`,
   `docs/agent-guides/architecture.md`, `docs/agent-guides/change-contracts.md`, and
-  `e2e/README.md` before editing.
+  `e2e/README.md`.
 
 ## Scope
 

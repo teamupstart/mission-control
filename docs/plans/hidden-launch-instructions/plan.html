@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Plan: Hide launch instructions from conversations</title>
+<style>
+  :root {
+    --bg: #ffffff; --surface: #f6f8fb; --surface-2: #eef2f7; --fg: #17202a;
+    --muted: #5f6b78; --border: #d9e0e8; --soft: #e8edf2; --accent: #8857d9;
+    --accent-soft: #f2ebff; --good: #1f7a52; --link: #0b68c7; --code: #f2f4f7;
+    --shadow: 0 10px 30px rgba(34, 43, 54, 0.08);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0c1015; --surface: #141a21; --surface-2: #1a222c; --fg: #e8edf3;
+      --muted: #9ba7b5; --border: #2a3440; --soft: #202a35; --accent: #b995f4;
+      --accent-soft: #271c3b; --good: #65c99b; --link: #73b6ff; --code: #151b22;
+      --shadow: 0 12px 36px rgba(0, 0, 0, 0.25);
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0; padding: 48px 24px 72px; background: var(--bg); color: var(--fg);
+    font: 16px/1.62 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  main { max-width: 920px; margin: 0 auto; }
+  h1 { margin: 0 0 8px; font-size: clamp(30px, 5vw, 44px); line-height: 1.08; letter-spacing: -0.025em; }
+  h2 { margin: 44px 0 14px; padding-bottom: 8px; border-bottom: 1px solid var(--soft); font-size: 23px; line-height: 1.25; }
+  h3 { margin: 30px 0 10px; font-size: 18px; line-height: 1.3; }
+  p { margin: 10px 0; }
+  a { color: var(--link); }
+  ul, ol { padding-left: 24px; }
+  li { margin: 6px 0; }
+  code {
+    padding: 2px 5px; border: 1px solid var(--soft); border-radius: 5px;
+    background: var(--code); font: 0.88em ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  .eyebrow { margin: 0 0 10px; color: var(--accent); font-size: 12px; font-weight: 750; letter-spacing: .09em; text-transform: uppercase; }
+  .lede { max-width: 780px; color: var(--muted); font-size: 19px; }
+  .status {
+    display: inline-block; margin: 18px 0 10px; padding: 5px 11px; border-radius: 999px;
+    color: var(--accent); background: var(--accent-soft); font-size: 12px; font-weight: 720;
+    letter-spacing: .04em; text-transform: uppercase;
+  }
+  .callout {
+    margin: 20px 0; padding: 18px 20px; border: 1px solid var(--border); border-left: 4px solid var(--accent);
+    border-radius: 10px; background: var(--surface); box-shadow: var(--shadow);
+  }
+  .callout strong { color: var(--accent); }
+  .table-wrap, .code-wrap { max-width: 100%; overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; min-width: 720px; }
+  th, td { padding: 12px 14px; border: 1px solid var(--border); text-align: left; vertical-align: top; }
+  th { background: var(--surface-2); font-size: 13px; letter-spacing: .02em; }
+  .option-grid { display: grid; grid-template-columns: 1fr; gap: 14px; margin: 18px 0; }
+  .option { padding: 18px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+  .option.recommended { border-color: var(--accent); box-shadow: var(--shadow); }
+  .option h3 { margin: 0 0 8px; }
+  .tag { display: inline-block; margin-bottom: 10px; color: var(--good); font-size: 11px; font-weight: 750; letter-spacing: .07em; text-transform: uppercase; }
+  .option p, .option li { font-size: 14px; }
+  .muted { color: var(--muted); }
+  figure { margin: 22px 0; padding: 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); overflow-x: auto; }
+  figure svg { display: block; width: 100%; min-width: 760px; height: auto; }
+  figcaption { margin: 10px 4px 0; color: var(--muted); font-size: 13px; }
+  .box { fill: var(--bg); stroke: var(--border); stroke-width: 1.5; }
+  .box-accent { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.8; }
+  .title { fill: var(--fg); font: 650 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  .sub { fill: var(--muted); font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .arrow { stroke: var(--muted); stroke-width: 1.6; fill: none; }
+  .arrow-accent { stroke: var(--accent); stroke-width: 2; fill: none; }
+  .arrow-head { fill: var(--muted); }
+  .arrow-head-accent { fill: var(--accent); }
+  .legend { fill: var(--fg); font: 12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  .num { fill: var(--accent); font: 750 12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  @media (max-width: 760px) {
+    body { padding: 30px 16px 56px; }
+    .option-grid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <p class="eyebrow">Mission Control product plan</p>
+  <h1>Hide launch instructions from conversations</h1>
+  <p class="lede">Keep the complete launch contract in the agent transcript and every evidence path, while giving the dashboard a cleaner top-of-conversation experience.</p>
+  <span class="status">Approved for phased planning</span>
+
+  <h2>Decision</h2>
+  <div class="callout">
+    <strong>Show only the human task request.</strong>
+    <p>Mark every non-empty prompt used to start a fresh Mission Control-managed agent conversation as <code>launch</code> metadata. Retain the complete text in the native transcript and every server-side evidence path, but render only the original human-authored <code>Task.intent</code> as the first user turn.</p>
+  </div>
+  <p>This keeps the natural request-response shape while removing repository manifests, execution authorization, task-kind contracts, and other platform-owned launch instructions from visible scrollback. The display is an explicit projection of the full native turn, not a rewrite of the transcript.</p>
+
+  <h2>Problem</h2>
+  <p>Mission Control composes a launch prompt from the task intent plus platform-owned context such as repository manifests, execution authorization, and task-kind contracts. That payload is important to the agent and intentionally preserved in the native Claude, Codex, or Pi transcript. Today the conversation window renders it as an ordinary message from the user, creating a large and confusing first turn.</p>
+  <p>The change is presentational, not destructive. The exact prompt still reaches the agent, native transcripts stay untouched, and Goal, Workflow, Foreman, archive, review, and retro consumers retain the full turn. Only the dashboard conversation and its search results treat the turn differently.</p>
+
+  <h2>Current and proposed flow</h2>
+  <p>One durable classification separates the visible conversation from the evidence record without creating a second transcript.</p>
+  <figure>
+    <svg viewBox="0 0 860 330" role="img" aria-label="The dispatcher sends the full prompt to the agent and records a durable launch marker. The native transcript and marker meet in the normalizer. Full marked turns continue to server evidence consumers while the dashboard applies the selected presentation before showing scrollback.">
+      <defs>
+        <marker id="head" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path class="arrow-head" d="M0 0 L7 3 L0 6 Z" /></marker>
+        <marker id="head-accent" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path class="arrow-head-accent" d="M0 0 L7 3 L0 6 Z" /></marker>
+      </defs>
+      <rect class="box" x="24" y="44" width="170" height="64" rx="9" />
+      <text class="title" x="109" y="72" text-anchor="middle">Task + contracts</text>
+      <text class="sub" x="109" y="91" text-anchor="middle">composed launch prompt</text>
+      <rect class="box-accent" x="246" y="44" width="170" height="64" rx="9" />
+      <text class="title" x="331" y="72" text-anchor="middle">Delivery boundary</text>
+      <text class="sub" x="331" y="91" text-anchor="middle">prompt + launch marker</text>
+      <rect class="box" x="478" y="44" width="160" height="64" rx="9" />
+      <text class="title" x="558" y="72" text-anchor="middle">Agent runtime</text>
+      <text class="sub" x="558" y="91" text-anchor="middle">Claude · Codex · Pi</text>
+      <rect class="box" x="478" y="164" width="160" height="64" rx="9" />
+      <text class="title" x="558" y="192" text-anchor="middle">Normalizer</text>
+      <text class="sub" x="558" y="211" text-anchor="middle">full marked turn</text>
+      <rect class="box" x="690" y="134" width="146" height="64" rx="9" />
+      <text class="title" x="763" y="162" text-anchor="middle">Evidence paths</text>
+      <text class="sub" x="763" y="181" text-anchor="middle">full text retained</text>
+      <rect class="box-accent" x="690" y="230" width="146" height="64" rx="9" />
+      <text class="title" x="763" y="258" text-anchor="middle">Conversation UI</text>
+      <text class="sub" x="763" y="277" text-anchor="middle">chosen presentation</text>
+      <path class="arrow" d="M194 76 H242" marker-end="url(#head)" />
+      <path class="arrow" d="M416 76 H474" marker-end="url(#head)" />
+      <path class="arrow" d="M558 108 V160" marker-end="url(#head)" />
+      <path class="arrow-accent" d="M331 108 V196 H474" marker-end="url(#head-accent)" />
+      <path class="arrow" d="M638 187 L686 170" marker-end="url(#head)" />
+      <path class="arrow-accent" d="M638 205 L686 250" marker-end="url(#head-accent)" />
+      <text class="num" x="437" y="67">1</text>
+      <text class="num" x="344" y="188">2</text>
+      <text class="num" x="662" y="184">3</text>
+      <text class="num" x="662" y="235">4</text>
+      <text class="legend" x="24" y="262">1. The full composed prompt reaches the agent unchanged.</text>
+      <text class="legend" x="24" y="281">2. A durable launch marker follows the logical conversation identity.</text>
+      <text class="legend" x="24" y="300">3. Internal consumers retain the complete normalized turn.</text>
+      <text class="legend" x="24" y="319">4. Only the dashboard applies hide, projection, or receipt behavior.</text>
+    </svg>
+    <figcaption>The marker changes presentation, never delivery or retention. Inline SVG, no external runtime.</figcaption>
+  </figure>
+
+  <h2>Chosen presentation: show the human task request</h2>
+  <div class="option-grid">
+    <section class="option recommended">
+      <span class="tag">Approved</span>
+      <p>The marker carries a safe display projection. The agent receives the composed prompt, but the conversation renders only the original <code>Task.intent</code>.</p>
+      <p><strong>Benefits</strong></p>
+      <ul>
+        <li>Preserves a natural request-response conversation</li>
+        <li>Removes the platform-owned text most likely to confuse a user</li>
+        <li>Makes the first turn agree with the human-authored task record</li>
+      </ul>
+      <p><strong>Trade-offs:</strong> visible text differs from the native transcript, launch sources without a distinct intent need a fallback, and prompt composition must keep visible and hidden segments separate.</p>
+    </section>
+  </div>
+
+  <h2>Shared technical design</h2>
+  <p>The approved presentation uses one control-plane foundation across every supported harness.</p>
+  <h3>Classify at the delivery boundary</h3>
+  <p>Record an exact non-empty launch prompt at terminal task dispatch, Pi's positional launch, ordinary embedded SDK dispatch, and pipeline tasks that directly launch an SDK agent conversation. The terminal Conductor pipeline host is not itself a streamable agent conversation, so it has no conversation turn to classify and remains unchanged. Do not classify:</p>
+  <ul>
+    <li>a task assigned into an already-running conversation;</li>
+    <li>a human follow-up;</li>
+    <li>a Foreman or Workflow instruction;</li>
+    <li>an empty resume prompt;</li>
+    <li>a manually discovered session that Mission Control did not launch.</li>
+  </ul>
+  <p>Persist the marker against the same logical conversation identity used by Goal and notes, including provisional-to-native key rotation. This makes it stable across restart, restoration, paging, and late hook binding.</p>
+
+  <h3>Attach semantic metadata during normalization</h3>
+  <p>Extend the normalized message contract with an optional semantic value such as <code>presentation: "launch"</code>. Match against the recorded conversation identity and prompt fingerprint, not a global "first user message" heuristic. Keep text, tools, timestamp, role, and native id intact for every server-side consumer.</p>
+
+  <h3>Apply presentation in one browser selector</h3>
+  <p>Derive visible messages before transcript rows, conversation merge, find indexing, empty-state calculation, and both Chat and Native renderers. Keep transcript history and SSE resume offsets based on unfiltered native bytes so presentation cannot break pagination or reconnect.</p>
+  <p>The selector substitutes the recorded human-intent projection. If a source has no distinct human-authored projection, it omits the marked launch turn rather than showing platform instructions or inventing user-authored text.</p>
+
+  <h2>Compatibility and lifecycle</h2>
+  <ul>
+    <li>Existing unmarked transcripts render unchanged. There is no heuristic backfill.</li>
+    <li>A context clear starts a new logical conversation and does not inherit the marker.</li>
+    <li>Goal, Workflow, Foreman, Scout archive, review, and retro paths retain the full prompt.</li>
+    <li>The wire change is additive. Older dashboards ignore the optional marker.</li>
+    <li>Cleanup follows the existing logical-key lifecycle and does not add another session eviction path.</li>
+  </ul>
+
+  <h2>Verification</h2>
+  <p>Start from a Playwright reproduction against the built dashboard and fake agent fixture that proves the long launch contract is visible before the change. The final spec covers:</p>
+  <ul>
+    <li>the selected presentation in Chat and Native views;</li>
+    <li>absence of the hidden text from find-in-conversation results;</li>
+    <li>complete composed launch-prompt receipt by the fake agent;</li>
+    <li>a human follow-up with identical or similar text;</li>
+    <li>manual and resumed sessions retaining their first human turn;</li>
+    <li>reload and pagination never making the launch turn reappear;</li>
+    <li>the correct empty state until the agent replies.</li>
+  </ul>
+  <p>Focused tests pin persistence and key rotation, cross-harness normalization, wire compatibility, the web selector, and unchanged evidence windows. Run typecheck, lint, focused Node tests, build, smoke, and the required end-to-end suite.</p>
+
+  <h2>Documentation</h2>
+  <p>Update session and conversation documentation to explain that Mission Control-managed launch prompts remain part of the agent transcript and evidence history but may have a different dashboard presentation. State the exact scope so users do not assume follow-ups or workflow instructions are being deleted.</p>
+
+  <h2>Non-goals</h2>
+  <ul>
+    <li>Deleting or rewriting native transcripts</li>
+    <li>Withholding any launch contract from the agent</li>
+    <li>Hiding follow-ups, live-session task assignments, Foreman turns, or Workflow repairs</li>
+    <li>Changing Goal derivation or evidence retention</li>
+    <li>Guessing at old sessions that have no launch marker</li>
+  </ul>
+
+  <h2>Approved decisions</h2>
+  <ul>
+    <li><strong>Conversation presentation:</strong> show only the human task request. Keep the complete composed launch prompt in the native transcript and every server-side evidence path.</li>
+    <li><strong>Implementation follow-up:</strong> create a repository-verified phased implementation plan and schedule its dependency-linked Mission Control tasks.</li>
+  </ul>
+</main>
+</body>
+</html>

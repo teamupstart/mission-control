@@ -8,6 +8,7 @@ import {
   listSessionFiles,
   MAX_SESSION_FILE_ENTRIES,
   MAX_SESSION_EDITOR_BYTES,
+  MAX_SESSION_PREVIEW_BYTES,
   readFileWithinCap,
   readSessionFile,
   saveSessionFile,
@@ -22,6 +23,11 @@ import {
   type FileBuffer,
   type SessionFilesState,
 } from "../src/web/lib/sessionFiles.ts";
+
+const PNG = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+  "base64",
+);
 
 async function fixture(): Promise<string> {
   const dir = await mkdtemp(path.join(os.tmpdir(), "mission-files-"));
@@ -62,6 +68,40 @@ test("reads UTF-8 text by content and classifies HTML independently", async (t) 
   assert.match(text.revision, /^[a-f0-9]{64}$/);
   assert.equal((await readSessionFile(dir, "page.html")).kind, "html");
   assert.equal((await readSessionFile(dir, "notes.md")).kind, "markdown");
+});
+
+test("returns browser images as exact bounded data URLs and keeps SVG source editable", async (t) => {
+  const dir = await fixture();
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg"><rect width="40" height="20"/></svg>';
+  await writeFile(path.join(dir, "screen.PNG"), PNG);
+  await writeFile(path.join(dir, "diagram.svg"), svg);
+
+  const raster = await readSessionFile(dir, "screen.PNG");
+  assert.equal(raster.kind, "image");
+  assert.equal(raster.editable, false);
+  assert.equal(raster.text, null);
+  assert.equal(raster.error, null);
+  assert.deepEqual(raster.image, {
+    mediaType: "image/png",
+    dataUrl: `data:image/png;base64,${PNG.toString("base64")}`,
+  });
+
+  const vector = await readSessionFile(dir, "diagram.svg");
+  assert.equal(vector.kind, "image");
+  assert.equal(vector.editable, true);
+  assert.equal(vector.text, svg);
+  assert.equal(vector.image?.mediaType, "image/svg+xml");
+  assert.equal(vector.image?.dataUrl, `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`);
+});
+
+test("browser images use the preview byte limit", async (t) => {
+  const dir = await fixture();
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  await writeFile(path.join(dir, "large.png"), Buffer.alloc(MAX_SESSION_PREVIEW_BYTES + 1, 65));
+  const image = await readSessionFile(dir, "large.png");
+  assert.equal(image.kind, "oversized");
+  assert.match(image.error ?? "", /5 MiB preview limit/);
 });
 
 test("rejects binary, invalid UTF-8, oversized, traversal, and symlink escape targets", async (t) => {
@@ -185,6 +225,29 @@ test("background file loads cannot replace the selected path's error", () => {
     mtime: 1, language: "text", revision: "one", error: null,
   }, true);
   assert.equal(loaded.openError, "Current file is missing");
+});
+
+test("a selected image load leaves Editor mode for Preview", () => {
+  const state: SessionFilesState = {
+    files: [{ path: "screen.png" }], listState: "ready", listError: null,
+    selectedPath: "screen.png", openError: null, mode: "editor", buffers: {},
+  };
+  const image = {
+    path: "screen.png", kind: "image" as const, editable: false, text: null,
+    size: PNG.length, mtime: 1, language: "png", revision: "one", error: null,
+    image: { mediaType: "image/png", dataUrl: `data:image/png;base64,${PNG.toString("base64")}` },
+  };
+
+  const loaded = applyFileLoadSuccess(state, "screen.png", image, true);
+  assert.equal(loaded.mode, "preview");
+
+  const background = applyFileLoadSuccess(
+    { ...state, selectedPath: "source.ts" },
+    "screen.png",
+    image,
+    true,
+  );
+  assert.equal(background.mode, "editor");
 });
 
 test("matching revisions save atomically, preserve mode, and leave no temp file", async (t) => {

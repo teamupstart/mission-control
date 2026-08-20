@@ -2932,9 +2932,16 @@ export interface SessionFileEntry {
   path: string;
 }
 
-export type SessionFileKind = "html" | "markdown" | "text" | "binary" | "oversized";
+export type SessionFileKind = "html" | "markdown" | "image" | "text" | "binary" | "oversized";
 
-/** A file opened through the daemon's contained, UTF-8-only reader. */
+export interface SessionFileImagePreview {
+  /** Browser-decodable media type selected from the shared image-extension registry. */
+  mediaType: string;
+  /** Exact bounded bytes from this read, kept self-contained rather than exposed by a second route. */
+  dataUrl: string;
+}
+
+/** A file opened through the daemon's contained, size-bounded reader. */
 export interface SessionFileDocument {
   path: string;
   kind: SessionFileKind;
@@ -2945,6 +2952,8 @@ export interface SessionFileDocument {
   language: string;
   revision: string;
   error: string | null;
+  /** Present only for browser-renderable image documents. */
+  image?: SessionFileImagePreview;
 }
 
 export interface SessionFileSaveResult {

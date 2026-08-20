@@ -490,3 +490,34 @@ test("a task's fingerprint spans every repository and is ordered by position", a
     "unknown",
   );
 });
+
+test("a filename that is not valid UTF-8 is fingerprinted as its own bytes", async (t) => {
+  // POSIX filenames are byte strings. Decoding `git status -z` as UTF-8 folds every invalid
+  // byte to U+FFFD, so a checkout holding BOTH `x-\xff.txt` and a real `x-<U+FFFD>.txt` decodes
+  // to one path twice - the probe then read the second file's bytes for both records, and every
+  // later edit to the first left the digest identical. That is the one failure this module may
+  // never have: an actively-edited tree reading as quiet is what authorizes deletion a phase
+  // from now.
+  const dir = mkRepo("non-utf8");
+  const raw = Buffer.concat([Buffer.from(join(dir, "x-")), Buffer.from([0xff]), Buffer.from(".txt")]);
+  try {
+    writeFileSync(raw, "aaa");
+  } catch (err) {
+    // APFS and NTFS reject a name that is not valid UTF-8 outright (EILSEQ/EINVAL), so on a
+    // developer's Mac there is nothing to test. On Linux - CI, and every daemon host that is
+    // not a Mac - it creates fine and the assertions below run for real.
+    const code = (err as { code?: string }).code;
+    if (code !== "EILSEQ" && code !== "EINVAL") throw err;
+    t.skip(`this filesystem rejects non-UTF-8 filenames (${code})`);
+    return;
+  }
+  writeFileSync(join(dir, "x-�.txt"), "aaa");
+
+  await assertMoves(dir, "editing a file whose name is not valid UTF-8", () => {
+    writeFileSync(raw, "edited by an agent");
+  });
+  // And the collision runs both ways: editing only the twin must move it too.
+  await assertMoves(dir, "editing the replacement-character twin", () => {
+    writeFileSync(join(dir, "x-�.txt"), "edited by an agent");
+  });
+});

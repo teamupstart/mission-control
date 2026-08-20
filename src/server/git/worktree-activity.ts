@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { createHash, type Hash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { lstat, readlink, realpath } from "node:fs/promises";
-import { join } from "node:path";
+import { sep } from "node:path";
 import { taskRepoRefs, type TaskRepoRef, type TaskRepoSource } from "@shared/task-repos.ts";
 
 // "Has anything Git can SEE changed in this checkout since the last time we looked?"
@@ -23,7 +23,11 @@ import { taskRepoRefs, type TaskRepoRef, type TaskRepoSource } from "@shared/tas
 //  2. **Nothing is silently truncated.** A very large visible file is streamed into the digest
 //     in full or refused outright. A capped read would produce a digest that stops changing
 //     once a file grows past the cap, which is the same failure as (1) wearing a hash.
-//  3. **Nothing is stored but the digest.** No path, no file content, no Git output survives
+//  3. **A filename is bytes, not text.** POSIX filenames are byte strings, and decoding them
+//     as UTF-8 merges every invalid byte into U+FFFD - so two distinct files can collide onto
+//     one record and an edit to one of them stops moving the digest. Status paths stay Buffers
+//     end to end; see `ActivityPath`.
+//  4. **Nothing is stored but the digest.** No path, no file content, no Git output survives
 //     this module - and that includes its ERROR text, which is where such things leak from.
 //     A failure is reported as a bounded classification (`readFailureClass`), never as the
 //     original message: `String(err)` on a filesystem error reads
@@ -126,6 +130,47 @@ function unknown(reason: string): ActivityFingerprint {
   return { kind: "unknown", reason: reason.slice(0, REASON_LIMIT) };
 }
 
+/**
+ * A path as this module carries one: the ORIGINAL BYTES, or a string when they came from us.
+ *
+ * On POSIX a filename is a byte string with no encoding attached, and Git hands it back
+ * verbatim through `-z`. Decoding that as UTF-8 is lossy in a way that matters here: every
+ * invalid byte becomes U+FFFD, so `x-\xff.txt` and a genuinely-named `x-�.txt` sitting in the
+ * same checkout decode to ONE path. The probe would then hash the second file's contents for
+ * both records - and every later edit to the first would leave the digest untouched, which is
+ * this module's one unacceptable failure: a tree somebody is working in reads as quiet, and
+ * quiet is what eventually authorizes deletion.
+ *
+ * So status paths stay Buffers from `git status` through sorting, hashing, and the filesystem
+ * reads (`lstat`, `readlink`, `createReadStream` all take a Buffer path). `pathAsString` marks
+ * the single place that cannot - a child process `cwd` - and refuses instead of approximating.
+ */
+type ActivityPath = string | Buffer;
+
+/** Drop the single trailing newline a one-line git read ends with, in byte space. */
+function trimTrailingNewline(bytes: Buffer): Buffer {
+  let end = bytes.length;
+  while (end > 0 && (bytes[end - 1] === 0x0a || bytes[end - 1] === 0x0d)) end -= 1;
+  return bytes.subarray(0, end);
+}
+
+/** Join a relative git-reported path onto its checkout, without leaving byte space. */
+function childPath(parent: string, child: Buffer): Buffer {
+  return Buffer.concat([Buffer.from(parent, "utf8"), Buffer.from(sep, "utf8"), child]);
+}
+
+/**
+ * The text spelling of a path, or `null` if the bytes do not survive the round trip.
+ *
+ * A plain `toString("utf8")` always succeeds and sometimes lies. Re-encoding and comparing is
+ * what turns "this name is not representable" into an answer the caller has to handle.
+ */
+function pathAsString(path: ActivityPath): string | null {
+  if (typeof path === "string") return path;
+  const text = path.toString("utf8");
+  return Buffer.from(text, "utf8").equals(path) ? text : null;
+}
+
 /** The subprocess and filesystem seam, so a test can drive the real logic without a repository. */
 export interface WorktreeActivityDeps {
   /**
@@ -146,9 +191,13 @@ export interface WorktreeActivityDeps {
   realpath: (path: string) => Promise<string>;
   /** `lstat` without following links - a symlink must be hashed as a link, not as its target. */
   lstat: typeof lstat;
-  readlink: (path: string) => Promise<string>;
+  /**
+   * `readlink` in BUFFER mode, so a link target that is not valid UTF-8 hashes as itself.
+   * The same lossiness argument as `ActivityPath` applies to the target as to the path.
+   */
+  readlink: (path: ActivityPath) => Promise<Buffer>;
   /** Stream one file's bytes into a digest. Refuses rather than truncates past `limit`. */
-  hashFile: (path: string, hash: Hash, limit: number) => Promise<void>;
+  hashFile: (path: ActivityPath, hash: Hash, limit: number) => Promise<void>;
 }
 
 export interface GitStreamResult {
@@ -231,7 +280,7 @@ function gitStream(
   });
 }
 
-async function hashFileInto(path: string, hash: Hash, limit: number): Promise<void> {
+async function hashFileInto(path: ActivityPath, hash: Hash, limit: number): Promise<void> {
   let seen = 0;
   const stream = createReadStream(path);
   for await (const chunk of stream) {
@@ -256,13 +305,28 @@ export const defaultWorktreeActivityDeps: WorktreeActivityDeps = {
   gitStream,
   realpath,
   lstat,
-  readlink,
+  readlink: (path) => readlink(path, { encoding: "buffer" }),
   hashFile: hashFileInto,
 };
 
-/** Split NUL-delimited git output, dropping the empty tail every `-z` stream ends with. */
-function splitNul(text: string): string[] {
-  return text.split("\0").filter((entry) => entry !== "");
+/**
+ * Split NUL-delimited git output into RECORDS OF BYTES, dropping the empty tail `-z` ends with.
+ *
+ * Bytes, not a string, for the reason `ActivityPath` exists: NUL (0x00) cannot occur inside a
+ * UTF-8 sequence, so splitting on it is exactly as correct over a Buffer as over a string, and
+ * the Buffer form is the one that still holds the original filename afterwards.
+ */
+function splitNul(buf: Buffer): Buffer[] {
+  const records: Buffer[] = [];
+  let start = 0;
+  for (;;) {
+    const end = buf.indexOf(0, start);
+    if (end === -1) break;
+    if (end > start) records.push(buf.subarray(start, end));
+    start = end + 1;
+  }
+  if (start < buf.length) records.push(buf.subarray(start));
+  return records;
 }
 
 /**
@@ -304,11 +368,15 @@ export async function worktreeActivityFingerprint(
   } catch {
     return unknown("worktree path is not readable");
   }
-  const top = await capture(deps, worktreePath, ["rev-parse", "--show-toplevel"]);
+  const top = await captureBytes(deps, worktreePath, ["rev-parse", "--show-toplevel"]);
   if (top.kind === "unknown") return unknown(top.reason);
+  // `--show-toplevel` emits a PATH, so it is read as bytes and only then spelled - see
+  // `pathAsString`. A toplevel we cannot spell exactly is `unknown`, never assumed to match.
+  const topText = pathAsString(trimTrailingNewline(top.bytes));
+  if (topText === null) return unknown("worktree toplevel is not representable as text");
   let canonicalTop: string;
   try {
-    canonicalTop = await deps.realpath(top.text.trim());
+    canonicalTop = await deps.realpath(topText);
   } catch {
     return unknown("worktree toplevel is not readable");
   }
@@ -336,7 +404,7 @@ export async function worktreeActivityFingerprint(
   if (index.code !== 0) return unknown(`index listing failed (exit ${index.code})`);
 
   // 3. Worktree status.
-  const status = await capture(deps, worktreePath, [
+  const status = await captureBytes(deps, worktreePath, [
     "status",
     "--porcelain=v1",
     "-z",
@@ -345,15 +413,19 @@ export async function worktreeActivityFingerprint(
     "--ignored=no",
   ]);
   if (status.kind === "unknown") return unknown(status.reason);
-  const entries = parseStatus(status.text);
+  const entries = parseStatus(status.bytes);
   if (entries === null) return unknown("status output could not be parsed");
 
   // 4. Content identity for everything status says differs on disk.
   hash.update("worktree:\0");
   for (const entry of entries) {
-    hash.update(`${entry.code}\0${entry.path}\0`);
+    // Fed to the digest as three writes rather than one interpolated string, because
+    // `${buffer}` is `buffer.toString()` - the very UTF-8 coercion this path avoids.
+    hash.update(`${entry.code}\0`);
+    hash.update(entry.path);
+    hash.update("\0");
     if (!entry.readContent) continue;
-    const content = await pathContentIdentity(join(worktreePath, entry.path), deps, depth);
+    const content = await pathContentIdentity(childPath(worktreePath, entry.path), deps, depth);
     if (content.kind === "unknown") return content;
     hash.update(`${content.digest}\0`);
   }
@@ -363,7 +435,8 @@ export async function worktreeActivityFingerprint(
 /** One `git status -z` record: its two-letter code and the path it is about. */
 interface StatusEntry {
   code: string;
-  path: string;
+  /** The path EXACTLY as git emitted it. See `ActivityPath`. */
+  path: Buffer;
   /** Whether the WORKTREE side of the code means "there are bytes on disk to identify". */
   readContent: boolean;
 }
@@ -382,14 +455,16 @@ interface StatusEntry {
  * shape, so a malformed stream is detectable rather than an off-by-one that shifts every
  * subsequent path onto the wrong code.
  */
-function parseStatus(text: string): StatusEntry[] | null {
-  const records = splitNul(text);
+function parseStatus(bytes: Buffer): StatusEntry[] | null {
+  const records = splitNul(bytes);
   const entries: StatusEntry[] = [];
   for (const record of records) {
     // "XY <path>" - two status letters, one space, then the path verbatim.
-    if (record.length < 4 || record[2] !== " ") return null;
-    const code = record.slice(0, 2);
-    const path = record.slice(3);
+    if (record.length < 4 || record[2] !== 0x20) return null;
+    // The code is two bytes of a fixed ASCII alphabet, so decoding THAT is lossless; the path
+    // after it is the part that stays bytes.
+    const code = record.toString("latin1", 0, 2);
+    const path = record.subarray(3);
     const worktreeSide = code[1] ?? " ";
     // `D` is a deletion (nothing on disk to read, and the code itself is the change) and a
     // space means the worktree side is unchanged - the difference is staged, which the index
@@ -400,7 +475,7 @@ function parseStatus(text: string): StatusEntry[] | null {
   }
   // Deterministic order regardless of locale or Git version, so two observations of an
   // unchanged tree cannot differ on ordering alone.
-  entries.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  entries.sort((a, b) => Buffer.compare(a.path, b.path));
   return entries;
 }
 
@@ -416,7 +491,7 @@ function parseStatus(text: string): StatusEntry[] | null {
  * recursing would be a second, slower enumeration that disagrees with Git's.
  */
 async function pathContentIdentity(
-  path: string,
+  path: ActivityPath,
   deps: WorktreeActivityDeps,
   depth: number,
 ): Promise<{ kind: "known"; digest: string } | { kind: "unknown"; reason: string }> {
@@ -432,7 +507,9 @@ async function pathContentIdentity(
   if (stat.isSymbolicLink()) {
     try {
       const target = await deps.readlink(path);
-      return { kind: "known", digest: createHash("sha256").update(`link:${target}`).digest("hex") };
+      const linkHash = createHash("sha256").update("link:");
+      linkHash.update(target);
+      return { kind: "known", digest: linkHash.digest("hex") };
     } catch {
       return { kind: "unknown", reason: "a symlink target could not be read" };
     }
@@ -456,7 +533,15 @@ async function pathContentIdentity(
     if (depth >= MAX_NESTED_CHECKOUT_DEPTH) {
       return { kind: "unknown", reason: "nested checkouts are deeper than the probe follows" };
     }
-    const nested = await worktreeActivityFingerprint(path, deps, depth + 1);
+    // The ONE place a path has to become a string again: it is spawned as a child's `cwd`, and
+    // `cwd` takes no Buffer. A name that cannot make the round trip is `unknown` rather than
+    // approximated - the whole point of carrying bytes this far is that a lossy spelling may
+    // name a DIFFERENT file that happens to exist.
+    const nestedPath = pathAsString(path);
+    if (nestedPath === null) {
+      return { kind: "unknown", reason: "a nested checkout path is not representable as text" };
+    }
+    const nested = await worktreeActivityFingerprint(nestedPath, deps, depth + 1);
     if (nested.kind === "unknown") return nested;
     return { kind: "known", digest: `nested:${nested.digest}` };
   }
@@ -485,18 +570,18 @@ async function pathContentIdentity(
  * the difference between an unborn HEAD and a broken repository - see step 1 above. Every
  * other caller treats both as `unknown` and does not have to look.
  */
-type Captured =
-  | { kind: "text"; text: string }
-  | { kind: "unknown"; reason: string; exitFailure: boolean };
+type CaptureFailure = { kind: "unknown"; reason: string; exitFailure: boolean };
+type Captured = { kind: "text"; text: string } | CaptureFailure;
+type CapturedBytes = { kind: "bytes"; bytes: Buffer } | CaptureFailure;
 
-async function capture(
+async function captureBytes(
   deps: WorktreeActivityDeps,
   cwd: string,
   args: string[],
-): Promise<Captured> {
+): Promise<CapturedBytes> {
   const chunks: Buffer[] = [];
   const result = await deps.gitStream(cwd, args, (chunk) => chunks.push(chunk));
-  const fail = (reason: string, exitFailure = false): Captured => ({
+  const fail = (reason: string, exitFailure = false): CaptureFailure => ({
     kind: "unknown",
     reason: reason.slice(0, REASON_LIMIT),
     exitFailure,
@@ -506,7 +591,22 @@ async function capture(
   if (result.code !== 0) {
     return fail(`git ${args[0]} exit ${result.code}`, true);
   }
-  return { kind: "text", text: Buffer.concat(chunks).toString("utf8") };
+  return { kind: "bytes", bytes: Buffer.concat(chunks) };
+}
+
+/**
+ * `captureBytes` for a command whose output is known to be ASCII - an object id, a ref name.
+ *
+ * Every command that can emit a FILENAME uses `captureBytes` directly.
+ */
+async function capture(
+  deps: WorktreeActivityDeps,
+  cwd: string,
+  args: string[],
+): Promise<Captured> {
+  const result = await captureBytes(deps, cwd, args);
+  if (result.kind !== "bytes") return result;
+  return { kind: "text", text: result.bytes.toString("utf8") };
 }
 
 /**

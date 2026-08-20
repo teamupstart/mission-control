@@ -390,7 +390,7 @@ earns two surfaces a card has nowhere to put:
   *about* it. A card keeps the full note block instead, since it has no transcript to inline
   into.
 - **Cards** is the only layout with an in-place focus mode, so its floating command bar is
-  unique to it. On the **board**'s overview <kbd>e</kbd> (expand) opens the drill-in the way
+  unique to it. On the **board**'s overview <kbd>v</kbd> (expand) opens the drill-in the way
   <kbd>Enter</kbd> does, and closes it again. In the console, and in the board once you're
   drilled in, the open detail *is* the selected session, so there is nothing left to expand,
   and its controls are on screen permanently instead of on a bar that floats over them.
@@ -756,7 +756,8 @@ names the layouts where a shortcut's target exists:
 | <kbd>/</kbd> | Focus the filter box (sessions, plus the board's backlog), or **Scouts** search while on that page | Anywhere |
 | <kbd>⌘</kbd><kbd>K</kbd> | Open [the palette](#the-palette-k) over workflows, runs, ensembles, Personas, actions, missions and settings - it opens where you are and never navigates to open; press again to close | Anywhere |
 | <kbd>⇧</kbd><kbd>F10</kbd> or the Menu key | Open the [context menu](#context-menus) for the focused item or text field | Anywhere |
-| <kbd>e</kbd> | On the **Board** overview, show the selected card's full workflow or collapse it back to the active-rung preview. This is the keyboard equivalent of **Show full workflow** / **Collapse workflow** and never opens Conversation or another session-detail tab | Selected Board card with a workflow |
+| <kbd>e</kbd> | Open the review queue waiting on you. Uses the selected session when it is the one asking; otherwise jumps to the first session in grid order that is, selecting its card on the way. Unclaimed when nothing anywhere is waiting. This is the keyboard equivalent of clicking the amber **to review** badge | Any session with a pending review |
+| <kbd>v</kbd> | On the **Board** overview, show the selected card's full workflow or collapse it back to the active-rung preview. This is the keyboard equivalent of **Show full workflow** / **Collapse workflow** and never opens Conversation or another session-detail tab | Selected Board card with a workflow |
 | <kbd>g</kbd> | Show the selected session's conversation. **Console / Board drill-in**: reveals the Conversation tab. **Board** overview: opens the drill-in, which starts there. **Cards**: expands the card, where the transcript already lives. Only ever reveals - <kbd>Enter</kbd> owns the Cards toggle | Selected session |
 | <kbd>y</kbd> | Show the selected session's **Workflows** tab and workflow ladder. On the **Board** overview it drills in first. Cards draws no tab strip and never showed the ladder, so the chord is unclaimed there; <kbd>w</kbd> opens the Library instead | Selected session (Console or Board) |
 | <kbd>d</kbd> | Open the selected session's diff (in the Console/Board Diff tab, or the Cards modal) | Selected session |
@@ -796,7 +797,9 @@ and can't be reassigned; <kbd>⇧</kbd><kbd>F10</kbd> is the customizable contex
 <kbd>⇧</kbd><kbd>Tab</kbd> remains bindable. The pipeline
 editor's four rows above and the Files tab's <kbd>p</kbd> / <kbd>e</kbd> controls are in-surface
 keys rather than fleet chords - they only exist while their surface is active - so they are fixed
-for the same reason.
+for the same reason. The Files tab's <kbd>e</kbd> does overlap the review chord, and wins while
+that tab is open: an in-surface key is claimed on the capture phase, so the surface you are
+looking at keeps its own letter. Rebind **Open reviews** if you would rather have it there.
 
 ### Keycaps on the buttons
 

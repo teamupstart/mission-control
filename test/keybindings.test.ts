@@ -231,6 +231,7 @@ test("file actions own Shift+F, Shift+O, and l and every default round-trips fro
     chordFromEvent(key("/")),
     chordFromEvent(key("w")),
     chordFromEvent(key("e")),
+    chordFromEvent(key("v")),
     chordFromEvent(key("g")),
     chordFromEvent(key("d")),
     chordFromEvent(key("F", { shift: true })),
@@ -368,39 +369,41 @@ test("a stored override wins over a colliding new default", () => {
 });
 
 test("the editor rejects another action's chord and keeps the prior binding", () => {
-  const bindings = { ...defaults(), conversation: "v", diff: "x" };
+  // `z`, not `v`: this needs a chord no action ships with, and `v` became the Board
+  // workflow disclosure's default when the review queue took `e`.
+  const bindings = { ...defaults(), conversation: "z", diff: "x" };
   assert.equal(
     bindingValidationError(bindings, "conversation", "x"),
     "x is already bound to Open diff.",
   );
-  assert.equal(bindingValidationError(bindings, "conversation", "v"), null);
+  assert.equal(bindingValidationError(bindings, "conversation", "z"), null);
 
   resetAll();
-  setBinding("conversation", "v");
+  setBinding("conversation", "z");
   setBinding("diff", "x");
   const before = puts.length;
   setBinding("conversation", "x");
   assert.equal(puts.length, before);
-  assert.equal(stored().conversation, "v");
+  assert.equal(stored().conversation, "z");
   assert.equal(stored().diff, "x");
   resetAll();
 });
 
 test("reset copy reflects whether the default will be restored", async () => {
-  await updateUiConfig({ keybindings: { conversation: "v" } });
+  await updateUiConfig({ keybindings: { conversation: "z" } });
   const freeDefault = renderToStaticMarkup(createElement(KeyboardPanel));
   assert.match(freeDefault, /Reset Open conversation to g/);
   assert.match(freeDefault, /aria-label="Reset Open conversation to default"/);
 
-  await updateUiConfig({ keybindings: { conversation: "v", diff: "g" } });
+  await updateUiConfig({ keybindings: { conversation: "z", diff: "g" } });
   const claimedDefault = renderToStaticMarkup(createElement(KeyboardPanel));
   assert.match(
     claimedDefault,
-    /Clear v - g is taken by Open diff, so this stays unset/,
+    /Clear z - g is taken by Open diff, so this stays unset/,
   );
   assert.match(
     claimedDefault,
-    /aria-label="Clear Open conversation v; g is taken by Open diff, so Open conversation stays unset"/,
+    /aria-label="Clear Open conversation z; g is taken by Open diff, so Open conversation stays unset"/,
   );
   resetAll();
 });

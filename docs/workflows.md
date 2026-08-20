@@ -798,7 +798,7 @@ that slot - it is finished work, so the preview keeps naming whatever is actuall
 tile instead carries one line counting them, **✓ 2 stages carried from Round 1 · evidence 1**.
 Click the compact preview to open that exact run's complete evidence and timeline.
 **Show full workflow** expands that tile in place into the same actionable ladder;
-**Collapse workflow** returns to the preview. Press <kbd>e</kbd> on the selected tile to toggle
+**Collapse workflow** returns to the preview. Press <kbd>v</kbd> on the selected tile to toggle
 those same controls without opening the session detail. These controls do
 not open the session or leave the Board. **Open run** inside the expanded ladder reaches the same
 run as the compact preview. The preview fetches run detail when its tile mounts and

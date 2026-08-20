@@ -36,3 +36,46 @@ for (const [name, nextName, normalOutcome] of cases) {
     );
   });
 }
+
+// ---- staying alive long enough that nobody has to ask twice ------------------------------
+
+// What is at stake: the duplicate cards in the review queue.
+//
+// Every tool above BLOCKS on a human. The MCP client in front of them does not wait that
+// long - it abandons the tool call on its own timeout and hands the model an error - and the
+// model's recovery is to ask again, which is where a second identical row came from.
+// `ReviewManager.create` is the floor under that (it re-attaches an identical pending ask),
+// and this is the half that stops the retry happening at all: a progress notification, which
+// a receiving client MUST use to restart its timeout for the request.
+//
+// Scanned rather than driven, like the cases above, because importing `src/mcp/server.ts`
+// stands a whole MCP server up on stdio. What a scan can still pin is the defect actually
+// seen: a blocking tool that forgets to hand its `extra` down, which silently reverts that
+// tool - and only that tool - to timing out and duplicating.
+
+test("waitForResolution reports in, and gives up when the client cancels", () => {
+  const start = source.indexOf("type BlockingCall = {");
+  const end = source.indexOf("function textResult(");
+  assert.ok(start !== -1 && end > start, "the blocking-wait section is missing");
+  const wait = source.slice(start, end);
+  assert.match(wait, /async function waitForResolution\(/);
+  assert.match(wait, /notifications\/progress/, "nothing keeps the client's timeout at bay");
+  assert.match(wait, /call\?\.signal\.aborted/, "a cancelled call still polls the daemon");
+  assert.match(wait, /call\?\.signal\)/, "the in-flight long poll is not cancelled with it");
+});
+
+for (const [name, nextName] of [
+  ["request_plan_decisions", "request_review"],
+  ["request_review", "create_task"],
+  ["request_input", "report_status"],
+  ["report_product_issue", "report_status"],
+] as const) {
+  test(`${name} hands its request context to the wait`, () => {
+    const body = toolSource(name, nextName);
+    assert.match(
+      body,
+      /waitForResolution\((?:id|reviewId|\(id: string\) => waitForResolution\(id), extra\)/,
+      "the wait cannot report progress for a call it was not told about",
+    );
+  });
+}

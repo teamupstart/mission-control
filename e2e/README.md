@@ -138,6 +138,25 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   --workers=1 --reporter=list
 ```
 
+### Closing a scout without a report
+
+`e2e/.artifacts/scout-close-warning/confirm-close-without-report.png` captures the first
+**Complete & close** refusal after a scout omits its report. The dialog keeps the daemon's
+exact report path and submission-tool guidance, presents it as an amber warning, and replaces
+the ordinary primary action with the explicit red **Close without report** confirmation. The
+same run proves the first click changes nothing and the second closes the task without
+inventing an archive.
+
+Regenerate it with:
+
+```sh
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/scout-archive.spec.ts \
+  -g 'warns first' \
+  --workers=1 --reporter=list
+```
+
 ### Full workflow graph canvas
 
 `e2e/.artifacts/workflow-graph/workflow-graph-full-canvas.png` is captured
@@ -387,6 +406,36 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   e2e/specs/foreman-planner-health.spec.ts \
   --workers=1 --reporter=list
 ```
+
+### An effort that applies on the next turn
+
+`e2e/.artifacts/effort-next-turn/` holds the pair that settles the one thing an accessible
+name cannot: whether a person reading a card can tell "this is your level" from "this will
+be your level".
+
+- `effort-pending-mid-turn.png` - the chip while a Codex turn is running, reading
+  `medium → high` with the **next turn** tag and a dashed outline, taken after the run has
+  already watched three metadata refreshes go by without it reverting.
+- `effort-pending-menu.png` - the same chip's menu open, where the sentence the chip has no
+  room for is written out and the two options carry different sub-labels: one is set for
+  the next turn, the other is what this turn is running.
+- `effort-settled-next-turn.png` - the chip after the next turn actually started, back to a
+  plain `high` with no tag and a solid outline.
+
+The three matter together. The difference between the first and the last is a dashed border,
+a struck-through level and five words, and getting them confused means an operator believes
+a level took effect on work that ran without it.
+
+Regenerate them with:
+
+```sh
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/effort-next-turn.spec.ts \
+  --workers=1 --reporter=list
+```
+
+Attach the generated frames to the pull request; they are never committed.
 
 ### Accepted SDK stop
 

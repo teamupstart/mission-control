@@ -35,6 +35,7 @@ function props(sessions: Session[], tasks: Task[], backlog: Task[]): SessionView
     consoleZone: "rail",
     onConsoleZoneChange: () => {},
     onSelect: () => {},
+    onCursorTo: () => {},
     onDeselect: () => {},
     expandedId: null,
     onToggleExpand: () => {},

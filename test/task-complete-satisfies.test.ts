@@ -85,6 +85,7 @@ test("satisfyDependents defaults to false on the wire", () => {
   // is pinned here rather than left to be read off the zod chain.
   assert.equal(CompleteTaskSchema.parse({ outcome: "x" }).satisfyDependents, false);
   assert.equal(CompleteTaskSchema.parse({ outcome: "x" }).requireStopped, false);
+  assert.equal(CompleteTaskSchema.parse({ outcome: "x" }).confirmIncompleteScout, false);
 });
 
 // ---- the opt-in exit --------------------------------------------------------------------

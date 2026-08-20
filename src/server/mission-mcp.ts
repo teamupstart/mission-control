@@ -89,8 +89,8 @@ export interface MissionMcpRequirement {
  * What each KIND has to be able to call, whatever its caller asked for.
  *
  * A scout has to be able to call `submit_scout_artifacts`, because that is the only way its
- * task can reach `done` - a scout launched without it would work to a finished report and then
- * have no way to hand it over, which is the same dead end an ensemble member without
+ * normal task contract can reach `done` - a scout launched without it would work to a finished
+ * report and then have no way to hand it over, which is the same dead end an ensemble member without
  * `submit_ensemble_result` reaches. A plan has to be able to ask its human, because
  * `request_plan_decisions` is how the plan is shown for review AND how the phased follow-up is
  * offered, and to file tasks, because scheduling the phases is what taking that follow-up
@@ -231,8 +231,8 @@ export async function missionMcpDescriptor(): Promise<MissionMcpDescriptor | nul
 //   bytes.
 //
 // The consequence is the worst shape a bug can take here. A scout's prompt tells it to call
-// `submit_scout_artifacts` and its task cannot reach `done` until it does, but the tool is
-// simply absent from the toolbox it was handed - so the agent works to a finished report and
+// `submit_scout_artifacts` and its normal completion cannot reach `done` until it does, but the
+// tool is simply absent from the toolbox it was handed - so the agent works to a finished report and
 // then has nowhere to put it. No error, no warning, no red test. `MISSION_MCP_TOOLS` cannot
 // see it either: that list is a CLIENT-side pre-approval, never read by the server, which is
 // exactly the hazard `scouts/submission-tool.ts` already names - "a launch that pre-approves

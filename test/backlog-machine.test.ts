@@ -90,6 +90,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     inspector: null,
     meta: null,
     effortBaselineReady: false,
+    pendingEffort: null,
     note: null,
     cost: null,
     goal: null,

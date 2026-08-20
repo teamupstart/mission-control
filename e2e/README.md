@@ -76,6 +76,7 @@ Regenerate both with:
 
 ```sh
 mkdir -p e2e/.artifacts/dispatch-restart-recovery
+set -o pipefail   # or the pipe below reports tee's success, not Playwright's
 env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   --config e2e/playwright.config.ts \
   e2e/specs/dispatch-restart-recovery.spec.ts \
@@ -95,6 +96,7 @@ Regenerate the frames and transcript with:
 
 ```sh
 mkdir -p e2e/.artifacts/native-worktree-dispatch
+set -o pipefail   # or the pipe below reports tee's success, not Playwright's
 env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   --config e2e/playwright.config.ts \
   e2e/specs/native-worktree-dispatch.spec.ts \
@@ -438,6 +440,7 @@ Regenerate the frames and the transcript with:
 
 ```sh
 mkdir -p e2e/.artifacts/effort-next-turn
+set -o pipefail   # or the pipe below reports tee's success, not Playwright's
 env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   --config e2e/playwright.config.ts \
   e2e/specs/effort-next-turn.spec.ts \

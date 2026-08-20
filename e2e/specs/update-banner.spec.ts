@@ -79,6 +79,9 @@ test("desktop update banner exposes the complete update flow while the browser s
   const evidenceDir = join(process.cwd(), "e2e/.artifacts/update-banner");
   const screenshot = async (name: string): Promise<void> => {
     if (process.env.MC_E2E_EVIDENCE !== "1") return;
+    await dashboard.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    await dashboard.mouse.move(640, 600);
+    await expect(dashboard.locator(".tooltip")).toHaveCount(0);
     await mkdir(evidenceDir, { recursive: true });
     await dashboard.screenshot({ path: join(evidenceDir, `${name}.png`), fullPage: true });
   };

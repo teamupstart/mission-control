@@ -1537,6 +1537,15 @@ see [Session runtimes](#session-runtimes-terminal-or-the-agent-sdk). Either way 
 lands in the session's conversation as the same gold entry - the two channels differ in how
 the question reaches you, not in what is written down afterwards.
 
+A Codex Agent SDK launch that successfully registers the bundled Mission MCP server also
+appends one developer instruction: when the operator needs to review alternatives, select an
+option, or answer another discrete multiple-choice question, call `request_input` with
+`options` and wait for the response instead of presenting the choices only as prose and
+ending the turn. Mission Control reads Codex's effective configured developer instruction
+first and preserves it ahead of this appendix. If the MCP server is unavailable, or that
+effective instruction cannot be read safely, the appendix is omitted so the launch never
+points Codex at an unavailable tool or replaces the operator's customization.
+
 For the terminal runtime, four flags go on together or not at all
 (`src/server/ask-channel.ts`): `--mcp-config`
 supplies the tool, `--allowed-tools` pre-approves it so calling it doesn't itself raise a

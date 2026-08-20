@@ -356,11 +356,17 @@
     which does not run on an existing database.</p>
 
   <h3>Rank allocation - <code>src/server/backlog-rank.ts</code></h3>
-  <p>Sparse integers, <code>RANK_STEP = 1024</code>. Appending is
-    <code>max(backlog_rank) + RANK_STEP</code>. Inserting between two neighbours is their
-    midpoint. When two neighbours are adjacent integers there is no midpoint, so the whole
-    backlog is <strong>renormalized</strong> to <code>RANK_STEP</code> spacing in the same
+  <p>Sparse integers, <code>RANK_STEP = 1024</code>, with three symmetric primitives because the
+    route offers three positions: the <strong>bottom</strong> is
+    <code>max(backlog_rank) + RANK_STEP</code>, the <strong>top</strong> is
+    <code>min(backlog_rank) - RANK_STEP</code>, and <strong>between</strong> two neighbours is
+    their midpoint. When two neighbours are adjacent integers there is no midpoint, so the whole
+    backlog is <strong>normalized</strong> to <code>RANK_STEP</code> spacing in the same
     transaction and the placement is retried once.</p>
+  <p>The same normalization is the single repair for a rank space that cannot be allocated into
+    at all - an unranked row, a non-safe-integer rank, or a maximum/minimum with no headroom left
+    at its end. Ranks go negative after enough prepends, which is fine; a bound at only one end
+    is not.</p>
   <div class="why">
     <strong>Why not rewrite every rank on every move?</strong> It is simpler to reason about and
     rejected on write amplification: a move would <code>UPDATE</code> every backlog row and

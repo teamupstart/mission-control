@@ -22,11 +22,11 @@ The backlog has three orderings and none of them is the operator's.
    oldest first inside a priority. This is the order the **board column draws**.
 2. `readyBacklog` (`src/shared/backlog.ts`) walks the **stored plan's entry order** first
    and appends whatever the plan does not name, oldest first. This is the order the
-   **scheduler decides from** (`backlog-machine.ts` (`decideBacklogTick`) and the order `nextUpTaskId` marks
+   **scheduler decides from** (`decideBacklogTick` in `backlog-machine.ts`) and the order `nextUpTaskId` marks
    `next up` from.
 3. The plan's entry order is a **topological sort whose tie-break is the model's own array
-   order** (`topoOrder`, `src/server/foreman/backlog-plan.ts` (`topoOrder`). The planner prompt is
-   never shown a task's priority (`buildBacklogPrompt`, `backlog-prompt.ts` (`buildBacklogPrompt`).
+   order** (`topoOrder` in `src/server/foreman/backlog-plan.ts`). The planner prompt is
+   never shown a task's priority (`buildBacklogPrompt` in `backlog-prompt.ts`).
 
 Put together: **for any item the plan covers, the priority chip changes where the card is
 drawn and does not change what Foreman takes next.** Two independent ready items are ordered
@@ -73,7 +73,7 @@ model call, and cannot make the plan stale.
 ### `tasks.backlog_rank` - the column
 
 `addColumn(d, "tasks", "backlog_rank", "INTEGER")` in `migrate()`, nullable, beside the
-`priority`/`labels`/`enabled` block at `db.ts` (the `priority`/`labels`/`enabled` block in `migrate`. Named `backlog_rank` rather than `rank`
+`priority`/`labels`/`enabled` block in `migrate()`. Named `backlog_rank` rather than `rank`
 because `RANK` is a SQLite window-function keyword and a bare `rank` in a future query reads
 ambiguously; named on the wire as `backlogRank` for the same reason.
 
@@ -99,10 +99,16 @@ not run on an existing database.
 
 ### Rank allocation - `src/server/backlog-rank.ts`
 
-Sparse integers, `RANK_STEP = 1024`. Appending is `max(backlog_rank) + RANK_STEP`. Inserting
-between two neighbours is their midpoint. When two neighbours are adjacent integers there is
-no midpoint, so the whole backlog is **renormalized** to `RANK_STEP` spacing in the same
-transaction and the placement is retried once.
+Sparse integers, `RANK_STEP = 1024`, with three symmetric primitives because the route offers
+three positions: the **bottom** is `max(backlog_rank) + RANK_STEP`, the **top** is
+`min(backlog_rank) - RANK_STEP`, and **between** two neighbours is their midpoint. When two
+neighbours are adjacent integers there is no midpoint, so the whole backlog is **normalized** to
+`RANK_STEP` spacing in the same transaction and the placement is retried once.
+
+The same normalization is the single repair for a rank space that cannot be allocated into at
+all - an unranked row, a non-safe-integer rank, or a maximum/minimum with no headroom left at
+its end. Ranks go negative after enough prepends, which is fine; a bound at only one end is
+not.
 
 The alternative - rewriting every rank on every move - is simpler to reason about and rejected
 on write amplification: a move would `UPDATE` every backlog row and publish a `task_upsert`
@@ -394,7 +400,7 @@ reopen a settled question.
 
 **A swept `P0` lands at the bottom and stays there until somebody moves it.** That is a real
 loss of a behaviour that exists today: `priorityFrom` maps a GitHub label onto a task priority
-(`task-sources/github-issues.ts` (`priorityFor`), `priorityFromJira` does the same for Jira, and today
+(`priorityFor` in `task-sources/github-issues.ts`), `priorityFromJira` does the same for Jira, and today
 that mapping lifts the task in the column on its own.
 
 It is accepted rather than mitigated, and the reason is the point of the whole feature. An

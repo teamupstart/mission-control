@@ -43,7 +43,7 @@ Verified against the current checkout. Where a finding contradicts `plan.md`, th
 
 - **There is no backlog table.** A backlog item is a `Task` with `status = 'backlog'`. All
   ordering is in-memory; the SQL only ever orders by timestamps
-  (`db.ts` (`listTasks` `listTasks()` is `ORDER BY created_at DESC`).
+  (`listTasks()` in `db.ts` is `ORDER BY created_at DESC`).
 - **`backlogTasks` (`src/shared/session.ts`) is the single chokepoint.** The board column,
   `ReportPanel`, `App.tsx`'s `visibleBacklog`, `line-summary.ts`, `report.ts`,
   `foreman/config.ts`, `plannableBacklog` and `readyBacklog` all read through it. One edit moves
@@ -59,7 +59,7 @@ Verified against the current checkout. Where a finding contradicts `plan.md`, th
   for position but remains a coherent readout, and `NextUpPlanner` still quotes each entry's
   `reason`. Do not delete the ordering from the writer in this phase; that is churn with no
   reader change behind it.
-- **Migrations are idempotent and re-run on every open** (`migrate(d)`, `db.ts` (`migrate`).
+- **Migrations are idempotent and re-run on every open** (`migrate(d)` in `db.ts`).
   `addColumn` (`db.ts`) returns `true` **only when it actually added the column**, which is
   the repo's established hook for a one-time backfill - `migrateTaskHomeName` (`db.ts`) is
   the worked example to follow.
@@ -67,7 +67,7 @@ Verified against the current checkout. Where a finding contradicts `plan.md`, th
   (the `INSERT INTO tasks ... ON CONFLICT` statement in `db.ts`). Adding a column means editing the column list, the `VALUES` placeholder
   count, the `DO UPDATE SET` list and the positional `.run(...)` arguments - four places that
   must stay in step. `rowToTask` (`db.ts`) is the read side.
-- **`Registry.listTasks()` returns Map insertion order, unsorted** (`registry.ts` (`Registry.listTasks`), and
+- **`Registry.listTasks()` returns Map insertion order, unsorted**, and
   `GET /api/tasks` serves it raw. Ordering is a predicate concern, not a route concern - so the
   route needs no `ORDER BY` and the Foreman worker gets the new order for free through
   `backlogTasks`.
@@ -75,9 +75,9 @@ Verified against the current checkout. Where a finding contradicts `plan.md`, th
   (`foreman/client.ts`) and decides with the shared predicates. Once `backlogRank` is on the
   wire, the worker needs **no change at all**.
 - **Every automatic creator already funnels through `TaskManager.create`** with `backlog: true`:
-  `task-sources/ingest.ts` (`ingestSweep`, `schedules/manager.ts`, `retro.ts`,
+  `ingestSweep` in `task-sources/ingest.ts`, `schedules/manager.ts`, `retro.ts`,
   `ensembles/member-launch.ts`, `ensembles/finalize-deps.ts`, and `POST /mcp/tasks`
-  (`routes.ts` (`POST /mcp/tasks`). Assigning the rank in `create` therefore covers "synced items go to the
+  (`POST /mcp/tasks` in `routes.ts`). Assigning the rank in `create` therefore covers "synced items go to the
   bottom" for all of them with one edit and no per-caller work.
 - **`reschedule` (`tasks.ts`) reuses the same row**, setting `status` back to `backlog`. It
   is not a new task, which is why the plan says a re-entering task keeps the rank it has.
@@ -194,19 +194,31 @@ internal edges. Update `plannableBacklog`'s comment too - its 400-item head is n
 New file. Pure functions plus small `DatabaseSync`-taking helpers, no manager state.
 
 - `RANK_STEP = 1024`.
-- `MAX_RANK = Number.MAX_SAFE_INTEGER - RANK_STEP` - the append ceiling.
-- `rankDegenerate(d)` - true when the backlog's rank space cannot be appended to safely: **any**
-  `status='backlog'` row has a NULL rank, a non-safe-integer rank, or `max(backlog_rank)` is
-  above `MAX_RANK`. One `SELECT`, no writes.
+- `MAX_RANK = Number.MAX_SAFE_INTEGER - RANK_STEP` - the append (bottom) ceiling.
+- `MIN_RANK = Number.MIN_SAFE_INTEGER + RANK_STEP` - the prepend (top) floor. The rank space runs
+  in **both** directions and needs a bound at each end; see below.
+- `rankDegenerate(d)` - true when the backlog's rank space cannot be allocated into safely:
+  **any** `status='backlog'` row has a NULL rank or a non-safe-integer rank, **or**
+  `max(backlog_rank) > MAX_RANK`, **or** `min(backlog_rank) < MIN_RANK`. One `SELECT`, no writes.
 - `normalizeBacklogRanks(d)` - rewrite **every** backlog row's rank to `(i + 1) * RANK_STEP` in
   `byBacklogRank` order. Returns the ids it touched so the caller can publish a `task_upsert`
   for each. This is the single repair: it heals unranked rows, discards unsafe ones, and resets
-  the ceiling in one pass.
-- `appendRank(d)` - `if (rankDegenerate(d)) normalizeBacklogRanks(d)` **first**, then
-  `max(backlog_rank) + RANK_STEP` over `status='backlog'`, or `RANK_STEP` when the backlog is
-  empty. After normalization `max` is `count * RANK_STEP`, so the append is always safe.
+  **both** bounds in one pass - every rank afterwards is a small positive multiple of
+  `RANK_STEP`, so there is full headroom above and below.
+- `appendRank(d)` - the **bottom**. `if (rankDegenerate(d)) normalizeBacklogRanks(d)` **first**,
+  then `max(backlog_rank) + RANK_STEP` over `status='backlog'`, or `RANK_STEP` when the backlog
+  is empty.
+- `prependRank(d)` - the **top**. Same guard first, then `min(backlog_rank) - RANK_STEP`, or
+  `RANK_STEP` when the backlog is empty.
 - `rankBetween(before, after)` - the midpoint; `null` when there is no integer strictly between
   them, which is the caller's signal to normalize.
+
+The three allocation primitives are deliberately symmetric - **bottom, top, between** - because
+the route offers all three and an allocator that only grows in one direction cannot serve it. An
+earlier draft specified `appendRank` and a `MAX_RANK` ceiling but **no prepend primitive and no
+floor at all**, while `ReorderTaskSchema` already promised `{ position: "top" }` and phase 2's
+drop-target table already mapped the gap above the first card onto it. Ranks go negative after
+enough prepends, which is fine and expected; what is not fine is a bound at one end only.
 
 There is **one** repair operation, deliberately. An earlier draft of this plan had two - a
 targeted "heal the NULLs" and a separate ceiling renormalize - and they raced: both were
@@ -252,16 +264,22 @@ depend on.
 
 #### The append ceiling, and which limit actually binds
 
-`appendRank` is the only operation that raises the maximum rank - a midpoint is strictly between
-two existing values, and normalization compacts to `count * RANK_STEP` - so the ceiling is only
-ever approached one `RANK_STEP` at a time, and it drops whenever the top-ranked task leaves the
-backlog.
+`appendRank` is the only operation that raises the maximum rank and `prependRank` the only one
+that lowers the minimum - a midpoint is strictly between two existing values, and normalization
+compacts to `count * RANK_STEP` - so each bound is only ever approached one `RANK_STEP` at a
+time, and each relaxes whenever the task at that end leaves the backlog.
 
-**Organic growth cannot reach it.** At `RANK_STEP = 1024` it takes ~8.8e12 appends to reach
-`Number.MAX_SAFE_INTEGER`, which is ~24 million years at a thousand task creations a day. The
-guard is therefore not for the counter running up; it is for a rank that arrives from **outside
+**Organic growth cannot reach either bound.** At `RANK_STEP = 1024` it takes ~8.8e12 appends to
+reach `Number.MAX_SAFE_INTEGER`, and the same number of prepends to reach
+`Number.MIN_SAFE_INTEGER` - about 24 million years at a thousand operations a day. The guards
+are therefore not for a counter running away; they are for a rank that arrives from **outside
 the allocator**, which is the reachable case: a restored backup, a hand-edited row, or a future
 writer that sets the column itself.
+
+**A safe integer is not automatically an allocatable one.** `Number.MIN_SAFE_INTEGER` satisfies
+`Number.isSafeInteger` and is nowhere near `MAX_RANK`, so a validity check alone accepts it - and
+then one prepend produces `MIN_SAFE_INTEGER - RANK_STEP`, which is not exactly representable.
+That is why `rankDegenerate` asks about **headroom at both ends**, not merely validity.
 
 **The binding limit is `Number.MAX_SAFE_INTEGER` (2^53-1), not SQLite's signed 64-bit range.**
 `Task.backlogRank` crosses the wire as a JSON `number`, so integer precision is lost at 2^53
@@ -299,9 +317,14 @@ export const ReorderTaskSchema = z.discriminatedUnion("position", [
 ]);
 ```
 
+Each position maps onto one allocation primitive: `top` -> `prependRank`, `bottom` ->
+`appendRank`, and `before`/`after` -> `rankBetween` against the anchor's relevant neighbour,
+normalizing and retrying once when there is no midpoint.
+
 An anchor, not an index: an index is a claim about a list the caller last saw, and the daemon's
-list has moved on. `POST /api/tasks/:id/reorder` beside its siblings around `routes.ts` (beside `POST /api/tasks/:id/cancel`,
-returning the updated `Task` on 200 like `dispatch`/`assign`/`complete`.
+list has moved on. `POST /api/tasks/:id/reorder` goes in `routes.ts` beside its siblings
+(`POST /api/tasks/:id/cancel` and the rest), returning the updated `Task` on 200 like
+`dispatch`/`assign`/`complete`.
 
 | Code | When |
 |---|---|
@@ -314,7 +337,7 @@ operator can see, not a silent no-op.
 
 ### 9. `src/web/lib/api.ts` + `BacklogColumn.tsx` - the first caller
 
-`api.reorderTask(id, body)` beside `updateTask` (`api.ts` (beside `updateTask`).
+`api.reorderTask(id, body)` beside `updateTask` in `api.ts`.
 
 Four controls on the card. They are ordinary focusable `<button>`s with `aria-label`s naming the
 task - `Move "Fix the flaky test" to top` - because the app selects by role and label and
@@ -366,6 +389,11 @@ Same change, not a follow-up:
   distinct rows. Assert explicitly that **a ranked row sorts before an unranked one whatever
   their `createdAt`** - the mixed case is the one an intuitive single-subtraction comparator gets
   backwards, and a by-example test that happens to use a younger unranked row would pass anyway.
+- `test/backlog-rank.test.ts` - **the prepend floor, symmetric with the ceiling.** With a backlog
+  row seeded at `Number.MIN_SAFE_INTEGER` - a *valid* safe integer, so a validity-only check
+  accepts it - `rankDegenerate` is true, and moving a card to the top normalizes rather than
+  writing `MIN_SAFE_INTEGER - RANK_STEP`. Assert the resulting rank is a safe integer and that
+  the moved card is genuinely first.
 - `test/backlog-rank.test.ts` - **the append ceiling.** With a backlog row seeded at
   `MAX_RANK + 1` (as a restored or hand-edited row could be), `appendRank` normalizes and the
   new task still lands last with a safe-integer rank. **And the combined case the single
@@ -420,8 +448,10 @@ A single test file needs the suite's loader:
 - A database that predates the column opens, backfills once, and shows the order it showed before.
 - A swept task arrives at the bottom - including when an unranked row is already sitting there.
 - No `status='backlog'` row is left with a NULL rank after a daemon start.
-- Every rank the daemon writes is a safe integer, and a row carrying anything else is re-placed
-  rather than trusted.
+- Every rank the daemon writes is a safe integer, at **both** ends: moving a card to the top of a
+  backlog whose minimum is already at the floor normalizes rather than writing an unsafe value,
+  and the same holds for the bottom.
+- A row carrying a rank that is invalid *or* out of allocation headroom is re-placed, not trusted.
 - Docs match the implementation - no surface still claims priority sorts the backlog.
 
 ## Downstream handoff
@@ -434,10 +464,11 @@ Phase 2 may rely on, and **must not change**:
 - `Task.backlogRank`, `byBacklogRank`, and `backlogTasks` sorting by it.
 - `readyBacklog` as filter-only.
 - The move buttons and their `aria-label` wording, which the phase-1 e2e spec selects by.
-- `RANK_STEP`, `MAX_RANK`, and the allocation semantics: a collision normalizes rather than
-  failing, and `appendRank` repairs a degenerate rank space **before** it reads `max`, through
-  the single `normalizeBacklogRanks` operation rather than a heal and a renormalize that could
-  order badly against each other.
+- `RANK_STEP`, `MAX_RANK`, `MIN_RANK`, and the allocation semantics: three symmetric primitives
+  (`appendRank`, `prependRank`, `rankBetween`), a collision normalizes rather than failing, and
+  every one of them repairs a degenerate rank space **before** it reads `max` or `min`, through
+  the single `normalizeBacklogRanks` operation rather than several repairs that could order badly
+  against each other.
 
 Phase 2 owns, and phase 1 must not pre-empt: any drop target, drag-state, drop-indicator or
 `dragover`/`dragleave`/`drop` handler in `BacklogColumn`, and the CSS for them. Phase 1 leaves

@@ -43,15 +43,15 @@ Phase 1 merged, so the following exist on the default branch and are consumed un
 ## Repository findings
 
 - **The drag already exists and already means something.** `BacklogCard`
-  (`BacklogColumn.tsx` (`BacklogCard`'s `onDragStart`) is `draggable`, sets
+  (`BacklogCard` in `BacklogColumn.tsx`) is `draggable`, sets
   `e.dataTransfer.setData("application/x-mission-task", task.id)` and
   `effectAllowed = "move"`, and calls `onDragging(repoRoot)` so the board can light up the tiles
-  that could accept it. `SessionTile` (`SessionTile.tsx` (its `onDragOver` and `onDrop`) is the only drop target today,
+  that could accept it. `SessionTile`, through its `onDragOver` and `onDrop`, is the only drop target today,
   gated by `canAcceptTask` (`BacklogColumn.tsx`).
 - **So this phase adds a second kind of drop target for the same payload.** No new MIME type: a
   second payload would mean the card has to decide at `dragstart` what the drag is *for*, which
   is exactly the mode this design avoids. The drop target decides.
-- **`onDragging(null)` for a multi-repo task is load-bearing** (`BacklogColumn.tsx` (`BacklogCard`'s `onDragStart`): a
+- **`onDragging(null)` for a multi-repo task is load-bearing**, in `BacklogCard`'s `onDragStart`: a
   multi-repo card announces no repo so no tile lights up, because those tasks are dispatch-only.
   **The column's own gaps must still accept it** - reordering a multi-repo task is fine, only
   assigning it is not. Do not gate the column's drop targets on the repo the card announced.
@@ -65,7 +65,7 @@ Phase 1 merged, so the following exist on the default branch and are consumed un
   id** is still correct, because the route places relative to that anchor in the real list, which
   is what the operator pointed at.
 - **`dragover` must call `preventDefault()`** or the browser refuses the drop - the same thing
-  `SessionTile.tsx` (its `onDragOver` already does.
+  `SessionTile`'s own `onDragOver` already does.
 - **`dragleave` fires when moving onto a child element**, which makes a naive
   `onDragEnter`/`onDragLeave` pair flicker. Keep the active gap in state keyed by the gap's
   index and set it on `dragover` rather than tracking enter/leave counts.

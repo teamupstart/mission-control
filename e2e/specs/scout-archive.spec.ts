@@ -284,7 +284,20 @@ test("a scout without a report warns first, then closes only after confirmation"
   await expect(card).toContainText("worktree-pools/");
   expect(await archives(daemon), "the warning does not invent an archive").toHaveLength(0);
 
-  await confirm.click();
+  // Leaving the decision clears its authority. Reopening must start from the ordinary
+  // request again, not carry the prior scout's confirmation into another modal use.
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await expect(dialog).toBeHidden();
+  await complete.click();
+  await expect(dialog).toBeVisible();
+  await expect(dialog).not.toContainText("No scout report will be archived.");
+  await expect(dialog.getByRole("button", { name: "Close without report" })).toHaveCount(0);
+  await dialog.getByRole("button", { name: "Complete & close" }).click();
+  await expect(dialog).toContainText("No scout report will be archived.");
+  const reopenedConfirm = dialog.getByRole("button", { name: "Close without report" });
+  await expect(reopenedConfirm).toBeVisible();
+
+  await reopenedConfirm.click();
   await expect(dialog).toBeHidden({ timeout: 10_000 });
 
   await expect

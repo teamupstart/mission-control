@@ -31,8 +31,33 @@ const {
 let root: string;
 const repos: string[] = [];
 
+/**
+ * Run git with an identity and transport policy supplied EXPLICITLY on every call.
+ *
+ * None of this may come from the machine: a developer has a global `user.email` and a hostname
+ * that git can auto-detect an address from, and a CI container has neither - so a commit that
+ * relies on ambient config passes here and fails there with "unable to auto-detect email
+ * address (got 'root@....(none)')". That is not hypothetical; it is what this file did to CI,
+ * and the gap was a repository `git commit` could reach that no test had configured: the
+ * submodule CLONE, which `git submodule add` creates and which inherits none of the source
+ * repository's local config.
+ *
+ * `protocol.file.allow` is here for the same reason from the other direction - git refuses a
+ * local-path submodule clone without it since 2.38.1, so it is stated rather than left to the
+ * version that happens to be installed.
+ */
 function git(cwd: string, ...args: string[]): string {
-  return execFileSync("git", args, { cwd, encoding: "utf8" });
+  return execFileSync(
+    "git",
+    [
+      "-c", "user.email=test@example.com",
+      "-c", "user.name=Test",
+      "-c", "commit.gpgsign=false",
+      "-c", "protocol.file.allow=always",
+      ...args,
+    ],
+    { cwd, encoding: "utf8" },
+  );
 }
 
 /** A real repository with one commit, which is the state every case below starts from. */
@@ -223,7 +248,7 @@ test("work inside a dirty submodule keeps moving the parent fingerprint", async 
   // eventually authorizes deletion.
   const sub = mkRepo("sub-origin");
   const parent = mkRepo("sub-parent");
-  git(parent, "-c", "protocol.file.allow=always", "submodule", "add", "-q", sub, "sub");
+  git(parent, "submodule", "add", "-q", sub, "sub");
   git(parent, "commit", "-qm", "add submodule");
 
   const clean = await digest(parent);

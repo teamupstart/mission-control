@@ -384,7 +384,7 @@ test("a live session's thread cannot be orphaned through the status route", asyn
   assert.equal(loadFileCommentThread(t.id)?.status, "orphaned");
 });
 
-test("a comment out with the agent cannot be settled out from under its delivery", async () => {
+test("a comment out with the agent can be neither settled nor deleted", async () => {
   // `sending` and `awaiting` are the two statuses the partial unique index is built on, so
   // settling one to `draft` or `resolved` releases the session's single-flight slot while its
   // pending turn can still reach the agent. The next queue then delivers a SECOND comment
@@ -406,10 +406,25 @@ test("a comment out with the agent cannot be settled out from under its delivery
   }
   assert.equal(loadFileCommentThread(t.id)?.status, "sending", "nothing moved it");
 
-  // The longer half of the outstanding window is refused for the same reason.
+  // DELETE is the same rule through the other door, and the worse half of it: settling
+  // releases the session's single-flight slot, deleting releases it AND destroys the row, so
+  // when the reply arrives there is nothing left for it to land on.
+  const destroyed = await app.request(`/api/file-comments/${t.id}`, {
+    method: "DELETE",
+    headers: HEADERS,
+  });
+  assert.equal(destroyed.status, 409);
+  assert.match(((await destroyed.json()) as { error: string }).error, /out with the agent/);
+  assert.ok(loadFileCommentThread(t.id), "the outstanding thread and its turn survive");
+
+  // The longer half of the outstanding window is refused for the same reason, both ways.
   markFileCommentMessageDelivered(loadFileCommentThread(t.id)!.messages[0]!.id, Date.now());
   assert.equal(loadFileCommentThread(t.id)?.status, "awaiting");
   assert.equal((await post(`/api/file-comments/${t.id}/status`, { status: "resolved" })).status, 409);
+  assert.equal(
+    (await app.request(`/api/file-comments/${t.id}`, { method: "DELETE", headers: HEADERS })).status,
+    409,
+  );
 
   // And this is not a hang. The grace window moves `awaiting` to `unanswered`, which sits
   // OUTSIDE the outstanding tuple precisely so the queue can move on - and from there a
@@ -417,6 +432,11 @@ test("a comment out with the agent cannot be settled out from under its delivery
   setFileCommentThreadStatus(t.id, "unanswered", Date.now());
   assert.equal((await post(`/api/file-comments/${t.id}/status`, { status: "resolved" })).status, 200);
   assert.equal(loadFileCommentThread(t.id)?.status, "resolved");
+  // Both doors reopen together, because they are one rule stated once.
+  assert.equal(
+    (await app.request(`/api/file-comments/${t.id}`, { method: "DELETE", headers: HEADERS })).status,
+    200,
+  );
 });
 
 test("a session's live comments are bounded, and closing one makes room", async () => {

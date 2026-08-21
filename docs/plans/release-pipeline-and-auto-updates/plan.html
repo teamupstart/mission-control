@@ -350,6 +350,16 @@
   .decisions-table td strong { color: var(--fg); font-weight: 660; }
   .decisions-table td.chosen { color: var(--fg); }
   .decisions-table td.chosen strong { color: var(--settled); }
+
+  .phases-table table { min-width: 46rem; }
+  .phases-table thead th:first-child { width: 3.4rem; }
+  .phases-table th[scope="row"] {
+    font-family: var(--mono);
+    font-size: .82rem;
+    font-weight: 700;
+    color: var(--accent);
+    white-space: nowrap;
+  }
 </style>
 </head>
 <body>
@@ -693,97 +703,76 @@
 
   <h2>Part 3 - proposed work</h2>
 
-  <p>The four open choices below were resolved in the dashboard review on 2026-08-21 and are recorded
-  under <a href="#decisions-resolved">Decisions</a>. The phases reflect what was chosen; the alternatives that
-  were not taken have been removed rather than left to re-litigate.</p>
+  <p><strong>The definitive roadmap is <a href="phased-plan.md"><code>phased-plan.md</code></a></strong> (rendered:
+  <a href="phased-plan.html"><code>phased-plan.html</code></a>), with one file per phase beside it. That index owns the
+  phase boundaries, the dependency graph, the sizing rationale, and the cross-phase contracts, and it
+  is what the scheduled implementation tasks point at.</p>
 
-  <section class="phase">
-    <h3>Phase A - cut the first release (unblocks everything)</h3>
+  <p>An earlier draft of this section carried a provisional A-D roadmap. It has been replaced rather
+  than kept alongside, because it had drifted into contradicting the real one in three ways that
+  would have misled anyone following it: it still asked Phase C to choose between changelog
+  alternatives that decision C1 has since settled, still asked Phase D to decide whether G10 warrants
+  an e2e spec, and ordered the real-journey verification <em>before</em> the update-safety work when the
+  actual graph makes verification depend on it.</p>
 
-    <p>Nothing else in this plan can be verified until a release exists.</p>
+  <p>The four phases:</p>
 
-    <ol>
-      <li><strong>Give Release Please a credential that is allowed to open a pull request</strong> (D1). A fine-grained
-        PAT or a GitHub App installation token, stored as a repository secret and passed to the action
-        as <code>token:</code>. This sidesteps the organization policy rather than negotiating with it, and it does
-        not depend on an org admin being available.</li>
-      <li><strong>Set the first release to <code>1.0.0</code></strong> (D4). Release Please computed <code>0.2.0</code> from the minority of
-        commits it could parse, which is not a number anyone should have to defend. This needs
-        <code>"release-as": "1.0.0"</code> in <code>release-please-config.json</code> for the first run only, and it must be
-        removed immediately afterwards or every subsequent release is pinned to the same version.</li>
-      <li>Confirm the release pull request opens, review the generated <code>CHANGELOG.md</code>, and merge it.</li>
-      <li>Confirm the follow-up run creates the <code>v1.0.0</code> tag and publishes the Release, and that
-        <code>scripts/assert-release-version.mjs</code> passes against it.</li>
-      <li><strong>Fix G7 in the same change</strong> so <code>scripts/assert-release-version.mjs</code> and <code>src/shared/update.ts</code>
-        agree on what a version is. Today a <code>-rc.1</code> tag passes the CI assertion and is then permanently
-        invisible to the updater.</li>
-    </ol>
+  <div class="tablewrap phases-table breakout">
+    <table>
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Phase</th>
+          <th>Depends on</th>
+          <th>Owns</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <th scope="row">1</th>
+          <td><a href="phase-1-cut-the-first-release.md">Unblock the release trigger and cut v1.0.0</a></td>
+          <td>-</td>
+          <td>G1, G7, D1, D4</td>
+        </tr>
+        <tr>
+          <th scope="row">2</th>
+          <td><a href="phase-2-changelog-from-pull-requests.md">Generate the changelog from pull request titles and labels</a></td>
+          <td>1</td>
+          <td>G2, G3, D2, C1</td>
+        </tr>
+        <tr>
+          <th scope="row">3</th>
+          <td><a href="phase-3-install-and-update-safety.md">Close the install and update-safety gaps</a></td>
+          <td>-</td>
+          <td>G5, G6, G8, G9</td>
+        </tr>
+        <tr>
+          <th scope="row">4</th>
+          <td><a href="phase-4-prove-the-journey.md">Prove the journey against a real release</a></td>
+          <td>1, 3</td>
+          <td>G10</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
 
-    <p>One consequence worth planning for: a PAT-pushed tag <strong>does</strong> start workflow runs, unlike the
-    <code>GITHUB_TOKEN</code>-pushed tag today. <code>ci.yml</code>'s <code>package</code> job is gated on <code>refs/tags/*</code> and will now
-    fire on every release. That is harmless - it builds a dmg and uploads it as a 90-day artifact
-    nobody has to consume - but it is a behaviour change, and <code>release.yml</code>'s header comment explicitly
-    documents the old assumption. Both the comment and the <code>package</code> job's gating need revisiting in
-    this phase: either let it run as a build check, or exclude release tags from it.</p>
-  </section>
+  <p><strong>Phases 1 and 3 are concurrent</strong> - they share no files. Phase 2 follows Phase 1 because both edit
+  <code>.github/workflows/release.yml</code> and because a changelog redesign should be built against a release
+  cycle that has actually run. <strong>Phase 4 depends on Phase 3</strong>, so the one real end-to-end run
+  exercises the hardened install and update paths rather than rediscovering the gaps Phase 3 closes;
+  it is additionally gated on a human merging the release pull request Phase 1 produces, which is why
+  it cannot be an exit criterion of an earlier phase.</p>
 
-  <section class="phase">
-    <h3>Phase B - prove the user journey end to end</h3>
+  <p>Two things settled since the review, both recorded in full in the phase files:</p>
 
-    <p>Only possible once Phase A has published a release. This is the "make sure that works" the task
-    asked for; it cannot be done by reading code, which is why it is its own phase.</p>
-
-    <ol>
-      <li>On a clean machine state, run <code>make install</code> and confirm it selects the published <code>v1.0.0</code> tag
-        rather than the default branch tip, and that the receipt records that tag.</li>
-      <li>Cut a second release.</li>
-      <li>Confirm the installed app surfaces the update banner, and that <strong>Update Now</strong> rebuilds, swaps,
-        and relaunches at the new version.</li>
-      <li>Confirm the negative path: force a build failure and verify the previous app <strong>and</strong> its receipt
-        are both restored, and the restored app relaunches.</li>
-    </ol>
-  </section>
-
-  <section class="phase">
-    <h3>Phase C - generate the changelog from pull request titles and labels</h3>
-
-    <p>D2. Conventional-commit parsing is the wrong tool for this repository's history - it reads 40 of
-    the last 245 commits and discards the 185 descriptive titles that are the actual product changes.
-    Generating from pull request titles and labels matches how history is already written, and it works
-    retroactively rather than only going forward.</p>
-
-    <ol>
-      <li>Replace the commit-message changelog source with a pull-request-derived one - GitHub's own
-        release-notes generator via <code>.github/release.yml</code>, or <code>git-cliff</code> configured against the GitHub
-        API. Keep Release Please as the thing that owns the version, tag, and Release if it can be fed
-        this way; otherwise this phase absorbs the tagging too.</li>
-      <li><strong>Close G3: disable merge commits on the repository</strong>, leaving squash-only. A merge commit
-        discards the pull request title into <code>Merge pull request #N from &lt;branch&gt;</code>, which carries nothing
-        either generator can use. This is the setting that makes the rest of the phase hold.</li>
-      <li>Adopt a small, enforced label vocabulary for the sections the changelog groups by.</li>
-    </ol>
-  </section>
-
-  <section class="phase">
-    <h3>Phase D - close the install and update-safety gaps</h3>
-
-    <ol>
-      <li><strong>G5</strong> - give <code>README.md</code> a real install section pointing at <code>make install</code>, alongside the
-        existing dev quick start. A cloner following the README today lands in dev mode and never meets
-        the updater at all.</li>
-      <li><strong>G6</strong> - add Xcode Command Line Tools to the documented prerequisites, and make
-        <code>scripts/install-app.mjs</code> check for it up front, so a missing toolchain fails at install time
-        with a clear message rather than mid-update with no UI on screen.</li>
-      <li><strong>G8</strong> - put a timeout on <code>install()</code> in <code>scripts/apply-update.mjs</code>, and keep
-        <code>previous-app.bundle</code> until the relaunched app has been observed alive, rather than deleting it
-        the moment the install returns 0.</li>
-      <li><strong>G9</strong> - re-check <code>gh auth status</code> on the update path and surface lapsed auth as an actionable
-        state rather than silence; special-case HTTP 403 rate limiting instead of reporting it as a
-        generic non-zero exit.</li>
-      <li><strong>G10</strong> - decide whether any of this warrants an e2e spec given the Electron-preload gating, or
-        whether Phase B's manual verification is the honest coverage boundary.</li>
-    </ol>
-  </section>
+  <ul>
+    <li><strong>C1 - what owns the version, tag, and Release.</strong> Removing conventional commits as the changelog
+      source also removed the semver bump driver, which this plan did not anticipate. Resolved as
+      <strong>C1-b</strong>: a <code>workflow_dispatch</code> release where the human picks the bump and the workflow generates
+      notes from pull request titles and label categories. It replaces Release Please. The D1 token
+      remains in use, because it is what makes a release tag trigger <code>ci.yml</code>.</li>
+    <li><strong>G10</strong> is answered by running the journey for real in Phase 4, not by adding another fixture.</li>
+  </ul>
 
   <section class="phase">
     <h3>Not doing: artifact distribution</h3>
@@ -839,6 +828,13 @@
       </tbody>
     </table>
   </div>
+
+  <p>Those are the decisions as taken, with the reasoning that applied at the time. One has since been
+  partly overtaken: <strong>D1's premise weakened when C1 resolved as C1-b.</strong> With no release pull request,
+  the organization policy it was chosen to bypass stops applying. The token is still wanted and still
+  in use - it is what makes a release tag trigger <code>ci.yml</code> - so D1's work stands and Phase 1 needed no
+  revision, but its original justification no longer carries Phase 2. See
+  <a href="phased-plan.md"><code>phased-plan.md</code></a> for the full record.</p>
 
   <h3>A note on how this review was answered</h3>
 

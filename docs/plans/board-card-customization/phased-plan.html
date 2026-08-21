@@ -1,0 +1,384 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Board card customization - phased implementation</title>
+<style>
+  :root {
+    --bg: #fbfcfe;
+    --bg-2: #f1f4f9;
+    --panel: #ffffff;
+    --fg: #1a2230;
+    --muted: #55637a;
+    --dim: #8a95a8;
+    --border: #dfe4ec;
+    --border-soft: #eaeef4;
+    --accent: #2f7df6;
+    --accent-soft: #e6f0ff;
+    --attention: #e0693b;
+    --working: #2f7df6;
+    --code-bg: #f3f5f9;
+    --shadow: 0 1px 2px rgba(20, 30, 50, 0.06), 0 8px 24px rgba(20, 30, 50, 0.06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0c0f14;
+      --bg-2: #12161d;
+      --panel: #161b23;
+      --fg: #e7ecf3;
+      --muted: #9aa6ba;
+      --dim: #67728a;
+      --border: #262d38;
+      --border-soft: #1c222b;
+      --accent: #5b9bff;
+      --accent-soft: #17253d;
+      --attention: #f0805a;
+      --working: #5b9bff;
+      --code-bg: #10151c;
+      --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 10px 30px rgba(0, 0, 0, 0.35);
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 15.5px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    padding: 40px 20px 96px;
+  }
+  main { max-width: 820px; margin: 0 auto; }
+
+  .eyebrow {
+    font-size: 12px; font-weight: 700; letter-spacing: 1.4px; text-transform: uppercase;
+    color: var(--accent); margin: 0 0 8px;
+  }
+  h1 { font-size: 30px; line-height: 1.2; margin: 0 0 12px; letter-spacing: -0.4px; }
+  h2 {
+    font-size: 20px; margin: 40px 0 12px; padding-top: 18px;
+    border-top: 1px solid var(--border-soft); letter-spacing: -0.2px;
+  }
+  h3 { font-size: 15.5px; margin: 22px 0 6px; color: var(--fg); }
+  p { margin: 12px 0; color: var(--fg); }
+  .lead { font-size: 17px; color: var(--muted); }
+  strong { color: var(--fg); font-weight: 650; }
+  em { color: var(--muted); }
+  a { color: var(--accent); }
+  ul, ol { margin: 12px 0; padding-left: 22px; }
+  li { margin: 6px 0; }
+  li::marker { color: var(--dim); }
+
+  code {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 0.86em; background: var(--code-bg);
+    border: 1px solid var(--border-soft); border-radius: 5px; padding: 1px 5px;
+  }
+  .scroll-x { overflow-x: auto; }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--border-soft); border-radius: 10px;
+    padding: 14px 16px; margin: 14px 0; font-size: 13px; line-height: 1.55;
+  }
+  pre code { background: none; border: 0; padding: 0; font-size: inherit; }
+
+  table { border-collapse: collapse; width: 100%; margin: 14px 0; font-size: 14px; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--border-soft); vertical-align: top; }
+  th { color: var(--dim); font-weight: 650; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; }
+  td code { white-space: nowrap; }
+
+  .callout {
+    display: flex; gap: 12px; margin: 18px 0; padding: 14px 16px;
+    background: var(--bg-2); border: 1px solid var(--border-soft);
+    border-left: 3px solid var(--accent); border-radius: 10px;
+  }
+  .callout .mark { font-size: 18px; line-height: 1.3; }
+  .callout p { margin: 0; color: var(--muted); font-size: 14.5px; }
+  .callout strong { color: var(--fg); }
+
+  .choice-grid { display: grid; gap: 14px; margin: 16px 0; }
+  @media (min-width: 620px) { .choice-grid { grid-template-columns: 1fr 1fr; } }
+  .choice {
+    border: 1px solid var(--border); border-radius: 12px; padding: 16px 16px 4px;
+    background: var(--panel); box-shadow: var(--shadow);
+  }
+  .choice.rec { border-color: color-mix(in oklab, var(--accent) 55%, var(--border)); }
+  .choice h4 { margin: 0 0 4px; font-size: 15px; display: flex; align-items: center; gap: 8px; }
+  .pill {
+    font-size: 10.5px; font-weight: 700; letter-spacing: 0.4px; text-transform: uppercase;
+    color: var(--accent); background: var(--accent-soft); border-radius: 999px; padding: 2px 8px;
+  }
+  .choice p { font-size: 14px; color: var(--muted); }
+
+  figure { margin: 22px 0; }
+  .diagram {
+    background: var(--panel); border: 1px solid var(--border-soft); border-radius: 14px;
+    padding: 18px; box-shadow: var(--shadow);
+  }
+  .diagram svg { width: 100%; height: auto; display: block; }
+  figcaption { margin-top: 10px; font-size: 13px; color: var(--dim); text-align: center; }
+
+  /* SVG theme hooks */
+  .d-frame { fill: none; stroke: var(--border); stroke-width: 1.5; }
+  .d-col { fill: var(--bg-2); stroke: var(--border-soft); stroke-width: 1; }
+  .d-col-hi { fill: var(--accent-soft); stroke: color-mix(in oklab, var(--accent) 45%, var(--border)); stroke-width: 1.5; }
+  .d-tile { fill: var(--panel); stroke: var(--border); stroke-width: 1; }
+  .d-tile-hi { fill: var(--panel); stroke: color-mix(in oklab, var(--accent) 55%, var(--border)); stroke-width: 1.5; }
+  .d-bar { fill: var(--bg-2); }
+  .d-tab-on { fill: var(--accent); }
+  .d-tab { fill: var(--border); }
+  .d-line { fill: var(--border); }
+  .d-reply { fill: var(--panel); stroke: color-mix(in oklab, var(--accent) 45%, var(--border)); stroke-width: 1.5; }
+  .d-arrow { fill: none; stroke: var(--accent); stroke-width: 2; }
+  .d-arrow-head { fill: var(--accent); }
+  .d-lbl { fill: var(--muted); font: 600 12px -apple-system, system-ui, sans-serif; }
+  .d-lbl-sm { fill: var(--dim); font: 500 9.5px -apple-system, system-ui, sans-serif; }
+  .d-lbl-acc { fill: var(--accent); font: 700 10px -apple-system, system-ui, sans-serif; }
+  .d-title { fill: var(--fg); font: 700 13px -apple-system, system-ui, sans-serif; }
+</style>
+<style>
+  .d-card { fill: var(--panel); stroke: var(--border); stroke-width: 1.2; }
+  .d-card-hi { fill: var(--panel); stroke: color-mix(in oklab, var(--accent) 55%, var(--border)); stroke-width: 1.6; }
+  .d-band { fill: var(--accent-soft); stroke: color-mix(in oklab, var(--accent) 45%, var(--border)); stroke-width: 1.3; }
+  .d-gone { fill: none; stroke: var(--dim); stroke-width: 1.2; stroke-dasharray: 4 4; }
+  .d-conv { fill: color-mix(in oklab, var(--working) 10%, var(--panel)); stroke: color-mix(in oklab, var(--working) 35%, var(--border)); stroke-width: 1.3; }
+  .d-arrow-new { fill: none; stroke: var(--accent); stroke-width: 2.4; }
+  .d-arrow-old { fill: none; stroke: var(--dim); stroke-width: 1.4; }
+  .d-arrow-head-dim { fill: var(--dim); }
+  .d-store { fill: var(--bg-2); stroke: var(--border); stroke-width: 1.4; }
+  .d-lbl-strong { fill: var(--fg); font: 650 11.5px -apple-system, system-ui, sans-serif; }
+  .d-lbl-mono { fill: var(--muted); font: 500 10px ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .d-lbl-gone { fill: var(--dim); font: 500 10px -apple-system, system-ui, sans-serif; }
+  .legend { display: flex; flex-wrap: wrap; gap: 16px; justify-content: center; margin-top: 10px; font-size: 12px; color: var(--dim); }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .swatch { width: 22px; height: 3px; border-radius: 2px; display: inline-block; }
+  .items-note { font-size: 13px; color: var(--dim); margin-top: -4px; }
+  pre { overflow-x: auto; }
+</style>
+</head>
+<body>
+<main>
+  <p class="eyebrow">Phased implementation · board &amp; settings</p>
+  <h1>Board card customization - phased implementation</h1>
+  <p class="lead">
+    Two phases, serial. <strong>Phase 1</strong> delivers the customizable board card and the Settings
+    panel that drives it. <strong>Phase 2</strong> spends the new mechanism on the console detail's
+    <code>PATH</code>/<code>BRANCH</code> band, which is the half of the request that buys vertical
+    space back.
+  </p>
+  <p>
+    Source plan: <a href="plan.md"><code>plan.md</code></a> (rendered:
+    <a href="plan.html"><code>plan.html</code></a>).
+  </p>
+
+  <h2>Incorporated human decisions</h2>
+  <p>Selected during the plan review and carried into the phases as requirements:</p>
+  <div class="scroll-x">
+  <table>
+    <thead><tr><th></th><th>Decision</th><th>Owned by</th></tr></thead>
+    <tbody>
+      <tr><td><strong>D1</strong></td><td>"Worktree selector" is a visibility checkbox, not a control that re-points a worktree</td><td>Phase 1</td></tr>
+      <tr><td><strong>D2</strong></td><td>Defaults preserve today's rendering exactly; the operator opts in</td><td>Phase 1 sets the defaults; Phase 2 inherits them</td></tr>
+      <tr><td><strong>D3</strong></td><td>The attention flags in <code>.tile-marks</code> stay always on and are not in the registry</td><td>Phase 1</td></tr>
+      <tr><td><strong>D4</strong></td><td>The panel carries a live preview card that redraws as items are toggled</td><td>Phase 1</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>Investigated findings that changed the decomposition</h2>
+  <p>
+    The source plan's findings F1-F8 stand and are not repeated here. Four things surfaced while
+    drawing the phase boundaries, and each changes an artifact the source plan named.
+  </p>
+
+  <h3>P1 - The config key is not <code>boardCardHidden</code></h3>
+  <p>
+    The source plan proposed <code>boardCardHidden</code>. Phase boundaries disproved the name:
+    <strong>one array serves both groups</strong>. Phase 2's two conversation entries are ids in the
+    same list, which is what lets Phase 2 ship without touching <code>src/shared/protocol.ts</code>,
+    <code>uiCache.ts</code> or any route at all.
+  </p>
+  <p>
+    A key called <code>boardCardHidden</code> holding <code>detail-path</code> would be a lie on
+    operators' machines, and this key is persisted - renaming it later orphans everyone's choices.
+    <strong>The key is <code>hiddenDisplayItems</code></strong>, which is what it is: the items the
+    Display category has been told not to draw. Phase 1 owns the name and Phase 2 may not change it.
+  </p>
+
+  <h3>P2 - The registry needs its <code>group</code> field in Phase 1, populated only by Phase 1</h3>
+  <p>
+    If Phase 1 shipped all thirteen entries, its panel would draw two checkboxes that do nothing,
+    which is a dead surface. If Phase 1 shipped no <code>group</code> field, Phase 2 would have to
+    restructure the panel to introduce sections.
+  </p>
+  <p>
+    So the entry type carries <code>group: "card" | "conversation"</code> from Phase 1, with
+    <strong>only <code>"card"</code> entries present</strong>, and the panel renders one section per
+    distinct group it finds in the registry. Phase 2 then appends two entries and its section appears
+    with no panel restructuring. This is the single most important cross-phase contract and is stated
+    in both phase files.
+  </p>
+
+  <h3>P3 - The preview card needs a fixture <code>Session</code> that does not exist anywhere in <code>src/web</code></h3>
+  <p>
+    <code>test/helpers/session-fixture.ts</code> is the only session fixture in the repository and it
+    is in <code>test/</code>, which the web bundle cannot import. The Tour has no fixture session
+    either - it spotlights real tiles (<code>src/web/tour/target-registry.ts</code>). Demo mode seeds
+    a fleet in the daemon, not in the browser.
+  </p>
+  <p>
+    So D4's preview needs a new fixture in <code>src/web</code>, and it must populate
+    <strong>every</strong> optional item, or toggling an item the fixture lacks does nothing visible
+    and reads as a broken checkbox. This is Phase 1 work and is sized into it.
+  </p>
+
+  <h3>P4 - Phase 2 touches no shared contract, which is why it is a separate merge unit rather than a risk</h3>
+  <p>
+    Given P1 and P2, Phase 2's diff is confined to <code>ConsoleDetail.tsx</code>,
+    <code>board-card.ts</code> (two appended entries), <code>styles.css</code> and its tests. It shares
+    no file with Phase 1's riskiest change (<code>session-bits.tsx</code>), and it is independently
+    revertible: if the band's render guard proves wrong, the revert gives back the conversation band
+    without giving back card customization.
+  </p>
+
+  <h2>Sizing</h2>
+  <p>
+    <strong>Estimate: 450-650 gross non-test implementation lines</strong>, most likely ~550. Counted
+    as production lines added or materially changed, excluding <code>test/</code> and
+    <code>e2e/</code>, and including this repository's comment density, which is high by policy and is
+    a real part of writing a file here.
+  </p>
+  <div class="scroll-x">
+  <table>
+    <thead><tr><th>Area</th><th>Lines</th><th>Phase</th></tr></thead>
+    <tbody>
+      <tr><td><code>src/shared/protocol.ts</code> - default + schema field</td><td>~15</td><td>1</td></tr>
+      <tr><td><code>src/web/lib/uiCache.ts</code> - the <code>coerce()</code> line (F6)</td><td>~5</td><td>1</td></tr>
+      <tr><td><code>src/web/lib/board-card.ts</code> - registry, ids, hook</td><td>~130</td><td>1</td></tr>
+      <tr><td><code>src/web/lib/board-card-preview.ts</code> - the fixture session (P3)</td><td>~45</td><td>1</td></tr>
+      <tr><td><code>src/web/components/BoardCardPanel.tsx</code> - checklist + preview host</td><td>~150</td><td>1</td></tr>
+      <tr><td><code>src/web/components/SettingsPage.tsx</code> - import and mount</td><td>~5</td><td>1</td></tr>
+      <tr><td><code>src/web/lib/settings-search.ts</code> - the <code>SETTINGS_CONTROLS</code> entry</td><td>~14</td><td>1</td></tr>
+      <tr><td><code>src/web/components/layouts/SessionTile.tsx</code> - gating + worktree item</td><td>~55</td><td>1</td></tr>
+      <tr><td><code>src/web/components/session-bits.tsx</code> - <code>RuntimeMetaRow</code> <code>omit</code> (F5)</td><td>~25</td><td>1</td></tr>
+      <tr><td><code>src/web/styles.css</code> - panel, preview, tile worktree cell</td><td>~80</td><td>1</td></tr>
+      <tr><td><code>src/web/components/layouts/ConsoleDetail.tsx</code> - optional cells + band guard</td><td>~30</td><td>2</td></tr>
+      <tr><td><code>src/web/lib/board-card.ts</code> - two conversation entries</td><td>~15</td><td>2</td></tr>
+      <tr><td><code>src/web/styles.css</code> - band guard fallout</td><td>~15</td><td>2</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p>Phase 1 ≈ 420-500 lines. Phase 2 ≈ 60-100 lines.</p>
+
+  <h3>Why two phases and not one</h3>
+  <p>
+    The estimate is well above the 200-line one-shot threshold, so the question is whether a second
+    merge boundary earns itself. It does, on three grounds:
+  </p>
+  <ol>
+    <li><strong>Size.</strong> Combined, this is ~550 production lines across nine files plus six
+      <code>test/</code> files and four <code>e2e/</code> specs in a single pull request. That is past
+      what reviews well as one unit.</li>
+    <li><strong>Different failure modes.</strong> Phase 1's risk is the shared
+      <code>RuntimeMetaRow</code> and the parity tests that exist to stop the tile, rail and detail
+      drifting (F5, F8). Phase 2's risk is the three live e2e assertions that read
+      <code>.detail-sub</code> (F3) and the band's render guard. Mixing them means a revert for either
+      reason gives back both.</li>
+    <li><strong>Independent value.</strong> Phase 1 alone is a shipped, complete feature - the
+      operator can customize their cards, including putting the worktree on them. Phase 2 is the
+      payoff that fact enables, and is worth reviewing against its own measured claim.</li>
+  </ol>
+
+  <h3>Why not three</h3>
+  <p>
+    Splitting the live preview card (D4) into its own phase was considered and rejected. A panel that
+    ships without its preview is a half-delivered decision, and the preview is part of the panel's job
+    rather than an enhancement to it.
+  </p>
+  <p>
+    Splitting the contract (<code>protocol.ts</code> + <code>uiCache.ts</code> + registry) from its
+    consumers was also rejected: a config key nothing reads and no panel writes is a dead surface,
+    which is exactly the vertical-slice rule.
+  </p>
+
+  <h2>Phases</h2>
+  <div class="scroll-x">
+  <table>
+    <thead><tr><th>#</th><th>Phase</th><th>File</th><th>Direct prerequisites</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td>The customizable board card</td><td><a href="phase-1-customizable-board-card.md"><code>phase-1-customizable-board-card.md</code></a></td><td>none</td></tr>
+      <tr><td>2</td><td>The conversation band becomes optional</td><td><a href="phase-2-optional-conversation-band.md"><code>phase-2-optional-conversation-band.md</code></a></td><td>Phase 1</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>Dependency graph</h2>
+  <figure>
+    <div class="diagram">
+      <svg viewBox="0 0 900 150" role="img" aria-label="The planning session's pull request releases Phase 1, which releases Phase 2. The phases run in series with no concurrency.">
+        <rect x="20" y="40" width="220" height="66" rx="10" class="d-store" />
+        <text x="130" y="68" text-anchor="middle" class="d-lbl-strong">Planning session PR</text>
+        <text x="130" y="86" text-anchor="middle" class="d-lbl-sm">publishes these artifacts</text>
+
+        <path d="M 240 73 L 296 73" class="d-arrow" />
+        <path d="M 296 73 l -9 -5 l 0 10 z" class="d-arrow-head" />
+
+        <rect x="302" y="40" width="250" height="66" rx="10" class="d-card-hi" />
+        <text x="427" y="62" text-anchor="middle" class="d-lbl-acc">PHASE 1</text>
+        <text x="427" y="82" text-anchor="middle" class="d-lbl-strong">Customizable board card</text>
+        <text x="427" y="98" text-anchor="middle" class="d-lbl-sm">registry · panel · preview · tile</text>
+
+        <path d="M 552 73 L 608 73" class="d-arrow" />
+        <path d="M 608 73 l -9 -5 l 0 10 z" class="d-arrow-head" />
+
+        <rect x="614" y="40" width="266" height="66" rx="10" class="d-card-hi" />
+        <text x="747" y="62" text-anchor="middle" class="d-lbl-acc">PHASE 2</text>
+        <text x="747" y="82" text-anchor="middle" class="d-lbl-strong">Optional conversation band</text>
+        <text x="747" y="98" text-anchor="middle" class="d-lbl-sm">two entries · band render guard</text>
+
+        <text x="450" y="132" text-anchor="middle" class="d-lbl-sm">Serial - Phase 2 consumes the registry, key, hook and panel Phase 1 creates.</text>
+      </svg>
+    </div>
+    <figcaption>No concurrency group: Phase 2 cannot start until Phase 1 merges.</figcaption>
+  </figure>
+  <p>
+    <strong>Merge order:</strong> planning PR → Phase 1 → Phase 2.
+  </p>
+
+  <h2>Cross-phase contracts</h2>
+  <p>Phase 1 owns these and Phase 2 consumes them without changing them:</p>
+  <div class="scroll-x">
+  <table>
+    <thead><tr><th>Contract</th><th>Shape</th><th>Note</th></tr></thead>
+    <tbody>
+      <tr><td>Config key</td><td><code>UiConfig.hiddenDisplayItems: string[]</code></td><td>P1. One array for both groups. Phase 2 adds ids to it, never a second key.</td></tr>
+      <tr><td>Registry entry</td><td><code>{ id, group: "card" | "conversation", label, description }</code></td><td>P2. Phase 1 ships <code>"card"</code> entries only.</td></tr>
+      <tr><td>Panel sectioning</td><td>One section per distinct <code>group</code> present in the registry</td><td>P2. Phase 2 adds entries, not layout.</td></tr>
+      <tr><td>Visibility hook</td><td><code>useDisplayItems(): (id) =&gt; boolean</code></td><td>Phase 2 calls the same hook from <code>ConsoleDetail</code>.</td></tr>
+      <tr><td>Defaults</td><td>Empty array - everything visible (D2)</td><td>Phase 2 must not add an id to the shipped default.</td></tr>
+      <tr><td><code>RuntimeMetaRow</code></td><td><code>omit?: ReadonlySet&lt;"model" | "effort" | "context"&gt;</code>, replacing <code>showEffort</code></td><td>Phase 2 does not touch this component.</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>Final verification strategy</h2>
+  <p>
+    Each phase runs its own verification, specified in its file. Across the set, the delivered feature
+    is correct when:
+  </p>
+  <ul>
+    <li><code>npm run typecheck</code>, <code>npm run lint</code>, <code>npm test</code> and
+      <code>npm run test:e2e</code> pass on each phase's branch.</li>
+    <li><code>e2e/specs/console-tabs-toolbar.spec.ts</code> and
+      <code>e2e/specs/native-worktree-dispatch.spec.ts</code> are <strong>unmodified</strong> at the
+      end of Phase 2. D2 guarantees this; a diff touching either is the signal that the defaults
+      drifted (F3).</li>
+    <li><code>test/session-leaf-parity.test.ts</code> and <code>test/layout-parity.test.ts</code> are
+      unmodified and passing, which is the assertion that the tile still mounts the shared leaves
+      rather than inlining copies (F8).</li>
+    <li>A fresh profile with no stored config renders a board card and a console detail
+      byte-identical to the previous release (D2).</li>
+  </ul>
+</main>
+</body>
+</html>

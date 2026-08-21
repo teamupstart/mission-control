@@ -8,6 +8,7 @@ export const E2E_MAX_WORKERS = 4;
 const DEFAULT_POLL_MS = 1_000;
 const DEFAULT_WAIT_TIMEOUT_MS = 45 * 60_000;
 const OWNER_FILE = "owner.json";
+const RECLAIM_DIR = "reclaim";
 
 export interface E2eLeaseOwner {
   token: string;
@@ -29,6 +30,8 @@ interface AcquireOptions {
   pollMs?: number;
   waitTimeoutMs?: number;
   onWait?: (owner: E2eLeaseOwner | null) => void;
+  // Used by the concurrency regression test to hold the reclaim critical section open.
+  beforeStaleLeaseRename?: () => Promise<void>;
 }
 
 function userIdentity(): string {
@@ -102,20 +105,44 @@ async function publishCandidate(lockDir: string, owner: E2eLeaseOwner): Promise<
   }
 }
 
-async function reclaimStaleLease(lockDir: string, expected: E2eLeaseOwner | null): Promise<void> {
-  const current = await readOwner(lockDir);
-  if (expected && current?.token !== expected.token) return;
-  if (current && processIsAlive(current.pid)) return;
-
-  const staleDir = `${lockDir}.stale-${process.pid}-${randomUUID()}`;
+async function reclaimStaleLease(
+  lockDir: string,
+  expected: E2eLeaseOwner | null,
+  beforeRename?: () => Promise<void>,
+): Promise<boolean> {
+  // The marker lives inside the lease so it can only guard this exact directory.
+  // Moving the stale lease also moves the marker, letting a replacement publish
+  // without a second reclaimer being able to mistake it for the stale owner.
+  const reclaimDir = join(lockDir, RECLAIM_DIR);
   try {
-    await rename(lockDir, staleDir);
+    await mkdir(reclaimDir);
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
-    if (code === "ENOENT" || code === "EEXIST" || code === "ENOTEMPTY") return;
+    if (code === "ENOENT" || code === "EEXIST") return false;
     throw error;
   }
+
+  let markerMoved = false;
+  const staleDir = `${lockDir}.stale-${process.pid}-${randomUUID()}`;
+  try {
+    const current = await readOwner(lockDir);
+    const ownerChanged = expected
+      ? current?.token !== expected.token
+      : current !== null;
+    if (ownerChanged || (current && processIsAlive(current.pid))) return false;
+
+    await beforeRename?.();
+    await rename(lockDir, staleDir);
+    markerMoved = true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "EEXIST" || code === "ENOTEMPTY") return false;
+    throw error;
+  } finally {
+    if (!markerMoved) await rm(reclaimDir, { recursive: true, force: true });
+  }
   await rm(staleDir, { recursive: true, force: true });
+  return true;
 }
 
 async function sleep(ms: number): Promise<void> {
@@ -162,7 +189,16 @@ export async function acquireE2eHostLease(options: AcquireOptions): Promise<E2eH
 
     const current = await readOwner(lockDir);
     if (!current || !processIsAlive(current.pid)) {
-      await reclaimStaleLease(lockDir, current);
+      const reclaimed = await reclaimStaleLease(lockDir, current, options.beforeStaleLeaseRename);
+      if (!reclaimed) {
+        if (Date.now() >= deadline) {
+          throw new Error(
+            `Timed out waiting for another process to reclaim the Mission Control E2E host lease `
+            + `after ${waitTimeoutMs}ms.`,
+          );
+        }
+        await sleep(Math.min(pollMs, Math.max(1, deadline - Date.now())));
+      }
       continue;
     }
 

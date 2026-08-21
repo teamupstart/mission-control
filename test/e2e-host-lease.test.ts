@@ -87,6 +87,70 @@ test("a dead E2E owner is reclaimed before the next suite starts", async () => {
   }
 });
 
+test("concurrent stale reclaimers cannot remove a replacement lease", async () => {
+  const { root, lockDir } = await fixture();
+  try {
+    await mkdir(lockDir);
+    await writeFile(
+      join(lockDir, "owner.json"),
+      JSON.stringify({
+        token: "dead-owner",
+        pid: 2_147_483_647,
+        acquiredAt: "2026-01-01T00:00:00.000Z",
+        cwd: "/stale/checkout",
+        argv: ["playwright", "test"],
+        workers: 4,
+      }),
+    );
+
+    let allowFirstReclaim!: () => void;
+    const firstReclaimMayContinue = new Promise<void>((resolve) => {
+      allowFirstReclaim = resolve;
+    });
+    let firstClaimed = false;
+    const firstPromise = acquireE2eHostLease({
+      lockDir,
+      workers: 4,
+      pollMs: 5,
+      waitTimeoutMs: 2_000,
+      beforeStaleLeaseRename: async () => {
+        firstClaimed = true;
+        await firstReclaimMayContinue;
+      },
+    });
+
+    while (!firstClaimed) await new Promise((resolve) => setTimeout(resolve, 1));
+    let secondSettled = false;
+    const secondPromise = acquireE2eHostLease({
+      lockDir,
+      workers: 4,
+      pollMs: 100,
+      waitTimeoutMs: 2_000,
+    }).then((lease) => {
+      secondSettled = true;
+      return lease;
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.equal(secondSettled, false);
+    allowFirstReclaim();
+
+    const first = await firstPromise;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.equal(secondSettled, false);
+    assert.equal(
+      (JSON.parse(await readFile(join(lockDir, "owner.json"), "utf8")) as E2eLeaseOwner).token,
+      first.owner.token,
+    );
+
+    await first.release();
+    const second = await secondPromise;
+    await second.release();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("an E2E suite times out with the live owner's identity", async () => {
   const { root, lockDir } = await fixture();
   try {

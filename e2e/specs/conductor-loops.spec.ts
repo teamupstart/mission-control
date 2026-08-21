@@ -55,7 +55,7 @@ async function request<T>(
 async function enablePipelines(
   daemon: DaemonHandle,
   foremanMechanicalTriage = false,
-  launchRuntime: "claude-sdk" | "terminal" = "claude-sdk",
+  launchRuntime: "agent-sdk" | "terminal" = "agent-sdk",
 ): Promise<void> {
   writeConductorProjects(daemon.home, [
     { name: "demo-repo", path: daemon.repo },
@@ -69,23 +69,21 @@ async function enablePipelines(
   });
 }
 
-/** User prompts recorded by the cost-free Claude SDK fixture for one checkout. */
-function sdkPrompts(daemon: DaemonHandle): string[] {
-  const project = join(
-    daemon.home,
-    ".claude",
-    "projects",
-    daemon.repo.replace(/[/.]/g, "-"),
-  );
+/** User prompts recorded by the cost-free Codex SDK fixture. */
+function codexPrompts(daemon: DaemonHandle): string[] {
+  const sessions = join(daemon.home, ".codex", "sessions");
   try {
-    return readdirSync(project)
+    return readdirSync(sessions, { recursive: true })
       .filter((name) => name.endsWith(".jsonl"))
-      .flatMap((name) => readFileSync(join(project, name), "utf8").trim().split("\n"))
+      .flatMap((name) => readFileSync(join(sessions, name), "utf8").trim().split("\n"))
       .filter(Boolean)
-      .map((line) => JSON.parse(line) as { message?: { role?: string; content?: unknown } })
-      .filter((entry) => entry.message?.role === "user")
-      .map((entry) => entry.message?.content)
-      .filter((content): content is string => typeof content === "string");
+      .map((line) => JSON.parse(line) as {
+        type?: string;
+        payload?: { type?: string; message?: unknown };
+      })
+      .filter((entry) => entry.type === "event_msg" && entry.payload?.type === "user_message")
+      .map((entry) => entry.payload?.message)
+      .filter((message): message is string => typeof message === "string");
   } catch {
     return [];
   }
@@ -108,9 +106,19 @@ test("SDK pipeline dispatch invokes Engineer directly and stays provider-owned",
   await dialog.getByPlaceholder("repo to attach…").fill(daemon.secondRepo);
   await dashboard.keyboard.press("Escape");
   await dialog.getByRole("button", { name: "Attach repo" }).click();
+  const agent = dialog.getByRole("combobox", { name: "Agent", exact: true });
+  await agent.selectOption("pi");
   await kind.selectOption("pipeline");
 
-  await expect(dialog.getByRole("combobox", { name: "Agent", exact: true })).toBeDisabled();
+  await expect
+    .poll(async () => ({
+      enabled: await agent.isEnabled(),
+      agents: await agent.locator("option").evaluateAll((options) =>
+        options.map((option) => option.getAttribute("value") ?? "").sort(),
+      ),
+    }))
+    .toEqual({ enabled: true, agents: ["claude", "codex"] });
+  await agent.selectOption("codex");
   await expect(dialog.getByRole("combobox", { name: "Model", exact: true })).toBeDisabled();
   await expect(dialog.getByRole("combobox", { name: /Effort/ })).toBeDisabled();
   await expect(dialog.getByRole("combobox", { name: "After work", exact: true })).toBeDisabled();
@@ -118,11 +126,21 @@ test("SDK pipeline dispatch invokes Engineer directly and stays provider-owned",
   await expect(
     dialog.getByRole("button", { name: `Detach repo: ${daemon.secondRepo}` }),
   ).toHaveCount(0);
-  await expect(dialog.getByText(/Claude Agent SDK starts one managed Claude host/)).toBeVisible();
-  await expect(dialog.getByText(/\/engineer <idea> as turn one/)).toBeVisible();
+  await expect(dialog.getByText(/Managed Agent SDK starts the selected Claude or Codex host/)).toBeVisible();
+  await expect(dialog.getByText(/harness's configured defaults/)).toBeVisible();
   await expect(dialog.getByText(/provider projection owns task completion/)).toBeVisible();
+  await expect(dialog.getByText(/does not fall back to Terminal/)).toBeVisible();
   await expect(dialog.getByText(/background build daemon keeps its own tmux supervision/)).toBeVisible();
   await shoot(dashboard, "04-sdk-pipeline-dispatch", dialog);
+
+  const desktopViewport = dashboard.viewportSize();
+  await dashboard.setViewportSize({ width: 420, height: 900 });
+  const narrowBox = await dialog.boundingBox();
+  expect(narrowBox).not.toBeNull();
+  expect(narrowBox!.x).toBeGreaterThanOrEqual(0);
+  expect(narrowBox!.x + narrowBox!.width).toBeLessThanOrEqual(420);
+  await shoot(dashboard, "05-sdk-pipeline-dispatch-narrow", dialog);
+  if (desktopViewport) await dashboard.setViewportSize(desktopViewport);
 
   const intent = "Build the SDK-hosted pipeline route";
   await dialog.getByPlaceholder("What should this agent do?").fill(intent);
@@ -134,6 +152,7 @@ test("SDK pipeline dispatch invokes Engineer directly and stays provider-owned",
       async () =>
         (
           await request<Array<{
+            agent: string;
             kind: string;
             status: string;
             sessionId: string | null;
@@ -144,6 +163,7 @@ test("SDK pipeline dispatch invokes Engineer directly and stays provider-owned",
       { message: "the pipeline task should own a running SDK session" },
     )
     .toMatchObject({
+      agent: "codex",
       kind: "pipeline",
       status: "running",
       sessionId: expect.stringMatching(/^sdk:/),
@@ -155,10 +175,123 @@ test("SDK pipeline dispatch invokes Engineer directly and stays provider-owned",
       },
     });
   await expect
-    .poll(() => sdkPrompts(daemon), {
+    .poll(() => codexPrompts(daemon)[0], {
       message: "the SDK host should receive the direct Engineer command as turn one",
     })
-    .toContain(`/engineer ${intent}`);
+    .toBe(`$engineer - run this skill now. ${intent}`);
+});
+
+test("guided managed Agent SDK pipeline asks for an eligible harness", async ({
+  dashboard,
+  daemon,
+}) => {
+  await enablePipelines(daemon);
+
+  await dashboard.getByRole("button", { name: "Dispatch" }).click();
+  const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
+  await dialog.getByRole("switch", { name: "Guided" }).click();
+  await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
+  await dashboard.keyboard.press("Enter");
+  const kinds = dialog.getByRole("listbox", { name: "What kind of run is this?" });
+  await kinds.getByRole("option", { name: /^pipeline/ }).click();
+
+  const harnesses = dialog.getByRole("listbox", { name: "Which harness runs it?" });
+  await expect
+    .poll(async () => ({
+      active: await harnesses.isVisible(),
+      claude: await harnesses.getByRole("option", { name: /^Claude Code/ }).count(),
+      codex: await harnesses.getByRole("option", { name: /^Codex/ }).count(),
+      pi: await harnesses.getByRole("option", { name: /^Pi/ }).count(),
+      total: await harnesses.getByRole("option").count(),
+    }))
+    .toEqual({ active: true, claude: 1, codex: 1, pi: 0, total: 2 });
+  await harnesses.getByRole("option", { name: /^Codex/ }).click();
+  await expect(harnesses).toBeHidden();
+  await expect(dialog.getByRole("combobox", { name: "Agent", exact: true })).toHaveValue("codex");
+  await expect(dialog.getByRole("combobox", { name: "After work", exact: true })).toBeDisabled();
+});
+
+test("terminal pipeline normalizes a stale non-Claude agent before dispatch", async ({
+  dashboard,
+  daemon,
+}) => {
+  await enablePipelines(daemon, false, "terminal");
+
+  await dashboard.getByRole("button", { name: "Dispatch" }).click();
+  const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
+  const agent = dialog.getByRole("combobox", { name: "Agent", exact: true });
+  const kind = dialog.getByRole("combobox", { name: "Kind", exact: true });
+  await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
+  await dashboard.keyboard.press("Escape");
+
+  await agent.selectOption("codex");
+  await kind.selectOption("pipeline");
+
+  await expect(agent).toBeDisabled();
+  await expect(agent).toHaveValue("claude");
+  await shoot(dashboard, "06-terminal-pipeline-agent-normalized", dialog);
+
+  await dialog.getByPlaceholder("What should this agent do?").fill("Run the terminal pipeline host");
+  await dialog.getByRole("button", { name: "Dispatch now" }).click();
+  await expect(dialog).toBeHidden();
+
+  await expect
+    .poll(
+      async () =>
+        (
+          await request<Array<{ agent: string; kind: string; status: string }>>(
+            daemon,
+            "/api/tasks",
+          )
+        ).find((task) => task.kind === "pipeline"),
+      { message: "the terminal pipeline task should carry the normalized Claude host" },
+    )
+    .toMatchObject({ agent: "claude", kind: "pipeline", status: "running" });
+});
+
+test("an open pipeline dispatch follows a live host runtime change", async ({
+  dashboard,
+  daemon,
+}) => {
+  await enablePipelines(daemon);
+
+  await dashboard.getByRole("button", { name: "Dispatch" }).click();
+  const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
+  const agent = dialog.getByRole("combobox", { name: "Agent", exact: true });
+  const kind = dialog.getByRole("combobox", { name: "Kind", exact: true });
+  await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
+  await dashboard.keyboard.press("Escape");
+
+  await kind.selectOption("pipeline");
+  await agent.selectOption("codex");
+  await expect(agent).toBeEnabled();
+  await expect(agent).toHaveValue("codex");
+
+  await enablePipelines(daemon, false, "terminal");
+
+  await expect(dialog.getByText(/Terminal is Claude-only/)).toBeVisible();
+  await expect(agent).toBeDisabled();
+  await expect(agent).toHaveValue("claude");
+  await shoot(dashboard, "07-terminal-pipeline-live-runtime-normalized", dialog);
+
+  await dialog
+    .getByPlaceholder("What should this agent do?")
+    .fill("Follow the live terminal pipeline host setting");
+  await dialog.getByRole("button", { name: "Dispatch now" }).click();
+  await expect(dialog).toBeHidden();
+
+  await expect
+    .poll(
+      async () =>
+        (
+          await request<Array<{ agent: string; kind: string; status: string }>>(
+            daemon,
+            "/api/tasks",
+          )
+        ).find((task) => task.kind === "pipeline"),
+      { message: "the live runtime change should dispatch the normalized Claude host" },
+    )
+    .toMatchObject({ agent: "claude", kind: "pipeline", status: "running" });
 });
 
 test("guided dispatch offers pipeline only in an enabled repo and launches a real terminal home", async ({
@@ -171,6 +304,7 @@ test("guided dispatch offers pipeline only in an enabled repo and launches a rea
   const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
   const repo = dialog.getByPlaceholder("search repos or type a path…");
   const kind = dialog.getByRole("combobox", { name: "Kind", exact: true });
+  const agent = dialog.getByRole("combobox", { name: "Agent", exact: true });
 
   await repo.fill(daemon.secondRepo);
   await dashboard.keyboard.press("Escape");
@@ -187,6 +321,8 @@ test("guided dispatch offers pipeline only in an enabled repo and launches a rea
   await expect(
     dialog.getByRole("button", { name: `Detach repo: ${daemon.secondRepo}` }),
   ).toBeVisible();
+  await agent.selectOption("pi");
+  await expect(agent).toHaveValue("pi");
 
   await dialog.getByRole("switch", { name: "Guided" }).click();
   await expect(repo).toBeFocused();
@@ -200,11 +336,12 @@ test("guided dispatch offers pipeline only in an enabled repo and launches a rea
   await expect(
     dialog.getByRole("button", { name: `Detach repo: ${daemon.secondRepo}` }),
   ).toHaveCount(0);
-  await expect(dialog.getByRole("combobox", { name: "Agent", exact: true })).toBeDisabled();
+  await expect(agent).toBeDisabled();
+  await expect(agent).toHaveValue("claude");
   await expect(dialog.getByRole("combobox", { name: "Model", exact: true })).toBeDisabled();
   await expect(dialog.getByRole("combobox", { name: /Effort/ })).toBeDisabled();
   await expect(dialog.getByRole("combobox", { name: "After work", exact: true })).toBeDisabled();
-  await expect(dialog.getByText(/Terminal opens conduct-ts engineer --idea/)).toBeVisible();
+  await expect(dialog.getByText(/Terminal is Claude-only and opens conduct-ts engineer --idea/)).toBeVisible();
   await expect(dialog.getByText(/live stdin and removes the inherited Claude nesting marker/)).toBeVisible();
   await expect(dialog.getByText(/provider projection owns task completion/)).toBeVisible();
   await shoot(dashboard, "01-pipeline-dispatch", dialog);

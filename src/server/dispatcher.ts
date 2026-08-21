@@ -9,7 +9,11 @@ import type {
   ThinkingLevel,
   WorktreeProvider,
 } from "@shared/types.ts";
-import { capabilitiesFor } from "@shared/harness-capabilities.ts";
+import {
+  capabilitiesFor,
+  skillCommand,
+  supportsSdkSkillInvocation,
+} from "@shared/harness-capabilities.ts";
 import { pipelineRunKeyOf } from "@shared/pipeline.ts";
 import { innermostTerminalResourceId } from "@shared/pane.ts";
 import { deriveTitle as deriveTaskTitle } from "@shared/title.ts";
@@ -686,21 +690,32 @@ export class Dispatcher {
     // dispatch sees the claim before this one yields to either host launcher.
     this.patch(taskId, { pipelineRun: launch.pipelineRun });
 
-    if (launch.launchRuntime === "claude-sdk") {
+    if (launch.launchRuntime === "agent-sdk") {
+      if (!supportsSdkSkillInvocation(task.agent, "engineer")) {
+        throw new Error(
+          `agent "${task.agent}" cannot host this managed Pipeline; choose an agent with Agent SDK support and a typed engineer skill invocation`,
+        );
+      }
+      const engineerCommand = skillCommand(task.agent, "engineer");
+      if (engineerCommand === null) {
+        throw new Error(
+          `agent "${task.agent}" has no typed engineer skill invocation; choose a supported Pipeline agent`,
+        );
+      }
       const supervisor = this.deps.supervisor;
       if (!supervisor) {
-        throw new Error("this build has no session supervisor, so it cannot launch Conductor through Claude Agent SDK");
+        throw new Error("this build has no session supervisor, so it cannot launch Conductor through Agent SDK");
       }
       const mcp = await (this.deps.missionMcpDescriptor ?? missionMcpDescriptor)();
       const session = await supervisor.start({
-        agent: "claude",
+        agent: task.agent,
         name: task.title.trim() || launch.cwd,
         cwd: launch.cwd,
-        prompt: launch.prompt,
+        prompt: `${engineerCommand} ${task.intent}`,
         acceptedGoalPrompt: task.intent,
         model: null,
         effort: null,
-        permissionMode: null,
+        permissionMode: dispatchPermissionMode(task.agent),
         mcp,
         extraDirs: [],
         taskId,
@@ -724,6 +739,12 @@ export class Dispatcher {
       // session is linked now; a later `bound` event sees Task.sessionId and links then.
       this.registry.bindTaskToWorkEpisode(taskId, session.id);
       return;
+    }
+
+    if (task.agent !== "claude") {
+      throw new Error(
+        "Terminal Pipeline launches are Claude-only; choose Claude or switch the Pipelines launch runtime to Agent SDK",
+      );
     }
 
     const label = sessionLabel(task.title);

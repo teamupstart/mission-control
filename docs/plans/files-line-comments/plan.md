@@ -301,7 +301,11 @@ the dashboard from its own state.
     later human reply, in time order, with a reply box.
 
 12. **A human reply in a thread re-enters the queue** at the end, and is delivered in its turn
-    exactly like a new comment - the reply itself, not the comment that started the thread.
+    exactly like a new comment - the reply itself, not the comment that started the thread. A
+    reply to the comment **currently in flight** is written to the thread and waits: that thread
+    keeps its outstanding status and requeues for the reply when the turn resolves. Replying never
+    pulls a thread out of the outstanding set, because that set is where the one-at-a-time
+    guarantee is enforced.
 
 13. **The agent's reply appears in the thread it answers**, live, without a refresh, and raises
     the Files tab's attention pip.

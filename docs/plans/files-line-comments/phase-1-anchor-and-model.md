@@ -68,6 +68,22 @@ change them cheaply. That ordering is deliberate - see the entry on `addColumn` 
      never recomputed from the row. **Unique per session means every lookup by `short_id` is
      session-scoped**; it is not a global key, and resolving one without a session would let a
      reply land on another session's thread.
+   - **Minting is collision-safe, and the unique index is the authority.** `MC-` plus four hex
+     characters is 65,536 handles per session, so by the birthday bound a session is around a 1%
+     collision risk at ~36 comments and roughly even odds at ~300. A review is normally tens of
+     comments, so the first candidate nearly always wins - the loop exists for the tail, not the
+     common case, and the width is recorded here as a decision rather than left to look accidental.
+     - **Attempt the insert and inspect the failure; never pre-check with a `SELECT`.** A
+       read-then-write races another create in the same session, and it is the natural wrong fix.
+       Copy `isSingleFlightViolation` (`queue.ts:400-403`), which matches **one named index** by
+       regex so an unrelated constraint failure is not swallowed as a collision.
+     - On a collision, mint again and retry, bounded. **If the bounded loop is exhausted, widen the
+       handle rather than fail**: the column is `TEXT` and the transcript fallback matches it out
+       of free text, so a longer id costs nothing and is still quotable. Thread creation must not
+       be the thing that fails - refusing to save a comment a human just wrote is a far worse
+       outcome than an id two characters longer.
+     - Minting happens inside the same transaction as the thread insert, so a retry cannot leave a
+       half-created thread behind.
    - **`beginFileCommentDelivery(threadId, deliveryId, deliveryRevision)`** moves a thread
      `queued` → `sending` and records the correlation in `delivery_id`. This is the write phase 3
      performs when it *submits*, and it deliberately does **not** stamp `delivered_at`:
@@ -197,7 +213,9 @@ change them cheaply. That ordering is deliberate - see the entry on `addColumn` 
   `outdated` flag surviving a status change in both directions, message append and load order for
   both authors, editing an undelivered message and **being refused on a delivered one and on one
   whose thread is merely outstanding**, stamping
-  `addressed_at` and `read_at` without touching `status`, and that the partial unique index refuses a second outstanding row for one session
+  `addressed_at` and `read_at` without touching `status`, **`short_id` minting surviving a forced
+  collision** - seed a session's handle, force the next mint onto it, and assert the thread is
+  created with a different handle rather than the insert failing - and that the partial unique index refuses a second outstanding row for one session
   **from either outstanding status** - a `sending` row beside an `awaiting` one, not just two
   `sending` rows. That asymmetric case is the one an index over a single status would pass.
 - `test/file-comments-lifecycle.test.ts` - `session_remove` orphans; `state === "exited"` alone
@@ -314,3 +332,10 @@ the walkthrough state machine and payload (phase 3), the MCP tool (phase 4).
   Unique *per session* means every lookup by it is session-scoped; phase 4 resolves a reply through
   this column, and a global lookup there would land a reply on another session's thread. Recorded
   here because the column and its uniqueness rule are this phase's.
+- Review pass (round 15): `short_id` was required to be unique per session with no rule for what
+  happens when a mint collides, so the natural implementation fails thread creation at the unique
+  index instead of saving the comment. `MC-` plus four hex is 65,536 per session - fine for a review
+  of tens of comments, and roughly even odds of a collision by ~300 - so the width is now recorded
+  as a decision, minting attempts the insert and inspects the failure the way
+  `isSingleFlightViolation` does rather than pre-checking with a racy `SELECT`, and an exhausted
+  retry loop widens the handle rather than refusing to save a human's comment.

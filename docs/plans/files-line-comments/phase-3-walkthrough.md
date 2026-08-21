@@ -103,9 +103,18 @@ measurement the plan's two 60% assumptions need.
    NULL, so a requeued thread sends the message you just wrote rather than resending its first
    one. Confirmed delivery stamps `delivered_at`, which is what stops a message going twice; if further
    undelivered human messages remain when the turn resolves, the thread requeues again for the
-   next one. An `answered` thread that gains a human reply goes back to `queued` with its history
-   intact - the `outdated` flag is a column beside the status, so it stays
-   orthogonal and reversible throughout. The reply itself is still written by phase 1's
+   next one. An `answered` or `unanswered` thread that gains a human reply goes back to `queued`
+   with its history intact.
+   - **A reply to the outstanding thread does not requeue it.** Appending is always allowed - a
+     human may answer the comment currently in flight - but the status must not move, because
+     `sending` and `awaiting` are the two statuses the partial unique index is built on. Moving
+     that thread to `queued` would empty the outstanding set while a turn is genuinely live in
+     `pending_turns`, and the walkthrough would release the next comment on top of it, breaking the
+     depth-one guarantee this phase rests on. The message simply waits, and the existing rule above
+     picks it up: when the turn resolves and undelivered human messages remain, the thread requeues
+     for the next one. Editing is a different question and is refused outright while outstanding.
+   The `outdated` flag is a column beside the status, so it stays orthogonal and reversible
+   throughout. The reply itself is still written by phase 1's
    `appendFileCommentMessage`; what this phase adds is the requeue that follows it.
 9. **Routes** for start, pause and resume, each with a `parseBody` schema. Reorder is phase 1's
    route and is reused, not redeclared.
@@ -228,3 +237,13 @@ Phase 4 may rely on, and must not change:
   phase 4 rather than here - the requeue is correct, the transition that overwrote it was not - but
   recorded here because the invariant that a requeued thread keeps its `queue_seq` until its
   follow-up is delivered is this phase's to defend.
+- Self-audit after round 14, looking for the same defect class rather than waiting for it to be
+  reported: **the requeue-on-human-reply rule was unscoped**, in this item and in `plan.md`'s
+  contract 12. The lifecycle diagram only ever drew the arrow from `answered` and `unanswered`, but
+  the prose said "a human reply in a thread re-enters the queue" with no qualification, and nothing
+  stops a human replying to the comment currently in flight. Applied literally that moves a
+  `sending` or `awaiting` thread to `queued`, emptying the outstanding set the partial unique index
+  is built on while a turn is still live in `pending_turns` - so the walkthrough would release the
+  next comment on top of it and the depth-one guarantee would be gone. Appending still always
+  works; the status now stays put, and the existing "requeues when the turn resolves" rule picks
+  the message up.

@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Review MCP timeout investigation</title>
+  <style>
+    :root { color-scheme: light dark; --bg:#eef2f0; --paper:#fffdf8; --ink:#18302b; --muted:#62706c; --line:#cad5d1; --accent:#006b5f; --warn:#9b5a18; --code:#102824; }
+    * { box-sizing:border-box; } body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.58 ui-sans-serif,system-ui,sans-serif; }
+    main { width:min(1040px,calc(100% - 32px)); margin:28px auto 72px; background:var(--paper); border-top:6px solid var(--accent); box-shadow:0 18px 48px #18302b22; }
+    header,section { padding:clamp(24px,5vw,56px); } header { background:var(--ink); color:#f4fbf8; } h1,h2 { line-height:1.08; } h1 { max-width:760px; margin:0; font:600 clamp(2.5rem,7vw,5.4rem)/.95 Georgia,serif; } h2 { margin:0 0 16px; font-family:Georgia,serif; font-size:2rem; }
+    .eyebrow { color:#8ee2d4; font:700 .75rem ui-monospace,monospace; letter-spacing:.15em; text-transform:uppercase; }
+    .answer { max-width:830px; margin:28px 0 0; font-size:1.2rem; } .callout { border-left:5px solid var(--warn); padding:16px 20px; background:#e8b66a22; }
+    code,pre { font-family:ui-monospace,SFMono-Regular,monospace; } code { color:var(--accent); } pre { overflow:auto; padding:16px; background:var(--code); color:#e8f5f1; }
+    table { width:100%; border-collapse:collapse; min-width:680px; } th,td { padding:12px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; } .scroll { overflow:auto; }
+    a { color:var(--accent); } svg { width:100%; height:auto; border:1px solid var(--line); background:#ffffff; } .limits { color:var(--muted); }
+    @media (prefers-color-scheme:dark) { :root { --bg:#0d1715; --paper:#14221f; --ink:#e5f1ed; --muted:#9fb1ab; --line:#35534b; --accent:#75d8c8; --warn:#efb461; --code:#08110f; } header { background:#091713; } svg { background:#f8fbfa; } }
+  </style>
+</head>
+<body><main>
+  <header>
+    <p class="eyebrow">Investigation | 21 Aug 2026</p>
+    <h1>Review answers can outlive their MCP result channel</h1>
+    <p class="answer"><strong>No Mission Control review timer is set to 30 minutes.</strong> The daemon waits in 30-second HTTP long-poll slices. The likely 30-minute boundary is the MCP host's maximum per-tool wait. After that channel is canceled, the dashboard can still persist an answer, but nothing durable carries it back to the session.</p>
+  </header>
+  <section>
+    <h2>Finding</h2>
+    <div class="callout">The current heartbeat reduces idle timeouts, but cannot guarantee an unlimited wait. The MCP specification allows a client to reset its timer on progress and recommends a maximum timeout regardless of progress. Mission Control currently documents the reset as mandatory and indefinite, which is not the protocol contract.</div>
+    <div class="scroll"><table>
+      <thead><tr><th>Layer</th><th>Observed behavior</th><th>Evidence</th></tr></thead>
+      <tbody>
+        <tr><td>Daemon long poll</td><td>One wait lasts 30 seconds, then the MCP child polls again.</td><td><a href="../../../src/server/routes.ts"><code>src/server/routes.ts:397,2867</code></a></td></tr>
+        <tr><td>MCP child</td><td>Loops until resolution, emits progress only when the client supplied a progress token, and stops when the call signal is aborted.</td><td><a href="../../../src/mcp/server.ts"><code>src/mcp/server.ts:83-150</code></a></td></tr>
+        <tr><td>Review state</td><td>The human answer is durable and waiters are released, but no fallback delivery is created if no MCP waiter remains.</td><td><a href="../../../src/server/reviews.ts"><code>src/server/reviews.ts:278-300, 390-430</code></a></td></tr>
+        <tr><td>Codex host</td><td>Official OpenAI documentation exposes <code>tool_timeout_sec</code> and states a 60-second default. Mission Control does not currently override it on launch.</td><td><a href="https://learn.chatgpt.com/docs/config-file/config-reference">OpenAI configuration reference</a>; <a href="../../../src/server/mission-mcp.ts"><code>src/server/mission-mcp.ts:842-889</code></a></td></tr>
+        <tr><td>MCP contract</td><td>Progress may reset a request timeout, but clients should still enforce a maximum.</td><td><a href="https://modelcontextprotocol.io/specification/2025-06-18/basic/lifecycle">MCP lifecycle specification</a></td></tr>
+      </tbody>
+    </table></div>
+  </section>
+  <section>
+    <h2>Failure flow</h2>
+    <svg viewBox="0 0 980 280" role="img" aria-labelledby="flow-title flow-desc">
+      <title id="flow-title">Review answer delivery failure after MCP cancellation</title>
+      <desc id="flow-desc">The agent calls the Mission Control MCP server, which waits through the daemon. The MCP host cancels the call at its maximum timeout. A later dashboard answer reaches the database but no longer reaches the agent.</desc>
+      <defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#006b5f"/></marker></defs>
+      <g font-family="system-ui,sans-serif" font-size="15" fill="#18302b">
+        <rect x="28" y="72" width="170" height="72" rx="8" fill="#dcefe9" stroke="#006b5f"/><text x="113" y="102" text-anchor="middle" font-weight="700">Agent session</text><text x="113" y="125" text-anchor="middle">blocking tool call</text>
+        <rect x="272" y="72" width="180" height="72" rx="8" fill="#dcefe9" stroke="#006b5f"/><text x="362" y="102" text-anchor="middle" font-weight="700">MCP child</text><text x="362" y="125" text-anchor="middle">30s long-poll loop</text>
+        <rect x="526" y="72" width="180" height="72" rx="8" fill="#dcefe9" stroke="#006b5f"/><text x="616" y="102" text-anchor="middle" font-weight="700">Daemon</text><text x="616" y="125" text-anchor="middle">durable review row</text>
+        <rect x="780" y="72" width="170" height="72" rx="8" fill="#fff0d9" stroke="#9b5a18"/><text x="865" y="102" text-anchor="middle" font-weight="700">Dashboard</text><text x="865" y="125" text-anchor="middle">human answer</text>
+        <line x1="198" y1="108" x2="272" y2="108" stroke="#006b5f" stroke-width="3" marker-end="url(#arrow)"/><line x1="452" y1="108" x2="526" y2="108" stroke="#006b5f" stroke-width="3" marker-end="url(#arrow)"/><line x1="780" y1="108" x2="706" y2="108" stroke="#006b5f" stroke-width="3" marker-end="url(#arrow)"/>
+        <path d="M362 156 C362 230 113 230 113 156" fill="none" stroke="#b43d32" stroke-width="4" stroke-dasharray="8 6"/><text x="238" y="250" text-anchor="middle" fill="#9b2f28" font-weight="700">host cancels; result channel is gone</text>
+        <path d="M616 156 C616 205 830 205 830 156" fill="none" stroke="#9b5a18" stroke-width="3"/><text x="724" y="224" text-anchor="middle" fill="#7d4814">answer persists, but has no fallback route</text>
+      </g>
+    </svg>
+  </section>
+  <section>
+    <h2>Solution options</h2>
+    <ol>
+      <li><strong>Durable continuation fallback, recommended.</strong> When the MCP host cancels a blocking review call, persist that the result channel detached. When the review is later resolved, atomically enqueue the answer through the existing pending-turn outbox. This is client-independent and survives daemon restarts.</li>
+      <li><strong>Raise host timeouts.</strong> Add an explicit long <code>tool_timeout_sec</code> for Codex launches and equivalent supported settings elsewhere. This is small, but only moves the loss boundary and cannot promise delivery.</li>
+      <li><strong>Replay on identical retry.</strong> Reuse a recently answered identical review when the model retries. This is useful defense in depth, but it depends on a retry and risks confusing a legitimate repeated question without a stable idempotency key.</li>
+    </ol>
+  </section>
+  <section class="limits">
+    <h2>Limits</h2>
+    <p>The repository establishes the 30-second daemon slice and the missing fallback. It does not establish which specific host produced the operator's observed 30-minute boundary. No operator database or live session state was opened. Official OpenAI documentation confirms a configurable Codex per-tool timeout but does not document a 30-minute default.</p>
+  </section>
+</main></body></html>

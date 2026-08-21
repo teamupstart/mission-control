@@ -54,6 +54,39 @@ export function isHumanResolvedReview(review: ReviewItem): boolean {
   return review.resolvedBy === "human" && HUMAN_REVIEW_STATUSES.has(review.status);
 }
 
+/**
+ * The semantic result a blocking review tool hands back to its caller.
+ *
+ * Shared by the MCP fast path and the durable continuation fallback. If these were two
+ * spellings, a timeout would change the meaning of the human's answer depending only on
+ * which transport happened to deliver it.
+ */
+export function reviewToolResult(review: ReviewItem): { text: string; isError: boolean } {
+  if (review.status === "orphaned") {
+    return { text: "Review channel went away before a human answered.", isError: true };
+  }
+  if (review.kind === "diff") {
+    const verdict = review.status === "approved" ? "APPROVED" : "CHANGES REQUESTED";
+    const note = review.response ? `\nReviewer note: ${review.response}` : "";
+    return { text: `${verdict}${note}`, isError: false };
+  }
+  if (review.status === "dismissed") {
+    return {
+      text:
+        review.kind === "plan-decisions"
+          ? "Decision request dismissed without a response."
+          : "Input request dismissed without a response.",
+      isError: false,
+    };
+  }
+  return {
+    text:
+      review.response ??
+      (review.kind === "plan-decisions" ? "(no selections given)" : "(no answer given)"),
+    isError: false,
+  };
+}
+
 // ---- how a filled-in form reads as text, for both sides ----
 //
 // These moved out of `web/lib/reviews.ts` when the daemon acquired a second writer of

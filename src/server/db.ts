@@ -532,15 +532,17 @@ export function openDb(): DatabaseSync {
   db.exec("PRAGMA foreign_keys = ON;");
   db.exec(`
     CREATE TABLE IF NOT EXISTS reviews (
-      id          TEXT PRIMARY KEY,
-      session_id  TEXT NOT NULL,
-      kind        TEXT NOT NULL,
-      title       TEXT NOT NULL,
-      body        TEXT NOT NULL,
-      status      TEXT NOT NULL,
-      response    TEXT,
-      created_at  INTEGER NOT NULL,
-      resolved_at INTEGER
+      id                     TEXT PRIMARY KEY,
+      session_id             TEXT NOT NULL,
+      kind                   TEXT NOT NULL,
+      title                  TEXT NOT NULL,
+      body                   TEXT NOT NULL,
+      status                 TEXT NOT NULL,
+      response               TEXT,
+      created_at             INTEGER NOT NULL,
+      resolved_at            INTEGER,
+      mcp_wait_detached_at   INTEGER,
+      continuation_queued_at INTEGER
     );
     CREATE INDEX IF NOT EXISTS idx_reviews_session ON reviews(session_id);
     CREATE INDEX IF NOT EXISTS idx_reviews_status ON reviews(status);
@@ -3149,6 +3151,13 @@ function migrate(d: DatabaseSync): void {
   // operator on the strength of its status alone.
   addColumn(d, "reviews", "resolved_by", "TEXT");
 
+  // A blocking MCP request is only a transport, not durable ownership of the answer. Once
+  // its host cancels the request, `mcp_wait_detached_at` records that a later human answer
+  // must leave through the pending-turn outbox instead. `continuation_queued_at` is the
+  // transaction guard that makes that handoff idempotent across daemon restarts.
+  addColumn(d, "reviews", "mcp_wait_detached_at", "INTEGER");
+  addColumn(d, "reviews", "continuation_queued_at", "INTEGER");
+
   // `resolved_by`: who decided the episode, split back out of `sent_by`. Unlike the
   // ALTERs above this covers a window rather than a shipped release - `foreman_episodes`
   // is new enough that the only dbs carrying it are the ones this feature was developed
@@ -3567,6 +3576,8 @@ interface ReviewRow {
   resolved_by: string | null;
   created_at: number;
   resolved_at: number | null;
+  mcp_wait_detached_at: number | null;
+  continuation_queued_at: number | null;
 }
 
 function rowToReview(r: ReviewRow): ReviewItem {
@@ -3645,6 +3656,106 @@ export function updateReviewStatus(
         WHERE id = ?`,
     )
     .run(status, response, resolvedAt, jsonArrayColumn(selections), resolvedBy, id);
+}
+
+/**
+ * Record that the MCP host stopped waiting for this review's tool result.
+ *
+ * Idempotent because cancellation can be observed both by the MCP child and by startup
+ * recovery. The first timestamp is the useful one: it says when the direct result channel
+ * ceased to be authoritative.
+ */
+export function markReviewWaitDetached(id: string, at: number): ReviewItem | null {
+  const d = openDb();
+  d.prepare(
+    `UPDATE reviews
+        SET mcp_wait_detached_at = COALESCE(mcp_wait_detached_at, ?)
+      WHERE id = ?`,
+  ).run(at, id);
+  const row = d.prepare(`SELECT * FROM reviews WHERE id = ?`).get(id) as unknown as
+    | ReviewRow
+    | undefined;
+  return row ? rowToReview(row) : null;
+}
+
+/** Human answers that have lost their MCP result channel and still need a session turn. */
+export function loadReviewContinuationCandidates(id?: string): ReviewItem[] {
+  const suffix = id === undefined ? "" : " AND id = ?";
+  const rows = openDb()
+    .prepare(
+      `SELECT * FROM reviews
+        WHERE mcp_wait_detached_at IS NOT NULL
+          AND continuation_queued_at IS NULL
+          AND resolved_by = 'human'
+          AND status IN ('approved', 'rejected', 'answered', 'dismissed')${suffix}
+        ORDER BY resolved_at ASC, created_at ASC`,
+    )
+    .all(...(id === undefined ? [] : [id])) as unknown as ReviewRow[];
+  return rows.map(rowToReview);
+}
+
+/**
+ * Atomically hand one detached review answer to the durable human-turn outbox.
+ *
+ * The review stamp and pending-turn insert are one transaction. A daemon crash can leave
+ * neither or both, never a review claiming delivery with no queued turn and never two turns
+ * for one review after startup reconciliation retries it.
+ */
+export function createReviewContinuationPendingTurn(input: {
+  reviewId: string;
+  noteKey: string;
+  text: string;
+  now: number;
+}): PendingTurn | null {
+  const d = openDb();
+  d.exec("BEGIN IMMEDIATE");
+  try {
+    const eligible = d
+      .prepare(
+        `SELECT 1 AS present FROM reviews
+          WHERE id = ?
+            AND mcp_wait_detached_at IS NOT NULL
+            AND continuation_queued_at IS NULL
+            AND resolved_by = 'human'
+            AND status IN ('approved', 'rejected', 'answered', 'dismissed')`,
+      )
+      .get(input.reviewId) as unknown as { present: number } | undefined;
+    if (!eligible) {
+      d.exec("COMMIT");
+      return null;
+    }
+    const sequence = d
+      .prepare(`SELECT COALESCE(MAX(seq), -1) + 1 AS seq FROM pending_turns WHERE note_key = ?`)
+      .get(input.noteKey) as unknown as { seq: number };
+    const pendingTurnId = `review-continuation:${input.reviewId}`;
+    d.prepare(
+      `INSERT INTO pending_turns
+         (id, note_key, seq, text, state, revision, created_at, updated_at, claimed_at, last_error)
+       VALUES (?, ?, ?, ?, 'queued', 0, ?, ?, NULL, NULL)`,
+    ).run(pendingTurnId, input.noteKey, sequence.seq, input.text, input.now, input.now);
+    d.prepare(`UPDATE reviews SET continuation_queued_at = ? WHERE id = ?`).run(
+      input.now,
+      input.reviewId,
+    );
+    d.exec("COMMIT");
+    return {
+      id: pendingTurnId,
+      noteKey: input.noteKey,
+      seq: sequence.seq,
+      text: input.text,
+      state: "queued",
+      revision: 0,
+      createdAt: input.now,
+      updatedAt: input.now,
+      claimedAt: null,
+      lastError: null,
+    };
+  } catch (error) {
+    try {
+      d.exec("ROLLBACK");
+    } catch {}
+    throw error;
+  }
 }
 
 /** Store a JSON array column, collapsing both "absent" and "empty" to NULL. */

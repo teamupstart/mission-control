@@ -2,6 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { reviewToolResult } from "../src/shared/review-item.ts";
+import type { ReviewItem, ReviewKind } from "../src/shared/types.ts";
 
 const source = readFileSync(fileURLToPath(new URL("../src/mcp/server.ts", import.meta.url)), "utf8");
 
@@ -14,26 +16,30 @@ function toolSource(name: string, nextName: string): string {
 }
 
 const cases = [
-  ["request_plan_decisions", "request_review", "(no selections given)"],
-  ["request_review", "create_task", 'status === "approved" ? "APPROVED" : "CHANGES REQUESTED"'],
-  ["request_input", "report_status", "(no answer given)"],
-] as const;
+  ["request_plan_decisions", "request_review", "plan-decisions"],
+  ["request_review", "create_task", "diff"],
+  ["request_input", "report_status", "input"],
+] as const satisfies ReadonlyArray<readonly [string, string, ReviewKind]>;
 
-for (const [name, nextName, normalOutcome] of cases) {
+for (const [name, nextName, kind] of cases) {
   test(`${name} reports orphaning as an unanswered error`, () => {
     const body = toolSource(name, nextName);
-    const branch = body.indexOf('if (review.status === "orphaned")');
-    const fallback = body.indexOf(normalOutcome);
-
-    assert.notEqual(branch, -1, "orphaned status is not handled");
-    assert.notEqual(fallback, -1, "normal outcome translation is missing");
-    assert.ok(branch < fallback, "orphaned status falls through to a normal human outcome");
-
-    const result = body.slice(branch, body.indexOf("\n      }", branch));
-    assert.match(
-      result,
-      /return textResult\("Review channel went away before a human answered\.", true\);/,
-    );
+    assert.match(body, /reviewToolResult\(review\)/, "the tool bypasses the shared translation");
+    const result = reviewToolResult({
+      id: "review-1",
+      sessionId: "session-1",
+      kind,
+      title: "review",
+      body: "body",
+      status: "orphaned",
+      response: null,
+      createdAt: 1,
+      resolvedAt: 2,
+    } satisfies ReviewItem);
+    assert.deepEqual(result, {
+      text: "Review channel went away before a human answered.",
+      isError: true,
+    });
   });
 }
 
@@ -45,8 +51,9 @@ for (const [name, nextName, normalOutcome] of cases) {
 // long - it abandons the tool call on its own timeout and hands the model an error - and the
 // model's recovery is to ask again, which is where a second identical row came from.
 // `ReviewManager.create` is the floor under that (it re-attaches an identical pending ask),
-// and this is the half that stops the retry happening at all: a progress notification, which
-// a receiving client MUST use to restart its timeout for the request.
+// and this is the half that delays the retry when a client elects to reset its timeout on a
+// progress notification. A protocol-compliant maximum can still cancel the request, so the
+// source must also notify the daemon that the result channel detached.
 //
 // Scanned rather than driven, like the cases above, because importing `src/mcp/server.ts`
 // stands a whole MCP server up on stdio. What a scan can still pin is the defect actually
@@ -62,6 +69,17 @@ test("waitForResolution reports in, and gives up when the client cancels", () =>
   assert.match(wait, /notifications\/progress/, "nothing keeps the client's timeout at bay");
   assert.match(wait, /call\?\.signal\.aborted/, "a cancelled call still polls the daemon");
   assert.match(wait, /call\?\.signal\)/, "the in-flight long poll is not cancelled with it");
+  assert.match(wait, /\/detach/, "a cancelled call can still strand the human's answer");
+  assert.match(
+    wait,
+    /const response = await http\([\s\S]*?if \(!response\.ok\)[\s\S]*?detachFailure = detachError;[\s\S]*?throw new AggregateError/,
+    "a rejected detach response is retained instead of being discarded as a successful handoff",
+  );
+  assert.match(
+    wait,
+    /if \(review\.status !== "pending"\) \{\s*\/\/[\s\S]*?if \(call\?\.signal\.aborted\)[\s\S]*?return review;/,
+    "cancellation after a resolved long poll bypasses the durable detach handoff",
+  );
 });
 
 for (const [name, nextName] of [

@@ -3,6 +3,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { ReviewItem } from "@shared/types.ts";
+import { reviewToolResult } from "@shared/review-item.ts";
 import { ENSEMBLE_LIMITS } from "@shared/ensemble.ts";
 import { SCOUT_REPORT_PATH_SHAPE, SCOUT_SUBMISSION_LIMITS } from "@shared/scouts.ts";
 import {
@@ -104,15 +105,15 @@ type BlockingCall = {
  * an error for a question the operator can still see and still answer. What the model does
  * next is ask again, which is where the duplicate cards came from.
  *
- * A progress notification is the protocol's own answer to this: a client that receives one
- * MUST restart its timeout for that request, so a wait that keeps reporting in is never
- * abandoned for taking too long. It is only ever sent against the `progressToken` the client
- * itself supplied - a client that wants no progress sends none, and gets none.
+ * A progress notification is the protocol's first answer to this: a client MAY restart its
+ * timeout for that request, while still enforcing a maximum. It is only ever sent against
+ * the `progressToken` the client itself supplied - a client that wants no progress sends
+ * none, and gets none. The durable answer after that maximum is the detach fallback below.
  *
  * Best-effort on purpose. No token, no `sendNotification`, or a notification that fails to
- * send, and the wait carries on exactly as it did before; the failure this guards is a slow
- * human, and dropping a heartbeat must never be worse than not having one. The floor under
- * it is `ReviewManager.create`, which makes the retry harmless when this does not land.
+ * send, and the wait carries on exactly as it did before. `ReviewManager.create` keeps a
+ * retry from duplicating the card, while `/detach` makes a later answer resumable after the
+ * host cancels this result channel entirely.
  */
 function heartbeat(call?: BlockingCall): () => void {
   if (!call) return () => {};
@@ -140,13 +141,50 @@ function heartbeat(call?: BlockingCall): () => void {
  */
 async function waitForResolution(id: string, call?: BlockingCall): Promise<ReviewItem> {
   const beat = heartbeat(call);
-  for (;;) {
-    if (call?.signal.aborted) throw new Error("the client cancelled this request");
-    const res = await http(`/mcp/reviews/${id}/wait`, "GET", undefined, false, call?.signal);
-    if (!res.ok) throw new Error(`harness wait ${res.status}`);
-    const review = (await res.json()) as ReviewItem;
-    if (review.status !== "pending") return review;
-    beat();
+  try {
+    for (;;) {
+      if (call?.signal.aborted) throw new Error("the client cancelled this request");
+      const res = await http(`/mcp/reviews/${id}/wait`, "GET", undefined, false, call?.signal);
+      if (!res.ok) throw new Error(`harness wait ${res.status}`);
+      const review = (await res.json()) as ReviewItem;
+      if (review.status !== "pending") {
+        // The host can cancel after the daemon has answered the long poll but before this
+        // result crosses the MCP response boundary. Recheck at the fast-path handoff so that
+        // cancellation takes the detach path below instead of silently losing the answer.
+        if (call?.signal.aborted) throw new Error("the client cancelled this request");
+        return review;
+      }
+      beat();
+    }
+  } catch (error) {
+    let detachFailure: unknown = null;
+    try {
+      const response = await http(
+        `/mcp/reviews/${id}/detach`,
+        "POST",
+        { env: ENV, sessionId: SESSION_ID, cwd: process.cwd() },
+        false,
+        AbortSignal.timeout(2_000),
+      );
+      if (!response.ok) {
+        throw new Error(`harness detach ${response.status}: ${await response.text()}`);
+      }
+    } catch (detachError) {
+      // Startup recovery still covers a daemon restart. Retain every other handoff failure
+      // in the returned error so a running daemon cannot silently lose the detached wait.
+      detachFailure = detachError;
+    }
+    if (detachFailure) {
+      const detail = detachFailure instanceof Error ? detachFailure.message : String(detachFailure);
+      throw new AggregateError(
+        [error, detachFailure],
+        `review wait ended and its durable detach failed: ${detail}`,
+      );
+    }
+    if (call?.signal.aborted) {
+      throw new Error("the client cancelled this request");
+    }
+    throw error;
   }
 }
 
@@ -236,13 +274,8 @@ server.registerTool(
     try {
       const id = await createReview("plan-decisions", title, plan, decisions);
       const review = await waitForResolution(id, extra);
-      if (review.status === "dismissed") {
-        return textResult("Decision request dismissed without a response.");
-      }
-      if (review.status === "orphaned") {
-        return textResult("Review channel went away before a human answered.", true);
-      }
-      return textResult(review.response ?? "(no selections given)");
+      const result = reviewToolResult(review);
+      return textResult(result.text, result.isError);
     } catch (err) {
       return textResult(`Could not reach Mission Control: ${String(err)}`, true);
     }
@@ -264,12 +297,8 @@ server.registerTool(
     try {
       const id = await createReview("diff", title, diff);
       const review = await waitForResolution(id, extra);
-      if (review.status === "orphaned") {
-        return textResult("Review channel went away before a human answered.", true);
-      }
-      const verdict = review.status === "approved" ? "APPROVED" : "CHANGES REQUESTED";
-      const note = review.response ? `\nReviewer note: ${review.response}` : "";
-      return textResult(`${verdict}${note}`);
+      const result = reviewToolResult(review);
+      return textResult(result.text, result.isError);
     } catch (err) {
       return textResult(`Could not reach Mission Control: ${String(err)}`, true);
     }
@@ -420,13 +449,8 @@ server.registerTool(
       // unchanged, which keeps the equal case genuinely equal and still de-duplicated.
       const id = await createReview("input", titleLine(question), question, decisions);
       const review = await waitForResolution(id, extra);
-      if (review.status === "dismissed") {
-        return textResult("Input request dismissed without a response.");
-      }
-      if (review.status === "orphaned") {
-        return textResult("Review channel went away before a human answered.", true);
-      }
-      return textResult(review.response ?? "(no answer given)");
+      const result = reviewToolResult(review);
+      return textResult(result.text, result.isError);
     } catch (err) {
       return textResult(`Could not reach Mission Control: ${String(err)}`, true);
     }

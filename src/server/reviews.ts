@@ -7,14 +7,21 @@ import type {
   ReviewKind,
   ReviewStatus,
 } from "@shared/types.ts";
-import { isHumanResolvedReview } from "@shared/review-item.ts";
+import { isHumanResolvedReview, reviewToolResult } from "@shared/review-item.ts";
 import type { Registry } from "./registry.ts";
-import { inTransaction, insertReview, updateReviewStatus } from "./db.ts";
+import {
+  inTransaction,
+  insertReview,
+  loadReviewContinuationCandidates,
+  markReviewWaitDetached,
+  updateReviewStatus,
+} from "./db.ts";
 import { unref } from "./util/timers.ts";
 
 export type ReviewAction = "approve" | "reject" | "answer" | "dismiss";
 
 type Waiter = (r: ReviewItem) => void;
+type ContinuationDelivery = (review: ReviewItem, text: string) => boolean;
 
 export class ReviewResolutionError extends Error {}
 
@@ -48,6 +55,8 @@ function canonical(value: unknown): string {
 
 export class ReviewManager {
   private waiters = new Map<string, Set<Waiter>>();
+  private continuationDelivery: ContinuationDelivery | null = null;
+  private owedContinuationSessions = new Set<string>();
 
   constructor(private registry: Registry) {
     // A review is durable state BOUND TO A SESSION, so it needs the same two halves every
@@ -64,12 +73,86 @@ export class ReviewManager {
     // question on one hiccuping sweep, and there is no way back from a terminal status.
     this.registry.subscribe((e) => {
       if (e.type === "session_remove") this.orphanReviewsFor(e.id);
+      if (e.type === "session_upsert" && this.owedContinuationSessions.has(e.session.id)) {
+        this.retryContinuations(e.session.id);
+      }
     });
     // And one whose session went away while the daemon was DOWN is in no map at all until
     // discovery rebuilds it, so the same reconciliation waits for the first COMPLETED
     // sweep. Running it any earlier would orphan the questions of every agent that
     // outlived the restart, which are exactly the ones still worth answering.
     this.registry.onSessionsObserved(() => this.orphanReviewsWithNoLiveSession());
+  }
+
+  /**
+   * Arm the durable fallback after the daemon has won its port and the pending-turn owner
+   * has started.
+   *
+   * Every pending review restored at process startup has lost its former stdio request:
+   * that MCP child was connected to the daemon process that stopped. Marking those rows
+   * detached makes an answer after restart resumable instead of merely historical.
+   */
+  startContinuationRecovery(deliver: ContinuationDelivery): void {
+    this.continuationDelivery = deliver;
+    const now = Date.now();
+    for (const review of this.registry.pendingReviews()) markReviewWaitDetached(review.id, now);
+    for (const review of loadReviewContinuationCandidates()) this.deliverContinuation(review);
+  }
+
+  /**
+   * The MCP host canceled the blocking request. Persist the transport handoff, then deliver
+   * immediately when the human answer won the race and is already stored.
+   */
+  detachWait(id: string, sessionId: string): ReviewItem | null {
+    const current = this.registry.getReview(id);
+    if (!current || current.sessionId !== sessionId) return null;
+    const review = markReviewWaitDetached(id, Date.now());
+    const candidate = loadReviewContinuationCandidates(id)[0];
+    if (candidate) this.deliverContinuation(candidate);
+    return review;
+  }
+
+  private continuationText(review: ReviewItem): string {
+    const result = reviewToolResult(review);
+    return (
+      `Mission Control review ${review.id} was answered after its MCP wait ended. ` +
+      `Treat this as the result of your earlier review tool call:\n\n${result.text}`
+    );
+  }
+
+  private deliverContinuation(review: ReviewItem): void {
+    if (!this.continuationDelivery) {
+      this.owedContinuationSessions.add(review.sessionId);
+      return;
+    }
+
+    let delivered = false;
+    try {
+      delivered = this.continuationDelivery(review, this.continuationText(review));
+    } catch (error) {
+      console.error(`Failed to queue review continuation ${review.id}:`, error);
+    }
+    if (!delivered) {
+      this.owedContinuationSessions.add(review.sessionId);
+      return;
+    }
+
+    const stillOwed = loadReviewContinuationCandidates().some(
+      (candidate) => candidate.sessionId === review.sessionId,
+    );
+    if (stillOwed) this.owedContinuationSessions.add(review.sessionId);
+    else this.owedContinuationSessions.delete(review.sessionId);
+  }
+
+  private retryContinuations(sessionId: string): void {
+    const candidates = loadReviewContinuationCandidates().filter(
+      (review) => review.sessionId === sessionId,
+    );
+    if (candidates.length === 0) {
+      this.owedContinuationSessions.delete(sessionId);
+      return;
+    }
+    for (const review of candidates) this.deliverContinuation(review);
   }
 
   /**
@@ -99,10 +182,9 @@ export class ReviewManager {
    * refuses to collapse are the two it must: a different session's, and one whose offered
    * options differ, since the options are what the human is actually choosing between.
    *
-   * This is a floor, not the fix for the timeout itself - it makes a retry HARMLESS rather
-   * than preventing one. The MCP side keeps the call alive so the retry mostly does not
-   * happen (`src/mcp/server.ts`), but that depends on a client honouring progress
-   * notifications, and this does not depend on anything.
+   * This is one floor, not the fix for the timeout itself. The MCP side reports progress to
+   * clients that ask for it and persists detachment when a client's maximum still expires.
+   * A retry remains harmless, while a later answer no longer depends on a retry occurring.
    */
   create(
     sessionId: string,
@@ -404,6 +486,10 @@ export class ReviewManager {
       this.registry.retireNoteAnsweredByYou(cur.sessionId, `review:${cur.id}`);
     }
     this.markSteered(updated);
+    if (isHumanResolvedReview(updated)) {
+      const candidate = loadReviewContinuationCandidates(updated.id)[0];
+      if (candidate) this.deliverContinuation(candidate);
+    }
 
     const set = this.waiters.get(cur.id);
     if (set) {

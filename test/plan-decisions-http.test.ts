@@ -105,6 +105,48 @@ test("a plan-decisions review round-trips create -> resolve -> wait over HTTP", 
   assert.equal(waited.response, answer, "the agent receives exactly what the human submitted");
 });
 
+test("the MCP detach route is authenticated and bound to the review's session", async () => {
+  const created = await app.request("/mcp/reviews", {
+    method: "POST",
+    headers: authed,
+    body: JSON.stringify({
+      env: { tmuxPane: "%3" },
+      cwd: "/repo/app",
+      kind: "input",
+      title: "Will this arrive?",
+      body: "Will this arrive?",
+    }),
+  });
+  const { id } = (await created.json()) as { id: string };
+
+  const wrongSession = await app.request(`/mcp/reviews/${id}/detach`, {
+    method: "POST",
+    headers: authed,
+    body: JSON.stringify({ env: { tmuxPane: "%999" }, cwd: "/repo/elsewhere" }),
+  });
+  assert.equal(wrongSession.status, 404);
+
+  const detached = await app.request(`/mcp/reviews/${id}/detach`, {
+    method: "POST",
+    headers: authed,
+    body: JSON.stringify({ env: { tmuxPane: "%3" }, cwd: "/repo/app" }),
+  });
+  assert.equal(detached.status, 200);
+  assert.deepEqual(await detached.json(), { id, detached: true });
+
+  const row = openDb()
+    .prepare(`SELECT mcp_wait_detached_at FROM reviews WHERE id = ?`)
+    .get(id) as unknown as { mcp_wait_detached_at: number | null };
+  assert.ok(row.mcp_wait_detached_at, "the transport handoff is durable");
+
+  const cleanup = await app.request(`/api/reviews/${id}/resolve`, {
+    method: "POST",
+    headers: authed,
+    body: JSON.stringify({ action: "answer", response: "yes" }),
+  });
+  assert.equal(cleanup.status, 200);
+});
+
 test("submitted and dismissed decision sets both leave Needs you when none remain", async () => {
   async function create(title: string): Promise<string> {
     const response = await app.request("/mcp/reviews", {

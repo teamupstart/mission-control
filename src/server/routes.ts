@@ -19,6 +19,7 @@ import {
   ArchiveSessionActionSchema,
   CostConfigPatchSchema,
   CreateReviewSchema,
+  DetachReviewWaitSchema,
   DispatchBacklogTaskSchema,
   DispatchSchema,
   ResolveRepoSchema,
@@ -2869,6 +2870,21 @@ export function buildApp(
     const review = await reviews.wait(c.req.param("id"), WAIT_TIMEOUT_MS);
     if (!review) return c.json({ error: "no such review" }, 404);
     return c.json(review);
+  });
+
+  app.post("/mcp/reviews/:id/detach", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, DetachReviewWaitSchema);
+    if (!parsed.ok) return parsed.res;
+    const session = registry.findSessionByEnv(
+      parsed.data.env,
+      parsed.data.sessionId,
+      parsed.data.cwd,
+    );
+    if (!session) return c.json({ error: "no matching session" }, 404);
+    const review = reviews.detachWait(c.req.param("id"), session.id);
+    if (!review) return c.json({ error: "no such review for this session" }, 404);
+    return c.json({ id: review.id, detached: true });
   });
 
   app.post("/mcp/status", async (c) => {

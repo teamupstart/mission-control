@@ -36,7 +36,13 @@ const { Registry } = await import("../src/server/registry.ts");
 const { ReviewManager } = await import("../src/server/reviews.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
 const { QueueManager } = await import("../src/server/queue.ts");
-const { buildApp } = await import("../src/server/routes.ts");
+const { buildApp, WORKFLOW_EVIDENCE_BODY_MAX_BYTES } = await import("../src/server/routes.ts");
+const {
+  JSON_UTF8_MAX_BYTES_PER_CHAR,
+  WORKFLOW_IMAGE_LIMITS,
+  WORKFLOW_LIMITS,
+  WORKFLOW_TEXT_EVIDENCE_LIMITS,
+} = await import("../src/shared/workflow.ts");
 const {
   captureSubmissionImages,
   captureSubmissionTextArtifacts,
@@ -252,6 +258,33 @@ test("workflow image contracts default historical context and bind image citatio
       repositoryScope: "repo-01",
     }],
   }).success, false);
+});
+
+test("workflow evidence HTTP sizing reserves metadata for every command item", () => {
+  // The output, image-locator, text-locator, and envelope terms were already present. What must
+  // remain additional is the worst-case wire representation of every command item's metadata.
+  // Zod counts code units, while a caller may spell each one as a six-byte JSON escape.
+  const existingTerms =
+    WORKFLOW_TEXT_EVIDENCE_LIMITS.maxAggregateBytes * JSON_UTF8_MAX_BYTES_PER_CHAR
+    + (WORKFLOW_IMAGE_LIMITS.locatorJsonBytes + WORKFLOW_TEXT_EVIDENCE_LIMITS.locatorJsonBytes)
+      * JSON_UTF8_MAX_BYTES_PER_CHAR
+    + 32 * 1024;
+  const everyCommandItemMetadata =
+    WORKFLOW_TEXT_EVIDENCE_LIMITS.maxCount
+    * (
+      (
+        WORKFLOW_TEXT_EVIDENCE_LIMITS.clientItemIdChars
+        + WORKFLOW_TEXT_EVIDENCE_LIMITS.captionChars
+        + WORKFLOW_LIMITS.checkCommandLength
+      ) * JSON_UTF8_MAX_BYTES_PER_CHAR
+      + 512
+    );
+
+  assert.equal(
+    WORKFLOW_EVIDENCE_BODY_MAX_BYTES - existingTerms,
+    everyCommandItemMetadata,
+    "the stream guard must not reserve command metadata for only one item",
+  );
 });
 
 test("gitignored UTF-8 logs preserve BOM bytes when digest-bound and submission-frozen", async () => {

@@ -459,10 +459,28 @@ const REVISION_ONLY_BODY_MAX_BYTES = 1024;
  */
 const PERSONA_IMPORT_BODY_MAX_BYTES = 32 * 1024;
 const WORKFLOW_BODY_MAX_BYTES = WORKFLOW_LIMITS.graphJsonBytes * 6 + 32 * 1024;
-const WORKFLOW_EVIDENCE_BODY_MAX_BYTES =
+/**
+ * Direct command evidence carries bounded content plus metadata for every item. Reserve the
+ * complete metadata envelope separately for the full accepted command count instead of relying
+ * on the aggregate content and locator terms. This deliberately gives the command string
+ * overlapping headroom. The fixed 512-byte allowance per item covers the bounded non-string
+ * fields, property names, and punctuation.
+ */
+const WORKFLOW_COMMAND_EVIDENCE_METADATA_MAX_BYTES =
+  WORKFLOW_TEXT_EVIDENCE_LIMITS.maxCount
+  * (
+    (
+      WORKFLOW_TEXT_EVIDENCE_LIMITS.clientItemIdChars
+      + WORKFLOW_TEXT_EVIDENCE_LIMITS.captionChars
+      + WORKFLOW_LIMITS.checkCommandLength
+    ) * JSON_UTF8_MAX_BYTES_PER_CHAR
+    + 512
+  );
+export const WORKFLOW_EVIDENCE_BODY_MAX_BYTES =
   WORKFLOW_TEXT_EVIDENCE_LIMITS.maxAggregateBytes * JSON_UTF8_MAX_BYTES_PER_CHAR
   + (WORKFLOW_IMAGE_LIMITS.locatorJsonBytes + WORKFLOW_TEXT_EVIDENCE_LIMITS.locatorJsonBytes)
     * JSON_UTF8_MAX_BYTES_PER_CHAR
+  + WORKFLOW_COMMAND_EVIDENCE_METADATA_MAX_BYTES
   + 32 * 1024;
 
 /**

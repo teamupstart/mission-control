@@ -17,6 +17,9 @@ import type {
   ForemanEpisode,
   ForemanEpisodeSummary,
   InspectorComment,
+  FileCommentMessage,
+  FileCommentReview,
+  FileCommentThread,
   InspectorCommentStatus,
   InspectorFailKind,
   InspectorInspection,
@@ -55,6 +58,19 @@ import { DEFAULT_TASK_KIND, TASK_KINDS } from "@shared/types.ts";
 import { readPersistedEnum } from "@shared/schedules.ts";
 import { HUMAN_REVIEW_STATUSES, isHumanResolvedReview } from "@shared/review-item.ts";
 import { IN_FLIGHT_ITEM_STATES, TERMINAL_ITEM_STATES } from "@shared/queue.ts";
+import {
+  FILE_COMMENT_MESSAGES_PER_THREAD_MAX,
+  FILE_COMMENT_THREAD_MESSAGE_CAP,
+  FILE_COMMENT_THREADS_PER_SESSION_MAX,
+  OUTSTANDING_THREAD_STATUSES,
+  REQUEUEABLE_THREAD_STATUSES,
+  holdsQueuePosition,
+  isFileCommentThreadStatus,
+  type FileCommentAuthor,
+  type FileCommentReviewState,
+  type FileCommentThreadStatus,
+} from "@shared/file-comments.ts";
+import { isFileCommentSurface, type FileCommentSurface } from "@shared/file-comment-anchor.ts";
 import { readCheapAction, readDivergence, readSkipReason } from "@shared/foreman.ts";
 import { askPreviewForWire } from "@shared/foreman-ask.ts";
 import type { CheapAction, Divergence, SkipReason } from "@shared/foreman.ts";
@@ -2740,8 +2756,104 @@ export function openDb(): DatabaseSync {
     -- long-lived install has a row per terminal task it ever ran.
     CREATE INDEX IF NOT EXISTS idx_task_worktree_retention_due
       ON task_worktree_retention(cleanup_due_at);
+
+    -- ---- line comments in the Files workspace ----
+    --
+    -- A comment anchored to a line of a file a session is working in, and the review queue
+    -- those comments form. The rule these three tables enforce is that an anchor is
+    -- (path, line range, quoted text) and NOT a line number: the agent edits the file
+    -- between deliveries, so a stored number is stale by the time the next comment goes.
+    -- That is the Inspector's rule - its fingerprint deliberately excludes the line - applied
+    -- to a live working file, and the re-anchor pass is the part it does not have.
+    --
+    -- Threads are SESSION-SCOPED and end with the session that owns them: session_remove
+    -- settles them to orphaned by UPDATE, never by DELETE, and never keyed on
+    -- state === 'exited'. See FileCommentManager for the three mechanisms that complete it.
+    CREATE TABLE IF NOT EXISTS file_comment_threads (
+      id           TEXT PRIMARY KEY,  -- our uuid, minted at the call site
+      -- MC-a41f: the stable handle the payload cites, the reply tool takes as its
+      -- commentId, and the transcript fallback matches out of free text. Unique PER
+      -- SESSION, never global - so every lookup by it is session-scoped, and a lookup
+      -- without a session would land a reply on another session's thread.
+      short_id     TEXT NOT NULL,
+      session_id   TEXT NOT NULL,     -- the session this thread belongs to
+      path         TEXT NOT NULL,     -- repository-relative, as the Files tab lists it
+      start_line   INTEGER NOT NULL,  -- 1-based, inclusive, in the file's source
+      end_line     INTEGER NOT NULL,
+      quote        TEXT NOT NULL,     -- the anchored source text, bounded
+      quote_hash   TEXT NOT NULL,     -- sha256(path + LF + normalized quote); excludes the line
+      revision     TEXT,              -- file revision the anchor was last VALID against
+      surface      TEXT NOT NULL,     -- editor | markdown | html
+      -- draft | queued | sending | awaiting | answered | unanswered | resolved | orphaned.
+      -- unanswered is outside the outstanding tuple on purpose: auto-advance sends the
+      -- next comment while this one has never been answered, and a timed-out thread left
+      -- awaiting would collide on the index below and deadlock the queue it protects.
+      status       TEXT NOT NULL,
+      -- 1 when the quote no longer resolves. A FLAG BESIDE THE STATUS, not one of its
+      -- values, and reversible: a thread that goes outdated keeps its place in the review,
+      -- and if the quoted text comes back it re-anchors and this clears.
+      outdated     INTEGER NOT NULL DEFAULT 0,
+      queue_seq    INTEGER,           -- position in the review; NULL once terminal
+      -- The correlation pending_turns cannot carry (its row is id/note_key/seq/text/state
+      -- and nothing else). It lives here instead, so that table needs no new column, and it
+      -- is what lets the walkthrough recognise its own turn in the outbox after a restart.
+      delivery_id  TEXT,
+      sent_at      INTEGER,
+      answered_at  INTEGER,
+      addressed_at INTEGER,           -- the agent's "I handled this"; never a closure
+      resolved_at  INTEGER,
+      created_at   INTEGER NOT NULL,
+      updated_at   INTEGER NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_file_comment_threads_short
+      ON file_comment_threads(session_id, short_id);
+    -- The gutter asks "what threads does this file have?" on every open, and the
+    -- walkthrough asks "what is this session's queue?" before every send.
+    CREATE INDEX IF NOT EXISTS idx_file_comment_threads_session
+      ON file_comment_threads(session_id, path);
+    -- Deliberately NOT a UNIQUE index on (session_id, queue_seq). The closest analogue
+    -- that also reorders is foreman_queue_items, which has none, because a full rewrite
+    -- passes through states where two rows share a seq - see the two-pass scratch offset
+    -- in reorderFileCommentQueue. pending_turns can afford idx_pending_turns_order only
+    -- because it never reorders. Recorded so a later change does not "fix" this.
+    CREATE INDEX IF NOT EXISTS idx_file_comment_threads_queue
+      ON file_comment_threads(session_id, queue_seq);
+
+    -- The messages of a thread: the opening comment, agent replies, and human follow-ups.
+    -- The BODY lives here rather than on the thread, which is what makes a draft a draft -
+    -- and what makes updateFileCommentMessageBody's refusal the contract it is.
+    CREATE TABLE IF NOT EXISTS file_comment_messages (
+      id            TEXT PRIMARY KEY,
+      thread_id     TEXT NOT NULL,
+      author        TEXT NOT NULL,    -- human | agent
+      session_id    TEXT,             -- the session that wrote or received it
+      body          TEXT NOT NULL,
+      -- When it reached the agent. Stamped from CONFIRMED delivery, never from submitting,
+      -- which only enqueues a turn that can still be recalled or turned uncertain.
+      delivered_at  INTEGER,
+      read_at       INTEGER,          -- when a human read it; NULL while it counts toward the pip
+      created_at    INTEGER NOT NULL,
+      updated_at    INTEGER NOT NULL  -- editable until delivered or outstanding, frozen after
+    );
+    CREATE INDEX IF NOT EXISTS idx_file_comment_messages_thread
+      ON file_comment_messages(thread_id, created_at);
+
+    -- The walkthrough's run state: one row per session, and a TABLE rather than a derived
+    -- value. "Paused" and "never started" are the same set of rows - everything queued,
+    -- nothing outstanding - so the walkthrough cannot tell them apart by looking at
+    -- threads, and between two comments the outstanding set is briefly empty, which would
+    -- make a derived "running" flicker. Keyed by session_id because there is exactly one
+    -- review per session and inventing a second id would only create a way to have two.
+    CREATE TABLE IF NOT EXISTS file_comment_reviews (
+      session_id    TEXT PRIMARY KEY,
+      state         TEXT NOT NULL,    -- idle | running | paused
+      pause_reason  TEXT,             -- why it stopped; NULL unless paused
+      started_at    INTEGER,
+      updated_at    INTEGER NOT NULL
+    );
   `);
   db.exec(inFlightIndexSql());
+  db.exec(outstandingFileCommentIndexSql());
   migrate(db);
   return db;
 }
@@ -2759,6 +2871,23 @@ function inFlightIndexSql(): string {
   const states = IN_FLIGHT_ITEM_STATES.map((s) => `'${s}'`).join(",");
   return `CREATE UNIQUE INDEX IF NOT EXISTS one_inflight_per_queue ON foreman_queue_items(note_key)
       WHERE state IN (${states});`;
+}
+
+/**
+ * One comment outstanding per SESSION, enforced by the database rather than by the
+ * walkthrough's bookkeeping. Same argument as `inFlightIndexSql` above: the stakes are a
+ * second comment typed into a live agent while the first is still unanswered, which is the
+ * one thing one-at-a-time exists to prevent, so this is a constraint and not a comment.
+ *
+ * The predicate is BUILT from `OUTSTANDING_THREAD_STATUSES` rather than restated here, so
+ * the enforcement and its TypeScript readers - `queueFileCommentThread`'s refusal and
+ * `updateFileCommentMessageBody`'s freeze - cannot drift apart. `status` is a closed enum
+ * of identifiers, so quoting them into SQL is safe by construction.
+ */
+function outstandingFileCommentIndexSql(): string {
+  const states = OUTSTANDING_THREAD_STATUSES.map((s) => `'${s}'`).join(",");
+  return `CREATE UNIQUE INDEX IF NOT EXISTS one_outstanding_file_comment
+      ON file_comment_threads(session_id) WHERE status IN (${states});`;
 }
 
 /**
@@ -3436,6 +3565,7 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "archives", "prompts_json", "TEXT");
 
   rebuildInFlightIndexIfStale(d);
+  rebuildOutstandingFileCommentIndexIfStale(d);
 }
 
 /** Whether a table exists in this database, for a migration that has to read the old one. */
@@ -3472,19 +3602,71 @@ function tableExists(d: DatabaseSync, name: string): boolean {
  * no-op and the daemon opens.
  */
 function rebuildInFlightIndexIfStale(d: DatabaseSync): void {
+  rebuildDerivedPartialIndexIfStale(
+    d,
+    "one_inflight_per_queue",
+    IN_FLIGHT_ITEM_STATES,
+    inFlightIndexSql,
+    "single-flight",
+  );
+}
+
+/**
+ * The same rebuild for the line-comment outstanding index, for the same reason and with the
+ * same failure posture.
+ *
+ * It exists BEFORE any phase widens the tuple, deliberately: the outstanding-status tuple
+ * is a declared cross-phase contract that no later phase may widen, and this is what makes
+ * that rule survivable rather than a comment - a build that did widen it would otherwise
+ * ship a database still enforcing the old predicate while every TypeScript reader used the
+ * new one.
+ */
+function rebuildOutstandingFileCommentIndexIfStale(d: DatabaseSync): void {
+  rebuildDerivedPartialIndexIfStale(
+    d,
+    "one_outstanding_file_comment",
+    OUTSTANDING_THREAD_STATUSES,
+    outstandingFileCommentIndexSql,
+    "one-outstanding",
+  );
+}
+
+/**
+ * Shared body for the two partial unique indices whose predicate is DERIVED from a
+ * TypeScript tuple. The long-form rationale is on `rebuildInFlightIndexIfStale` above; the
+ * three properties worth restating where the code is:
+ *
+ * - `CREATE UNIQUE INDEX IF NOT EXISTS` leaves an EXISTING index untouched, so deriving
+ *   the SQL only makes the index agree with its readers on a fresh database. Without this,
+ *   the drift the shared constant prevents is merely deferred to upgrade time.
+ * - The TRANSACTION is load-bearing, not tidy. DDL is transactional in SQLite; without it
+ *   the DROP commits alone, the CREATE fails on rows that already violate the new
+ *   predicate, and the table is left with NO index - after which the next `openDb()` runs
+ *   the same CREATE against the same rows, throws uncaught, and the daemon refuses to
+ *   start. Rolling back keeps the old index, so the CREATE stays a no-op and it opens.
+ * - Failing is REPORTED, never fatal. Widening a set can legitimately surface rows that
+ *   already violate it, and that is worth saying rather than worth bricking every start.
+ */
+function rebuildDerivedPartialIndexIfStale(
+  d: DatabaseSync,
+  name: string,
+  want: readonly string[],
+  sql: () => string,
+  label: string,
+): void {
   const row = d
-    .prepare(`SELECT sql FROM sqlite_master WHERE type='index' AND name='one_inflight_per_queue'`)
-    .get() as { sql: string | null } | undefined;
+    .prepare(`SELECT sql FROM sqlite_master WHERE type='index' AND name=?`)
+    .get(name) as { sql: string | null } | undefined;
   if (!row?.sql) return;
   // SQLite stores the CREATE text with `IF NOT EXISTS` stripped, so compare the one
   // thing that carries meaning: which states the WHERE clause names.
   const stored = new Set([...row.sql.matchAll(/'([a-z_]+)'/g)].map((m) => m[1]));
-  const want = new Set<string>(IN_FLIGHT_ITEM_STATES);
-  if (stored.size === want.size && [...want].every((s) => stored.has(s))) return;
+  const wanted = new Set<string>(want);
+  if (stored.size === wanted.size && [...wanted].every((s) => stored.has(s))) return;
   try {
     d.exec("BEGIN IMMEDIATE;");
-    d.exec("DROP INDEX one_inflight_per_queue;");
-    d.exec(inFlightIndexSql());
+    d.exec(`DROP INDEX ${name};`);
+    d.exec(sql());
     d.exec("COMMIT;");
   } catch (err) {
     // Put the old index back. Swallowing a rollback failure is deliberate: the
@@ -3494,8 +3676,8 @@ function rebuildInFlightIndexIfStale(d: DatabaseSync): void {
       d.exec("ROLLBACK;");
     } catch {}
     console.error(
-      "[db] could not rebuild one_inflight_per_queue (rows may already violate " +
-        `single-flight); keeping the previous index: ${String(err)}`,
+      `[db] could not rebuild ${name} (rows may already violate ` +
+        `${label}); keeping the previous index: ${String(err)}`,
     );
   }
 }
@@ -10171,4 +10353,939 @@ export function loadInspectionsAdoptedSince(sinceMs: number): InspectorInspectio
     )
     .all(sinceMs) as unknown as InspectionTallyRow[];
   return rows.map(rowToInspection);
+}
+
+// ---- line comments in the Files workspace ----
+//
+// Shape A (module-level exported functions), like `upsertInspectorComment` above.
+//
+// Every operation here is DECLARED rather than composable, and that is the design rather
+// than a preference: a thread joining the queue is two writes (status and position), and a
+// caller composing them out of the generic status route plus the reorder route makes two
+// HTTP requests with a window between them where a second submit takes the same number.
+// The race is created by the missing operation, not by SQLite - `DatabaseSync` is fully
+// synchronous and the daemon is the only writer, so two statements inside ONE store
+// function cannot interleave.
+
+interface FileCommentThreadRow {
+  id: string;
+  short_id: string;
+  session_id: string;
+  path: string;
+  start_line: number;
+  end_line: number;
+  quote: string;
+  quote_hash: string;
+  revision: string | null;
+  surface: string;
+  status: string;
+  outdated: number;
+  queue_seq: number | null;
+  delivery_id: string | null;
+  sent_at: number | null;
+  answered_at: number | null;
+  addressed_at: number | null;
+  resolved_at: number | null;
+  created_at: number;
+  updated_at: number;
+}
+
+interface FileCommentMessageRow {
+  id: string;
+  thread_id: string;
+  author: string;
+  session_id: string | null;
+  body: string;
+  delivered_at: number | null;
+  read_at: number | null;
+  created_at: number;
+  updated_at: number;
+}
+
+interface FileCommentReviewRow {
+  session_id: string;
+  state: string;
+  pause_reason: string | null;
+  started_at: number | null;
+  updated_at: number;
+}
+
+/**
+ * A status this build does not recognise reads as `orphaned`, which is terminal and inert.
+ *
+ * The forward-compatibility seam `readEnsembleEnum` establishes, resolved the safe way for
+ * this table: a newer build could write a status this one has never heard of, and the two
+ * wrong answers would be to crash the read or to let the value through onto a thread the
+ * walkthrough then tries to deliver. Reading it as terminal means an older build shows the
+ * thread as settled and never sends it - it does not rewrite the row, so the build that
+ * understands it still can.
+ */
+function readThreadStatus(raw: string): FileCommentThreadStatus {
+  return isFileCommentThreadStatus(raw) ? raw : "orphaned";
+}
+
+function rowToFileCommentMessage(row: FileCommentMessageRow): FileCommentMessage {
+  return {
+    id: row.id,
+    threadId: row.thread_id,
+    // `human` is the safe fall-through: an unknown author is not attributed to the agent,
+    // because "the agent said this" is a claim the dashboard renders as an answer.
+    author: row.author === "agent" ? "agent" : "human",
+    sessionId: row.session_id,
+    body: row.body,
+    deliveredAt: row.delivered_at,
+    readAt: row.read_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function rowToFileCommentThread(
+  row: FileCommentThreadRow,
+  messages: FileCommentMessage[],
+  messageCount: number,
+): FileCommentThread {
+  return {
+    id: row.id,
+    shortId: row.short_id,
+    sessionId: row.session_id,
+    path: row.path,
+    startLine: row.start_line,
+    endLine: row.end_line,
+    quote: row.quote,
+    quoteHash: row.quote_hash,
+    revision: row.revision,
+    surface: (isFileCommentSurface(row.surface) ? row.surface : "editor") as FileCommentSurface,
+    status: readThreadStatus(row.status),
+    outdated: row.outdated !== 0,
+    queueSeq: row.queue_seq,
+    deliveryId: row.delivery_id,
+    sentAt: row.sent_at,
+    answeredAt: row.answered_at,
+    addressedAt: row.addressed_at,
+    resolvedAt: row.resolved_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    messages,
+    messageCount,
+  };
+}
+
+/**
+ * Hydrate a set of threads with their messages in ONE pass rather than per thread.
+ *
+ * A thread arrives on the wire with its messages (phase 2 renders from one frame, phase 4
+ * delivers a reply through one), and the snapshot hydrates every thread the daemon holds,
+ * so a per-thread query here would be one statement per thread on every boot.
+ *
+ * `cap` is what makes the wire budget a budget: with it on, a thread carries the NEWEST
+ * `FILE_COMMENT_THREAD_MESSAGE_CAP` messages and `messageCount` reports the true total, so a
+ * surface can tell it is looking at a tail. It is off for exactly one caller - the
+ * single-thread route, which is the declared escape hatch a surface reaches for once
+ * `messageCount` has told it the frame was truncated. A cap that could not be turned off
+ * would make that route unable to answer the question it exists for.
+ */
+function hydrateFileCommentThreads(
+  rows: FileCommentThreadRow[],
+  cap = true,
+): FileCommentThread[] {
+  if (!rows.length) return [];
+  const placeholders = rows.map(() => "?").join(",");
+  const messageRows = openDb()
+    .prepare(
+      `SELECT * FROM file_comment_messages WHERE thread_id IN (${placeholders})
+         ORDER BY created_at ASC, rowid ASC`,
+    )
+    .all(...rows.map((r) => r.id)) as unknown as FileCommentMessageRow[];
+  const byThread = new Map<string, FileCommentMessage[]>();
+  for (const row of messageRows) {
+    const list = byThread.get(row.thread_id) ?? [];
+    list.push(rowToFileCommentMessage(row));
+    byThread.set(row.thread_id, list);
+  }
+  return rows.map((row) => {
+    const all = byThread.get(row.id) ?? [];
+    const messages =
+      !cap || all.length <= FILE_COMMENT_THREAD_MESSAGE_CAP
+        ? all
+        : all.slice(all.length - FILE_COMMENT_THREAD_MESSAGE_CAP);
+    return rowToFileCommentThread(row, messages, all.length);
+  });
+}
+
+/**
+ * Every thread this build should hold live, in queue order within a session.
+ *
+ * Excludes `orphaned`, which is what a thread becomes when its session went away: those
+ * rows are kept for the record and for the prune, and there is nothing left to draw. The
+ * registry's boot load is this query, and its first completed sweep is what settles rows
+ * whose session vanished while the daemon was down.
+ */
+export function loadFileCommentThreads(): FileCommentThread[] {
+  const rows = openDb()
+    .prepare(
+      `SELECT * FROM file_comment_threads WHERE status <> 'orphaned'
+         ORDER BY session_id ASC, queue_seq ASC, created_at ASC`,
+    )
+    .all() as unknown as FileCommentThreadRow[];
+  return hydrateFileCommentThreads(rows);
+}
+
+/** One thread as it rides the wire: its message list capped, `messageCount` exact. */
+export function loadFileCommentThread(id: string): FileCommentThread | null {
+  return readFileCommentThread(id, true);
+}
+
+/**
+ * One thread with its WHOLE history, however long. The single-thread route's read.
+ *
+ * This is the other half of the message cap being a cap rather than a loss: the snapshot and
+ * every incremental frame carry a bounded tail plus the true `messageCount`, and a surface
+ * that sees `messageCount > messages.length` fetches the rest from here. Without an uncapped
+ * path the cap would silently make a long thread unreadable, which is the failure the budget
+ * was supposed to avoid rather than cause.
+ *
+ * Deliberately NOT what the registry or any frame uses - see `hydrateFileCommentThreads`.
+ */
+export function loadFileCommentThreadWithFullHistory(id: string): FileCommentThread | null {
+  return readFileCommentThread(id, false);
+}
+
+function readFileCommentThread(id: string, cap: boolean): FileCommentThread | null {
+  const row = openDb()
+    .prepare(`SELECT * FROM file_comment_threads WHERE id = ?`)
+    .get(id) as unknown as FileCommentThreadRow | undefined;
+  if (!row) return null;
+  return hydrateFileCommentThreads([row], cap)[0] ?? null;
+}
+
+export function loadFileCommentThreadsForSession(
+  sessionId: string,
+  path?: string,
+): FileCommentThread[] {
+  const d = openDb();
+  const rows = (
+    path === undefined
+      ? d
+          .prepare(
+            `SELECT * FROM file_comment_threads WHERE session_id = ?
+               ORDER BY queue_seq ASC, created_at ASC`,
+          )
+          .all(sessionId)
+      : d
+          .prepare(
+            `SELECT * FROM file_comment_threads WHERE session_id = ? AND path = ?
+               ORDER BY queue_seq ASC, created_at ASC`,
+          )
+          .all(sessionId, path)
+  ) as unknown as FileCommentThreadRow[];
+  return hydrateFileCommentThreads(rows);
+}
+
+/**
+ * Resolve a thread by the handle the agent was shown. ALWAYS session-scoped.
+ *
+ * `short_id` is unique per session, not globally, so a lookup without a session could land
+ * a reply on another session's thread. There is deliberately no global variant of this
+ * function for a later phase to reach for.
+ */
+export function findFileCommentThreadByShortId(
+  sessionId: string,
+  shortId: string,
+): FileCommentThread | null {
+  const row = openDb()
+    .prepare(`SELECT * FROM file_comment_threads WHERE session_id = ? AND short_id = ?`)
+    .get(sessionId, shortId) as unknown as FileCommentThreadRow | undefined;
+  if (!row) return null;
+  return hydrateFileCommentThreads([row])[0] ?? null;
+}
+
+/** True when an error is `one_outstanding_file_comment` refusing a second outstanding row. */
+export function isOutstandingFileCommentViolation(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  // Matches ONE named index rather than "a UNIQUE failure", the way
+  // `isSingleFlightViolation` does. The negative lookahead is load-bearing rather than
+  // decorative: the short_id index is on `(session_id, short_id)`, so SQLite reports it as
+  // `...file_comment_threads.session_id, file_comment_threads.short_id` and a bare
+  // `session_id` match would swallow a mint collision as an outstanding violation - which
+  // would refuse to save a comment a human just wrote and report the wrong reason.
+  return /UNIQUE constraint failed: file_comment_threads\.session_id(?!\s*,)/i.test(msg);
+}
+
+function isShortIdCollision(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /file_comment_threads\.short_id/i.test(msg) ||
+    /idx_file_comment_threads_short/i.test(msg);
+}
+
+/**
+ * `MC-` plus hex. Four characters is 65,536 handles per session, so by the birthday bound a
+ * session is around a 1% collision risk at ~36 comments and roughly even odds at ~300. A
+ * review is normally tens of comments, so the first candidate nearly always wins - the
+ * retry loop exists for the tail, not the common case, and the width is recorded here as a
+ * decision rather than left to look accidental.
+ */
+function mintFileCommentShortId(width: number): string {
+  let out = "";
+  for (let i = 0; i < width; i += 1) out += Math.floor(Math.random() * 16).toString(16);
+  return `MC-${out}`;
+}
+
+const SHORT_ID_ATTEMPTS = 8;
+
+export interface CreateFileCommentThreadInput {
+  id: string;
+  messageId: string;
+  sessionId: string;
+  path: string;
+  startLine: number;
+  endLine: number;
+  quote: string;
+  quoteHash: string;
+  revision: string | null;
+  surface: FileCommentSurface;
+  /** The opening comment. Written through `appendFileCommentMessage`, not a second insert. */
+  body: string;
+  now: number;
+}
+
+/**
+ * Create a thread and its opening message, in one transaction.
+ *
+ * The thread starts as a `draft`: comments are persisted from the first keystroke, because
+ * the integrated Files tab and the extracted Files window are two live workspaces that
+ * converge only through the daemon, so a comment kept in browser state is wrong in the
+ * other one. Submitting is `queueFileCommentThread`, which is a separate, deliberate act.
+ *
+ * **Minting attempts the insert and inspects the failure; it never pre-checks with a
+ * SELECT.** A read-then-write races another create in the same session, and it is the
+ * natural wrong fix. If the bounded loop is exhausted the handle WIDENS rather than
+ * failing: the column is TEXT and the transcript fallback matches it out of free text, so a
+ * longer id costs nothing and is still quotable, whereas refusing to save a comment a human
+ * just wrote is a far worse outcome than an id two characters longer.
+ */
+export function createFileCommentThread(input: CreateFileCommentThreadInput): FileCommentThread {
+  const d = openDb();
+  for (let attempt = 0; ; attempt += 1) {
+    // Widen past the bounded loop rather than fail. Attempt 0-7 are four hex characters;
+    // anything after that grows, and a session that reached there has tens of thousands of
+    // comments and deserves the wider handle anyway.
+    const width = attempt < SHORT_ID_ATTEMPTS ? 4 : 4 + (attempt - SHORT_ID_ATTEMPTS + 1);
+    const shortId = mintFileCommentShortId(width);
+    d.exec("BEGIN IMMEDIATE");
+    try {
+      // Inside the transaction, not before it: a pre-check outside would be a racy read, and
+      // two concurrent creates could both pass it. `BEGIN IMMEDIATE` is already held for the
+      // short-id mint, so this costs one more read on a lock we are taking anyway.
+      const held = d
+        .prepare(
+          `SELECT COUNT(*) AS n FROM file_comment_threads
+            WHERE session_id = ? AND status <> 'orphaned'`,
+        )
+        .get(input.sessionId) as unknown as { n: number };
+      if (Number(held.n) >= FILE_COMMENT_THREADS_PER_SESSION_MAX) {
+        // Thrown, not rolled back here: the catch below already rolls back and rethrows
+        // anything that is not a short-id collision, so one unwind path rather than two.
+        throw new FileCommentStoreError(
+          `this session already holds ${FILE_COMMENT_THREADS_PER_SESSION_MAX} comments; ` +
+            `resolve or delete some before adding another`,
+        );
+      }
+      d.prepare(
+        `INSERT INTO file_comment_threads
+           (id, short_id, session_id, path, start_line, end_line, quote, quote_hash, revision,
+            surface, status, outdated, queue_seq, delivery_id, sent_at, answered_at,
+            addressed_at, resolved_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', 0, NULL, NULL, NULL, NULL, NULL, NULL, ?, ?)`,
+      ).run(
+        input.id,
+        shortId,
+        input.sessionId,
+        input.path,
+        input.startLine,
+        input.endLine,
+        input.quote,
+        input.quoteHash,
+        input.revision,
+        input.surface,
+        input.now,
+        input.now,
+      );
+      // One insert path for messages, not two that can drift: thread creation calls the
+      // same writer phase 2's reply box and phase 4's MCP tool call.
+      insertFileCommentMessageRow(d, {
+        id: input.messageId,
+        threadId: input.id,
+        author: "human",
+        sessionId: input.sessionId,
+        body: input.body,
+        now: input.now,
+      });
+      d.exec("COMMIT");
+      break;
+    } catch (err) {
+      // Minting is INSIDE the transaction, so a retry cannot leave a half-created thread
+      // behind - the rollback takes the message row with it.
+      try {
+        d.exec("ROLLBACK");
+      } catch {}
+      if (!isShortIdCollision(err)) throw err;
+    }
+  }
+  const created = loadFileCommentThread(input.id);
+  if (!created) throw new Error("file comment thread vanished immediately after creation");
+  return created;
+}
+
+function insertFileCommentMessageRow(
+  d: DatabaseSync,
+  input: {
+    id: string;
+    threadId: string;
+    author: FileCommentAuthor;
+    sessionId: string | null;
+    body: string;
+    now: number;
+  },
+): void {
+  d.prepare(
+    `INSERT INTO file_comment_messages
+       (id, thread_id, author, session_id, body, delivered_at, read_at, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?)`,
+  ).run(input.id, input.threadId, input.author, input.sessionId, input.body, input.now, input.now);
+}
+
+/**
+ * The ONLY insert into `file_comment_messages`, by either author.
+ *
+ * Phase 2's reply box passes `human`, phase 4's MCP tool passes `agent`, and thread
+ * creation above calls the same row writer - so there is one insert path rather than three
+ * that can drift on what a message row looks like.
+ */
+export function appendFileCommentMessage(input: {
+  id: string;
+  threadId: string;
+  author: FileCommentAuthor;
+  sessionId: string | null;
+  body: string;
+  now: number;
+}): FileCommentMessage | null {
+  const d = openDb();
+  const exists = d
+    .prepare(`SELECT id FROM file_comment_threads WHERE id = ?`)
+    .get(input.threadId) as { id?: string } | undefined;
+  if (!exists?.id) return null;
+  const held = d
+    .prepare(`SELECT COUNT(*) AS n FROM file_comment_messages WHERE thread_id = ?`)
+    .get(input.threadId) as unknown as { n: number };
+  if (Number(held.n) >= FILE_COMMENT_MESSAGES_PER_THREAD_MAX) {
+    throw new FileCommentStoreError(
+      `this comment already holds ${FILE_COMMENT_MESSAGES_PER_THREAD_MAX} messages; ` +
+        `start a new comment rather than continuing this one`,
+    );
+  }
+  insertFileCommentMessageRow(d, input);
+  touchFileCommentThread(input.threadId, input.now);
+  const row = d
+    .prepare(`SELECT * FROM file_comment_messages WHERE id = ?`)
+    .get(input.id) as unknown as FileCommentMessageRow | undefined;
+  return row ? rowToFileCommentMessage(row) : null;
+}
+
+/** The thread moved because something about it did. Keeps `updated_at` one statement away. */
+function touchFileCommentThread(threadId: string, now: number): void {
+  openDb()
+    .prepare(`UPDATE file_comment_threads SET updated_at = ? WHERE id = ?`)
+    .run(now, threadId);
+}
+
+/**
+ * One message row, for the caller that holds a message id and needs the thread it belongs
+ * to. The edit route is that caller: it has to resolve the OWNER before it writes, so a
+ * message id cannot be a way around the thread's own lifetime guard.
+ */
+export function loadFileCommentMessage(id: string): FileCommentMessage | null {
+  const row = openDb()
+    .prepare(`SELECT * FROM file_comment_messages WHERE id = ?`)
+    .get(id) as unknown as FileCommentMessageRow | undefined;
+  return row ? rowToFileCommentMessage(row) : null;
+}
+
+export class FileCommentStoreError extends Error {}
+
+/**
+ * Edit a comment body. The ONLY way any comment body is edited - phase 2's
+ * drafts-from-the-first-keystroke and phase 3's edit-unsent are both this function.
+ *
+ * **It refuses a delivered message AND one whose thread is merely outstanding**, and both
+ * halves are needed because they are two different moments. Submitting only enqueues a
+ * turn, so a comment's bytes sit in `pending_turns.text` while its thread is `sending` and
+ * before `delivered_at` exists. Refusing on `delivered_at` alone would leave that window
+ * editable, and an edit inside it changes the dashboard's copy of a comment already
+ * committed to the outbox - the exact divergence the rule exists to prevent.
+ *
+ * The outstanding statuses are read from the same exported tuple the partial unique index
+ * is built from, never respelled here.
+ */
+export function updateFileCommentMessageBody(
+  id: string,
+  body: string,
+  now: number,
+): FileCommentMessage | null {
+  const d = openDb();
+  const row = d
+    .prepare(
+      `SELECT m.*, t.status AS thread_status FROM file_comment_messages m
+         JOIN file_comment_threads t ON t.id = m.thread_id
+        WHERE m.id = ?`,
+    )
+    .get(id) as unknown as (FileCommentMessageRow & { thread_status: string }) | undefined;
+  if (!row) return null;
+  // An agent's reply is a RECORD, not a draft, and nothing edits it - not this route, not
+  // phase 4's own tool. The two refusals below are both about the SEND window, and an agent
+  // reply is on the wrong side of it for either to fire: it arrives undelivered (nobody sends
+  // it anywhere) and it moves its thread to `answered`, which is not outstanding. So without
+  // this check any caller holding a message id could rewrite what the agent said, which is
+  // the same forgery `AppendFileCommentMessageSchema` refuses at creation - a reply the UI
+  // renders as the agent's answer, written by somebody else - only worse, because it destroys
+  // a real answer instead of inventing one beside it.
+  if (row.author !== "human") {
+    throw new FileCommentStoreError("an agent's reply is a record and cannot be edited");
+  }
+  if (row.delivered_at !== null) {
+    throw new FileCommentStoreError("a message the agent has already been sent cannot be edited");
+  }
+  if ((OUTSTANDING_THREAD_STATUSES as readonly string[]).includes(row.thread_status)) {
+    throw new FileCommentStoreError(
+      "this comment is already committed to the outbox and cannot be edited",
+    );
+  }
+  d.prepare(`UPDATE file_comment_messages SET body = ?, updated_at = ? WHERE id = ?`).run(
+    body,
+    now,
+    id,
+  );
+  touchFileCommentThread(row.thread_id, now);
+  const updated = d
+    .prepare(`SELECT * FROM file_comment_messages WHERE id = ?`)
+    .get(id) as unknown as FileCommentMessageRow | undefined;
+  return updated ? rowToFileCommentMessage(updated) : null;
+}
+
+/**
+ * Place a thread at the TAIL of its session's queue, setting `queued` and allocating
+ * `queue_seq` in one call.
+ *
+ * **It is the only way a thread enters the queue, first time or not.** Three callers need
+ * exactly this - phase 2 submitting a `draft`, a human follow-up on an `answered` or
+ * `unanswered` thread, and phase 3 requeueing a thread whose turn resolved with undelivered
+ * human messages left - and declaring it once is what stops the second and third being
+ * improvised out of the generic status route, which cannot allocate a position at all.
+ *
+ * **A fresh tail number every time; the prior `queue_seq` is discarded, never reused.**
+ * Reusing it would put a follow-up back in the original comment's old position, ahead of
+ * comments queued in between, and "re-enters the queue at the end" is the contract.
+ *
+ * The source-status guard lives on the OPERATION rather than at each of its three callers,
+ * and the route is exposed, so it has to hold against a caller that is not one of them. See
+ * `REQUEUEABLE_THREAD_STATUSES` for why it is an allow-list and not "anything not
+ * outstanding".
+ *
+ * Modelled on `createPendingTurn`: the allocating SELECT and the UPDATE are one
+ * `BEGIN IMMEDIATE`, the house style every transaction in this file follows.
+ */
+export function queueFileCommentThread(threadId: string, now: number): FileCommentThread | null {
+  return inTransaction(() => {
+    const d = openDb();
+    const row = d
+      .prepare(`SELECT session_id, status FROM file_comment_threads WHERE id = ?`)
+      .get(threadId) as { session_id?: string; status?: string } | undefined;
+    if (!row?.session_id) return null;
+    const status = readThreadStatus(row.status ?? "");
+    if (!(REQUEUEABLE_THREAD_STATUSES as readonly string[]).includes(status)) {
+      throw new FileCommentStoreError(`a ${status} comment cannot be queued`);
+    }
+    const seq = d
+      .prepare(
+        `SELECT COALESCE(MAX(queue_seq), -1) + 1 AS seq FROM file_comment_threads
+           WHERE session_id = ?`,
+      )
+      .get(row.session_id) as unknown as { seq: number };
+    d.prepare(
+      `UPDATE file_comment_threads
+          SET status = 'queued', queue_seq = ?, updated_at = ?
+        WHERE id = ?`,
+    ).run(seq.seq, now, threadId);
+    return loadFileCommentThread(threadId);
+  });
+}
+
+/**
+ * Rewrite a session's queue order from an explicit list of thread ids.
+ *
+ * **Two passes with a scratch offset**, exactly as `reorderQueueItems` does for
+ * `foreman_queue_items`: the list is written once far above every live value and once back
+ * down, so it never passes through an ambiguous order for anything reading mid-transaction.
+ * That two-pass shape is also why this table carries no UNIQUE index on
+ * `(session_id, queue_seq)` - the first pass legitimately holds values a unique constraint
+ * would refuse.
+ *
+ * Ids that do not belong to this session, or that are not queueable, are ignored rather
+ * than refused: a reorder is a drag in a list that may have moved under the operator, and
+ * dropping the whole gesture because one row was answered in the meantime is worse than
+ * ordering the rows that are still there.
+ */
+export function reorderFileCommentQueue(
+  sessionId: string,
+  orderedIds: readonly string[],
+  now: number,
+): FileCommentThread[] {
+  return inTransaction(() => {
+    const d = openDb();
+    const live = d
+      .prepare(
+        `SELECT id, status FROM file_comment_threads
+          WHERE session_id = ? AND queue_seq IS NOT NULL
+          ORDER BY queue_seq`,
+      )
+      .all(sessionId) as unknown as { id: string; status: string }[];
+    const eligible = new Set(live.map((r) => r.id));
+    // DEDUPED, first occurrence winning. A drag list is assembled by a browser and arrives
+    // over HTTP, so `[a, a, b]` is a reachable body - and writing `a` twice would advance the
+    // running index twice, leaving `a` at 1 and `b` at 2 with position 0 unfilled. The
+    // consecutive-order contract this function promises is what a later phase reads to find
+    // the head of the review, so a hole is not cosmetic.
+    const ordered = [...new Set(orderedIds.filter((id) => eligible.has(id)))];
+    // Anything the caller did not name keeps its relative order behind the named ones, so a
+    // partial list is a promotion rather than a silent truncation of the queue.
+    const rest = live
+      .map((r) => r.id)
+      .filter((id) => !ordered.includes(id));
+    const final = [...ordered, ...rest];
+    const scratch = 1_000_000;
+    const setSeq = d.prepare(
+      `UPDATE file_comment_threads SET queue_seq = ?, updated_at = ? WHERE id = ?`,
+    );
+    final.forEach((id, index) => setSeq.run(scratch + index, now, id));
+    final.forEach((id, index) => setSeq.run(index, now, id));
+    return loadFileCommentThreadsForSession(sessionId);
+  });
+}
+
+/**
+ * Move a thread to `sending` and record the correlation in `delivery_id`. Phase 3's write
+ * at SUBMIT time.
+ *
+ * It deliberately does NOT stamp `delivered_at`: `pendingTurns.submit()` only enqueues a
+ * turn, so from here the thread is outstanding but not yet delivered, and the bytes can
+ * still be recalled, dropped, or turned `uncertain` by a restart.
+ *
+ * **It is also the re-point.** Valid from `queued` for a first send and from `sending` when
+ * an `uncertain` delivery is being retried and the correlation is being replaced. It
+ * refuses every other status. The single-flight index is unaffected by the retry case
+ * (`sending` is outstanding both before and after), and re-pointing through this function
+ * rather than a second writer is what keeps `delivery_id` to one declared writer.
+ *
+ * This is also where the partial unique index bites, which is the point: the index refuses
+ * a second outstanding row for the session rather than trusting phase 3's bookkeeping.
+ *
+ * It writes NO anchor column, deliberately. The phase plan sketched a `deliveryRevision`
+ * argument here; taking one would make this a second writer of `revision`, whose single
+ * declared writer is `updateFileCommentThreadAnchor`. It is also unnecessary: the
+ * re-anchor pass runs over every unsent comment immediately BEFORE each send, so the
+ * anchor's revision is already current by the time this is called, and a second write would
+ * only be able to disagree with it.
+ */
+export function beginFileCommentDelivery(
+  threadId: string,
+  deliveryId: string,
+  now: number,
+): FileCommentThread | null {
+  const d = openDb();
+  const row = d
+    .prepare(`SELECT status FROM file_comment_threads WHERE id = ?`)
+    .get(threadId) as { status?: string } | undefined;
+  if (!row?.status) return null;
+  const status = readThreadStatus(row.status);
+  if (status !== "queued" && status !== "sending") {
+    throw new FileCommentStoreError(`a ${status} comment cannot be delivered`);
+  }
+  // `sent_at` records the FIRST send, so an uncertain-delivery retry re-points the
+  // correlation without rewriting when the comment went out.
+  d.prepare(
+    `UPDATE file_comment_threads
+        SET status = 'sending', delivery_id = ?, sent_at = COALESCE(sent_at, ?), updated_at = ?
+      WHERE id = ?`,
+  ).run(deliveryId, now, now, threadId);
+  return loadFileCommentThread(threadId);
+}
+
+/**
+ * Stamp `delivered_at` on a message and complete the transition `sending` -> `awaiting`.
+ *
+ * Phase 3 calls this from the CONFIRMED-delivery signal - the one the two sites that retire
+ * a claimed pending turn already raise - and never at submit. Stamping at submit would mark
+ * a comment delivered while it was still queued in the outbox, and `delivered_at` is what
+ * freezes the body and what stops the same message being sent twice.
+ */
+export function markFileCommentMessageDelivered(id: string, at: number): FileCommentThread | null {
+  return inTransaction(() => {
+    const d = openDb();
+    const row = d
+      .prepare(`SELECT thread_id FROM file_comment_messages WHERE id = ?`)
+      .get(id) as { thread_id?: string } | undefined;
+    if (!row?.thread_id) return null;
+    d.prepare(
+      `UPDATE file_comment_messages SET delivered_at = ?, updated_at = ?
+        WHERE id = ? AND delivered_at IS NULL`,
+    ).run(at, at, id);
+    d.prepare(
+      `UPDATE file_comment_threads SET status = 'awaiting', updated_at = ?
+        WHERE id = ? AND status = 'sending'`,
+    ).run(at, row.thread_id);
+    touchFileCommentThread(row.thread_id, at);
+    return loadFileCommentThread(row.thread_id);
+  });
+}
+
+/**
+ * The durable half of the re-anchor pass, and the ONLY writer of `start_line`, `end_line`,
+ * `revision` and `outdated` after creation.
+ *
+ * `reanchor()` is pure and returns only an outcome, so without this a thread that moved
+ * would be recomputed from its original anchor on every send and `revision` could never
+ * leave the value creation gave it.
+ *
+ * **It changes no status.** `outdated` is a flag beside the status, and whether to hold a
+ * comment at the head of the queue is phase 3's decision, not this function's.
+ */
+export function updateFileCommentThreadAnchor(
+  threadId: string,
+  patch: { startLine?: number; endLine?: number; revision?: string | null; outdated: boolean },
+  now: number,
+): FileCommentThread | null {
+  const d = openDb();
+  const row = d
+    .prepare(`SELECT id FROM file_comment_threads WHERE id = ?`)
+    .get(threadId) as { id?: string } | undefined;
+  if (!row?.id) return null;
+  d.prepare(
+    `UPDATE file_comment_threads
+        SET start_line = COALESCE(?, start_line),
+            end_line = COALESCE(?, end_line),
+            revision = CASE WHEN ? = 1 THEN ? ELSE revision END,
+            outdated = ?,
+            updated_at = ?
+      WHERE id = ?`,
+  ).run(
+    patch.startLine ?? null,
+    patch.endLine ?? null,
+    // `revision` is nullable, so "not supplied" and "supplied as null" cannot be told apart
+    // by COALESCE. The explicit flag is what keeps an outdated outcome - which must NOT
+    // advance the column - from being indistinguishable from clearing it.
+    patch.revision === undefined ? 0 : 1,
+    patch.revision ?? null,
+    patch.outdated ? 1 : 0,
+    now,
+    threadId,
+  );
+  return loadFileCommentThread(threadId);
+}
+
+/**
+ * The agent's "I handled this". Stamps `addressed_at` and **changes no status**.
+ *
+ * `addressed` is deliberately not a status - only a person closes a thread - so it cannot
+ * ride the status route, which would have to move the thread somewhere in order to write a
+ * timestamp, and that is exactly how an agent's suggestion becomes a closure. Phase 4's
+ * reply route calls this in the same transaction as its reply insert, so a thread is never
+ * seen as addressed by a reply that failed to persist.
+ */
+export function markFileCommentThreadAddressed(
+  threadId: string,
+  at: number,
+): FileCommentThread | null {
+  const d = openDb();
+  const changed = d
+    .prepare(`UPDATE file_comment_threads SET addressed_at = ?, updated_at = ? WHERE id = ?`)
+    .run(at, at, threadId);
+  if (!Number(changed.changes)) return null;
+  return loadFileCommentThread(threadId);
+}
+
+/**
+ * Stamp `read_at` on a thread's unread AGENT messages. What clears the Files tab's pip,
+ * which counts agent-authored messages where it is NULL.
+ *
+ * A column rather than browser state for the same reason drafts are: the integrated tab and
+ * the extracted Files window are two live workspaces that converge only through the daemon,
+ * so a badge kept in one of them is wrong in the other.
+ */
+export function markFileCommentMessagesRead(threadId: string, at: number): FileCommentThread | null {
+  const d = openDb();
+  const exists = d
+    .prepare(`SELECT id FROM file_comment_threads WHERE id = ?`)
+    .get(threadId) as { id?: string } | undefined;
+  if (!exists?.id) return null;
+  d.prepare(
+    `UPDATE file_comment_messages SET read_at = ?, updated_at = ?
+      WHERE thread_id = ? AND author = 'agent' AND read_at IS NULL`,
+  ).run(at, at, threadId);
+  touchFileCommentThread(threadId, at);
+  return loadFileCommentThread(threadId);
+}
+
+/**
+ * Set a thread's status. Phase 2's resolve control is what posts to this; `addressed` never
+ * does, and neither does phase 4.
+ *
+ * Terminal statuses drop the thread out of the queue (`queue_seq` to NULL) because there is
+ * no longer a position for it to hold; a re-open through this route therefore requeues
+ * through `queueFileCommentThread` like anything else, which is the deliberate two-step.
+ */
+export function setFileCommentThreadStatus(
+  threadId: string,
+  status: FileCommentThreadStatus,
+  now: number,
+): FileCommentThread | null {
+  const d = openDb();
+  const exists = d
+    .prepare(`SELECT id FROM file_comment_threads WHERE id = ?`)
+    .get(threadId) as { id?: string } | undefined;
+  if (!exists?.id) return null;
+  // A queue position is meaningful only while the thread holds one. Clearing it here is what
+  // keeps a withdrawn thread from sitting in the order as a `draft`, and a closed one from
+  // leaving a permanent hole in it.
+  const keepsPosition = holdsQueuePosition(status);
+  d.prepare(
+    `UPDATE file_comment_threads
+        SET status = ?,
+            queue_seq = CASE WHEN ? = 1 THEN queue_seq ELSE NULL END,
+            answered_at = CASE WHEN ? = 'answered' THEN COALESCE(answered_at, ?) ELSE answered_at END,
+            resolved_at = CASE WHEN ? = 'resolved' THEN ? ELSE NULL END,
+            updated_at = ?
+      WHERE id = ?`,
+  ).run(status, keepsPosition ? 1 : 0, status, now, status, now, now, threadId);
+  return loadFileCommentThread(threadId);
+}
+
+export function deleteFileCommentThread(threadId: string): boolean {
+  return inTransaction(() => {
+    const d = openDb();
+    d.prepare(`DELETE FROM file_comment_messages WHERE thread_id = ?`).run(threadId);
+    const r = d.prepare(`DELETE FROM file_comment_threads WHERE id = ?`).run(threadId);
+    return Number(r.changes) > 0;
+  });
+}
+
+/**
+ * Settle every thread a removed session owned to `orphaned`, by UPDATE.
+ *
+ * **Not a DELETE, and never keyed on `state === 'exited'`** - the standing rule for durable
+ * cleanup in this repository, and why there is no second eviction path here. A session that
+ * is merely idle, disconnected, or restarting keeps every thread it owns. Returns the ids
+ * that MOVED, so the caller emits exactly the frames a browser needs and no more.
+ */
+export function orphanFileCommentThreadsForSession(sessionId: string, now: number): string[] {
+  return inTransaction(() => {
+    const d = openDb();
+    const rows = d
+      .prepare(`SELECT id FROM file_comment_threads WHERE session_id = ? AND status <> 'orphaned'`)
+      .all(sessionId) as unknown as { id: string }[];
+    if (!rows.length) return [];
+    d.prepare(
+      `UPDATE file_comment_threads
+          SET status = 'orphaned', queue_seq = NULL, updated_at = ?
+        WHERE session_id = ? AND status <> 'orphaned'`,
+    ).run(now, sessionId);
+    // The review's run state goes with them: there is nothing left to walk through, and a
+    // row left `running` would resume a review for a session that no longer exists.
+    d.prepare(`DELETE FROM file_comment_reviews WHERE session_id = ?`).run(sessionId);
+    return rows.map((r) => r.id);
+  });
+}
+
+/**
+ * Finally delete settled threads whose session key is gone.
+ *
+ * The same shape and the same safety property as `pruneSessionGoals`: BOTH conditions are
+ * load-bearing, and the live-key one is the safety property - a thread whose session is
+ * still here is never touched no matter how old it is. Only TERMINAL rows are eligible, so
+ * a queued comment can never be pruned out from under a review.
+ *
+ * An empty `liveSessionIds` deletes nothing, for `pruneSessionGoals`' reason.
+ */
+export function pruneFileCommentThreads(
+  liveSessionIds: Iterable<string>,
+  olderThan: number,
+): number {
+  const keys = [...new Set(liveSessionIds)];
+  if (!keys.length) return 0;
+  return inTransaction(() => {
+    const d = openDb();
+    const placeholders = keys.map(() => "?").join(",");
+    const doomed = d
+      .prepare(
+        `SELECT id FROM file_comment_threads
+          WHERE status IN ('resolved', 'orphaned') AND updated_at < ?
+            AND session_id NOT IN (${placeholders})`,
+      )
+      .all(olderThan, ...keys) as unknown as { id: string }[];
+    if (!doomed.length) return 0;
+    const ids = doomed.map((r) => r.id);
+    const idHoles = ids.map(() => "?").join(",");
+    d.prepare(`DELETE FROM file_comment_messages WHERE thread_id IN (${idHoles})`).run(...ids);
+    d.prepare(`DELETE FROM file_comment_threads WHERE id IN (${idHoles})`).run(...ids);
+    return ids.length;
+  });
+}
+
+// ---- the walkthrough's run state (phase 3 is its only writer) ----
+
+function rowToFileCommentReview(row: FileCommentReviewRow): FileCommentReview {
+  return {
+    sessionId: row.session_id,
+    state: (["idle", "running", "paused"] as readonly string[]).includes(row.state)
+      ? (row.state as FileCommentReviewState)
+      : "idle",
+    pauseReason: row.pause_reason,
+    startedAt: row.started_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+/**
+ * A session's review state. An absent row reads as `idle` rather than null: "never started"
+ * is a real answer the walkthrough and the toolbar both need, and making every caller
+ * handle an absence would invite each of them to pick its own default.
+ */
+export function loadFileCommentReview(sessionId: string): FileCommentReview {
+  const row = openDb()
+    .prepare(`SELECT * FROM file_comment_reviews WHERE session_id = ?`)
+    .get(sessionId) as unknown as FileCommentReviewRow | undefined;
+  return row
+    ? rowToFileCommentReview(row)
+    : { sessionId, state: "idle", pauseReason: null, startedAt: null, updatedAt: 0 };
+}
+
+export function setFileCommentReviewState(
+  sessionId: string,
+  state: FileCommentReviewState,
+  pauseReason: string | null,
+  now: number,
+): FileCommentReview {
+  openDb()
+    .prepare(
+      `INSERT INTO file_comment_reviews (session_id, state, pause_reason, started_at, updated_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(session_id) DO UPDATE SET
+         state = excluded.state,
+         pause_reason = excluded.pause_reason,
+         -- The first start is what started_at records; a pause and resume do not restart
+         -- the review, so it is kept rather than rewritten.
+         started_at = COALESCE(file_comment_reviews.started_at, excluded.started_at),
+         updated_at = excluded.updated_at`,
+    )
+    .run(sessionId, state, pauseReason, state === "running" ? now : null, now);
+  return loadFileCommentReview(sessionId);
 }

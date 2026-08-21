@@ -426,7 +426,7 @@
       <header class="hero">
         <p class="eyebrow">Mission Control / operator reference / 2026-08-16</p>
         <h1>A field guide to <code>harness.db</code></h1>
-        <p class="lede">The durable memory behind tasks, reviews, automation, workflows, schedules, usage, and ensembles. This guide explains where it lives, how to inspect it safely, and what each of its 75 tables owns.</p>
+        <p class="lede">The durable memory behind tasks, reviews, automation, workflows, schedules, usage, and ensembles. This guide explains where it lives, how to inspect it safely, and what each of its 78 tables owns.</p>
         <div class="launch" aria-label="Database shell command">
           <code>make db</code>
           <span>read-only shell</span>
@@ -434,7 +434,7 @@
       </header>
 
       <div class="metrics" aria-label="Database summary">
-        <div class="metric"><strong>75</strong><span>application tables in the current fresh schema</span></div>
+        <div class="metric"><strong>78</strong><span>application tables in the current fresh schema</span></div>
         <div class="metric"><strong>WAL</strong><span>journal mode selected when the daemon opens the file</span></div>
         <div class="metric"><strong>1 writer</strong><span>the daemon owns every application write</span></div>
       </div>
@@ -622,6 +622,15 @@ LIMIT 20;
               <div class="table-list">
                 <div class="table-row"><code>inspector_prs</code><p>The pull requests Mission Control is allowed to inspect, plus last reviewed head, last observed remote state, retry state, merge posture, and adoption provenance.</p></div>
                 <div class="table-row"><code>inspector_comments</code><p>One deduplicated finding per pull request fingerprint, with path, line, title, scrubbed body, severity, round, reply state, and status.</p></div>
+              </div>
+            </details>
+
+            <details class="family">
+              <summary><strong>Line comments in the Files workspace</strong><span>3 tables</span></summary>
+              <div class="table-list">
+                <div class="table-row"><code>file_comment_threads</code><p>One line-anchored comment thread on one file in one session, holding the anchor as path, line range, quoted source text and a quote hash that deliberately excludes the line number, plus its lifecycle status, the reversible outdated flag, its position in the review queue, and the outbox delivery currently carrying it.</p></div>
+                <div class="table-row"><code>file_comment_messages</code><p>The messages of a thread in time order - the opening comment, agent replies, and human follow-ups - carrying the editable body, when it actually reached the agent, and when a human read it.</p></div>
+                <div class="table-row"><code>file_comment_reviews</code><p>The walkthrough's run state for one session: idle, running, or paused, with the reason it stopped and when the review first started.</p></div>
               </div>
             </details>
 

@@ -10,6 +10,12 @@ import type { EnsembleSummary, TaskEnsembleLink } from "./ensemble.ts";
 import type { MissionSchedule } from "./schedules.ts";
 import type { CheapAction, Divergence, SkipReason } from "./foreman.ts";
 import type { ForemanModelRole, ResolvedForemanModel } from "./foreman-models.ts";
+import type { FileCommentSurface } from "./file-comment-anchor.ts";
+import type {
+  FileCommentAuthor,
+  FileCommentReviewState,
+  FileCommentThreadStatus,
+} from "./file-comments.ts";
 import type { InspectorPosture } from "./inspector.ts";
 import type { LlmJobId, ResolvedLlmJobModel } from "./llm-jobs.ts";
 import type { AutomationRoleCost } from "./llm-spend.ts";
@@ -2676,6 +2682,31 @@ export type ServerEvent =
        */
       pipelineRuns: PipelineRun[];
       /**
+       * Every line-comment thread the daemon holds for a session it still knows about.
+       *
+       * BOUNDED BY LIVE SESSIONS, not by history. A thread belongs to exactly one session
+       * and ends with it: `session_remove` settles it to `orphaned` and it leaves this
+       * collection through `file_comment_thread_remove`, and a throttled prune finally
+       * deletes settled rows whose session key is gone. Nothing accumulates here.
+       *
+       * The arithmetic: a review is normally tens of comments on one file, a busy fleet
+       * holds tens of sessions, and most sessions have none at all - so the realistic
+       * ceiling is a few hundred threads. That is the TYPICAL case; the hard one is
+       * `FILE_COMMENT_THREADS_PER_SESSION_MAX`, refused at the create route, because
+       * "bounded by live sessions" alone caps how LONG a thread lives and not how many one
+       * session can accumulate while it is alive - and the prune only reaches settled
+       * threads whose session key is already gone. Per-thread size is what a later phase can move,
+       * and it is dominated by the anchored quote (`FILE_COMMENT_QUOTE_MAX`, 4kB) plus a
+       * capped reply list (`FILE_COMMENT_THREAD_MESSAGE_CAP`); `test/file-comments-sse.ts`
+       * measures one realistic thread and states the ceiling it implies. When a surface
+       * needs more than the budget allows, fetch that ONE thread from its own route -
+       * never widen the collection.
+       *
+       * EMPTY on every fleet where nobody has written a comment, which is the shipped
+       * state, so an ordinary installation carries one `[]`.
+       */
+      fileCommentThreads: FileCommentThread[];
+      /**
        * Fleet cost estimate at connect time. Carried in the snapshot rather than waited for,
        * or the topbar strip would sit blank until the next export happened to change
        * something - up to a whole export interval of a dashboard that looks broken.
@@ -2759,6 +2790,24 @@ export type ServerEvent =
       repoRoot: string;
       slug: string;
     }
+  /**
+   * A line-comment thread was created, edited, re-anchored, requeued, replied to, or
+   * resolved. Carries the WHOLE thread, messages included, like `schedule_upsert`: a
+   * thread is read as one picture of one conversation on one line, and a patch would let a
+   * gutter draw a marker whose state came from one instant and whose replies came from
+   * another. It is also what makes a reply reach every open dashboard without a fetch.
+   */
+  | { type: "file_comment_thread_upsert"; thread: FileCommentThread }
+  /**
+   * A thread left the live collection: it was deleted, or its session went away and the
+   * row was settled to `orphaned`. Keyed rather than carrying the thread, because there is
+   * nothing left to draw.
+   *
+   * NOT a durable delete signal for the orphan case - the row survives by UPDATE, which is
+   * this repository's standing rule for session-scoped cleanup. This frame says only that
+   * the browser should stop holding it.
+   */
+  | { type: "file_comment_thread_remove"; id: string }
   /**
    * Fleet-wide API-equivalent estimate and subscription rate limits. A top-level collection,
    * not a per-session field: the rate limits are account-global, so hanging them off each
@@ -3104,6 +3153,102 @@ export interface SessionFileSaveResult {
   currentRevision?: string;
   currentText?: string | null;
   deleted?: boolean;
+}
+
+// ---- line comments in the Files workspace ----
+
+/**
+ * One message in a thread: the opening comment, an agent reply, or a human follow-up.
+ *
+ * The BODY lives here rather than on the thread, which is what makes a draft a draft: the
+ * opening comment is an ordinary message row edited from the first keystroke, and so is a
+ * queued reply. It stops being editable when its bytes leave for the agent - see
+ * `deliveredAt`.
+ */
+export interface FileCommentMessage {
+  id: string;
+  threadId: string;
+  author: FileCommentAuthor;
+  /** The session that wrote or received it; null for a row whose session was not recorded. */
+  sessionId: string | null;
+  body: string;
+  /**
+   * When this message actually reached the agent - stamped from CONFIRMED delivery, never
+   * from submitting, which only queues a turn. Null while it is still the queue's business.
+   *
+   * Phase 3 selects what to send with it (a thread's oldest human message where it is
+   * NULL), which is why the queue can reorder threads and still send the right message
+   * from each.
+   */
+  deliveredAt: number | null;
+  /** When a human read it. NULL is what the Files tab's attention pip counts. */
+  readAt: number | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/**
+ * A line-anchored comment thread, drawn from durable state and never from the transcript.
+ *
+ * It carries its messages because a thread has to render from ONE frame: phase 2 draws a
+ * thread from a snapshot arm and phase 4 delivers a reply through an upsert, and neither
+ * has a second fetch. See `FILE_COMMENT_THREAD_MESSAGE_CAP` for what bounds that list and
+ * what a surface does past it.
+ *
+ * `status` and `outdated` are two dimensions, not one. A thread whose quote has stopped
+ * resolving keeps the status it had; losing that would lose its place in the review.
+ */
+export interface FileCommentThread {
+  id: string;
+  /** `MC-a41f`: the stable, human-quotable handle, unique PER SESSION and never global. */
+  shortId: string;
+  /** The session this thread belongs to. Threads end with the session that owns them. */
+  sessionId: string;
+  path: string;
+  /** 1-based, inclusive, in the file's source. */
+  startLine: number;
+  endLine: number;
+  /** The anchored source text, bounded by `FILE_COMMENT_QUOTE_MAX`. */
+  quote: string;
+  /** `sha256(path + LF + normalized quote)`; excludes the line, as the Inspector's does. */
+  quoteHash: string;
+  /** The file revision the anchor was last VALID against; null when it was unknown. */
+  revision: string | null;
+  surface: FileCommentSurface;
+  status: FileCommentThreadStatus;
+  /** The quote no longer resolves. A flag beside the status, reversible, never a status. */
+  outdated: boolean;
+  /** Position in the review; null once terminal. */
+  queueSeq: number | null;
+  /** The `pending_turns` row currently carrying it - the correlation that table cannot hold. */
+  deliveryId: string | null;
+  sentAt: number | null;
+  answeredAt: number | null;
+  /** The agent's "I handled this". A suggestion, never a closure - only a person resolves. */
+  addressedAt: number | null;
+  resolvedAt: number | null;
+  createdAt: number;
+  updatedAt: number;
+  /**
+   * In time order, oldest first. Capped at `FILE_COMMENT_THREAD_MESSAGE_CAP`, carrying the
+   * NEWEST that many when there are more.
+   */
+  messages: FileCommentMessage[];
+  /** The true total, so a surface can tell `messages` is a tail rather than the whole thread. */
+  messageCount: number;
+}
+
+/**
+ * The walkthrough's run state for one session. Phase 3 is its only writer; it is declared
+ * now because a shipped table cannot gain a column from its CREATE TABLE afterwards.
+ */
+export interface FileCommentReview {
+  sessionId: string;
+  state: FileCommentReviewState;
+  /** Why it stopped, as a human reads it. Null unless paused. */
+  pauseReason: string | null;
+  startedAt: number | null;
+  updatedAt: number;
 }
 
 /**

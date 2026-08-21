@@ -84,6 +84,7 @@ import {
 import { WorktreeOperationsService } from "./worktrees/operations.ts";
 import { nativeWorktreeOwnerReferenced } from "./worktrees/owners.ts";
 import { HarnessModelCatalogService } from "./harness/model-catalog-service.ts";
+import { FileCommentManager } from "./file-comments.ts";
 import {
   PRODUCT_ISSUE_ATTACHMENTS_DISABLED,
   ProductIssueService,
@@ -502,6 +503,13 @@ const productIssues = new ProductIssueService({
   attachments: PRODUCT_ISSUE_ATTACHMENTS_DISABLED,
 });
 
+// Line comments in the Files workspace. Constructed here rather than inside `buildApp`
+// because it subscribes to `session_remove` and reconciles on the first completed sweep -
+// a route-built twin would be a second teardown path for state whose whole contract is
+// that it has exactly three.
+const fileComments = new FileCommentManager(registry);
+fileComments.start();
+
 const app = buildApp(
   registry,
   reviews,
@@ -525,6 +533,7 @@ const app = buildApp(
   worktreeOperations,
   modelCatalogs,
   productIssues,
+  fileComments,
 );
 
 // In production the daemon serves the built SPA; in dev, Vite serves it and

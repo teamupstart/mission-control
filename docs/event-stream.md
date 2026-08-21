@@ -26,6 +26,30 @@ emits no pipeline frame, and the browser holds an array it never renders. Enabli
 repository is what starts the traffic, and withdrawing consent retires it through
 `pipeline_remove` in the same request rather than on a later tick.
 
+A collection may instead be bounded by a SESSION LIFETIME. `fileCommentThreads` - the
+line-anchored comment threads of the [Files workspace](ui.md) - carries every thread the
+daemon holds for a session it still knows about, each with its own messages so a thread
+renders from one frame rather than needing a second fetch. A thread belongs to exactly one
+session and ends with it: when the session is removed its threads are settled to `orphaned`
+by UPDATE and leave the collection through `file_comment_thread_remove`, and a throttled
+prune finally deletes settled rows whose session is gone. Nothing accumulates.
+
+Two frames carry it. `file_comment_thread_upsert` carries the WHOLE thread - a thread is
+read as one picture of one conversation on one line, so a patch could draw a marker whose
+state came from one instant and whose replies came from another. `file_comment_thread_remove`
+carries only an id, because there is nothing left to draw; for the orphan case it is a
+statement about the live collection and not about the row, which survives.
+
+The bound is stated twice and pinned once. Per thread, the anchored quote is capped
+(`FILE_COMMENT_QUOTE_MAX`) and the reply list is capped
+(`FILE_COMMENT_THREAD_MESSAGE_CAP`), with `messageCount` reporting the true total so a
+surface can tell it is looking at a tail and fetch the whole thread from
+`GET /api/file-comments/:id`. Per fleet, a review is normally tens of comments and most
+sessions have none, so the realistic ceiling is a few hundred threads;
+`test/file-comments-sse.test.ts` measures one realistic thread and states the arithmetic.
+When a surface needs more than the budget allows, fetch the one thread that is open - never
+widen the collection.
+
 Not everything crosses this stream. Detailed or unbounded history - the Ship log's day feed,
 Workflow runs, [archives](archives.md) - stays out of both the snapshot and the
 incremental frames, and is fetched on demand by the view that owns it. Where the daemon still

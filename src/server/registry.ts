@@ -16,6 +16,7 @@ import type {
   RateLimitSource,
   PrChecks,
   PrState,
+  FileCommentThread,
   ReviewItem,
   ServerEvent,
   Session,
@@ -136,6 +137,8 @@ import {
   loadRecentTerminalTasks,
   loadSessionGoals,
   loadSessionLaunchTurns,
+  loadFileCommentThreads,
+  pruneFileCommentThreads,
   pruneSessionGoals,
   pruneSessionLaunchTurns,
   loadSessionNotes,
@@ -470,6 +473,19 @@ const LINE_INPUT_EVENTS = new Set<ServerEvent["type"]>([
   // owes an operator is attention, not a stage figure, and that is phase 3's
   // `pipeline_halt` item - which reaches the strip through the attention fold this set
   // does not feed.
+  //
+  // `file_comment_thread_upsert` / `file_comment_thread_remove` are DELIBERATELY absent,
+  // and the question was asked rather than skipped. The Line folds EXECUTION - what is
+  // waiting, running, shipped - and a line comment is authoring state, in the same class as
+  // personas and workflow definitions: writing one starts nothing and finishes nothing. The
+  // strip reads no store these frames name, so membership would buy a refold per keystroke
+  // in a draft comment - the drafts are persisted from the first keystroke - for a fold
+  // whose output could not move.
+  //
+  // What WOULD change the answer is a later phase teaching the Line that a session is
+  // blocked on an unanswered review comment. That is attention, not a stage figure, and it
+  // reaches the strip through `Session.pendingReviews` and `session_upsert` the way a
+  // pending review already does - which is the same reason `review_upsert` is absent above.
 ]);
 /** Hook overlays older than this are ignored/pruned (a session went quiet). */
 const OVERLAY_TTL_MS = 30 * 60 * 1000;
@@ -656,6 +672,20 @@ export class Registry extends EventEmitter {
    * anywhere - it is empty and stays empty.
    */
   private pipelineRuns = new Map<string, PipelineRun>();
+  /**
+   * Live line-comment threads, keyed by id.
+   *
+   * A cache and a notifier, like `schedules` and `pipelineRuns`: the routes and the
+   * FileCommentManager are the writers of `file_comment_threads`, and they call
+   * `upsertFileCommentThread` / `removeFileCommentThread` here AFTER their durable write
+   * returns.
+   *
+   * BOUNDED BY LIVE SESSIONS, not by history. A thread belongs to exactly one session and
+   * ends with it, so an orphaned thread leaves this map immediately and a throttled prune
+   * finally deletes the settled row. Empty on every fleet where nobody has written a
+   * comment, which is the shipped state.
+   */
+  private fileCommentThreads = new Map<string, FileCommentThread>();
   /**
    * How a task finds out it is an ensemble member.
    *
@@ -881,6 +911,11 @@ export class Registry extends EventEmitter {
     // Seed the live catalog so a reconnect snapshot is truthful before the scheduler's first
     // tick. Empty on every machine that has never saved a schedule.
     for (const s of loadActiveSchedules()) this.schedules.set(s.id, s);
+    // Every non-orphaned thread, so a dashboard reconnecting after a daemon restart is
+    // handed the same queue it was looking at. Threads whose session went away while the
+    // daemon was down are still here at this point and are settled by the
+    // FileCommentManager's first-completed-sweep arm, not by this load.
+    for (const t of loadFileCommentThreads()) this.fileCommentThreads.set(t.id, t);
     this.hydrateTaskDependencyProvenance();
     this.cleanupDependencyProvenance();
   }
@@ -898,6 +933,7 @@ export class Registry extends EventEmitter {
     ensembleSummaries: EnsembleSummary[];
     schedules: MissionSchedule[];
     pipelineRuns: PipelineRun[];
+    fileCommentThreads: FileCommentThread[];
     fleetCost: FleetCost | null;
     lineSummary: LineSummary;
     settingsStatus: SettingsStatus;
@@ -919,6 +955,10 @@ export class Registry extends EventEmitter {
       // first pass is already right rather than blank for one tick. Empty on every fleet
       // that has enabled no pipeline repository.
       pipelineRuns: [...this.pipelineRuns.values()],
+      // Seeded from SQLite at boot for `pipelineRuns`' reason: a dashboard reconnecting
+      // after a restart must be handed the queue it was looking at, not a blank gutter
+      // until something happens to move a thread.
+      fileCommentThreads: [...this.fileCommentThreads.values()],
       // Computed on demand rather than served from `lastFleetCost`, which is null until
       // the first ingest: a dashboard opened before any export would otherwise show a
       // blank strip over a ledger that already holds a week of estimated usage.
@@ -1464,6 +1504,85 @@ export class Registry extends EventEmitter {
 
   removeSchedule(id: string): void {
     if (this.schedules.delete(id)) this.emitEvent({ type: "schedule_remove", id });
+  }
+
+  // ---- line comments in the Files workspace ----
+  //
+  // The same shape as the two catalogs below: this class holds the live projection and
+  // emits the frames, while `db.ts` owns the SQL and `FileCommentManager` owns the
+  // session-scoped lifetime. Nothing here knows what an anchor is or when a comment is
+  // due to be sent - those are the shared anchor module's and phase 3's.
+
+  listFileCommentThreads(): FileCommentThread[] {
+    return [...this.fileCommentThreads.values()];
+  }
+
+  getFileCommentThread(id: string): FileCommentThread | undefined {
+    return this.fileCommentThreads.get(id);
+  }
+
+  /** This session's threads, in queue order then creation order - the gutter's read. */
+  fileCommentThreadsForSession(sessionId: string): FileCommentThread[] {
+    return [...this.fileCommentThreads.values()]
+      .filter((t) => t.sessionId === sessionId)
+      .sort(
+        (a, b) =>
+          (a.queueSeq ?? Number.MAX_SAFE_INTEGER) - (b.queueSeq ?? Number.MAX_SAFE_INTEGER) ||
+          a.createdAt - b.createdAt,
+      );
+  }
+
+  /**
+   * Adopt a thread and tell every browser.
+   *
+   * Unconditional, unlike `upsertPipelineRun`'s suppression: nothing polls this table, so
+   * every call here is already a write somebody made - a keystroke in a draft, a reorder, a
+   * re-anchor, an agent's reply. There is no cadence to protect a quiet fleet from.
+   */
+  upsertFileCommentThread(thread: FileCommentThread): void {
+    this.fileCommentThreads.set(thread.id, thread);
+    this.emitEvent({ type: "file_comment_thread_upsert", thread });
+  }
+
+  /**
+   * A thread left the live collection - deleted outright, or settled to `orphaned` because
+   * its session went away.
+   *
+   * The orphan case is NOT a durable delete: the row survives by UPDATE, which is the
+   * standing rule for session-scoped cleanup here. This only says the browser should stop
+   * holding it.
+   */
+  removeFileCommentThread(id: string): void {
+    if (this.fileCommentThreads.delete(id)) {
+      this.emitEvent({ type: "file_comment_thread_remove", id });
+    }
+  }
+
+  /**
+   * Finally delete settled threads whose session key is gone.
+   *
+   * `pruneGoals`' twin, for `pruneGoals`' reasons, and with the same `sweptSessions` gate:
+   * "no live session owns this thread" is a claim about the session map, and before the
+   * first completed sweep that map is empty because nobody has filled it in - not because
+   * there are no sessions. The constructor loads the whole thread table while `sessions` is
+   * still empty, so an ungated sweep at boot would read every thread as stranded.
+   *
+   * `sessions` rather than `liveSessions()`, also for `pruneGoals`' reason: an exited card
+   * is still on screen with its file open, and it keeps its threads until it is evicted.
+   */
+  pruneFileComments(olderThan: number): number {
+    if (!this.sweptSessions) return 0;
+    const live = new Set(this.sessions.keys());
+    const removed = pruneFileCommentThreads(live, olderThan);
+    if (!removed) return 0;
+    // The map holds only non-terminal threads for live sessions, so a pruned row is
+    // normally already gone from it. Dropping any straggler keeps the two from drifting
+    // the way `pruneGoals` keeps `this.goals` from drifting.
+    for (const [id, t] of this.fileCommentThreads) {
+      if (live.has(t.sessionId) || t.updatedAt >= olderThan) continue;
+      this.fileCommentThreads.delete(id);
+    }
+    return removed;
   }
 
   // ---- pipeline projection (external SDLC engines) ----

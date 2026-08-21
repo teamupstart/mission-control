@@ -130,6 +130,7 @@ npm start              # daemon serving built UI
 npm run foreman        # Foreman worker (needs-you queue, work queues, PR follow-up, backlog autopilot)
 npm run build          # build web + MCP bundle
 npm test               # full test suite, including real Electron GUI geometry checks
+npm run test:workflow-evidence # focused evidence transport and Test Evidence audit checks
 npm run test:electron  # focused Electron GUI checks (see AGENTS.md for macOS Seatbelt guidance)
 npm run test:e2e       # Playwright: drive the real dashboard against a real daemon (after build)
 npx playwright install chromium # one-time setup for test:e2e (npm install does not fetch it)

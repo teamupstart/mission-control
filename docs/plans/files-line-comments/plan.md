@@ -436,9 +436,9 @@ in the middle, pause and resume.
 the payload carries its **oldest human message whose `delivered_at` is NULL** - not "the
 comment", which stops being well defined the moment a thread has more than one. On a thread's
 first turn that is the opening comment. On a thread you replied to after the agent answered, it
-is the reply, which is the whole point of replying. Sending is what stamps `delivered_at`, so
-the same message is never sent twice, and the rule needs no column the model does not already
-have.
+is the reply, which is the whole point of replying. **Confirmed delivery** is what stamps
+`delivered_at` - not submitting, which only queues - so the same message is never sent twice, and
+the rule needs no column the model does not already have.
 
 If more undelivered human messages remain when that turn resolves, the thread re-enters the
 queue for the next one, one at a time like everything else. Two replies written in one sitting
@@ -522,7 +522,7 @@ file_comment_messages
   delivered_at  INTEGER          -- when it reached the agent; NULL while queued
   read_at       INTEGER          -- when a human read it; NULL while it counts toward the pip
   created_at    INTEGER NOT NULL
-  updated_at    INTEGER NOT NULL -- editable until delivered_at is set, frozen after
+  updated_at    INTEGER NOT NULL -- editable until its thread is outstanding, frozen after
 
 file_comment_reviews
   session_id    TEXT PRIMARY KEY -- one review per session, per decision 2
@@ -552,7 +552,10 @@ thread keeps its anchor, its marker and its place in the file; what it does not 
 turn. Because decision 2 scopes a thread to a session, that index is exactly the invariant the
 walkthrough needs and nothing broader.
 `delivery_id` is the correlation `pending_turns` cannot carry: it lives here instead, so that
-table needs no new column.
+table needs no new column. It is written when the thread enters `sending`, and it is what lets the
+walkthrough recognise its own turn again in the outbox - including after a restart, when every
+in-flight row has been flipped to `uncertain` and the thread has to be told apart from a turn that
+landed.
 
 **`read_at` is what the Files tab pip counts.** The pip is agent-authored messages whose
 `read_at` is NULL, for that session. It has to be a column rather than browser state for the same
@@ -560,12 +563,18 @@ reason drafts are: the integrated tab and the extracted Files window are two liv
 instances that converge only through the daemon, so a badge kept in one of them is wrong in the
 other. Expanding a thread stamps it.
 
-**A message is editable until it is delivered, and frozen afterwards.** `delivered_at IS NULL` is
-the whole test. That is what makes a draft a draft: the opening comment is an ordinary message row
-you keep editing from the first keystroke, and so is a queued reply, which is why the walkthrough
-can offer edit-unsent at all. The moment a message reaches the agent it stops being editable,
-because from then on the dashboard's copy and the agent's copy have to be the same text - a
-comment you could rewrite after it was read would make every transcript a guess.
+**A message is editable until it leaves for the agent, and frozen afterwards.** That is what makes
+a draft a draft: the opening comment is an ordinary message row you keep editing from the first
+keystroke, and so is a queued reply, which is why the walkthrough can offer edit-unsent at all.
+From then on the dashboard's copy and the agent's copy have to be the same text - a comment you
+could rewrite after it was read would make every transcript a guess.
+
+The test is `delivered_at IS NULL` **and its thread not outstanding**, because those are two
+different moments and the gap between them is real: submitting only queues a turn, so the bytes sit
+in `pending_turns.text` while the thread is `sending` and before `delivered_at` exists. Freezing on
+`delivered_at` alone would leave that window editable, and an edit inside it changes the
+dashboard's copy of a comment whose bytes are already committed to the outbox - the exact
+divergence the rule exists to prevent.
 
 **The review's run state is a table, not a derived value.** "Paused" and "never started" are the
 same set of rows - everything `queued`, nothing outstanding - so the walkthrough cannot tell them

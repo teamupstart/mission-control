@@ -56,10 +56,30 @@ measurement the plan's two 60% assumptions need.
      head-of-line blocking behind an `uncertain` row, and the missing correlation id from ever
      mattering.
    - `delivery_id` on the thread is that correlation. `pending_turns` gains no column.
-   - **Stamp the message with `markFileCommentMessageDelivered` as part of the same send.** That
-     one write does three jobs: it stops the message being sent again, it freezes it from further
-     editing, and it is what makes edit-unsent correctly refuse the outstanding comment. Skip it
-     and all three fail quietly.
+   - **Submitting is not delivering, and they get separate writes.** `submit()` only creates a
+     `queued` row and returns `delivery: "pending"` with `submitVerified: false`; the bytes reach
+     the agent later, from the drain. So the submit write is phase 1's
+     `beginFileCommentDelivery` - thread `queued` → `sending`, storing `delivery_id` and the row's
+     `revision`, since every `pending_turns` mutation is revision-checked. **It does not stamp
+     `delivered_at`.**
+   - **`delivered_at` is stamped from the confirmed-delivery signal.** That signal already exists
+     and already has a consumer: the only two sites that retire a claimed row
+     (`pending-turns.ts:606` and `:849`) both call `journalDelivered` (`:865`), whose comment
+     states the rule - those are the places a row "positively reached the agent" - and
+     `journalScoutPrompt` is its existing subscriber. Stamping there is a second subscriber to an
+     established fact, not a new mechanism. That write stamps `delivered_at` and moves the thread
+     `sending` → `awaiting` together.
+   - **A row leaving `pending_turns` is not proof of delivery.** `recallPendingTurn` and
+     `dropQueuedPendingTurns` remove rows too, so key off the signal and never off the row's
+     absence. Recalled or dropped, the thread returns to `queued`, `delivery_id` clears, and
+     `delivered_at` stays NULL so the comment is editable again.
+   - **A delivery that ends `uncertain` never stamps**, leaving the thread `sending` and pausing
+     the review (item 6). **This is also the daemon-restart case, and it needs no separate
+     design**: `recoverSendingPendingTurns` already flips every `sending` row to `uncertain` at
+     startup with "Mission Control restarted during delivery; confirm before retrying." A restart
+     mid-delivery therefore surfaces as a paused review awaiting one human confirmation. Stamping
+     at submit would instead have recorded it as delivered, and the comment would sit frozen and
+     answered-for-ever having never reached the agent.
 5. **Advance signals.** In this phase there is only one: the session settles idle. Per decision 3,
    wait a grace window, move the thread from `awaiting` to `unanswered`, and release the next.
    **Moving it out of `awaiting` is not bookkeeping** - `unanswered` sits outside phase 1's
@@ -73,14 +93,15 @@ measurement the plan's two 60% assumptions need.
    comment. A send that lands in `uncertain` pauses the review and surfaces the **existing** Retry /
    Mark sent controls rather than inventing a second recovery path.
 7. **Queue controls in the UI**: queue depth, Start review, Pause, reorder, edit-unsent, drop.
-   Edit-unsent is phase 1's message-edit route, which refuses a delivered row - so the control is
-   offered on queued comments and not on the outstanding one. Pause
+   Edit-unsent is phase 1's message-edit route, which refuses a delivered row **and one whose
+   thread is outstanding** - so the control is offered on queued comments and not on the one in
+   flight, including during the `sending` window before delivery is confirmed. Pause
    takes effect after the outstanding comment resolves and never recalls a delivered one.
 8. **A human reply in a thread re-enters the queue** at the end, and is delivered in its turn
    exactly like a new comment. **What gets sent is the reply, not the comment that opened the
    thread** - the payload always carries the thread's oldest human message with `delivered_at`
    NULL, so a requeued thread sends the message you just wrote rather than resending its first
-   one. Sending stamps `delivered_at`, which is what stops a message going twice; if further
+   one. Confirmed delivery stamps `delivered_at`, which is what stops a message going twice; if further
    undelivered human messages remain when the turn resolves, the thread requeues again for the
    next one. An `answered` thread that gains a human reply goes back to `queued` with its history
    intact - the `outdated` flag is a column beside the status, so it stays
@@ -190,3 +211,15 @@ Phase 4 may rely on, and must not change:
   Phase 1 gained `updateFileCommentThreadAnchor` and this pass now calls it once per comment, and
   passes the file's current revision into `reanchor()` so the "revision unchanged" short-circuit
   can actually fire.
+- Review pass (round 12): **this phase stamped `delivered_at` at submit, and submitting is not
+  delivering.** `pendingTurns.submit()` only creates a `queued` row - it returns
+  `delivery: "pending"` with `submitVerified: false`, and the bytes reach the agent later from the
+  drain, where the attempt can still end `uncertain`, be recalled, be dropped, or be caught by a
+  restart. Stamping at submit would have frozen a comment and recorded it as delivered when the
+  agent may never have seen it. Split into two writes: `beginFileCommentDelivery` at submit
+  (`queued` → `sending`, storing `delivery_id`) and `markFileCommentMessageDelivered` on the
+  confirmed-delivery signal (`sending` → `awaiting`). The signal is the one `journalDelivered`
+  already raises at the only two sites that retire a claimed row, so this is a second subscriber to
+  an established fact rather than a new mechanism. The restart case needed no new design:
+  `recoverSendingPendingTurns` already turns every in-flight row `uncertain`, which lands on this
+  phase's existing pause-and-confirm path.

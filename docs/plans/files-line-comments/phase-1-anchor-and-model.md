@@ -65,9 +65,19 @@ change them cheaply. That ordering is deliberate - see the entry on `addColumn` 
    - **Minting `short_id`.** Creation derives the thread's `MC-xxxx` handle beside its UUID and
      stores it, unique per session. It is what the payload cites and what the transcript fallback
      matches, so it is generated once and never recomputed from the row.
-   - **`markFileCommentMessageDelivered(id, at)`** stamps `delivered_at`. The column is written by
-     the delivery path in phase 3, so it needs its writer declared here alongside the insert -
-     otherwise it is a column with no way to stop being NULL.
+   - **`beginFileCommentDelivery(threadId, deliveryId, deliveryRevision)`** moves a thread
+     `queued` → `sending` and records the correlation in `delivery_id`. This is the write phase 3
+     performs when it *submits*, and it deliberately does **not** stamp `delivered_at`:
+     `pendingTurns.submit()` only enqueues a turn (`delivery: "pending"`, `submitVerified: false`),
+     so from here the thread is outstanding but not yet delivered. It is also where the partial
+     unique index bites, which is the point - the index refuses a second `sending` row for the
+     session rather than trusting phase 3's bookkeeping.
+   - **`markFileCommentMessageDelivered(id, at)`** stamps `delivered_at` and completes that
+     transition, `sending` → `awaiting`. Phase 3 calls it from the **confirmed-delivery** signal -
+     the one the two sites that retire a claimed row already raise (`pending-turns.ts:606`, `:849`,
+     both via `journalDelivered`) - and never at submit. Stamping at submit would mark a comment
+     delivered while it was still queued in the outbox, where it can still be recalled, dropped, or
+     turned `uncertain` by a restart.
    - **`updateFileCommentThreadAnchor(threadId, { startLine, endLine, revision, outdated })`** is
      what makes the re-anchor pass durable. `reanchor()` is pure and only returns an outcome, so
      without a writer a thread that moved would be recomputed from its original anchor on every
@@ -86,9 +96,14 @@ change them cheaply. That ordering is deliberate - see the entry on `addColumn` 
    - **`updateFileCommentMessageBody(id, body)`, and the rule that governs it.** The comment text
      lives in `file_comment_messages`, not on the thread, so this is the only way any comment body
      is edited - phase 2's drafts-from-the-first-keystroke and phase 3's edit-unsent are both this
-     one function. **It refuses a row whose `delivered_at` is set**, and that refusal is the
-     contract, not a nicety: once the agent has read a comment, the dashboard's copy and the
-     agent's copy have to stay the same text. Editable until delivered, frozen after.
+     one function. **It refuses a row whose `delivered_at` is set, and also one whose thread is
+     outstanding** - reuse the same exported tuple the partial unique index is built from, rather
+     than spelling the statuses again. That refusal is the contract, not a nicety: once a comment's
+     bytes are committed to the outbox the dashboard's copy and the agent's copy have to stay the
+     same text. **Both halves are needed.** They are two different moments: submitting only queues
+     a turn, so a comment sits in `pending_turns.text` while its thread is `sending` and before
+     `delivered_at` exists. Refusing on `delivered_at` alone leaves that window editable, and an
+     edit inside it changes the dashboard's copy of a comment already committed to the outbox.
    - **`file_comment_messages` gets its writer here too.** `appendFileCommentMessage(threadId,
      author, body)` is the only insert - **thread creation calls it** for the opening message
      rather than writing a row of its own, so there is one insert path and not two that can drift.
@@ -177,7 +192,8 @@ change them cheaply. That ordering is deliberate - see the entry on `addColumn` 
 - `test/file-comment-contracts.test.ts` - Zod bounds and refusals.
 - `test/file-comments-store.test.ts` - SQL, status transitions, `queue_seq` rewrites, the
   `outdated` flag surviving a status change in both directions, message append and load order for
-  both authors, editing an undelivered message and **being refused on a delivered one**, stamping
+  both authors, editing an undelivered message and **being refused on a delivered one and on one
+  whose thread is merely outstanding**, stamping
   `addressed_at` and `read_at` without touching `status`, and that the partial unique index refuses a second outstanding row for one session
   **from either outstanding status** - a `sending` row beside an `awaiting` one, not just two
   `sending` rows. That asymmetric case is the one an index over a single status would pass.
@@ -222,7 +238,8 @@ Later phases may rely on, and must not change:
 - The outstanding-status tuple and the index built from it. Phase 3 enforces one turn outstanding
   on top of this, never instead of it, and never widens the tuple to make a transition easier -
   `unanswered` exists precisely so decision 3's auto-advance does not need it widened.
-- `short_id` minting (creation), `markFileCommentMessageDelivered` (phase 3, at send),
+- `short_id` minting (creation), `beginFileCommentDelivery` (phase 3, at submit) and
+  `markFileCommentMessageDelivered` (phase 3, on confirmed delivery - **not** at submit),
   `updateFileCommentThreadAnchor` (phase 3, re-anchor pass), the
   status-setting route (phases 2 and 4), `markFileCommentThreadAddressed` (phase 4) and
   `markFileCommentMessagesRead` (phase 4). Each has exactly one declaration here; no phase
@@ -283,3 +300,10 @@ the walkthrough state machine and payload (phase 3), the MCP tool (phase 4).
   creation value forever. Fixed by taking the revision as an argument and adding
   `updateFileCommentThreadAnchor` as its single writer. The three outcomes phase 5 depends on are
   unchanged - the revision rides on the outcome rather than becoming a fourth.
+- Review pass (round 12): `delivery_id` was declared with no writer - the same class of gap round
+  11 found on `revision`. It gained `beginFileCommentDelivery`, which is also where the split
+  between submitting and delivering is recorded, because phase 3 had been stamping `delivered_at`
+  at submit. The message-edit refusal widened with it: freezing on `delivered_at` alone left the
+  `sending` window editable, and a comment whose bytes are already in `pending_turns.text` must not
+  be rewritable. The refusal reuses the exported outstanding-status tuple rather than respelling
+  the statuses.

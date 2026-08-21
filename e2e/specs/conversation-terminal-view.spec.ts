@@ -160,15 +160,29 @@ test("the terminal rendering draws the conversation as one stream", async ({ das
   await openConversation(card);
 
   // This suite pins its ordinary dashboard fixture to Chat so rendering-focused specs state
-  // their own precondition. Asserting it first is what makes the switch below mean something.
+  // their own precondition. Its composer carries the same binding-derived prompt as Terminal,
+  // and pressing that displayed default proves it focuses the shared reply box.
   await expect(card.getByRole("region", { name: "Conversation terminal" })).toHaveCount(0);
-  await seedRun(card, card.getByPlaceholder(/^Reply to this session/));
+  await expect(card.getByText("mission (s) >", { exact: true })).toBeVisible();
+  const chatReply = card.getByPlaceholder(/^Reply to this session/);
+  // The transcript deliberately stops pointer clicks from changing card selection, so use
+  // the documented fleet navigation path before exercising a selected-session shortcut.
+  await dashboard.keyboard.press("ArrowDown");
+  await expect(card).toHaveClass(/selected/);
+  await dashboard.keyboard.press("s");
+  await expect(chatReply).toBeFocused();
+  await shoot(dashboard, card, "00-chat-composer-binding");
+  await seedRun(card, chatReply);
 
   await dashboard.setViewportSize({ width: 1920, height: 1080 });
   await fetch(`${daemon.baseURL}/api/ui/config`, {
     method: "PUT",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ layout: "console", conversationView: "terminal" }),
+    body: JSON.stringify({
+      layout: "console",
+      conversationView: "terminal",
+      keybindings: { send: "shift+j" },
+    }),
   });
   await dashboard.reload();
   const rail = dashboard.getByRole("navigation", { name: "Sessions" });
@@ -239,10 +253,15 @@ test("the terminal rendering draws the conversation as one stream", async ({ das
   await dashboard.keyboard.press("Escape");
   await expect(findBox).toHaveCount(0);
 
-  // The composer keeps the prompt metaphor, and keeps working.
-  await expect(reopened.getByText("mission ❯")).toBeVisible();
+  // The composer keeps the prompt metaphor and teaches the RESOLVED focus binding, not
+  // the shipped `s`. Pressing the rebound chord proves the cue and the action share one
+  // source rather than merely displaying the same custom value by coincidence.
+  await expect(reopened.getByText("mission (⇧J) >", { exact: true })).toBeVisible();
   const reply = reopened.getByPlaceholder(/^Send the next instruction/);
   await expect(reply).toBeEnabled();
+  await terminal.locator(".pty-titlebar").click();
+  await dashboard.keyboard.press("Shift+J");
+  await expect(reply).toBeFocused();
 
   // The status line carries this session's real state.
   const statusLine = reopened.getByRole("region", { name: "Session status" });

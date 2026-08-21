@@ -408,9 +408,12 @@ export function WorkflowProperties({
               a session action included, is removable now that it is authorable - an add
               control without a matching remove is half an authoring loop. */}
           {!readOnly && selectedNode.kind !== "session" && (
-            <Tooltip label="Remove this node and every route touching it">
-              <DeleteButton className="btn btn-danger" shortcutPrimary onClick={removeSelection}>Delete node</DeleteButton>
-            </Tooltip>
+            <DeleteButton
+              className="btn btn-danger"
+              shortcutPrimary
+              tooltip="Remove this node and every route touching it"
+              onClick={removeSelection}
+            >Delete node</DeleteButton>
           )}
         </section>
       ) : selectedEdge ? (
@@ -419,9 +422,12 @@ export function WorkflowProperties({
           <h3>{selectedEdge.sourcePort} → {selectedEdge.targetPort}</h3>
           <p>{labelOf(selectedEdge.source)} to {labelOf(selectedEdge.target)}</p>
           {!readOnly && (
-            <Tooltip label="Remove this connection between the two nodes">
-              <DeleteButton className="btn btn-danger" shortcutPrimary onClick={removeSelection}>Delete edge</DeleteButton>
-            </Tooltip>
+            <DeleteButton
+              className="btn btn-danger"
+              shortcutPrimary
+              tooltip="Remove this connection between the two nodes"
+              onClick={removeSelection}
+            >Delete edge</DeleteButton>
           )}
         </section>
       ) : selection?.kind === "multi" ? (

@@ -69,7 +69,7 @@ function setHints(on: boolean): void {
 test("hints are on out of the box, so the shortcuts are discoverable without being sought", () => {
   resetAll();
   setHints(true);
-  assert.deepEqual(keycaps(actionBar()), ["p", "d", "⌃R", "⌃C", "c", "k"]);
+  assert.deepEqual(keycaps(actionBar()), ["p", "⇧D", "⌃R", "⌃C", "c", "k"]);
 });
 
 test("turning the preference off leaves the buttons, and not one keycap", () => {
@@ -93,7 +93,7 @@ test("the console footer answers to the shared hints switch", () => {
   setHints(false);
   assert.equal(keycaps(actionBar()).length, 0);
   setHints(true);
-  assert.deepEqual(keycaps(actionBar()), ["p", "d", "⌃R", "⌃C", "c", "k"]);
+  assert.deepEqual(keycaps(actionBar()), ["p", "⇧D", "⌃R", "⌃C", "c", "k"]);
 });
 
 test("a rebind moves what the buttons print, so a keycap is never a stale default", () => {

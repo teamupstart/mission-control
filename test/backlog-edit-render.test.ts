@@ -152,7 +152,10 @@ test("only the editor offers to delete, and only from the footer", () => {
   // The exact pair the Sitrep's Delete wears, pinned rather than matched loosely: "looks like
   // the other Delete" is the claim, and a class list that drifts is how two surfaces offering
   // the same action stop looking like the same action.
-  assert.match(editing, /<button class="btn btn-danger-ghost"[^>]*>Delete<\/button>/);
+  assert.match(
+    editing,
+    /<button class="btn btn-danger-ghost"[^>]*>Delete<kbd class="kb-hint">d<\/kbd><\/button>/,
+  );
   assert.ok(
     hasTooltip(editor(mkTask()), "Delete this task from the backlog"),
     "Delete must say what it deletes - 'Delete' alone, beside Revert, could read as the draft",

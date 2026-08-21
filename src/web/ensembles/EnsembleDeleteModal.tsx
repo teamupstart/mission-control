@@ -71,11 +71,14 @@ export function EnsembleDeleteModal({
               Cancel
             </button>
           </Tooltip>
-          <Tooltip label="Permanently delete this run's history and private refs">
-            <DeleteButton type="submit" className="btn btn-danger" disabled={busy}>
-              {busy ? "Deleting…" : "Delete run"}
-            </DeleteButton>
-          </Tooltip>
+          <DeleteButton
+            type="submit"
+            className="btn btn-danger"
+            disabled={busy}
+            tooltip="Permanently delete this run's history and private refs"
+          >
+            {busy ? "Deleting…" : "Delete run"}
+          </DeleteButton>
         </footer>
       </form>
     </Overlay>

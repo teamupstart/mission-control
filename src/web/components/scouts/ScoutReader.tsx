@@ -323,11 +323,11 @@ export function ScoutReader({
               </Tooltip>
             ) : null}
             <span className="spacer" />
-            <Tooltip label="Delete this archive from the library on this machine">
             <DeleteButton
               type="button"
               className="btn btn-danger-ghost"
               shortcutPrimary
+              tooltip="Delete this archive from the library on this machine"
               onClick={(event) =>
                 onDelete(
                   {
@@ -342,7 +342,6 @@ export function ScoutReader({
             >
               Delete scout
             </DeleteButton>
-            </Tooltip>
           </div>
           {/*
             The daemon's own diagnostic for a bundle it could not read.

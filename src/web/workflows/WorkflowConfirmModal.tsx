@@ -95,6 +95,11 @@ export function WorkflowConfirmModal({
     ? workflowEvidenceSubmission(evidence.controller, evidence.scopes)
     : null;
   const evidenceReady = !request.captureEvidence || evidenceSubmission?.ready === true;
+  const confirmTooltip = request.requirePhrase && !satisfied
+    ? `Type ${request.requirePhrase} above to enable this`
+    : !evidenceReady
+      ? "Finish the image evidence packet before submitting"
+      : request.confirmHint;
   return (
     <Overlay
       id={OVERLAY_IDS.workflowConfirm}
@@ -147,21 +152,18 @@ export function WorkflowConfirmModal({
           <Tooltip label={request.cancelHint ?? "Leave the workflow as it is"}>
             <button type="button" className="btn btn-ghost" onClick={onClose}>Cancel</button>
           </Tooltip>
-          <Tooltip label={request.requirePhrase && !satisfied
-            ? `Type ${request.requirePhrase} above to enable this`
-            : !evidenceReady
-              ? "Finish the image evidence packet before submitting"
-            : request.confirmHint}>
-            {request.shortcut === "delete" ? (
-              <DeleteButton
-                type="submit"
-                className={request.danger ? "btn btn-danger" : "btn"}
-                disabled={!satisfied || !evidenceReady}
-                autoFocus={!request.requirePhrase}
-              >
-                {request.confirmLabel}
-              </DeleteButton>
-            ) : (
+          {request.shortcut === "delete" ? (
+            <DeleteButton
+              type="submit"
+              className={request.danger ? "btn btn-danger" : "btn"}
+              disabled={!satisfied || !evidenceReady}
+              autoFocus={!request.requirePhrase}
+              tooltip={confirmTooltip}
+            >
+              {request.confirmLabel}
+            </DeleteButton>
+          ) : (
+            <Tooltip label={confirmTooltip}>
               <button
                 type="submit"
                 className={request.danger ? "btn btn-danger" : "btn"}
@@ -170,8 +172,8 @@ export function WorkflowConfirmModal({
               >
                 {request.confirmLabel}
               </button>
-            )}
-          </Tooltip>
+            </Tooltip>
+          )}
         </footer>
       </form>
     </Overlay>

@@ -140,11 +140,14 @@ export function EnsembleActions({
           </Tooltip>
         )}
         {terminal && !confirmDelete && (
-          <Tooltip label="Delete this run's history and private refs (tasks and workflow survive)">
-            <DeleteButton className="btn btn-ghost danger" disabled={busy} onClick={() => setConfirmDelete(true)}>
-              Delete run…
-            </DeleteButton>
-          </Tooltip>
+          <DeleteButton
+            className="btn btn-ghost danger"
+            disabled={busy}
+            tooltip="Delete this run's history and private refs (tasks and workflow survive)"
+            onClick={() => setConfirmDelete(true)}
+          >
+            Delete run…
+          </DeleteButton>
         )}
       </div>
 

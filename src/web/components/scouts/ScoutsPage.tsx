@@ -428,11 +428,11 @@ export function ScoutsPage({
                           ) : null}
                         </button>
                         </Tooltip>
-                        <Tooltip label={`Delete ${scoutLabel(archive)} (${formatChord(bindings.delete)})`}>
-                          <DeleteButton
+                        <DeleteButton
                             type="button"
                             className="btn btn-ghost scouts-row-more"
                             showShortcutHint={false}
+                            tooltip={`Delete ${scoutLabel(archive)} (${formatChord(bindings.delete)})`}
                             aria-label={`Delete the scout archive ${scoutLabel(archive)}`}
                             onClick={(event) => {
                               invoker.current = event.currentTarget;
@@ -445,8 +445,7 @@ export function ScoutsPage({
                             }}
                           >
                             ⋯
-                          </DeleteButton>
-                        </Tooltip>
+                        </DeleteButton>
                       </div>
                     </li>
                   ))}

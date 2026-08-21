@@ -127,15 +127,16 @@ export function ScoutDeleteModal({
               Cancel
             </button>
           </Tooltip>
-          <Tooltip label={
-            armed
+          <DeleteButton
+            type="submit"
+            className="btn btn-danger"
+            disabled={!armed}
+            tooltip={armed
               ? "Remove this bundle and its search entry from the library on this machine"
-              : `Type ${CONFIRM_WORD} above to enable this`
-          }>
-            <DeleteButton type="submit" className="btn btn-danger" disabled={!armed}>
-              {busy ? "Deleting…" : "Delete scout"}
-            </DeleteButton>
-          </Tooltip>
+              : `Type ${CONFIRM_WORD} above to enable this`}
+          >
+            {busy ? "Deleting…" : "Delete scout"}
+          </DeleteButton>
         </footer>
       </form>
     </Overlay>

@@ -171,11 +171,13 @@ function BacklogReportRow({
             {blockers.length > 0 ? "Waiting" : "Dispatch"}
           </button>
         </Tooltip>
-        <Tooltip label="Delete this task from the backlog">
-          <DeleteButton className="btn btn-danger-ghost" onClick={() => void api.deleteTask(task.id)}>
-            Delete
-          </DeleteButton>
-        </Tooltip>
+        <DeleteButton
+          className="btn btn-danger-ghost"
+          tooltip="Delete this task from the backlog"
+          onClick={() => void api.deleteTask(task.id)}
+        >
+          Delete
+        </DeleteButton>
       </div>
     </div>
   );

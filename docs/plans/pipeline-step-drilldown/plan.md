@@ -132,8 +132,9 @@ step that has not started.
 **Each band is an optional field on one `PipelineStepDetail`, and that is load-bearing rather
 than convenient.** Absence is already a state the reader must draw, so a band no phase has
 implemented yet is indistinguishable from a band whose engine wrote nothing - which is what lets
-[Decision 2](#decision-2---what-the-first-phase-covers) put bands 1 to 3 in the first phase and
-bands 4 and 5 in later ones without either of them changing the contract. Every band below is
+[Decision 2](#decision-2---what-the-first-phase-covers) propose bands 1 to 3 for the first phase
+and bands 4 and 5 for later ones without either split changing the contract - and why the split
+can wait on the operator without stranding anything. Every band below is
 specified in full here regardless of which phase builds it.
 
 ### 1. Timeline
@@ -374,63 +375,75 @@ not in any contract this build could copy.
   exactly the live run's shape: its ledger opens at `step_started acceptance_specs index 11`.
   The reader says which steps it has no timeline for rather than drawing them as empty.
 - **The audit trail and the event ledger are retired with the worktree.** Both live under
-  `.pipeline/`, so a torn-down worktree takes its history with it. Decision 3 below adopts
-  reading on demand and accepts that cost, which is the cost today's gate files already carry;
-  it also records the tailing alternative as a self-contained later phase rather than a fork.
+  `.pipeline/`, so a torn-down worktree takes its history with it. Decision 3 below proposes
+  reading on demand and accepting that cost, which is the cost today's gate files already carry;
+  it records the tailing alternative as a self-contained later phase rather than a fork. Neither
+  is approved yet.
 - **Artifacts are listed, not versioned.** A file the engine has since rewritten is shown as it
   is now. There is no per-step snapshot on disk to show instead.
 
 ## Decisions
 
-Three choices decide the component boundary and the read architecture. Each is **recorded here
-with an adopted option that binds implementation**, so a phase owner has one thing to build and
-not a fork to guess at.
+Three choices decide the component boundary and the read architecture. Each is **recorded here as
+one proposed option with its bounded alternatives**, so there is a single thing under discussion
+rather than a fork a phase owner has to guess at.
+
+> ### Blocking precondition
+>
+> **None of the three is approved, and none of them authorizes implementation.** Each carries
+> `Status: PENDING OPERATOR CONFIRMATION`. No phase may be scheduled, and no code written against
+> a phase, until the operator's selection is recorded in this section and the status line changed
+> to name them and the date.
+>
+> A proposal is written down so the plan is unambiguous about *what is being asked*. It is not a
+> licence to build it. Those are different things and this section keeps them apart.
 
 **Provenance, stated plainly so nobody reads more into it than is there.** These are the plan
-author's adopted defaults, not the operator's selections. The choices were put to the operator
-twice through `request_plan_decisions`; both requests timed out with no submission, so nothing
-was selected and nothing is recorded as selected. They bind implementation because a plan that
-leaves them open is not executable - not because a human has ratified them. Each carries the
-bounded alternative and its blast radius, so a later operator reversal is a scoped change with a
-known cost rather than a redesign.
+author's proposals, not the operator's selections. The choices were put to the operator twice
+through `request_plan_decisions`; both requests timed out with no submission, so nothing was
+selected and nothing is recorded as selected. Recording a proposal is what removes the ambiguity
+that made the plan unreadable as a source document; it is the gate above, not the proposal, that
+decides whether anything gets built.
 
-### What makes all three safe to bind now
+### Why a written proposal costs nothing to reverse
 
-One invariant, and it is the reason the read architecture does not depend on any of them:
+One invariant, and it is why none of these three can strand the work whichever way it goes:
 
 > `PipelineStepDetail` is defined **once**, with every band an optional field. A band a phase
 > has not implemented is *absent*, which is already a state the reader must render - a step with
 > nothing recorded is an ordinary state, not an error. So adding a band later is an additive
 > field on a shape that already tolerates its absence, never a change to the contract.
 
-That is what separates the three: **one of them touches the architecture and two do not.**
+That is what separates the three: **one of them touches the architecture and two do not.** It is
+also why waiting on the operator costs nothing structural - the shape is settled, only the
+policy is open.
 
 ### Decision 1 - reader placement
 
-**Adopted: a section below the strip, focused by the click.** It matches the workflow runs page,
+**Status: PENDING OPERATOR CONFIRMATION.** Proposed: a section below the strip, focused by the click. It matches the workflow runs page,
 which already focuses its `Review worklist` from strip clicks (`WorkflowRuns.tsx:2101-2163`), so
 the pipelines surface gains no interaction idiom of its own.
 
 *Not an architecture decision.* The reader is a pure renderer over `PipelineStepDetail`;
 placement decides only where it mounts.
 
-| Alternative | What changes if the operator reverses this |
+| Alternative | What changes if the operator picks this instead |
 |---|---|
 | Drawer beside the strip | `PipelineRunView.tsx`, a new drawer frame under the `pipelines-` prefix, the `styles.css` block, and the e2e spec's selectors. |
 | Full overlay | The above, plus a new id in `OVERLAY_IDS` and an `Overlay` registration. |
 | Inline in the strip | The above, plus a layout answer for a 3 kB markdown tail inside a card that is one of six in a horizontally scrolling frame. Rejected on that ground, not on preference. |
 
-Untouched in every case: `PipelineStepDetail`, `usePipelineStepDetail`, the route, the server
+Untouched whichever the operator picks: `PipelineStepDetail`, `usePipelineStepDetail`, the route, the server
 readers, the shared types, and `test/pipeline-sse.test.ts`.
 
 ### Decision 2 - what the first phase covers
 
-**Adopted: bands 1, 2 and 3** - Timeline, Gate history and operator actions, and Outcome. Those
+**Status: PENDING OPERATOR CONFIRMATION.** Proposed: bands 1, 2 and 3 - Timeline, Gate history and operator actions, and Outcome. Those
 read only the two ledgers that already exist and have no reader, so the first phase adds **no
 new file readers at all** and still delivers `step_completed.tail`, retries with escalations,
 kickback reasons, per-dispatch cost, skip reasons, interventions and halt clears.
 
-Bands 4 (Findings) and 5 (Artifacts) are **later phases, not descoped work.** Each is a set of
+Under this proposal bands 4 (Findings) and 5 (Artifacts) are **later phases, not descoped work.** Each is a set of
 independent file readers behind an optional field, so each lands on its own without touching
 what shipped before it.
 
@@ -438,7 +451,7 @@ what shipped before it.
 so: a phase that does not implement band 4 leaves `findings` absent, and the reader renders that
 exactly as it renders a step whose engine wrote no findings.
 
-| Alternative | What changes if the operator reverses this |
+| Alternative | What changes if the operator picks this instead |
 |---|---|
 | Bands 1 and 3 only | Drop the audit-trail reader from phase 1. The gate-history band goes absent; every gate occurrence and every operator action stays invisible until a later phase. |
 | Also band 4 | Phase 1 additionally carries six version-tolerant file readers and their tests. Larger phase, same contract. |
@@ -446,7 +459,7 @@ exactly as it renders a step whose engine wrote no findings.
 
 ### Decision 3 - audit-trail retention
 
-**Adopted: read on demand, like the gate files.** No new storage, no cursor column, no retention
+**Status: PENDING OPERATOR CONFIRMATION.** Proposed: read on demand, like the gate files. No new storage, no cursor column, no retention
 path, no migration. It keeps the rule `db.ts` states - the projection is a cache of the engine's
 files and may store nothing the engine did not write down - which is the rule the whole
 read-through design rests on.
@@ -456,11 +469,11 @@ cost is named rather than hidden: the audit trail lives under `.pipeline/`, so a
 engine tears down takes its gate history, its interventions and its halt clears with it. Today's
 gate files behave identically, so this loses nothing that is currently kept.
 
-| Alternative | What changes if the operator reverses this |
+| Alternative | What changes if the operator picks this instead |
 |---|---|
 | Tail it into `pipeline_events` | A second cursor column on `pipeline_runs` and its migration, a second retention path paired to run retirement, and a fingerprint rule for a record shape that carries no `type`. |
 
-**Reversing it does not fork this plan, and that is the point.** The band's shape on
+**Picking the other option does not fork this plan, and that is the point.** The band's shape on
 `PipelineStepDetail` is identical either way - `origin`, `phase`, `event`, `reason`, `cause`,
 `attempt`, `at` - because that is the engine's `AuditRecord` and not a choice this plan makes.
 Only *where the server reads it from* moves. So the tailing alternative is a self-contained later
@@ -468,6 +481,16 @@ phase that changes one reader and no contract, no route and no component.
 
 ### The standing rule for every phase owner
 
-Any later change to one of these three is a change to **this file first**. A phase that
-implements a different option than the one recorded above, without this section being updated to
-record it, is the incompatibility this section exists to prevent.
+Two rules, and the first one is a gate rather than a convention.
+
+1. **Do not start.** While any of the three reads `PENDING OPERATOR CONFIRMATION`, there is
+   nothing here to implement. A phase built on an unconfirmed proposal is work the operator never
+   approved, however well documented the proposal was.
+2. **Any change to one of these three is a change to this file first.** Once a selection is
+   recorded, a phase that implements a different option without updating this section is the
+   incompatibility this section exists to prevent.
+
+What this section is for, stated once: it removes the *ambiguity* about what is being asked
+without removing the *approval gate* on doing it. An unwritten choice lets two phase owners build
+different things; a written-but-ungated choice lets one phase owner build something nobody
+signed off. This section is meant to close both.

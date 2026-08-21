@@ -17,7 +17,7 @@ The queue stops advancing on an inference about idleness and starts advancing on
 ## Scope
 
 1. **`respond_to_file_comments({ commentId, body, addressed? })`** in `src/mcp/server.ts`,
-   registered in the non-blocking `share_plan` shape (`src/mcp/server.ts:162-181`): an
+   registered in the non-blocking `share_plan` shape (`src/mcp/server.ts:206-225`): an
    `inputSchema` that is a **bare object of zod fields** with `.describe()` on each, a handler
    taking only the destructured args and **no `extra`** (the visible marker of non-blocking), and a
    `textResult(...)` return. It posts and carries on; it does not long-poll.

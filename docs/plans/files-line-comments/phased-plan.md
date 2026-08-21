@@ -22,16 +22,16 @@ boundaries are where they are.
    `plan.md` itself). It said both tables
    are "cleared on `session_remove` and on no other signal." No table works that way. Every
    durable `session_remove` subscriber *orphans or settles by UPDATE* - `orphanReviewsFor`
-   (`reviews.ts:357`), `reconcileTasksBoundTo` (`tasks.ts:1357`), `orphanBinding`
+   (`reviews.ts:439`), `reconcileTasksBoundTo` (`tasks.ts:1357`), `orphanBinding`
    (`workflows/manager.ts:616`). Row deletion is a separate, throttled sweep against the live key
-   set (`pruneSessionGoals` `db.ts:7449`, `pruneDeadQueues` `db.ts:9265`), gated on
+   set (`pruneSessionGoals` `db.ts:7560`, `pruneDeadQueues` `db.ts:9376`), gated on
    `sweptSessions` because absence is not evidence before the first completed sweep. And every
    subscriber has a **second arm** - `registry.onSessionsObserved(...)` running
-   `orphanReviewsWithNoLiveSession` (`reviews.ts:362`) / `reconcileTasksWithNoLiveSession`
+   `orphanReviewsWithNoLiveSession` (`reviews.ts:444`) / `reconcileTasksWithNoLiveSession`
    (`tasks.ts:1364`) - for the daemon-was-down case. Session-scoped cleanup is therefore three
    mechanisms, not one. Phase 1 owns all three.
 2. **A new table needs no `migrate()` entry.** The whole schema is one `db.exec()` template
-   literal (`db.ts:533-2741`) that runs on every open, before `migrate(d)` at `db.ts:2743`. The
+   literal (`db.ts:533-2743`) that runs on every open, before `migrate(d)` at `db.ts:2745`. The
    most recent table addition (`task_worktree_retention`, #687) added zero lines to `migrate()`.
    The corollary is the trap: once the table ships, a later column needs `addColumn` **as well as**
    the CREATE TABLE edit, so phase 1 declares the full shape up front - the house preference,
@@ -42,7 +42,7 @@ boundaries are where they are.
    drift silently.
 4. **`previewable` does not mean "can take a comment"** - it includes `image`
    (`FileWorkspace.tsx:126-128`). It also cannot be redefined:
-   `test/console-arrow-scroll.test.ts:41-42` asserts a **literal source regex** over that
+   `test/console-arrow-scroll.test.ts:42` asserts a **literal source regex** over that
    expression. Comment eligibility needs its own predicate.
 5. **A bare key cannot open a composer from inside the editor.** The Files keydown handler bails on
    `isTypingTarget` (`FileWorkspace.tsx:141`), and that helper returns true for anything
@@ -66,7 +66,7 @@ boundaries are where they are.
     (`e2e/specs/file-default-view.spec.ts:88-99`). There is no shared `dispatch()` fixture - about
     40 specs carry their own copy.
 11. **A new `buildApp` dependency is appended as the last optional positional parameter**
-    (`routes.ts:770-859`), because ~50 focused tests construct it positionally; its routes answer
+    (`routes.ts:771-860`), because ~50 focused tests construct it positionally; its routes answer
     **503** when it is absent rather than constructing a twin.
 12. **`Markdown` has a memo comparator.** A new prop absent from `markdownPropsEqual`
     (`Markdown.tsx:242-251`) is silently ignored.

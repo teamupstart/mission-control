@@ -20,7 +20,7 @@ running session.
 
 1. **A comment eligibility predicate**, separate from `previewable`. Finding 4 in `phased-plan.md`:
    `previewable` includes `image` (`FileWorkspace.tsx:126-128`), and it **cannot be redefined**
-   because `test/console-arrow-scroll.test.ts:41-42` asserts a literal source regex over that exact
+   because `test/console-arrow-scroll.test.ts:42` asserts a literal source regex over that exact
    expression. Add a new named predicate; leave `previewable` byte-identical.
 2. **A Comment control in the file toolbar** (`FileWorkspace.tsx:422-444`), following the existing
    segmented-control shape exactly: wrapped in `Tooltip`, an `aria-label`, `aria-pressed` for the
@@ -29,7 +29,7 @@ running session.
    - Images take no comments: disable the control with a reason rather than hiding it.
    - Do not style by descendant of `.file-toolbar` or `.file-mode` - `PersonaEditor.tsx`,
      `SessionActionEditor.tsx` and `ForemanProfileEditor.tsx` reuse those classes
-     (`styles.css:16829-16834`).
+     (`styles.css:16400-16411`).
 3. **The chord.** Extend the capture-phase handler at `FileWorkspace.tsx:129-156`.
    **This is a decision to make and record in the PR, not a detail:** the mnemonic `c` is the global
    Complete-task action (`docs/ui.md:783`). Shadowing a global in-surface is established - `p`
@@ -98,16 +98,16 @@ Four source-scan gates fire on the code this phase writes:
   prose reason above it**. Only `Overlay` may render `modal-backdrop`. Read that file's header
   before choosing: an unregistered popover leaves App's global shortcuts, including kill and reset,
   live behind it.
-- `test/topbar-popover-dismiss.test.ts:35` - a hard-coded file list asserting the Escape-dismiss
+- `test/topbar-popover-dismiss.test.ts:36` - a hard-coded file list asserting the Escape-dismiss
   contract. A new popover is not automatically covered; add it and copy the template.
 - `test/desktop-drag-region.test.ts` - any new absolutely or fixed-positioned rule in `styles.css`
   must be covered by the `-webkit-app-region: no-drag` list or exempted with a true reason.
 
 Two existing tests are pinned to `FileWorkspace.tsx` **source text** and break on careless edits:
-`test/console-arrow-scroll.test.ts:41-42` (the `previewable` regex) and
-`test/open-in-freshness.test.ts:87` (`Not opened` must occur exactly once in the file).
+`test/console-arrow-scroll.test.ts:42` (the `previewable` regex) and
+`test/open-in-freshness.test.ts:86` (`Not opened` must occur exactly once in the file).
 
-And one e2e contract: `e2e/specs/file-default-view.spec.ts:264` asserts the **extracted** Files
+And one e2e contract: `e2e/specs/file-default-view.spec.ts:305-319` asserts the **extracted** Files
 window contains **zero** `[aria-keyshortcuts]` elements. The new control must respect `extracted`
 the way Preview and Editor do.
 

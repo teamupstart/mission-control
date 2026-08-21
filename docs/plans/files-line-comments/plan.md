@@ -148,7 +148,7 @@ security module, and decision 1 approved it as part of the feature's v1 surface.
 ### Anchoring
 
 **Anchored comments have a precedent with a stated rule.** `inspector_comments`
-(`src/server/db.ts:1842-1861`) carries `path`, `line`, `title`, `body`, `severity`, `status`
+(`src/server/db.ts:1837-1859`) carries `path`, `line`, `title`, `body`, `severity`, `status`
 (`drafted | posting | open | resolved`), `replies`, and `answered_comment_id`, keyed uniquely
 by `(pr_key, fingerprint)`. The comment above it states the principle this plan adopts:
 
@@ -172,12 +172,12 @@ the wire either; the browser receives counts only. The thread UI is greenfield.
 
 ### Delivery and queueing
 
-**Delivery must be `/inject`, not `/send`.** `TranscriptPanel.tsx:767-776` states why: `/send`
+**Delivery must be `/inject`, not `/send`.** `TranscriptPanel.tsx:759-766` states why: `/send`
 types character by character, so every newline lands as an Enter and submits early. A multi-line
 payload has to arrive as one bracketed paste.
 
 **`PendingTurnManager` already gives strict one-at-a-time FIFO, and it is still the wrong place
-to hold the queue.** `pending_turns` (`db.ts:1724-1739`) enforces single-flight three times over
+to hold the queue.** `pending_turns` (`db.ts:1726-1741`) enforces single-flight three times over
 - a partial unique index `ON pending_turns(note_key) WHERE state = 'sending'`, a
 `state <> 'queued'` guard inside the claim transaction, and in-process drain guards - so
 submitting N turns really does deliver them one at a time in `seq` order. But:
@@ -205,13 +205,13 @@ one of these limits**, because a queue of depth one has no tail to be blocked be
 to reorder, and nothing stranded when a row goes `uncertain`.
 
 **The Work queue is the wrong shape for a conversation.** `foreman_queue_items`
-(`db.ts:1762-1784`) already does one-at-a-time with a `one_inflight_per_queue` partial unique
-index (`db.ts:2758`), and `docs/work-queues.md` describes exactly the loop this feature wants.
+(`db.ts:1764-1786`) already does one-at-a-time with a `one_inflight_per_queue` partial unique
+index (`db.ts:2760`), and `docs/work-queues.md` describes exactly the loop this feature wants.
 It is still wrong here, for five reasons that are each disqualifying:
 
 - **The verifier is not optional.** An item reaches `verified` - and only then releases the
   next - through a fresh tool-less model call reading the item's diff and a 48-turn transcript
-  window against `AGENTS.md` (`src/server/foreman/queue-verify.ts`, `worker.ts:1618-1745`).
+  window against `AGENTS.md` (`src/server/foreman/queue-verify.ts`, `worker.ts:1636-1757`).
   That is a model call per comment, answering *"was the thing you asked for actually done?"* -
   the wrong question for "why is this estimate 3 to 5 days?".
 - **From round 1 on it stops sending your text.** `payloadFor`
@@ -224,7 +224,7 @@ It is still wrong here, for five reasons that are each disqualifying:
   installed hooks, Codex needs launch-scoped hooks, and **Pi is unsupported**
   (`docs/work-queues.md:174-177`, `harness-capabilities.ts:915-922`).
 - **Items are `intent TEXT` and nothing else.** `AddWorkItemSchema` has exactly one field
-  (`protocol.ts:2892`); there is no foreign key on the table at all.
+  (`protocol.ts:2907`); there is no foreign key on the table at all.
 
 **Two independent outboxes already share one pane, with no arbiter.** `PendingTurnManager` is
 event-driven with a 1,500ms settle; the Foreman queue polls every 4s with a 10,000ms settle. A

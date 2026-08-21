@@ -226,7 +226,7 @@ export function TranscriptPanel({
   // ConsoleDetail builds `onOpenFile` as a fresh closure every render, and `Markdown` is
   // memoized on its props, including
   // this one, because it must be: a skipped render leaves the rendered anchors calling
-  // the previous closure, which carries App's `layout` and `sessions`. Handing the same
+  // the previous closure, which carries App's active layout and sessions. Handing the same
   // wrapper down every time makes that comparison true HONESTLY, so the turns below stay
   // memoized through every SSE frame while a click still reaches the newest handler.
   const openFileRef = useRef(onOpenFile);

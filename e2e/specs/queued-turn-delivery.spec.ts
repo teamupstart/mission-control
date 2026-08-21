@@ -43,10 +43,15 @@ async function dispatch(page: Page, daemon: DaemonHandle, agent: "claude" | "cod
   await dialog.getByRole("button", { name: "Dispatch now" }).click();
   await expect(dialog).toBeHidden();
 
-  // The dispatch opener is a real first turn. Start the queued-turn scenario only after it
-  // finishes: crossing that working-to-idle boundary while clicking Expand can legitimately
-  // replace the provisional card and clear its expanded state.
-  await expect(page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().locator(".badge-idle")).toBeVisible({
+  // The dispatch opener is a real first turn. Start the queued-turn scenario only after its
+  // rail row reaches idle.
+  await expect(
+    page
+      .getByRole("navigation", { name: "Sessions" })
+      .locator("button.rail-row")
+      .first()
+      .locator(".rail-state"),
+  ).toHaveText("idle", {
     timeout: 20_000,
   });
 }

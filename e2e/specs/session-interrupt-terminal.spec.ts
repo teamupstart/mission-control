@@ -146,12 +146,6 @@ test.describe("terminal-runtime interrupt", () => {
     const row = dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").filter({ hasText: pane.session });
     await expect(row).toHaveCount(1, { timeout: DISCOVERY_TIMEOUT });
 
-    // The runtime is the precondition of the whole spec, and the card states it by naming
-    // the pane it is bound to - `tmux · %<id>`, where an Agent SDK card says "Agent SDK".
-    // Asserted rather than assumed: a build where discovery quietly produced something else
-    // would otherwise leave this a second, weaker test of the driver path.
-    await expect(row).toContainText(/tmux · %\d+/);
-
     // Nothing has been typed into that pane yet, which is what makes the byte assertion at
     // the end unambiguous.
     expect(pane.bytes()).toBe("");
@@ -160,6 +154,10 @@ test.describe("terminal-runtime interrupt", () => {
     await row.click();
     await expect(row).toHaveClass(/selected/);
     const detail = dashboard.locator(".console-detail");
+    // The runtime is the precondition of the whole spec, and the Console detail states it
+    // by naming the pane it is bound to - `tmux · %<id>`, where an Agent SDK detail says
+    // "Agent SDK". Asserted rather than assumed so this cannot become a weaker driver test.
+    await expect(detail).toContainText(/tmux · %\d+/);
 
     // The control is live - this is the capability declaration doing its job. Before this
     // phase the same card drew it disabled with "can't yet stop a Claude Code turn running

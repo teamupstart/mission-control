@@ -101,11 +101,13 @@ test("native dispatch isolates concurrent work, cleans ownership, and reuses bot
     ownerKey: `${first.id}:1`,
   });
 
-  const firstCard = dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row", { hasText: first.title });
-  await expect(firstCard).toContainText("worktree-pools/");
+  const firstSessionRow = dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row", { hasText: first.title });
+  await firstSessionRow.click();
+  const firstDetail = dashboard.locator(".console-detail");
+  await expect(firstDetail.locator(".detail-sub dd.mono").first()).toContainText("worktree-pools/");
   if (process.env.MC_E2E_EVIDENCE === "1") {
     mkdirSync(EVIDENCE, { recursive: true });
-    await firstCard.locator(".card-meta dd.mono").first().hover();
+    await firstDetail.locator(".detail-sub dd.mono").first().hover();
     await expect(dashboard.locator(".tooltip")).toHaveText(first.worktreePath!);
     await dashboard.screenshot({ path: `${EVIDENCE}native-multi-repo-path.png`, fullPage: true });
   }
@@ -121,14 +123,14 @@ test("native dispatch isolates concurrent work, cleans ownership, and reuses bot
   expect(concurrent.worktreePath).not.toBe(first.worktreePath);
   expect(slot(concurrent.worktreePath!, daemon)).toMatchObject({ state: "leased" });
 
-  // A live session disappearing keeps its task checkout. Kill it through the card, then use
+  // A live session disappearing keeps its task checkout. Kill it through the detail, then use
   // the existing explicit Clean up flow. This proves the allocator cutover did not turn
   // session exit into a second task-eviction path.
-  await firstCard.getByRole("button", { name: /Kill$/ }).click();
+  await firstDetail.getByRole("button", { name: /kill$/i }).click();
   const kill = dashboard.getByRole("dialog", { name: "Kill session" });
   await kill.getByRole("button", { name: "Kill" }).click();
   await expect(kill).toBeHidden();
-  await expect.poll(() => taskFor(daemon, firstIntent)).toMatchObject({
+  await expect.poll(() => taskFor(daemon, firstIntent), { timeout: 15_000 }).toMatchObject({
     status: "failed",
     worktreePath: first.worktreePath,
     worktreeLeaseId: first.worktreeLeaseId,
@@ -140,7 +142,7 @@ test("native dispatch isolates concurrent work, cleans ownership, and reuses bot
   const firstRow = sitrep.locator(".report-row", { hasText: currentFirst.title });
   await firstRow.getByRole("button", { name: "Clean up" }).click();
   await firstRow.getByRole("button", { name: "Clean up" }).click();
-  await expect.poll(() => taskFor(daemon, firstIntent)).toMatchObject({
+  await expect.poll(() => taskFor(daemon, firstIntent), { timeout: 15_000 }).toMatchObject({
     status: "failed",
     worktreePath: null,
     worktreeLeaseId: null,
@@ -171,8 +173,9 @@ test("native dispatch isolates concurrent work, cleans ownership, and reuses bot
   });
 
   if (process.env.MC_E2E_EVIDENCE === "1") {
-    const reusedCard = dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row", { hasText: reused.title });
-    await reusedCard.locator(".card-meta dd.mono").first().hover();
+    const reusedRow = dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row", { hasText: reused.title });
+    await reusedRow.click();
+    await dashboard.locator(".console-detail .detail-sub dd.mono").first().hover();
     await expect(dashboard.locator(".tooltip")).toHaveText(reused.worktreePath!);
     await dashboard.screenshot({ path: `${EVIDENCE}native-reuse-with-concurrent-slot.png`, fullPage: true });
   }

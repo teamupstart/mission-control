@@ -33,7 +33,7 @@ import { dialogMarker } from "../../src/server/foreman/pending.ts";
  * Everything is real except the model: a real dispatched SDK session, a real `can_use_tool`
  * request over the vendored SDK, a real review over the real `POST /mcp/reviews` channel, a
  * real note written through `PUT /api/sessions/:id/note`, real clicks on the real forms, and
- * the note read back out of the SSE stream the card renders from.
+ * the note read back out of the SSE stream the Console detail renders from.
  *
  * The note is SEEDED rather than produced by a real Foreman pass, which would cost a model
  * call per test. What that trades away is covered below it: `test/foreman-pending.test.ts`
@@ -179,10 +179,10 @@ async function askAndWait(page: Page): Promise<{ card: Locator; form: Locator }>
 }
 
 /** The separate Foreman panel that must not compete with a matching canonical ask. */
-const notePanel = (card: Locator): Locator => card.locator(".foreman-note");
+const notePanel = (card: Locator): Locator => card.locator(".foreman-strip");
 
 /**
- * A string that must no longer be anywhere on this card.
+ * A string that must no longer be anywhere in this detail.
  *
  * `toHaveCount(0)` on the text rather than `not.toContainText` on the panel, because the two
  * disagree about the BEST possible outcome. `not.toContainText` has to resolve its container
@@ -259,7 +259,7 @@ test("answering the agent's own question retires the note pinned on it", async (
   await expect(sidecar).toBeHidden();
   await expect(recommendation).toHaveCount(0);
 
-  // The same card, same run, after one answer and no Dismiss. This is the frame the bug report
+  // The same detail, same run, after one answer and no Dismiss. This is the frame the bug report
   // was missing.
   await shoot(dashboard, "note-retired-after-your-answer", card);
 });
@@ -409,6 +409,8 @@ test("a note about a DIFFERENT ask is still yours to decide", async ({ dashboard
   });
 
   const note = notePanel(card);
+  await expect(note).toContainText("needs your decision");
+  await note.getByRole("button", { name: /Foreman needs your decision/ }).click();
   await expect(note).toContainText(other);
 
   await form.getByRole("radio", { name: /eslint/ }).click();

@@ -675,8 +675,8 @@ every run for no added signal.
 
 `e2e/.artifacts/multiline-textarea/` contains three captures showing five explicit input
 lines in every multiline surface covered by the regression: the dispatch brief, the
-collapsed-card composer, and the compact terminal-style composer. The browser assertions
-also prove a sixth line uses an internal scrollbar instead of growing the surrounding card
+Console reply composer, and the compact terminal-style composer. The browser assertions
+also prove a sixth line uses an internal scrollbar instead of growing the surrounding pane
 without a bound.
 
 Regenerate them with:
@@ -779,7 +779,7 @@ OBSERVED the drawer's "Ship log →" escalation navigated to #/shipped
 OBSERVED the strip is fleet-only: it did not follow the navigation off the fleet page
   ✓  1 [chromium] › e2e/specs/line-strip.spec.ts:85:1 › the Line renders every stage, tracks the fleet live, and its stages reach their targets (1.4s)
 OBSERVED the strip renders once, outside <header class="topbar">, so the topbar and fleet body keep separate height budgets
-  ✓  2 [chromium] › e2e/specs/line-strip.spec.ts:168:1 › the strip sits outside the topbar, so it cannot shorten an expanded card (992ms)
+  ✓  2 [chromium] › e2e/specs/line-strip.spec.ts:168:1 › the strip sits outside the topbar, preserving separate height budgets (992ms)
 
   2 passed (2.9s)
 ```

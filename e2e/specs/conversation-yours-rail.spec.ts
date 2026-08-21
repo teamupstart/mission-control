@@ -581,7 +581,7 @@ test("the tab survives find taking the column, and switches back", async ({ dash
   await expect(row(card, SECOND)).toBeVisible();
 
   // Find owns the whole column while it is open - the rail is not merely covered.
-  await card.getByRole("heading", { name: CARD_TITLE }).click();
+  await card.locator(".detail-body").focus();
   await dashboard.keyboard.press("Meta+f");
   await expect(card.getByRole("searchbox", { name: "Find in conversation" })).toBeVisible();
   await expect(card.getByRole("region", { name: "Conversation rail" })).toHaveCount(0);
@@ -611,7 +611,7 @@ test("find's You scope and the Yours tab agree about whose message is whose", as
   await delivers(daemon, await session(daemon), "foreman", FOREMAN_SAYS);
   await expect(turnsBy(card, FOREMAN)).toBeVisible();
 
-  await card.getByRole("heading", { name: CARD_TITLE }).click();
+  await card.locator(".detail-body").focus();
   await dashboard.keyboard.press("Meta+f");
   const box = card.getByRole("searchbox", { name: "Find in conversation" });
   // A word both the operator and Foreman used, so scope is the only thing that can

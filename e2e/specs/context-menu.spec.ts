@@ -58,7 +58,7 @@ async function pointForText(
   }, { needle, select, characterOffset });
 }
 
-test("context actions work by pointer and keyboard without leaking keys to the grid", async ({
+test("context actions work by pointer and keyboard without leaking keys to the dashboard", async ({
   dashboard,
   daemon,
 }) => {
@@ -97,8 +97,8 @@ test("context actions work by pointer and keyboard without leaking keys to the g
   menu = dashboard.getByRole("menu", { name: "Actions for this item" });
   await expect(menu.getByRole("menuitem", { name: "Copy URL" })).toBeVisible();
 
-  // While the anchored menu owns the keyboard, a bare grid shortcut cannot reach the selected
-  // card behind it. The menu stays up and no Kill dialog appears.
+  // While the anchored menu owns the keyboard, a bare dashboard shortcut cannot reach the
+  // selected session behind it. The menu stays up and no Kill dialog appears.
   await dashboard.keyboard.press("k");
   await expect(menu).toBeVisible();
   await expect(dashboard.getByRole("dialog", { name: "Kill session" })).toHaveCount(0);
@@ -117,8 +117,8 @@ test("context actions work by pointer and keyboard without leaking keys to the g
 
   // The host drops a selection that does not intersect the keyboard target, so an otherwise
   // actionless focused control cannot open a menu for text somewhere else in the document.
-  const focus = card.getByRole("button", { name: "focus" });
-  await focus.focus();
+  const terminalView = card.getByRole("button", { name: "Terminal view" });
+  await terminalView.focus();
   await pointForText(turn, SELECTED, true);
   await dashboard.keyboard.press("Shift+F10");
   await expect(menu).toBeHidden();

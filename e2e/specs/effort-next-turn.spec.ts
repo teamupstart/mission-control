@@ -86,7 +86,13 @@ async function dispatchCodex(page: Page, daemon: DaemonHandle): Promise<void> {
   await expect(dialog).toBeHidden();
   // The opener is a real first turn; it is the one that writes the first `turn_context`, so
   // the chip has nothing to read until it is over.
-  await expect(page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().locator(".badge-idle")).toBeVisible({
+  await expect(
+    page
+      .getByRole("navigation", { name: "Sessions" })
+      .locator("button.rail-row")
+      .first()
+      .locator(".rail-state"),
+  ).toHaveText("idle", {
     timeout: 30_000,
   });
 }

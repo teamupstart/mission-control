@@ -160,6 +160,10 @@ test("a completed run lists its reviewers, and its tiles select their worklist d
   expect(((await config.json()) as { config?: { layout?: string } }).config?.layout).toBe("console");
   await dashboard.reload();
 
+  await dashboard.getByRole("navigation", { name: "Sessions" })
+    .locator("button.rail-row")
+    .first()
+    .click();
   const chip = dashboard.locator(".console-detail .workflow-chip");
   await expect(chip).toHaveText("⌁Approved", { timeout: 10_000 });
   await chip.click();

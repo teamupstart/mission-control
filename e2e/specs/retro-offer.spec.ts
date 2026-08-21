@@ -15,9 +15,9 @@ import { writeGhPullRequests, type FakePullRequest } from "../fixtures/fake-agen
  * Phase 2 already made the retro runnable over HTTP, so nothing shipped in this phase is the
  * retro itself - it is the answer to "is now the moment", and that answer is only checkable
  * here. `test/retro-offer.test.ts` pins the predicate and the markup, but a predicate that is
- * right and never reaches a card is the exact defect this layer exists to catch: the signal
- * has to be computed by the daemon, ride `session_upsert`, condition a control, and that
- * control has to POST to a route that types into a real session.
+ * right and never reaches the Console detail is the exact defect this layer exists to catch:
+ * the signal has to be computed by the daemon, ride `session_upsert`, condition a control,
+ * and that control has to POST to a route that types into a real session.
  *
  * What is real here: the dispatched SDK session, the correction typed into its conversation,
  * the daemon's own transcript scan that notices it, the `prCreated` hook that adopts the pull
@@ -48,7 +48,7 @@ const HELD_TURN = "hold the current turn open";
 /**
  * Photograph a state this spec has already asserted on.
  *
- * Behind `MC_E2E_EVIDENCE`, like every other capture here: the card carries a relative
+ * Behind `MC_E2E_EVIDENCE`, like every other capture here: the detail carries a relative
  * timestamp and a fresh worktree uuid, so an unconditional shoot would rewrite a binary on
  * every run for no added signal. Inside the regression rather than in a staged capture spec,
  * so the picture is of a run whose assertions passed.
@@ -161,7 +161,7 @@ async function announcePullRequest(daemon: DaemonHandle, session: SessionRow, ur
   const response = await fetch(`${daemon.baseURL}/hooks/Stop`, {
     method: "POST",
     headers: { "content-type": "application/json", "x-harness-token": token },
-    // The AGENT's session id, not the card's - a hook naming the wrong one lands on no
+    // The AGENT's session id, not the dashboard row's - a hook naming the wrong one lands on no
     // session at all, and this spec would then pass by never adopting anything.
     body: JSON.stringify({
       agent: session.agent,
@@ -223,7 +223,7 @@ async function refreshInspections(daemon: DaemonHandle): Promise<void> {
 async function expectNoRetroOffer(card: ReturnType<Page["locator"]>): Promise<void> {
   await expect(card.getByRole("button", { name: "Complete" })).toBeVisible();
   expect(
-    await card.getByRole("button", { name: "Run retro" }).count(),
+    await card.getByRole("button", { name: "retro", exact: true }).count(),
     "the retro must not be offered here",
   ).toBe(0);
 }
@@ -275,7 +275,7 @@ test("a corrected session is offered a retro once its review is clean, and one c
     .toBe(1);
 
   // Now. The offer reached the card over SSE with no reload, which is the claim.
-  const retro = card.getByRole("button", { name: "Run retro" });
+  const retro = card.getByRole("button", { name: "retro", exact: true });
   await expect(retro).toBeVisible();
   // It says what it does and why it is being offered, in the accessible description the
   // tooltip renders - a button that spends a session's turn must not be a bare verb.
@@ -364,7 +364,7 @@ test("a retro clicked after merge starts one follow-up and keeps the source task
   await expect.poll(async () => (await api<unknown[]>(daemon, "/api/inspector/prs")).length).toBe(1);
   observeCleanReview(daemon);
   await refreshInspections(daemon);
-  const retro = card.getByRole("button", { name: "Run retro" });
+  const retro = card.getByRole("button", { name: "retro", exact: true });
   await expect(retro).toBeVisible({ timeout: 30_000 });
 
   let source: TaskRow | undefined;
@@ -527,17 +527,20 @@ test.describe("steered by answering, not by typing a correction", () => {
   }) => {
     await enableRetroSkill(daemon);
     const session = await dispatch(dashboard, daemon);
-    const card = dashboard.locator("article.card").first();
-    await expectNoRetroOffer(card);
+    await dashboard.getByRole("navigation", { name: "Sessions" })
+      .locator("button.rail-row")
+      .first()
+      .click();
+    const detail = dashboard.locator(".console-detail");
+    await expectNoRetroOffer(detail);
 
     // Provoke the real `can_use_tool` request and answer the real form the dashboard draws
     // for one, through the same route a person's click takes.
-    await card.getByRole("button", { name: "Expand conversation" }).click();
-    const composer = card.getByPlaceholder(/^Reply to this session/);
+    const composer = detail.getByPlaceholder(/^Reply to this session/);
     await expect(composer).toBeEnabled();
     await composer.fill(ASK_TURN);
     await composer.press("Enter");
-    const form = card.locator(".pane-dialog");
+    const form = detail.locator(".pane-dialog");
     await expect(form).toBeVisible({ timeout: 30_000 });
     // Deliberately not the first row of either question: a spec that picks the default passes
     // just as well against a form that ignores the click.
@@ -558,7 +561,7 @@ test.describe("steered by answering, not by typing a correction", () => {
 
     // Worthy, but the timing half has not arrived - the same independence the typed case
     // proves, on the other evidence source.
-    await expectNoRetroOffer(card);
+    await expectNoRetroOffer(detail);
     observed("a steered session with no pull request is still not offered a retro");
 
     await announcePullRequest(daemon, session, "https://github.com/mancej-cyc/ai-harness/pull/480");
@@ -569,7 +572,7 @@ test.describe("steered by answering, not by typing a correction", () => {
       .poll(async () => (await sessions(daemon)).find((s) => s.id === session.id)?.inspector?.round)
       .toBe(1);
 
-    const retro = card.getByRole("button", { name: "Run retro" });
+    const retro = detail.getByRole("button", { name: "retro", exact: true });
     await expect(retro).toBeVisible({ timeout: 30_000 });
     // And it explains itself in language that is true of what this operator actually did.
     // "You corrected it" was a sentence about a turn they never typed.
@@ -578,7 +581,7 @@ test.describe("steered by answering, not by typing a correction", () => {
         hasText: "Offered because you steered it during the work, by correcting it or answering its question",
       }),
     ).toBeAttached();
-    observed("the offer reached the card, earned by an answered question alone");
-    await shoot(card, dashboard, "07-offer-earned-by-answering-a-question");
+    observed("the offer reached the Console detail, earned by an answered question alone");
+    await shoot(detail, dashboard, "07-offer-earned-by-answering-a-question");
   });
 });

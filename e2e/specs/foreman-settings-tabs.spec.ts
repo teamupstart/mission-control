@@ -112,7 +112,9 @@ test("a model field's explanation is not printed but arrives on focus", async ({
   );
   // ...and it paints as the tooltip when the field takes keyboard focus.
   await review.focus();
-  await expect(dashboard.locator(".tooltip"))
+  await expect(dashboard.locator(".tooltip", {
+    hasText: "Judges a stuck session's pending question",
+  }))
     .toHaveText(/Judges a stuck session's pending question/);
 
   // What earned the shorter column: the explanation no longer prints under the field.

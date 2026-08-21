@@ -7265,8 +7265,8 @@ mark.find-hit.is-current {
   white-space: nowrap;
 }
 
-/* Below the panel width the expanded card sits at - the same breakpoint the activity rail
-   relocates on - the frame gives up its centred title, the send hint and the context
+/* Below the narrow session-detail breakpoint, the frame gives up its centred title,
+   the send hint and the context
    share. All three are the things a person can get elsewhere; the run state, the pid and
    the branch are not, so they stay and the row wraps under them if it has to. */
 @container (max-width: 560px) {
@@ -18049,32 +18049,6 @@ select.foreman-model-input {
   min-width: 0;
 }
 
-/* Foreman panel inside an expanded card. */
-.foreman-note {
-  margin-top: 12px;
-  padding: 12px 14px;
-  border: 1px solid var(--border);
-  border-left: 3px solid var(--neutral);
-  border-radius: 10px;
-  background: var(--panel-2);
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.foreman-note.fn-escalated {
-  border-left-color: var(--attention);
-}
-.foreman-note.fn-pending {
-  border-left-color: var(--working);
-}
-.foreman-note.fn-answered {
-  border-left-color: var(--idle);
-}
-.fn-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
 .fn-badge {
   font-size: 10px;
   font-weight: 700;
@@ -18084,34 +18058,6 @@ select.foreman-model-input {
   border-radius: 999px;
   color: var(--bg);
   background: color-mix(in oklab, var(--idle) 78%, var(--fg));
-}
-.fn-disp {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--fg);
-}
-.fn-time {
-  margin-left: auto;
-  font-size: 11px;
-}
-.fn-purpose {
-  margin: 0;
-  font-size: 13px;
-  line-height: 1.55;
-  color: var(--fg);
-}
-.fn-brief {
-  font-size: 12.5px;
-  line-height: 1.55;
-  color: var(--muted);
-  border-top: 1px solid var(--border-soft);
-  padding-top: 8px;
-}
-.fn-brief :first-child {
-  margin-top: 0;
-}
-.fn-brief :last-child {
-  margin-bottom: 0;
 }
 .fn-rec {
   display: flex;
@@ -18135,15 +18081,6 @@ select.foreman-model-input {
   color: var(--fg);
   white-space: pre-wrap;
 }
-.fn-audit {
-  margin: 0;
-  font-size: 12px;
-  color: color-mix(in oklab, var(--idle) 70%, var(--fg));
-}
-.fn-actions {
-  display: flex;
-  gap: 8px;
-}
 .fn-hint {
   margin: 0;
   font-size: 11px;
@@ -18151,7 +18088,7 @@ select.foreman-model-input {
   color: var(--dim);
 }
 /* The allowlist hint names a repo path, which is long and has no spaces to break
-   at - without `anywhere` it rides straight out through the side of the card.
+   at - without `anywhere` it rides straight out through the side of the strip.
    Mirrors `.wq-hint code`, which says the same sentence in the queue panel. */
 .fn-hint code {
   font-family: var(--mono);
@@ -22002,7 +21939,7 @@ span.line-run-prov {
 }
 /* The selected row wears a full green selector frame, not the thin left edge it used to
    carry - a 2px inset that read as barely-there against a busy "working" row. The green
-   is the same `--select` the grid's card and the board's tile use, and it stands clear of
+   is the same `--select` the Board tile uses, and it stands clear of
    the blue "working" tone, so the selection is unmistakable in every state. The outline is
    inset (negative offset) so the dense list never clips it and it frames cleanly over the
    left tone bar. */
@@ -25415,14 +25352,9 @@ body.foreman-sidecar-open .modal-backdrop {
 /* ---------------------------------------------------------------------------
    Foreman: the strip, the inline episode, and the history drawer.
 
-   Replaces the single `.foreman-note` block in the detail pane, which carried the
-   record and the action together and pinned both - so a long escalation covered the
-   conversation it was about. The prose now scrolls with the chat (`.transcript-
+   The prose scrolls with the chat (`.transcript-
    episode`), the decision stays pinned as one line (`.foreman-strip`), and the
    archive lives behind a rail (`.foreman-drawer`).
-
-   `.foreman-note` itself is untouched: the grid card still uses it, where there is no
-   transcript to inline into and its own max-height cap already bounds it.
    --------------------------------------------------------------------------- */
 
 /* --- the pinned one-liner --- */

@@ -241,10 +241,15 @@ test("Complete closes promptly while an accepted SDK stop drains", async ({ dash
 
   // The fake keeps its SDK subprocess alive for four seconds after stdin closes. The modal
   // must follow the daemon's accepted stop rather than that later process exit and pump
-  // drain, while the retained card truthfully becomes unavailable in between.
+  // drain. Completing also closes the selected Console detail immediately, while the
+  // daemon truthfully reports the stopping state until the SDK process finishes draining.
   await expect(dialog).toBeHidden({ timeout: 1_500 });
-  await expect(card).toContainText("stopping");
+  await expect(card.getByText("No session selected")).toBeVisible();
   await expect(card.getByRole("button", { name: "Complete" })).toHaveCount(0);
+  await expect.poll(async () => {
+    const sessions = await api<Array<{ state: string }>>(daemon, "/api/sessions");
+    return sessions[0]?.state ?? "missing";
+  }).toBe("stopping");
   if (process.env.MC_E2E_EVIDENCE) {
     mkdirSync(EVIDENCE, { recursive: true });
     console.log("OBSERVED Complete closed while the accepted SDK stop was still draining");
@@ -253,7 +258,10 @@ test("Complete closes promptly while an accepted SDK stop drains", async ({ dash
     });
     console.log("CAPTURED e2e/.artifacts/dispatch-and-converse/complete-stopping-state.png");
   }
-  await expect(card).toContainText("exited", { timeout: 10_000 });
+  await expect.poll(async () => {
+    const sessions = await api<Array<{ state: string }>>(daemon, "/api/sessions");
+    return sessions[0]?.state ?? "removed";
+  }, { timeout: 10_000 }).toMatch(/^(exited|removed)$/);
 });
 
 test("typing into the conversation gets a reply back from the agent", async ({ dashboard, daemon }) => {
@@ -341,13 +349,13 @@ test("typing into the conversation gets a reply back from the agent", async ({ d
   // "the conversation renders" is a claim that deserves to be seen rather than read.
   //
   // Behind an env flag, and gitignored, because the alternative is a binary that changes on
-  // every run: the card carries a relative timestamp and a fresh worktree uuid, so an
+  // every run: the detail carries a relative timestamp and a fresh worktree uuid, so an
   // unconditional capture would churn the repository for no added signal. Regenerate with
   // `MC_E2E_EVIDENCE=1 npm run test:e2e`. This follows the same shape as the `*-evidence`
   // generators under `scripts/`, which also produce pull-request artifacts on demand.
   if (process.env.MC_E2E_EVIDENCE) {
     mkdirSync(EVIDENCE, { recursive: true });
-    // The expanded card is a fixed-height box and its log scrolls, so a plain capture shows
+    // The Console detail is a fixed-height pane and its log scrolls, so a plain capture shows
     // only the last turn and a half. Unclip both FOR THE CAPTURE ONLY, so one image holds
     // all six turns. This changes nothing the test asserted - every expectation above has
     // already passed against the real, clipped layout - and the clipping itself is covered
@@ -414,7 +422,7 @@ test("Ship it starts No-Mistakes Review through the workflow route", async ({
     return session?.queue?.wrapupAskedAt !== null && session?.queue?.wrapupAnswered === false;
   }, { timeout: 40_000 }).toBe(true);
 
-  await card.getByRole("button", { name: "Queue" }).click();
+  await card.getByRole("tab", { name: "Work queue" }).click();
   const review = card.getByRole("button", { name: "Run No-Mistakes Review" });
   await expect(review).toBeVisible();
   await expect(card.getByLabel("Direct shipping instruction")).toBeVisible();
@@ -675,7 +683,7 @@ test("Foreman never resurfaces Ship it actions after a scout completes", async (
   await api(daemon, `/api/sessions/${sessionId}/queue/wrapup/asked`, {
     clearAnswer: true,
   });
-  await card.getByRole("button", { name: "Queue" }).click();
+  await card.getByRole("tab", { name: "Work queue" }).click();
   await expect(card.getByRole("button", { name: "Run No-Mistakes Review" })).toBeVisible();
   await expect(card.getByLabel("Direct shipping instruction")).toBeVisible();
   await expect(card.getByRole("button", { name: "Send direct PR instruction" })).toBeVisible();

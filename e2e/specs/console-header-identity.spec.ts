@@ -201,40 +201,25 @@ test("the kind badge is a scout's alone, and the pill stops repeating the sessio
   await dispatch(dashboard, daemon, SCOUT, "scout");
   await sessions(daemon, 2);
 
-  const cards = dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row");
-  await expect(cards).toHaveCount(2);
-  const shipCard = cards.filter({ has: dashboard.getByRole("heading", { name: SHIP.title }) });
-  const scoutCard = cards.filter({ has: dashboard.getByRole("heading", { name: SCOUT.title }) });
+  const rows = dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row");
+  await expect(rows).toHaveCount(2);
 
-  // The scout's pill has something to say, so it is drawn and says it. It does NOT repeat
-  // the session's name, which is the heading directly above it.
-  await expect(scoutCard.locator(".task-chip .task-kind")).toHaveText("scout");
-  await expect(scoutCard.locator(".task-chip")).not.toContainText(SCOUT.title);
-
-  // The ship session's pill has nothing left: `ship` is what every task is, and its title
-  // is the heading above. So there is no bar at all rather than an empty one. The scout's
-  // chip on the same screen is what makes this a claim about content and not a selector
-  // that never matched.
-  await expect(shipCard.locator(".task-chip")).toHaveCount(0);
-
-  await shot(
-    dashboard.locator("main.grid"),
-    "both-kinds-on-cards",
-    "the scout card badges its kind and the ship card does not, neither repeating its name",
-  );
-
-  // The same two facts on the other layout that draws this pill. A rule applied to the card
-  // alone would look right here and be wrong one click away.
+  // The scout's detail pill has something to say, so it is drawn and says it. It does NOT
+  // repeat the session's name, which is the heading directly above it.
   const scoutDetail = await openDetail(dashboard, daemon, SCOUT.title);
   await expect(scoutDetail.locator(".task-chip .task-kind")).toHaveText("scout");
+  await expect(scoutDetail.locator(".task-chip")).not.toContainText(SCOUT.title);
+  await shot(
+    dashboard.locator("main.console"),
+    "scout-kind-in-console",
+    "the scout detail badges its kind without repeating its name",
+  );
 
-  await dashboard.getByRole("navigation", { name: "Sessions" })
-    .getByRole("button", { name: SHIP.title })
-    .first()
-    .click();
-  const shipDetail = dashboard.locator(".cdetail");
-  await expect(shipDetail.getByRole("heading", { name: SHIP.title })).toBeVisible();
+  // The ship session's pill has nothing left: `ship` is what every task is, and its title
+  // is already the heading. So there is no bar at all rather than an empty one.
+  const shipDetail = await openDetail(dashboard, daemon, SHIP.title);
   await expect(shipDetail.locator(".task-chip")).toHaveCount(0);
+
 });
 
 test("a silent pill does not take a multi-repo task's pull-request row with it", async ({

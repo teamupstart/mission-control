@@ -495,7 +495,7 @@ test("the frame fits the shared detail at narrow and wide widths", async ({
   const statusLine = card.getByRole("region", { name: "Session status" });
   await expect(statusLine).toBeVisible();
 
-  await dashboard.setViewportSize({ width: 620, height: 900 });
+  await dashboard.setViewportSize({ width: 540, height: 900 });
   await settled(frame);
   // Narrow, the titlebar drops its centred title and the send hint goes - both are things
   // a person can get elsewhere. What must not go is the run state.

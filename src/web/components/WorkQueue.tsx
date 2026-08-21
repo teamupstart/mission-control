@@ -1079,10 +1079,8 @@ function Wrapup({
       <p className="wq-hint dim">Ship directly</p>
       {/* `rows` is the FLOOR, not the height: `field-sizing: content` grows this to fit
           (see styles.css). It has to, because the PR prefill now spells out CI and
-          conflicts rather than just "open a PR", and the same string is two lines in the
-          console detail pane and six in a grid card - no fixed row count reads well in
-          both, and you should not have to scroll a box to see what you are about to
-          send. */}
+          conflicts rather than just "open a PR". You should not have to scroll a box to
+          see what you are about to send. */}
       <textarea
         className="field-input"
         rows={3}

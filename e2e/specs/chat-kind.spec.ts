@@ -271,10 +271,11 @@ test("a fake-agent chat survives idle and a later turn until Complete and close"
       .find((task) => task.kind === "chat")?.status ?? null,
   ).toBe("running");
 
-  await card.getByRole("button", { name: "Queue" }).click();
+  await card.getByRole("tab", { name: "Work queue" }).click();
   await expect(card.getByRole("button", { name: "Run No-Mistakes Review" })).toHaveCount(0);
   await expect(card.getByLabel("Direct shipping instruction")).toHaveCount(0);
 
+  await card.getByRole("tab", { name: "Conversation" }).click();
   const reply = card.getByPlaceholder(/^Reply to this session/);
   await expect(reply).toBeEnabled();
   await reply.fill(LATER_TURN);

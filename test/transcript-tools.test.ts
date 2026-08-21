@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { commandName, toolChip, toolLineTarget, transcriptRows } from "../src/web/lib/tools.ts";
 import type { ToolCall, TranscriptMessage } from "../src/shared/types.ts";
 
-// The expanded card's tool-call presentation. The inputs below are real shapes lifted
+// The Console detail's tool-call presentation. The inputs below are real shapes lifted
 // from ~/.claude/projects transcripts (key order and all - `Edit` really does put
 // `replace_all` before `file_path`), because every one of these is a heuristic and the
 // only thing that makes a heuristic honest is checking it against what actually arrives.

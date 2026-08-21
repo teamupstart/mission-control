@@ -292,8 +292,8 @@ test("a turn's markup survives the SSE frames arriving under it", () => {
 test("a replaced link handler re-renders, so no anchor is left calling the old one", () => {
   // The body refreshes its handler ref DURING its own render, so skipping that render
   // with a new handler pins every rendered anchor to the previous closure - and that
-  // closure carries App's `layout` and `sessions`. Switching layout with the transcript
-  // text unchanged would then open a stale Files destination from Console.
+  // closure carries App's active layout and sessions. Switching between Console and Board
+  // with the transcript text unchanged would then use a stale Files destination.
   const paths = new Set(["a.ts"]);
   const base = { children: "x", breaks: true, onLinkClick: () => true, filePaths: paths };
   assert.equal(markdownPropsEqual(base, { ...base, onLinkClick: () => true }), false);

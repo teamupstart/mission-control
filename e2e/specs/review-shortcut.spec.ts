@@ -144,7 +144,12 @@ test("the badge prints the chord that opens it", async ({ dashboard, daemon }) =
 
   // A bare letter keycap stays lowercase (`formatChord` only uppercases a MODIFIED letter),
   // so this asserts the exact glyph a person reads on the badge.
-  const badge = dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().getByRole("button", { name: "to review" });
+  await dashboard
+    .getByRole("navigation", { name: "Sessions" })
+    .locator("button.rail-row")
+    .first()
+    .click();
+  const badge = dashboard.locator(".console-detail").getByRole("button", { name: "to review" });
   await expect(badge.locator("kbd.kb-hint")).toHaveText("e");
 });
 
@@ -165,20 +170,15 @@ test("e travels to the first session asking when the selected one has nothing wa
   expect(askTarget, `the ${OTHER_TASK} session is on the fleet`).toBeTruthy();
   await ask(daemon, askTarget!.cwd);
 
-  // Exactly one of the two is asking. Which CARD that is gets read off the DOM rather than
-  // assumed: a pending review tones a session `attention`, which re-sorts it to the front of
-  // the grid, so the asking card is not the one that was dispatched second.
+  // Exactly one of the two is asking. Which row that is gets read off the DOM rather than
+  // assumed: a pending review tones a session `attention`, which re-sorts it to the front.
   const rows = dashboard.getByRole("navigation", { name: "Sessions" });
-  const asking = rows
-    .locator("button.rail-row")
-    .filter({ has: dashboard.getByRole("button", { name: "to review" }) });
+  const asking = rows.locator("button.rail-row.tone-attention");
   await expect(asking).toHaveCount(1);
 
-  // Select the OTHER card - the one with no queue of its own. Without the travel rule the
+  // Select the other row, the one with no queue of its own. Without the travel rule the
   // chord would be dead here, which is the whole point of the test.
-  const quiet = rows
-    .locator("button.rail-row")
-    .filter({ hasNot: dashboard.getByRole("button", { name: "to review" }) });
+  const quiet = rows.locator("button.rail-row:not(.tone-attention)");
   await expect(quiet).toHaveCount(1);
   await quiet.click();
   await expect(quiet).toHaveClass(/selected/);
@@ -186,7 +186,7 @@ test("e travels to the first session asking when the selected one has nothing wa
   await dashboard.keyboard.press("e");
 
   // The queue that opened is the asking session's, and the selection followed it there, so
-  // the modal and the highlighted card do not disagree about which session is being answered.
+  // the modal and the highlighted row do not disagree about which session is being answered.
   const modal = dashboard.getByRole("dialog", { name: "Review request" });
   await expect(modal).toBeVisible();
   // The queue is the SECOND session's - the one dispatched with OTHER_TASK - and not

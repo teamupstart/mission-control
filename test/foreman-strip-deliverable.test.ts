@@ -4,7 +4,6 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { Session, SessionNoteSummary } from "../src/shared/types.ts";
 import { ForemanStrip } from "../src/web/components/ForemanStrip.tsx";
-import { ForemanNote } from "../src/web/components/ForemanNote.tsx";
 import { deliveryTarget, undeliverable } from "../src/web/lib/foreman.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
 
@@ -21,9 +20,8 @@ import { mkMuxHandle } from "./helpers/session-fixture.ts";
 // `lastAction: "escalated (no reply channel)"` exists BECAUSE nothing could deliver it - and
 // the strip offered to deliver it anyway, into whatever pane the session happened to have.
 //
-// Rendered rather than checked as a pure rule, for the reason `foreman-note.test.ts` gives:
-// the predicate was never wrong, nothing asked it. A test below the component could not have
-// caught this.
+// Rendered rather than checked only as a pure rule: the predicate was never wrong, nothing
+// asked it. A test below the component could not have caught this.
 
 const PANE = mkMuxHandle({ session: "m", windowIndex: 1, paneId: "%13" });
 
@@ -156,18 +154,4 @@ test("the strip unmounts for a note that owes nothing, from the shared predicate
   for (const disposition of ["answered", "skipped"] as const) {
     assert.equal(strip({ note: mkNote({ disposition }) }), "", `${disposition} pins nothing`);
   }
-});
-
-test("the full Foreman note explains an undeliverable reply", () => {
-  const html = renderToStaticMarkup(
-    createElement(ForemanNote, {
-      session: mkSession({ terminals: [] }),
-      note: mkNote({ handledMarker: "state:working:1", lastAction: "escalated (no reply channel)" }),
-      mode: "live",
-      enabled: true,
-      inputReviewId: null,
-    }),
-  );
-  assert.match(html, /no terminal pane/);
-  assert.doesNotMatch(html, /Approve &amp; send/);
 });

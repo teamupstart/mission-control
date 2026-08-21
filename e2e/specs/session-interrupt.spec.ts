@@ -75,7 +75,12 @@ test("Ctrl+C keeps an interrupted Codex session idle after late child activity",
 }) => {
   await dispatch(dashboard, daemon, "codex");
 
-  const card = await selectTheOnlyCard(dashboard);
+  await dashboard
+    .getByRole("navigation", { name: "Sessions" })
+    .locator("button.rail-row")
+    .first()
+    .click();
+  const card = dashboard.locator(".console-detail");
   const composer = card.getByPlaceholder(/^Reply to this session/);
   await expect(composer).toBeEnabled();
   await expect(card).toContainText("Agent SDK");

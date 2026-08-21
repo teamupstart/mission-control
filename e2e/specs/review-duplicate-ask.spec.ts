@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import type { Page } from "@playwright/test";
@@ -67,7 +67,7 @@ async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {
 async function ask(
   daemon: DaemonHandle,
   body: Record<string, unknown>,
-): Promise<{ id: string; sessionId: string }> {
+): Promise<{ id: string; sessionId: string; cwd: string }> {
   const token = readFileSync(join(daemon.home, "token"), "utf8").trim();
 
   let cwd: string | null = null;
@@ -92,7 +92,20 @@ async function ask(
   expect(res.status, `the review channel accepted the question: ${await res.clone().text()}`).toBe(
     200,
   );
-  return (await res.json()) as { id: string; sessionId: string };
+  return { ...((await res.json()) as { id: string; sessionId: string }), cwd: cwd! };
+}
+
+async function detach(
+  daemon: DaemonHandle,
+  review: { id: string; cwd: string },
+): Promise<void> {
+  const token = readFileSync(join(daemon.home, "token"), "utf8").trim();
+  const response = await fetch(`${daemon.baseURL}/mcp/reviews/${review.id}/detach`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-harness-token": token },
+    body: JSON.stringify({ env: {}, cwd: review.cwd }),
+  });
+  expect(response.status, await response.text()).toBe(200);
 }
 
 test("a retried ask does not put the same prompt in the queue twice", async ({
@@ -147,4 +160,45 @@ test("a different question from the same session still gets its own card", async
   const modal = dashboard.locator(".review-modal");
   await expect(modal.getByText(QUESTION)).toHaveCount(1);
   await expect(modal.getByText("What retry budget?")).toHaveCount(1);
+});
+
+test("an answer after the MCP wait detaches is queued back to the session", async ({
+  dashboard,
+  daemon,
+}) => {
+  await dispatch(dashboard, daemon);
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
+
+  // The fake holds this prompt open long enough for the fallback to remain visibly queued.
+  const composer = card.getByPlaceholder(/^Reply to this session/);
+  await composer.fill("hold the current turn open");
+  await composer.press("Enter");
+  await expect(
+    card.locator(".turn-user:not(.pending-turn)").getByText("hold the current turn open", {
+      exact: true,
+    }),
+  ).toBeVisible();
+
+  const review = await ask(daemon, ASK);
+  await detach(daemon, review);
+  const chip = card.getByRole("button", { name: /to review/ });
+  await chip.click();
+  const modal = dashboard.locator(".review-modal");
+  await modal.getByRole("radio", { name: /Single shared ring buffer/ }).check();
+  await modal.getByRole("button", { name: "Submit" }).click();
+
+  const fallback = card.locator(".pending-turn").filter({
+    hasText: "Treat this as the result of your earlier review tool call",
+  });
+  await expect(fallback).toBeVisible();
+  await expect(fallback).toContainText("Single shared ring buffer");
+  if (process.env.MC_E2E_EVIDENCE === "1") {
+    const evidenceDir = join(process.cwd(), "e2e", ".artifacts", "review-continuation");
+    mkdirSync(evidenceDir, { recursive: true });
+    await dashboard.screenshot({
+      path: join(evidenceDir, "answer-queued-after-mcp-detach.png"),
+      fullPage: true,
+    });
+  }
 });

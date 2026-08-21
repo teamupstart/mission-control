@@ -6,6 +6,7 @@ import { injectPrompt, type InjectResult } from "./actions.ts";
 import {
   claimNextPendingTurn,
   createPendingTurn,
+  createReviewContinuationPendingTurn,
   deleteClaimedPendingTurn,
   dropQueuedPendingTurns,
   markPendingTurnUncertain,
@@ -248,6 +249,58 @@ export class PendingTurnManager {
       text,
       now: this.deps.now(),
     });
+    this.registry.refreshPendingTurns(pendingTurn.noteKey);
+    this.scheduleDrain(pendingTurn.noteKey);
+    return {
+      ok: true,
+      pasted: false,
+      submitVerified: false,
+      delivery: "pending",
+      pendingTurn,
+    };
+  }
+
+  /**
+   * Queue the answer to a review whose blocking MCP result channel was canceled.
+   *
+   * Unlike an ordinary composer submit, the idempotency key is the review itself. The DB
+   * inserts the pending turn and stamps the review in one transaction, so startup recovery
+   * can call this again without duplicating the human's answer.
+   */
+  submitReviewContinuation(
+    reviewId: string,
+    sessionId: string,
+    text: string,
+  ): PendingTurnSubmitResult {
+    if (!this.started) {
+      return {
+        ok: false,
+        pasted: false,
+        submitVerified: false,
+        error: "pending turns are still starting",
+      };
+    }
+    const session = this.registry.getSession(sessionId);
+    if (!session) {
+      return { ok: false, pasted: false, submitVerified: false, error: "no such session" };
+    }
+    if (!canMessage(session) || session.state === "exited") {
+      return {
+        ok: false,
+        pasted: false,
+        submitVerified: false,
+        error: "this session cannot receive messages",
+      };
+    }
+    const pendingTurn = createReviewContinuationPendingTurn({
+      reviewId,
+      noteKey: noteKeyFor(session),
+      text,
+      now: this.deps.now(),
+    });
+    if (!pendingTurn) {
+      return { ok: true, pasted: false, submitVerified: false, delivery: "pending" };
+    }
     this.registry.refreshPendingTurns(pendingTurn.noteKey);
     this.scheduleDrain(pendingTurn.noteKey);
     return {

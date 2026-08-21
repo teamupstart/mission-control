@@ -491,6 +491,14 @@ export const CreateReviewSchema = z
   });
 export type CreateReview = z.infer<typeof CreateReviewSchema>;
 
+/** An MCP child reporting that its blocking result channel was canceled by the host. */
+export const DetachReviewWaitSchema = z.object({
+  env: EnvSchema,
+  sessionId: z.string().nullable().optional().default(null),
+  cwd: z.string().nullable().optional().default(null),
+});
+export type DetachReviewWait = z.infer<typeof DetachReviewWaitSchema>;
+
 // ---- public product issue reporting --------------------------------------------------
 
 const productIssueUtf8 = new TextEncoder();

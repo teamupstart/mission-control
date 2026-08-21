@@ -1583,10 +1583,9 @@ hands the model an error for a question that is still on screen and still answer
 model's natural recovery is to ask again word for word. Two things keep that from reaching you:
 
 - While it waits, the daemon's long poll reports in to the client after every round trip, as a
-  standard MCP **progress notification** against the token that client supplied. A client that
-  receives one restarts its timeout for that request, so a wait that keeps reporting in is never
-  abandoned for taking too long. A client that asks for no progress gets none, and simply behaves
-  as it did before.
+  standard MCP **progress notification** against the token that client supplied. A client may
+  restart its timeout when one arrives, but the protocol still recommends a maximum request
+  lifetime. A client that asks for no progress gets none.
 - If a retry happens anyway - a client that ignores progress, a dropped connection, a daemon
   restart - **an identical ask from the same session, while the first is still unanswered,
   re-attaches to the question that is already open** rather than opening a second one. You see
@@ -1595,8 +1594,15 @@ model's natural recovery is to ask again word for word. Two things keep that fro
 The re-attach is deliberately narrow: it matches only a **pending** review with the same kind,
 the same wording, and the same offered options. A question you already answered is never reused,
 so an agent that legitimately asks the same thing again later gets a fresh session detail; a different
-session's identical question is never folded into yours; and changing the options makes it a
-different question, because the options are what you are choosing between.
+  session's identical question is never folded into yours; and changing the options makes it a
+  different question, because the options are what you are choosing between.
+
+If the client cancels the blocking call before you answer, Mission Control marks that result
+channel detached. Your eventual answer is then queued through the same durable pending-turn
+outbox as a message you type into the session. The review id makes that fallback idempotent, so
+a daemon restart can finish the handoff without delivering the answer twice. A pending review
+restored after restart is treated as detached because the stdio request owned by the old daemon
+process cannot have survived it.
 
 **Your answer stays in the conversation.** Submitting a review writes a gold entry into that
 session's conversation, at the point in time you answered. What the entry shows depends on

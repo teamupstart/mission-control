@@ -221,7 +221,7 @@ learned about the hard way.
 
 ```ts
 // src/shared/protocol.ts, inside UiConfigSchema
-boardCardHidden: z.array(z.string().min(1)).default([]),
+hiddenDisplayItems: z.array(z.string().min(1)).default([]),
 ```
 
 An **opt-out list of hidden ids**, not `{ model: true, cost: false, ... }`. Three reasons:
@@ -239,6 +239,12 @@ An **opt-out list of hidden ids**, not `{ model: true, cost: false, ... }`. Thre
 `trustStaged: z.array(z.string().min(1))` in the same schema is the existing precedent for a plain
 string array owned whole by one panel.
 
+The key is `hiddenDisplayItems` rather than `boardCardHidden`, which an earlier draft of this plan
+proposed. Phasing the work established that **one array serves both groups** - the card's items and
+the conversation's - which is what lets the conversation work ship without touching
+`src/shared/protocol.ts` at all. A key called `boardCardHidden` holding `detailPath` would be a lie on
+operators' machines, and this key is persisted, so renaming it later orphans everyone's choices.
+
 The ids and their prose live in `src/web/lib/board-card.ts`, not in `src/shared/`, because the daemon
 stores them opaquely and has no use for prose it never shows - exactly the split between
 `LAYOUT_MODES` (shared, validated) and `LAYOUTS` (web, prose).
@@ -247,7 +253,7 @@ stores them opaquely and has no use for prose it never shows - exactly the split
 
 ```ts
 // src/web/lib/board-card.ts
-export function useBoardCardItems(): (id: BoardCardItemId) => boolean;
+export function useDisplayItems(): (id: DisplayItemId) => boolean;
 ```
 
 One hook over `useUiConfig()`, returning a predicate. `SessionTile` calls it once and gates each
@@ -324,7 +330,7 @@ graph LR
   end
   subgraph After
     P2[+ Board card panel] --> U2[updateUiConfig]
-    U2 --> R2[PUT /api/ui/config] --> D2[(app_config.ui<br/>+ boardCardHidden)]
+    U2 --> R2[PUT /api/ui/config] --> D2[(app_config.ui<br/>+ hiddenDisplayItems)]
     D2 --> S2[uiConfig module store]
     S2 --> A2[App: layout]
     S2 --> T2[TranscriptPanel: richText]

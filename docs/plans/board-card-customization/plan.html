@@ -517,7 +517,7 @@
 
   <h3>The stored shape: a list of hidden ids, not a map of booleans</h3>
   <pre><code>// src/shared/protocol.ts, inside UiConfigSchema
-boardCardHidden: z.array(z.string().min(1)).default([]),</code></pre>
+hiddenDisplayItems: z.array(z.string().min(1)).default([]),</code></pre>
   <p>
     An <strong>opt-out list of hidden ids</strong>, not
     <code>{ model: true, cost: false, ... }</code>. Three reasons:
@@ -539,6 +539,14 @@ boardCardHidden: z.array(z.string().min(1)).default([]),</code></pre>
     for a plain string array owned whole by one panel.
   </p>
   <p>
+    The key is <code>hiddenDisplayItems</code> rather than <code>boardCardHidden</code>, which an
+    earlier draft of this plan proposed. Phasing the work established that <strong>one array serves
+    both groups</strong> - the card's items and the conversation's - which is what lets the
+    conversation work ship without touching <code>src/shared/protocol.ts</code> at all. A key called
+    <code>boardCardHidden</code> holding <code>detailPath</code> would be a lie on operators'
+    machines, and this key is persisted, so renaming it later orphans everyone's choices.
+  </p>
+  <p>
     The ids and their prose live in <code>src/web/lib/board-card.ts</code>, not in
     <code>src/shared/</code>, because the daemon stores them opaquely and has no use for prose it never
     shows - exactly the split between <code>LAYOUT_MODES</code> (shared, validated) and
@@ -547,7 +555,7 @@ boardCardHidden: z.array(z.string().min(1)).default([]),</code></pre>
 
   <h3>How a card reads it</h3>
   <pre><code>// src/web/lib/board-card.ts
-export function useBoardCardItems(): (id: BoardCardItemId) =&gt; boolean;</code></pre>
+export function useDisplayItems(): (id: DisplayItemId) =&gt; boolean;</code></pre>
   <p>
     One hook over <code>useUiConfig()</code>, returning a predicate. <code>SessionTile</code> calls it
     once and gates each optional item on it. <code>useSyncExternalStore</code> is given

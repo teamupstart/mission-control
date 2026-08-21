@@ -204,7 +204,7 @@ these stays in this browser, and which of them acts publicly under your account.
 
 | Group | Reach | Categories |
 |-------|-------|-----------|
-| **This screen** | This browser | **Display** (layout + message formatting), **Keyboard**, **Dispatch** |
+| **This screen** | This browser | **Display** (layout, conversation rendering, message formatting, board card), **Keyboard**, **Dispatch** |
 | **Sessions** | This machine | **Harnesses**, **Skills** (writes `~/`), **Cost** (writes `~/`) |
 | **Background work** | This machine | **Foreman**, **Workflows**, **Task sources**, **Conductor** (only when an engine is installed), **Models** |
 | **Leaves the machine** | Acts on GitHub | **GitHub Inspector**, **Shipping**, **Trust** |
@@ -212,6 +212,19 @@ these stays in this browser, and which of them acts publicly under your account.
 The badge on a group is the general case; the badge in a panel's own header is that
 category's precise claim, which can be stronger - Skills sits under *This machine* and
 symlinks into `~/.claude/skills` and `~/.agents/skills`, so its own badge says `Writes ~/`.
+
+Display's fourth panel is **Board card**, and it is the checklist of every optional item a
+session card draws - goal, live activity, workflow, model, context meter, reasoning effort,
+permission mode, cost, branch, worktree and last seen. Unchecking one applies to every card
+in every column immediately, and a live preview card in the panel redraws as you toggle, so
+the consequence is on screen before you go and look at the Board. Two deliberate limits.
+The **attention flags** - a draft or escalated note, a review, a queued turn, a pull request,
+an Inspector verdict, a recurring mission, an ensemble - are not on the list and cannot be
+switched off, so no setting can make a session that needs you look like one that does not.
+And the **shipped defaults draw the card the previous release drew**: everything that was on
+a card is still on it, and the one genuinely new item, the **worktree**, starts off. Turn it
+on and the card prints the checkout's directory name with the full path on hover, which is a
+fact the console detail used to be the only place to read.
 
 Two things changed shape when the page arrived. **Layout and Appearance merged into
 Display**: both are one browser's preferences about how this screen draws the fleet, and a

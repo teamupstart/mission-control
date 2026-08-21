@@ -24653,6 +24653,21 @@ span.line-run-prov {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* Which checkout this session is in, beside the branch and sharing its budget.
+   `.tile-branch` is `flex: 1`, so this cell takes `flex` too and the two split the line
+   rather than one shouldering the other off it - and both need `min-width: 0`, or a long
+   worktree name would refuse to ellipsis and push the timestamp out of the tile. Dimmer
+   than the branch on purpose: they are two mono strings on one line, and the tone is what
+   says which is which without a label neither has room for. */
+.tile-worktree {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono);
+  color: var(--dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .tile-seen {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
@@ -24834,6 +24849,77 @@ span.line-run-prov {
   font-size: 11.5px;
   line-height: 1.5;
   color: var(--muted);
+}
+
+/* ---- Board card (Settings -> Display) ----
+   A checklist beside a live card. The card is the real `SessionTile` against a fixture,
+   so this file styles only the frame around it - everything inside is the tile's own CSS,
+   which is what stops the preview and the board from drifting. */
+.board-card-customizer {
+  display: grid;
+  /* The preview is pinned to a board column's own width rather than sharing the space
+     proportionally: a card narrower or wider than a real one would misreport the thing it
+     exists to report - which items still fit on the branch line, where the goal wraps. */
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 20px;
+  align-items: start;
+}
+.board-card-checklist {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.board-card-checklist .settings-subhead {
+  margin: 6px 0 0;
+  font-size: 12px;
+  font-weight: 620;
+  color: var(--fg);
+}
+.board-card-checklist .settings-blurb {
+  margin: 0 0 2px;
+}
+.board-card-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  /* The checklist is eleven rows tall and the card answers all of them, so the card
+     follows the scroll instead of being read from memory at the bottom of the list. */
+  position: sticky;
+  top: 8px;
+}
+.board-card-preview-cap {
+  font-size: 10px;
+  font-weight: 620;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+/* The board's own backdrop under the card, so the tile is read against the surface it
+   will actually sit on rather than against the settings pane. */
+.board-card-preview-stage {
+  padding: 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  background: var(--bg);
+}
+/* Inert already blocks the pointer; this stops the tile ADVERTISING a click it will not
+   answer, which is the half `inert` cannot express. */
+.board-card-preview-stage .tile,
+.board-card-preview-stage .tile * {
+  cursor: default;
+}
+.board-card-preview-stage .tile:hover {
+  transform: none;
+}
+@media (max-width: 900px) {
+  .board-card-customizer {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .board-card-preview {
+    position: static;
+    max-width: 300px;
+  }
 }
 
 /* Below this the console's rail and the board's columns stop being a layout and start

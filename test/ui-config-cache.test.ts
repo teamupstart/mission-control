@@ -33,6 +33,10 @@ test("nothing stored anywhere reads as the shipped defaults", () => {
   assert.deepEqual(config.alerts, { notifications: false, sound: true });
   assert.equal(config.keybindingHints, true);
   assert.equal(config.guidedDispatch, true);
+  // NOT empty. The shipped default is "the card the previous release drew", and `worktree`
+  // is the one registry item no card drew before - so it ships hidden and an upgrade moves
+  // nothing on screen. See `UI_CONFIG_DEFAULTS` for the whole reasoning.
+  assert.deepEqual(config.hiddenDisplayItems, ["worktree"]);
 });
 
 test("a written cache round-trips", () => {
@@ -45,6 +49,7 @@ test("a written cache round-trips", () => {
     keybindingHints: false,
     guidedDispatch: false,
     trustStaged: ["/work/staged"],
+    hiddenDisplayItems: ["cost"],
   });
   const config = readCache();
   assert.equal(config.layout, "console");
@@ -55,6 +60,7 @@ test("a written cache round-trips", () => {
   assert.equal(config.keybindingHints, false);
   assert.equal(config.guidedDispatch, false);
   assert.deepEqual(config.trustStaged, ["/work/staged"]);
+  assert.deepEqual(config.hiddenDisplayItems, ["cost"]);
 });
 
 test("a preference this cache forgets to copy would reset on every cold paint", () => {
@@ -65,6 +71,31 @@ test("a preference this cache forgets to copy would reset on every cold paint", 
   // is the newest field, and it is really a test of the copy.
   store.set("mission-control.ui", JSON.stringify({ guidedDispatch: false }));
   assert.equal(readCache().guidedDispatch, false, "the cached preference was dropped");
+
+  // The same failure, for the newest field, in both directions - because this one has a
+  // NON-empty default and so can be dropped two ways. A hidden item forgotten by `coerce`
+  // comes back on the next cold paint, and an item the operator switched ON is hidden
+  // again by a fallback that reaches for `[]` instead of the shipped default.
+  store.set("mission-control.ui", JSON.stringify({ hiddenDisplayItems: ["cost", "model"] }));
+  assert.deepEqual(readCache().hiddenDisplayItems, ["cost", "model"]);
+  store.set("mission-control.ui", JSON.stringify({ hiddenDisplayItems: [] }));
+  assert.deepEqual(
+    readCache().hiddenDisplayItems,
+    [],
+    "a stored empty list is a real answer, not a miss",
+  );
+});
+
+test("the hidden list is handed back as a fresh array the panel can build a patch from", () => {
+  // Same rule `trustStaged` follows: the default is a shared frozen literal, and the panel
+  // computes its next patch from what it reads here. Mutating the constant would change
+  // the default for every later cold paint in this process.
+  store.set("mission-control.ui", JSON.stringify({ hiddenDisplayItems: ["cost"] }));
+  readCache().hiddenDisplayItems.push("model");
+  assert.deepEqual(readCache().hiddenDisplayItems, ["cost"]);
+  store.clear();
+  readCache().hiddenDisplayItems.push("goal");
+  assert.deepEqual(readCache().hiddenDisplayItems, ["worktree"]);
 });
 
 test("a rendering this build does not ship reads as the shipped one", () => {

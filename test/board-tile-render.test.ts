@@ -101,6 +101,32 @@ test("the keyboard-selected tile is marked without opening its console detail", 
   assert.match(html, /class="board-detail" aria-hidden="true"/);
 });
 
+test("a profile with no stored preference draws the card the previous release drew", () => {
+  // D2, from the rendering side. Every optional item is customizable now, and the one
+  // thing that must NOT have changed is what an operator sees on upgrade: the shipped
+  // default is "today's card", not "everything this build knows how to draw".
+  //
+  // These run with no `localStorage` and no daemon, so `useUiConfig` reads the shipped
+  // defaults - which is exactly the profile being described.
+  const html = render(mkSession());
+  assert.match(html, /tile-goal/);
+  assert.match(html, /tile-activity/);
+  assert.match(html, /tile-runtime-line/);
+  assert.match(html, /card-runtime/);
+  assert.match(html, /tile-foot/);
+  assert.match(html, /tile-branch[^>]*>harness\/app-bugfixes/);
+  assert.match(html, /tile-seen/);
+  // And the one item that is new to the card is absent until it is asked for. `/wt/` is
+  // the fixture's cwd, which no card has ever printed.
+  assert.doesNotMatch(html, /tile-worktree/);
+  // The foot, byte for byte, which is the row this feature changed most: two cells with
+  // nothing between them and nothing wrapping them.
+  assert.ok(html.includes(
+    '<span class="tile-foot"><span class="tile-branch">harness/app-bugfixes</span>'
+    + '<span class="tile-seen"></span></span>',
+  ), "the default card's foot is no longer the branch-and-timestamp row it was");
+});
+
 test("the tile shows what the session is doing right now", () => {
   const html = render(mkSession());
   assert.match(html, /tile-activity/);

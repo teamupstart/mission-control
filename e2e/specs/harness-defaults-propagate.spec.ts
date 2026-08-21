@@ -58,10 +58,16 @@ test("Settings waits for a saved runtime rather than guessing during its first r
   const gateHit = new Promise<void>((resolve) => {
     hit = resolve;
   });
-  let gated = false;
+  // EVERY read is held, not just the first.
+  //
+  // Gating only the first one made this spec fail under a loaded full-suite run, on `main`
+  // as well as on a branch: two GETs can be in flight at once - the settings page lands on
+  // its default category before the Harnesses tab is clicked - and a gate that armed on one
+  // let the other through, so the panel already had its config and the transient sentence
+  // below never rendered. `hit` still resolves once; the extra `resolve` calls a second
+  // request would make are no-ops on a settled promise.
   await dashboard.route("**/api/harnesses/config", async (route) => {
-    if (route.request().method() !== "GET" || gated) return route.fallback();
-    gated = true;
+    if (route.request().method() !== "GET") return route.fallback();
     const response = await route.fetch();
     hit?.();
     await released;

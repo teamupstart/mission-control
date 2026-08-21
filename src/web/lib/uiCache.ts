@@ -100,6 +100,16 @@ function coerce(raw: Partial<UiConfig> | null): UiConfig {
     // A fresh array either way: the default is a shared frozen literal, and the cache must
     // hand back something the Trust panel can build its next patch from without mutating it.
     trustStaged: raw?.trustStaged ? [...raw.trustStaged] : [],
+    // A fresh array for the same reason `trustStaged` above is one: the Board card panel
+    // builds its next patch by adding to or removing from what it reads here, and the
+    // default is a shared frozen literal. Unlike `trustStaged` the default is NOT empty
+    // (see `UI_CONFIG_DEFAULTS`), so a miss has to fall back to the constant rather than
+    // to `[]` - falling back to `[]` here would un-hide the worktree on every cold paint,
+    // which is the exact silent-reset failure this field-by-field copy exists to prevent.
+    // A STORED empty array is a real answer and stays empty; `[]` is truthy.
+    hiddenDisplayItems: raw?.hiddenDisplayItems
+      ? [...raw.hiddenDisplayItems]
+      : [...UI_CONFIG_DEFAULTS.hiddenDisplayItems],
   };
 }
 

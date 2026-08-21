@@ -126,7 +126,7 @@ import { useRichText } from "./lib/rich-text.ts";
 import { useDesktopUpdates } from "./useDesktopUpdates.ts";
 import { UpdateBanner } from "./components/UpdateBanner.tsx";
 import { useGuidedDispatch } from "./lib/guided-dispatch.ts";
-import { activateDeleteShortcut } from "./lib/delete-shortcut.ts";
+import { activateDeleteShortcut, deleteShortcutMatchesChord } from "./lib/delete-shortcut.ts";
 import {
   SeeWorkTourController,
   type SeeWorkTourNavigation,
@@ -1982,7 +1982,15 @@ export function App(): React.JSX.Element {
       // registers itself in the DOM; resolution prefers the focused row/current surface and
       // fails closed when several destructive controls are otherwise equally plausible.
       // A bare binding never fires while typing, including confirmation phrase fields.
-      if (!typing && chord === bindings.delete && activateDeleteShortcut(e.target)) {
+      if (
+        !typing
+        && deleteShortcutMatchesChord({
+          chord,
+          deleteBinding: bindings.delete,
+          diffBinding: bindings.diff,
+        })
+        && activateDeleteShortcut(e.target)
+      ) {
         e.preventDefault();
         return;
       }

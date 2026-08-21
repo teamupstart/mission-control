@@ -3,6 +3,26 @@ export const DELETE_SHORTCUT_SCOPE_ATTRIBUTE = "data-delete-shortcut-scope";
 
 const DELETE_BUTTON_SELECTOR = `button[data-keybinding-action="${DELETE_SHORTCUT_ACTION}"]`;
 
+/**
+ * Whether Delete owns this keypress after the Diff-default migration.
+ *
+ * `resolveKeybindings` already gives persisted overrides first claim, so an existing
+ * `{ diff: "d" }` normally leaves Delete unset. The explicit Diff check is a second boundary
+ * at dispatch time: even a malformed/stale binding map cannot turn that established custom
+ * Diff chord into a destructive action merely because a Delete button is visible.
+ */
+export function deleteShortcutMatchesChord(input: {
+  chord: string;
+  deleteBinding: string;
+  diffBinding: string;
+}): boolean {
+  return Boolean(
+    input.deleteBinding
+    && input.chord === input.deleteBinding
+    && input.chord !== input.diffBinding
+  );
+}
+
 function usable(button: HTMLButtonElement): boolean {
   return !button.disabled
     && button.getAttribute("aria-disabled") !== "true"

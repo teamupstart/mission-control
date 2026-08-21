@@ -59,6 +59,7 @@ const {
 const { updateUiConfig } = await import("../src/web/lib/uiConfig.ts");
 const { KeyboardPanel } = await import("../src/web/components/KeyboardPanel.tsx");
 const { DeleteButton } = await import("../src/web/components/DeleteButton.tsx");
+const { deleteShortcutMatchesChord } = await import("../src/web/lib/delete-shortcut.ts");
 const { pageShortcutRoute } = await import("../src/web/workflows/useWorkflowRoute.ts");
 type ActionId = (typeof ACTIONS)[number]["id"];
 
@@ -186,6 +187,25 @@ test("Delete owns d by default and Diff stays available on Shift+D", () => {
   assert.equal(chordFromEvent(key("D", { shift: true })), diff?.defaultBinding);
 });
 
+test("a persisted custom Diff binding keeps d away from Delete", () => {
+  const resolved = resolveKeybindings({ diff: "d" });
+  assert.equal(resolved.diff, "d");
+  assert.equal(resolved.delete, "");
+  assert.equal(deleteShortcutMatchesChord({
+    chord: "d",
+    deleteBinding: resolved.delete,
+    diffBinding: resolved.diff,
+  }), false);
+
+  // Dispatch also fails closed if a stale or malformed snapshot somehow contains the
+  // collision that the resolver normally removes.
+  assert.equal(deleteShortcutMatchesChord({
+    chord: "d",
+    deleteBinding: "d",
+    diffBinding: "d",
+  }), false);
+});
+
 test("Delete buttons advertise the resolved binding and use the shared keycap", () => {
   const html = renderToStaticMarkup(createElement(DeleteButton, null, "Delete"));
   assert.match(html, /data-keybinding-action="delete"/);
@@ -216,7 +236,7 @@ test("every current Delete surface uses the shared bound button", () => {
   }
 
   const app = readFileSync("src/web/App.tsx", "utf8");
-  const activation = app.indexOf("activateDeleteShortcut(e.target)");
+  const activation = app.indexOf("deleteShortcutMatchesChord({");
   assert.ok(
     activation >= 0 && activation < app.indexOf('if (route.page !== "fleet")', activation),
     "Delete must dispatch on every page before fleet-only shortcuts stand down",

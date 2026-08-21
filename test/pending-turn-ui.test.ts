@@ -7,6 +7,8 @@ import type { PendingTurn } from "../src/shared/types.ts";
 import { PendingTurnView } from "../src/web/components/TranscriptPanel.tsx";
 import {
   latestEditablePendingTurn,
+  PENDING_TURN_HELD_REASON,
+  pendingTurnHeld,
   pendingTurnStatus,
   recallPendingTurnIntoDraft,
   shouldRecallPendingTurn,
@@ -41,6 +43,49 @@ test("the pending row renders as a complete human turn with edit guidance", () =
   assert.match(html, />queued</);
   assert.match(html, /Please check the queue race\./);
   assert.match(html, />Edit</);
+  assert.match(html, /Up Arrow in an empty reply box/);
+});
+
+test("a queued row held by an open dialog says so, and offers the jump to it", () => {
+  const html = renderToStaticMarkup(
+    createElement(PendingTurnView, {
+      turn: turn(),
+      editable: true,
+      held: true,
+      onEdit: () => {},
+      onGoToReview: () => {},
+    }),
+  );
+  // Amber, not working-blue: the row is not on its way, and the class is what says so.
+  assert.match(html, /pending-turn is-queued is-held/);
+  assert.match(html, /data-pending-held="true"/);
+  assert.match(html, />queued · held</);
+  assert.match(html, new RegExp(PENDING_TURN_HELD_REASON));
+  assert.match(html, />Go to review</);
+  // Recall stays available - the point is that the message is stuck, not that it is stuck
+  // beyond the operator's reach.
+  assert.match(html, />Edit</);
+  // The keystroke hint yields the line to the reason.
+  assert.doesNotMatch(html, /Up Arrow in an empty reply box/);
+});
+
+test("held is exactly the daemon's own precondition: an open dialog over a queued row", () => {
+  // `canDrain` in src/server/pending-turns.ts refuses delivery while `paneDialog` is set,
+  // so this predicate is a read of that rule and not a presentation choice.
+  assert.equal(pendingTurnHeld(turn(), true), true);
+  assert.equal(pendingTurnHeld(turn(), false), false);
+  // A claimed row already crossed the boundary the dialog guards; an uncertain one has a
+  // louder story. Neither is "held".
+  assert.equal(pendingTurnHeld(turn({ state: "sending" }), true), false);
+  assert.equal(pendingTurnHeld(turn({ state: "uncertain" }), true), false);
+});
+
+test("an unheld queued row is unchanged by the held affordance existing", () => {
+  const html = renderToStaticMarkup(
+    createElement(PendingTurnView, { turn: turn(), editable: true, onEdit: () => {} }),
+  );
+  assert.doesNotMatch(html, /is-held/);
+  assert.doesNotMatch(html, />Go to review</);
   assert.match(html, /Up Arrow in an empty reply box/);
 });
 
@@ -204,5 +249,20 @@ test("both uncontrolled composer surfaces wire Arrow Up to the shared recall gua
     );
     assert.match(source, /writeDraft\(/, `${path} does not restore the recalled draft`);
     assert.match(source, /setSelectionRange\(/, `${path} does not put the caret at the end`);
+  }
+});
+
+test("both surfaces mark a held queued row, so neither can quietly keep the old blue", () => {
+  // The queue is drawn twice - the transcript's `PendingTurnView` and the ActionBar's
+  // mini-list - and a held row that reads "queued" in one of them is the exact confusion
+  // this indicator exists to remove.
+  for (const path of [
+    "src/web/components/TranscriptPanel.tsx",
+    "src/web/components/ActionBar.tsx",
+  ]) {
+    const source = readFileSync(path, "utf8");
+    assert.match(source, /pendingTurnHeld\(/, `${path} does not compute the held state`);
+    assert.match(source, /PENDING_TURN_HELD_STATUS/, `${path} does not relabel a held row`);
+    assert.match(source, /revealPaneDialog\(/, `${path} offers no jump to the blocking review`);
   }
 });

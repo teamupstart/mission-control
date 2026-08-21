@@ -103,3 +103,25 @@ export function pendingTurnStatus(turn: PendingTurn): string {
       return "delivery uncertain";
   }
 }
+
+/**
+ * Is this queued row being withheld from the agent by an open pane dialog?
+ *
+ * Not a presentation flourish - it is the daemon's own precondition read back. `canDrain`
+ * in `src/server/pending-turns.ts` refuses to deliver anything while `session.paneDialog`
+ * is non-null, so a message queued underneath a review sits there until the review is
+ * answered, however long that is. Every other queued row is on its way; this one is not,
+ * and the two used to be drawn identically in working-blue.
+ *
+ * Scoped to `queued` deliberately. A `sending` row has already been claimed and crossed
+ * the boundary the dialog guards, and an `uncertain` one has its own louder story to tell.
+ */
+export function pendingTurnHeld(turn: PendingTurn, dialogOpen: boolean): boolean {
+  return dialogOpen && turn.state === "queued";
+}
+
+/** The reason a held row carries, in both composer surfaces. */
+export const PENDING_TURN_HELD_REASON = "Held until you answer the review above";
+
+/** The status a held row reports, replacing the bare "queued" it would otherwise show. */
+export const PENDING_TURN_HELD_STATUS = "queued · held";

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Session } from "@shared/types.ts";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
-import { canCycleMode, canInterruptSession } from "@shared/session.ts";
+import { activePaneDialog, canCycleMode, canInterruptSession } from "@shared/session.ts";
 import { interruptUnsupportedWhy } from "@shared/harness-capabilities.ts";
 import { canMessage, muxHandle } from "@shared/pane.ts";
 import { api, type ActionResult } from "../lib/api.ts";
@@ -10,8 +10,12 @@ import { clearDraft, readDraft, writeDraft } from "../lib/drafts.ts";
 import { formatChord, useKeybindings } from "../lib/keybindings.ts";
 import { clearInterrupting, interruptReport, markInterrupting } from "../lib/interrupting.ts";
 import { sdkDeliveryConfirmation } from "../lib/sdk-delivery.ts";
+import { revealPaneDialog } from "../lib/pane-dialog-anchor.ts";
 import {
   latestEditablePendingTurn,
+  PENDING_TURN_HELD_REASON,
+  PENDING_TURN_HELD_STATUS,
+  pendingTurnHeld,
   pendingTurnStatus,
   RECALL_ACKNOWLEDGEMENT_LOST_MESSAGE,
   recallPendingTurnIntoDraft,
@@ -168,6 +172,10 @@ export function ActionBar({
   // Queued work is the reason to open a hidden panel, so the button carries the count
   // rather than making you press it to find out whether anything is waiting.
   const latestEditable = latestEditablePendingTurn(session.pendingTurns);
+  // The same fact the transcript's queue draws: a row queued under an open dialog is not
+  // on its way, because `canDrain` refuses to deliver anything until the dialog is gone.
+  // Read here rather than passed in - this bar has the session and nothing else needs it.
+  const dialogOpen = activePaneDialog(session) !== null;
   // An OFFER, not permanent chrome: it appears at the one moment the plan chose and is
   // absent every other time, so its presence is itself the message. That is why there is no
   // disabled Retro anywhere in this row - a greyed-out button for the whole
@@ -406,10 +414,26 @@ export function ActionBar({
         <div className="compose">
           {session.pendingTurns.length > 0 && (
             <div className="compose-pending-list" aria-label="Pending messages">
-              {session.pendingTurns.map((turn) => (
-                <div className={`compose-pending is-${turn.state}`} key={turn.id}>
+              {session.pendingTurns.map((turn) => {
+                const held = pendingTurnHeld(turn, dialogOpen);
+                return (
+                <div
+                  className={`compose-pending is-${turn.state}${held ? " is-held" : ""}`}
+                  key={turn.id}
+                >
                   <span className="compose-pending-text">{turn.text}</span>
-                  <span className="compose-pending-state">{pendingTurnStatus(turn)}</span>
+                  <Tooltip label={held ? `${PENDING_TURN_HELD_REASON}.` : "Waiting to be delivered"}>
+                    <span className="compose-pending-state">
+                      {held ? PENDING_TURN_HELD_STATUS : pendingTurnStatus(turn)}
+                    </span>
+                  </Tooltip>
+                  {held && (
+                    <Tooltip label="Scroll to the review that is holding this message">
+                      <button type="button" onClick={() => revealPaneDialog(session.id)}>
+                        Go to review
+                      </button>
+                    </Tooltip>
+                  )}
                   {turn.id === latestEditable?.id && (
                     <Tooltip label="Move this queued message back into the send box">
                       <button type="button" disabled={busy !== null} onClick={() => void recallPending()}>
@@ -440,7 +464,8 @@ export function ActionBar({
                     </>
                   )}
                 </div>
-              ))}
+                );
+              })}
             </div>
           )}
           <textarea

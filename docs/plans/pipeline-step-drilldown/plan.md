@@ -438,9 +438,21 @@ readers, the shared types, and `test/pipeline-sse.test.ts`.
 
 ### Decision 2 - what the first phase covers
 
-**Status: PENDING OPERATOR CONFIRMATION.** Proposed: bands 1, 2 and 3 - Timeline, Gate history and operator actions, and Outcome. Those
-read only the two ledgers that already exist and have no reader, so the first phase adds **no
-new file readers at all** and still delivers `step_completed.tail`, retries with escalations,
+**Status: PENDING OPERATOR CONFIRMATION.** Proposed: bands 1, 2 and 3 - Timeline, Gate history
+and operator actions, and Outcome.
+
+**Scope, counted exactly.** Bands 1 and 3 need no file reader: they read `pipeline_events`, which
+is already populated, plus the gate verdicts `PipelineRunDetail` already carries. **Band 2 adds
+exactly one new file reader** - `.pipeline/audit-trail/events.jsonl` in `state.ts`, with its own
+byte cap and its own test, as the work map below lists. So this proposal is **one** new reader,
+not zero. What it excludes is band 4's fifteen judgement-file readers and band 5's artifact
+resolution.
+
+That one reader is also the cheapest in the whole inventory, which is why it is proposed here
+rather than with the rest: `AuditRecord` carries `origin`, so the band needs no step-attribution
+rule, and its fields are flat scalars with no version to tolerate.
+
+For that one reader the phase still delivers `step_completed.tail`, retries with escalations,
 kickback reasons, per-dispatch cost, skip reasons, interventions and halt clears.
 
 Under this proposal bands 4 (Findings) and 5 (Artifacts) are **later phases, not descoped work.** Each is a set of
@@ -453,8 +465,8 @@ exactly as it renders a step whose engine wrote no findings.
 
 | Alternative | What changes if the operator picks this instead |
 |---|---|
-| Bands 1 and 3 only | Drop the audit-trail reader from phase 1. The gate-history band goes absent; every gate occurrence and every operator action stays invisible until a later phase. |
-| Also band 4 | Phase 1 additionally carries six version-tolerant file readers and their tests. Larger phase, same contract. |
+| Bands 1 and 3 only | Drops the audit-trail reader, so phase 1 adds no file reader at all. The gate-history band goes absent; every gate occurrence and every operator action stays invisible until a later phase. |
+| Also band 4 | Adds fourteen readers over fifteen artifact files, each version-tolerant, each with its own test. Much larger phase, same contract. |
 | Also band 5 | The above, plus the frozen `PIPELINE_STEP_ARTIFACTS` copy and the file-viewer wiring. |
 
 ### Decision 3 - audit-trail retention

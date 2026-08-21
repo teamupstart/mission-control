@@ -731,11 +731,24 @@ its own.</p>
 
 <h3 id="d2">Decision 2 - what the first phase covers</h3>
 
-<p><strong>Status: PENDING OPERATOR CONFIRMATION.</strong> Proposed: bands 1, 2 and 3 - Timeline, Gate history and operator actions, and
-Outcome. Those read only the two ledgers that already exist and have no reader, so the first phase
-adds <strong>no new file readers at all</strong> and still delivers
-<code>step_completed.tail</code>, retries with escalations, kickback reasons, per-dispatch cost,
-skip reasons, interventions and halt clears.</p>
+<p><strong>Status: PENDING OPERATOR CONFIRMATION.</strong> Proposed: bands 1, 2 and 3 - Timeline,
+Gate history and operator actions, and Outcome.</p>
+
+<p><strong>Scope, counted exactly.</strong> Bands 1 and 3 need no file reader: they read
+<code>pipeline_events</code>, which is already populated, plus the gate verdicts
+<code>PipelineRunDetail</code> already carries. <strong>Band 2 adds exactly one new file
+reader</strong> - <code>.pipeline/audit-trail/events.jsonl</code> in <code>state.ts</code>, with
+its own byte cap and its own test, as the work map below lists. So this proposal is
+<strong>one</strong> new reader, not zero. What it excludes is band 4's fifteen judgement-file
+readers and band 5's artifact resolution.</p>
+
+<p>That one reader is also the cheapest in the whole inventory, which is why it is proposed here
+rather than with the rest: <code>AuditRecord</code> carries <code>origin</code>, so the band needs
+no step-attribution rule, and its fields are flat scalars with no version to tolerate.</p>
+
+<p>For that one reader the phase still delivers <code>step_completed.tail</code>, retries with
+escalations, kickback reasons, per-dispatch cost, skip reasons, interventions and halt
+clears.</p>
 
 <p>Under this proposal bands 4 (Findings) and 5 (Artifacts) are <strong>later phases, not descoped work.</strong> Each
 is a set of independent file readers behind an optional field, so each lands on its own without
@@ -749,8 +762,8 @@ reader renders that exactly as it renders a step whose engine wrote no findings.
 <table>
   <thead><tr><th>Alternative</th><th>What changes if the operator picks this instead</th></tr></thead>
   <tbody>
-    <tr><td>Bands 1 and 3 only</td><td>Drop the audit-trail reader from phase 1. The gate-history band goes absent; every gate occurrence and every operator action stays invisible until a later phase.</td></tr>
-    <tr><td>Also band 4</td><td>Phase 1 additionally carries six version-tolerant file readers and their tests. Larger phase, same contract.</td></tr>
+    <tr><td>Bands 1 and 3 only</td><td>Drops the audit-trail reader, so phase 1 adds no file reader at all. The gate-history band goes absent; every gate occurrence and every operator action stays invisible until a later phase.</td></tr>
+    <tr><td>Also band 4</td><td>Adds fourteen readers over fifteen artifact files, each version-tolerant, each with its own test. Much larger phase, same contract.</td></tr>
     <tr><td>Also band 5</td><td>The above, plus the frozen <code>PIPELINE_STEP_ARTIFACTS</code> copy and the file-viewer wiring.</td></tr>
   </tbody>
 </table>

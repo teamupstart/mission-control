@@ -28,16 +28,16 @@ change them cheaply. That ordering is deliberate - see the entry on `addColumn` 
    - `reanchor(anchor, newText)` returning one of: unchanged, moved (with the new range), or
      `outdated`. Rules in `plan.md` under "The anchor". Pure, no I/O.
 2. **Both tables in `src/server/db.ts`**, appended to the one schema template literal, in the house
-   style of `inspector_comments` (`db.ts:1791-1817`): a comment block above the table stating the
+   style of `inspector_comments` (`db.ts:1842-1861`): a comment block above the table stating the
    rule it enforces, aligned column types, `--` comments naming each enum domain, indices declared
    immediately beneath.
    - `file_comment_threads` and `file_comment_messages`, columns exactly as `plan.md` specifies.
    - A partial unique index on `(session_id) WHERE status = 'sending'`. Build the predicate from the
-     TypeScript status tuple the way `inFlightIndexSql()` does (`db.ts:2707-2716`) so enforcement and
+     TypeScript status tuple the way `inFlightIndexSql()` does (`db.ts:2756-2759`) so enforcement and
      readers cannot drift.
    - **Declare the whole shape now**, including `queue_seq`, `delivery_id`, `answered_at` - columns
      phases 3 and 4 are the first to write. A shipped table cannot gain a column from the CREATE
-     TABLE alone; it needs `addColumn` in `migrate()` forever after (`db.ts:3021-3023`).
+     TABLE alone; it needs `addColumn` in `migrate()` forever after (`db.ts:3077-3079`).
    - **No `migrate()` entry is needed** for a new table: the schema literal runs on every open,
      before `migrate()`.
 3. **Store functions in `db.ts`**, Shape A (module-level exported functions, as
@@ -46,13 +46,13 @@ change them cheaply. That ordering is deliberate - see the entry on `addColumn` 
 4. **A `FileCommentManager`** owning the session-scoped lifetime. This is the part the source plan
    got wrong; implement the repository's actual pattern, which is **three mechanisms**:
    - `registry.subscribe` on `session_remove` - mark that session's threads terminal
-     (`orphaned`), the way `ReviewManager.orphanReviewsFor` (`reviews.ts:314`) does. **Not a
+     (`orphaned`), the way `ReviewManager.orphanReviewsFor` (`reviews.ts:357`) does. **Not a
      `DELETE`,** and never keyed on `state === "exited"`.
    - `registry.onSessionsObserved(...)` - the same reconciliation for threads whose session vanished
-     while the daemon was down, mirroring `orphanReviewsWithNoLiveSession` (`reviews.ts:319`).
+     while the daemon was down, mirroring `orphanReviewsWithNoLiveSession` (`reviews.ts:362`).
      Without this arm, pre-restart rows survive forever.
    - A throttled prune of terminal rows against the live key set, in the shape of
-     `pruneSessionGoals` (`db.ts:6905`) / `Registry.pruneGoals` (`registry.ts:6288`), gated on
+     `pruneSessionGoals` (`db.ts:7449`) / `Registry.pruneGoals` (`registry.ts:6541`), gated on
      `sweptSessions`.
 5. **Zod schemas in `src/shared/protocol.ts`** for every mutating route, in the house shape
    (`RenameArchiveSchema`, `protocol.ts:5535-5539`): doc comment, `export const XSchema`, then
@@ -61,12 +61,12 @@ change them cheaply. That ordering is deliberate - see the entry on `addColumn` 
    arms named to the existing convention - `file_comment_thread_upsert` (carrying the thread) and
    `file_comment_thread_remove` (carrying `id`).
 7. **`src/server/registry.ts`**: the collection on `snapshot()`, the emit helpers, and an
-   **explicit decision on `LINE_INPUT_EVENTS`** (`registry.ts:423`) with the reason written beside
+   **explicit decision on `LINE_INPUT_EVENTS`** (`registry.ts:431`) with the reason written beside
    it. The recommendation is **absent** - the Line strip does not read file comments - and
    `pipeline_upsert`'s deliberate absence is the precedent to follow.
 8. **Routes in `src/server/routes.ts`**: create, list, edit, delete, and reorder. `parseBody` for
    every mutating route; no hand-parsed JSON. If a manager instance is needed, append it as the
-   **last** optional positional parameter of `buildApp` (currently `productIssues`, `routes.ts:833`)
+   **last** optional positional parameter of `buildApp` (currently `productIssues`, `routes.ts:859`)
    and answer **503** when absent.
 9. **Browser plumbing**: the exhaustive cases in `src/web/useEventStream.ts`, the collection on
    `MissionState`, the snapshot arm with a `?? []` version-skew guard, and helpers on
@@ -85,15 +85,15 @@ change them cheaply. That ordering is deliberate - see the entry on `addColumn` 
 
 ## Repository findings this phase rests on
 
-- The schema is one `db.exec()` literal at `db.ts:525-2697`; `migrate(d)` runs after it at `:2699`.
-- `test/db-shell.test.ts:58` asserts `74` tables and becomes `76`. A second test in the same file
+- The schema is one `db.exec()` literal at `db.ts:533-2741`; `migrate(d)` runs after it at `:2699`.
+- `test/db-shell.test.ts:58` asserts `75` tables and becomes `77`. A second test in the same file
   cross-checks each family's `<span>N tables</span>` against its row count.
 - No existing table is hard-`DELETE`d on `session_remove`; every subscriber orphans by UPDATE, and
   every one has an `onSessionsObserved` second arm.
 - `change-contracts.md:14-28` requires the `LINE_INPUT_EVENTS` decision **and** a stated bound on the
   new collection, pinned by a test.
 - `buildApp`'s optional parameters are positional and appended last because ~50 tests construct it
-  that way (`routes.ts:803-806`).
+  that way (`routes.ts`, on `buildApp`'s trailing optional parameters).
 
 ## Data and migration notes
 

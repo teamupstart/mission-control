@@ -37,7 +37,7 @@ The queue stops advancing on an inference about idleness and starts advancing on
      recommendation is **no**: this tool is reachable when a human is reviewing a file, which is not
      a property of the task's kind.
 4. **`POST /mcp/file-comments/replies`** in `src/server/routes.ts`, in the `/mcp/reviews` shape
-   (`routes.ts:2743-2753`): `authed(c)` → `parseBody` → destructure `{ env, sessionId, cwd, ... }` →
+   (`routes.ts:2799-2809`): `authed(c)` → `parseBody` → destructure `{ env, sessionId, cwd, ... }` →
    `registry.findSessionByEnv(env, sessionId, cwd)` → 404 `"no matching session"`. Note `/mcp/*` is
    deliberately **not** behind `requireLoopback`; the token is the gate.
 5. **Persist, emit, advance.** The reply is stored in `file_comment_messages`, the thread moves to
@@ -66,7 +66,7 @@ The queue stops advancing on an inference about idleness and starts advancing on
 - **A tool result cannot draw itself in the conversation.** Every harness parser drops a user turn
   that is purely a tool result as machine noise - the reason `ReviewAnswerCard` exists
   (`src/web/components/ReviewAnswer.tsx:8-13`). The thread must render from durable state.
-- **`findSessionByEnv`** (`registry.ts:2833`) resolves in three steps: pane token from `env`, then
+- **`findSessionByEnv`** (`registry.ts:2878`) resolves in three steps: pane token from `env`, then
   `agentSessionId`, then a **unique** `cwd` match. The cwd branch deliberately does not filter by
   agent, because uniqueness is the tie-break that matters.
 - **The build obligation is silent.** A dispatched agent runs the gitignored `dist/mcp/server.mjs`,

@@ -20,7 +20,7 @@ exact source lines. The feature now covers every surface decision 1 approved.
    the same shape as the existing `diagramRenderers` opt-in that `FileWorkspace` alone passes: a
    block-anchor callback. When present, block-level components read `node.position` and wrap their
    output in an anchor host carrying the line range.
-   - **The prop must be added to `markdownPropsEqual` (`Markdown.tsx:241-250`)** or the memo
+   - **The prop must be added to `markdownPropsEqual` (`Markdown.tsx:242-251`)** or the memo
      silently ignores changes to it. This is the single easiest thing to get wrong here.
    - It must default to absent, not to an empty object: `undefined` is the "off" signal the file
      already uses (`if (!diagramRenderers) return { a: anchor };`, `:173`).

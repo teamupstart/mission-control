@@ -21,22 +21,22 @@ boundaries are where they are.
 1. **The plan's cleanup design does not match anything in this repository.** It says both tables
    are "cleared on `session_remove` and on no other signal." No table works that way. Every
    durable `session_remove` subscriber *orphans or settles by UPDATE* - `orphanReviewsFor`
-   (`reviews.ts:314`), `reconcileTasksBoundTo` (`tasks.ts:1224`), `orphanBinding`
-   (`workflows/manager.ts:583`). Row deletion is a separate, throttled sweep against the live key
-   set (`pruneSessionGoals` `db.ts:6905`, `pruneDeadQueues` `db.ts:8578`), gated on
+   (`reviews.ts:357`), `reconcileTasksBoundTo` (`tasks.ts:1357`), `orphanBinding`
+   (`workflows/manager.ts:616`). Row deletion is a separate, throttled sweep against the live key
+   set (`pruneSessionGoals` `db.ts:7449`, `pruneDeadQueues` `db.ts:9265`), gated on
    `sweptSessions` because absence is not evidence before the first completed sweep. And every
    subscriber has a **second arm** - `registry.onSessionsObserved(...)` running
-   `orphanReviewsWithNoLiveSession` (`reviews.ts:319`) / `reconcileTasksWithNoLiveSession`
-   (`tasks.ts:1231`) - for the daemon-was-down case. Session-scoped cleanup is therefore three
+   `orphanReviewsWithNoLiveSession` (`reviews.ts:362`) / `reconcileTasksWithNoLiveSession`
+   (`tasks.ts:1364`) - for the daemon-was-down case. Session-scoped cleanup is therefore three
    mechanisms, not one. Phase 1 owns all three.
 2. **A new table needs no `migrate()` entry.** The whole schema is one `db.exec()` template
-   literal (`db.ts:525-2697`) that runs on every open, before `migrate(d)` at `db.ts:2699`. The
+   literal (`db.ts:533-2741`) that runs on every open, before `migrate(d)` at `db.ts:2743`. The
    most recent table addition (`task_worktree_retention`, #687) added zero lines to `migrate()`.
    The corollary is the trap: once the table ships, a later column needs `addColumn` **as well as**
    the CREATE TABLE edit, so phase 1 declares the full shape up front - the house preference,
-   stated at `db.ts:2676-2678`.
+   stated at `db.ts`, beside `task_worktree_retention`.
 3. **The table count lives in four places and only two are enforced.**
-   `test/db-shell.test.ts:58` (`74`, becomes `76`) and the per-family `<span>N tables</span>` are
+   `test/db-shell.test.ts:58` (`75`, becomes `77`) and the per-family `<span>N tables</span>` are
    tested; `sqlite-database.html:429` (lede prose) and `:437` (metric tile) are hand-maintained and
    drift silently.
 4. **`previewable` does not mean "can take a comment"** - it includes `image`
@@ -57,7 +57,7 @@ boundaries are where they are.
 8. **A tool that is not rebuilt never reaches an agent.** Sessions run the gitignored
    `dist/mcp/server.mjs`; only `npm run build` refreshes it (`change-contracts.md:46`). `npm run
    smoke` performs a real `initialize` + `tools/list` handshake and is what catches it.
-9. **`LINE_INPUT_EVENTS` (`registry.ts:423`) is a hand-maintained `Set` literal the compiler cannot
+9. **`LINE_INPUT_EVENTS` (`registry.ts:431`) is a hand-maintained `Set` literal the compiler cannot
    check.** `change-contracts.md:14-28` requires an explicit decision, plus a stated bound on any
    new collection, pinned by a test in the shape of `test/pipeline-sse.test.ts`.
 10. **The Files tab exists only in the Console layout.** Every spec must
@@ -65,10 +65,10 @@ boundaries are where they are.
     (`e2e/specs/file-default-view.spec.ts:88-99`). There is no shared `dispatch()` fixture - about
     40 specs carry their own copy.
 11. **A new `buildApp` dependency is appended as the last optional positional parameter**
-    (`routes.ts:803-833`), because ~50 focused tests construct it positionally; its routes answer
+    (`routes.ts:770-859`), because ~50 focused tests construct it positionally; its routes answer
     **503** when it is absent rather than constructing a twin.
 12. **`Markdown` has a memo comparator.** A new prop absent from `markdownPropsEqual`
-    (`Markdown.tsx:241-250`) is silently ignored.
+    (`Markdown.tsx:242-251`) is silently ignored.
 13. **The HTML preview hash test hard-codes the script count** (`test/html-preview.test.ts:25`,
     `assert.equal(scripts.length, 2)`) and extracts with `/<script>([^<]+)<\/script>/g`, so a third
     bridge must update the count and contain **no literal `<`**.

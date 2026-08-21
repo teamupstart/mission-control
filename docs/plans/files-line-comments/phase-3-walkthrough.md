@@ -35,7 +35,7 @@ measurement the plan's two 60% assumptions need.
    (hold and pause with the reason), outdated further down (mark in place and carry on).
 4. **Delivery, keeping exactly one turn outstanding.** Submit through the existing human outbox:
    `POST /api/sessions/:id/inject` with `origin: "human"` and `buffer: true` is intercepted at
-   `routes.ts:3332-3335` into `pendingTurns.submit(session.id, text)` - a **synchronous**,
+   `routes.ts:3391-3394` into `pendingTurns.submit(session.id, text)` - a **synchronous**,
    two-argument call returning `PendingTurnSubmitResult` (`pending-turns.ts:35-42`), whose `pasted`
    is the literal `false` because a queued turn never claims to have reached a pane.
    - Never submit a second turn while one is outstanding. Depth one is what keeps tail-only recall,

@@ -40,7 +40,7 @@ running session.
    the window handler bails on `isTypingTarget`, which returns true for `contentEditable`
    (`keybindings.ts:462`), and CodeMirror's `.cm-content` is exactly that. A bare key pressed inside
    the editor never arrives. Add the binding to `FileEditor`'s own `keymap.of([...])`
-   (`FileEditor.tsx:103`).
+   (`FileEditor.tsx:104`).
 5. **The CodeMirror integration** in `src/web/components/FileEditor.tsx`:
    - a gutter marker for every line owning a thread, beside the `basicSetup` line numbers;
    - a block widget below the anchored line for an open thread or composer;

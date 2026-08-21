@@ -201,7 +201,7 @@
   <h3>The rest</h3>
   <ul>
     <li><strong>2. A new table needs no <code>migrate()</code> entry.</strong> The schema is one <code>db.exec()</code> literal that runs on every open, before <code>migrate()</code>. The corollary is the trap: once shipped, a later column needs <code>addColumn</code> as well, so phase 1 declares the full shape up front.</li>
-    <li><strong>3. The table count lives in four places and only two are enforced.</strong> <code>test/db-shell.test.ts:58</code> (74 → 76) and the per-family count are tested; the lede prose and the metric tile drift silently.</li>
+    <li><strong>3. The table count lives in four places and only two are enforced.</strong> <code>test/db-shell.test.ts:58</code> (75 → 77) and the per-family count are tested; the lede prose and the metric tile drift silently.</li>
     <li><strong>6. The natural <code>c</code> chord is the global Complete-task action.</strong> Shadowing a global in-surface is established precedent - <code>p</code> and <code>e</code> already are - but Complete is heavier to shadow. Phase 2 owns the choice; <code>m</code> is the alternative.</li>
     <li><strong>7. The MCP tool name must be a bare string literal</strong> inside <code>registerTool(</code>. The drift test scrapes <code>/registerTool\(\s*"([a-z_]+)"/g</code>, so a named constant breaks it.</li>
     <li><strong>8. A tool that is not rebuilt never reaches an agent.</strong> Sessions run the gitignored <code>dist/mcp/server.mjs</code>. <code>npm run smoke</code> is what catches it.</li>

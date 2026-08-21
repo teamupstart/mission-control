@@ -148,7 +148,7 @@ security module, and decision 1 approved it as part of the feature's v1 surface.
 ### Anchoring
 
 **Anchored comments have a precedent with a stated rule.** `inspector_comments`
-(`src/server/db.ts:1798-1817`) carries `path`, `line`, `title`, `body`, `severity`, `status`
+(`src/server/db.ts:1842-1861`) carries `path`, `line`, `title`, `body`, `severity`, `status`
 (`drafted | posting | open | resolved`), `replies`, and `answered_comment_id`, keyed uniquely
 by `(pr_key, fingerprint)`. The comment above it states the principle this plan adopts:
 
@@ -177,7 +177,7 @@ types character by character, so every newline lands as an Enter and submits ear
 payload has to arrive as one bracketed paste.
 
 **`PendingTurnManager` already gives strict one-at-a-time FIFO, and it is still the wrong place
-to hold the queue.** `pending_turns` (`db.ts:1680-1695`) enforces single-flight three times over
+to hold the queue.** `pending_turns` (`db.ts:1724-1739`) enforces single-flight three times over
 - a partial unique index `ON pending_turns(note_key) WHERE state = 'sending'`, a
 `state <> 'queued'` guard inside the claim transaction, and in-process drain guards - so
 submitting N turns really does deliver them one at a time in `seq` order. But:
@@ -205,8 +205,8 @@ one of these limits**, because a queue of depth one has no tail to be blocked be
 to reorder, and nothing stranded when a row goes `uncertain`.
 
 **The Work queue is the wrong shape for a conversation.** `foreman_queue_items`
-(`db.ts:1718-1740`) already does one-at-a-time with a `one_inflight_per_queue` partial unique
-index (`db.ts:2714`), and `docs/work-queues.md` describes exactly the loop this feature wants.
+(`db.ts:1762-1784`) already does one-at-a-time with a `one_inflight_per_queue` partial unique
+index (`db.ts:2758`), and `docs/work-queues.md` describes exactly the loop this feature wants.
 It is still wrong here, for five reasons that are each disqualifying:
 
 - **The verifier is not optional.** An item reaches `verified` - and only then releases the
@@ -636,7 +636,7 @@ from a model.
 
 Two obligations that are easy to miss and fail the suite: `docs/sqlite-database.html` catalogs
 every table exactly once, including its family's `N tables` count, and `test/db-shell.test.ts:58`
-hard-codes the total at 74 - which becomes 76.
+hard-codes the total at 75 - which becomes 77.
 
 The walkthrough specs seed threads straight into the daemon's database with `withDaemonDb`, the
 way `e2e/specs/inspector-resolve-findings.spec.ts` already seeds `inspector_comments`, and assert

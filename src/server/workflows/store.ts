@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
 import { RASTER_IMAGE_MIME_TYPES } from "@shared/images.ts";
@@ -1014,10 +1014,11 @@ const WorkflowEvidenceStagingRowSchema = z.object({
   id: nonempty.max(200),
   note_key: nonempty,
   client_item_id: nonempty.max(WORKFLOW_IMAGE_LIMITS.clientItemIdChars),
-  source_kind: z.enum(["agent", "upload", "retained"]),
+  source_kind: z.enum(["agent", "upload", "retained", "command"]),
   evidence_kind: z.enum(["image", "text"]).optional().default("image"),
   source_root: nonempty,
   source_locator: nonempty.max(WORKFLOW_IMAGE_LIMITS.relativePathChars),
+  inline_content: nullableText.optional().default(null),
   display_name: nonempty.max(WORKFLOW_IMAGE_LIMITS.displayNameChars),
   caption: nonempty.max(WORKFLOW_IMAGE_LIMITS.captionChars),
   repository_scope: WorkflowEvidenceRepositoryScopeSchema,
@@ -1048,8 +1049,29 @@ const WorkflowEvidenceStagingRowSchema = z.object({
   if (row.evidence_kind === "text" && row.mime_type !== "text/plain") {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["mime_type"], message: "Invalid text artifact MIME type" });
   }
-  if (row.evidence_kind === "text" && row.source_kind !== "agent") {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["source_kind"], message: "Text evidence must come from an agent path" });
+  if (row.evidence_kind === "text" && !["agent", "command"].includes(row.source_kind)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["source_kind"], message: "Text evidence must come from an agent path or command output" });
+  }
+  if (row.source_kind === "command" && row.evidence_kind !== "text") {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["evidence_kind"], message: "Command evidence must be text" });
+  }
+  if ((row.source_kind === "command") !== (row.inline_content !== null)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["inline_content"],
+      message: "Only command evidence carries inline content, and command evidence must carry it",
+    });
+  }
+  if (row.source_kind === "command" && row.inline_content !== null) {
+    const bytes = Buffer.byteLength(row.inline_content, "utf8");
+    const sha256 = createHash("sha256").update(Buffer.from(row.inline_content, "utf8")).digest("hex");
+    if (bytes !== row.bytes || sha256 !== row.sha256) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["inline_content"],
+        message: "Command evidence content does not match its byte count and digest",
+      });
+    }
   }
   const byteLimit = row.evidence_kind === "image"
     ? WORKFLOW_IMAGE_LIMITS.maxBytesPerImage
@@ -1063,7 +1085,11 @@ export type WorkflowEvidenceStagingRow = z.infer<typeof WorkflowEvidenceStagingR
 
 export function parseWorkflowEvidenceStagingRow(value: unknown): WorkflowEvidenceStagingRow {
   const row = parseShape("workflow_evidence_staging", WorkflowEvidenceStagingRowSchema, value);
-  return { ...row, evidence_kind: row.evidence_kind ?? "image" };
+  return {
+    ...row,
+    evidence_kind: row.evidence_kind ?? "image",
+    inline_content: row.inline_content ?? null,
+  };
 }
 
 const WorkflowSubmissionImageRowSchema = z.object({
@@ -1805,11 +1831,13 @@ export interface WorkflowSubmissionInsert {
 export interface WorkflowStagedEvidenceWrite {
   id: string;
   clientItemId: string;
-  sourceKind: "agent" | "upload" | "retained";
+  sourceKind: "agent" | "upload" | "retained" | "command";
   /** Omitted by historical/image-only callers and therefore defaults to `image`. */
   evidenceKind?: "image" | "text";
   sourceRoot: string;
   sourceLocator: string;
+  /** Present only for bounded command output supplied directly through the evidence tool. */
+  inlineContent?: string | null;
   displayName: string;
   caption: string;
   repositoryScope: string;
@@ -3849,6 +3877,7 @@ export class WorkflowStore {
           && row.evidence_kind === (item.evidenceKind ?? "image")
           && row.source_root === item.sourceRoot
           && row.source_locator === item.sourceLocator
+          && row.inline_content === (item.inlineContent ?? null)
           && row.display_name === item.displayName
           && row.caption === item.caption
           && row.repository_scope === item.repositoryScope
@@ -3919,14 +3948,15 @@ export class WorkflowStore {
       const write = this.db.prepare(
         `INSERT INTO workflow_evidence_staging (
            id, note_key, client_item_id, source_kind, evidence_kind, source_root, source_locator,
-           display_name, caption, repository_scope, mime_type, bytes, sha256,
+           inline_content, display_name, caption, repository_scope, mime_type, bytes, sha256,
            generation, state, reserved_group_key, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'staged', NULL, ?, ?)
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'staged', NULL, ?, ?)
          ON CONFLICT(note_key, client_item_id) DO UPDATE SET
            source_kind = excluded.source_kind,
            evidence_kind = excluded.evidence_kind,
            source_root = excluded.source_root,
            source_locator = excluded.source_locator,
+           inline_content = excluded.inline_content,
            display_name = excluded.display_name,
            caption = excluded.caption,
            repository_scope = excluded.repository_scope,
@@ -3948,6 +3978,7 @@ export class WorkflowStore {
           item.evidenceKind ?? "image",
           item.sourceRoot,
           item.sourceLocator,
+          item.inlineContent ?? null,
           item.displayName,
           item.caption,
           item.repositoryScope,
@@ -3977,7 +4008,7 @@ export class WorkflowStore {
       images: rows.filter((row) => row.evidence_kind === "image").map((row): WorkflowStagedEvidenceImage => ({
         id: row.id,
         clientItemId: row.client_item_id,
-        sourceKind: row.source_kind,
+        sourceKind: row.source_kind as WorkflowStagedEvidenceImage["sourceKind"],
         displayName: row.display_name,
         caption: row.caption,
         repositoryScope: row.repository_scope,
@@ -3992,7 +4023,7 @@ export class WorkflowStore {
         (row): WorkflowStagedEvidenceTextArtifact => ({
           id: row.id,
           clientItemId: row.client_item_id,
-          sourceKind: "agent",
+          sourceKind: row.source_kind as WorkflowStagedEvidenceTextArtifact["sourceKind"],
           displayName: row.display_name,
           caption: row.caption,
           repositoryScope: row.repository_scope,
@@ -4077,6 +4108,7 @@ export class WorkflowStore {
         evidenceKind: row.evidence_kind,
         sourceRoot: row.source_root,
         sourceLocator: row.source_locator,
+        inlineContent: row.inline_content,
         displayName: row.display_name,
         caption: row.caption,
         repositoryScope: row.repository_scope,

@@ -64,6 +64,7 @@ import type {
   WorkflowInspectorGateState,
   WorkflowRunRepeatOffender,
   WorkflowAgentEvidenceLocator,
+  WorkflowAgentCommandEvidenceLocator,
   WorkflowAgentTextEvidenceLocator,
   WorkflowUploadEvidenceLocator,
   WorkflowRetainedEvidenceLocator,
@@ -1277,6 +1278,7 @@ export class WorkflowManager {
     evidence: {
       images: readonly WorkflowAgentEvidenceLocator[];
       artifacts?: readonly WorkflowAgentTextEvidenceLocator[];
+      commandOutputs?: readonly WorkflowAgentCommandEvidenceLocator[];
     },
     now = Date.now(),
   ): Promise<WorkflowStagedEvidenceList> {
@@ -1312,6 +1314,7 @@ export class WorkflowManager {
       fallbackRoot: session.cwd,
       images: evidence.images,
       artifacts: evidence.artifacts,
+      commandOutputs: evidence.commandOutputs,
       now,
     });
   }

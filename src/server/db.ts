@@ -1246,6 +1246,7 @@ export function openDb(): DatabaseSync {
       evidence_kind         TEXT NOT NULL DEFAULT 'image',
       source_root           TEXT NOT NULL,
       source_locator        TEXT NOT NULL,
+      inline_content        TEXT,
       display_name          TEXT NOT NULL,
       caption               TEXT NOT NULL,
       repository_scope      TEXT NOT NULL,
@@ -2879,6 +2880,10 @@ function migrate(d: DatabaseSync): void {
   // Existing staged rows are images. The append-only kind lets text/log evidence share the
   // reservation and generation lifecycle without changing any historical row's meaning.
   addColumn(d, "workflow_evidence_staging", "evidence_kind", "TEXT NOT NULL DEFAULT 'image'");
+  // Direct command evidence uses the same reservation lifecycle as path-backed logs, but the
+  // bounded content is already present at registration and therefore must survive until capture.
+  // NULL means every historical row and every path/image source exactly as before.
+  addColumn(d, "workflow_evidence_staging", "inline_content", "TEXT");
   // The one verified index replacement, both halves, in this order and only here.
   //
   // `idx_workflow_submissions_round` was UNIQUE on (run_id, round), and it is precisely what

@@ -131,6 +131,7 @@ npm start              # daemon serving built UI
 npm run foreman        # Foreman worker (needs-you queue, work queues, PR follow-up, backlog autopilot)
 npm run build          # build web + MCP bundle
 npm test               # full test suite, including real Electron GUI geometry checks
+npm run test:workflow-evidence # focused evidence transport and Test Evidence audit checks
 npm run test:electron  # focused Electron GUI checks (see AGENTS.md for macOS Seatbelt guidance)
 npm run test:e2e       # Playwright: drive the real dashboard against a real daemon (after build)
 npx playwright install chromium # one-time setup for test:e2e (npm install does not fetch it)
@@ -150,8 +151,11 @@ npx tsx scripts/measure-inspector-prompt.ts # size the GitHub Inspector review p
 
 On macOS, `npm test` and `npm run test:electron` validate Electron's framework link before
 starting their suites. If a copied dependency tree contains the complete framework payload
-but is missing only Electron's standard top-level link, the pretest restores that link. An
-absent payload is refused with an instruction to reinstall dependencies.
+but is missing either canonical framework link, the pretest restores that link. If the payload
+itself is absent, the command-line pretest re-runs Electron's installer before asserting the
+links; the runtime integrity probe that follows still verifies the installed binary before any
+test starts. Direct callers of the framework inspection function remain fail-closed and name
+Electron's installer as the repair instead of manufacturing a payload.
 
 The same lease and pool policy are visible under **Settings > Worktrees**. The panel can set
 default and per-repository native enablement, maximum capacity, and an operator-authored setup

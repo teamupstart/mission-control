@@ -26,7 +26,14 @@ async function close(server: Server): Promise<void> {
   );
 }
 
-test("request_input prefers the Mission Control session identity", { timeout: 10_000 }, async () => {
+async function captureRequestInput(
+  identityEnv: {
+    MISSION_SESSION_ID?: string;
+    CLAUDE_SESSION_ID: string;
+    TMUX_PANE: string;
+    WEZTERM_PANE: string;
+  },
+): Promise<Record<string, unknown>> {
   const missionHome = mkdtempSync(join(tmpdir(), "mission-review-mcp-"));
   writeFileSync(join(missionHome, "token"), "integration-token\n");
   const captured = { review: null as Record<string, unknown> | null };
@@ -66,6 +73,13 @@ test("request_input prefers the Mission Control session identity", { timeout: 10
 
   try {
     const port = await listen(daemon);
+    const childEnv = {
+      ...process.env,
+      ...identityEnv,
+      MISSION_HOME: missionHome,
+      MISSION_PORT: String(port),
+    };
+    if (!identityEnv.MISSION_SESSION_ID) delete childEnv.MISSION_SESSION_ID;
     transport = new StdioClientTransport({
       command: process.execPath,
       args: [
@@ -74,13 +88,7 @@ test("request_input prefers the Mission Control session identity", { timeout: 10
         fileURLToPath(new URL("../src/mcp/server.ts", import.meta.url)),
       ],
       cwd: fileURLToPath(new URL("..", import.meta.url)),
-      env: {
-        ...process.env,
-        MISSION_HOME: missionHome,
-        MISSION_PORT: String(port),
-        MISSION_SESSION_ID: "sdk:mission",
-        CLAUDE_SESSION_ID: "claude:legacy",
-      } as Record<string, string>,
+      env: childEnv as Record<string, string>,
       stderr: "pipe",
     });
     client = new Client({ name: "review-identity-test", version: "1" });
@@ -93,13 +101,53 @@ test("request_input prefers the Mission Control session identity", { timeout: 10
       undefined,
       { timeout: 5_000 },
     );
-    assert.equal(captured.review?.sessionId, "sdk:mission");
+    if (!captured.review) throw new Error("fake daemon did not capture the review request");
+    return captured.review;
   } finally {
     await client?.close().catch(() => {});
     await transport?.close().catch(() => {});
     await close(daemon);
     rmSync(missionHome, { recursive: true, force: true });
   }
+}
+
+test("request_input prefers the Mission Control session identity", { timeout: 10_000 }, async () => {
+  const captured = await captureRequestInput({
+    MISSION_SESSION_ID: "sdk:mission",
+    CLAUDE_SESSION_ID: "claude:legacy",
+    TMUX_PANE: "%3",
+    WEZTERM_PANE: "19",
+  });
+
+  assert.deepEqual(
+    {
+      sessionId: captured.sessionId,
+      env: captured.env,
+    },
+    {
+      sessionId: "sdk:mission",
+      env: {},
+    },
+  );
+});
+
+test("request_input preserves terminal identity without a Mission session", { timeout: 10_000 }, async () => {
+  const captured = await captureRequestInput({
+    CLAUDE_SESSION_ID: "claude:terminal",
+    TMUX_PANE: "%4",
+    WEZTERM_PANE: "20",
+  });
+
+  assert.deepEqual(
+    {
+      sessionId: captured.sessionId,
+      env: captured.env,
+    },
+    {
+      sessionId: "claude:terminal",
+      env: { tmuxPane: "%4", weztermPane: "20" },
+    },
+  );
 });
 
 function toolSource(name: string, nextName: string): string {

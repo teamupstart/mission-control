@@ -20,6 +20,11 @@ import { CLAUDE_TRANSPORTS, CODEX_TRANSPORTS, LLM_RUNNER_IDS } from "./llm.ts";
 import { RASTER_IMAGE_MIME_TYPES } from "./images.ts";
 import { LLM_SPEND_ROLES } from "./llm-spend.ts";
 import { OPEN_TARGET_IDS } from "./open-targets.ts";
+import { FILE_COMMENT_QUOTE_MAX, FILE_COMMENT_SURFACES } from "./file-comment-anchor.ts";
+import {
+  FILE_COMMENT_TEXT_LIMITS,
+  HUMAN_SETTABLE_THREAD_STATUSES,
+} from "./file-comments.ts";
 import {
   PRODUCT_ISSUE_CLIENTS,
   PRODUCT_ISSUE_LIMITS,
@@ -5679,3 +5684,88 @@ export const SubmitScoutArtifactsSchema = z.object({
     .default([]),
 });
 export type SubmitScoutArtifactsInput = z.infer<typeof SubmitScoutArtifactsSchema>;
+
+// ---- line comments in the Files workspace ----
+//
+// Every mutating route below has one of these and goes through `parseBody`. Every string is
+// bounded, and the two fields a caller could use to describe an anchor it never took -
+// `quoteHash` and `shortId` - are absent on purpose: the daemon computes the hash and mints
+// the handle, exactly as `fingerprint()` is computed server-side and never supplied.
+
+/** A new line-anchored comment thread, with its opening comment. */
+export const CreateFileCommentSchema = z.object({
+  path: z.string().trim().min(1).max(FILE_COMMENT_TEXT_LIMITS.path),
+  startLine: z.number().int().min(1),
+  endLine: z.number().int().min(1),
+  /**
+   * The anchored SOURCE text. Bounded here and clamped again on the way in, because this is
+   * both a snapshot cost and a prompt cost - it is pasted verbatim into what the agent reads.
+   */
+  quote: z.string().min(1).max(FILE_COMMENT_QUOTE_MAX),
+  /** The document revision the anchor was taken against; null when it was unknown. */
+  revision: z.string().max(256).nullable().optional().default(null),
+  surface: z.enum(FILE_COMMENT_SURFACES),
+  body: z.string().trim().min(1).max(FILE_COMMENT_TEXT_LIMITS.body),
+});
+export type CreateFileCommentBody = z.infer<typeof CreateFileCommentSchema>;
+
+/**
+ * A reply a PERSON writes in a thread. Human-authored, and only ever human-authored.
+ *
+ * `author` is a literal rather than the `FILE_COMMENT_AUTHORS` enum, and that is the whole
+ * point of the field existing at all: an agent reply is phase 4's, delivered through the
+ * `respond_to_file_comments` MCP tool and its token-guarded `/mcp/*` route, where the session
+ * is established by `findSessionByEnv` before anything is written. This route is reached by
+ * any ordinary dashboard caller over loopback, so accepting `agent` here would let one forge
+ * a reply the UI renders as the agent's answer - and, once phase 3 lands, hand the
+ * walkthrough a false advance signal.
+ *
+ * Refused rather than silently rewritten to `human`: a caller that asked for `agent` is
+ * asking for something this route does not do, and reattributing it would file a message
+ * under an author nobody chose.
+ *
+ * The store's `appendFileCommentMessage` keeps its `author` parameter - that is the declared
+ * cross-phase write seam, and phase 4 calls it with `agent` from its own trusted route. What
+ * is closed here is the HTTP door, not the seam.
+ */
+export const AppendFileCommentMessageSchema = z.object({
+  author: z.literal("human").optional().default("human"),
+  body: z.string().trim().min(1).max(FILE_COMMENT_TEXT_LIMITS.body),
+});
+export type AppendFileCommentMessageBody = z.infer<typeof AppendFileCommentMessageSchema>;
+
+/** Editing an undelivered comment. The store decides whether it still may be. */
+export const EditFileCommentMessageSchema = z.object({
+  body: z.string().trim().min(1).max(FILE_COMMENT_TEXT_LIMITS.body),
+});
+export type EditFileCommentMessageBody = z.infer<typeof EditFileCommentMessageSchema>;
+
+/**
+ * A new queue order for one session's review.
+ *
+ * Bounded at 500 threads: the collection is bounded by live sessions and a review is
+ * normally tens of comments, so a longer list is not a review anybody is reordering by
+ * hand. Ids the session does not own are ignored by the store rather than refused - a
+ * reorder is a drag in a list that may have moved under the operator.
+ */
+export const ReorderFileCommentsSchema = z.object({
+  order: z.array(z.string().trim().min(1).max(128)).max(500),
+});
+export type ReorderFileCommentsBody = z.infer<typeof ReorderFileCommentsSchema>;
+
+/**
+ * Set a thread's status. Phase 2's resolve control is what posts to this.
+ *
+ * `addressed` is deliberately not reachable from here and is not a status: only a person
+ * closes a thread, and routing an agent's "I handled this" through a status transition is
+ * exactly how a suggestion becomes a closure.
+ *
+ * `orphaned` is not reachable from here either, and for a different reason: it is not a
+ * status anyone DECIDES. It is what a thread becomes when the session that owns it goes
+ * away, written by session cleanup alone. See `HUMAN_SETTABLE_THREAD_STATUSES`, which is
+ * the enum below and exists precisely so this route cannot reuse the persisted tuple.
+ */
+export const SetFileCommentStatusSchema = z.object({
+  status: z.enum(HUMAN_SETTABLE_THREAD_STATUSES),
+});
+export type SetFileCommentStatusBody = z.infer<typeof SetFileCommentStatusSchema>;

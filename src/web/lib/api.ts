@@ -2,6 +2,7 @@ import type {
   AgentType,
   AssignResetConfirm,
   BacklogPlan,
+  FileCommentThread,
   ForemanEpisode,
   ForemanEpisodeSummary,
   ForemanStatus,
@@ -27,9 +28,11 @@ import type {
   TaskPriority,
   TranscriptMessage,
 } from "@shared/types.ts";
+import type { HumanSettableThreadStatus } from "@shared/file-comments.ts";
 import type {
   AwayConfig,
   AwayConfigPatch,
+  CreateFileCommentBody,
   ForemanConfig,
   ForemanConfigPatch,
   FormOutcome,
@@ -1647,3 +1650,115 @@ export const api = {
       { confirmArchiveKey: archiveKey },
     ),
 };
+
+// ---- line comments in the Files workspace ----
+//
+// Writers only. There is deliberately no `fetchFileComments` poll beside these: the
+// snapshot and the two `file_comment_thread_*` frames are the whole read path, so a surface
+// that polled would be a second answer to "what threads does this file have" that drifts
+// the moment a second window writes one. The one read here is the single-thread route, and
+// it exists for exactly one reason - the snapshot caps a thread's message list, and this is
+// how a surface that has been told it is looking at a tail gets the rest.
+
+/**
+ * Every mutating file-comment call answers `{ thread }` or an `{ error }`, and each returns
+ * the thread the daemon just wrote. The live frame is what the UI actually re-renders from;
+ * the returned thread is for the caller that needs the id or the refusal.
+ */
+async function fileCommentWrite(
+  path: string,
+  init?: RequestInit,
+): Promise<{ ok: true; thread: FileCommentThread } | { ok: false; error: string }> {
+  try {
+    const res = await fetch(path, {
+      method: "POST",
+      headers: init?.body ? { "content-type": "application/json" } : undefined,
+      ...init,
+    });
+    const data = (await res.json().catch(() => ({}))) as {
+      thread?: FileCommentThread;
+      error?: string;
+    };
+    if (!res.ok || !data.thread) return { ok: false, error: data.error ?? `HTTP ${res.status}` };
+    return { ok: true, thread: data.thread };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+export const createFileComment = (sessionId: string, body: CreateFileCommentBody) =>
+  fileCommentWrite(`/api/sessions/${encodeURIComponent(sessionId)}/file-comments`, {
+    body: JSON.stringify(body),
+  });
+
+/** Submit a draft, or put a replied-to thread back at the TAIL of the queue. One route. */
+export const queueFileComment = (threadId: string) =>
+  fileCommentWrite(`/api/file-comments/${encodeURIComponent(threadId)}/queue`);
+
+export const appendFileCommentMessage = (threadId: string, body: string) =>
+  fileCommentWrite(`/api/file-comments/${encodeURIComponent(threadId)}/messages`, {
+    body: JSON.stringify({ body }),
+  });
+
+export const editFileCommentMessage = (messageId: string, body: string) =>
+  fileCommentWrite(`/api/file-comment-messages/${encodeURIComponent(messageId)}`, {
+    body: JSON.stringify({ body }),
+  });
+
+export const markFileCommentRead = (threadId: string) =>
+  fileCommentWrite(`/api/file-comments/${encodeURIComponent(threadId)}/read`);
+
+/**
+ * `HumanSettableThreadStatus`, not `FileCommentThreadStatus`: `orphaned` is what a thread
+ * becomes when its session goes away, written by session cleanup alone, so phase 2's resolve
+ * control cannot even compile a call that asks for it.
+ */
+export const setFileCommentStatus = (threadId: string, status: HumanSettableThreadStatus) =>
+  fileCommentWrite(`/api/file-comments/${encodeURIComponent(threadId)}/status`, {
+    body: JSON.stringify({ status }),
+  });
+
+/** The whole thread with its messages UNCAPPED - the read path past the snapshot's cap. */
+export const fetchFileCommentThread = (threadId: string) =>
+  fetchJson<{ thread: FileCommentThread }>(`/api/file-comments/${encodeURIComponent(threadId)}`);
+
+export async function reorderFileComments(
+  sessionId: string,
+  order: readonly string[],
+): Promise<{ ok: true; threads: FileCommentThread[] } | { ok: false; error: string }> {
+  try {
+    const res = await fetch(
+      `/api/sessions/${encodeURIComponent(sessionId)}/file-comments/reorder`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ order }),
+      },
+    );
+    const data = (await res.json().catch(() => ({}))) as {
+      threads?: FileCommentThread[];
+      error?: string;
+    };
+    if (!res.ok || !data.threads) return { ok: false, error: data.error ?? `HTTP ${res.status}` };
+    return { ok: true, threads: data.threads };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+export async function deleteFileComment(
+  threadId: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  try {
+    const res = await fetch(`/api/file-comments/${encodeURIComponent(threadId)}`, {
+      method: "DELETE",
+    });
+    if (!res.ok) {
+      const data = (await res.json().catch(() => ({}))) as { error?: string };
+      return { ok: false, error: data.error ?? `HTTP ${res.status}` };
+    }
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}

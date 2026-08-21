@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import type { Context, MiddlewareHandler } from "hono";
+import type { ContentfulStatusCode } from "hono/utils/http-status";
 import type { TypeOf, ZodTypeAny } from "zod";
 import { Readable } from "node:stream";
 import { randomUUID } from "node:crypto";
@@ -78,6 +79,11 @@ import {
   OpenArchiveArtifactSchema,
   LaunchSessionTerminalSchema,
   SaveSessionFileSchema,
+  AppendFileCommentMessageSchema,
+  CreateFileCommentSchema,
+  EditFileCommentMessageSchema,
+  ReorderFileCommentsSchema,
+  SetFileCommentStatusSchema,
   SessionFilePathSchema,
   SubmitOptionsSchema,
   RecordEpisodeSchema,
@@ -208,6 +214,7 @@ import type { AwayWatcher } from "./away/watcher.ts";
 import { getHarnessesConfig, setHarnessesConfig } from "./harnesses.ts";
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
 import type { HarnessModelCatalogService } from "./harness/model-catalog-service.ts";
+import { FileCommentError, type FileCommentManager } from "./file-comments.ts";
 import type { ProductIssueService } from "./product-issues.ts";
 import type { WorktreeManager } from "./worktrees/manager.ts";
 import {
@@ -858,6 +865,17 @@ export function buildApp(
   modelCatalogs?: HarnessModelCatalogService,
   /** Daemon-owned public issue writer. Appended last for focused route-test compatibility. */
   productIssues?: ProductIssueService,
+  /**
+   * The line-comment owner. Appended LAST for the reason every optional above it is: the
+   * ~50 focused tests that construct `buildApp` positionally must not have to learn about
+   * comment threads to keep compiling.
+   *
+   * Absent means these routes answer 503 rather than constructing a manager here. A
+   * route-built twin would be a second subscriber on `session_remove` and a second emitter
+   * on one live stream - two teardown paths for state whose whole contract is that it has
+   * exactly three.
+   */
+  fileComments?: FileCommentManager,
 ): Hono {
   const app = new Hono();
   const terminalLauncher = launchSessionTerminal ?? launchTerminal;
@@ -2162,6 +2180,152 @@ export function buildApp(
     }
     },
   );
+  // ---- line comments in the Files workspace ----
+  //
+  // Two roots on purpose. Session-scoped operations - listing a file's threads, reordering
+  // the review - key on the session, because that is what a review belongs to (decision 2).
+  // Thread-scoped operations key on the thread id, which is a uuid and globally unique, and
+  // the manager resolves the session from it rather than trusting a second copy in the URL.
+  //
+  // `short_id` is deliberately not a route key anywhere here: it is unique PER SESSION, so
+  // resolving one without a session could reach another session's thread. Phase 4's reply
+  // route resolves it inside a session it already established through `findSessionByEnv`.
+  /** 503 rather than a route-built manager: see the parameter's declaration for why. */
+  const fileCommentsUnavailable = (c: Context) =>
+    fileComments ? null : c.json({ error: "file comments are not available" }, 503);
+  /** Map the manager's refusals onto HTTP; anything else is a real 500 and stays one. */
+  const fileCommentFailure = (c: Context, error: unknown) => {
+    if (error instanceof FileCommentError) {
+      return c.json({ error: error.message }, error.status as ContentfulStatusCode);
+    }
+    throw error;
+  };
+
+  app.get("/api/sessions/:id/file-comments", (c) => {
+    const unavailable = fileCommentsUnavailable(c);
+    if (unavailable) return unavailable;
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const path = c.req.query("path");
+    return c.json({ threads: fileComments!.list(session.id, path || undefined) });
+  });
+
+  app.post("/api/sessions/:id/file-comments", async (c) => {
+    const unavailable = fileCommentsUnavailable(c);
+    if (unavailable) return unavailable;
+    const parsed = await parseBody(c, CreateFileCommentSchema);
+    if (!parsed.ok) return parsed.res;
+    try {
+      return c.json({
+        thread: fileComments!.create({ sessionId: c.req.param("id"), ...parsed.data }),
+      });
+    } catch (error) {
+      return fileCommentFailure(c, error);
+    }
+  });
+
+  app.post("/api/sessions/:id/file-comments/reorder", async (c) => {
+    const unavailable = fileCommentsUnavailable(c);
+    if (unavailable) return unavailable;
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const parsed = await parseBody(c, ReorderFileCommentsSchema);
+    if (!parsed.ok) return parsed.res;
+    try {
+      return c.json({ threads: fileComments!.reorder(session.id, parsed.data.order) });
+    } catch (error) {
+      return fileCommentFailure(c, error);
+    }
+  });
+
+  app.get("/api/file-comments/:id", (c) => {
+    const unavailable = fileCommentsUnavailable(c);
+    if (unavailable) return unavailable;
+    // The whole thread, messages UNCAPPED: this is the route a surface reaches for when
+    // `messageCount` told it the frame it holds was a tail, so it reads through the
+    // full-history loader rather than the capped one every frame uses.
+    const thread = fileComments!.getFull(c.req.param("id"));
+    if (!thread) return c.json({ error: "no such comment thread" }, 404);
+    return c.json({ thread });
+  });
+
+  // One route, not the status route composed with the reorder route. Those are two HTTP
+  // requests, and a second submit landing between them takes the same queue position.
+  app.post("/api/file-comments/:id/queue", (c) => {
+    const unavailable = fileCommentsUnavailable(c);
+    if (unavailable) return unavailable;
+    try {
+      return c.json({ thread: fileComments!.queue(c.req.param("id")) });
+    } catch (error) {
+      return fileCommentFailure(c, error);
+    }
+  });
+
+  app.post("/api/file-comments/:id/messages", async (c) => {
+    const unavailable = fileCommentsUnavailable(c);
+    if (unavailable) return unavailable;
+    const parsed = await parseBody(c, AppendFileCommentMessageSchema);
+    if (!parsed.ok) return parsed.res;
+    try {
+      // "human", from the literal the schema pins - never a value carried in from the
+      // request. An agent reply is phase 4's, through its own token-guarded `/mcp/*` route;
+      // this door is a person typing in a thread.
+      const message = fileComments!.appendMessage(
+        c.req.param("id"),
+        parsed.data.author,
+        parsed.data.body,
+      );
+      return c.json({ message, thread: fileComments!.get(c.req.param("id")) });
+    } catch (error) {
+      return fileCommentFailure(c, error);
+    }
+  });
+
+  app.post("/api/file-comment-messages/:id", async (c) => {
+    const unavailable = fileCommentsUnavailable(c);
+    if (unavailable) return unavailable;
+    const parsed = await parseBody(c, EditFileCommentMessageSchema);
+    if (!parsed.ok) return parsed.res;
+    try {
+      return c.json({ thread: fileComments!.editMessage(c.req.param("id"), parsed.data.body) });
+    } catch (error) {
+      return fileCommentFailure(c, error);
+    }
+  });
+
+  app.post("/api/file-comments/:id/read", (c) => {
+    const unavailable = fileCommentsUnavailable(c);
+    if (unavailable) return unavailable;
+    try {
+      return c.json({ thread: fileComments!.markRead(c.req.param("id")) });
+    } catch (error) {
+      return fileCommentFailure(c, error);
+    }
+  });
+
+  // Phase 2's resolve control posts here. `addressed` gets no route at all - see
+  // `SetFileCommentStatusSchema` and `FileCommentManager.markAddressed`.
+  app.post("/api/file-comments/:id/status", async (c) => {
+    const unavailable = fileCommentsUnavailable(c);
+    if (unavailable) return unavailable;
+    const parsed = await parseBody(c, SetFileCommentStatusSchema);
+    if (!parsed.ok) return parsed.res;
+    try {
+      return c.json({ thread: fileComments!.setStatus(c.req.param("id"), parsed.data.status) });
+    } catch (error) {
+      return fileCommentFailure(c, error);
+    }
+  });
+
+  app.delete("/api/file-comments/:id", (c) => {
+    const unavailable = fileCommentsUnavailable(c);
+    if (unavailable) return unavailable;
+    if (!fileComments!.delete(c.req.param("id"))) {
+      return c.json({ error: "no such comment thread" }, 404);
+    }
+    return c.json({ ok: true });
+  });
+
   // The "Open in" menu: every registered target, and whether THIS machine can use it.
   // Availability is answered here rather than in the browser because it is a question
   // about the daemon's host - which is not the machine the dashboard is necessarily

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type {
+  FileCommentThread,
   FleetCost,
   KeepAwakeStatus,
   ReviewItem,
@@ -76,6 +77,18 @@ export interface MissionState {
    * dashboard with no conductor installed carries this array and never renders it.
    */
   pipelineRuns: PipelineRun[];
+  /**
+   * Every line-comment thread the daemon holds for a session it still knows about, each
+   * carrying its own messages so a thread renders from ONE frame.
+   *
+   * The SOLE source of these facts, on the same terms as `schedules` and `pipelineRuns`:
+   * the snapshot and the two incremental frames are the only refresh mechanism, and nothing
+   * here polls a file-comments route. Bounded by live sessions rather than by history - see
+   * the snapshot field's declaration in `types.ts` for the arithmetic.
+   *
+   * EMPTY on every fleet where nobody has written a comment, which is the shipped state.
+   */
+  fileCommentThreads: FileCommentThread[];
   /**
    * Fleet spend and the subscription's rate limits, for the topbar strip. A single
    * value rather than a per-session field because that is the shape of the fact: the
@@ -170,6 +183,9 @@ export function useEventStream(): MissionState {
   // is rebuildable from the engine's files and an id of ours is the one field a rebuild
   // could not reproduce.
   const [pipelineRuns, setPipelineRuns] = useState<Map<string, PipelineRun>>(new Map());
+  const [fileCommentThreads, setFileCommentThreads] = useState<Map<string, FileCommentThread>>(
+    new Map(),
+  );
   const [fleetCost, setFleetCost] = useState<FleetCost | null>(null);
   const [lineSummary, setLineSummary] = useState<LineSummary | null>(null);
   const [settingsStatus, setSettingsStatus] = useState<SettingsStatus | null>(null);
@@ -247,6 +263,13 @@ export function useEventStream(): MissionState {
           // no such field, and `undefined` must read as "none" rather than crash the arm.
           setPipelineRuns(
             new Map((msg.pipelineRuns ?? []).map((run) => [pipelineRunKeyOf(run), run])),
+          );
+          // Replaced wholesale for the same reason, with this collection's own edge: a
+          // session removed while a tab was disconnected takes its threads with it, and a
+          // merge would leave an orphaned gutter on screen for the rest of the session.
+          // The `?? []` is the version-skew guard an older daemon needs.
+          setFileCommentThreads(
+            new Map((msg.fileCommentThreads ?? []).map((thread) => [thread.id, thread])),
           );
           // Carried in the snapshot rather than waited for: the strip would otherwise sit
           // blank until the next export happened to change a figure.
@@ -399,6 +422,19 @@ export function useEventStream(): MissionState {
             return next;
           });
           break;
+        // The whole thread, replaced: it is read as one picture of one conversation on one
+        // line, so a merge could draw a marker whose state and whose replies came from two
+        // different instants.
+        case "file_comment_thread_upsert":
+          setFileCommentThreads((prev) => new Map(prev).set(msg.thread.id, msg.thread));
+          break;
+        case "file_comment_thread_remove":
+          setFileCommentThreads((prev) => {
+            const next = new Map(prev);
+            next.delete(msg.id);
+            return next;
+          });
+          break;
         case "cost_fleet":
           setFleetCost(msg.fleet);
           break;
@@ -469,6 +505,7 @@ export function useEventStream(): MissionState {
     ensembleSummaries: [...ensembles.values()],
     schedules: [...schedules.values()],
     pipelineRuns: [...pipelineRuns.values()],
+    fileCommentThreads: [...fileCommentThreads.values()],
     fleetCost,
     lineSummary,
     settingsStatus,

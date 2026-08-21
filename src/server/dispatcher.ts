@@ -33,6 +33,8 @@ import type { SdkSupervisor } from "./sdk/supervisor.ts";
 import { heldHomeNames, homeAlive, homeNameRules, killHome, launchHome } from "./terminal/home.ts";
 import type { Registry } from "./registry.ts";
 import { verifyHeadIs } from "./git/ensemble-snapshot.ts";
+import { freshRemoteDefaultSha, originConfigured } from "./git/remote-default.ts";
+import { FULL_SHA } from "./workflows/commit-id.ts";
 import {
   kindMissionMcpRequirement,
   missionMcpDescriptor,
@@ -172,6 +174,14 @@ export class Dispatcher {
       /** Server-owned immutable graph check; kept injectable so this launch layer stays DB-free. */
       workflowEvidenceEnabled?: (task: Pick<Task, "kind" | "workflowId">) => boolean;
       resolveRuntime?: typeof resolveDispatchRuntime;
+      /**
+       * Which commit each of the task's repositories is frozen at before provisioning.
+       *
+       * A seam only so a focused test can prove the ORDERING - that a base failure happens
+       * in front of every lease and every spawn - without standing up a remote per case.
+       * Production always takes `resolveTaskBases`.
+       */
+      resolveBases?: typeof resolveTaskBases;
       /** Provider-owned launch facts for a pipeline task. */
       pipelineLaunch?: typeof pipelineTaskLaunch;
       /** Terminal-home launch seam for focused pipeline dispatch tests. */
@@ -286,7 +296,18 @@ export class Dispatcher {
       // a failure part-way through returns every tree it had already taken, provider-aware,
       // and rethrows - so a partial dispatch never leaves leased trees nothing will ever
       // tear down. On a single-repo task this is exactly one call with slot 0.
-      const { primary: wt, extras } = await this.provisionAll(task, taskId, slug, shortId, baseSha);
+      //
+      // Every repository's base is frozen HERE, in front of the loop, rather than inside
+      // it: an unpinned task takes a freshly fetched remote-default commit instead of
+      // whatever the main checkout's local HEAD happens to be, and a fetch that fails in
+      // the third repository must not leave the first two leased. Placed after the cheap
+      // refusals above so a dispatch that was going to be turned away for its runtime or
+      // its harness capability does not pay for a network round trip first.
+      const bases = await (this.deps.resolveBases ?? resolveTaskBases)(
+        { primary: task.repoRoot, extras: task.extraRepos.map((entry) => entry.repoRoot) },
+        baseSha,
+      );
+      const { primary: wt, extras } = await this.provisionAll(task, taskId, slug, shortId, bases);
       // Record every worktree BEFORE spawning, so a spawn failure can still tear them down.
       // The collection lands in the SAME patch so every durable native owner becomes visible
       // atomically before provisional allocator state settles.
@@ -1026,14 +1047,14 @@ export class Dispatcher {
     taskId: string,
     slug: string,
     shortId: string,
-    baseSha: string | null,
+    bases: TaskDispatchBases,
   ): Promise<{ primary: ProvisionedWorktree; extras: TaskRepoEntry[] }> {
     const primary = await provisionWorktree(
       task.repoRoot,
       taskId,
       slug,
       shortId,
-      baseSha,
+      bases.primary,
       0,
       this.worktrees,
     );
@@ -1044,14 +1065,15 @@ export class Dispatcher {
     try {
       for (const [index, entry] of task.extraRepos.entries()) {
         // Slot is the entry's position in `task_repos`, offset by one for the primary at
-        // slot 0. `baseSha` pins the PRIMARY's repo and means nothing in another one, so a
-        // secondary is cut from its own HEAD and records where that landed.
+        // slot 0. Its base was frozen alongside every other repository's before this loop
+        // started - a pin means nothing in another repository, so a secondary took its own
+        // repository's freshly fetched remote default and records where that landed.
         const wt = await provisionWorktree(
           entry.repoRoot,
           taskId,
           slug,
           shortId,
-          null,
+          bases.extras[index] ?? null,
           index + 1,
           this.worktrees,
         );
@@ -1181,6 +1203,99 @@ function gitNeverAnswered(question: string, r: RunResult): Error {
     `could not determine ${question}: git did not answer ` +
       `(${r.stderr.trim() || `exit ${r.code}`}) - nothing was provisioned, so this can be retried`,
   );
+}
+
+/**
+ * Where an ordinary, unpinned task starts: a freshly fetched remote-default commit.
+ *
+ * The alternative - the main checkout's current local `HEAD` - is what shipped, and it is
+ * wrong for a scheduled task in two ways at once. It is whatever the operator happened to
+ * have checked out at that instant, which for a checkout sitting on a feature branch is a
+ * base nobody chose; and it is stale by however long it has been since somebody pulled,
+ * which for a task scheduled to run after a dependency merged is the specific commit the
+ * task exists to build on. Freezing the remote default makes both deterministic, and
+ * freezing ONE full id (rather than passing the ref name down) makes it observable: the
+ * task records exactly what it started from.
+ *
+ * Every uncertain answer fails the dispatch instead of falling back. The fallback is the
+ * dangerous direction here: refusing costs a retryable error before anything is
+ * provisioned, while guessing costs an agent that has already been launched from a base
+ * nobody can reconstruct afterwards. So only a `git remote` listing that SUCCEEDED and did
+ * not name `origin` may take the local-HEAD path - a probe that timed out cannot.
+ */
+export async function resolveDispatchBase(repoRoot: string): Promise<string> {
+  const origin = await originConfigured(repoRoot);
+  if (!origin.ok) {
+    throw new Error(
+      `could not determine whether ${repoRoot} has an origin remote: ${origin.reason} - ` +
+        "nothing was provisioned, so this can be retried",
+    );
+  }
+  // A local-only repository is ordinary - a scratch checkout, a fixture, a repo whose
+  // remote was never added. Its local HEAD is the only base that exists, so it is not a
+  // fallback so much as the whole answer.
+  if (!origin.value) {
+    const head = await headCommit(repoRoot);
+    if (!head) {
+      throw new Error(
+        `${repoRoot} has no origin remote and its exact HEAD commit could not be resolved`,
+      );
+    }
+    return head;
+  }
+  const fresh = await freshRemoteDefaultSha(repoRoot);
+  if (!fresh.ok) {
+    throw new Error(
+      `could not freeze ${repoRoot}'s remote default branch: ${fresh.reason} - ` +
+        "nothing was provisioned, so this can be retried",
+    );
+  }
+  return fresh.value;
+}
+
+/** The exact commit each of a task's repositories will be provisioned at, by slot. */
+export interface TaskDispatchBases {
+  /** Slot 0, the task's own repository. */
+  primary: string;
+  /** Slot n+1, aligned index-for-index with `task.extraRepos`. */
+  extras: string[];
+}
+
+/**
+ * Freeze every repository's base BEFORE the first worktree is taken.
+ *
+ * A multi-repository task is all-or-nothing, and resolving lazily inside the provisioning
+ * loop would break that in the one case it matters: the second repository's fetch fails,
+ * the first repository's lease already exists, and the unwind has to return a tree that
+ * should never have been taken. Resolving up front makes a fetch failure cost an error and
+ * nothing else.
+ *
+ * Sequential and memoized rather than concurrent. Two fetches racing in one repository
+ * contend for the same lock file for no benefit, and a task may legitimately attach the
+ * same repository twice; one resolution per distinct root, in a fixed order, keeps both the
+ * cost and the failure order predictable.
+ */
+export async function resolveTaskBases(
+  repoRoots: { primary: string; extras: readonly string[] },
+  /** The verified `options.baseSha`, which pins the PRIMARY repository only. */
+  pinned: string | null,
+  resolve: (repoRoot: string) => Promise<string> = resolveDispatchBase,
+): Promise<TaskDispatchBases> {
+  const frozen = new Map<string, string>();
+  const forRepo = async (repoRoot: string): Promise<string> => {
+    const already = frozen.get(repoRoot);
+    if (already) return already;
+    const resolved = await resolve(repoRoot);
+    frozen.set(repoRoot, resolved);
+    return resolved;
+  };
+  // A pin names one commit in one repository. It cannot mean anything in another, so an
+  // attached repository resolves its own remote default even on a pinned dispatch - the
+  // same rule the old code stated by passing `null` for every secondary.
+  const primary = pinned ?? (await forRepo(repoRoots.primary));
+  const extras: string[] = [];
+  for (const repoRoot of repoRoots.extras) extras.push(await forRepo(repoRoot));
+  return { primary, extras };
 }
 
 /**
@@ -1358,7 +1473,7 @@ async function headCommit(dir: string): Promise<string | null> {
     timeoutMs: GIT_PREFLIGHT_TIMEOUT_MS,
   });
   const sha = r.stdout.trim();
-  return r.code === 0 && /^[0-9a-f]{40}$/.test(sha) ? sha : null;
+  return r.code === 0 && FULL_SHA.test(sha) ? sha : null;
 }
 
 /**

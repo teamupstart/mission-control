@@ -98,7 +98,7 @@ const emptyOccupancy = async (paths: readonly string[]) =>
   new Map(paths.map((path) => [path, { status: "known" as const, occupants: [] }]));
 const cleanGit = { inspect: async (path: string) => ({
   ok: true as const,
-  value: { path, head: "a".repeat(40), dirty: false, commonDirectory: home },
+  value: { path, head: "a".repeat(40), dirty: false, commonDirectory: home, detached: true },
 }) };
 
 test("v2.1.1 JSON parsing keeps stable identity, time, and bounded process hints", () => {
@@ -483,7 +483,7 @@ test("dirty, occupied, and unknown occupancy all block exact return", async () =
     {
       name: "dirty",
       occupancy: emptyOccupancy,
-      git: { inspect: async () => ({ ok: true as const, value: { path, head: "a".repeat(40), dirty: true, commonDirectory: home } }) },
+      git: { inspect: async () => ({ ok: true as const, value: { path, head: "a".repeat(40), dirty: true, commonDirectory: home, detached: true } }) },
     },
     {
       name: "occupied",
@@ -556,6 +556,7 @@ test("execute rechecks process and dirty safety after preview before forced retu
               head: "a".repeat(40),
               dirty: kind === "dirty" && dirtyReads > 1,
               commonDirectory: home,
+              detached: true,
             },
           };
         },

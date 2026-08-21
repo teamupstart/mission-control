@@ -76,6 +76,7 @@ Regenerate both with:
 
 ```sh
 mkdir -p e2e/.artifacts/dispatch-restart-recovery
+set -o pipefail   # or the pipe below reports tee's success, not Playwright's
 env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   --config e2e/playwright.config.ts \
   e2e/specs/dispatch-restart-recovery.spec.ts \
@@ -95,6 +96,7 @@ Regenerate the frames and transcript with:
 
 ```sh
 mkdir -p e2e/.artifacts/native-worktree-dispatch
+set -o pipefail   # or the pipe below reports tee's success, not Playwright's
 env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   --config e2e/playwright.config.ts \
   e2e/specs/native-worktree-dispatch.spec.ts \
@@ -409,9 +411,9 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
 
 ### An effort that applies on the next turn
 
-`e2e/.artifacts/effort-next-turn/` holds the pair that settles the one thing an accessible
-name cannot: whether a person reading a card can tell "this is your level" from "this will
-be your level".
+`e2e/.artifacts/effort-next-turn/` holds three frames and the transcript of the run that
+produced them. The frames settle the one thing an accessible name cannot: whether a person
+reading a card can tell "this is your level" from "this will be your level".
 
 - `effort-pending-mid-turn.png` - the chip while a Codex turn is running, reading
   `medium → high` with the **next turn** tag and a dashed outline, taken after the run has
@@ -422,20 +424,31 @@ be your level".
 - `effort-settled-next-turn.png` - the chip after the next turn actually started, back to a
   plain `high` with no tag and a solid outline.
 
-The three matter together. The difference between the first and the last is a dashed border,
-a struck-through level and five words, and getting them confused means an operator believes
-a level took effect on work that ran without it.
+All three matter together. The difference between the first and the last is a dashed border,
+a struck-through level and the two words `next turn`, and getting them confused means an
+operator believes a level took effect on work that ran without it.
 
-Regenerate them with:
+`effort-next-turn/focused-playwright-transcript.txt` is that run's own output. Under
+`MC_E2E_EVIDENCE` the spec narrates each milestone as its assertion lands - the live level
+read off the rollout, the turn going busy, the choice, how many times the active turn
+refreshed the card's metadata without the pending state moving, and the settle after the
+next turn. A bare pass line proves the spec ran and says nothing about what it watched; these
+lines are emitted by the run itself, so the transcript is a record of the flow rather than a
+summary written afterwards.
+
+Regenerate the frames and the transcript with:
 
 ```sh
+mkdir -p e2e/.artifacts/effort-next-turn
+set -o pipefail   # or the pipe below reports tee's success, not Playwright's
 env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   --config e2e/playwright.config.ts \
   e2e/specs/effort-next-turn.spec.ts \
-  --workers=1 --reporter=list
+  --workers=1 --reporter=list \
+  | tee e2e/.artifacts/effort-next-turn/focused-playwright-transcript.txt
 ```
 
-Attach the generated frames to the pull request; they are never committed.
+Attach the generated frames and transcript to the pull request; they are never committed.
 
 ### Accepted SDK stop
 
@@ -1151,7 +1164,7 @@ Attach the generated frames to the pull request; they are never committed.
 
 ### The retro offer appearing, and being taken
 
-`e2e/.artifacts/retro-offer/` carries five frames and the run's own stdout from
+`e2e/.artifacts/retro-offer/` carries seven frames and the run's own stdout from
 `specs/retro-offer.spec.ts`, behind the same `MC_E2E_EVIDENCE` flag. The change is a control
 that **appears**, so the pair either side of that is the point: `01-no-offer-yet.png` is a
 fresh session's action row, and `02-offer-on-the-card.png` is the same row once a human has
@@ -1166,10 +1179,18 @@ by whether the session earned the offer - the backstop sits on the dialog's own 
 footer, away from Cancel and Complete & close, because it is not a third answer to the
 dialog's question.
 
+`06-post-merge-follow-up-started.png` is the click taken after the pull request merged: the
+flash naming the linked follow-up task, with the source task still complete beside it.
+
+`07-offer-earned-by-answering-a-question.png` is the same control earned the OTHER way: that
+session's human typed no correction at all, they answered the agent's own `AskUserQuestion`
+form in the dashboard, and the daemon read the durable human-resolved review. Its case runs
+with `MISSION_RETRO_SCAN_MS=0`, so the transcript scanner cannot have supplied the answer.
+
 That the offer is **absent** the rest of the time is checkable in the DOM as a count; that it
 reads as an offer rather than as a permanently disabled control is legible only here.
 
-Regenerate all six with:
+Regenerate all seven with:
 
 ```sh
 set -o pipefail   # or the pipe below reports tee's success, not Playwright's

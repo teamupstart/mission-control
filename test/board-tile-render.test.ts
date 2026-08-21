@@ -126,7 +126,9 @@ test("a bound workflow starts as an in-place Board disclosure, not a navigation 
     /aria-label="Open No-Mistakes Review v4 workflow run: Review changes"/,
   );
   assert.match(html, /aria-expanded="false"/);
-  assert.match(html, /<kbd class="kb-hint">e<\/kbd>/);
+  // `v`, not the `e` this shipped with: the review queue's badge took `e` when it got a
+  // chord of its own, and the disclosure moved rather than resolving to nothing.
+  assert.match(html, /<kbd class="kb-hint">v<\/kbd>/);
   assert.match(html, /Show full workflow/);
   assert.doesNotMatch(html, /tf-workflow/);
 });

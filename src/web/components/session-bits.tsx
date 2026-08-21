@@ -24,6 +24,7 @@ import {
 import { useInterrupting } from "../lib/interrupting.ts";
 import { formatScheduledFor } from "../lib/schedules.ts";
 import { api } from "../lib/api.ts";
+import { Keycap } from "./Keycap.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 import { InlineRenameEditor } from "./InlineRenameEditor.tsx";
 import { EffortPicker } from "./EffortPicker.tsx";
@@ -1467,7 +1468,7 @@ export function StateBadge({
           }}
         >
           <span className="badge-dot" />
-          {st.label} →
+          {st.label} <Keycap action="review" /> →
         </button>
       </Tooltip>
     );

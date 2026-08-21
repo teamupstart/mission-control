@@ -7,6 +7,7 @@ import type {
   ReviewKind,
   ReviewStatus,
 } from "@shared/types.ts";
+import { isHumanResolvedReview } from "@shared/review-item.ts";
 import type { Registry } from "./registry.ts";
 import { inTransaction, insertReview, updateReviewStatus } from "./db.ts";
 import { unref } from "./util/timers.ts";
@@ -185,6 +186,22 @@ export class ReviewManager {
    * `resolvedBy` is required, not defaulted. It is the field the conversation reads to
    * decide whose voice an answer speaks in (`isHumanResolvedReview`), and Foreman answers
    * driver questions through the very same route the dashboard does.
+   *
+   * REFUSED when the session has no row in the registry, which is the dangling case and the
+   * one place it can arise: this method is reached only after `answerDriverRequest` has
+   * AWAITED the driver taking the answer, and an eviction timer can fire inside that await.
+   * What would be written is a conversation entry for a conversation that no longer exists -
+   * nothing can render it, because the card is gone - and it would be durably
+   * indistinguishable from an ordinary answer for ever after. That is not a cosmetic
+   * difference: retro worthiness is reconstructed from these rows when a session is
+   * introduced (`Registry.seedRetroFromReviews`), so a row written behind a departed session
+   * would light the offer for the very path the design excludes, on this daemon or on any
+   * later one. Refusing at the write is what makes that exclusion structural rather than a
+   * piece of memory a restart discards.
+   *
+   * A throw rather than a silent no-op, and it costs nothing: the caller already treats a
+   * failed record as a thing to log beside the delivery that did happen, and must not turn it
+   * into a 409 - the operator would answer a question the agent is no longer blocked on.
    */
   record(o: {
     sessionId: string;
@@ -205,6 +222,11 @@ export class ReviewManager {
      */
     at: number;
   }): ReviewItem {
+    if (!this.registry.getSession(o.sessionId)) {
+      throw new ReviewResolutionError(
+        `session ${o.sessionId} is no longer registered, so its answer has no conversation to join`,
+      );
+    }
     const now = o.at;
     const review: ReviewItem = {
       id: randomUUID(),
@@ -228,7 +250,28 @@ export class ReviewManager {
     // then took off disk. The throw from a failed transaction reaches the caller, which
     // logs it and still reports the delivery that did happen.
     this.registry.upsertReview(review);
+    this.markSteered(review);
     return review;
+  }
+
+  /**
+   * A settled review the human authored is the same retro evidence as a typed correction.
+   *
+   * ONE test for both writers of a terminal status, and it is `isHumanResolvedReview` rather
+   * than a status check spelled again here: Foreman resolves reviews through the very route
+   * the dashboard does, and the daemon's own orphan settle carries no actor at all. Neither
+   * is a person steering the work, and both are already excluded from the conversation by
+   * this same predicate - so the offer and the log agree by construction.
+   *
+   * Called AFTER the durable write and the publish, never before. A rolled-back transaction
+   * throws out of `record` before it reaches here, and a delivery that failed never reached
+   * `record` at all (the driver route returns 409 first) - so nothing lights the offer on an
+   * answer the agent never received. The Registry drops it on the floor when the session row
+   * has already gone; see `recordRetroHumanReview`.
+   */
+  private markSteered(review: ReviewItem): void {
+    if (!isHumanResolvedReview(review)) return;
+    this.registry.recordRetroHumanReview(review.sessionId);
   }
 
   /**
@@ -360,6 +403,7 @@ export class ReviewManager {
     if (resolvedBy === "human") {
       this.registry.retireNoteAnsweredByYou(cur.sessionId, `review:${cur.id}`);
     }
+    this.markSteered(updated);
 
     const set = this.waiters.get(cur.id);
     if (set) {

@@ -10,9 +10,13 @@ import type { PlanDecision, ReviewItem } from "../src/shared/types.ts";
 const home = mkdtempSync(join(tmpdir(), "mission-review-answer-db-"));
 process.env.MISSION_HOME = home;
 
-const { openDb, insertReview, updateReviewStatus, loadHumanResolvedReviews } = await import(
-  "../src/server/db.ts"
-);
+const {
+  openDb,
+  insertReview,
+  updateReviewStatus,
+  loadHumanResolvedReviews,
+  hasHumanResolvedReview,
+} = await import("../src/server/db.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -219,4 +223,69 @@ test("a row written before the actor column is not credited to the human", () =>
     loadHumanResolvedReviews("s1").find((r) => r.id === "r-legacy"),
     undefined,
   );
+});
+
+// ---- the existence half, which decides retro worthiness after a restart ----
+//
+// `hasHumanResolvedReview` answers the same question as the query above with the row bodies
+// left on disk, because the Registry asks it once per session it introduces and only wants a
+// yes or no. Its filter has to admit and refuse exactly what the conversation does: a session
+// that replays your answer in its log while reporting that nobody steered it would be the two
+// spellings drifting, which is the failure both of them exist to prevent.
+
+/** Insert one settled row and hand back the session it belongs to. */
+function settled(
+  session: string,
+  id: string,
+  status: ReviewItem["status"],
+  by: "human" | "foreman" | null,
+): string {
+  insertReview(review(id, { sessionId: session }));
+  updateReviewStatus(id, status, "said so", 5000, null, by);
+  return session;
+}
+
+test("every status a person can put a review into counts as human steering", () => {
+  for (const status of ["answered", "approved", "rejected", "dismissed"] as const) {
+    const session = `s-has-${status}`;
+    settled(session, `r-has-${status}`, status, "human");
+    assert.equal(
+      hasHumanResolvedReview(session),
+      true,
+      `a human ${status} review is evidence the session was steered`,
+    );
+    assert.ok(
+      loadHumanResolvedReviews(session).length > 0,
+      "and the conversation agrees, which is what keeps the two filters in step",
+    );
+  }
+});
+
+test("nobody's decision is not the human's: Foreman, pending, orphaned, legacy", () => {
+  settled("s-has-foreman", "r-has-foreman", "answered", "foreman");
+  assert.equal(hasHumanResolvedReview("s-has-foreman"), false, "Foreman is not the operator");
+
+  insertReview(review("r-has-pending", { sessionId: "s-has-pending" }));
+  assert.equal(hasHumanResolvedReview("s-has-pending"), false, "a question still on screen");
+
+  settled("s-has-orphan", "r-has-orphan", "orphaned", null);
+  assert.equal(hasHumanResolvedReview("s-has-orphan"), false, "the daemon tidying up");
+
+  openDb()
+    .prepare(
+      `INSERT INTO reviews (id, session_id, kind, title, body, status, response, created_at, resolved_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run("r-has-legacy", "s-has-legacy", "input", "t", "b", "answered", "said so", 1000, 5000);
+  assert.equal(
+    hasHumanResolvedReview("s-has-legacy"),
+    false,
+    "a row predating the actor column names no author, so it credits none",
+  );
+});
+
+test("the answer is scoped to the session that was asked", () => {
+  settled("s-has-mine", "r-has-mine", "answered", "human");
+  assert.equal(hasHumanResolvedReview("s-has-mine"), true);
+  assert.equal(hasHumanResolvedReview("s-has-nobody"), false, "a session with no rows at all");
 });

@@ -26,12 +26,12 @@ const frameworkDir = join(
 const payload = join(frameworkDir, "Versions/Current/Electron Framework");
 const link = join(frameworkDir, "Electron Framework");
 
-test("both published Electron test commands repair the runtime before the framework link", () => {
+test("both published Electron test commands run both preflights in order", () => {
   const packageJson = JSON.parse(
     readFileSync(join(import.meta.dirname, "..", "package.json"), "utf8"),
   ) as { scripts: Record<string, string> };
   const preflight =
-    "node scripts/ensure-electron-runtime.mjs && node scripts/ensure-electron-framework.mjs";
+    "node scripts/ensure-electron-framework.mjs && node scripts/ensure-electron-runtime.mjs";
 
   assert.equal(packageJson.scripts.pretest, preflight);
   assert.equal(packageJson.scripts["pretest:electron"], preflight);

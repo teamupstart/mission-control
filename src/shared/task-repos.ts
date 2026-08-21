@@ -40,6 +40,17 @@ export interface TaskRepoRef {
   worktreePath: string | null;
   branch: string | null;
   provider: WorktreeProvider | null;
+  /**
+   * The opaque native allocator identity that released this tree must be returned under, or
+   * null for every other provider.
+   *
+   * Here rather than only on the row it is stored on because it is a CLEANUP-RELEVANT fact
+   * about a repository, and this is the only enumeration that returns all of them. The
+   * worktree retention generation hashes it: a slot returned and re-leased under a new id at
+   * the same path is a different tree wearing the same name, and an activity observation
+   * taken against the old lease must not survive onto the new one.
+   */
+  worktreeLeaseId: string | null;
   baseSha: string | null;
   role: TaskRepoRole;
   position: number;
@@ -48,7 +59,7 @@ export interface TaskRepoRef {
 /** The narrowest task shape this module reads, so a test can build one by hand. */
 export type TaskRepoSource = Pick<
   Task,
-  "repoRoot" | "worktreePath" | "branch" | "provider" | "baseSha"
+  "repoRoot" | "worktreePath" | "branch" | "provider" | "worktreeLeaseId" | "baseSha"
 > & { extraRepos: readonly TaskRepoEntry[] };
 
 /**
@@ -69,6 +80,7 @@ export function taskRepoRefs(task: TaskRepoSource): TaskRepoRef[] {
       worktreePath: task.worktreePath,
       branch: task.branch,
       provider: task.provider,
+      worktreeLeaseId: task.worktreeLeaseId,
       baseSha: task.baseSha,
       role: "primary",
       position: 0,
@@ -78,11 +90,34 @@ export function taskRepoRefs(task: TaskRepoSource): TaskRepoRef[] {
       worktreePath: entry.worktreePath,
       branch: entry.branch,
       provider: entry.provider,
+      worktreeLeaseId: entry.worktreeLeaseId,
       baseSha: entry.baseSha,
       role: "secondary" as const,
       position: index + 1,
     })),
   ];
+}
+
+/**
+ * Does this task still own at least one CHECKOUT - its primary, or any attached repository's?
+ *
+ * The one predicate for that question, and it exists because the obvious spelling of it,
+ * `task.worktreePath !== null`, is wrong for a shape the product can actually reach. A
+ * multi-repo teardown clears each repository's path as that repository's tree is actually
+ * released, so a run that released the primary and then failed on an attached repo leaves a
+ * terminal task whose `worktreePath` is null and whose attached tree is still on disk. Every
+ * caller asking "is there anything left to clean up here" that reads the primary alone
+ * answers no and forgets the survivor - `loadResourceHoldingTerminalTasks` stopped loading
+ * it on restart, and `pruneTerminalTasks` evicted it from memory - which is precisely how a
+ * half-released task became invisible while still holding a slot.
+ *
+ * HOME ownership is deliberately not folded in. A terminal home is not a worktree, and the
+ * approved retention policy is about worktrees: a task holding only a home has nothing whose
+ * Git state could be observed, so it is not a retention candidate even though it is still a
+ * resource holder. Callers that mean "holds any resource at all" ask for both.
+ */
+export function taskHasWorktrees(task: TaskRepoSource): boolean {
+  return taskRepoRefs(task).some((ref) => ref.worktreePath !== null);
 }
 
 /**

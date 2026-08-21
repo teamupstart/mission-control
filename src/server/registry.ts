@@ -22,6 +22,7 @@ import type {
   SessionCost,
   SessionMeta,
   SessionGoal,
+  PromptedDirectHandoffKind,
   SessionIntentGuard,
   SessionGoalSummary,
   SessionNote,
@@ -64,7 +65,8 @@ import { noteAwaitsYou } from "@shared/foreman.ts";
 import { reportBucket } from "@shared/session.ts";
 import { goalLine, resolvedSessionIntent, sessionIntentMatches } from "@shared/goal.ts";
 import { fullTaskTitle } from "@shared/title.ts";
-import { taskRepoPrSummaries, taskRepoRefs } from "@shared/task-repos.ts";
+import { taskHasWorktrees, taskRepoPrSummaries, taskRepoRefs } from "@shared/task-repos.ts";
+import { isTerminalTask } from "@shared/task-status.ts";
 import { capabilitiesFor, workQueueBlockedReason } from "@shared/harness-capabilities.ts";
 import { canWriteTo, muxHandle, paneToken, terminalHomeNames, terminalResourceId, terminalResourceIds, tmuxPaneToken, weztermPaneToken } from "@shared/pane.ts";
 import type { EmulatorHandle, MuxHandle, TerminalHandle } from "@shared/terminal.ts";
@@ -199,6 +201,7 @@ import {
   upsertTask as dbUpsertTask,
   upsertUsageCell,
   loadInspectorInspections,
+  hasHumanResolvedReview,
   markWorkEpisodeMerged,
   type TaskDependencyRewrite,
   recordWorkEpisodePrompt,
@@ -750,7 +753,16 @@ export class Registry extends EventEmitter {
    */
   private livePrs = new Map<string, LivePrObservation>();
   /**
-   * Session ids whose transcript has shown a human turn beyond the opening brief.
+   * Session ids whose human has STEERED them - the worthiness half of the retro offer.
+   *
+   * Two evidence sources feed this one set, and they are one set rather than two flags
+   * because the browser reads a single `Session.retro` and must not learn to combine them:
+   *
+   *  - the transcript scanner, when it sees a human turn beyond the opening brief; and
+   *  - `ReviewManager`, when a review this session asked has been durably settled by the
+   *    human (`isHumanResolvedReview`). That covers the answers no transcript can carry -
+   *    an SDK `AskUserQuestion` and the MCP `request_input`/`request_plan_decisions` forms
+   *    land in the JSONL as pure tool results, which every harness parser drops.
    *
    * Written only by `recordRetroCorrections` and held until the session ROW is removed, not
    * until the session exits: an exited card still offers a retro (the route files a task for
@@ -758,9 +770,10 @@ export class Registry extends EventEmitter {
    * precisely the moment it is most likely to be taken.
    *
    * In memory rather than persisted, like the injection attribution it depends on. A daemon
-   * restart therefore loses it and the poller rebuilds what it can from the transcript still
-   * on disk - which is the honest behaviour, since `originOf` cannot re-derive who typed a
-   * turn it never saw delivered.
+   * restart therefore loses it, and the two halves rebuild differently: the poller re-reads
+   * what it can from the transcript still on disk - `originOf` cannot re-derive who typed a
+   * turn it never saw delivered - while the review half is reconstructed exactly, from the
+   * durable rows, by `seedRetroFromReviews` when a session is first introduced.
    */
   private retroCorrections = new Set<string>();
   private lastQueuePrune = 0;
@@ -1567,6 +1580,10 @@ export class Registry extends EventEmitter {
     d: DiscoveredSession,
     now: number,
   ): Session {
+    // First sight of this pane-backed session in this process, which is the one moment the
+    // durable review half is worth a query - see `seedRetroFromReviews`. Before `base.retro`
+    // is derived below, so the first payload this session emits already carries it.
+    if (!prev) this.seedRetroFromReviews(d.syntheticId);
     // Read the stored binding ONCE, on first sight. After that the in-memory value
     // is the freshest truth - every rebinding goes through this process first - so
     // re-reading each sweep could only ever return what we already have.
@@ -1871,6 +1888,10 @@ export class Registry extends EventEmitter {
     s.queue = this.queueSummaryFor(s);
     s.pendingTurns = this.pendingTurnsFor(s);
     s.workCycle = dbWorkCycleFor(noteKeyFor(s)) ?? undefined;
+    // The SDK door's half of the same first-introduction seeding `mergeDiscovered` does, and
+    // the one that matters most: a driver session's questions are answered natively, so its
+    // steering evidence exists ONLY as a review row.
+    this.seedRetroFromReviews(s.id);
     this.resolveInspectionSummaries(s);
     this.sessions.set(s.id, s);
     this.emitSession(s);
@@ -5493,8 +5514,16 @@ export class Registry extends EventEmitter {
     // Only evict fully-cleaned terminal tasks. A failed-but-alive task still holds
     // a worktree + terminal home and decorates its live card, so it must never be
     // evicted (that would orphan its resources and drop the card's chip).
+    //
+    // `taskHasWorktrees` rather than `!t.worktreePath`, and the difference is a shape the
+    // product reaches: multi-repo teardown clears each repository's path as that tree is
+    // actually released, so a run that released the primary and then failed on an attached
+    // repository leaves a terminal task whose primary path is null and whose attached
+    // checkout is still on disk. Reading the primary alone called that task fully cleaned
+    // and evicted it - orphaning a real worktree, and taking with it the durable activity
+    // clock's only in-memory candidate.
     const evictable = [...this.tasks.values()].filter(
-      (t) => isTerminalTask(t.status) && !t.worktreePath && !t.homeName,
+      (t) => isTerminalTask(t.status) && !taskHasWorktrees(t) && !t.homeName,
     );
     if (evictable.length <= RECENT_TERMINAL_TASKS) return;
     evictable.sort((a, b) => b.updatedAt - a.updatedAt);
@@ -6567,7 +6596,11 @@ export class Registry extends EventEmitter {
   }
 
   /**
-   * Record that this session's human has corrected it, and light the offer if that is new.
+   * Record that this session's human has steered it, and light the offer if that is new.
+   *
+   * The transcript poller's door - it calls this for a session it just read out of the live
+   * map, so no row check is made here. The review path enters through
+   * `recordRetroHumanReview`, which adds one.
    *
    * Idempotent and one-way, because the fact is: the poller calls this on every tick once a
    * session has flipped, and a correction cannot be taken back. The early return is what
@@ -6582,6 +6615,57 @@ export class Registry extends EventEmitter {
     if (sessionEqual(s, next)) return;
     this.sessions.set(sessionId, next);
     this.emitSession(next);
+  }
+
+  /**
+   * A human just settled one of this session's reviews, so it has been steered.
+   *
+   * Separate from `recordRetroCorrections` for one reason, and it is the dangling-review
+   * case: `ReviewManager` settles rows for sessions that are already GONE - the orphan
+   * sweeps, and a decision that lands in the window between eviction and the route
+   * returning. `recordRetroCorrections` remembers an id whether or not a row exists, because
+   * the transcript poller only ever calls it for a session it just read out of the live map.
+   * This caller has no such guarantee, and an id kept for a row that will never come back is
+   * a leak that `remove` can no longer collect - `remove` has already run.
+   *
+   * So the row is the gate. A session still present gets the signal and the emit; a session
+   * that has gone gets nothing, and gains nothing later either: `ReviewManager.record` refuses
+   * to write a durable answer for a session with no row, so the dangling case leaves no row
+   * for `seedRetroFromReviews` to read back on this daemon or on any later one. The exclusion
+   * is structural rather than a piece of memory a restart would discard, which is what lets
+   * this method stay a one-line guard instead of an ownership ledger.
+   */
+  recordRetroHumanReview(sessionId: string): void {
+    if (!this.sessions.has(sessionId)) return;
+    this.recordRetroCorrections(sessionId);
+  }
+
+  /**
+   * Restore review-backed worthiness for a session being introduced into the live map.
+   *
+   * Called from the two doors into `sessions` - `mergeDiscovered` on first sight, and
+   * `registerSdkSession` - and from nowhere else. That bound is the design: the alternative
+   * considered was loading every session id with a human-resolved review at boot, which is a
+   * process-lifetime set that grows with the whole review history and is mostly ids of
+   * sessions that will never be seen again. One indexed existence read per introduced
+   * session costs less and forgets on eviction like everything else here.
+   *
+   * A read that throws is logged and treated as "no evidence": the honest failure for this
+   * signal is to under-offer, and a database hiccup must not take a discovery sweep with it.
+   *
+   * What this reads is ONLY answers given while the session was live to receive them, and
+   * that is enforced where the row is written rather than filtered here: the query cannot tell
+   * a dangling answer from an ordinary one, so `ReviewManager.record` refuses to write one at
+   * all. That is the whole of the dangling-path exclusion, and it holds across a restart
+   * because it is a property of the table rather than of this process's memory.
+   */
+  private seedRetroFromReviews(sessionId: string): void {
+    if (this.retroCorrections.has(sessionId)) return;
+    try {
+      if (hasHumanResolvedReview(sessionId)) this.retroCorrections.add(sessionId);
+    } catch (err) {
+      console.error("[registry] could not read human-resolved reviews for", sessionId, err);
+    }
   }
 
   /**
@@ -6691,6 +6775,7 @@ export class Registry extends EventEmitter {
       promptedActivityAt: row?.promptedActivityAt ?? null,
       promptedLegacyCutoverGeneration: row?.promptedLegacyCutoverGeneration ?? null,
       promptedConsumedGeneration: row?.promptedConsumedGeneration ?? null,
+      promptedDirectHandoff: row?.promptedDirectHandoff ?? null,
       updatedAt: row?.updatedAt ?? 0,
       items,
     };
@@ -6782,6 +6867,9 @@ export class Registry extends EventEmitter {
       promptedActivityAt: prev?.promptedActivityAt ?? null,
       promptedLegacyCutoverGeneration: prev?.promptedLegacyCutoverGeneration ?? null,
       promptedConsumedGeneration: prev?.promptedConsumedGeneration ?? null,
+      // Carried through, never re-derived: this row's whole purpose here is to refresh
+      // cwd/branch, and dropping the latch would re-arm a direct handoff that already ran.
+      promptedDirectHandoff: prev?.promptedDirectHandoff ?? null,
       updatedAt: now,
     });
     return key;
@@ -6846,6 +6934,8 @@ export class Registry extends EventEmitter {
       generation: number;
       expectedIntent: SessionIntentGuard;
       ask: boolean;
+      /** Record a direct-shipping handoff in the same write, or null to consume only. */
+      directHandoff: PromptedDirectHandoffKind | null;
     },
     now = Date.now(),
   ): boolean {
@@ -6875,6 +6965,13 @@ export class Registry extends EventEmitter {
       sessionCwd: session.cwd,
       generation: input.generation,
       ask: input.ask,
+      // The authorizing episode is the one this boundary just RE-VERIFIED against the
+      // live goal, not the one the caller sent. `sessionIntentMatches` above already
+      // refused a stale guard, so the two are equal here - taking it from the verified
+      // guard keeps it that way if either side ever grows a field.
+      directHandoff: input.directHandoff
+        ? { kind: input.directHandoff, episodeKey: input.expectedIntent.episodeKey }
+        : null,
       now,
     });
     if (consumed) this.syncSessionsForQueue(input.logicalKey);
@@ -7044,6 +7141,14 @@ export class Registry extends EventEmitter {
         promptedActivityAt: row.promptedActivityAt,
         promptedLegacyCutoverGeneration: row.promptedLegacyCutoverGeneration,
         promptedConsumedGeneration: row.promptedConsumedGeneration,
+        // DROPPED, not carried. Every other guard on this row is a statement about the
+        // SOURCE logical key's own lifecycle, and re-keying moves it wholesale. The
+        // direct-shipping latch is a statement about an INTENT EPISODE, and episode keys
+        // are per-conversation counters (`intent:<objectiveVersion>:<promptRevision>`) -
+        // so the source's `intent:1:1` would collide with the target conversation's own
+        // first episode and silently disarm prompted completion on work it never shipped.
+        // A re-attached queue has made no handoff on behalf of its new session.
+        promptedDirectHandoff: null,
         updatedAt: now,
       },
       items.map((i, n) => ({ ...i, noteKey: toKey, seq: base + n, updatedAt: now })),
@@ -7133,10 +7238,7 @@ export function summarizeQueue(
 
 // ---- pure helpers ----
 
-/** A task in a terminal state has no further lifecycle - safe to evict from memory. */
-function isTerminalTask(status: Task["status"]): boolean {
-  return status === "done" || status === "failed" || status === "cancelled";
-}
+
 
 /**
  * The task statuses a merged pull request can still decide.

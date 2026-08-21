@@ -1,7 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { claudeTurnUsage } from "../src/server/harness/claude/sdk.ts";
+import {
+  claudeTurnUsage,
+  claudeUsageDelta,
+} from "../src/server/harness/claude/sdk.ts";
 import {
   claudeEnvelopeModels,
   claudeEnvelopeTurnId,
@@ -62,6 +65,83 @@ test("a result frame yields the ledger's per-model view and the card's flat one"
       reportedCostUsd: 0.051683,
     },
   ]);
+});
+
+test("successive query totals become per-result deltas before reaching the ledger", () => {
+  const first = claudeTurnUsage(FRAME, "claude-haiku-4-5");
+  const second = claudeTurnUsage(
+    {
+      ...FRAME,
+      uuid: "99492222-0bd9-4fea-9f6f-42a2df772da9",
+      total_cost_usd: 0.083,
+      num_turns: 2,
+      modelUsage: {
+        "claude-haiku-4-5": {
+          inputTokens: 17,
+          outputTokens: 61,
+          cacheReadInputTokens: 400,
+          cacheCreationInputTokens: 28_000,
+          costUSD: 0.083,
+        },
+      },
+    },
+    "claude-haiku-4-5",
+  );
+  assert.ok(first && second);
+
+  const firstDelta = claudeUsageDelta(first, null);
+  const secondDelta = claudeUsageDelta(second, first);
+
+  assert.deepEqual(firstDelta, first, "the first query snapshot is all new spend");
+  assert.equal(secondDelta.turnId, "99492222-0bd9-4fea-9f6f-42a2df772da9");
+  assert.equal(secondDelta.costUsd, 0.083 - 0.051683);
+  assert.equal(secondDelta.input, 7);
+  assert.equal(secondDelta.output, 24);
+  assert.equal(secondDelta.cacheRead, 400);
+  assert.equal(secondDelta.cacheWrite, 2_256);
+  assert.deepEqual(secondDelta.models, [
+    {
+      modelId: "claude-haiku-4-5",
+      input: 7,
+      output: 24,
+      reasoningOutput: 0,
+      cacheRead: 400,
+      cacheWrite: 2_256,
+      reportedCostUsd: 0.083 - 0.051683,
+    },
+  ]);
+
+  assert.equal(
+    firstDelta.costUsd! + secondDelta.costUsd!,
+    second.costUsd,
+    "adding the emitted deltas recovers the latest total instead of adding both totals",
+  );
+});
+
+test("a reset cumulative counter starts a fresh delta rather than going negative", () => {
+  const previous = claudeTurnUsage(
+    {
+      ...FRAME,
+      total_cost_usd: 2,
+      modelUsage: {
+        "claude-haiku-4-5": {
+          inputTokens: 1_000,
+          outputTokens: 200,
+          cacheReadInputTokens: 5_000,
+          cacheCreationInputTokens: 400,
+          costUSD: 2,
+        },
+      },
+    },
+    "claude-haiku-4-5",
+  );
+  const reset = claudeTurnUsage(FRAME, "claude-haiku-4-5");
+  assert.ok(previous && reset);
+  assert.deepEqual(
+    claudeUsageDelta(reset, previous),
+    reset,
+    "lower provider counters are the first snapshot of a new accounting window",
+  );
 });
 
 test("a turn served by two models keeps both ids and sums the flat view", () => {

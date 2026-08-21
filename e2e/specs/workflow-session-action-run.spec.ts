@@ -409,12 +409,13 @@ test("Board workflow controls expand in place and open the exact run", async ({
   await expect(dashboard.getByRole("button", { name: "Show full workflow" })).toBeVisible();
   await expect(boardDetail).toHaveAttribute("aria-hidden", "true");
 
-  // The first arrow only selects. `e` must stay inside that card and drive the same
-  // aria-expanded transition as clicking Show full workflow.
+  // The first arrow only selects. `v` must stay inside that card and drive the same
+  // aria-expanded transition as clicking Show full workflow. `v`, not the `e` this
+  // shipped with: `e` became the review queue's chord and the disclosure moved.
   await dashboard.keyboard.press("ArrowRight");
   const tile = dashboard.locator(".tile.selected");
   await expect(tile).toBeVisible();
-  await dashboard.keyboard.press("e");
+  await dashboard.keyboard.press("v");
   await expect(tile.getByRole("button", { name: "Collapse workflow" }))
     .toHaveAttribute("aria-expanded", "true");
   await expect(tile.locator(".wf-ladder-panel")).toBeVisible();
@@ -422,7 +423,7 @@ test("Board workflow controls expand in place and open the exact run", async ({
   await captureBoardShortcut(dashboard, "01-expanded");
 
   // A second press returns to the compact preview and still does not drill in.
-  await dashboard.keyboard.press("e");
+  await dashboard.keyboard.press("v");
   await expect(tile.getByRole("button", { name: "Show full workflow" }))
     .toHaveAttribute("aria-expanded", "false");
   await expect(boardDetail).toHaveAttribute("aria-hidden", "true");

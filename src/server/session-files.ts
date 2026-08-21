@@ -9,6 +9,7 @@ import type {
   SessionFileEntry,
   SessionFileSaveResult,
 } from "@shared/types.ts";
+import { browserImageMediaTypeForPath } from "@shared/browser-images.ts";
 import { run } from "./util/exec.ts";
 
 export const MAX_SESSION_FILE_ENTRIES = 10_000;
@@ -153,7 +154,8 @@ export async function readSessionFile(cwd: string, relativePath: string): Promis
   const { target } = await rootAndTarget(cwd, relativePath);
   const html = isHtml(relativePath);
   const markdown = isMarkdown(relativePath);
-  const previewable = html || markdown;
+  const imageMediaType = browserImageMediaTypeForPath(relativePath);
+  const previewable = html || markdown || imageMediaType !== null;
   const cap = previewable ? MAX_SESSION_PREVIEW_BYTES : MAX_SESSION_EDITOR_BYTES;
   const handle = await open(target, constants.O_RDONLY);
   let info: Stats;
@@ -180,6 +182,33 @@ export async function readSessionFile(cwd: string, relativePath: string): Promis
   }
   const bytes = bounded!.bytes;
   const rev = revision(bytes);
+  if (imageMediaType) {
+    let text: string | null = null;
+    let editable = false;
+    if (imageMediaType === "image/svg+xml") {
+      try {
+        text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+        editable = bytes.length <= MAX_SESSION_EDITOR_BYTES;
+      } catch {
+        // The browser remains the image decoder. Invalid SVG source simply has no Editor view.
+      }
+    }
+    return {
+      path: relativePath,
+      kind: "image",
+      editable,
+      text,
+      size: bytes.length,
+      mtime: info.mtimeMs,
+      language: languageFor(relativePath),
+      revision: rev,
+      error: editable || text === null ? null : "Preview only: file exceeds the 2 MiB editor limit",
+      image: {
+        mediaType: imageMediaType,
+        dataUrl: `data:${imageMediaType};base64,${bytes.toString("base64")}`,
+      },
+    };
+  }
   if (bytes.includes(0)) {
     return {
       path: relativePath, kind: "binary", editable: false, text: null, size: bytes.length,

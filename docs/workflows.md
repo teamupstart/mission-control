@@ -798,7 +798,7 @@ that slot - it is finished work, so the preview keeps naming whatever is actuall
 tile instead carries one line counting them, **✓ 2 stages carried from Round 1 · evidence 1**.
 Click the compact preview to open that exact run's complete evidence and timeline.
 **Show full workflow** expands that tile in place into the same actionable ladder;
-**Collapse workflow** returns to the preview. Press <kbd>e</kbd> on the selected tile to toggle
+**Collapse workflow** returns to the preview. Press <kbd>v</kbd> on the selected tile to toggle
 those same controls without opening the session detail. These controls do
 not open the session or leave the Board. **Open run** inside the expanded ladder reaches the same
 run as the compact preview.
@@ -1286,7 +1286,10 @@ transcript proof Foreman verified. The daemon atomically compares and consumes t
 evidence keeps retries idempotent, while a later completed generation under unchanged intent can
 claim the binding exactly once. Work restarting, a newer completion, key rotation, intent drift,
 or queue work appearing before the claim makes the old result fail closed. A missing or failed
-claim endpoint also fails closed, so Foreman does not fall through to an unreviewed wrap-up. If no
+claim endpoint also fails closed, so Foreman does not fall through to an unreviewed wrap-up. A
+claim consumes the generation and nothing else: it never records the direct-shipping handoff that
+[Straight to PR](work-queues.md) latches, so the repair rounds that follow it stay
+eligible under the same human intent. If no
 Foreman binding claims the boundary,
 the existing wrap-up behavior is unchanged.
 

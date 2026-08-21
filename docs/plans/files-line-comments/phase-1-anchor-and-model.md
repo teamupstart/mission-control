@@ -74,10 +74,20 @@ change them cheaply. That ordering is deliberate - see the entry on `addColumn` 
        Reusing it would put a follow-up back in the original comment's old position, ahead of
        comments the human queued in between - "re-enters the queue **at the end**" is the contract
        in `plan.md`, and reuse quietly breaks it.
-     - **Refused from `sending` and `awaiting`.** Those are the outstanding statuses, and pulling a
-       thread out of that set while its turn is live in `pending_turns` would empty the set the
-       single-flight index is built on. The guard belongs here, on the operation, rather than being
-       restated at each of its three callers. Model it on `createPendingTurn`
+     - **The accepted source statuses are exactly `draft`, `answered` and `unanswered`** - an
+       allow-list, not "anything that is not outstanding". Everything else is refused, for two
+       different reasons worth keeping apart:
+       - **`sending` and `awaiting`** are outstanding. Pulling a thread out of that set while its
+         turn is live in `pending_turns` would empty the set the single-flight index is built on.
+       - **`resolved` and `orphaned`** are terminal. Requeueing a `resolved` thread would reopen
+         something a person closed, contradicting `plan.md`'s "only a person closes it" and the
+         rule that a late agent reply leaves a resolved thread alone; requeueing an `orphaned` one
+         would allocate a queue position in a session that no longer exists. **A person who wants a
+         resolved thread back in the review un-resolves it through the status route first** - that
+         is a deliberate act by the only party allowed to perform it, and the ordinary requeue then
+         applies. The two-step is the point, not an inconvenience.
+       The guard belongs on the operation rather than being restated at each of its three callers,
+       and the route is exposed, so it has to hold against a caller that is not one of them. Model it on `createPendingTurn`
      (`db.ts:8578`), which allocates `pending_turns.seq` exactly this way inside one
      `BEGIN IMMEDIATE` (`db.ts:8588` is the allocating select) - the house style every transaction
      in this file follows (`db.ts:516`).
@@ -255,7 +265,9 @@ change them cheaply. That ordering is deliberate - see the entry on `addColumn` 
   `outdated` flag surviving a status change in both directions, **`queueFileCommentThread`
   allocating consecutive `queue_seq` values across repeated submits in one session and starting a
   second session's queue at zero, a requeue from `answered` landing at the **tail** rather than its
-  old position, and the same call **refused** on a `sending` or `awaiting` thread**, message append and load order for
+  old position, and the same call **refused on every status outside the allow-list** - `sending`
+  and `awaiting` for the single-flight reason, `resolved` and `orphaned` because terminal is
+  terminal**, message append and load order for
   both authors, editing an undelivered message and **being refused on a delivered one and on one
   whose thread is merely outstanding**, stamping
   `addressed_at` and `read_at` without touching `status`, **`short_id` minting surviving a forced
@@ -398,7 +410,8 @@ the walkthrough state machine and payload (phase 3), the MCP tool (phase 4).
   thread and a thread requeued when its turn resolves both need the same thing - the tail of the
   queue with a fresh number - and neither could get it from a generic status update, while reusing
   the thread's old `queue_seq` would send a follow-up ahead of everything queued since. Generalised
-  to a tail-append valid from any non-outstanding status, with the previous round's
+  to a tail-append over an explicit allow-list of source statuses (narrowed again in round 19),
+  with the previous round's
   "do not requeue an outstanding thread" guard moved onto the operation itself, where its three
   callers cannot each forget it.
 - Review pass (round 18): the route inventory said phase 4's `addressed` posts to the status route,
@@ -409,3 +422,14 @@ the walkthrough state machine and payload (phase 3), the MCP tool (phase 4).
   control alone and states that `addressed` gets no route here at all, because nothing in the
   dashboard sets it. `phased-plan.md` already had this right, which is what made phase 1 the
   outlier rather than the source.
+- Review pass (round 19): round 17 generalised this operation with the phrase "valid from any
+  non-outstanding status", which quietly includes the two terminal ones. The route is exposed, so a
+  caller could have reopened a thread a person had closed - contradicting `plan.md`'s "only a person
+  closes it" and the round-14 rule that a late agent reply leaves a `resolved` thread alone - or
+  allocated a queue position inside a session that no longer exists. Replaced with an explicit
+  allow-list of `draft`, `answered` and `unanswered`, and the two refusal reasons are kept apart
+  because they are different: outstanding would break the single-flight set, terminal would undo a
+  human decision or queue work for a dead session. Reopening a resolved thread stays possible and
+  stays deliberate: un-resolve through the status route, then requeue normally. The lesson is the
+  same one round 18 recorded - "everything except X" is a weaker specification than naming what is
+  allowed, because the set it admits grows every time a status is added.

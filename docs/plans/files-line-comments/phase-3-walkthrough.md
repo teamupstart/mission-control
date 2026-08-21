@@ -119,9 +119,10 @@ measurement the plan's two 60% assumptions need.
      tail with a fresh `queue_seq` - the follow-up on an `answered` or `unanswered` thread, and the
      thread whose turn resolved with undelivered human messages still on it. Neither reuses the
      thread's old position: "at the end" is the contract, and a reused number would send the
-     follow-up ahead of everything queued since. That operation refuses an outstanding thread
-     outright, which is the same guard as the bullet above, enforced once where it cannot be
-     forgotten.
+     follow-up ahead of everything queued since. That operation accepts only `draft`, `answered`
+     and `unanswered`: it refuses an outstanding thread, which is the same guard as the bullet
+     above, and refuses a terminal one, so neither a resolved thread nor an orphaned one can be
+     pulled back into a review. Enforced once, where it cannot be forgotten.
    The `outdated` flag is a column beside the status, so it stays orthogonal and reversible
    throughout. The reply itself is still written by phase 1's
    `appendFileCommentMessage`; what this phase adds is the requeue that follows it.

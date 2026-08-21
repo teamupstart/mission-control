@@ -154,7 +154,7 @@ test("only the editor offers to delete, and only from the footer", () => {
   // the same action stop looking like the same action.
   assert.match(
     editing,
-    /<button class="btn btn-danger-ghost"[^>]*>Delete<kbd class="kb-hint">d<\/kbd><\/button>/,
+    /<button class="btn btn-danger-ghost"[^>]*>Delete<kbd class="kb-hint" aria-hidden="true">d<\/kbd><\/button>/,
   );
   assert.ok(
     hasTooltip(editor(mkTask()), "Delete this task from the backlog"),

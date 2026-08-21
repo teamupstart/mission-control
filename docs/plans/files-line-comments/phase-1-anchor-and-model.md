@@ -62,6 +62,27 @@ change them cheaply. That ordering is deliberate - see the entry on `addColumn` 
    `upsertInspectorComment` / `loadInspectorComments` are): create, list by session, list by session
    and path, delete, reorder `queue_seq`, set and clear the `outdated` flag, read and write the
    review's run state, and the status transitions.
+   - **`queueFileCommentThread(threadId, now)` does both halves of submitting in one call**: moves
+     the thread `draft` → `queued` **and** allocates its `queue_seq` as
+     `COALESCE(MAX(queue_seq), -1) + 1` scoped to the session. Model it on `createPendingTurn`
+     (`db.ts:8578`), which allocates `pending_turns.seq` exactly this way inside one
+     `BEGIN IMMEDIATE` (`db.ts:8588` is the allocating select) - the house style every transaction
+     in this file follows (`db.ts:516`).
+   - **It has to be one operation, and the reason is not the one it looks like.** `DatabaseSync` is
+     fully synchronous and the daemon is the only writer, so the select and the update cannot
+     interleave *inside* one store function - that part is safe for free. The hazard is composing
+     it out of the generic status route plus the reorder route, which is **two HTTP requests**, and
+     another submit can land between them and allocate the same number. The race is created by the
+     missing operation, not by SQLite, which is why the fix is to declare the operation rather than
+     to add locking.
+   - **No `UNIQUE` index on `(session_id, queue_seq)`, deliberately.** The closest analogue that
+     also reorders is `foreman_queue_items`, which has none, because a full rewrite passes through
+     states where two rows share a seq - see the two-pass scratch offset and its comment at
+     `db.ts:9482-9488`. `pending_turns` can afford `idx_pending_turns_order` (`db.ts:1736`) only
+     because it never reorders. Ours does, so it follows `foreman_queue_items`. This is recorded so
+     a later change does not "fix" the missing index and break the reorder route.
+   - The reorder route rewrites with that same **two-pass scratch offset**, so the list never
+     passes through an ambiguous order for anything reading mid-transaction.
    - **Minting `short_id`.** Creation derives the thread's `MC-xxxx` handle beside its UUID and
      stores it, unique per session. It is what the payload cites, what phase 4's reply tool takes
      as its `commentId`, and what the transcript fallback matches - so it is generated once and
@@ -155,7 +176,9 @@ change them cheaply. That ordering is deliberate - see the entry on `addColumn` 
    **explicit decision on `LINE_INPUT_EVENTS`** (`registry.ts:431`) with the reason written beside
    it. The recommendation is **absent** - the Line strip does not read file comments - and
    `pipeline_upsert`'s deliberate absence is the precedent to follow.
-8. **Routes in `src/server/routes.ts`**: create, list, delete, reorder, **append a message**,
+8. **Routes in `src/server/routes.ts`**: create, list, delete, reorder, **queue a thread**
+   (the `queueFileCommentThread` pair above - phase 2 calls this one route rather than composing
+   the status and reorder routes), **append a message**,
    **edit an undelivered message's body**, **mark a thread read**, and **set a thread's status** - the last is what phase 2's resolve control and phase
    4's `addressed` both post to, and without it "edit" means the body only and neither can land.
    This phase owns the reorder route outright; phase 3 adds `start`/`pause`/`resume` beside it and
@@ -210,7 +233,9 @@ change them cheaply. That ordering is deliberate - see the entry on `addColumn` 
   successful re-anchor carries the new revision out, and an `outdated` one does not.
 - `test/file-comment-contracts.test.ts` - Zod bounds and refusals.
 - `test/file-comments-store.test.ts` - SQL, status transitions, `queue_seq` rewrites, the
-  `outdated` flag surviving a status change in both directions, message append and load order for
+  `outdated` flag surviving a status change in both directions, **`queueFileCommentThread`
+  allocating consecutive `queue_seq` values across repeated submits in one session and starting a
+  second session's queue at zero**, message append and load order for
   both authors, editing an undelivered message and **being refused on a delivered one and on one
   whose thread is merely outstanding**, stamping
   `addressed_at` and `read_at` without touching `status`, **`short_id` minting surviving a forced
@@ -339,3 +364,11 @@ the walkthrough state machine and payload (phase 3), the MCP tool (phase 4).
   as a decision, minting attempts the insert and inspects the failure the way
   `isSingleFlightViolation` does rather than pre-checking with a racy `SELECT`, and an exhausted
   retry loop widens the handle rather than refusing to save a human's comment.
+- Review pass (round 16): submitting a comment is two writes - `draft` → `queued` and the
+  `queue_seq` allocation - and this phase declared neither together, leaving phase 2 to compose the
+  generic status route with the reorder route. That is two HTTP requests, and a second submit can
+  land between them and take the same number; the integrated tab and the extracted `FileWindow`
+  make two concurrent submits ordinary rather than exotic. Declared as one store function and one
+  route, modelled on `createPendingTurn`'s allocation. Recorded at the same time: no `UNIQUE` index
+  on `(session_id, queue_seq)`, because this table reorders and `foreman_queue_items` shows why a
+  reordering table cannot carry one - so a later change does not add it and break the reorder.

@@ -124,7 +124,7 @@ measurement the plan's two 60% assumptions need.
    sending. `workspaceFileTarget` already parses `path:line`, but `App.tsx` discards `target.line`
    and nothing scrolls the viewer to it (`plan.md`, "Deep-linking to a line is half-built"). This
    phase owns it because this is the phase whose feature is incomplete without it.
-11. **`docs/ui.md`** and a short pointer in **`docs/work-queues.md`** saying what the review queue is
+12. **`docs/ui.md`** and a short pointer in **`docs/work-queues.md`** saying what the review queue is
     *not*, so the two one-at-a-time mechanisms are not confused for each other.
 
 ## Non-goals

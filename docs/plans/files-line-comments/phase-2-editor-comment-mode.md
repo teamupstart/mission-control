@@ -64,14 +64,17 @@ running session.
    as a suggestion and never as a closure.
 8. **Drafts persist from the first keystroke** through phase 1's message-edit route - a draft is an
    ordinary undelivered message row, which is why it is editable - and not in browser state.
-9. **Submitting a comment queues it.** `draft` becomes `queued` and the thread takes the next
-   `queue_seq` for its session. This phase writes that column even though it cannot send: "comments
-   accumulate as an ordered review queue" is `plan.md`'s contract 5, and a phase 3 that opened onto
-   an empty queue would have nothing to drain. Phase 3 reorders and delivers; it does not fill. The
-   integrated tab and the extracted `FileWindow` are two live `FileWorkspace` instances that
-   converge only through the daemon.
-9. **`src/web/styles.css`** additions in the matching section.
-10. **`docs/ui.md`**: the Files workspace section, the new control, the chord row in the shortcuts
+9. **Submitting a comment queues it**, through phase 1's **`queueFileCommentThread` route**.
+   `draft` becomes `queued` and the thread takes the next `queue_seq` for its session, and those
+   are **one call, not two**: composing the status route with the reorder route lets a second
+   submit land between the requests and take the same number. This phase writes that column even
+   though it cannot send: "comments accumulate as an ordered review queue" is `plan.md`'s contract
+   5, and a phase 3 that opened onto an empty queue would have nothing to drain. Phase 3 reorders
+   and delivers; it does not fill. That the integrated tab and the extracted `FileWindow` are two
+   live `FileWorkspace` instances converging only through the daemon is exactly why the single
+   route matters - two windows submitting at once is the ordinary case here, not a corner one.
+10. **`src/web/styles.css`** additions in the matching section.
+11. **`docs/ui.md`**: the Files workspace section, the new control, the chord row in the shortcuts
    table, the in-surface-keys paragraph at `:800-804`, and the Keycaps list at `:806+`.
 
 ## Non-goals
@@ -156,3 +159,9 @@ Later phases may rely on, and must not change:
   had nothing behind it. Rather than move the reply box to phase 3, the write path moved up into
   phase 1, which already owns the tables and now declares one append function for both authors.
   Recorded in phase 1's scope, exit criteria, and handoff.
+- Review pass (round 16): item 9 said the thread "takes the next `queue_seq`" without saying
+  through what. Phase 1 published only a generic status route and a reorder route, so the honest
+  reading was two calls - and two calls is where two `FileWorkspace` instances collide on the same
+  sequence number. Phase 1 now owns a single `queueFileCommentThread` operation and route, and this
+  item calls it. The duplicated item number this scope item introduced when it was added is fixed
+  in the same pass.

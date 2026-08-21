@@ -15,8 +15,14 @@ import { Registry } from "./registry.ts";
 import { observeInjections } from "./injections.ts";
 import { journalScoutPrompt } from "./scouts/prompt-journal.ts";
 import { killLiveLlmRuns, llmRunner } from "./llm/index.ts";
-import { claudeTransportChoice, getLlmConfig, llmRunnerChoice } from "./llm/config.ts";
+import {
+  claudeTransportChoice,
+  codexTransportChoice,
+  getLlmConfig,
+  llmRunnerChoice,
+} from "./llm/config.ts";
 import { configureClaudeRunnerTransport } from "./llm/claude.ts";
+import { configureCodexRunnerTransport } from "./llm/codex.ts";
 import { resolveLlmJobModel, LLM_JOB_SPECS } from "@shared/llm-jobs.ts";
 import { WORKFLOW_PERSONA_MODEL_ENV } from "@shared/workflow.ts";
 import { envVar } from "@shared/harness-runtime.mjs";
@@ -87,6 +93,7 @@ openDb();
 // process and receives this resolved transport over HTTP. Resolve on every run so an API
 // config edit reaches the next call in both processes.
 configureClaudeRunnerTransport(claudeTransportChoice);
+configureCodexRunnerTransport(codexTransportChoice);
 ensureToken();
 // Reclaim expired image drops now, while we know no send is mid-flight. An upload
 // outlives its send on purpose (the agent reads the path on its own schedule), so

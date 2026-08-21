@@ -14,7 +14,11 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { ensureElectronFramework } from "../scripts/ensure-electron-framework.mjs";
+import {
+  electronPayloadPresent,
+  ensureElectronFramework,
+  restoreElectronPayload,
+} from "../scripts/ensure-electron-framework.mjs";
 
 const root = mkdtempSync(join(tmpdir(), "mission-electron-install-"));
 after(() => rmSync(root, { recursive: true, force: true }));
@@ -48,45 +52,74 @@ test("the macOS pretest restores a missing Electron framework link", () => {
   assert.equal(ensureElectronFramework(root, "darwin"), "present");
 });
 
-test("the macOS pretest repairs a missing framework payload before validating it", () => {
+test("the pretest does not invent a framework payload or change other platforms", () => {
   const incomplete = mkdtempSync(join(tmpdir(), "mission-electron-incomplete-"));
-  const incompletePayload = join(
-    incomplete,
-    "node_modules/electron/dist/Electron.app/Contents/Frameworks/Electron Framework.framework/Versions/Current/Electron Framework",
-  );
-  const repairedPackageDirs: string[] = [];
   try {
-    assert.equal(
-      ensureElectronFramework(incomplete, "darwin", {
-        repairRuntime(electronPackageDir) {
-          repairedPackageDirs.push(electronPackageDir);
-          mkdirSync(join(incompletePayload, ".."), { recursive: true });
-          writeFileSync(incompletePayload, "reinstalled framework payload");
-        },
-      }),
-      "repaired",
+    assert.equal(ensureElectronFramework(incomplete, "linux"), "not-applicable");
+    assert.throws(
+      () => ensureElectronFramework(incomplete, "darwin"),
+      /framework payload is incomplete/i,
     );
-    assert.deepEqual(repairedPackageDirs, [join(incomplete, "node_modules", "electron")]);
-    assert.equal(existsSync(incompletePayload), true);
   } finally {
     rmSync(incomplete, { recursive: true, force: true });
   }
 });
 
-test("the pretest fails closed when runtime repair leaves the payload incomplete", () => {
-  const incomplete = mkdtempSync(join(tmpdir(), "mission-electron-incomplete-"));
+/**
+ * What is at stake: the advice this preflight used to print could not clear the state it
+ * diagnosed. `npm install` resolves `electron` against the lockfile, finds the package
+ * directory present and matching, and skips the postinstall that downloads the 192 MB
+ * payload - so a checkout missing only `dist/` stayed broken through any number of installs,
+ * while the error confidently told the reader to run one. A fresh worktree-pool slot reaches
+ * that state routinely, which is how the same failure arrived from a different slot twice.
+ */
+test("the incomplete-payload error names a repair that actually works", () => {
+  const incomplete = mkdtempSync(join(tmpdir(), "mission-electron-advice-"));
   try {
-    assert.equal(ensureElectronFramework(incomplete, "linux"), "not-applicable");
-    assert.throws(
-      () =>
-        ensureElectronFramework(incomplete, "darwin", {
-          repairRuntime() {},
-        }),
-      /framework payload is incomplete.*runtime repair did not restore it/i,
-    );
+    assert.throws(() => ensureElectronFramework(incomplete, "darwin"), (err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
+      // The one repair that clears this: Electron's own installer, which is what npm's
+      // postinstall would have run and which extracts from the local cache when it can.
+      assert.match(message, /node_modules\/electron\/install\.js/);
+      // And it must not send the reader back to the command that demonstrably does nothing
+      // here. Pinned as a negative because the wrong advice is what the incident was.
+      assert.doesNotMatch(
+        message,
+        /run npm install again/i,
+        "npm install does not restore a missing dist/ - the error must not claim it does",
+      );
+      return true;
+    });
   } finally {
     rmSync(incomplete, { recursive: true, force: true });
   }
+});
+
+test("payload presence is reported per platform, and healing is refused without a package", () => {
+  const empty = mkdtempSync(join(tmpdir(), "mission-electron-empty-"));
+  try {
+    // Non-darwin has no framework to guard, so it is vacuously present and nothing is spawned.
+    assert.equal(electronPayloadPresent(empty, "linux"), true);
+    assert.equal(electronPayloadPresent(empty, "darwin"), false);
+    assert.equal(restoreElectronPayload(empty, "linux"), "not-applicable");
+
+    // No `electron` package at all is a DIFFERENT fault from one missing its payload, and
+    // running an installer that is not there is not the answer to it. It must say so rather
+    // than fail as a spawn error the reader has to decode.
+    assert.throws(
+      () => restoreElectronPayload(empty, "darwin"),
+      /Electron is not installed.*run npm install/is,
+    );
+  } finally {
+    rmSync(empty, { recursive: true, force: true });
+  }
+});
+
+test("a complete payload is reported present and needs no healing", () => {
+  // `root` was given a real payload by the restore test above, so this also pins that the
+  // presence probe and the framework check agree about the same tree.
+  assert.equal(electronPayloadPresent(root, "darwin"), true);
+  assert.equal(ensureElectronFramework(root, "darwin"), "present");
 });
 
 test("the pretest refuses every unexpected resolving framework entry", () => {

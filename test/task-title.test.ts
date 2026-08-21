@@ -194,6 +194,90 @@ test("dispatching while titling is in flight uses the model's title, not the heu
   assert.equal(dispatched.task?.title, "Fix flaky worktree cleanup");
 });
 
+/**
+ * What is at stake: the launch used to sit behind the titling call. Dispatch reads
+ * `task.title` to name the terminal home, so an untitled dispatch waited for a headless model
+ * before any worktree was cut or any agent spawned - measured at 4.5-7.7s against the
+ * configured provider, and that wait WAS the delay between pressing Dispatch and an agent
+ * existing. The launch now starts on the heuristic title and the model's renames the session
+ * afterwards, which is the operation `assign` has always used.
+ *
+ * The regression this pins is subtle and would not fail a typecheck: reinstating the await -
+ * or letting a slow provider block the call - silently restores the whole delay while every
+ * other assertion in this file still passes, because the FINAL title is identical either way.
+ * So this asserts on the ordering, not on the outcome.
+ */
+test("an untitled dispatch launches before the model has named it", async () => {
+  setMode("good");
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+
+  // Stand in for the real dispatch, which would shell out to git against a repo that does not
+  // exist. Records WHEN it was reached and under which title.
+  let titleAtDispatch: string | undefined;
+  let dispatchedAt = 0;
+  const inner = tasks as unknown as { dispatcher: { dispatch(id: string): Promise<void> } };
+  inner.dispatcher.dispatch = async (id) => {
+    titleAtDispatch = registry.getTask(id)?.title;
+    dispatchedAt = Date.now();
+  };
+
+  const started = Date.now();
+  const t = tasks.create({
+    repoRoot: "/repo",
+    intent: "hey, could you please look at the flaky worktree cleanup on Reset?",
+    kind: "ship",
+    agent: "claude",
+    // NOT backlog: this is the path the delay was on - an operator pressing Dispatch now.
+    backlog: false,
+  });
+
+  await until(() => dispatchedAt > 0, "the launch to start");
+
+  // The load-bearing claim: the agent was launched under the HEURISTIC title, which means it
+  // was not waiting on the model. The fake still takes a real subprocess to answer, so a
+  // launch that had waited could not have landed this early.
+  assert.match(
+    titleAtDispatch ?? "",
+    /^Hey, Could You Please/,
+    "the launch must not have waited for the model's title",
+  );
+  assert.ok(
+    dispatchedAt - started < 100,
+    `the launch waited ${dispatchedAt - started}ms - it must not sit behind the titling call`,
+  );
+
+  // And the model's title still lands on the card afterwards, so nothing was traded away.
+  await until(() => tasks.get(t.id)?.title === "Fix flaky worktree cleanup", "the model's title");
+});
+
+test("a launch whose model never answers keeps its heuristic name and still runs", async () => {
+  // The failure this protects: with the launch behind the title, a hanging or logged-out
+  // provider delayed every dispatch by the full per-attempt budget. It must now cost nothing.
+  setMode("crash");
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+  let dispatched = false;
+  const inner = tasks as unknown as { dispatcher: { dispatch(id: string): Promise<void> } };
+  inner.dispatcher.dispatch = async () => {
+    dispatched = true;
+  };
+
+  const t = tasks.create({
+    repoRoot: "/repo",
+    intent: "add a dark mode toggle to the settings pane",
+    kind: "ship",
+    agent: "claude",
+    backlog: false,
+  });
+
+  await until(() => dispatched, "the launch to start despite a crashing provider");
+  // Give the failed titling time to settle, then confirm the heuristic name stands.
+  await new Promise((r) => setTimeout(r, 300));
+  assert.match(tasks.get(t.id)?.title ?? "", /^Add a Dark Mode/);
+  setMode("good");
+});
+
 test("dispatching a task removed during titling is refused rather than resurrecting it", async () => {
   setMode("good");
   const tasks = new TaskManager(new Registry());

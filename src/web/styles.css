@@ -21169,6 +21169,83 @@ button.sc-row:focus-visible {
   border-bottom: 1px solid var(--border-soft);
 }
 
+/* ============================================================================
+   Starting strip: dispatched tasks that have no session yet.
+
+   Sits directly under `.line` and takes its gutters from the same two rules, for the
+   same reason - it is a sibling of the strip above it and of the board below, and a
+   third gutter here would misalign it against both. `flex: none` keeps it out of the
+   full-height shells' scroll calculation exactly as `.line` is kept out.
+
+   It has NO fixed height, which is the one place it deliberately parts from `.line`.
+   The Line is always answering something so it holds its band; this is empty almost
+   all of the time and renders nothing at all when it is, so the board must not carry
+   a permanent gap reserved for it.
+   ============================================================================ */
+.starting-strip {
+  flex: none;
+  padding-inline: 4px;
+  margin-bottom: 18px;
+}
+.app-console .starting-strip,
+.app-board .starting-strip {
+  margin-bottom: 0;
+  padding: 10px 22px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.starting-strip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.starting-strip-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--fg) 3%, transparent);
+}
+
+/* Dashed rather than solid, and the only card on the page that is: this is a card for a
+   thing that does not exist yet, and the border says so before any of the words do. */
+.starting-strip-title {
+  color: var(--fg);
+  font-weight: 500;
+}
+
+.starting-strip-meta,
+.starting-strip-status {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.starting-strip-spinner {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 1.5px solid color-mix(in srgb, var(--fg) 25%, transparent);
+  border-top-color: var(--fg);
+  align-self: center;
+  animation: starting-strip-spin 0.8s linear infinite;
+}
+
+@keyframes starting-strip-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Provisioning is a wait, not an animation people asked for. Honour the setting and let the
+   ring sit still - the row still says "Starting…" in words, so nothing is lost. */
+@media (prefers-reduced-motion: reduce) {
+  .starting-strip-spinner { animation: none; }
+}
+
 .line-stage {
   flex: 1 1 0;
   /* Lets a long sentence ellipsize instead of setting the stage's width. Without it a

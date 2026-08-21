@@ -16,7 +16,7 @@ import {
 import { TaskSourcesConfigSchema } from "./task-source.ts";
 import { CHEAP_ACTIONS, DIVERGENCE_KINDS, SKIP_REASONS } from "./foreman.ts";
 import { LLM_JOB_IDS } from "./llm-jobs.ts";
-import { CLAUDE_TRANSPORTS, LLM_RUNNER_IDS } from "./llm.ts";
+import { CLAUDE_TRANSPORTS, CODEX_TRANSPORTS, LLM_RUNNER_IDS } from "./llm.ts";
 import { RASTER_IMAGE_MIME_TYPES } from "./images.ts";
 import { LLM_SPEND_ROLES } from "./llm-spend.ts";
 import { OPEN_TARGET_IDS } from "./open-targets.ts";
@@ -2530,6 +2530,11 @@ export const LlmConfigSchema = z.object({
     .union([z.enum(CLAUDE_TRANSPORTS), z.literal("")])
     .catch("")
     .default(""),
+  /** Codex's headless wire protocol. Same ladder and same read tolerance as above. */
+  codexTransport: z
+    .union([z.enum(CODEX_TRANSPORTS), z.literal("")])
+    .catch("")
+    .default(""),
   /**
    * Per-job model overrides, keyed by `LlmJobId`. Empty or absent means the ladder decides.
    *
@@ -2554,6 +2559,7 @@ export const LlmConfigPatchSchema = z
   .object({
     runner: z.union([z.enum(LLM_RUNNER_IDS), z.literal("")]),
     claudeTransport: z.union([z.enum(CLAUDE_TRANSPORTS), z.literal("")]),
+    codexTransport: z.union([z.enum(CODEX_TRANSPORTS), z.literal("")]),
     models: z
       .record(z.string(), ModelOverrideSchema)
       .refine((m) => Object.keys(m).every((k) => (LLM_JOB_IDS as readonly string[]).includes(k)), {

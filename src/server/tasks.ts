@@ -582,6 +582,9 @@ export class TaskManager {
       workflowEvidenceEnabled: (task) => this.workflowEvidenceEnabledForTask(task),
       worktrees: this.worktrees,
       legacy: this.legacyWorktrees,
+      // The launch no longer waits for a model to name it, so the name can arrive on either
+      // side of the session. This is the "session arrived" half; see `settleTitleName`.
+      onSessionBound: (taskId) => void this.settleTitleName(taskId),
     });
     // A restart severs the in-flight dispatch promises but leaves worktrees + terminal
     // homes on disk. Reconcile every task that still holds resources by checking
@@ -1367,7 +1370,7 @@ export class TaskManager {
     this.registry.upsertTask({
       ...t,
       status: "failed",
-      error: `the Claude Agent SDK host ended before Conductor created pipeline run${expected}`,
+      error: `the managed Agent SDK host ended before Conductor created pipeline run${expected}`,
       sessionId: null,
       updatedAt: Date.now(),
     });
@@ -1845,47 +1848,93 @@ export class TaskManager {
   }
 
   /**
-   * Replace an auto-derived title with a model's, THEN dispatch.
+   * Dispatch NOW, and let the model's title rename what it named.
    *
-   * The ordering is the whole point, and it is why dispatch waits on a cosmetic call.
-   * `Dispatcher.dispatch` reads `task.title` once, at the top, to build the git branch
-   * (`slugify`) and the terminal session name (`sessionLabel`) - both of which are permanent for
-   * the life of the task and neither of which can be renamed afterwards from the dashboard.
-   * Dispatching first and patching the title after would leave every untitled task with a
-   * card whose name no longer matches its branch or its terminal, which is worse than the
-   * rough title this feature exists to replace. The wait is `TITLE_TIMEOUT_MS` per attempt,
-   * and almost always exactly one attempt: a timeout or a missing `claude` makes
-   * `runStructured` return on the first exception rather than retry, so the slow path costs
-   * one budget (~15s) and the answered path costs however long Haiku takes (~7s measured).
-   * Only a parse miss - a clean exit whose output won't validate - takes the second attempt
-   * and so roughly twice the budget. All of it against a dispatch that spends far longer
-   * cutting a worktree and waiting for the agent to boot.
+   * This ordering was the reverse until the wait was measured. Dispatch reads `task.title`
+   * once to build the terminal home name (`sessionLabel`), so naming used to gate the entire
+   * launch behind the titling call, and the justification written here was that neither the
+   * branch nor the terminal "can be renamed afterwards from the dashboard". That premise was
+   * false on both halves:
    *
-   * Never throws: `summariseTaskTitle` reports failure as null, and the title write is
-   * guarded, so a failure of either simply leaves the heuristic title standing - the
-   * dispatch below happens either way.
+   *  - The SESSION can be renamed. `POST /api/sessions/:id/rename` does it, and
+   *    `Registry.renameSession` deliberately carries the task's resource binding across so a
+   *    renamed agent's worktree is not force-removed underneath it. `renameForTask` below is
+   *    that operation applied from a task's title, and `assign` has always called it.
+   *  - The BRANCH is not cut from the title on the path this actually runs. A pooled lease is
+   *    DETACHED - `provisionWorktree` reads its branch back off the tree with `currentBranch`
+   *    and never sees the slug. Only the git FALLBACK arm names a branch, and that arm is
+   *    reached when the pool is disabled or declines.
+   *
+   * What the old ordering bought, then, was a correctly-named branch in the fallback case, at
+   * the price of every dispatch waiting on a headless model call - measured at 4.5-7.7s
+   * against the configured provider, of which only ~0.3-0.6s is the process and none of it is
+   * prompt size. That is the whole of the delay between pressing Dispatch and an agent
+   * existing. The fallback branch keeps the heuristic slug now, which is the same string the
+   * card carried at that instant and is never rewritten afterwards.
+   *
+   * Never throws, and never lets a titling failure cost a launch: the dispatch is started
+   * before the model is asked, so a missing, logged-out or hanging provider costs a rougher
+   * name and nothing else.
    */
   private async autoTitleThenDispatch(id: string, intent: string, backlog: boolean): Promise<void> {
+    // Launch first. A backlog item is not launching at all, so it simply waits for its title.
+    if (!backlog && this.registry.getTask(id)?.status === "dispatching") {
+      void this.dispatcher.dispatch(id);
+    }
     const title = await summariseTaskTitle(intent);
     // Re-read rather than closing over the created task: the operator can cancel or remove a
     // task while the model is thinking, and both of those are decisions this must not undo.
     const cur = this.registry.getTask(id);
     if (!cur) return;
-    if (title && title !== cur.title) {
-      try {
-        this.registry.upsertTask({ ...cur, title, updatedAt: Date.now() });
-      } catch (err) {
-        // A failed write must not cost the dispatch. Throwing here would strand the task in
-        // `dispatching` forever - no error on the card, and `remove` refuses that status -
-        // over a cosmetic rename. The heuristic title stands and we fall through.
-        console.error("[title] could not store the title:", err);
-      }
+    if (!title || title === cur.title) return;
+    try {
+      this.registry.upsertTask({ ...cur, title, updatedAt: Date.now() });
+    } catch (err) {
+      // A failed write must not cost the dispatch. The heuristic title stands, and with it
+      // the name already on the session, which is a consistent pair rather than a broken one.
+      console.error("[title] could not store the title:", err);
+      return;
     }
     if (backlog) return;
-    // A task cancelled mid-title is withdrawn, not merely renamed - launching an agent for it
-    // now would strand a worktree and a terminal home behind a card that says "cancelled".
-    if ((this.registry.getTask(id) ?? cur).status !== "dispatching") return;
-    void this.dispatcher.dispatch(id);
+    // Second half of the rename race. If the session is already bound this renames it now; if
+    // it is not, `onSessionBound` will call the same method the moment it binds. Both paths
+    // are no-ops once the name matches, so whichever runs second settles it and a third call
+    // changes nothing.
+    await this.settleTitleName(id);
+  }
+
+  /**
+   * Bring a launched session's name up to date with its task's title.
+   *
+   * Reached from BOTH sides of a race that has no fixed winner: the model can answer before
+   * the agent's session is discovered, or minutes after it. `autoTitleThenDispatch` calls this
+   * when the title lands, and the Dispatcher's `onSessionBound` calls it when the session
+   * does. Whichever completes second performs the rename; the other finds nothing to do.
+   *
+   * Silent about everything it declines to do, because every one of those is a correct
+   * outcome rather than an error: no task, no session yet, a session the operator has since
+   * renamed by hand onto something else, or a task that never had a model title at all.
+   * `renameForTask` is itself best-effort and leaves the old name standing on refusal - a
+   * cosmetic name must never be able to disturb an agent that is already working.
+   */
+  private async settleTitleName(id: string): Promise<void> {
+    const task = this.registry.getTask(id);
+    if (!task?.sessionId) return;
+    // Only while the task is actually running on that session. A cancelled or completed task
+    // is being torn down, and renaming its terminal home mid-teardown would point `killHome`
+    // at a name that no longer exists.
+    if (task.status !== "dispatching" && task.status !== "running") return;
+    const session = this.registry.getSession(task.sessionId);
+    if (!session) return;
+    try {
+      await this.renameForTask(
+        session,
+        task,
+        (s, name) => rename(s, name, undefined, renameDriverSession),
+      );
+    } catch (err) {
+      console.error(`[title] could not rename the session for ${id}:`, err);
+    }
   }
 
   /**

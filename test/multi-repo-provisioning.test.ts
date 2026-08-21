@@ -19,6 +19,12 @@ import { join } from "node:path";
 const home = mkdtempSync(join(tmpdir(), "mission-multirepo-provision-"));
 // Set before importing anything that resolves the state dir - WORKTREES_DIR hangs off it.
 process.env.HARNESS_HOME = join(home, "state");
+// A binary that exists, so bin resolution cannot be what fails. `resolveBinPath` runs at the
+// very top of `dispatch`, before any of the behaviour under test, so a machine without the
+// real CLI installed - every CI runner - would otherwise fail the base-freezing case below
+// with "agent binary not found" and never reach the refusal it is about. The same reason
+// multi-repo-dispatch.test.ts sets these.
+process.env.MISSION_CLAUDE_BIN = "/bin/echo";
 
 const { WORKTREES_DIR } = await import("../src/server/config.ts");
 const {
@@ -28,9 +34,18 @@ const {
   intentWithRepoManifest,
   releasedTaskResources,
   WorktreeTeardownError,
+  Dispatcher,
 } = await import("../src/server/dispatcher.ts");
+const { Registry } = await import("../src/server/registry.ts");
+const { openDb } = await import("../src/server/db.ts");
+const { mkTask } = await import("./helpers/session-fixture.ts");
 
-after(() => rmSync(home, { recursive: true, force: true }));
+openDb();
+
+after(() => {
+  rmSync(home, { recursive: true, force: true });
+  delete process.env.MISSION_CLAUDE_BIN;
+});
 
 function git(dir: string, ...args: string[]): string {
   return execFileSync("git", ["-C", dir, ...args], { stdio: "pipe" }).toString().trim();
@@ -484,4 +499,62 @@ test("a task releases the trees that came back and keeps the ones still standing
   const none = releasedTaskResources(task, []);
   assert.equal(none.worktreePath, "/wt/t1");
   assert.deepEqual(none.extraRepos.map((e) => e.worktreePath), ["/wt/t1-1", "/wt/t1-2"]);
+});
+
+// ---- every repository's base is frozen in FRONT of the first tree -----------------------
+
+test("a repository whose base cannot be frozen fails the dispatch before any tree is taken", async () => {
+  // The all-or-nothing promise, moved one step earlier. `provisionAll` already unwound the
+  // trees it had taken when a later repository failed, but the unwind is only ever the
+  // second-best outcome: it returns a pool slot that was leased, reset and handed out for a
+  // task that never ran. Freezing every base first makes the common failure - one
+  // repository's origin being unreachable - cost an error and nothing else.
+  const api = mkRepo("frozen-first-api");
+  const web = mkRepo("frozen-first-web");
+  // A configured origin that cannot be fetched. NOT a missing origin, which is the one
+  // case that legitimately falls back to local HEAD.
+  git(web, "remote", "add", "origin", join(home, "no-such-repository"));
+
+  const registry = new Registry();
+  registry.upsertTask(
+    mkTask({
+      id: "frozen-first",
+      status: "dispatching",
+      repoRoot: api,
+      extraRepos: [
+        {
+          repoRoot: web,
+          worktreePath: null,
+          branch: null,
+          provider: null,
+          worktreeLeaseId: null,
+          baseSha: null,
+          prUrl: null,
+          prState: null,
+          mergedAt: null,
+        },
+      ],
+    }),
+  );
+  const dispatcher = new Dispatcher(registry, async () => {}, {
+    // Terminal, so no embedded supervisor is required. Nothing spawns either way: the
+    // refusal lands before provisioning, which is the whole assertion.
+    resolveRuntime: () => "terminal",
+  });
+
+  await dispatcher.dispatch("frozen-first");
+
+  const task = registry.getTask("frozen-first")!;
+  assert.equal(task.status, "failed");
+  assert.match(task.error ?? "", /could not freeze .*remote default branch/);
+  // Not one tree, not one branch, in either repository - including the primary, whose own
+  // base resolved perfectly well.
+  assert.equal(task.worktreePath, null);
+  assert.equal(existsSync(worktreeSlotPath("frozen-first", 0)), false);
+  assert.equal(existsSync(worktreeSlotPath("frozen-first", 1)), false);
+  // The primary repo still has exactly one worktree registration: its own checkout.
+  assert.equal(
+    git(api, "worktree", "list", "--porcelain").split("\n").filter((l) => l.startsWith("worktree ")).length,
+    1,
+  );
 });

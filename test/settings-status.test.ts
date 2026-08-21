@@ -105,7 +105,7 @@ const ALL_OFF: SettingsStatus = {
     present: false,
     observing: 0,
     observedRepoKeys: [],
-    launchRuntime: "claude-sdk",
+    launchRuntime: "agent-sdk",
   },
 };
 
@@ -205,7 +205,7 @@ test("the suppression compares every field, so no change can be dropped in silen
       ...base,
       pipelines: {
         ...base.pipelines,
-        launchRuntime: base.pipelines.launchRuntime === "terminal" ? "claude-sdk" : "terminal",
+        launchRuntime: base.pipelines.launchRuntime === "terminal" ? "agent-sdk" : "terminal",
       },
     },
     "pipelines.observedRepoKeys": {

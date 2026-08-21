@@ -1,0 +1,667 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pipeline step drill-down: what actually happened in each phase</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1c2733; --muted: #5b6a7a; --border: #d8dee6;
+    --panel: #f5f7fa; --accent: #2563c4; --code-bg: #f0f3f7;
+    --good: #1d8a5f; --bad: #c0392b; --new: #7a3fc4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0e1116; --fg: #e7ebf1; --muted: #939eae; --border: #232a33;
+      --panel: #14181e; --accent: #4a9eff; --code-bg: #171c23;
+      --good: #35c08a; --bad: #ff7b6b; --new: #b98bff;
+    }
+  }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0 auto; max-width: 900px; padding: 40px 24px 80px;
+    background: var(--bg); color: var(--fg);
+    font: 15.5px/1.62 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+  h1 { font-size: 26px; line-height: 1.25; margin: 0 0 14px; }
+  h2 { font-size: 19px; margin: 40px 0 10px; padding-top: 14px; border-top: 1px solid var(--border); }
+  h3 { font-size: 15.5px; margin: 26px 0 8px; }
+  .lead { color: var(--muted); }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code {
+    font: 12.5px/1.5 ui-monospace, "SF Mono", Menlo, monospace;
+    background: var(--code-bg); border: 1px solid var(--border);
+    border-radius: 4px; padding: 1px 5px;
+  }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px;
+    padding: 14px 16px; overflow-x: auto;
+  }
+  pre code { background: none; border: none; padding: 0; }
+  ul > li, ol > li { margin: 6px 0; }
+  .tablewrap { overflow-x: auto; margin: 16px 0; border: 1px solid var(--border); border-radius: 8px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { background: var(--panel); font-weight: 600; white-space: nowrap; }
+  tr:last-child td { border-bottom: none; }
+  td.no { color: var(--bad); font-weight: 600; white-space: nowrap; }
+  .figure {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 16px; margin: 20px 0; overflow-x: auto;
+  }
+  .figure figcaption { color: var(--muted); font-size: 13px; margin-top: 10px; }
+  .note {
+    border-left: 3px solid var(--accent); background: var(--panel);
+    padding: 10px 14px; border-radius: 0 8px 8px 0; margin: 16px 0;
+  }
+  .warn { border-left-color: var(--bad); }
+  svg text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  .sv-box { fill: var(--bg); stroke: var(--border); }
+  .sv-group { fill: none; stroke: var(--border); stroke-dasharray: 4 4; }
+  .sv-new { fill: var(--bg); stroke: var(--new); stroke-width: 1.6; }
+  .sv-t { fill: var(--fg); font-size: 11.5px; }
+  .sv-tb { fill: var(--fg); font-size: 12px; font-weight: 700; }
+  .sv-m { fill: var(--muted); font-size: 10.5px; }
+  .sv-gl { fill: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: .05em; }
+  .sv-nl { fill: var(--new); font-size: 10.5px; font-weight: 700; }
+</style>
+</head>
+<body>
+
+<h1>Pipeline step drill-down: what actually happened in each phase</h1>
+
+<p class="lead">The Pipelines tab draws 24 steps and one word each. Every decision, finding,
+retry, fix, dispatch and human intervention the engine recorded is either sitting unread in the
+worktree or sitting unrendered in Mission Control's own SQLite. This plan makes each step and
+phase in the strip clickable, and gives the section below the strip the job of showing what that
+step actually did - on the on-demand channel that already exists for exactly this, so the
+projection wire does not grow by a byte.</p>
+
+<p>This page renders <code>docs/plans/pipeline-step-drilldown/plan.md</code>, which stays the
+source of truth. Facts below were verified against this checkout, against ai-conductor's engine
+source, and against the live <code>deploy-health-and-rds-connectivity</code> run in
+<code>jordan-mance-devx-uv-demo</code> - a tier-M technical run of 24 steps, 280 ledger events
+and 36 audit records, halted in <code>build_review</code>.</p>
+
+<h2>The problem, stated exactly</h2>
+
+<p>The tab works. It is a <em>status</em> projection and that is all it is:
+<code>Explore Skipped</code>, <code>Plan Done</code>, <code>Build Review Running</code>. Click
+anything in the strip and nothing happens, because nothing is clickable.</p>
+
+<div class="tablewrap">
+<table>
+  <thead><tr><th>What the engine recorded</th><th>Where it is</th><th>Shown</th></tr></thead>
+  <tbody>
+    <tr><td>The review finding that halted the run - <code>out-of-plan-change</code>, a 90-word rationale, four <code>file:line</code> evidence locations</td><td><code>.pipeline/build-review.json</code></td><td class="no">no</td></tr>
+    <tr><td>Each rubric's verdict - <code>scope FAIL</code>, <code>rootCause PASS</code>, <code>completeness PASS</code>, <code>tautology skipped: disabled</code></td><td>same file</td><td class="no">no</td></tr>
+    <tr><td>The engine's own prose account of a finished step - 3,573 characters for <code>acceptance_specs</code>, including a disposition table over 58 acceptance criteria</td><td><code>step_completed.tail</code> in the event ledger</td><td class="no">no</td></tr>
+    <tr><td>Why <code>build</code> retried, eleven times, each with its own reason, and that it escalated <code>sonnet/medium</code> → <code>sonnet/high</code></td><td><code>step_retry</code>; <code>retry</code> in the audit trail</td><td class="no">no</td></tr>
+    <tr><td>Why <code>test_suite</code> sent the run back to <code>build</code>, three times, reason quoted</td><td><code>kickback.evidence</code>; audit trail</td><td class="no">no</td></tr>
+    <tr><td><strong>That a human was asked for a decision four times, and what they were asked</strong></td><td><code>intervention</code> in the audit trail</td><td class="no">no</td></tr>
+    <tr><td><strong>That a human cleared a halt five times, and when</strong></td><td><code>halt_cleared</code> in the audit trail</td><td class="no">no</td></tr>
+    <tr><td>Per-dispatch model, tokens, <code>costUsd</code>, <code>numTurns</code>, <code>durationMs</code> - 34 of them</td><td><code>provider_attempt.tokenUsage</code></td><td>one summed chip</td></tr>
+    <tr><td>20 build tasks, each with a status and the files it touched</td><td><code>.pipeline/task-status.json</code></td><td class="no">no</td></tr>
+    <tr><td>A remediation disposition with a four-clause rationale citing engine source lines</td><td><code>.pipeline/remediation.json</code></td><td class="no">no</td></tr>
+    <tr><td>Narrative of six fixes, including "fixed a real bug: Alembic was building a fresh engine from a credential-less URL"</td><td><code>.pipeline/build-outcome.json</code> <code>note[]</code></td><td class="no">no</td></tr>
+    <tr><td>The kickback ledger: gate, count, cumulative, <code>lastReason</code></td><td><code>.pipeline/kickback-ledger.json</code></td><td class="no">no</td></tr>
+    <tr><td>The plan, stories, ADRs, coherence mapping and conflict report DECIDE authored - 88 kB over 12 files</td><td><code>.docs/**</code></td><td class="no">no</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Three of those rows are worse than merely missing.</p>
+
+<div class="note warn">
+<p><strong>The build_review verdict is unreachable.</strong> This run halted in
+<code>build_review</code>, and <code>build_review</code> is one of the steps that writes no
+<code>gates/&lt;step&gt;.json</code>. The Gate verdicts section - the tab's only evidence surface
+- is therefore silent about the one step that stopped the run. The strip says
+<code>Build Review Running</code> and the reader below it has nothing to add.</p>
+</div>
+
+<div class="note warn">
+<p><strong>The event ledger is written and never read.</strong> <code>pipeline_events</code> in
+<code>src/server/db.ts</code> is populated by both observation paths, is append-only, converges
+the file tail and the push plugin onto one row per event, and stores each record verbatim.
+<code>pipelineEvents()</code> and <code>countPipelineEvents()</code> have no callers outside
+<code>db.ts</code> and <code>test/</code>. No route serves them; no component reads them. It is,
+by the integration's own documentation, <em>"the only thing this integration stores that is not
+re-derivable from the engine's files"</em> - and nothing has ever displayed it. Which also means
+the visualizer plugin currently buys an operator a faster tab and nothing else: it is the only
+path that can deliver the 27 event kinds the engine never writes to disk, including
+<code>gate_verdict</code> itself, and there is no surface on which any of them appear.</p>
+</div>
+
+<div class="note warn">
+<p><strong>The operator's own history is invisible.</strong>
+<code>.pipeline/audit-trail/events.jsonl</code> carries 36 records for this run, each stamped
+with <code>origin</code> - the step - and <code>phase</code>: 13 <code>gate_pass</code>, 11
+<code>retry</code>, 3 <code>kickback</code>, 5 <code>halt_cleared</code> and 4
+<code>intervention</code>. Nothing reads it, in either repository. The engine's own reference
+notes it has no TypeScript reader at all; only the <code>retro</code> skill consults it, by
+prose.</p>
+</div>
+
+<h2>What this plan does</h2>
+
+<p>Three changes, no new storage, no new wire on the projection.</p>
+
+<ol>
+  <li><strong>Make the strip clickable.</strong> <code>StageCard</code> and
+    <code>ReviewerRow</code> in <code>src/web/workflows/pipeline-bits.tsx</code> already take
+    <code>onOpen</code> and <code>openLabel</code>, already render them as a real
+    <code>&lt;button&gt;</code> wrapping the card's own title, and the workflow run monitor
+    already uses them. <code>PipelineRunView</code> is the one caller that passes neither.
+    Passing them changes no shared leaf, which is what the Runs page contract requires:
+    <em>"a new prop for one caller is a modification of the other's surface."</em> There is no
+    new prop.</li>
+  <li><strong>Turn "Gate verdicts" into a step reader.</strong> The section below the strip
+    becomes where a selected step is read, and the strip's clicks focus it. This is the shape the
+    workflow surface already has - <code>WorkflowRuns</code> clicks a stage or node in its strip
+    and remounts the <code>Review worklist</code> section below with that node selected
+    (<code>WorkflowRuns.tsx:2101-2163</code>). Same grammar, second surface, no new interaction
+    idiom.</li>
+  <li><strong>Serve one step's evidence on the channel that already exists for it.</strong>
+    <code>PipelineRunDetail</code> is fetched on demand for the run somebody has open, precisely
+    so evidence never rides the projection. A sibling read,
+    <code>GET /api/pipelines/step</code>, answers for one step. The projection is untouched, so
+    the 2 kB-per-run budget <code>test/pipeline-sse.test.ts</code> pins is untouched too.</li>
+</ol>
+
+<p>The step is also addressable:
+<code>#/runs/pipeline/&lt;repoKey&gt;/&lt;slug&gt;/&lt;step&gt;</code>, built through
+<code>pipelineRunRoute</code>/<code>pipelineRunHash</code> in <code>useWorkflowRoute.ts</code> as
+the route contract requires, never by hand. A halted run's finding then has a link somebody can
+paste.</p>
+
+<h2>Data flow: what gains a reader</h2>
+
+<p>Nothing new is written and no new producer appears. What changes is that two existing ledgers
+gain their first reader, and the on-demand read widens from one file to a declared set.</p>
+
+<figure class="figure">
+<svg width="964" height="576" viewBox="0 0 964 576" role="img"
+     aria-label="Read topology. The engine worktree holds conduct-state.json, gates, events.jsonl, an audit-trail events ledger, five rich .pipeline JSON files and .docs. Today conduct-state feeds the projection and gates feed the run-detail route, both reaching the strip; events.jsonl and the plugin push feed the pipeline_events table, which has no reader; the audit trail, the rich files and .docs are unread. The change adds a step-detail route that reads pipeline_events, the audit trail, the rich files and .docs, and feeds a new step reader that the strip's clicks focus.">
+  <defs>
+    <marker id="ahm" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--muted)"/>
+    </marker>
+    <marker id="ahn" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--new)"/>
+    </marker>
+  </defs>
+
+  <rect class="sv-group" x="8" y="30" width="248" height="492" rx="10"/>
+  <text class="sv-gl" x="16" y="22">AI-CONDUCTOR WORKTREE</text>
+  <rect class="sv-group" x="344" y="30" width="256" height="492" rx="10"/>
+  <text class="sv-gl" x="352" y="22">MISSION CONTROL DAEMON</text>
+  <rect class="sv-group" x="688" y="30" width="268" height="492" rx="10"/>
+  <text class="sv-gl" x="696" y="22">PIPELINES TAB (BROWSER)</text>
+
+  <!-- engine -->
+  <rect class="sv-box" x="24" y="56" width="216" height="32" rx="6"/>
+  <text class="sv-t" x="34" y="76">.pipeline/conduct-state.json</text>
+
+  <rect class="sv-box" x="24" y="100" width="216" height="32" rx="6"/>
+  <text class="sv-t" x="34" y="120">.pipeline/gates/*.json</text>
+
+  <rect class="sv-box" x="24" y="196" width="216" height="32" rx="6"/>
+  <text class="sv-t" x="34" y="216">.pipeline/events.jsonl</text>
+
+  <rect class="sv-box" x="24" y="248" width="216" height="42" rx="6"/>
+  <text class="sv-t" x="34" y="266">audit-trail/events.jsonl</text>
+  <text class="sv-nl" x="34" y="282">no reader, in either repo</text>
+
+  <rect class="sv-box" x="24" y="306" width="216" height="118" rx="6"/>
+  <text class="sv-tb" x="34" y="324">.pipeline/ judgement files</text>
+  <text class="sv-m" x="34" y="342">build-review.json</text>
+  <text class="sv-m" x="34" y="358">task-status.json</text>
+  <text class="sv-m" x="34" y="374">build-outcome.json</text>
+  <text class="sv-m" x="34" y="390">remediation.json</text>
+  <text class="sv-m" x="34" y="406">kickback-ledger.json</text>
+  <text class="sv-nl" x="152" y="324">unread</text>
+
+  <rect class="sv-box" x="24" y="440" width="216" height="48" rx="6"/>
+  <text class="sv-tb" x="34" y="459">.docs/**</text>
+  <text class="sv-m" x="34" y="476">plan, stories, ADRs, coherence</text>
+  <text class="sv-nl" x="152" y="459">unread</text>
+
+  <!-- daemon -->
+  <rect class="sv-box" x="360" y="56" width="224" height="32" rx="6"/>
+  <text class="sv-t" x="370" y="76">projection · pipeline_runs</text>
+
+  <rect class="sv-box" x="360" y="100" width="224" height="32" rx="6"/>
+  <text class="sv-t" x="370" y="120">GET /api/pipelines/run</text>
+
+  <rect class="sv-box" x="360" y="150" width="224" height="32" rx="6"/>
+  <text class="sv-t" x="370" y="170">POST /ingest/conductor</text>
+
+  <rect class="sv-box" x="360" y="200" width="224" height="42" rx="6"/>
+  <text class="sv-t" x="370" y="218">pipeline_events · SQLite</text>
+  <text class="sv-m" x="370" y="234">append-only, 2000/run</text>
+
+  <rect class="sv-new" x="360" y="360" width="224" height="52" rx="6"/>
+  <text class="sv-tb" x="370" y="380">GET /api/pipelines/step</text>
+  <text class="sv-nl" x="370" y="398">new · one step, on demand</text>
+
+  <!-- ui -->
+  <rect class="sv-box" x="704" y="80" width="236" height="52" rx="6"/>
+  <text class="sv-tb" x="714" y="100">phase + step strip</text>
+  <text class="sv-m" x="714" y="118">now clickable</text>
+
+  <rect class="sv-new" x="704" y="360" width="236" height="52" rx="6"/>
+  <text class="sv-tb" x="714" y="380">step reader</text>
+  <text class="sv-nl" x="714" y="398">new · timeline, history, findings</text>
+
+  <!-- existing edges -->
+  <g stroke="var(--muted)" stroke-width="1.4" fill="none">
+    <path d="M 240 72 L 352 72" marker-end="url(#ahm)"/>
+    <path d="M 240 116 L 352 116" marker-end="url(#ahm)"/>
+    <path d="M 240 212 L 352 214" marker-end="url(#ahm)"/>
+    <path d="M 472 182 L 472 194" marker-end="url(#ahm)"/>
+    <path d="M 584 72 L 696 94" marker-end="url(#ahm)"/>
+    <path d="M 584 116 L 696 112" marker-end="url(#ahm)"/>
+  </g>
+  <text class="sv-m" x="252" y="206">file tail</text>
+  <text class="sv-m" x="482" y="193">push</text>
+  <text class="sv-m" x="600" y="64">SSE · 2 kB/run</text>
+  <text class="sv-m" x="600" y="136">gate chips</text>
+
+  <!-- new edges -->
+  <g stroke="var(--new)" stroke-width="1.8" fill="none">
+    <path d="M 472 242 L 472 360" marker-end="url(#ahn)"/>
+    <path d="M 240 268 L 300 268 L 300 372 L 352 372" marker-end="url(#ahn)"/>
+    <path d="M 240 366 L 352 380" marker-end="url(#ahn)"/>
+    <path d="M 240 464 L 352 398" marker-end="url(#ahn)"/>
+    <path d="M 584 386 L 696 386" marker-end="url(#ahn)"/>
+    <path d="M 822 132 L 822 360" marker-end="url(#ahn)"/>
+  </g>
+  <text class="sv-nl" x="482" y="306">its first reader</text>
+  <text class="sv-nl" x="832" y="252">click a step</text>
+
+  <!-- legend -->
+  <line x1="24" y1="548" x2="64" y2="548" stroke="var(--muted)" stroke-width="1.4"/>
+  <text class="sv-m" x="72" y="552">exists today</text>
+  <line x1="200" y1="548" x2="240" y2="548" stroke="var(--new)" stroke-width="1.8"/>
+  <text class="sv-m" x="248" y="552">added by this plan</text>
+</svg>
+<figcaption>The purple edges are the whole change: four sources that exist and have no consumer
+become the input to one new on-demand read, and the strip gains a click that asks for it. The
+grey edges - the projection, the gate read, the tail and the push - are not touched.</figcaption>
+</figure>
+
+<h2>What a step reader shows</h2>
+
+<p>Five bands, ordered the way a person reads a step that went wrong. Every band degrades to
+absent: a step with nothing recorded renders a sentence saying so, which is a real state for a
+step that has not started.</p>
+
+<h3>1. Timeline</h3>
+
+<p>From <code>pipeline_events</code>, filtered to this step. Per row: the engine's own
+<code>type</code>, its <code>ts</code>, and the fields that kind carries. The kinds worth naming,
+all observed in the live ledger:</p>
+
+<ul>
+  <li><code>step_started</code>, <code>step_completed</code> (<code>status</code>,
+    <code>tail</code>), <code>step_failed</code> (<code>error</code>,
+    <code>retryCount</code>)</li>
+  <li><code>step_retry</code>: <code>attempt</code>/<code>maxAttempts</code>,
+    <code>reason</code>, <code>resolvedBefore</code>→<code>resolvedAfter</code>,
+    <code>escalatedModel</code>, <code>escalatedEffort</code></li>
+  <li><code>provider_attempt</code>: <code>provider</code>, <code>model</code>, and when
+    <code>invoked</code> is true a <code>tokenUsage</code> carrying <code>input</code>,
+    <code>output</code>, <code>cacheRead</code>, <code>cacheCreation</code>,
+    <code>costUsd</code>, <code>numTurns</code>, <code>durationMs</code></li>
+  <li><code>build_progress</code> (<code>resolved</code>/<code>total</code>,
+    <code>tickReason</code>, <code>headMoved</code>, <code>commitCount</code>),
+    <code>build_no_progress</code>, <code>build_stall</code> (<code>reason</code>)</li>
+  <li><code>kickback</code> (<code>from</code>, <code>to</code>, <code>evidence</code>,
+    <code>count</code>), <code>loop_halt</code> (<code>reason</code>,
+    <code>prUrl</code>)</li>
+  <li><code>parallel_started</code>/<code>parallel_completed</code> (<code>branches</code>),
+    <code>deprecated_step</code> (<code>adr</code>), <code>session_policy</code>
+    (<code>reason</code>), <code>acceptance_red</code> (<code>state</code>)</li>
+  <li><code>build_review_rubric_started</code> / <code>_result</code>
+    (<code>verdict</code>) / <code>_skipped</code> / <code>_prompt</code> /
+    <code>_infrastructure_failure</code> (<code>reason</code>),
+    <code>build_review_repair_context</code> (<code>disposition</code>),
+    <code>build_review_cache_hit</code></li>
+  <li><strong><code>tier_skip</code> (<code>step</code>, <code>tier</code>),
+    <code>config_skip</code>, <code>mode_skip</code> (<code>mode</code>, <code>reason</code>),
+    <code>when_skip</code> (<code>expression</code>, <code>undefinedKey</code>).</strong> All
+    four are <code>persist: true</code> in the engine's own <code>EVENT_SINKS</code>, so
+    <code>Skipped</code> can finally say <em>why</em>: tier S, track technical, disabled in
+    config, or a <code>when:</code> expression that evaluated false.</li>
+</ul>
+
+<p>An unrecognised kind still draws a row: its <code>type</code>, its <code>ts</code>, and its
+record. Mission Control keeps no copy of the engine's event union - about 90 members,
+unversioned, TypeScript-only - and the ledger already stores every kind verbatim for that reason.
+The reader inherits the same posture, so a conductor release that adds an event kind adds a row
+rather than breaking a page.</p>
+
+<h3>2. Gate history and operator actions</h3>
+
+<p>From <code>.pipeline/audit-trail/events.jsonl</code>, whose <code>AuditRecord</code> shape is
+<code>{ origin, phase, event, reason?, cause?, attempt?, at, … }</code> - <code>origin</code>
+<strong>is</strong> the step, so this ledger needs no attribution rule at all.</p>
+
+<p>It answers four questions nothing else can:</p>
+
+<ul>
+  <li><strong>Every gate occurrence, not just the last one.</strong> <code>gate_verdict</code> is
+    <code>persist: false</code> in <code>EVENT_SINKS</code>, so it never reaches
+    <code>events.jsonl</code>, and <code>gates/&lt;step&gt;.json</code> is overwritten on each
+    check. The audit trail's <code>gate_pass</code>/<code>gate_fail</code> records are the only
+    durable per-occurrence history a run has. For this run that is 13 <code>gate_pass</code>
+    records where the gate files show four current verdicts.</li>
+  <li><strong>Why a human was asked.</strong> 4 × <code>intervention</code>, <code>cause</code>
+    carrying the question verbatim - including <em>"Need user decision:
+    <code>.ai-conductor/config.yml</code> is missing project-wide … test_suite verification
+    cannot proceed"</em>.</li>
+  <li><strong>That a human answered.</strong> 5 × <code>halt_cleared</code> with
+    <code>cause: "operator"</code> and a timestamp. The tab today shows the <em>current</em> halt
+    and says nothing about the five a person already cleared.</li>
+  <li><strong>Retries and kickbacks with their reasons</strong>, cross-checkable against the
+    event ledger.</li>
+</ul>
+
+<h3>3. Outcome</h3>
+
+<p>The step's own account of itself, which is the highest-value thing in the whole inventory and
+is pure markdown the engine already wrote:</p>
+
+<ul>
+  <li><code>step_completed.tail</code>, rendered through the existing <code>Markdown</code>
+    component. For <code>acceptance_specs</code> in the live run this is a disposition pass over
+    58 acceptance criteria with a summary table; for <code>build</code> it is a bulleted list of
+    the six fixes that landed, naming a real bug that was found and how it was verified.</li>
+  <li>the <code>step_retry</code> reason and escalation, when the step went round again</li>
+  <li>the gate verdict for the step, from the <code>gates</code> array
+    <code>PipelineRunDetail</code> already carries</li>
+  <li>kickbacks in and out, with <code>evidence</code> quoted</li>
+</ul>
+
+<h3>4. Findings</h3>
+
+<p>Read from the engine's files at request time, per step, with a declared reader per file. Each
+is versioned or parsed by a named engine symbol, so the reader has something stable to key
+on:</p>
+
+<div class="tablewrap">
+<table>
+  <thead><tr><th>Step</th><th>File</th><th>What is read</th></tr></thead>
+  <tbody>
+    <tr><td><code>build_review</code></td><td><code>.pipeline/build-review.json</code> (<code>aggregateVersion: "v1"</code>)</td><td><code>verdict</code>, <code>coverage</code>, per-rubric <code>findings[]</code>: <code>concernKind</code>, <code>summary</code>, <code>evidenceLocations[]</code>, <code>anchor</code></td></tr>
+    <tr><td><code>build_review</code></td><td><code>.pipeline/build-review-dispositions.json</code> (<code>version: "v1"</code>)</td><td>accepted risk: <code>summary</code>, <code>rationale</code>, <code>operator</code>, <code>acceptedAt</code></td></tr>
+    <tr><td><code>build</code></td><td><code>.pipeline/task-status.json</code></td><td><code>plan_ref</code> and per-task <code>id</code>, <code>name</code>, <code>status</code>, <code>files[]</code></td></tr>
+    <tr><td><code>build</code></td><td><code>.pipeline/build-outcome.json</code> (<code>version: 1</code>)</td><td>per-lap <code>outcome</code>, <code>terminalOutcome</code>, <code>gate</code>, <code>rung</code> (<code>model</code>/<code>effort</code>), <code>treeBefore</code>→<code>treeAfter</code>, <code>note[]</code>, <code>category</code></td></tr>
+    <tr><td><code>build</code></td><td><code>.pipeline/audit-trail/batch-N/review.json</code></td><td>the code-review evaluator's verdict and findings per batch</td></tr>
+    <tr><td><code>test_suite</code></td><td><code>.pipeline/test-suite-evidence.json</code> (<code>version: 3</code>)</td><td><code>outcome</code>, <code>reason</code>, <code>command</code>, <code>durationMs</code>, <code>exitCode</code>, bounded <code>stdout</code>/<code>stderr</code></td></tr>
+    <tr><td><code>acceptance_specs</code></td><td><code>acceptance-specs-red.json</code>, <code>acceptance-specs-dispositions.md</code></td><td>RED evidence and the per-criterion dispositions</td></tr>
+    <tr><td><code>remediate</code></td><td><code>.pipeline/remediation.json</code></td><td><code>dispositions[]</code>: <code>id</code>, <code>disposition</code>, <code>category</code>, <code>rationale</code>, <code>tasks[]</code></td></tr>
+    <tr><td><code>prd_audit</code></td><td><code>.pipeline/prd-audit.md</code></td><td>the <code>FR / Verdict / Gap-class / Evidence / Accepted?</code> table</td></tr>
+    <tr><td><code>manual_test</code></td><td><code>.pipeline/manual-test-results.md</code></td><td>the latest <code>## Attempt N</code> region</td></tr>
+    <tr><td><code>architecture_review_as_built</code></td><td><code>.pipeline/architecture-review-as-built.md</code></td><td>the <code>Verdict:</code> line and body</td></tr>
+    <tr><td><code>assess</code></td><td><code>.pipeline/assessment/cto-*.md</code></td><td>the nine specialist reports, listed</td></tr>
+    <tr><td>any step</td><td><code>.pipeline/verify-claims-&lt;step&gt;.md</code></td><td>the assumption ledger: claims with confidence, load-bearing assumptions, operator approval status</td></tr>
+    <tr><td>any gate</td><td><code>.pipeline/kickback-ledger.json</code> (<code>version: 1</code>)</td><td>per-gate <code>count</code>, <code>cumulative</code>, <code>lastReason</code>, <code>priorVerdict</code></td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>A file whose version this build does not know is reported as <em>recorded, and not readable by
+this build</em> rather than as an error or as absent. That is the same tolerance rule the step
+table already runs under, applied to a second frozen contract. A file that is simply not there -
+and most of these are optional, tier-dependent or skill-dependent;
+<code>verify-claims-*.md</code>, <code>summary.json</code> and <code>fr-coverage.md</code> are
+all absent from the live run - contributes no band.</p>
+
+<h3>5. Artifacts</h3>
+
+<p>The files the step authored, as a list of path, size and modified time - not inlined. Resolved
+from a frozen copy of ai-conductor's own <code>STEP_ARTIFACT_CONTRACTS</code>
+(<code>src/conductor/src/engine/artifacts.ts</code>), which is a
+<code>Record&lt;StepName, readonly ArtifactPatternContract[]&gt;</code> and the engine's authored
+source of truth for exactly this question:</p>
+
+<div class="tablewrap">
+<table>
+  <thead><tr><th>Step</th><th>Pattern</th><th>Scope</th></tr></thead>
+  <tbody>
+    <tr><td><code>plan</code></td><td><code>.docs/plans/*.md</code></td><td>feature, plan-stem</td></tr>
+    <tr><td><code>stories</code></td><td><code>.docs/stories/**/*.md</code></td><td>feature, normalized-stem</td></tr>
+    <tr><td><code>prd</code></td><td><code>.docs/specs/*.md</code></td><td>feature, normalized-stem</td></tr>
+    <tr><td><code>conflict_check</code></td><td><code>.docs/conflicts/*.md</code></td><td>feature</td></tr>
+    <tr><td><code>coherence_check</code></td><td><code>.docs/coherence/*.md</code></td><td>feature, plan-stem</td></tr>
+    <tr><td><code>architecture_review</code></td><td><code>.docs/decisions/architecture-review-*.md</code>, <code>.docs/decisions/adr-*.md</code></td><td>feature, repository</td></tr>
+    <tr><td><code>architecture_diagram</code></td><td><code>.docs/architecture/*.md</code></td><td>repository</td></tr>
+    <tr><td><code>assess</code></td><td><code>.docs/decisions/technical-assessment-*.md</code></td><td>repository</td></tr>
+    <tr><td><code>retro</code></td><td><code>.docs/retros/*.md</code></td><td>feature</td></tr>
+    <tr><td><code>manual_test</code>, <code>prd_audit</code>, <code>architecture_review_as_built</code></td><td><code>.pipeline/*.md</code></td><td>run</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Opened rather than inlined, because the plan alone is 25 kB and the existing file viewer
+(<code>FileWorkspace</code> / <code>FileWindow</code>, reached through
+<code>readSessionFile</code>'s containment check) is already the surface for reading a file in a
+checkout. Copying that job into the step reader would be a second file viewer.</p>
+
+<div class="note">
+<p>Two caveats, stated rather than discovered:</p>
+<ul>
+  <li><strong>The contract is the engine's <em>verification</em> map, not an exhaustive output
+    list.</strong> Steps whose entry is empty still write things.
+    <code>.docs/complexity/&lt;slug&gt;.md</code> (<code>Tier: S|M|L</code>),
+    <code>.docs/track/&lt;slug&gt;.md</code> (<code>Track: product|technical</code>) and
+    <code>.docs/intake/&lt;plan-stem&gt;.md</code> (<code>Source-Ref:</code>,
+    <code>Owner:</code>) are the engineer loop's markers, each with a named parser
+    (<code>parseComplexityTier</code>, <code>parseTrack</code>,
+    <code>parseIntakeSourceRef</code>), and they belong to <code>complexity</code>,
+    <code>explore</code> and intake respectively. They are worth listing under those steps
+    precisely because the frozen contract does not.</li>
+  <li><strong>Several patterns are repository-scoped.</strong> An ADR list under
+    <code>architecture_review</code> is the repository's ADRs, not only this feature's. The
+    engine's contract marks the scope, so the reader carries the label rather than implying the
+    feature authored all of them.</li>
+</ul>
+</div>
+
+<h2>How an event reaches a step</h2>
+
+<p>This is the correctness core of the feature, and a naive rule gets it wrong. In the live
+ledger, 217 of 280 records carry an explicit <code>step</code>. The other 63 do not, and they are
+not noise - they include every <code>build_review_*</code> record and every
+<code>kickback</code>.</p>
+
+<figure class="figure">
+<svg width="900" height="332" viewBox="0 0 900 332" role="img"
+     aria-label="Attribution rules. A ledger record with a step field is attributed to that step. Otherwise a declared table maps build_review prefixed kinds to build_review and kickback to its from step, cross-listed under each to step. Otherwise the record falls back to the step of the last step-bearing record before it and is marked inferred. A callout shows the counter-example: parallel_started for wiring_check with branches wiring_check and test_suite is followed by a kickback from test_suite to build, so the fallback alone would misfile it.">
+  <defs>
+    <marker id="ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--muted)"/>
+    </marker>
+    <marker id="ah3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--new)"/>
+    </marker>
+  </defs>
+
+  <rect class="sv-box" x="8" y="118" width="150" height="46" rx="6"/>
+  <text class="sv-tb" x="18" y="138">one ledger record</text>
+  <text class="sv-m" x="18" y="154">from pipeline_events</text>
+
+  <rect class="sv-box" x="212" y="20" width="252" height="52" rx="6"/>
+  <text class="sv-tb" x="222" y="40">1 · has its own step field?</text>
+  <text class="sv-m" x="222" y="57">217 of 280 records</text>
+  <rect class="sv-box" x="520" y="20" width="252" height="52" rx="6"/>
+  <text class="sv-t" x="530" y="41">that step</text>
+  <text class="sv-m" x="530" y="58">exact, no inference</text>
+
+  <rect class="sv-new" x="212" y="112" width="252" height="58" rx="6"/>
+  <text class="sv-tb" x="222" y="132">2 · in the declared table?</text>
+  <text class="sv-m" x="222" y="149">build_review_* · kickback</text>
+  <text class="sv-m" x="222" y="164">63 of 280 records</text>
+  <rect class="sv-new" x="520" y="112" width="252" height="58" rx="6"/>
+  <text class="sv-t" x="530" y="132">build_review_* → build_review</text>
+  <text class="sv-t" x="530" y="149">kickback → its from step,</text>
+  <text class="sv-t" x="530" y="164">cross-listed under each to</text>
+
+  <rect class="sv-box" x="212" y="210" width="252" height="52" rx="6"/>
+  <text class="sv-tb" x="222" y="230">3 · otherwise</text>
+  <text class="sv-m" x="222" y="247">a kind nobody here has read</text>
+  <rect class="sv-box" x="520" y="210" width="252" height="52" rx="6"/>
+  <text class="sv-t" x="530" y="231">last step-bearing record</text>
+  <text class="sv-m" x="530" y="248">drawn, and marked inferred</text>
+
+  <g stroke="var(--muted)" stroke-width="1.4" fill="none">
+    <path d="M 158 132 L 200 50 L 206 46" marker-end="url(#ah2)"/>
+    <path d="M 158 152 L 200 234 L 206 238" marker-end="url(#ah2)"/>
+    <path d="M 464 46 L 514 46" marker-end="url(#ah2)"/>
+    <path d="M 464 236 L 514 236" marker-end="url(#ah2)"/>
+  </g>
+  <g stroke="var(--new)" stroke-width="1.8" fill="none">
+    <path d="M 158 141 L 206 141" marker-end="url(#ah3)"/>
+    <path d="M 464 141 L 514 141" marker-end="url(#ah3)"/>
+  </g>
+
+  <rect x="8" y="284" width="884" height="40" rx="8" fill="none" stroke="var(--bad)"/>
+  <text class="sv-t" x="20" y="301">Why rule 2 is declared and not inferred:</text>
+  <text class="sv-m" x="20" y="317">parallel_started {step: "wiring_check", branches: ["wiring_check", "test_suite"]} … then kickback {from: "test_suite", to: "build"} - rule 3 alone misfiles it under wiring_check.</text>
+</svg>
+<figcaption>Rules 1 and 2 place all 280 records in the live ledger and misfile none. Rule 3 is
+the tolerance path for a kind nobody here has read yet, and it says so in the row rather than
+pretending to know. The audit trail needs none of this - its <code>origin</code> field is the
+step, by construction.</figcaption>
+</figure>
+
+<h2>The frozen step table gains display copy, not authority</h2>
+
+<p><code>PipelineStepInfo</code> copies five fields out of the engine's
+<code>StepDefinition</code>: <code>name</code>, <code>label</code>, <code>phase</code>,
+<code>outOfBand</code>, <code>deprecated</code>. Two more are pure display copy and answer
+questions a step reader is asked immediately:</p>
+
+<ul>
+  <li><strong><code>enforcement</code></strong> - <code>structural</code> |
+    <code>advisory</code> | <code>gating</code>. Whether a failure here stops the run is the
+    first thing somebody wants to know about a step that failed.</li>
+  <li><strong><code>prerequisites</code></strong> - what the step waited on.
+    <code>build_review</code> waits on <code>wiring_check</code> and <code>test_suite</code>;
+    saying so explains the parallel branch the timeline shows.</li>
+</ul>
+
+<p>Both stay under the same rule as the rest of that table: <em>a display aid, never an
+authority</em>. Nothing refuses a step for disagreeing with it, and a copy that has fallen behind
+a conductor release makes one line stale and changes no behaviour.</p>
+
+<div class="note">
+<p><strong>Custom steps are real and must not break this.</strong>
+<code>buildStepRegistry(config)</code> splices config-declared steps into
+<code>ALL_STEPS</code> by an <code>after:</code> key - ai-conductor's own config adds
+<code>maintain-documentation</code> and <code>release-disposition</code> to SHIP. So the step set
+is not 26 and cannot be frozen as though it were. A custom step already draws under the strip's
+Unknown steps card; in the reader it gets a full timeline (its events carry its name) and no
+artifact list, which is correct rather than degraded - its completion artifact is declared in the
+operator's own config, not in any contract this build could copy.</p>
+</div>
+
+<h2>Where the work lands</h2>
+
+<div class="tablewrap">
+<table>
+  <thead><tr><th>Layer</th><th>File</th><th>Change</th></tr></thead>
+  <tbody>
+    <tr><td>shared</td><td><code>src/shared/pipeline.ts</code></td><td><code>PipelineStepDetail</code> and its parts; <code>enforcement</code> and <code>prerequisites</code> on <code>PipelineStepInfo</code>; a frozen <code>PIPELINE_STEP_ARTIFACTS</code> copy; the step-attribution table. <code>PipelineRun</code> and <code>PipelineStep</code> are <strong>not</strong> touched.</td></tr>
+    <tr><td>server</td><td><code>src/server/pipelines/conductor/state.ts</code></td><td>readers for the audit trail, <code>build-review.json</code>, <code>task-status.json</code>, <code>build-outcome.json</code>, <code>remediation.json</code>, <code>kickback-ledger.json</code>, <code>test-suite-evidence.json</code> and the markdown reports, plus artifact resolution. Same total, never-throwing, byte-capped posture as every reader already there.</td></tr>
+    <tr><td>server</td><td><code>src/server/pipelines/conductor/index.ts</code></td><td><code>readConductorStepDetail</code>, beside <code>readConductorRunDetail</code>, finding the worktree by listing rather than path-joining - the traversal guard that is already there.</td></tr>
+    <tr><td>server</td><td><code>src/server/pipelines/types.ts</code></td><td><code>readStepDetail</code> on <code>PipelineProvider</code>, so a second provider cannot compile without one.</td></tr>
+    <tr><td>server</td><td><code>src/server/pipelines/index.ts</code></td><td><code>readPipelineStepDetail</code>, behind the same live consent check <code>readPipelineRunDetail</code> uses.</td></tr>
+    <tr><td>server</td><td><code>src/server/db.ts</code></td><td>nothing. <code>pipelineEvents()</code> already exists and already does this.</td></tr>
+    <tr><td>server</td><td><code>src/server/routes.ts</code></td><td><code>GET /api/pipelines/step</code>.</td></tr>
+    <tr><td>web</td><td><code>src/web/pipelines/PipelineRunView.tsx</code></td><td><code>onOpen</code>/<code>openLabel</code> on the phase card and each step row; <code>GateVerdicts</code> becomes the step reader.</td></tr>
+    <tr><td>web</td><td><code>src/web/pipelines/usePipelineStepDetail.ts</code></td><td>the fetch, generation-guarded, keyed on run + step + <code>updatedAt</code>, exactly as <code>usePipelineRunDetail</code> is.</td></tr>
+    <tr><td>web</td><td><code>src/web/workflows/useWorkflowRoute.ts</code></td><td>the optional step segment on the pipeline run hash.</td></tr>
+    <tr><td>web</td><td><code>src/web/pipelines/PipelineLadder.tsx</code></td><td>the session pane's step rows gain the same click, opening the run in Runs at that step.</td></tr>
+    <tr><td>web</td><td><code>src/web/styles.css</code></td><td>under the <code>pipelines-</code> prefix only.</td></tr>
+    <tr><td>docs</td><td><code>docs/pipelines.md</code></td><td>the reader, the attribution rule, and the ledger's first consumer.</td></tr>
+    <tr><td>docs</td><td><code>docs/agent-guides/change-contracts.md</code></td><td>the step-detail channel beside the run-detail one.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2>Tests</h2>
+
+<ul>
+  <li><code>e2e/specs/pipeline-step-detail.spec.ts</code> - the required Playwright spec.
+    <code>seedConductorRun</code> in <code>e2e/fixtures/conductor.ts</code> already writes
+    <code>conduct-state.json</code>, <code>gates/</code>, <code>HALT</code> and
+    <code>events.jsonl</code>; it gains the audit trail and the richer
+    <code>.pipeline/*.json</code> files. The spec clicks a step in the strip and asserts the
+    reader shows that step's finding, its retry reason, and its dispatch model - by role and
+    label, never by <code>data-testid</code>.</li>
+  <li><code>test/pipeline-step-attribution.test.ts</code> - the three rules, including the
+    parallel-branch case that makes rule 2 necessary.</li>
+  <li><code>test/pipeline-step-detail.test.ts</code> - each file reader against a fixture tree,
+    plus an unknown <code>aggregateVersion</code> degrading rather than throwing, plus a custom
+    step resolving to a timeline and no artifacts.</li>
+  <li><code>test/pipeline-http.test.ts</code> - the route: consent refused, unknown step, unknown
+    run.</li>
+  <li><code>test/pipeline-sse.test.ts</code> - unchanged and must stay green. It is the proof the
+    projection did not grow.</li>
+  <li><code>e2e/specs/runs-workflows-unchanged.spec.ts</code> - unchanged and must stay green. It
+    is the proof the shared leaves were not modified.</li>
+</ul>
+
+<h2>What this does not do</h2>
+
+<ul>
+  <li><strong>No new persistence.</strong> <code>db.ts</code> states the prohibition directly:
+    the projection is a cache of the engine's files, and <em>"a label, an annotation or an
+    operator's own note would be lost the first time the projection was rebuilt, which is why
+    none may be added."</em> Every band here is read-through.</li>
+  <li><strong>No engine writes.</strong> Mission Control reads; it mutates only by spawning
+    <code>conduct-ts</code>.</li>
+  <li><strong>No change to the ingest envelope.</strong>
+    <code>ConductorIngestEnvelopeSchema</code> is frozen and already carries the whole event
+    verbatim. The plugin needs no new version for any of this - and this is the first feature
+    that makes installing it worth anything beyond latency.</li>
+  <li><strong>No change to the shared strip leaves</strong>, and therefore no change to the
+    workflow surface.</li>
+  <li><strong>No widening of <code>PipelineRun</code>.</strong></li>
+</ul>
+
+<h2>Known limits, stated rather than discovered later</h2>
+
+<ul>
+  <li><strong>The ledger is capped at 2000 events per run, newest kept.</strong> A long run's
+    earliest steps can lose their timeline. The live run used 280 events across 24 steps, so the
+    cap is far from the common case - but a step whose events were retired says so instead of
+    drawing an empty timeline.</li>
+  <li><strong>Both ledgers start where they start.</strong> <code>pipeline_events</code> begins
+    when observation begins, and the engine's own <code>events.jsonl</code> begins when the
+    <em>run</em> begins - so a feature whose DECIDE phase ran in an earlier session has
+    file-derived evidence and no timeline for those steps. That is exactly the live run's shape:
+    its ledger opens at <code>step_started acceptance_specs index 11</code>. The reader says
+    which steps it has no timeline for rather than drawing them as empty.</li>
+  <li><strong>The audit trail and the event ledger are retired with the worktree.</strong> Both
+    live under <code>.pipeline/</code>, so a torn-down worktree takes its history with it.
+    Whether Mission Control should tail the audit trail into SQLite - as it already does for
+    <code>events.jsonl</code> - to outlive that is an open question below, not a settled
+    one.</li>
+  <li><strong>Artifacts are listed, not versioned.</strong> A file the engine has since rewritten
+    is shown as it is now. There is no per-step snapshot on disk to show instead.</li>
+</ul>
+
+<h2>Open questions</h2>
+
+<p>Three, each carried to the review as a selectable decision rather than settled here: where the
+reader sits on the page, how much of the inventory phase 1 covers, and whether the audit trail is
+read on demand or tailed into the ledger so it survives the worktree.</p>
+
+</body>
+</html>
+</content>

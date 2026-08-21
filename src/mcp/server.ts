@@ -14,6 +14,7 @@ import {
 } from "@shared/workflow.ts";
 import {
   BASE_URL,
+  MISSION_SESSION_ID_ENV,
   SCOUT_SUBMISSION_CREDENTIAL_HEADER,
   captureTerminalEnv,
   readScoutSubmissionCredential,
@@ -28,13 +29,14 @@ import {
 } from "@shared/product-issues.ts";
 import { reportProductIssueWithConfirmation } from "./product-issues.ts";
 
-// This runs as a stdio MCP server, launched by Claude Code per session. Because
-// it's a child of the agent it inherits the terminal env (TMUX_PANE /
-// WEZTERM_PANE), which lets the daemon bind every call to the right session -
-// the same join key the hook bridge uses.
+// This runs as a stdio MCP server in one of two provenance modes. An SDK launch carries
+// Mission Control's exact session id and must not also claim an inherited terminal pane,
+// because the Registry intentionally resolves pane identity first. A terminal launch has
+// no Mission id, so it keeps the pane join key and legacy Claude session id it always used.
 
-const ENV = captureTerminalEnv();
-const SESSION_ID = process.env.CLAUDE_SESSION_ID ?? null;
+const MISSION_SESSION_ID = process.env[MISSION_SESSION_ID_ENV];
+const ENV = MISSION_SESSION_ID === undefined ? captureTerminalEnv() : {};
+const SESSION_ID = MISSION_SESSION_ID ?? process.env.CLAUDE_SESSION_ID ?? null;
 const PRODUCT_ISSUE_CLIENT = productIssueClientFromEnvironment(
   process.env[PRODUCT_ISSUE_CLIENT_ENV],
 );

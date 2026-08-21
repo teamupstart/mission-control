@@ -36,6 +36,7 @@ type Handle = import("../src/server/harness/types.ts").SdkSessionHandle;
 type SdkEvent = import("../src/server/harness/types.ts").SdkEvent;
 type SdkTurn = import("../src/server/harness/types.ts").SdkTurn;
 type LaunchOptions = import("../src/server/harness/types.ts").SdkLaunchOptions;
+type MissionMcpDescriptor = NonNullable<LaunchOptions["mcp"]>;
 type ServerEvent = import("../src/shared/types.ts").ServerEvent;
 
 after(() => rmSync(home, { recursive: true, force: true }));
@@ -156,6 +157,54 @@ const START = {
   mcp: null,
   taskId: null,
 };
+
+test("Codex SDK sessions carry their synthetic identity into Mission MCP", async () => {
+  const firstHandle = fakeHandle();
+  const secondHandle = fakeHandle();
+  const handles = [firstHandle, secondHandle];
+  const fake = withFakeCodexDriver(async () => handles.shift()!);
+  const sharedCwd = "/wt/shared-codex";
+  const descriptor: MissionMcpDescriptor = {
+    serverName: "mission-control",
+    command: "/usr/bin/node",
+    args: ["/mission/mcp.mjs"],
+    env: { MISSION_CONTROL_URL: "http://127.0.0.1:7317" },
+  };
+  const registry = new Registry();
+  const supervisor = new SdkSupervisor(registry);
+  try {
+    const first = await supervisor.start({
+      ...START,
+      agent: "codex",
+      cwd: sharedCwd,
+      mcp: descriptor,
+    });
+    const second = await supervisor.start({
+      ...START,
+      agent: "codex",
+      cwd: sharedCwd,
+      mcp: descriptor,
+    });
+    const firstIdentity = fake.calls[0]?.mcp?.env.MISSION_SESSION_ID;
+    const secondIdentity = fake.calls[1]?.mcp?.env.MISSION_SESSION_ID;
+
+    assert.deepEqual(
+      {
+        driverIdentities: [firstIdentity, secondIdentity],
+        resolvedSecond: registry.findSessionByEnv({}, secondIdentity, sharedCwd)?.id,
+      },
+      {
+        driverIdentities: [first.id, second.id],
+        resolvedSecond: second.id,
+      },
+    );
+  } finally {
+    await supervisor.stopAll(50);
+    firstHandle.end();
+    secondHandle.end();
+    fake.restore();
+  }
+});
 
 test("start persists a row, registers the card, and records the binding", async () => {
   const handle = fakeHandle();
@@ -783,7 +832,13 @@ test("restore resumes the same conversation rather than starting a new one", asy
     assert.equal(fake.calls[0]!.prompt, "");
     assert.equal(fake.calls[0]!.model, "m");
     assert.equal(fake.calls[0]!.effort, "high");
-    assert.deepEqual(fake.calls[0]!.mcp, descriptor);
+    assert.deepEqual(fake.calls[0]!.mcp, {
+      ...descriptor,
+      env: {
+        ...descriptor.env,
+        MISSION_SESSION_ID: "sdk:restore-1",
+      },
+    });
     assert.ok(registry.getSession("sdk:restore-1"), "the card is back before the first sweep");
     assert.equal(
       registry.getSession("sdk:restore-1")?.agentSessionId,

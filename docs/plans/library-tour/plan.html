@@ -1,0 +1,542 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>A second tour: the Library, and what runs after the work</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #fbfaf8;
+    --panel: #ffffff;
+    --panel-2: #f4f2ee;
+    --fg: #1b1a17;
+    --dim: #5f5b52;
+    --faint: #8b8579;
+    --border: #e2ded5;
+    --accent: #b4711c;
+    --accent-soft: #fdf3e2;
+    --link: #8a5410;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14130f;
+      --panel: #1c1b17;
+      --panel-2: #22201b;
+      --fg: #ece8e0;
+      --dim: #a8a294;
+      --faint: #7d7768;
+      --border: #33302a;
+      --accent: #f6a733;
+      --accent-soft: #2a2317;
+      --link: #f0b155;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    padding: 0 20px 96px;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.62;
+    overflow-x: hidden;
+  }
+  main { max-width: 860px; margin: 0 auto; }
+  header.doc {
+    padding: 56px 0 28px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 12px;
+  }
+  .kicker {
+    font-size: 12px;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--accent);
+    font-weight: 600;
+    margin: 0 0 10px;
+  }
+  h1 { font-size: 34px; line-height: 1.2; margin: 0 0 12px; letter-spacing: -.02em; }
+  h2 {
+    font-size: 24px;
+    margin: 44px 0 12px;
+    padding-top: 20px;
+    border-top: 1px solid var(--border);
+    letter-spacing: -.01em;
+  }
+  h3 { font-size: 18px; margin: 30px 0 8px; }
+  h4 { font-size: 15px; margin: 22px 0 6px; color: var(--dim); text-transform: uppercase; letter-spacing: .07em; }
+  p { margin: 0 0 14px; }
+  ul, ol { margin: 0 0 16px; padding-left: 24px; }
+  li { margin: 0 0 8px; }
+  li > ul, li > ol { margin-top: 8px; }
+  strong { font-weight: 640; }
+  a { color: var(--link); }
+  code {
+    font-family: var(--mono);
+    font-size: .87em;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 1px 5px;
+    word-break: break-word;
+  }
+  pre {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px 18px;
+    overflow-x: auto;
+    margin: 0 0 18px;
+  }
+  pre code { background: none; border: 0; padding: 0; font-size: 13px; line-height: 1.6; }
+  .table-wrap { overflow-x: auto; margin: 0 0 20px; border: 1px solid var(--border); border-radius: 10px; }
+  table { border-collapse: collapse; width: 100%; font-size: 14.5px; }
+  th, td { text-align: left; padding: 9px 14px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  thead th { background: var(--panel-2); font-weight: 620; white-space: nowrap; }
+  tbody tr:last-child td { border-bottom: 0; }
+  figure { margin: 26px 0 30px; }
+  .diagram {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 18px 12px 8px;
+    overflow-x: auto;
+  }
+  .diagram svg { display: block; margin: 0 auto; max-width: 100%; height: auto; }
+  figcaption { margin-top: 10px; font-size: 13.5px; color: var(--dim); text-align: center; }
+  .svg-box { fill: var(--panel-2); stroke: var(--border); }
+  .svg-box-accent { fill: var(--accent-soft); stroke: var(--accent); }
+  .svg-group { fill: none; stroke: var(--border); stroke-dasharray: 5 4; }
+  .svg-t { fill: var(--fg); font-family: var(--sans); font-size: 12px; }
+  .svg-t-sm { fill: var(--dim); font-family: var(--sans); font-size: 10.5px; }
+  .svg-t-mono { fill: var(--dim); font-family: var(--mono); font-size: 10px; }
+  .svg-label { fill: var(--accent); font-family: var(--sans); font-size: 11px; font-weight: 620; letter-spacing: .06em; }
+  .svg-line { stroke: var(--faint); stroke-width: 1.4; fill: none; }
+  .svg-line-accent { stroke: var(--accent); stroke-width: 1.6; fill: none; }
+  .svg-head { fill: var(--faint); }
+  .svg-head-accent { fill: var(--accent); }
+  .callout {
+    background: var(--accent-soft);
+    border: 1px solid var(--accent);
+    border-left-width: 4px;
+    border-radius: 8px;
+    padding: 14px 18px;
+    margin: 0 0 20px;
+  }
+  .callout p:last-child { margin-bottom: 0; }
+  .decisions { counter-reset: dec; list-style: none; padding-left: 0; }
+  .decisions li {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px 16px 12px 46px;
+    position: relative;
+    margin-bottom: 10px;
+  }
+  .decisions li::before {
+    counter-increment: dec;
+    content: counter(dec);
+    position: absolute;
+    left: 14px; top: 12px;
+    width: 22px; height: 22px;
+    border-radius: 50%;
+    background: var(--accent);
+    color: #14130f;
+    font-size: 12px; font-weight: 700;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .stops { list-style: none; padding-left: 0; counter-reset: stop; }
+  .stops > li {
+    position: relative;
+    padding-left: 42px;
+    margin-bottom: 12px;
+  }
+  .stops > li::before {
+    counter-increment: stop;
+    content: counter(stop);
+    position: absolute;
+    left: 0; top: 1px;
+    width: 26px; height: 26px;
+    border-radius: 7px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    color: var(--dim);
+    font-size: 12px; font-weight: 650;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .chapter {
+    font-size: 12px;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--accent);
+    font-weight: 650;
+    margin: 26px 0 10px;
+  }
+  footer.doc { margin-top: 56px; padding-top: 18px; border-top: 1px solid var(--border); font-size: 13px; color: var(--faint); }
+</style>
+</head>
+<body>
+<main>
+
+<header class="doc">
+  <p class="kicker">Mission Control · Plan</p>
+  <h1>A second tour: the Library, and what runs after the work</h1>
+  <p style="color:var(--dim);margin:0">Source of truth: <code>docs/plans/library-tour/plan.md</code></p>
+</header>
+
+<h2>What this is</h2>
+<p>Mission Control ships one guided tour. It teaches the operational half of the product - the Line, the Board, a session desk, Dispatch, a review, completion - and it stops there. The authoring half is untaught: the six Library shelves, the four assets a person edits, and the workflow that turns "the agent finished" into "the change was reviewed and shipped".</p>
+<p>This plan adds a second tour covering <strong>Personas, Actions, Commands, and Workflows</strong>, ending on <strong>No-Mistakes Review</strong> and a demo of a workflow run. To add a second tour at all, the first one's machinery has to stop being the first one's machinery - so this plan is two pieces of work that must land together: a tour <em>engine</em>, and a tour <em>written on it</em>.</p>
+
+<h2>What exists today</h2>
+<p><code>docs/ui.md</code> calls the current tour a "comparison spike" for <code>driver.js@1.8.0</code>, and the code matches that framing exactly. Every part of it is singular:</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Layer</th><th>File</th><th>How it is coupled</th></tr></thead>
+  <tbody>
+    <tr><td>Steps</td><td><code>src/web/tour/SeeWorkTourController.tsx</code></td><td>14 literal <code>STEPS</code>, a <code>STEP_INDEX</code> map, and five <code>switch</code> statements keyed on those indices</td></tr>
+    <tr><td>Navigation</td><td><code>src/web/App.tsx:904-996</code></td><td><code>SeeWorkTourNavigation</code>, a fixed 13-method interface named for this tour's stops</td></tr>
+    <tr><td>Run state</td><td><code>src/web/App.tsx</code></td><td>~330 lines: one <code>seeWorkTour</code> run, one snapshot shape, one re-entrancy guard, one controller mount</td></tr>
+    <tr><td>Targets</td><td><code>src/web/tour/target-registry.ts</code></td><td><code>TOUR_TARGET_IDS</code> is a flat 13-member union that <em>is</em> this tour's step list</td></tr>
+    <tr><td>Overlay</td><td><code>src/web/components/Overlay.tsx:62</code></td><td>one id, <code>seeWorkTour: "see-work-tour"</code></td></tr>
+    <tr><td>Entry</td><td><code>SettingsPage.tsx:663-690</code>, <code>palette-index.ts:496-503</code></td><td>one <code>onStartSeeWorkTour</code> prop, one palette row, one <code>start-see-work-tour</code> target kind</td></tr>
+    <tr><td>Server</td><td><code>src/server/routes.ts:4965-5081</code></td><td>three routes literally pathed <code>/api/tours/see-work/*</code>, with titles, labels, model and intent-prefix identity checks hardcoded</td></tr>
+    <tr><td>Skin</td><td><code>src/web/styles.css:106-400</code></td><td>scoped to <code>.mc-see-work-tour</code>, plus three <code>data-mc-tour-*</code> flags encoding this tour's specific stops</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Two things are already general, and they are the seams to build on. The <strong>target registry</strong> (<code>target-registry.ts</code>, <code>target-context.tsx</code>) is tour-agnostic in mechanism - identity-token safe against StrictMode and remount races - and only its id union is coupled. And the <strong>Settings rail footer</strong> is already a <code>role="group"</code> labelled <strong>Help &amp; tours</strong>, plural, sized to hold a list.</p>
+
+<p>The Library it needs to teach is equally well-shaped for this. Every authoring surface is already deep-linkable, so a tour navigates by publishing a hash rather than by driving clicks:</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Hash</th><th>Surface</th></tr></thead>
+  <tbody>
+    <tr><td><code>#/library</code></td><td>The six shelves</td></tr>
+    <tr><td><code>#/library/personas[/:id]</code>, <code>/new</code></td><td>Persona library and editor, or a blank draft</td></tr>
+    <tr><td><code>#/library/actions[/:id]</code>, <code>/new</code></td><td>Action library and editor, or a blank draft</td></tr>
+    <tr><td><code>#/library/commands/:slot</code></td><td>The Command editor on <code>test</code>, <code>lint</code>, <code>typecheck</code> or <code>build</code></td></tr>
+    <tr><td><code>#/library/workflows[/:id]</code>, <code>/new</code></td><td>The workflow builder</td></tr>
+    <tr><td><code>#/runs/:runId</code></td><td>One workflow run's evidence and timeline</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2>The shape of the work</h2>
+
+<h3>Part 1 - from one tour to many</h3>
+<p>Extract a <strong>tour engine</strong> from the existing controller and re-express "See the work" as the first definition written on it. This is a refactor whose success criterion is that <code>e2e/specs/see-work-tour.spec.ts</code> passes unchanged: the existing tour must keep its exact 14 stops, copy, labels, fallbacks, cleanup and restore behaviour.</p>
+
+<p>A <code>TourDefinition</code> carries what the controller currently hardcodes:</p>
+
+<pre><code>interface TourDefinition {
+  id: TourId;                       // "see-work" | "library"
+  kicker: string;                   // popover header text, today "See the work"
+  title: string;                    // "See the work", "Author what runs"
+  detail: string;                   // palette and Settings sub-copy
+  keywords: readonly string[];      // palette matching
+  steps: readonly TourStep[];
+}
+
+interface TourStep {
+  id: string;                       // stable, replaces STEP_INDEX
+  target: TourTargetId;
+  title: string;
+  description: string;
+  details?: readonly { label: string; description: string }[];
+  side?: "top" | "bottom" | "left" | "right";
+  nextLabel?: string;               // today's next-button ladder, per step
+  /** Put the app where this step can be seen. Today's `prepare()` switch. */
+  prepare(nav: TourNavigator): boolean;
+  /** Is the target mounted and meaningful yet? Today's `targetReady()` switch. */
+  ready?(runtime: TourRuntime, registry: TourTargetRegistry): boolean;
+  /** What to say while it is not. Today's `fallbackDescription()` switch. */
+  fallback?(runtime: TourRuntime): string | null;
+  /** Runtime moved under this step - advance, retreat, or stay. Today's `refresh()`. */
+  reconcile?(runtime: TourRuntime): string | null;
+}</code></pre>
+
+<p>The five index-keyed switches become per-step methods; <code>intendedIndex</code> becomes an intended <strong>step id</strong>, which removes the class of bug the current controller carries comments about (Driver's active index lagging a committed transition). The Driver.js adapter, focus containment, progress rail, fallback rendering, cleanup-error dialog and overlay registration are unchanged in behaviour and move wholesale into the engine.</p>
+
+<p>Around it:</p>
+<ul>
+  <li><strong>Target ids get namespaced.</strong> <code>TOUR_TARGET_IDS</code> becomes per-tour groups so a Library target cannot collide with a fleet one. <code>useTourTaskTargetRef</code>'s hardcoded <code>Extract&lt;&gt;</code> allow-list becomes a declared scoping.</li>
+  <li><strong><code>App.tsx</code> holds one active tour, not one named tour.</strong> <code>SeeWorkTourRun</code> generalizes to <code>TourRun</code> with the same snapshot fields; the re-entrancy guard becomes "a tour is running" rather than "this tour is running". A tour still owns temporary resources, so the run carries a per-tour cleanup handle rather than two hardcoded task ids.</li>
+  <li><strong>Entry points become a list.</strong> The Settings <strong>Help &amp; tours</strong> footer renders one row per registered tour, and the palette contributes one <strong>Do</strong> row per tour from the same registry - <code>{ kind: "start-tour", tourId }</code> replacing <code>{ kind: "start-see-work-tour" }</code>. Adding a third tour then costs a definition and nothing else.</li>
+  <li><strong>One overlay id</strong> (<code>tour</code>) serves whichever tour is active.</li>
+  <li><strong>The skin generalizes.</strong> <code>.mc-see-work-tour</code> becomes <code>.mc-tour</code>; the three <code>data-mc-tour-*</code> documentElement flags stay, because they describe <em>surfaces</em> (a modal is live, a tile is spotlit) rather than steps.</li>
+</ul>
+
+<figure>
+<div class="diagram">
+<svg viewBox="0 0 820 430" role="img" aria-label="Before and after: a single hard-coded tour controller becomes a tour registry feeding one engine">
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" class="svg-head"/>
+    </marker>
+    <marker id="ar-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" class="svg-head-accent"/>
+    </marker>
+  </defs>
+
+  <!-- BEFORE -->
+  <rect class="svg-group" x="10" y="30" width="370" height="380" rx="12"/>
+  <text class="svg-label" x="26" y="52">BEFORE - ONE TOUR</text>
+
+  <rect class="svg-box" x="34" y="70" width="150" height="34" rx="7"/>
+  <text class="svg-t" x="109" y="91" text-anchor="middle">Settings button</text>
+  <rect class="svg-box" x="204" y="70" width="150" height="34" rx="7"/>
+  <text class="svg-t" x="279" y="91" text-anchor="middle">Palette row</text>
+
+  <rect class="svg-box-accent" x="94" y="138" width="200" height="42" rx="7"/>
+  <text class="svg-t" x="194" y="155" text-anchor="middle">App.tsx</text>
+  <text class="svg-t-mono" x="194" y="171" text-anchor="middle">seeWorkTour state (~330 lines)</text>
+
+  <rect class="svg-box" x="74" y="214" width="240" height="46" rx="7"/>
+  <text class="svg-t" x="194" y="232" text-anchor="middle">SeeWorkTourController</text>
+  <text class="svg-t-sm" x="194" y="248" text-anchor="middle">14 literal steps · 5 index switches</text>
+
+  <rect class="svg-box" x="34" y="296" width="150" height="42" rx="7"/>
+  <text class="svg-t" x="109" y="314" text-anchor="middle">target registry</text>
+  <text class="svg-t-sm" x="109" y="329" text-anchor="middle">13 flat ids</text>
+
+  <rect class="svg-box" x="204" y="296" width="150" height="42" rx="7"/>
+  <text class="svg-t-mono" x="279" y="315" text-anchor="middle">/api/tours/</text>
+  <text class="svg-t-mono" x="279" y="329" text-anchor="middle">see-work/*</text>
+
+  <g color="var(--faint)">
+    <path class="svg-line" d="M109 104 L 160 136" marker-end="url(#ar)"/>
+    <path class="svg-line" d="M279 104 L 228 136" marker-end="url(#ar)"/>
+    <path class="svg-line" d="M194 180 L 194 212" marker-end="url(#ar)"/>
+    <path class="svg-line" d="M150 260 L 115 294" marker-end="url(#ar)"/>
+    <path class="svg-line" d="M262 182 L 279 294" marker-end="url(#ar)"/>
+  </g>
+
+  <!-- AFTER -->
+  <rect class="svg-group" x="440" y="30" width="370" height="380" rx="12"/>
+  <text class="svg-label" x="456" y="52">AFTER - A REGISTRY</text>
+
+  <rect class="svg-box" x="464" y="70" width="150" height="34" rx="7"/>
+  <text class="svg-t" x="539" y="91" text-anchor="middle">Settings: one per tour</text>
+  <rect class="svg-box" x="634" y="70" width="150" height="34" rx="7"/>
+  <text class="svg-t" x="709" y="91" text-anchor="middle">Palette: one per tour</text>
+
+  <rect class="svg-box-accent" x="524" y="126" width="200" height="34" rx="7"/>
+  <text class="svg-t" x="624" y="147" text-anchor="middle">App.tsx - one active TourRun</text>
+
+  <rect class="svg-box-accent" x="574" y="180" width="100" height="30" rx="7"/>
+  <text class="svg-t" x="624" y="199" text-anchor="middle">tour registry</text>
+
+  <rect class="svg-box" x="464" y="232" width="150" height="34" rx="7"/>
+  <text class="svg-t" x="539" y="253" text-anchor="middle">see-work definition</text>
+  <rect class="svg-box" x="634" y="232" width="150" height="34" rx="7"/>
+  <text class="svg-t" x="709" y="253" text-anchor="middle">library definition</text>
+
+  <rect class="svg-box" x="524" y="288" width="200" height="42" rx="7"/>
+  <text class="svg-t" x="624" y="306" text-anchor="middle">GuidedTourController</text>
+  <text class="svg-t-sm" x="624" y="321" text-anchor="middle">engine · driver.js adapter</text>
+
+  <rect class="svg-box" x="464" y="356" width="150" height="40" rx="7"/>
+  <text class="svg-t" x="539" y="373" text-anchor="middle">target registry</text>
+  <text class="svg-t-sm" x="539" y="388" text-anchor="middle">namespaced ids</text>
+
+  <rect class="svg-box" x="634" y="356" width="150" height="40" rx="7"/>
+  <text class="svg-t-mono" x="709" y="374" text-anchor="middle">/api/tours/</text>
+  <text class="svg-t-mono" x="709" y="388" text-anchor="middle">:tourId/*</text>
+
+  <g color="var(--accent)">
+    <path class="svg-line-accent" d="M539 104 L 590 124" marker-end="url(#ar-a)"/>
+    <path class="svg-line-accent" d="M709 104 L 658 124" marker-end="url(#ar-a)"/>
+    <path class="svg-line-accent" d="M624 160 L 624 178" marker-end="url(#ar-a)"/>
+    <path class="svg-line-accent" d="M598 210 L 545 230" marker-end="url(#ar-a)"/>
+    <path class="svg-line-accent" d="M650 210 L 703 230" marker-end="url(#ar-a)"/>
+    <path class="svg-line-accent" d="M556 266 L 596 286" marker-end="url(#ar-a)"/>
+    <path class="svg-line-accent" d="M692 266 L 652 286" marker-end="url(#ar-a)"/>
+    <path class="svg-line-accent" d="M580 330 L 545 354" marker-end="url(#ar-a)"/>
+    <path class="svg-line-accent" d="M724 143 L 796 143 L 796 376 L 788 376" marker-end="url(#ar-a)"/>
+  </g>
+</svg>
+</div>
+<figcaption>Part 1: the same doors and the same server surface, routed through a registry so a second definition costs a definition.</figcaption>
+</figure>
+
+<h3>Part 2 - the Library tour</h3>
+
+<div class="callout">
+<p><strong>Order.</strong> The tour teaches Personas → Actions → Commands → Workflows. The Library renders its shelves in a different order - Missions, <strong>Workflows, Commands, Personas, Actions</strong>, Ensembles - so the tour deliberately walks the page bottom-up. The reason is that this is the <em>dependency</em> order: a workflow is built out of Persona nodes, Action nodes and Command nodes, so the tour teaches the parts before the thing that composes them, and stop 9 can say that the builder's node palette is exactly the three assets just covered. The shelves themselves are left as they are; reordering a shipped page to match a tour would be the tour dictating the product.</p>
+</div>
+
+<p>The stops. Fifteen, not the full sweep of every surface: each chapter shows what the asset is, what configures it, and how it is edited, then moves on.</p>
+
+<p class="chapter">Opening</p>
+<ol class="stops">
+  <li><strong>The Library</strong> - <code>#/library</code>. Spotlight <code>&lt;main class="lib-page"&gt;</code>. Everything you author once and reuse; nothing runs from here. Name the six shelves and the question each one heads, because the shelves are titled by their question rather than their noun.</li>
+</ol>
+
+<p class="chapter">Personas - who does the reviewing</p>
+<ol class="stops" style="counter-reset: stop 1">
+  <li><strong>The Persona library</strong> - <code>#/library/personas/&lt;built-in id&gt;</code>, spotlight the <code>complementary "Persona library"</code> rail. <strong>System</strong>, <strong>Built-in</strong> and <strong>Yours</strong> groups with their own counts; each row's sub-label is the resolved runner and model, which is what tells two reviewers apart.</li>
+  <li><strong>What a Persona is, and what configures it</strong> - spotlight <code>section "Persona guidance"</code> and the property chips together. The Markdown <em>is</em> the asset; everything above it is metadata about how that Markdown gets run. <code>provider</code> and <code>model</code> open the control that set them, and a chip inherited from the app defaults draws quiet where one this Persona overrides draws solid.</li>
+  <li><strong>Editing one</strong> - spotlight the promoted verb. On a built-in it reads <strong>Duplicate to edit</strong>, and that is the whole ownership rule: shipped roles are read-only, and a customized copy is one gesture with an honest name. On your own it reads <strong>Save</strong>. Import <code>.md</code>, Import from path and Check upstream sit in the rail footer.</li>
+</ol>
+
+<p class="chapter">Actions - what a run can tell the session to do</p>
+<ol class="stops" style="counter-reset: stop 4">
+  <li><strong>The Action library</strong> - <code>#/library/actions/&lt;built-in id&gt;</code>, spotlight the <code>complementary "Session action library"</code> rail. The same rail and workspace grammar as Personas, because an operator moving between them is moving through one surface with different contents; each row's sub-label is its contract, not its description.</li>
+  <li><strong>The contract, and editing one</strong> - spotlight the <code>requires skill</code> and <code>completes when</code> chips and the sentence they form. This is the one Library asset carrying a machine-checked contract: something observable has to happen before a stage may call it done. Then the instruction editor, whose Markdown reaches the session byte for byte, and the same <strong>Save</strong> or <strong>Duplicate to edit</strong> verb the Persona screen promotes.</li>
+</ol>
+
+<p class="chapter">Commands - what each standard gate runs here</p>
+<ol class="stops" style="counter-reset: stop 6">
+  <li><strong>A Command slot</strong> - <code>#/library/commands/test</code>. Four fixed slots, no <strong>＋ New</strong> card and no cross-link, because the slots ship with the product. A workflow's Command node names a portable slot and never an argv, so the same workflow runs against any repository; this screen is where <em>this machine</em> says what the slot runs. Spotlight <strong>Default command</strong>.</li>
+  <li><strong>Overrides, and saving one</strong> - spotlight the <strong>Repository path</strong> / <strong>Override command</strong> / <strong>Add override</strong> row and <strong>Save Command</strong>. Saving executes nothing. A workflow reaching that slot, later, in a repository granted the Workflows cell in Trust, is what runs it - and <strong>Settings → Workflows → Allow workflow Commands</strong> is the machine-wide switch above that.</li>
+</ol>
+
+<p class="chapter">Workflows - what counts as done</p>
+<ol class="stops" style="counter-reset: stop 8">
+  <li><strong>The builder</strong> - <code>#/library/workflows/&lt;a workflow&gt;</code>, spotlight the <code>complementary "Workflow library and node palette"</code> rail: Persona, Command, Session action, all-pass Join and End are exactly the assets the last three chapters covered.</li>
+  <li><strong>Creating one</strong> - spotlight <strong>New</strong>, then the <code>group "Editing surface"</code> Pipeline/Graph toggle and <strong>Publish</strong>. A draft follows Library edits; a published version freezes its Persona snapshots, and publishing cannot change a binding that already exists.</li>
+  <li><strong>No-Mistakes Review</strong> - <code>#/library/workflows/builtin-workflow:no-mistakes-review</code>, spotlight <code>.wf-pipeline-strip</code>. Five stages, walked in order: typecheck and test together; Intent Conformance alone as a cheap gate; Code Risk and Code Quality in parallel; Test Evidence and Documentation in parallel; then the verified Pull Request action before End. Every failure returns to the session for a repair round, up to five. It is a built-in, so its versions stay addressable exactly as shipped and your changes live in a <strong>Duplicate</strong>.</li>
+  <li><strong>Binding it</strong> - spotlight <strong>Bind to a session…</strong>, and name the trigger and delivery postures v10 ships with: Foreman-complete, live delivery, five repair rounds.</li>
+</ol>
+
+<p class="chapter">A run</p>
+<ol class="stops" style="counter-reset: stop 12">
+  <li><strong>A run, moving</strong> - the Runs page for a No-Mistakes run. Spotlight the pipeline strip, then the review worklist's <strong>Blocking</strong> / <strong>Passed</strong> segments, then a verdict.</li>
+  <li><strong>Where a run is watched</strong> - the same run drawn as the vertical stage ladder in a session's <strong>Workflows</strong> tab, which is where the work is actually followed.</li>
+  <li><strong>Close</strong> - what the tour left behind, and the offer to run the other tour.</li>
+</ol>
+
+<p>Which run stops 13 and 14 look at is settled in Part 3: an existing finished run, never one the tour starts.</p>
+
+<h3>Part 3 - the demo run</h3>
+<p>The current tour spends real model tokens by design, and <code>docs/ui.md</code> says so plainly. A No-Mistakes run is a different order of magnitude: five reviewer Personas, a typecheck, a test, a real pull request, and minutes to tens of minutes of wall clock. Running the real flagship inside a tour is not on the table.</p>
+
+<p>Nothing in <code>src/</code> calls a model API directly - every model interaction is a spawned CLI resolved by <code>MISSION_&lt;AGENT&gt;_BIN</code>. That resolution is process-wide, so the trick both the e2e suite and <code>npm run demo</code> use (point the binary at a scripted player) cannot be scoped to one task inside an operator's own daemon. The engine does, however, already write <strong>synthetic verdicts</strong> without a model call in two cases: an unconfigured check slot skips and passes, and a node the operator disabled gets a <code>disabled</code> verdict. Those are the only free paths.</p>
+
+<p><strong>Adopted: the tour reads a run that already happened.</strong> Stop 13 opens <code>#/runs/&lt;id&gt;</code> on the operator's most recent finished No-Mistakes run and walks its real pipeline strip, review worklist and verdicts; stop 14 follows the same run into its session's <strong>Workflows</strong> tab. This costs no tokens, adds no server surface, leaves nothing to clean up, and the artifact it teaches is genuinely the operator's own rather than a demo built to be taught.</p>
+
+<p>The tour picks that run with a single filtered read of the existing paged runs route - newest finished run whose workflow is the built-in No-Mistakes Review, falling back to the newest finished run of any workflow. Nothing is created, so there is nothing to remove on exit.</p>
+
+<p><strong>When there is no run at all</strong>, which is every fresh install, the two run stops degrade rather than disappear. They keep their titles and explain the same surfaces against the read-only built-in graph already on screen from stop 11, using the existing tour fallback mechanism - the same labelled dialog the current tour shows when a target has not mounted, with Back, Next and Exit still available. This is the one part of the tour whose content depends on the operator's own history, and it is why the fallback copy is written as a real stop rather than an apology.</p>
+
+<p>Two alternatives were considered and set aside. Launching a small real run would be the only way to show a run actually <em>moving</em>, but it spends model tokens on every start of a tour whose whole subject is authoring. Submitting a run with its Persona nodes pre-disabled would be free, live and always available, but every verdict would read <code>disabled</code> - a truthful picture of a mechanism nobody uses, and a synthetic run left sitting in the operator's real run history.</p>
+
+<figure>
+<div class="diagram">
+<svg viewBox="0 0 720 300" role="img" aria-label="The run stops read the newest finished No-Mistakes run, or fall back to the read-only built-in graph when there is none">
+  <defs>
+    <marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" class="svg-head"/>
+    </marker>
+  </defs>
+
+  <rect class="svg-box-accent" x="250" y="14" width="220" height="34" rx="7"/>
+  <text class="svg-t" x="360" y="35" text-anchor="middle">Library tour · stop 13</text>
+
+  <rect class="svg-box" x="250" y="76" width="220" height="40" rx="7"/>
+  <text class="svg-t-mono" x="360" y="94" text-anchor="middle">GET /api/workflow-runs</text>
+  <text class="svg-t-sm" x="360" y="108" text-anchor="middle">filter: finished</text>
+
+  <path class="svg-box" d="M360 138 L 470 168 L 360 198 L 250 168 Z"/>
+  <text class="svg-t" x="360" y="165" text-anchor="middle">a finished</text>
+  <text class="svg-t" x="360" y="179" text-anchor="middle">No-Mistakes run?</text>
+
+  <rect class="svg-box-accent" x="386" y="216" width="300" height="44" rx="7"/>
+  <text class="svg-t" x="536" y="234" text-anchor="middle">#/runs/:id - read only</text>
+  <text class="svg-t-sm" x="536" y="249" text-anchor="middle">strip, worklist, verdicts → then the session ladder</text>
+
+  <rect class="svg-box" x="24" y="216" width="300" height="44" rx="7"/>
+  <text class="svg-t" x="174" y="234" text-anchor="middle">fallback copy, same two stops</text>
+  <text class="svg-t-sm" x="174" y="249" text-anchor="middle">on the read-only built-in graph from stop 11</text>
+
+  <text class="svg-label" x="486" y="205">YES</text>
+  <text class="svg-label" x="176" y="205">NO RUN YET</text>
+
+  <g>
+    <path class="svg-line" d="M360 48 L 360 74" marker-end="url(#ar2)"/>
+    <path class="svg-line" d="M360 116 L 360 136" marker-end="url(#ar2)"/>
+    <path class="svg-line" d="M470 168 L 536 168 L 536 214" marker-end="url(#ar2)"/>
+    <path class="svg-line" d="M250 168 L 174 168 L 174 214" marker-end="url(#ar2)"/>
+  </g>
+</svg>
+</div>
+<figcaption>Part 3: one filtered read, no writes. The tour creates no run, workflow, binding or session of its own.</figcaption>
+</figure>
+
+<h2>Server support</h2>
+<p>Whatever stop 13 does, the existing tour routes get generalized alongside the engine: <code>/api/tours/see-work/*</code> becomes <code>/api/tours/:tourId/*</code> with the per-tour brief, labels, titles and identity checks moving into a server-side tour registry beside the existing intent constants in <code>src/shared/protocol.ts</code>. The identity check that refuses to complete a task which does not belong to the tour is kept exactly as strict - title, labels and intent prefix - because it is what stops the cleanup doorway from being a general "close any task" route.</p>
+<p><strong>The Library tour needs no temporary session, task, workflow or binding of its own.</strong> Every one of its fifteen stops is a hash and a spotlight on a surface that renders from the SSE stores the dashboard already holds, plus one filtered read of the runs route. It creates nothing, so its cleanup is the snapshot restore below and nothing more - which is why the generalized routes above are a refactor in service of the engine rather than a new surface this tour consumes.</p>
+
+<h2>Safety and cleanup</h2>
+<p>The Library tour edits nothing. It navigates to real assets and spotlights real controls, and every stop that shows an editing affordance shows it on a <strong>built-in</strong> asset, where the promoted verb is <strong>Duplicate to edit</strong> and no Save exists to press. That is not a special read-only mode; it is the ownership rule the product already enforces, which makes it the safest thing to point at.</p>
+<p>Two guards follow from that, both of which the engine must carry:</p>
+<ul>
+  <li>The tour never types into an editor, so it can never raise the <strong>Leave with unsaved changes</strong> dialog. If the operator is <em>already</em> holding a dirty draft when they start the tour, the tour's first navigation will hit that gate - so starting a tour has to be refused, or the gate has to be answered, rather than the tour half-starting behind a modal it did not open.</li>
+  <li>The snapshot restored on exit gains the Library route and selected asset alongside the existing route, layout, selection, expansion, drill-in, filter and Line drawer.</li>
+</ul>
+
+<h2>Testing</h2>
+<ul>
+  <li><strong><code>test/</code></strong> - the tour registry and its definitions are pure data, so the step list, ids, targets, per-step prepare/ready contracts, and the palette and Settings rows derived from the registry are all unit-testable without a browser. Extend <code>test/tour-target-registry.test.ts</code> for namespaced ids, <code>test/palette-index.test.ts</code> for one row per tour, and <code>test/settings-sidebar-render.test.ts</code> for the Help &amp; tours list. The generalized <code>/api/tours/:tourId/*</code> routes keep their coverage in <code>test/see-work-tour-http.test.ts</code>, including the identity check that still refuses a task which does not belong to the tour.</li>
+  <li><strong><code>e2e/</code></strong> - a new <code>e2e/specs/library-tour.spec.ts</code> walks the tour by popover title, asserts each stop's hash and spotlight, asserts no asset was written (<code>GET /api/personas</code> and friends unchanged across the run), and asserts the snapshot restore and focus return. <code>e2e/specs/see-work-tour.spec.ts</code> must pass <strong>unchanged</strong> - it is the regression gate on Part 1. The run stops need <strong>both</strong> states covered, and the suite can already produce the first without a model: a Persona whose guidance carries <code>E2E_PASS_VERDICT</code> is answered by <code>e2e/fixtures/fake-claude.mjs</code> with a schema-valid pass, which is how the existing workflow specs drive a real run to completion. So one spec seeds a finished run and asserts the tour reads it, and one runs the tour on a fleet with no run and asserts the fallback copy.</li>
+  <li><strong>Electron geometry</strong> - the coachmark is a positioned popover over real surfaces; the existing tour's spec already measures that it never overlaps the control it is asking the operator to click, and the Library stops that spotlight a rail row or a chip need the same treatment.</li>
+</ul>
+
+<h2>Documentation</h2>
+<ul>
+  <li><code>docs/ui.md</code> - the "Comparison spike: See the work" section becomes a <strong>Tours</strong> section describing the engine, the registry, and both tours. The driver.js comparison finding is history worth keeping and stays.</li>
+  <li><code>docs/library-and-line.md</code> - a pointer from the Library page to its tour.</li>
+  <li><code>docs/workflows.md</code> - a pointer from No-Mistakes Review to the tour that walks it.</li>
+  <li><code>README.md</code> - the "See the work" paragraph becomes a two-tour paragraph.</li>
+  <li><code>docs/workflow-system.md:17</code> says the built-in No-Mistakes Review is version 9; the code ships version 10. The tour teaches this workflow, so the stale sentence is fixed here.</li>
+</ul>
+
+<h2>Out of scope</h2>
+<ul>
+  <li>First-run or automatic triggering. Both tours stay user-started, as the current one is.</li>
+  <li>Progress persistence, resumption, or a "you have not finished this tour" nudge.</li>
+  <li>A new top-bar control. The Settings footer and the palette are the two doors.</li>
+  <li>Tours for the Missions, Sources or Ensembles shelves, and for Foreman, Scouts and Pipelines. The engine makes them cheap; this plan does not write them.</li>
+  <li>Any change to what No-Mistakes Review <em>is</em>. The tour explains version 10 as shipped.</li>
+</ul>
+
+<h2>Risks</h2>
+<ul>
+  <li><strong>The refactor is the risk, not the tour.</strong> The existing controller carries hard-won behaviour in comments - Driver's lagging active index, the review modal becoming the top registered layer, <code>onDestroyed</code> being skipped on an immediate exit, cleanup refusal retry. Every one of those has to survive the extraction, and <code>see-work-tour.spec.ts</code> passing unchanged is the only proof that counts.</li>
+  <li><strong>Fifteen stops is close to the ceiling.</strong> The current tour is fourteen and already asks a lot. The list above is already cut to what each chapter needs to teach - what the asset is, what configures it, how it is edited - and anything further added to it should displace a stop rather than extend the run. If the review wants it shorter still, the chapters split into separately-startable tours sharing one engine, which the registry makes free.</li>
+  <li><strong>Built-in assets must exist.</strong> Stops 2, 5 and 11 point at shipped built-ins, which are app data and always present. Stop 9 points at <em>a</em> workflow; on an install with none authored, it points at the built-in too.</li>
+  <li><strong>The last two stops depend on the operator's own history.</strong> With the run stops reading a real finished run, a fleet that has never run No-Mistakes sees fallback copy instead of a run. That fallback is written as a real stop rather than an apology, and it is the one part of the tour whose test needs both states covered: a seeded finished run, and none.</li>
+</ul>
+
+<h2>Decisions taken</h2>
+<p>Reviewed and submitted before implementation began. Each is recorded here so a later reader sees what was chosen rather than the choice:</p>
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Decision</th><th>Taken</th></tr></thead>
+  <tbody>
+    <tr><td>Chapter order</td><td><strong>Personas → Actions → Commands → Workflows</strong> - dependency order, walking the shelves bottom-up. The Library's shelf order is left alone.</td></tr>
+    <tr><td>The demo run</td><td><strong>Read a run that already happened.</strong> No tokens, no created state, with a written fallback for an install that has no run yet.</td></tr>
+    <tr><td>Engine scope</td><td><strong>Full extraction now.</strong> One engine plus two definitions, with the existing tour's spec unchanged as the gate.</td></tr>
+    <tr><td>How editing is shown</td><td><strong>Spotlight built-ins only, never type.</strong> The tour writes nothing, so it can never raise the unsaved-changes gate.</td></tr>
+    <tr><td>Tour shape</td><td><strong>One 15-stop tour</strong>, cut to what each chapter needs to teach.</td></tr>
+    <tr><td>Follow-up</td><td><strong>Stop after this plan.</strong> No implementation phases or scheduled tasks are created from it.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<footer class="doc">
+  Rendered from <code>docs/plans/library-tour/plan.md</code>. This page is a rendering of that file, not a second source of truth.
+</footer>
+
+</main>
+</body>
+</html>

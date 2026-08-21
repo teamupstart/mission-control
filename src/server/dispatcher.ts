@@ -856,7 +856,11 @@ export class Dispatcher {
       } catch (error) {
         this.registry.endManagedPipelineCaller(taskId, sessionId, callerCredential);
         const current = this.registry.getTask(taskId);
-        if (current?.status !== "done" && current?.sessionId === sessionId) {
+        // This preallocated ID never became a registered session. A concurrent
+        // completion owns every settlement field, but not this failed launch's
+        // phantom host attribution. Restore the prior owner only while the task
+        // still names the ID allocated by this attempt.
+        if (current?.sessionId === sessionId) {
           this.patch(taskId, { sessionId: task.sessionId });
         }
         throw error;

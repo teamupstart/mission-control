@@ -577,7 +577,7 @@ test("rejected managed Pipeline retry restores its older live session attributio
   });
 });
 
-test("managed Pipeline start rejection preserves concurrently settled task attribution", async () => {
+test("managed Pipeline start rejection clears its phantom host after concurrent settlement", async () => {
   const taskId = "pipeline-sdk-settled-during-start";
   const repoRoot = "/repo/settled-during-start";
   const slug = "preserve-settled-launch-attribution";
@@ -653,9 +653,10 @@ test("managed Pipeline start rejection preserves concurrently settled task attri
   }, {
     outcome: `pipeline opened ${prUrl}`,
     outcomeUrl: prUrl,
-    sessionId: preallocatedSessionId,
+    sessionId: null,
     status: "done",
   });
+  assert.notEqual(preallocatedSessionId, "", "the rejected launch had assigned a host identity");
 });
 
 test("managed Pipeline cancellation clears a preallocated session when SDK start rejects", async () => {

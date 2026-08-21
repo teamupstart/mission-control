@@ -254,6 +254,7 @@ test("managed SDK pipeline dispatch composes the selected host prompt with no te
   assert.equal(spawned, false);
   const launchedSessionId = supervisor.starts[0]?.sessionId;
   assert.match(launchedSessionId ?? "", /^sdk:/);
+  assert.equal(registry.managedPipelineLaunch(launchedSessionId!), null);
   assert.deepEqual(supervisor.starts, [{
     sessionId: launchedSessionId,
     agent: "codex",
@@ -644,6 +645,85 @@ test("managed Pipeline start rejection preserves concurrently settled task attri
     outcomeUrl: prUrl,
     sessionId: preallocatedSessionId,
     status: "done",
+  });
+});
+
+test("managed Pipeline cancellation clears a preallocated session when SDK start rejects", async () => {
+  const taskId = "pipeline-sdk-cancel-rejected-start";
+  const repoRoot = "/repo/cancel-rejected-start";
+  const registry = new Registry();
+  registry.upsertTask(mkTask({
+    id: taskId,
+    agent: "codex",
+    kind: "pipeline",
+    repoRoot,
+    intent: "Cancel while SDK start is pending and then rejects",
+  }));
+  let preallocatedSessionId = "";
+  let markStarted!: () => void;
+  let rejectStart!: (error: Error) => void;
+  const started = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
+  let stopped = 0;
+  let tornDown = 0;
+  const supervisor = {
+    start: (input: Parameters<SdkSupervisor["start"]>[0]) => {
+      preallocatedSessionId = input.sessionId!;
+      assert.equal(registry.getTask(taskId)?.sessionId, preallocatedSessionId);
+      assert.equal(registry.getSession(preallocatedSessionId), undefined);
+      return new Promise<Session>((_resolve, reject) => {
+        rejectStart = reject;
+        markStarted();
+      });
+    },
+    stop: async () => {
+      stopped += 1;
+    },
+    taskLiveness: () => null,
+  } as unknown as SdkSupervisor;
+  const tasks = new TaskManager(registry, undefined, supervisor);
+  const dispatcher = new Dispatcher(registry, async () => {
+    tornDown += 1;
+  }, {
+    supervisor,
+    missionMcpDescriptor: async () => ({
+      serverName: "mission-control",
+      command: "/usr/bin/node",
+      args: ["/dist/mcp/server.mjs"],
+      env: {},
+    }),
+    verifyMissionMcpTools: async () => ({ ok: true }),
+    pipelineLaunch: async () => ({
+      ok: true,
+      launchRuntime: "agent-sdk",
+      cwd: repoRoot,
+      pipelineRun: {
+        provider: "ai-conductor",
+        repoRoot,
+        slug: "cancel-rejected-start",
+      },
+    }),
+  });
+
+  const dispatching = dispatcher.dispatch(taskId);
+  await started;
+  const cancellation = await tasks.cancel(taskId);
+  assert.equal(cancellation.ok, true);
+  rejectStart(new Error("Codex SDK start rejected after cancellation"));
+  await dispatching;
+
+  const cancelled = registry.getTask(taskId);
+  assert.deepEqual({
+    sessionId: cancelled?.sessionId,
+    status: cancelled?.status,
+    stopped,
+    tornDown,
+  }, {
+    sessionId: null,
+    status: "cancelled",
+    stopped: 0,
+    tornDown: 1,
   });
 });
 

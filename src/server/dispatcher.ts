@@ -822,6 +822,7 @@ export class Dispatcher {
       // `start` returns, so assigning it afterward would create a valid-tool race window.
       this.patch(taskId, { sessionId });
       let session: Session;
+      this.registry.beginManagedPipelineLaunch(taskId, sessionId, launch.cwd);
       try {
         session = await supervisor.start({
           sessionId,
@@ -847,10 +848,12 @@ export class Dispatcher {
         });
       } catch (error) {
         const current = this.registry.getTask(taskId);
-        if (current?.status === "dispatching" && current.sessionId === sessionId) {
+        if (current?.status !== "done" && current?.sessionId === sessionId) {
           this.patch(taskId, { sessionId: task.sessionId });
         }
         throw error;
+      } finally {
+        this.registry.endManagedPipelineLaunch(taskId, sessionId);
       }
       if (await this.abortIfSettled(taskId)) {
         // Cancel can land while the SDK driver is starting, before the managed host is

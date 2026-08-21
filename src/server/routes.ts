@@ -2909,14 +2909,24 @@ export function buildApp(
       return c.json({ error: "the caller does not own this Pipeline task" }, 403);
     }
     const session = registry.getSession(parsed.data.hostSessionId);
-    if (!session || session.state === "exited") {
-      return c.json({ error: "no matching active session" }, 404);
-    }
-    if (
-      session.cwd !== parsed.data.cwd ||
-      (parsed.data.sessionId !== null && parsed.data.sessionId !== session.agentSessionId)
-    ) {
-      return c.json({ error: "the caller does not match the managed Pipeline host" }, 403);
+    if (session?.state === "exited") return c.json({ error: "no matching active session" }, 404);
+    if (session) {
+      if (
+        session.cwd !== parsed.data.cwd ||
+        (parsed.data.sessionId !== null && parsed.data.sessionId !== session.agentSessionId)
+      ) {
+        return c.json({ error: "the caller does not match the managed Pipeline host" }, 403);
+      }
+    } else {
+      const launch = registry.managedPipelineLaunch(parsed.data.hostSessionId);
+      if (!launch) return c.json({ error: "no matching active session" }, 404);
+      if (
+        launch.taskId !== task.id ||
+        launch.cwd !== parsed.data.cwd ||
+        parsed.data.sessionId !== null
+      ) {
+        return c.json({ error: "the caller does not match the pending managed Pipeline host" }, 403);
+      }
     }
     const result = tasks.adoptPipelineRun(
       task,
@@ -2925,7 +2935,9 @@ export function buildApp(
         repoRoot: task.repoRoot,
         slug: parsed.data.slug,
       },
-      { kind: "managed", session },
+      session
+        ? { kind: "managed", session }
+        : { kind: "managed-launch", sessionId: parsed.data.hostSessionId },
     );
     if (!result.ok) return c.json({ error: result.error }, result.status);
     return c.json({ task: result.task, replayed: result.replayed });

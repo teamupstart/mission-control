@@ -233,6 +233,13 @@ export interface PrOpened {
   repoRoot: string | null;
 }
 
+/** Daemon-minted authority for the interval before a managed Pipeline host is registered. */
+export interface ManagedPipelineLaunch {
+  taskId: string;
+  sessionId: string;
+  cwd: string;
+}
+
 /**
  * The id space of driver-run sessions.
  *
@@ -561,6 +568,7 @@ interface PassiveState {
  */
 export class Registry extends EventEmitter {
   private sessions = new Map<string, Session>();
+  private managedPipelineLaunches = new Map<string, ManagedPipelineLaunch>();
   private prObservations = new Map<string, PrObservation>();
   /**
    * Pull requests each session has already been announced as the author of.
@@ -1008,6 +1016,19 @@ export class Registry extends EventEmitter {
 
   getSession(id: string): Session | undefined {
     return this.sessions.get(id);
+  }
+
+  beginManagedPipelineLaunch(taskId: string, sessionId: string, cwd: string): void {
+    this.managedPipelineLaunches.set(sessionId, { taskId, sessionId, cwd });
+  }
+
+  endManagedPipelineLaunch(taskId: string, sessionId: string): void {
+    const launch = this.managedPipelineLaunches.get(sessionId);
+    if (launch?.taskId === taskId) this.managedPipelineLaunches.delete(sessionId);
+  }
+
+  managedPipelineLaunch(sessionId: string): ManagedPipelineLaunch | null {
+    return this.managedPipelineLaunches.get(sessionId) ?? null;
   }
 
   /**

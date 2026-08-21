@@ -5,12 +5,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { QueueManager } from "../src/server/queue.ts";
 import type { ReviewManager } from "../src/server/reviews.ts";
+import type { SdkSupervisor } from "../src/server/sdk/supervisor.ts";
 import type { PipelineRun } from "../src/shared/pipeline.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-pipeline-adoption-http-"));
 process.env.MISSION_HOME = home;
 
 const { ensureToken } = await import("../src/server/auth.ts");
+const { Dispatcher } = await import("../src/server/dispatcher.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
@@ -95,6 +97,199 @@ test("the authenticated adoption route derives provider and repository from its 
     slug: target.slug,
   });
   assert.equal(registry.getSession(task.sessionId!)?.pipeline, null);
+});
+
+test("the authenticated adoption route accepts its preallocated managed host before SDK registration", async () => {
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+  const repoRoot = "/repo/pipeline-adoption-preallocated";
+  const target: PipelineRun = {
+    provider: "ai-conductor",
+    repoRoot,
+    slug: "existing-preallocated-run",
+    worktree: `${repoRoot}/.worktrees/existing-preallocated-run`,
+    tier: "M",
+    track: "technical",
+    steps: [{ name: "build", state: "in_progress" }],
+    lastStep: "build",
+    halt: null,
+    group: "building",
+    prUrl: null,
+    costTokens: null,
+    updatedAt: 1,
+  };
+  registry.initializePipelineRuns([target]);
+  const task = mkTask({
+    id: "pipeline-adoption-preallocated",
+    agent: "codex",
+    kind: "pipeline",
+    repoRoot,
+    intent: "Resume the observed Pipeline run",
+  });
+  registry.upsertTask(task);
+
+  let preallocatedSessionId = "";
+  let markStarted!: () => void;
+  let rejectStart!: (error: Error) => void;
+  const started = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
+  const supervisor = {
+    start: (input: Parameters<SdkSupervisor["start"]>[0]) => {
+      preallocatedSessionId = input.sessionId!;
+      assert.equal(registry.getTask(task.id)?.sessionId, preallocatedSessionId);
+      assert.equal(registry.getSession(preallocatedSessionId), undefined);
+      return new Promise((_resolve, reject) => {
+        rejectStart = reject;
+        markStarted();
+      });
+    },
+    taskLiveness: () => null,
+  } as unknown as SdkSupervisor;
+  const dispatcher = new Dispatcher(registry, undefined, {
+    supervisor,
+    missionMcpDescriptor: async () => ({
+      serverName: "mission-control",
+      command: "/usr/bin/node",
+      args: ["/dist/mcp/server.mjs"],
+      env: {},
+    }),
+    verifyMissionMcpTools: async () => ({ ok: true }),
+    pipelineLaunch: async () => ({
+      ok: true,
+      launchRuntime: "agent-sdk",
+      cwd: repoRoot,
+      pipelineRun: {
+        provider: target.provider,
+        repoRoot,
+        slug: "reserved-preallocated-run",
+      },
+    }),
+  });
+  const app = buildApp(registry, {} as ReviewManager, tasks, {} as QueueManager);
+
+  const dispatch = dispatcher.dispatch(task.id);
+  await started;
+  const response = await app.request("/mcp/pipelines/adopt", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-harness-token": ensureToken() },
+    body: JSON.stringify({
+      env: {},
+      sessionId: null,
+      cwd: repoRoot,
+      taskId: task.id,
+      hostSessionId: preallocatedSessionId,
+      slug: target.slug,
+    }),
+  });
+  const responseBody = await response.text();
+  rejectStart(new Error("SDK start rejected after adoption request"));
+  await dispatch;
+
+  assert.equal(registry.managedPipelineLaunch(preallocatedSessionId), null);
+  assert.equal(response.status, 200, responseBody);
+  assert.deepEqual(registry.getTask(task.id)?.pipelineRun, {
+    provider: target.provider,
+    repoRoot: target.repoRoot,
+    slug: target.slug,
+  });
+});
+
+test("pre-registration managed adoption refuses mismatched caller identity", async () => {
+  for (const mode of ["wrong-cwd", "native-session"] as const) {
+    const registry = new Registry();
+    const tasks = new TaskManager(registry);
+    const repoRoot = `/repo/pipeline-adoption-preallocated-${mode}`;
+    const reservedSlug = `reserved-preallocated-${mode}`;
+    const target: PipelineRun = {
+      provider: "ai-conductor",
+      repoRoot,
+      slug: `existing-preallocated-${mode}`,
+      worktree: `${repoRoot}/.worktrees/existing-preallocated-${mode}`,
+      tier: "M",
+      track: "technical",
+      steps: [{ name: "build", state: "in_progress" }],
+      lastStep: "build",
+      halt: null,
+      group: "building",
+      prUrl: null,
+      costTokens: null,
+      updatedAt: 1,
+    };
+    registry.initializePipelineRuns([target]);
+    const task = mkTask({
+      id: `pipeline-adoption-preallocated-${mode}`,
+      agent: "codex",
+      kind: "pipeline",
+      repoRoot,
+      intent: "Keep the reserved run when caller identity is wrong",
+    });
+    registry.upsertTask(task);
+
+    let preallocatedSessionId = "";
+    let markStarted!: () => void;
+    let rejectStart!: (error: Error) => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const supervisor = {
+      start: (input: Parameters<SdkSupervisor["start"]>[0]) => {
+        preallocatedSessionId = input.sessionId!;
+        assert.equal(registry.getTask(task.id)?.sessionId, preallocatedSessionId);
+        assert.equal(registry.getSession(preallocatedSessionId), undefined);
+        return new Promise((_resolve, reject) => {
+          rejectStart = reject;
+          markStarted();
+        });
+      },
+      taskLiveness: () => null,
+    } as unknown as SdkSupervisor;
+    const dispatcher = new Dispatcher(registry, undefined, {
+      supervisor,
+      missionMcpDescriptor: async () => ({
+        serverName: "mission-control",
+        command: "/usr/bin/node",
+        args: ["/dist/mcp/server.mjs"],
+        env: {},
+      }),
+      verifyMissionMcpTools: async () => ({ ok: true }),
+      pipelineLaunch: async () => ({
+        ok: true,
+        launchRuntime: "agent-sdk",
+        cwd: repoRoot,
+        pipelineRun: {
+          provider: target.provider,
+          repoRoot,
+          slug: reservedSlug,
+        },
+      }),
+    });
+    const app = buildApp(registry, {} as ReviewManager, tasks, {} as QueueManager);
+
+    const dispatch = dispatcher.dispatch(task.id);
+    await started;
+    const response = await app.request("/mcp/pipelines/adopt", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-harness-token": ensureToken() },
+      body: JSON.stringify({
+        env: {},
+        sessionId: mode === "native-session" ? "unexpected-native-session" : null,
+        cwd: mode === "wrong-cwd" ? "/repo/different" : repoRoot,
+        taskId: task.id,
+        hostSessionId: preallocatedSessionId,
+        slug: target.slug,
+      }),
+    });
+    const responseBody = await response.text();
+    const pipelineRun = registry.getTask(task.id)?.pipelineRun;
+    rejectStart(new Error("SDK start rejected after mismatched adoption request"));
+    await dispatch;
+
+    assert.deepEqual({ status: response.status, slug: pipelineRun?.slug }, {
+      status: 403,
+      slug: reservedSlug,
+    }, `${mode}: ${responseBody}`);
+  }
 });
 
 test("the adoption route requires authentication and exact launch identity", async () => {

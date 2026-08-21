@@ -587,6 +587,7 @@ export interface AssignOptions {
 /** Evidence that the daemon resolved before a Pipeline task may change its durable run. */
 export type PipelineRunAdoptionProof =
   | { kind: "managed"; session: Session }
+  | { kind: "managed-launch"; sessionId: string }
   | { kind: "terminal"; session: Session };
 
 export type PipelineRunAdoptionResult =
@@ -855,37 +856,50 @@ export class TaskManager {
       return { ok: false, status: 409, error: "this task is not an active Pipeline task" };
     }
 
-    const session = this.registry.getSession(proof.session.id);
-    if (!session || session.state === "exited") {
-      return { ok: false, status: 403, error: "the Pipeline task host is no longer active" };
-    }
-    if (proof.kind === "managed") {
-      if (task.sessionId !== session.id || session.runtime !== "sdk" || session.pipeline !== null) {
+    let sessionPipeline: PipelineRunLink | null = null;
+    if (proof.kind === "managed-launch") {
+      const launch = this.registry.managedPipelineLaunch(proof.sessionId);
+      if (!launch || launch.taskId !== task.id || task.sessionId !== launch.sessionId) {
         return {
           ok: false,
           status: 403,
-          error: "only this task's live managed Engineer host may adopt its Pipeline run",
+          error: "only this task's pending managed Engineer launch may adopt its Pipeline run",
         };
       }
     } else {
-      const owner = this.registry.taskResourceOwnerForSession(
-        session.id,
-        undefined,
-        (candidate) =>
-          candidate.id === task.id &&
-          candidate.kind === "pipeline" &&
-          (candidate.status === "running" || candidate.status === "dispatching"),
-      );
-      if (session.runtime !== "terminal" || owner?.id !== task.id || !session.pipeline) {
-        return {
-          ok: false,
-          status: 403,
-          error: "the terminal session does not prove ownership of this Pipeline task",
-        };
+      const session = this.registry.getSession(proof.session.id);
+      if (!session || session.state === "exited") {
+        return { ok: false, status: 403, error: "the Pipeline task host is no longer active" };
       }
+      if (proof.kind === "managed") {
+        if (task.sessionId !== session.id || session.runtime !== "sdk" || session.pipeline !== null) {
+          return {
+            ok: false,
+            status: 403,
+            error: "only this task's live managed Engineer host may adopt its Pipeline run",
+          };
+        }
+      } else {
+        const owner = this.registry.taskResourceOwnerForSession(
+          session.id,
+          undefined,
+          (candidate) =>
+            candidate.id === task.id &&
+            candidate.kind === "pipeline" &&
+            (candidate.status === "running" || candidate.status === "dispatching"),
+        );
+        if (session.runtime !== "terminal" || owner?.id !== task.id || !session.pipeline) {
+          return {
+            ok: false,
+            status: 403,
+            error: "the terminal session does not prove ownership of this Pipeline task",
+          };
+        }
+      }
+      sessionPipeline = session.pipeline;
     }
 
-    const provider = task.pipelineRun?.provider ?? session.pipeline?.provider;
+    const provider = task.pipelineRun?.provider ?? sessionPipeline?.provider;
     const runLink: PipelineRunLink = {
       provider: target.provider,
       repoRoot: target.repoRoot,
@@ -929,7 +943,7 @@ export class TaskManager {
     }
     if (
       proof.kind === "terminal" &&
-      pipelineRunKeyOf(session.pipeline!) !== targetKey
+      pipelineRunKeyOf(sessionPipeline!) !== targetKey
     ) {
       return {
         ok: false,

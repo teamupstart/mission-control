@@ -1,0 +1,159 @@
+# Phase 1: Anchor, durable model, and wire
+
+## Outcome
+
+Mission Control can durably hold a line-anchored comment thread, re-anchor it when the file moves
+under it, and tell every dashboard about it - with a route suite that proves all of it. No UI. The
+next phase draws a gutter against a contract that is already settled and already tested.
+
+The engineering value is specific: after this merges, the anchor type and the table shape are fixed,
+and three renderer integrations can be written against them without any of the three being able to
+change them cheaply. That ordering is deliberate - see the entry on `addColumn` below.
+
+## Entry criteria and dependencies
+
+- Direct prerequisites: none. Base is current `main`.
+- Read `docs/agent-guides/change-contracts.md` before starting. This phase triggers three of its
+  checklists at once (new persisted entity, new `ServerEvent`, new mutating routes).
+
+## Scope
+
+1. **`src/shared/file-comment-anchor.ts`** - the pure anchor module. Browser-safe, **no `node:`
+   imports** (`src/shared/` is a controlled path). Owns:
+   - the `FileCommentAnchor` shape: `path`, `startLine`, `endLine`, `quote`, `quoteHash`,
+     `revision`, `surface`;
+   - `quoteHash` = `sha256(path + "\n" + normalized quote)`, excluding the line numbers, exactly as
+     `fingerprint()` (`src/server/inspector/marker.ts:140-148`) excludes them. Use Web Crypto or a
+     small local digest rather than `node:crypto`, which this directory forbids;
+   - `reanchor(anchor, newText)` returning one of: unchanged, moved (with the new range), or
+     `outdated`. Rules in `plan.md` under "The anchor". Pure, no I/O.
+2. **Both tables in `src/server/db.ts`**, appended to the one schema template literal, in the house
+   style of `inspector_comments` (`db.ts:1791-1817`): a comment block above the table stating the
+   rule it enforces, aligned column types, `--` comments naming each enum domain, indices declared
+   immediately beneath.
+   - `file_comment_threads` and `file_comment_messages`, columns exactly as `plan.md` specifies.
+   - A partial unique index on `(session_id) WHERE status = 'sending'`. Build the predicate from the
+     TypeScript status tuple the way `inFlightIndexSql()` does (`db.ts:2707-2716`) so enforcement and
+     readers cannot drift.
+   - **Declare the whole shape now**, including `queue_seq`, `delivery_id`, `answered_at` - columns
+     phases 3 and 4 are the first to write. A shipped table cannot gain a column from the CREATE
+     TABLE alone; it needs `addColumn` in `migrate()` forever after (`db.ts:3021-3023`).
+   - **No `migrate()` entry is needed** for a new table: the schema literal runs on every open,
+     before `migrate()`.
+3. **Store functions in `db.ts`**, Shape A (module-level exported functions, as
+   `upsertInspectorComment` / `loadInspectorComments` are): create, list by session, list by session
+   and path, update body, delete, reorder `queue_seq`, and the status transitions.
+4. **A `FileCommentManager`** owning the session-scoped lifetime. This is the part the source plan
+   got wrong; implement the repository's actual pattern, which is **three mechanisms**:
+   - `registry.subscribe` on `session_remove` - mark that session's threads terminal
+     (`orphaned`), the way `ReviewManager.orphanReviewsFor` (`reviews.ts:314`) does. **Not a
+     `DELETE`,** and never keyed on `state === "exited"`.
+   - `registry.onSessionsObserved(...)` - the same reconciliation for threads whose session vanished
+     while the daemon was down, mirroring `orphanReviewsWithNoLiveSession` (`reviews.ts:319`).
+     Without this arm, pre-restart rows survive forever.
+   - A throttled prune of terminal rows against the live key set, in the shape of
+     `pruneSessionGoals` (`db.ts:6905`) / `Registry.pruneGoals` (`registry.ts:6288`), gated on
+     `sweptSessions`.
+5. **Zod schemas in `src/shared/protocol.ts`** for every mutating route, in the house shape
+   (`RenameArchiveSchema`, `protocol.ts:5535-5539`): doc comment, `export const XSchema`, then
+   `export type X = z.infer<typeof XSchema>` immediately after. Bound every string.
+6. **Wire types in `src/shared/types.ts`**: the `FileCommentThread` entity, and two `ServerEvent`
+   arms named to the existing convention - `file_comment_thread_upsert` (carrying the thread) and
+   `file_comment_thread_remove` (carrying `id`).
+7. **`src/server/registry.ts`**: the collection on `snapshot()`, the emit helpers, and an
+   **explicit decision on `LINE_INPUT_EVENTS`** (`registry.ts:423`) with the reason written beside
+   it. The recommendation is **absent** - the Line strip does not read file comments - and
+   `pipeline_upsert`'s deliberate absence is the precedent to follow.
+8. **Routes in `src/server/routes.ts`**: create, list, edit, delete, and reorder. `parseBody` for
+   every mutating route; no hand-parsed JSON. If a manager instance is needed, append it as the
+   **last** optional positional parameter of `buildApp` (currently `productIssues`, `routes.ts:833`)
+   and answer **503** when absent.
+9. **Browser plumbing**: the exhaustive cases in `src/web/useEventStream.ts`, the collection on
+   `MissionState`, the snapshot arm with a `?? []` version-skew guard, and helpers on
+   `src/web/lib/api.ts` (note the path - it is `lib/api.ts`, not `api.ts`).
+10. **`docs/sqlite-database.html`**: both tables in a family, the family's `N tables` count, **and**
+    the two hand-maintained totals at `:429` (lede prose) and `:437` (metric tile).
+11. **`docs/event-stream.md`**: both new event variants and what bounds the collection. They ship
+    here, so they are documented here.
+
+## Non-goals
+
+- No UI of any kind. No toolbar control, no gutter, no thread rendering.
+- No delivery. Nothing writes to a session, and `pending_turns` is not touched.
+- No MCP tool.
+- No `start`/`pause` walkthrough routes - phase 3 owns those.
+
+## Repository findings this phase rests on
+
+- The schema is one `db.exec()` literal at `db.ts:525-2697`; `migrate(d)` runs after it at `:2699`.
+- `test/db-shell.test.ts:58` asserts `74` tables and becomes `76`. A second test in the same file
+  cross-checks each family's `<span>N tables</span>` against its row count.
+- No existing table is hard-`DELETE`d on `session_remove`; every subscriber orphans by UPDATE, and
+  every one has an `onSessionsObserved` second arm.
+- `change-contracts.md:14-28` requires the `LINE_INPUT_EVENTS` decision **and** a stated bound on the
+  new collection, pinned by a test.
+- `buildApp`'s optional parameters are positional and appended last because ~50 tests construct it
+  that way (`routes.ts:803-806`).
+
+## Data and migration notes
+
+- Epoch-millisecond `INTEGER NOT NULL` timestamps; `TEXT PRIMARY KEY` from `randomUUID()` at the
+  call site; relations by convention, not `REFERENCES`.
+- Columns in a `UNIQUE` index targeted by `ON CONFLICT` must be non-null - SQLite treats nulls as
+  distinct (`change-contracts.md:50-63`).
+- No backticks inside the `openDb()` SQL template literal.
+- **State the bound** on the threads collection in its doc comment: how many threads can ride a
+  reconnect, and the fleet arithmetic. Every collection rides every snapshot.
+
+## Verification
+
+- `test/file-comment-anchor.test.ts` - re-anchoring: exact, moved, duplicated (nearest wins), gone,
+  and reversible. Pure, so cover it exhaustively; this is the cheapest place in the feature to be
+  thorough.
+- `test/file-comment-contracts.test.ts` - Zod bounds and refusals.
+- `test/file-comments-store.test.ts` - SQL, status transitions, `queue_seq` rewrites, and that the
+  partial unique index actually refuses a second `sending` row for one session.
+- `test/file-comments-lifecycle.test.ts` - `session_remove` orphans; `state === "exited"` alone
+  changes nothing; the `onSessionsObserved` arm settles rows orphaned during a daemon outage; the
+  prune deletes only terminal rows whose session is gone.
+- `test/file-comments-migration.test.ts` - the subprocess round-trip shape of
+  `test/retro-followup-migration.test.ts`: drop the table in one child, re-open in a second, assert
+  it returns, assert a third pass keeps it.
+- `test/file-comments-http.test.ts` - every route through `buildApp()`. Remember `/api/*` is behind
+  `requireLoopback`, so send `{ host: "127.0.0.1:7317" }`.
+- `test/file-comments-sse.test.ts` - snapshot and incremental convergence in the shape of
+  `test/pipeline-sse.test.ts`, plus its wire-size budget assertion and its
+  `useEventStream.ts` source-parity checks (`case "file_comment_thread_upsert":` present,
+  `const unhandled: never = msg;` still present).
+- Commands: `npm run typecheck`, `npm run lint`, `npm test`.
+
+Every test file needs the `HARNESS_HOME`-above-imports preamble and `await import(...)` for anything
+under `src/`. Run one file with
+`node --test --import ./test/setup-state.mjs --import tsx test/<file>.test.ts`.
+
+## Merge and exit criteria
+
+- A thread can be created, listed, edited, reordered, and deleted through real routes.
+- A thread survives a daemon restart and is orphaned when its session is removed - by both arms.
+- Both new event variants reach a browser, and the snapshot and the stream agree.
+- The database guide catalogs both tables and all four counts agree.
+- Typecheck, lint, and the full unit suite pass.
+
+## Downstream handoff
+
+Later phases may rely on, and must not change:
+
+- The `FileCommentAnchor` shape and `reanchor()`'s three outcomes.
+- Both tables' full column shape, including the columns phases 3 and 4 are first to write.
+- The three-mechanism session lifetime. No later phase adds a fourth teardown path.
+- The two `ServerEvent` variants. Phases 3 and 4 emit them; neither adds a third.
+
+Later phases own, and this phase must not pre-empt: comment eligibility per surface (phase 2),
+the walkthrough state machine and payload (phase 3), the MCP tool (phase 4).
+
+## Cross-phase audit record
+
+- Initial authoring. The source plan's single-signal cleanup claim was replaced with the
+  repository's actual three-mechanism pattern; recorded as finding 1 in `phased-plan.md`.
+- The source plan's "Migration" test row was reframed: a new table needs no `migrate()` entry, so
+  the migration test proves **idempotency** rather than an upgrade path.

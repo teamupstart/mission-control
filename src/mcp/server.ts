@@ -157,18 +157,29 @@ async function waitForResolution(id: string, call?: BlockingCall): Promise<Revie
       beat();
     }
   } catch (error) {
+    let detachFailure: unknown = null;
     try {
-      await http(
+      const response = await http(
         `/mcp/reviews/${id}/detach`,
         "POST",
         { env: ENV, sessionId: SESSION_ID, cwd: process.cwd() },
         false,
         AbortSignal.timeout(2_000),
       );
-    } catch {
-      // Startup recovery marks a still-pending row detached if the daemon itself was the
-      // reason this notification could not land. Reporting the handoff must not become a
-      // second error that hides the failure which ended the direct result channel.
+      if (!response.ok) {
+        throw new Error(`harness detach ${response.status}: ${await response.text()}`);
+      }
+    } catch (detachError) {
+      // Startup recovery still covers a daemon restart. Retain every other handoff failure
+      // in the returned error so a running daemon cannot silently lose the detached wait.
+      detachFailure = detachError;
+    }
+    if (detachFailure) {
+      const detail = detachFailure instanceof Error ? detachFailure.message : String(detachFailure);
+      throw new AggregateError(
+        [error, detachFailure],
+        `review wait ended and its durable detach failed: ${detail}`,
+      );
     }
     if (call?.signal.aborted) {
       throw new Error("the client cancelled this request");

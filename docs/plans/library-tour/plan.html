@@ -238,9 +238,9 @@
 <p>A <code>TourDefinition</code> carries what the controller currently hardcodes:</p>
 
 <pre><code>interface TourDefinition {
-  id: TourId;                       // "see-work" | "library"
-  kicker: string;                   // popover header text, today "See the work"
-  title: string;                    // "See the work", "Author what runs"
+  id: TourId;                       // &quot;see-work&quot; | &quot;library&quot;
+  kicker: string;                   // popover header text, today &quot;See the work&quot;
+  title: string;                    // &quot;See the work&quot;, &quot;Author what runs&quot;
   detail: string;                   // palette and Settings sub-copy
   keywords: readonly string[];      // palette matching
   steps: readonly TourStep[];
@@ -248,20 +248,25 @@
 
 interface TourStep {
   id: string;                       // stable, replaces STEP_INDEX
-  target: TourTargetId;
+  /**
+   * The surfaces this stop spotlights, in order - its &quot;beats&quot;. One for most stops; two
+   * where a stop genuinely has to point at a second thing to make its point, such as a
+   * Persona&#x27;s config chips and then its guidance. Never more than two.
+   */
+  targets: readonly TourTargetId[];
   title: string;
   description: string;
   details?: readonly { label: string; description: string }[];
-  side?: "top" | "bottom" | "left" | "right";
-  nextLabel?: string;               // today's next-button ladder, per step
-  /** Put the app where this step can be seen. Today's `prepare()` switch. */
+  side?: &quot;top&quot; | &quot;bottom&quot; | &quot;left&quot; | &quot;right&quot;;
+  nextLabel?: string;               // today&#x27;s next-button ladder, per step
+  /** Put the app where this step can be seen. Today&#x27;s `prepare()` switch. */
   prepare(nav: TourNavigator): boolean;
-  /** Is the target mounted and meaningful yet? Today's `targetReady()` switch. */
+  /** Is the target mounted and meaningful yet? Today&#x27;s `targetReady()` switch. */
   ready?(runtime: TourRuntime, registry: TourTargetRegistry): boolean;
-  /** What to say while it is not. Today's `fallbackDescription()` switch. */
+  /** What to say while it is not. Today&#x27;s `fallbackDescription()` switch. */
   fallback?(runtime: TourRuntime): string | null;
   /**
-   * Runtime moved under this step - advance, retreat, or stay. Today's `refresh()`.
+   * Runtime moved under this step - advance, retreat, or stay. Today&#x27;s `refresh()`.
    * Returns the step id to move to, or null to stay put.
    */
   reconcile?(runtime: TourRuntime): string | null;
@@ -269,9 +274,15 @@ interface TourStep {
 
 <p>The five index-keyed switches become per-step methods; <code>intendedIndex</code> becomes an intended <strong>step id</strong>, which removes the class of bug the current controller carries comments about (Driver's active index lagging a committed transition). The Driver.js adapter, focus containment, progress rail, fallback rendering, cleanup-error dialog and overlay registration are unchanged in behaviour and move wholesale into the engine.</p>
 
+<p><strong>Beats, and why a step needs more than one target.</strong> The current controller assumes one target per step, which is true of all fourteen of its own. It is not true of the Library's authoring screens: a stop that teaches what configures a Persona has to point at the property chips <em>and</em> the guidance below them, and a stop about a run has to point at the pipeline strip <em>and</em> the worklist under it. Splitting each of those into its own step is the alternative, and it is what pushed the first draft of this tour to twenty-five.</p>
+
+<p>So a step declares an ordered <code>targets</code> array instead of a single <code>target</code>. <strong>Driver drives beats; the progress rail counts stops.</strong> Next advances to the next beat within a stop and then to the next stop, so the popover keeps its title and its rail segment while the spotlight moves. The rail therefore reads <em>Step 3 of 15</em> across both beats of stop 3, which is the count the tour actually has. The cost is stated rather than hidden: fifteen stops are nineteen beats plus a targetless close card - twenty screens in all, so a full run is twenty Next presses rather than fifteen.</p>
+
+<p>Every step in the existing tour becomes a one-element <code>targets</code> array, which is why its spec does not change. Two is the ceiling, and a stop reaching for a third is a stop that should have been two stops.</p>
+
 <p>Around it:</p>
 <ul>
-  <li><strong>Target ids get namespaced.</strong> <code>TOUR_TARGET_IDS</code> becomes per-tour groups so a Library target cannot collide with a fleet one. <code>useTourTaskTargetRef</code>'s hardcoded <code>Extract&lt;&gt;</code> allow-list becomes a declared scoping.</li>
+  <li><strong>Target ids get namespaced.</strong> <code>TOUR_TARGET_IDS</code> becomes per-tour groups so a Library target cannot collide with a fleet one - the existing thirteen stay as the <code>see-work</code> group, and the Library tour adds nineteen of its own, listed per stop in Part 2. <code>useTourTaskTargetRef</code>'s hardcoded <code>Extract&lt;&gt;</code> allow-list becomes a declared scoping.</li>
   <li><strong><code>App.tsx</code> holds one active tour, not one named tour.</strong> <code>SeeWorkTourRun</code> generalizes to <code>TourRun</code> with the same snapshot fields; the re-entrancy guard becomes "a tour is running" rather than "this tour is running". A tour still owns temporary resources, so the run carries a per-tour cleanup handle rather than two hardcoded task ids.</li>
   <li><strong>Entry points become a list.</strong> The Settings <strong>Help &amp; tours</strong> footer renders one row per registered tour, and the palette contributes one <strong>Do</strong> row per tour from the same registry - <code>{ kind: "start-tour", tourId }</code> replacing <code>{ kind: "start-see-work-tour" }</code>. Adding a third tour then costs a definition and nothing else.</li>
   <li><strong>One overlay id</strong> (<code>tour</code>) serves whichever tour is active.</li>
@@ -328,9 +339,9 @@ interface TourStep {
   <text class="svg-label" x="456" y="52">AFTER - A REGISTRY</text>
 
   <rect class="svg-box" x="464" y="70" width="150" height="34" rx="7"/>
-  <text class="svg-t" x="539" y="91" text-anchor="middle">Settings: one per tour</text>
+  <text class="svg-t" x="539" y="91" text-anchor="middle">Settings: one row per tour</text>
   <rect class="svg-box" x="634" y="70" width="150" height="34" rx="7"/>
-  <text class="svg-t" x="709" y="91" text-anchor="middle">Palette: one per tour</text>
+  <text class="svg-t" x="709" y="91" text-anchor="middle">Palette: one row per tour</text>
 
   <rect class="svg-box-accent" x="524" y="126" width="200" height="34" rx="7"/>
   <text class="svg-t" x="624" y="147" text-anchor="middle">App.tsx - one active TourRun</text>
@@ -394,31 +405,58 @@ interface TourStep {
 <p class="chapter">Actions - what a run can tell the session to do</p>
 <ol class="stops" style="counter-reset: stop 4">
   <li><strong>The Action library</strong> - <code>#/library/actions/&lt;built-in id&gt;</code>, spotlight the <code>complementary "Session action library"</code> rail. The same rail and workspace grammar as Personas, because an operator moving between them is moving through one surface with different contents; each row's sub-label is its contract, not its description.</li>
-  <li><strong>The contract, and editing one</strong> - spotlight the <code>requires skill</code> and <code>completes when</code> chips and the sentence they form. This is the one Library asset carrying a machine-checked contract: something observable has to happen before a stage may call it done. Then the instruction editor, whose Markdown reaches the session byte for byte, and the same <strong>Save</strong> or <strong>Duplicate to edit</strong> verb the Persona screen promotes.</li>
+  <li><strong>The contract, and the instruction</strong> - two beats. First the <code>requires skill</code> and <code>completes when</code> chips and the sentence they form: this is the one Library asset carrying a machine-checked contract, where something observable has to happen before a stage may call it done. Then the instruction editor, whose Markdown reaches the session byte for byte. Editing is the same promoted verb stop 4 already showed - this screen shares the Persona screen's rail and workspace - so the copy says so rather than spending a third beat on it.</li>
 </ol>
 
 <p class="chapter">Commands - what each standard gate runs here</p>
 <ol class="stops" style="counter-reset: stop 6">
   <li><strong>A Command slot</strong> - <code>#/library/commands/test</code>. Four fixed slots, no <strong>＋ New</strong> card and no cross-link, because the slots ship with the product. A workflow's Command node names a portable slot and never an argv, so the same workflow runs against any repository; this screen is where <em>this machine</em> says what the slot runs. Spotlight <strong>Default command</strong>.</li>
-  <li><strong>Overrides, and saving one</strong> - spotlight the <strong>Repository path</strong> / <strong>Override command</strong> / <strong>Add override</strong> row and <strong>Save Command</strong>. Saving executes nothing. A workflow reaching that slot, later, in a repository granted the Workflows cell in Trust, is what runs it - and <strong>Settings → Workflows → Allow workflow Commands</strong> is the machine-wide switch above that.</li>
+  <li><strong>Overrides, and saving one</strong> - two beats. First the <strong>Repository path</strong> / <strong>Override command</strong> / <strong>Add override</strong> row and the rules table it writes. Then <strong>Save Command</strong>, where the point is that saving executes nothing: a workflow reaching that slot, later, in a repository granted the Workflows cell in Trust, is what runs it - and <strong>Settings → Workflows → Allow workflow Commands</strong> is the machine-wide switch above that.</li>
 </ol>
 
 <p class="chapter">Workflows - what counts as done</p>
 <ol class="stops" style="counter-reset: stop 8">
   <li><strong>The builder</strong> - <code>#/library/workflows/&lt;a workflow&gt;</code>, spotlight the <code>complementary "Workflow library and node palette"</code> rail: Persona, Command, Session action, all-pass Join and End are exactly the assets the last three chapters covered.</li>
-  <li><strong>Creating one</strong> - spotlight <strong>New</strong>, then the <code>group "Editing surface"</code> Pipeline/Graph toggle and <strong>Publish</strong>. A draft follows Library edits; a published version freezes its Persona snapshots, and publishing cannot change a binding that already exists.</li>
+  <li><strong>Creating one</strong> - two beats. First the <code>group "Editing surface"</code> Pipeline/Graph toggle, reached from the <strong>New</strong> button the copy names but does not spend a beat on. Then <strong>Publish</strong>: a draft follows Library edits, while a published version freezes its Persona snapshots, and publishing cannot change a binding that already exists.</li>
   <li><strong>No-Mistakes Review</strong> - <code>#/library/workflows/builtin-workflow:no-mistakes-review</code>, spotlight <code>.wf-pipeline-strip</code>. Five stages, walked in order: typecheck and test together; Intent Conformance alone as a cheap gate; Code Risk and Code Quality in parallel; Test Evidence and Documentation in parallel; then the verified Pull Request action before End. Every failure returns to the session for a repair round, up to five. It is a built-in, so its versions stay addressable exactly as shipped and your changes live in a <strong>Duplicate</strong>.</li>
   <li><strong>Binding it</strong> - spotlight <strong>Bind to a session…</strong>, and name the trigger and delivery postures v10 ships with: Foreman-complete, live delivery, five repair rounds.</li>
 </ol>
 
 <p class="chapter">A run</p>
 <ol class="stops" style="counter-reset: stop 12">
-  <li><strong>A run, moving</strong> - the Runs page for a No-Mistakes run. Spotlight the pipeline strip, then the review worklist's <strong>Blocking</strong> / <strong>Passed</strong> segments, then a verdict.</li>
+  <li><strong>A run, moving</strong> - the Runs page for a No-Mistakes run, in two beats. First the pipeline strip, which is the same five stages stop 11 just walked, now carrying real state. Then the review worklist's <strong>Blocking</strong> / <strong>Passed</strong> segments, where an individual verdict is read inside that same beat rather than claiming a third.</li>
   <li><strong>Where a run is watched</strong> - the same run drawn as the vertical stage ladder in a session's <strong>Workflows</strong> tab, which is where the work is actually followed.</li>
   <li><strong>Close</strong> - what the tour left behind, and the offer to run the other tour.</li>
 </ol>
 
 <p>Which run stops 13 and 14 look at is settled in Part 3: an existing finished run, never one the tour starts.</p>
+
+<p><strong>Every stop's targets, named.</strong> The engine refuses to render a step whose target is absent - that is what the fallback copy is for - so a plan that leaves them implied is a plan that cannot be checked against the DOM. Fifteen stops, nineteen beats:</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>#</th><th>Stop</th><th>Beats (<code>targets</code>, in order)</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td>The Library</td><td><code>library-page</code></td></tr>
+    <tr><td>2</td><td>The Persona library</td><td><code>persona-rail</code></td></tr>
+    <tr><td>3</td><td>What a Persona is</td><td><code>persona-chips</code> → <code>persona-guidance</code></td></tr>
+    <tr><td>4</td><td>Editing one</td><td><code>persona-primary-action</code></td></tr>
+    <tr><td>5</td><td>The Action library</td><td><code>action-rail</code></td></tr>
+    <tr><td>6</td><td>The contract, and the instruction</td><td><code>action-contract</code> → <code>action-instruction</code></td></tr>
+    <tr><td>7</td><td>A Command slot</td><td><code>command-default</code></td></tr>
+    <tr><td>8</td><td>Overrides, and saving one</td><td><code>command-overrides</code> → <code>command-save</code></td></tr>
+    <tr><td>9</td><td>The builder</td><td><code>workflow-palette</code></td></tr>
+    <tr><td>10</td><td>Creating one</td><td><code>workflow-surface-toggle</code> → <code>workflow-publish</code></td></tr>
+    <tr><td>11</td><td>No-Mistakes Review</td><td><code>workflow-pipeline-strip</code></td></tr>
+    <tr><td>12</td><td>Binding it</td><td><code>workflow-bind</code></td></tr>
+    <tr><td>13</td><td>A run, moving</td><td><code>run-pipeline-strip</code> → <code>run-worklist</code></td></tr>
+    <tr><td>14</td><td>Where a run is watched</td><td><code>session-workflow-ladder</code></td></tr>
+    <tr><td>15</td><td>Close</td><td>none - a centred card, like the current tour's terminal states</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Nineteen new target ids, each registered by the component that already owns that element through <code>useTourTargetRef</code>, exactly as the existing thirteen are. None of them is a new wrapper element added for the tour's benefit: every one is a node the Library already renders and already gives an accessible name.</p>
 
 <h3>Part 3 - the demo run</h3>
 <p>The current tour spends real model tokens by design, and <code>docs/ui.md</code> says so plainly. A No-Mistakes run is a different order of magnitude: five reviewer Personas, a typecheck, a test, a real pull request, and minutes to tens of minutes of wall clock. Running the real flagship inside a tour is not on the table.</p>
@@ -471,7 +509,7 @@ interface TourStep {
 
   <rect class="svg-box-accent" x="386" y="216" width="300" height="44" rx="7"/>
   <text class="svg-t" x="536" y="234" text-anchor="middle">#/runs/:id - read only</text>
-  <text class="svg-t-sm" x="536" y="249" text-anchor="middle">strip, worklist, verdicts → then the session ladder</text>
+  <text class="svg-t-sm" x="536" y="249" text-anchor="middle">strip, worklist, verdicts, then the session ladder</text>
 
   <rect class="svg-box" x="24" y="216" width="300" height="44" rx="7"/>
   <text class="svg-t" x="174" y="234" text-anchor="middle">fallback copy, same two stops</text>
@@ -531,7 +569,7 @@ interface TourStep {
 <h2>Risks</h2>
 <ul>
   <li><strong>The refactor is the risk, not the tour.</strong> The existing controller carries hard-won behaviour in comments - Driver's lagging active index, the review modal becoming the top registered layer, <code>onDestroyed</code> being skipped on an immediate exit, cleanup refusal retry. Every one of those has to survive the extraction, and <code>see-work-tour.spec.ts</code> passing unchanged is the only proof that counts.</li>
-  <li><strong>Fifteen stops is close to the ceiling.</strong> The current tour is fourteen and already asks a lot. The list above is already cut to what each chapter needs to teach - what the asset is, what configures it, how it is edited - and anything further added to it should displace a stop rather than extend the run. If the review wants it shorter still, the chapters split into separately-startable tours sharing one engine, which the registry makes free.</li>
+  <li><strong>Fifteen stops, twenty screens, is close to the ceiling.</strong> The current tour is fourteen single-beat steps and already asks a lot. The list above is cut to what each chapter needs to teach - what the asset is, what configures it, how it is edited - and anything further added should displace a stop rather than extend the run. Beats are the pressure valve that keeps the stop count at fifteen, and they are capped at two precisely so they cannot become a way of hiding a twenty-five stop tour inside a fifteen-stop rail. If the review wants it shorter still, the chapters split into separately-startable tours sharing one engine, which the registry makes free.</li>
   <li><strong>Built-in assets must exist.</strong> Stops 2, 5 and 11 point at shipped built-ins, which are app data and always present. Stop 9 points at <em>a</em> workflow; on an install with none authored, it points at the built-in too.</li>
   <li><strong>The last two stops depend on the operator's own history.</strong> With the run stops reading a real finished run, a fleet that has never run No-Mistakes sees fallback copy instead of a run. That fallback is written as a real stop rather than an apology, and it is the one part of the tour whose test needs both states covered: a seeded finished No-Mistakes run, and a fleet without one.</li>
 </ul>

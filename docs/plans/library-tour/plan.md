@@ -70,7 +70,12 @@ interface TourDefinition {
 
 interface TourStep {
   id: string;                       // stable, replaces STEP_INDEX
-  target: TourTargetId;
+  /**
+   * The surfaces this stop spotlights, in order - its "beats". One for most stops; two
+   * where a stop genuinely has to point at a second thing to make its point, such as a
+   * Persona's config chips and then its guidance. Never more than two.
+   */
+  targets: readonly TourTargetId[];
   title: string;
   description: string;
   details?: readonly { label: string; description: string }[];
@@ -96,11 +101,31 @@ about (Driver's active index lagging a committed transition). The Driver.js adap
 containment, progress rail, fallback rendering, cleanup-error dialog and overlay
 registration are unchanged in behaviour and move wholesale into the engine.
 
+**Beats, and why a step needs more than one target.** The current controller assumes one
+target per step, which is true of all fourteen of its own. It is not true of the Library's
+authoring screens: a stop that teaches what configures a Persona has to point at the property
+chips *and* the guidance below them, and a stop about a run has to point at the pipeline strip
+*and* the worklist under it. Splitting each of those into its own step is the alternative, and
+it is what pushed the first draft of this tour to twenty-five.
+
+So a step declares an ordered `targets` array instead of a single `target`. **Driver drives
+beats; the progress rail counts stops.** Next advances to the next beat within a stop and then
+to the next stop, so the popover keeps its title and its rail segment while the spotlight
+moves. The rail therefore reads *Step 3 of 15* across both beats of stop 3, which is the count
+the tour actually has. The cost is stated rather than hidden: fifteen stops are nineteen beats
+plus a targetless close card - twenty screens in all, so a full run is twenty Next presses
+rather than fifteen.
+
+Every step in the existing tour becomes a one-element `targets` array, which is why its spec
+does not change. Two is the ceiling, and a stop reaching for a third is a stop that should
+have been two stops.
+
 Around it:
 
 - **Target ids get namespaced.** `TOUR_TARGET_IDS` becomes per-tour groups so a Library
-  target cannot collide with a fleet one. `useTourTaskTargetRef`'s hardcoded `Extract<>`
-  allow-list becomes a declared scoping.
+  target cannot collide with a fleet one - the existing thirteen stay as the `see-work` group,
+  and the Library tour adds nineteen of its own, listed per stop in Part 2.
+  `useTourTaskTargetRef`'s hardcoded `Extract<>` allow-list becomes a declared scoping.
 - **`App.tsx` holds one active tour, not one named tour.** `SeeWorkTourRun` generalizes to
   `TourRun` with the same snapshot fields; the re-entrancy guard becomes "a tour is running"
   rather than "this tour is running". A tour still owns temporary resources, so the run
@@ -178,11 +203,12 @@ is, what configures it, and how it is edited, then moves on.
    `complementary "Session action library"` rail. The same rail and workspace grammar as
    Personas, because an operator moving between them is moving through one surface with
    different contents; each row's sub-label is its contract, not its description.
-6. **The contract, and editing one** - spotlight the `requires skill` and `completes when`
-   chips and the sentence they form. This is the one Library asset carrying a machine-checked
-   contract: something observable has to happen before a stage may call it done. Then the
-   instruction editor, whose Markdown reaches the session byte for byte, and the same **Save**
-   or **Duplicate to edit** verb the Persona screen promotes.
+6. **The contract, and the instruction** - two beats. First the `requires skill` and
+   `completes when` chips and the sentence they form: this is the one Library asset carrying a
+   machine-checked contract, where something observable has to happen before a stage may call
+   it done. Then the instruction editor, whose Markdown reaches the session byte for byte.
+   Editing is the same promoted verb stop 4 already showed - this screen shares the Persona
+   screen's rail and workspace - so the copy says so rather than spending a third beat on it.
 
 **Commands - what each standard gate runs here**
 
@@ -190,19 +216,21 @@ is, what configures it, and how it is edited, then moves on.
    cross-link, because the slots ship with the product. A workflow's Command node names a
    portable slot and never an argv, so the same workflow runs against any repository; this
    screen is where *this machine* says what the slot runs. Spotlight **Default command**.
-8. **Overrides, and saving one** - spotlight the **Repository path** / **Override command** /
-   **Add override** row and **Save Command**. Saving executes nothing. A workflow reaching that
-   slot, later, in a repository granted the Workflows cell in Trust, is what runs it - and
-   **Settings → Workflows → Allow workflow Commands** is the machine-wide switch above that.
+8. **Overrides, and saving one** - two beats. First the **Repository path** / **Override
+   command** / **Add override** row and the rules table it writes. Then **Save Command**, where
+   the point is that saving executes nothing: a workflow reaching that slot, later, in a
+   repository granted the Workflows cell in Trust, is what runs it - and **Settings → Workflows
+   → Allow workflow Commands** is the machine-wide switch above that.
 
 **Workflows - what counts as done**
 
 9. **The builder** - `#/library/workflows/<a workflow>`, spotlight the
    `complementary "Workflow library and node palette"` rail: Persona, Command, Session action,
    all-pass Join and End are exactly the assets the last three chapters covered.
-10. **Creating one** - spotlight **New**, then the `group "Editing surface"` Pipeline/Graph
-    toggle and **Publish**. A draft follows Library edits; a published version freezes its
-    Persona snapshots, and publishing cannot change a binding that already exists.
+10. **Creating one** - two beats. First the `group "Editing surface"` Pipeline/Graph toggle,
+    reached from the **New** button the copy names but does not spend a beat on. Then
+    **Publish**: a draft follows Library edits, while a published version freezes its Persona
+    snapshots, and publishing cannot change a binding that already exists.
 11. **No-Mistakes Review** - `#/library/workflows/builtin-workflow:no-mistakes-review`,
     spotlight `.wf-pipeline-strip`. Five stages, walked in order: typecheck and test together;
     Intent Conformance alone as a cheap gate; Code Risk and Code Quality in parallel; Test
@@ -214,14 +242,43 @@ is, what configures it, and how it is edited, then moves on.
 
 **A run**
 
-13. **A run, moving** - the Runs page for a No-Mistakes run. Spotlight the pipeline strip,
-    then the review worklist's **Blocking** / **Passed** segments, then a verdict.
+13. **A run, moving** - the Runs page for a No-Mistakes run, in two beats. First the pipeline
+    strip, which is the same five stages stop 11 just walked, now carrying real state. Then the
+    review worklist's **Blocking** / **Passed** segments, where an individual verdict is read
+    inside that same beat rather than claiming a third.
 14. **Where a run is watched** - the same run drawn as the vertical stage ladder in a
     session's **Workflows** tab, which is where the work is actually followed.
 15. **Close** - what the tour left behind, and the offer to run the other tour.
 
 Which run stops 13 and 14 look at is settled in Part 3: an existing finished run, never one
 the tour starts.
+
+**Every stop's targets, named.** The engine refuses to render a step whose target is absent -
+that is what the fallback copy is for - so a plan that leaves them implied is a plan that
+cannot be checked against the DOM. Fifteen stops, nineteen beats:
+
+| # | Stop | Beats (`targets`, in order) |
+| --- | --- | --- |
+| 1 | The Library | `library-page` |
+| 2 | The Persona library | `persona-rail` |
+| 3 | What a Persona is | `persona-chips` → `persona-guidance` |
+| 4 | Editing one | `persona-primary-action` |
+| 5 | The Action library | `action-rail` |
+| 6 | The contract, and the instruction | `action-contract` → `action-instruction` |
+| 7 | A Command slot | `command-default` |
+| 8 | Overrides, and saving one | `command-overrides` → `command-save` |
+| 9 | The builder | `workflow-palette` |
+| 10 | Creating one | `workflow-surface-toggle` → `workflow-publish` |
+| 11 | No-Mistakes Review | `workflow-pipeline-strip` |
+| 12 | Binding it | `workflow-bind` |
+| 13 | A run, moving | `run-pipeline-strip` → `run-worklist` |
+| 14 | Where a run is watched | `session-workflow-ladder` |
+| 15 | Close | none - a centred card, like the current tour's terminal states |
+
+Nineteen new target ids, each registered by the component that already owns that element
+through `useTourTargetRef`, exactly as the existing thirteen are. None of them is a new
+wrapper element added for the tour's benefit: every one is a node the Library already renders
+and already gives an accessible name.
 
 
 ### Part 3 - the demo run
@@ -290,9 +347,8 @@ run history.
 graph TD
   T[Library tour, stop 13] --> Q["GET /api/workflow-runs<br/>filter: finished"]
   Q --> D{a finished<br/>No-Mistakes run?}
-  D -->|yes| R["#/runs/:id<br/>strip, worklist, verdicts - read only"]
-  R --> L["session Workflows tab<br/>the same run as a stage ladder"]
-  D -->|no run yet| F["fallback copy on the<br/>read-only built-in graph from stop 11"]
+  D -->|yes| R["#/runs/:id - read only<br/>strip, worklist, verdicts, then the session ladder"]
+  D -->|no such run| F["fallback copy, same two stops<br/>no runs, none finished, or none of this workflow"]
 ```
 
 ## Server support
@@ -382,11 +438,14 @@ Two guards follow from that, both of which the engine must carry:
   registered layer, `onDestroyed` being skipped on an immediate exit, cleanup refusal
   retry. Every one of those has to survive the extraction, and `see-work-tour.spec.ts`
   passing unchanged is the only proof that counts.
-- **Fifteen stops is close to the ceiling.** The current tour is fourteen and already asks
-  a lot. The list above is already cut to what each chapter needs to teach - what the asset
-  is, what configures it, how it is edited - and anything further added to it should displace
-  a stop rather than extend the run. If the review wants it shorter still, the chapters split
-  into separately-startable tours sharing one engine, which the registry makes free.
+- **Fifteen stops, twenty screens, is close to the ceiling.** The current tour is fourteen
+  single-beat steps and already asks a lot. The list above is cut to what each chapter needs
+  to teach - what the asset is, what configures it, how it is edited - and anything further
+  added should displace a stop rather than extend the run. Beats are the pressure valve that
+  keeps the stop count at fifteen, and they are capped at two precisely so they cannot become
+  a way of hiding a twenty-five stop tour inside a fifteen-stop rail. If the review wants it
+  shorter still, the chapters split into separately-startable tours sharing one engine, which
+  the registry makes free.
 - **Built-in assets must exist.** Stops 2, 5 and 11 point at shipped built-ins, which are
   app data and always present. Stop 9 points at *a* workflow; on an install with none
   authored, it points at the built-in too.

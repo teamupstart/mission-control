@@ -72,6 +72,7 @@ import {
   type PendingAttachment,
 } from "./ImageDrop.tsx";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
+import { DeleteButton } from "./DeleteButton.tsx";
 import { LabelChips, ScheduleSwitch } from "./session-bits.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 import {
@@ -3026,20 +3027,19 @@ function DispatchModal({
             behind it to delete. Ghost-danger rather than filled: it must be findable without
             competing with the primary, which is the same weight the Sitrep's Delete carries. */}
         {editing && (
-          <Tooltip label="Delete this task from the backlog">
-            <button
+          <DeleteButton
               // The same pair the Sitrep's Delete wears, and the same pair every other
               // destructive control in the app wears (ReportPanel, WorkflowRuns,
               // WorkflowLibrary, ActionBar): one class for the danger tone, none for the
               // frame. Deleting a backlog task should look like itself wherever it is
               // offered, so this deliberately does not get a bespoke weight for this footer.
               className="btn btn-danger-ghost"
+              tooltip="Delete this task from the backlog"
               onClick={() => void remove()}
               disabled={busy}
             >
               {pending === "delete" ? "Deleting…" : "Delete"}
-            </button>
-          </Tooltip>
+          </DeleteButton>
         )}
         {/* Ensemble launches immediately and owns its own member backlog wave, so "Add to
             backlog" makes no sense there; its Review/Launch control owns the primary slot. */}

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { basename } from "node:path";
+import { MISSION_SESSION_ID_ENV } from "@shared/harness-runtime.mjs";
 import type {
   AgentType,
   PermissionMode,
@@ -60,6 +61,19 @@ const RESTART_CONTINUATION_PROMPT =
   "Continue that work from the current checkout and conversation. Inspect the current " +
   "state before acting, do not repeat completed work, and ask again for any approval or " +
   "input you still need.";
+
+/** Bind one launch-scoped MCP process to the SDK session Mission Control registered. */
+function missionMcpForSession(
+  descriptor: MissionMcpDescriptor | null,
+  sessionId: string,
+): MissionMcpDescriptor | null {
+  return descriptor
+    ? {
+        ...descriptor,
+        env: { ...descriptor.env, [MISSION_SESSION_ID_ENV]: sessionId },
+      }
+    : null;
+}
 
 /**
  * The owner of every embedded (SDK-runtime) session: its handle, its row, and its events.
@@ -209,7 +223,7 @@ export class SdkSupervisor {
       model: input.model,
       effort: input.effort,
       permissionMode: input.permissionMode,
-      mcp: input.mcp,
+      mcp: missionMcpForSession(input.mcp, id),
       extraDirs: input.extraDirs ?? [],
       resume: null,
     });
@@ -860,7 +874,7 @@ export class SdkSupervisor {
         model: row.model,
         effort: row.effort,
         permissionMode: row.permissionMode,
-        mcp,
+        mcp: missionMcpForSession(mcp, row.id),
         // Rebuilt from the task row rather than remembered on the session row, because the
         // task is where the repo set durably lives - and this grant can only be made at
         // launch, so a resumed multi-repo session that omitted it would come back able to

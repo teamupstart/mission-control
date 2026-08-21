@@ -1645,6 +1645,12 @@ export function RenameEditor({
   );
 }
 
+/** The three facts `RuntimeMetaRow` draws, each of which a host may leave out. */
+export type RuntimeMetaPart = "model" | "effort" | "context";
+
+/** Shared so the default prop is one frozen value rather than a new Set per render. */
+const EMPTY_OMIT: ReadonlySet<RuntimeMetaPart> = new Set();
+
 /**
  * The runtime row: model, thinking level, and a context-window pressure meter - the same
  * facts ccstatusline shows in the terminal. Each chip is independently omitted when unknown.
@@ -1656,15 +1662,30 @@ export function RenameEditor({
 export function RuntimeMetaRow({
   meta,
   session,
-  showEffort = true,
+  omit = EMPTY_OMIT,
 }: {
   meta: SessionMeta;
   session?: Session;
-  /** Board renders its interactive effort control as a sibling of this shared row. */
-  showEffort?: boolean;
+  /**
+   * Parts this HOST does not want, which is not the same question as whether the fact is
+   * known. Two unrelated callers ask it: the board renders its interactive effort control
+   * as a sibling of this shared row, and the board's card items are individually hideable
+   * by the operator (`lib/board-card.ts`). The console detail passes nothing and must keep
+   * meaning "draw everything" - a card preference must never reach it.
+   *
+   * One set rather than a boolean per part, so the third and fourth caller do not each add
+   * a `showX`, and so all three pills answer to the same mechanism rather than one of them
+   * having a switch and the other two not.
+   */
+  omit?: ReadonlySet<RuntimeMetaPart>;
 }): React.JSX.Element | null {
-  const hasCtx = meta.contextPct != null;
-  if (!meta.model && !meta.thinkingLevel && !hasCtx) return null;
+  const hasModel = Boolean(meta.model) && !omit.has("model");
+  const hasEffort = Boolean(meta.thinkingLevel) && !omit.has("effort");
+  const hasCtx = meta.contextPct != null && !omit.has("context");
+  // Nothing LEFT to draw, which now covers both "the session has not reported it" and
+  // "this host asked for it to be left out". An empty `.card-runtime` would still take its
+  // flex gap on the row, so the early return has to widen with the prop.
+  if (!hasModel && !hasEffort && !hasCtx) return null;
   const tone = contextTone(meta.contextPct);
   const ctxTitle =
     meta.contextTokens != null && meta.contextWindow != null
@@ -1672,7 +1693,7 @@ export function RuntimeMetaRow({
       : `${meta.contextPct}% of the context window used`;
   return (
     <span className="card-runtime">
-      {meta.model && (
+      {hasModel && (
         <Tooltip label={meta.modelId ? `Model: ${meta.modelId}` : `Model: ${meta.model}`}>
           <span className="rt-pill rt-model">
             {meta.model}
@@ -1680,7 +1701,7 @@ export function RuntimeMetaRow({
           </span>
         </Tooltip>
       )}
-      {showEffort && meta.thinkingLevel &&
+      {hasEffort &&
         (session ? (
           <EffortPicker session={session} />
         ) : (

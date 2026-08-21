@@ -20,6 +20,7 @@ import { useWorkflowSettings } from "../useWorkflowSettings.ts";
 import type { WorkflowRunFilters } from "../workflows/useWorkflowRoute.ts";
 import { LayoutPanel } from "./LayoutPanel.tsx";
 import { ConversationViewPanel } from "./ConversationViewPanel.tsx";
+import { BoardCardPanel } from "./BoardCardPanel.tsx";
 import { AppearancePanel } from "./AppearancePanel.tsx";
 import { DispatchSettingsPanel } from "./DispatchSettingsPanel.tsx";
 import { useHarnesses } from "../useHarnesses.ts";
@@ -496,6 +497,12 @@ export function SettingsPage({
             <LayoutPanel layout={layout} onLayoutChange={onLayoutChange} />
             <ConversationViewPanel />
             <AppearancePanel />
+            {/* Last, and inside out like the three above it: having chosen an arrangement,
+                a rendering and a format, this is what an individual card inside that
+                arrangement states. It is also the tallest panel here, because it carries a
+                live card, so it belongs at the bottom of the scroll rather than pushing
+                the three one-line choices below the fold. */}
+            <BoardCardPanel />
           </>
         );
       case "keyboard":

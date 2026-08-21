@@ -117,6 +117,32 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     keywords: ["rich text", "markdown", "appearance", "code blocks", "syntax"],
     kind: "toggle",
   },
+  {
+    id: "board-card",
+    label: "Board card",
+    description: "Choose which items a session card draws in every Board column.",
+    category: "display",
+    anchor: "display/board-card",
+    // "hide"/"show"/"customize" are what an operator types who wants the panel and has not
+    // read its label; the item names are what someone types who wants ONE of them gone and
+    // does not know they are all in one place. `kind` is "jump" rather than "toggle"
+    // because a checklist has no single boolean for the palette to flip.
+    keywords: [
+      "card",
+      "tile",
+      "hide",
+      "show",
+      "customize",
+      "items",
+      "worktree",
+      "branch",
+      "model",
+      "cost",
+      "context",
+      "goal",
+    ],
+    kind: "jump",
+  },
   ...KEYBOARD_CONTROLS,
   {
     id: "guided-dispatch",

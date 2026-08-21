@@ -17,6 +17,7 @@ import type { TranscriptFindHandle } from "./components/TranscriptPanel.tsx";
 import { ReviewModal } from "./components/ReviewModal.tsx";
 import { AttentionInbox } from "./components/AttentionInbox.tsx";
 import { DispatchLayer } from "./components/DispatchModal.tsx";
+import { ProductIssueLayer } from "./components/ProductIssueModal.tsx";
 import { ResetModal } from "./components/ResetModal.tsx";
 import { CompleteModal } from "./components/CompleteModal.tsx";
 import { KillModal } from "./components/KillModal.tsx";
@@ -125,6 +126,7 @@ import { useRichText } from "./lib/rich-text.ts";
 import { useDesktopUpdates } from "./useDesktopUpdates.ts";
 import { UpdateBanner } from "./components/UpdateBanner.tsx";
 import { useGuidedDispatch } from "./lib/guided-dispatch.ts";
+import { activateDeleteShortcut, deleteShortcutMatchesChord } from "./lib/delete-shortcut.ts";
 import {
   SeeWorkTourController,
   type SeeWorkTourNavigation,
@@ -346,6 +348,20 @@ export function App(): React.JSX.Element {
     null,
   );
   const [reportOpen, setReportOpen] = useState(false);
+  // Whether the public Feedback form is on screen - and ONLY that. The draft, the last
+  // result and this opening's request id belong to `ProductIssueLayer`, for the reason
+  // `dispatchOpen` gives above: the draft has to outlive a close, and a fleet re-render
+  // must not drag every keystroke through it.
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
+  /**
+   * The one opener, shared by the topbar glyph and the palette command.
+   *
+   * Memoised because both entry points close over it, and single because two openers
+   * would eventually become two modals with two drafts - which is exactly the retention
+   * bug this form is built to avoid.
+   */
+  const openFeedback = useCallback(() => setFeedbackOpen(true), []);
+  const closeFeedback = useCallback(() => setFeedbackOpen(false), []);
   // Whether the ⌘K palette is open. Owned here, and rendered in the overlay slot that every
   // page shares, because it indexes BOTH homes: it opens over the fleet, the Library, a run,
   // an ensemble and Settings alike, and navigating from it must not close it out from under
@@ -1085,6 +1101,9 @@ export function App(): React.JSX.Element {
         case "start-see-work-tour":
           startSeeWorkTour();
           return;
+        case "report-product-issue":
+          openFeedback();
+          return;
         case "open-mission":
           onOpenSchedule(target.scheduleId);
           return;
@@ -1099,6 +1118,7 @@ export function App(): React.JSX.Element {
     [
       navigate,
       openDispatch,
+      openFeedback,
       launchEnsemble,
       onOpenSchedule,
       paletteBindings,
@@ -1958,6 +1978,23 @@ export function App(): React.JSX.Element {
         return;
       }
 
+      // Delete is page-contextual rather than fleet-only. Every participating button
+      // registers itself in the DOM; resolution prefers the focused row/current surface and
+      // fails closed when several destructive controls are otherwise equally plausible.
+      // A bare binding never fires while typing, including confirmation phrase fields.
+      if (
+        !typing
+        && deleteShortcutMatchesChord({
+          chord,
+          deleteBinding: bindings.delete,
+          diffBinding: bindings.diff,
+        })
+        && activateDeleteShortcut(e.target)
+      ) {
+        e.preventDefault();
+        return;
+      }
+
       // Fleet, Library and Runs are direct destinations rather than toggles. Their chords
       // fire off every page and sit above the fleet-only guard for that reason. The shared
       // pure helper keeps their typing/rename/overlay stand-downs testable without a DOM.
@@ -2746,6 +2783,19 @@ export function App(): React.JSX.Element {
               </Tooltip>
             </div>
             <div className="tb-group tb-tools">
+              {/* Glyph-only, like its two peers, and so it adds the same ~30px at every rung
+                  rather than a word that has to be shed. The accessible name is the same
+                  phrase the palette row uses, at every width, because this button is the
+                  one an unhappy person hunts for and it must not go quiet. */}
+              <Tooltip label="Report product feedback - file a public GitHub issue about Mission Control">
+                <button
+                  className="ghost-btn glyph-btn feedback-btn"
+                  onClick={openFeedback}
+                  aria-label="Report product feedback"
+                >
+                  <span aria-hidden>☺</span>
+                </button>
+              </Tooltip>
               <Tooltip
                 label={
                   route.page === "settings"
@@ -3269,6 +3319,8 @@ export function App(): React.JSX.Element {
                 onOpenSchedule={onOpenSchedule}
                 onEnsembleLaunched={openEnsembleRun}
               />
+
+              <ProductIssueLayer open={feedbackOpen} onClose={closeFeedback} />
 
               {reportOpen && (
                 <ReportPanel

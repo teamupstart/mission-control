@@ -25,5 +25,5 @@ export function Keycap({ action }: { action: ActionId }): React.JSX.Element | nu
   const [show] = useKeybindingHints();
   const chord = formatChord(bindings[action]);
   if (!show || !chord) return null;
-  return <kbd className="kb-hint">{chord}</kbd>;
+  return <kbd className="kb-hint" aria-hidden="true">{chord}</kbd>;
 }

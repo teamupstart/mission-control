@@ -58,6 +58,7 @@ import {
   rememberWorkflowId,
 } from "./workflowSelection.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
+import { DeleteButton } from "../components/DeleteButton.tsx";
 import { LibraryBackRow } from "../library/LibraryBackRow.tsx";
 import { useLibraryEscape } from "../library/useLibraryEscape.ts";
 
@@ -996,13 +997,17 @@ export function WorkflowLibrary({
               </div>
               <div className="workflow-toolbar-group workflow-toolbar-ship">
                 {neverPublished && (
-                  <Tooltip label="Delete this workflow permanently - offered only before its first publish">
-                    <button className="btn btn-danger-ghost" disabled={transitioning} onClick={() => setConfirm({
+                  <DeleteButton
+                    className="btn btn-danger-ghost"
+                    disabled={transitioning}
+                    tooltip="Delete this workflow permanently - offered only before its first publish"
+                    onClick={() => setConfirm({
                       title: "Delete workflow",
                       body: `Delete ${workflow.name}? It has never been published, so there are no versions, bindings, or run history to keep. This cannot be undone.`,
                       confirmLabel: "Delete",
                       confirmHint: "Permanently deletes this never-published workflow",
                       danger: true,
+                      shortcut: "delete",
                       onConfirm: () => void runTransition(async () => {
                         if (!(await draft.saveNow())) return;
                         const current = draft.current();
@@ -1010,8 +1015,8 @@ export function WorkflowLibrary({
                         await workflowRequest(`/api/workflows/${current.id}/delete`, { method: "POST", body: JSON.stringify({ expectedDraftRevision: current.draftRevision }) });
                         openWorkflow(active.find((item) => item.id !== current.id)?.id ?? null);
                       }),
-                    })}>Delete</button>
-                  </Tooltip>
+                    })}
+                  >Delete</DeleteButton>
                 )}
                 {workflow.archivedAt === null ? (
                   // All three strings state the same two facts, because each is read on its

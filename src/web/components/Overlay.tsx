@@ -60,6 +60,7 @@ export const OVERLAY_IDS = {
   ensembleDelete: "ensemble-delete",
   worktreeAction: "worktree-action",
   seeWorkTour: "see-work-tour",
+  productIssue: "product-issue",
 } as const;
 
 export type OverlayId = (typeof OVERLAY_IDS)[keyof typeof OVERLAY_IDS];
@@ -271,7 +272,11 @@ export function Overlay({
   }, [isTop, closable, onClose, onEscape, onKeyDown]);
 
   return (
-    <div className="modal-backdrop" onClick={() => closable && onClose()}>
+    <div
+      className="modal-backdrop"
+      data-overlay-top={isTop ? "true" : undefined}
+      onClick={() => closable && onClose()}
+    >
       <Tag
         ref={surfaceRef}
         className={className}

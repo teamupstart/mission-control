@@ -4,7 +4,9 @@ import type { WorkflowRunSummary } from "@shared/workflow.ts";
 import type { EnsembleSummary } from "@shared/ensemble.ts";
 import type { PipelineRunLink } from "@shared/pipeline.ts";
 import { liveActivity } from "@shared/session.ts";
-import { relativeTime, sessionTitleDetail, stateDisplay, uptime } from "../../lib/format.ts";
+import { relativeTime, repoLeaf, sessionTitleDetail, stateDisplay, uptime } from "../../lib/format.ts";
+import { useDisplayItems } from "../../lib/board-card.ts";
+import type { RuntimeMetaPart } from "../session-bits.tsx";
 import { useInterrupting } from "../../lib/interrupting.ts";
 import { heldByRun } from "../../lib/held.ts";
 import { isDragSelection } from "../../lib/pointer.ts";
@@ -49,6 +51,7 @@ export function SessionTile({
   onDropError,
   onDropConfirm,
   workflowRun = null,
+  workflowStageDetail = "load",
   workflowRuns = null,
   registerWorkflowDisclosure,
   onOpenWorkflowRun,
@@ -72,6 +75,14 @@ export function SessionTile({
   /** The drop needs a yes: the handover would take something from this agent. */
   onDropConfirm: (pending: { taskId: string; confirm: AssignResetConfirm }) => void;
   workflowRun?: WorkflowRunSummary | null;
+  /**
+   * Whether the workflow panel may load the run's stages, passed straight through.
+   *
+   * `"load"` for the Board, which is showing a live run. `"summary"` is for a host holding
+   * a run SUMMARY and no run - the Board card preview in Settings - so the panel draws its
+   * settled placeholder instead of fetching an id the daemon can only 404.
+   */
+  workflowStageDetail?: "load" | "summary";
   /** Every review this conversation carries - one per repository a multi-repo task changed. */
   workflowRuns?: readonly WorkflowRunSummary[] | null;
   /** Register the same disclosure transition the Show/Collapse workflow button drives. */
@@ -127,6 +138,31 @@ export function SessionTile({
   // refusal cannot disagree about one tile.
   const droppable = canAcceptTask(session, draggingRepo, workflowRuns);
   const openName = session.name ? sessionTitleDetail(session) : "unnamed session";
+
+  // Which optional items this operator asked the card to draw. ONE registry
+  // (`lib/board-card.ts`) owns the ids and the prose the settings panel prints, and this
+  // is the only place the board consults it - a private list here would be the second
+  // source of truth the whole feature exists to avoid, and `test/board-card-items.test.ts`
+  // is what fails when one appears.
+  //
+  // The attention flags below (`.tile-marks`) are deliberately NOT gated on any of this,
+  // and neither are the tone spine, the name and its open button, the agent dot, the
+  // `held` tag or the drop hint. See the registry's header for why each is pinned on.
+  const shown = useDisplayItems();
+  // The board has always drawn the interactive `EffortPicker` as a sibling of the shared
+  // runtime row rather than the read-only pill inside it, so `effort` is omitted from the
+  // row unconditionally and the operator's choice gates the picker instead.
+  const omitRuntime = new Set<RuntimeMetaPart>(["effort"]);
+  if (!shown("model")) omitRuntime.add("model");
+  if (!shown("context")) omitRuntime.add("context");
+  // Gated on the operator's CHOICES, not on the data. Today's card draws both wrappers
+  // even when everything inside them happens to be absent, so keeping them while any of
+  // their items is switched on is what makes the shipped defaults byte-identical - while
+  // an operator who switches a whole row off gets its height back rather than an empty
+  // flex line still eating the tile's column gap.
+  const runtimeLine =
+    shown("model") || shown("context") || shown("effort") || shown("mode") || shown("cost");
+  const foot = shown("branch") || shown("worktree") || shown("lastSeen");
 
   return (
     <div
@@ -207,7 +243,9 @@ export function SessionTile({
         )}
       </span>
 
-      {session.goal?.text && <span className="tile-goal">{session.goal.text}</span>}
+      {shown("goal") && session.goal?.text && (
+        <span className="tile-goal">{session.goal.text}</span>
+      )}
 
       {/* What it's doing right now - the board's only live signal past "6s ago", and what
           tells an actively-editing session apart from one stalled on a prompt. `liveActivity`
@@ -215,7 +253,7 @@ export function SessionTile({
           something happening for it to describe, which is also what the conversation's
           in-progress row asks. This tile established the rule; the shared predicate is what
           stops the two from drifting apart. */}
-      {ticker && (
+      {shown("activity") && ticker && (
         <span className="tile-activity">
           <span className="ta-glyph" aria-hidden>
             ⟳
@@ -229,10 +267,11 @@ export function SessionTile({
           while collapsed, and reuses the real actionable ladder when disclosed. Its wrapper owns
           click propagation so neither action accidentally drills into the Console: the compact
           preview opens the exact run, while the disclosure control expands in place. */}
-      {workflowRun && (
+      {shown("workflow") && workflowRun && (
         <WorkflowLadderPanel
           run={workflowRun}
           session={session}
+          stageDetail={workflowStageDetail}
           onOpenRun={() => onOpenWorkflowRun?.(workflowRun.id)}
           tileDisclosure={{
             expanded: workflowExpanded,
@@ -318,26 +357,49 @@ export function SessionTile({
           means "things that want your attention", and a routine estimate is not an
           alert. When it stops being routine the chip's own tone says so (costTone), which
           keeps one spelling of the number per surface rather than two. */}
-      <span className="tile-runtime-line">
-        {session.meta && <RuntimeMetaRow meta={session.meta} session={session} showEffort={false} />}
-        {session.meta?.thinkingLevel && <EffortPicker session={session} />}
-        {/* On this row rather than in `.tile-foot`: a
-            tile's foot is branch-and-timestamp, while mode is the same kind of thing as
-            the effort chip beside it - what this session is allowed to do right now, and
-            changeable from here. This is the shared picker the Board tile and Console detail
-            mount, so the two cannot drift on what a mode is called or how it is driven; it draws
-            nothing for a harness with no permission modes, and degrades to a read-only
-            chip when there is no pane to drive its native control. */}
-        <ModePicker session={session} />
-        <CostChip cost={session.cost} />
-      </span>
-
-      <span className="tile-foot">
-        <span className="tile-branch">{session.gitBranch ?? session.nameSource}</span>
-        <span className="tile-seen">
-          {session.lastActivity ? relativeTime(session.lastActivity) : uptime(session.startedAt)}
+      {runtimeLine && (
+        <span className="tile-runtime-line">
+          {session.meta && (
+            <RuntimeMetaRow meta={session.meta} session={session} omit={omitRuntime} />
+          )}
+          {shown("effort") && session.meta?.thinkingLevel && <EffortPicker session={session} />}
+          {/* On this row rather than in `.tile-foot`: a
+              tile's foot is branch-and-timestamp, while mode is the same kind of thing as
+              the effort chip beside it - what this session is allowed to do right now, and
+              changeable from here. This is the shared picker the Board tile and Console detail
+              mount, so the two cannot drift on what a mode is called or how it is driven; it draws
+              nothing for a harness with no permission modes, and degrades to a read-only
+              chip when there is no pane to drive its native control. */}
+          {shown("mode") && <ModePicker session={session} />}
+          {shown("cost") && <CostChip cost={session.cost} />}
         </span>
-      </span>
+      )}
+
+      {foot && (
+        <span className="tile-foot">
+          {/* The branch, with its fallback intact: a session with no branch prints where its
+              NAME came from instead, so hiding "branch" hides the branch and does not empty
+              the cell for a session that never had one. */}
+          {shown("branch") && (
+            <span className="tile-branch">{session.gitBranch ?? session.nameSource}</span>
+          )}
+          {/* Which checkout this is - the one fact on this card that the console detail used
+              to be the only place to read. The LEAF, not the path: a pool worktree path is
+              sixty characters of bookkeeping, and this row is two cells sharing one line's
+              width. The whole path is on hover, which is the same bargain every other
+              shortened path in the app makes. */}
+          {shown("worktree") && session.cwd && (
+            <Tooltip label={session.cwd}>
+              <span className="tile-worktree">{repoLeaf(session.cwd)}</span>
+            </Tooltip>
+          )}
+          {shown("lastSeen") && (
+            <span className="tile-seen">
+              {session.lastActivity ? relativeTime(session.lastActivity) : uptime(session.startedAt)}
+            </span>
+          )}
+        </span>
+      )}
     </div>
   );
 }

@@ -149,6 +149,9 @@ export function ensureToken() {
 /** The scoped bearer the Mission MCP bridge adds only to scout submission requests. */
 export const SCOUT_SUBMISSION_CREDENTIAL_HEADER = "x-mission-scout-credential";
 
+/** Daemon-issued identity that binds a launch-scoped MCP process to its SDK session. */
+export const MISSION_SESSION_ID_ENV = "MISSION_SESSION_ID";
+
 /**
  * Where the daemon leaves the opaque credential for the one checkout an MCP process is in.
  *

@@ -656,11 +656,24 @@ export function WorkflowLadderPanel({
   run,
   onOpenRun,
   tileDisclosure = null,
+  stageDetail = "load",
   session = null,
 }: {
   run: WorkflowRunSummary;
   onOpenRun: () => void;
   tileDisclosure?: WorkflowTileDisclosureState | null;
+  /**
+   * Where the stage detail comes from.
+   *
+   * `"load"`, the default, is every real host: the panel fetches the run by id and draws
+   * the live ladder or its cropped peek. `"summary"` is for a host that has a run SUMMARY
+   * and no run - the Board card preview in Settings mounts a real tile against a fixture
+   * session, and its run does not exist. Without this the preview would GET a run id the
+   * daemon can only 404, every time an operator opens Settings, to arrive at the same
+   * placeholder this draws directly. The summary carries the workflow's name, version, run
+   * state and round, which is the shape the card's Workflow item actually governs.
+   */
+  stageDetail?: "load" | "summary";
   /**
    * The session this run is reviewing, when the host already renders it.
    *
@@ -709,7 +722,13 @@ export function WorkflowLadderPanel({
     (): Promise<void> => refreshQueue.current.enqueue(performRefresh),
     [performRefresh],
   );
-  const state = useWorkflowRunDetail(run.id, run.updatedAt + refreshRevision);
+  // A null run id is what tells the hook not to fetch, so `"summary"` costs no request at
+  // all rather than firing one and ignoring its answer.
+  const summaryOnly = stageDetail === "summary";
+  const state = useWorkflowRunDetail(
+    summaryOnly ? null : run.id,
+    run.updatedAt + refreshRevision,
+  );
   const controller = useRunActions(run.id, requestRefresh);
 
   useEffect(() => {
@@ -739,10 +758,13 @@ export function WorkflowLadderPanel({
     // render site instead, which is the honest form of the same intent.
   }, [run.id]);
 
+  // `summaryOnly` lands here too - the hook reports `loading` forever for a null id - and
+  // takes the same shape with the placeholder's settled wording rather than a spinner that
+  // is waiting for nothing.
   if (state.state === "loading") {
     const feedback = (
-      <section className="wf-ladder-feedback" aria-busy="true">
-        Loading workflow stages…
+      <section className="wf-ladder-feedback" aria-busy={!summaryOnly}>
+        {summaryOnly ? "Stage detail is unavailable." : "Loading workflow stages…"}
       </section>
     );
     return tileDisclosure
@@ -755,6 +777,7 @@ export function WorkflowLadderPanel({
             onExpandedChange={tileDisclosure.onExpandedChange}
             onSurfaceClick={tileDisclosure.onSurfaceClick ?? null}
             regionId={disclosureRegionId}
+            loadError={summaryOnly}
           >
             {feedback}
           </WorkflowTileDisclosure>

@@ -105,6 +105,92 @@ test("a plan-decisions review round-trips create -> resolve -> wait over HTTP", 
   assert.equal(waited.response, answer, "the agent receives exactly what the human submitted");
 });
 
+test("an explicit SDK identity owns its review when two sessions share a cwd", async () => {
+  const firstId = "sdk:http-same-cwd-first";
+  const secondId = "sdk:http-same-cwd-second";
+  const sharedCwd = "/repo/http-same-cwd";
+  registry.registerSdkSession({ id: firstId, agent: "codex", name: "first", cwd: sharedCwd });
+  registry.registerSdkSession({ id: secondId, agent: "codex", name: "second", cwd: sharedCwd });
+  let reviewId: string | null = null;
+
+  try {
+    const created = await app.request("/mcp/reviews", {
+      method: "POST",
+      headers: authed,
+      body: JSON.stringify({
+        env: {},
+        sessionId: secondId,
+        cwd: sharedCwd,
+        kind: "input",
+        title: "Which session owns this review?",
+        body: "Which session owns this review?",
+      }),
+    });
+    const response = (await created.json()) as { id: string; sessionId: string };
+    reviewId = response.id;
+
+    assert.deepEqual(
+      {
+        status: created.status,
+        responseSessionId: response.sessionId,
+        reviewSessionId: registry.getReview(response.id)?.sessionId,
+        pendingReviews: {
+          first: registry.getSession(firstId)?.pendingReviews,
+          second: registry.getSession(secondId)?.pendingReviews,
+        },
+      },
+      {
+        status: 200,
+        responseSessionId: secondId,
+        reviewSessionId: secondId,
+        pendingReviews: { first: 0, second: 1 },
+      },
+    );
+  } finally {
+    if (reviewId) {
+      await app.request(`/api/reviews/${reviewId}/resolve`, {
+        method: "POST",
+        headers: authed,
+        body: JSON.stringify({ action: "answer", response: "second" }),
+      });
+    }
+  }
+});
+
+test("report_status routed by an SDK identity preserves its native conversation binding", async () => {
+  const id = "sdk:http-status-routing";
+  registry.registerSdkSession({ id, agent: "codex", name: "status", cwd: "/repo/status" });
+  registry.applyDriverEvent(id, {
+    kind: "bound",
+    agentSessionId: "thread:native",
+    transcriptPath: "/rollouts/native.jsonl",
+    modelId: null,
+    pid: null,
+  });
+
+  const response = await app.request("/mcp/status", {
+    method: "POST",
+    headers: authed,
+    body: JSON.stringify({ env: {}, sessionId: id, activity: "awaiting review" }),
+  });
+
+  const session = registry.getSession(id);
+  assert.deepEqual(
+    {
+      status: response.status,
+      activity: session?.activity,
+      agentSessionId: session?.agentSessionId,
+      transcriptPath: session?.transcriptPath,
+    },
+    {
+      status: 204,
+      activity: "awaiting review",
+      agentSessionId: "thread:native",
+      transcriptPath: "/rollouts/native.jsonl",
+    },
+  );
+});
+
 test("the MCP detach route is authenticated and bound to the review's session", async () => {
   const created = await app.request("/mcp/reviews", {
     method: "POST",

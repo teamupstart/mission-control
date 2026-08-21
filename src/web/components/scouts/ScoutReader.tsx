@@ -17,6 +17,7 @@ import { COPY_FEEDBACK_LABEL, useCopyFeedback } from "../../lib/clipboard.ts";
 import { Markdown } from "../Markdown.tsx";
 import { OpenInMenu } from "../OpenInMenu.tsx";
 import { Tooltip } from "../Tooltip.tsx";
+import { DeleteButton } from "../DeleteButton.tsx";
 import { InlineRenameEditor } from "../InlineRenameEditor.tsx";
 import { formatChord, useKeybindings } from "../../lib/keybindings.ts";
 import type { ScoutDeleteTarget } from "./ScoutDeleteModal.tsx";
@@ -322,10 +323,11 @@ export function ScoutReader({
               </Tooltip>
             ) : null}
             <span className="spacer" />
-            <Tooltip label="Delete this archive from the library on this machine">
-            <button
+            <DeleteButton
               type="button"
               className="btn btn-danger-ghost"
+              shortcutPrimary
+              tooltip="Delete this archive from the library on this machine"
               onClick={(event) =>
                 onDelete(
                   {
@@ -339,8 +341,7 @@ export function ScoutReader({
               }
             >
               Delete scout
-            </button>
-            </Tooltip>
+            </DeleteButton>
           </div>
           {/*
             The daemon's own diagnostic for a bundle it could not read.

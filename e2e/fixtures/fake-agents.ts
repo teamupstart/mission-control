@@ -1,6 +1,10 @@
 import { chmodSync, copyFileSync, mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  PRODUCT_ISSUE_REQUIRED_LABELS,
+  PRODUCT_ISSUE_STATUS_LABEL,
+} from "../../src/shared/product-issues.ts";
 
 /**
  * Stand-in `claude`, `codex` and `pi` binaries, so this suite spends nothing.
@@ -72,6 +76,97 @@ export function writeGhPullRequests(home: string, prs: readonly FakePullRequest[
 /** The issue `FAKE_GH` says it created, and the id the daemon derives from it. */
 export const FAKE_GH_ISSUE_URL = "https://github.com/acme/demo-repo/issues/123";
 export const FAKE_GH_ISSUE_ID = "acme/demo-repo#123";
+
+/**
+ * How `FAKE_GH` should behave for the public product-report path.
+ *
+ * The product reporter asks `gh` four read-only questions before it will publish anything -
+ * `--version`, `auth status`, `repo view`, and the label listing - and only then runs
+ * `issue create`. A spec that wants to see the form's "GitHub CLI is not authenticated"
+ * copy has to be able to fail exactly one of those and leave the rest working, which is
+ * what `preflight` selects. `issueCreate` then picks between the three terminal outcomes
+ * the form draws differently: a created issue, a retry-safe refusal, and an unknown result
+ * that must NOT invite a retry.
+ *
+ * Kept separate from the pull-request script above because they answer different verbs and
+ * a spec should be able to set one without disturbing the other.
+ */
+export interface FakeGhProductScript {
+  preflight: "ok" | "gh-unavailable" | "gh-auth" | "repository" | "labels";
+  issueCreate: "created" | "refused" | "unknown";
+  /** The labels `repos/<target>/labels` reports. Defaults to the full required set. */
+  labels?: readonly string[];
+}
+
+export const FAKE_GH_PRODUCT_ISSUE_URL = "https://github.com/acme/public-issues/issues/4242";
+
+/** Where a spec scripts `FAKE_GH`'s product-report behavior for one daemon. */
+export function ghProductScriptPath(home: string): string {
+  return join(home, "gh-product-script.json");
+}
+
+export function productConsentScriptPath(home: string): string {
+  return join(home, "product-consent-script.json");
+}
+
+export function productConsentBinPath(home: string): string {
+  return join(home, "bin", "product-consent");
+}
+
+/**
+ * Stand in for the operator answering the native publish dialog.
+ *
+ * In the shipped app the daemon asks the Electron shell over its utility-process port and a
+ * person clicks. A daemon forked by this fixture has no shell, and deliberately CANNOT publish
+ * without one - so the suite gives it something else to ask, through the launch-time
+ * `MISSION_PRODUCT_ISSUE_CONSENT_CMD` seam. Setting that is not a bypass anyone gains from: it
+ * lives on the daemon's own environment, and a process that can choose that has already
+ * replaced the daemon. `MISSION_GH_BIN` redirects the GitHub CLI on the same reasoning.
+ *
+ * It records what it was asked, so a spec can assert that confirming reached a human question
+ * naming the right repository rather than being decided inside the daemon.
+ */
+export function writeProductConsentBin(home: string): string {
+  const bin = productConsentBinPath(home);
+  mkdirSync(dirname(bin), { recursive: true });
+  writeFileSync(
+    bin,
+    [
+      "#!/usr/bin/env node",
+      "const { readFileSync, writeFileSync, appendFileSync } = require('node:fs');",
+      `const script = ${JSON.stringify(productConsentScriptPath(home))};`,
+      `const log = ${JSON.stringify(join(home, "product-consent-asked.jsonl"))};`,
+      "const [target, title] = process.argv.slice(2);",
+      "appendFileSync(log, JSON.stringify({ target, title }) + String.fromCharCode(10));",
+      "let answer = 'grant';",
+      "try { answer = JSON.parse(readFileSync(script, 'utf8')).answer; } catch {}",
+      "process.exit(answer === 'grant' ? 0 : 1);",
+    ].join("\n") + "\n",
+    { mode: 0o755 },
+  );
+  writeProductConsentScript(home, { answer: "grant" });
+  return bin;
+}
+
+/** What the stand-in operator will say next. */
+export interface FakeProductConsentScript {
+  answer: "grant" | "refuse";
+}
+
+export function writeProductConsentScript(
+  home: string,
+  script: FakeProductConsentScript,
+): void {
+  writeFileSync(productConsentScriptPath(home), JSON.stringify(script, null, 2));
+}
+
+/**
+ * Script the product-report path. Re-read by the fake per call, so a spec can move from a
+ * blocked preflight to a working one without restarting the daemon.
+ */
+export function writeGhProductScript(home: string, script: FakeGhProductScript): void {
+  writeFileSync(ghProductScriptPath(home), JSON.stringify(script, null, 2));
+}
 
 /**
  * The stand-in terminal backend, so a spec can watch what a click asks a terminal to run.
@@ -163,7 +258,59 @@ function scriptedPrs() {
     return [];
   }
 }
-if (command.startsWith("issue create")) {
+/**
+ * The product-report script, re-read per call. Absent means the working default: every
+ * preflight question answers yes and a create succeeds, which is what a spec that does not
+ * care about this path already expects.
+ */
+function productScript() {
+  const fallback = { preflight: "ok", issueCreate: "created" };
+  const path = process.env.MC_E2E_GH_PRODUCT;
+  if (!path) return fallback;
+  try {
+    return { ...fallback, ...JSON.parse(require("node:fs").readFileSync(path, "utf8")) };
+  } catch {
+    return fallback;
+  }
+}
+const REQUIRED_LABELS = ${JSON.stringify(PRODUCT_ISSUE_REQUIRED_LABELS)};
+const product = productScript();
+/** Fail exactly the scripted preflight question, the way the real CLI fails it. */
+function preflightRefusal(stage) {
+  if (product.preflight !== stage) return false;
+  process.stderr.write(stage + " unavailable\\n");
+  process.exit(1);
+}
+if (argv[0] === "--version") {
+  preflightRefusal("gh-unavailable");
+  process.stdout.write("gh version 0.0.0-fake\\n");
+} else if (command.startsWith("auth status")) {
+  preflightRefusal("gh-auth");
+  process.stdout.write("Logged in to github.com as fake\\n");
+} else if (command.startsWith("repo view")) {
+  preflightRefusal("repository");
+  process.stdout.write((argv[2] || "acme/public-issues") + "\\n");
+} else if (argv[0] === "api" && command.includes("/labels")) {
+  // The --slurp form prints one array of PAGES, each a page of label objects. The daemon parses
+  // exactly that shape, so the fake has to nest rather than print a flat list.
+  const names = product.preflight === "labels"
+    ? REQUIRED_LABELS.filter((name) => name !== "usability")
+    : (product.labels || REQUIRED_LABELS);
+  process.stdout.write(JSON.stringify([names.map((name) => ({ name }))]) + "\\n");
+} else if (command.startsWith("issue create") && command.includes("${PRODUCT_ISSUE_STATUS_LABEL}")) {
+  // A product report, distinguished from every other \`issue create\` by the fixed triage
+  // label only the product reporter attaches. Task sources and the PR path keep their
+  // existing behavior below.
+  if (product.issueCreate === "refused") {
+    process.stderr.write("could not create issue: label not found\\n");
+    process.exit(1);
+  } else if (product.issueCreate === "unknown") {
+    // The shape the daemon must treat as "may have happened": exit 0, no URL.
+    process.stdout.write("\\n");
+  } else {
+    process.stdout.write("${FAKE_GH_PRODUCT_ISSUE_URL}\\n");
+  }
+} else if (command.startsWith("issue create")) {
   // What the real gh prints on success: the URL of the issue, and nothing else.
   process.stdout.write("${FAKE_GH_ISSUE_URL}\\n");
 } else if (command.startsWith("pr view")) {

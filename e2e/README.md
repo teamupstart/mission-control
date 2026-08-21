@@ -59,6 +59,53 @@ Video is off. Recording it cost 16s of every CI shard whether or not anything fa
 showed nothing the trace does not already replay. A failure still leaves a trace and a
 screenshot; open the trace with `npx playwright show-trace`.
 
+### A card item switched off across two Board columns
+
+`e2e/.artifacts/board-card-customization/` is the whole-board half of the same feature:
+three frames of a fleet split across **needs you** and **idle**, at the defaults, with
+Branch and Permission mode unchecked, and restored. One session settles idle and the other
+is asked a question over `POST /mcp/reviews` so it sorts into a second column by tone -
+which is what makes the frames evidence for "every card in every column" rather than for one
+card. The `review` flag stays drawn in all three, because the attention flags are not
+customizable.
+
+Regenerate all three with:
+
+```sh
+mkdir -p e2e/.artifacts/board-card-customization
+set -o pipefail   # or the pipe below reports tee's success, not Playwright's
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/board-card-customization.spec.ts \
+  --workers=1 --reporter=list \
+  | tee e2e/.artifacts/board-card-customization/focused-playwright-transcript.txt
+```
+
+### The Board card panel and its preview
+
+`e2e/.artifacts/board-card-preview/` carries the **Settings → Display → Board card**
+checklist beside its live preview card, twice: once at the shipped defaults - every item
+checked except the worktree, which is the one item no card drew before this feature - and
+once with Goal and Model unchecked and the worktree switched on, so the same frame shows
+what each checkbox actually costs and buys. No agent is dispatched, so nothing runs but the
+settings page and a daemon.
+
+The viewport is deliberately taller than the panel. An element screenshot taken across a
+scroll is stitched rather than photographed, and the seam reads as a missing row in a frame
+meant for pixel review.
+
+Regenerate both with:
+
+```sh
+mkdir -p e2e/.artifacts/board-card-preview
+set -o pipefail   # or the pipe below reports tee's success, not Playwright's
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/board-card-preview.spec.ts \
+  --workers=1 --reporter=list \
+  | tee e2e/.artifacts/board-card-preview/focused-playwright-transcript.txt
+```
+
 ### Native workflow image evidence
 
 `e2e/.artifacts/workflow-image-evidence/` records the dashboard intake and audit surfaces for

@@ -115,6 +115,10 @@ export const PRODUCT_ISSUE_PREFLIGHT_PROBLEMS = [
   "gh-auth",
   "repository",
   "labels",
+  // Appended, never reordered: these are persisted, append-only wire values. This one says
+  // the daemon has nobody to ask - see docs/security.md - so publishing is unavailable even
+  // though `gh` and the target repository are perfectly healthy.
+  "consent-unavailable",
 ] as const;
 export type ProductIssuePreflightProblemCode =
   (typeof PRODUCT_ISSUE_PREFLIGHT_PROBLEMS)[number];
@@ -156,3 +160,41 @@ export type ProductIssueSubmitResult =
 export type ProductIssuePreviewResponse =
   | ProductIssuePreview
   | Extract<ProductIssueSubmitResult, { outcome: "refused" | "configuration" }>;
+
+/**
+ * A grant to publish one exact report, once, soon.
+ *
+ * This is deliberately NOT part of the preview reply. A preview is a read: it renders what
+ * would become public so a person can read it, and it is re-issued on every keystroke that
+ * settles. Handing publishing authority out with a read means the authority is a side effect
+ * of looking, which is precisely what a reader is not agreeing to.
+ *
+ * So the grant is minted only by its own step, taken between two distinct human gestures -
+ * the press that asks to publish and the press that confirms it - and it is bounded three
+ * ways: to one `requestId`, to one `draftIdentity` (so it dies the instant the daemon's own
+ * derivation moves), and to `expiresAt`. It is retired on first terminal use.
+ *
+ * This is the shape `WorktreeActionPreview` already uses for the other irreversible action in
+ * this app, and the bound is the same one: it establishes that the caller took the confirming
+ * step for this exact content, not that the caller is a person. On a loopback API with no
+ * authentication, no server-side value can establish the second - see docs/security.md.
+ */
+export interface ProductIssueConfirmation {
+  outcome: "confirmation";
+  requestId: string;
+  /** The derivation this grant is pinned to; a submission whose identity differs is refused. */
+  draftIdentity: string;
+  /** Repeated from the preview so the confirming step names the destination it publishes to. */
+  target: string;
+  /** Unguessable, single-use, held only by the daemon and the reply it went out in. */
+  token: string;
+  /** Epoch milliseconds after which the grant is refused and the person must confirm again. */
+  expiresAt: number;
+}
+
+export type ProductIssueConfirmResponse =
+  | ProductIssueConfirmation
+  | Extract<ProductIssueSubmitResult, { outcome: "refused" | "configuration" | "unknown" }>;
+
+/** How long a confirmation grant stays usable. Matches the worktree action grant. */
+export const PRODUCT_ISSUE_CONFIRMATION_TTL_MS = 2 * 60_000;

@@ -30,7 +30,7 @@ const frameworkDir = join(
 const payload = join(frameworkDir, "Versions/Current/Electron Framework");
 const link = join(frameworkDir, "Electron Framework");
 
-test("both published Electron test commands run both preflights in repair order", () => {
+test("both published Electron test commands run both preflights in order", () => {
   const packageJson = JSON.parse(
     readFileSync(join(import.meta.dirname, "..", "package.json"), "utf8"),
   ) as { scripts: Record<string, string> };

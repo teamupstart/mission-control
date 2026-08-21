@@ -12,6 +12,7 @@ import { activePaneDialog, reportBucket } from "@shared/session.ts";
 import {
   ForemanClient,
   foremanClaudeTransportFallback,
+  foremanCodexTransportFallback,
   flushPendingSpend,
   loadSpendOutbox,
   sweepSpendOutbox,
@@ -78,7 +79,8 @@ import { verifyItem, verifyModel } from "./queue-verify.ts";
 import type { StandardsBundle } from "../standards.ts";
 import { DEFAULT_LLM_RUNNER_ID, llmRunner } from "../llm/index.ts";
 import { configureClaudeRunnerTransport } from "../llm/claude.ts";
-import type { ClaudeTransport, LlmRunnerId } from "@shared/llm.ts";
+import { configureCodexRunnerTransport } from "../llm/codex.ts";
+import type { ClaudeTransport, CodexTransport, LlmRunnerId } from "@shared/llm.ts";
 import { installForemanShutdown } from "./shutdown.ts";
 import {
   drainCompletionClaim,
@@ -266,6 +268,11 @@ async function main(): Promise<void> {
   // must not import that config module, so its resolver closes over the HTTP-refreshed
   // value below instead. It is installed before any path can spend.
   configureClaudeRunnerTransport(() => claudeTransport);
+  // And Codex's, for the same reason and at the same moment. A worker that installed only
+  // Claude's would answer the operator's saved transport correctly on one provider and
+  // silently ignore it on the other - which is worse than not offering the choice, because
+  // the panel says the choice took.
+  configureCodexRunnerTransport(() => codexTransport);
   // This process's half of usage accounting, installed before anything can spend. The
   // worker never opens the database, so its runs reach the ledger the way everything else
   // it does reaches it - over a route. `void` rather than await: the runner reports on the
@@ -323,7 +330,10 @@ async function main(): Promise<void> {
     // request carries both facts, and a transient failure retains both last-known values.
     const llmSelection = await client.llmSelection().catch(() => null);
     triageRunnerId = cfg.runner ?? llmSelection?.runner ?? triageRunnerId;
-    if (llmSelection) claudeTransport = llmSelection.claudeTransport;
+    if (llmSelection) {
+      claudeTransport = llmSelection.claudeTransport;
+      codexTransport = llmSelection.codexTransport;
+    }
     await syncBacklogPlanner(client, cfg, triageRunnerId);
     if (isLeader) await publishBacklogPlannerHealth(client);
 
@@ -2293,6 +2303,15 @@ let triageRunnerId: LlmRunnerId = DEFAULT_LLM_RUNNER_ID;
  * resolved config/env/default answer, keeping that daemon authoritative thereafter.
  */
 let claudeTransport: ClaudeTransport = foremanClaudeTransportFallback();
+
+/**
+ * The Codex wire transport this worker applies wherever the cheap tier runs on Codex.
+ *
+ * Kept beside `claudeTransport` and refreshed from the same status read, because the two
+ * answer one question - how this process talks to whichever provider it was told to use -
+ * and splitting their refresh is how one of them goes stale unnoticed.
+ */
+let codexTransport: CodexTransport = foremanCodexTransportFallback();
 
 /**
  * Adapt the daemon client to the cheap tier's read-only dependency surface.

@@ -448,6 +448,7 @@ test("the fixed commands include the isolated tour spike beside existing afforda
   assert.deepEqual(targets, [
     "bind-workflow",
     "dispatch",
+    "report-product-issue",
     "route",
     "route",
     "route",
@@ -456,6 +457,11 @@ test("the fixed commands include the isolated tour spike beside existing afforda
   const tour = find(rows, "command:see-work-tour");
   assert.equal(tour.title, "Start See the work tour");
   assert.equal(tour.target.kind, "start-see-work-tour");
+  // Feedback is the second doorway onto the topbar glyph, and it opens THAT modal - App
+  // routes both through one `openFeedback`, so there is one draft behind the two entries.
+  const feedback = find(rows, "command:report-product-issue");
+  assert.equal(feedback.title, "Report product feedback…");
+  assert.equal(feedback.target.kind, "report-product-issue");
   // The three routes are the Library's own ＋ New cards, which is the whole rule: the palette
   // is a second doorway onto shipped affordances, never a new capability.
   const creating = rows.filter((row) => row.target.kind === "route");
@@ -463,6 +469,30 @@ test("the fixed commands include the isolated tour spike beside existing afforda
     assert.deepEqual(
       row.target.kind === "route" ? row.target.route.page : null,
       "library",
+    );
+  }
+});
+
+/**
+ * The words an unhappy person actually types.
+ *
+ * Nobody opens the palette thinking "feedback". They arrive holding the thing that went
+ * wrong - a bug, a missing feature, a doc that lied - so each of those has to reach the one
+ * row that can do something about it. A row nobody can find is a report nobody files.
+ */
+test("every report type's own word finds the Feedback command", () => {
+  for (const query of [
+    "bug",
+    "issue",
+    "feature request",
+    "docs",
+    "documentation",
+    "usability",
+    "feedback",
+  ]) {
+    assert.ok(
+      searchPalette(query, stores()).rows.some((row) => row.id === "command:report-product-issue"),
+      `"${query}" did not reach the Feedback command`,
     );
   }
 });

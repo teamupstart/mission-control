@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import {
   closeSync,
   constants as fsConstants,
@@ -16,12 +16,14 @@ import {
 } from "@shared/protocol.ts";
 import {
   PRODUCT_ISSUE_BODY_MARKER,
+  PRODUCT_ISSUE_CONFIRMATION_TTL_MS,
   PRODUCT_ISSUE_LIMITS,
   PRODUCT_ISSUE_REQUIRED_LABELS,
   PRODUCT_ISSUE_SOURCE_LABELS,
   PRODUCT_ISSUE_STATUS_LABEL,
   PRODUCT_ISSUE_TYPE_LABELS,
   type ProductIssueAttachmentState,
+  type ProductIssueConfirmResponse,
   type ProductIssueDraft,
   type ProductIssueEnvironment,
   type ProductIssuePreflight,
@@ -35,6 +37,10 @@ import {
   productIssuesRepo,
   type ProductIssuesRepoConfig,
 } from "./config.ts";
+import {
+  resolveConsentPort,
+  type ProductIssueConsentPort,
+} from "./product-issue-consent.ts";
 import { githubIssueCreateOutcome } from "./github/issue-create.ts";
 import { detectImageExt, type SavedUpload } from "./uploads.ts";
 import { run, type RunResult } from "./util/exec.ts";
@@ -74,11 +80,40 @@ export interface ProductIssueServiceOptions {
   platform?: string;
   architecture?: string;
   demoMode?: boolean;
+  /**
+   * Who is asked before a publish is authorized.
+   *
+   * Injectable so tests can drive a refusal, a grant and an unavailable shell without an
+   * Electron shell in the room - never so production can choose a weaker one. The default is
+   * whatever this daemon actually has, which for a daemon nobody can ask is a port that always
+   * answers no.
+   */
+  consent?: ProductIssueConsentPort;
 }
 
 interface PreviewClaim {
   identity: string;
   expiresAt: number;
+}
+
+/**
+ * A minted, unused grant to publish one opening's currently derived content.
+ *
+ * Kept apart from `PreviewClaim` on purpose. A preview is re-issued on every settled
+ * keystroke and must stay a pure read; a grant is minted only by the confirming step, is
+ * pinned to the derivation it was taken against, and dies of age. Merging the two puts a
+ * publishing capability back on the read, which is the thing being fixed here.
+ */
+interface ConfirmationGrant {
+  identity: string;
+  token: string;
+  expiresAt: number;
+}
+
+/** Compare two hex tokens without leaking their divergence point through timing. */
+function tokenMatches(provided: string, expected: string | null): boolean {
+  if (!expected || provided.length !== expected.length) return false;
+  return timingSafeEqual(Buffer.from(provided, "utf8"), Buffer.from(expected, "utf8"));
 }
 
 interface SubmitClaim {
@@ -264,7 +299,10 @@ export class ProductIssueService {
   private readonly platform: string;
   private readonly architecture: string;
   private readonly demoMode: boolean;
+  /** Who gets asked before anything is published. See ./product-issue-consent.ts. */
+  private readonly consent: ProductIssueConsentPort;
   private readonly previews = new Map<string, PreviewClaim>();
+  private readonly grants = new Map<string, ConfirmationGrant>();
   private readonly claims = new Map<string, SubmitClaim>();
 
   constructor(options: ProductIssueServiceOptions = {}) {
@@ -276,6 +314,9 @@ export class ProductIssueService {
     this.platform = options.platform ?? hostPlatform();
     this.architecture = options.architecture ?? hostArch();
     this.demoMode = options.demoMode ?? Boolean(process.env.MISSION_DEMO_SCENARIO_DIR);
+    // Resolved per service rather than per call, so a daemon that cannot ask anybody says so
+    // in preflight instead of discovering it at the moment somebody presses publish.
+    this.consent = options.consent ?? resolveConsentPort();
   }
 
   attachmentState(): ProductIssueAttachmentState {
@@ -304,6 +345,17 @@ export class ProductIssueService {
           code: "demo-mode",
           message: "Product issue reporting is disabled in demo mode",
         }],
+      };
+    }
+    if (this.consent.unavailable) {
+      // Reported here rather than at the press, because "you cannot publish from this daemon"
+      // is a property of the daemon and a person deserves it before typing a bug report, not
+      // after. The form still previews; reading the public content is useful on its own.
+      return {
+        ready: false,
+        target: target.repo,
+        attachments,
+        problems: [{ code: "consent-unavailable", message: this.consent.unavailable }],
       };
     }
 
@@ -428,10 +480,17 @@ export class ProductIssueService {
     if (claimed && existing?.identity !== identity) {
       return refused("This report opening has already submitted a different draft");
     }
-    this.previews.set(request.requestId, {
-      identity,
-      expiresAt: now + REQUEST_TTL_MS,
-    });
+    this.previews.set(request.requestId, { identity, expiresAt: now + REQUEST_TTL_MS });
+    /**
+     * A preview whose content moved drops any grant taken against the old content.
+     *
+     * Without this, a person could confirm, keep typing, and have the older grant still be
+     * live when they pressed publish. `submit` would refuse it on the identity comparison
+     * anyway, so this is not the boundary - it is the state matching what the screen says,
+     * which is what puts the confirming press back in front of the person.
+     */
+    const grant = this.grants.get(request.requestId);
+    if (grant && grant.identity !== identity) this.grants.delete(request.requestId);
     return {
       outcome: "preview",
       requestId: request.requestId,
@@ -445,7 +504,113 @@ export class ProductIssueService {
     };
   }
 
-  async submit(source: ProductIssueSource, input: unknown): Promise<ProductIssueSubmitResult> {
+
+  /**
+   * Take the confirming step for one report, and mint the grant that publishes it.
+   *
+   * This exists as a step of its own rather than as a field on the preview reply, and that is
+   * the whole point of it. Previewing is a read that happens on every settled keystroke;
+   * something that arrives by reading is not a decision. Publishing to a public tracker is
+   * irreversible, so it is gated on a caller that came back a second time, naming the same
+   * opening and the same derived content, within two minutes.
+   *
+   * The grant is minted only after `this.consent` reports that a person answered yes. That
+   * call leaves the HTTP surface entirely - in the shipped app it is a native dialog raised by
+   * the desktop shell over the utility-process port - which is what makes this an attestation
+   * rather than a value a caller could present. Everything a caller CAN present was tried in
+   * three earlier revisions and refused, correctly: `/api/*` is unauthenticated, so whatever
+   * the dashboard sends a local process sends too.
+   *
+   * What it still does not establish: that the person answering is the person who typed the
+   * report. One human at the machine is the unit here, as it is for every other confirmation
+   * in this app.
+   *
+   * Dashboard only. The agent path's authorization is its submitted `input` review over a
+   * token-guarded transport, and a grant an agent could mint for itself would be a second way
+   * in beside the confirmation Phase 1 built.
+   */
+  async confirm(
+    source: ProductIssueSource,
+    input: unknown,
+  ): Promise<ProductIssueConfirmResponse> {
+    if (source !== "dashboard") {
+      return refused("Only the dashboard confirms product issues; the agent path uses a review");
+    }
+    const parsed = ProductIssueRequestSchema.safeParse(input);
+    if (!parsed.success) return refused(`Invalid product issue draft: ${parsed.error.message}`);
+    const request = parsed.data;
+    if (this.demoMode) {
+      return configuration("Product issue reporting is disabled in demo mode; nothing was published");
+    }
+    if (!this.attachments.enabled && request.attachmentUploadIds.length > 0) {
+      return refused(`${ATTACHMENTS_DISABLED_REASON}; remove screenshots and preview again`);
+    }
+    const target = this.target();
+    if (!target.ok) return configuration(target.error);
+
+    const now = this.now();
+    this.purgeExpired(now);
+    const identity = this.identity(source, request, target.repo);
+    const preview = this.previews.get(request.requestId);
+    // Confirming something that was never rendered is refused, so the grant can only ever
+    // describe content this daemon has actually served to somebody to read.
+    if (!preview) return refused("Preview this product issue before confirming it");
+    if (preview.identity !== identity) {
+      return refused("The product issue changed after preview; preview the current draft again");
+    }
+    if (this.claims.has(request.requestId)) {
+      return unknown(
+        "This report opening is already submitting or has an uncertain result; check GitHub before retrying",
+      );
+    }
+    if (this.consent.unavailable) return configuration(this.consent.unavailable);
+    // The one step that is not a computation. Everything above narrowed WHAT would be
+    // published; this asks whether anybody wants it published, and it is the only question
+    // whose answer a caller cannot supply.
+    const granted = await this.consent.ask({ target: target.repo, title: request.title });
+    if (!granted) {
+      return refused("Publishing was not confirmed; nothing was published");
+    }
+    // Re-checked after the wait: a dialog can sit open for two minutes, and the claim state
+    // may have moved underneath it.
+    if (this.claims.has(request.requestId)) {
+      return unknown(
+        "This report opening is already submitting or has an uncertain result; check GitHub before retrying",
+      );
+    }
+    const after = this.now();
+    const token = randomBytes(32).toString("hex");
+    const expiresAt = after + PRODUCT_ISSUE_CONFIRMATION_TTL_MS;
+    this.grants.set(request.requestId, { identity, token, expiresAt });
+    return {
+      outcome: "confirmation",
+      requestId: request.requestId,
+      draftIdentity: identity,
+      target: target.repo,
+      token,
+      expiresAt,
+    };
+  }
+
+  /**
+   * File one report.
+   *
+   * `confirmation` carries the single-use grant minted by `confirm`. Omitted for the MCP
+   * path, whose authorization is the session's submitted `input` review and whose transport
+   * is token-guarded.
+   *
+   * Three separate things are checked, and each covers a different failure. The grant proves
+   * the confirming step was taken rather than the value being computed from the draft or
+   * picked up by reading a preview. Its expiry proves that step was taken recently rather
+   * than being an old approval held for later. The identity comparison proves the daemon's
+   * own derivation - target, labels, source, environment, body - has not moved since, so a
+   * configuration change between reading and pressing cannot publish content nobody saw.
+   */
+  async submit(
+    source: ProductIssueSource,
+    input: unknown,
+    confirmation?: { token: string },
+  ): Promise<ProductIssueSubmitResult> {
     const parsed = ProductIssueRequestSchema.safeParse(input);
     if (!parsed.success) return refused(`Invalid product issue draft: ${parsed.error.message}`);
     const request = parsed.data;
@@ -466,10 +631,33 @@ export class ProductIssueService {
     if (preview.identity !== identity) {
       return refused("The product issue changed after preview; preview the current draft again");
     }
+    // BEFORE the confirmation check, and the order is load-bearing. Retiring the token on a
+    // terminal outcome means a replay after a successful publish would otherwise fail the
+    // token check and come back as a retry-safe `refused` - telling somebody it is safe to
+    // press again when an issue provably already exists. "This opening has already published"
+    // is both the stronger statement and the true one, so it answers first.
     if (this.claims.has(request.requestId)) {
       return unknown(
         "This report opening is already submitting or has an uncertain result; check GitHub before retrying",
       );
+    }
+    if (confirmation) {
+      // `purgeExpired(now)` above already dropped a grant that aged out, so a missing grant
+      // and an expired one arrive here identically - which is correct, because the recovery
+      // is identical too: confirm again in front of the content.
+      const grant = this.grants.get(request.requestId);
+      if (!grant || !tokenMatches(confirmation.token, grant.token)) {
+        return refused(
+          "This report was not confirmed, its confirmation expired, or it has already been " +
+            "used; review the public content and confirm it again",
+        );
+      }
+      // Belt to the identity comparison's braces. That one asks whether the derivation moved
+      // since the PREVIEW; this asks whether it moved since the CONFIRMATION, which is the
+      // narrower window a person actually agreed within.
+      if (grant.identity !== identity) {
+        return refused("The product issue changed after it was confirmed; confirm it again");
+      }
     }
 
     let attachmentArgs: string[] = [];
@@ -504,6 +692,7 @@ export class ProductIssueService {
         state: "terminal",
         expiresAt: this.now() + REQUEST_TTL_MS,
       });
+      this.retireConfirmation(request.requestId);
       return unknown(
         "GitHub issue creation did not report back; the issue may exist, so check GitHub before retrying",
       );
@@ -516,6 +705,7 @@ export class ProductIssueService {
           state: "terminal",
           expiresAt: this.now() + REQUEST_TTL_MS,
         });
+        this.retireConfirmation(request.requestId);
         return { outcome: "created", issueUrl: outcome.url, target: target.repo };
       case "refused":
         this.claims.delete(request.requestId);
@@ -527,12 +717,25 @@ export class ProductIssueService {
           state: "terminal",
           expiresAt: this.now() + REQUEST_TTL_MS,
         });
+        this.retireConfirmation(request.requestId);
         return unknown(
           outcome.reason === "process"
             ? "GitHub issue creation did not report back; the issue may exist, so check GitHub before retrying"
             : "GitHub CLI reported success without an issue URL; the issue may exist, so check GitHub before retrying",
         );
     }
+  }
+
+  /**
+   * Retire this opening's confirmation, so the token that authorized a publish cannot
+   * authorize a second one.
+   *
+   * Called on `created` and on `unknown` - the two outcomes where an issue may exist - and
+   * deliberately NOT on a retry-safe refusal, where nothing was published and the person is
+   * expected to press the same confirmed content again.
+   */
+  private retireConfirmation(requestId: string): void {
+    this.grants.delete(requestId);
   }
 
   private preflightFailure(
@@ -575,6 +778,9 @@ export class ProductIssueService {
   private purgeExpired(now: number): void {
     for (const [id, preview] of this.previews) {
       if (preview.expiresAt <= now) this.previews.delete(id);
+    }
+    for (const [id, grant] of this.grants) {
+      if (grant.expiresAt <= now) this.grants.delete(id);
     }
     for (const [id, claim] of this.claims) {
       if (claim.expiresAt <= now) this.claims.delete(id);

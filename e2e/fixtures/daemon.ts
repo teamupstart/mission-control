@@ -15,6 +15,10 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  ghProductScriptPath,
+  productConsentBinPath,
+  productConsentScriptPath,
+  writeProductConsentBin,
   ghPullRequestsPath,
   piCatalogControlPath,
   writeFakeAgents,
@@ -62,6 +66,16 @@ export interface DaemonHandle {
    * at spawn time - the fake reads one env var, and a spec cannot add one afterwards.
    */
   ghPrsPath: string;
+  /**
+   * Where a spec scripts the fake `gh`'s product-report behavior, for THIS daemon.
+   *
+   * On the handle for `ghPrsPath`'s reason: the fake reads one env var, set at spawn time.
+   */
+  ghProductPath: string;
+  /** Where a spec writes what the stand-in operator answers next. */
+  productConsentPath: string;
+  /** One JSON line per publish question the daemon actually asked. */
+  productConsentAskedPath: string;
   /**
    * The fake ai-conductor installation this daemon probes, and where a spec scripts the
    * repositories it says it manages.
@@ -209,6 +223,7 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
   const workspace = join(home, "workspace");
   const port = await freeLoopbackPort();
   const { recordDir, bins } = writeFakeAgents(home);
+  writeProductConsentBin(home);
   const conductor = writeFakeConductor(home);
   mkdirSync(workspace, { recursive: true });
   const repo = seedRepo(workspace, "demo-repo");
@@ -283,6 +298,18 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     // only has to write the file; absent content simply means "no pull requests anywhere",
     // which is what every spec that does not script one already expects.
     MC_E2E_GH_PRS: ghPullRequestsPath(home),
+    // Where that fake reads its scripted product-report behavior from. Set for every daemon
+    // so a spec only has to write the file; absent content is the working default, which is
+    // what every spec that never opens the Feedback form already expects.
+    MC_E2E_GH_PRODUCT: ghProductScriptPath(home),
+    // The public repository product reports would target. Pointed at a fixture owner/name so
+    // no run - not even one whose `gh` override somehow failed - names the real tracker. The
+    // blast dam is `MISSION_GH_BIN` above; this is the second lock on the same door.
+    MISSION_PRODUCT_ISSUES_REPO: "acme/public-issues",
+    // The stand-in for the operator answering the native publish dialog. Without something
+    // here the daemon can ask nobody and refuses every publish, which is exactly what a
+    // daemon started outside the desktop shell is supposed to do.
+    MISSION_PRODUCT_ISSUE_CONSENT_CMD: productConsentBinPath(home),
     // Native pools live inside this disposable MISSION_HOME. Keep their maintenance pass
     // deterministic during browser assertions; focused maintenance behavior belongs to the
     // allocator unit suite, while e2e specs drive explicit task cleanup.
@@ -500,6 +527,9 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     repo,
     secondRepo,
     ghPrsPath: ghPullRequestsPath(home),
+    ghProductPath: ghProductScriptPath(home),
+    productConsentPath: productConsentScriptPath(home),
+    productConsentAskedPath: join(home, "product-consent-asked.jsonl"),
     conductor,
     conductorCheckout,
     installFakeConductor,

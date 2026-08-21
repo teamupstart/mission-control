@@ -60,6 +60,7 @@ export const OVERLAY_IDS = {
   ensembleDelete: "ensemble-delete",
   worktreeAction: "worktree-action",
   seeWorkTour: "see-work-tour",
+  productIssue: "product-issue",
 } as const;
 
 export type OverlayId = (typeof OVERLAY_IDS)[keyof typeof OVERLAY_IDS];

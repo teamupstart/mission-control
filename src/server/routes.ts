@@ -89,6 +89,8 @@ import {
   PromptedWrapupSchema,
   WrapupAskedSchema,
   PushTaskSchema,
+  ProductIssueDashboardSubmitRequestSchema,
+  ProductIssueConfirmRequestSchema,
   ProductIssuePreviewRequestSchema,
   PipelineActionSchema,
   PipelineConsoleSchema,
@@ -934,6 +936,92 @@ export function buildApp(
       const result = productIssues.preview("dashboard", parsed.data);
       if (result.outcome === "preview") return c.json(result);
       return c.json(result, result.outcome === "configuration" ? 503 : 409);
+    },
+  );
+
+
+  /**
+   * The confirming step: ASK for a publish, and get one only if a person says yes.
+   *
+   * This route authenticates nobody, and that is deliberate rather than an oversight. Three
+   * earlier revisions tried to make the confirmation something a caller PRESENTS - a hash of
+   * the request, then a random token from the preview reply, then the per-machine bearer token
+   * - and each failed for the same reason: `/api/*` is loopback-reachable, so anything the
+   * dashboard can send a local process can send, and a token is a file that a process running
+   * as the operator can read. Possession is not attestation.
+   *
+   * So calling this grants nothing by itself. It asks the desktop shell to put a native dialog
+   * naming the target repository in front of the operator, over the utility-process port - not
+   * a route, not a socket, not a file - and mints a grant only if the reply says a person
+   * clicked publish. A local script may call this as often as it likes; every call raises a
+   * dialog on somebody's screen, and no click means no grant. See ./product-issue-consent.ts.
+   *
+   * The grant is then two minutes, single-use, pinned to one derivation. Not folded into the
+   * preview route for the second reason as well: preview is a read the modal issues on every
+   * settled keystroke, and authority that falls out of looking is authority nobody chose to
+   * take.
+   */
+  app.post(
+    "/api/product-issues/confirm",
+    bodyLimit({
+      maxSize: PRODUCT_ISSUE_LIMITS.requestJsonBytes,
+      onError: (c) => c.json({ error: "Product issue request is too large" }, 413),
+    }),
+    async (c) => {
+      if (!productIssues) {
+        return c.json({
+          outcome: "configuration",
+          message: "Product issue service unavailable",
+          retrySafe: true,
+        } as const, 503);
+      }
+      const parsed = await parseBody(c, ProductIssueConfirmRequestSchema);
+      if (!parsed.ok) return parsed.res;
+      const result = await productIssues.confirm("dashboard", parsed.data);
+      if (result.outcome === "confirmation") return c.json(result);
+      return c.json(
+        result,
+        result.outcome === "configuration" ? 503 : result.outcome === "unknown" ? 504 : 409,
+      );
+    },
+  );
+
+  /**
+   * The dashboard's public mutation, bound to the confirmation the browser rendered.
+   *
+   * Phase 1 held this route back on purpose: "preview then submit" alone would let anything
+   * that can reach the daemon publish without a person ever seeing the content.
+   * `confirmationToken` is the single-use grant minted by `/api/product-issues/confirm` -
+   * unguessable, so it cannot be computed from the draft; short-lived, so an old approval
+   * cannot be held and spent later; and retired once a submission using it reaches a terminal
+   * outcome, so a publish cannot be replayed. The service additionally refuses if its own
+   * re-derivation has moved since the grant was minted, which is what stops a configuration
+   * change between reading and pressing from publishing unseen content.
+   *
+   * Everything that can steer GitHub - target, labels, source, environment, body - is still
+   * derived by the service and never accepted from here.
+   */
+  app.post(
+    "/api/product-issues",
+    bodyLimit({
+      maxSize: PRODUCT_ISSUE_LIMITS.requestJsonBytes,
+      onError: (c) => c.json({ error: "Product issue request is too large" }, 413),
+    }),
+    async (c) => {
+      if (!productIssues) {
+        return c.json({
+          outcome: "configuration",
+          message: "Product issue service unavailable",
+          retrySafe: true,
+        } as const, 503);
+      }
+      const parsed = await parseBody(c, ProductIssueDashboardSubmitRequestSchema);
+      if (!parsed.ok) return parsed.res;
+      const { confirmationToken, ...request } = parsed.data;
+      const response = productIssueSubmitResponse(
+        await productIssues.submit("dashboard", request, { token: confirmationToken }),
+      );
+      return c.json(response.body, response.status);
     },
   );
 

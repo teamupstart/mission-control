@@ -560,6 +560,41 @@ export const ProductIssuePreviewRequestSchema = ProductIssueRequestSchema;
 export const ProductIssueSubmitRequestSchema = ProductIssueRequestSchema;
 export type ProductIssueRequestInput = z.infer<typeof ProductIssueRequestSchema>;
 
+/**
+ * The dashboard's mutation request: the same bounded report, plus the single-use grant minted
+ * by the confirming step.
+ *
+ * Two earlier revisions of this are worth recording, because each was refused for a reason
+ * the next one had to keep.
+ *
+ * It first echoed the preview's `draftIdentity`. That was wrong because `draftIdentity` is a
+ * hash OF THE REQUEST: anything holding the draft can recompute it, and the same value then
+ * authorizes every submission of that draft forever.
+ *
+ * It then carried a random token that the PREVIEW reply handed out. That fixed the recompute
+ * but not the shape: previewing is a read, it happens on every settled keystroke, and a value
+ * that arrives merely by looking is not a decision anybody took. Authority that falls out of
+ * a read is authority nobody granted.
+ *
+ * So the token now comes from `POST /api/product-issues/confirm`, a step of its own that sits
+ * between the press asking to publish and the press confirming it, expires in two minutes,
+ * and is retired on first terminal use.
+ *
+ * It still grants no authority of its own. Target, labels, source, environment and body are
+ * re-derived at submission, and the daemon additionally requires that the re-derivation match
+ * the content this grant was minted for - so a report whose derived content moved after it
+ * was confirmed is refused rather than published unseen.
+ */
+export const ProductIssueDashboardSubmitRequestSchema = ProductIssueRequestSchema.extend({
+  confirmationToken: z.string().regex(/^[0-9a-f]{64}$/),
+}).strict();
+
+/** The confirming step takes exactly the report it is confirming, and nothing else. */
+export const ProductIssueConfirmRequestSchema = ProductIssueRequestSchema;
+export type ProductIssueDashboardSubmitInput = z.infer<
+  typeof ProductIssueDashboardSubmitRequestSchema
+>;
+
 /** MCP identity is transport-owned and added beside the same bounded report request. */
 export const McpProductIssueRequestSchema = z
   .object({
@@ -618,6 +653,25 @@ export const ProductIssuePreviewResponseSchema = z.discriminatedUnion("outcome",
   ProductIssuePreviewSchema,
   ProductIssueRefusedResultSchema,
   ProductIssueConfigurationResultSchema,
+]);
+
+export const ProductIssueConfirmationSchema = z.object({
+  outcome: z.literal("confirmation"),
+  requestId: z.string().uuid(),
+  draftIdentity: z.string().regex(/^[0-9a-f]{64}$/),
+  target: z.string().min(1),
+  token: z.string().regex(/^[0-9a-f]{64}$/),
+  expiresAt: z.number().int().positive(),
+});
+
+export const ProductIssueConfirmResponseSchema = z.discriminatedUnion("outcome", [
+  ProductIssueConfirmationSchema,
+  ProductIssueRefusedResultSchema,
+  ProductIssueConfigurationResultSchema,
+  // Confirming an opening that is already publishing is not retry-safe, and saying so here
+  // rather than downgrading it to a refusal keeps the one distinction this feature exists to
+  // protect: never invite a second press when an issue may already exist.
+  ProductIssueUnknownResultSchema,
 ]);
 
 export const ProductIssueSubmitResultSchema = z.discriminatedUnion("outcome", [

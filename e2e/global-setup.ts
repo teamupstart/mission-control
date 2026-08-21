@@ -11,7 +11,10 @@ export default async function globalSetup(config: FullConfig): Promise<() => Pro
   const lease = await acquireE2eHostLease({
     workers: config.workers,
     onWait: (owner) => {
-      if (!owner) return;
+      if (!owner) {
+        console.log("[e2e] waiting for the host lease; owner metadata is not available yet");
+        return;
+      }
       console.log(
         `[e2e] waiting for the host lease held by pid ${owner.pid} from ${owner.cwd} `
         + `since ${owner.acquiredAt}`,

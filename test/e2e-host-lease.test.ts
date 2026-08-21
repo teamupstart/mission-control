@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -8,12 +8,12 @@ import {
   acquireE2eHostLease,
   assertE2eWorkerLimit,
   E2E_MAX_WORKERS,
-  type E2eLeaseOwner,
+  type E2eHostLease,
 } from "../e2e/host-lease.ts";
 
-async function fixture(): Promise<{ root: string; lockDir: string }> {
+async function fixture(): Promise<{ root: string; metadataPath: string }> {
   const root = await mkdtemp(join(tmpdir(), "mission-e2e-lease-test-"));
-  return { root, lockDir: join(root, "host.lock") };
+  return { root, metadataPath: join(root, "owner.json") };
 }
 
 test("the E2E worker ceiling rejects a CLI override above four", () => {
@@ -24,18 +24,19 @@ test("the E2E worker ceiling rejects a CLI override above four", () => {
 });
 
 test("a second E2E suite waits until the host lease is released", async () => {
-  const { root, lockDir } = await fixture();
+  const { root, metadataPath } = await fixture();
   try {
-    const first = await acquireE2eHostLease({ lockDir, workers: 4 });
+    const first = await acquireE2eHostLease({ metadataPath, port: 0, workers: 4 });
     let secondSettled = false;
-    const observedOwners: E2eLeaseOwner[] = [];
+    let observedOwnerPid: number | null = null;
     const secondPromise = acquireE2eHostLease({
-      lockDir,
+      metadataPath,
+      port: first.owner.port,
       workers: 2,
       pollMs: 10,
       waitTimeoutMs: 2_000,
       onWait: (owner) => {
-        if (owner) observedOwners.push(owner);
+        observedOwnerPid = owner?.pid ?? null;
       },
     }).then((lease) => {
       secondSettled = true;
@@ -44,132 +45,92 @@ test("a second E2E suite waits until the host lease is released", async () => {
 
     await new Promise((resolve) => setTimeout(resolve, 50));
     assert.equal(secondSettled, false);
-    assert.equal(observedOwners[0]?.token, first.owner.token);
+    assert.equal(observedOwnerPid, process.pid);
 
     await first.release();
     const second = await secondPromise;
     assert.equal(secondSettled, true);
-    assert.notEqual(second.owner.token, first.owner.token);
     await second.release();
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test("a dead E2E owner is reclaimed before the next suite starts", async () => {
-  const { root, lockDir } = await fixture();
+test("a crashed owner leaves no kernel lease to reclaim", async () => {
+  const { root, metadataPath } = await fixture();
   try {
-    await mkdir(lockDir);
-    await writeFile(
-      join(lockDir, "owner.json"),
-      JSON.stringify({
-        token: "dead-owner",
-        pid: 2_147_483_647,
-        acquiredAt: "2026-01-01T00:00:00.000Z",
-        cwd: "/stale/checkout",
-        argv: ["playwright", "test"],
-        workers: 4,
-      }),
-    );
-
-    const lease = await acquireE2eHostLease({
-      lockDir,
+    await writeFile(metadataPath, JSON.stringify({
+      token: "dead-owner",
+      pid: 2_147_483_647,
+      acquiredAt: "2026-01-01T00:00:00.000Z",
+      cwd: "/stale/checkout",
+      argv: ["playwright", "test"],
       workers: 4,
-      pollMs: 5,
-      waitTimeoutMs: 1_000,
-    });
-    const current = JSON.parse(await readFile(join(lockDir, "owner.json"), "utf8")) as E2eLeaseOwner;
-    assert.equal(current.token, lease.owner.token);
-    assert.equal(current.pid, process.pid);
+      port: 1,
+    }));
+
+    const lease = await acquireE2eHostLease({ metadataPath, port: 0, workers: 4 });
+    assert.equal(lease.owner.pid, process.pid);
+    assert.notEqual(lease.owner.token, "dead-owner");
     await lease.release();
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test("concurrent stale reclaimers cannot remove a replacement lease", async () => {
-  const { root, lockDir } = await fixture();
+test("concurrent waiters cannot hold the kernel lease together", async () => {
+  const { root, metadataPath } = await fixture();
   try {
-    await mkdir(lockDir);
-    await writeFile(
-      join(lockDir, "owner.json"),
-      JSON.stringify({
-        token: "dead-owner",
-        pid: 2_147_483_647,
-        acquiredAt: "2026-01-01T00:00:00.000Z",
-        cwd: "/stale/checkout",
-        argv: ["playwright", "test"],
+    const first = await acquireE2eHostLease({ metadataPath, port: 0, workers: 4 });
+    let active = 0;
+    let maxActive = 0;
+    const runWaiter = async (): Promise<void> => {
+      const lease = await acquireE2eHostLease({
+        metadataPath,
+        port: first.owner.port,
         workers: 4,
-      }),
-    );
-
-    let allowFirstReclaim!: () => void;
-    const firstReclaimMayContinue = new Promise<void>((resolve) => {
-      allowFirstReclaim = resolve;
-    });
-    let firstClaimed = false;
-    const firstPromise = acquireE2eHostLease({
-      lockDir,
-      workers: 4,
-      pollMs: 5,
-      waitTimeoutMs: 2_000,
-      beforeStaleLeaseRename: async () => {
-        firstClaimed = true;
-        await firstReclaimMayContinue;
-      },
-    });
-
-    while (!firstClaimed) await new Promise((resolve) => setTimeout(resolve, 1));
-    let secondSettled = false;
-    const secondPromise = acquireE2eHostLease({
-      lockDir,
-      workers: 4,
-      pollMs: 100,
-      waitTimeoutMs: 2_000,
-    }).then((lease) => {
-      secondSettled = true;
-      return lease;
-    });
+        pollMs: 5,
+        waitTimeoutMs: 2_000,
+      });
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      active -= 1;
+      await lease.release();
+    };
+    const waiters = [runWaiter(), runWaiter(), runWaiter()];
 
     await new Promise((resolve) => setTimeout(resolve, 25));
-    assert.equal(secondSettled, false);
-    allowFirstReclaim();
-
-    const first = await firstPromise;
-    await new Promise((resolve) => setTimeout(resolve, 25));
-    assert.equal(secondSettled, false);
-    assert.equal(
-      (JSON.parse(await readFile(join(lockDir, "owner.json"), "utf8")) as E2eLeaseOwner).token,
-      first.owner.token,
-    );
-
+    assert.equal(active, 0);
     await first.release();
-    const second = await secondPromise;
-    await second.release();
+    await Promise.all(waiters);
+    assert.equal(maxActive, 1);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
 
 test("an E2E suite times out with the live owner's identity", async () => {
-  const { root, lockDir } = await fixture();
+  const { root, metadataPath } = await fixture();
+  let first: E2eHostLease | null = null;
   try {
-    const first = await acquireE2eHostLease({ lockDir, workers: 4 });
+    first = await acquireE2eHostLease({ metadataPath, port: 0, workers: 4 });
     await assert.rejects(
       acquireE2eHostLease({
-        lockDir,
+        metadataPath,
+        port: first.owner.port,
         workers: 1,
         pollMs: 5,
         waitTimeoutMs: 25,
       }),
       (error: Error) => {
         assert.match(error.message, new RegExp(`held by pid ${process.pid}`));
-        assert.match(error.message, new RegExp(first.owner.cwd.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+        assert.match(error.message, /Timed out waiting for the Mission Control E2E host lease/);
         return true;
       },
     );
-    await first.release();
   } finally {
+    await first?.release();
     await rm(root, { recursive: true, force: true });
   }
 });

@@ -1,14 +1,16 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { dirname, join } from "node:path";
 
 export const E2E_MAX_WORKERS = 4;
 
 const DEFAULT_POLL_MS = 1_000;
 const DEFAULT_WAIT_TIMEOUT_MS = 45 * 60_000;
-const OWNER_FILE = "owner.json";
-const RECLAIM_DIR = "reclaim";
+const LEASE_HOST = "127.0.0.1";
+const LEASE_PORT_BASE = 21_800;
+const LEASE_PORT_SPAN = 1_000;
 
 export interface E2eLeaseOwner {
   token: string;
@@ -17,6 +19,7 @@ export interface E2eLeaseOwner {
   cwd: string;
   argv: string[];
   workers: number;
+  port: number;
 }
 
 export interface E2eHostLease {
@@ -25,13 +28,12 @@ export interface E2eHostLease {
 }
 
 interface AcquireOptions {
-  lockDir?: string;
   workers: number;
+  port?: number;
+  metadataPath?: string;
   pollMs?: number;
   waitTimeoutMs?: number;
   onWait?: (owner: E2eLeaseOwner | null) => void;
-  // Used by the concurrency regression test to hold the reclaim critical section open.
-  beforeStaleLeaseRename?: () => Promise<void>;
 }
 
 function userIdentity(): string {
@@ -41,8 +43,18 @@ function userIdentity(): string {
   return value.replace(/[^a-zA-Z0-9_.-]/g, "_");
 }
 
-export function defaultE2eLeaseDir(): string {
-  return join(tmpdir(), `mission-control-e2e-${userIdentity()}.lock`);
+function identityNumber(value: string): number {
+  let result = 0;
+  for (const character of value) result = ((result * 31) + character.charCodeAt(0)) >>> 0;
+  return result;
+}
+
+export function defaultE2eLeasePort(): number {
+  return LEASE_PORT_BASE + (identityNumber(userIdentity()) % LEASE_PORT_SPAN);
+}
+
+export function defaultE2eLeaseMetadataPath(): string {
+  return join(tmpdir(), `mission-control-e2e-${userIdentity()}.json`);
 }
 
 export function assertE2eWorkerLimit(workers: number): void {
@@ -57,19 +69,9 @@ export function assertE2eWorkerLimit(workers: number): void {
   }
 }
 
-function processIsAlive(pid: number): boolean {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
+async function readOwner(metadataPath: string): Promise<E2eLeaseOwner | null> {
   try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM";
-  }
-}
-
-async function readOwner(lockDir: string): Promise<E2eLeaseOwner | null> {
-  try {
-    const parsed = JSON.parse(await readFile(join(lockDir, OWNER_FILE), "utf8")) as Partial<E2eLeaseOwner>;
+    const parsed = JSON.parse(await readFile(metadataPath, "utf8")) as Partial<E2eLeaseOwner>;
     if (
       typeof parsed.token !== "string"
       || !Number.isInteger(parsed.pid)
@@ -78,6 +80,7 @@ async function readOwner(lockDir: string): Promise<E2eLeaseOwner | null> {
       || !Array.isArray(parsed.argv)
       || !parsed.argv.every((part) => typeof part === "string")
       || !Number.isInteger(parsed.workers)
+      || !Number.isInteger(parsed.port)
     ) {
       return null;
     }
@@ -87,62 +90,36 @@ async function readOwner(lockDir: string): Promise<E2eLeaseOwner | null> {
   }
 }
 
-async function publishCandidate(lockDir: string, owner: E2eLeaseOwner): Promise<boolean> {
-  await mkdir(dirname(lockDir), { recursive: true });
-  const candidate = await mkdtemp(join(dirname(lockDir), `${basename(lockDir)}.candidate-`));
+async function publishOwner(metadataPath: string, owner: E2eLeaseOwner): Promise<void> {
+  await mkdir(dirname(metadataPath), { recursive: true });
+  const candidate = `${metadataPath}.candidate-${process.pid}-${randomUUID()}`;
   try {
-    await writeFile(join(candidate, OWNER_FILE), `${JSON.stringify(owner, null, 2)}\n`, {
-      flag: "wx",
-    });
-    await rename(candidate, lockDir);
-    return true;
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === "EEXIST" || code === "ENOTEMPTY") return false;
-    throw error;
+    await writeFile(candidate, `${JSON.stringify(owner, null, 2)}\n`, { flag: "wx" });
+    await rename(candidate, metadataPath);
   } finally {
-    await rm(candidate, { recursive: true, force: true });
+    await rm(candidate, { force: true });
   }
 }
 
-async function reclaimStaleLease(
-  lockDir: string,
-  expected: E2eLeaseOwner | null,
-  beforeRename?: () => Promise<void>,
-): Promise<boolean> {
-  // The marker lives inside the lease so it can only guard this exact directory.
-  // Moving the stale lease also moves the marker, letting a replacement publish
-  // without a second reclaimer being able to mistake it for the stale owner.
-  const reclaimDir = join(lockDir, RECLAIM_DIR);
-  try {
-    await mkdir(reclaimDir);
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === "ENOENT" || code === "EEXIST") return false;
-    throw error;
-  }
+async function tryListen(port: number): Promise<Server | null> {
+  const server = createServer();
+  return await new Promise((resolve, reject) => {
+    server.once("error", (error) => {
+      if ((error as NodeJS.ErrnoException).code === "EADDRINUSE") resolve(null);
+      else reject(error);
+    });
+    server.listen({ host: LEASE_HOST, port, exclusive: true }, () => resolve(server));
+  });
+}
 
-  let markerMoved = false;
-  const staleDir = `${lockDir}.stale-${process.pid}-${randomUUID()}`;
-  try {
-    const current = await readOwner(lockDir);
-    const ownerChanged = expected
-      ? current?.token !== expected.token
-      : current !== null;
-    if (ownerChanged || (current && processIsAlive(current.pid))) return false;
-
-    await beforeRename?.();
-    await rename(lockDir, staleDir);
-    markerMoved = true;
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === "ENOENT" || code === "EEXIST" || code === "ENOTEMPTY") return false;
-    throw error;
-  } finally {
-    if (!markerMoved) await rm(reclaimDir, { recursive: true, force: true });
-  }
-  await rm(staleDir, { recursive: true, force: true });
-  return true;
+async function closeServer(server: Server): Promise<void> {
+  if (!server.listening) return;
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
 }
 
 async function sleep(ms: number): Promise<void> {
@@ -151,65 +128,62 @@ async function sleep(ms: number): Promise<void> {
 
 export async function acquireE2eHostLease(options: AcquireOptions): Promise<E2eHostLease> {
   assertE2eWorkerLimit(options.workers);
-  const lockDir = options.lockDir ?? defaultE2eLeaseDir();
+  const requestedPort = options.port ?? defaultE2eLeasePort();
+  const metadataPath = options.metadataPath ?? defaultE2eLeaseMetadataPath();
   const pollMs = options.pollMs ?? DEFAULT_POLL_MS;
   const waitTimeoutMs = options.waitTimeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS;
-  const owner: E2eLeaseOwner = {
-    token: randomUUID(),
-    pid: process.pid,
-    acquiredAt: new Date().toISOString(),
-    cwd: process.cwd(),
-    argv: process.argv.slice(1),
-    workers: options.workers,
-  };
   const deadline = Date.now() + waitTimeoutMs;
   let reportedOwnerToken: string | null | undefined;
 
   for (;;) {
-    if (await publishCandidate(lockDir, owner)) {
+    const server = await tryListen(requestedPort);
+    if (server) {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        await closeServer(server);
+        throw new Error("Could not read the Mission Control E2E host lease port.");
+      }
+      const owner: E2eLeaseOwner = {
+        token: randomUUID(),
+        pid: process.pid,
+        acquiredAt: new Date().toISOString(),
+        cwd: process.cwd(),
+        argv: process.argv.slice(1),
+        workers: options.workers,
+        port: address.port,
+      };
+      try {
+        await publishOwner(metadataPath, owner);
+      } catch (error) {
+        await closeServer(server);
+        throw error;
+      }
+
       let released = false;
       return {
         owner,
         release: async () => {
           if (released) return;
           released = true;
-          const current = await readOwner(lockDir);
-          if (current?.token !== owner.token) return;
-          const releaseDir = `${lockDir}.release-${process.pid}-${randomUUID()}`;
-          try {
-            await rename(lockDir, releaseDir);
-          } catch (error) {
-            if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
-            throw error;
-          }
-          await rm(releaseDir, { recursive: true, force: true });
+          await closeServer(server);
+          const current = await readOwner(metadataPath);
+          if (current?.token === owner.token) await rm(metadataPath, { force: true });
         },
       };
     }
 
-    const current = await readOwner(lockDir);
-    if (!current || !processIsAlive(current.pid)) {
-      const reclaimed = await reclaimStaleLease(lockDir, current, options.beforeStaleLeaseRename);
-      if (!reclaimed) {
-        if (Date.now() >= deadline) {
-          throw new Error(
-            `Timed out waiting for another process to reclaim the Mission Control E2E host lease `
-            + `after ${waitTimeoutMs}ms.`,
-          );
-        }
-        await sleep(Math.min(pollMs, Math.max(1, deadline - Date.now())));
-      }
-      continue;
-    }
-
-    if (reportedOwnerToken !== current.token) {
+    const current = await readOwner(metadataPath);
+    const currentToken = current?.token ?? null;
+    if (reportedOwnerToken !== currentToken) {
       options.onWait?.(current);
-      reportedOwnerToken = current.token;
+      reportedOwnerToken = currentToken;
     }
     if (Date.now() >= deadline) {
+      const holder = current
+        ? ` It is held by pid ${current.pid} from ${current.cwd} since ${current.acquiredAt}.`
+        : ` Port ${requestedPort} is in use, but no Mission Control E2E owner metadata is available.`;
       throw new Error(
-        `Timed out waiting for the Mission Control E2E host lease after ${waitTimeoutMs}ms. `
-        + `It is held by pid ${current.pid} from ${current.cwd} since ${current.acquiredAt}.`,
+        `Timed out waiting for the Mission Control E2E host lease after ${waitTimeoutMs}ms.${holder}`,
       );
     }
     await sleep(Math.min(pollMs, Math.max(1, deadline - Date.now())));

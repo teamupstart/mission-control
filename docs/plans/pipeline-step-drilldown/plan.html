@@ -298,6 +298,15 @@ grey edges - the projection, the gate read, the tail and the push - are not touc
 absent: a step with nothing recorded renders a sentence saying so, which is a real state for a
 step that has not started.</p>
 
+<div class="note">
+<p><strong>Each band is an optional field on one <code>PipelineStepDetail</code>, and that is
+load-bearing rather than convenient.</strong> Absence is already a state the reader must draw, so
+a band no phase has implemented yet is indistinguishable from a band whose engine wrote nothing -
+which is what lets <a href="#d2">Decision 2</a> put bands 1 to 3 in the first phase and bands 4
+and 5 in later ones without either of them changing the contract. Every band below is specified in
+full here regardless of which phase builds it.</p>
+</div>
+
 <h3>1. Timeline</h3>
 
 <p>From <code>pipeline_events</code>, filtered to this step. Per row: the engine's own
@@ -649,19 +658,131 @@ operator's own config, not in any contract this build could copy.</p>
     which steps it has no timeline for rather than drawing them as empty.</li>
   <li><strong>The audit trail and the event ledger are retired with the worktree.</strong> Both
     live under <code>.pipeline/</code>, so a torn-down worktree takes its history with it.
-    Whether Mission Control should tail the audit trail into SQLite - as it already does for
-    <code>events.jsonl</code> - to outlive that is an open question below, not a settled
-    one.</li>
+    Decision 3 below adopts reading on demand and accepts that cost, which is the cost today's
+    gate files already carry; it also records the tailing alternative as a self-contained later
+    phase rather than a fork.</li>
   <li><strong>Artifacts are listed, not versioned.</strong> A file the engine has since rewritten
     is shown as it is now. There is no per-step snapshot on disk to show instead.</li>
 </ul>
 
-<h2>Open questions</h2>
+<h2>Decisions</h2>
 
-<p>Three, each carried to the review as a selectable decision rather than settled here: where the
-reader sits on the page, how much of the inventory phase 1 covers, and whether the audit trail is
-read on demand or tailed into the ledger so it survives the worktree.</p>
+<p>Three choices decide the component boundary and the read architecture. Each is <strong>recorded
+here with an adopted option that binds implementation</strong>, so a phase owner has one thing to
+build and not a fork to guess at.</p>
+
+<div class="note warn">
+<p><strong>Provenance, stated plainly so nobody reads more into it than is there.</strong> These
+are the plan author's adopted defaults, <em>not</em> the operator's selections. The choices were
+put to the operator twice through <code>request_plan_decisions</code>; both requests timed out
+with no submission, so nothing was selected and nothing is recorded as selected. They bind
+implementation because a plan that leaves them open is not executable - not because a human has
+ratified them. Each carries the bounded alternative and its blast radius, so a later operator
+reversal is a scoped change with a known cost rather than a redesign.</p>
+</div>
+
+<h3>What makes all three safe to bind now</h3>
+
+<p>One invariant, and it is the reason the read architecture does not depend on any of them:</p>
+
+<div class="note">
+<p><code>PipelineStepDetail</code> is defined <strong>once</strong>, with every band an optional
+field. A band a phase has not implemented is <em>absent</em>, which is already a state the reader
+must render - a step with nothing recorded is an ordinary state, not an error. So adding a band
+later is an additive field on a shape that already tolerates its absence, never a change to the
+contract.</p>
+</div>
+
+<p>That is what separates the three: <strong>one of them touches the architecture and two do
+not.</strong></p>
+
+<h3>Decision 1 - reader placement</h3>
+
+<p><strong>Adopted: a section below the strip, focused by the click.</strong> It matches the
+workflow runs page, which already focuses its <code>Review worklist</code> from strip clicks
+(<code>WorkflowRuns.tsx:2101-2163</code>), so the pipelines surface gains no interaction idiom of
+its own.</p>
+
+<p><em>Not an architecture decision.</em> The reader is a pure renderer over
+<code>PipelineStepDetail</code>; placement decides only where it mounts.</p>
+
+<div class="tablewrap">
+<table>
+  <thead><tr><th>Alternative</th><th>What changes if the operator reverses this</th></tr></thead>
+  <tbody>
+    <tr><td>Drawer beside the strip</td><td><code>PipelineRunView.tsx</code>, a new drawer frame under the <code>pipelines-</code> prefix, the <code>styles.css</code> block, and the e2e spec's selectors.</td></tr>
+    <tr><td>Full overlay</td><td>The above, plus a new id in <code>OVERLAY_IDS</code> and an <code>Overlay</code> registration.</td></tr>
+    <tr><td>Inline in the strip</td><td>The above, plus a layout answer for a 3 kB markdown tail inside a card that is one of six in a horizontally scrolling frame. Rejected on that ground, not on preference.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Untouched in every case: <code>PipelineStepDetail</code>,
+<code>usePipelineStepDetail</code>, the route, the server readers, the shared types, and
+<code>test/pipeline-sse.test.ts</code>.</p>
+
+<h3 id="d2">Decision 2 - what the first phase covers</h3>
+
+<p><strong>Adopted: bands 1, 2 and 3</strong> - Timeline, Gate history and operator actions, and
+Outcome. Those read only the two ledgers that already exist and have no reader, so the first phase
+adds <strong>no new file readers at all</strong> and still delivers
+<code>step_completed.tail</code>, retries with escalations, kickback reasons, per-dispatch cost,
+skip reasons, interventions and halt clears.</p>
+
+<p>Bands 4 (Findings) and 5 (Artifacts) are <strong>later phases, not descoped work.</strong> Each
+is a set of independent file readers behind an optional field, so each lands on its own without
+touching what shipped before it.</p>
+
+<p><em>Not an architecture decision.</em> It is phase ordering, and the invariant above is what
+makes it so: a phase that does not implement band 4 leaves <code>findings</code> absent, and the
+reader renders that exactly as it renders a step whose engine wrote no findings.</p>
+
+<div class="tablewrap">
+<table>
+  <thead><tr><th>Alternative</th><th>What changes if the operator reverses this</th></tr></thead>
+  <tbody>
+    <tr><td>Bands 1 and 3 only</td><td>Drop the audit-trail reader from phase 1. The gate-history band goes absent; every gate occurrence and every operator action stays invisible until a later phase.</td></tr>
+    <tr><td>Also band 4</td><td>Phase 1 additionally carries six version-tolerant file readers and their tests. Larger phase, same contract.</td></tr>
+    <tr><td>Also band 5</td><td>The above, plus the frozen <code>PIPELINE_STEP_ARTIFACTS</code> copy and the file-viewer wiring.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h3>Decision 3 - audit-trail retention</h3>
+
+<p><strong>Adopted: read on demand, like the gate files.</strong> No new storage, no cursor
+column, no retention path, no migration. It keeps the rule <code>db.ts</code> states - the
+projection is a cache of the engine's files and may store nothing the engine did not write down -
+which is the rule the whole read-through design rests on.</p>
+
+<p><strong>This is the one decision that touches the architecture, and exactly one invariant of
+it.</strong> The cost is named rather than hidden: the audit trail lives under
+<code>.pipeline/</code>, so a worktree the engine tears down takes its gate history, its
+interventions and its halt clears with it. Today's gate files behave identically, so this loses
+nothing that is currently kept.</p>
+
+<div class="tablewrap">
+<table>
+  <thead><tr><th>Alternative</th><th>What changes if the operator reverses this</th></tr></thead>
+  <tbody>
+    <tr><td>Tail it into <code>pipeline_events</code></td><td>A second cursor column on <code>pipeline_runs</code> and its migration, a second retention path paired to run retirement, and a fingerprint rule for a record shape that carries no <code>type</code>.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p><strong>Reversing it does not fork this plan, and that is the point.</strong> The band's shape
+on <code>PipelineStepDetail</code> is identical either way - <code>origin</code>,
+<code>phase</code>, <code>event</code>, <code>reason</code>, <code>cause</code>,
+<code>attempt</code>, <code>at</code> - because that is the engine's <code>AuditRecord</code> and
+not a choice this plan makes. Only <em>where the server reads it from</em> moves. So the tailing
+alternative is a self-contained later phase that changes one reader and no contract, no route and
+no component.</p>
+
+<h3>The standing rule for every phase owner</h3>
+
+<p>Any later change to one of these three is a change to <strong>this file first</strong>. A phase
+that implements a different option than the one recorded above, without this section being updated
+to record it, is the incompatibility this section exists to prevent.</p>
 
 </body>
 </html>
-</content>

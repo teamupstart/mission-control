@@ -23,6 +23,22 @@ export interface LaunchTurnMarker {
    * platform contract.
    */
   displayText: string | null;
+  /**
+   * The native transcript id of the turn this marker projects, once one has been seen.
+   *
+   * The OCCURRENCE anchor, and the reason a fingerprint alone is not enough. A fingerprint
+   * says "text shaped like the launch"; it cannot say "the turn that started this
+   * conversation". Nothing stops the same bytes arriving again later - a delivery retry
+   * pastes the intent twice by design, and automation can resend it verbatim - and a marker
+   * that matched on text alone would then project the repeat too, replacing or omitting a
+   * turn that really was a later message.
+   *
+   * Null until a decorated read identifies the turn, because at dispatch the turn does not
+   * exist yet: the prompt has not been written to the transcript, so it has no id to record.
+   * The first fingerprint match binds this, and from then on the fingerprint is not consulted
+   * at all - only this id projects, and every later identical turn renders literally.
+   */
+  messageId: string | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -67,6 +83,7 @@ export function launchTextFingerprint(text: string): string {
  */
 export interface LaunchMarkerSource {
   launchTurnFor(sessionId: string): LaunchTurnMarker | null;
+  bindLaunchTurnMessage(sessionId: string, messageId: string): void;
 }
 
 /**
@@ -97,13 +114,45 @@ export function resolveLaunchMarker(
 }
 
 /**
+ * Bind the identified launch turn to its marker, and never let that write break a read.
+ *
+ * The companion to `resolveLaunchMarker`, on the same terms and for the same reason: this
+ * runs on a transcript read, and a conversation must not be lost because a presentation row
+ * could not be updated. A failed bind leaves the marker matching on fingerprint alone, which
+ * is exactly today's behaviour minus the occurrence anchor - the next read tries again.
+ */
+export function bindLaunchTurnMessage(
+  source: LaunchMarkerSource,
+  sessionId: string | undefined,
+  messageId: string,
+): void {
+  if (!sessionId) return;
+  try {
+    source.bindLaunchTurnMessage(sessionId, messageId);
+  } catch (err) {
+    console.error(
+      `[transcript] could not anchor the launch turn for ${sessionId}:`,
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+}
+
+/**
  * The presentation for one normalized message under one marker, or null to leave it alone.
  *
  * Narrow on purpose, and deliberately NOT "the first user turn": a resumed conversation, a
  * manually discovered session, and a task assigned into a live session all open on a real
- * human message, and a positional heuristic would delete it. Three things have to hold -
- * a user-role turn, carrying text, whose fingerprint is the recorded one - and the marker
- * itself only exists because a dispatch wrote it.
+ * human message, and a positional heuristic would delete it. The marker itself only exists
+ * because a dispatch wrote it.
+ *
+ * Two matching modes, and the second is the one that matters:
+ *
+ * - **Anchored** (`messageId` set): only that exact native turn projects. The fingerprint is
+ *   not consulted, so a later turn carrying the identical bytes - a delivery retry, an
+ *   automated resend - renders literally, as the real message it is.
+ * - **Unanchored** (`messageId` null): the turn is recognized by fingerprint, which is all
+ *   there is to go on before any read has seen it. The caller anchors the first match; see
+ *   `attributeTranscript`, which is what makes this mode transient rather than permanent.
  */
 export function launchPresentationFor(
   message: TranscriptMessage,
@@ -111,6 +160,11 @@ export function launchPresentationFor(
 ): TranscriptPresentation | null {
   if (!marker) return null;
   if (message.role !== "user" || !message.text) return null;
+  if (marker.messageId !== null) {
+    return message.id === marker.messageId
+      ? { kind: "launch", displayText: marker.displayText }
+      : null;
+  }
   if (launchTextFingerprint(message.text) !== marker.fingerprint) return null;
   return { kind: "launch", displayText: marker.displayText };
 }

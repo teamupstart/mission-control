@@ -25,12 +25,32 @@ export function attributeTranscript(
   sessionId: string | undefined,
   messages: TranscriptMessage[],
   launch: LaunchTurnMarker | null = null,
+  onLaunchTurnIdentified?: (messageId: string) => void,
 ): TranscriptMessage[] {
   if (!sessionId) return messages;
+  /**
+   * The launch turn's native id, once this page has established it.
+   *
+   * Seeded from the marker, so an already-anchored marker projects exactly one turn and the
+   * fingerprint is never consulted again. Left null only until the first match, and then set
+   * IMMEDIATELY - within this page, not after the durable write lands - because a page can
+   * contain the launch turn and a later turn carrying the same bytes, and both would
+   * otherwise match. Claiming locally is what makes the repeat render as the message it is.
+   */
+  let anchor = launch?.messageId ?? null;
   return messages.map((message) => {
     if (message.role !== "user" || !message.text) return message;
     const origin = originOf(sessionId, message.text);
-    const presentation = launchPresentationFor(message, launch);
+    const marker = launch && anchor !== null && launch.messageId === null
+      ? { ...launch, messageId: anchor }
+      : launch;
+    const presentation = launchPresentationFor(message, marker);
+    if (presentation && anchor === null) {
+      anchor = message.id;
+      // Persisted by the caller, so the next read is anchored too rather than re-deciding
+      // from the fingerprint. Best-effort by contract: see `bindLaunchTurnMessage`.
+      onLaunchTurnIdentified?.(message.id);
+    }
     if (!origin && !presentation) return message;
     return {
       ...message,

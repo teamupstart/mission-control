@@ -547,13 +547,38 @@ export class Dispatcher {
         }
       }
 
-      const homeName = await (this.deps.spawn ?? spawnUniquely)(
-        label,
-        shortId,
-        wt.path,
-        agentBin,
-        agentArgs,
-      );
+      // Pi's launch marker goes down BEFORE the process starts, and under the FINAL key.
+      //
+      // Pi is the one harness whose turn one travels in the argv, so by the time anything can
+      // observe the conversation the prompt has already been written - there is no delivery
+      // seam later to record against. Recording after discovery instead would leave the
+      // ordering resting on two unstated accidents: that `locatePiTranscript` refuses a
+      // session with no `agentSessionId`, and that the bind and the write sit in one
+      // synchronous block. Either could be undone by an unrelated change - discovery learning
+      // to read `--session-id` off the argv is the obvious one, since the id is right there -
+      // and the symptom would be a first frame carrying the whole launch contract, which SSE
+      // never re-decorates afterwards.
+      //
+      // `preparePiLaunch` has already minted the native conversation id, so this needs no
+      // provisional key and no later move: it is written under the key the session will hold
+      // once `bindLaunchedAgentSession` runs.
+      const piMarker = piLaunch.sessionId && piText !== null
+        ? this.recordLaunchPresentationForKey(piLaunch.sessionId, piText, task.intent)
+        : null;
+      let homeName: string;
+      try {
+        homeName = await (this.deps.spawn ?? spawnUniquely)(
+          label,
+          shortId,
+          wt.path,
+          agentBin,
+          agentArgs,
+        );
+      } catch (err) {
+        // Nothing was launched, so the marker describes a turn that will never be written.
+        this.registry.discardLaunchTurn(piMarker);
+        throw err;
+      }
       this.patch(taskId, { homeName });
       if (await this.abortIfSettled(taskId)) return;
 
@@ -583,19 +608,8 @@ export class Dispatcher {
         ? this.registry.bindLaunchedAgentSession(ready.session.id, task.agent, piLaunch.sessionId)
         : ready.session;
       if (!session) throw new Error("agent session changed before its launch identity was recorded");
-      // Pi received turn one in its launch argv, so there is no delivery seam below to record
-      // against - the prompt has already crossed. This is the first instant at which its
-      // launched native identity is bound, which is the key the marker has to sit under, and
-      // it is still before the dispatch settles and the conversation becomes something a
-      // person is reading.
-      //
-      // The fingerprinted text is `piText`, the memory-pointer-prefixed string actually
-      // passed to `preparePiLaunch` - NOT `intent`. Those differ by a whole line whenever the
-      // worktree carries a `.agents/memory` index, and fingerprinting the wrong one would
-      // silently never match.
-      if (piLaunch.sessionId && piText !== null) {
-        this.recordLaunchPresentation(session.id, piText, task.intent);
-      }
+      // Pi's launch marker was recorded before the spawn, under this exact key. Nothing to do
+      // here - see the note at that call site for why the ordering is not deferred to now.
       const { instrumented } = ready;
       const readyResourceId = innermostTerminalResourceId(session);
       if (readyResourceId) this.patch(taskId, { terminalResourceId: readyResourceId });
@@ -1009,6 +1023,29 @@ export class Dispatcher {
     } catch (err) {
       console.error(
         `[dispatch] could not record the launch presentation for session ${sessionId}:`,
+        err instanceof Error ? err.message : String(err),
+      );
+      return null;
+    }
+  }
+
+  /**
+   * The same door addressed by logical conversation key rather than by session.
+   *
+   * For the one launch that has its native conversation id BEFORE it has a session: Pi's,
+   * minted by `preparePiLaunch` so it can travel in the argv. Recording under that key needs
+   * no session to look it up from, and no later move.
+   */
+  private recordLaunchPresentationForKey(
+    noteKey: string,
+    prompt: string,
+    displayText: string | null,
+  ): LaunchTurnMarker | null {
+    try {
+      return this.registry.recordLaunchTurnForKey(noteKey, prompt, displayText);
+    } catch (err) {
+      console.error(
+        `[dispatch] could not record the launch presentation for conversation ${noteKey}:`,
         err instanceof Error ? err.message : String(err),
       );
       return null;

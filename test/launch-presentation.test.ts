@@ -80,15 +80,18 @@ function mkMessage(over: Partial<TranscriptMessage> = {}): TranscriptMessage {
   return { id: `m-${++seq}`, role: "user", text: COMPOSED, tools: [], ts: 1_000, ...over };
 }
 
-function mkMarker(noteKey: string, over: Partial<{ prompt: string; displayText: string | null }> = {}) {
-  const marker = {
+function mkMarker(
+  noteKey: string,
+  over: Partial<{ prompt: string; displayText: string | null; messageId: string | null }> = {},
+) {
+  return {
     noteKey,
     fingerprint: launchTextFingerprint(over.prompt ?? COMPOSED),
     displayText: over.displayText === undefined ? HUMAN : over.displayText,
+    messageId: over.messageId === undefined ? null : over.messageId,
     createdAt: 100,
     updatedAt: 100,
   };
-  return marker;
 }
 
 type SdkHandle = import("../src/server/harness/types.ts").SdkSessionHandle;
@@ -183,6 +186,13 @@ function mkDiscovered(over: Partial<DiscoveredSession> = {}): DiscoveredSession 
   } as DiscoveredSession;
 }
 
+/** The logical conversation key a session currently holds - what markers are stored under. */
+function noteKeyOf(registry: InstanceType<typeof Registry>, sessionId: string): string {
+  const s = registry.getSession(sessionId);
+  assert.ok(s, "the session should exist");
+  return s.agentSessionId ?? s.id;
+}
+
 function discover(
   registry: InstanceType<typeof Registry>,
   over: Partial<DiscoveredSession> = {},
@@ -229,9 +239,17 @@ test("marker rows round-trip, replace, and delete", () => {
     noteKey: k,
     fingerprint: "beef",
     displayText: "later",
+    messageId: null,
     createdAt: 100,
     updatedAt: 900,
   });
+
+  // The occurrence anchor round-trips, and a replacement can clear it: a later launch under
+  // this key describes a different conversation, whose turn has its own id.
+  upsertSessionLaunchTurn({ ...marker, messageId: "native-uuid", updatedAt: 950 });
+  assert.equal(getSessionLaunchTurn(k)?.messageId, "native-uuid");
+  upsertSessionLaunchTurn({ ...marker, messageId: null, updatedAt: 960 });
+  assert.equal(getSessionLaunchTurn(k)?.messageId, null);
 
   deleteSessionLaunchTurn(k);
   assert.equal(getSessionLaunchTurn(k), undefined);
@@ -667,10 +685,14 @@ async function terminalDispatch(options: {
   taskId: string;
   intent: string;
   deliver: "accept" | "throw";
+  /** Resolves the marker under Pi's pre-minted conversation key, read at spawn time. */
+  piSessionKey?: () => { fingerprint: string; displayText: string | null } | null;
 }): Promise<{
   registry: InstanceType<typeof Registry>;
   /** The marker as it stood at the instant the prompt was handed to the pane. */
   atDelivery: { fingerprint: string; displayText: string | null } | null;
+  /** The marker as it stood at the instant the agent process was launched. */
+  atSpawn: { fingerprint: string; displayText: string | null } | null;
   delivered: string | null;
   sessionId: string | null;
 }> {
@@ -689,11 +711,16 @@ async function terminalDispatch(options: {
   let delivered: string | null = null;
   let sessionId: string | null = null;
   let worktree: string | null = null;
+  let atSpawn: { fingerprint: string; displayText: string | null } | null = null;
   const dispatcher = new Dispatcher(registry, async () => {}, {
     resolveRuntime: () => "terminal",
     missionMcpDescriptor: async () => null,
     spawn: async (_label, _short, cwd) => {
       worktree = cwd;
+      // Asked at the instant the process is launched. For Pi this is the assertion that
+      // matters: turn one travels in this argv, so a marker recorded any later is a marker
+      // that was missing while the conversation already existed.
+      atSpawn = options.piSessionKey?.() ?? null;
       const discovered = mkDiscovered({ agent: options.agent, cwd, syntheticId: `sid-${options.taskId}` });
       registry.applyDiscovery([discovered]);
       sessionId = discovered.syntheticId;
@@ -733,7 +760,7 @@ async function terminalDispatch(options: {
     },
   });
   await dispatcher.dispatch(options.taskId);
-  return { registry, atDelivery, delivered, sessionId };
+  return { registry, atDelivery, atSpawn, delivered, sessionId };
 }
 
 test("a terminal launch marker exists BEFORE the paste, and matches what was pasted", async () => {
@@ -787,16 +814,30 @@ test("Pi fingerprints the memory-pointer prefixed text it actually launched with
   // match, and every Pi dispatch would render its launch contract in full.
   const repo = seedRepo("pi-launch", true);
   const intent = "read the memory index first";
+  // Pi's conversation id is minted by `preparePiLaunch` inside the dispatch, so the test
+  // cannot know it up front. It is the only launch-turn row in this file's database that is
+  // keyed by a uuid, which is enough to find it at spawn time.
+  const piKeyed = (): { fingerprint: string; displayText: string | null } | null => {
+    const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+    const row = loadSessionLaunchTurns().find((m) => uuid.test(m.noteKey));
+    return row ? { fingerprint: row.fingerprint, displayText: row.displayText } : null;
+  };
   const run = await terminalDispatch({
     agent: "pi",
     repo,
     taskId: "task-pi",
     intent,
     deliver: "accept",
+    piSessionKey: piKeyed,
   });
 
   // Pi is never pasted to: its turn one travelled in the argv.
   assert.equal(run.delivered, null, "Pi must not be typed at - that would run the task twice");
+  // And the marker was already durable when that argv was handed to the process. Recorded
+  // after discovery instead, the conversation would exist - with turn one already written -
+  // before anything could project it, and SSE never re-decorates a frame it already sent.
+  assert.ok(run.atSpawn, "Pi's launch marker must be durable before the process starts");
+  assert.equal(run.atSpawn!.displayText, intent);
   const marker = run.registry.launchTurnFor(run.sessionId!);
   assert.ok(marker, "a Pi dispatch still records its launch presentation");
   assert.equal(marker!.displayText, intent);
@@ -877,4 +918,102 @@ test("a task ASSIGNED into a live conversation records no launch marker", async 
   );
   assert.equal(registry.launchTurnFor("assign-sid"), null, "and the log still shows it");
   assert.equal(getSessionLaunchTurn("assign-native"), undefined);
+});
+
+// ---- the occurrence anchor (Inspector round 1) ----
+
+test("a repeated launch prompt renders as the real message it is", () => {
+  // The defect a fingerprint alone cannot avoid. Nothing stops the same bytes arriving twice:
+  // `deliverIntent` retries an unacknowledged paste by design, and automation can resend an
+  // intent verbatim. Matching on text alone projected BOTH, so a real later message was
+  // replaced by the human request - or omitted outright under a null projection.
+  const launch = mkMessage({ id: "launch-turn" });
+  const repeat = mkMessage({ id: "repeat-turn" });
+  assert.equal(launch.text, repeat.text, "the fixture's whole point: identical bytes");
+
+  const bound: string[] = [];
+  const out = attributeTranscript("s1", [launch, repeat], mkMarker("s1"), (id) => bound.push(id));
+
+  assert.deepEqual(bound, ["launch-turn"], "the first match is claimed, once");
+  assert.equal(out[0]?.presentation?.displayText, HUMAN, "the launch turn projects");
+  assert.equal(out[1]?.presentation, undefined, "the repeat is left alone");
+  assert.deepEqual(out[1], repeat, "byte-for-byte the turn the transcript recorded");
+
+  // And the projection agrees: one visible request, one visible repeat.
+  const visible = projectLaunchPresentation(out);
+  assert.deepEqual(visible.map((m) => m.text), [HUMAN, COMPOSED]);
+});
+
+test("an anchored marker projects only its own turn, whatever the text says", () => {
+  // Once anchored the fingerprint is not consulted at all. A turn carrying the launch bytes
+  // under a different id is a different turn, and this is what says so.
+  const marker = mkMarker("s1", { messageId: "the-launch" });
+  const [same] = attributeTranscript("s1", [mkMessage({ id: "the-launch" })], marker);
+  assert.equal(same?.presentation?.displayText, HUMAN);
+
+  const [other] = attributeTranscript("s1", [mkMessage({ id: "some-other-turn" })], marker);
+  assert.equal(other?.presentation, undefined);
+
+  // Nor does an anchored marker re-claim: the callback must not fire.
+  const bound: string[] = [];
+  attributeTranscript("s1", [mkMessage({ id: "some-other-turn" })], marker, (id) => bound.push(id));
+  assert.deepEqual(bound, []);
+});
+
+test("the anchor is written once and never re-pointed", () => {
+  const registry = new Registry();
+  const s = discover(registry);
+  registry.recordLaunchTurn(s.id, COMPOSED, HUMAN);
+  assert.equal(registry.launchTurnFor(s.id)?.messageId, null, "unanchored at dispatch");
+
+  registry.bindLaunchTurnMessage(s.id, "first-sighting");
+  assert.equal(registry.launchTurnFor(s.id)?.messageId, "first-sighting");
+  assert.equal(getSessionLaunchTurn(noteKeyOf(registry, s.id))?.messageId, "first-sighting");
+
+  // A later read that somehow matched something else must not steal the projection.
+  registry.bindLaunchTurnMessage(s.id, "a-later-turn");
+  assert.equal(registry.launchTurnFor(s.id)?.messageId, "first-sighting");
+
+  // Unknown session, empty id, and no marker are all no-ops rather than throws.
+  registry.bindLaunchTurnMessage("no-such-session", "x");
+  registry.bindLaunchTurnMessage(s.id, "");
+  const bare = discover(registry);
+  registry.bindLaunchTurnMessage(bare.id, "y");
+  assert.equal(registry.launchTurnFor(bare.id), null);
+});
+
+test("a re-dispatch under one key does not inherit the previous launch's anchor", () => {
+  // The stale-anchor trap. A replacement launch describes a different conversation whose turn
+  // has its own id; carrying the old anchor would point the projection at a turn that is no
+  // longer there, and the new launch contract would render in full for ever.
+  const registry = new Registry();
+  const s = discover(registry);
+  registry.recordLaunchTurn(s.id, COMPOSED, HUMAN);
+  registry.bindLaunchTurnMessage(s.id, "old-turn");
+  assert.equal(registry.launchTurnFor(s.id)?.messageId, "old-turn");
+
+  registry.recordLaunchTurn(s.id, `${COMPOSED} take two`, "take two", 9_000);
+  assert.equal(registry.launchTurnFor(s.id)?.messageId, null, "the new launch starts unanchored");
+  assert.equal(registry.launchTurnFor(s.id)?.displayText, "take two");
+});
+
+test("the anchor survives the initial bind, so a bound conversation stays projected", () => {
+  const registry = new Registry();
+  const d = mkDiscovered();
+  registry.applyDiscovery([d]);
+  registry.recordLaunchTurn(d.syntheticId, COMPOSED, HUMAN);
+  registry.bindLaunchTurnMessage(d.syntheticId, "turn-one");
+
+  const native = `agent-anchor-${seq}`;
+  registry.applyHook({
+    agent: "claude",
+    event: "SessionStart",
+    sessionId: native,
+    cwd: d.cwd,
+    transcriptPath: null,
+    env: { tmuxPane: (d.terminals[0] as { paneId: string }).paneId },
+  });
+
+  assert.equal(registry.launchTurnFor(d.syntheticId)?.messageId, "turn-one");
+  assert.equal(getSessionLaunchTurn(native)?.messageId, "turn-one");
 });

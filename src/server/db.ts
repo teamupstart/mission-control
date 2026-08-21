@@ -890,6 +890,12 @@ export function openDb(): DatabaseSync {
     -- display_text means the launch had no distinct human request, which OMITS the turn from
     -- the visible log rather than exposing the platform contract.
     --
+    -- message_id is the OCCURRENCE anchor, null until a decorated read identifies the turn
+    -- (at dispatch the prompt has not been written yet, so it has no id). Once set, only that
+    -- turn projects and the fingerprint is no longer consulted - which is what keeps a later
+    -- turn carrying identical bytes, such as a delivery retry, rendering as the real message
+    -- it is rather than being replaced by the projection.
+    --
     -- An empty table is the shipped state of every existing installation, and absence means
     -- current rendering: no backfill, and no heuristic guessing which historical turn was a
     -- launch.
@@ -897,6 +903,7 @@ export function openDb(): DatabaseSync {
       note_key     TEXT PRIMARY KEY,   -- noteKeyFor(s), same key as session_notes
       fingerprint  TEXT NOT NULL,      -- sha256 of the trimmed prompt delivered to the agent
       display_text TEXT,               -- the human request, or NULL to omit the turn
+      message_id   TEXT,               -- native id of the projected turn, NULL until seen
       created_at   INTEGER NOT NULL,
       updated_at   INTEGER NOT NULL
     );
@@ -7111,6 +7118,7 @@ interface SessionLaunchTurnRow {
   note_key: string;
   fingerprint: string;
   display_text: string | null;
+  message_id: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -7120,6 +7128,7 @@ function rowToLaunchTurn(r: SessionLaunchTurnRow): LaunchTurnMarker {
     noteKey: r.note_key,
     fingerprint: r.fingerprint,
     displayText: r.display_text,
+    messageId: r.message_id,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
@@ -7137,17 +7146,19 @@ export function upsertSessionLaunchTurn(marker: LaunchTurnMarker): void {
   openDb()
     .prepare(
       `INSERT INTO session_launch_turns
-         (note_key, fingerprint, display_text, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?)
+         (note_key, fingerprint, display_text, message_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)
        ON CONFLICT(note_key) DO UPDATE SET
          fingerprint=excluded.fingerprint,
          display_text=excluded.display_text,
+         message_id=excluded.message_id,
          updated_at=excluded.updated_at`,
     )
     .run(
       marker.noteKey,
       marker.fingerprint,
       marker.displayText,
+      marker.messageId,
       marker.createdAt,
       marker.updatedAt,
     );
@@ -7156,7 +7167,7 @@ export function upsertSessionLaunchTurn(marker: LaunchTurnMarker): void {
 export function getSessionLaunchTurn(noteKey: string): LaunchTurnMarker | undefined {
   const r = openDb()
     .prepare(
-      `SELECT note_key, fingerprint, display_text, created_at, updated_at
+      `SELECT note_key, fingerprint, display_text, message_id, created_at, updated_at
          FROM session_launch_turns WHERE note_key = ?`,
     )
     .get(noteKey) as unknown as SessionLaunchTurnRow | undefined;
@@ -7167,7 +7178,7 @@ export function getSessionLaunchTurn(noteKey: string): LaunchTurnMarker | undefi
 export function loadSessionLaunchTurns(): LaunchTurnMarker[] {
   const rows = openDb()
     .prepare(
-      `SELECT note_key, fingerprint, display_text, created_at, updated_at
+      `SELECT note_key, fingerprint, display_text, message_id, created_at, updated_at
          FROM session_launch_turns ORDER BY updated_at DESC`,
     )
     .all() as unknown as SessionLaunchTurnRow[];
@@ -7204,14 +7215,15 @@ export function moveSessionLaunchTurn(fromKey: string, toKey: string): void {
   try {
     d.prepare(
       `INSERT INTO session_launch_turns
-         (note_key, fingerprint, display_text, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?)
+         (note_key, fingerprint, display_text, message_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)
        ON CONFLICT(note_key) DO UPDATE SET
          fingerprint=excluded.fingerprint,
          display_text=excluded.display_text,
+         message_id=excluded.message_id,
          created_at=excluded.created_at,
          updated_at=excluded.updated_at`,
-    ).run(toKey, row.fingerprint, row.displayText, row.createdAt, row.updatedAt);
+    ).run(toKey, row.fingerprint, row.displayText, row.messageId, row.createdAt, row.updatedAt);
     d.prepare(`DELETE FROM session_launch_turns WHERE note_key = ?`).run(fromKey);
     d.exec("COMMIT");
   } catch (err) {

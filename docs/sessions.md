@@ -945,6 +945,11 @@ never applied to:
 If a launch has no distinct request of yours to show, the turn is left out of the visible
 log rather than rendered as platform instructions or replaced with invented prose.
 
+It also applies to **one** turn, not to every turn that happens to carry the same text. The
+first time the conversation is read, the launch turn is pinned by its own transcript id; if the
+identical prompt arrives again later - a delivery Mission Control retried, or automation
+resending it - that later turn is a real message and renders in full.
+
 Scroll to the top of the log and the page above loads automatically, then the page above
 that, back to the session's first turn. **Load older messages** does the same on click,
 for when you would rather not scroll. Nothing appears once you reach the beginning: a

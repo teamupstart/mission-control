@@ -6212,6 +6212,11 @@ export class Registry extends EventEmitter {
       noteKey,
       fingerprint: launchTextFingerprint(text),
       displayText: display,
+      // Null on every record, including one that replaces an earlier marker under this key.
+      // The turn this launch will write does not exist yet, and inheriting the PREVIOUS
+      // launch's anchor would point the projection at a turn belonging to the conversation
+      // this one replaced.
+      messageId: null,
       createdAt: prev?.createdAt ?? now,
       updatedAt: now,
     };
@@ -6258,6 +6263,29 @@ export class Registry extends EventEmitter {
     moveSessionLaunchTurn(fromKey, toKey);
     this.launchTurns.delete(fromKey);
     this.launchTurns.set(toKey, { ...marker, noteKey: toKey });
+  }
+
+  /**
+   * Anchor a launch marker to the native transcript turn a decorated read just identified.
+   *
+   * Write-once by design: an anchored marker is never re-pointed, so a later turn carrying
+   * the identical bytes cannot steal the projection from the turn that actually started the
+   * conversation. A repeat rendering literally is the correct outcome - it really is a
+   * separate message.
+   *
+   * Called from the transcript seams rather than from a launch seam, because this is the one
+   * fact about the launch turn that only a READ can supply: at dispatch the prompt has not
+   * been written yet and has no id.
+   */
+  bindLaunchTurnMessage(sessionId: string, messageId: string): void {
+    const s = this.sessions.get(sessionId);
+    if (!s || !messageId) return;
+    const key = noteKeyFor(s);
+    const marker = this.launchTurns.get(key);
+    if (!marker || marker.messageId !== null) return;
+    const anchored: LaunchTurnMarker = { ...marker, messageId };
+    upsertSessionLaunchTurn(anchored);
+    this.launchTurns.set(key, anchored);
   }
 
   /**

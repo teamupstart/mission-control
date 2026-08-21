@@ -187,7 +187,7 @@ import {
 } from "@shared/harness-capabilities.ts";
 import { transcriptStreamHandler } from "./transcript-stream.ts";
 import { attributeTranscript } from "./transcript-attribution.ts";
-import { resolveLaunchMarker } from "./launch-presentation.ts";
+import { bindLaunchTurnMessage, resolveLaunchMarker } from "./launch-presentation.ts";
 import {
   claimForemanLease,
   claimForemanPlannerRetry,
@@ -2500,6 +2500,7 @@ export function buildApp(
           session.id,
           page.messages,
           resolveLaunchMarker(registry, session.id),
+          (messageId) => bindLaunchTurnMessage(registry, session.id, messageId),
         ),
       });
     }

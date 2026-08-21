@@ -187,6 +187,7 @@ import {
 } from "@shared/harness-capabilities.ts";
 import { transcriptStreamHandler } from "./transcript-stream.ts";
 import { attributeTranscript } from "./transcript-attribution.ts";
+import { resolveLaunchMarker } from "./launch-presentation.ts";
 import {
   claimForemanLease,
   claimForemanPlannerRetry,
@@ -2490,7 +2491,17 @@ export function buildApp(
       const turns = Number(c.req.query("turns"));
       const want = Number.isFinite(turns) && turns > 0 ? Math.min(turns, 200) : undefined;
       const page = t.read.before(t.path, before, want);
-      return c.json({ ...page, messages: attributeTranscript(session.id, page.messages) });
+      // The panel's own history pages, so they carry the same launch presentation the stream
+      // put on `init` - decorated here rather than in the reader, because paging back far
+      // enough to reach the launch turn must not make it reappear in full.
+      return c.json({
+        ...page,
+        messages: attributeTranscript(
+          session.id,
+          page.messages,
+          resolveLaunchMarker(registry, session.id),
+        ),
+      });
     }
     const since = Number(c.req.query("since"));
     if (Number.isFinite(since) && since >= 0) return c.json(t.read.since(t.path, since));

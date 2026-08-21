@@ -715,9 +715,13 @@ test("both task-delivery seams freeze a boundary, not just the dispatcher", () =
   // may still be in the composer - cannot support that claim.
   assert.match(src("src/server/tasks.ts"), /if \(!r\.ok \|\| !r\.submitVerified\) discardScoutPromptBoundary\(boundary\);/);
   for (const path of ["src/server/dispatcher.ts", "src/server/tasks.ts"]) {
+    // The claim is ORDER, not adjacency: the discard has to be inside the catch and ahead of
+    // the rethrow. Other roll-backs may sit beside it - the dispatcher's catch also discards
+    // the launch-presentation marker, which is the same "undo what the failed delivery
+    // claimed" obligation - so anything that is not itself a `throw` is allowed between.
     assert.match(
       src(path),
-      /catch \(err\) \{\n\s+(\/\/[^\n]*\n\s+)*discardScoutPromptBoundary\(boundary\);\n\s+throw err;/,
+      /catch \(err\) \{\n(?:(?!\bthrow\b)[^\n]*\n)*?\s+discardScoutPromptBoundary\(boundary\);\n(?:(?!\bthrow\b)[^\n]*\n)*?\s+throw err;/,
       `${path} discards the boundary before a thrown delivery propagates`,
     );
   }

@@ -6,6 +6,7 @@ import { basename, dirname, join, resolve, sep } from "node:path";
 import { STATE_DIRS } from "@shared/harness-runtime.mjs";
 import { DB_PATH, envVar } from "./config.ts";
 import { supportsEffort } from "@shared/harness-capabilities.ts";
+import type { LaunchTurnMarker } from "./launch-presentation.ts";
 import {
   isPipelineProviderId,
   type PipelineProviderId,
@@ -873,6 +874,34 @@ export function openDb(): DatabaseSync {
       source     TEXT NOT NULL CHECK (source IN ('dispatch','operator','withdrawn')),
       created_at INTEGER NOT NULL
     );
+
+    -- How the DASHBOARD presents the turn that STARTED a Mission Control-managed
+    -- conversation. Keyed like session_notes and session_goals (noteKeyFor = agentSessionId
+    -- ?? synthetic id) so it shares that lifecycle, and its own row for the same reason the
+    -- goal has one: a second writer sharing the note's disposition and updated_at would
+    -- corrupt both meanings.
+    --
+    -- What is deliberately absent is the composed prompt. The agent's own transcript already
+    -- holds it in full and is authoritative for every server-side evidence consumer; a copy
+    -- here would be a second source of transcript truth that could drift from the first.
+    -- The fingerprint column is launchTextFingerprint of that delivered text - enough to
+    -- recognize one turn and nothing else - and display_text is the operator's request as it
+    -- stood at dispatch, frozen so a later task edit cannot rewrite visible history. A null
+    -- display_text means the launch had no distinct human request, which OMITS the turn from
+    -- the visible log rather than exposing the platform contract.
+    --
+    -- An empty table is the shipped state of every existing installation, and absence means
+    -- current rendering: no backfill, and no heuristic guessing which historical turn was a
+    -- launch.
+    CREATE TABLE IF NOT EXISTS session_launch_turns (
+      note_key     TEXT PRIMARY KEY,   -- noteKeyFor(s), same key as session_notes
+      fingerprint  TEXT NOT NULL,      -- sha256 of the trimmed prompt delivered to the agent
+      display_text TEXT,               -- the human request, or NULL to omit the turn
+      created_at   INTEGER NOT NULL,
+      updated_at   INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_session_launch_turns_age
+      ON session_launch_turns(updated_at);
 
     CREATE TABLE IF NOT EXISTS app_config (
       key   TEXT PRIMARY KEY,
@@ -7071,6 +7100,144 @@ export function pruneForemanInvites(liveKeys: Iterable<string>, olderThan: numbe
   const r = openDb()
     .prepare(
       `DELETE FROM foreman_invites WHERE created_at < ? AND note_key NOT IN (${placeholders})`,
+    )
+    .run(olderThan, ...keys);
+  return Number(r.changes);
+}
+
+// ---- session launch turns (how the dashboard presents a managed launch) ----
+
+interface SessionLaunchTurnRow {
+  note_key: string;
+  fingerprint: string;
+  display_text: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+function rowToLaunchTurn(r: SessionLaunchTurnRow): LaunchTurnMarker {
+  return {
+    noteKey: r.note_key,
+    fingerprint: r.fingerprint,
+    displayText: r.display_text,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  };
+}
+
+/**
+ * Record (or replace) the launch marker for one logical conversation.
+ *
+ * A plain upsert, because a second dispatch into a key that already holds a marker IS the
+ * later launch: the earlier conversation it described has been replaced, and the row that
+ * survives has to be the one whose prompt is actually at the top of the transcript now.
+ * `created_at` is preserved across a replacement so pruning cannot be reset by a rewrite.
+ */
+export function upsertSessionLaunchTurn(marker: LaunchTurnMarker): void {
+  openDb()
+    .prepare(
+      `INSERT INTO session_launch_turns
+         (note_key, fingerprint, display_text, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(note_key) DO UPDATE SET
+         fingerprint=excluded.fingerprint,
+         display_text=excluded.display_text,
+         updated_at=excluded.updated_at`,
+    )
+    .run(
+      marker.noteKey,
+      marker.fingerprint,
+      marker.displayText,
+      marker.createdAt,
+      marker.updatedAt,
+    );
+}
+
+export function getSessionLaunchTurn(noteKey: string): LaunchTurnMarker | undefined {
+  const r = openDb()
+    .prepare(
+      `SELECT note_key, fingerprint, display_text, created_at, updated_at
+         FROM session_launch_turns WHERE note_key = ?`,
+    )
+    .get(noteKey) as unknown as SessionLaunchTurnRow | undefined;
+  return r ? rowToLaunchTurn(r) : undefined;
+}
+
+/** All markers, reloaded into the registry on start - the notes/goals/invites boot pattern. */
+export function loadSessionLaunchTurns(): LaunchTurnMarker[] {
+  const rows = openDb()
+    .prepare(
+      `SELECT note_key, fingerprint, display_text, created_at, updated_at
+         FROM session_launch_turns ORDER BY updated_at DESC`,
+    )
+    .all() as unknown as SessionLaunchTurnRow[];
+  return rows.map(rowToLaunchTurn);
+}
+
+/**
+ * Drop a marker whose launch did not happen - the rollback half of recording one BEFORE
+ * the prompt crosses into the runtime.
+ *
+ * A marker with no delivery behind it is worse than no marker: it says the dashboard should
+ * project a turn that will never be written, and the next real human message to land under
+ * that key is the one it would be compared against.
+ */
+export function deleteSessionLaunchTurn(noteKey: string): void {
+  openDb().prepare(`DELETE FROM session_launch_turns WHERE note_key = ?`).run(noteKey);
+}
+
+/**
+ * Carry a marker from the provisional session key to the harness-native conversation key.
+ *
+ * Called ONLY for that first bind - see `Registry.moveLaunchTurnOnInitialBind` for why a
+ * native-to-native rotation (a `/clear`) must strand the row instead. Last-write-wins on
+ * the destination for the same reason `moveForemanInvite` does it: the moved row followed
+ * the conversation, and anything already under the target key is that conversation's own
+ * earlier state.
+ */
+export function moveSessionLaunchTurn(fromKey: string, toKey: string): void {
+  if (fromKey === toKey) return;
+  const d = openDb();
+  const row = getSessionLaunchTurn(fromKey);
+  if (!row) return;
+  d.exec("BEGIN IMMEDIATE");
+  try {
+    d.prepare(
+      `INSERT INTO session_launch_turns
+         (note_key, fingerprint, display_text, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(note_key) DO UPDATE SET
+         fingerprint=excluded.fingerprint,
+         display_text=excluded.display_text,
+         created_at=excluded.created_at,
+         updated_at=excluded.updated_at`,
+    ).run(toKey, row.fingerprint, row.displayText, row.createdAt, row.updatedAt);
+    d.prepare(`DELETE FROM session_launch_turns WHERE note_key = ?`).run(fromKey);
+    d.exec("COMMIT");
+  } catch (err) {
+    if (d.isTransaction) d.exec("ROLLBACK");
+    throw err;
+  }
+}
+
+/**
+ * Delete markers that belong to no live session and have gone stale. Returns how many.
+ *
+ * The same shape and the same safety property as `pruneSessionGoals` and
+ * `pruneForemanInvites`: a row whose key still belongs to a session is never touched no
+ * matter how old it is, and an EMPTY `liveKeys` means "liveness unknown", never "nothing is
+ * live", so it deletes nothing. Stranding is the ordinary end of one of these rows - every
+ * `/clear` rotates the key past it deliberately - so the accumulation this answers is the
+ * goal table's, and it answers it on the goal table's tick.
+ */
+export function pruneSessionLaunchTurns(liveKeys: Iterable<string>, olderThan: number): number {
+  const keys = [...new Set(liveKeys)];
+  if (!keys.length) return 0;
+  const placeholders = keys.map(() => "?").join(",");
+  const r = openDb()
+    .prepare(
+      `DELETE FROM session_launch_turns
+         WHERE updated_at < ? AND note_key NOT IN (${placeholders})`,
     )
     .run(olderThan, ...keys);
   return Number(r.changes);

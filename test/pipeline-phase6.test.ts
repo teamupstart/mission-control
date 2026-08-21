@@ -252,6 +252,19 @@ test("managed SDK pipeline dispatch composes the selected host prompt with no te
     cwd: "/repo/sdk",
     prompt: "$engineer - run this skill now. Build the SDK path\nwithout changing the daemon",
     acceptedGoalPrompt: "Build the SDK path\nwithout changing the daemon",
+    // A pipeline task on this arm launches a directly streamable agent conversation, so it
+    // presents its launch turn exactly as an ordinary embedded dispatch does: the host's
+    // composed engineer invocation reaches the agent, the operator's own idea is what the
+    // conversation shows. The terminal arm above launches the Conductor host instead - not an
+    // agent conversation - and records no presentation at all.
+    //
+    // The marker's prompt is the SAME string as `prompt` above, spelled out rather than
+    // referenced so this stays a literal assertion: fingerprinting a recomposed copy of turn
+    // one is the exact defect that would make every pipeline launch render in full.
+    launchPresentation: {
+      prompt: "$engineer - run this skill now. Build the SDK path\nwithout changing the daemon",
+      displayText: "Build the SDK path\nwithout changing the daemon",
+    },
     model: null,
     effort: null,
     permissionMode: "approveForMe",

@@ -31,6 +31,14 @@ daemon:
 If either launch path cannot prove it started as requested, dispatch fails instead of
 calling an unverified task running.
 
+Whichever path a launch takes, the agent receives the whole composed prompt - your request
+plus the repository manifest, the execution authorization, the kind's contract and Pi's
+memory pointer - and the harness records it in its own transcript file unchanged. The
+dashboard's conversation window is the one place that reads differently: it shows your task
+request as that first turn and leaves the platform-owned context out. See
+[the first turn of a dispatched session](sessions.md#the-first-turn-of-a-dispatched-session-shows-your-request-not-the-whole-launch-prompt)
+for what is and is not covered by that, and for why no evidence path is affected.
+
 An enabled conductor repository offers one different launch owner: **pipeline**. It creates
 the ordinary durable task row, derives conductor's canonical idea slug, and stores that exact
 provider run identity before it starts the configured Engineer host. Dispatch refuses an intent

@@ -43,6 +43,7 @@ import {
   InspectorConfigPatchSchema,
   LlmConfigPatchSchema,
   McpCreateTaskSchema,
+  McpAdoptPipelineRunSchema,
   McpProductIssuePreviewRequestSchema,
   McpProductIssueSubmitRequestSchema,
   ResolveFindingsSchema,
@@ -248,6 +249,7 @@ import {
 } from "./pipelines/index.ts";
 import {
   isPipelineProviderId,
+  PIPELINE_CALLER_CREDENTIAL_HEADER,
   pipelineRepoKey,
   type PipelineActionResult,
   type PipelineConsoleResult,
@@ -2981,6 +2983,51 @@ export function buildApp(
     if (!parsed.ok) return parsed.res;
     registry.applyStatus(parsed.data.env, parsed.data.sessionId, parsed.data.activity);
     return c.body(null, 204);
+  });
+
+  app.post("/mcp/pipelines/adopt", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, McpAdoptPipelineRunSchema);
+    if (!parsed.ok) return parsed.res;
+    const credential = c.req.header(PIPELINE_CALLER_CREDENTIAL_HEADER);
+    const caller = credential ? registry.managedPipelineCaller(credential) : null;
+    if (!caller) {
+      return c.json({ error: "the caller has no managed Pipeline launch capability" }, 403);
+    }
+    const task = registry.getTask(caller.taskId);
+    if (!task) return c.json({ error: "no matching Pipeline task" }, 404);
+    if (!task.pipelineRun) {
+      return c.json({ error: "the Pipeline task has no launch reservation" }, 409);
+    }
+    if (task.sessionId !== caller.sessionId) {
+      return c.json({ error: "the caller does not own this Pipeline task" }, 403);
+    }
+    const session = registry.getSession(caller.sessionId);
+    if (session?.state === "exited") return c.json({ error: "no matching active session" }, 404);
+    if (session) {
+      if (session.cwd !== caller.cwd) {
+        return c.json({ error: "the caller does not match the managed Pipeline host" }, 403);
+      }
+    } else {
+      const launch = registry.managedPipelineLaunch(caller.sessionId);
+      if (!launch) return c.json({ error: "no matching active session" }, 404);
+      if (launch.taskId !== task.id || launch.cwd !== caller.cwd) {
+        return c.json({ error: "the caller does not match the pending managed Pipeline host" }, 403);
+      }
+    }
+    const result = tasks.adoptPipelineRun(
+      task,
+      {
+        provider: task.pipelineRun.provider,
+        repoRoot: task.repoRoot,
+        slug: parsed.data.slug,
+      },
+      session
+        ? { kind: "managed", session }
+        : { kind: "managed-launch", sessionId: caller.sessionId },
+    );
+    if (!result.ok) return c.json({ error: result.error }, result.status);
+    return c.json({ task: result.task, replayed: result.replayed });
   });
 
   app.post("/mcp/workflow-evidence", bodyLimit({

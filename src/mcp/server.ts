@@ -28,6 +28,10 @@ import {
   productIssueClientFromEnvironment,
 } from "@shared/product-issues.ts";
 import { reportProductIssueWithConfirmation } from "./product-issues.ts";
+import {
+  PIPELINE_CALLER_CREDENTIAL_ENV,
+  PIPELINE_CALLER_CREDENTIAL_HEADER,
+} from "@shared/pipeline.ts";
 
 // This runs as a stdio MCP server in one of two provenance modes. An SDK launch carries
 // Mission Control's exact session id and must not also claim an inherited terminal pane,
@@ -37,6 +41,7 @@ import { reportProductIssueWithConfirmation } from "./product-issues.ts";
 const MISSION_SESSION_ID = process.env[MISSION_SESSION_ID_ENV];
 const ENV = MISSION_SESSION_ID === undefined ? captureTerminalEnv() : {};
 const SESSION_ID = MISSION_SESSION_ID ?? process.env.CLAUDE_SESSION_ID ?? null;
+const PIPELINE_CALLER_CREDENTIAL = process.env[PIPELINE_CALLER_CREDENTIAL_ENV] ?? null;
 const PRODUCT_ISSUE_CLIENT = productIssueClientFromEnvironment(
   process.env[PRODUCT_ISSUE_CLIENT_ENV],
 );
@@ -47,8 +52,10 @@ async function http(
   body?: unknown,
   scoutCredential = false,
   signal?: AbortSignal,
+  extraHeaders: Record<string, string> = {},
 ): Promise<Response> {
   const headers: Record<string, string> = {
+    ...extraHeaders,
     "content-type": "application/json",
     "x-harness-token": readToken(),
   };
@@ -548,6 +555,45 @@ server.registerTool(
     try {
       await http("/mcp/status", "POST", { env: ENV, sessionId: SESSION_ID, activity });
       return textResult("ok");
+    } catch (err) {
+      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
+    }
+  },
+);
+
+server.registerTool(
+  "adopt_pipeline_run",
+  {
+    title: "Adopt an existing Pipeline run",
+    description:
+      "Use only when this managed Pipeline Engineer host resumes an existing run whose slug differs from the reserved run in its launch instruction.",
+    inputSchema: { slug: z.string().trim().min(1).describe("The observed existing run slug") },
+  },
+  async ({ slug }) => {
+    if (!PIPELINE_CALLER_CREDENTIAL) {
+      return textResult("Mission Control did not issue Pipeline host identity to this session.", true);
+    }
+    try {
+      const res = await http(
+        "/mcp/pipelines/adopt",
+        "POST",
+        { slug },
+        false,
+        undefined,
+        { [PIPELINE_CALLER_CREDENTIAL_HEADER]: PIPELINE_CALLER_CREDENTIAL },
+      );
+      const body = (await res.json()) as { replayed?: boolean; error?: string };
+      if (!res.ok) {
+        return textResult(
+          `Mission Control refused Pipeline run adoption (${res.status}): ${body.error ?? "unknown refusal"}`,
+          true,
+        );
+      }
+      return textResult(
+        body.replayed
+          ? `This task already continues in ${slug}.`
+          : `This task now continues in ${slug}.`,
+      );
     } catch (err) {
       return textResult(`Could not reach Mission Control: ${String(err)}`, true);
     }

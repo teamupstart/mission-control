@@ -5,7 +5,7 @@ import type { TranscriptFindHandle } from "../TranscriptPanel.tsx";
 import type { SessionFilesController } from "../../lib/sessionFiles.ts";
 import type { WorkflowBindingSummary, WorkflowRunSummary } from "@shared/workflow.ts";
 import type { EnsembleSummary } from "@shared/ensemble.ts";
-import type { PipelineRun, SessionPipelineLink } from "@shared/pipeline.ts";
+import type { PipelineRun, PipelineRunLink } from "@shared/pipeline.ts";
 
 /** The Board card's in-place workflow disclosure, registered for App's global shortcut. */
 export interface WorkflowDisclosureHandle {
@@ -208,7 +208,7 @@ export interface SessionViewProps {
    * repository half of it is a composite. Every renderer already holds the link: it is on
    * the session.
    */
-  onOpenPipelineRun?: (link: SessionPipelineLink) => void;
+  onOpenPipelineRun?: (link: PipelineRunLink) => void;
   /**
    * The live pipeline runs by `pipelineRunKey`, for the facts about the RUN rather than the
    * session: the cluster header's group word and current step.

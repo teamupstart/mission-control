@@ -3,7 +3,7 @@ import type { ForemanEpisode, Session, SessionGoal } from "@shared/types.ts";
 import { foremanAllowlisted } from "@shared/foreman.ts";
 import { activePaneDialog } from "@shared/session.ts";
 import { canMessage } from "@shared/pane.ts";
-import { pipelineRunKey } from "@shared/pipeline.ts";
+import { pipelineRunKey, pipelineRunKeyOf } from "@shared/pipeline.ts";
 import { taskPillParts } from "@shared/task.ts";
 import { shortenCwd, stateDisplay, uptime, relativeTime } from "../../lib/format.ts";
 import {
@@ -42,6 +42,7 @@ import {
   WorkflowChips,
   EnsembleChip,
   PipelineChip,
+  TaskPipelineRunChip,
   SessionWhere,
 } from "../session-bits.tsx";
 import { canRenameSession } from "../../lib/format.ts";
@@ -442,6 +443,18 @@ export function ConsoleDetail({
           link={ensembleLink}
           summary={ensembleSummaryFor(view, session)}
           onOpen={ensembleLink ? () => view.onOpenEnsemble?.(ensembleLink.runId) : undefined}
+        />
+        <TaskPipelineRunChip
+          link={session.task?.pipelineRun ?? null}
+          observed={Boolean(
+            session.task?.pipelineRun &&
+              view.pipelineRunByKey?.has(pipelineRunKeyOf(session.task.pipelineRun)),
+          )}
+          onOpen={
+            session.task?.pipelineRun
+              ? () => view.onOpenPipelineRun?.(session.task!.pipelineRun!)
+              : undefined
+          }
         />
         {/* Renders nothing on an uncorrelated session, which is every session on a fleet
             observing no engine - so this row is byte-identical to what it was there. */}

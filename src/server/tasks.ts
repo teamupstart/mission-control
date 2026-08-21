@@ -12,7 +12,7 @@ import type {
 } from "@shared/types.ts";
 import type { TaskDependencyInput, UpdateTask } from "@shared/protocol.ts";
 import type { TaskSourceRef } from "@shared/task-source.ts";
-import type { PipelineRun } from "@shared/pipeline.ts";
+import { pipelineRunKeyOf, type PipelineRun, type PipelineRunLink } from "@shared/pipeline.ts";
 import { isAnnotationOnlyUpdate } from "@shared/protocol.ts";
 import { capabilitiesFor, supportsEffort } from "@shared/harness-capabilities.ts";
 import { canMessage } from "@shared/pane.ts";
@@ -584,6 +584,16 @@ export interface AssignOptions {
   requirePlanSkills?: typeof planSkillsForSession;
 }
 
+/** Evidence that the daemon resolved before a Pipeline task may change its durable run. */
+export type PipelineRunAdoptionProof =
+  | { kind: "managed"; session: Session }
+  | { kind: "managed-launch"; sessionId: string }
+  | { kind: "terminal"; session: Session };
+
+export type PipelineRunAdoptionResult =
+  | { ok: true; task: Task; replayed: boolean }
+  | { ok: false; status: 403 | 404 | 409; error: string };
+
 export interface CloseMergedSessionDeps {
   resetWouldDestroyWork: typeof resetWouldDestroyWork;
   kill: typeof kill;
@@ -817,38 +827,166 @@ export class TaskManager {
           (candidate.status === "running" || candidate.status === "dispatching"),
       );
       if (!task || task.repoRoot !== link.repoRoot) return;
-
-      if (task.pipelineRun === null) {
-        this.registry.upsertTask({
-          ...task,
-          pipelineRun: {
-            provider: link.provider,
-            repoRoot: link.repoRoot,
-            slug: link.slug,
-          },
-          updatedAt: Date.now(),
-        });
-      } else if (
-        task.pipelineRun.provider !== link.provider ||
-        task.pipelineRun.repoRoot !== link.repoRoot ||
-        task.pipelineRun.slug !== link.slug
-      ) {
-        // One terminal home cannot be reassigned from a proven run by a later child session.
-        return;
-      }
-
-      const run = this.registry.listPipelineRuns().find(
-        (candidate) =>
-          candidate.provider === link.provider &&
-          candidate.repoRoot === link.repoRoot &&
-          candidate.slug === link.slug,
-      );
-      if (run) this.settlePipelineTask(run);
+      this.adoptPipelineRun(task, link, { kind: "terminal", session });
     } catch (error) {
       // Session discovery must survive a persistence failure. The next discovery frame or
       // projection update retries the same idempotent join.
       console.warn("[tasks] could not bind pipeline task:", error);
     }
+  }
+
+  /**
+   * Adopt one observed provider run as an active Pipeline task's durable completion key.
+   *
+   * The caller supplies only the provider slug. Provider, repository, task and session
+   * authority all come from daemon-owned state. Every guard and the write remain synchronous
+   * so two claims cannot both pass the active-owner check before either becomes visible.
+   */
+  adoptPipelineRun(
+    resolvedTask: Task,
+    target: PipelineRunLink,
+    proof: PipelineRunAdoptionProof,
+  ): PipelineRunAdoptionResult {
+    const task = this.registry.getTask(resolvedTask.id);
+    if (!task) return { ok: false, status: 404, error: "no matching Pipeline task" };
+    if (
+      task.kind !== "pipeline" ||
+      (task.status !== "running" && task.status !== "dispatching")
+    ) {
+      return { ok: false, status: 409, error: "this task is not an active Pipeline task" };
+    }
+
+    let sessionPipeline: PipelineRunLink | null = null;
+    if (proof.kind === "managed-launch") {
+      const launch = this.registry.managedPipelineLaunch(proof.sessionId);
+      if (!launch || launch.taskId !== task.id || task.sessionId !== launch.sessionId) {
+        return {
+          ok: false,
+          status: 403,
+          error: "only this task's pending managed Engineer launch may adopt its Pipeline run",
+        };
+      }
+    } else {
+      const session = this.registry.getSession(proof.session.id);
+      if (!session || session.state === "exited") {
+        return { ok: false, status: 403, error: "the Pipeline task host is no longer active" };
+      }
+      if (proof.kind === "managed") {
+        if (task.sessionId !== session.id || session.runtime !== "sdk" || session.pipeline !== null) {
+          return {
+            ok: false,
+            status: 403,
+            error: "only this task's live managed Engineer host may adopt its Pipeline run",
+          };
+        }
+      } else {
+        const owner = this.registry.taskResourceOwnerForSession(
+          session.id,
+          undefined,
+          (candidate) =>
+            candidate.id === task.id &&
+            candidate.kind === "pipeline" &&
+            (candidate.status === "running" || candidate.status === "dispatching"),
+        );
+        if (session.runtime !== "terminal" || owner?.id !== task.id || !session.pipeline) {
+          return {
+            ok: false,
+            status: 403,
+            error: "the terminal session does not prove ownership of this Pipeline task",
+          };
+        }
+      }
+      sessionPipeline = session.pipeline;
+    }
+
+    const provider = task.pipelineRun?.provider ?? sessionPipeline?.provider;
+    const runLink: PipelineRunLink = {
+      provider: target.provider,
+      repoRoot: target.repoRoot,
+      slug: target.slug,
+    };
+    if (
+      !provider ||
+      target.provider !== provider ||
+      target.repoRoot !== task.repoRoot ||
+      (task.pipelineRun?.repoRoot !== undefined && task.pipelineRun.repoRoot !== task.repoRoot)
+    ) {
+      return { ok: false, status: 409, error: "the task has no valid provider reservation" };
+    }
+    const targetKey = pipelineRunKeyOf(runLink);
+    if (task.pipelineRun && pipelineRunKeyOf(task.pipelineRun) === targetKey) {
+      return { ok: true, task, replayed: true };
+    }
+    const runs = this.registry.listPipelineRuns();
+    if (
+      task.pipelineRun &&
+      (proof.kind === "terminal" ||
+        runs.some((candidate) =>
+          pipelineRunKeyOf(candidate) === pipelineRunKeyOf(task.pipelineRun!),
+        ))
+    ) {
+      return {
+        ok: false,
+        status: 409,
+        error: proof.kind === "terminal"
+          ? `the terminal join cannot replace reserved Pipeline run "${task.pipelineRun.slug}"`
+          : `the reserved Pipeline run "${task.pipelineRun.slug}" is already observed and cannot be reassigned`,
+      };
+    }
+    const observed = runs.find((candidate) => pipelineRunKeyOf(candidate) === targetKey);
+    if (!observed) {
+      return {
+        ok: false,
+        status: 409,
+        error: `Pipeline run "${target.slug}" is not observed in this task's repository`,
+      };
+    }
+    if (
+      proof.kind === "terminal" &&
+      pipelineRunKeyOf(sessionPipeline!) !== targetKey
+    ) {
+      return {
+        ok: false,
+        status: 403,
+        error: "the terminal session does not match the observed Pipeline run",
+      };
+    }
+
+    const owner = this.registry.listTasks().find(
+      (candidate) =>
+        candidate.id !== task.id &&
+        candidate.kind === "pipeline" &&
+        (candidate.status === "running" || candidate.status === "dispatching") &&
+        candidate.pipelineRun !== null &&
+        pipelineRunKeyOf(candidate.pipelineRun) === targetKey,
+    );
+    if (owner) {
+      return {
+        ok: false,
+        status: 409,
+        error: `Pipeline run "${target.slug}" is already owned by active task ${owner.id}`,
+      };
+    }
+
+    let adopted: Task;
+    try {
+      adopted = {
+        ...task,
+        pipelineRun: runLink,
+        updatedAt: Date.now(),
+      };
+      this.registry.upsertTask(adopted);
+    } catch (error) {
+      return {
+        ok: false,
+        status: 409,
+        error: `could not persist Pipeline run adoption: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      };
+    }
+    if (observed.group === "processed") this.settlePipelineTask(observed);
+    return { ok: true, task: this.registry.getTask(task.id) ?? adopted, replayed: false };
   }
 
   /** Settle every live task durably correlated with a provider-completed run. */

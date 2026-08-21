@@ -284,6 +284,11 @@ export interface PipelineRunLink {
   slug: string;
 }
 
+/** Unforgeable bearer capability issued only to one managed Pipeline host's MCP child. */
+export const PIPELINE_CALLER_CREDENTIAL_ENV = "MISSION_PIPELINE_CALLER_CREDENTIAL";
+/** HTTP header carrying `PIPELINE_CALLER_CREDENTIAL_ENV` back to the daemon. */
+export const PIPELINE_CALLER_CREDENTIAL_HEADER = "x-mission-pipeline-caller";
+
 /**
  * What one SESSION carries about the run it is doing the work of: `Session.pipeline`.
  *

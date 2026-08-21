@@ -109,6 +109,7 @@ function mkTask(over: Partial<TaskSummary> = {}): TaskSummary {
     status: "running",
     outcome: null,
     outcomeUrl: null,
+    pipelineRun: null,
     scheduleId: null,
     scheduleOccurrenceId: null,
     scheduledFor: null,

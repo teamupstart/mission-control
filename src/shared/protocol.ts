@@ -721,6 +721,12 @@ export const McpCreateTaskSchema = z
   );
 export type McpCreateTask = z.infer<typeof McpCreateTaskSchema>;
 
+/** The MCP tool exposes only the provider slug; its launch capability carries identity. */
+export const McpAdoptPipelineRunSchema = z.object({
+  slug: z.string().trim().min(1),
+}).strict();
+export type McpAdoptPipelineRun = z.infer<typeof McpAdoptPipelineRunSchema>;
+
 /**
  * Identity added by the bundled MCP bridge when a retro follow-up reports no approved change.
  * There is intentionally no task id and no caller-controlled outcome: the daemon attributes

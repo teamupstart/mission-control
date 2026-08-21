@@ -11,7 +11,13 @@ import type {
 import type { Registry, SdkSessionRegistration } from "../registry.ts";
 import type { SdkSessionHandle, SdkTurn, SessionRequestAnswer } from "../harness/types.ts";
 import { sdkFor } from "../harness/index.ts";
-import { missionMcpDescriptor, type MissionMcpDescriptor } from "../mission-mcp.ts";
+import {
+  missionMcpDescriptor,
+  missionMcpDescriptorForPipelineTask,
+  newPipelineCallerCredential,
+  verifyMissionMcpTools,
+  type MissionMcpDescriptor,
+} from "../mission-mcp.ts";
 import { SDK_SESSION_ID_PREFIX } from "../registry.ts";
 import type { LaunchPresentationInput } from "../launch-presentation.ts";
 import { sleep } from "../util/timers.ts";
@@ -43,6 +49,11 @@ export type SdkInterruptOutcome = "interrupted" | "idle";
 export interface AcceptedGoalPrompt {
   prompt: string;
   noteKey: string;
+}
+
+/** Allocate the exact dashboard identity before an SDK driver can invoke launch-scoped MCP. */
+export function newSdkSessionId(): string {
+  return `${SDK_SESSION_ID_PREFIX}${randomUUID()}`;
 }
 
 const RESTART_CONTINUATION_PROMPT =
@@ -117,6 +128,7 @@ export class SdkSupervisor {
     private readonly registry: Registry,
     private readonly deps: {
       missionMcpDescriptor?: typeof missionMcpDescriptor;
+      verifyMissionMcpTools?: typeof verifyMissionMcpTools;
     } = {},
   ) {}
 
@@ -167,6 +179,8 @@ export class SdkSupervisor {
    * ownership of rather than leaking a subprocess nothing is pumping.
    */
   async start(input: {
+    /** Preallocated when launch-scoped capabilities need the exact host identity. */
+    sessionId?: string;
     agent: AgentType;
     /** What the card is called. The dispatcher passes the task's label. */
     name: string;
@@ -202,7 +216,7 @@ export class SdkSupervisor {
   }): Promise<Session> {
     const spec = sdkFor(input.agent);
     if (!spec) throw new Error(`${input.agent} has no embedded driver`);
-    const id = `${SDK_SESSION_ID_PREFIX}${randomUUID()}`;
+    const id = input.sessionId ?? newSdkSessionId();
     const handle = await spec.launch({
       cwd: input.cwd,
       prompt: input.prompt,
@@ -811,58 +825,101 @@ export class SdkSupervisor {
     }
     const task = row.taskId ? this.registry.getTask(row.taskId) : null;
     let mcp: MissionMcpDescriptor | null = null;
+    let callerCredential: string | null = null;
     try {
       mcp = await (this.deps.missionMcpDescriptor ?? missionMcpDescriptor)();
     } catch (err) {
+      if (task?.kind === "pipeline") {
+        const why = err instanceof Error ? err.message : String(err);
+        throw new Error(`managed Pipeline resume could not resolve Mission MCP: ${why}`);
+      }
       console.error(
         `[sdk] could not resolve Mission MCP while resuming ${row.id}:`,
         err instanceof Error ? err.message : String(err),
       );
     }
-    const handle = await spec.launch({
-      cwd: row.cwd,
-      // No prompt: this is a continuation, and re-sending the original intent would make the
-      // agent start the task over on top of whatever it had already done.
-      prompt: "",
-      model: row.model,
-      effort: row.effort,
-      permissionMode: row.permissionMode,
-      mcp: missionMcpForSession(mcp, row.id),
-      // Rebuilt from the task row rather than remembered on the session row, because the
-      // task is where the repo set durably lives - and this grant can only be made at
-      // launch, so a resumed multi-repo session that omitted it would come back able to
-      // read its secondary worktrees and unable to write to them, which is the failure
-      // nobody would attribute to a daemon restart.
-      extraDirs: (task?.extraRepos ?? [])
-        .map((entry) => entry.worktreePath)
-        .filter((p): p is string => p !== null),
-      resume: row.agentSessionId,
-    });
-    this.adopt({
-      registration: {
-        id: row.id,
-        agent: row.agent,
-        name: restoredName(row, task?.title ?? null),
+    if (task?.kind === "pipeline") {
+      callerCredential = newPipelineCallerCredential();
+      mcp = missionMcpDescriptorForPipelineTask(mcp, callerCredential);
+      if (!mcp) {
+        throw new Error(
+          "managed Pipeline resume requires Mission Control's MCP server - rebuild with: npm run build",
+        );
+      }
+      const published = await (this.deps.verifyMissionMcpTools ?? verifyMissionMcpTools)(
+        ["adopt_pipeline_run"],
+        mcp,
+      );
+      if (!published.ok) {
+        throw new Error(
+          `managed Pipeline resume requires adopt_pipeline_run, but ${published.reason}`,
+        );
+      }
+    }
+    if (task?.kind === "pipeline") {
+      this.registry.registerManagedPipelineCaller(
+        task.id,
+        row.id,
+        row.cwd,
+        callerCredential!,
+      );
+      this.registry.beginManagedPipelineLaunch(task.id, row.id, row.cwd);
+    }
+    try {
+      const handle = await spec.launch({
         cwd: row.cwd,
-        // An idle resume emits a binding but owes no assistant/result frame, so carry the
-        // durable no-turn fact into the card that binding confirms. Fresh launches and
-        // interrupted restores stay `starting`; the latter receives its recovery turn below.
-        initialState: row.turnInProgress ? "starting" : "idle",
-        permissionMode: row.permissionMode,
-        gitBranch: task?.branch ?? null,
-        gitRoot: row.cwd,
-        repoRoot: task?.repoRoot ?? null,
-      },
-      handle,
-      durable: {
-        taskId: row.taskId,
+        // No prompt: this is a continuation, and re-sending the original intent would make the
+        // agent start the task over on top of whatever it had already done.
+        prompt: "",
         model: row.model,
         effort: row.effort,
-        agentSessionId: row.agentSessionId,
-        turnInProgress: row.turnInProgress,
-        acceptedTurns: 0,
-      },
-    });
+        permissionMode: row.permissionMode,
+        mcp: missionMcpForSession(mcp, row.id),
+        // Rebuilt from the task row rather than remembered on the session row, because the
+        // task is where the repo set durably lives - and this grant can only be made at
+        // launch, so a resumed multi-repo session that omitted it would come back able to
+        // read its secondary worktrees and unable to write to them, which is the failure
+        // nobody would attribute to a daemon restart.
+        extraDirs: (task?.extraRepos ?? [])
+          .map((entry) => entry.worktreePath)
+          .filter((p): p is string => p !== null),
+        resume: row.agentSessionId,
+      });
+      this.adopt({
+        registration: {
+          id: row.id,
+          agent: row.agent,
+          name: restoredName(row, task?.title ?? null),
+          cwd: row.cwd,
+          // An idle resume emits a binding but owes no assistant/result frame, so carry the
+          // durable no-turn fact into the card that binding confirms. Fresh launches and
+          // interrupted restores stay `starting`; the latter receives its recovery turn below.
+          initialState: row.turnInProgress ? "starting" : "idle",
+          permissionMode: row.permissionMode,
+          gitBranch: task?.branch ?? null,
+          gitRoot: row.cwd,
+          repoRoot: task?.repoRoot ?? null,
+        },
+        handle,
+        durable: {
+          taskId: row.taskId,
+          model: row.model,
+          effort: row.effort,
+          agentSessionId: row.agentSessionId,
+          turnInProgress: row.turnInProgress,
+          acceptedTurns: 0,
+        },
+      });
+    } catch (error) {
+      if (task?.kind === "pipeline") {
+        this.registry.endManagedPipelineCaller(task.id, row.id, callerCredential!);
+      }
+      throw error;
+    } finally {
+      if (task?.kind === "pipeline") {
+        this.registry.endManagedPipelineLaunch(task.id, row.id);
+      }
+    }
     if (row.turnInProgress) {
       try {
         // Through the ordinary send path AFTER adoption: Codex can resume with an active

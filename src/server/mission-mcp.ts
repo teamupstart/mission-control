@@ -21,6 +21,9 @@ import { PLAN_DECISIONS_TOOL, PLAN_SCHEDULING_TOOL } from "./plans/tools.ts";
 import { SUBMIT_SCOUT_ARTIFACTS_TOOL } from "./scouts/submission-tool.ts";
 import { SUBMIT_WORKFLOW_EVIDENCE_TOOL } from "./workflows/evidence-tool.ts";
 import { COMPLETE_RETRO_NO_CHANGE_TOOL } from "./retro-tool.ts";
+import {
+  PIPELINE_CALLER_CREDENTIAL_ENV,
+} from "@shared/pipeline.ts";
 import { run } from "./util/exec.ts";
 
 // The one place that knows how to hand a LAUNCHING agent our own MCP server.
@@ -60,6 +63,7 @@ export const MISSION_MCP_TOOLS = [
   "request_input",
   "report_product_issue",
   "report_status",
+  "adopt_pipeline_run",
   SUBMIT_ENSEMBLE_RESULT_TOOL,
   SUBMIT_SCOUT_ARTIFACTS_TOOL,
   SUBMIT_WORKFLOW_EVIDENCE_TOOL,
@@ -212,6 +216,27 @@ export async function missionMcpDescriptor(): Promise<MissionMcpDescriptor | nul
       MISSION_HOME: STATE_DIR,
       MISSION_PORT: String(PORT),
       [PRODUCT_ISSUE_CLIENT_ENV]: missionMcpProductIssueClient(process.versions.electron),
+    },
+  };
+}
+
+/** Mint the bearer capability known only to one managed Pipeline host's MCP child. */
+export function newPipelineCallerCredential(): string {
+  return randomBytes(32).toString("base64url");
+}
+
+/** Clone one registration with the identity and capability issued to a managed Pipeline host. */
+export function missionMcpDescriptorForPipelineTask(
+  descriptor: MissionMcpDescriptor | null,
+  callerCredential: string,
+): MissionMcpDescriptor | null {
+  if (!descriptor) return null;
+  return {
+    ...descriptor,
+    args: [...descriptor.args],
+    env: {
+      ...descriptor.env,
+      [PIPELINE_CALLER_CREDENTIAL_ENV]: callerCredential,
     },
   };
 }

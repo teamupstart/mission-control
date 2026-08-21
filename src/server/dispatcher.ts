@@ -29,7 +29,7 @@ import {
   resolveDispatchRuntime,
 } from "./harnesses.ts";
 import { harnessFor } from "./harness/index.ts";
-import type { SdkSupervisor } from "./sdk/supervisor.ts";
+import { newSdkSessionId, type SdkSupervisor } from "./sdk/supervisor.ts";
 import { heldHomeNames, homeAlive, homeNameRules, killHome, launchHome } from "./terminal/home.ts";
 import type { Registry } from "./registry.ts";
 import { verifyHeadIs } from "./git/ensemble-snapshot.ts";
@@ -38,6 +38,8 @@ import { FULL_SHA } from "./workflows/commit-id.ts";
 import {
   kindMissionMcpRequirement,
   missionMcpDescriptor,
+  missionMcpDescriptorForPipelineTask,
+  newPipelineCallerCredential,
   verifyMissionMcpTools,
   type MissionMcpRequirement,
 } from "./mission-mcp.ts";
@@ -789,36 +791,89 @@ export class Dispatcher {
       if (!supervisor) {
         throw new Error("this build has no session supervisor, so it cannot launch Conductor through Agent SDK");
       }
-      const mcp = await (this.deps.missionMcpDescriptor ?? missionMcpDescriptor)();
+      const sessionId = newSdkSessionId();
+      const callerCredential = newPipelineCallerCredential();
+      const mcp = missionMcpDescriptorForPipelineTask(
+        await (this.deps.missionMcpDescriptor ?? missionMcpDescriptor)(),
+        callerCredential,
+      );
+      if (!mcp) {
+        throw new Error(
+          "managed Pipeline dispatch requires Mission Control's MCP server - rebuild with: npm run build",
+        );
+      }
+      const published = await (this.deps.verifyMissionMcpTools ?? verifyMissionMcpTools)(
+        ["adopt_pipeline_run"],
+        mcp,
+      );
+      if (!published.ok) {
+        throw new Error(
+          `managed Pipeline dispatch requires adopt_pipeline_run, but ${published.reason}`,
+        );
+      }
       // Held in its own binding for the same reason `piText` is: turn one now has a second
       // reader, and the launch marker has to fingerprint the exact string the driver was
       // given. Recomposing it at the second site is how the two answers drift apart.
-      const engineerPrompt = `${engineerCommand} ${task.intent}`;
-      const session = await supervisor.start({
-        agent: task.agent,
-        name: task.title.trim() || launch.cwd,
-        cwd: launch.cwd,
-        prompt: engineerPrompt,
-        acceptedGoalPrompt: task.intent,
-        // A pipeline task on this arm launches a directly streamable agent conversation, so
-        // it has the same launch turn to present as an ordinary embedded dispatch. The
-        // terminal arm below launches the Conductor host instead - not an agent conversation,
-        // no transcript turn, nothing to classify.
-        launchPresentation: { prompt: engineerPrompt, displayText: task.intent },
-        model: null,
-        effort: null,
-        permissionMode: dispatchPermissionMode(task.agent),
-        mcp,
-        extraDirs: [],
+      const engineerPrompt =
+        `${engineerCommand} ${task.intent}\n\n` +
+        `[Mission Control launch context: the reserved Pipeline run is ${launch.pipelineRun.slug}. ` +
+        `If Engineer resumes a different existing run, call adopt_pipeline_run with that run's ` +
+        `slug before continuing. No call is needed when Engineer creates the reserved run.]`;
+      // Persist the exact host identity before launch. The driver can invoke MCP before
+      // `start` returns, so assigning it afterward would create a valid-tool race window.
+      this.patch(taskId, { sessionId });
+      this.registry.registerManagedPipelineCaller(
         taskId,
-        gitBranch: null,
-        gitRoot: launch.cwd,
-        repoRoot: launch.cwd,
-      });
+        sessionId,
+        launch.cwd,
+        callerCredential,
+      );
+      let session: Session;
+      try {
+        this.registry.beginManagedPipelineLaunch(taskId, sessionId, launch.cwd);
+        session = await supervisor.start({
+          sessionId,
+          agent: task.agent,
+          name: task.title.trim() || launch.cwd,
+          cwd: launch.cwd,
+          prompt: engineerPrompt,
+          acceptedGoalPrompt: task.intent,
+          // A pipeline task on this arm launches a directly streamable agent conversation, so
+          // it has the same launch turn to present as an ordinary embedded dispatch. The
+          // terminal arm below launches the Conductor host instead - not an agent conversation,
+          // no transcript turn, nothing to classify.
+          launchPresentation: { prompt: engineerPrompt, displayText: task.intent },
+          model: null,
+          effort: null,
+          permissionMode: dispatchPermissionMode(task.agent),
+          mcp,
+          extraDirs: [],
+          taskId,
+          gitBranch: null,
+          gitRoot: launch.cwd,
+          repoRoot: launch.cwd,
+        });
+      } catch (error) {
+        this.registry.endManagedPipelineCaller(taskId, sessionId, callerCredential);
+        const current = this.registry.getTask(taskId);
+        // This preallocated ID never became a registered session. A concurrent
+        // completion owns every settlement field, but not this failed launch's
+        // phantom host attribution. Restore the prior owner only while the task
+        // still names the ID allocated by this attempt.
+        if (current?.sessionId === sessionId) {
+          this.patch(taskId, { sessionId: task.sessionId });
+        }
+        throw error;
+      } finally {
+        this.registry.endManagedPipelineLaunch(taskId, sessionId);
+      }
       if (await this.abortIfSettled(taskId)) {
-        // Cancel can land while the SDK driver is starting, before Task.sessionId exists.
-        // The returned session is still this launch's responsibility and must not leak.
+        // Cancel can land while the SDK driver is starting, before the managed host is
+        // registered or `start` returns. The returned session is still this launch's
+        // responsibility and must not leak.
         await supervisor.stop(session.id).catch(() => {});
+        const settled = this.registry.getTask(taskId);
+        if (settled?.sessionId === session.id) this.patch(taskId, { sessionId: null });
         return;
       }
       this.patch(taskId, {

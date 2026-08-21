@@ -400,10 +400,13 @@ parent enables comment mode over the existing `postMessage` channel. While enabl
 reports the nearest block-level ancestor's bounded `textContent` and its structural index path.
 It gains no capability the two existing bridges lack - it reads the document it is inside and
 posts to the parent that sent it - and it never gets `allow-same-origin`. The parent resolves
-the reported **structural path** to a source line, against a position-tracking parse of the file -
-never by searching it for the block's text, which cannot work: the DOM text of
-`<p>Read <strong>this</strong></p>` appears nowhere in the source, and nested markup, entities and
-reflowed whitespace are ordinary HTML rather than edge cases. The quote is then the source slice at
+the reported **structural path** to a source line, server-side, with `parse5` and
+`sourceCodeLocationInfo` - never by searching the file for the block's text, which cannot work: the
+DOM text of `<p>Read <strong>this</strong></p>` appears nowhere in the source. The parser has to do
+**tree construction**, not just tokenizing, because the path indexes the browser's tree: `<table>`
+gains an implicit `tbody` there and a tag walk would resolve to the wrong node. `parse5` implements
+that algorithm, is already a dependency, and is already used for the same parity in
+`src/server/archives/html.ts`. The quote is then the source slice at
 that range, so an HTML thread re-anchors through the same `reanchor()` as an editor thread. A path
 that no longer resolves means the render is stale: refuse and offer a reload. Markdown Preview never
 takes this path - its blocks carry `node.position` - so both surfaces get their range from a parse. The sandbox constant stays a single exported value so no call site

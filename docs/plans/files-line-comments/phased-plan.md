@@ -76,7 +76,7 @@ boundaries are where they are.
 
 ## Sizing
 
-Estimated **3,000 to 3,900 gross non-test implementation lines**, counting shared contracts,
+Estimated **3,400 to 4,400 gross non-test implementation lines**, counting shared contracts,
 persistence, server, MCP, and browser code together. Assumptions: the anchor module is pure and
 compact; the three renderer integrations do not share code beyond the anchor type; `styles.css`
 additions are counted; documentation and tests are excluded from the number but not from the work.
@@ -99,8 +99,27 @@ boundary that materially reduces risk, not by layer:
   It could stand on phase 2's contracts alone; it waits on phase 3 for the anchor-survival
   measurement rather than for code, which is argued under the dependency graph below.
 
-Phase 1 is the largest at roughly 1,100-1,400 lines and is deliberately not split further: cutting
-it at the store/route seam would produce two PRs that are each unreviewable without the other.
+**Phase 1 is the largest, and it grew during review.** It began at roughly 1,100-1,400 lines
+against two tables; eight review rounds added a third table, fourteen columns, four store
+functions and three routes, so budget **1,600 to 2,000**. The growth was not scope creep - every
+addition was a column or a call some later phase already consumed and no phase declared - but the
+implementing agent should know it is walking into the biggest phase in the plan, not the estimate
+written before review.
+
+It is still not split at the store/route seam: that produces two pull requests each unreviewable
+without the other. **If it does prove too large, the cheap cut is `file_comment_reviews`**, which
+only phase 3 writes. Phase 1's "declare the whole shape now" rule is about *columns*, since a
+shipped table cannot gain one from `CREATE TABLE` alone - it says nothing about which phase
+introduces a *table*, and a new table needs no `migrate()` entry at all. Moving that one table and
+its run-state store functions into phase 3 costs nothing structurally; it only splits the database
+guide edit and the table count across two commits, which is why it is offered as a lever rather
+than taken here.
+
+That coupling is worth stating plainly for whoever implements this: across eight review rounds,
+four findings were caused by a previous round's fix. Phase 1's invariants - the outstanding-status
+tuple, `delivered_at` doing three jobs, status versus flag versus timestamp - are tight enough
+that changing one sentence reliably breaks a neighbour. Change them deliberately, and re-read the
+cross-phase contracts below before you do.
 
 ## Phases
 
@@ -161,10 +180,11 @@ let phase 5 merge before the number that is meant to validate its premise even e
   and `read` is a badge; neither closes a thread, so neither may ride the status route.
 - **`queue_seq` is Phase 2's** - a comment joins the review when it is submitted. Phase 3 reorders
   and drains a queue phase 2 fills; it does not fill one.
-- **Preview line ranges come from a parse, never from matching text** (Phase 5): Markdown from
-  `node.position`, HTML from a position-tracking parse indexed by the bridge's structural path. The
-  DOM text of a block with nested markup is not a substring of its source, so text search would
-  refuse ordinary HTML.
+- **Preview line ranges come from a spec parse, never from matching text** (Phase 5): Markdown from
+  `node.position`, HTML from `parse5` with `sourceCodeLocationInfo`, server-side, indexed by the
+  bridge's structural path. Text search cannot work (the DOM text of a block with nested markup is
+  not a substring of its source) and neither can a tokenizer (the path indexes the browser's tree,
+  which has implicit `tbody` and repaired markup in it).
 - **A turn carries one message, chosen by `delivered_at`** (Phase 1's column, Phase 3's rule): the
   thread's oldest human message where it is NULL. The thread is the queue position; the message is
   the payload. A requeued thread therefore sends the reply that requeued it, not the comment that

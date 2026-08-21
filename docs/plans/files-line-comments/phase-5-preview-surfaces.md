@@ -53,29 +53,40 @@ exact source lines. The feature now covers every surface decision 1 approved.
      invisibly as a bridge that simply does not run.
    - `src/web/components/scouts/ScoutReader.tsx` shares this module. It must be unaffected: the
      bridge is inert unless the parent enables it, and Scouts never will.
-3. **Resolving a clicked block to a source line, by structural path and not by text search.**
+3. **Resolving a clicked block to a source line, through a parse that matches the preview DOM.**
    This is the part of the phase most likely to be got wrong, so it is specified rather than left
-   to the implementer.
+   to the implementer, and two wrong approaches are named because both look reasonable.
    - **Text search cannot do this job.** The DOM `textContent` of
      `<p>Read <strong>this</strong></p>` is `Read this`, which is not a substring of the source at
      all. Nested inline markup, character entities and reflowed whitespace each break the
-     equivalence, and all three are ordinary HTML rather than edge cases - so a text-matching
-     resolver refuses most real blocks while appearing to work on the simple ones it was tried on.
-   - **Parse the source with a position-tracking tokenizer in the parent** and build, for every
-     element, its structural path and its start and end line. The bridge already reports the
-     clicked block's structural index path, so resolution is a lookup in that map rather than a
-     search. Entities, nesting and whitespace never enter into it, because no text is compared.
+     equivalence, and all three are ordinary HTML - so a text-matching resolver refuses most real
+     blocks while appearing to work on the simple ones it was tried on.
+   - **Neither can a tokenizer that does not do tree construction.** The bridge reports a path
+     through the *browser's* tree, and HTML parsing is not tokenizing: `<table><tr>` gains an
+     implicit `tbody`, misnested inline tags are reparented, and malformed-but-renderable markup is
+     repaired. A source index built by walking tags in order therefore disagrees with the DOM on
+     ordinary input - a table is enough - and resolves to the wrong node or none, on a fresh render.
+   - **Use `parse5` with `sourceCodeLocationInfo: true`, on the server.** It implements the HTML5
+     tree-construction algorithm, so its tree is the one the iframe built, implicit `tbody` and all,
+     and it retains source locations on every node. It is already a direct dependency and already
+     used this way in `src/server/archives/html.ts`, whose header documents the parity that matters
+     here - **scripting on, which is parse5's default and matches the preview's
+     `sandbox="allow-scripts"`**, so `<noscript>` content is treated the same on both sides.
+   - Resolution is a walk of the reported path over that tree, returning the node's start and end
+     line. **No text is ever compared**, so entities, nesting and whitespace never enter into it.
+   - **Server-side, behind a non-mutating route.** Phase 1 owns every mutation route; this is a
+     read, so it belongs here. It also keeps `parse5` out of the browser bundle, which is the other
+     reason not to do this in the parent.
    - **The quote is the source slice** at the resolved range, not the DOM text. That is what lets an
      HTML thread re-anchor through the same `reanchor()` as an editor thread instead of needing a
      second rule.
-   - **Refusal narrows to one honest case:** the structural path does not resolve against the
-     current source, which means the file changed under a stale render. Say that, and offer a
-     reload. Duplicate headings and repeated paragraphs stop being a problem at all - the whole
-     class of ambiguity disappears with the search that created it.
+   - **Refusal narrows to one honest case:** the path does not resolve against the current source,
+     which means the file changed under a stale render. Say that, and offer a reload. Duplicate
+     headings and repeated paragraphs are not a problem at all - they resolve by position.
    - There is still deliberately **no "approximately here" state**. `reanchor()` returns unchanged,
      moved or outdated, and phase 1 froze those three.
    - Markdown Preview never takes this path: its blocks carry `node.position` from the parser. Both
-     surfaces now take their line range from a parse rather than from matching text, which is the
+     surfaces take their range from a spec parse rather than from matching text, which is the
      property that makes them behave alike.
 4. **`docs/ui.md`** - the preview surfaces.
 
@@ -121,9 +132,11 @@ exact source lines. The feature now covers every surface decision 1 approved.
 - A comment made in Markdown Preview lands on the same source line the Editor shows.
 - A comment made in HTML Preview lands on the right line, or is refused with a reason a person can
   act on. Cover the cases a text-matching resolver would have failed: **a block with nested inline
-  markup** (`<p>Read <strong>this</strong></p>`), **one containing a character entity**, and **two
-  blocks with identical text** - all three anchor correctly, because none is resolved by comparing
-  text. Refusal is tested against a stale render, not against duplicate wording.
+  markup** (`<p>Read <strong>this</strong></p>`), **one containing a character entity**, **two
+  blocks with identical text**, and **a row inside a `<table>` written without `<tbody>`** - the
+  last is the one a non-tree-constructing parse gets wrong, because the browser inserts the
+  implicit element and a tag walk does not. All four anchor correctly. Refusal is tested against a
+  stale render, not against duplicate wording.
 - All nine bare `<Markdown>` callers render unchanged.
 - The preview sandbox has three hashed scripts, no `allow-same-origin`, and one exported sandbox
   constant.
@@ -160,6 +173,13 @@ cross-file threads - is out of this plan's scope and starts a new one.
   of that disagreement assumed the source could be found by searching it for the block's text, and
   it cannot - `<p>Read <strong>this</strong></p>` has DOM text that appears nowhere in the source,
   and that is ordinary HTML. The design would have refused most real blocks while passing a demo.
-  Resolution is now a lookup by structural path against a position-tracking parse of the source -
-  a path the bridge was already reporting and the design was not using. The ambiguity question the
-  previous pass settled evaporates along with the search that created it.
+  Resolution moved to a lookup by structural path - a path the bridge was already reporting and the
+  design was not using - and the ambiguity question the previous pass settled evaporated with the
+  search that created it.
+- Third review pass, on that fix: a position-tracking **tokenizer** is not enough either, because
+  the bridge's path indexes the browser's tree and HTML parsing performs tree construction -
+  implicit `tbody`, reparented misnested tags, repaired markup. A plain table would have resolved
+  to the wrong node on a fresh render. Now specified as `parse5` with `sourceCodeLocationInfo`,
+  which implements that algorithm, is already a direct dependency, and is already used for exactly
+  this parity in `src/server/archives/html.ts`. That moved resolution to the server, which also
+  keeps the parser out of the browser bundle.

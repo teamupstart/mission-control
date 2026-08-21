@@ -90,7 +90,7 @@ This is a large feature. It is not a one-pull-request change and should not be p
 | Production code | About 2,700 to 3,300 non-test lines |
 | Tests | About 900 to 1,200 lines across eight unit layers, plus three Playwright specs |
 | Delivery estimate | About 13 to 19 engineering days across 5 phases |
-| Persistence | Two new tables, plus the `docs/sqlite-database.html` catalog and the table count in `test/db-shell.test.ts` |
+| Persistence | Three new tables, plus the `docs/sqlite-database.html` catalog and the table count in `test/db-shell.test.ts` |
 | Wire protocol | Two new `ServerEvent` variants, new Zod schemas |
 | Agent surface | One new MCP tool, its entry in `MISSION_MCP_TOOLS`, and a `/mcp/*` route bound by `findSessionByEnv` |
 | Security-relevant | One new hashed bridge script in the shared HTML preview sandbox |
@@ -455,8 +455,9 @@ recovery path.
 ### 4. Data model
 
 Three tables, following the house conventions: `TEXT PRIMARY KEY` from `randomUUID()` at the call
-site, epoch-millisecond `INTEGER NOT NULL` timestamps, `created_at` and `updated_at` on both,
-indices declared beside the table, and relations by convention rather than a `REFERENCES` clause.
+site, epoch-millisecond `INTEGER NOT NULL` timestamps, indices declared beside the table, and
+relations by convention rather than a `REFERENCES` clause. A row that can change carries
+`updated_at`; a message cannot change once written, so it carries only `created_at`.
 
 ```
 file_comment_threads
@@ -712,7 +713,7 @@ each durable claim twice: once through the DOM and once against the daemon's own
   one-at-a-time mechanisms are not confused for each other.
 - `docs/event-stream.md` - the new event variants and what bounds the collection.
 - `docs/sessions.md` - what a comment looks like as a turn, and where it queues.
-- `docs/sqlite-database.html` - the two new tables in their family.
+- `docs/sqlite-database.html` - the three new tables in their family, and all four counts.
 
 ## Delivery shape
 

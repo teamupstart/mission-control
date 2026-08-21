@@ -212,7 +212,7 @@
         <tr><td>Production code</td><td>About 2,700 to 3,300 non-test lines</td></tr>
         <tr><td>Tests</td><td>About 900 to 1,200 lines across eight unit layers, plus three Playwright specs</td></tr>
         <tr><td>Delivery estimate</td><td>About 13 to 19 engineering days across 5 phases</td></tr>
-        <tr><td>Persistence</td><td>Two new tables, plus the <code>docs/sqlite-database.html</code> catalog and the table count in <code>test/db-shell.test.ts</code></td></tr>
+        <tr><td>Persistence</td><td>Three new tables, plus the <code>docs/sqlite-database.html</code> catalog and the table count in <code>test/db-shell.test.ts</code></td></tr>
         <tr><td>Wire protocol</td><td>Two new <code>ServerEvent</code> variants, new Zod schemas</td></tr>
         <tr><td>Agent surface</td><td>One new MCP tool, its entry in <code>MISSION_MCP_TOOLS</code>, and a <code>/mcp/*</code> route bound by <code>findSessionByEnv</code></td></tr>
         <tr><td>Security-relevant</td><td>One new hashed bridge script in the shared HTML preview sandbox</td></tr>
@@ -460,7 +460,7 @@ blockquote 13 -&gt; 13</code></pre></div>
   <p><strong>Everything is durable.</strong> The walkthrough's state is columns on the queue, not memory, so a daemon restart resumes rather than re-sends. A send that lands in <code>uncertain</code> pauses the review and surfaces the existing Retry / Mark sent controls rather than inventing a second recovery path.</p>
 
   <h3>4. Data model</h3>
-  <p>Three tables, following the house conventions: <code>TEXT PRIMARY KEY</code> from <code>randomUUID()</code> at the call site, epoch-millisecond <code>INTEGER NOT NULL</code> timestamps, <code>created_at</code> and <code>updated_at</code> on both, indices declared beside the table, and relations by convention rather than a <code>REFERENCES</code> clause.</p>
+  <p>Three tables, following the house conventions: <code>TEXT PRIMARY KEY</code> from <code>randomUUID()</code> at the call site, epoch-millisecond <code>INTEGER NOT NULL</code> timestamps, indices declared beside the table, and relations by convention rather than a <code>REFERENCES</code> clause. A row that can change carries <code>updated_at</code>; a message cannot change once written, so it carries only <code>created_at</code>.</p>
   <div class="code-wrap"><pre><code>file_comment_threads
   id           TEXT PRIMARY KEY
   short_id     TEXT NOT NULL     -- MC-a41f; what the payload cites and a reply quotes
@@ -616,7 +616,7 @@ any thread ──the file moved under it──▶ outdated = 1 ──the quote r
     <li><code>docs/work-queues.md</code> - a short pointer saying what the review queue is <em>not</em>, so the two one-at-a-time mechanisms are not confused for each other.</li>
     <li><code>docs/event-stream.md</code> - the new event variants and what bounds the collection.</li>
     <li><code>docs/sessions.md</code> - what a comment looks like as a turn, and where it queues.</li>
-    <li><code>docs/sqlite-database.html</code> - the two new tables in their family.</li>
+    <li><code>docs/sqlite-database.html</code> - the three new tables in their family, and all four counts.</li>
   </ul>
 
   <h2>Delivery shape</h2>

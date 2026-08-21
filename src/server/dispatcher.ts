@@ -50,6 +50,7 @@ import {
   freezeScoutPromptBoundary,
 } from "./scouts/prompt-journal.ts";
 import { withRepoMemoryPointer } from "./memory.ts";
+import type { LaunchTurnMarker } from "./launch-presentation.ts";
 import { hasBin, resolveBinPath, run, type RunResult } from "./util/exec.ts";
 import { sleep } from "./util/timers.ts";
 import { prepareCodexLaunch } from "./harness/codex/launch.ts";
@@ -206,7 +207,16 @@ export class Dispatcher {
       resolveBases?: typeof resolveTaskBases;
       /** Provider-owned launch facts for a pipeline task. */
       pipelineLaunch?: typeof pipelineTaskLaunch;
-      /** Terminal-home launch seam for focused pipeline dispatch tests. */
+      /**
+       * Terminal-home launch seam, used by BOTH terminal arms - the ordinary agent launch
+       * and the pipeline host.
+       *
+       * A focused test that needs to reach the delivery boundary has to stop short of the
+       * real backend: `spawnUniquely` opens an actual tmux session on the machine running
+       * the suite, which is a side effect a unit test has no business having and which
+       * collides with itself on a second run. Left unset - which is every daemon - the real
+       * launcher is used and nothing changes.
+       */
       spawn?: typeof spawnUniquely;
       /** The daemon's singleton native allocator. Focused tests may inject an isolated one. */
       worktrees?: WorktreeManager;
@@ -488,8 +498,13 @@ export class Dispatcher {
       // Pi is terminal-only today (`HARNESS_CAPABILITIES.pi.runtimes`), so this is its one
       // launch seam. Whoever gives it an SDK runtime composes the same pointer into turn
       // one on the embedded path, which returns above this line.
-      const piLaunch = task.agent === "pi"
-        ? preparePiLaunch(withRepoMemoryPointer(wt.path, intent))
+      // Held in its own binding because two different things need it: `preparePiLaunch`
+      // needs it to build the argv, and the launch marker needs to fingerprint the exact
+      // text that argv carries. Recomposing it at the second site is how the two answers
+      // drift apart.
+      const piText = task.agent === "pi" ? withRepoMemoryPointer(wt.path, intent) : null;
+      const piLaunch = piText !== null
+        ? preparePiLaunch(piText)
         : { args: [] as string[], sessionId: null };
       const askArgs = await askChannelArgs(task.agent, missionMcp);
       // Rendered by the harness that has to honour it, from a capability measured against a
@@ -554,7 +569,38 @@ export class Dispatcher {
         }
       }
 
-      const homeName = await spawnUniquely(label, shortId, wt.path, agentBin, agentArgs);
+      // Pi's launch marker goes down BEFORE the process starts, and under the FINAL key.
+      //
+      // Pi is the one harness whose turn one travels in the argv, so by the time anything can
+      // observe the conversation the prompt has already been written - there is no delivery
+      // seam later to record against. Recording after discovery instead would leave the
+      // ordering resting on two unstated accidents: that `locatePiTranscript` refuses a
+      // session with no `agentSessionId`, and that the bind and the write sit in one
+      // synchronous block. Either could be undone by an unrelated change - discovery learning
+      // to read `--session-id` off the argv is the obvious one, since the id is right there -
+      // and the symptom would be a first frame carrying the whole launch contract, which SSE
+      // never re-decorates afterwards.
+      //
+      // `preparePiLaunch` has already minted the native conversation id, so this needs no
+      // provisional key and no later move: it is written under the key the session will hold
+      // once `bindLaunchedAgentSession` runs.
+      const piMarker = piLaunch.sessionId && piText !== null
+        ? this.recordLaunchPresentationForKey(piLaunch.sessionId, piText, task.intent)
+        : null;
+      let homeName: string;
+      try {
+        homeName = await (this.deps.spawn ?? spawnUniquely)(
+          label,
+          shortId,
+          wt.path,
+          agentBin,
+          agentArgs,
+        );
+      } catch (err) {
+        // Nothing was launched, so the marker describes a turn that will never be written.
+        this.registry.discardLaunchTurn(piMarker);
+        throw err;
+      }
       this.patch(taskId, { homeName });
       if (await this.abortIfSettled(taskId)) return;
 
@@ -584,6 +630,8 @@ export class Dispatcher {
         ? this.registry.bindLaunchedAgentSession(ready.session.id, task.agent, piLaunch.sessionId)
         : ready.session;
       if (!session) throw new Error("agent session changed before its launch identity was recorded");
+      // Pi's launch marker was recorded before the spawn, under this exact key. Nothing to do
+      // here - see the note at that call site for why the ordering is not deferred to now.
       const { instrumented } = ready;
       const readyResourceId = innermostTerminalResourceId(session);
       if (readyResourceId) this.patch(taskId, { terminalResourceId: readyResourceId });
@@ -609,13 +657,26 @@ export class Dispatcher {
       // `session.prompt()` only after the TUI is initialized, so injecting it here would run
       // the task twice. Other terminal harnesses still need the pane delivery below.
       if (!piLaunch.sessionId) {
+        // Recorded BEFORE the paste, for the same reason the scout boundary above is: this
+        // is the last instant at which "what the agent is about to be told" is still a fact
+        // rather than a guess, and a marker written after an acknowledged delivery would
+        // race the transcript poller that has already read the turn.
+        const launchMarker = this.recordLaunchPresentation(
+          deliverySession.id,
+          intent,
+          task.intent,
+        );
         try {
           await this.deliverIntent(deliverySession.id, intent, wt.path, instrumented);
         } catch (err) {
           // A boundary with no delivery behind it claims the agent saw a task it never
           // received, and a later capture would anchor into a conversation that never
-          // started. Discard it before the failure propagates.
+          // started. Discard it before the failure propagates. The launch marker is
+          // discarded on the same terms and for the same reason: it would tell the dashboard
+          // to project a turn nothing ever wrote, and the next real human message under that
+          // key is what it would be compared against.
           discardScoutPromptBoundary(boundary);
+          this.registry.discardLaunchTurn(launchMarker);
           throw err;
         }
       }
@@ -729,12 +790,21 @@ export class Dispatcher {
         throw new Error("this build has no session supervisor, so it cannot launch Conductor through Agent SDK");
       }
       const mcp = await (this.deps.missionMcpDescriptor ?? missionMcpDescriptor)();
+      // Held in its own binding for the same reason `piText` is: turn one now has a second
+      // reader, and the launch marker has to fingerprint the exact string the driver was
+      // given. Recomposing it at the second site is how the two answers drift apart.
+      const engineerPrompt = `${engineerCommand} ${task.intent}`;
       const session = await supervisor.start({
         agent: task.agent,
         name: task.title.trim() || launch.cwd,
         cwd: launch.cwd,
-        prompt: `${engineerCommand} ${task.intent}`,
+        prompt: engineerPrompt,
         acceptedGoalPrompt: task.intent,
+        // A pipeline task on this arm launches a directly streamable agent conversation, so
+        // it has the same launch turn to present as an ordinary embedded dispatch. The
+        // terminal arm below launches the Conductor host instead - not an agent conversation,
+        // no transcript turn, nothing to classify.
+        launchPresentation: { prompt: engineerPrompt, displayText: task.intent },
         model: null,
         effort: null,
         permissionMode: dispatchPermissionMode(task.agent),
@@ -862,6 +932,11 @@ export class Dispatcher {
       cwd: wt.path,
       prompt: intent,
       acceptedGoalPrompt: task.intent,
+      // Turn one IS the composed prompt on this runtime, so the dashboard's projection is
+      // recorded here rather than at a delivery seam that does not exist. `task.intent` is
+      // the operator's own words; everything the composition added above stays in the
+      // transcript, in the agent's context, and in every server-side evidence read.
+      launchPresentation: { prompt: intent, displayText: task.intent },
       model,
       effort,
       permissionMode: dispatchPermissionMode(task.agent),
@@ -947,6 +1022,56 @@ export class Dispatcher {
       throw new Error("agent session exited before the initial prompt could be sent");
     }
     return session;
+  }
+
+  /**
+   * Record how the dashboard should present this launch, without ever risking the launch.
+   *
+   * Presentation is strictly secondary to delivery: the prompt reaching the agent is the
+   * task, and the conversation window drawing it nicely is a courtesy. So a failed marker
+   * write is logged and swallowed - the conversation simply renders the composed prompt the
+   * way it did before this feature existed, which is a degradation a person can read past
+   * rather than a dispatch that did not happen.
+   *
+   * Returns the marker so a caller whose delivery then fails can roll it back.
+   */
+  private recordLaunchPresentation(
+    sessionId: string,
+    prompt: string,
+    displayText: string | null,
+  ): LaunchTurnMarker | null {
+    try {
+      return this.registry.recordLaunchTurn(sessionId, prompt, displayText);
+    } catch (err) {
+      console.error(
+        `[dispatch] could not record the launch presentation for session ${sessionId}:`,
+        err instanceof Error ? err.message : String(err),
+      );
+      return null;
+    }
+  }
+
+  /**
+   * The same door addressed by logical conversation key rather than by session.
+   *
+   * For the one launch that has its native conversation id BEFORE it has a session: Pi's,
+   * minted by `preparePiLaunch` so it can travel in the argv. Recording under that key needs
+   * no session to look it up from, and no later move.
+   */
+  private recordLaunchPresentationForKey(
+    noteKey: string,
+    prompt: string,
+    displayText: string | null,
+  ): LaunchTurnMarker | null {
+    try {
+      return this.registry.recordLaunchTurnForKey(noteKey, prompt, displayText);
+    } catch (err) {
+      console.error(
+        `[dispatch] could not record the launch presentation for conversation ${noteKey}:`,
+        err instanceof Error ? err.message : String(err),
+      );
+      return null;
+    }
   }
 
   /**

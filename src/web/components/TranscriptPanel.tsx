@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type {
   ForemanEpisode,
   PendingTurn,
@@ -39,6 +39,7 @@ import {
 import { toolChip, toolLineTarget, transcriptRows } from "../lib/tools.ts";
 import { useWorkspacePaths, type SessionFilesController } from "../lib/sessionFiles.ts";
 import { mergeConversation } from "../lib/episodes.ts";
+import { projectLaunchPresentation } from "../lib/launch-presentation.ts";
 import { parseForemanTerminalReview } from "../lib/foreman-terminal.ts";
 import {
   collectHits,
@@ -355,11 +356,25 @@ export function TranscriptPanel({
   notifyRef.current = onReplyBox;
 
   /**
+   * The conversation as a person should READ it, derived from `messages` and never stored.
+   *
+   * Everything below this line is a display consumer and takes this array; everything that
+   * touches the transcript as a FILE - the SSE merge, the history cache, `loadOlder`, and
+   * the byte offsets both of those carry - keeps taking `messages`. Paging anchors describe
+   * native transcript bytes, so a projection that reached them would couple resume
+   * correctness to how many rows happen to be visible.
+   *
+   * Today this substitutes the human task request for a Mission Control launch contract.
+   * See `projectLaunchPresentation` for why that has to happen exactly once, here, rather
+   * than inside the turn component.
+   */
+  const visible = useMemo(() => projectLaunchPresentation(messages), [messages]);
+  /**
    * The conversation as rows, computed once and shared by the renderer and the
    * search. Both MUST walk the same list: hits are addressed by row id and offset,
    * so a search over a differently-folded list would highlight the wrong span.
    */
-  const rows = mergeConversation(transcriptRows(messages), episodes, reviews);
+  const rows = mergeConversation(transcriptRows(visible), episodes, reviews);
   const agentLabel = AGENT_IDENTITY[agent].speaker;
   /**
    * What the turn currently arriving is doing, or null when nothing is arriving.
@@ -1009,7 +1024,7 @@ export function TranscriptPanel({
           />
         ) : (
           <ConversationActivity
-            messages={messages}
+            messages={visible}
             open={activityOpen}
             onToggle={() => setActivityOpen((v) => !v)}
             tab={railTab}

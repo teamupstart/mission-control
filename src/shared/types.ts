@@ -2861,7 +2861,39 @@ export interface TranscriptMessage {
    * anything we can't attribute - which reads as the human, the way it always has.
    */
   origin?: TurnOrigin;
+  /**
+   * How the DASHBOARD should present this turn, when that differs from how the transcript
+   * records it. Absent on every turn the log renders literally, which is nearly all of
+   * them, and absent on the wire for any client or fixture that never asked.
+   *
+   * Additive and advisory: `text`, `tools`, `ts`, `role` and `id` are the native record
+   * either way, so a server-side evidence consumer that ignores this field reads exactly
+   * what it read before the field existed. Only `src/web/lib/launch-presentation.ts` acts
+   * on it.
+   */
+  presentation?: TranscriptPresentation;
 }
+
+/**
+ * A dashboard-only presentation instruction attached to one normalized turn.
+ *
+ * A discriminated `kind` rather than a `hidden: true` boolean, because the question a
+ * reader of this field has to answer is "WHY does this turn present differently", and a
+ * boolean answers only "should I draw it". A second presentation kind extends the union;
+ * it must not repurpose `launch`.
+ *
+ * `launch` is the composed prompt Mission Control used to START a managed conversation:
+ * the operator's request plus the repository manifest, the shared execution authorization,
+ * and the task kind's contract. All of it reached the agent and all of it is in the native
+ * transcript. `displayText` is the operator's own request, captured at dispatch, and is
+ * what the conversation window draws in place of the whole payload. `null` means this
+ * launch had no distinct human-authored request, and the turn is omitted from the visible
+ * log rather than drawn as platform instructions or invented prose.
+ */
+export type TranscriptPresentation = {
+  kind: "launch";
+  displayText: string | null;
+};
 
 /**
  * The non-human authors of a "user" turn.

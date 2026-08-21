@@ -6,6 +6,11 @@ import { AGENT_IDENTITY } from "@shared/agent.ts";
 import type { Registry } from "./registry.ts";
 import { sessionMessages, transcriptFor } from "./harness/index.ts";
 import { attributeTranscript } from "./transcript-attribution.ts";
+import {
+  bindLaunchTurnMessage,
+  resolveLaunchMarker,
+  type LaunchTurnMarker,
+} from "./launch-presentation.ts";
 import { sleep } from "./util/timers.ts";
 
 // The live transcript feed behind the expanded card: send the recent history, then poll
@@ -32,7 +37,8 @@ const RESUME_MAX_BYTES = 2 * 1024 * 1024;
 /**
  * SSE handler for `GET /api/sessions/:id/transcript/stream`.
  *
- * Turns are credited to whoever typed them via `attributeTranscript`, which lives beside
+ * Turns are credited to whoever typed them - and a Mission Control-managed launch turn is
+ * marked for the dashboard's own projection - via `attributeTranscript`, which lives beside
  * this rather than inside a harness's line parser: that is a pure parse of a file, this is
  * a fact only the running daemon holds (see injections.ts). It reaches the dashboard's
  * live stream and its backward pages; the one-shot reviewer window stays unattributed,
@@ -62,6 +68,14 @@ export function transcriptStreamHandler(registry: Registry) {
         return;
       }
       const { read, path } = source;
+      // Re-read per FRAME, not cached for the connection. A terminal dispatch records its
+      // marker immediately before the paste, and a person can expand the card in the seconds
+      // between discovery and that paste; a connection-scoped null would then draw the launch
+      // contract in full until something forced a reconnect. It is a Map lookup behind a
+      // keyed session, which is what `Registry.launchTurns` exists to make cheap.
+      const launch = (): LaunchTurnMarker | null => resolveLaunchMarker(registry, id);
+      /** Anchor the marker to the turn a frame just identified, so later reads agree. */
+      const anchor = (messageId: string): void => bindLaunchTurnMessage(registry, id, messageId);
 
       let pos = 0;
       // `?from=<byte>` is a reader saying "I still have everything up to here, just tell
@@ -97,7 +111,7 @@ export function transcriptStreamHandler(registry: Registry) {
           pos = resumed.pos;
           await send({
             type: "resume",
-            messages: attributeTranscript(id, resumed.messages),
+            messages: attributeTranscript(id, resumed.messages, launch(), anchor),
             pos,
           });
         } else {
@@ -105,7 +119,7 @@ export function transcriptStreamHandler(registry: Registry) {
           pos = init.pos;
           await send({
             type: "init",
-            messages: attributeTranscript(id, init.messages),
+            messages: attributeTranscript(id, init.messages, launch(), anchor),
             start: init.start,
             atStart: init.atStart,
             pos,
@@ -126,7 +140,7 @@ export function transcriptStreamHandler(registry: Registry) {
           const { messages, pos: next } = read.appended(path, pos);
           pos = next;
           if (messages.length > 0) {
-            await send({ type: "append", messages: attributeTranscript(id, messages), pos });
+            await send({ type: "append", messages: attributeTranscript(id, messages, launch(), anchor), pos });
             sinceHeartbeat = 0;
             continue;
           }

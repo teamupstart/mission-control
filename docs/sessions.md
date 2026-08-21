@@ -904,6 +904,52 @@ anything about their wording. They had no author the daemon could attribute, so 
 to arrive wearing your byline, which made the conversation claim you had typed
 `[Image: original 2360x12932…]` or *Continue from where you left off.*
 
+#### The first turn of a dispatched session shows your request, not the whole launch prompt
+
+When Mission Control dispatches a task, the prompt it hands the agent is more than what you
+typed: it composes your request with several pieces of platform-owned context, which
+[dispatching an agent](dispatch-and-backlog.md) itemizes because it owns that composition.
+The agent needs all of it. You do not want to read it every time you open a card, and for a
+plan or scout task it is long enough to bury the reply underneath it.
+
+So the conversation shows **only your task request** as that first turn. Nothing is deleted
+and nothing is withheld:
+
+- the agent received the complete composed prompt, exactly as it always did;
+- the harness's own transcript file still holds that turn in full, byte for byte;
+- every server-side reader still sees the full text - Goal derivation, Foreman triage,
+  Workflow evidence, the Scout archive, review windows, and retro worthiness;
+- `GET /api/sessions/:id/transcript` serves the full turn, so an export or an audit is
+  unaffected.
+
+The substitution is a display projection, applied in the browser and applied once, so the
+Chat rendering, the Terminal rendering,
+[find-in-conversation](#find-in-a-conversation) and the
+[Yours rail](#the-rail-beside-the-conversation) all agree - the hidden text is not quietly
+searchable from one of them.
+
+It applies **only** to the turn that started a conversation Mission Control launched. It is
+never applied to:
+
+- a task assigned into a session that was already running - that turn is a message in an
+  ongoing conversation, and it renders in full;
+- anything you type yourself, including a follow-up whose wording resembles the launch;
+- a Foreman entry or a Workflow repair instruction;
+- an empty resume;
+- a session Mission Control merely discovered rather than launched;
+- the conversation after a `/clear`, which is a new conversation with no launch turn;
+- any transcript recorded before this behavior shipped. There is no backfill and no
+  guessing which historical turn was a launch instruction, so an older session reads
+  exactly as it did before.
+
+If a launch has no distinct request of yours to show, the turn is left out of the visible
+log rather than rendered as platform instructions or replaced with invented prose.
+
+It also applies to **one** turn, not to every turn that happens to carry the same text. The
+first time the conversation is read, the launch turn is pinned by its own transcript id; if the
+identical prompt arrives again later - a delivery Mission Control retried, or automation
+resending it - that later turn is a real message and renders in full.
+
 Scroll to the top of the log and the page above loads automatically, then the page above
 that, back to the session's first turn. **Load older messages** does the same on click,
 for when you would rather not scroll. Nothing appears once you reach the beginning: a

@@ -135,7 +135,9 @@ import {
   loadPendingReviews,
   loadRecentTerminalTasks,
   loadSessionGoals,
+  loadSessionLaunchTurns,
   pruneSessionGoals,
+  pruneSessionLaunchTurns,
   loadSessionNotes,
   loadForemanInvites,
   upsertForemanInvite,
@@ -198,6 +200,9 @@ import {
   upsertQueue,
   upsertQueueItem,
   upsertSessionGoal,
+  upsertSessionLaunchTurn,
+  deleteSessionLaunchTurn,
+  moveSessionLaunchTurn,
   upsertSessionNote,
   upsertTask as dbUpsertTask,
   upsertUsageCell,
@@ -209,6 +214,7 @@ import {
   workEpisodePromptIdentities,
 } from "./db.ts";
 import type { ForemanInviteRow, SessionWorkEpisode, TaskWorkEpisodeBinding, UsageCol } from "./db.ts";
+import { launchTextFingerprint, type LaunchTurnMarker } from "./launch-presentation.ts";
 import { refreshScoutPromptTitle } from "./scouts/prompt-journal.ts";
 import { unref } from "./util/timers.ts";
 import { getInspectorConfig } from "./inspector/config.ts";
@@ -656,6 +662,13 @@ export class Registry extends EventEmitter {
    * tombstones included - resolution, not storage, is where the tombstone becomes null.
    */
   private invites = new Map<string, ForemanInviteRow>();
+  /**
+   * Launch presentation markers, keyed by the SAME note key. In memory like notes, goals
+   * and invites because `launchTurnFor` is consulted once per transcript frame - every SSE
+   * append on every open conversation - and a per-frame SELECT is the exact cost these
+   * caches exist to avoid.
+   */
+  private launchTurns = new Map<string, LaunchTurnMarker>();
   private exitTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private driverDialogs = new Map<string, PaneDialog[]>();
   /** overlay keyed by pane token ("tmux:%12" | "wezterm:12") - see `@shared/pane.ts`. */
@@ -838,6 +851,7 @@ export class Registry extends EventEmitter {
     for (const n of loadSessionNotes()) this.notes.set(n.noteKey, n);
     for (const g of loadSessionGoals()) this.goals.set(g.noteKey, g);
     for (const i of loadForemanInvites()) this.invites.set(i.noteKey, i);
+    for (const m of loadSessionLaunchTurns()) this.launchTurns.set(m.noteKey, m);
     for (const t of loadActiveTasks()) this.tasks.set(t.id, t);
     for (const t of loadRecentTerminalTasks(RECENT_TERMINAL_TASKS)) this.tasks.set(t.id, t);
     // Always load terminal tasks that still hold resources so they get reconciled, even if newer
@@ -1740,6 +1754,9 @@ export class Registry extends EventEmitter {
     // session it just launched. Notes and goals accept that stranding; an invite is
     // policy, not prose, so it may not.
     if (prev) this.moveForemanInviteKey(noteKeyFor(prev), noteKeyFor(base));
+    // And the launch marker, but only across a FIRST bind - see the method for why a
+    // /clear's native-to-native rotation must strand it instead.
+    if (prev) this.moveLaunchTurnOnInitialBind(prev, base);
     // Resolve the note + queue only after the overlay may have supplied
     // agentSessionId, so their key (which prefers agentSessionId) is stable.
     base.note = this.noteSummaryFor(base);
@@ -2120,6 +2137,10 @@ export class Registry extends EventEmitter {
     // note and goal: stranding those costs stale prose, stranding this un-invites
     // Foreman from a session Mission Control launched. Move first, resolve after.
     this.moveForemanInviteKey(noteKeyFor(s), noteKeyFor(next));
+    // The launch marker moves on the FIRST bind only. `evt.cleared` is a replacement
+    // conversation, and the guard inside refuses it because the source key is already
+    // native by then - so the projection cannot follow a /clear onto a real human turn.
+    this.moveLaunchTurnOnInitialBind(s, next);
     next.note = this.noteSummaryFor(next);
     next.goal = this.goalSummaryFor(next);
     next.foremanInvite = this.foremanInviteFor(next);
@@ -2384,6 +2405,7 @@ export class Registry extends EventEmitter {
       // The invite moves with the rotation - see `applyDriverBound` for why it may not
       // strand the way the note and goal below are allowed to.
       this.moveForemanInviteKey(noteKeyFor(target), noteKeyFor(next));
+      this.moveLaunchTurnOnInitialBind(target, next);
       next.note = this.noteSummaryFor(next);
       next.goal = this.goalSummaryFor(next);
       next.foremanInvite = this.foremanInviteFor(next);
@@ -2535,6 +2557,9 @@ export class Registry extends EventEmitter {
     // implicit grant catches a stranded row - missing this move silently un-invites
     // Foreman from a session Mission Control just dispatched.
     this.moveForemanInviteKey(noteKeyFor(s), noteKeyFor(next));
+    // Pi's turn one travelled in the argv, so its marker was written under the synthetic
+    // key moments ago and this rebind is exactly the first bind the guard allows.
+    this.moveLaunchTurnOnInitialBind(s, next);
     next.note = this.noteSummaryFor(next);
     next.goal = this.goalSummaryFor(next);
     next.foremanInvite = this.foremanInviteFor(next);
@@ -4506,6 +4531,7 @@ export class Registry extends EventEmitter {
       // `report_status` can carry the first (or a new) agent session id, which rotates
       // the note key like any other binding - and the invite moves with the key.
       this.moveForemanInviteKey(noteKeyFor(s), noteKeyFor(next));
+      this.moveLaunchTurnOnInitialBind(s, next);
       next.foremanInvite = this.foremanInviteFor(next);
       next.workCycle = dbWorkCycleFor(noteKeyFor(next)) ?? undefined;
     }
@@ -4602,6 +4628,7 @@ export class Registry extends EventEmitter {
       // Same rotation, same rule as `applyDriverBound`: the invite moves with the key.
       // Inside the rotation guard for the same per-render economy the cost re-read is.
       this.moveForemanInviteKey(noteKeyFor(s), key);
+      this.moveLaunchTurnOnInitialBind(s, next);
       next.foremanInvite = this.foremanInviteFor(next);
       next.workCycle = dbWorkCycleFor(key) ?? undefined;
     }
@@ -6175,6 +6202,170 @@ export class Registry extends EventEmitter {
     const s = this.sessions.get(id);
     if (!s) return [];
     return episodesFor(noteKeyFor(s));
+  }
+
+  // ---- launch presentation (how the dashboard draws a managed launch) ----
+
+  /**
+   * Record that this exact prompt is the launch turn of the session's conversation.
+   *
+   * Written at the DELIVERY boundary - immediately before a terminal paste, immediately
+   * after Pi's launch identity binds, before an SDK session becomes streamable - because
+   * that is the only place both facts exist at once: the complete text the runtime is about
+   * to receive, and the operator's own request it was composed from.
+   *
+   * `displayText` is what the conversation window draws instead. Null is a deliberate
+   * value, not a missing one: it means this launch had no distinct human-authored request,
+   * and the turn is omitted rather than rendered as platform instructions.
+   *
+   * Returns null for an unknown session, which is the caller's signal that nothing was
+   * recorded - a launch whose session vanished has no conversation to present.
+   */
+  recordLaunchTurn(
+    sessionId: string,
+    prompt: string,
+    displayText: string | null,
+    now = Date.now(),
+  ): LaunchTurnMarker | null {
+    const s = this.sessions.get(sessionId);
+    if (!s) return null;
+    return this.recordLaunchTurnForKey(noteKeyFor(s), prompt, displayText, now);
+  }
+
+  /**
+   * The same door, addressed by logical key rather than by session.
+   *
+   * It exists for one caller: `SdkSupervisor.adopt` persists a marker BEFORE
+   * `registerSdkSession`, so the first transcript frame cannot outrun its own presentation
+   * metadata - and at that instant there is no session to look the key up from. A fresh
+   * SDK session's key is its own id (nothing has bound yet), which is what makes passing
+   * the registration id here correct rather than a shortcut.
+   */
+  recordLaunchTurnForKey(
+    noteKey: string,
+    prompt: string,
+    displayText: string | null,
+    now = Date.now(),
+  ): LaunchTurnMarker | null {
+    const text = prompt.trim();
+    // An empty launch prompt is a resume, not a launch. There is no turn to present.
+    if (!text) return null;
+    const display = displayText?.trim() ? displayText.trim() : null;
+    const prev = this.launchTurns.get(noteKey);
+    const marker: LaunchTurnMarker = {
+      noteKey,
+      fingerprint: launchTextFingerprint(text),
+      displayText: display,
+      // Null on every record, including one that replaces an earlier marker under this key.
+      // The turn this launch will write does not exist yet, and inheriting the PREVIOUS
+      // launch's anchor would point the projection at a turn belonging to the conversation
+      // this one replaced.
+      messageId: null,
+      createdAt: prev?.createdAt ?? now,
+      updatedAt: now,
+    };
+    upsertSessionLaunchTurn(marker);
+    this.launchTurns.set(noteKey, marker);
+    return marker;
+  }
+
+  /**
+   * Drop a marker whose delivery did not happen.
+   *
+   * The rollback half of recording before the paste. A marker with no launch behind it
+   * claims the dashboard should project a turn that was never written, and the next real
+   * human message under that key is what it would be compared against.
+   */
+  discardLaunchTurn(marker: LaunchTurnMarker | null): void {
+    if (!marker) return;
+    // Only if this is still the marker we wrote. A later dispatch into the same key owns
+    // the row now, and a failed earlier launch must not delete the one that succeeded.
+    if (this.launchTurns.get(marker.noteKey)?.updatedAt !== marker.updatedAt) return;
+    deleteSessionLaunchTurn(marker.noteKey);
+    this.launchTurns.delete(marker.noteKey);
+  }
+
+  /**
+   * Carry a marker from the provisional session key to the harness-native conversation key,
+   * and ONLY on that first bind.
+   *
+   * The guard is the whole method, and it is what separates this from
+   * `moveForemanInviteKey`, which moves on every rotation. A `/clear` starts a new logical
+   * conversation whose first turn is whatever the operator or the daemon says next; carrying
+   * a launch marker into it would let the projection swallow a real message. So the move
+   * fires only when the source key is the session's own synthetic id - the one state that
+   * can only ever mean "nothing had bound yet" - and a native-to-native rotation strands the
+   * row for the pruner, exactly as the note and the goal are stranded.
+   */
+  private moveLaunchTurnOnInitialBind(previous: Session, next: Session): void {
+    const fromKey = noteKeyFor(previous);
+    const toKey = noteKeyFor(next);
+    if (fromKey === toKey) return;
+    if (fromKey !== previous.id) return;
+    const marker = this.launchTurns.get(fromKey);
+    if (!marker) return;
+    moveSessionLaunchTurn(fromKey, toKey);
+    this.launchTurns.delete(fromKey);
+    this.launchTurns.set(toKey, { ...marker, noteKey: toKey });
+  }
+
+  /**
+   * Anchor a launch marker to the native transcript turn a decorated read just identified.
+   *
+   * Write-once by design: an anchored marker is never re-pointed, so a later turn carrying
+   * the identical bytes cannot steal the projection from the turn that actually started the
+   * conversation. A repeat rendering literally is the correct outcome - it really is a
+   * separate message.
+   *
+   * Called from the transcript seams rather than from a launch seam, because this is the one
+   * fact about the launch turn that only a READ can supply: at dispatch the prompt has not
+   * been written yet and has no id.
+   */
+  bindLaunchTurnMessage(sessionId: string, messageId: string): void {
+    const s = this.sessions.get(sessionId);
+    if (!s || !messageId) return;
+    const key = noteKeyFor(s);
+    const marker = this.launchTurns.get(key);
+    if (!marker || marker.messageId !== null) return;
+    const anchored: LaunchTurnMarker = { ...marker, messageId };
+    upsertSessionLaunchTurn(anchored);
+    this.launchTurns.set(key, anchored);
+  }
+
+  /**
+   * This session's launch marker, for transcript decoration. Null when Mission Control did
+   * not launch this conversation, which is every manually discovered session and every
+   * conversation a `/clear` replaced.
+   *
+   * Deliberately NOT denormalized onto `Session`. A card has no question to ask of it: it
+   * is a per-message decoration on a transcript read, and putting it on the snapshot would
+   * ship a fingerprint of the operator's prompt to every dashboard on every sweep.
+   */
+  launchTurnFor(sessionId: string): LaunchTurnMarker | null {
+    const s = this.sessions.get(sessionId);
+    if (!s) return null;
+    return this.launchTurns.get(noteKeyFor(s)) ?? null;
+  }
+
+  /**
+   * Drop markers belonging to no live session and older than `olderThan`. Returns how many.
+   *
+   * Owned here, gated on `sweptSessions`, and protecting `sessions` rather than
+   * `liveSessions()` for exactly the three reasons `pruneGoals` documents at length: the
+   * in-memory map accumulates alongside the table so both drop together or neither does,
+   * an unswept session map is "liveness unknown" rather than "nothing is live", and an
+   * exited card a human is still reading keeps its conversation until it is evicted.
+   */
+  pruneLaunchTurns(olderThan: number): number {
+    if (!this.sweptSessions) return 0;
+    const liveKeys = new Set([...this.sessions.values()].map((s) => noteKeyFor(s)));
+    const removed = pruneSessionLaunchTurns(liveKeys, olderThan);
+    if (!removed) return 0;
+    for (const [key, marker] of this.launchTurns) {
+      if (liveKeys.has(key) || marker.updatedAt >= olderThan) continue;
+      this.launchTurns.delete(key);
+    }
+    return removed;
   }
 
   // ---- goals (what a session is attempting to solve) ----

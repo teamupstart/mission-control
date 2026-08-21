@@ -6344,16 +6344,17 @@ export class WorkflowManager {
     if (!delivered?.deliveredAt) return;
     const parkedMs = now - delivered.deliveredAt;
     if (parkedMs < (this.options.parkedReminderMs ?? WORKFLOW_PARKED_REMINDER_MS)) return;
-    this.scheduleParkedRepairReminder(run.id, submission.id, Math.round(parkedMs / 60_000));
+    this.scheduleParkedRepairReminder(run.id, submission.id, Math.round(parkedMs / 60_000), now);
   }
 
   private scheduleParkedRepairReminder(
     runId: string,
     submissionId: string,
     parkedMinutes: number,
+    now: number,
   ): void {
     this.trackBackgroundTask(
-      this.prepareParkedRepairReminder(runId, submissionId, parkedMinutes).catch((error) => {
+      this.prepareParkedRepairReminder(runId, submissionId, parkedMinutes, now).catch((error) => {
         const run = this.store.getRun(runId);
         if (!run || runIsTerminal(run)) return;
         // Recorded, never escalated. Every other prepare failure blocks its run because the
@@ -6368,31 +6369,74 @@ export class WorkflowManager {
     );
   }
 
+  /**
+   * Re-ask every question the sweep asked, from scratch, and only then write the packet.
+   *
+   * The reminder is the one delivery in this file that nothing is waiting for. A repair packet
+   * has to reach the session or the round cannot proceed; a reminder that arrives one second
+   * after the agent finally started typing is pure interruption, and one that arrives after the
+   * repair landed says "no change to the repository" about a repository that has changed. So
+   * this is written to be droppable: every gate below is a plain `return`, no reminder row is
+   * written, and the next sweep reconsiders from nothing.
+   *
+   * The rechecks are `resumableRun` itself rather than a hand-picked subset, because a subset
+   * is a second opinion about what "still parked" means and this file has already paid for
+   * having two. It runs against a FRESH registry snapshot rather than the sweep's, which is
+   * the half that matters: a session that started working, or that stopped on a permission
+   * prompt, is visible only in a snapshot taken after it did - and, crucially, after the one
+   * await this method makes, which is the only window there is.
+   *
+   * The sweep's `now` is carried down rather than re-read, keeping this method on the same
+   * injected clock as everything else in the file. Nothing is lost by it. `settledIdle`
+   * measures the session's own `lastActivity` against that clock, so an older `now` can only
+   * under-report settledness - it can skip a reminder, never send one it should not have.
+   *
+   * The repository is asked again for the same reason, and the once-per-round guard is asked
+   * again because this method now awaits: a sweep landing in that window would find no
+   * reminder row yet and schedule a second one.
+   */
   private async prepareParkedRepairReminder(
     runId: string,
     submissionId: string,
     parkedMinutes: number,
+    now: number,
   ): Promise<void> {
-    const run = this.store.getRun(runId);
-    const submission = this.store.getSubmission(submissionId);
-    const binding = run ? this.store.getBinding(run.bindingId) : null;
-    const version = run ? this.store.getWorkflowVersionById(run.workflowVersionId) : null;
-    const summary = run ? this.store.runSummary(runId) : null;
-    // Re-read rather than trust the sweep: the session may have started working, or a human
-    // may have resubmitted, between the tick that decided to remind and this task running.
+    const scheduled = this.store.getRun(runId);
+    const scheduledBinding = scheduled ? this.store.getBinding(scheduled.bindingId) : null;
+    if (!scheduled || !scheduledBinding) return;
+
+    /*
+     * The repository read comes FIRST, and every other gate is asked after it.
+     *
+     * This is the method's only await, so it is also the only point at which the world can
+     * move underneath it - and asking the gates before it would recheck a world that had not
+     * had the chance to change yet, which is the same as not rechecking at all. Two git reads
+     * take long enough for a session to pick up its turn.
+     */
+    const probe = await this.probeRepository(scheduledBinding).catch(() => null);
+    if (!probe) return;
+
+    const eligible = this.resumableRun(runId, this.registry.snapshot().sessions, now);
+    if (eligible.withheld !== undefined) return;
+    const { run, binding, latest: submission } = eligible;
+    const version = this.store.getWorkflowVersionById(run.workflowVersionId);
+    const summary = this.store.runSummary(runId);
     if (
-      !run
-      || runIsTerminal(run)
-      || run.status !== "waiting_for_session"
-      || !submission
-      || this.store.latestSubmission(runId)?.id !== submission.id
-      || !binding
-      || binding.state !== "active"
+      runIsTerminal(run)
+      || submission.id !== submissionId
       || binding.deliveryMode !== "live"
       || !binding.sessionId
       || !version
       || !summary
     ) return;
+    // The premise of the sentence about to be typed. A repair that landed between the sweep's
+    // decision and this line makes the reminder false, not merely unnecessary.
+    if (this.repositoryUnchangedSince(probe, binding, submission) !== true) return;
+    // Asked again after the await, because a sweep landing in that window would find no
+    // reminder row yet and schedule a second one.
+    if (this.store.listDeliveries(runId).some((delivery) =>
+      delivery.kind === "parked_repair_reminder"
+      && delivery.submissionId === submission.id)) return;
     const prior = [...this.store.listDeliveries(runId)].reverse().find((delivery) =>
       delivery.kind === "persona_feedback"
       && delivery.state === "delivered"

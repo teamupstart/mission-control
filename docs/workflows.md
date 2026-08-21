@@ -1247,6 +1247,15 @@ the unchanged-evidence nudge, which answers a claim the agent made; this one ans
 so it says how long the round has been open and repeats what was asked without accusing anyone
 of anything.
 
+It is also the one packet the daemon is willing to drop. A repair packet has to reach the
+session or the round cannot proceed, so it is delivered and any refusal is recorded; a
+reminder that arrives one second after the agent finally picked up its turn is pure
+interruption, and one that arrives after the repair landed is simply untrue. So every
+condition the observer checked is asked again immediately before the reminder is written -
+after the repository read, which is the only point at which any of them can have changed -
+and any of them failing means no reminder row, no packet, and the next sweep starting over
+from nothing.
+
 `Max repair rounds` is the budget, and exhausting it blocks the run exactly as it always did.
 It sets what a *new* run starts with; a run already stuck takes more rounds from **Grant 2
 more rounds** on its own page, which is the only control that reaches a live run's budget.

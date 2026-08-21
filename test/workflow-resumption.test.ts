@@ -196,6 +196,7 @@ interface Harness {
   injected: string[];
   head: { sha: string };
   probe: Probe;
+  duringProbe: { fn: (() => void) | null };
   /**
    * The transcript anchor a CAPTURE would read. Deliberately not on `Probe`: the observer's
    * pre-filter is repository-only, and this exists so a test can move the transcript without
@@ -233,6 +234,8 @@ function harness(
   const injected: string[] = [];
   const head = { sha: "head-1" };
   const probe: Probe = { headSha: "head-1", workingTreeStatus: [], diffFingerprint: "content-1" };
+  /** Run once inside the next repository read. See `readEvidenceProbe` below. */
+  const duringProbe: { fn: (() => void) | null } = { fn: null };
   const transcript = { anchor: 0 };
   const manager = new WorkflowManager(registry, store, {
     queueManager: queues,
@@ -251,11 +254,17 @@ function harness(
       return { ok: true, pasted: true, submitVerified: true };
     }) as never,
     recordInjection: (() => {}) as never,
-    readEvidenceProbe: async () => ({
-      ...probe,
-      headSha: head.sha,
-      diffFingerprint: `${head.sha}:${probe.diffFingerprint}`,
-    }),
+    readEvidenceProbe: async () => {
+      // Fired INSIDE the read, which is the only place a test can stand in the window the
+      // reminder's rechecks exist to cover: two git commands take long enough for a session
+      // to pick up its turn, and every gate after this await is asked because of it.
+      duringProbe.fn?.();
+      return {
+        ...probe,
+        headSha: head.sha,
+        diffFingerprint: `${head.sha}:${probe.diffFingerprint}`,
+      };
+    },
     readContextRaw: async (_registry, binding) => {
       const raw = {
         primaryGoal: { rawPrompt: "Ship the feature", refined: null, sourceNoteKey: binding.noteKey },
@@ -309,7 +318,7 @@ function harness(
     personas,
     manager,
   );
-  return { registry, store, manager, app, injected, head, probe, transcript };
+  return { registry, store, manager, app, injected, head, probe, transcript, duringProbe };
 }
 
 /**
@@ -1431,6 +1440,88 @@ test("a parked round with a delivered packet and no work gets exactly one remind
   );
   assert.equal(h.injected.length, 2, "the session was reminded more than once");
   await h.manager.stop();
+});
+
+/**
+ * The reminder is the one delivery nothing is waiting for, so it is the one that must be
+ * droppable.
+ *
+ * Everything the sweep checked can stop being true while the reminder's own two git reads
+ * are running - a session picks up its turn, hits a permission prompt, or lands the repair -
+ * and the reminder is written to lose that race rather than win it: no row, no packet, and
+ * the next sweep reconsiders from nothing. A repair packet cannot behave that way, because
+ * the round does not proceed without it. A courtesy reminder typed into a session that has
+ * just started working is pure interruption, and one typed after the repair landed is false.
+ *
+ * Both cases are driven from inside the reminder's OWN repository read - the second of the
+ * two the sweep makes, the observer's being the first - because that read is the only window
+ * there is. Firing during the observer's read instead would prove only that the reminder
+ * rechecks something, and would pass just as happily with every gate asked before the await,
+ * where nothing can have changed yet.
+ */
+/** Fire `fn` on the Nth repository read of this sweep, counting from one. */
+function onProbeCall(h: Harness, call: number, fn: () => void): void {
+  let seen = 0;
+  h.duringProbe.fn = () => {
+    seen += 1;
+    if (seen === call) fn();
+  };
+}
+
+test("a reminder loses every race it can be in, and leaves nothing behind", async () => {
+  const busy = await personaFeedbackRun(
+    "parked-busy", "v-parked-busy", "auto", undefined, undefined, "/repo",
+    { parkedReminderMs: 0 },
+  );
+  reportIdle(busy, "parked-busy", busy.agentSessionId, busy.paneId);
+  // The session picks up its turn while the daemon is reading the repository for the reminder.
+  onProbeCall(busy, 2, () => {
+    busy.registry.applyHook({
+      agent: "claude",
+      event: "PreToolUse",
+      sessionId: busy.agentSessionId,
+      cwd: "/repo",
+      transcriptPath: null,
+      env: { tmuxPane: busy.paneId },
+      prCreated: false,
+    });
+  });
+  await busy.manager.sweepResumptions(SETTLED());
+  // `stop` awaits every tracked background task, which is what makes an assertion about a
+  // delivery that must NOT exist a real one rather than a race the test happens to win.
+  await busy.manager.stop();
+  assert.deepEqual(
+    busy.store.listDeliveries(busy.runId).filter((d) => d.kind === "parked_repair_reminder"),
+    [],
+    "a session that started working was reminded anyway",
+  );
+  // Skipped by a gate, not lost to a crash. A thrown reminder also produces no delivery, so
+  // without this the assertion above would pass for entirely the wrong reason.
+  assert.deepEqual(
+    busy.store.listEvents(busy.runId).filter((e) => e.kind === "parked_reminder_failed"),
+    [],
+  );
+  assert.equal(busy.injected.length, 1, "only the repair packet should have been typed");
+
+  const repaired = await personaFeedbackRun(
+    "parked-raced", "v-parked-raced", "auto", undefined, undefined, "/repo",
+    { parkedReminderMs: 0 },
+  );
+  reportIdle(repaired, "parked-raced", repaired.agentSessionId, repaired.paneId);
+  // And the repair itself lands in the same window. The reminder's whole sentence is "no
+  // change to the repository", so sending it here would not be untimely, it would be untrue.
+  onProbeCall(repaired, 2, () => { repaired.head.sha = "head-repaired"; });
+  await repaired.manager.sweepResumptions(SETTLED());
+  await repaired.manager.stop();
+  assert.deepEqual(
+    repaired.store.listDeliveries(repaired.runId).filter((d) => d.kind === "parked_repair_reminder"),
+    [],
+    "the reminder claimed nothing had changed about a repository that had",
+  );
+  assert.deepEqual(
+    repaired.store.listEvents(repaired.runId).filter((e) => e.kind === "parked_reminder_failed"),
+    [],
+  );
 });
 
 // ---------------------------------------------------------------------------

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -131,6 +131,51 @@ test("concurrent waiters cannot hold the kernel lease together", async () => {
     await first.release();
     await Promise.all(waiters);
     assert.equal(maxActive, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("release removes old metadata before a successor can publish", async () => {
+  const { root, metadataPath } = await fixture();
+  try {
+    let allowMetadataRemoval!: () => void;
+    const metadataMayBeRemoved = new Promise<void>((resolve) => {
+      allowMetadataRemoval = resolve;
+    });
+    let cleanupStarted = false;
+    const first = await acquireE2eHostLease({
+      metadataPath,
+      port: 0,
+      workers: 4,
+      beforeReleaseMetadataRemoval: async () => {
+        cleanupStarted = true;
+        await metadataMayBeRemoved;
+      },
+    });
+    const firstRelease = first.release();
+    while (!cleanupStarted) await new Promise((resolve) => setTimeout(resolve, 1));
+
+    let secondSettled = false;
+    const secondPromise = acquireE2eHostLease({
+      metadataPath,
+      port: first.owner.port,
+      workers: 4,
+      pollMs: 5,
+      waitTimeoutMs: 2_000,
+    }).then((lease) => {
+      secondSettled = true;
+      return lease;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.equal(secondSettled, false);
+
+    allowMetadataRemoval();
+    await firstRelease;
+    const second = await secondPromise;
+    const current = JSON.parse(await readFile(metadataPath, "utf8")) as { token: string };
+    assert.equal(current.token, second.owner.token);
+    await second.release();
   } finally {
     await rm(root, { recursive: true, force: true });
   }

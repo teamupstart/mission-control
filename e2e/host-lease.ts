@@ -36,6 +36,8 @@ interface AcquireOptions {
   pollMs?: number;
   waitTimeoutMs?: number;
   onWait?: (owner: E2eLeaseOwner | null) => void;
+  // Used by the handoff regression test to hold metadata cleanup open.
+  beforeReleaseMetadataRemoval?: () => Promise<void>;
 }
 
 function userIdentity(): string {
@@ -207,9 +209,17 @@ export async function acquireE2eHostLease(options: AcquireOptions): Promise<E2eH
         release: async () => {
           if (released) return;
           released = true;
-          await closeServer(server);
-          const current = await readOwner(metadataPath);
-          if (current?.token === owner.token) await rm(metadataPath, { force: true });
+          try {
+            const current = await readOwner(metadataPath);
+            if (current?.token === owner.token) {
+              await options.beforeReleaseMetadataRemoval?.();
+              await rm(metadataPath, { force: true });
+            }
+          } finally {
+            // Keep the kernel lease until this owner's metadata is gone. A successor
+            // therefore cannot publish its token before the old cleanup completes.
+            await closeServer(server);
+          }
         },
       };
     }

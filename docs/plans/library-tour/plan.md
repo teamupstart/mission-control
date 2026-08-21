@@ -224,13 +224,24 @@ is, what configures it, and how it is edited, then moves on.
 
 **Workflows - what counts as done**
 
-9. **The builder** - `#/library/workflows/<a workflow>`, spotlight the
-   `complementary "Workflow library and node palette"` rail: Persona, Command, Session action,
-   all-pass Join and End are exactly the assets the last three chapters covered.
-10. **Creating one** - two beats. First the `group "Editing surface"` Pipeline/Graph toggle,
-    reached from the **New** button the copy names but does not spend a beat on. Then
-    **Publish**: a draft follows Library edits, while a published version freezes its Persona
-    snapshots, and publishing cannot change a binding that already exists.
+9. **The builder** - `#/library/workflows/builtin-workflow:no-mistakes-review`, where stops 9
+   to 12 all live, spotlight the `complementary "Workflow library and node palette"` rail. The
+   list, the **Built-in** tag, and **New** - which is where a workflow of your own starts. A
+   workflow is composed of Persona, Command and Session action nodes, exactly the three assets
+   the last three chapters covered. The node palette that adds them renders only in Graph view
+   on a draft you own (`workflow && !readOnly && mode === "graph"`), so the tour names where
+   creation starts rather than pressing it, for the same reason stop 4 shows the editing verb
+   without saving.
+10. **Draft and published** - two beats, both on the built-in. First the
+    `group "Editing surface"` Pipeline/Graph toggle, which the toolbar renders for any open
+    workflow. Then **Publish** - and the point of the beat is that it is **disabled** here, with
+    the state notice beneath it saying why: a built-in ships already published, always carries
+    the graph this build was made from, and Duplicate is how you get a copy you own and can
+    edit. That disabled control is the whole draft-versus-published lesson without a draft
+    existing: a draft follows Library edits, a published version freezes its Persona snapshots,
+    and publishing cannot change a binding that already exists. The toolbar eyebrow makes the
+    same distinction in two words - **Built-in workflow** here, `Draft revision N` on one of
+    yours.
 11. **No-Mistakes Review** - `#/library/workflows/builtin-workflow:no-mistakes-review`,
     spotlight `.wf-pipeline-strip`. Five stages, walked in order: typecheck and test together;
     Intent Conformance alone as a cheap gate; Code Risk and Code Quality in parallel; Test
@@ -267,8 +278,8 @@ cannot be checked against the DOM. Fifteen stops, nineteen beats:
 | 6 | The contract, and the instruction | `action-contract` → `action-instruction` |
 | 7 | A Command slot | `command-default` |
 | 8 | Overrides, and saving one | `command-overrides` → `command-save` |
-| 9 | The builder | `workflow-palette` |
-| 10 | Creating one | `workflow-surface-toggle` → `workflow-publish` |
+| 9 | The builder | `workflow-rail` |
+| 10 | Draft and published | `workflow-surface-toggle` → `workflow-publish` (disabled) |
 | 11 | No-Mistakes Review | `workflow-pipeline-strip` |
 | 12 | Binding it | `workflow-bind` |
 | 13 | A run, moving | `run-pipeline-strip` → `run-worklist` |
@@ -301,11 +312,29 @@ worklist and verdicts; stop 14 follows the same run into its session's **Workflo
 This costs no tokens, adds no server surface, leaves nothing to clean up, and the artifact it
 teaches is genuinely the operator's own rather than a demo built to be taught.
 
-The tour picks that run with a single filtered read of the existing paged runs route: the
-newest finished run whose `workflowId` is the built-in No-Mistakes Review, and nothing else.
-`WorkflowRunSummary` already carries `workflowId` and `status`, so that is an exact match on
-data the dashboard holds, with no second request and nothing created - so there is nothing
-to remove on exit.
+The tour picks that run with a single filtered read of the existing paged runs route, and the
+predicate has **two** clauses, not one:
+
+1. `workflowId` is the built-in No-Mistakes Review, and `status` is finished.
+2. `sessionId` is non-null **and** still names a session in the live collection the dashboard
+   already holds.
+
+`WorkflowRunSummary` carries all three fields, so this is a match on data already in the
+browser, with no second request and nothing created - so there is nothing to remove on exit.
+
+**The second clause is not defensive padding.** A run outlives the session it reviewed:
+`WorkflowRunSummary.sessionId` is `string | null` precisely because `orphanBinding` nulls it
+when the session goes, and the summary carries a durable `sessionName` for exactly that case -
+"the only human name that survives". A finished run is therefore the *common* case for having
+no session left, not the rare one. Stop 14 opens that session's **Workflows** tab, so a run
+selected on clause 1 alone would routinely reach a stop whose target cannot mount, and land
+the operator on the target-missing dialog at the tour's last real beat.
+
+**And the session can go during the tour.** Nothing pins it open between stops 13 and 14, and
+the tour deliberately holds nothing open. So stop 14 carries its own fallback on the same
+mechanism as the run stops: if the session is evicted mid-tour, it keeps its title and
+explains the stage ladder against the run already on screen from stop 13, naming the run's
+durable `sessionName` rather than a session row that is gone.
 
 **A run of some other workflow is not a substitute, and the tour does not take one.** Stops
 13 and 14 arrive straight out of stop 11, and their copy names the five stages the operator
@@ -321,8 +350,9 @@ So there are exactly **two** states, and the second covers everything that is no
 
 | The fleet has | Stops 13-14 show |
 | --- | --- |
-| A finished built-in No-Mistakes Review run | That run - `#/runs/<id>`, then its session's **Workflows** tab |
-| Anything else - no runs, only unfinished runs, or finished runs of other workflows only | Fallback copy on the read-only built-in graph |
+| A finished built-in No-Mistakes Review run whose session is still live | That run - `#/runs/<id>`, then its session's **Workflows** tab |
+| Such a run, but its session is evicted mid-tour | Stop 13 as normal; stop 14 falls back, naming the run's durable `sessionName` |
+| Anything else - no runs, only unfinished runs, finished runs of other workflows only, or none whose session survives | Fallback copy on the read-only built-in graph |
 
 **The fallback is a real stop, not a gap.** Both stops keep their titles and explain the same
 two surfaces - what a pipeline strip, a review worklist and a stage ladder are for - against
@@ -346,9 +376,11 @@ run history.
 ```mermaid
 graph TD
   T[Library tour, stop 13] --> Q["GET /api/workflow-runs<br/>filter: finished"]
-  Q --> D{a finished<br/>No-Mistakes run?}
-  D -->|yes| R["#/runs/:id - read only<br/>strip, worklist, verdicts, then the session ladder"]
-  D -->|no such run| F["fallback copy, same two stops<br/>no runs, none finished, or none of this workflow"]
+  Q --> D{a finished No-Mistakes run<br/>whose session is still live?}
+  D -->|yes| R["#/runs/:id - read only<br/>strip, worklist, then the session ladder"]
+  D -->|no such run| F["fallback copy, same two stops<br/>no run, or none whose session survives"]
+  R --> E{session evicted<br/>mid-tour?}
+  E -->|yes| G["stop 14 falls back,<br/>naming the run's durable sessionName"]
 ```
 
 ## Server support
@@ -446,9 +478,11 @@ Two guards follow from that, both of which the engine must carry:
   a way of hiding a twenty-five stop tour inside a fifteen-stop rail. If the review wants it
   shorter still, the chapters split into separately-startable tours sharing one engine, which
   the registry makes free.
-- **Built-in assets must exist.** Stops 2, 5 and 11 point at shipped built-ins, which are
-  app data and always present. Stop 9 points at *a* workflow; on an install with none
-  authored, it points at the built-in too.
+- **Built-in assets must exist.** Every asset stop points at a shipped built-in, which is app
+  data and always present - stops 2 and 5 at a built-in Persona and Action, and stops 9 to 12
+  at No-Mistakes Review itself. No stop depends on the operator having authored anything, and
+  none of them can mount a control that writes: the two workflow-editing affordances the tour
+  spotlights, **Publish** and **Duplicate to edit**, are the disabled and the read-only one.
 - **The last two stops depend on the operator's own history.** With the run stops reading a
   real finished run, a fleet that has never run No-Mistakes sees fallback copy instead of a
   run. That fallback is written as a real stop rather than an apology, and it is the one part

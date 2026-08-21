@@ -416,8 +416,8 @@ interface TourStep {
 
 <p class="chapter">Workflows - what counts as done</p>
 <ol class="stops" style="counter-reset: stop 8">
-  <li><strong>The builder</strong> - <code>#/library/workflows/&lt;a workflow&gt;</code>, spotlight the <code>complementary "Workflow library and node palette"</code> rail: Persona, Command, Session action, all-pass Join and End are exactly the assets the last three chapters covered.</li>
-  <li><strong>Creating one</strong> - two beats. First the <code>group "Editing surface"</code> Pipeline/Graph toggle, reached from the <strong>New</strong> button the copy names but does not spend a beat on. Then <strong>Publish</strong>: a draft follows Library edits, while a published version freezes its Persona snapshots, and publishing cannot change a binding that already exists.</li>
+  <li><strong>The builder</strong> - <code>#/library/workflows/builtin-workflow:no-mistakes-review</code>, where stops 9 to 12 all live, spotlight the <code>complementary "Workflow library and node palette"</code> rail. The list, the <strong>Built-in</strong> tag, and <strong>New</strong> - which is where a workflow of your own starts. A workflow is composed of Persona, Command and Session action nodes, exactly the three assets the last three chapters covered. The node palette that adds them renders only in Graph view on a draft you own (<code>workflow &amp;&amp; !readOnly &amp;&amp; mode === "graph"</code>), so the tour names where creation starts rather than pressing it, for the same reason stop 4 shows the editing verb without saving.</li>
+  <li><strong>Draft and published</strong> - two beats, both on the built-in. First the <code>group "Editing surface"</code> Pipeline/Graph toggle, which the toolbar renders for any open workflow. Then <strong>Publish</strong> - and the point of the beat is that it is <strong>disabled</strong> here, with the state notice beneath it saying why: a built-in ships already published, always carries the graph this build was made from, and Duplicate is how you get a copy you own and can edit. That disabled control is the whole draft-versus-published lesson without a draft existing: a draft follows Library edits, a published version freezes its Persona snapshots, and publishing cannot change a binding that already exists. The toolbar eyebrow makes the same distinction in two words - <strong>Built-in workflow</strong> here, <code>Draft revision N</code> on one of yours.</li>
   <li><strong>No-Mistakes Review</strong> - <code>#/library/workflows/builtin-workflow:no-mistakes-review</code>, spotlight <code>.wf-pipeline-strip</code>. Five stages, walked in order: typecheck and test together; Intent Conformance alone as a cheap gate; Code Risk and Code Quality in parallel; Test Evidence and Documentation in parallel; then the verified Pull Request action before End. Every failure returns to the session for a repair round, up to five. It is a built-in, so its versions stay addressable exactly as shipped and your changes live in a <strong>Duplicate</strong>.</li>
   <li><strong>Binding it</strong> - spotlight <strong>Bind to a session…</strong>, and name the trigger and delivery postures v10 ships with: Foreman-complete, live delivery, five repair rounds.</li>
 </ol>
@@ -445,8 +445,8 @@ interface TourStep {
     <tr><td>6</td><td>The contract, and the instruction</td><td><code>action-contract</code> → <code>action-instruction</code></td></tr>
     <tr><td>7</td><td>A Command slot</td><td><code>command-default</code></td></tr>
     <tr><td>8</td><td>Overrides, and saving one</td><td><code>command-overrides</code> → <code>command-save</code></td></tr>
-    <tr><td>9</td><td>The builder</td><td><code>workflow-palette</code></td></tr>
-    <tr><td>10</td><td>Creating one</td><td><code>workflow-surface-toggle</code> → <code>workflow-publish</code></td></tr>
+    <tr><td>9</td><td>The builder</td><td><code>workflow-rail</code></td></tr>
+    <tr><td>10</td><td>Draft and published</td><td><code>workflow-surface-toggle</code> → <code>workflow-publish</code> (disabled)</td></tr>
     <tr><td>11</td><td>No-Mistakes Review</td><td><code>workflow-pipeline-strip</code></td></tr>
     <tr><td>12</td><td>Binding it</td><td><code>workflow-bind</code></td></tr>
     <tr><td>13</td><td>A run, moving</td><td><code>run-pipeline-strip</code> → <code>run-worklist</code></td></tr>
@@ -465,7 +465,18 @@ interface TourStep {
 
 <p><strong>Adopted: the tour reads a run that already happened.</strong> Stop 13 opens <code>#/runs/&lt;id&gt;</code> on the operator's most recent finished No-Mistakes run and walks its real pipeline strip, review worklist and verdicts; stop 14 follows the same run into its session's <strong>Workflows</strong> tab. This costs no tokens, adds no server surface, leaves nothing to clean up, and the artifact it teaches is genuinely the operator's own rather than a demo built to be taught.</p>
 
-<p>The tour picks that run with a single filtered read of the existing paged runs route: the newest finished run whose <code>workflowId</code> is the built-in No-Mistakes Review, and nothing else. <code>WorkflowRunSummary</code> already carries <code>workflowId</code> and <code>status</code>, so that is an exact match on data the dashboard holds, with no second request and nothing created - so there is nothing to remove on exit.</p>
+<p>The tour picks that run with a single filtered read of the existing paged runs route, and the predicate has <strong>two</strong> clauses, not one:</p>
+
+<ol>
+  <li><code>workflowId</code> is the built-in No-Mistakes Review, and <code>status</code> is finished.</li>
+  <li><code>sessionId</code> is non-null <strong>and</strong> still names a session in the live collection the dashboard already holds.</li>
+</ol>
+
+<p><code>WorkflowRunSummary</code> carries all three fields, so this is a match on data already in the browser, with no second request and nothing created - so there is nothing to remove on exit.</p>
+
+<p><strong>The second clause is not defensive padding.</strong> A run outlives the session it reviewed: <code>WorkflowRunSummary.sessionId</code> is <code>string | null</code> precisely because <code>orphanBinding</code> nulls it when the session goes, and the summary carries a durable <code>sessionName</code> for exactly that case - "the only human name that survives". A finished run is therefore the <em>common</em> case for having no session left, not the rare one. Stop 14 opens that session's <strong>Workflows</strong> tab, so a run selected on clause 1 alone would routinely reach a stop whose target cannot mount, and land the operator on the target-missing dialog at the tour's last real beat.</p>
+
+<p><strong>And the session can go during the tour.</strong> Nothing pins it open between stops 13 and 14, and the tour deliberately holds nothing open. So stop 14 carries its own fallback on the same mechanism as the run stops: if the session is evicted mid-tour, it keeps its title and explains the stage ladder against the run already on screen from stop 13, naming the run's durable <code>sessionName</code> rather than a session row that is gone.</p>
 
 <p><strong>A run of some other workflow is not a substitute, and the tour does not take one.</strong> Stops 13 and 14 arrive straight out of stop 11, and their copy names the five stages the operator has just been shown - typecheck and test, Intent Conformance, the two parallel review stages, the verified Pull Request action. An arbitrary workflow need not have any of that: a checks-only workflow reaches the worklist with no reviewer verdict to spotlight, and one with a different graph contradicts the stop that introduced it. <code>WorkflowRunSummary</code> carries no reviewer-verdict count either, so "a run with something in its worklist" is not a filter this read can even express without fetching a detail per candidate. Selecting the newest finished run of any workflow would have been a wider net catching mostly wrong fish.</p>
 
@@ -475,8 +486,9 @@ interface TourStep {
 <table>
   <thead><tr><th>The fleet has</th><th>Stops 13-14 show</th></tr></thead>
   <tbody>
-    <tr><td>A finished built-in No-Mistakes Review run</td><td>That run - <code>#/runs/&lt;id&gt;</code>, then its session's <strong>Workflows</strong> tab</td></tr>
-    <tr><td>Anything else - no runs, only unfinished runs, or finished runs of other workflows only</td><td>Fallback copy on the read-only built-in graph</td></tr>
+    <tr><td>A finished built-in No-Mistakes Review run whose session is still live</td><td>That run - <code>#/runs/&lt;id&gt;</code>, then its session's <strong>Workflows</strong> tab</td></tr>
+    <tr><td>Such a run, but its session is evicted mid-tour</td><td>Stop 13 as normal; stop 14 falls back, naming the run's durable <code>sessionName</code></td></tr>
+    <tr><td>Anything else - no runs, only unfinished runs, finished runs of other workflows only, or none whose session survives</td><td>Fallback copy on the read-only built-in graph</td></tr>
   </tbody>
 </table>
 </div>
@@ -489,40 +501,53 @@ interface TourStep {
 
 <figure>
 <div class="diagram">
-<svg viewBox="0 0 720 300" role="img" aria-label="The run stops read the newest finished No-Mistakes run, or fall back to the read-only built-in graph when there is none">
+<svg viewBox="0 0 760 400" role="img" aria-label="The run stops read the newest finished No-Mistakes run whose session is still live, with fallbacks for no such run and for a session evicted mid-tour">
   <defs>
     <marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M 0 0 L 10 5 L 0 10 z" class="svg-head"/>
     </marker>
   </defs>
 
-  <rect class="svg-box-accent" x="250" y="14" width="220" height="34" rx="7"/>
-  <text class="svg-t" x="360" y="35" text-anchor="middle">Library tour · stop 13</text>
+  <rect class="svg-box-accent" x="270" y="12" width="220" height="34" rx="7"/>
+  <text class="svg-t" x="380" y="33" text-anchor="middle">Library tour · stop 13</text>
 
-  <rect class="svg-box" x="250" y="76" width="220" height="40" rx="7"/>
-  <text class="svg-t-mono" x="360" y="94" text-anchor="middle">GET /api/workflow-runs</text>
-  <text class="svg-t-sm" x="360" y="108" text-anchor="middle">filter: finished</text>
+  <rect class="svg-box" x="270" y="70" width="220" height="40" rx="7"/>
+  <text class="svg-t-mono" x="380" y="88" text-anchor="middle">GET /api/workflow-runs</text>
+  <text class="svg-t-sm" x="380" y="102" text-anchor="middle">filter: finished</text>
 
-  <path class="svg-box" d="M360 138 L 470 168 L 360 198 L 250 168 Z"/>
-  <text class="svg-t" x="360" y="165" text-anchor="middle">a finished</text>
-  <text class="svg-t" x="360" y="179" text-anchor="middle">No-Mistakes run?</text>
+  <path class="svg-box" d="M380 132 L 530 170 L 380 208 L 230 170 Z"/>
+  <text class="svg-t" x="380" y="161" text-anchor="middle">finished No-Mistakes run,</text>
+  <text class="svg-t" x="380" y="175" text-anchor="middle">session still live?</text>
 
-  <rect class="svg-box-accent" x="386" y="216" width="300" height="44" rx="7"/>
-  <text class="svg-t" x="536" y="234" text-anchor="middle">#/runs/:id - read only</text>
-  <text class="svg-t-sm" x="536" y="249" text-anchor="middle">strip, worklist, verdicts, then the session ladder</text>
+  <rect class="svg-box" x="20" y="228" width="250" height="44" rx="7"/>
+  <text class="svg-t" x="145" y="246" text-anchor="middle">fallback copy, same two stops</text>
+  <text class="svg-t-sm" x="145" y="261" text-anchor="middle">no run, or none whose session survives</text>
 
-  <rect class="svg-box" x="24" y="216" width="300" height="44" rx="7"/>
-  <text class="svg-t" x="174" y="234" text-anchor="middle">fallback copy, same two stops</text>
-  <text class="svg-t-sm" x="174" y="249" text-anchor="middle">no runs, none finished, or none of this workflow</text>
+  <rect class="svg-box-accent" x="420" y="228" width="320" height="44" rx="7"/>
+  <text class="svg-t" x="580" y="246" text-anchor="middle">stop 13 - #/runs/:id, read only</text>
+  <text class="svg-t-sm" x="580" y="261" text-anchor="middle">pipeline strip, then review worklist</text>
 
-  <text class="svg-label" x="486" y="205">YES</text>
-  <text class="svg-label" x="176" y="205">NO SUCH RUN</text>
+  <path class="svg-box" d="M580 292 L 700 326 L 580 360 L 460 326 Z"/>
+  <text class="svg-t" x="580" y="322" text-anchor="middle">session evicted</text>
+  <text class="svg-t" x="580" y="336" text-anchor="middle">mid-tour?</text>
+
+  <rect class="svg-box" x="20" y="304" width="250" height="44" rx="7"/>
+  <text class="svg-t" x="145" y="322" text-anchor="middle">stop 14 falls back</text>
+  <text class="svg-t-sm" x="145" y="337" text-anchor="middle">names the run's durable sessionName</text>
+
+  <text class="svg-label" x="196" y="212">NO SUCH RUN</text>
+  <text class="svg-label" x="556" y="212">YES</text>
+  <text class="svg-label" x="300" y="318">YES</text>
+  <text class="svg-label" x="596" y="382">NO - session Workflows tab</text>
 
   <g>
-    <path class="svg-line" d="M360 48 L 360 74" marker-end="url(#ar2)"/>
-    <path class="svg-line" d="M360 116 L 360 136" marker-end="url(#ar2)"/>
-    <path class="svg-line" d="M470 168 L 536 168 L 536 214" marker-end="url(#ar2)"/>
-    <path class="svg-line" d="M250 168 L 174 168 L 174 214" marker-end="url(#ar2)"/>
+    <path class="svg-line" d="M380 46 L 380 68" marker-end="url(#ar2)"/>
+    <path class="svg-line" d="M380 110 L 380 130" marker-end="url(#ar2)"/>
+    <path class="svg-line" d="M230 170 L 145 170 L 145 226" marker-end="url(#ar2)"/>
+    <path class="svg-line" d="M530 170 L 580 170 L 580 226" marker-end="url(#ar2)"/>
+    <path class="svg-line" d="M580 272 L 580 290" marker-end="url(#ar2)"/>
+    <path class="svg-line" d="M460 326 L 272 326" marker-end="url(#ar2)"/>
+    <path class="svg-line" d="M580 360 L 580 376" marker-end="url(#ar2)"/>
   </g>
 </svg>
 </div>
@@ -570,7 +595,7 @@ interface TourStep {
 <ul>
   <li><strong>The refactor is the risk, not the tour.</strong> The existing controller carries hard-won behaviour in comments - Driver's lagging active index, the review modal becoming the top registered layer, <code>onDestroyed</code> being skipped on an immediate exit, cleanup refusal retry. Every one of those has to survive the extraction, and <code>see-work-tour.spec.ts</code> passing unchanged is the only proof that counts.</li>
   <li><strong>Fifteen stops, twenty screens, is close to the ceiling.</strong> The current tour is fourteen single-beat steps and already asks a lot. The list above is cut to what each chapter needs to teach - what the asset is, what configures it, how it is edited - and anything further added should displace a stop rather than extend the run. Beats are the pressure valve that keeps the stop count at fifteen, and they are capped at two precisely so they cannot become a way of hiding a twenty-five stop tour inside a fifteen-stop rail. If the review wants it shorter still, the chapters split into separately-startable tours sharing one engine, which the registry makes free.</li>
-  <li><strong>Built-in assets must exist.</strong> Stops 2, 5 and 11 point at shipped built-ins, which are app data and always present. Stop 9 points at <em>a</em> workflow; on an install with none authored, it points at the built-in too.</li>
+  <li><strong>Built-in assets must exist.</strong> Every asset stop points at a shipped built-in, which is app data and always present - stops 2 and 5 at a built-in Persona and Action, and stops 9 to 12 at No-Mistakes Review itself. No stop depends on the operator having authored anything, and none of them can mount a control that writes: the two workflow-editing affordances the tour spotlights, <strong>Publish</strong> and <strong>Duplicate to edit</strong>, are the disabled and the read-only one.</li>
   <li><strong>The last two stops depend on the operator's own history.</strong> With the run stops reading a real finished run, a fleet that has never run No-Mistakes sees fallback copy instead of a run. That fallback is written as a real stop rather than an apology, and it is the one part of the tour whose test needs both states covered: a seeded finished No-Mistakes run, and a fleet without one.</li>
 </ul>
 

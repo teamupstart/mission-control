@@ -20,6 +20,13 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
  * Only a browser can see this: the state is a live pane dialog OVER a durable outbox row,
  * produced by a real drain against a real driver's question, and every layer beneath this
  * one sees a healthy queued row and a healthy dialog separately.
+ *
+ * The second test covers the OTHER thing that stops a queued row for good. A killed session
+ * keeps its card, its transcript and its outbox rows for the exit-linger window, and none of
+ * those rows can ever drain - `canDrain` requires `idle`. They used to read the same blue
+ * "queued" there too. The row says shutdown rather than naming a review, because
+ * `activePaneDialog` withdraws a dying session's dialog and there would be no card to jump
+ * to.
  */
 
 const EVIDENCE = artifactsDir("queued-turn-held-by-review");
@@ -142,4 +149,61 @@ test("a queued message says the open review is what is holding it, and stops say
     card.locator(".turn-user:not(.pending-turn)").getByText(FOLLOW_UP, { exact: true }),
   ).toBeVisible({ timeout: 30_000 });
   await shoot(dashboard, "released-by-the-answer");
+});
+
+test("a queued message on a killed session says the shutdown is what is holding it", async ({
+  dashboard,
+  daemon,
+}) => {
+  await dispatch(dashboard, daemon);
+
+  await dashboard
+    .getByRole("navigation", { name: "Sessions" })
+    .locator("button.rail-row")
+    .first()
+    .click();
+  const card = dashboard.locator(".console-detail");
+  const composer = card.getByPlaceholder(/^Reply to this session/);
+  await expect(composer).toBeEnabled();
+
+  await composer.fill(HELD_TURN);
+  await composer.press("Enter");
+  await expect(
+    card.locator(".turn-user:not(.pending-turn)").getByText(HELD_TURN, { exact: true }),
+  ).toBeVisible();
+
+  await composer.fill(FOLLOW_UP);
+  await composer.press("Enter");
+  const followUpRow = card.locator(".pending-turn").filter({ hasText: FOLLOW_UP });
+  await expect(followUpRow).toHaveCount(1);
+  await expect(followUpRow.getByRole("status")).toHaveText("queued");
+
+  // Kill it out from under the queued row, which is the state the outbox can never leave.
+  await card.getByRole("button", { name: /kill$/i }).click();
+  const kill = dashboard.getByRole("dialog", { name: "Kill session" });
+  await kill.getByRole("button", { name: "Kill" }).click();
+  await expect(kill).toBeHidden();
+
+  // Exiting DESELECTS the session - it moves to the rail's GONE bucket and the detail closes
+  // - so the row is reached the way an operator reaches it, by opening the gone session
+  // during its linger. Without this the assertions below would be aimed at an unmounted pane
+  // and would pass or fail for the wrong reason.
+  const gone = dashboard
+    .getByRole("navigation", { name: "Sessions" })
+    .locator("button.rail-row")
+    .first();
+  await expect(gone.locator(".rail-state")).toHaveText("exited", { timeout: 15_000 });
+  await gone.click();
+
+  // The row is still in the outbox and can never leave it. It must not read as on its way.
+  await expect(followUpRow).toHaveClass(/\bis-held\b/);
+  await expect(followUpRow.getByRole("status")).toHaveText("queued · held");
+  await expect(followUpRow).toContainText("this session is ending and will not receive it");
+  await expect(followUpRow).toHaveCSS("border-left-color", ATTENTION_GOLD);
+  // No jump: a dying session has no dialog card rendered, so the button would aim at an
+  // anchor that is not in the document.
+  await expect(followUpRow.getByRole("button", { name: "Go to review" })).toHaveCount(0);
+  await expect(followUpRow).not.toContainText("Held until you answer the review above");
+  await followUpRow.scrollIntoViewIfNeeded();
+  await shoot(dashboard, "held-by-shutdown", followUpRow);
 });

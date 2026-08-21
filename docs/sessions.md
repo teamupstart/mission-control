@@ -238,13 +238,19 @@ lines visible, including the end of the draft, then scrolls inside the box for l
 The field's original row count remains its empty-state floor.
 
 Delivery begins only after the session positively reports idle and no question is covering
-its input. While a question IS covering it, every queued message reads `You · queued · held`
-in the dashboard's attention gold rather than the ordinary working blue, and carries **Held
-until you answer the review above** with a **Go to review** jump to the card that is holding
-it. That is the delivery rule stated where it bites: a message queued under an open question
-is not late, it is stopped, and it stays stopped for as long as the question goes unanswered.
-Recall still works on a held row. Answering the question releases it on the next drain, and
-the row goes back to plain `queued` on its way out. An Agent SDK driver rechecks that condition at its own acceptance boundary, so a
+its input. A queued message that either rule is stopping reads `You · queued · held` in the
+dashboard's attention gold rather than the ordinary working blue, and says which rule:
+
+- **Held until you answer the review above**, with a **Go to review** jump to the card that
+  is holding it. A message queued under an open question is not late, it is stopped, and it
+  stays stopped for as long as the question goes unanswered. Answering releases it on the
+  next drain, and the row goes back to plain `queued` on its way out.
+- **Held - this session is ending and will not receive it**, on a session that is stopping or
+  has exited. Nothing releases that one: the outbox needs a session reporting idle, and this
+  one never will again. No jump is offered, because a dying session's question is withdrawn
+  from the dashboard and there is no card to open.
+
+Recall still works on a held row under either. An Agent SDK driver rechecks that condition at its own acceptance boundary, so a
 message that is still shown as editable never joins a turn that is already running. Both
 embedded harnesses would do exactly that with it: Codex through an explicit steer, Claude
 Code by attaching it to the running turn, which then answers both and ends once. A terminal

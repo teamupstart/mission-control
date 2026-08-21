@@ -24,8 +24,9 @@ import {
   latestEditablePendingTurn,
   PENDING_TURN_HELD_REASON,
   PENDING_TURN_HELD_STATUS,
-  pendingTurnHeld,
+  pendingTurnHold,
   pendingTurnStatus,
+  type PendingTurnHold,
   RECALL_ACKNOWLEDGEMENT_LOST_MESSAGE,
   recallPendingTurnIntoDraft,
   shouldRecallPendingTurn,
@@ -974,7 +975,7 @@ export function TranscriptPanel({
             turn={turn}
             editable={latestEditable?.id === turn.id}
             busy={pendingAction === turn.id}
-            held={pendingTurnHeld(turn, dialogOpen)}
+            hold={pendingTurnHold(turn, session)}
             onGoToReview={() => revealPaneDialog(sessionId)}
             onEdit={() => void recall(turn)}
             onRetry={() => void retry(turn)}
@@ -1366,7 +1367,7 @@ export function PendingTurnView({
   turn,
   editable,
   busy = false,
-  held = false,
+  hold = null,
   onEdit,
   onRetry,
   onMarkSent,
@@ -1375,8 +1376,8 @@ export function PendingTurnView({
   turn: PendingTurn;
   editable: boolean;
   busy?: boolean;
-  /** An open pane dialog is withholding this row from the agent. See `pendingTurnHeld`. */
-  held?: boolean;
+  /** What is withholding this row from the agent, if anything. See `pendingTurnHold`. */
+  hold?: PendingTurnHold;
   onEdit?: () => void;
   onRetry?: () => void;
   onMarkSent?: () => void;
@@ -1384,14 +1385,14 @@ export function PendingTurnView({
 }): React.JSX.Element {
   return (
     <div
-      className={`turn turn-user pending-turn is-${turn.state}${held ? " is-held" : ""}`}
+      className={`turn turn-user pending-turn is-${turn.state}${hold ? " is-held" : ""}`}
       data-pending-state={turn.state}
-      data-pending-held={held ? "true" : undefined}
+      data-pending-held={hold ?? undefined}
     >
       <div className="turn-role pending-turn-role">
         <span>You</span>
         <span className="pending-turn-state" role="status">
-          {held ? PENDING_TURN_HELD_STATUS : pendingTurnStatus(turn)}
+          {hold ? PENDING_TURN_HELD_STATUS : pendingTurnStatus(turn)}
         </span>
       </div>
       <div className="turn-text">{turn.text}</div>
@@ -1420,7 +1421,7 @@ export function PendingTurnView({
         {/* The reason takes the hint's place rather than sitting beside it. Both are
             secondary text on one line, and a held row's answer to "why is this still
             here" outranks a keystroke the Edit button next to it already offers. */}
-        {held ? (
+        {hold ? (
           <span className="pending-turn-held">
             {/* A text-style glyph, not the emoji stop sign: this line is 10.5px and an
                 emoji renders in its own colours at its own weight, which at that size is a
@@ -1429,8 +1430,12 @@ export function PendingTurnView({
             <span className="pth-glyph" aria-hidden>
               ⊘
             </span>
-            {PENDING_TURN_HELD_REASON}
-            {onGoToReview && (
+            {PENDING_TURN_HELD_REASON[hold]}
+            {/* A jump only where there is something to jump TO. `activePaneDialog` reports
+                nothing for a dying session, so `ConsoleDetail` renders no dialog card in
+                the `shutdown` window and this button would land on an anchor that is not
+                in the document. */}
+            {hold === "review" && onGoToReview && (
               <>
                 {" · "}
                 <Tooltip label="Scroll to the review that is holding this message, and focus it">

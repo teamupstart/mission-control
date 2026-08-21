@@ -5,7 +5,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { InjectResult } from "../src/server/actions.ts";
-import { mkMuxHandle, mkTask } from "./helpers/session-fixture.ts";
+import type { PaneDialog, SessionState } from "../src/shared/types.ts";
+import { activePaneDialog } from "../src/shared/session.ts";
+import { mkMuxHandle, mkSession, mkTask } from "./helpers/session-fixture.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-pending-turn-manager-"));
 process.env.MISSION_HOME = home;
@@ -529,6 +531,78 @@ test("an open driver dialog blocks delivery until the dialog resolves", async ()
   f.registry.applyDriverEvent(f.id, { kind: "request_resolved", requestId: "ask-1" });
   await tick();
   assert.deepEqual(f.calls, ["wait for the answer"]);
+  f.manager.stop();
+});
+
+/**
+ * The gate reads `activePaneDialog`, and the dashboard's held indicator reads it too. This
+ * pins the property that makes those one rule rather than two expressions that happen to
+ * agree today.
+ *
+ * `canDrain` is private, so this asserts the invariant the swap rests on directly: for every
+ * state in the union, a session carrying a dialog is refused - either because the shared
+ * helper still reports it, or because the state is not `idle` and the conjunct above it has
+ * already refused. Written over `SessionState` exhaustively rather than over the two states
+ * that differ today, so widening `activePaneDialog`'s cleared set to a state that CAN be
+ * idle fails here instead of quietly loosening delivery.
+ */
+test("no session state lets a dialog-covered row past the drain gate", () => {
+  const STATES: readonly SessionState[] = [
+    "starting",
+    "idle",
+    "working",
+    "awaiting_input",
+    "awaiting_review",
+    "stopping",
+    "exited",
+  ];
+  const menu = {
+    prompt: "Allow this?",
+    options: [{ number: 1, label: "Yes" }],
+    highlighted: 1,
+  } as PaneDialog;
+
+  for (const state of STATES) {
+    const session = mkSession({ id: `s-${state}`, state, paneDialog: menu });
+    const covered = activePaneDialog(session) !== null;
+    const drainable = state === "idle";
+    assert.equal(
+      covered || !drainable,
+      true,
+      `state "${state}" is drainable AND reports no active dialog: the outbox would deliver into an open menu`,
+    );
+    // And the converse of the no-op claim: wherever the gate's own idle conjunct lets this
+    // clause decide, the helper and the raw field must return the same answer.
+    if (drainable) {
+      assert.equal(
+        activePaneDialog(session) === null,
+        session.paneDialog === null,
+        `state "${state}" makes the helper and the raw field disagree where the gate can act`,
+      );
+    }
+  }
+});
+
+test("a dialog raised on a stopping session still refuses the queued row", async () => {
+  // The window the two expressions used to differ over. Delivery must refuse it either way,
+  // and this asserts the behaviour rather than the expression that produces it.
+  const f = sdkFixture("stopping-dialog", async () => "started");
+  idle(f.registry, f.id);
+  f.registry.applyDriverEvent(f.id, {
+    kind: "request",
+    request: {
+      id: "ask-stopping",
+      kind: "permission",
+      prompt: "Allow this?",
+      options: [{ number: 1, label: "Yes" }],
+    },
+  });
+  f.manager.submit(f.id, "never delivered while it is going away");
+  await tick();
+  assert.deepEqual(f.calls, []);
+  f.registry.markSessionStopping(f.id);
+  await tick();
+  assert.deepEqual(f.calls, [], "a stopping session drained a row it should have held");
   f.manager.stop();
 });
 

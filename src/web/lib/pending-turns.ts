@@ -1,4 +1,5 @@
 import type { PendingTurn } from "@shared/types.ts";
+import { activePaneDialog, type DialogBearing } from "@shared/session.ts";
 
 interface PendingTurnRecallResponse {
   ok: boolean;
@@ -105,23 +106,41 @@ export function pendingTurnStatus(turn: PendingTurn): string {
 }
 
 /**
- * Is this queued row being withheld from the agent by an open pane dialog?
+ * What is stopping this queued row from reaching the agent, or null when nothing is.
  *
  * Not a presentation flourish - it is the daemon's own precondition read back. `canDrain`
- * in `src/server/pending-turns.ts` refuses to deliver anything while `session.paneDialog`
- * is non-null, so a message queued underneath a review sits there until the review is
- * answered, however long that is. Every other queued row is on its way; this one is not,
- * and the two used to be drawn identically in working-blue.
+ * in `src/server/pending-turns.ts` refuses to deliver while a dialog covers the session,
+ * and refuses again unless the session is `idle`. A row caught by either is not on its way,
+ * and every queued row used to be drawn identically in working-blue whichever was true.
  *
- * Scoped to `queued` deliberately. A `sending` row has already been claimed and crossed
- * the boundary the dialog guards, and an `uncertain` one has its own louder story to tell.
+ * Takes the SESSION rather than a boolean, so this and the gate read one fact through one
+ * helper. `dialogOpen` as a parameter is what let the display and the rule drift: the gate
+ * read `session.paneDialog` and the caller passed `activePaneDialog(...) !== null`, which
+ * differ exactly on `exited` and `stopping`.
+ *
+ * `shutdown` is tested FIRST and is not merely the dialog case in disguise. A dying session
+ * holds every queued row whether or not a menu is up, and it is the answer that stays true:
+ * `activePaneDialog` reports nothing for those two states, so a dialog raised just before a
+ * kill is neither rendered nor answerable, and naming it as the blocker would point the
+ * operator at a card that is not on screen and cannot be acted on.
+ *
+ * Scoped to `queued` deliberately. A `sending` row has already been claimed and crossed the
+ * boundary these gates guard, and an `uncertain` one has its own louder story to tell.
  */
-export function pendingTurnHeld(turn: PendingTurn, dialogOpen: boolean): boolean {
-  return dialogOpen && turn.state === "queued";
+export function pendingTurnHold(turn: PendingTurn, session: DialogBearing): PendingTurnHold {
+  if (turn.state !== "queued") return null;
+  if (session.state === "exited" || session.state === "stopping") return "shutdown";
+  return activePaneDialog(session) === null ? null : "review";
 }
 
-/** The reason a held row carries, in both composer surfaces. */
-export const PENDING_TURN_HELD_REASON = "Held until you answer the review above";
+/** Why a queued row is not moving, or null when it is on its way. */
+export type PendingTurnHold = "review" | "shutdown" | null;
+
+/** The sentence each hold carries, in both composer surfaces. */
+export const PENDING_TURN_HELD_REASON: Record<NonNullable<PendingTurnHold>, string> = {
+  review: "Held until you answer the review above",
+  shutdown: "Held - this session is ending and will not receive it",
+};
 
 /** The status a held row reports, replacing the bare "queued" it would otherwise show. */
 export const PENDING_TURN_HELD_STATUS = "queued · held";

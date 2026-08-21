@@ -42,7 +42,14 @@ change them cheaply. That ordering is deliberate - see the entry on `addColumn` 
      before `migrate()`.
 3. **Store functions in `db.ts`**, Shape A (module-level exported functions, as
    `upsertInspectorComment` / `loadInspectorComments` are): create, list by session, list by session
-   and path, update body, delete, reorder `queue_seq`, and the status transitions.
+   and path, update body, delete, reorder `queue_seq`, set and clear the `outdated` flag, and the
+   status transitions.
+   - **`file_comment_messages` gets its writer here too.** Creating a thread writes its opening
+     message row; `appendFileCommentMessage(threadId, author, body)` writes every one after it, and
+     a thread's messages load with it. The `author` column is why one function serves both writers:
+     phase 2's reply box passes `human`, phase 4's MCP tool passes `agent`, and neither invents a
+     second insert. Without it phase 2 would ship a reply box with nothing behind it, or reopen
+     this phase's already-merged store contract to add one.
 4. **A `FileCommentManager`** owning the session-scoped lifetime. This is the part the source plan
    got wrong; implement the repository's actual pattern, which is **three mechanisms**:
    - `registry.subscribe` on `session_remove` - mark that session's threads terminal
@@ -64,7 +71,8 @@ change them cheaply. That ordering is deliberate - see the entry on `addColumn` 
    **explicit decision on `LINE_INPUT_EVENTS`** (`registry.ts:431`) with the reason written beside
    it. The recommendation is **absent** - the Line strip does not read file comments - and
    `pipeline_upsert`'s deliberate absence is the precedent to follow.
-8. **Routes in `src/server/routes.ts`**: create, list, edit, delete, and reorder. `parseBody` for
+8. **Routes in `src/server/routes.ts`**: create, list, edit, delete, reorder, and **append a
+   message** to a thread. `parseBody` for
    every mutating route; no hand-parsed JSON. If a manager instance is needed, append it as the
    **last** optional positional parameter of `buildApp` (currently `productIssues`, `routes.ts:859`)
    and answer **503** when absent.
@@ -111,8 +119,10 @@ change them cheaply. That ordering is deliberate - see the entry on `addColumn` 
   and reversible. Pure, so cover it exhaustively; this is the cheapest place in the feature to be
   thorough.
 - `test/file-comment-contracts.test.ts` - Zod bounds and refusals.
-- `test/file-comments-store.test.ts` - SQL, status transitions, `queue_seq` rewrites, and that the
-  partial unique index actually refuses a second `sending` row for one session.
+- `test/file-comments-store.test.ts` - SQL, status transitions, `queue_seq` rewrites, the
+  `outdated` flag surviving a status change in both directions, message append and load order for
+  both authors, and that the partial unique index actually refuses a second `sending` row for one
+  session.
 - `test/file-comments-lifecycle.test.ts` - `session_remove` orphans; `state === "exited"` alone
   changes nothing; the `onSessionsObserved` arm settles rows orphaned during a daemon outage; the
   prune deletes only terminal rows whose session is gone.
@@ -133,7 +143,8 @@ under `src/`. Run one file with
 
 ## Merge and exit criteria
 
-- A thread can be created, listed, edited, reordered, and deleted through real routes.
+- A thread can be created, listed, edited, reordered, replied to, and deleted through real
+  routes, and a thread loads with its messages in time order.
 - A thread survives a daemon restart and is orphaned when its session is removed - by both arms.
 - Both new event variants reach a browser, and the snapshot and the stream agree.
 - The database guide catalogs both tables and all four counts agree.
@@ -145,6 +156,10 @@ Later phases may rely on, and must not change:
 
 - The `FileCommentAnchor` shape and `reanchor()`'s three outcomes.
 - Both tables' full column shape, including the columns phases 3 and 4 are first to write.
+- `appendFileCommentMessage` and its route: the only way a message row is written, by either
+  author. Phase 2 calls it with `human`, phase 4 with `agent`.
+- `status` and `outdated` as two dimensions. A later phase may add neither a status value that
+  means outdated nor a second flag that means orphaned.
 - The three-mechanism session lifetime. No later phase adds a fourth teardown path.
 - The two `ServerEvent` variants. Phases 3 and 4 emit them; neither adds a third.
 
@@ -157,3 +172,10 @@ the walkthrough state machine and payload (phase 3), the MCP tool (phase 4).
   repository's actual three-mechanism pattern; recorded as finding 1 in `phased-plan.md`.
 - The source plan's "Migration" test row was reframed: a new table needs no `migrate()` entry, so
   the migration test proves **idempotency** rather than an upgrade path.
+- Review pass: three defects repaired here rather than downstream. `orphaned` was missing from the
+  status domain this phase declares, while this phase's own lifetime design writes it. `outdated`
+  was a status value in `plan.md` and an orthogonal reversible flag in its prose and in phase 3;
+  it is now a column, because a thread that goes outdated has to keep its place in the queue.
+  And the `file_comment_messages` write path existed in no phase at all, while phase 2 shipped a
+  reply box and phase 4 an agent reply - both now call one function declared here. `plan.md` and
+  `plan.html` carry the same two corrections.

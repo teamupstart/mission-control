@@ -40,7 +40,8 @@ The queue stops advancing on an inference about idleness and starts advancing on
    (`routes.ts:2799-2809`): `authed(c)` → `parseBody` → destructure `{ env, sessionId, cwd, ... }` →
    `registry.findSessionByEnv(env, sessionId, cwd)` → 404 `"no matching session"`. Note `/mcp/*` is
    deliberately **not** behind `requireLoopback`; the token is the gate.
-5. **Persist, emit, advance.** The reply is stored in `file_comment_messages`, the thread moves to
+5. **Persist, emit, advance.** The reply is stored through phase 1's `appendFileCommentMessage`
+   with author `agent` - the same function phase 2's reply box uses - the thread moves to
    `answered`, one `file_comment_thread_upsert` carries it to every dashboard, and the walkthrough
    releases the next comment.
    - `commentId` stays **required** even though only one comment is outstanding. It costs one field

@@ -425,7 +425,7 @@ blockquote 13 -&gt; 13</code></pre></div>
     <li><strong>Revision unchanged</strong> - the lines are exact, nothing to do.</li>
     <li><strong>Quote found exactly once</strong> - move the anchor to it. Silent.</li>
     <li><strong>Quote found several times</strong> - take the occurrence nearest the previous line. Silent.</li>
-    <li><strong>Quote not found</strong> - <code>outdated</code>. Keep the quote and the last known line.</li>
+    <li><strong>Quote not found</strong> - set <code>outdated</code>. Keep the quote, the last known line, and the status.</li>
   </ul>
   <p>No I/O, which makes it the cheapest part of the feature to test exhaustively and the part most worth testing that way.</p>
 
@@ -462,34 +462,36 @@ blockquote 13 -&gt; 13</code></pre></div>
   <h3>4. Data model</h3>
   <p>Two tables, following the house conventions: <code>TEXT PRIMARY KEY</code> from <code>randomUUID()</code> at the call site, epoch-millisecond <code>INTEGER NOT NULL</code> timestamps, <code>created_at</code> and <code>updated_at</code> on both, indices declared beside the table, and relations by convention rather than a <code>REFERENCES</code> clause.</p>
   <div class="code-wrap"><pre><code>file_comment_threads
-  id            TEXT PRIMARY KEY
-  session_id    TEXT NOT NULL   -- the session this thread belongs to (decision 2)
-  path          TEXT NOT NULL   -- repository-relative
-  start_line    INTEGER NOT NULL
-  end_line      INTEGER NOT NULL
-  quote         TEXT NOT NULL
-  quote_hash    TEXT NOT NULL   -- sha256(path + quote); excludes the line
-  revision      TEXT            -- file revision the anchor was last valid against
-  surface       TEXT NOT NULL   -- editor | markdown | html
-  status        TEXT NOT NULL   -- draft | queued | sending | awaiting | answered | outdated | resolved
-  queue_seq     INTEGER         -- position in the review; NULL once terminal
-  delivery_id   TEXT            -- the pending_turns row currently carrying it
-  sent_at       INTEGER
-  answered_at   INTEGER
-  resolved_at   INTEGER
-  created_at    INTEGER NOT NULL
-  updated_at    INTEGER NOT NULL
+  id           TEXT PRIMARY KEY
+  session_id   TEXT NOT NULL     -- the session this thread belongs to (decision 2)
+  path         TEXT NOT NULL     -- repository-relative
+  start_line   INTEGER NOT NULL
+  end_line     INTEGER NOT NULL
+  quote        TEXT NOT NULL
+  quote_hash   TEXT NOT NULL     -- sha256(path + quote); excludes the line
+  revision     TEXT              -- file revision the anchor was last valid against
+  surface      TEXT NOT NULL     -- editor | markdown | html
+  status       TEXT NOT NULL     -- draft | queued | sending | awaiting | answered | resolved | orphaned
+  outdated     INTEGER NOT NULL  -- 1 when the quote no longer resolves; not a status
+  queue_seq    INTEGER           -- position in the review; NULL once terminal
+  delivery_id  TEXT              -- the pending_turns row currently carrying it
+  sent_at      INTEGER
+  answered_at  INTEGER
+  resolved_at  INTEGER
+  created_at   INTEGER NOT NULL
+  updated_at   INTEGER NOT NULL
 
 file_comment_messages
   id            TEXT PRIMARY KEY
   thread_id     TEXT NOT NULL
-  author        TEXT NOT NULL   -- human | agent
-  session_id    TEXT            -- the session that wrote or received it
+  author        TEXT NOT NULL    -- human | agent
+  session_id    TEXT             -- the session that wrote or received it
   body          TEXT NOT NULL
-  delivered_at  INTEGER         -- when it reached the agent; NULL while queued
+  delivered_at  INTEGER          -- when it reached the agent; NULL while queued
   created_at    INTEGER NOT NULL</code></pre></div>
   <p>A partial unique index on <code>(session_id)</code> where <code>status = 'sending'</code> enforces one-comment-in-flight at the database rather than by convention, mirroring <code>idx_pending_turns_sending</code> and <code>one_inflight_per_queue</code>. Because decision 2 scopes a thread to a session, that index is exactly the invariant the walkthrough needs and nothing broader. <code>delivery_id</code> is the correlation <code>pending_turns</code> cannot carry: it lives here instead, so that table needs no new column.</p>
-  <p><strong>Threads end with their session.</strong> Both tables are cleared on <code>session_remove</code> and on no other signal - never on <code>state === "exited"</code>, which is the standing rule for durable cleanup in this repository and the reason there is no second eviction path here. A session that is merely idle, disconnected, or restarting keeps every thread it owns.</p>
+  <p><strong><code>outdated</code> is a column, not a status.</strong> A thread whose quote has stopped resolving is still queued, or still answered - losing that is losing its place in the review, and the flag is reversible where a status transition would not be. Two dimensions, so two columns. <code>orphaned</code> <em>is</em> a status, and a terminal one: it is what a thread becomes when the session that owns it goes away, and there is nothing left to be in the middle of.</p>
+  <p><strong>Threads end with their session.</strong> On <code>session_remove</code> that session's threads are settled to <code>orphaned</code> by UPDATE - not deleted, and never keyed on <code>state === "exited"</code>, which is the standing rule for durable cleanup in this repository and the reason there is no second eviction path here. Two mechanisms complete it, both copied from <code>ReviewManager</code> rather than invented: a reconciliation arm for sessions that went away while the daemon was down, and a throttled prune that finally deletes settled rows whose session key is gone. A session that is merely idle, disconnected, or restarting keeps every thread it owns.</p>
   <p>Drafts are persisted from the first keystroke rather than kept in browser state: the integrated tab and the extracted Files window are two live <code>FileWorkspace</code> instances that converge only through the daemon.</p>
 
   <h3>5. The payload</h3>
@@ -527,8 +529,11 @@ restructure beyond what this one asks for.</code></pre></div>
                     │                                        ▼
                     └──────────────────────────────────── answered ──human resolves──▶ resolved
 
-any unsent state ──the file moved under it──▶ outdated (reversible)</code></pre></div>
-  <p><code>outdated</code> is orthogonal and reversible: if the quoted text comes back, the thread re-anchors and returns to what it was. A human reply on an <code>answered</code> thread puts it back in the queue with its history intact.</p>
+any status ──its session is removed──▶ orphaned (terminal)
+
+outdated is a flag beside the status, not one of its values:
+any unsent thread ──the file moved under it──▶ outdated = 1 ──the quote returns──▶ outdated = 0</code></pre></div>
+  <p><code>outdated</code> is orthogonal and reversible, which is why it is a column: a thread that goes outdated keeps the status it had, and if the quoted text comes back it re-anchors and clears the flag. A human reply on an <code>answered</code> thread puts it back in the queue with its history intact. <code>orphaned</code> is the one status reached without a human or an agent doing anything.</p>
 
   <h3>8. Keyboard and accessibility</h3>
   <p>The comment control joins the existing tab-local <code>p</code> and <code>e</code> handling in <code>FileWorkspace.tsx:129-156</code> - capture-phase, suppressed while typing and while an overlay is open. Markers are buttons with accessible names naming their line and state. The queue's position is announced through a live region as the walkthrough advances, so a screen-reader user is not left guessing which comment is outstanding. Thread composers are ordinary textareas with labels. Nothing uses <code>data-testid</code>; the Playwright specs select by role, label, and placeholder, as <code>e2e/README.md</code> requires.</p>

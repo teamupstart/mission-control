@@ -12,8 +12,8 @@ running session.
 ## Entry criteria and dependencies
 
 - **Direct prerequisite: Phase 1**, merged to the default branch. This phase consumes
-  `src/shared/file-comment-anchor.ts`, both tables, the routes, and the two `ServerEvent` variants,
-  and reimplements none of them.
+  `src/shared/file-comment-anchor.ts`, both tables, the thread routes, the message-append route,
+  and the two `ServerEvent` variants, and reimplements none of them.
 
 ## Scope
 
@@ -54,7 +54,10 @@ running session.
      currently reconfigured, and `editable` is a compartment that is never used as one.
 6. **The thread UI**: marker, composer, thread view (original comment, replies in time order, reply
    box), and a "show resolved" toggle. Markers are real buttons with accessible names naming their
-   line and state.
+   line and state. The reply box posts to phase 1's message-append route with author `human`; it
+   writes no message row of its own, and phase 4's agent reply arrives through the same function.
+   Replying here does not queue anything - phase 3 is what makes a reply re-enter the queue, and
+   until it merges a reply is a durable note on the thread.
 7. **Resolving.** A human resolves a thread; resolved threads collapse out of the gutter behind the
    toggle. Only a person closes a thread - phase 4 lets the agent mark one *addressed*, which shows
    as a suggestion and never as a closure.
@@ -142,5 +145,8 @@ Later phases may rely on, and must not change:
   CodeMirror keymap binding for creation.
 - Added the comment eligibility predicate as an explicit deliverable after finding that
   `previewable` includes images and is pinned by a source regex (finding 4).
-- No change required to Phase 1: the anchor shape and routes it published are sufficient for
-  everything here.
+- Review pass: **Phase 1 was changed on this phase's behalf.** It published thread create, edit,
+  delete and reorder but no way to write a `file_comment_messages` row, so the reply box in step 6
+  had nothing behind it. Rather than move the reply box to phase 3, the write path moved up into
+  phase 1, which already owns both tables and now declares one append function for both authors.
+  Recorded in phase 1's scope, exit criteria, and handoff.

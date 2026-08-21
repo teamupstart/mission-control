@@ -369,7 +369,7 @@ Re-anchoring is a pure function of `(anchor, newText)`:
 - **Revision unchanged** - the lines are exact, nothing to do.
 - **Quote found exactly once** - move the anchor to it. Silent.
 - **Quote found several times** - take the occurrence nearest the previous line. Silent.
-- **Quote not found** - `outdated`. Keep the quote and the last known line.
+- **Quote not found** - set `outdated`. Keep the quote, the last known line, and the status.
 
 No I/O, which makes it the cheapest part of the feature to test exhaustively and the part most
 worth testing that way.
@@ -453,31 +453,32 @@ indices declared beside the table, and relations by convention rather than a `RE
 
 ```
 file_comment_threads
-  id            TEXT PRIMARY KEY
-  session_id    TEXT NOT NULL   -- the session this thread belongs to (decision 2)
-  path          TEXT NOT NULL   -- repository-relative
-  start_line    INTEGER NOT NULL
-  end_line      INTEGER NOT NULL
-  quote         TEXT NOT NULL
-  quote_hash    TEXT NOT NULL   -- sha256(path + quote); excludes the line
-  revision      TEXT            -- file revision the anchor was last valid against
-  surface       TEXT NOT NULL   -- editor | markdown | html
-  status        TEXT NOT NULL   -- draft | queued | sending | awaiting | answered | outdated | resolved
-  queue_seq     INTEGER         -- position in the review; NULL once terminal
-  delivery_id   TEXT            -- the pending_turns row currently carrying it
-  sent_at       INTEGER
-  answered_at   INTEGER
-  resolved_at   INTEGER
-  created_at    INTEGER NOT NULL
-  updated_at    INTEGER NOT NULL
+  id           TEXT PRIMARY KEY
+  session_id   TEXT NOT NULL     -- the session this thread belongs to (decision 2)
+  path         TEXT NOT NULL     -- repository-relative
+  start_line   INTEGER NOT NULL
+  end_line     INTEGER NOT NULL
+  quote        TEXT NOT NULL
+  quote_hash   TEXT NOT NULL     -- sha256(path + quote); excludes the line
+  revision     TEXT              -- file revision the anchor was last valid against
+  surface      TEXT NOT NULL     -- editor | markdown | html
+  status       TEXT NOT NULL     -- draft | queued | sending | awaiting | answered | resolved | orphaned
+  outdated     INTEGER NOT NULL  -- 1 when the quote no longer resolves; not a status
+  queue_seq    INTEGER           -- position in the review; NULL once terminal
+  delivery_id  TEXT              -- the pending_turns row currently carrying it
+  sent_at      INTEGER
+  answered_at  INTEGER
+  resolved_at  INTEGER
+  created_at   INTEGER NOT NULL
+  updated_at   INTEGER NOT NULL
 
 file_comment_messages
   id            TEXT PRIMARY KEY
   thread_id     TEXT NOT NULL
-  author        TEXT NOT NULL   -- human | agent
-  session_id    TEXT            -- the session that wrote or received it
+  author        TEXT NOT NULL    -- human | agent
+  session_id    TEXT             -- the session that wrote or received it
   body          TEXT NOT NULL
-  delivered_at  INTEGER         -- when it reached the agent; NULL while queued
+  delivered_at  INTEGER          -- when it reached the agent; NULL while queued
   created_at    INTEGER NOT NULL
 ```
 
@@ -488,9 +489,18 @@ a session, that index is exactly the invariant the walkthrough needs and nothing
 `delivery_id` is the correlation `pending_turns` cannot carry: it lives here instead, so that
 table needs no new column.
 
-**Threads end with their session.** Both tables are cleared on `session_remove` and on no other
-signal - never on `state === "exited"`, which is the standing rule for durable cleanup in this
-repository and the reason there is no second eviction path here. A session that is merely idle,
+**`outdated` is a column, not a status.** A thread whose quote has stopped resolving is still
+queued, or still answered - losing that is losing its place in the review, and the flag is
+reversible where a status transition would not be. Two dimensions, so two columns. `orphaned`
+*is* a status, and a terminal one: it is what a thread becomes when the session that owns it
+goes away, and there is nothing left to be in the middle of.
+
+**Threads end with their session.** On `session_remove` that session's threads are settled to
+`orphaned` by UPDATE - not deleted, and never keyed on `state === "exited"`, which is the
+standing rule for durable cleanup in this repository and the reason there is no second eviction
+path here. Two mechanisms complete it, both copied from `ReviewManager` rather than invented: a
+reconciliation arm for sessions that went away while the daemon was down, and a throttled prune
+that finally deletes settled rows whose session key is gone. A session that is merely idle,
 disconnected, or restarting keeps every thread it owns.
 
 Drafts are persisted from the first keystroke rather than kept in browser state: the integrated
@@ -563,12 +573,16 @@ draft ──queue──▶ queued ──send──▶ sending ──delivered─
                     │                                        ▼
                     └──────────────────────────────────── answered ──human resolves──▶ resolved
 
-any unsent state ──the file moved under it──▶ outdated (reversible)
+any status ──its session is removed──▶ orphaned (terminal)
+
+outdated is a flag beside the status, not one of its values:
+any unsent thread ──the file moved under it──▶ outdated = 1 ──the quote returns──▶ outdated = 0
 ```
 
-`outdated` is orthogonal and reversible: if the quoted text comes back, the thread re-anchors and
-returns to what it was. A human reply on an `answered` thread puts it back in the queue with its
-history intact.
+`outdated` is orthogonal and reversible, which is why it is a column: a thread that goes
+outdated keeps the status it had, and if the quoted text comes back it re-anchors and clears the
+flag. A human reply on an `answered` thread puts it back in the queue with its history intact.
+`orphaned` is the one status reached without a human or an agent doing anything.
 
 ### 8. Keyboard and accessibility
 

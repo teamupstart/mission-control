@@ -133,6 +133,12 @@ renderer branch (`:446-487`). Whichever merges second rebases; neither changes t
 - **`file_comment_threads` / `file_comment_messages`** (Phase 1): the full column shape is declared
   in phase 1 including columns phases 3 and 4 will be the first to write, so no later phase needs an
   `addColumn`.
+- **`status` and `outdated` are two dimensions** (Phase 1): `outdated` is a column, not a status
+  value, because a thread whose quote stopped resolving keeps its place in the queue and the flag
+  clears if the text comes back. `orphaned` is a status, and terminal. No later phase adds a status
+  meaning outdated or a flag meaning orphaned.
+- **`appendFileCommentMessage`** (Phase 1): the only writer of a `file_comment_messages` row, for
+  either author. Phase 2's reply box passes `human`; phase 4's MCP tool passes `agent`.
 - **Session-scoped lifetime is three mechanisms** (Phase 1): orphan-on-`session_remove`, a
   reconcile arm on `onSessionsObserved`, and a throttled prune of terminal rows. No later phase adds
   a fourth teardown path.

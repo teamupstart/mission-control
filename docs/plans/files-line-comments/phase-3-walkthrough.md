@@ -52,7 +52,9 @@ measurement the plan's two 60% assumptions need.
    takes effect after the outstanding comment resolves and never recalls a delivered one.
 8. **A human reply in a thread re-enters the queue** at the end, and is delivered in its turn
    exactly like a new comment. An `answered` thread that gains a human reply goes back to `queued`
-   with its history intact - the `outdated` flag stays orthogonal and reversible throughout.
+   with its history intact - the `outdated` flag is a column beside the status, so it stays
+   orthogonal and reversible throughout. The reply itself is still written by phase 1's
+   `appendFileCommentMessage`; what this phase adds is the requeue that follows it.
 9. **Routes** for start, pause, resume, and reorder, each with a `parseBody` schema.
 10. **A live region** announcing which comment is outstanding and how many remain, so a screen-reader
    user is not left guessing.

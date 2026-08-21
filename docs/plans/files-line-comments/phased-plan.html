@@ -288,6 +288,8 @@
   <ul>
     <li><strong><code>src/shared/file-comment-anchor.ts</code></strong> (Phase 1): the only definition of an anchor and the only re-anchor implementation. Browser-safe, no <code>node:</code> imports. Phases 2, 3 and 5 consume it; none reimplements it.</li>
     <li><strong>Both tables' full column shape</strong> (Phase 1), declared up front including columns phases 3 and 4 are first to write, so no later phase needs an <code>addColumn</code>.</li>
+    <li><strong><code>status</code> and <code>outdated</code> are two dimensions</strong> (Phase 1): <code>outdated</code> is a column, not a status value, because a thread whose quote stopped resolving keeps its place in the queue and the flag clears if the text comes back. <code>orphaned</code> is a status, and terminal. No later phase adds a status meaning outdated or a flag meaning orphaned.</li>
+    <li><strong><code>appendFileCommentMessage</code></strong> (Phase 1): the only writer of a <code>file_comment_messages</code> row, for either author. Phase 2's reply box passes <code>human</code>; phase 4's MCP tool passes <code>agent</code>.</li>
     <li><strong>Session-scoped lifetime is three mechanisms</strong> (Phase 1): orphan on <code>session_remove</code>, a reconcile arm on <code>onSessionsObserved</code>, and a throttled prune of terminal rows. No later phase adds a fourth teardown path.</li>
     <li><strong>Two <code>ServerEvent</code> variants</strong> (Phase 1) are the only wire frames for this feature. Phases 3 and 4 emit them; neither adds a third.</li>
     <li><strong>Comment eligibility is its own predicate</strong> (Phase 2), never <code>previewable</code>.</li>

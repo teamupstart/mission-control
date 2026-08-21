@@ -131,9 +131,19 @@ export function liveActivity(s: Session): string | null {
  * than reading the field, which is what kept the buckets honest while the card still
  * offered buttons aimed at a dead pane.
  */
-export function activePaneDialog(s: Session): PaneDialog | null {
+export function activePaneDialog(s: DialogBearing): PaneDialog | null {
   return s.state === "exited" || s.state === "stopping" ? null : s.paneDialog;
 }
+
+/**
+ * The two fields the answer depends on, rather than a whole `Session`.
+ *
+ * A widening, so every existing caller passing a `Session` is unchanged. It exists so a
+ * predicate built ON this one - the outbox's held-row reason - can be stated and tested in
+ * terms of what it reads, instead of forcing a full session fixture to ask a two-field
+ * question.
+ */
+export type DialogBearing = Pick<Session, "state" | "paneDialog">;
 
 /**
  * What makes two reads of the pane the SAME question: the prompt and the rows offered.

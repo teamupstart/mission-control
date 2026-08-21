@@ -31,6 +31,7 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 const HELD_TURN = "hold the current turn open";
 const QUEUED_TURN = "this queued turn must not outlive the interrupt";
+const INTERRUPTED_MARKER = "[Request interrupted by user]";
 /** ⌃C, not ⌘C: the chord grammar spells the two modifiers apart and the default is `ctrl+c`. */
 const INTERRUPT = "Control+c";
 /**
@@ -93,6 +94,9 @@ test("Ctrl+C keeps an interrupted Codex session idle after late child activity",
   await composer.press(INTERRUPT);
   const badge = card.locator("span.badge").first();
   await expect(badge).toHaveText("idle", { timeout: WELL_BEFORE_THE_TURN_WOULD_END });
+  await expect(
+    card.locator(".turn-user:not(.pending-turn)").getByText(INTERRUPTED_MARKER, { exact: true }),
+  ).toBeVisible();
 
   await expect
     .poll(
@@ -107,7 +111,7 @@ test("Ctrl+C keeps an interrupted Codex session idle after late child activity",
 
   expect(await badge.textContent()).toBe("idle");
   await expect(composer).toBeFocused();
-  await shoot(dashboard, "codex-stable-idle-after-late-child");
+  await shoot(dashboard, "codex-interrupt-marker-and-stable-idle");
 });
 
 /**

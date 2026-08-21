@@ -7,10 +7,16 @@ import {
   ReorderFileCommentsSchema,
   SetFileCommentStatusSchema,
 } from "../src/shared/protocol.ts";
-import { FILE_COMMENT_QUOTE_MAX, FILE_COMMENT_SURFACES } from "../src/shared/file-comment-anchor.ts";
+import {
+  FILE_COMMENT_QUOTE_MAX,
+  FILE_COMMENT_SURFACES,
+  normalizeQuote,
+} from "../src/shared/file-comment-anchor.ts";
 import {
   FILE_COMMENT_AUTHORS,
   FILE_COMMENT_TEXT_LIMITS,
+  FILE_COMMENT_THREADS_PER_SESSION_MAX,
+  FILE_COMMENT_THREAD_MESSAGE_CAP,
   FILE_COMMENT_THREAD_STATUSES,
   HUMAN_SETTABLE_THREAD_STATUSES,
   OUTSTANDING_THREAD_STATUSES,
@@ -53,6 +59,9 @@ test("every string is bounded, and an empty one is not a comment", () => {
   refuse({ body: "x".repeat(FILE_COMMENT_TEXT_LIMITS.body + 1) });
   refuse({ quote: "" });
   refuse({ quote: "x".repeat(FILE_COMMENT_QUOTE_MAX + 1) });
+  // Whitespace-only passes a LENGTH check and normalizes to empty, which is a different
+  // failure: see the test below.
+  refuse({ quote: "   " });
   refuse({ path: "" });
   refuse({ path: "x".repeat(FILE_COMMENT_TEXT_LIMITS.path + 1) });
   refuse({ startLine: 0 });
@@ -185,4 +194,37 @@ test("the lifecycle tuples say exactly what the index and the allow-list are bui
     ].filter(Boolean).length;
     assert.ok(memberships <= 1, `${status} is in more than one lifecycle set`);
   }
+});
+
+test("a quote that normalizes to nothing is refused, not born unanchorable", () => {
+  // `reanchor()` searches with the NORMALIZED quote - CRLF folded, trailing whitespace
+  // stripped per line, blank edges dropped - and reports an empty one as `outdated` before it
+  // searches at all. A whitespace-only quote passes a length check, so without this the
+  // thread would be created already stale, marked outdated the first time phase 3 looked at
+  // it, with no edit that could repair it: an empty quote names no text in the file.
+  for (const quote of ["   ", "\n\n", "\r\n\r\n", "  \n \t \n  "]) {
+    assert.equal(
+      CreateFileCommentSchema.safeParse({ ...VALID, quote }).success,
+      false,
+      JSON.stringify(quote),
+    );
+  }
+  // The check is on the normalized form, not `.trim()`: surrounding blank lines are fine as
+  // long as there is text between them, because that is exactly what normalization keeps.
+  const padded = CreateFileCommentSchema.parse({ ...VALID, quote: "\n\n  const x = 1;  \n\n" });
+  assert.equal(normalizeQuote(padded.quote).length > 0, true);
+  // And the raw quote is passed through untouched - normalization is a validity question
+  // here, not a rewrite. The daemon computes the hash from the normalized form itself.
+  assert.equal(padded.quote, "\n\n  const x = 1;  \n\n");
+});
+
+test("the live collection states a per-session bound, not only a per-thread one", () => {
+  // `change-contracts.md` asks a collection to state its bound and pin it. "Bounded by live
+  // sessions" was half a bound: it capped how LONG a thread lives, not how MANY one session
+  // can accumulate while it is alive, and the prune only reaches settled threads whose
+  // session key is already gone.
+  assert.equal(FILE_COMMENT_THREADS_PER_SESSION_MAX, 200);
+  // A runaway guard rather than a product limit, so it sits far above any real review - and
+  // far enough above the message cap that the two bound different things.
+  assert.ok(FILE_COMMENT_THREADS_PER_SESSION_MAX > FILE_COMMENT_THREAD_MESSAGE_CAP);
 });

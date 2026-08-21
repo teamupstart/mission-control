@@ -60,6 +60,7 @@ import { HUMAN_REVIEW_STATUSES, isHumanResolvedReview } from "@shared/review-ite
 import { IN_FLIGHT_ITEM_STATES, TERMINAL_ITEM_STATES } from "@shared/queue.ts";
 import {
   FILE_COMMENT_THREAD_MESSAGE_CAP,
+  FILE_COMMENT_THREADS_PER_SESSION_MAX,
   OUTSTANDING_THREAD_STATUSES,
   REQUEUEABLE_THREAD_STATUSES,
   holdsQueuePosition,
@@ -10672,6 +10673,23 @@ export function createFileCommentThread(input: CreateFileCommentThreadInput): Fi
     const shortId = mintFileCommentShortId(width);
     d.exec("BEGIN IMMEDIATE");
     try {
+      // Inside the transaction, not before it: a pre-check outside would be a racy read, and
+      // two concurrent creates could both pass it. `BEGIN IMMEDIATE` is already held for the
+      // short-id mint, so this costs one more read on a lock we are taking anyway.
+      const held = d
+        .prepare(
+          `SELECT COUNT(*) AS n FROM file_comment_threads
+            WHERE session_id = ? AND status <> 'orphaned'`,
+        )
+        .get(input.sessionId) as unknown as { n: number };
+      if (Number(held.n) >= FILE_COMMENT_THREADS_PER_SESSION_MAX) {
+        // Thrown, not rolled back here: the catch below already rolls back and rethrows
+        // anything that is not a short-id collision, so one unwind path rather than two.
+        throw new FileCommentStoreError(
+          `this session already holds ${FILE_COMMENT_THREADS_PER_SESSION_MAX} comments; ` +
+            `resolve or delete some before adding another`,
+        );
+      }
       d.prepare(
         `INSERT INTO file_comment_threads
            (id, short_id, session_id, path, start_line, end_line, quote, quote_hash, revision,

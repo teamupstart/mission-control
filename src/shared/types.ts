@@ -2689,7 +2689,11 @@ export type ServerEvent =
        *
        * The arithmetic: a review is normally tens of comments on one file, a busy fleet
        * holds tens of sessions, and most sessions have none at all - so the realistic
-       * ceiling is a few hundred threads. Per-thread size is what a later phase can move,
+       * ceiling is a few hundred threads. That is the TYPICAL case; the hard one is
+       * `FILE_COMMENT_THREADS_PER_SESSION_MAX`, refused at the create route, because
+       * "bounded by live sessions" alone caps how LONG a thread lives and not how many one
+       * session can accumulate while it is alive - and the prune only reaches settled
+       * threads whose session key is already gone. Per-thread size is what a later phase can move,
        * and it is dominated by the anchored quote (`FILE_COMMENT_QUOTE_MAX`, 4kB) plus a
        * capped reply list (`FILE_COMMENT_THREAD_MESSAGE_CAP`); `test/file-comments-sse.ts`
        * measures one realistic thread and states the ceiling it implies. When a surface

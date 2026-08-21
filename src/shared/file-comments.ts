@@ -216,3 +216,27 @@ const HOLDS_QUEUE_POSITION = new Set<string>(QUEUE_POSITION_THREAD_STATUSES);
 export function holdsQueuePosition(status: FileCommentThreadStatus): boolean {
   return HOLDS_QUEUE_POSITION.has(status);
 }
+
+/**
+ * How many threads one session may hold in the LIVE collection at once.
+ *
+ * `change-contracts.md` asks a collection to state its bound and pin it, and "bounded by live
+ * sessions" was only half a bound: it capped how long a thread lives, not how many a session
+ * can accumulate while it is alive. The prune only reaches SETTLED threads whose session key
+ * is gone, so a long-lived session - or a client stuck in a retry loop against the create
+ * route - could grow SQLite, the registry map, and every reconnect snapshot without limit.
+ *
+ * The arithmetic, in the same terms as the per-thread wire budget: an ordinary thread is one
+ * paragraph and a reply or two, a few hundred bytes, so 200 of them is tens of kilobytes per
+ * session. The pathological thread measured by the SSE budget test is ~17kB, which is the
+ * ceiling nobody reaches in practice, and the message cap is what bounds that half.
+ *
+ * 200 comments on one working tree is already a review that should have been several. This is
+ * a runaway guard, not a product limit, and it is deliberately far above any real review so
+ * that hitting it means something is wrong rather than that somebody was thorough.
+ *
+ * Counted over everything a session still holds - `orphaned` is excluded because those rows
+ * have left the live collection and are the prune's to remove. Closing threads therefore
+ * makes room, which is the behaviour a person hitting this would expect.
+ */
+export const FILE_COMMENT_THREADS_PER_SESSION_MAX = 200;

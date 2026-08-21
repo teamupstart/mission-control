@@ -19,6 +19,7 @@ const {
   appendFileCommentMessage,
   loadFileCommentThread,
   openDb,
+  loadFileCommentThreadsForSession,
   orphanFileCommentThreadsForSession,
   setFileCommentThreadStatus,
 } = await import("../src/server/db.ts");
@@ -415,6 +416,52 @@ test("a comment out with the agent cannot be settled out from under its delivery
   setFileCommentThreadStatus(t.id, "unanswered", Date.now());
   assert.equal((await post(`/api/file-comments/${t.id}/status`, { status: "resolved" })).status, 200);
   assert.equal(loadFileCommentThread(t.id)?.status, "resolved");
+});
+
+test("a session's live comments are bounded, and closing one makes room", async () => {
+  // The live collection is bounded by live SESSIONS, which caps how long a thread lives but
+  // not how many one session accumulates while it is alive. The prune only reaches settled
+  // threads whose session key is already gone, so without this a long-lived session - or a
+  // client stuck retrying the create route - grows SQLite, the registry map, and every
+  // reconnect snapshot without limit.
+  reset();
+  const { FILE_COMMENT_THREADS_PER_SESSION_MAX } = await import("../src/shared/file-comments.ts");
+  const made: string[] = [];
+  for (let i = 0; i < FILE_COMMENT_THREADS_PER_SESSION_MAX; i += 1) made.push((await create()).id);
+  assert.equal(made.length, FILE_COMMENT_THREADS_PER_SESSION_MAX);
+
+  const refused = await post("/api/sessions/live/file-comments", COMMENT);
+  assert.equal(refused.status, 409);
+  assert.match(((await refused.json()) as { error: string }).error, /already holds 200 comments/);
+  // Refused BEFORE anything was written - not a partially created thread.
+  assert.equal(
+    loadFileCommentThreadsForSession("live").length,
+    FILE_COMMENT_THREADS_PER_SESSION_MAX,
+  );
+
+  // Closing a thread makes room, which is the behaviour a person hitting this expects. The
+  // count is over what the session still HOLDS, and a `resolved` thread is still one of them,
+  // so it takes a delete rather than a resolve.
+  assert.equal(
+    (await app.request(`/api/file-comments/${made[0]}`, { method: "DELETE", headers: HEADERS }))
+      .status,
+    200,
+  );
+  assert.equal((await post("/api/sessions/live/file-comments", COMMENT)).status, 200);
+
+  // The cap is per SESSION, never per fleet: another session is unaffected by this one.
+  sessions.add("second");
+  assert.equal((await post("/api/sessions/second/file-comments", COMMENT)).status, 200);
+});
+
+test("a whitespace-only quote is refused rather than stored unanchorable", async () => {
+  // It would pass a length check and normalize to empty, and `reanchor()` reports empty as
+  // `outdated` before it searches - so the thread would be created already stale with no edit
+  // that could repair it.
+  reset();
+  const res = await post("/api/sessions/live/file-comments", { ...COMMENT, quote: "  \n  " });
+  assert.equal(res.status, 400);
+  assert.equal(loadFileCommentThreadsForSession("live").length, 0, "nothing was written");
 });
 
 test("a thread can be fetched whole, and deleted", async () => {

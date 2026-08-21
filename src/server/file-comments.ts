@@ -177,22 +177,30 @@ export class FileCommentManager {
     }
     const quote = boundQuote(input.quote);
     const now = Date.now();
-    const thread = createFileCommentThread({
-      id: randomUUID(),
-      messageId: randomUUID(),
-      sessionId: input.sessionId,
-      path: input.path,
-      startLine: input.startLine,
-      endLine: Math.max(input.startLine, input.endLine),
-      quote,
-      quoteHash: fileCommentQuoteHash(input.path, quote),
-      revision: input.revision,
-      surface: input.surface,
-      body: input.body,
-      now,
-    });
-    this.registry.upsertFileCommentThread(thread);
-    return thread;
+    try {
+      // Wrapped like every other write on this manager. The store refuses a session that has
+      // reached its live-thread budget, and without this that refusal reached the route as a
+      // raw `FileCommentStoreError` and became an opaque 500 rather than the 409 with a reason
+      // a person can act on.
+      const thread = createFileCommentThread({
+        id: randomUUID(),
+        messageId: randomUUID(),
+        sessionId: input.sessionId,
+        path: input.path,
+        startLine: input.startLine,
+        endLine: Math.max(input.startLine, input.endLine),
+        quote,
+        quoteHash: fileCommentQuoteHash(input.path, quote),
+        revision: input.revision,
+        surface: input.surface,
+        body: input.body,
+        now,
+      });
+      this.registry.upsertFileCommentThread(thread);
+      return thread;
+    } catch (err) {
+      throw this.asRouteError(err);
+    }
   }
 
   /** The only way a message row is written, by either author. */

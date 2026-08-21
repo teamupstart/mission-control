@@ -20,7 +20,11 @@ import { CLAUDE_TRANSPORTS, CODEX_TRANSPORTS, LLM_RUNNER_IDS } from "./llm.ts";
 import { RASTER_IMAGE_MIME_TYPES } from "./images.ts";
 import { LLM_SPEND_ROLES } from "./llm-spend.ts";
 import { OPEN_TARGET_IDS } from "./open-targets.ts";
-import { FILE_COMMENT_QUOTE_MAX, FILE_COMMENT_SURFACES } from "./file-comment-anchor.ts";
+import {
+  FILE_COMMENT_QUOTE_MAX,
+  FILE_COMMENT_SURFACES,
+  normalizeQuote,
+} from "./file-comment-anchor.ts";
 import {
   FILE_COMMENT_TEXT_LIMITS,
   HUMAN_SETTABLE_THREAD_STATUSES,
@@ -5700,8 +5704,24 @@ export const CreateFileCommentSchema = z.object({
   /**
    * The anchored SOURCE text. Bounded here and clamped again on the way in, because this is
    * both a snapshot cost and a prompt cost - it is pasted verbatim into what the agent reads.
+   *
+   * Checked against `normalizeQuote`, not against `.trim()`, because normalization is what
+   * `reanchor()` actually searches with: it folds CRLF, strips trailing whitespace per line,
+   * and drops blank edges. A quote of only whitespace or blank lines passes a length check and
+   * normalizes to empty, and `reanchor()` reports empty as `outdated` before it searches -
+   * so the thread would be born unanchorable, marked stale the first time phase 3 looked at
+   * it, with no edit that could ever repair it.
+   *
+   * Refused at the door rather than repaired, because there is nothing to repair to: an empty
+   * quote names no text in the file.
    */
-  quote: z.string().min(1).max(FILE_COMMENT_QUOTE_MAX),
+  quote: z
+    .string()
+    .min(1)
+    .max(FILE_COMMENT_QUOTE_MAX)
+    .refine((quote) => normalizeQuote(quote).length > 0, {
+      message: "quote must contain text once normalized",
+    }),
   /** The document revision the anchor was taken against; null when it was unknown. */
   revision: z.string().max(256).nullable().optional().default(null),
   surface: z.enum(FILE_COMMENT_SURFACES),

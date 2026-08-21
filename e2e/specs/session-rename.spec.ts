@@ -1,5 +1,5 @@
 import { mkdirSync } from "node:fs";
-import type { Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
@@ -10,9 +10,9 @@ import { settled } from "../fixtures/settle.ts";
  *
  * The rename affordance was built when every session WAS a terminal pane: it moves the
  * multiplexer session's name (or an emulator tab's title) and lets the next discovery sweep
- * read it back onto the card, so it was gated on the presence of a pane handle. An SDK-runtime
+ * read it back onto the session detail, so it was gated on the presence of a pane handle. An SDK-runtime
  * session has `terminals: []` by construction, so once dispatch started producing those, the
- * title on the card a person actually looks at silently stopped being a click target - the
+ * title in the detail a person actually looks at silently stopped being a click target - the
  * heading rendered as plain text, with no button inside it and no pencil.
  *
  * So the assertion that matters is structural: the heading CONTAINS a control. That is what a
@@ -28,6 +28,10 @@ const LONG_TASK =
 const FULL_LONG_TITLE =
   "Compare the Features of This Application with the Features of the Competing Application in a Complete Report";
 const EVIDENCE = "e2e/.artifacts/session-rename-full-tooltip";
+
+function sessionHeading(detail: Locator): Locator {
+  return detail.locator(".detail-title-line > h2");
+}
 
 async function dispatch(page: Page, daemon: DaemonHandle, task = TASK): Promise<void> {
   await page.getByRole("button", { name: "Dispatch" }).click();
@@ -72,10 +76,10 @@ test("a shortened generated name keeps its full name in the tooltip", async ({
   await dispatch(dashboard, daemon, LONG_TASK);
 
   await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
-  const card = dashboard.locator(".console-detail");
-  await expect(card).toContainText("Agent SDK", { timeout: 30_000 });
+  const detail = dashboard.locator(".console-detail");
+  await expect(detail).toContainText("Agent SDK", { timeout: 30_000 });
 
-  const title = card.getByRole("heading").getByRole("button");
+  const title = sessionHeading(detail).getByRole("button");
   await expect(title).toContainText("…");
   await title.hover();
   await expect(dashboard.locator(".tooltip")).toHaveText(`Rename "${FULL_LONG_TITLE}"`);
@@ -98,19 +102,19 @@ test("clicking an SDK session's title renames it, durably", async ({ dashboard, 
   await dispatch(dashboard, daemon);
 
   await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
-  const card = dashboard.locator(".console-detail");
-  await expect(card).toContainText("Agent SDK", { timeout: 30_000 });
+  const detail = dashboard.locator(".console-detail");
+  await expect(detail).toContainText("Agent SDK", { timeout: 30_000 });
 
-  // The card's only heading is its title. Selecting the button THROUGH it is what pins the
-  // regression: on the broken build the heading is present and its text is right, and there is
-  // simply no control inside it to click.
-  const title = card.getByRole("heading").getByRole("button");
+  // The detail header's heading is its title. Selecting the button THROUGH it is what pins
+  // the regression: on the broken build the heading is present and its text is right, and
+  // there is simply no control inside it to click.
+  const title = sessionHeading(detail).getByRole("button");
   await expect(title).toBeVisible();
   await expect(title).toHaveText(new RegExp(DERIVED_TITLE));
   await settled(title);
   await title.click();
 
-  const box = card.getByLabel("Rename session");
+  const box = detail.getByLabel("Rename session");
   await expect(box).toBeVisible();
   // The editor opens on the current name, pre-selected, so a rename is an edit rather than a
   // retype. `toHaveValue`'s second parameter is options, not a message - so this says it here.
@@ -121,7 +125,7 @@ test("clicking an SDK session's title renames it, durably", async ({ dashboard, 
   // The editor closes only on a rename the server accepted - a refusal keeps it open with the
   // reason - so its disappearance is the acceptance, and the heading is the echo.
   await expect(box).toBeHidden();
-  await expect(card.getByRole("heading")).toContainText("renamed by hand");
+  await expect(sessionHeading(detail)).toContainText("renamed by hand");
 
   // The name a person typed outlives the browser. An SDK session's name is otherwise DERIVED
   // on every read of its durable row, so without a column to put this in the reload below
@@ -129,8 +133,8 @@ test("clicking an SDK session's title renames it, durably", async ({ dashboard, 
   await dashboard.reload();
   await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
   const reloaded = dashboard.locator(".console-detail");
-  await expect(reloaded.getByRole("heading")).toContainText("renamed by hand");
-  await expect(reloaded.getByRole("heading")).not.toContainText(DERIVED_TITLE);
+  await expect(sessionHeading(reloaded)).toContainText("renamed by hand");
+  await expect(sessionHeading(reloaded)).not.toContainText(DERIVED_TITLE);
 });
 
 test("an SDK session's title takes a name no terminal home could hold", async ({ dashboard, daemon }) => {
@@ -141,35 +145,35 @@ test("an SDK session's title takes a name no terminal home could hold", async ({
   await dispatch(dashboard, daemon);
 
   await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
-  const card = dashboard.locator(".console-detail");
-  const title = card.getByRole("heading").getByRole("button");
+  const detail = dashboard.locator(".console-detail");
+  const title = sessionHeading(detail).getByRole("button");
   await expect(title).toBeVisible();
   await settled(title);
   await title.click();
 
-  const box = card.getByLabel("Rename session");
+  const box = detail.getByLabel("Rename session");
   await box.fill("fix: the a.b parser $0");
   await box.press("Enter");
 
   await expect(box).toBeHidden();
-  await expect(card.getByRole("heading")).toContainText("fix: the a.b parser $0");
+  await expect(sessionHeading(detail)).toContainText("fix: the a.b parser $0");
 });
 
 test("Escape leaves an SDK session's title alone", async ({ dashboard, daemon }) => {
   await dispatch(dashboard, daemon);
 
   await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
-  const card = dashboard.locator(".console-detail");
-  const title = card.getByRole("heading").getByRole("button");
+  const detail = dashboard.locator(".console-detail");
+  const title = sessionHeading(detail).getByRole("button");
   await expect(title).toBeVisible();
   await settled(title);
   await title.click();
 
-  const box = card.getByLabel("Rename session");
+  const box = detail.getByLabel("Rename session");
   await box.fill("discarded");
   await box.press("Escape");
 
   await expect(box).toBeHidden();
-  await expect(card).not.toContainText("discarded");
-  await expect(card.getByRole("heading")).toContainText(DERIVED_TITLE);
+  await expect(detail).not.toContainText("discarded");
+  await expect(sessionHeading(detail)).toContainText(DERIVED_TITLE);
 });

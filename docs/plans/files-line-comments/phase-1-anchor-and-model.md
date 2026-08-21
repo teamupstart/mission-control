@@ -189,6 +189,10 @@ Later phases may rely on, and must not change:
   4 call all three; neither reimplements one.
 - `appendFileCommentMessage` and its route: the only way a message row is written, by either
   author. Phase 2 calls it with `human`, phase 4 with `agent`.
+- `delivered_at` as the per-message delivery record, and `markFileCommentMessageDelivered` as its
+  only writer. Phase 3 selects what to send with it (the thread's oldest human message where it is
+  NULL) and stamps it on send; that is why the queue can reorder threads while still sending the
+  right message from each.
 - `updateFileCommentMessageBody` and its refusal on a delivered row: the only way a comment body is
   edited. Phase 2's drafts and phase 3's edit-unsent are both this function, and no later phase
   relaxes the refusal or moves the body onto the thread.

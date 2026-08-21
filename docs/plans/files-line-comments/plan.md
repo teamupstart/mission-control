@@ -300,7 +300,7 @@ the dashboard from its own state.
     later human reply, in time order, with a reply box.
 
 12. **A human reply in a thread re-enters the queue** at the end, and is delivered in its turn
-    exactly like a new comment.
+    exactly like a new comment - the reply itself, not the comment that started the thread.
 
 13. **The agent's reply appears in the thread it answers**, live, without a refresh, and raises
     the Files tab's attention pip.
@@ -415,6 +415,19 @@ This is the part one-at-a-time adds, and the part most likely to be got wrong.
 **The queue is the threads table**, ordered by `queue_seq`. Because Mission Control owns it, it
 supports what `pending_turns` refuses: reorder any position, edit any unsent comment, drop one
 in the middle, pause and resume.
+
+**A thread is the queue position; a message is what gets sent.** When a thread reaches the head,
+the payload carries its **oldest human message whose `delivered_at` is NULL** - not "the
+comment", which stops being well defined the moment a thread has more than one. On a thread's
+first turn that is the opening comment. On a thread you replied to after the agent answered, it
+is the reply, which is the whole point of replying. Sending is what stamps `delivered_at`, so
+the same message is never sent twice, and the rule needs no column the model does not already
+have.
+
+If more undelivered human messages remain when that turn resolves, the thread re-enters the
+queue for the next one, one at a time like everything else. Two replies written in one sitting
+are two turns, not a merged one - decision 4 does not stop being true because the messages share
+a thread.
 
 **Exactly one comment is outstanding.** The walkthrough submits a single `/inject` human turn
 and does not submit another until that one resolves. Queue depth in `pending_turns` is

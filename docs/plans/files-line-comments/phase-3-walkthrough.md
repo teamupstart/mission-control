@@ -20,8 +20,11 @@ measurement the plan's two 60% assumptions need.
 ## Scope
 
 1. **The single-comment payload renderer**, pure, in the `src/server/workflows/feedback.ts` family:
-   bounded fields, stable shape, a `payloadSha256`. Content as `plan.md` specifies - path, line
-   range, quoted anchor, the comment, the thread's `short_id`, **the position line ("Comment 3 of
+   bounded fields, stable shape, a `payloadSha256`. It renders **one message**, selected as
+   `plan.md` specifies: the thread's oldest human message whose `delivered_at` is NULL. Do not
+   render "the thread's comment" - that is only well defined on a thread's first turn, and picking
+   it is what makes a follow-up resend the original. Content as `plan.md` specifies - path, line
+   range, quoted anchor, that message's body, the thread's `short_id`, **the position line ("Comment 3 of
    12")**, and the closing instruction to answer only this one. **One deliberate difference until
    phase 4 lands:** that closing instruction asks for an answer in the next turn and names no
    tool, because `respond_to_file_comments` does not exist yet. Phase 4 substitutes the tool name
@@ -60,8 +63,13 @@ measurement the plan's two 60% assumptions need.
    offered on queued comments and not on the outstanding one. Pause
    takes effect after the outstanding comment resolves and never recalls a delivered one.
 8. **A human reply in a thread re-enters the queue** at the end, and is delivered in its turn
-   exactly like a new comment. An `answered` thread that gains a human reply goes back to `queued`
-   with its history intact - the `outdated` flag is a column beside the status, so it stays
+   exactly like a new comment. **What gets sent is the reply, not the comment that opened the
+   thread** - the payload always carries the thread's oldest human message with `delivered_at`
+   NULL, so a requeued thread sends the message you just wrote rather than resending its first
+   one. Sending stamps `delivered_at`, which is what stops a message going twice; if further
+   undelivered human messages remain when the turn resolves, the thread requeues again for the
+   next one. An `answered` thread that gains a human reply goes back to `queued` with its history
+   intact - the `outdated` flag is a column beside the status, so it stays
    orthogonal and reversible throughout. The reply itself is still written by phase 1's
    `appendFileCommentMessage`; what this phase adds is the requeue that follows it.
 9. **Routes** for start, pause and resume, each with a `parseBody` schema. Reorder is phase 1's
@@ -100,7 +108,8 @@ measurement the plan's two 60% assumptions need.
 - `test/file-comment-payload.test.ts` - bounding, the position line, the id, and a stable
   `payloadSha256`.
 - `test/file-comment-walkthrough.test.ts` - the advance state machine: idle fallback, hold-on-
-  outdated, pause, resume, restart-resumes-without-resending, and refusal when `canMessage` is
+  outdated, pause, resume, restart-resumes-without-resending, **reply-after-answer delivers the
+  reply rather than the opening comment**, and refusal when `canMessage` is
   false. Inject `now` and the submit function; this file should need no database and no pane.
 - Extend `test/file-comments-http.test.ts` for the new routes.
 - `e2e/specs/file-comment-walkthrough.spec.ts` - Start review sends exactly one comment; reorder and
@@ -134,6 +143,8 @@ signal as a poor one: phase 5 should not start until this is written down.
 - Start review delivers exactly one comment, and the next only after the first resolves.
 - `pending_turns` never holds more than one row for the session at a time.
 - Reorder, edit-unsent, drop and pause all work mid-walkthrough.
+- A thread that is answered, then replied to, delivers **the reply** on its next turn. Cover this
+  explicitly: resending the opening comment is the failure it is easiest to ship.
 - An outdated head comment is held, not sent, and the pause names the reason.
 - A daemon restart mid-walkthrough resumes without re-sending the outstanding comment.
 - The measurement above is recorded in the PR.
@@ -146,6 +157,8 @@ Phase 4 may rely on, and must not change:
 - The thread's `delivery_id` correlation and the `sending` / `awaiting` statuses.
 - The idle fallback, which stays as the floor beneath phase 4's stronger signal.
 - The payload renderer's shape, into which phase 4 adds only the reply instruction's tool name.
+- The delivery selection rule: the thread's oldest human message with `delivered_at` NULL. Phase 4
+  changes what advances the queue, never what a turn carries.
 - The recorded anchor-survival number. Phase 5 reads it before it starts and does not re-take it.
 
 ## Cross-phase audit record

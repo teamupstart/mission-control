@@ -156,6 +156,10 @@ let phase 5 merge before the number that is meant to validate its premise even e
 - **One route per mutation, declared once** (Phase 1): create, list, delete, reorder, append a
   message, edit an undelivered message, set status. Phase 2 resolves through the status route,
   phase 4 stamps `addressed_at` through it, and phase 3 adds only `start`/`pause`/`resume`.
+- **A turn carries one message, chosen by `delivered_at`** (Phase 1's column, Phase 3's rule): the
+  thread's oldest human message where it is NULL. The thread is the queue position; the message is
+  the payload. A requeued thread therefore sends the reply that requeued it, not the comment that
+  opened it, and sending stamps the column so nothing goes twice.
 - **A message is editable until `delivered_at` is set, and frozen after** (Phase 1). The comment
   body lives in `file_comment_messages`, so phase 2's drafts and phase 3's edit-unsent are the same
   operation; no phase relaxes the refusal or moves the body onto the thread.

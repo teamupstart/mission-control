@@ -18,6 +18,24 @@ install` is run by everyone and this suite is not - fetching ~150MB of Chromium 
 contributor who only ever runs `npm test` is a tax on the common path. CI installs it as its
 own step for the same reason, and skips it on the Node version that does not run this suite.
 
+## Host concurrency
+
+Playwright uses at most four workers, and Mission Control permits one E2E invocation per user on
+a host at a time. This is a shared limit across linked worktrees: a second full or focused run
+waits before Playwright starts any browser workers, prints the PID and checkout holding the lease,
+and begins when that run exits. A dead owner's lease is reclaimed automatically.
+
+The resolved worker count is a hard ceiling. A command that asks for more than four workers is
+refused; use the ordinary default or lower it for a lighter run:
+
+```sh
+npm run test:e2e -- --workers=2
+npm run test:e2e -- --workers=1
+```
+
+The two CI shards remain concurrent because each job runs on its own machine. The lease coordinates
+processes sharing one host; it does not serialize separate runners.
+
 Useful flags:
 
 ```sh

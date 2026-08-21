@@ -10,6 +10,9 @@ import { defineConfig, devices } from "@playwright/test";
  */
 export default defineConfig({
   testDir: "./specs",
+  // One user-scoped host lease is acquired before Playwright starts workers. Linked
+  // worktrees therefore queue full or focused runs instead of multiplying this cap.
+  globalSetup: "./global-setup.ts",
   // Each spec boots its own daemon on a per-worker port, so files are safe to parallelise;
   // the cost is one daemon process per worker, which is why this is not unbounded.
   fullyParallel: true,

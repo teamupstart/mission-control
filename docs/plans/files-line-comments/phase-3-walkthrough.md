@@ -109,10 +109,15 @@ only, 9 more follow" will not over-scope. Neither can break the feature - a held
 readable and still carries its exact quote - but together they decide whether a twelve-comment
 review is one unattended walkthrough or six interruptions.
 
-**Before phase 5 is scheduled**, run a real review of at least six comments against a live session
-and record how many reached the head still anchored. Put the number in the pull request. If most of
-the queue is going outdated, that is a design signal about the payload's scoping instruction, not a
-bug to patch in the re-anchor pass.
+Run a real review of at least six comments against a live session and record how many reached the
+head still anchored. **Put the number in this phase's pull request.** If most of the queue is going
+outdated, that is a design signal about the payload's scoping instruction - which this phase owns -
+and not a bug to patch in the re-anchor pass.
+
+**Phase 5 is sequenced behind this phase to make that a real checkpoint.** It needs no code from
+here; it waits on this number, because preview anchors quote whole blocks and are therefore more
+exposed to the same failure than the editor anchors measured here. A missing number is the same
+signal as a poor one: phase 5 should not start until this is written down.
 
 ## Merge and exit criteria
 
@@ -131,6 +136,7 @@ Phase 4 may rely on, and must not change:
 - The thread's `delivery_id` correlation and the `sending` / `awaiting` statuses.
 - The idle fallback, which stays as the floor beneath phase 4's stronger signal.
 - The payload renderer's shape, into which phase 4 adds only the reply instruction's tool name.
+- The recorded anchor-survival number. Phase 5 reads it before it starts and does not re-take it.
 
 ## Cross-phase audit record
 

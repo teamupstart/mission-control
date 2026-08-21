@@ -103,7 +103,9 @@ The queue stops advancing on an inference about idleness and starts advancing on
 
 ## Downstream handoff
 
-Phase 5 may rely on, and must not change: the reply route and tool, the pip, and the fact that a
+Phase 5 is this phase's **concurrent sibling**, not its dependent - both depend on phase 3, and
+either may merge first - so phase 5 must build on none of this. Should it merge second, it may rely
+on, and must not change: the reply route and tool, the pip, and the fact that a
 thread renders from durable state rather than from the transcript.
 
 ## Cross-phase audit record

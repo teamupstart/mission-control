@@ -8,11 +8,21 @@ exact source lines. The feature now covers every surface decision 1 approved.
 
 ## Entry criteria and dependencies
 
-- **Direct prerequisite: Phase 2**, merged. This phase reuses the thread and composer components and
-  the comment eligibility predicate rather than reimplementing them.
-- May merge in either order with **Phase 3** and **Phase 4**. It consumes no contract they own, and
-  they consume none of its. Expect a textual conflict in `FileWorkspace.tsx`: this phase edits the
-  renderer branch (`:446-487`), phase 3 edits the toolbar region (`:422-444`).
+- **Direct prerequisite: Phase 3**, merged. The *code* this phase needs comes from phase 2 - the
+  thread and composer components and the comment eligibility predicate, none of which it
+  reimplements. It waits on phase 3 for a different reason: **the anchor-survival measurement**.
+- **Read that measurement before writing any code here.** Phase 3's pull request records how many
+  comments in a real six-comment review reached the head still anchored. This phase multiplies the
+  thing that measurement tests: a preview anchor quotes a whole paragraph, table or code block, so
+  it is disturbed by strictly more edits than a two-line editor anchor is. If the number was poor,
+  stop and raise it rather than adding two more surfaces on top of it - the fix is phase 3's payload
+  scoping instruction, and it is cheaper before this phase than after. If phase 3's PR did not
+  record a number at all, that is the same signal.
+- May merge in either order with **Phase 4**, which is its concurrent sibling. Neither consumes a
+  contract the other owns and they do not collide textually - phase 4 edits `detailTabs.ts` and the
+  MCP server, this phase edits `Markdown.tsx`, `htmlPreview.ts`, and `FileWorkspace.tsx`'s renderer
+  branch (`:446-487`). **Do not build on phase 4's reply tool or its pip**: this phase may land
+  first.
 
 ## Scope
 
@@ -105,9 +115,15 @@ cross-file threads - is out of this plan's scope and starts a new one.
 ## Cross-phase audit record
 
 - Initial authoring, after Phase 4.
-- Confirmed this phase consumes only Phase 2's contracts (anchor module, eligibility predicate,
-  thread components) and therefore does not depend on Phase 3 or 4. Concurrency recorded in
-  `phased-plan.md`.
+- Confirmed this phase consumes only Phase 2's contracts in code (anchor module, eligibility
+  predicate, thread components) and none from Phase 3 or 4.
+- Review pass: **the prerequisite was moved from Phase 2 to Phase 3 anyway.** Phase 3 states that
+  the anchor-survival measurement is owed "before phase 5", but with phase 5 depending only on
+  phase 2 the two could run concurrently and this phase could merge before the measurement existed.
+  A gate that the graph permits you to walk past is not a gate. Sequencing it behind phase 3 costs
+  the old 3-and-5 concurrency and buys a real checkpoint; phases 4 and 5 are the concurrency group
+  now, and they conflict in neither contracts nor files. The scheduled task's dependency was
+  repointed to match.
 - Recorded the `markdownPropsEqual` obligation as a first-class scope item rather than an
   implementation detail: it is a silent failure, not a loud one.
 - Recorded the no-literal-`<` constraint on the third bridge, which is not obvious from reading

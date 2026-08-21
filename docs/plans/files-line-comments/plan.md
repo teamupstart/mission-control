@@ -482,10 +482,17 @@ file_comment_messages
   created_at    INTEGER NOT NULL
 ```
 
-A partial unique index on `(session_id)` where `status = 'sending'` enforces
-one-comment-in-flight at the database rather than by convention, mirroring
-`idx_pending_turns_sending` and `one_inflight_per_queue`. Because decision 2 scopes a thread to
-a session, that index is exactly the invariant the walkthrough needs and nothing broader.
+A partial unique index on `(session_id)` where `status IN ('sending', 'awaiting')` enforces
+one-comment-outstanding at the database rather than by convention, mirroring
+`idx_pending_turns_sending` and `one_inflight_per_queue`. **The predicate covers every
+outstanding status, not just `sending`.** A comment is outstanding from the moment it is handed
+to the outbox until the agent answers it, and `awaiting` is by far the longer half of that -
+an index naming only `sending` would let a second start or a resume open a new delivery while
+the first comment is still unanswered, which is the one thing one-at-a-time exists to prevent.
+Build it from the TypeScript tuple the way `inFlightIndexSql` builds
+`one_inflight_per_queue` from `IN_FLIGHT_ITEM_STATES`, so the enforcement and its readers cannot
+drift. Because decision 2 scopes a thread to a session, that index is exactly the invariant the
+walkthrough needs and nothing broader.
 `delivery_id` is the correlation `pending_turns` cannot carry: it lives here instead, so that
 table needs no new column.
 

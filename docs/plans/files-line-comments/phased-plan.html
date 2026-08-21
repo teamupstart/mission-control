@@ -167,7 +167,7 @@
   </header>
 
   <div class="lede">
-    <p>Five phases. Four merge serially; one runs concurrently with two of them. Every phase is a reviewable pull request that leaves the repository operable.</p>
+    <p>Five phases. Four merge serially; the last runs concurrently with phase 4. Every phase is a reviewable pull request that leaves the repository operable.</p>
   </div>
 
   <h2>Incorporated decisions</h2>
@@ -223,7 +223,7 @@
         <tr><td>1 &rarr; 2</td><td>Phase 1 is durable state whose shape is expensive to change after it ships. Landing it against a route suite, before three renderers depend on its anchor type, is what keeps that type cheap to correct.</td></tr>
         <tr><td>2 &rarr; 3</td><td>Phase 2 ends with comments that persist and render but never send. That is the last point at which the feature touches no live agent.</td></tr>
         <tr><td>3 &rarr; 4</td><td>Phase 3 is a server state machine; phase 4 is an agent-facing tool with a build obligation whose failure mode is silent. They fail differently and are verified differently.</td></tr>
-        <tr><td>2 &rarr; 5</td><td>Phase 5 is the only work touching the shared HTML preview sandbox, a controlled security module also used by Scouts. Worth reviewing alone, and it blocks nothing.</td></tr>
+        <tr><td>3 &rarr; 5</td><td>Phase 5 is the only work touching the shared HTML preview sandbox, a controlled security module also used by Scouts. Worth reviewing alone, and it blocks nothing. It could stand on phase 2 alone; it waits on phase 3 for the anchor-survival measurement rather than for code.</td></tr>
       </tbody>
     </table>
   </div>
@@ -238,14 +238,14 @@
         <tr><td>2</td><td>Comment mode in the Editor</td><td><a href="./phase-2-editor-comment-mode.md"><code>phase-2-editor-comment-mode.md</code></a></td><td>Phase 1</td></tr>
         <tr><td>3</td><td>The walkthrough</td><td><a href="./phase-3-walkthrough.md"><code>phase-3-walkthrough.md</code></a></td><td>Phase 2</td></tr>
         <tr><td>4</td><td>The agent's reply</td><td><a href="./phase-4-agent-reply.md"><code>phase-4-agent-reply.md</code></a></td><td>Phase 3</td></tr>
-        <tr><td>5</td><td>Preview surfaces</td><td><a href="./phase-5-preview-surfaces.md"><code>phase-5-preview-surfaces.md</code></a></td><td>Phase 2</td></tr>
+        <tr><td>5</td><td>Preview surfaces</td><td><a href="./phase-5-preview-surfaces.md"><code>phase-5-preview-surfaces.md</code></a></td><td>Phase 3</td></tr>
       </tbody>
     </table>
   </div>
 
   <h2>Dependency graph and concurrency</h2>
   <figure class="diagram">
-    <svg viewBox="0 40 980 210" role="img" aria-label="Diagram: phase 1 leads to phase 2; phase 2 leads to both phase 3 and phase 5; phase 3 leads to phase 4. Phases 3 and 5 form one concurrency group and may merge in either order.">
+    <svg viewBox="0 40 980 210" role="img" aria-label="Diagram: phase 1 leads to phase 2, phase 2 leads to phase 3, and phase 3 leads to both phase 4 and phase 5. Phases 4 and 5 form one concurrency group and may merge in either order.">
       <defs>
         <marker id="p1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
           <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"></path>
@@ -260,28 +260,28 @@
         <text class="svg-label" x="313" y="121" text-anchor="middle">Phase 2</text>
         <text class="svg-sub" x="313" y="140" text-anchor="middle">editor comments</text>
 
-        <rect class="svg-box-accent" x="480" y="60" width="150" height="62" rx="11"></rect>
-        <text class="svg-label" x="555" y="85" text-anchor="middle">Phase 3</text>
-        <text class="svg-sub" x="555" y="104" text-anchor="middle">walkthrough</text>
+        <rect class="svg-box" x="462" y="96" width="150" height="62" rx="11"></rect>
+        <text class="svg-label" x="537" y="121" text-anchor="middle">Phase 3</text>
+        <text class="svg-sub" x="537" y="140" text-anchor="middle">walkthrough</text>
 
-        <rect class="svg-box" x="716" y="60" width="150" height="62" rx="11"></rect>
+        <rect class="svg-box-accent" x="716" y="60" width="150" height="62" rx="11"></rect>
         <text class="svg-label" x="791" y="85" text-anchor="middle">Phase 4</text>
         <text class="svg-sub" x="791" y="104" text-anchor="middle">agent reply</text>
 
-        <rect class="svg-box-accent" x="480" y="170" width="150" height="62" rx="11"></rect>
-        <text class="svg-label" x="555" y="195" text-anchor="middle">Phase 5</text>
-        <text class="svg-sub" x="555" y="214" text-anchor="middle">preview surfaces</text>
+        <rect class="svg-box-accent" x="716" y="170" width="150" height="62" rx="11"></rect>
+        <text class="svg-label" x="791" y="195" text-anchor="middle">Phase 5</text>
+        <text class="svg-sub" x="791" y="214" text-anchor="middle">preview surfaces</text>
 
         <path class="svg-edge" d="M 164 127 H 238" marker-end="url(#p1)"></path>
-        <path class="svg-edge" d="M 388 127 H 434 V 91 H 480" marker-end="url(#p1)"></path>
-        <path class="svg-edge" d="M 388 127 H 434 V 201 H 480" marker-end="url(#p1)"></path>
-        <path class="svg-edge" d="M 630 91 H 716" marker-end="url(#p1)"></path>
+        <path class="svg-edge" d="M 388 127 H 462" marker-end="url(#p1)"></path>
+        <path class="svg-edge" d="M 612 127 H 668 V 91 H 716" marker-end="url(#p1)"></path>
+        <path class="svg-edge" d="M 612 127 H 668 V 201 H 716" marker-end="url(#p1)"></path>
 
-        <text class="svg-edge-label" x="791" y="188" text-anchor="middle">phases 3 and 5 are one</text>
-        <text class="svg-edge-label" x="791" y="202" text-anchor="middle">concurrency group</text>
+        <text class="svg-edge-label" x="791" y="141" text-anchor="middle">phases 4 and 5 are one</text>
+        <text class="svg-edge-label" x="791" y="155" text-anchor="middle">concurrency group</text>
       </g>
     </svg>
-    <figcaption>Phases 3 and 5 consume no contract the other owns. They do both edit <code>FileWorkspace.tsx</code> - phase 3 the toolbar region, phase 5 the renderer branch - so expect a textual conflict there and no semantic one.</figcaption>
+    <figcaption>Phases 4 and 5 consume no contract the other owns and do not collide textually either - phase 4 edits <code>detailTabs.ts</code> and the MCP server, phase 5 the renderer branch of <code>FileWorkspace.tsx</code>. Phase 5 depends on phase 3 for the anchor-survival measurement rather than for code: preview anchors quote whole blocks, so they are more exposed to the failure that measurement looks for, and sequencing them is what makes the checkpoint real.</figcaption>
   </figure>
 
   <h2>Cross-phase contracts</h2>
@@ -293,7 +293,7 @@
     <li><strong>Session-scoped lifetime is three mechanisms</strong> (Phase 1): orphan on <code>session_remove</code>, a reconcile arm on <code>onSessionsObserved</code>, and a throttled prune of terminal rows. No later phase adds a fourth teardown path.</li>
     <li><strong>Two <code>ServerEvent</code> variants</strong> (Phase 1) are the only wire frames for this feature. Phases 3 and 4 emit them; neither adds a third.</li>
     <li><strong>Comment eligibility is its own predicate</strong> (Phase 2), never <code>previewable</code>.</li>
-    <li><strong>One turn outstanding</strong> (Phase 3). Phase 4 changes what <em>advances</em> the queue, never how many are in flight.</li>
+    <li><strong>One turn outstanding</strong> (Phase 3), on top of Phase 1's partial unique index over <em>every</em> outstanding status - <code>sending</code> and <code>awaiting</code> both, since a comment is outstanding until it is answered. Phase 4 changes what <em>advances</em> the queue, never how many are in flight.</li>
     <li><strong><code>respond_to_file_comments</code></strong> (Phase 4): the only agent-facing write, its name a string literal at the <code>registerTool</code> call site.</li>
   </ul>
 

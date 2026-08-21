@@ -1,7 +1,7 @@
 # Line comments in the Files workspace - phased implementation
 
 Implementation index for [`plan.md`](./plan.md), approved 2026-08-21 with all five decisions
-resolved. Five phases; four merge serially and one runs concurrently.
+resolved. Five phases; four merge serially and the last runs concurrently with phase 4.
 
 ## Incorporated decisions
 
@@ -93,9 +93,10 @@ boundary that materially reduces risk, not by layer:
 - **3 → 4.** Phase 3 is a server state machine; phase 4 is an agent-facing tool with a build
   obligation whose failure mode is silent (findings 7 and 8). They fail differently and are
   verified differently.
-- **2 → 5.** Phase 5 is the only work that touches the shared HTML preview sandbox, a controlled
-  security module also used by Scouts. It is worth reviewing on its own, and it does not block
-  delivery.
+- **3 → 5.** Phase 5 is the only work that touches the shared HTML preview sandbox, a controlled
+  security module also used by Scouts, so it is worth reviewing on its own and it blocks nothing.
+  It could stand on phase 2's contracts alone; it waits on phase 3 for the anchor-survival
+  measurement rather than for code, which is argued under the dependency graph below.
 
 Phase 1 is the largest at roughly 1,100-1,400 lines and is deliberately not split further: cutting
 it at the store/route seam would produce two PRs that are each unreviewable without the other.
@@ -108,22 +109,28 @@ it at the store/route seam would produce two PRs that are each unreviewable with
 | 2 | Comment mode in the Editor | [`phase-2-editor-comment-mode.md`](./phase-2-editor-comment-mode.md) | Phase 1 |
 | 3 | The walkthrough | [`phase-3-walkthrough.md`](./phase-3-walkthrough.md) | Phase 2 |
 | 4 | The agent's reply | [`phase-4-agent-reply.md`](./phase-4-agent-reply.md) | Phase 3 |
-| 5 | Preview surfaces | [`phase-5-preview-surfaces.md`](./phase-5-preview-surfaces.md) | Phase 2 |
+| 5 | Preview surfaces | [`phase-5-preview-surfaces.md`](./phase-5-preview-surfaces.md) | Phase 3 |
 
 ## Dependency graph and concurrency
 
 ```
-Phase 1 ──> Phase 2 ──┬──> Phase 3 ──> Phase 4
-                      └──> Phase 5
+Phase 1 ──> Phase 2 ──> Phase 3 ──┬──> Phase 4
+                                  └──> Phase 5
 ```
 
-**One concurrency group: phases 3 and 5.** Neither consumes a contract the other owns. Phase 3 adds
-server-side delivery plus toolbar queue controls; phase 5 adds two renderer integrations. They can
-merge in either order.
+**One concurrency group: phases 4 and 5.** Neither consumes a contract the other owns, and they do
+not even collide textually: phase 4 edits `detailTabs.ts` and the MCP server, phase 5 edits
+`Markdown.tsx`, `htmlPreview.ts` and `FileWorkspace.tsx`'s renderer branch. They can merge in either
+order, and phase 5 must not build on the reply tool or the pip, because it may land first.
 
-They do, however, both edit `FileWorkspace.tsx`, so expect a **textual** conflict there even though
-there is no contract conflict. Phase 3 edits the toolbar region (`:422-444`); phase 5 edits the
-renderer branch (`:446-487`). Whichever merges second rebases; neither changes the other's meaning.
+**Phase 5 depends on phase 3, not on phase 2.** Phase 5 needs nothing from phase 3's code - it
+reuses phase 2's components - but phase 3 is where the anchor-survival measurement is taken, and
+that measurement is what says whether anchoring more of the document is worth doing. Preview
+anchors quote whole blocks rather than a line or two, so they are strictly *more* exposed to the
+failure the measurement looks for. Sequencing phase 5 behind phase 3 is what makes that a real
+checkpoint rather than a sentence: the measurement lands in phase 3's pull request, and a human
+reads it before phase 5's task is released. The alternative - the two running concurrently - would
+let phase 5 merge before the number that is meant to validate its premise even exists.
 
 ## Cross-phase contracts
 
@@ -160,4 +167,6 @@ the only check that proves the built MCP bundle actually publishes the new tool 
 Then one manual pass a test cannot make: open a real spec in the Files tab, write six comments
 across three surfaces, run the walkthrough against a live session, and record how many of the six
 reached the head still anchored. That number is the measurement the two 60% assumptions in
-`plan.md` need, and phase 3 is where it is taken.
+`plan.md` need. **Phase 3 is where it is first taken, on editor anchors alone**, and it is recorded
+in phase 3's pull request because phase 5's task is gated on a human reading it. This final pass
+re-takes it across all three surfaces once they exist.

@@ -32,9 +32,14 @@ change them cheaply. That ordering is deliberate - see the entry on `addColumn` 
    rule it enforces, aligned column types, `--` comments naming each enum domain, indices declared
    immediately beneath.
    - `file_comment_threads` and `file_comment_messages`, columns exactly as `plan.md` specifies.
-   - A partial unique index on `(session_id) WHERE status = 'sending'`. Build the predicate from the
-     TypeScript status tuple the way `inFlightIndexSql()` does (`db.ts:2756-2759`) so enforcement and
-     readers cannot drift.
+   - A partial unique index on `(session_id) WHERE status IN ('sending', 'awaiting')`. Export the
+     outstanding statuses as one `as const` tuple and build the predicate from it the way
+     `inFlightIndexSql()` builds `one_inflight_per_queue` from `IN_FLIGHT_ITEM_STATES`
+     (`db.ts:2756-2759`), so enforcement and readers cannot drift. **Both statuses, not just
+     `sending`:** a comment is outstanding until the agent answers it, and `awaiting` is the longer
+     half of that window. An index over `sending` alone would let a second start or a resume open a
+     new delivery while the first comment is still unanswered - the exact failure one-at-a-time
+     exists to prevent, and the reason this is an index rather than a check in the manager.
    - **Declare the whole shape now**, including `queue_seq`, `delivery_id`, `answered_at` - columns
      phases 3 and 4 are the first to write. A shipped table cannot gain a column from the CREATE
      TABLE alone; it needs `addColumn` in `migrate()` forever after (`db.ts:3077-3079`).
@@ -121,8 +126,9 @@ change them cheaply. That ordering is deliberate - see the entry on `addColumn` 
 - `test/file-comment-contracts.test.ts` - Zod bounds and refusals.
 - `test/file-comments-store.test.ts` - SQL, status transitions, `queue_seq` rewrites, the
   `outdated` flag surviving a status change in both directions, message append and load order for
-  both authors, and that the partial unique index actually refuses a second `sending` row for one
-  session.
+  both authors, and that the partial unique index refuses a second outstanding row for one session
+  **from either outstanding status** - a `sending` row beside an `awaiting` one, not just two
+  `sending` rows. That asymmetric case is the one an index over a single status would pass.
 - `test/file-comments-lifecycle.test.ts` - `session_remove` orphans; `state === "exited"` alone
   changes nothing; the `onSessionsObserved` arm settles rows orphaned during a daemon outage; the
   prune deletes only terminal rows whose session is gone.
@@ -156,6 +162,8 @@ Later phases may rely on, and must not change:
 
 - The `FileCommentAnchor` shape and `reanchor()`'s three outcomes.
 - Both tables' full column shape, including the columns phases 3 and 4 are first to write.
+- The outstanding-status tuple and the index built from it. Phase 3 enforces one turn outstanding
+  on top of this, never instead of it, and never widens the tuple to make a transition easier.
 - `appendFileCommentMessage` and its route: the only way a message row is written, by either
   author. Phase 2 calls it with `human`, phase 4 with `agent`.
 - `status` and `outdated` as two dimensions. A later phase may add neither a status value that

@@ -598,13 +598,13 @@ not. Delete asks for confirmation and cannot be undone.
 ### Manual Preview runs
 
 Bind a session to an exact published workflow version from the workflow history or from any
-fleet layout, then choose **Preview**. On a Cards card and in the Console and Board detail
+fleet layout, then choose **Preview**. In the Console and Board detail
 header the chip states what the session is armed with, naming the workflow and its version -
 **⌘ No-Mistakes Review v10**. It falls back to an offer, **＋ workflow**, in two cases: nothing is
 bound at all, and the binding that exists is no longer `active` - `orphaned` after its session
 disappeared, or `paused` after the conversation changed. Those rows are not archived and the
 bind dialog still reattaches them, but neither will run when this session's work completes, so
-naming one on a card would promise a review that is not coming. The card answers "is a review
+naming one in session detail would promise a review that is not coming. The detail answers "is a review
 going to run here"; the dialog is where a binding that stopped being able to answer yes gets
 repaired. That distinction matters most for the Foreman-complete trigger, where the binding
 exists for the whole working life of the session and the first run does not appear until the
@@ -613,7 +613,7 @@ The chip is present whenever no run currently *owns* that session - which includ
 whose last run has finished. A finished run shows both: its outcome chip (**Approved**,
 **Preview cancelled**, **Preview failed**) as history, and the chip as the next move. Only an
 open run withdraws the offer, on the same
-[held-ness join](ui.md#layout-cards-console-or-board) the held tag and the backlog drop target
+[held-ness join](ui.md#layout-console-or-board-in-settings) the held tag and the backlog drop target
 read, because that is the window in which the daemon would refuse a second binding anyway as a
 conflict. A binding records the conversation note key, harness, name, working directory, and
 repository root, and pins the immutable version id. Publishing or editing a newer workflow
@@ -760,7 +760,7 @@ content.
 Filesystem removal follows a durable cleanup ledger, so restart can finish an interrupted
 trash transition without deleting a referenced retained file. Compact run
 summaries update over the existing SSE stream, while detailed evidence and timelines are
-loaded on demand for a selected run or a bound Board tile. Cards, Console, and Board show the
+loaded on demand for a selected run or a bound Board tile. Console and Board show the
 same workflow status. Run history pages use the updated-time cursor index, select the bounded
 page before enrichment, and batch the latest attempts in one follow-up query. Summary reads
 never load submission context or evidence. Detail reads batch attempts and receipts for the
@@ -1009,12 +1009,35 @@ because they answer a bug report rather than a reader.
 
 **The header offers one next move, derived from the run's own state.** Not every control the
 run might accept: a single primary, in the language of the person reading the page rather than
-of the route behind it. A parked run offers **Resume review**; a GitHub Inspector gate waiting on a
-pull request offers **Ask the session to open a PR**, or **Check again** when its immutable
-policy declines the handoff; a run blocked on an exhausted provider call offers **Retry the
-failed call**. A run whose evidence snapshot has not moved since the last round is refused by
-the daemon, and the primary becomes the recovery for exactly that refusal - **Review this
-snapshot anyway** - which is the only state it appears in.
+of the route behind it. A parked run offers **Start repair round N**, naming the round it
+opens; a GitHub Inspector gate waiting on a pull request offers **Ask the session to open a
+PR**, or **Check again** when its immutable policy declines the handoff; a run blocked on an
+exhausted provider call offers **Retry the failed call**.
+
+That primary used to read **Resume review**, over a tooltip promising to "resume this run
+where it stalled". It does no such thing: the daemon computes `latest.round + 1`, re-runs the
+graph from the Session node with an empty attempt slate, and every reviewer that passed last
+round runs again. The old copy made the round it spends look like a bug rather than the
+documented cost, so the label now says which round it opens and the tooltip says what it does.
+
+A resubmission the daemon refuses turns that same primary into the recovery for exactly that
+refusal, which is the only state either recovery appears in. There are two, and they refuse
+different things:
+
+Both write a sentence into the header beside the button, which the older no-move sentence
+could not do: that one explains an *empty* action row, and a refusal leaves a button standing.
+A repaint from **Start repair round 2** to **Review it anyway** with nothing else on the page
+is the same unexplained click the grant used to produce.
+
+- **Review it anyway** answers `unchanged_repository`. Before capturing anything, the
+  resubmit route asks the same two git reads the resumption observer gates on, and a
+  repository byte-identical to the one the last round reviewed is refused there - no
+  submission, no round spent. The recovery names the round, says it spends one, and says who
+  it is for: an operator whose evidence is the transcript itself, such as a manual
+  verification they have just carried out.
+- **Review this snapshot anyway** answers `unchanged_evidence`, the older post-capture
+  refusal, which now stands as a backstop for the cases the pre-capture probe cannot read.
+  It replays the snapshot already taken, so it names the images frozen into it.
 
 When there is no move, the header says so **in a sentence** and names where the decision
 actually lives: "Confirm or discard it in Deliveries below", "they are listed under GitHub Inspector
@@ -1035,15 +1058,31 @@ to stand there named the binding's `Max repair rounds` as the fix, which was wro
 snapshots its budget when its row is created, and editing the binding changes what the *next*
 run may spend.
 
-What the grant does depends on what stopped the run, and the difference is not cosmetic. A
-**parked repair round** needs only the number: the resume move refuses on
-`round > maxRepairRounds`, so raising the budget hands the run straight back to it, and the
-header repaints from the grant to **Preview fresh evidence**. A **GitHub Inspector-only gate run**
-needs its status back as well, because nothing polls a blocked run - the gate evaluator
-returns early on one - so the grant restores `waiting_for_new_head` and the gate re-enters
-on the next observation, picking up the very head it refused. Without that second half the
-grant would flip the merge block from "gave up" to "still working" while nothing was working,
-which is worse than the dead end it replaced. Beside the primary sit at most
+What the grant does depends on what stopped the run, and the difference is not cosmetic.
+Every arm restores a status something watches, because nothing polls a blocked run.
+
+- A **parked repair round on a self-resuming review** - `auto` resumption and `Live`
+  delivery - is put back in `waiting_for_session` at the phase it was parked in, which the
+  round-limit block records when it writes itself. That is the arm the grant used to be
+  missing, and its absence is what made the button look broken: it raised the number and left
+  the run `blocked`, a status `sweepResumptions` does not look at, so the rounds it had just
+  bought could only be spent by a human clicking the resume.
+- A **parked round on any other posture** keeps the number alone and stays blocked, correctly:
+  a `manual` version or a `Preview` binding has no observer to be handed back to, so the next
+  round is the operator's to start and the header says so.
+- A **GitHub Inspector-only gate run** needs `waiting_for_new_head` back, so the gate re-enters
+  on the next observation and picks up the very head it refused. Without that the grant would
+  flip the merge block from "gave up" to "still working" while nothing was working, which is
+  worse than the dead end it replaced.
+
+**And the grant says what it bought.** It was the one primary on the page with no visible
+result, so a click that worked was indistinguishable from a click that failed. The header now
+carries **Repair budget raised. Round N is now the last this run can reach.** for as long as
+that is still the last thing that happened - stated as a round rather than as a budget so it
+agrees with the eyebrow above it, which counts the first submission - derived from the run's own event ledger and the current round rather than held in
+component state - so a lost HTTP response, a replay under the retained request id, and a grant
+applied from another tab all produce it, and it clears itself the moment the round it bought
+actually starts. The same sentence is announced to a screen reader once, politely. Beside the primary sit at most
 **Copy feedback** and **Open PR**, and **Open PR** appears only when there is an adopted pull
 request to open. The contextual adoption still waits for the ordinary daemon evaluator to
 revalidate an open exact head from the Inspector ledger and create the immutable
@@ -1170,7 +1209,7 @@ useful new evidence when eligible, and stop. The daemon owns automatic resumptio
 UI owns manual resubmission, so the agent does not turn resubmission into another permission
 question for the human.
 
-Four things it deliberately does not do:
+Five things it deliberately does not do:
 
 - **It does not ask the model to signal anything.** The instruction that used to end every
   repair packet is gone; the loop is closed by the daemon observing work, not by an agent
@@ -1183,8 +1222,10 @@ Four things it deliberately does not do:
   is not a repair, and resubmitting byte-identical input into the same reviewers would spend
   the whole budget proving nothing.
   If the transcript itself is the intended repair, such as a newly captured manual
-  verification, click **Resubmit**. Manual Resubmit performs a full capture and can accept that
-  transcript-only evidence change; the automatic observer intentionally will not infer it.
+  verification, the manual round is still the way through - but it now says the same thing
+  first. **Start repair round N** asks the repository before it captures, refuses an unmoved
+  one for free, and offers **Review it anyway** as the deliberate override. The automatic
+  observer will never infer that override; a person has to state it.
 - **It does not touch a run waiting for a new pushed head.** The `inspector_only` findings
   policy already resumes on its own, when the GitHub Inspector observes a head that is not the failed
   one, and that remains its business.
@@ -1200,6 +1241,39 @@ Four things it deliberately does not do:
   announces once per round it burns rather than every tick, and a third rejection is still
   news after the second. The daemon computes it, which is the point: a run burning its budget
   unattended is exactly the case where no tab is open to notice.
+
+**Every one of those refusals is now written down, and the run page reads them back.** The
+observer's gates were silent: a run under `auto` and `Live` that it declined to resume looked
+exactly like a run it had not reached yet, and "waiting on the session" is a promise on a
+self-resuming run and an instruction on every other kind. So the observer now names why it held -
+`policy_manual`, `binding_inactive`, `session_unavailable`, `session_busy`,
+`session_needs_you`, `packet_undelivered`, `repository_unchanged` - and writes it down as a
+**transition**: an entry is recorded when the reason differs from the one before it on the
+same round, so a sweep every fifteen seconds does not write an entry every fifteen seconds,
+and the newest entry is always the reason that holds now. A reason that recurs after another
+one is recorded again, deliberately: a session that goes busy and settles again would
+otherwise leave "the session is still working" standing over a session that had been idle for
+an hour. Run detail carries the latest entry for the round it is actually parked in, and the
+header turns it into a sentence: "the repository has not changed since round 2. Reviewing it again would return
+the same verdicts, so no round has been spent." A run that will not resume itself gets the
+clause that matters most - *this review does not resume on its own, so the next round is yours
+to start.*
+
+**A parked round that nothing has moved sends exactly one reminder.** Under `Live` delivery,
+45 minutes after the repair packet was delivered with the repository still untouched, the
+daemon re-delivers the packet as a `parked_repair_reminder`, once per parked round. It is not
+the unchanged-evidence nudge, which answers a claim the agent made; this one answers silence,
+so it says how long the round has been open and repeats what was asked without accusing anyone
+of anything.
+
+It is also the one packet the daemon is willing to drop. A repair packet has to reach the
+session or the round cannot proceed, so it is delivered and any refusal is recorded; a
+reminder that arrives one second after the agent finally picked up its turn is pure
+interruption, and one that arrives after the repair landed is simply untrue. So every
+condition the observer checked is asked again immediately before the reminder is written -
+after the repository read, which is the only point at which any of them can have changed -
+and any of them failing means no reminder row, no packet, and the next sweep starting over
+from nothing.
 
 `Max repair rounds` is the budget, and exhausting it blocks the run exactly as it always did.
 It sets what a *new* run starts with; a run already stuck takes more rounds from **Grant 2

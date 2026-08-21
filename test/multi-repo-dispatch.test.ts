@@ -78,6 +78,38 @@ function emptyOccupancy(paths: readonly string[]): Promise<Map<string, WorktreeO
   return Promise.resolve(new Map(paths.map((path) => [path, { status: "known", occupants: [] }])));
 }
 
+/**
+ * Base resolution stubbed to each repository's own local HEAD.
+ *
+ * Ordinary dispatch now freezes every repository's base - a freshly fetched remote default -
+ * BEFORE it takes the first tree, which means a repository that is not a git repository at
+ * all is refused one step earlier than these two cases are about. That earlier refusal is
+ * itself covered (multi-repo-provisioning.test.ts), and it is strictly better: nothing is
+ * taken, so nothing has to be handed back.
+ *
+ * The unwind it front-runs is still real, though. A native acquisition can fail, a
+ * `git worktree add` can fail, and a repository can disappear between the fetch and the
+ * lease - and in every one of those the first repository's tree already exists. So these
+ * cases keep driving the unwind by letting base resolution succeed and failing where they
+ * always did: inside provisioning.
+ */
+const localBases = async (
+  roots: { primary: string; extras: readonly string[] },
+  pinned: string | null,
+): Promise<{ primary: string; extras: string[] }> => ({
+  primary: pinned ?? headOf(roots.primary),
+  extras: roots.extras.map(headOf),
+});
+
+/** A repository's exact HEAD, or a syntactically valid id for a path that has no git dir. */
+function headOf(repo: string): string {
+  try {
+    return execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], { stdio: "pipe" }).toString().trim();
+  } catch {
+    return "0".repeat(40);
+  }
+}
+
 // ---- all-or-nothing --------------------------------------------------------------------
 
 test("a secondary that cannot be provisioned unwinds the primary's tree", async () => {
@@ -101,7 +133,7 @@ test("a secondary that cannot be provisioned unwinds the primary's tree", async 
   // has its own fail-closed coverage and would make a disappearing runner PID an unrelated
   // reason for this test to retain the lease it expects to return.
   const worktrees = new WorktreeManager(undefined, { occupancy: emptyOccupancy });
-  const dispatcher = new Dispatcher(registry, undefined, { worktrees });
+  const dispatcher = new Dispatcher(registry, undefined, { worktrees, resolveBases: localBases });
 
   await dispatcher.dispatch("rollback-task");
 
@@ -150,9 +182,13 @@ test("the unwind is provider-aware in every ordering", async () => {
     const seen: Array<{ path: string | null; provider: string | null }> = [];
     const registry = new Registry();
     registry.upsertTask(mkTask({ id, status: "dispatching", repoRoot: primary, extraRepos: extras }));
-    const dispatcher = new Dispatcher(registry, async (task) => {
-      seen.push({ path: task.worktreePath, provider: task.provider });
-    });
+    const dispatcher = new Dispatcher(
+      registry,
+      async (task) => {
+        seen.push({ path: task.worktreePath, provider: task.provider });
+      },
+      { resolveBases: localBases },
+    );
 
     await dispatcher.dispatch(id);
 
@@ -335,6 +371,9 @@ test("cancelling a multi-repo task stops it pinning the trees it just handed bac
     registry,
     autoCompleted: new Set<string>(),
     reschedulingTasks: new Set<string>(),
+    // Every destructive path takes this reservation, so a hand-built instance needs it too.
+    // See `TaskManager.withCleanupReservation`.
+    cleanupReservations: new Set<string>(),
     stopEmbeddedAgentBeforeReclaim: async () => {},
   });
 

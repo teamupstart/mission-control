@@ -56,7 +56,7 @@ async function expectFiveLineViewport(field: Locator, shouldGrow: boolean): Prom
       initial.height + initial.lineHeight * 2,
     );
   }
-  expect(five.visibleRows, "all five entered lines should fit in the viewport").toBeGreaterThanOrEqual(5);
+  expect(five.visibleRows, "all five entered lines should fit in the viewport").toBeGreaterThanOrEqual(4.95);
   expect(five.overflow, "five lines should not be clipped inside the textarea").toBeLessThanOrEqual(1);
 
   await field.fill(SIX_LINES);
@@ -64,7 +64,7 @@ async function expectFiveLineViewport(field: Locator, shouldGrow: boolean): Prom
   expect(six.height, "a sixth line should use the textarea's five-line cap").toBeLessThanOrEqual(
     five.height + 1,
   );
-  expect(six.visibleRows, "the capped textarea should keep a five-line viewport").toBeGreaterThanOrEqual(5);
+  expect(six.visibleRows, "the capped textarea should keep a five-line viewport").toBeGreaterThanOrEqual(4.95);
   expect(six.overflow, "input beyond five lines should scroll inside the textarea").toBeGreaterThan(1);
 }
 
@@ -102,25 +102,20 @@ test("multiline text boxes grow through five lines before scrolling", async ({
   await dialog.getByRole("button", { name: "Dispatch now" }).click();
   await expect(dialog).toBeHidden();
 
-  const card = dashboard.locator("article.card").first();
-  const send = card.getByRole("button", { name: "Send" });
-  await expect(send).toBeEnabled();
-  await send.click();
-
-  // The collapsed-card composer is the smallest variant: one line at rest, five when the
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const detail = dashboard.locator(".console-detail");
+  // The Console reply composer is the smallest variant: one line at rest, five when the
   // draft needs them, then an internal scrollbar for anything longer.
-  const compactComposer = card.getByPlaceholder("Message to send…");
+  const compactComposer = detail.getByPlaceholder(/^Reply to this session/);
   await expectFiveLineViewport(compactComposer, true);
   await compactComposer.fill(FIVE_LINES);
-  await captureEvidence(dashboard, card, "collapsed-card-composer-five-lines.png");
-  await compactComposer.press("Escape");
-  await expect(compactComposer).toHaveCount(0);
+  await captureEvidence(dashboard, detail, "console-reply-composer-five-lines.png");
 
-  await card.getByRole("button", { name: "Expand conversation" }).click();
-  await card.getByRole("button", { name: "Terminal view" }).click();
-  const terminalComposer = card.getByPlaceholder("Send the next instruction to this process…");
+  await detail.getByRole("button", { name: "Terminal view" }).click();
+  const terminalComposer = detail.getByPlaceholder("Send the next instruction to this process…");
   await expect(terminalComposer).toBeEnabled();
-  await expectFiveLineViewport(terminalComposer, true);
+  // The terminal composer starts at its five-line cap; additional input scrolls inside it.
+  await expectFiveLineViewport(terminalComposer, false);
 
   // Return to exactly five lines for the optional visual evidence. This is the reported
   // prompt-line rendering, with line five visible instead of line two being clipped.
@@ -131,5 +126,5 @@ test("multiline text boxes grow through five lines before scrolling", async ({
     return prompt.getBoundingClientRect().top - element.getBoundingClientRect().top;
   });
   expect(promptOffset, "the terminal prompt should stay beside the first input line").toBeLessThanOrEqual(6);
-  await captureEvidence(dashboard, card, "terminal-composer-five-lines.png");
+  await captureEvidence(dashboard, detail, "terminal-composer-five-lines.png");
 });

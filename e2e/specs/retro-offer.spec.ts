@@ -15,14 +15,20 @@ import { writeGhPullRequests, type FakePullRequest } from "../fixtures/fake-agen
  * Phase 2 already made the retro runnable over HTTP, so nothing shipped in this phase is the
  * retro itself - it is the answer to "is now the moment", and that answer is only checkable
  * here. `test/retro-offer.test.ts` pins the predicate and the markup, but a predicate that is
- * right and never reaches a card is the exact defect this layer exists to catch: the signal
- * has to be computed by the daemon, ride `session_upsert`, condition a control, and that
- * control has to POST to a route that types into a real session.
+ * right and never reaches the Console detail is the exact defect this layer exists to catch:
+ * the signal has to be computed by the daemon, ride `session_upsert`, condition a control,
+ * and that control has to POST to a route that types into a real session.
  *
  * What is real here: the dispatched SDK session, the correction typed into its conversation,
  * the daemon's own transcript scan that notices it, the `prCreated` hook that adopts the pull
  * request, the offer appearing over SSE, the click, the route, and the instruction landing in
  * the conversation the browser is rendering.
+ *
+ * Worthiness has TWO evidence sources and both are covered, because they are one signal and a
+ * change that swapped one for the other would look identical from either case alone: a typed
+ * correction the transcript scanner reads, and a review the human settled - the last case in
+ * this file, where the agent's own `AskUserQuestion` is answered from the dashboard and no
+ * correction is typed at all.
  *
  * Stood in for, and only ever the PROVIDER's answer: what the Inspector's poll saw on GitHub.
  * A review ROUND is written straight into the ledger the way the poller would, exactly as
@@ -35,12 +41,14 @@ import { writeGhPullRequests, type FakePullRequest } from "../fixtures/fake-agen
 const EVIDENCE = artifactsDir("retro-offer");
 const TASK = "hold a session worth retrospecting";
 const CORRECTION = "no - reproduce it in docker first, it never fails on the Mac";
+/** The prompt `fake-claude.mjs` answers by raising a real `AskUserQuestion` and blocking. */
+const ASK_TURN = "ask me which linter to use";
 const HELD_TURN = "hold the current turn open";
 
 /**
  * Photograph a state this spec has already asserted on.
  *
- * Behind `MC_E2E_EVIDENCE`, like every other capture here: the card carries a relative
+ * Behind `MC_E2E_EVIDENCE`, like every other capture here: the detail carries a relative
  * timestamp and a fresh worktree uuid, so an unconditional shoot would rewrite a binary on
  * every run for no added signal. Inside the regression rather than in a staged capture spec,
  * so the picture is of a run whose assertions passed.
@@ -153,7 +161,7 @@ async function announcePullRequest(daemon: DaemonHandle, session: SessionRow, ur
   const response = await fetch(`${daemon.baseURL}/hooks/Stop`, {
     method: "POST",
     headers: { "content-type": "application/json", "x-harness-token": token },
-    // The AGENT's session id, not the card's - a hook naming the wrong one lands on no
+    // The AGENT's session id, not the dashboard row's - a hook naming the wrong one lands on no
     // session at all, and this spec would then pass by never adopting anything.
     body: JSON.stringify({
       agent: session.agent,
@@ -197,13 +205,13 @@ async function refreshInspections(daemon: DaemonHandle): Promise<void> {
 }
 
 /**
- * Assert this card's action row is on screen and carries NO retro offer.
+ * Assert this detail's action row is on screen and carries no retro offer.
  *
  * Two things make this more than `toHaveCount(0)`, and both were found by breaking the
  * predicate on purpose and watching the naive version stay green:
  *
- *  - The row is ANCHORED first. `SessionCard` drops the whole ActionBar once a session
- *    exits, so a card that has merely gone quiet satisfies "no Run retro" trivially - and
+ *  - The row is anchored first. The detail drops the whole ActionBar once a session
+ *    exits, so a detail that has merely gone quiet satisfies "no Run retro" trivially, and
  *    the fake agent does exit, about twenty seconds in. Complete is the neighbour the offer
  *    renders beside, so its presence is what makes the absence next to it mean something.
  *  - The count is READ ONCE rather than asserted with a retrying matcher. `toHaveCount(0)`
@@ -215,7 +223,7 @@ async function refreshInspections(daemon: DaemonHandle): Promise<void> {
 async function expectNoRetroOffer(card: ReturnType<Page["locator"]>): Promise<void> {
   await expect(card.getByRole("button", { name: "Complete" })).toBeVisible();
   expect(
-    await card.getByRole("button", { name: "Run retro" }).count(),
+    await card.getByRole("button", { name: "retro", exact: true }).count(),
     "the retro must not be offered here",
   ).toBe(0);
 }
@@ -227,7 +235,8 @@ test("a corrected session is offered a retro once its review is clean, and one c
   await enableRetroSkill(daemon);
   const session = await dispatch(dashboard, daemon);
 
-  const card = dashboard.locator("article.card").first();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
   // Nothing yet: one human turn (the dispatched brief) and no pull request. This assertion is
   // the reason the whole spec is not decoration - it establishes that the control is ABSENT
   // before the conditions hold, so its later appearance is caused rather than coincidental.
@@ -238,7 +247,6 @@ test("a corrected session is offered a retro once its review is clean, and one c
   // The correction. A second human turn is what makes this session worth retrospecting, and
   // it is typed through the composer rather than seeded, so the daemon's scan reads the same
   // bytes a person's message would leave.
-  await card.getByRole("button", { name: "Expand conversation" }).click();
   const reply = card.getByPlaceholder(/^Reply to this session/);
   await expect(reply).toBeEnabled();
   await reply.fill(CORRECTION);
@@ -267,7 +275,7 @@ test("a corrected session is offered a retro once its review is clean, and one c
     .toBe(1);
 
   // Now. The offer reached the card over SSE with no reload, which is the claim.
-  const retro = card.getByRole("button", { name: "Run retro" });
+  const retro = card.getByRole("button", { name: "retro", exact: true });
   await expect(retro).toBeVisible();
   // It says what it does and why it is being offered, in the accessible description the
   // tooltip renders - a button that spends a session's turn must not be a bare verb.
@@ -277,7 +285,9 @@ test("a corrected session is offered a retro once its review is clean, and one c
   // e2e/README.md), so a card-scoped locator never sees it and a page-scoped `getByText`
   // matches the visible bubble as well.
   await expect(
-    dashboard.locator(".tt-desc", { hasText: "Offered because you corrected it during the work" }),
+    dashboard.locator(".tt-desc", {
+      hasText: "Offered because you steered it during the work, by correcting it or answering its question",
+    }),
   ).toBeAttached();
   observed("the offer reached the card over SSE, naming the reason it is being made");
   await shoot(card, dashboard, "02-offer-on-the-card");
@@ -329,9 +339,9 @@ test("a retro clicked after merge starts one follow-up and keeps the source task
 }) => {
   await enableRetroSkill(daemon);
   const session = await dispatch(dashboard, daemon);
-  const card = dashboard.locator("article.card").first();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
 
-  await card.getByRole("button", { name: "Expand conversation" }).click();
   const reply = card.getByPlaceholder(/^Reply to this session/);
   await reply.fill(CORRECTION);
   await reply.press("Enter");
@@ -354,7 +364,7 @@ test("a retro clicked after merge starts one follow-up and keeps the source task
   await expect.poll(async () => (await api<unknown[]>(daemon, "/api/inspector/prs")).length).toBe(1);
   observeCleanReview(daemon);
   await refreshInspections(daemon);
-  const retro = card.getByRole("button", { name: "Run retro" });
+  const retro = card.getByRole("button", { name: "retro", exact: true });
   await expect(retro).toBeVisible({ timeout: 30_000 });
 
   let source: TaskRow | undefined;
@@ -464,7 +474,8 @@ test("a session nobody corrected is never offered a retro, however clean its rev
   const current = (await sessions(daemon)).find((s) => s.id === session.id);
   expect(current?.retro, "an uncorrected session carries no worthiness signal").toBeUndefined();
 
-  const card = dashboard.locator("article.card").first();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
   // Wait for the clean review to reach the DOM before asserting the offer did not.
   //
   // This barrier is the whole test, and it was missing: the poll above reads the ROUTE, and a
@@ -489,4 +500,88 @@ test("a session nobody corrected is never offered a retro, however clean its rev
   ).toBe(0);
   observed("the Complete dialog offers no retro for a session nobody corrected");
   await shoot(dialog, dashboard, "04-complete-without-a-backstop");
+});
+
+/**
+ * The OTHER way a human steers a session, and the one no transcript can carry.
+ *
+ * A driver-run session keeps Claude's native `AskUserQuestion`, so answering it resolves the
+ * callback the agent is blocked on and lands in the JSONL as a pure `tool_result` - which
+ * every harness parser drops as machine noise. The observed failure was a finished session
+ * ("Add keybinding for To review button") whose operator answered two dashboard questions,
+ * whose pull request the Inspector reviewed clean, and whose card offered no retro at all.
+ *
+ * `MISSION_RETRO_SCAN_MS: "0"` switches transcript scanning OFF for this daemon, which is
+ * what makes the case airtight rather than merely plausible. The prompt that makes the fake
+ * CLI ask is itself typed into the composer - it has to be, since that is how a real ask is
+ * provoked - so with the scanner running, a green result would prove nothing about the review
+ * feed. With it off, the durable human-resolved review is the only thing that can possibly
+ * light the offer.
+ */
+test.describe("steered by answering, not by typing a correction", () => {
+  test.use({ daemonEnv: { MISSION_RETRO_SCAN_MS: "0" } });
+
+  test("answering the agent's own question earns the retro offer once the review is clean", async ({
+    dashboard,
+    daemon,
+  }) => {
+    await enableRetroSkill(daemon);
+    const session = await dispatch(dashboard, daemon);
+    await dashboard.getByRole("navigation", { name: "Sessions" })
+      .locator("button.rail-row")
+      .first()
+      .click();
+    const detail = dashboard.locator(".console-detail");
+    await expectNoRetroOffer(detail);
+
+    // Provoke the real `can_use_tool` request and answer the real form the dashboard draws
+    // for one, through the same route a person's click takes.
+    const composer = detail.getByPlaceholder(/^Reply to this session/);
+    await expect(composer).toBeEnabled();
+    await composer.fill(ASK_TURN);
+    await composer.press("Enter");
+    const form = detail.locator(".pane-dialog");
+    await expect(form).toBeVisible({ timeout: 30_000 });
+    // Deliberately not the first row of either question: a spec that picks the default passes
+    // just as well against a form that ignores the click.
+    await form.getByRole("radio", { name: /eslint/ }).click();
+    await form.getByRole("checkbox", { name: /tests/ }).click();
+    await form.getByRole("button", { name: "Submit answers" }).click();
+    await expect(form).toBeHidden({ timeout: 30_000 });
+    observed("the agent's own question was answered from the dashboard");
+
+    // The claim: worthiness with no transcript scan running at all, so the durable
+    // human-resolved review is the only thing that can have produced it.
+    await expect
+      .poll(async () => (await sessions(daemon)).find((s) => s.id === session.id)?.retro?.reasons, {
+        timeout: 30_000,
+        message: "answering the question is steering, and rides the session payload",
+      })
+      .toEqual(["corrections"]);
+
+    // Worthy, but the timing half has not arrived - the same independence the typed case
+    // proves, on the other evidence source.
+    await expectNoRetroOffer(detail);
+    observed("a steered session with no pull request is still not offered a retro");
+
+    await announcePullRequest(daemon, session, "https://github.com/mancej-cyc/ai-harness/pull/480");
+    await expect.poll(async () => (await api<unknown[]>(daemon, "/api/inspector/prs")).length).toBe(1);
+    observeCleanReview(daemon);
+    await refreshInspections(daemon);
+    await expect
+      .poll(async () => (await sessions(daemon)).find((s) => s.id === session.id)?.inspector?.round)
+      .toBe(1);
+
+    const retro = detail.getByRole("button", { name: "retro", exact: true });
+    await expect(retro).toBeVisible({ timeout: 30_000 });
+    // And it explains itself in language that is true of what this operator actually did.
+    // "You corrected it" was a sentence about a turn they never typed.
+    await expect(
+      dashboard.locator(".tt-desc", {
+        hasText: "Offered because you steered it during the work, by correcting it or answering its question",
+      }),
+    ).toBeAttached();
+    observed("the offer reached the Console detail, earned by an answered question alone");
+    await shoot(detail, dashboard, "07-offer-earned-by-answering-a-question");
+  });
 });

@@ -155,17 +155,11 @@ test("a text node with no path in it is left as the same node, not rebuilt", () 
   assert.equal(tree.children[0], text);
 });
 
-test("both transcript hosts hand the panel the store, so all three layouts link paths", () => {
-  // An affordance added to SessionCard alone reaches one layout of three. The transcript
-  // has exactly two mount sites - the grid's expanded card and the console/board detail -
-  // and each has to pass the store, or the same conversation links its paths in one place
-  // and renders them as dead text in the other.
-  const card = readFileSync("src/web/components/SessionCard.tsx", "utf8");
+test("the shared Console and Board transcript receives the file store", () => {
   const detail = readFileSync("src/web/components/layouts/ConsoleDetail.tsx", "utf8");
   const shared = readFileSync("src/web/components/layouts/types.ts", "utf8");
-  assert.match(card, /<TranscriptPanel[\s\S]*?files=\{files\}[\s\S]*?\/>/);
   assert.match(detail, /<TranscriptPanel[\s\S]*?files=\{view\.files\}[\s\S]*?\/>/);
-  assert.match(shared, /files: p\.files,/);
+  assert.match(shared, /files: SessionFilesController/);
 });
 
 test("the panel asks for the listing and hands it to the renderer", () => {
@@ -298,8 +292,8 @@ test("a turn's markup survives the SSE frames arriving under it", () => {
 test("a replaced link handler re-renders, so no anchor is left calling the old one", () => {
   // The body refreshes its handler ref DURING its own render, so skipping that render
   // with a new handler pins every rendered anchor to the previous closure - and that
-  // closure carries App's `layout` and `sessions`. Switching layout with the transcript
-  // text unchanged would then open the grid's Files overlay from Console.
+  // closure carries App's active layout and sessions. Switching between Console and Board
+  // with the transcript text unchanged would then use a stale Files destination.
   const paths = new Set(["a.ts"]);
   const base = { children: "x", breaks: true, onLinkClick: () => true, filePaths: paths };
   assert.equal(markdownPropsEqual(base, { ...base, onLinkClick: () => true }), false);

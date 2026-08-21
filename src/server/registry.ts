@@ -135,7 +135,9 @@ import {
   loadPendingReviews,
   loadRecentTerminalTasks,
   loadSessionGoals,
+  loadSessionLaunchTurns,
   pruneSessionGoals,
+  pruneSessionLaunchTurns,
   loadSessionNotes,
   loadForemanInvites,
   upsertForemanInvite,
@@ -185,6 +187,7 @@ import {
   sessionWorkEpisodeFor,
   taskWorkEpisodeForSession,
   taskWorkEpisodeForTask,
+  taskAutomaticCleanupSummaries,
   taskHasPrCarryingBinding,
   updateWorkEpisodePr,
   primaryRepoPrForTask,
@@ -197,16 +200,21 @@ import {
   upsertQueue,
   upsertQueueItem,
   upsertSessionGoal,
+  upsertSessionLaunchTurn,
+  deleteSessionLaunchTurn,
+  moveSessionLaunchTurn,
   upsertSessionNote,
   upsertTask as dbUpsertTask,
   upsertUsageCell,
   loadInspectorInspections,
+  hasHumanResolvedReview,
   markWorkEpisodeMerged,
   type TaskDependencyRewrite,
   recordWorkEpisodePrompt,
   workEpisodePromptIdentities,
 } from "./db.ts";
 import type { ForemanInviteRow, SessionWorkEpisode, TaskWorkEpisodeBinding, UsageCol } from "./db.ts";
+import { launchTextFingerprint, type LaunchTurnMarker } from "./launch-presentation.ts";
 import { refreshScoutPromptTitle } from "./scouts/prompt-journal.ts";
 import { unref } from "./util/timers.ts";
 import { getInspectorConfig } from "./inspector/config.ts";
@@ -654,6 +662,13 @@ export class Registry extends EventEmitter {
    * tombstones included - resolution, not storage, is where the tombstone becomes null.
    */
   private invites = new Map<string, ForemanInviteRow>();
+  /**
+   * Launch presentation markers, keyed by the SAME note key. In memory like notes, goals
+   * and invites because `launchTurnFor` is consulted once per transcript frame - every SSE
+   * append on every open conversation - and a per-frame SELECT is the exact cost these
+   * caches exist to avoid.
+   */
+  private launchTurns = new Map<string, LaunchTurnMarker>();
   private exitTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private driverDialogs = new Map<string, PaneDialog[]>();
   /** overlay keyed by pane token ("tmux:%12" | "wezterm:12") - see `@shared/pane.ts`. */
@@ -752,7 +767,16 @@ export class Registry extends EventEmitter {
    */
   private livePrs = new Map<string, LivePrObservation>();
   /**
-   * Session ids whose transcript has shown a human turn beyond the opening brief.
+   * Session ids whose human has STEERED them - the worthiness half of the retro offer.
+   *
+   * Two evidence sources feed this one set, and they are one set rather than two flags
+   * because the browser reads a single `Session.retro` and must not learn to combine them:
+   *
+   *  - the transcript scanner, when it sees a human turn beyond the opening brief; and
+   *  - `ReviewManager`, when a review this session asked has been durably settled by the
+   *    human (`isHumanResolvedReview`). That covers the answers no transcript can carry -
+   *    an SDK `AskUserQuestion` and the MCP `request_input`/`request_plan_decisions` forms
+   *    land in the JSONL as pure tool results, which every harness parser drops.
    *
    * Written only by `recordRetroCorrections` and held until the session ROW is removed, not
    * until the session exits: an exited card still offers a retro (the route files a task for
@@ -760,9 +784,10 @@ export class Registry extends EventEmitter {
    * precisely the moment it is most likely to be taken.
    *
    * In memory rather than persisted, like the injection attribution it depends on. A daemon
-   * restart therefore loses it and the poller rebuilds what it can from the transcript still
-   * on disk - which is the honest behaviour, since `originOf` cannot re-derive who typed a
-   * turn it never saw delivered.
+   * restart therefore loses it, and the two halves rebuild differently: the poller re-reads
+   * what it can from the transcript still on disk - `originOf` cannot re-derive who typed a
+   * turn it never saw delivered - while the review half is reconstructed exactly, from the
+   * durable rows, by `seedRetroFromReviews` when a session is first introduced.
    */
   private retroCorrections = new Set<string>();
   private lastQueuePrune = 0;
@@ -826,6 +851,7 @@ export class Registry extends EventEmitter {
     for (const n of loadSessionNotes()) this.notes.set(n.noteKey, n);
     for (const g of loadSessionGoals()) this.goals.set(g.noteKey, g);
     for (const i of loadForemanInvites()) this.invites.set(i.noteKey, i);
+    for (const m of loadSessionLaunchTurns()) this.launchTurns.set(m.noteKey, m);
     for (const t of loadActiveTasks()) this.tasks.set(t.id, t);
     for (const t of loadRecentTerminalTasks(RECENT_TERMINAL_TASKS)) this.tasks.set(t.id, t);
     // Always load terminal tasks that still hold resources so they get reconciled, even if newer
@@ -1569,6 +1595,10 @@ export class Registry extends EventEmitter {
     d: DiscoveredSession,
     now: number,
   ): Session {
+    // First sight of this pane-backed session in this process, which is the one moment the
+    // durable review half is worth a query - see `seedRetroFromReviews`. Before `base.retro`
+    // is derived below, so the first payload this session emits already carries it.
+    if (!prev) this.seedRetroFromReviews(d.syntheticId);
     // Read the stored binding ONCE, on first sight. After that the in-memory value
     // is the freshest truth - every rebinding goes through this process first - so
     // re-reading each sweep could only ever return what we already have.
@@ -1724,6 +1754,9 @@ export class Registry extends EventEmitter {
     // session it just launched. Notes and goals accept that stranding; an invite is
     // policy, not prose, so it may not.
     if (prev) this.moveForemanInviteKey(noteKeyFor(prev), noteKeyFor(base));
+    // And the launch marker, but only across a FIRST bind - see the method for why a
+    // /clear's native-to-native rotation must strand it instead.
+    if (prev) this.moveLaunchTurnOnInitialBind(prev, base);
     // Resolve the note + queue only after the overlay may have supplied
     // agentSessionId, so their key (which prefers agentSessionId) is stable.
     base.note = this.noteSummaryFor(base);
@@ -1873,6 +1906,10 @@ export class Registry extends EventEmitter {
     s.queue = this.queueSummaryFor(s);
     s.pendingTurns = this.pendingTurnsFor(s);
     s.workCycle = dbWorkCycleFor(noteKeyFor(s)) ?? undefined;
+    // The SDK door's half of the same first-introduction seeding `mergeDiscovered` does, and
+    // the one that matters most: a driver session's questions are answered natively, so its
+    // steering evidence exists ONLY as a review row.
+    this.seedRetroFromReviews(s.id);
     this.resolveInspectionSummaries(s);
     this.sessions.set(s.id, s);
     this.emitSession(s);
@@ -2100,6 +2137,10 @@ export class Registry extends EventEmitter {
     // note and goal: stranding those costs stale prose, stranding this un-invites
     // Foreman from a session Mission Control launched. Move first, resolve after.
     this.moveForemanInviteKey(noteKeyFor(s), noteKeyFor(next));
+    // The launch marker moves on the FIRST bind only. `evt.cleared` is a replacement
+    // conversation, and the guard inside refuses it because the source key is already
+    // native by then - so the projection cannot follow a /clear onto a real human turn.
+    this.moveLaunchTurnOnInitialBind(s, next);
     next.note = this.noteSummaryFor(next);
     next.goal = this.goalSummaryFor(next);
     next.foremanInvite = this.foremanInviteFor(next);
@@ -2364,6 +2405,7 @@ export class Registry extends EventEmitter {
       // The invite moves with the rotation - see `applyDriverBound` for why it may not
       // strand the way the note and goal below are allowed to.
       this.moveForemanInviteKey(noteKeyFor(target), noteKeyFor(next));
+      this.moveLaunchTurnOnInitialBind(target, next);
       next.note = this.noteSummaryFor(next);
       next.goal = this.goalSummaryFor(next);
       next.foremanInvite = this.foremanInviteFor(next);
@@ -2515,6 +2557,9 @@ export class Registry extends EventEmitter {
     // implicit grant catches a stranded row - missing this move silently un-invites
     // Foreman from a session Mission Control just dispatched.
     this.moveForemanInviteKey(noteKeyFor(s), noteKeyFor(next));
+    // Pi's turn one travelled in the argv, so its marker was written under the synthetic
+    // key moments ago and this rebind is exactly the first bind the guard allows.
+    this.moveLaunchTurnOnInitialBind(s, next);
     next.note = this.noteSummaryFor(next);
     next.goal = this.goalSummaryFor(next);
     next.foremanInvite = this.foremanInviteFor(next);
@@ -4486,6 +4531,7 @@ export class Registry extends EventEmitter {
       // `report_status` can carry the first (or a new) agent session id, which rotates
       // the note key like any other binding - and the invite moves with the key.
       this.moveForemanInviteKey(noteKeyFor(s), noteKeyFor(next));
+      this.moveLaunchTurnOnInitialBind(s, next);
       next.foremanInvite = this.foremanInviteFor(next);
       next.workCycle = dbWorkCycleFor(noteKeyFor(next)) ?? undefined;
     }
@@ -4582,6 +4628,7 @@ export class Registry extends EventEmitter {
       // Same rotation, same rule as `applyDriverBound`: the invite moves with the key.
       // Inside the rotation guard for the same per-render economy the cost re-read is.
       this.moveForemanInviteKey(noteKeyFor(s), key);
+      this.moveLaunchTurnOnInitialBind(s, next);
       next.foremanInvite = this.foremanInviteFor(next);
       next.workCycle = dbWorkCycleFor(key) ?? undefined;
     }
@@ -5458,11 +5505,54 @@ export class Registry extends EventEmitter {
 
   /** Persist + broadcast a task, and refresh any session bound to it. */
   upsertTask(task: Task, deferDependencyCleanup = false): void {
+    this.publishTask(task, dbUpsertTask(task), deferDependencyCleanup);
+  }
+
+  /**
+   * Broadcast a task that has ALREADY been persisted, without writing it again.
+   *
+   * The one caller is restart settlement, which has to commit the task row and the adoption
+   * of its retention deadline in a single SQLite transaction (see
+   * `settleTaskWithRetentionAdoption`). Publishing through `upsertTask` afterwards would
+   * re-write the row outside that transaction - harmless for the row itself, but it would
+   * also re-derive `automaticCleanup` and re-run the displacement query for a write that
+   * already happened, which is exactly the kind of duplicate the transaction exists to avoid.
+   *
+   * `displaced` is what the transaction's own `upsertTask` returned, so the in-memory
+   * unbinding of any session pointer this write moved still happens.
+   */
+  publishPersistedTask(task: Task, displaced: readonly string[]): void {
+    this.publishTask(task, displaced, false);
+  }
+
+  /**
+   * Refresh one task's derived automatic-cleanup summary and broadcast the whole task.
+   *
+   * Called by the retention service after it moves the ledger, and it re-reads rather than
+   * being handed a value so there is still exactly one place that decides what crosses to a
+   * browser - `taskAutomaticCleanupSummaries`. The event is the ordinary `task_upsert` every
+   * open dashboard already handles, which is why activating automatic cleanup needs no new
+   * `ServerEvent` and no polling.
+   *
+   * A task that is not in memory is skipped rather than loaded: it is outside the bounded
+   * recent-terminal window, so no dashboard is drawing it, and the summary will be projected
+   * the next time it is read from SQLite.
+   */
+  refreshTaskAutomaticCleanup(taskId: string): void {
+    const current = this.tasks.get(taskId);
+    if (!current) return;
+    const summary = taskAutomaticCleanupSummaries([taskId]).get(taskId) ?? null;
+    if (JSON.stringify(summary) === JSON.stringify(current.automaticCleanup)) return;
+    const next = { ...current, automaticCleanup: summary };
+    this.tasks.set(taskId, next);
+    this.emitEvent({ type: "task_upsert", task: next });
+  }
+
+  private publishTask(task: Task, displaced: readonly string[], deferDependencyCleanup: boolean): void {
     const previous = this.tasks.get(task.id);
     const dependenciesChanged = Boolean(
       previous && JSON.stringify(previous.dependencies) !== JSON.stringify(task.dependencies),
     );
-    const displaced = dbUpsertTask(task);
     for (const id of displaced) {
       const prior = this.tasks.get(id);
       if (!prior) continue;
@@ -6114,6 +6204,170 @@ export class Registry extends EventEmitter {
     return episodesFor(noteKeyFor(s));
   }
 
+  // ---- launch presentation (how the dashboard draws a managed launch) ----
+
+  /**
+   * Record that this exact prompt is the launch turn of the session's conversation.
+   *
+   * Written at the DELIVERY boundary - immediately before a terminal paste, immediately
+   * after Pi's launch identity binds, before an SDK session becomes streamable - because
+   * that is the only place both facts exist at once: the complete text the runtime is about
+   * to receive, and the operator's own request it was composed from.
+   *
+   * `displayText` is what the conversation window draws instead. Null is a deliberate
+   * value, not a missing one: it means this launch had no distinct human-authored request,
+   * and the turn is omitted rather than rendered as platform instructions.
+   *
+   * Returns null for an unknown session, which is the caller's signal that nothing was
+   * recorded - a launch whose session vanished has no conversation to present.
+   */
+  recordLaunchTurn(
+    sessionId: string,
+    prompt: string,
+    displayText: string | null,
+    now = Date.now(),
+  ): LaunchTurnMarker | null {
+    const s = this.sessions.get(sessionId);
+    if (!s) return null;
+    return this.recordLaunchTurnForKey(noteKeyFor(s), prompt, displayText, now);
+  }
+
+  /**
+   * The same door, addressed by logical key rather than by session.
+   *
+   * It exists for one caller: `SdkSupervisor.adopt` persists a marker BEFORE
+   * `registerSdkSession`, so the first transcript frame cannot outrun its own presentation
+   * metadata - and at that instant there is no session to look the key up from. A fresh
+   * SDK session's key is its own id (nothing has bound yet), which is what makes passing
+   * the registration id here correct rather than a shortcut.
+   */
+  recordLaunchTurnForKey(
+    noteKey: string,
+    prompt: string,
+    displayText: string | null,
+    now = Date.now(),
+  ): LaunchTurnMarker | null {
+    const text = prompt.trim();
+    // An empty launch prompt is a resume, not a launch. There is no turn to present.
+    if (!text) return null;
+    const display = displayText?.trim() ? displayText.trim() : null;
+    const prev = this.launchTurns.get(noteKey);
+    const marker: LaunchTurnMarker = {
+      noteKey,
+      fingerprint: launchTextFingerprint(text),
+      displayText: display,
+      // Null on every record, including one that replaces an earlier marker under this key.
+      // The turn this launch will write does not exist yet, and inheriting the PREVIOUS
+      // launch's anchor would point the projection at a turn belonging to the conversation
+      // this one replaced.
+      messageId: null,
+      createdAt: prev?.createdAt ?? now,
+      updatedAt: now,
+    };
+    upsertSessionLaunchTurn(marker);
+    this.launchTurns.set(noteKey, marker);
+    return marker;
+  }
+
+  /**
+   * Drop a marker whose delivery did not happen.
+   *
+   * The rollback half of recording before the paste. A marker with no launch behind it
+   * claims the dashboard should project a turn that was never written, and the next real
+   * human message under that key is what it would be compared against.
+   */
+  discardLaunchTurn(marker: LaunchTurnMarker | null): void {
+    if (!marker) return;
+    // Only if this is still the marker we wrote. A later dispatch into the same key owns
+    // the row now, and a failed earlier launch must not delete the one that succeeded.
+    if (this.launchTurns.get(marker.noteKey)?.updatedAt !== marker.updatedAt) return;
+    deleteSessionLaunchTurn(marker.noteKey);
+    this.launchTurns.delete(marker.noteKey);
+  }
+
+  /**
+   * Carry a marker from the provisional session key to the harness-native conversation key,
+   * and ONLY on that first bind.
+   *
+   * The guard is the whole method, and it is what separates this from
+   * `moveForemanInviteKey`, which moves on every rotation. A `/clear` starts a new logical
+   * conversation whose first turn is whatever the operator or the daemon says next; carrying
+   * a launch marker into it would let the projection swallow a real message. So the move
+   * fires only when the source key is the session's own synthetic id - the one state that
+   * can only ever mean "nothing had bound yet" - and a native-to-native rotation strands the
+   * row for the pruner, exactly as the note and the goal are stranded.
+   */
+  private moveLaunchTurnOnInitialBind(previous: Session, next: Session): void {
+    const fromKey = noteKeyFor(previous);
+    const toKey = noteKeyFor(next);
+    if (fromKey === toKey) return;
+    if (fromKey !== previous.id) return;
+    const marker = this.launchTurns.get(fromKey);
+    if (!marker) return;
+    moveSessionLaunchTurn(fromKey, toKey);
+    this.launchTurns.delete(fromKey);
+    this.launchTurns.set(toKey, { ...marker, noteKey: toKey });
+  }
+
+  /**
+   * Anchor a launch marker to the native transcript turn a decorated read just identified.
+   *
+   * Write-once by design: an anchored marker is never re-pointed, so a later turn carrying
+   * the identical bytes cannot steal the projection from the turn that actually started the
+   * conversation. A repeat rendering literally is the correct outcome - it really is a
+   * separate message.
+   *
+   * Called from the transcript seams rather than from a launch seam, because this is the one
+   * fact about the launch turn that only a READ can supply: at dispatch the prompt has not
+   * been written yet and has no id.
+   */
+  bindLaunchTurnMessage(sessionId: string, messageId: string): void {
+    const s = this.sessions.get(sessionId);
+    if (!s || !messageId) return;
+    const key = noteKeyFor(s);
+    const marker = this.launchTurns.get(key);
+    if (!marker || marker.messageId !== null) return;
+    const anchored: LaunchTurnMarker = { ...marker, messageId };
+    upsertSessionLaunchTurn(anchored);
+    this.launchTurns.set(key, anchored);
+  }
+
+  /**
+   * This session's launch marker, for transcript decoration. Null when Mission Control did
+   * not launch this conversation, which is every manually discovered session and every
+   * conversation a `/clear` replaced.
+   *
+   * Deliberately NOT denormalized onto `Session`. A card has no question to ask of it: it
+   * is a per-message decoration on a transcript read, and putting it on the snapshot would
+   * ship a fingerprint of the operator's prompt to every dashboard on every sweep.
+   */
+  launchTurnFor(sessionId: string): LaunchTurnMarker | null {
+    const s = this.sessions.get(sessionId);
+    if (!s) return null;
+    return this.launchTurns.get(noteKeyFor(s)) ?? null;
+  }
+
+  /**
+   * Drop markers belonging to no live session and older than `olderThan`. Returns how many.
+   *
+   * Owned here, gated on `sweptSessions`, and protecting `sessions` rather than
+   * `liveSessions()` for exactly the three reasons `pruneGoals` documents at length: the
+   * in-memory map accumulates alongside the table so both drop together or neither does,
+   * an unswept session map is "liveness unknown" rather than "nothing is live", and an
+   * exited card a human is still reading keeps its conversation until it is evicted.
+   */
+  pruneLaunchTurns(olderThan: number): number {
+    if (!this.sweptSessions) return 0;
+    const liveKeys = new Set([...this.sessions.values()].map((s) => noteKeyFor(s)));
+    const removed = pruneSessionLaunchTurns(liveKeys, olderThan);
+    if (!removed) return 0;
+    for (const [key, marker] of this.launchTurns) {
+      if (liveKeys.has(key) || marker.updatedAt >= olderThan) continue;
+      this.launchTurns.delete(key);
+    }
+    return removed;
+  }
+
   // ---- goals (what a session is attempting to solve) ----
 
   /**
@@ -6577,7 +6831,11 @@ export class Registry extends EventEmitter {
   }
 
   /**
-   * Record that this session's human has corrected it, and light the offer if that is new.
+   * Record that this session's human has steered it, and light the offer if that is new.
+   *
+   * The transcript poller's door - it calls this for a session it just read out of the live
+   * map, so no row check is made here. The review path enters through
+   * `recordRetroHumanReview`, which adds one.
    *
    * Idempotent and one-way, because the fact is: the poller calls this on every tick once a
    * session has flipped, and a correction cannot be taken back. The early return is what
@@ -6592,6 +6850,57 @@ export class Registry extends EventEmitter {
     if (sessionEqual(s, next)) return;
     this.sessions.set(sessionId, next);
     this.emitSession(next);
+  }
+
+  /**
+   * A human just settled one of this session's reviews, so it has been steered.
+   *
+   * Separate from `recordRetroCorrections` for one reason, and it is the dangling-review
+   * case: `ReviewManager` settles rows for sessions that are already GONE - the orphan
+   * sweeps, and a decision that lands in the window between eviction and the route
+   * returning. `recordRetroCorrections` remembers an id whether or not a row exists, because
+   * the transcript poller only ever calls it for a session it just read out of the live map.
+   * This caller has no such guarantee, and an id kept for a row that will never come back is
+   * a leak that `remove` can no longer collect - `remove` has already run.
+   *
+   * So the row is the gate. A session still present gets the signal and the emit; a session
+   * that has gone gets nothing, and gains nothing later either: `ReviewManager.record` refuses
+   * to write a durable answer for a session with no row, so the dangling case leaves no row
+   * for `seedRetroFromReviews` to read back on this daemon or on any later one. The exclusion
+   * is structural rather than a piece of memory a restart would discard, which is what lets
+   * this method stay a one-line guard instead of an ownership ledger.
+   */
+  recordRetroHumanReview(sessionId: string): void {
+    if (!this.sessions.has(sessionId)) return;
+    this.recordRetroCorrections(sessionId);
+  }
+
+  /**
+   * Restore review-backed worthiness for a session being introduced into the live map.
+   *
+   * Called from the two doors into `sessions` - `mergeDiscovered` on first sight, and
+   * `registerSdkSession` - and from nowhere else. That bound is the design: the alternative
+   * considered was loading every session id with a human-resolved review at boot, which is a
+   * process-lifetime set that grows with the whole review history and is mostly ids of
+   * sessions that will never be seen again. One indexed existence read per introduced
+   * session costs less and forgets on eviction like everything else here.
+   *
+   * A read that throws is logged and treated as "no evidence": the honest failure for this
+   * signal is to under-offer, and a database hiccup must not take a discovery sweep with it.
+   *
+   * What this reads is ONLY answers given while the session was live to receive them, and
+   * that is enforced where the row is written rather than filtered here: the query cannot tell
+   * a dangling answer from an ordinary one, so `ReviewManager.record` refuses to write one at
+   * all. That is the whole of the dangling-path exclusion, and it holds across a restart
+   * because it is a property of the table rather than of this process's memory.
+   */
+  private seedRetroFromReviews(sessionId: string): void {
+    if (this.retroCorrections.has(sessionId)) return;
+    try {
+      if (hasHumanResolvedReview(sessionId)) this.retroCorrections.add(sessionId);
+    } catch (err) {
+      console.error("[registry] could not read human-resolved reviews for", sessionId, err);
+    }
   }
 
   /**

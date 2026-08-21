@@ -43,6 +43,7 @@ function tourTask(overrides: Partial<Task> = {}): Task {
     createdAt: 1,
     updatedAt: 1,
     dispatchedAt: null,
+    automaticCleanup: null,
     completedAt: null,
     ...overrides,
   };

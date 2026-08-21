@@ -1,7 +1,7 @@
 // What is at stake: keyboard navigation and rendered order staying ONE fact.
 //
-// Three layouts render this ordering and two arrow-key index arrays are derived from it - the
-// grid's flat list and the board's per-column ids. Clustering REORDERS tiles within a column
+// Both layouts render this ordering and two arrow-key index arrays are derived from it - the
+// Console rail's flat list and the Board's per-column ids. Clustering REORDERS tiles within a column
 // (siblings were name-sorted apart before), so an ordering computed twice by two rules is Up/Down
 // landing somewhere other than where the eye is, silently, with nothing failing. These assert the
 // properties that make the two agree by construction: one function, idempotent, clusters
@@ -193,8 +193,8 @@ test("fleetBlocks frames exactly the span, and a lone sibling still gets one", (
 test("the arrow keys walk straight through a cluster boundary, in both layouts", () => {
   // The end all of the above is for. Clustering is the first thing that reorders tiles WITHIN a
   // column, so this composes the real ordering with the real `moveSelection` and walks the
-  // sequence a finger would: down the board column across the frame's edges, and along the flat
-  // grid list. A frame that changed the rendered order without changing these arrays would land
+  // sequence a finger would: down the board column and Console rail across the frame's edges.
+  // A frame that changed the rendered order without changing these arrays would land
   // the cursor on a different tile than the eye.
   const fleet = [
     plain("aaa"),
@@ -209,18 +209,18 @@ test("the arrow keys walk straight through a cluster boundary, in both layouts",
   const columns = ordered.groups.map((g) => g.sessions.map((s) => s.id));
   const ids = ordered.sessions.map((s) => s.id);
   const byName = new Map(ordered.sessions.map((s) => [s.name, s.id]));
-  const walk = (mode: "board" | "grid", key: "ArrowDown" | "ArrowRight"): string[] => {
+  const walk = (mode: "board" | "console"): string[] => {
     const seen: string[] = [];
     let at: string | null = byName.get("aaa")!;
     while (at) {
       seen.push(ordered.sessions.find((s) => s.id === at)!.name);
-      at = moveSelection({ mode, key, ids, currentId: at, cols: 1, columns });
+      at = moveSelection({ mode, key: "ArrowDown", ids, currentId: at, columns });
     }
     return seen;
   };
   // Into the frame at `mmm`, out of it at `zulu` - no row skipped, none visited twice.
-  assert.deepEqual(walk("board", "ArrowDown"), ["aaa", "mmm", "delta", "zulu"]);
-  assert.deepEqual(walk("grid", "ArrowRight"), ["aaa", "mmm", "delta", "zulu"]);
+  assert.deepEqual(walk("board"), ["aaa", "mmm", "delta", "zulu"]);
+  assert.deepEqual(walk("console"), ["aaa", "mmm", "delta", "zulu"]);
 });
 
 test("a cluster falls back to the member link's strategy label before its summary lands", () => {

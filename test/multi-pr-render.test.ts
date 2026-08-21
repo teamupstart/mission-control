@@ -2,7 +2,6 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { SessionCard } from "../src/web/components/SessionCard.tsx";
 import { ConsoleDetail } from "../src/web/components/layouts/ConsoleDetail.tsx";
 import { TaskRepoPrs } from "../src/web/components/session-bits.tsx";
 import { mkSession, mkTaskSummary } from "./helpers/session-fixture.ts";
@@ -50,15 +49,6 @@ const REPO_PRS: TaskRepoPrSummary[] = [
   },
 ];
 
-function card(repoPrs: TaskRepoPrSummary[]): string {
-  return renderToStaticMarkup(
-    createElement(SessionCard, {
-      session: mkSession({ task: mkTaskSummary({ repoPrs }) }),
-      onOpenReviews: () => {},
-    }),
-  );
-}
-
 function detail(repoPrs: TaskRepoPrSummary[]): string {
   const session = mkSession({ task: mkTaskSummary({ repoPrs }) });
   return renderToStaticMarkup(
@@ -66,8 +56,8 @@ function detail(repoPrs: TaskRepoPrSummary[]): string {
   );
 }
 
-test("a multi-repo task's card names every repo and the pull request it has", () => {
-  const html = card(REPO_PRS);
+test("a multi-repo task's detail names every repo and the pull request it has", () => {
+  const html = detail(REPO_PRS);
 
   // The repo, by leaf name, beside its pull request number - so a row of these reads as
   // "which repo, which pull request" rather than as interchangeable numbers.
@@ -87,7 +77,7 @@ test("a multi-repo task's card names every repo and the pull request it has", ()
 });
 
 test("each repo line says which repo it is and what its pull request is doing", () => {
-  const labels = tooltipLabels(card(REPO_PRS));
+  const labels = tooltipLabels(detail(REPO_PRS));
   // The full path, because two attached repos can share a leaf name and the chip is short.
   assert.ok(
     labels.includes("/Users/dev/work/api (primary repo) - pull request #10 merged - open on GitHub"),
@@ -100,25 +90,12 @@ test("each repo line says which repo it is and what its pull request is doing", 
   );
 });
 
-test("the console detail draws the same shared leaf the card does", () => {
-  // The parity rule this repo keeps: the card is rendered by one layout and the detail by
-  // two, so a private copy in either silently misses a surface.
+test("the shared Console and Board detail draws the common leaf", () => {
   const leaf = renderToStaticMarkup(createElement(TaskRepoPrs, { repoPrs: REPO_PRS }));
-  assert.ok(containsMarkup(card(REPO_PRS), leaf), "the card renders the shared leaf");
-  assert.ok(containsMarkup(detail(REPO_PRS), leaf), "and so does the console detail");
+  assert.ok(containsMarkup(detail(REPO_PRS), leaf), "the detail renders the shared leaf");
 });
 
-test("a single-repo task's markup is exactly what it was", () => {
-  // Not "looks similar" - identical. Every surface gates on a list that is empty for a
-  // single-repo task, so nothing about the tasks that are nearly all of them may move.
-  const before = renderToStaticMarkup(
-    createElement(SessionCard, {
-      session: mkSession({ task: mkTaskSummary() }),
-      onOpenReviews: () => {},
-    }),
-  );
-  assert.equal(card([]), before);
-  assert.equal(card([]).includes("task-repo-pr"), false);
+test("a single-repo task keeps the multi-repo row absent", () => {
   assert.equal(detail([]).includes("task-repo-pr"), false);
   assert.equal(renderToStaticMarkup(createElement(TaskRepoPrs, { repoPrs: [] })), "");
 });

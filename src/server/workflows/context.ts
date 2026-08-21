@@ -429,8 +429,11 @@ async function readRepositoryEvidence(cwd: string | null): Promise<{
   return { ...work, standards, repositoryFingerprint };
 }
 
-function sourceFingerprint(context: WorkflowContextSnapshot): string {
-  return sha(JSON.stringify({
+function sourceFingerprintFields(
+  context: WorkflowContextSnapshot,
+  transcriptAnchor: number | null,
+): object {
+  return {
     rawGoal: context.primaryGoal.rawPrompt,
     refinedGoal: context.primaryGoal.refined,
     decisions: context.humanDecisions.map((item) => ({
@@ -440,7 +443,7 @@ function sourceFingerprint(context: WorkflowContextSnapshot): string {
     })),
     headSha: context.evidence.headSha,
     diffFingerprint: context.evidence.diffFingerprint,
-    transcriptAnchor: context.evidence.transcriptAnchor,
+    transcriptAnchor,
     standards: context.evidence.standards.map((doc) => ({
       path: doc.path,
       fingerprint: doc.fingerprint,
@@ -458,11 +461,42 @@ function sourceFingerprint(context: WorkflowContextSnapshot): string {
       repositoryScope: artifact.repositoryScope,
     })),
     stagedImageGeneration: context.evidence.stagedImageGeneration ?? 0,
-  }));
+  };
+}
+
+function sourceFingerprint(context: WorkflowContextSnapshot): string {
+  return sha(JSON.stringify(sourceFingerprintFields(
+    context,
+    context.evidence.transcriptAnchor,
+  )));
 }
 
 export function workflowContextFingerprint(context: WorkflowContextSnapshot): string {
   return sourceFingerprint(context);
+}
+
+/**
+ * The same fingerprint with the transcript anchor held at a constant - what changed about
+ * the WORK, rather than what changed about the conversation.
+ *
+ * `sourceFingerprint` above is the submission's identity and must keep reading every input,
+ * transcript included: two captures of the same repository taken either side of a real
+ * manual verification are genuinely different submissions and have to hash differently.
+ *
+ * But identity is the wrong question for "has anything changed since the round that asked
+ * for a fix?", and answering it with the identity hash is why that guard had fired twice in
+ * the system's entire history. The anchor is the transcript file's byte size, and delivering
+ * the repair packet is itself a transcript write, so by the time anyone can resubmit, the
+ * identity has already moved - whether or not a single byte of the work did. Comparing this
+ * instead lets the refusal mean what it says.
+ *
+ * Everything else stays in, staged evidence and standards included. A screenshot registered
+ * through `submit_workflow_evidence` is new evidence about the work and must read as a
+ * change; that is exactly the signal the resumption observer already resumes on, and the two
+ * must not disagree.
+ */
+export function workflowRepositoryFingerprint(context: WorkflowContextSnapshot): string {
+  return sha(JSON.stringify(sourceFingerprintFields(context, null)));
 }
 
 function compatibleSession(binding: WorkflowBinding, session: Session): boolean {

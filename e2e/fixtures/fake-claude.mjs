@@ -62,6 +62,18 @@ const SESSION_ID = process.env.MC_E2E_SESSION_ID ?? argvValue("--resume") ?? ses
 // for default launches, but preserve a pinned model so browser specs can exercise the
 // production model-metadata resolver rather than a browser-side stub.
 const MODEL = argvValue("--model") ?? "claude-e2e-mock";
+
+/**
+ * The reasoning effort this session is running at, written onto every assistant record the
+ * way the real CLI writes it - a TOP-LEVEL `effort` field on the turn record.
+ *
+ * An embedded (Agent SDK) session never types `/effort`, so nothing ever echoes a level into
+ * its transcript and this field is the only thing that ever says what it is running at. It
+ * is seeded from `--effort` (the flag the Agent SDK renders for its `effort` option) and
+ * moved by the `apply_flag_settings` control request the daemon sends when a person picks a
+ * new level on the card. `medium` is the real CLI's own recorded default.
+ */
+let effort = argvValue("--effort") ?? "medium";
 const HELD_TURN = "hold the current turn open";
 const HELD_TURN_MS = 5_000;
 /**
@@ -557,6 +569,9 @@ function appendTurn(role, content) {
       type: role,
       uuid: `${role}-${turn}`,
       timestamp: new Date().toISOString(),
+      // Top level, beside the record's own type - not inside `message`, where the model and
+      // usage live. That is where the real CLI puts it, and where the daemon reads it.
+      ...(role === "assistant" ? { effort } : {}),
       message: { role, content, ...runtime },
     })}\n`,
   );
@@ -900,6 +915,16 @@ rl.on("line", (line) => {
         // No assistant text: the turn was cut off, so there is nothing it finished saying.
         emit({ type: "result", subtype: "success", session_id: SESSION_ID, ...turnUsage() });
       }
+      return;
+    }
+    // A live effort change. Acknowledging it without MOVING anything would let a spec pass
+    // on a build where the level never reached the process: the proof is that the NEXT turn
+    // this fake writes records the new level, which is the same evidence the daemon reads
+    // off a real transcript.
+    if (frame.request?.subtype === "apply_flag_settings") {
+      const level = frame.request?.settings?.effortLevel;
+      if (typeof level === "string") effort = level;
+      ok(frame.request_id, {});
       return;
     }
     // Every other subtype gets a success. `get_usage` arrives repeatedly (once per init and

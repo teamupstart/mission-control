@@ -13,52 +13,37 @@ that submission as unverified rather than retrying on evidence Codex cannot prov
 session started without reporting hooks is refused at the composer with instructions to
 launch it through Mission Control, rather than accepting a batch it cannot verify.
 
-The **Work queue** panel is a drawer, kept out of the way until you ask for it: press
-**Queue** on the card (next to **Send** / **Focus** / **Reset**) or <kbd>q</kbd> on the
-selected session, and it opens under the controls. The button carries the open-item count,
-so you can see there's a batch waiting without opening anything. It's independent of
-expanding a card - a queue is worth a glance without handing the whole grid to one session
-- and stays open until you close it.
+The **Work queue** is a tab in the shared Console and Board detail. Select a session and
+choose **Work queue**, or press <kbd>q</kbd>; pressing <kbd>q</kbd> again returns to the
+Conversation tab. The tab carries the open-item count, so a waiting batch remains visible
+while you read another part of the detail.
 
-The **chip** above the controls opens the same drawer, and it's there for as long as the
+The queue summary remains available for as long as the
 session has queued anything at all - not just while work is still waiting. It reports what
 the batch is actually doing: **"3 queued"** while items wait, **"3 done"** once they've all
 landed, and **"1 done · 2 escalated · 1 stopped"** in the attention tone when some of them
 didn't - *escalated* being work Foreman gave up on and handed back, *stopped* being work
 that ended without landing at all. A session with no queued work gets a chip too, but only
 while a wrap-up question is outstanding: a **"ship it?"** in the attention tone, which is
-how the *prompted* trigger's ask stays reachable on a card that has no batch to show.
+how the *prompted* trigger's ask stays reachable on a session that has no batch to show.
 
 Only work that actually **verified** is ever counted as done, and that's the point of the
 wording rather than a detail of it. Every ending is *finished* in the sense that nothing
 will advance it again - landed, escalated and cancelled alike - so a chip that counted
 "finished" work would report a clean-looking total over a batch that quietly stalled. An
-**exited** session has no controls at all - no **Queue** button - so the chip is the only
-thing left saying what its batch did, which is why it outlives the work and why it doesn't
-flatter it.
+**exited** session has no action controls, but its queue history still says what the batch
+did, which is why it outlives the work and why it does not flatter it.
 
-Two ways to get the room back, for two different intents. **Queue** (or <kbd>q</kbd>) puts
-the drawer away entirely. Clicking the panel's **Work queue** header *folds* it instead -
-down to a title bar that still reports the count, so a long batch stops taking up the card
-without you losing sight of it. Fold state is per card and survives closing and reopening
-the drawer.
-
-On an **expanded** card the queue doesn't sit above the conversation at all - it moves into
-a column beside it. An expanded card is full-width and the scarce thing is height, so
-stacking them meant the queue and the log competed for the same pixels and a long enough
-queue pushed the conversation off the bottom of the card. Side by side, neither can take
-anything from the other: the log keeps its full height however much work is queued. Below
-about 820px wide there isn't room for two readable columns, so it stacks again - and there
-the queue is capped at 40% of the space it shares with the log, which always keeps the
-larger half.
+Press <kbd>q</kbd> or choose another detail tab to put the queue away. The queue's own
+sections can still fold long batches without losing their counts.
 
 Inside it: type an intent, press <kbd>Enter</kbd> (or **Add**), repeat - the same contract
-as the reply box on the same card, with <kbd>Shift</kbd><kbd>Enter</kbd> for a newline when
+as the reply box in the Conversation tab, with <kbd>Shift</kbd><kbd>Enter</kbd> for a newline when
 an intent needs more than one line. The box also
 takes **dropped or pasted images**: the upload starts on drop, and what's queued is the
 uploaded file's *path*, so the agent reads it with its own file tools whenever the item is
 finally delivered. **Add** stays disabled while an upload is in flight, and an image with no
-words is a valid item. The same gesture works on the card's transcript reply box and the
+words is a valid item. The same gesture works on the transcript reply box and the
 dispatch form. Items are drag-reorderable, editable, and removable while they wait -
 and **editing** one obeys the same <kbd>Enter</kbd> saves / <kbd>Shift</kbd><kbd>Enter</kbd>
 newline contract, because the edit box and the add box are the same textarea to look at and
@@ -165,7 +150,7 @@ it starts in **Preview**.
 **Foreman verification is evidence-only by design.** It reads the diff and the transcript and
 does not run tests. Its job is the narrower question: *was the thing you asked for actually
 done?* The review workflow owns its configured checks and reviewers. Gaps carry a severity, and only **blocking** ones send the agent back - a style nit
-lands as advisory, shows on the card, and never costs a round. Two knobs in the Foreman
+lands as advisory, shows on the session detail, and never costs a round. Two knobs in the Foreman
 popover bound it: **fix attempts per issue** (default 3) and **max fix rounds per item**
 (default 10, the hard stop).
 
@@ -386,7 +371,7 @@ it. Handing it the next item would type into a checkout still standing on the PR
 so the new work lands on a change that's out for review. So an **unmerged PR keeps the
 agent off the backlog** until it merges - turn off **Open PRs keep an idle agent off the
 backlog** if your PRs auto-merge and you'd rather have the throughput. A *merged* PR never
-blocks; it lingers on the card so you can see the work landed. This narrows *autopilot*
+blocks; it lingers on the session detail so you can see the work landed. This narrows *autopilot*
 only - dragging a task onto that agent yourself still works, because that's you saying
 "yes, that one".
 

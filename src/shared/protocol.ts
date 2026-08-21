@@ -16,7 +16,7 @@ import {
 import { TaskSourcesConfigSchema } from "./task-source.ts";
 import { CHEAP_ACTIONS, DIVERGENCE_KINDS, SKIP_REASONS } from "./foreman.ts";
 import { LLM_JOB_IDS } from "./llm-jobs.ts";
-import { CLAUDE_TRANSPORTS, LLM_RUNNER_IDS } from "./llm.ts";
+import { CLAUDE_TRANSPORTS, CODEX_TRANSPORTS, LLM_RUNNER_IDS } from "./llm.ts";
 import { RASTER_IMAGE_MIME_TYPES } from "./images.ts";
 import { LLM_SPEND_ROLES } from "./llm-spend.ts";
 import { OPEN_TARGET_IDS } from "./open-targets.ts";
@@ -2288,7 +2288,7 @@ export type PipelineConsoleBody = z.infer<typeof PipelineConsoleSchema>;
  * against the same list the render switch branches on. The labels and descriptions stay
  * in the web lib - the daemon has no use for prose it never shows.
  */
-export const LAYOUT_MODES = ["grid", "console", "board"] as const;
+export const LAYOUT_MODES = ["console", "board"] as const;
 export const LayoutModeSchema = z.enum(LAYOUT_MODES);
 /** Derived from the array, not from the schema, so reading it costs the web no zod. */
 export type LayoutMode = (typeof LAYOUT_MODES)[number];
@@ -2344,7 +2344,7 @@ export type ConversationView = (typeof CONVERSATION_VIEWS)[number];
  * the right rule and the breach is a defect to fix, not a licence to add a second one.
  */
 export const UI_CONFIG_DEFAULTS = {
-  layout: "grid",
+  layout: "console",
   conversationView: "terminal",
   keybindings: {},
   alerts: { notifications: false, sound: true },
@@ -2531,6 +2531,11 @@ export const LlmConfigSchema = z.object({
     .union([z.enum(CLAUDE_TRANSPORTS), z.literal("")])
     .catch("")
     .default(""),
+  /** Codex's headless wire protocol. Same ladder and same read tolerance as above. */
+  codexTransport: z
+    .union([z.enum(CODEX_TRANSPORTS), z.literal("")])
+    .catch("")
+    .default(""),
   /**
    * Per-job model overrides, keyed by `LlmJobId`. Empty or absent means the ladder decides.
    *
@@ -2555,6 +2560,7 @@ export const LlmConfigPatchSchema = z
   .object({
     runner: z.union([z.enum(LLM_RUNNER_IDS), z.literal("")]),
     claudeTransport: z.union([z.enum(CLAUDE_TRANSPORTS), z.literal("")]),
+    codexTransport: z.union([z.enum(CODEX_TRANSPORTS), z.literal("")]),
     models: z
       .record(z.string(), ModelOverrideSchema)
       .refine((m) => Object.keys(m).every((k) => (LLM_JOB_IDS as readonly string[]).includes(k)), {

@@ -253,8 +253,8 @@ test("Live types the authored instruction once and resumes on a fresh child segm
   // it. The delivery row above proves the daemon wrote it; this proves the SESSION received
   // it, which is the difference between a packet sent and a packet delivered.
   await dashboard.goto(`${daemon.baseURL}/#/`);
-  const card = dashboard.locator("article.card").first();
-  await card.getByRole("button", { name: "Expand conversation" }).click();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
   await expect(card.getByText("Remove the stray scratch file and say so.").first())
     .toBeVisible({ timeout: 40_000 });
   expect(sessionId).not.toBe("");
@@ -375,8 +375,8 @@ test("Preview prepares the identical packet and types nothing at all", async ({
   // Preview promise actually reduces to: not "the delivery row says prepared", but "nothing
   // reached the human's screen".
   await dashboard.goto(`${daemon.baseURL}/#/`);
-  const card = dashboard.locator("article.card").first();
-  await card.getByRole("button", { name: "Expand conversation" }).click();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
   await expect(card.getByPlaceholder(/^Reply to this session/)).toBeEnabled();
   await expect(card.getByText("Remove the stray scratch file and say so.")).toHaveCount(0);
 });
@@ -434,30 +434,6 @@ test("Board workflow controls expand in place and open the exact run", async ({
   await expect(boardDetail).toHaveAttribute("aria-hidden", "false");
   await expect(boardDetail.getByRole("tab", { name: "Conversation" }))
     .toHaveAttribute("aria-selected", "true");
-
-  // Cards gives its old conversation-expansion job to structural Enter as well. The first
-  // press expands and moves focus into Reply; Escape hands focus back before Enter collapses.
-  await api(daemon, "/api/ui/config", { layout: "grid" }, "PUT");
-  await dashboard.reload();
-  await expect(dashboard.locator("article.card")).toBeVisible();
-  // The arrow is RE-PRESSED until something is selected, rather than pressed once and asserted.
-  // A keystroke that lands between the reload's first paint and the window handler being attached
-  // is simply lost, and the negative assertion below cannot retry an element into existence - so
-  // that race read as "the card was expanded", which is not what failed. Idempotent with one card
-  // in the fleet: right from the only card keeps selecting it. A BARRIER, not a mask - every
-  // assertion after this still fails as loudly as it did.
-  await expect.poll(async () => {
-    await dashboard.keyboard.press("ArrowRight");
-    return await dashboard.locator("article.card.selected").count();
-  }, { message: "an arrow press should select the only card in the fleet" }).toBe(1);
-  const card = dashboard.locator("article.card.selected");
-  await expect(card).not.toHaveClass(/expanded/);
-  await dashboard.keyboard.press("Enter");
-  await expect(card).toHaveClass(/expanded/);
-  await expect(card.getByPlaceholder(/^Reply to this session/)).toBeFocused();
-  await dashboard.keyboard.press("Escape");
-  await dashboard.keyboard.press("Enter");
-  await expect(card).not.toHaveClass(/expanded/);
 
   // The compact workflow panel is the direct route to this durable run, while the separate
   // disclosure control above remains the in-place route. Return to Board to prove the click

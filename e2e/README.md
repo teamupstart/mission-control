@@ -18,6 +18,25 @@ install` is run by everyone and this suite is not - fetching ~150MB of Chromium 
 contributor who only ever runs `npm test` is a tax on the common path. CI installs it as its
 own step for the same reason, and skips it on the Node version that does not run this suite.
 
+## Host concurrency
+
+Playwright uses at most four workers, and Mission Control permits one E2E invocation per user on
+a host at a time. This is a shared limit across linked worktrees: a second full or focused run
+waits before Playwright starts any browser workers, prints the PID and checkout holding the lease,
+and begins when that run exits. The kernel releases the lease automatically if its process dies.
+If an unrelated process owns the derived lease port, the run refuses promptly instead of waiting.
+
+The resolved worker count is a hard ceiling. A command that asks for more than four workers is
+refused; use the ordinary default or lower it for a lighter run:
+
+```sh
+npm run test:e2e -- --workers=2
+npm run test:e2e -- --workers=1
+```
+
+The two CI shards remain concurrent because each job runs on its own machine. The lease coordinates
+processes sharing one host; it does not serialize separate runners.
+
 Useful flags:
 
 ```sh
@@ -102,6 +121,28 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   e2e/specs/native-worktree-dispatch.spec.ts \
   --workers=1 --reporter=list \
   | tee e2e/.artifacts/native-worktree-dispatch/focused-playwright-transcript.txt
+```
+
+### Task worktree retention
+
+`e2e/.artifacts/task-worktree-retention/` carries the two frames of the 30-day rule: a checkout
+whose unpushed local commit postponed cleanup, still showing **Clean up**, and the same task
+after an untouched window expired, with the cleanup control gone and its native slot back in
+the pool. The spec dispatches through a real native worktree, kills the agent without an
+outcome, makes a real git commit in the tree, and moves the retention ledger's own timestamps
+backwards while the daemon is stopped - a fixture technique, since the duration has no
+production setting and retention has no off switch.
+
+Regenerate the frames and transcript with:
+
+```sh
+mkdir -p e2e/.artifacts/task-worktree-retention
+set -o pipefail   # or the pipe below reports tee's success, not Playwright's
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/task-worktree-retention.spec.ts \
+  --workers=1 --reporter=list \
+  | tee e2e/.artifacts/task-worktree-retention/focused-playwright-transcript.txt
 ```
 
 ### Scout prompt context reader
@@ -675,8 +716,8 @@ every run for no added signal.
 
 `e2e/.artifacts/multiline-textarea/` contains three captures showing five explicit input
 lines in every multiline surface covered by the regression: the dispatch brief, the
-collapsed-card composer, and the compact terminal-style composer. The browser assertions
-also prove a sixth line uses an internal scrollbar instead of growing the surrounding card
+Console reply composer, and the compact terminal-style composer. The browser assertions
+also prove a sixth line uses an internal scrollbar instead of growing the surrounding pane
 without a bound.
 
 Regenerate them with:
@@ -778,8 +819,8 @@ OBSERVED clicking the Shipped stage opened the Shipped drawer in place, without 
 OBSERVED the drawer's "Ship log →" escalation navigated to #/shipped
 OBSERVED the strip is fleet-only: it did not follow the navigation off the fleet page
   ✓  1 [chromium] › e2e/specs/line-strip.spec.ts:85:1 › the Line renders every stage, tracks the fleet live, and its stages reach their targets (1.4s)
-OBSERVED the strip renders once, outside <header class="topbar">, so --topbar-h and .card.expanded are untouched
-  ✓  2 [chromium] › e2e/specs/line-strip.spec.ts:168:1 › the strip sits outside the topbar, so it cannot shorten an expanded card (992ms)
+OBSERVED the strip renders once, outside <header class="topbar">, so the topbar and fleet body keep separate height budgets
+  ✓  2 [chromium] › e2e/specs/line-strip.spec.ts:168:1 › the strip sits outside the topbar, preserving separate height budgets (992ms)
 
   2 passed (2.9s)
 ```
@@ -876,7 +917,7 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
 
 ### The console detail's tab row, carrying the toolbar
 
-`e2e/.artifacts/console-tabs-toolbar/` carries three frames from
+`e2e/.artifacts/console-tabs-toolbar/` carries two frames from
 `specs/console-tabs-toolbar.spec.ts`, behind the same `MC_E2E_EVIDENCE` flag. The change is a
 band that stopped existing and two controls that moved into a row which already had room, so
 what a picture answers is whether the row still reads as a tab strip.
@@ -887,17 +928,12 @@ bands - head, `PATH`/`BRANCH`, tab strip - with **Terminal view**, **Terminal** 
 directly under the row. The worktree band that used to sit between them is gone, and the path
 appears exactly once, in the row above.
 
-`02-cards-keep-their-own.png` is the regression that a naive move would have shipped silently:
-the same controls on an expanded Cards card, in the pane-owned band, worktree caption and full
-path included - that host has nowhere better to put them, so it keeps them. The frame is taken
-in the run that also presses <kbd>t</kbd> there and gets the terminal chooser.
-
 `03-narrow-one-row.png` is the give-way ladder at a 1160px window, and it is the frame the
 ladder exists for: one line, every tab still carrying its own word, the three toolbar controls
 drawn as glyphs that still answer to a screen reader. That it is one row is checkable in the
 DOM as a height; that it still reads as a toolbar is legible only here.
 
-Regenerate all three with:
+Regenerate both with:
 
 ```sh
 env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
@@ -1089,15 +1125,14 @@ Attach the generated frames to the pull request; they are never committed.
 
 ### The bind chip, back after a finished run
 
-`e2e/.artifacts/workflow-bind-chip-returns/` carries four frames from
+`e2e/.artifacts/workflow-bind-chip-returns/` carries three frames from
 `specs/workflow-bind-chip-returns.spec.ts`. They exist because the fix is a control *appearing*,
 and the state it appears in used to be a dead end: a session whose review had completed hid the
 `＋ workflow` chip forever, so the outcome chip stood there with no next move beside it.
 
 `console-detail-approved-and-bind-chip.png` is the headline - a console detail header reading
 `⌁ Approved` and `＋ workflow` side by side, the history and the next move at once.
-`card-approved-and-bind-chip.png` is the same pairing on a Cards card, at the narrow width where
-the head has to wrap to fit both. `bind-dialog-from-finished-run.png` and
+`bind-dialog-from-finished-run.png` and
 `console-detail-bind-dialog.png` are where each chip leads: the bind dialog pinned to that
 session, with the bound version chosen and `Submit bound version` enabled - the resubmit the
 daemon accepts while the original binding is still active.
@@ -1164,7 +1199,7 @@ Attach the generated frames to the pull request; they are never committed.
 
 ### The retro offer appearing, and being taken
 
-`e2e/.artifacts/retro-offer/` carries five frames and the run's own stdout from
+`e2e/.artifacts/retro-offer/` carries seven frames and the run's own stdout from
 `specs/retro-offer.spec.ts`, behind the same `MC_E2E_EVIDENCE` flag. The change is a control
 that **appears**, so the pair either side of that is the point: `01-no-offer-yet.png` is a
 fresh session's action row, and `02-offer-on-the-card.png` is the same row once a human has
@@ -1179,10 +1214,18 @@ by whether the session earned the offer - the backstop sits on the dialog's own 
 footer, away from Cancel and Complete & close, because it is not a third answer to the
 dialog's question.
 
+`06-post-merge-follow-up-started.png` is the click taken after the pull request merged: the
+flash naming the linked follow-up task, with the source task still complete beside it.
+
+`07-offer-earned-by-answering-a-question.png` is the same control earned the OTHER way: that
+session's human typed no correction at all, they answered the agent's own `AskUserQuestion`
+form in the dashboard, and the daemon read the durable human-resolved review. Its case runs
+with `MISSION_RETRO_SCAN_MS=0`, so the transcript scanner cannot have supplied the answer.
+
 That the offer is **absent** the rest of the time is checkable in the DOM as a count; that it
 reads as an offer rather than as a permanently disabled control is legible only here.
 
-Regenerate all six with:
+Regenerate all seven with:
 
 ```sh
 set -o pipefail   # or the pipe below reports tee's success, not Playwright's

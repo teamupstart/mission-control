@@ -8,11 +8,9 @@ const { BrowserWindow } = require("electron");
  * That comparison rests on something neither fixture used to check: that every page was laid
  * out in the window the fixture asked for.
  *
- * It is not a theoretical worry, and the error is not small. `.card.expanded` is
- * `calc(100dvh - var(--topbar-h) - var(--cmdbar-clearance) - 28px)`, and the grid cases pin
- * both tokens inline - so the card's measured height IS the viewport minus 180px, a reading
- * of the window with no layout in it at all. CI produced `720 !== 693` from exactly that:
- * four pages measured in a 900px window and the fifth in an 873px one. Both cards were
+ * It is not a theoretical worry, and the error is not small. Full-height layout cases are
+ * measured directly from the viewport. CI produced `720 !== 693` from exactly that:
+ * four pages measured in a 900px window and the fifth in an 873px one. Both layouts were
  * correct. The test called it a regression in the Line strip, which is the opposite of what
  * had happened, and the strip is where somebody would then have gone looking.
  *

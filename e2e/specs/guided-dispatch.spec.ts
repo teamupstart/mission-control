@@ -252,7 +252,7 @@ test("a fresh profile gets the guided pass, and Tab hands back the working form"
   await page.keyboard.press("Control+Enter");
 
   await expect(dialog).toBeHidden();
-  await expect(page.locator("article.card")).toHaveCount(1);
+  await expect(page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row")).toHaveCount(1);
 });
 
 // ---- the Repo question -----------------------------------------------------------------

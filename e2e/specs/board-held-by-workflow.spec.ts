@@ -314,49 +314,6 @@ test("the console rail draws the same rule, since the ordering it renders is sha
   await expect(drilled.locator(".rail-row.is-held .rail-held")).toHaveText("held");
 });
 
-test("Cards wears the held mark too, since it has no column to say it", async ({
-  dashboard,
-  daemon,
-}) => {
-  // Cards sorts held sessions last (every layout shares `orderSessions`) but draws no section
-  // rule - its arrow keys are geometric against the CSS grid. So the card's spine and tag are
-  // that layout's whole answer, and a card without them would show a held agent as free.
-  const free = await dispatchIdleAgent(dashboard, daemon, "stay free on cards");
-  const held = await dispatchIdleAgent(dashboard, daemon, "get held on cards");
-  await openRunOn(daemon, held, "cards");
-
-  const response = await fetch(`${daemon.baseURL}/api/ui/config`, {
-    method: "PUT",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ layout: "grid" }),
-  });
-  expect(((await response.json()) as { config?: { layout?: string } }).config?.layout).toBe("grid");
-  await dashboard.reload();
-
-  const cards = dashboard.locator("article.card");
-  await expect(cards).toHaveCount(2);
-  const heldCard = dashboard.locator("article.card.is-held");
-  await expect(heldCard).toHaveCount(1);
-  await expect(heldCard).toContainText(await sessionName(daemon, held));
-  await expect(heldCard.locator(".card-held")).toHaveText("held");
-  // The free card carries neither the spine nor the tag.
-  const freeCard = cards.filter({ hasText: await sessionName(daemon, free) });
-  await expect(freeCard).not.toHaveClass(/is-held/);
-  await expect(dashboard.locator(".card-held")).toHaveCount(1);
-
-  // The pill must not COST anything: the crowded head wraps rather than deleting the title
-  // or clipping the trailing controls, so the name shows a readable stem and the expand
-  // caret sits fully inside the card. Geometry, because markup cannot say "still visible".
-  const heldTitle = heldCard.locator(".card-title h2");
-  expect((await heldTitle.boundingBox())!.width).toBeGreaterThan(40);
-  const caret = heldCard.getByRole("button", { name: "Expand conversation" });
-  const caretBox = (await caret.boundingBox())!;
-  const cardBox = (await heldCard.boundingBox())!;
-  expect(caretBox.x + caretBox.width).toBeLessThanOrEqual(cardBox.x + cardBox.width);
-
-  await shoot(dashboard, "cards-held-mark");
-});
-
 test("a run that reaches a terminal status releases its session back to free", async ({
   dashboard,
   daemon,

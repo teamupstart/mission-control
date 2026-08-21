@@ -1,14 +1,10 @@
 /**
- * What is at stake: the conversation chord has to REVEAL the conversation in all three
+ * What is at stake: the conversation chord has to REVEAL the conversation in both
  * layouts, and reveal is not toggle.
  *
- * The conversation is the one thing every layout shows and no two show the same way.
- * Cards has no tab strip at all - the transcript is simply part of the expanded card.
- * Console always has a detail, whose strip may have been walked off to Files. The Board
- * has both: an overview that draws no detail, and a drill-in that IS a console. So one
- * key means four different actions, and three of those four are reachable only in a
- * layout you are not currently looking at - which is exactly the shape of thing that
- * gets verified once by hand and then silently breaks.
+ * Console always has a detail, whose strip may have been walked off to Files. Board has
+ * both an overview that draws no detail and a drill-in that is a Console. The same key
+ * therefore either opens the Board detail or switches a mounted detail back to Conversation.
  *
  * It is testable at all because the decision is a pure function (`conversationReveal`)
  * rather than four branches inside App's keydown handler. This repo renders with
@@ -40,25 +36,10 @@ function reveal(over: Partial<Parameters<typeof conversationReveal>[0]> = {}) {
   return conversationReveal({
     layout: "console",
     hasSelection: true,
-    selectedIsExpanded: false,
     boardDetailOpen: false,
     ...over,
   });
 }
-
-test("Cards expands the card, because that is where its transcript is", () => {
-  // Cards draws no tab strip, so there is no tab to switch to. The transcript is part of
-  // the expanded card and expanding is the only way to reach it.
-  assert.equal(reveal({ layout: "grid", selectedIsExpanded: false }), "expand");
-});
-
-test("Cards never closes a card that is already showing its conversation", () => {
-  // The regression this exists to stop: making the chord a toggle. Pressing it on the
-  // card you are reading would then HIDE the conversation - the exact opposite of what
-  // the key is named for. `e` owns the toggle.
-  assert.equal(reveal({ layout: "grid", selectedIsExpanded: true }), "already");
-  assert.notEqual(reveal({ layout: "grid", selectedIsExpanded: true }), "expand");
-});
 
 test("the Board overview opens the drill-in, which starts on the conversation", () => {
   // No detail is drawn at all on the overview, so a tab request would arrive at nothing.
@@ -104,7 +85,7 @@ test("every layout has an answer - a new one cannot silently do nothing", () => 
   for (const layout of LAYOUT_MODES) {
     const answer = reveal({ layout });
     assert.ok(
-      ["expand", "drill-in", "tab", "already"].includes(answer),
+      ["drill-in", "tab"].includes(answer),
       `${layout} returned ${answer} for a selected session`,
     );
   }
@@ -115,7 +96,6 @@ test("the handler still routes the chord through the decision, and performs each
   // stops calling it, or calls it and ignores a branch.
   assert.match(app, /chord === bindings\.conversation/, "the chord must still be handled");
   assert.match(app, /conversationReveal\(\{/, "the handler must ask the shared decision");
-  assert.match(app, /reveal === "expand"[^\n]*toggleExpand\(sel\.id\)/);
   assert.match(app, /reveal === "drill-in"[^\n]*setBoardOpen\(true\)/);
   assert.match(app, /reveal === "tab"[^\n]*requestConversationTab\(sel\.id\)/);
   // The nonce is what makes a second press land after you have walked away and back.

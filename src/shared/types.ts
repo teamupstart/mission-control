@@ -14,7 +14,7 @@ import type { InspectorPosture } from "./inspector.ts";
 import type { LlmJobId, ResolvedLlmJobModel } from "./llm-jobs.ts";
 import type { AutomationRoleCost } from "./llm-spend.ts";
 import type { LineSummary } from "./line.ts";
-import type { ClaudeTransport, LlmRunnerId, ResolvedLlmRunner } from "./llm.ts";
+import type { ClaudeTransport, CodexTransport, LlmRunnerId, ResolvedLlmRunner } from "./llm.ts";
 import type { ResolvedModel } from "./model-choice.ts";
 import type {
   PipelineLaunchRuntime,
@@ -630,8 +630,8 @@ export interface Session {
    * instrumented Claude session rather than by Foreman on the ones it inspects.
    *
    * A sibling of `note` rather than a field inside it, because Foreman does not own this
-   * sentence and the card must be free to show it without showing (or gating on) anything
-   * of Foreman's - the whole point of the feature is that it is visible on a collapsed card.
+   * sentence and the dashboard must be free to show it without showing (or gating on)
+   * anything of Foreman's - the feature remains visible in fleet summaries.
    * Null for a session that has taken no prompt yet, and for a Codex session, which carries
    * no hooks to derive one from.
    */
@@ -1739,6 +1739,44 @@ export interface TaskRepoEntry {
   mergedAt: number | null;
 }
 
+/**
+ * How long a terminal task's checkouts survive without a Git-visible change.
+ *
+ * Fixed, and deliberately without a configuration key in this release - see
+ * `docs/worktrees-and-checks.md`. Shared rather than server-only because the dashboard states
+ * the policy in words next to the manual cleanup control, and a copy that drifted from the
+ * server's window would be a promise the product does not keep.
+ */
+export const TASK_WORKTREE_RETENTION_DAYS = 30;
+
+/** Bytes of automatic-cleanup explanation that may reach a browser. One short sentence. */
+export const TASK_AUTOMATIC_CLEANUP_DETAIL_LIMIT = 200;
+
+/**
+ * What automatic worktree cleanup has to say about this task, or null when it has nothing.
+ *
+ * Null in every ordinary case: a task with no checkout, a checkout inside its 30-day window,
+ * and a task whose automatic cleanup simply worked (its row is deleted, and the whole-task
+ * update that removes the Clean up control is the report). It becomes non-null only when a
+ * cleanup that was already DUE failed to release everything and is waiting to try again -
+ * which is the one situation where a card showing a stale worktree needs to explain itself.
+ *
+ * Deliberately small. The ledger holds a fingerprint, a resource generation, a claim token and
+ * a provider's own error text; none of them appear here. `detail` is a bounded, human-readable
+ * classification produced for this purpose, never a raw exception, never a git path.
+ *
+ * It is derived from the retention ledger on read, not stored on the `tasks` row: there is one
+ * durable clock, and a second copy of its state would be a second thing to keep in step.
+ */
+export interface TaskAutomaticCleanup {
+  /** Only one state crosses today. An enum so a later observability state is additive. */
+  state: "retrying";
+  /** When the daemon will try again, epoch ms, or null if it is ready now. */
+  retryAt: number | null;
+  /** One bounded sentence about why the last attempt did not finish. */
+  detail: string | null;
+}
+
 export interface Task {
   id: string;
   /** Short label - source of the terminal home name slug and the card title. */
@@ -1914,6 +1952,15 @@ export interface Task {
   outcomeUrl: string | null;
   /** Failure reason when status = failed. */
   error: string | null;
+  /**
+   * Automatic worktree cleanup's own state for this task, or null when it has nothing to say.
+   *
+   * Derived from the retention ledger every time the task is loaded or refreshed, so it rides
+   * the ordinary whole-task `task_upsert` and needs no event of its own and no browser
+   * polling. Separate from `outcome` and `error` on purpose: what a task PRODUCED and why it
+   * FAILED are the task's own record, and a maintenance note must never overwrite either.
+   */
+  automaticCleanup: TaskAutomaticCleanup | null;
   createdAt: number;
   updatedAt: number;
   dispatchedAt: number | null;
@@ -2413,11 +2460,17 @@ export interface InspectorSummary {
 /**
  * Why a finished session is worth a retrospective.
  *
- * Two reasons, and they are the two the source plan named: the human corrected the agent in
- * the transcript, or the Inspector raised findings that were then resolved. Both describe
+ * Two reasons, and they are the two the source plan named: the human STEERED the agent, or
+ * the Inspector raised findings that were then resolved. Both describe
  * something that was LEARNED - a correction the next session should not need, a defect the
  * repository could have warned about - which is exactly what a repository memory is for. A
  * clean run nobody had to steer teaches nothing, and gets no offer.
+ *
+ * `corrections` is the wire spelling of the first, and it is broader than its name: steering
+ * arrives either as a human turn in the transcript beyond the opening brief or as a review
+ * the human settled - an answered question, an approved plan, a set of decisions - which no
+ * transcript carries, because those land in the JSONL as pure tool results. One reason for
+ * both, because they are one fact about the session and the offer asks one question of it.
  *
  * The values are display vocabulary rather than persisted vocabulary: nothing writes them to
  * SQLite, so they may be renamed. They still reach the browser, so a build that does not
@@ -2431,7 +2484,7 @@ export type RetroReason = (typeof RETRO_REASONS)[number];
  * The per-session retro-worthiness signal, denormalized onto a Session like `inspector`.
  *
  * A list rather than one reason because both can hold at once and they say different things
- * to the person deciding whether to spend a turn on it: "you corrected this agent four times"
+ * to the person deciding whether to spend a turn on it: "you steered this agent four times"
  * and "the review found things" are separate arguments for the same ceremony. The summary is
  * only ever present when `reasons` is non-empty; absence IS "not worth retrospecting".
  */
@@ -2487,6 +2540,8 @@ export interface LlmStatus {
   runner: ResolvedLlmRunner;
   /** The resolved wire transport for tool-less Claude calls in every process. */
   claudeTransport: ClaudeTransport;
+  /** The same, for Codex. `exec` spawns the CLI; `sdk` drives it through the typed SDK. */
+  codexTransport: CodexTransport;
   models: Record<LlmJobId, ResolvedLlmJobModel>;
   /** Every provider this build has, in declaration order. */
   runners: LlmProviderView[];
@@ -2770,7 +2825,7 @@ export type ServerEvent =
    */
   | { type: "archive_changed" };
 
-// ---- session transcript (expanded card) ----
+// ---- session transcript (session detail) ----
 
 /** One tool call in a turn: what was invoked, and what it was invoked with. */
 export interface ToolCall {
@@ -2790,7 +2845,7 @@ export interface ToolCall {
   input?: string;
 }
 
-/** One normalized turn from a Claude/Codex transcript, for the expanded card. */
+/** One normalized turn from a Claude/Codex transcript, for the session detail. */
 export interface TranscriptMessage {
   /** Stable id (the record uuid) - used to de-dupe across init/append. */
   id: string;
@@ -2806,7 +2861,39 @@ export interface TranscriptMessage {
    * anything we can't attribute - which reads as the human, the way it always has.
    */
   origin?: TurnOrigin;
+  /**
+   * How the DASHBOARD should present this turn, when that differs from how the transcript
+   * records it. Absent on every turn the log renders literally, which is nearly all of
+   * them, and absent on the wire for any client or fixture that never asked.
+   *
+   * Additive and advisory: `text`, `tools`, `ts`, `role` and `id` are the native record
+   * either way, so a server-side evidence consumer that ignores this field reads exactly
+   * what it read before the field existed. Only `src/web/lib/launch-presentation.ts` acts
+   * on it.
+   */
+  presentation?: TranscriptPresentation;
 }
+
+/**
+ * A dashboard-only presentation instruction attached to one normalized turn.
+ *
+ * A discriminated `kind` rather than a `hidden: true` boolean, because the question a
+ * reader of this field has to answer is "WHY does this turn present differently", and a
+ * boolean answers only "should I draw it". A second presentation kind extends the union;
+ * it must not repurpose `launch`.
+ *
+ * `launch` is the composed prompt Mission Control used to START a managed conversation:
+ * the operator's request plus the repository manifest, the shared execution authorization,
+ * and the task kind's contract. All of it reached the agent and all of it is in the native
+ * transcript. `displayText` is the operator's own request, captured at dispatch, and is
+ * what the conversation window draws in place of the whole payload. `null` means this
+ * launch had no distinct human-authored request, and the turn is omitted from the visible
+ * log rather than drawn as platform instructions or invented prose.
+ */
+export type TranscriptPresentation = {
+  kind: "launch";
+  displayText: string | null;
+};
 
 /**
  * The non-human authors of a "user" turn.

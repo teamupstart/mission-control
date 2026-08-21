@@ -27,9 +27,9 @@ const LAUNCH_RUNTIME_COPY: Record<
   PipelineLaunchRuntime,
   { label: string; detail: string }
 > = {
-  "claude-sdk": {
-    label: "Claude Agent SDK",
-    detail: "Starts one managed Claude session with /engineer <idea> as turn one.",
+  "agent-sdk": {
+    label: "Managed Agent SDK",
+    detail: "Starts the Claude or Codex Engineer host selected on each Pipeline task.",
   },
   terminal: {
     label: "Terminal",
@@ -549,9 +549,9 @@ export function ConductorPanel({ state }: { state: ConductorState }): React.JSX.
           <ConsoleState tone={config ? "ok" : "unknown"}>
             {!config
               ? "Unknown - the daemon has not answered."
-              : config.launchRuntime === "claude-sdk"
-                ? "Claude Agent SDK - the shipped default, with no terminal fallback."
-                : "Terminal - the explicit compatibility host."}
+              : config.launchRuntime === "agent-sdk"
+                ? "Managed Agent SDK - the shipped default, with no Terminal fallback."
+                : "Terminal - the explicit Claude-only compatibility host."}
           </ConsoleState>
         </ConsoleCard>
 

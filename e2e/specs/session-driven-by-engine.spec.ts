@@ -224,53 +224,52 @@ test.describe("a session an external engine is driving", () => {
     const ordinary = startPane(daemon.repo, "ordinary");
     panes.push(ordinary);
 
-    // Find OUR cards by the tmux session names we generated. Never "the only card":
+    // Find our rows by the tmux session names we generated. Never "the only session":
     // discovery is on, so the developer's own agents are on this fleet too.
-    const drivenCard = dashboard.locator("article.card").filter({ hasText: driven.session });
-    const ordinaryCard = dashboard.locator("article.card").filter({ hasText: ordinary.session });
-    await expect(drivenCard).toHaveCount(1, { timeout: SETTLE });
-    await expect(ordinaryCard).toHaveCount(1, { timeout: SETTLE });
-    // The runtime is the precondition of the whole spec, and the card states it by naming the
-    // pane it is bound to. Asserted rather than assumed: a build where discovery quietly
-    // produced something else would leave every claim below testing a different path.
-    await expect(drivenCard).toContainText(/tmux · %\d+/);
+    const drivenRow = dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").filter({ hasText: driven.session });
+    const ordinaryRow = dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").filter({ hasText: ordinary.session });
+    await expect(drivenRow).toHaveCount(1, { timeout: SETTLE });
+    await expect(ordinaryRow).toHaveCount(1, { timeout: SETTLE });
+    await drivenRow.click();
+    const detail = dashboard.locator(".console-detail");
+    // The runtime is the precondition of the whole spec, and the detail states it by naming
+    // the pane it is bound to.
+    await expect(detail).toContainText(/tmux · %\d+/);
 
     // (1) THE BADGE, naming the run and the step - so two engine-driven agents on one board
     // are told apart by the feature they are on rather than by their pane ids.
-    const chip = drivenCard.getByRole("button", { name: "add-widgets · Build" });
+    const chip = detail.getByRole("button", { name: "add-widgets · Build" });
     await expect(chip).toBeVisible({ timeout: SETTLE });
-    await expect(ordinaryCard.locator("button.pipeline-chip")).toHaveCount(0);
 
     // (2) THE POSTURE IS STILL DRAWN, and is no longer a control. An engine-driven agent must
     // not look SAFER than it is just because nobody can change its mode from here - and the
     // ordinary card proves the gate is the correlation's, because its picker is still a button.
-    await expect(drivenCard.locator("span.mode")).toHaveCount(1);
-    await expect(drivenCard.locator("button.mode-btn")).toHaveCount(0);
-    await expect(ordinaryCard.locator("button.mode-btn")).toHaveCount(1);
+    await expect(detail.locator("span.mode")).toHaveCount(1);
+    await expect(detail.locator("button.mode-btn")).toHaveCount(0);
 
     // (3) NO COMPOSER, and a sentence in its place. A DISABLED box says "not right now", which
     // is what a busy agent's looks like, so an operator waits for it to come back; this one
     // never does, and the card says who to act through instead.
-    await drivenCard.click();
-    await drivenCard.getByRole("button", { name: "Expand conversation" }).click();
     await expect(
-      drivenCard.getByText("Driven by ai-conductor - act through its run in Runs"),
+      detail.getByText("Driven by ai-conductor - act through its run in Runs"),
     ).toBeVisible();
-    await expect(drivenCard.locator("textarea.transcript-input")).toHaveCount(0);
-    await expect(drivenCard.getByRole("button", { name: "Send", exact: true })).toHaveCount(0);
+    await expect(detail.locator("textarea.transcript-input")).toHaveCount(0);
+    await expect(detail.getByRole("button", { name: "Send", exact: true })).toHaveCount(0);
     // The way out is an ADDRESS, so it survives a middle click into a second window.
-    await expect(drivenCard.getByRole("link", { name: "Open its run" })).toHaveAttribute(
+    await expect(detail.getByRole("link", { name: "Open its run" })).toHaveAttribute(
       "href",
       /^#\/runs\/pipeline\/.+\/add-widgets$/,
     );
-    await shoot(dashboard, drivenCard, "01-badged-card-no-composer");
+    await shoot(dashboard, detail, "01-badged-detail-no-composer");
 
     // (4) THE CONTROL, again: an agent in the same repository, outside every worktree, keeps
     // the composer exactly where it was. This is the fail-open guarantee on the surface an
     // operator with no engine installed looks at all day.
-    await ordinaryCard.getByRole("button", { name: "Expand conversation" }).click();
-    await expect(ordinaryCard.getByPlaceholder(/^Reply to this session/)).toBeVisible();
-    await expect(ordinaryCard.getByRole("button", { name: "Send", exact: true })).toBeVisible();
+    await ordinaryRow.click();
+    await expect(detail.locator("button.pipeline-chip")).toHaveCount(0);
+    await expect(detail.locator("button.mode-btn")).toHaveCount(1);
+    await expect(detail.getByPlaceholder(/^Reply to this session/)).toBeVisible();
+    await expect(detail.getByRole("button", { name: "Send", exact: true })).toBeVisible();
   });
 
   test("it groups under its run, on the board and in the console rail", async ({
@@ -281,7 +280,7 @@ test.describe("a session an external engine is driving", () => {
     const driven = startPane(conductorWorktree(daemon.repo, "add-widgets"), "grouped");
     panes.push(driven);
     await expect(
-      dashboard.locator("article.card").filter({ hasText: driven.session }),
+      dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").filter({ hasText: driven.session }),
     ).toHaveCount(1, { timeout: SETTLE });
 
     // The board frames the sessions of one run and heads the frame with the run itself, which
@@ -312,7 +311,7 @@ test.describe("a session an external engine is driving", () => {
     const driven = startPane(conductorWorktree(daemon.repo, "add-widgets"), "ladder");
     panes.push(driven);
     await expect(
-      dashboard.locator("article.card").filter({ hasText: driven.session }),
+      dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").filter({ hasText: driven.session }),
     ).toHaveCount(1, { timeout: SETTLE });
 
     // Into the conversation window, chosen off the rail the way a person chooses one.
@@ -434,9 +433,10 @@ test.describe("a session an external engine is driving", () => {
     const driven = startPane(conductorWorktree(daemon.repo, "add-widgets"), "consent");
     panes.push(driven);
 
-    const card = dashboard.locator("article.card").filter({ hasText: driven.session });
-    await expect(card).toHaveCount(1, { timeout: SETTLE });
-    await expect(card.locator("button.pipeline-chip")).toHaveCount(1, { timeout: SETTLE });
+    const row = dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").filter({ hasText: driven.session });
+    await expect(row).toHaveCount(1, { timeout: SETTLE });
+    await row.click();
+    await expect(dashboard.locator(".console-detail button.pipeline-chip")).toHaveCount(1, { timeout: SETTLE });
 
     await dashboard.goto(`${daemon.baseURL}/#/settings/conductor`);
     const repoSwitch = dashboard.getByRole("checkbox", { name: "Observe pipelines in demo-repo" });
@@ -445,16 +445,17 @@ test.describe("a session an external engine is driving", () => {
     await expect(dashboard.getByText(/On, but no repository is switched on/)).toBeVisible();
 
     await dashboard.goto(`${daemon.baseURL}/#/fleet`);
-    const back = dashboard.locator("article.card").filter({ hasText: driven.session });
+    const back = dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").filter({ hasText: driven.session });
     await expect(back).toHaveCount(1, { timeout: SETTLE });
-    // The badge is gone and NOTHING ELSE about the session moved: same card, same pane, and a
+    await back.click();
+    const detail = dashboard.locator(".console-detail");
+    // The badge is gone and nothing else about the session moved: same row, same pane, and a
     // mode chip that is a control again.
-    await expect(back.locator("button.pipeline-chip")).toHaveCount(0, { timeout: SETTLE });
-    await expect(back).toContainText(/tmux · %\d+/);
-    await expect(back.locator("button.mode-btn")).toHaveCount(1);
-    await back.getByRole("button", { name: "Expand conversation" }).click();
-    await expect(back.getByPlaceholder(/^Reply to this session/)).toBeVisible();
-    await expect(back.locator("p.compose-notice")).toHaveCount(0);
+    await expect(detail.locator("button.pipeline-chip")).toHaveCount(0, { timeout: SETTLE });
+    await expect(detail).toContainText(/tmux · %\d+/);
+    await expect(detail.locator("button.mode-btn")).toHaveCount(1);
+    await expect(detail.getByPlaceholder(/^Reply to this session/)).toBeVisible();
+    await expect(detail.locator("p.compose-notice")).toHaveCount(0);
 
     // And the halt is off the drain - because the daemon is no longer observing the repository
     // that holds it, not because the inbox learned a second rule about consent.

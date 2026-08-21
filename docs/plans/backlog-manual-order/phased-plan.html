@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Phased plan: Manual backlog order</title>
+<style>
+  :root {
+    --bg: #ffffff; --bg-2: #f5f7fa; --fg: #1a1f27; --muted: #5d6775;
+    --border: #d9dee6; --border-soft: #e6eaf0; --accent: #b46a00; --link: #0b6bcb;
+    --code-bg: #f2f4f8; --panel: #ffffff; --panel-2: #eef1f6; --ok: #157347;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0b0e13; --bg-2: #12161d; --fg: #e7ebf1; --muted: #939eae;
+      --border: #232a34; --border-soft: #1b2129; --accent: #f6a733; --link: #6aa9ee;
+      --code-bg: #12161d; --panel: #0f131a; --panel-2: #161b23; --ok: #4ade80;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    padding: 48px 24px;
+  }
+  main { max-width: 860px; margin: 0 auto; }
+  h1 { font-size: 29px; line-height: 1.2; margin: 0 0 8px; letter-spacing: -0.01em; }
+  h2 { font-size: 21px; margin: 40px 0 12px; padding-bottom: 6px; border-bottom: 1px solid var(--border-soft); }
+  h3 { font-size: 16px; margin: 24px 0 8px; }
+  a { color: var(--link); }
+  code {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 0.88em; background: var(--code-bg); padding: 1.5px 5px; border-radius: 5px;
+    border: 1px solid var(--border-soft);
+  }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--border-soft); border-radius: 10px;
+    padding: 12px 14px; overflow-x: auto; font-size: 13px; line-height: 1.5;
+  }
+  pre code { background: none; border: 0; padding: 0; font-size: 13px; }
+  .status {
+    display: inline-block; font-size: 12px; font-weight: 640; text-transform: uppercase;
+    letter-spacing: 0.05em; color: var(--accent);
+    background: color-mix(in oklab, var(--accent) 14%, transparent);
+    padding: 3px 10px; border-radius: 999px; margin-bottom: 20px;
+  }
+  ul, ol { padding-left: 22px; }
+  li { margin: 5px 0; }
+  strong { font-weight: 660; }
+  .muted { color: var(--muted); }
+  .scroll-x { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; margin: 14px 0; font-size: 14px; min-width: 520px; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border-soft); vertical-align: top; }
+  th { color: var(--muted); font-weight: 640; font-size: 12.5px; text-transform: uppercase; letter-spacing: 0.04em; }
+  figure { margin: 22px 0; }
+  figure svg { max-width: 100%; height: auto; display: block; }
+  figcaption { color: var(--muted); font-size: 13px; margin-top: 8px; }
+  .box { border: 1px solid var(--border); border-radius: 12px; padding: 2px 16px 14px; margin: 16px 0; background: var(--bg-2); }
+  .box h3 { margin-top: 14px; }
+  .why { border-left: 3px solid var(--accent); padding: 2px 0 2px 14px; margin: 16px 0; color: var(--muted); }
+  .why strong { color: var(--fg); }
+  .rule {
+    border: 1px solid var(--accent); border-radius: 12px; padding: 14px 18px; margin: 20px 0;
+    background: color-mix(in oklab, var(--accent) 8%, transparent); font-size: 17px;
+  }
+  /* diagram primitives */
+  .d-box { fill: var(--panel-2); stroke: var(--border); stroke-width: 1; }
+  .d-hi  { fill: color-mix(in oklab, var(--accent) 14%, transparent); stroke: var(--accent); stroke-width: 1; }
+  .d-t   { fill: var(--fg); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 13px; font-weight: 620; }
+  .d-s   { fill: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; }
+  .d-l   { fill: var(--muted); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 11.5px; }
+  .d-a   { stroke: var(--muted); stroke-width: 1.4; fill: none; }
+  .d-a-hi { stroke: var(--accent); stroke-width: 1.8; fill: none; }
+  .d-life { stroke: var(--border); stroke-width: 1; stroke-dasharray: 4 4; }
+  .d-head { fill: var(--muted); }
+  .d-head-hi { fill: var(--accent); }
+</style>
+</head><body>
+<main>
+  <h1>Phased plan: Manual backlog order</h1>
+  <p class="muted">Source plan: <a href="plan.html">plan.html</a> (<a href="plan.md">plan.md</a>) ·
+    Phases: <a href="phase-1-rank-the-backlog.md">Phase 1</a> ·
+    <a href="phase-2-drag-to-reorder.md">Phase 2</a></p>
+  <span class="status">2 phases · serial · ~420-520 non-test lines</span>
+
+  <h2>The approved goal</h2>
+  <p>Drag a backlog item above another and Foreman takes it first; drag it down and it takes it
+    later - unless it is waiting on a dependency. Work that files itself (a task source sweep, a
+    recurring mission, a retro follow-up, an MCP <code>create_task</code>) lands at the
+    <strong>bottom</strong>.</p>
+
+  <h2>Human decisions, incorporated as requirements</h2>
+  <p>All four were submitted at plan review and are written into <code>plan.md</code>'s
+    <strong>Decisions taken</strong> section. They are requirements here, not open questions.</p>
+  <div class="scroll-x">
+  <table>
+    <thead><tr><th>Decision</th><th>Taken</th><th>Owned by</th></tr></thead>
+    <tbody>
+      <tr><td>Priority vs manual order</td><td><strong>Rank is the only order. Priority is pure annotation.</strong> No bulk "Sort by priority" button - explicitly out of scope.</td><td>Phase 1</td></tr>
+      <tr><td>The reorder gesture</td><td><strong>Drag in the column, plus keyboard move controls.</strong></td><td>Keyboard: Phase 1<br/>Drag: Phase 2</td></tr>
+      <tr><td>The assign path's scan</td><td><strong>Kept.</strong> Dispatch takes the head; assign may take a lower ready item that has a free agent.</td><td>Phase 1</td></tr>
+      <tr><td>Rank allocation</td><td><strong>Sparse integers, renormalize on collision.</strong></td><td>Phase 1</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <div class="why">
+    <strong>The first decision carries an accepted cost, stated rather than mitigated:</strong> a
+    swept <code>P0</code> now lands at the bottom until somebody moves it. An order a sweep can
+    rearrange is not an order you set.
+  </div>
+
+  <h2>What the investigation found</h2>
+  <p>Verified against the checkout before the boundaries were drawn. Two findings shaped the
+    split.</p>
+  <ol>
+    <li><strong><code>backlogTasks</code> is a single chokepoint.</strong> The board column, the
+      Sitrep, the Line drawer, <code>line-summary.ts</code>, <code>report.ts</code>,
+      <code>foreman/config.ts</code>, <code>plannableBacklog</code> and <code>readyBacklog</code>
+      all read through it. Changing one comparator moves every surface together, and none of them
+      can drift apart.</li>
+    <li><strong><code>readyBacklog</code> already drops every item with an unmet
+      dependency</strong>, so a ready item has zero unmet edges and the ready set has no internal
+      edges. Any total order over it is dependency-safe. That is why replacing the model's order
+      with the operator's is a deletion rather than a new sort - and it is pinned as an invariant
+      test rather than left as a comment.</li>
+  </ol>
+  <p>Three findings that contradicted or sharpened the source plan, resolved in the phase files
+    rather than left to be rediscovered:</p>
+  <ul>
+    <li><strong>The Foreman worker needs no change at all.</strong> It never opens SQLite; it
+      reads <code>GET /api/tasks</code> over loopback and decides with the shared predicates.</li>
+    <li><strong>Every automatic filer already funnels through <code>TaskManager.create</code></strong>
+      with <code>backlog: true</code>, so "synced items go to the bottom" is one edit in one
+      place, not one per source.</li>
+    <li><strong>The task upsert is a positional <code>INSERT ... ON CONFLICT</code></strong> with
+      four lists that must stay in step. Named in phase 1 because three of the four are easy to
+      miss.</li>
+  </ul>
+
+  <h2>Sizing, and why two phases</h2>
+  <p><strong>Estimate: 420-520 gross non-test implementation lines</strong>, counting all layers
+    together. Assumptions: ~260 server and shared (migration and backfill ~40, upsert and row
+    mapper ~10, types and comparator ~30, <code>readyBacklog</code> and its comments ~30,
+    <code>backlog-rank.ts</code> ~80, manager and route ~70), and ~220 browser (drag ~120, move
+    controls ~45, CSS ~30, copy ~25). Documentation and tests are excluded from the count and
+    included in the phases. It is a planning signal, not a promised diff size.</p>
+  <p>That is above the 200-line one-phase threshold, so the default is still <em>one</em> phase
+    and a second needs a case. The case:</p>
+  <ul>
+    <li><strong>The riskiest work is cleanly separable.</strong> The drag change adds a second
+      kind of drop target for a payload that already means "assign this to an agent". Getting it
+      wrong breaks a gesture that works today, and it has the largest e2e surface and the least
+      deterministic test story.</li>
+    <li><strong>The boundary is a real merge boundary, not a layer boundary.</strong> Phase 1 is a
+      complete, user-visible feature on its own: the backlog has one order, Foreman honours it,
+      and you can reorder it from the keyboard. It leaves no dead surface - the route has a caller
+      the moment it lands.</li>
+    <li><strong>Combining them would be worse.</strong> One task carrying a migration with a
+      hand-written SQL backfill, a semantics change in the hottest shared predicate, a new
+      allocator, a new route and a drag-and-drop rework is a large ask for one session, and a
+      failure in the drag work would hold back the ordering semantics everything else depends
+      on.</li>
+  </ul>
+  <p>Nothing smaller was created. There is no preparation phase, no test-only phase and no
+    documentation phase: docs, tests and copy changes live with the behaviour that makes them
+    true.</p>
+
+  <h2>Phases</h2>
+  <div class="scroll-x">
+  <table>
+    <thead><tr><th>#</th><th>Phase</th><th>Delivers</th><th>Prerequisites</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td><a href="phase-1-rank-the-backlog.md">Rank the backlog</a></td><td><code>backlog_rank</code> column and backfill, the comparator, <code>readyBacklog</code> reduced to filter-only, the allocator, <code>POST /api/tasks/:id/reorder</code>, the keyboard move controls, docs</td><td>none</td></tr>
+      <tr><td>2</td><td><a href="phase-2-drag-to-reorder.md">Drag to reorder</a></td><td>Drop targets between cards, drag state, the drop indicator, and the regression proof that drag-to-assign still works</td><td>Phase 1</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>Dependency graph</h2>
+  <figure>
+    <svg viewBox="0 0 720 130" role="img" aria-label="Serial graph: the planning session's pull request releases Phase 1, which releases Phase 2.">
+      <defs>
+        <marker id="pg" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+          <path d="M0,0 L8,4 L0,8 z" class="d-head"/>
+        </marker>
+      </defs>
+      <rect x="14" y="34" width="196" height="52" rx="10" class="d-hi"/>
+      <text x="112" y="56" class="d-t" text-anchor="middle">Planning session PR</text>
+      <text x="112" y="73" class="d-s" text-anchor="middle">publishes these artifacts</text>
+
+      <rect x="266" y="34" width="180" height="52" rx="10" class="d-box"/>
+      <text x="356" y="56" class="d-t" text-anchor="middle">Phase 1</text>
+      <text x="356" y="73" class="d-s" text-anchor="middle">rank the backlog</text>
+
+      <rect x="502" y="34" width="180" height="52" rx="10" class="d-box"/>
+      <text x="592" y="56" class="d-t" text-anchor="middle">Phase 2</text>
+      <text x="592" y="73" class="d-s" text-anchor="middle">drag to reorder</text>
+
+      <path d="M210,60 L258,60" class="d-a" marker-end="url(#pg)"/>
+      <path d="M446,60 L494,60" class="d-a" marker-end="url(#pg)"/>
+      <text x="234" y="26" class="d-l" text-anchor="middle">merge</text>
+      <text x="470" y="26" class="d-l" text-anchor="middle">merge</text>
+    </svg>
+    <figcaption>Serial. Phase 2 consumes phase 1's route, client and comparator, so there is no
+      concurrency group - and every task also waits on the planning pull request that publishes
+      the paths it names.</figcaption>
+  </figure>
+  <p><strong>Merge order:</strong> planning PR, then phase 1, then phase 2.</p>
+
+  <h2>Cross-phase contracts</h2>
+  <p>Fixed by phase 1, consumed unchanged by phase 2:</p>
+  <ul>
+    <li><code>POST /api/tasks/:id/reorder</code>, <code>ReorderTaskSchema</code>
+      (<code>top</code> / <code>bottom</code> / <code>before</code> + anchor / <code>after</code>
+      + anchor), and its 404 / 409 / 200 contract. <strong>Anchors, never indices.</strong></li>
+    <li><code>api.reorderTask(id, body)</code> as the only client entry point.</li>
+    <li><code>Task.backlogRank: number | null</code>, <code>byBacklogRank</code>, and
+      <code>backlogTasks</code> sorting by it.</li>
+    <li><code>readyBacklog</code> as filter-only; the stored plan supplies edges, never
+      position.</li>
+    <li><code>RANK_STEP</code> and renormalize-on-collision.</li>
+    <li>The move buttons' <code>aria-label</code> wording, which the phase-1 e2e spec selects
+      by.</li>
+  </ul>
+  <div class="why">
+    <strong>Ownership boundary, stated because both phases could plausibly have claimed it.</strong>
+    Phase 1 leaves <code>draggable</code> and the card's existing <code>onDragStart</code> /
+    <code>onDragEnd</code> exactly as they are today. Phase 2 owns every drop target, drag-state
+    and drop-indicator change. Without this line phase 1 would have touched the drag setup to stop
+    the move buttons starting a drag, and phase 2 would have touched it to report the dragged id
+    upward - merging into a conflict neither file predicted.
+  </div>
+
+  <h2>Final verification</h2>
+<pre><code>npm run typecheck &amp;&amp; npm run lint &amp;&amp; npm test
+npm run build &amp;&amp; npm run smoke
+npm run test:e2e</code></pre>
+  <p>The behavioural bar, proven in a browser rather than by reading a diff:</p>
+  <ul>
+    <li>Reordering - by keyboard <strong>and</strong> by drag - changes what Foreman schedules
+      next.</li>
+    <li>Dragging a card onto an idle agent still assigns it.</li>
+    <li>A database that predates the column opens, backfills once, and shows the order it showed
+      before.</li>
+    <li>A swept task arrives at the bottom.</li>
+    <li>Dependencies still gate: a blocked item dragged to the top runs first <em>when it
+      unblocks</em>, and not before.</li>
+    <li>No surface still claims priority sorts the backlog.</li>
+  </ul>
+
+  <h2>Final cross-phase audit</h2>
+  <ul>
+    <li>Every requirement in <code>plan.md</code> and every submitted decision is owned by
+      <strong>exactly one</strong> phase. The gesture decision is the only one split across two,
+      and deliberately: keyboard in phase 1, drag in phase 2, both required.</li>
+    <li>Every consumer follows its prerequisite. Phase 2 &rarr; phase 1 only; there is no edge
+      back, so phase 1 is shippable alone.</li>
+    <li>No concurrent phases, so there is no merge-in-either-order claim to check.</li>
+    <li>The final state matches <code>plan.md</code> with no undocumented cleanup: nothing in
+      phase 2 repairs a knowingly broken state left by phase 1, because phase 1 ends operable.</li>
+    <li>Items <code>plan.md</code> puts out of scope stay out of both phases: bulk re-sort,
+      per-repo sub-orders, teaching the planner about rank, multi-select drag.</li>
+  </ul>
+</main>
+</body></html>

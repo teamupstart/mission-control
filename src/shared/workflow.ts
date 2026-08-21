@@ -1747,6 +1747,112 @@ export function workflowRunGaveUp(run: {
   return run.round > run.maxRepairRounds;
 }
 
+/**
+ * The phase a run was parked in before its budget ran out, recorded on the way into
+ * `round_limit` so a later grant can put it back.
+ *
+ * A run that spends its budget loses the only record of what it was waiting for: the
+ * round-limit block overwrites `current_phase` with `round_limit` and `gate_state_json`
+ * with the budget, and neither is recoverable afterwards. That was survivable while a
+ * grant only ever handed the run to a human's next click. It is not survivable now that a
+ * grant may hand it back to the resumption observer, which needs the run to read as the
+ * parked round it actually is - `pr_handoff` in particular takes a different branch there
+ * than an ordinary repair round does.
+ *
+ * So the phase rides along in the same payload as the budget, written by the one store
+ * helper every round-limit writer goes through. It is deliberately NOT re-recorded on a
+ * second block: a run blocked, granted, resumed and blocked again must keep pointing at
+ * the round it was parked in, not at `round_limit` itself.
+ *
+ * Absence is meaningful and is the reason this returns `null` rather than a default. A run
+ * blocked by a build that predates this field cannot say what it was doing, and guessing
+ * would restore a run into a phase whose branch never ran. Those runs keep the behaviour
+ * they were blocked under: the grant raises the budget and the operator resumes by hand.
+ */
+export function workflowRoundLimitParkedPhase(gateState: WorkflowJson | null): string | null {
+  if (!gateState || typeof gateState !== "object" || Array.isArray(gateState)) return null;
+  const parked = (gateState as { [key: string]: WorkflowJson }).parkedPhase;
+  if (typeof parked !== "string" || parked.length === 0) return null;
+  if ((WORKFLOW_RUN_SPENT_PHASES as readonly string[]).includes(parked)) return null;
+  return parked;
+}
+
+/**
+ * The phase a run carries while its last resubmission was refused for naming work that
+ * does not exist yet - the repository has not moved since the round that asked for it.
+ *
+ * It sits beside `unchanged_evidence` rather than reusing it because the two refusals
+ * measure different things and are recovered at different costs. `unchanged_evidence`
+ * compares the captured, compacted snapshot and is only reachable after a capture has
+ * already been paid for. This one compares two git reads taken BEFORE a submission row
+ * exists, so refusing costs nothing and spends no round. Both are answered by the same
+ * "review it anyway" move, which is why both are listed as unchanged-evidence phases in
+ * the browser; only the sentence above the button differs.
+ */
+export const WORKFLOW_UNCHANGED_REPOSITORY_PHASE = "unchanged_repository";
+
+/**
+ * Why the resumption observer declined to open the next repair round this tick.
+ *
+ * Every one of these was previously a bare `return null` inside `resumableRun`, which is
+ * why "the session never resubmitted" was unanswerable from the dashboard: the observer
+ * looked, decided not to act, and left no trace anywhere. Naming the reasons is the whole
+ * fix - the run page can then say which gate held instead of showing a parked run and no
+ * explanation at all.
+ *
+ * `repository_unchanged` is the one an operator will see most, and it is not a fault: it
+ * is the observer correctly refusing to spend a round on a repair that changed no code.
+ */
+export const WORKFLOW_RESUMPTION_WITHHELD_REASONS = [
+  "policy_manual",
+  "binding_inactive",
+  "session_unavailable",
+  "session_busy",
+  "session_needs_you",
+  "packet_undelivered",
+  "repository_unchanged",
+] as const;
+
+export type WorkflowResumptionWithheldReason =
+  (typeof WORKFLOW_RESUMPTION_WITHHELD_REASONS)[number];
+
+/**
+ * What the run page says about a withheld resumption, in the operator's language.
+ *
+ * One sentence each, and each one names what would change it. These are read by run detail
+ * and by nothing else; the daemon stores the reason code, never the prose, so re-wording
+ * this never invalidates a ledger entry.
+ */
+export function workflowResumptionWithheldSentence(
+  reason: string,
+  round: number,
+): string | null {
+  switch (reason) {
+    case "policy_manual":
+      return "This workflow version was published before automatic resumption existed, so the"
+        + " next round waits for you rather than for the session.";
+    case "binding_inactive":
+      return "The review is no longer attached to a live session, so nothing is watching for"
+        + " the repair.";
+    case "session_unavailable":
+      return "The bound session is gone or has been replaced, so the repair packet has no"
+        + " reader.";
+    case "session_busy":
+      return "The session is still working. The next round opens once it settles.";
+    case "session_needs_you":
+      return "The session is waiting on you - a permission prompt or a dialog - so it has not"
+        + " been handed another round.";
+    case "packet_undelivered":
+      return "The repair packet has not reached the session yet, so there is nothing for it to"
+        + " have repaired.";
+    case "repository_unchanged":
+      return `Waiting on the session: the repository has not changed since round ${round}.`
+        + " Reviewing it again would return the same verdicts, so no round has been spent.";
+    default:
+      return null;
+  }
+}
+
 export const WORKFLOW_GATE_WAIT_REASONS = [
   "missing_pr",
   "unadopted_pr",
@@ -1843,6 +1949,12 @@ export const WORKFLOW_DELIVERY_KINDS = [
   // reaches its pull request through the legacy post-End path, and those rows have to stay
   // readable and recoverable exactly as they are.
   "session_action",
+  // One reminder for a repair round that has been parked, with its packet delivered and its
+  // repository untouched, for longer than a session doing the work would take. Appended
+  // rather than folded into `unchanged_evidence_nudge`, which answers a claim the session
+  // actually made; this one answers a silence, and the two have to stay distinguishable in a
+  // ledger a person reads to work out why a run sat still.
+  "parked_repair_reminder",
 ] as const;
 export type WorkflowDeliveryKind = (typeof WORKFLOW_DELIVERY_KINDS)[number];
 
@@ -2938,6 +3050,17 @@ export interface WorkflowSubmission {
   /** Staged-set generation frozen when this submission reserved its locators. */
   stagedImageGeneration?: number;
   evidenceFingerprint: string;
+  /**
+   * The same capture hashed without its transcript anchor, or null on a row captured
+   * before the column existed.
+   *
+   * `evidenceFingerprint` is IDENTITY - every input, transcript included - and is what
+   * trigger keys and idempotency are built on. This is the answer to a different question:
+   * has the work changed? The two differ by exactly one field, and that field moves on its
+   * own the instant a repair packet is typed into the pane, which is why the unchanged
+   * resubmission guard reads this one and the submission's identity reads the other.
+   */
+  repositoryFingerprint?: string | null;
   context: WorkflowJson;
   evidence: WorkflowJson;
   prHeadSha: string | null;
@@ -3458,11 +3581,63 @@ export interface WorkflowRunDetail {
    */
   repeatOffenders?: WorkflowRepeatOffender[];
   /**
+   * The last repair-round grant this run was given, if it was given one.
+   *
+   * Its own field for the reason `resumption` below has one, and this one was the miss that
+   * proved the rule: it was first derived in the browser from `events`, which is a PAGE - and
+   * not the most recent page, but the OLDEST two hundred rows. A grant only ever happens after
+   * a run has exhausted its budget, so it is a late event by construction, and a run that
+   * spent five repair rounds is exactly the run whose first two hundred events are all older
+   * than it. The notice would have gone missing on every run long enough to need it, which is
+   * the "the grant did nothing" report all over again.
+   */
+  repairGrant?: WorkflowRunRepairGrant | null;
+  /**
+   * Why the resumption observer last declined to open the next round on this run, if it did.
+   *
+   * Its own field rather than a derivation over `events`, and the reason is that `events` is
+   * a PAGE. A long-running review can hold hundreds of them, so the detail ships one page and
+   * a cursor; deriving the current answer from whichever page happened to arrive would answer
+   * correctly on a short run and silently stop answering on the runs that need it most.
+   *
+   * Detail-only and OPTIONAL, on the same terms as `repeatOffenders`: summaries travel over
+   * SSE for every run in the fleet and must stay compact, and an older daemon serving a newer
+   * browser must not fail to parse.
+   */
+  resumption?: WorkflowRunResumptionState | null;
+  /**
    * Provenance for a run an external orchestrator started. Optional and detail-only: run
    * SUMMARIES travel over SSE for every run in the fleet and must stay compact.
    */
   externalSource?: WorkflowExternalSource | null;
   inspectorGate: WorkflowInspectorGateDetail | null;
+}
+
+/**
+ * One repair-round grant, as run detail carries it.
+ *
+ * `round` is the round the run was on when the grant landed, which is what makes the notice
+ * self-clearing: the browser drops it once the run has moved past that round, because the
+ * grant has been spent and the run's own state is the better story from then on.
+ */
+export interface WorkflowRunRepairGrant {
+  round: number;
+  from: number;
+  to: number;
+}
+
+/**
+ * The observer's last word on a parked round, as run detail carries it.
+ *
+ * `reason` is the stored code, never prose - `workflowResumptionWithheldSentence` turns it
+ * into a sentence in the browser, so re-wording never invalidates a ledger entry. `round` is
+ * the round that was parked when the observer looked, which is what the sentence names.
+ */
+export interface WorkflowRunResumptionState {
+  reason: string;
+  round: number | null;
+  /** True when this run's own version and binding mean the loop closes without a human. */
+  resumesItself: boolean;
 }
 
 export interface WorkflowRunPage {

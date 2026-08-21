@@ -949,6 +949,16 @@ export function skillCommand(agent: AgentType, name: string): string | null {
 }
 
 /**
+ * Whether an embedded session of this harness can receive a named skill invocation.
+ *
+ * A non-null command alone is not enough for a managed launch: the host must also offer
+ * the SDK runtime that delivers the invocation.
+ */
+export function supportsSdkSkillInvocation(agent: AgentType, name: string): boolean {
+  return capabilitiesFor(agent).runtimes.includes("sdk") && skillCommand(agent, name) !== null;
+}
+
+/**
  * The agents a skills change has to be TYPED at - the pane-reload broadcast.
  *
  * A strict subset of `skillLoadingAgents()`, and the two must not be conflated: Codex

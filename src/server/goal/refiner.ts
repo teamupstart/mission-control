@@ -112,6 +112,12 @@ export function startGoalRefiner(registry: Registry): () => void {
         // so it prunes on the same tick, window, and live-key safety property.
         const invites = registry.pruneForemanInvites(now - GOAL_PRUNE_AGE_MS);
         if (invites > 0) console.log(`[goal] pruned ${invites} orphaned foreman invite(s)`);
+        // And launch presentation markers, which accumulate the same way for the same
+        // reason: one row per conversation Mission Control ever launched, stranded for good
+        // by every /clear that follows. Same tick, same window, same live-key safety
+        // property - a third timer would be a third place to get that property wrong.
+        const launches = registry.pruneLaunchTurns(now - GOAL_PRUNE_AGE_MS);
+        if (launches > 0) console.log(`[goal] pruned ${launches} orphaned launch marker(s)`);
       }
     } catch (err) {
       console.error("[goal] poll failed:", err);

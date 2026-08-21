@@ -64,6 +64,10 @@ const { setWorkflowPolicy } = await import("../src/server/workflows/config.ts");
 const { setForemanConfig } = await import("../src/server/foreman/config.ts");
 const { setInspectorConfig } = await import("../src/server/inspector/config.ts");
 const { buildApp } = await import("../src/server/routes.ts");
+// Browser-safe and imported here on purpose: the notice is only correct if the field the
+// DAEMON puts on the detail is the field the browser reads, and asserting the two halves in
+// different files is how they drift.
+const { runGrantNotice } = await import("../src/web/workflows/run-model.ts");
 
 const db = openDb();
 
@@ -1143,6 +1147,46 @@ test("a grant hands a self-resuming run back to its own observer", async () => {
     "the granted round never opened by itself",
   );
   assert.equal(h.store.latestSubmission(h.runId)?.triggerSource, "session");
+  await h.manager.stop();
+});
+
+/**
+ * The grant has to still be readable on a run long enough to have needed one.
+ *
+ * The notice was first derived in the browser by scanning `detail.events`, and those are a
+ * page - the OLDEST two hundred rows, plus a cursor an operator has to click for the rest. A
+ * grant cannot happen until a run has exhausted its repair budget, so it is a late event by
+ * construction, and a run that spent five rounds is exactly the run whose first two hundred
+ * events are all older than it. The notice would have been missing on every run that had
+ * actually been granted anything - the reported silence, restored by the fix for it.
+ *
+ * The filler is written BEFORE the grant, which is the mechanism rather than a detail of the
+ * fixture: the page is `id > 0 ORDER BY id ASC LIMIT 200`, so what hides a grant is the two
+ * hundred rounds' worth of history in front of it, not anything that happens afterwards.
+ */
+test("the grant survives being pushed off the event page", async () => {
+  const h = await spentPersonaRun("grant-paged", "v-grant-paged", "auto");
+  for (let index = 0; index < 201; index += 1) {
+    h.store.appendEvent(h.runId, "resumption_withheld", {
+      submissionId: null,
+      round: null,
+      reason: "session_busy",
+    });
+  }
+  const granted = h.manager.grantRepairRounds(h.runId, { requestId: "grant-paged-1", rounds: 2 });
+  assert.equal(granted.ok, true, "the grant was refused");
+
+  const detail = h.store.runDetail(h.runId)!;
+  assert.equal(
+    detail.events.some((event) => event.kind === "repair_rounds_granted"),
+    false,
+    "the fixture failed to push the grant off the page, so this proves nothing",
+  );
+  assert.deepEqual(detail.repairGrant, { round: 2, from: 1, to: 3 });
+  assert.equal(
+    runGrantNotice(detail),
+    "Repair budget raised. Round 4 is now the last this run can reach.",
+  );
   await h.manager.stop();
 });
 

@@ -3552,6 +3552,18 @@ export interface WorkflowRunDetail {
    */
   repeatOffenders?: WorkflowRepeatOffender[];
   /**
+   * The last repair-round grant this run was given, if it was given one.
+   *
+   * Its own field for the reason `resumption` below has one, and this one was the miss that
+   * proved the rule: it was first derived in the browser from `events`, which is a PAGE - and
+   * not the most recent page, but the OLDEST two hundred rows. A grant only ever happens after
+   * a run has exhausted its budget, so it is a late event by construction, and a run that
+   * spent five repair rounds is exactly the run whose first two hundred events are all older
+   * than it. The notice would have gone missing on every run long enough to need it, which is
+   * the "the grant did nothing" report all over again.
+   */
+  repairGrant?: WorkflowRunRepairGrant | null;
+  /**
    * Why the resumption observer last declined to open the next round on this run, if it did.
    *
    * Its own field rather than a derivation over `events`, and the reason is that `events` is
@@ -3570,6 +3582,19 @@ export interface WorkflowRunDetail {
    */
   externalSource?: WorkflowExternalSource | null;
   inspectorGate: WorkflowInspectorGateDetail | null;
+}
+
+/**
+ * One repair-round grant, as run detail carries it.
+ *
+ * `round` is the round the run was on when the grant landed, which is what makes the notice
+ * self-clearing: the browser drops it once the run has moved past that round, because the
+ * grant has been spent and the run's own state is the better story from then on.
+ */
+export interface WorkflowRunRepairGrant {
+  round: number;
+  from: number;
+  to: number;
 }
 
 /**

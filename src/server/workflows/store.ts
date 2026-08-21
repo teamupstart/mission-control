@@ -6921,6 +6921,33 @@ export class WorkflowStore {
   }
 
   /**
+   * The last grant this run was given, read from the WHOLE ledger rather than a page of it.
+   *
+   * `runDetail` ships the oldest two hundred events and a cursor, and a grant is a late event
+   * by construction - it cannot happen until a run has exhausted its repair budget. So a run
+   * that spent five rounds keeps its grant well outside the page the browser is handed, and a
+   * notice derived there would be absent on exactly the runs that were granted anything. This
+   * reads the ledger directly, on the server, where there is no page.
+   *
+   * The staleness rule stays in the browser: this says what was granted and when, and
+   * `runGrantNotice` decides whether that is still the last thing that happened. Deciding it
+   * here would put a presentation rule in the store and make the field lie to any other
+   * reader.
+   */
+  private runRepairGrant(runId: string): WorkflowRunDetail["repairGrant"] {
+    const granted = this.listEvents(runId)
+      .filter((event) => event.kind === "repair_rounds_granted")
+      .at(-1);
+    const payload = granted?.payload;
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+    const { round, from, to } = payload;
+    if (typeof round !== "number" || typeof from !== "number" || typeof to !== "number") {
+      return null;
+    }
+    return { round, from, to };
+  }
+
+  /**
    * The observer's last word on this run, for the page that has to explain a parked round.
    *
    * Scoped to a run that is actually parked. A withheld reason on a run that has since
@@ -7001,6 +7028,7 @@ export class WorkflowStore {
       llmCallCount,
       nextLlmCallAfter: llmCalls.nextAfter,
       ...(offenders.length === 0 ? {} : { repeatOffenders: offenders }),
+      repairGrant: this.runRepairGrant(id),
       resumption: this.runResumptionState(run, binding, version),
       // Taken off the summary the join already resolved, not looked up a second way. The
       // detail's field predates the summary's and stays because the reader reads it here;

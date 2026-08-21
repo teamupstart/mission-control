@@ -2732,9 +2732,12 @@ test("a granted run says so, and says what is now waiting", () => {
     ...base,
     summary: { ...base.summary, status: "waiting_for_session", round: 2, maxRepairRounds: 4 },
     run: { ...base.run, status: "waiting_for_session", currentPhase: "persona_feedback" },
-    events: [
-      { id: 7, runId: "run", timestamp: 20, kind: "repair_rounds_granted", payload: { from: 2, to: 4, round: 2 } },
-    ],
+    // Carried as its own field, and the event list is left EMPTY on purpose: the grant is a
+    // late event on a run whose first two hundred events are all older than it, so a notice
+    // that needed the event page would be absent on every run that had actually been granted
+    // anything.
+    events: [],
+    repairGrant: { round: 2, from: 2, to: 4 },
     resumption: { reason: "repository_unchanged", round: 2, resumesItself: true },
   });
   const header = headerOf(html);
@@ -2755,9 +2758,7 @@ test("the grant notice disappears once the round it bought has started", () => {
   const html = render({
     ...base,
     summary: { ...base.summary, round: 3, maxRepairRounds: 4 },
-    events: [
-      { id: 7, runId: "run", timestamp: 20, kind: "repair_rounds_granted", payload: { from: 2, to: 4, round: 2 } },
-    ],
+    repairGrant: { round: 2, from: 2, to: 4 },
   });
   assert.doesNotMatch(headerOf(html), /Repair budget raised/);
 });

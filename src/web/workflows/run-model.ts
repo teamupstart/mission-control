@@ -1213,16 +1213,21 @@ export function runRefusedSentence(detail: WorkflowRunDetail): string | null {
  * the moment the round it bought actually starts, with nothing to remember to clear.
  */
 export function runGrantNotice(detail: WorkflowRunDetail): string | null {
-  const grant = [...detail.events].reverse()
-    .find((event) => event.kind === "repair_rounds_granted");
-  const payload = grant?.payload;
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
-  const grantedAtRound = payload.round;
+  /*
+   * `detail.repairGrant`, NOT a scan of `detail.events`.
+   *
+   * The first version scanned the events, and they are a page - the oldest two hundred rows,
+   * with a cursor for the rest. A grant cannot happen until a run has exhausted its repair
+   * budget, so it is always a late event, and a run that spent five rounds keeps it outside
+   * that page entirely. The notice would have been missing on every run long enough to have
+   * been granted anything, which is the silence this whole thing exists to end.
+   */
+  const grant = detail.repairGrant;
+  if (!grant) return null;
   // Stale the instant a later round exists: the grant has been spent and the run's own state
   // is the better story from then on.
-  if (typeof grantedAtRound !== "number" || detail.summary.round > grantedAtRound) return null;
-  const to = payload.to;
-  const budget = typeof to === "number" ? to : detail.summary.maxRepairRounds;
+  if (detail.summary.round > grant.round) return null;
+  const budget = grant.to;
   /*
    * Stated as the round it reaches, not as the budget it raised, because the eyebrow three
    * lines above already prints `round N of ${maxRepairRounds + 1}`. Both numbers are correct

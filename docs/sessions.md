@@ -663,7 +663,10 @@ you: a plain `npm run install-hooks`, and the packaged app's integrations, leave
 It makes the model / thinking / context figures on the cards exact (without it they come
 from a passive transcript read), and supplies the [cost telemetry](#cost-telemetry) plan
 meters for terminal Claude sessions. Embedded Claude SDK sessions have no terminal status
-line; they fetch the same account windows through the SDK instead. For the passive context
+line; they fetch the same account windows through the SDK instead. Reasoning effort needs
+no status line on either path: Claude writes the level each turn ran under onto that turn's
+own transcript record, which is where an embedded session's badge comes from - it never
+types `/effort`, so no slash-command echo would ever say. For the passive context
 meter, Mission Control applies each recognized model's default window: Fable 5, Opus 4.6+
 and Sonnet 4.6+ use 1M, while Opus/Sonnet 4.5 and Haiku 4.5 use 200k. An explicit window
 reported by Claude remains authoritative.
@@ -673,8 +676,10 @@ also a picker: click it to see the effort levels Mission Control can safely appl
 selected model and choose one for that session. A successful change uses the harness's
 native session-only control; it never changes that harness card's **Effort** select in
 **Settings → Harnesses** or what future sessions start with. Until the current model and
-effort have a trustworthy passive baseline, or when the pane cannot be written, the badge
-stays read-only. The same picker appears on Cards, in Console detail, and on Board tiles.
+effort have a trustworthy passive baseline, or when the session cannot be written to at
+all, the badge stays read-only. An embedded session has no pane and is still writable: its
+driver applies the level directly. The same picker appears on Cards, in Console detail,
+and on Board tiles.
 
 #### Levels that apply on the next turn
 

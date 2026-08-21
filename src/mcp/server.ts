@@ -27,7 +27,10 @@ import {
   productIssueClientFromEnvironment,
 } from "@shared/product-issues.ts";
 import { reportProductIssueWithConfirmation } from "./product-issues.ts";
-import { PIPELINE_SESSION_ID_ENV, PIPELINE_TASK_ID_ENV } from "@shared/pipeline.ts";
+import {
+  PIPELINE_CALLER_CREDENTIAL_ENV,
+  PIPELINE_CALLER_CREDENTIAL_HEADER,
+} from "@shared/pipeline.ts";
 
 // This runs as a stdio MCP server, launched by Claude Code per session. Because
 // it's a child of the agent it inherits the terminal env (TMUX_PANE /
@@ -36,8 +39,7 @@ import { PIPELINE_SESSION_ID_ENV, PIPELINE_TASK_ID_ENV } from "@shared/pipeline.
 
 const ENV = captureTerminalEnv();
 const SESSION_ID = process.env.CLAUDE_SESSION_ID ?? null;
-const PIPELINE_TASK_ID = process.env[PIPELINE_TASK_ID_ENV] ?? null;
-const PIPELINE_SESSION_ID = process.env[PIPELINE_SESSION_ID_ENV] ?? null;
+const PIPELINE_CALLER_CREDENTIAL = process.env[PIPELINE_CALLER_CREDENTIAL_ENV] ?? null;
 const PRODUCT_ISSUE_CLIENT = productIssueClientFromEnvironment(
   process.env[PRODUCT_ISSUE_CLIENT_ENV],
 );
@@ -48,8 +50,10 @@ async function http(
   body?: unknown,
   scoutCredential = false,
   signal?: AbortSignal,
+  extraHeaders: Record<string, string> = {},
 ): Promise<Response> {
   const headers: Record<string, string> = {
+    ...extraHeaders,
     "content-type": "application/json",
     "x-harness-token": readToken(),
   };
@@ -564,18 +568,18 @@ server.registerTool(
     inputSchema: { slug: z.string().trim().min(1).describe("The observed existing run slug") },
   },
   async ({ slug }) => {
-    if (!PIPELINE_TASK_ID || !PIPELINE_SESSION_ID) {
+    if (!PIPELINE_CALLER_CREDENTIAL) {
       return textResult("Mission Control did not issue Pipeline host identity to this session.", true);
     }
     try {
-      const res = await http("/mcp/pipelines/adopt", "POST", {
-        env: ENV,
-        sessionId: SESSION_ID,
-        cwd: process.cwd(),
-        taskId: PIPELINE_TASK_ID,
-        hostSessionId: PIPELINE_SESSION_ID,
-        slug,
-      });
+      const res = await http(
+        "/mcp/pipelines/adopt",
+        "POST",
+        { slug },
+        false,
+        undefined,
+        { [PIPELINE_CALLER_CREDENTIAL_HEADER]: PIPELINE_CALLER_CREDENTIAL },
+      );
       const body = (await res.json()) as { replayed?: boolean; error?: string };
       if (!res.ok) {
         return textResult(

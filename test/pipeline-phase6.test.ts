@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  PIPELINE_CALLER_CREDENTIAL_ENV,
   PIPELINE_HALT_CLASSES,
   type PipelineActionResult,
   type PipelineRun,
@@ -228,13 +229,14 @@ test("managed SDK pipeline dispatch composes the selected host prompt with no te
     env: { MISSION_TOKEN: "fixture" },
   };
   let spawned = false;
+  let callerCredential = "";
   const dispatcher = new Dispatcher(registry, async () => assert.fail("no worktree is owned"), {
     supervisor,
     missionMcpDescriptor: async () => mcp,
     verifyMissionMcpTools: async (tools, descriptor) => {
       assert.deepEqual(tools, ["adopt_pipeline_run"]);
-      assert.equal(descriptor?.env.MISSION_PIPELINE_TASK_ID, "pipeline-sdk");
-      assert.match(descriptor?.env.MISSION_PIPELINE_SESSION_ID ?? "", /^sdk:/);
+      callerCredential = descriptor?.env[PIPELINE_CALLER_CREDENTIAL_ENV] ?? "";
+      assert.match(callerCredential, /^[A-Za-z0-9_-]{43}$/);
       return { ok: true };
     },
     pipelineLaunch: async () => ({
@@ -282,8 +284,7 @@ test("managed SDK pipeline dispatch composes the selected host prompt with no te
       ...mcp,
       env: {
         ...mcp.env,
-        MISSION_PIPELINE_TASK_ID: "pipeline-sdk",
-        MISSION_PIPELINE_SESSION_ID: launchedSessionId,
+        [PIPELINE_CALLER_CREDENTIAL_ENV]: callerCredential,
       },
     },
     extraDirs: [],
@@ -300,6 +301,11 @@ test("managed SDK pipeline dispatch composes the selected host prompt with no te
   assert.deepEqual(task?.extraRepos, []);
   assert.deepEqual(task?.pipelineRun, link);
   assert.equal(registry.workEpisodeForTask("pipeline-sdk")?.sessionId, launchedSessionId);
+  assert.deepEqual(registry.managedPipelineCaller(callerCredential), {
+    taskId: "pipeline-sdk",
+    sessionId: launchedSessionId,
+    cwd: "/repo/sdk",
+  });
 });
 
 test("managed Pipeline dispatch refuses a stale MCP bundle before host launch", async () => {
@@ -415,10 +421,13 @@ test("rejected managed Pipeline launch clears its preallocated nonexistent sessi
   }));
   let prelaunchAttributionObserved = false;
   let registrySessionMissing = false;
+  let callerCredential = "";
   let stopped = 0;
   let tornDown = 0;
   const supervisor = {
     start: async (input: Parameters<SdkSupervisor["start"]>[0]) => {
+      callerCredential = input.mcp?.env[PIPELINE_CALLER_CREDENTIAL_ENV] ?? "";
+      assert.match(callerCredential, /^[A-Za-z0-9_-]{43}$/);
       prelaunchAttributionObserved =
         typeof input.sessionId === "string" &&
         registry.getTask("pipeline-sdk-rejected-stale-liveness")?.sessionId === input.sessionId;
@@ -457,6 +466,7 @@ test("rejected managed Pipeline launch clears its preallocated nonexistent sessi
   await dispatcher.dispatch("pipeline-sdk-rejected-stale-liveness");
 
   const task = registry.getTask("pipeline-sdk-rejected-stale-liveness");
+  assert.equal(registry.managedPipelineCaller(callerCredential), null);
   assert.deepEqual({
     prelaunchAttributionObserved,
     registrySessionMissing,

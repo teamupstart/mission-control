@@ -284,10 +284,10 @@ export interface PipelineRunLink {
   slug: string;
 }
 
-/** Launch-scoped identity issued only to a managed Pipeline task's Mission MCP child. */
-export const PIPELINE_TASK_ID_ENV = "MISSION_PIPELINE_TASK_ID";
-/** Exact SDK host identity paired with `PIPELINE_TASK_ID_ENV` for managed adoption calls. */
-export const PIPELINE_SESSION_ID_ENV = "MISSION_PIPELINE_SESSION_ID";
+/** Unforgeable bearer capability issued only to one managed Pipeline host's MCP child. */
+export const PIPELINE_CALLER_CREDENTIAL_ENV = "MISSION_PIPELINE_CALLER_CREDENTIAL";
+/** HTTP header carrying `PIPELINE_CALLER_CREDENTIAL_ENV` back to the daemon. */
+export const PIPELINE_CALLER_CREDENTIAL_HEADER = "x-mission-pipeline-caller";
 
 /**
  * What one SESSION carries about the run it is doing the work of: `Session.pipeline`.

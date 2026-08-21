@@ -45,9 +45,9 @@ const {
   verifyMissionMcpToolsForRunningSession,
 } = await import("../src/server/mission-mcp.ts");
 const { PRODUCT_ISSUE_CLIENT_ENV } = await import("../src/shared/product-issues.ts");
-const { PIPELINE_SESSION_ID_ENV, PIPELINE_TASK_ID_ENV } = await import(
-  "../src/shared/pipeline.ts"
-);
+const {
+  PIPELINE_CALLER_CREDENTIAL_ENV,
+} = await import("../src/shared/pipeline.ts");
 const { mcpServerPath } = await import("../src/server/config.ts");
 const { askChannelArgs, ASK_TOOL } = await import("../src/server/ask-channel.ts");
 const { prepareCodexLaunch } = await import("../src/server/harness/codex/launch.ts");
@@ -105,16 +105,14 @@ test("Pipeline task scoping clones the descriptor and preserves the shared regis
   };
   const scoped = missionMcpDescriptorForPipelineTask(
     descriptor,
-    "pipeline-task",
-    "sdk:pipeline-host",
+    "pipeline-caller-credential",
   );
   assert.notEqual(scoped, descriptor);
   assert.notEqual(scoped?.args, descriptor.args);
   assert.notEqual(scoped?.env, descriptor.env);
   assert.deepEqual(scoped?.env, {
     MISSION_HOME: "/state",
-    [PIPELINE_TASK_ID_ENV]: "pipeline-task",
-    [PIPELINE_SESSION_ID_ENV]: "sdk:pipeline-host",
+    [PIPELINE_CALLER_CREDENTIAL_ENV]: "pipeline-caller-credential",
   });
   assert.deepEqual(descriptor.env, { MISSION_HOME: "/state" });
 });

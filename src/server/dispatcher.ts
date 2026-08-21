@@ -39,6 +39,7 @@ import {
   kindMissionMcpRequirement,
   missionMcpDescriptor,
   missionMcpDescriptorForPipelineTask,
+  newPipelineCallerCredential,
   verifyMissionMcpTools,
   type MissionMcpRequirement,
 } from "./mission-mcp.ts";
@@ -791,10 +792,10 @@ export class Dispatcher {
         throw new Error("this build has no session supervisor, so it cannot launch Conductor through Agent SDK");
       }
       const sessionId = newSdkSessionId();
+      const callerCredential = newPipelineCallerCredential();
       const mcp = missionMcpDescriptorForPipelineTask(
         await (this.deps.missionMcpDescriptor ?? missionMcpDescriptor)(),
-        taskId,
-        sessionId,
+        callerCredential,
       );
       if (!mcp) {
         throw new Error(
@@ -821,9 +822,15 @@ export class Dispatcher {
       // Persist the exact host identity before launch. The driver can invoke MCP before
       // `start` returns, so assigning it afterward would create a valid-tool race window.
       this.patch(taskId, { sessionId });
+      this.registry.registerManagedPipelineCaller(
+        taskId,
+        sessionId,
+        launch.cwd,
+        callerCredential,
+      );
       let session: Session;
-      this.registry.beginManagedPipelineLaunch(taskId, sessionId, launch.cwd);
       try {
+        this.registry.beginManagedPipelineLaunch(taskId, sessionId, launch.cwd);
         session = await supervisor.start({
           sessionId,
           agent: task.agent,
@@ -847,6 +854,7 @@ export class Dispatcher {
           repoRoot: launch.cwd,
         });
       } catch (error) {
+        this.registry.endManagedPipelineCaller(taskId, sessionId, callerCredential);
         const current = this.registry.getTask(taskId);
         if (current?.status !== "done" && current?.sessionId === sessionId) {
           this.patch(taskId, { sessionId: task.sessionId });

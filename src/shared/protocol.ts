@@ -667,16 +667,8 @@ export const McpCreateTaskSchema = z
   );
 export type McpCreateTask = z.infer<typeof McpCreateTaskSchema>;
 
-/**
- * Bridge-expanded request for a managed Pipeline host to adopt an observed run.
- * The MCP tool exposes only `slug`; every identity field here is daemon-issued or captured.
- */
+/** The MCP tool exposes only the provider slug; its launch capability carries identity. */
 export const McpAdoptPipelineRunSchema = z.object({
-  env: EnvSchema,
-  sessionId: z.string().nullable().optional().default(null),
-  cwd: z.string().min(1),
-  taskId: z.string().min(1),
-  hostSessionId: z.string().min(1),
   slug: z.string().trim().min(1),
 }).strict();
 export type McpAdoptPipelineRun = z.infer<typeof McpAdoptPipelineRunSchema>;

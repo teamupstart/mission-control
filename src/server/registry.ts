@@ -240,6 +240,13 @@ export interface ManagedPipelineLaunch {
   cwd: string;
 }
 
+/** Capability-backed identity of the MCP child belonging to one managed Pipeline host. */
+export interface ManagedPipelineCaller {
+  taskId: string;
+  sessionId: string;
+  cwd: string;
+}
+
 /**
  * The id space of driver-run sessions.
  *
@@ -569,6 +576,7 @@ interface PassiveState {
 export class Registry extends EventEmitter {
   private sessions = new Map<string, Session>();
   private managedPipelineLaunches = new Map<string, ManagedPipelineLaunch>();
+  private managedPipelineCallers = new Map<string, ManagedPipelineCaller>();
   private prObservations = new Map<string, PrObservation>();
   /**
    * Pull requests each session has already been announced as the author of.
@@ -1029,6 +1037,26 @@ export class Registry extends EventEmitter {
 
   managedPipelineLaunch(sessionId: string): ManagedPipelineLaunch | null {
     return this.managedPipelineLaunches.get(sessionId) ?? null;
+  }
+
+  registerManagedPipelineCaller(
+    taskId: string,
+    sessionId: string,
+    cwd: string,
+    credential: string,
+  ): void {
+    this.managedPipelineCallers.set(credential, { taskId, sessionId, cwd });
+  }
+
+  endManagedPipelineCaller(taskId: string, sessionId: string, credential: string): void {
+    const caller = this.managedPipelineCallers.get(credential);
+    if (caller?.taskId === taskId && caller.sessionId === sessionId) {
+      this.managedPipelineCallers.delete(credential);
+    }
+  }
+
+  managedPipelineCaller(credential: string): ManagedPipelineCaller | null {
+    return this.managedPipelineCallers.get(credential) ?? null;
   }
 
   /**
@@ -5200,6 +5228,9 @@ export class Registry extends EventEmitter {
     this.permissionModeFreshnessGuards.delete(id);
     this.statusLineTimestamps.delete(id);
     this.driverDialogs.delete(id);
+    for (const [credential, caller] of this.managedPipelineCallers) {
+      if (caller.sessionId === id) this.managedPipelineCallers.delete(credential);
+    }
     // Held until the ROW goes, not until the agent stopped - see `retroCorrections`. This is
     // where "the row goes", so this is where it is forgotten.
     this.retroCorrections.delete(id);

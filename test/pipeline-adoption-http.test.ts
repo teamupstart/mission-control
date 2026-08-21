@@ -16,6 +16,10 @@ const { Dispatcher } = await import("../src/server/dispatcher.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
+const {
+  PIPELINE_CALLER_CREDENTIAL_ENV,
+  PIPELINE_CALLER_CREDENTIAL_HEADER,
+} = await import("../src/shared/pipeline.ts");
 const { mkTask } = await import("./helpers/session-fixture.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
@@ -63,6 +67,8 @@ function fixture() {
     },
   });
   registry.upsertTask(task);
+  const callerCredential = "pipeline-adoption-http-credential";
+  registry.registerManagedPipelineCaller(task.id, host.id, target.repoRoot, callerCredential);
   registry.registerSdkSession({
     id: "sdk:pipeline-adoption-same-cwd",
     agent: "codex",
@@ -72,21 +78,32 @@ function fixture() {
   });
   const app = buildApp(registry, {} as ReviewManager, tasks, {} as QueueManager);
   const payload = {
-    env: {},
-    sessionId: null,
-    cwd: host.cwd,
-    taskId: task.id,
-    hostSessionId: host.id,
     slug: target.slug,
   };
-  return { app, registry, task, target, payload };
+  return { app, registry, task, target, payload, callerCredential };
 }
 
-test("the authenticated adoption route derives provider and repository from its launch task", async () => {
-  const { app, registry, task, target, payload } = fixture();
+test("the shared daemon token cannot authorize Pipeline adoption without its launch capability", async () => {
+  const { app, registry, task, payload } = fixture();
   const response = await app.request("/mcp/pipelines/adopt", {
     method: "POST",
     headers: { "content-type": "application/json", "x-harness-token": ensureToken() },
+    body: JSON.stringify(payload),
+  });
+
+  assert.equal(response.status, 403);
+  assert.equal(registry.getTask(task.id)?.pipelineRun?.slug, "reserved-run");
+});
+
+test("the authenticated adoption route derives provider and repository from its launch task", async () => {
+  const { app, registry, task, target, payload, callerCredential } = fixture();
+  const response = await app.request("/mcp/pipelines/adopt", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-harness-token": ensureToken(),
+      [PIPELINE_CALLER_CREDENTIAL_HEADER]: callerCredential,
+    },
     body: JSON.stringify(payload),
   });
 
@@ -129,6 +146,7 @@ test("the authenticated adoption route accepts its preallocated managed host bef
   registry.upsertTask(task);
 
   let preallocatedSessionId = "";
+  let callerCredential = "";
   let markStarted!: () => void;
   let rejectStart!: (error: Error) => void;
   const started = new Promise<void>((resolve) => {
@@ -137,6 +155,8 @@ test("the authenticated adoption route accepts its preallocated managed host bef
   const supervisor = {
     start: (input: Parameters<SdkSupervisor["start"]>[0]) => {
       preallocatedSessionId = input.sessionId!;
+      callerCredential = input.mcp?.env[PIPELINE_CALLER_CREDENTIAL_ENV] ?? "";
+      assert.ok(callerCredential);
       assert.equal(registry.getTask(task.id)?.sessionId, preallocatedSessionId);
       assert.equal(registry.getSession(preallocatedSessionId), undefined);
       return new Promise((_resolve, reject) => {
@@ -172,15 +192,12 @@ test("the authenticated adoption route accepts its preallocated managed host bef
   await started;
   const response = await app.request("/mcp/pipelines/adopt", {
     method: "POST",
-    headers: { "content-type": "application/json", "x-harness-token": ensureToken() },
-    body: JSON.stringify({
-      env: {},
-      sessionId: null,
-      cwd: repoRoot,
-      taskId: task.id,
-      hostSessionId: preallocatedSessionId,
-      slug: target.slug,
-    }),
+    headers: {
+      "content-type": "application/json",
+      "x-harness-token": ensureToken(),
+      [PIPELINE_CALLER_CREDENTIAL_HEADER]: callerCredential,
+    },
+    body: JSON.stringify({ slug: target.slug }),
   });
   const responseBody = await response.text();
   rejectStart(new Error("SDK start rejected after adoption request"));
@@ -195,8 +212,8 @@ test("the authenticated adoption route accepts its preallocated managed host bef
   });
 });
 
-test("pre-registration managed adoption refuses mismatched caller identity", async () => {
-  for (const mode of ["wrong-cwd", "native-session"] as const) {
+test("pre-registration managed adoption refuses missing or forged launch capability", async () => {
+  for (const mode of ["missing-capability", "forged-capability"] as const) {
     const registry = new Registry();
     const tasks = new TaskManager(registry);
     const repoRoot = `/repo/pipeline-adoption-preallocated-${mode}`;
@@ -270,15 +287,14 @@ test("pre-registration managed adoption refuses mismatched caller identity", asy
     await started;
     const response = await app.request("/mcp/pipelines/adopt", {
       method: "POST",
-      headers: { "content-type": "application/json", "x-harness-token": ensureToken() },
-      body: JSON.stringify({
-        env: {},
-        sessionId: mode === "native-session" ? "unexpected-native-session" : null,
-        cwd: mode === "wrong-cwd" ? "/repo/different" : repoRoot,
-        taskId: task.id,
-        hostSessionId: preallocatedSessionId,
-        slug: target.slug,
-      }),
+      headers: {
+        "content-type": "application/json",
+        "x-harness-token": ensureToken(),
+        ...(mode === "forged-capability"
+          ? { [PIPELINE_CALLER_CREDENTIAL_HEADER]: "forged-pipeline-capability" }
+          : {}),
+      },
+      body: JSON.stringify({ slug: target.slug }),
     });
     const responseBody = await response.text();
     const pipelineRun = registry.getTask(task.id)?.pipelineRun;
@@ -293,33 +309,46 @@ test("pre-registration managed adoption refuses mismatched caller identity", asy
 });
 
 test("the adoption route requires authentication and exact launch identity", async () => {
-  for (const mode of ["unauthenticated", "missing-host", "native-mismatch"] as const) {
-    const { app, registry, task, payload } = fixture();
-    const body = mode === "missing-host"
-      ? Object.fromEntries(Object.entries(payload).filter(([key]) => key !== "hostSessionId"))
-      : mode === "native-mismatch"
-        ? { ...payload, sessionId: "another-native-session" }
-        : payload;
+  for (const mode of ["unauthenticated", "missing-capability", "forged-capability"] as const) {
+    const { app, registry, task, payload, callerCredential } = fixture();
     const response = await app.request("/mcp/pipelines/adopt", {
       method: "POST",
       headers: {
         "content-type": "application/json",
         ...(mode === "unauthenticated" ? {} : { "x-harness-token": ensureToken() }),
+        ...(mode === "missing-capability"
+          ? {}
+          : {
+              [PIPELINE_CALLER_CREDENTIAL_HEADER]: mode === "forged-capability"
+                ? "forged-pipeline-capability"
+                : callerCredential,
+            }),
       },
-      body: JSON.stringify(body),
+      body: JSON.stringify(payload),
     });
 
-    assert.equal(response.status, mode === "unauthenticated" ? 401 : mode === "missing-host" ? 400 : 403, mode);
+    assert.equal(response.status, mode === "unauthenticated" ? 401 : 403, mode);
     assert.equal(registry.getTask(task.id)?.pipelineRun?.slug, "reserved-run", mode);
   }
 });
 
 test("the adoption route rejects caller-selected provider and repository identity", async () => {
-  const { app, registry, task, payload } = fixture();
+  const { app, registry, task, payload, callerCredential } = fixture();
   const response = await app.request("/mcp/pipelines/adopt", {
     method: "POST",
-    headers: { "content-type": "application/json", "x-harness-token": ensureToken() },
-    body: JSON.stringify({ ...payload, provider: "other", repoRoot: "/repo/other" }),
+    headers: {
+      "content-type": "application/json",
+      "x-harness-token": ensureToken(),
+      [PIPELINE_CALLER_CREDENTIAL_HEADER]: callerCredential,
+    },
+    body: JSON.stringify({
+      ...payload,
+      provider: "other",
+      repoRoot: "/repo/other",
+      taskId: task.id,
+      hostSessionId: task.sessionId,
+      cwd: task.repoRoot,
+    }),
   });
 
   assert.equal(response.status, 400);
@@ -335,15 +364,16 @@ test("the adoption route rejects a different live caller", async () => {
     cwd: "/repo/other-host",
     agentSessionId: "codex-pipeline-adoption-other",
   });
+  const otherCredential = "pipeline-adoption-other-credential";
+  registry.registerManagedPipelineCaller(task.id, other.id, "/repo/other-host", otherCredential);
   const response = await app.request("/mcp/pipelines/adopt", {
     method: "POST",
-    headers: { "content-type": "application/json", "x-harness-token": ensureToken() },
-    body: JSON.stringify({
-      ...payload,
-      hostSessionId: other.id,
-      sessionId: null,
-      cwd: other.cwd,
-    }),
+    headers: {
+      "content-type": "application/json",
+      "x-harness-token": ensureToken(),
+      [PIPELINE_CALLER_CREDENTIAL_HEADER]: otherCredential,
+    },
+    body: JSON.stringify(payload),
   });
 
   assert.equal(response.status, 403);

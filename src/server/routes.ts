@@ -247,6 +247,7 @@ import {
 } from "./pipelines/index.ts";
 import {
   isPipelineProviderId,
+  PIPELINE_CALLER_CREDENTIAL_HEADER,
   pipelineRepoKey,
   type PipelineActionResult,
   type PipelineConsoleResult,
@@ -2900,31 +2901,29 @@ export function buildApp(
     if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
     const parsed = await parseBody(c, McpAdoptPipelineRunSchema);
     if (!parsed.ok) return parsed.res;
-    const task = registry.getTask(parsed.data.taskId);
+    const credential = c.req.header(PIPELINE_CALLER_CREDENTIAL_HEADER);
+    const caller = credential ? registry.managedPipelineCaller(credential) : null;
+    if (!caller) {
+      return c.json({ error: "the caller has no managed Pipeline launch capability" }, 403);
+    }
+    const task = registry.getTask(caller.taskId);
     if (!task) return c.json({ error: "no matching Pipeline task" }, 404);
     if (!task.pipelineRun) {
       return c.json({ error: "the Pipeline task has no launch reservation" }, 409);
     }
-    if (task.sessionId !== parsed.data.hostSessionId) {
+    if (task.sessionId !== caller.sessionId) {
       return c.json({ error: "the caller does not own this Pipeline task" }, 403);
     }
-    const session = registry.getSession(parsed.data.hostSessionId);
+    const session = registry.getSession(caller.sessionId);
     if (session?.state === "exited") return c.json({ error: "no matching active session" }, 404);
     if (session) {
-      if (
-        session.cwd !== parsed.data.cwd ||
-        (parsed.data.sessionId !== null && parsed.data.sessionId !== session.agentSessionId)
-      ) {
+      if (session.cwd !== caller.cwd) {
         return c.json({ error: "the caller does not match the managed Pipeline host" }, 403);
       }
     } else {
-      const launch = registry.managedPipelineLaunch(parsed.data.hostSessionId);
+      const launch = registry.managedPipelineLaunch(caller.sessionId);
       if (!launch) return c.json({ error: "no matching active session" }, 404);
-      if (
-        launch.taskId !== task.id ||
-        launch.cwd !== parsed.data.cwd ||
-        parsed.data.sessionId !== null
-      ) {
+      if (launch.taskId !== task.id || launch.cwd !== caller.cwd) {
         return c.json({ error: "the caller does not match the pending managed Pipeline host" }, 403);
       }
     }
@@ -2937,7 +2936,7 @@ export function buildApp(
       },
       session
         ? { kind: "managed", session }
-        : { kind: "managed-launch", sessionId: parsed.data.hostSessionId },
+        : { kind: "managed-launch", sessionId: caller.sessionId },
     );
     if (!result.ok) return c.json({ error: result.error }, result.status);
     return c.json({ task: result.task, replayed: result.replayed });

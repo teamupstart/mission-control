@@ -23,7 +23,9 @@ import {
   writeConductorProjects,
 } from "../fixtures/conductor.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { recordsIn } from "../fixtures/records.ts";
 import { expect, test } from "../fixtures/test.ts";
+import { PIPELINE_CALLER_CREDENTIAL_HEADER } from "../../src/shared/pipeline.ts";
 
 /**
  * The three loops added around an external pipeline: dispatch, Inspector adoption, and
@@ -98,6 +100,18 @@ function codexPrompts(daemon: DaemonHandle): string[] {
   } catch {
     return [];
   }
+}
+
+/** Opaque capability the daemon handed only to this fake managed host's MCP registration. */
+function codexPipelineCallerCredential(daemon: DaemonHandle): string | null {
+  const records = recordsIn<{ argv?: string[] }>(join(daemon.recordDir, "codex"));
+  for (const record of records) {
+    for (const arg of record.argv ?? []) {
+      const match = arg.match(/"MISSION_PIPELINE_CALLER_CREDENTIAL"="([A-Za-z0-9_-]{43})"/);
+      if (match) return match[1]!;
+    }
+  }
+  return null;
 }
 
 const tmuxMissing = spawnSync("tmux", ["-V"], { stdio: "ignore" }).status !== 0;
@@ -364,21 +378,25 @@ test.describe("managed Pipeline run adoption", () => {
       await expect(detail.getByRole("button", { name: plannedName })).toBeVisible();
       await expect(detail.locator("button.pipeline-chip")).toHaveCount(0);
 
-      // The real MCP tool accepts only this object. Its bridge appends the launch-scoped
-      // task id and the captured caller evidence before posting to the daemon route.
+      // The real MCP tool accepts only this object. Its bridge proves which managed host
+      // called by returning the opaque capability in that host's MCP registration.
       const toolInput = { slug: adoptedSlug };
       const token = readFileSync(join(daemon.home, "token"), "utf8").trim();
+      let callerCredential: string | null = null;
+      await expect
+        .poll(() => {
+          callerCredential = codexPipelineCallerCredential(daemon);
+          return callerCredential;
+        })
+        .toMatch(/^[A-Za-z0-9_-]{43}$/);
       const adoption = await fetch(`${daemon.baseURL}/mcp/pipelines/adopt`, {
         method: "POST",
-        headers: { "content-type": "application/json", "x-harness-token": token },
-        body: JSON.stringify({
-          env: {},
-          sessionId: null,
-          cwd: host!.cwd,
-          taskId: task!.id,
-          hostSessionId: host!.id,
-          ...toolInput,
-        }),
+        headers: {
+          "content-type": "application/json",
+          "x-harness-token": token,
+          [PIPELINE_CALLER_CREDENTIAL_HEADER]: callerCredential!,
+        },
+        body: JSON.stringify(toolInput),
       });
       expect(adoption.status, await adoption.text()).toBe(200);
 

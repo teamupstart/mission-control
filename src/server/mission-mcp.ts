@@ -21,7 +21,9 @@ import { PLAN_DECISIONS_TOOL, PLAN_SCHEDULING_TOOL } from "./plans/tools.ts";
 import { SUBMIT_SCOUT_ARTIFACTS_TOOL } from "./scouts/submission-tool.ts";
 import { SUBMIT_WORKFLOW_EVIDENCE_TOOL } from "./workflows/evidence-tool.ts";
 import { COMPLETE_RETRO_NO_CHANGE_TOOL } from "./retro-tool.ts";
-import { PIPELINE_SESSION_ID_ENV, PIPELINE_TASK_ID_ENV } from "@shared/pipeline.ts";
+import {
+  PIPELINE_CALLER_CREDENTIAL_ENV,
+} from "@shared/pipeline.ts";
 import { run } from "./util/exec.ts";
 
 // The one place that knows how to hand a LAUNCHING agent our own MCP server.
@@ -218,11 +220,15 @@ export async function missionMcpDescriptor(): Promise<MissionMcpDescriptor | nul
   };
 }
 
-/** Clone one registration with the task identity issued to a managed Pipeline host. */
+/** Mint the bearer capability known only to one managed Pipeline host's MCP child. */
+export function newPipelineCallerCredential(): string {
+  return randomBytes(32).toString("base64url");
+}
+
+/** Clone one registration with the identity and capability issued to a managed Pipeline host. */
 export function missionMcpDescriptorForPipelineTask(
   descriptor: MissionMcpDescriptor | null,
-  taskId: string,
-  sessionId: string,
+  callerCredential: string,
 ): MissionMcpDescriptor | null {
   if (!descriptor) return null;
   return {
@@ -230,8 +236,7 @@ export function missionMcpDescriptorForPipelineTask(
     args: [...descriptor.args],
     env: {
       ...descriptor.env,
-      [PIPELINE_TASK_ID_ENV]: taskId,
-      [PIPELINE_SESSION_ID_ENV]: sessionId,
+      [PIPELINE_CALLER_CREDENTIAL_ENV]: callerCredential,
     },
   };
 }

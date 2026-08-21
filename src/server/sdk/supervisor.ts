@@ -13,6 +13,7 @@ import { sdkFor } from "../harness/index.ts";
 import {
   missionMcpDescriptor,
   missionMcpDescriptorForPipelineTask,
+  newPipelineCallerCredential,
   verifyMissionMcpTools,
   type MissionMcpDescriptor,
 } from "../mission-mcp.ts";
@@ -810,6 +811,7 @@ export class SdkSupervisor {
     }
     const task = row.taskId ? this.registry.getTask(row.taskId) : null;
     let mcp: MissionMcpDescriptor | null = null;
+    let callerCredential: string | null = null;
     try {
       mcp = await (this.deps.missionMcpDescriptor ?? missionMcpDescriptor)();
     } catch (err) {
@@ -823,7 +825,8 @@ export class SdkSupervisor {
       );
     }
     if (task?.kind === "pipeline") {
-      mcp = missionMcpDescriptorForPipelineTask(mcp, task.id, row.id);
+      callerCredential = newPipelineCallerCredential();
+      mcp = missionMcpDescriptorForPipelineTask(mcp, callerCredential);
       if (!mcp) {
         throw new Error(
           "managed Pipeline resume requires Mission Control's MCP server - rebuild with: npm run build",
@@ -840,6 +843,12 @@ export class SdkSupervisor {
       }
     }
     if (task?.kind === "pipeline") {
+      this.registry.registerManagedPipelineCaller(
+        task.id,
+        row.id,
+        row.cwd,
+        callerCredential!,
+      );
       this.registry.beginManagedPipelineLaunch(task.id, row.id, row.cwd);
     }
     try {
@@ -887,6 +896,11 @@ export class SdkSupervisor {
           acceptedTurns: 0,
         },
       });
+    } catch (error) {
+      if (task?.kind === "pipeline") {
+        this.registry.endManagedPipelineCaller(task.id, row.id, callerCredential!);
+      }
+      throw error;
     } finally {
       if (task?.kind === "pipeline") {
         this.registry.endManagedPipelineLaunch(task.id, row.id);

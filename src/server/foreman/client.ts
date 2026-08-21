@@ -12,12 +12,15 @@ import { dirname, join } from "node:path";
 import { BASE_URL, envVar, stateDir } from "@shared/harness-runtime.mjs";
 import {
   CLAUDE_TRANSPORT_ENV,
+  CODEX_TRANSPORT_ENV,
   DEFAULT_CLAUDE_TRANSPORT,
+  DEFAULT_CODEX_TRANSPORT,
   DEFAULT_LLM_RUNNER_ID,
   isClaudeTransport,
+  isCodexTransport,
   isLlmRunnerId,
 } from "@shared/llm.ts";
-import type { ClaudeTransport, LlmRunnerId } from "@shared/llm.ts";
+import type { ClaudeTransport, CodexTransport, LlmRunnerId } from "@shared/llm.ts";
 import { ForemanConfigSchema, TRANSCRIPT_DEFAULT_TAIL_TURNS } from "@shared/protocol.ts";
 import type {
   BacklogPlanInput,
@@ -90,12 +93,19 @@ export interface TaskActionResult {
 export interface ForemanLlmSelection {
   runner: LlmRunnerId;
   claudeTransport: ClaudeTransport;
+  codexTransport: CodexTransport;
 }
 
 /** Compatibility answer when the daemon predates the transport field or status route. */
 export function foremanClaudeTransportFallback(): ClaudeTransport {
   const configured = envVar(CLAUDE_TRANSPORT_ENV)?.trim() ?? "";
   return isClaudeTransport(configured) ? configured : DEFAULT_CLAUDE_TRANSPORT;
+}
+
+/** The same compatibility answer for Codex. Both transports degrade the same way. */
+export function foremanCodexTransportFallback(): CodexTransport {
+  const configured = envVar(CODEX_TRANSPORT_ENV)?.trim() ?? "";
+  return isCodexTransport(configured) ? configured : DEFAULT_CODEX_TRANSPORT;
 }
 
 async function get<T>(path: string): Promise<T> {
@@ -937,14 +947,21 @@ export class ForemanClient implements ForemanActions {
     const status = await get<{
       runner?: { id?: string };
       claudeTransport?: string;
+      codexTransport?: string;
     }>("/api/llm/status");
     const id = status?.runner?.id;
     const transport = status?.claudeTransport;
+    const codex = status?.codexTransport;
     return {
       runner: id && isLlmRunnerId(id) ? id : DEFAULT_LLM_RUNNER_ID,
       claudeTransport: transport && isClaudeTransport(transport)
         ? transport
         : foremanClaudeTransportFallback(),
+      // Read beside Claude's, off the same status body, so ONE request carries every
+      // app-wide model-call choice and a transient failure retains all of them together.
+      codexTransport: codex && isCodexTransport(codex)
+        ? codex
+        : foremanCodexTransportFallback(),
     };
   }
 

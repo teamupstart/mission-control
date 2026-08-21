@@ -87,6 +87,46 @@ export function isClaudeTransport(value: string): value is ClaudeTransport {
   return (CLAUDE_TRANSPORTS as readonly string[]).includes(value);
 }
 
+/**
+ * The two ways one headless Codex call can be made.
+ *
+ * `exec` spawns `codex exec` and reads its `--json` event stream, which is what this runner
+ * has always done. `sdk` drives the same binary through `@openai/codex-sdk`, whose typed
+ * thread API replaces the hand-rolled event decoding.
+ *
+ * WHAT THIS IS NOT is worth stating plainly, because the reverse was assumed once and the
+ * measurement says otherwise: it is NOT a direct API client and it is NOT faster. The SDK
+ * spawns the same executable, so the two transports differ in how the reply is PARSED, not
+ * in how it is fetched. Measured on this machine, a `gpt-5.6-luna` title call takes 4.5-7.7s
+ * wall, of which only ~0.3-0.6s is the process and none of it scales with prompt size -
+ * 72,422 input tokens answered in the same time as 12,414. The remainder is the model round
+ * trip and no transport can remove it.
+ *
+ * `exec` therefore remains the default. Choosing `sdk` buys typed events and a supported
+ * resume path, and costs a dependency; it does not buy latency.
+ */
+export const CODEX_TRANSPORTS = ["exec", "sdk"] as const;
+
+export type CodexTransport = (typeof CODEX_TRANSPORTS)[number];
+
+/**
+ * The transport used when neither config nor the environment pins one.
+ *
+ * `exec`, deliberately - the shipped path stays the one with years of behaviour behind it,
+ * and an operator opts into the SDK rather than being migrated by an upgrade.
+ */
+export const DEFAULT_CODEX_TRANSPORT: CodexTransport = "exec";
+
+/** The `envVar()` suffix selecting Codex's headless transport. See `CLAUDE_TRANSPORT_ENV`. */
+export const CODEX_TRANSPORT_ENV = "CODEX_TRANSPORT";
+
+/** The env var as the operator would type it. */
+export const CODEX_TRANSPORT_ENV_VAR = `MISSION_${CODEX_TRANSPORT_ENV}`;
+
+export function isCodexTransport(value: string): value is CodexTransport {
+  return (CODEX_TRANSPORTS as readonly string[]).includes(value);
+}
+
 /** A runner id, and which of the three layers chose it. */
 export interface ResolvedLlmRunner {
   id: LlmRunnerId;

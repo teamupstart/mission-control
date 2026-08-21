@@ -173,6 +173,28 @@ export class Dispatcher {
       planSkills?: typeof planSkillsForAgent;
       /** Server-owned immutable graph check; kept injectable so this launch layer stays DB-free. */
       workflowEvidenceEnabled?: (task: Pick<Task, "kind" | "workflowId">) => boolean;
+      /**
+       * Fired once, when a task first acquires the session it will run on.
+       *
+       * The seam that lets a launch stop waiting for a model to name it. Dispatch reads
+       * `task.title` to build the terminal home name, so naming used to gate the whole
+       * launch behind the titling call - measured at 4.5-7.7s against the configured
+       * provider, all of it in front of an agent that was otherwise ready to start. The
+       * launch now takes the heuristic title and the LATE title renames the session
+       * afterwards, which is the same operation `assign` already performs when it hands a
+       * task to a running agent.
+       *
+       * It has to be a notification rather than a return value because the two facts
+       * settle in either order: the model can answer before the session is discovered, or
+       * long after it. Whoever finishes second does the rename; this is the half that
+       * reports the session arriving.
+       *
+       * Deliberately fired from `patch`, which is the ONE place every runtime records its
+       * session - the terminal path, the embedded path and the pipeline path all land
+       * there. Hanging it off the three call sites instead would leave a runtime silently
+       * un-renamed the day a fourth is added.
+       */
+      onSessionBound?: (taskId: string) => void;
       resolveRuntime?: typeof resolveDispatchRuntime;
       /**
        * Which commit each of the task's repositories is frozen at before provisioning.
@@ -1146,6 +1168,19 @@ export class Dispatcher {
     const cur = this.registry.getTask(taskId);
     if (!cur) return;
     this.registry.upsertTask({ ...cur, ...fields, updatedAt: Date.now() });
+    // The one transition worth announcing: this task now has a session to be named on.
+    // Read off the BEFORE and AFTER rather than off `fields`, so a patch that merely
+    // restates the id it already had stays silent and the notification means "newly
+    // bound" exactly once.
+    if (cur.sessionId === null && typeof fields.sessionId === "string") {
+      // Never allowed to fail the launch. The listener renames a terminal home, which is
+      // cosmetic next to an agent that is already running with its worktree recorded.
+      try {
+        this.deps.onSessionBound?.(taskId);
+      } catch (err) {
+        console.error(`[dispatch] session-bound listener failed for ${taskId}:`, err);
+      }
+    }
   }
 }
 

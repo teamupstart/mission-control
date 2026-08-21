@@ -14,7 +14,7 @@ import type { InspectorPosture } from "./inspector.ts";
 import type { LlmJobId, ResolvedLlmJobModel } from "./llm-jobs.ts";
 import type { AutomationRoleCost } from "./llm-spend.ts";
 import type { LineSummary } from "./line.ts";
-import type { ClaudeTransport, LlmRunnerId, ResolvedLlmRunner } from "./llm.ts";
+import type { ClaudeTransport, CodexTransport, LlmRunnerId, ResolvedLlmRunner } from "./llm.ts";
 import type { ResolvedModel } from "./model-choice.ts";
 import type {
   PipelineLaunchRuntime,
@@ -2493,6 +2493,8 @@ export interface LlmStatus {
   runner: ResolvedLlmRunner;
   /** The resolved wire transport for tool-less Claude calls in every process. */
   claudeTransport: ClaudeTransport;
+  /** The same, for Codex. `exec` spawns the CLI; `sdk` drives it through the typed SDK. */
+  codexTransport: CodexTransport;
   models: Record<LlmJobId, ResolvedLlmJobModel>;
   /** Every provider this build has, in declaration order. */
   runners: LlmProviderView[];

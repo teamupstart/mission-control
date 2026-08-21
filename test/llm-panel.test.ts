@@ -27,12 +27,13 @@ import type { LlmStatus } from "../src/shared/types.ts";
 // Static markup rather than a browser, per the house rule: the panel's only interactivity is
 // a commit handler, and the dashboard's SSE stream hangs headless automation.
 
-const CONFIG: LlmConfig = { runner: "", claudeTransport: "", models: {} };
+const CONFIG: LlmConfig = { runner: "", claudeTransport: "", codexTransport: "", models: {} };
 
 function status(over: Partial<LlmStatus> = {}): LlmStatus {
   return {
     runner: { id: "claude", source: "default", unknown: null },
     claudeTransport: "print",
+    codexTransport: "exec",
     models: Object.fromEntries(
       LLM_JOB_IDS.map((job) => [
         job,
@@ -118,7 +119,7 @@ test("a shipped default says so, so an empty box is never mistaken for an unset 
 
 test("a config override renders in the box and explains nothing further", () => {
   const html = render({
-    config: { runner: "", claudeTransport: "", models: { goal: "claude-sonnet-5" } },
+    config: { runner: "", claudeTransport: "", codexTransport: "", models: { goal: "claude-sonnet-5" } },
     status: status({
       models: {
         ...status().models,

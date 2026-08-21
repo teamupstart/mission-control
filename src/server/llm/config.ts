@@ -5,12 +5,15 @@ import { LLM_JOB_IDS, LLM_JOB_SPECS, resolveLlmJobModel, resolveLlmJobModels } f
 import type { LlmJobId, ResolvedLlmJobModel } from "@shared/llm-jobs.ts";
 import {
   CLAUDE_TRANSPORT_ENV,
+  CODEX_TRANSPORT_ENV,
   DEFAULT_CLAUDE_TRANSPORT,
+  DEFAULT_CODEX_TRANSPORT,
   isClaudeTransport,
+  isCodexTransport,
   LLM_RUNNER_ENV,
   resolveLlmRunner,
 } from "@shared/llm.ts";
-import type { ClaudeTransport, ResolvedLlmRunner } from "@shared/llm.ts";
+import type { ClaudeTransport, CodexTransport, ResolvedLlmRunner } from "@shared/llm.ts";
 import type { LlmStatus } from "@shared/types.ts";
 import { getAppConfig, setAppConfig } from "../db.ts";
 import { allLlmRunners } from "./index.ts";
@@ -85,6 +88,18 @@ export function claudeTransportChoice(cfg: LlmConfig = getLlmConfig()): ClaudeTr
   return isClaudeTransport(environment) ? environment : DEFAULT_CLAUDE_TRANSPORT;
 }
 
+/**
+ * Which wire protocol a daemon-side Codex call uses. Same ladder as `claudeTransportChoice`.
+ *
+ * Resolved per call so a config edit reaches the next run rather than the next restart.
+ */
+export function codexTransportChoice(cfg: LlmConfig = getLlmConfig()): CodexTransport {
+  const configured = cfg.codexTransport.trim();
+  if (isCodexTransport(configured)) return configured;
+  const environment = envVar(CODEX_TRANSPORT_ENV)?.trim() ?? "";
+  return isCodexTransport(environment) ? environment : DEFAULT_CODEX_TRANSPORT;
+}
+
 /** What one background job will spawn with, and why. Per call, for the reason above. */
 export function llmJobModel(job: LlmJobId, cfg: LlmConfig = getLlmConfig()): ResolvedLlmJobModel {
   return resolveLlmJobModel(job, cfg.models, envVar(LLM_JOB_SPECS[job].envKey), llmRunnerChoice(cfg).id);
@@ -101,6 +116,7 @@ export function llmStatus(cfg: LlmConfig = getLlmConfig()): LlmStatus {
     // only from its own environment would let the daemon and worker disagree about a stored
     // choice until one of them restarted.
     claudeTransport: claudeTransportChoice(cfg),
+    codexTransport: codexTransportChoice(cfg),
     models: resolveLlmJobModels(cfg.models, envValues, llmRunnerChoice(cfg).id),
     // Ids AND labels, because a label lives on the implementation and the browser cannot
     // import one - see `LlmStatus.runners`.

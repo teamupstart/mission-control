@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
@@ -42,6 +43,7 @@ Object.defineProperty(globalThis, "fetch", {
 
 const {
   ACTIONS,
+  ariaKeyshortcuts,
   bindingValidationError,
   chordFromEvent,
   chordHasCommandModifier,
@@ -56,6 +58,8 @@ const {
 } = await import("../src/web/lib/keybindings.ts");
 const { updateUiConfig } = await import("../src/web/lib/uiConfig.ts");
 const { KeyboardPanel } = await import("../src/web/components/KeyboardPanel.tsx");
+const { DeleteButton } = await import("../src/web/components/DeleteButton.tsx");
+const { deleteShortcutMatchesChord } = await import("../src/web/lib/delete-shortcut.ts");
 const { pageShortcutRoute } = await import("../src/web/workflows/useWorkflowRoute.ts");
 type ActionId = (typeof ACTIONS)[number]["id"];
 
@@ -160,10 +164,85 @@ test("formatChord leaves uncased and named keys alone", () => {
   assert.equal(formatChord(""), "");
 });
 
+test("ARIA shortcuts use KeyboardEvent modifier names", () => {
+  assert.equal(ariaKeyshortcuts("d"), "d");
+  assert.equal(ariaKeyshortcuts("shift+d"), "Shift+D");
+  assert.equal(ariaKeyshortcuts("cmd+shift+k"), "Meta+Shift+K");
+  assert.equal(ariaKeyshortcuts("cmd+ctrl+k"), "Meta+Control+k");
+  assert.equal(ariaKeyshortcuts(""), undefined);
+});
+
 // ---- the action registry ----
 
 test("no two actions ship with the same default binding", () => {
   assert.deepEqual([...findConflicts(defaults()).keys()], []);
+});
+
+test("Delete owns d by default and Diff stays available on Shift+D", () => {
+  const remove = ACTIONS.find((action) => action.id === "delete");
+  const diff = ACTIONS.find((action) => action.id === "diff");
+  assert.equal(remove?.defaultBinding, "d");
+  assert.equal(remove?.group, "selection");
+  assert.equal(diff?.defaultBinding, "shift+d");
+  assert.equal(chordFromEvent(key("d")), remove?.defaultBinding);
+  assert.equal(chordFromEvent(key("D", { shift: true })), diff?.defaultBinding);
+});
+
+test("a persisted custom Diff binding keeps d away from Delete", () => {
+  const resolved = resolveKeybindings({ diff: "d" });
+  assert.equal(resolved.diff, "d");
+  assert.equal(resolved.delete, "");
+  assert.equal(deleteShortcutMatchesChord({
+    chord: "d",
+    deleteBinding: resolved.delete,
+    diffBinding: resolved.diff,
+  }), false);
+
+  // Dispatch also fails closed if a stale or malformed snapshot somehow contains the
+  // collision that the resolver normally removes.
+  assert.equal(deleteShortcutMatchesChord({
+    chord: "d",
+    deleteBinding: "d",
+    diffBinding: "d",
+  }), false);
+});
+
+test("Delete buttons advertise the resolved binding and use the shared keycap", () => {
+  const html = renderToStaticMarkup(createElement(DeleteButton, { tooltip: "Delete this item" }, "Delete"));
+  assert.match(html, /data-keybinding-action="delete"/);
+  assert.match(html, /aria-keyshortcuts="d"/);
+  assert.match(html, /<kbd class="kb-hint" aria-hidden="true">d<\/kbd>/);
+  assert.match(html, /Delete this item/);
+});
+
+test("every current Delete surface uses the shared bound button", () => {
+  const inventory = new Map([
+    ["src/web/components/DispatchModal.tsx", 1],
+    ["src/web/components/ReportPanel.tsx", 1],
+    ["src/web/components/scouts/ScoutDeleteModal.tsx", 1],
+    ["src/web/components/scouts/ScoutReader.tsx", 1],
+    ["src/web/components/scouts/ScoutsPage.tsx", 1],
+    ["src/web/ensembles/EnsembleActions.tsx", 1],
+    ["src/web/ensembles/EnsembleDeleteModal.tsx", 1],
+    ["src/web/workflows/WorkflowConfirmModal.tsx", 1],
+    ["src/web/workflows/WorkflowLibrary.tsx", 1],
+    ["src/web/workflows/WorkflowProperties.tsx", 2],
+  ]);
+  for (const [path, expected] of inventory) {
+    const source = readFileSync(path, "utf8");
+    assert.equal(
+      source.match(/<DeleteButton\b/g)?.length ?? 0,
+      expected,
+      `${path} does not bind every Delete control through DeleteButton`,
+    );
+  }
+
+  const app = readFileSync("src/web/App.tsx", "utf8");
+  const activation = app.indexOf("deleteShortcutMatchesChord({");
+  assert.ok(
+    activation >= 0 && activation < app.indexOf('if (route.page !== "fleet")', activation),
+    "Delete must dispatch on every page before fleet-only shortcuts stand down",
+  );
 });
 
 test("every default binding is bindable and round-trips through its chord form", () => {
@@ -234,6 +313,7 @@ test("file actions own Shift+F, Shift+O, and l and every default round-trips fro
     chordFromEvent(key("v")),
     chordFromEvent(key("g")),
     chordFromEvent(key("d")),
+    chordFromEvent(key("D", { shift: true })),
     chordFromEvent(key("F", { shift: true })),
     chordFromEvent(key("O", { shift: true })),
     chordFromEvent(key("l")),

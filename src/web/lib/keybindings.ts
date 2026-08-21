@@ -50,7 +50,8 @@ export type ActionId =
   // `app_config.ui.keybindings`, so moving one would silently reassign somebody's rebinding
   // to a different action.
   | "scouts"
-  | "review";
+  | "review"
+  | "delete";
 
 export interface ActionDef {
   id: ActionId;
@@ -197,7 +198,9 @@ export const ACTIONS: readonly ActionDef[] = [
     id: "diff",
     label: "Open diff",
     description: "Show the working diff for the selected session.",
-    defaultBinding: "d",
+    // Bare `d` now belongs to the destructive control that is current on any page. Keep
+    // Diff on the same mnemonic with Shift rather than silently dropping its shortcut.
+    defaultBinding: "shift+d",
     group: "selection",
   },
   {
@@ -337,6 +340,16 @@ export const ACTIONS: readonly ActionDef[] = [
     defaultBinding: "ctrl+r",
     group: "selection",
   },
+  {
+    // Appended because action ids key persisted overrides. Delete is page-contextual rather
+    // than session-specific, but it sits in the selection group because it only acts when a
+    // concrete current control can be resolved. It never guesses between destructive rows.
+    id: "delete",
+    label: "Delete selected item",
+    description: "Use the current Delete button on the focused row or active surface.",
+    defaultBinding: "d",
+    group: "selection",
+  },
 ];
 
 const ACTION_BY_ID = new Map<ActionId, ActionDef>(ACTIONS.map((a) => [a.id, a]));
@@ -449,6 +462,22 @@ export function formatChord(chord: string): string {
   // else ("⌘K", "⇧O"), while a bare letter stays as typed ("k").
   if (mods.length > 0 && key.length === 1 && isCased(key)) return modStr + key.toUpperCase();
   return modStr + (KEY_LABEL[key] ?? key);
+}
+
+/** WAI-ARIA spelling of a canonical chord for `aria-keyshortcuts`. */
+export function ariaKeyshortcuts(chord: string): string | undefined {
+  if (!chord) return undefined;
+  const { mods, key } = parseChord(chord);
+  const ariaMods: Record<string, string> = {
+    cmd: "Meta",
+    ctrl: "Control",
+    alt: "Alt",
+    shift: "Shift",
+  };
+  const ariaKey = mods.includes("shift") && key.length === 1 && isCased(key)
+    ? key.toUpperCase()
+    : key;
+  return [...mods.map((mod) => ariaMods[mod] ?? mod), ariaKey].join("+");
 }
 
 /** True when a chord targets a reserved navigation key and so can't be bound. */

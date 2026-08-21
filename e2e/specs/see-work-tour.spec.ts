@@ -321,7 +321,7 @@ test("the tour dispatches Terra, pauses for a real review, reaches Idle, and com
 
   dialog = step(dashboard, "Complete or run a retro");
   await expect(dialog).toContainText("will not run a retro");
-  await expect(dashboard.getByRole("button", { name: /^c complete$/i })).toBeVisible();
+  await expect(dashboard.getByRole("button", { name: "complete", exact: true })).toBeVisible();
   await dialog.getByRole("button", { name: "Open Complete" }).click();
 
   const completeDialog = dashboard.getByRole("dialog", {

@@ -138,7 +138,9 @@ test("a failed ensemble can be dismissed without deletion, then deleted through 
   // Permanent deletion is still deliberate, but identity is expressed in human terms. Escape
   // backs out; reopening and confirming removes the retained run without any GUID field.
   await dashboard.goto(`${daemon.baseURL}/#/ensembles/${runId}`);
-  await dashboard.getByRole("button", { name: "Delete run…" }).click();
+  const openDelete = dashboard.getByRole("button", { name: "Delete run…" });
+  await expect(openDelete).toHaveAttribute("aria-keyshortcuts", "d");
+  await dashboard.keyboard.press("d");
   const modal = dashboard.getByRole("dialog", {
     name: "Delete ensemble run Failed comparison to acknowledge",
   });
@@ -150,13 +152,16 @@ test("a failed ensemble can be dismissed without deletion, then deleted through 
   await expect(modal).toBeHidden();
   expect((await json<Detail>(daemon, `/api/ensembles/${runId}`)).run.status).toBe("failed");
 
-  await dashboard.getByRole("button", { name: "Delete run…" }).click();
+  await openDelete.click();
+  await expect(modal).toBeVisible();
   const deletedResponse = dashboard.waitForResponse(
     (response) =>
       response.url().endsWith(`/api/ensembles/${runId}`) &&
       response.request().method() === "DELETE",
   );
-  await modal.getByRole("button", { name: "Delete run", exact: true }).click();
+  const confirmDelete = modal.getByRole("button", { name: "Delete run", exact: true });
+  await expect(confirmDelete).toHaveAttribute("aria-keyshortcuts", "d");
+  await dashboard.keyboard.press("d");
   expect((await deletedResponse).ok()).toBe(true);
   await expect(modal).toHaveCount(0);
   await expect(dashboard.getByText("No ensembles yet.")).toBeVisible();

@@ -153,7 +153,7 @@ test("a bound workflow starts as an in-place Board disclosure, not a navigation 
   assert.match(html, /aria-expanded="false"/);
   // `v`, not the `e` this shipped with: the review queue's badge took `e` when it got a
   // chord of its own, and the disclosure moved rather than resolving to nothing.
-  assert.match(html, /<kbd class="kb-hint">v<\/kbd>/);
+  assert.match(html, /<kbd class="kb-hint" aria-hidden="true">v<\/kbd>/);
   assert.match(html, /Show full workflow/);
   assert.doesNotMatch(html, /tf-workflow/);
 });

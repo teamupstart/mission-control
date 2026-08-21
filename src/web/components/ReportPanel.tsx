@@ -25,6 +25,7 @@ import {
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
 import { RepositoryName } from "./RepositoryName.tsx";
 import { Tooltip } from "./Tooltip.tsx";
+import { DeleteButton } from "./DeleteButton.tsx";
 
 function BacklogReportRow({
   task,
@@ -72,6 +73,7 @@ function BacklogReportRow({
       className={`report-row${task.enabled ? "" : " is-disabled"}${
         deadBlockerOpen ? " is-deadblock-open" : ""
       }`}
+      data-delete-shortcut-scope
     >
       <div className="report-row-main report-row-stack">
         <span className="report-line">
@@ -169,11 +171,13 @@ function BacklogReportRow({
             {blockers.length > 0 ? "Waiting" : "Dispatch"}
           </button>
         </Tooltip>
-        <Tooltip label="Delete this task from the backlog">
-          <button className="btn btn-danger-ghost" onClick={() => void api.deleteTask(task.id)}>
-            Delete
-          </button>
-        </Tooltip>
+        <DeleteButton
+          className="btn btn-danger-ghost"
+          tooltip="Delete this task from the backlog"
+          onClick={() => void api.deleteTask(task.id)}
+        >
+          Delete
+        </DeleteButton>
       </div>
     </div>
   );

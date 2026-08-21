@@ -147,9 +147,12 @@ test("autosave conflict recovery offers reload and duplicate without overwriting
 
 /** The exact `<button …>` whose text is `label`, so an attribute assertion cannot drift onto a neighbour. */
 function buttonFor(source: string, label: string): string {
-  const end = source.indexOf(`>${label}</button>`);
+  const end = [`>${label}</button>`, `>${label}</DeleteButton>`]
+    .map((closing) => source.indexOf(closing))
+    .filter((index) => index >= 0)
+    .sort((a, b) => a - b)[0] ?? -1;
   assert.notEqual(end, -1, `no ${label} button in WorkflowLibrary`);
-  const start = source.lastIndexOf("<button", end);
+  const start = Math.max(source.lastIndexOf("<button", end), source.lastIndexOf("<DeleteButton", end));
   assert.notEqual(start, -1, `${label} button has no opening tag`);
   return source.slice(start, end);
 }

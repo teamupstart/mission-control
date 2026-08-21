@@ -426,6 +426,80 @@ export function renderUnchangedEvidenceNudge(
   };
 }
 
+export interface ParkedRepairReminderInput {
+  workflowName: string;
+  workflowVersion: number;
+  runId: string;
+  /** The parked round, so the reminder names the number run detail shows. */
+  round: number;
+  originalGoal: string;
+  /** How long the round has been parked with its packet delivered, in whole minutes. */
+  parkedMinutes: number;
+  /** The packet this session was handed and has not acted on, or null if it was pruned. */
+  priorPacket: string | null;
+  /** The pinned immutable workflow version contains at least one Persona. */
+  workflowEvidence: boolean;
+}
+
+/**
+ * Ask once about a repair round that has been parked with nothing happening.
+ *
+ * The gap this fills is the quietest failure the repair loop has. A packet is delivered, the
+ * observer starts watching for repository movement, and if the session simply never acts -
+ * a lapsed hook, a turn that ended early, an agent that read the packet as a status report -
+ * then nothing moves and nothing says so. Runs have sat like that for most of a day: the
+ * observer was right to withhold every round it withheld, and the operator's only recourse
+ * was a manual resubmission that spent a round to discover the tree was untouched.
+ *
+ * This is NOT the unchanged-evidence nudge and must not read like it. That one answers a
+ * claim - the session said it was done and the bytes disagree - so it is entitled to be
+ * blunt and to count against a limit. This one answers a silence, which has innocent causes,
+ * so it states what it sees, repeats what was asked, and makes no accusation.
+ *
+ * It is sent ONCE per parked round. A reminder that repeats is a session's whole context
+ * spent on the daemon asking the same question, and the second one has never been the thing
+ * that unsticks a stuck agent.
+ */
+export function renderParkedRepairReminder(
+  input: ParkedRepairReminderInput,
+): RenderedWorkflowFeedback {
+  let truncated = false;
+  const bounded = (value: string): string => {
+    const result = field(value);
+    truncated ||= result.truncated;
+    return result.value;
+  };
+  const body = [
+    `This repair round has been open for ${input.parkedMinutes} minutes with no change to the`,
+    "repository - no commit, no working-tree edit, no new file - so the review has not been",
+    "able to start another round.",
+    "",
+    "If the repair is done, nothing else is needed and this will pick itself up. If it was",
+    "never started, or it stopped part way, the packet below is what it was waiting for.",
+    "",
+    "Original user goal:",
+    bounded(input.originalGoal),
+    "",
+    `Workflow: ${bounded(input.workflowName)} v${input.workflowVersion}`,
+    `Run: ${input.runId}`,
+    `Repair round: ${input.round}`,
+    "",
+    ...(input.priorPacket
+      ? ["The review packet you were handed asked for this:", "", bounded(input.priorPacket)]
+      : [
+        "The original review packet is no longer retained, so re-read the review on the run",
+        "detail page for what it asked for.",
+      ]),
+  ].join("\n");
+  const instruction =
+    "Either carry out the change the packet asks for, or say plainly why it should not be "
+    + "made and leave the work as it stands. This is the only reminder this round will send.";
+  return {
+    ...finalizePacket(body, truncated, instruction, input.workflowEvidence),
+    failedPersonaCount: 0,
+  };
+}
+
 /**
  * Render one authored SessionAction packet: a small envelope plus the exact prompt.
  *

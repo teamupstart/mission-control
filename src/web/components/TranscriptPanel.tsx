@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type {
   ForemanEpisode,
   PendingTurn,
@@ -17,6 +17,7 @@ import { liveActivity } from "@shared/session.ts";
 import { pipelineRunHash } from "../workflows/useWorkflowRoute.ts";
 import { api, fetchTranscriptBefore } from "../lib/api.ts";
 import { clearDraft, readDraft, writeDraft } from "../lib/drafts.ts";
+import { formatChord, useKeybindings } from "../lib/keybindings.ts";
 import { sdkDeliveryConfirmation } from "../lib/sdk-delivery.ts";
 import {
   latestEditablePendingTurn,
@@ -38,6 +39,7 @@ import {
 import { toolChip, toolLineTarget, transcriptRows } from "../lib/tools.ts";
 import { useWorkspacePaths, type SessionFilesController } from "../lib/sessionFiles.ts";
 import { mergeConversation } from "../lib/episodes.ts";
+import { projectLaunchPresentation } from "../lib/launch-presentation.ts";
 import { parseForemanTerminalReview } from "../lib/foreman-terminal.ts";
 import {
   collectHits,
@@ -220,6 +222,8 @@ export function TranscriptPanel({
   // The body below was written against these two names and still is; only the PROP changed.
   const sessionId = session.id;
   const agent = session.agent;
+  const { bindings } = useKeybindings();
+  const sendChord = formatChord(bindings.send);
   // Only a session with a checkout and a handler that can open one has any use for the
   // listing; without both, a path in the prose stays the text the agent typed.
   const filePaths = useWorkspacePaths(files, sessionId, Boolean(session.cwd && onOpenFile));
@@ -322,11 +326,25 @@ export function TranscriptPanel({
   notifyRef.current = onReplyBox;
 
   /**
+   * The conversation as a person should READ it, derived from `messages` and never stored.
+   *
+   * Everything below this line is a display consumer and takes this array; everything that
+   * touches the transcript as a FILE - the SSE merge, the history cache, `loadOlder`, and
+   * the byte offsets both of those carry - keeps taking `messages`. Paging anchors describe
+   * native transcript bytes, so a projection that reached them would couple resume
+   * correctness to how many rows happen to be visible.
+   *
+   * Today this substitutes the human task request for a Mission Control launch contract.
+   * See `projectLaunchPresentation` for why that has to happen exactly once, here, rather
+   * than inside the turn component.
+   */
+  const visible = useMemo(() => projectLaunchPresentation(messages), [messages]);
+  /**
    * The conversation as rows, computed once and shared by the renderer and the
    * search. Both MUST walk the same list: hits are addressed by row id and offset,
    * so a search over a differently-folded list would highlight the wrong span.
    */
-  const rows = mergeConversation(transcriptRows(messages), episodes, reviews);
+  const rows = mergeConversation(transcriptRows(visible), episodes, reviews);
   const agentLabel = AGENT_IDENTITY[agent].speaker;
   /**
    * What the turn currently arriving is doing, or null when nothing is arriving.
@@ -719,9 +737,9 @@ export function TranscriptPanel({
   }, [messages, session.pendingTurns, inProgress]);
 
   // Deliberately don't grab focus when the panel opens. Focus mode is opened with
-  // `e` and closed with `e`, and the grid's global keys (including that toggle)
+  // `e` and closed with `e`, and the app's global keys (including that toggle)
   // stand down while a text field is focused - so auto-focusing the reply box
-  // would swallow the collapse press. The reader stays on the grid; one click on
+  // would swallow the close press. The reader stays on the detail; one click on
   // the (prominent, full-width) reply box drops in when it's time to respond.
   function onScroll(): void {
     const el = logRef.current;
@@ -976,7 +994,7 @@ export function TranscriptPanel({
           />
         ) : (
           <ConversationActivity
-            messages={messages}
+            messages={visible}
             open={activityOpen}
             onToggle={() => setActivityOpen((v) => !v)}
             tab={railTab}
@@ -1023,12 +1041,12 @@ export function TranscriptPanel({
         <div className="compose-row">
           {/* Decorative, and marked as such: the box's accessible name stays its
               placeholder, which says what typing here does. A real `<label>` reading
-              "mission ❯" would replace that sentence with a glyph. */}
-          {terminal && (
-            <span className="pty-prompt" aria-hidden="true">
-              mission ❯
-            </span>
-          )}
+              "mission (s) >" would replace that sentence with a prompt. The key is the
+              resolved Send binding, not its default, so rebinding the focus action also
+              updates this cue. */}
+          <span className="pty-prompt" aria-hidden="true">
+            {`mission${sendChord ? ` (${sendChord})` : ""} >`}
+          </span>
           <textarea
             // Remount on reset so an open box drops the text the reset discarded;
             // `defaultValue` then re-hydrates from the emptied draft. See `resetNonce`.

@@ -1,7 +1,7 @@
 // What is at stake: keyboard navigation and rendered order staying ONE fact.
 //
-// Three layouts render this ordering and two arrow-key index arrays are derived from it - the
-// grid's flat list and the board's per-column ids. Clustering REORDERS tiles within a column
+// Both layouts render this ordering and two arrow-key index arrays are derived from it - the
+// Console rail's flat list and the Board's per-column ids. Clustering REORDERS tiles within a column
 // (siblings were name-sorted apart before), so an ordering computed twice by two rules is Up/Down
 // landing somewhere other than where the eye is, silently, with nothing failing. These assert the
 // properties that make the two agree by construction: one function, idempotent, clusters

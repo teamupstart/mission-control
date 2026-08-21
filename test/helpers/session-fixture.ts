@@ -174,6 +174,9 @@ export function mkTask(over: Partial<Task> = {}): Task {
     completedAt: null,
     ...over,
     workflowId: over.workflowId ?? null,
+    // Derived from the retention ledger on read, so a hand-built fixture has nothing to say
+    // about automatic cleanup unless a test is specifically about it.
+    automaticCleanup: over.automaticCleanup ?? null,
   };
 }
 

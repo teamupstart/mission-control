@@ -51,6 +51,11 @@ writeFileSync(path, turn("a", "FIRST") + turn("b", "SECOND"));
 const session: Session = { ...mkSession(), id: "s1", agent: "claude", transcriptPath: path };
 const registry = {
   getSession: (id: string) => (id === "s1" ? session : undefined),
+  // A session Mission Control did not launch has no launch marker, which is what every
+  // fixture here is. Answered explicitly rather than left off the fake: the stream asks this
+  // per frame, and a fake that threw would be testing the seam's error guard instead of the
+  // byte offsets this file is about.
+  launchTurnFor: () => null,
 } as unknown as Registry;
 
 const app = buildApp(
@@ -143,7 +148,10 @@ test("a gap too wide to call a reconnect re-seeds rather than replaying megabyte
   })}\n`);
   const fatSession: Session = { ...mkSession(), id: "s2", agent: "claude", transcriptPath: fat };
   const fatApp = buildApp(
-    { getSession: (id: string) => (id === "s2" ? fatSession : undefined) } as unknown as Registry,
+    {
+      getSession: (id: string) => (id === "s2" ? fatSession : undefined),
+      launchTurnFor: () => null,
+    } as unknown as Registry,
     {} as unknown as ReviewManager,
     {} as unknown as TaskManager,
     {} as unknown as QueueManager,

@@ -371,6 +371,9 @@ test("cancelling a multi-repo task stops it pinning the trees it just handed bac
     registry,
     autoCompleted: new Set<string>(),
     reschedulingTasks: new Set<string>(),
+    // Every destructive path takes this reservation, so a hand-built instance needs it too.
+    // See `TaskManager.withCleanupReservation`.
+    cleanupReservations: new Set<string>(),
     stopEmbeddedAgentBeforeReclaim: async () => {},
   });
 

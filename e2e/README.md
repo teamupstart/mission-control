@@ -18,6 +18,25 @@ install` is run by everyone and this suite is not - fetching ~150MB of Chromium 
 contributor who only ever runs `npm test` is a tax on the common path. CI installs it as its
 own step for the same reason, and skips it on the Node version that does not run this suite.
 
+## Host concurrency
+
+Playwright uses at most four workers, and Mission Control permits one E2E invocation per user on
+a host at a time. This is a shared limit across linked worktrees: a second full or focused run
+waits before Playwright starts any browser workers, prints the PID and checkout holding the lease,
+and begins when that run exits. The kernel releases the lease automatically if its process dies.
+If an unrelated process owns the derived lease port, the run refuses promptly instead of waiting.
+
+The resolved worker count is a hard ceiling. A command that asks for more than four workers is
+refused; use the ordinary default or lower it for a lighter run:
+
+```sh
+npm run test:e2e -- --workers=2
+npm run test:e2e -- --workers=1
+```
+
+The two CI shards remain concurrent because each job runs on its own machine. The lease coordinates
+processes sharing one host; it does not serialize separate runners.
+
 Useful flags:
 
 ```sh
@@ -102,6 +121,28 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   e2e/specs/native-worktree-dispatch.spec.ts \
   --workers=1 --reporter=list \
   | tee e2e/.artifacts/native-worktree-dispatch/focused-playwright-transcript.txt
+```
+
+### Task worktree retention
+
+`e2e/.artifacts/task-worktree-retention/` carries the two frames of the 30-day rule: a checkout
+whose unpushed local commit postponed cleanup, still showing **Clean up**, and the same task
+after an untouched window expired, with the cleanup control gone and its native slot back in
+the pool. The spec dispatches through a real native worktree, kills the agent without an
+outcome, makes a real git commit in the tree, and moves the retention ledger's own timestamps
+backwards while the daemon is stopped - a fixture technique, since the duration has no
+production setting and retention has no off switch.
+
+Regenerate the frames and transcript with:
+
+```sh
+mkdir -p e2e/.artifacts/task-worktree-retention
+set -o pipefail   # or the pipe below reports tee's success, not Playwright's
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/task-worktree-retention.spec.ts \
+  --workers=1 --reporter=list \
+  | tee e2e/.artifacts/task-worktree-retention/focused-playwright-transcript.txt
 ```
 
 ### Scout prompt context reader

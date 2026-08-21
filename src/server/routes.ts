@@ -187,6 +187,7 @@ import {
 } from "@shared/harness-capabilities.ts";
 import { transcriptStreamHandler } from "./transcript-stream.ts";
 import { attributeTranscript } from "./transcript-attribution.ts";
+import { bindLaunchTurnMessage, resolveLaunchMarker } from "./launch-presentation.ts";
 import {
   claimForemanLease,
   claimForemanPlannerRetry,
@@ -1965,7 +1966,25 @@ export function buildApp(
     const parsed = await parseBody(c, GrantWorkflowRepairRoundsSchema);
     if (!parsed.ok) return parsed.res;
     const result = manager.grantRepairRounds(c.req.param("id"), parsed.data);
-    return result.ok ? c.json({ run: result.value }) : workflowRuntimeFailure(c, result);
+    /*
+     * `idempotent` reported, as every sibling action reports it.
+     *
+     * The manager has always computed it: `grantRepairRounds` looks for a
+     * `repair_rounds_granted` event carrying this same `requestId` and, finding one, returns
+     * the run it already granted with `idempotent: true`. That branch matters because the
+     * action store RETAINS its request id across a failed response, so a network error on a
+     * grant that committed comes back with the same id - and without it the replay would hit
+     * the `run_not_waiting` refusal, since the run is no longer spent precisely because the
+     * first attempt worked.
+     *
+     * Dropping the flag here left the browser unable to tell a fresh grant from a replay, on
+     * the one action whose success is otherwise invisible. The `?? false` is for the ok arms
+     * that never set it, not a default standing in for a manager that cannot answer; both
+     * halves are pinned end to end in `test/workflow-resumption.test.ts`.
+     */
+    return result.ok
+      ? c.json({ run: result.value, idempotent: result.idempotent ?? false })
+      : workflowRuntimeFailure(c, result);
   });
   app.post("/api/workflow-runs/:id/prepare-pr", async (c) => {
     const manager = workflowManager();
@@ -2490,7 +2509,18 @@ export function buildApp(
       const turns = Number(c.req.query("turns"));
       const want = Number.isFinite(turns) && turns > 0 ? Math.min(turns, 200) : undefined;
       const page = t.read.before(t.path, before, want);
-      return c.json({ ...page, messages: attributeTranscript(session.id, page.messages) });
+      // The panel's own history pages, so they carry the same launch presentation the stream
+      // put on `init` - decorated here rather than in the reader, because paging back far
+      // enough to reach the launch turn must not make it reappear in full.
+      return c.json({
+        ...page,
+        messages: attributeTranscript(
+          session.id,
+          page.messages,
+          resolveLaunchMarker(registry, session.id),
+          (messageId) => bindLaunchTurnMessage(registry, session.id, messageId),
+        ),
+      });
     }
     const since = Number(c.req.query("since"));
     if (Number.isFinite(since) && since >= 0) return c.json(t.read.since(t.path, since));

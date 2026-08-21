@@ -45,11 +45,11 @@ import { PIPELINE_GROUP_LABELS } from "../pipelines/pipeline-run-model.ts";
  * reason even though they hang off a Task rather than a Session: the board's backlog
  * column and the roundup panel both draw them, and two copies is how they drift.
  *
- * Every drawing is a consumer here, the card included: the card, console detail, board
- * tile and rail row arrange these SAME bits rather than importing one another or keeping
+ * Every drawing is a consumer here: the Console detail, Board tile and rail row arrange
+ * these SAME bits rather than importing one another or keeping
  * private copies. Compact drawings may use a different vocabulary, but their decision and
- * leaf variant still live here. That matters because the card is rendered by ONE layout
- * while the detail serves two, so a private copy can silently miss another layout.
+ * leaf variant still live here. That matters because the tile is rendered by ONE layout
+ * while the detail serves both, so a private copy can silently miss another layout.
  *
  * `test/session-leaf-parity.test.ts` pins each drawing to its shared leaves;
  * `test/pr-chip-parity.test.ts` pins the PR decision across all four.

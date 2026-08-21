@@ -229,9 +229,11 @@ test("answering the agent's own question retires the note pinned on it", async (
 
   // Opening adds the other half: the full reasoning, bounded in a sidecar, still with no
   // second send path. The mark survives the disclosure it is independent of.
-  await recommendation.click();
   const sidecar = dashboard.getByRole("dialog", { name: "Foreman recommendation" });
-  await expect(sidecar).toContainText(SUGGESTION);
+  await expect(async () => {
+    if (!(await sidecar.isVisible())) await recommendation.click();
+    await expect(sidecar).toContainText(SUGGESTION, { timeout: 2_000 });
+  }).toPass({ timeout: 20_000 });
   await expect(sidecar).toContainText("Both are defensible");
   await expect(biome).toContainText("Foreman's pick");
   await expect(biome).toHaveAttribute("aria-checked", "false");

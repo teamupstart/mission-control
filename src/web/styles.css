@@ -1481,6 +1481,37 @@ button.wf-run-version:focus-visible {
   font-weight: 600;
 }
 
+/* Why a parked round is standing still, and what the grant just did.
+   Both share `.wf-run-why`'s measure and rhythm on purpose - they sit in the same identity
+   block, one under the other, and three paragraphs at three sizes would read as three
+   unrelated warnings rather than as one account of the run's state. The grant's line takes
+   the working colour because it reports something that HAPPENED; the parked line stays muted
+   because it reports something that is not happening. */
+.wf-run-granted,
+.wf-run-refused,
+.wf-run-parked {
+  font-size: 12px;
+  line-height: 1.5;
+  max-width: 66ch;
+  padding: 1px 0 3px;
+}
+
+.wf-run-granted {
+  color: var(--working);
+  font-weight: 600;
+}
+
+/* The refusal takes the attention colour rather than the working one: unlike the grant, it
+   reports something that did NOT happen at the operator's request, and the button beside it
+   is the override for it. */
+.wf-run-refused {
+  color: var(--attention);
+}
+
+.wf-run-parked {
+  color: var(--muted);
+}
+
 /* The bound session, as a link rather than a labelled button: the name IS the affordance,
    and a disabled one still has to say which session has gone. */
 .wf-run-session {
@@ -5631,11 +5662,11 @@ kbd {
 }
 
 /* The shortcut printed on a button the chord also drives (`Keycap.tsx`), everywhere
-   one appears: the card and console action rows, the console tabs, the card's diff
+   one appears: the Board tile and Console action rows, the Console tabs, the detail's diff
    pill, the topbar's Dispatch. Deliberately NOT the raised keycap above - it rides
    inside a control, so it has to read as an annotation on that button's label rather
    than as a second, smaller button sitting on top of one. This was `.act kbd`, which
-   styled the console footer alone and left the seven card buttons unstyled the day
+   styled the Console footer alone and left the Board buttons unstyled the day
    they grew keycaps.
 
    Every host below lays its children out with `gap`, never a margin here, because the
@@ -6103,8 +6134,8 @@ kbd {
   min-height: 0;
   /* The relocation below queries `.transcript`, the split's full-width parent - it is
      the PANEL's width that decides the layout, never the viewport's: the same Console
-     detail exists at every window size, and an expanded Card's width depends on the
-     grid's column count. The `container-type` used to sit HERE, which is why the
+     detail exists at every window size, including inside the Board overlay. The
+     `container-type` used to sit HERE, which is why the
      stacked layout never actually engaged: a query container cannot style itself, so
      the `flex-direction: column` inside the query had no element it could match. */
 }
@@ -7157,13 +7188,14 @@ mark.find-hit.is-current {
   background: var(--panel);
 }
 .transcript[data-view="terminal"] .compose-row {
-  /* A multiline command still begins at the prompt. Centering this row put `mission ❯`
+  /* A multiline command still begins at the prompt. Centering this row put `mission (s) >`
      beside line three once the textarea grew to five lines. */
   align-items: flex-start;
   gap: 8px;
 }
 .pty-prompt {
   flex: none;
+  align-self: flex-start;
   margin-top: 4px;
   color: var(--working);
   font: 700 12.5px/1 var(--mono);
@@ -16688,8 +16720,8 @@ button.wf-carried.is-link:focus-visible {
 .settings-pane > .ts-panel {
   max-width: none;
 }
-/* Console and Board give their pages a fixed-height flex child rather than the grid's
-   scrolling document, so the page scrolls inside itself there - the same shape the
+/* Console and Board give their pages a fixed-height flex child rather than a
+   document-scrolling fleet, so the page scrolls inside itself there - the same shape the
    workflows page takes, for the same reason. */
 .app-console > .settings-page,
 .app-board > .settings-page {
@@ -21781,11 +21813,8 @@ span.line-run-prov {
   margin-bottom: 0;
   padding-inline: 22px;
 }
-/* Desktop shell: these two layouts run the topbar full-width (the shell sets
-   `max-width: none`), so the grid's trick - once the window passes 1400px the
-   centred dead space beside the column already clears the traffic lights - never
-   fires here: the topbar always starts hard against x=0. `padding-inline` above
-   also just overwrote the grid's window-scaled left clamp. So reserve a fixed
+/* Desktop shell: both supported layouts run the topbar full-width (the shell sets
+   `max-width: none`), so the topbar starts hard against x=0. Reserve a fixed
    inset wide enough to clear the lights at any width. Beats both the base
    `.is-desktop .topbar` and `.app-console .topbar` rules on specificity (0,3,0). */
 .is-desktop .app-console .topbar,

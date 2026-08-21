@@ -671,7 +671,7 @@ test("Foreman never resurfaces Ship it actions after a scout completes", async (
   if (!session) throw new Error("the dispatched scout never appeared in the fleet");
   const sessionId = session.id;
 
-  // Make the forbidden surface present first. This proves the same card can render the
+  // Make the forbidden surface present first. This proves the same detail can render the
   // controls and makes the later absence meaningful rather than a selector that never
   // matched. Answer the seeded ask before starting Foreman, then watch for any transient
   // reappearance while the real worker retires the scout completion.
@@ -683,6 +683,21 @@ test("Foreman never resurfaces Ship it actions after a scout completes", async (
   await api(daemon, `/api/sessions/${sessionId}/queue/wrapup/asked`, {
     clearAnswer: true,
   });
+  // Wait for the daemon to actually be holding an OPEN ask before opening the queue - the
+  // same barrier, for the same reason, as the sibling Ship it test above. Both routes are
+  // writes whose result reaches the browser over SSE, so clicking straight after them is a
+  // hope rather than a wait: on a loaded machine the dispatch's opening turn is still
+  // settling and the session upsert carrying the ask can land after the panel has already
+  // rendered without it. Observed as this test failing on the full-file run while passing in
+  // isolation. The poll asserts the precondition the click needs, so a genuinely missing ask
+  // still fails here rather than being papered over.
+  await expect.poll(async () => {
+    const current = (await api<Array<{
+      id: string;
+      queue: { wrapupAskedAt: number | null; wrapupAnswered: boolean } | null;
+    }>>(daemon, "/api/sessions")).find((candidate) => candidate.id === sessionId);
+    return current?.queue?.wrapupAskedAt !== null && current?.queue?.wrapupAnswered === false;
+  }, { timeout: 40_000 }).toBe(true);
   await card.getByRole("tab", { name: "Work queue" }).click();
   await expect(card.getByRole("button", { name: "Run No-Mistakes Review" })).toBeVisible();
   await expect(card.getByLabel("Direct shipping instruction")).toBeVisible();
@@ -696,7 +711,7 @@ test("Foreman never resurfaces Ship it actions after a scout completes", async (
 
   // The SDK acknowledgement already supplied the accepted human prompt and resolved
   // objective. The fake does not run machine-installed Claude hooks, so supply only the
-  // completion event Foreman needs as proof that this idle card completed a work cycle.
+  // completion event Foreman needs as proof that this idle session completed a work cycle.
   const token = readFileSync(join(daemon.home, "token"), "utf8").trim();
   const postHook = async (event: string, body: Record<string, unknown>): Promise<void> => {
     const hook = await fetch(`${daemon.baseURL}/hooks/${event}`, {
@@ -889,4 +904,153 @@ test("the dispatched agent was launched headless, without the daemon's terminal 
 
   // And it ran in the worktree the dispatch cut, not in the repo or the daemon's cwd.
   expect(record.cwd).toContain(join(daemon.home, "worktree-pools"));
+});
+
+/**
+ * The launch contract Mission Control composes around the operator's request.
+ *
+ * Every dispatch appends the shared execution authorization, so this heading is in the
+ * prompt the agent is given on every single ship task and is in NONE of the operator's own
+ * words. It is therefore the exact string that separates "what a person asked for" from
+ * "what the platform told the agent", and both halves of this spec turn on it.
+ */
+const PLATFORM_ONLY_LAUNCH_LINE = "## Mission Control execution authorization";
+
+/**
+ * The dispatch prompt for the launch-presentation case, deliberately unlike the other
+ * tasks in this file: a short, complete sentence, so "the visible turn is exactly the
+ * human request" can be asserted as an exact string rather than as a prefix.
+ */
+const HUMAN_REQUEST = "tidy the flexbox helper and add a test";
+
+test("a managed launch shows only the human task request, and the agent still gets the whole prompt", async ({
+  dashboard,
+  daemon,
+}) => {
+  await dispatch(dashboard, daemon, { task: HUMAN_REQUEST });
+
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const detail = dashboard.locator(".console-detail");
+  // The agent has replied, so the launch turn has certainly been written and read back.
+  await expect(detail.locator(".turn").getByText(`Mock reply to: ${HUMAN_REQUEST}`)).toBeVisible();
+
+  const log = detail.locator(".transcript-log");
+  /**
+   * The operator's OWN turns, in whichever rendering is up.
+   *
+   * Scoped to them rather than to the whole log, and the reason is a property of the
+   * fixture that would otherwise make this spec dishonest: the fake agent echoes the prompt
+   * it was given, so the launch contract is legitimately inside the AGENT's reply. That is
+   * the agent quoting its instructions, which this feature does not touch and must not - the
+   * claim being made here is about the turn attributed to the person.
+   */
+  const yourTurns = (author: "you" = "you"): Locator =>
+    log.locator(`article[aria-label="${author}"]`);
+
+  // 1. The visible first user turn is the human request and nothing else. Asserted as the
+  //    turn's exact text, so an authorization block merely scrolled out of view fails here.
+  await expect(yourTurns()).toHaveCount(1);
+  await expect(yourTurns().locator(".turn-text")).toHaveText(HUMAN_REQUEST);
+
+  // 2. The Native rendering draws the same projection. It is a second renderer over the
+  //    same rows, which is exactly how a fix applied to only one of them would be caught.
+  const terminalView = detail.getByRole("button", { name: "Terminal view" });
+  await terminalView.click();
+  await expect(detail.getByRole("region", { name: "Conversation terminal" })).toBeVisible();
+  // The terminal rendering draws a user turn as a command line rather than a bubble, so
+  // the text lives under its own class. Same turn, same projection, different element.
+  await expect(yourTurns()).toHaveCount(1);
+  await expect(yourTurns().locator(".pty-command")).toHaveText(HUMAN_REQUEST);
+  await terminalView.click();
+  await expect(detail.getByRole("region", { name: "Conversation terminal" })).toHaveCount(0);
+
+  // 3. Find-in-conversation cannot reach the hidden text - a hidden turn that is still
+  //    searchable is the half-fix this asserts against - while the human request still is
+  //    searchable, so find is looking at a real list. Under the "You" scope for the same
+  //    reason the log assertions are: the agent's echo is a legitimate All-scope match.
+  await detail.locator(".detail-body").focus();
+  await dashboard.keyboard.press("Meta+f");
+  const box = detail.getByRole("searchbox", { name: "Find in conversation" });
+  const results = detail.getByRole("complementary", { name: "Search results" });
+  await box.fill("Mission Control execution authorization");
+  await results.getByRole("button", { name: "You", exact: true }).click();
+  await expect(results).toContainText("Nothing matches");
+  // And the All scope proves the query itself is not simply unmatchable - it finds the
+  // agent's echo, so "no You matches" is a statement about attribution and not a typo.
+  await results.getByRole("button", { name: "All", exact: true }).click();
+  await expect(results).not.toContainText("Nothing matches");
+  await box.fill("tidy the flexbox helper");
+  await results.getByRole("button", { name: "You", exact: true }).click();
+  await expect(results).not.toContainText("Nothing matches");
+  // Closed from the box itself: find owns the rail's column while it is open, so the Yours
+  // tab below is not mounted until this lands.
+  await box.press("Escape");
+  await expect(box).toHaveCount(0);
+
+  // 4. The Yours rail indexes the human request under the operator's own name, not the
+  //    platform contract typed on their behalf.
+  const rail = detail.getByRole("region", { name: "Conversation rail" });
+  await rail.getByRole("tab", { name: "Yours" }).click();
+  await expect(rail.getByRole("button", { name: new RegExp(HUMAN_REQUEST) })).toBeVisible();
+  await expect(rail).not.toContainText(PLATFORM_ONLY_LAUNCH_LINE);
+
+  // Visual evidence of the asserted state, behind the same env flag and the same gitignored
+  // path the rest of this file uses: "the first turn is the request you typed" is a claim
+  // that deserves to be seen rather than only read. Every expectation above has already
+  // passed against the real layout.
+  if (process.env.MC_E2E_EVIDENCE) {
+    mkdirSync(EVIDENCE, { recursive: true });
+    // Park the pointer off the detail first: the Yours tab was just clicked, so its tooltip
+    // is still open and lands over the controls above the log in the capture.
+    await dashboard.mouse.move(0, 0);
+    await expect(detail.getByText("The messages you sent in this conversation")).toHaveCount(0);
+    console.log("OBSERVED the first user turn is the human task request, with no launch contract");
+    console.log("OBSERVED the Yours rail indexes that same request");
+    await detail.screenshot({ path: `${EVIDENCE}launch-turn-projection.png` });
+    console.log("CAPTURED e2e/.artifacts/dispatch-and-converse/launch-turn-projection.png");
+  }
+
+  // 5. A human follow-up with text overlapping the launch still renders and is searchable.
+  //    Marker matching must be a fingerprint of one recorded turn, never "hide the first
+  //    user message".
+  const reply = detail.getByPlaceholder(/^Reply to this session/);
+  await expect(reply).toBeEnabled();
+  const followUp = `${HUMAN_REQUEST} in the smaller file too`;
+  await reply.fill(followUp);
+  await reply.press("Enter");
+  await expect(detail.locator(".turn").getByText(followUp, { exact: true })).toBeVisible();
+
+  // 6. Reloading re-reads the transcript from the daemon over a fresh stream. The launch
+  //    text must not come back with it.
+  await dashboard.reload();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const reopened = dashboard.locator(".console-detail");
+  const reopenedLog = reopened.locator(".transcript-log");
+  const reopenedYours = reopenedLog.locator('article[aria-label="you"]');
+  await expect(reopenedYours.first().locator(".turn-text")).toHaveText(HUMAN_REQUEST);
+  for (const text of await reopenedYours.allInnerTexts()) {
+    expect(text).not.toContain(PLATFORM_ONLY_LAUNCH_LINE);
+  }
+
+  // 7. And the whole point: the agent was given the complete composed prompt. Read from
+  //    the fake provider's own transcript file - written from the frame the driver sent it,
+  //    so this is the provider boundary and not a server-side echo - and from the server's
+  //    unprojected transcript route, which is what every evidence consumer reads.
+  const sessions = await api<Array<{ id: string; transcriptPath: string | null }>>(
+    daemon,
+    "/api/sessions",
+  );
+  const live = sessions.find((candidate) => candidate.transcriptPath !== null);
+  expect(live?.transcriptPath, "the fake provider wrote a transcript").toBeTruthy();
+  const native = readFileSync(live!.transcriptPath!, "utf8");
+  expect(native).toContain(PLATFORM_ONLY_LAUNCH_LINE);
+  expect(native).toContain(HUMAN_REQUEST);
+
+  const served = await api<{ messages: Array<{ role: string; text: string }> }>(
+    daemon,
+    `/api/sessions/${encodeURIComponent(live!.id)}/transcript`,
+  );
+  const launchTurn = served.messages.find((m) => m.role === "user");
+  expect(launchTurn?.text).toContain(PLATFORM_ONLY_LAUNCH_LINE);
+  expect(launchTurn?.text).toContain(HUMAN_REQUEST);
 });

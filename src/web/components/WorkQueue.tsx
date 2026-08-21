@@ -907,10 +907,10 @@ export function AddBox({
               e.preventDefault();
               onAdd();
             }
-            // Blur back to the grid so card keyboard nav (Enter to collapse) works again -
-            // the same escape the reply box offers. The grid's own Escape stands down
+            // Blur back to the fleet so session keyboard navigation works again -
+            // the same escape the reply box offers. The app's own Escape stands down
             // for this press (its guard reads the event's target, which is still this
-            // field), so one press leaves the box and the next collapses the card,
+            // field), so one press leaves the box and the next returns through the fleet,
             // peeling back one layer at a time rather than two at once.
             else if (e.key === "Escape") e.currentTarget.blur();
           }}

@@ -408,3 +408,10 @@ does finish.
 The reclaim is conditional on purpose: a merge proves the *committed* work landed and says
 nothing about files still sitting unsaved in that checkout, and reclaiming runs
 `git worktree remove --force`. Anything that could be lost stays behind a human click.
+
+Behind that click, not behind it forever. A checkout kept this way is removed automatically
+once **30 days pass with no Git-visible change** in it, uncommitted, untracked and unpushed
+work included - see [task worktree retention](worktrees-and-checks.md#task-worktree-retention).
+Editing anything in the tree resets that window. Push and merge state are deliberately not
+consulted: they decide whether a *merge* reclaims the checkout, and they have no bearing at
+all on whether an untouched one is eventually reclaimed by age.

@@ -26,7 +26,7 @@ import { mkSession } from "./helpers/session-fixture.ts";
  */
 
 const DRAWINGS = [
-  { name: "PrChip (card, console detail)", component: PrChip },
+  { name: "PrChip (console detail)", component: PrChip },
   { name: "PrTileFlag (board tile)", component: PrTileFlag },
   { name: "PrRailMark (console rail, board drill-in)", component: PrRailMark },
 ] as const;

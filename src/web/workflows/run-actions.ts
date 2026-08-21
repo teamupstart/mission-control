@@ -5,6 +5,7 @@ import type {
 } from "@shared/workflow.ts";
 import {
   WORKFLOW_LIMITS,
+  WORKFLOW_UNCHANGED_REPOSITORY_PHASE,
   manualWorkflowTriggerRequestId,
   workflowRunGaveUp,
   workflowRunIsOpen,
@@ -221,7 +222,15 @@ export function deliveryResolutionActions(
  * evidence or the snapshot already taken - and that wording belongs beside the buttons.
  */
 export interface ResubmitAvailability {
-  /** A blocked run resumes the round it stalled in; a waiting run opens the next one. */
+  /**
+   * Whether the run has STOPPED, so a resubmission is what restarts it.
+   *
+   * It used to be documented as "a blocked run resumes the round it stalled in", and that was
+   * never true of the daemon. `manager.resubmit` opens `latest.round + 1` for a blocked run
+   * and a waiting one identically, and the two differ only in whether anything would have
+   * happened without the click. The old reading leaked into the button's own copy and told
+   * operators a round was being resumed while a fresh one was being spent.
+   */
   resuming: boolean;
   refusal: string | null;
 }
@@ -391,10 +400,19 @@ const DECISION_BLOCKED_PHASES: ReadonlySet<string> = new Set([
   "delivery_blocked",
 ]);
 
-/** The two phases the manager writes when it refuses an unchanged evidence snapshot. */
+/**
+ * The phases the manager writes when it refuses to review work that has not moved.
+ *
+ * The first two are the capture-time refusal: a round was opened, evidence was captured, and
+ * the snapshot turned out to match. `unchanged_repository` is the cheaper one added beside
+ * them - two git reads taken BEFORE a submission exists, so nothing was spent - and it is
+ * listed here because the recovery is the same button. What differs is the sentence above it,
+ * which is why `runNextMove` branches on the phase rather than treating all three alike.
+ */
 const UNCHANGED_EVIDENCE_PHASES: ReadonlySet<string> = new Set([
   "unchanged_evidence",
   "unchanged_evidence_exhausted",
+  WORKFLOW_UNCHANGED_REPOSITORY_PHASE,
 ]);
 
 const runPath = (detail: WorkflowRunDetail, action: string): string =>
@@ -660,6 +678,38 @@ export function runNextMove(detail: WorkflowRunDetail): RunNextMove | null {
     const reusedImageCount = latestSubmissionId
       ? detail.evidenceImages?.find((group) => group.submissionId === latestSubmissionId)?.images.length ?? 0
       : 0;
+    /*
+     * The pre-capture refusal reads differently because it refused a different thing.
+     *
+     * `unchanged_evidence` refused a snapshot that had already been taken, so its sentence is
+     * about reusing that snapshot and the images frozen into it. `unchanged_repository`
+     * refused before any of that existed: nothing was captured, nothing was frozen, and no
+     * round was spent. Telling that operator about reused images would describe a submission
+     * they do not have, so this arm states what the daemon actually compared - the tree - and
+     * what proceeding will cost.
+     */
+    const repositoryOnly = currentPhase === WORKFLOW_UNCHANGED_REPOSITORY_PHASE;
+    if (repositoryOnly) {
+      return {
+        id: "resubmit-unchanged",
+        kind: "resubmit-unchanged",
+        label: preview ? "Preview unchanged" : "Review it anyway",
+        tooltip: "Review the same commit and working tree the last round already reviewed",
+        path: runPath(detail, "resubmit"),
+        body: { resubmitUnchanged: true },
+        confirm: {
+          title: preview ? "Preview unchanged work" : "Review unchanged work",
+          body: `The repository has not changed since round ${detail.summary.round} - same`
+            + " commit, same working tree, no new evidence registered. Reviewing it again runs"
+            + " every reviewer from the top against identical code, which will usually return"
+            + " the same verdicts, and it spends one repair round."
+            + " Do it when the transcript itself is the evidence, such as a manual"
+            + " verification you have just carried out.",
+          confirmLabel: preview ? "Preview unchanged" : "Review it anyway",
+          confirmHint: "Spends one repair round on work that has not moved",
+        },
+      };
+    }
     return {
       id: "resubmit-unchanged",
       kind: "resubmit-unchanged",
@@ -682,24 +732,37 @@ export function runNextMove(detail: WorkflowRunDetail): RunNextMove | null {
   const resumable = status === "waiting_for_session"
     || !DECISION_BLOCKED_PHASES.has(currentPhase);
   if (!resumable) return null;
+  const nextRound = detail.summary.round + 1;
   return {
     // One action-store intent per repair round. A fresh capture that is refused as unchanged
     // must retain its request id for the exact replay, but once that replay runs the NEXT fresh
     // capture cannot reuse the old id and be answered with the previous submission.
-    id: `resubmit:${detail.summary.round + 1}`,
+    id: `resubmit:${nextRound}`,
     kind: "resubmit",
-    label: preview ? "Preview fresh evidence" : "Resume review",
-    tooltip: availability.resuming
-      ? "Re-read the session's current diff and resume this run where it stalled"
-      : "Re-read the session's current diff and run the review again",
+    /*
+     * It opens the NEXT round. It does not resume the one that stopped, and saying so was a
+     * promise the server never made: `manager.resubmit` computes `latest.round + 1` for a
+     * blocked run and a waiting one alike, and the graph re-runs from Session with an empty
+     * attempt slate, so every reviewer that passed last round runs again.
+     *
+     * The old copy - "resume this run where it stalled" - read as though the stopped round
+     * picked up where it left off, which made the round it actually spends look like a bug
+     * rather than the documented cost. The action id one line above always knew the number.
+     */
+    label: preview ? "Preview fresh evidence" : `Start repair round ${nextRound}`,
+    tooltip: "Re-read the session's current diff and run every reviewer again from the top",
     path: runPath(detail, "resubmit"),
     body: {},
     confirm: {
-      title: preview ? "Preview fresh evidence" : "Resume review with fresh evidence",
-      body: availability.resuming
-        ? "This re-reads the bound session and resumes the stopped workflow with a fresh, immutable evidence submission."
-        : "This re-reads the bound session and starts the next review round with a fresh, immutable evidence submission.",
-      confirmLabel: preview ? "Preview fresh evidence" : "Resume review",
+      title: preview ? "Preview fresh evidence" : `Start repair round ${nextRound}`,
+      body: "This re-reads the bound session, takes a fresh immutable evidence submission,"
+        + " and runs every reviewer again from the top - including the ones that passed."
+        + (availability.resuming
+          ? " The run is stopped, so this is what restarts it, and it spends one repair round."
+          : " It spends one repair round.")
+        + " If the repository has not moved since the last round, it will say so instead of"
+        + " spending one.",
+      confirmLabel: preview ? "Preview fresh evidence" : `Start round ${nextRound}`,
       confirmHint: "Captures the session again with this image evidence packet",
       captureEvidence: true,
     },

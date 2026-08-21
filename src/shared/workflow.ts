@@ -253,7 +253,7 @@ export interface WorkflowStagedEvidenceImage {
 export interface WorkflowStagedEvidenceTextArtifact {
   id: string;
   clientItemId: string;
-  sourceKind: "agent";
+  sourceKind: "agent" | "command";
   displayName: string;
   caption: string;
   repositoryScope: WorkflowEvidenceRepositoryScope;
@@ -285,6 +285,35 @@ export interface WorkflowAgentTextEvidenceLocator {
   path: string;
   caption: string;
   repositoryScope: WorkflowEvidenceRepositoryScope;
+}
+
+/** Completed command output supplied directly through the workflow evidence transport. */
+export interface WorkflowAgentCommandEvidenceLocator {
+  kind: "command";
+  clientItemId: string;
+  command: string;
+  exitCode: number;
+  output: string;
+  caption: string;
+  repositoryScope: WorkflowEvidenceRepositoryScope;
+}
+
+/**
+ * One canonical rendering for direct command evidence, shared by validation and capture.
+ *
+ * The explicit command and exit code make the retained artifact useful even when a harness
+ * transcript intentionally omits tool-result bodies. This is evidence the agent reports from a
+ * completed command, not a daemon execution endpoint; Check nodes remain the server-observed path.
+ */
+export function workflowCommandEvidenceContent(
+  item: Pick<WorkflowAgentCommandEvidenceLocator, "command" | "exitCode" | "output">,
+): string {
+  return [
+    `Command: ${item.command}`,
+    `Exit code: ${item.exitCode}`,
+    "Output:",
+    item.output,
+  ].join("\n");
 }
 
 export interface WorkflowUploadEvidenceLocator {

@@ -358,8 +358,10 @@ import type {
 } from "./workflows/manager.ts";
 import {
   JSON_UTF8_MAX_BYTES_PER_CHAR,
+  WORKFLOW_IMAGE_LIMITS,
   WORKFLOW_LIMITS,
   WORKFLOW_RUN_STATUSES,
+  WORKFLOW_TEXT_EVIDENCE_LIMITS,
   legacyCheckCommands,
 } from "@shared/workflow.ts";
 import type { WorkflowConfig } from "@shared/workflow.ts";
@@ -456,6 +458,11 @@ const REVISION_ONLY_BODY_MAX_BYTES = 1024;
  */
 const PERSONA_IMPORT_BODY_MAX_BYTES = 32 * 1024;
 const WORKFLOW_BODY_MAX_BYTES = WORKFLOW_LIMITS.graphJsonBytes * 6 + 32 * 1024;
+const WORKFLOW_EVIDENCE_BODY_MAX_BYTES =
+  WORKFLOW_TEXT_EVIDENCE_LIMITS.maxAggregateBytes * JSON_UTF8_MAX_BYTES_PER_CHAR
+  + (WORKFLOW_IMAGE_LIMITS.locatorJsonBytes + WORKFLOW_TEXT_EVIDENCE_LIMITS.locatorJsonBytes)
+    * JSON_UTF8_MAX_BYTES_PER_CHAR
+  + 32 * 1024;
 
 /**
  * Parse + validate a JSON request body against a schema. Returns the typed data,
@@ -2824,7 +2831,10 @@ export function buildApp(
     return c.body(null, 204);
   });
 
-  app.post("/mcp/workflow-evidence", async (c) => {
+  app.post("/mcp/workflow-evidence", bodyLimit({
+    maxSize: WORKFLOW_EVIDENCE_BODY_MAX_BYTES,
+    onError: (c) => c.json({ error: "Workflow evidence request is too large" }, 413),
+  }), async (c) => {
     if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
     const manager = workflowManager();
     if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
@@ -2842,6 +2852,7 @@ export function buildApp(
       return c.json(await manager.stageAgentEvidence(session.id, {
         images: parsed.data.images,
         artifacts: parsed.data.artifacts,
+        commandOutputs: parsed.data.commandOutputs,
       }));
     } catch (error) {
       const known = error instanceof WorkflowImageEvidenceError ? error : null;

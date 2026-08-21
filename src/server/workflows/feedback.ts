@@ -13,6 +13,11 @@ import type { InspectorComment } from "@shared/types.ts";
 import type { InspectorPosture } from "@shared/inspector.ts";
 import type { InspectorFindingsPolicy } from "@shared/workflow.ts";
 import { executionAuthorizationContract } from "../execution-authorization.ts";
+import { SUBMIT_WORKFLOW_EVIDENCE_TOOL } from "./evidence-tool.ts";
+import {
+  isTestEvidenceAuditorPersona,
+  testEvidenceRequestCategories,
+} from "./test-evidence-audit.ts";
 
 const TRUNCATION_NOTICE = "\n\n[Workflow repair packet truncated deterministically.]";
 /**
@@ -196,6 +201,35 @@ function latestAttempts(attempts: WorkflowNodeAttempt[]): Map<string, WorkflowNo
   return latest;
 }
 
+function testEvidenceRepairRecipe(verdict: PersonaVerdict): string[] {
+  const categories = new Set(testEvidenceRequestCategories(verdict));
+  const lines = ["", "Evidence registration recipe:"];
+  if (categories.has("visual_artifact")) {
+    lines.push(
+      `- Visual: save the final rendered state as a gitignored image and register it through \`${SUBMIT_WORKFLOW_EVIDENCE_TOOL}\` \`images\` with the issued repository scope and a precise caption.`,
+    );
+  }
+  if (categories.has("focused_execution")) {
+    lines.push(
+      `- Executed output: after the final focused run, register its exact command, exit code, and completed output through \`${SUBMIT_WORKFLOW_EVIDENCE_TOOL}\` \`commandOutputs\`.`,
+    );
+  }
+  if (categories.has("downstream_proof")) {
+    lines.push(
+      "- Later-stage proof: do not create or wait for pull-request, remote CI, merge, or Inspector evidence unless the original user goal explicitly requires it at this stage. Register current-stage native evidence instead.",
+    );
+  }
+  if (categories.has("other")) {
+    lines.push(
+      `- Match the missing proof to its native channel: \`images\` for rendered pixels, \`commandOutputs\` for a completed focused run, or \`artifacts\` for an existing gitignored UTF-8 log.`,
+    );
+  }
+  lines.push(
+    "- Confirm registration succeeded before stopping. Prose summaries, unregistered files, ordinary tool-result bodies, and pull-request attachments are not visible to this Persona.",
+  );
+  return lines;
+}
+
 function finalizePacket(
   body: string,
   truncated: boolean,
@@ -257,6 +291,9 @@ export function renderWorkflowFeedback(input: WorkflowFeedbackInput): RenderedWo
         lines.push(`   Evidence: ${bounded(evidenceLine(reference))}`);
       }
     });
+    if (node.kind === "persona" && isTestEvidenceAuditorPersona(node.persona)) {
+      lines.push(...testEvidenceRepairRecipe(verdict).map(bounded));
+    }
     blocks.push(lines.join("\n"));
   }
 

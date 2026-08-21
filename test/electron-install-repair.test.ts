@@ -14,7 +14,10 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { ensureElectronFramework } from "../scripts/ensure-electron-framework.mjs";
+import {
+  ensureElectronFramework,
+  prepareElectronFrameworkForRuntimeRepair,
+} from "../scripts/ensure-electron-framework.mjs";
 
 const root = mkdtempSync(join(tmpdir(), "mission-electron-install-"));
 after(() => rmSync(root, { recursive: true, force: true }));
@@ -31,7 +34,7 @@ test("both published Electron test commands run both preflights in order", () =>
     readFileSync(join(import.meta.dirname, "..", "package.json"), "utf8"),
   ) as { scripts: Record<string, string> };
   const preflight =
-    "node scripts/ensure-electron-framework.mjs && node scripts/ensure-electron-runtime.mjs";
+    "node scripts/ensure-electron-framework.mjs --allow-runtime-repair && node scripts/ensure-electron-runtime.mjs";
 
   assert.equal(packageJson.scripts.pretest, preflight);
   assert.equal(packageJson.scripts["pretest:electron"], preflight);
@@ -55,6 +58,11 @@ test("the pretest does not invent a framework payload or change other platforms"
     assert.throws(
       () => ensureElectronFramework(incomplete, "darwin"),
       /framework payload is incomplete.*npm install/i,
+    );
+    assert.equal(
+      prepareElectronFrameworkForRuntimeRepair(incomplete, "darwin"),
+      "runtime-repair-required",
+      "the published pretest must let the following integrity probe reinstall the payload",
     );
   } finally {
     rmSync(incomplete, { recursive: true, force: true });

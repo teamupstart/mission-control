@@ -150,7 +150,9 @@ npx tsx scripts/measure-inspector-prompt.ts # size the GitHub Inspector review p
 On macOS, `npm test` and `npm run test:electron` validate Electron's framework link before
 starting their suites. If a copied dependency tree contains the complete framework payload
 but is missing only Electron's standard top-level link, the pretest restores that link. An
-absent payload is refused with an instruction to reinstall dependencies.
+absent payload is handed to the runtime integrity repair that follows, which reinstalls the
+generated runtime and probes it before any test starts. Running the framework check by itself
+without the test command's explicit repair flag still refuses an absent payload.
 
 The same lease and pool policy are visible under **Settings > Worktrees**. The panel can set
 default and per-repository native enablement, maximum capacity, and an operator-authored setup

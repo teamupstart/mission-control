@@ -635,21 +635,31 @@ context, but its 45-second attempt cannot replace the raw evidence. An unparsabl
 one fresh 45-second attempt; invalid, timed-out, or unavailable compaction produces a
 deterministic visible fallback.
 
-A workflow-bound ship task whose published graph contains a Persona can register optional
-image and text evidence before completion. Through `submit_workflow_evidence`, the agent names
-an issued repository slot, a checkout-relative gitignored file, a stable client item id, and a
-required caption. Images remain bounded PNG, JPEG, static GIF, or WebP files. Text artifacts
-are bounded, valid UTF-8 files intended for focused test output or logs. The daemon resolves
-the slot from the task and rejects paths outside that checkout, symlinks, non-files, unsupported
-images, and files that are not gitignored. Browser submission continues to accept images
-through an opaque upload id; it never accepts the absolute upload path returned for chat
-compatibility and does not upload text artifacts.
+A workflow-bound ship task whose published graph contains a Persona receives an evidence-readiness
+contract before completion. Through `submit_workflow_evidence`, the agent can register three native
+channels. `images` and `artifacts` name an issued repository slot, a checkout-relative gitignored
+file, a stable client item id, and a required caption. Images remain bounded PNG, JPEG, static GIF,
+or WebP files. Path-backed text artifacts are bounded, valid UTF-8 files intended for focused test
+output or logs. `commandOutputs` instead carries one completed focused command, its exit code, and
+its exact output directly through the existing evidence tool, so normalized transcripts that omit
+ordinary tool-result bodies do not lose the proof. This is a bounded evidence intake, not a daemon
+command-execution endpoint; Check nodes remain the server-observed execution path.
+
+The daemon resolves repository scope from the task. It rejects file paths outside the issued
+checkout, symlinks, non-files, unsupported images, and path-backed evidence that is not gitignored.
+Direct command output is rendered into one canonical UTF-8 artifact, digest-bound at registration,
+and retained in the staging row until immutable submission capture. Browser submission continues
+to accept images through an opaque upload id; it never accepts the absolute upload path returned
+for chat compatibility and does not upload text artifacts.
 
 The delivered prompt states that this exact scoped registration is already authorized. The
 agent calls the tool directly without asking the human to approve the file, payload, repository
 scope, or Mission Control destination. `repositoryScope: "all"` is authorized only when the task
-received that scope, and every daemon-side validation above still applies. Registration remains
-optional and never replaces code or test evidence.
+received that scope, and every daemon-side validation above still applies. Native registration
+never replaces code or focused test evidence. It is the transport for proof that is otherwise
+absent from the Persona snapshot. Evidence is proportional to material behavior, not raw test
+count: a repository with 10,000 tests does not need 10,000 outputs, and one focused completed run
+can settle multiple criteria when its command and output identify the behavior.
 
 The dashboard uses one **Image evidence** composer anywhere a person can capture a new
 submission: the initial **Preview** in the binding dialog, **Ship it** and No-Mistakes review
@@ -708,11 +718,20 @@ the visual observation in `quote`; citations to any other image id are rejected 
 model output.
 
 Text artifacts reach every Persona as a metadata manifest followed by their exact retained
-content. An artifact citation uses `kind: "artifact"`, names a current artifact id in `path`,
-and omits `line`; citations to an id outside the submission manifest are rejected. These
-Persona inputs exist before any optional pull-request or Inspector stage. A Persona must judge
-the submission evidence it received, not require PR checks, remote CI, or Inspector evidence
-that can only exist later in the workflow.
+content. Direct command evidence includes the agent-reported command and exit code in that content;
+upstream Check evidence is the separate server-observed form. An artifact citation uses
+`kind: "artifact"`, names a current artifact id in `path`, and omits `line`; citations to an id
+outside the submission manifest are rejected. These Persona inputs exist before any optional
+pull-request or Inspector stage. A Persona must judge the submission evidence it received, not
+require PR checks, remote CI, or Inspector evidence that can only exist later in the workflow.
+
+Every completed built-in Test Evidence Auditor attempt also appends a bounded
+`test_evidence_audit` workflow event. It records first-submission status, pass or fail, rejection
+categories, image, text, Check, and transcript readiness counts, truncation facts, and later-stage
+proof terms. A later-stage request is flagged as possible overreach when the matching term is absent
+from the original goal, human decisions, acceptance criteria, constraints, and operator directive.
+The flag is telemetry rather than a verdict rewrite, so operators can measure prompt quality without
+silently replacing the published Persona's judgment.
 
 The durable engine records attempts and edge receipts, waits for all inputs at an all-pass
 Join, retries transient infrastructure failures with bounded backoff, and stops at the

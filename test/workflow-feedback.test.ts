@@ -61,6 +61,7 @@ const version: WorkflowVersion = {
   graph: {
     nodes: [
       { id: "session", kind: "session", position: { x: 0, y: 0 } },
+      persona("evidence", "Test Evidence Auditor"),
       persona("second", "Second reviewer"),
       persona("first", "First reviewer"),
     ],
@@ -156,7 +157,35 @@ test("repair feedback is deterministic, graph ordered, intent preserving, and co
   assert.match(first.payload, /already authorized `submit_workflow_evidence`/);
   assert.match(first.payload, /do not ask the human to resubmit the workflow/);
   assert.match(first.payload, /does not authorize merge/);
+  assert.doesNotMatch(first.payload, /Evidence registration recipe:/);
   assert.equal(first.payloadSha256.length, 64);
+});
+
+test("Test Evidence repairs name the native channel that can satisfy the rejection", () => {
+  const evidenceAttempt = attempt("evidence", "evidence", "The submitted proof is incomplete");
+  evidenceAttempt.verdict = {
+    verdict: "fail",
+    summary: "The UI and focused command are not reviewer-visible",
+    requestedChanges: [{
+      title: "Register the final screenshot and completed command output",
+      rationale: "The snapshot has no rendered pixels or actual test output with an exit code.",
+      evidence: [{ kind: "transcript", quote: "The agent only summarized the run." }],
+    }],
+    confidence: 1,
+  };
+  const rendered = renderWorkflowFeedback({
+    workflowName: "Review",
+    version,
+    run,
+    submission,
+    attempts: [evidenceAttempt],
+  });
+  assert.match(rendered.payload, /Evidence registration recipe:/);
+  assert.match(rendered.payload, /`images`/);
+  assert.match(rendered.payload, /`commandOutputs`/);
+  assert.match(rendered.payload, /Confirm registration succeeded/);
+  assert.match(rendered.payload, /ordinary tool-result bodies/);
+  assert.match(rendered.payload, /pull-request attachments are not visible/);
 });
 
 test("repair feedback caps fields and total bytes with a stable truncation notice", () => {

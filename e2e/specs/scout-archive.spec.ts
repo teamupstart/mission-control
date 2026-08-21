@@ -831,6 +831,33 @@ test("deleting a scout needs the word typed, and takes only that archive", async
   await dashboard.getByRole("button", { name: /^Scouts/ }).click();
   await expect(rail(dashboard)).toBeVisible();
 
+  // Clearing the binding removes both the ARIA shortcut and its tooltip suffix. Compact
+  // controls do not have an inline keycap, so the tooltip must still describe the action
+  // cleanly when there is no chord to advertise.
+  const clearedBinding = await fetch(`${daemon.baseURL}/api/ui/config`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ keybindings: { diff: "d" } }),
+  });
+  expect(clearedBinding.ok, await clearedBinding.text()).toBeTruthy();
+  await dashboard.reload();
+  await expect(rail(dashboard)).toBeVisible();
+  const unboundDelete = dashboard.getByRole("button", { name: "Delete scout" }).first();
+  await expect(unboundDelete).not.toHaveAttribute("aria-keyshortcuts");
+  await unboundDelete.hover();
+  const unboundTooltip = dashboard.locator(".tooltip");
+  await expect(unboundTooltip).toBeVisible();
+  await expect(unboundTooltip).not.toContainText("()");
+
+  const restoredBinding = await fetch(`${daemon.baseURL}/api/ui/config`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ keybindings: {} }),
+  });
+  expect(restoredBinding.ok, await restoredBinding.text()).toBeTruthy();
+  await dashboard.reload();
+  await expect(rail(dashboard)).toBeVisible();
+
   const openDelete = dashboard.getByRole("button", { name: "Delete scout" }).first();
   await expect(openDelete).toHaveAttribute("aria-keyshortcuts", "d");
   await dashboard.keyboard.press("d");

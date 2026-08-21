@@ -68,6 +68,7 @@ export function ScoutsPage({
   const selectedKey = route.archiveKey ?? null;
   const catalog = useScoutsCatalog({ filters, archiveKey: selectedKey, revision });
   const { bindings } = useKeybindings();
+  const deleteShortcutLabel = formatChord(bindings.delete);
   const [deleting, setDeleting] = useState<ScoutDeleteTarget | null>(null);
   /** Which selected archive has replaced its reader heading with the shared rename editor. */
   const [renamingKey, setRenamingKey] = useState<string | null>(null);
@@ -429,22 +430,22 @@ export function ScoutsPage({
                         </button>
                         </Tooltip>
                         <DeleteButton
-                            type="button"
-                            className="btn btn-ghost scouts-row-more"
-                            showShortcutHint={false}
-                            tooltip={`Delete ${scoutLabel(archive)} (${formatChord(bindings.delete)})`}
-                            aria-label={`Delete the scout archive ${scoutLabel(archive)}`}
-                            onClick={(event) => {
-                              invoker.current = event.currentTarget;
-                              setDeleting({
-                                key: archive.key,
-                                title: scoutLabel(archive),
-                                producerLabel: archive.producerLabel,
-                                bytes: archive.bytes,
-                              });
-                            }}
-                          >
-                            ⋯
+                          type="button"
+                          className="btn btn-ghost scouts-row-more"
+                          showShortcutHint={false}
+                          tooltip={`Delete ${scoutLabel(archive)}${deleteShortcutLabel ? ` (${deleteShortcutLabel})` : ""}`}
+                          aria-label={`Delete the scout archive ${scoutLabel(archive)}`}
+                          onClick={(event) => {
+                            invoker.current = event.currentTarget;
+                            setDeleting({
+                              key: archive.key,
+                              title: scoutLabel(archive),
+                              producerLabel: archive.producerLabel,
+                              bytes: archive.bytes,
+                            });
+                          }}
+                        >
+                          ⋯
                         </DeleteButton>
                       </div>
                     </li>

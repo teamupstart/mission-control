@@ -33,6 +33,7 @@ import { ensembleStageWord, type EnsembleSummary, type TaskEnsembleLink } from "
 import {
   PIPELINE_PROVIDER_INFO,
   pipelineStepInfo,
+  type PipelineRunLink,
   type PipelineRun,
   type SessionPipelineLink,
 } from "@shared/pipeline.ts";
@@ -309,6 +310,95 @@ export function PipelineChip({
             a gap would weld "add-widgetsBuild" into one word for a screen reader. */}
         {` ${link.slug}`}
         {step ? <span className="pipeline-chip-step">{` · ${step}`}</span> : null}
+      </button>
+    </Tooltip>
+  );
+}
+
+/** Task ownership copy, deliberately distinct from the externally-driven worker chip. */
+export function taskPipelineRunSentence(link: PipelineRunLink, observed: boolean): string {
+  return observed
+    ? `This task continues in ${link.slug}. Open its run in Runs.`
+    : `This task plans ${link.slug}. Open its run in Runs.`;
+}
+
+export function TaskPipelineRunChip({
+  link,
+  observed,
+  onOpen,
+}: {
+  link: PipelineRunLink | null;
+  observed: boolean;
+  onOpen?: () => void;
+}): React.JSX.Element | null {
+  if (!link) return null;
+  const label = taskPipelineRunSentence(link, observed);
+  return (
+    <Tooltip label={label}>
+      <button
+        className={`task-pipeline-chip ${observed ? "observed" : "planned"}`}
+        aria-label={label}
+        onClick={(event) => {
+          event.stopPropagation();
+          onOpen?.();
+        }}
+      >
+        <span aria-hidden>↝</span>
+        {` ${link.slug}`}
+      </button>
+    </Tooltip>
+  );
+}
+
+export function TaskPipelineRunTileFlag({
+  link,
+  observed,
+  onOpen,
+}: {
+  link: PipelineRunLink | null;
+  observed: boolean;
+  onOpen?: () => void;
+}): React.JSX.Element | null {
+  if (!link) return null;
+  const label = taskPipelineRunSentence(link, observed);
+  return (
+    <Tooltip label={label}>
+      <button
+        className={`tile-flag task-pipeline-flag ${observed ? "observed" : "planned"}`}
+        aria-label={label}
+        onClick={(event) => {
+          event.stopPropagation();
+          onOpen?.();
+        }}
+      >
+        {observed ? `↝ ${link.slug}` : `planned ${link.slug}`}
+      </button>
+    </Tooltip>
+  );
+}
+
+export function TaskPipelineRunRailMark({
+  link,
+  observed,
+  onOpen,
+}: {
+  link: PipelineRunLink | null;
+  observed: boolean;
+  onOpen?: () => void;
+}): React.JSX.Element | null {
+  if (!link) return null;
+  const label = taskPipelineRunSentence(link, observed);
+  return (
+    <Tooltip label={label}>
+      <button
+        className={`rail-task-pipeline ${observed ? "observed" : "planned"}`}
+        aria-label={label}
+        onClick={(event) => {
+          event.stopPropagation();
+          onOpen?.();
+        }}
+      >
+        <span aria-hidden>↝</span>
       </button>
     </Tooltip>
   );

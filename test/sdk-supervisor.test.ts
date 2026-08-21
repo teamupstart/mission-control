@@ -813,6 +813,125 @@ test("restore resumes the same conversation rather than starting a new one", asy
   }
 });
 
+test("restore preserves a managed Pipeline task's launch-scoped MCP identity", async () => {
+  const handle = fakeHandle();
+  const fake = withFakeDriver(async () => handle);
+  const descriptor = {
+    serverName: "mission-control",
+    command: "/usr/bin/node",
+    args: ["/mission/mcp.mjs"],
+    env: { MISSION_CONTROL_URL: "http://127.0.0.1:7317" },
+  };
+  try {
+    upsertSdkSession({
+      id: "sdk:restore-pipeline",
+      agent: "claude",
+      agentSessionId: "agent-restore-pipeline",
+      cwd: "/repo/restore-pipeline",
+      taskId: "task-restore-pipeline",
+      model: null,
+      effort: null,
+      permissionMode: null,
+      status: "running",
+      turnInProgress: false,
+    });
+    const registry = new Registry();
+    registry.upsertTask(mkTask({
+      id: "task-restore-pipeline",
+      kind: "pipeline",
+      status: "running",
+      repoRoot: "/repo/restore-pipeline",
+      sessionId: "sdk:restore-pipeline",
+      pipelineRun: {
+        provider: "ai-conductor",
+        repoRoot: "/repo/restore-pipeline",
+        slug: "restore-pipeline",
+      },
+    }));
+    const supervisor = new SdkSupervisor(registry, {
+      missionMcpDescriptor: async () => descriptor,
+      verifyMissionMcpTools: async (tools, scoped) => {
+        assert.deepEqual(tools, ["adopt_pipeline_run"]);
+        assert.equal(scoped?.env.MISSION_PIPELINE_TASK_ID, "task-restore-pipeline");
+        assert.equal(scoped?.env.MISSION_PIPELINE_SESSION_ID, "sdk:restore-pipeline");
+        return { ok: true };
+      },
+    });
+
+    await supervisor.restore();
+
+    assert.deepEqual(fake.calls[0]?.mcp, {
+      ...descriptor,
+      args: [...descriptor.args],
+      env: {
+        ...descriptor.env,
+        MISSION_PIPELINE_TASK_ID: "task-restore-pipeline",
+        MISSION_PIPELINE_SESSION_ID: "sdk:restore-pipeline",
+      },
+    });
+    assert.equal(registry.getSession("sdk:restore-pipeline")?.pipeline, null);
+  } finally {
+    fake.restore();
+  }
+});
+
+test("restore refuses a managed Pipeline host without a current adoption tool", async () => {
+  for (const mode of ["missing", "stale"] as const) {
+    const id = `sdk:restore-pipeline-${mode}`;
+    const taskId = `task-restore-pipeline-${mode}`;
+    upsertSdkSession({
+      id,
+      agent: "claude",
+      agentSessionId: `agent-${mode}`,
+      cwd: `/repo/restore-pipeline-${mode}`,
+      taskId,
+      model: null,
+      effort: null,
+      permissionMode: null,
+      status: "running",
+      turnInProgress: false,
+    });
+    const registry = new Registry();
+    registry.upsertTask(mkTask({
+      id: taskId,
+      kind: "pipeline",
+      status: "running",
+      repoRoot: `/repo/restore-pipeline-${mode}`,
+      sessionId: id,
+      pipelineRun: {
+        provider: "ai-conductor",
+        repoRoot: `/repo/restore-pipeline-${mode}`,
+        slug: `restore-pipeline-${mode}`,
+      },
+    }));
+    const fake = withFakeDriver(async () => assert.fail("the driver must not launch"));
+    try {
+      const supervisor = new SdkSupervisor(registry, {
+        missionMcpDescriptor: async () => mode === "missing"
+          ? null
+          : {
+              serverName: "mission-control",
+              command: "/usr/bin/node",
+              args: ["/mission/mcp.mjs"],
+              env: {},
+            },
+        verifyMissionMcpTools: async () => ({
+          ok: false,
+          reason: "the built bundle does not publish adopt_pipeline_run",
+        }),
+      });
+
+      await supervisor.restore();
+
+      assert.equal(fake.calls.length, 0, mode);
+      assert.equal(getSdkSession(id)?.status, "failed", mode);
+      assert.equal(registry.getSession(id)?.state, "exited", mode);
+    } finally {
+      fake.restore();
+    }
+  }
+});
+
 test("restore automatically continues an interrupted turn without replaying its intent", async () => {
   const handle = fakeHandle();
   const fake = withFakeDriver(async () => handle);

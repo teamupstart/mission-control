@@ -12,9 +12,11 @@ import {
   WorkflowRailMark,
   EnsembleRailMark,
   runtimeRailMark,
+  TaskPipelineRunRailMark,
 } from "../session-bits.tsx";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
 import type { EnsembleSummary } from "@shared/ensemble.ts";
+import type { PipelineRunLink } from "@shared/pipeline.ts";
 import { Tooltip } from "../Tooltip.tsx";
 
 /**
@@ -38,6 +40,8 @@ export function RailRow({
   scheduleNameById,
   onOpenEnsemble,
   ensembleSummary = null,
+  onOpenPipelineRun,
+  pipelineRunObserved = false,
 }: {
   session: Session;
   selected: boolean;
@@ -54,6 +58,8 @@ export function RailRow({
   onOpenEnsemble?: (runId: string) => void;
   /** This member's run summary, for the glyph's hover copy. Null until its SSE summary lands. */
   ensembleSummary?: EnsembleSummary | null;
+  onOpenPipelineRun?: (link: PipelineRunLink) => void;
+  pipelineRunObserved?: boolean;
 }): React.JSX.Element {
   // The rail draws its own badge, so it asks for the transient stop directly - the Console
   // is where a session is watched while it works, and so where the wait is most visible.
@@ -152,6 +158,15 @@ export function RailRow({
               onOpen={
                 session.task?.ensemble
                   ? () => onOpenEnsemble?.(session.task!.ensemble!.runId)
+                  : undefined
+              }
+            />
+            <TaskPipelineRunRailMark
+              link={session.task?.pipelineRun ?? null}
+              observed={pipelineRunObserved}
+              onOpen={
+                session.task?.pipelineRun
+                  ? () => onOpenPipelineRun?.(session.task!.pipelineRun!)
                   : undefined
               }
             />

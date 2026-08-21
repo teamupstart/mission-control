@@ -2014,6 +2014,8 @@ export interface TaskSummary {
   status: TaskStatus;
   outcome: string | null;
   outcomeUrl: string | null;
+  /** The provider run this task owns, separate from process-owned `Session.pipeline`. */
+  pipelineRun: PipelineRunLink | null;
   /**
    * Schedule provenance, carried through to the session card. Same three fields as
    * `Task`, and null together for the same reasons.

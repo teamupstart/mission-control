@@ -386,6 +386,11 @@ feature - as **ordinary cards**, indistinguishable from an agent waiting for you
 instruction, complete with a composer writing into a `--print` process that reads nothing at
 all. This section is about telling the two apart.
 
+A managed Engineer host is a separate case. Its task-owned run mark says where the Pipeline task
+continues, but it does not use the worker chip or the no-input sentence below. Only a provider
+worker correlated from an observed worktree receives `Session.pipeline` and the externally driven
+presentation.
+
 **The correlation is the worktree, and only the worktree.** A discovered session whose working
 directory is inside an observed run's worktree is that run's; anything else is not. Nothing is
 matched on a branch name, a task, a slug in a title, or anything else the operator can type:
@@ -672,6 +677,15 @@ another live task already owning the same provider, repository, and slug. It the
 complete run link before starting the host, closing the interval in which two Mission Control
 dispatches could claim the same future run.
 
+Managed hosts also receive a launch-scoped `adopt_pipeline_run` Mission MCP tool. Engineer calls
+it only when it resumes a different existing run instead of creating the reserved slug. The tool
+accepts only the observed slug. Mission Control derives the task, provider, repository, and live
+SDK host from daemon-issued launch context and captured caller evidence. Adoption is refused when
+the target is not projected, another active task owns it, the reserved run is already projected,
+or the caller is not that task's current managed host. The same task-scoped MCP identity is rebuilt
+when an SDK conversation resumes after a daemon restart. A missing or stale tool bundle fails the
+managed dispatch before the host starts; it never falls back to Terminal.
+
 Conductor owns downstream agent, model, and effort choices in either runtime. Model, Effort,
 attached repositories, After work, and the generic runtime picker stay unavailable. Agent is
 available only for Managed Agent SDK host selection. Backlog autopilot does not schedule Pipeline
@@ -685,6 +699,12 @@ same provider link is restored after a daemon restart. A task saved by an older 
 still binds through its Terminal home when a child appears inside a projected worktree. That
 legacy join may fill a null link or confirm a matching one, but it never rewrites a different
 prebound identity.
+
+The managed host card reads this durable relationship through `TaskSummary.pipelineRun`. Before
+the reserved run is present in the provider projection, Board, Console rail, and Console detail
+say that the task *plans* the slug. Once the run is observed or explicitly adopted, they say that
+the task *continues in* it and link to Runs. This is task ownership only: the host keeps
+`Session.pipeline = null`, remains messageable, and never joins a provider-worker cluster.
 
 When a projected run first reports `pr_url`, Mission Control adopts that pull request into the
 existing GitHub Inspector ledger with source `pipeline`, provided its owner and repository

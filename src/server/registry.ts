@@ -5776,6 +5776,7 @@ export class Registry extends EventEmitter {
           status: t.status,
           outcome: t.outcome,
           outcomeUrl: t.outcomeUrl,
+          pipelineRun: t.pipelineRun,
           scheduleId: t.scheduleId,
           scheduleOccurrenceId: t.scheduleOccurrenceId,
           scheduledFor: t.scheduledFor,

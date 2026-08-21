@@ -28157,6 +28157,70 @@ body.foreman-sidecar-open .modal-backdrop {
   color: var(--dim);
 }
 
+/* A task-owned run link. This does not imply that the provider drives the host process. */
+.task-pipeline-chip {
+  max-width: min(320px, 34vw);
+  overflow: hidden;
+  padding: 5px 8px;
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--working) 7%, var(--panel-2));
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.task-pipeline-chip.observed {
+  border-color: color-mix(in oklab, var(--working) 42%, var(--border-soft));
+  color: var(--fg);
+}
+.task-pipeline-chip:hover,
+.task-pipeline-flag:hover,
+.rail-task-pipeline:hover {
+  border-color: var(--fg);
+  color: var(--fg);
+}
+.task-pipeline-flag {
+  max-width: 100%;
+  overflow: hidden;
+  font: inherit;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.task-pipeline-flag.observed {
+  border-color: color-mix(in oklab, var(--working) 42%, var(--border));
+  color: var(--working);
+}
+.rail-task-pipeline {
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--dim);
+  font: inherit;
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+}
+.rail-task-pipeline.observed {
+  border-color: color-mix(in oklab, var(--working) 42%, var(--border-soft));
+  color: var(--working);
+}
+
+@media (max-width: 520px) {
+  .task-pipeline-chip {
+    max-width: min(230px, 58vw);
+  }
+}
+
 /* The frame header over an engine-driven session, in both layouts. Borrows the ensemble
    cluster's classes for its box (see `PipelineClusterHead`) and only re-tints the glyph, so
    two frames in one column read as the same kind of structure. */

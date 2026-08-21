@@ -1,11 +1,22 @@
-import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, readdirSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { execPath } from "node:process";
 
 import type { Locator, Page } from "@playwright/test";
 
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import {
+  conductorWorktree,
   readConductorInvocations,
   seedConductorDaemon,
   seedConductorRun,
@@ -87,6 +98,43 @@ function codexPrompts(daemon: DaemonHandle): string[] {
   } catch {
     return [];
   }
+}
+
+const tmuxMissing = spawnSync("tmux", ["-V"], { stdio: "ignore" }).status !== 0;
+
+/** A cost-free provider worker whose cwd lets the real discovery pass correlate it. */
+function startProviderWorker(cwd: string): { name: string; cleanup: () => void } {
+  const dir = mkdtempSync(join(tmpdir(), "mc-e2e-pipeline-adoption-"));
+  const bin = join(dir, "fake-bin");
+  mkdirSync(bin);
+  symlinkSync(execPath, join(bin, "claude"));
+  const script = join(dir, "worker.mjs");
+  writeFileSync(script, "setInterval(() => {}, 1 << 30);\n");
+  const name = `mc-e2e-adopt-worker-${process.pid}-${Date.now()}`;
+  execFileSync(
+    "tmux",
+    [
+      "new-session",
+      "-d",
+      "-s",
+      name,
+      "-x",
+      "120",
+      "-y",
+      "40",
+      "-c",
+      cwd,
+      `${join(bin, "claude")} ${script}`,
+    ],
+    { stdio: "pipe" },
+  );
+  return {
+    name,
+    cleanup: () => {
+      spawnSync("tmux", ["kill-session", "-t", name], { stdio: "ignore" });
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
 }
 
 test("SDK pipeline dispatch invokes Engineer directly and stays provider-owned", async ({
@@ -179,6 +227,253 @@ test("SDK pipeline dispatch invokes Engineer directly and stays provider-owned",
       message: "the SDK host should receive the direct Engineer command as turn one",
     })
     .toBe(`$engineer - run this skill now. ${intent}`);
+});
+
+test.describe("managed Pipeline run adoption", () => {
+  test.use({
+    daemonEnv: {
+      CLAUDECODE: "nested-e2e-parent",
+      MISSION_PIPELINE_TICK_MS: "1000",
+      MISSION_POLL_MS: "400",
+    },
+  });
+  test.skip(tmuxMissing, "tmux is not installed on this machine");
+
+  test("the task adopts an existing run without turning its interactive host into a worker", async ({
+    dashboard,
+    daemon,
+  }) => {
+    const adoptedSlug = "deploy-health-and-rds-connectivity";
+    const reservedSlug = "resume-the-managed-deployment-health-run";
+    seedConductorRun(daemon.repo, adoptedSlug, {
+      steps: { worktree: "done", build: "in_progress" },
+      lastStep: "build",
+      tier: "M",
+      track: "technical",
+    });
+    seedConductorDaemon(daemon.repo, { pid: process.pid });
+    await enablePipelines(daemon);
+    const worker = startProviderWorker(conductorWorktree(daemon.repo, adoptedSlug));
+
+    try {
+      await dashboard.getByRole("button", { name: "Dispatch" }).click();
+      const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
+      await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
+      await dashboard.keyboard.press("Escape");
+      await dialog.getByRole("combobox", { name: "Kind", exact: true }).selectOption("pipeline");
+      await dialog.getByRole("combobox", { name: "Agent", exact: true }).selectOption("codex");
+      await dialog
+        .getByPlaceholder("What should this agent do?")
+        .fill("Resume the managed deployment health run");
+      await dialog.getByRole("button", { name: "Dispatch now" }).click();
+      await expect(dialog).toBeHidden();
+
+      type PipelineLink = { provider: string; repoRoot: string; slug: string };
+      type PipelineTask = {
+        id: string;
+        kind: string;
+        status: string;
+        sessionId: string | null;
+        pipelineRun: PipelineLink | null;
+      };
+      type PipelineSession = {
+        id: string;
+        name: string;
+        runtime: string;
+        state: string;
+        cwd: string | null;
+        agentSessionId: string | null;
+        pipeline: (PipelineLink & { step: string | null }) | null;
+        task: { id: string; pipelineRun: PipelineLink | null } | null;
+      };
+
+      let task: PipelineTask | undefined;
+      let host: PipelineSession | undefined;
+      let providerWorker: PipelineSession | undefined;
+      await expect
+        .poll(
+          async () => {
+            task = (
+              await request<PipelineTask[]>(daemon, "/api/tasks")
+            ).find((candidate) => candidate.kind === "pipeline");
+            const sessions = await request<PipelineSession[]>(daemon, "/api/sessions");
+            host = sessions.find((candidate) => candidate.id === task?.sessionId);
+            providerWorker = sessions.find((candidate) => candidate.name === worker.name);
+            return {
+              task: task && {
+                status: task.status,
+                slug: task.pipelineRun?.slug,
+              },
+              host: host && {
+                runtime: host.runtime,
+                state: host.state,
+                pipeline: host.pipeline,
+              },
+              worker: providerWorker?.pipeline?.slug,
+            };
+          },
+          {
+            message: "the reserved task, interactive host, and existing run's provider worker should all be visible",
+            timeout: 30_000,
+          },
+        )
+        .toEqual({
+          task: { status: "running", slug: reservedSlug },
+          host: { runtime: "sdk", state: expect.stringMatching(/^(working|idle)$/), pipeline: null },
+          worker: adoptedSlug,
+        });
+
+      expect(task).toBeDefined();
+      expect(host).toBeDefined();
+      expect(providerWorker).toBeDefined();
+      const plannedName = `This task plans ${reservedSlug}. Open its run in Runs.`;
+      const adoptedName = `This task continues in ${adoptedSlug}. Open its run in Runs.`;
+
+      await request(daemon, "/api/ui/config", "PUT", { layout: "board" });
+      await dashboard.reload();
+      const hostTile = dashboard.locator("div.tile").filter({ hasText: host!.name });
+      await expect(hostTile).toBeVisible();
+      await expect(hostTile.getByRole("button", { name: plannedName })).toBeVisible();
+      await expect(
+        dashboard.locator("div.board-cluster").filter({ hasText: providerWorker!.name }),
+      ).toHaveCount(1);
+      await expect(
+        dashboard.locator("div.board-cluster").filter({ hasText: host!.name }),
+      ).toHaveCount(0);
+
+      await request(daemon, "/api/ui/config", "PUT", { layout: "console" });
+      await dashboard.reload();
+      const hostRow = dashboard
+        .getByRole("navigation", { name: "Sessions" })
+        .locator("button.rail-row")
+        .filter({ hasText: host!.name });
+      const railTaskRun = dashboard
+        .getByRole("navigation", { name: "Sessions" })
+        .locator("button.rail-task-pipeline");
+      await expect(railTaskRun).toBeVisible();
+      await expect(railTaskRun).toHaveAttribute("aria-label", plannedName);
+      await hostRow.click();
+      const detail = dashboard.locator(".console-detail");
+      await expect(detail.getByPlaceholder(/^Reply to this session/)).toBeVisible();
+      await expect(detail.getByRole("button", { name: plannedName })).toBeVisible();
+      await expect(detail.locator("button.pipeline-chip")).toHaveCount(0);
+
+      // The real MCP tool accepts only this object. Its bridge appends the launch-scoped
+      // task id and the captured caller evidence before posting to the daemon route.
+      const toolInput = { slug: adoptedSlug };
+      const token = readFileSync(join(daemon.home, "token"), "utf8").trim();
+      const adoption = await fetch(`${daemon.baseURL}/mcp/pipelines/adopt`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-harness-token": token },
+        body: JSON.stringify({
+          env: {},
+          sessionId: null,
+          cwd: host!.cwd,
+          taskId: task!.id,
+          hostSessionId: host!.id,
+          ...toolInput,
+        }),
+      });
+      expect(adoption.status, await adoption.text()).toBe(200);
+
+      await expect
+        .poll(async () => {
+          const current = (await request<PipelineTask[]>(daemon, "/api/tasks")).find(
+            (candidate) => candidate.id === task!.id,
+          );
+          return { status: current?.status, pipelineRun: current?.pipelineRun };
+        })
+        .toEqual({
+          status: "running",
+          pipelineRun: { provider: "ai-conductor", repoRoot: daemon.repo, slug: adoptedSlug },
+        });
+      await expect(detail.getByRole("button", { name: adoptedName })).toBeVisible();
+      await expect(railTaskRun).toHaveAttribute("aria-label", adoptedName);
+      await expect(detail.getByPlaceholder(/^Reply to this session/)).toBeVisible();
+      const railBox = await railTaskRun.boundingBox();
+      const desktopWidth = await dashboard.evaluate(() => window.innerWidth);
+      expect(railBox, "the desktop rail task-run control should have laid-out geometry").not.toBeNull();
+      expect(railBox!.x).toBeGreaterThanOrEqual(0);
+      expect(railBox!.x + railBox!.width).toBeLessThanOrEqual(desktopWidth);
+      await dashboard.setViewportSize({ width: 420, height: 900 });
+      // The narrow Console intentionally collapses its rail. Its detail replacement must
+      // retain the same reachable run control without clipping it off-screen.
+      const narrowRunControls = [detail.getByRole("button", { name: adoptedName })];
+      for (const control of narrowRunControls) {
+        await expect(control).toBeVisible();
+        const box = await control.boundingBox();
+        expect(box, "the task-run control should have laid-out geometry").not.toBeNull();
+        expect(box!.x).toBeGreaterThanOrEqual(0);
+        expect(box!.x + box!.width).toBeLessThanOrEqual(420);
+      }
+      await shoot(dashboard, "08-managed-adoption-console-narrow");
+      await expect
+        .poll(async () => {
+          const sessions = await request<PipelineSession[]>(daemon, "/api/sessions");
+          return {
+            host: sessions.find((candidate) => candidate.id === host!.id)?.pipeline ?? null,
+            worker:
+              sessions.find((candidate) => candidate.id === providerWorker!.id)?.pipeline?.slug ??
+              null,
+          };
+        })
+        .toEqual({ host: null, worker: adoptedSlug });
+
+      await detail.getByRole("button", { name: adoptedName }).click();
+      await expect.poll(() => new URL(dashboard.url()).hash).toMatch(new RegExp(`/${adoptedSlug}$`));
+      await expect(dashboard.locator(".pipelines-reader")).toContainText(adoptedSlug);
+
+      await dashboard.setViewportSize({ width: 1440, height: 900 });
+      await dashboard.goto(`${daemon.baseURL}/#/fleet`);
+      const restoredHostRow = dashboard
+        .getByRole("navigation", { name: "Sessions" })
+        .locator("button.rail-row")
+        .filter({ hasText: host!.name });
+      await restoredHostRow.click();
+      const restoredRailRun = dashboard
+        .getByRole("navigation", { name: "Sessions" })
+        .locator("button.rail-task-pipeline");
+      await restoredRailRun.click();
+      await expect.poll(() => new URL(dashboard.url()).hash).toMatch(new RegExp(`/${adoptedSlug}$`));
+      await expect(dashboard.locator(".pipelines-reader")).toContainText(adoptedSlug);
+
+      await request(daemon, "/api/ui/config", "PUT", { layout: "board" });
+      await dashboard.goto(`${daemon.baseURL}/#/fleet`);
+      await dashboard.reload();
+      const adoptedHostTile = dashboard.locator("div.tile").filter({ hasText: host!.name });
+      const adoptedBoardRun = adoptedHostTile.getByRole("button", { name: adoptedName });
+      await expect(adoptedBoardRun).toBeVisible();
+      await expect(
+        dashboard.locator("div.board-cluster").filter({ hasText: providerWorker!.name }),
+      ).toHaveCount(1);
+      await expect(
+        dashboard.locator("div.board-cluster").filter({ hasText: host!.name }),
+      ).toHaveCount(0);
+      await shoot(dashboard, "09-managed-adoption-board-desktop");
+      await adoptedBoardRun.click();
+      await expect.poll(() => new URL(dashboard.url()).hash).toMatch(new RegExp(`/${adoptedSlug}$`));
+      await expect(dashboard.locator(".pipelines-reader")).toContainText(adoptedSlug);
+
+      seedConductorDaemon(daemon.repo, {
+        pid: process.pid,
+        processed: { [adoptedSlug]: { prUrl: null } },
+      });
+      await expect
+        .poll(
+          async () =>
+            (await request<PipelineTask[]>(daemon, "/api/tasks")).find(
+              (candidate) => candidate.id === task!.id,
+            )?.status,
+          {
+            message: "only the provider's processed projection should settle the adopted task",
+            timeout: 15_000,
+          },
+        )
+        .toBe("done");
+    } finally {
+      worker.cleanup();
+    }
+  });
 });
 
 test("guided managed Agent SDK pipeline asks for an eligible harness", async ({

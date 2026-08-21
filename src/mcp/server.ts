@@ -27,6 +27,7 @@ import {
   productIssueClientFromEnvironment,
 } from "@shared/product-issues.ts";
 import { reportProductIssueWithConfirmation } from "./product-issues.ts";
+import { PIPELINE_SESSION_ID_ENV, PIPELINE_TASK_ID_ENV } from "@shared/pipeline.ts";
 
 // This runs as a stdio MCP server, launched by Claude Code per session. Because
 // it's a child of the agent it inherits the terminal env (TMUX_PANE /
@@ -35,6 +36,8 @@ import { reportProductIssueWithConfirmation } from "./product-issues.ts";
 
 const ENV = captureTerminalEnv();
 const SESSION_ID = process.env.CLAUDE_SESSION_ID ?? null;
+const PIPELINE_TASK_ID = process.env[PIPELINE_TASK_ID_ENV] ?? null;
+const PIPELINE_SESSION_ID = process.env[PIPELINE_SESSION_ID_ENV] ?? null;
 const PRODUCT_ISSUE_CLIENT = productIssueClientFromEnvironment(
   process.env[PRODUCT_ISSUE_CLIENT_ENV],
 );
@@ -546,6 +549,45 @@ server.registerTool(
     try {
       await http("/mcp/status", "POST", { env: ENV, sessionId: SESSION_ID, activity });
       return textResult("ok");
+    } catch (err) {
+      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
+    }
+  },
+);
+
+server.registerTool(
+  "adopt_pipeline_run",
+  {
+    title: "Adopt an existing Pipeline run",
+    description:
+      "Use only when this managed Pipeline Engineer host resumes an existing run whose slug differs from the reserved run in its launch instruction.",
+    inputSchema: { slug: z.string().trim().min(1).describe("The observed existing run slug") },
+  },
+  async ({ slug }) => {
+    if (!PIPELINE_TASK_ID || !PIPELINE_SESSION_ID) {
+      return textResult("Mission Control did not issue Pipeline host identity to this session.", true);
+    }
+    try {
+      const res = await http("/mcp/pipelines/adopt", "POST", {
+        env: ENV,
+        sessionId: SESSION_ID,
+        cwd: process.cwd(),
+        taskId: PIPELINE_TASK_ID,
+        hostSessionId: PIPELINE_SESSION_ID,
+        slug,
+      });
+      const body = (await res.json()) as { replayed?: boolean; error?: string };
+      if (!res.ok) {
+        return textResult(
+          `Mission Control refused Pipeline run adoption (${res.status}): ${body.error ?? "unknown refusal"}`,
+          true,
+        );
+      }
+      return textResult(
+        body.replayed
+          ? `This task already continues in ${slug}.`
+          : `This task now continues in ${slug}.`,
+      );
     } catch (err) {
       return textResult(`Could not reach Mission Control: ${String(err)}`, true);
     }

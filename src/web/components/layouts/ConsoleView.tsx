@@ -1,4 +1,5 @@
 import type { Session } from "@shared/types.ts";
+import { pipelineRunKeyOf } from "@shared/pipeline.ts";
 import { clusterFallbackLabel, fleetRows, orderSessions } from "../../lib/fleet-order.ts";
 import { heldSessionIds, newestSessionRun } from "../../lib/held.ts";
 import { ConsoleDetail } from "./ConsoleDetail.tsx";
@@ -53,6 +54,10 @@ export function ConsoleView(props: SessionViewProps): React.JSX.Element {
       scheduleNameById={props.scheduleNameById}
       onOpenEnsemble={props.onOpenEnsemble}
       ensembleSummary={ensembleSummaryFor(props, s)}
+      onOpenPipelineRun={props.onOpenPipelineRun}
+      pipelineRunObserved={Boolean(
+        s.task?.pipelineRun && props.pipelineRunByKey?.has(pipelineRunKeyOf(s.task.pipelineRun)),
+      )}
     />
   );
 

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { AssignResetConfirm, Session } from "@shared/types.ts";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
 import type { EnsembleSummary } from "@shared/ensemble.ts";
+import type { PipelineRunLink } from "@shared/pipeline.ts";
 import { liveActivity } from "@shared/session.ts";
 import { relativeTime, sessionTitleDetail, stateDisplay, uptime } from "../../lib/format.ts";
 import { useInterrupting } from "../../lib/interrupting.ts";
@@ -16,6 +17,7 @@ import {
   RuntimeTileFlag,
   ScheduleOriginTileFlag,
   EnsembleTileFlag,
+  TaskPipelineRunTileFlag,
 } from "../session-bits.tsx";
 import { EffortPicker } from "../EffortPicker.tsx";
 import { ModePicker } from "../ModePicker.tsx";
@@ -54,6 +56,8 @@ export function SessionTile({
   scheduleNameById,
   onOpenEnsemble,
   ensembleSummary = null,
+  onOpenPipelineRun,
+  pipelineRunObserved = false,
 }: {
   session: Session;
   /** The board's arrow-key cursor. Selection does not open the tile until Enter. */
@@ -80,6 +84,8 @@ export function SessionTile({
   onOpenEnsemble?: (runId: string) => void;
   /** This member's run summary, for the flag's hover copy. Null until its SSE summary lands. */
   ensembleSummary?: EnsembleSummary | null;
+  onOpenPipelineRun?: (link: PipelineRunLink) => void;
+  pipelineRunObserved?: boolean;
 }): React.JSX.Element {
   // Board tiles draw their own badge rather than `StateBadge`, so the transient stop has to
   // be asked for here too - Ctrl+C works from the board overview, so this is a surface where
@@ -287,6 +293,15 @@ export function SessionTile({
           onOpen={
             session.task?.ensemble
               ? () => onOpenEnsemble?.(session.task!.ensemble!.runId)
+              : undefined
+          }
+        />
+        <TaskPipelineRunTileFlag
+          link={session.task?.pipelineRun ?? null}
+          observed={pipelineRunObserved}
+          onOpen={
+            session.task?.pipelineRun
+              ? () => onOpenPipelineRun?.(session.task!.pipelineRun!)
               : undefined
           }
         />

@@ -10,7 +10,12 @@ import type {
 import type { Registry, SdkSessionRegistration } from "../registry.ts";
 import type { SdkSessionHandle, SdkTurn, SessionRequestAnswer } from "../harness/types.ts";
 import { sdkFor } from "../harness/index.ts";
-import { missionMcpDescriptor, type MissionMcpDescriptor } from "../mission-mcp.ts";
+import {
+  missionMcpDescriptor,
+  missionMcpDescriptorForPipelineTask,
+  verifyMissionMcpTools,
+  type MissionMcpDescriptor,
+} from "../mission-mcp.ts";
 import { SDK_SESSION_ID_PREFIX } from "../registry.ts";
 import type { LaunchPresentationInput } from "../launch-presentation.ts";
 import { sleep } from "../util/timers.ts";
@@ -42,6 +47,11 @@ export type SdkInterruptOutcome = "interrupted" | "idle";
 export interface AcceptedGoalPrompt {
   prompt: string;
   noteKey: string;
+}
+
+/** Allocate the exact dashboard identity before an SDK driver can invoke launch-scoped MCP. */
+export function newSdkSessionId(): string {
+  return `${SDK_SESSION_ID_PREFIX}${randomUUID()}`;
 }
 
 const RESTART_CONTINUATION_PROMPT =
@@ -103,6 +113,7 @@ export class SdkSupervisor {
     private readonly registry: Registry,
     private readonly deps: {
       missionMcpDescriptor?: typeof missionMcpDescriptor;
+      verifyMissionMcpTools?: typeof verifyMissionMcpTools;
     } = {},
   ) {}
 
@@ -153,6 +164,8 @@ export class SdkSupervisor {
    * ownership of rather than leaking a subprocess nothing is pumping.
    */
   async start(input: {
+    /** Preallocated when launch-scoped capabilities need the exact host identity. */
+    sessionId?: string;
     agent: AgentType;
     /** What the card is called. The dispatcher passes the task's label. */
     name: string;
@@ -188,7 +201,7 @@ export class SdkSupervisor {
   }): Promise<Session> {
     const spec = sdkFor(input.agent);
     if (!spec) throw new Error(`${input.agent} has no embedded driver`);
-    const id = `${SDK_SESSION_ID_PREFIX}${randomUUID()}`;
+    const id = input.sessionId ?? newSdkSessionId();
     const handle = await spec.launch({
       cwd: input.cwd,
       prompt: input.prompt,
@@ -800,10 +813,31 @@ export class SdkSupervisor {
     try {
       mcp = await (this.deps.missionMcpDescriptor ?? missionMcpDescriptor)();
     } catch (err) {
+      if (task?.kind === "pipeline") {
+        const why = err instanceof Error ? err.message : String(err);
+        throw new Error(`managed Pipeline resume could not resolve Mission MCP: ${why}`);
+      }
       console.error(
         `[sdk] could not resolve Mission MCP while resuming ${row.id}:`,
         err instanceof Error ? err.message : String(err),
       );
+    }
+    if (task?.kind === "pipeline") {
+      mcp = missionMcpDescriptorForPipelineTask(mcp, task.id, row.id);
+      if (!mcp) {
+        throw new Error(
+          "managed Pipeline resume requires Mission Control's MCP server - rebuild with: npm run build",
+        );
+      }
+      const published = await (this.deps.verifyMissionMcpTools ?? verifyMissionMcpTools)(
+        ["adopt_pipeline_run"],
+        mcp,
+      );
+      if (!published.ok) {
+        throw new Error(
+          `managed Pipeline resume requires adopt_pipeline_run, but ${published.reason}`,
+        );
+      }
     }
     const handle = await spec.launch({
       cwd: row.cwd,

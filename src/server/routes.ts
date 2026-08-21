@@ -43,6 +43,7 @@ import {
   InspectorConfigPatchSchema,
   LlmConfigPatchSchema,
   McpCreateTaskSchema,
+  McpAdoptPipelineRunSchema,
   McpProductIssuePreviewRequestSchema,
   McpProductIssueSubmitRequestSchema,
   ResolveFindingsSchema,
@@ -2893,6 +2894,41 @@ export function buildApp(
     if (!parsed.ok) return parsed.res;
     registry.applyStatus(parsed.data.env, parsed.data.sessionId, parsed.data.activity);
     return c.body(null, 204);
+  });
+
+  app.post("/mcp/pipelines/adopt", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, McpAdoptPipelineRunSchema);
+    if (!parsed.ok) return parsed.res;
+    const task = registry.getTask(parsed.data.taskId);
+    if (!task) return c.json({ error: "no matching Pipeline task" }, 404);
+    if (!task.pipelineRun) {
+      return c.json({ error: "the Pipeline task has no launch reservation" }, 409);
+    }
+    if (task.sessionId !== parsed.data.hostSessionId) {
+      return c.json({ error: "the caller does not own this Pipeline task" }, 403);
+    }
+    const session = registry.getSession(parsed.data.hostSessionId);
+    if (!session || session.state === "exited") {
+      return c.json({ error: "no matching active session" }, 404);
+    }
+    if (
+      session.cwd !== parsed.data.cwd ||
+      (parsed.data.sessionId !== null && parsed.data.sessionId !== session.agentSessionId)
+    ) {
+      return c.json({ error: "the caller does not match the managed Pipeline host" }, 403);
+    }
+    const result = tasks.adoptPipelineRun(
+      task,
+      {
+        provider: task.pipelineRun.provider,
+        repoRoot: task.repoRoot,
+        slug: parsed.data.slug,
+      },
+      { kind: "managed", session },
+    );
+    if (!result.ok) return c.json({ error: result.error }, result.status);
+    return c.json({ task: result.task, replayed: result.replayed });
   });
 
   app.post("/mcp/workflow-evidence", bodyLimit({

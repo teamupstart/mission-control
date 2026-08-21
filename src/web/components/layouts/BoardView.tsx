@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { AssignResetConfirm, Session } from "@shared/types.ts";
-import type { PipelineRun } from "@shared/pipeline.ts";
+import { pipelineRunKeyOf, type PipelineRun } from "@shared/pipeline.ts";
 import { stateDisplay, type Tone } from "../../lib/format.ts";
 import { boardColumnModes } from "../../lib/tone.ts";
 import {
@@ -163,6 +163,10 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
       scheduleNameById={props.scheduleNameById}
       onOpenEnsemble={props.onOpenEnsemble}
       ensembleSummary={ensembleSummaryFor(props, s)}
+      onOpenPipelineRun={props.onOpenPipelineRun}
+      pipelineRunObserved={Boolean(
+        s.task?.pipelineRun && props.pipelineRunByKey?.has(pipelineRunKeyOf(s.task.pipelineRun)),
+      )}
     />
   );
   /**
@@ -198,6 +202,10 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
       scheduleNameById={props.scheduleNameById}
       onOpenEnsemble={props.onOpenEnsemble}
       ensembleSummary={ensembleSummaryFor(props, s)}
+      onOpenPipelineRun={props.onOpenPipelineRun}
+      pipelineRunObserved={Boolean(
+        s.task?.pipelineRun && props.pipelineRunByKey?.has(pipelineRunKeyOf(s.task.pipelineRun)),
+      )}
     />
   );
 

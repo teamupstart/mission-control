@@ -66,6 +66,7 @@ const shipSummary: TaskSummary = {
   status: "running",
   outcome: null,
   outcomeUrl: null,
+  pipelineRun: null,
   scheduleId: null,
   scheduleOccurrenceId: null,
   scheduledFor: null,

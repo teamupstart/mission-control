@@ -39,7 +39,7 @@ function fakeSupervisor(registry: Registry) {
     async start(input: Parameters<SdkSupervisor["start"]>[0]): Promise<Session> {
       starts.push(input);
       return registry.registerSdkSession({
-        id: `sdk:pipeline-${starts.length}`,
+        id: input.sessionId ?? `sdk:pipeline-${starts.length}`,
         agent: input.agent,
         name: input.name,
         cwd: input.cwd,
@@ -231,6 +231,12 @@ test("managed SDK pipeline dispatch composes the selected host prompt with no te
   const dispatcher = new Dispatcher(registry, async () => assert.fail("no worktree is owned"), {
     supervisor,
     missionMcpDescriptor: async () => mcp,
+    verifyMissionMcpTools: async (tools, descriptor) => {
+      assert.deepEqual(tools, ["adopt_pipeline_run"]);
+      assert.equal(descriptor?.env.MISSION_PIPELINE_TASK_ID, "pipeline-sdk");
+      assert.match(descriptor?.env.MISSION_PIPELINE_SESSION_ID ?? "", /^sdk:/);
+      return { ok: true };
+    },
     pipelineLaunch: async () => ({
       ok: true,
       launchRuntime: "agent-sdk",
@@ -246,11 +252,14 @@ test("managed SDK pipeline dispatch composes the selected host prompt with no te
   await dispatcher.dispatch("pipeline-sdk");
 
   assert.equal(spawned, false);
+  const launchedSessionId = supervisor.starts[0]?.sessionId;
+  assert.match(launchedSessionId ?? "", /^sdk:/);
   assert.deepEqual(supervisor.starts, [{
+    sessionId: launchedSessionId,
     agent: "codex",
     name: "Build the SDK path",
     cwd: "/repo/sdk",
-    prompt: "$engineer - run this skill now. Build the SDK path\nwithout changing the daemon",
+    prompt: "$engineer - run this skill now. Build the SDK path\nwithout changing the daemon\n\n[Mission Control launch context: the reserved Pipeline run is build-the-sdk-path-without-changing-the-daemon. If Engineer resumes a different existing run, call adopt_pipeline_run with that run's slug before continuing. No call is needed when Engineer creates the reserved run.]",
     acceptedGoalPrompt: "Build the SDK path\nwithout changing the daemon",
     // A pipeline task on this arm launches a directly streamable agent conversation, so it
     // presents its launch turn exactly as an ordinary embedded dispatch does: the host's
@@ -262,13 +271,20 @@ test("managed SDK pipeline dispatch composes the selected host prompt with no te
     // referenced so this stays a literal assertion: fingerprinting a recomposed copy of turn
     // one is the exact defect that would make every pipeline launch render in full.
     launchPresentation: {
-      prompt: "$engineer - run this skill now. Build the SDK path\nwithout changing the daemon",
+      prompt: "$engineer - run this skill now. Build the SDK path\nwithout changing the daemon\n\n[Mission Control launch context: the reserved Pipeline run is build-the-sdk-path-without-changing-the-daemon. If Engineer resumes a different existing run, call adopt_pipeline_run with that run's slug before continuing. No call is needed when Engineer creates the reserved run.]",
       displayText: "Build the SDK path\nwithout changing the daemon",
     },
     model: null,
     effort: null,
     permissionMode: "approveForMe",
-    mcp,
+    mcp: {
+      ...mcp,
+      env: {
+        ...mcp.env,
+        MISSION_PIPELINE_TASK_ID: "pipeline-sdk",
+        MISSION_PIPELINE_SESSION_ID: launchedSessionId,
+      },
+    },
     extraDirs: [],
     taskId: "pipeline-sdk",
     gitBranch: null,
@@ -277,12 +293,53 @@ test("managed SDK pipeline dispatch composes the selected host prompt with no te
   }]);
   const task = registry.getTask("pipeline-sdk");
   assert.equal(task?.status, "running");
-  assert.equal(task?.sessionId, "sdk:pipeline-1");
+  assert.equal(task?.sessionId, launchedSessionId);
   assert.equal(task?.homeName, null);
   assert.equal(task?.worktreePath, null);
   assert.deepEqual(task?.extraRepos, []);
   assert.deepEqual(task?.pipelineRun, link);
-  assert.equal(registry.workEpisodeForTask("pipeline-sdk")?.sessionId, "sdk:pipeline-1");
+  assert.equal(registry.workEpisodeForTask("pipeline-sdk")?.sessionId, launchedSessionId);
+});
+
+test("managed Pipeline dispatch refuses a stale MCP bundle before host launch", async () => {
+  const registry = new Registry();
+  registry.upsertTask(mkTask({
+    id: "pipeline-stale-mcp",
+    agent: "codex",
+    kind: "pipeline",
+    repoRoot: "/repo/stale-mcp",
+    intent: "Resume safely",
+  }));
+  const supervisor = fakeSupervisor(registry);
+  const dispatcher = new Dispatcher(registry, undefined, {
+    supervisor,
+    missionMcpDescriptor: async () => ({
+      serverName: "mission-control",
+      command: "/usr/bin/node",
+      args: ["/dist/mcp/server.mjs"],
+      env: {},
+    }),
+    verifyMissionMcpTools: async () => ({
+      ok: false,
+      reason: "the built bundle does not publish adopt_pipeline_run; rebuild with: npm run build",
+    }),
+    pipelineLaunch: async () => ({
+      ok: true,
+      launchRuntime: "agent-sdk",
+      cwd: "/repo/stale-mcp",
+      pipelineRun: {
+        provider: "ai-conductor",
+        repoRoot: "/repo/stale-mcp",
+        slug: "resume-safely",
+      },
+    }),
+  });
+
+  await dispatcher.dispatch("pipeline-stale-mcp");
+
+  assert.deepEqual(supervisor.starts, []);
+  assert.equal(registry.getTask("pipeline-stale-mcp")?.status, "failed");
+  assert.match(registry.getTask("pipeline-stale-mcp")?.error ?? "", /rebuild with: npm run build/);
 });
 
 test("SDK preflight and start failures never fall back to Terminal", async () => {
@@ -307,7 +364,16 @@ test("SDK preflight and start failures never fall back to Terminal", async () =>
       : undefined;
     const dispatcher = new Dispatcher(registry, undefined, {
       supervisor,
-      missionMcpDescriptor: async () => null,
+      missionMcpDescriptor: async () =>
+        mode === "rejected"
+          ? {
+              serverName: "mission-control",
+              command: "/usr/bin/node",
+              args: ["/dist/mcp/server.mjs"],
+              env: {},
+            }
+          : null,
+      verifyMissionMcpTools: async () => ({ ok: true }),
       pipelineLaunch: async () => ({
         ok: true,
         launchRuntime: "agent-sdk",
@@ -337,6 +403,250 @@ test("SDK preflight and start failures never fall back to Terminal", async () =>
   }
 });
 
+test("rejected managed Pipeline launch clears its preallocated nonexistent session", async () => {
+  const registry = new Registry();
+  registry.upsertTask(mkTask({
+    id: "pipeline-sdk-rejected-stale-liveness",
+    agent: "codex",
+    kind: "pipeline",
+    repoRoot: "/repo/rejected-stale-liveness",
+    intent: "Keep no phantom managed session",
+  }));
+  let prelaunchAttributionObserved = false;
+  let registrySessionMissing = false;
+  let stopped = 0;
+  let tornDown = 0;
+  const supervisor = {
+    start: async (input: Parameters<SdkSupervisor["start"]>[0]) => {
+      prelaunchAttributionObserved =
+        typeof input.sessionId === "string" &&
+        registry.getTask("pipeline-sdk-rejected-stale-liveness")?.sessionId === input.sessionId;
+      registrySessionMissing =
+        typeof input.sessionId === "string" && registry.getSession(input.sessionId) === undefined;
+      throw new Error("Codex SDK launch refused by fixture");
+    },
+    taskLiveness: () => true,
+    stop: async () => {
+      stopped += 1;
+    },
+  } as unknown as SdkSupervisor;
+  const dispatcher = new Dispatcher(registry, async () => {
+    tornDown += 1;
+  }, {
+    supervisor,
+    missionMcpDescriptor: async () => ({
+      serverName: "mission-control",
+      command: "/usr/bin/node",
+      args: ["/dist/mcp/server.mjs"],
+      env: {},
+    }),
+    verifyMissionMcpTools: async () => ({ ok: true }),
+    pipelineLaunch: async () => ({
+      ok: true,
+      launchRuntime: "agent-sdk",
+      cwd: "/repo/rejected-stale-liveness",
+      pipelineRun: {
+        provider: "ai-conductor",
+        repoRoot: "/repo/rejected-stale-liveness",
+        slug: "keep-no-phantom-managed-session",
+      },
+    }),
+  });
+
+  await dispatcher.dispatch("pipeline-sdk-rejected-stale-liveness");
+
+  const task = registry.getTask("pipeline-sdk-rejected-stale-liveness");
+  assert.deepEqual({
+    prelaunchAttributionObserved,
+    registrySessionMissing,
+    task: {
+      sessionId: task?.sessionId,
+      status: task?.status,
+    },
+    staleLiveResource: { stopped, tornDown },
+  }, {
+    prelaunchAttributionObserved: true,
+    registrySessionMissing: true,
+    task: {
+      sessionId: null,
+      status: "failed",
+    },
+    staleLiveResource: { stopped: 0, tornDown: 0 },
+  });
+});
+
+test("rejected managed Pipeline retry restores its older live session attribution", async () => {
+  const taskId = "pipeline-sdk-rejected-retry";
+  const repoRoot = "/repo/rejected-retry";
+  const olderSessionId = "sdk:pipeline-older-live";
+  const registry = new Registry();
+  registry.registerSdkSession({
+    id: olderSessionId,
+    agent: "codex",
+    name: "Older live Pipeline host",
+    cwd: repoRoot,
+    agentSessionId: "codex-older-live",
+    gitRoot: repoRoot,
+    repoRoot,
+  });
+  registry.upsertTask(mkTask({
+    id: taskId,
+    agent: "codex",
+    kind: "pipeline",
+    repoRoot,
+    intent: "Retry without losing older live attribution",
+    sessionId: olderSessionId,
+    status: "failed",
+    error: "Older managed attempt failed",
+  }));
+  let prelaunchAttributionObserved = false;
+  let stopped = 0;
+  let tornDown = 0;
+  const supervisor = {
+    start: async (input: Parameters<SdkSupervisor["start"]>[0]) => {
+      prelaunchAttributionObserved =
+        typeof input.sessionId === "string" &&
+        input.sessionId !== olderSessionId &&
+        registry.getTask(taskId)?.sessionId === input.sessionId;
+      throw new Error("Codex SDK retry launch refused by fixture");
+    },
+    taskLiveness: () => true,
+    stop: async () => {
+      stopped += 1;
+    },
+  } as unknown as SdkSupervisor;
+  const dispatcher = new Dispatcher(registry, async () => {
+    tornDown += 1;
+  }, {
+    supervisor,
+    missionMcpDescriptor: async () => ({
+      serverName: "mission-control",
+      command: "/usr/bin/node",
+      args: ["/dist/mcp/server.mjs"],
+      env: {},
+    }),
+    verifyMissionMcpTools: async () => ({ ok: true }),
+    pipelineLaunch: async () => ({
+      ok: true,
+      launchRuntime: "agent-sdk",
+      cwd: repoRoot,
+      pipelineRun: {
+        provider: "ai-conductor",
+        repoRoot,
+        slug: "rejected-retry",
+      },
+    }),
+  });
+
+  await dispatcher.dispatch(taskId);
+
+  const task = registry.getTask(taskId);
+  assert.deepEqual({
+    prelaunchAttributionObserved,
+    task: {
+      sessionId: task?.sessionId,
+      status: task?.status,
+    },
+    olderLiveResource: {
+      registered: registry.getSession(olderSessionId)?.id === olderSessionId,
+      stopped,
+      tornDown,
+    },
+  }, {
+    prelaunchAttributionObserved: true,
+    task: {
+      sessionId: olderSessionId,
+      status: "failed",
+    },
+    olderLiveResource: {
+      registered: true,
+      stopped: 0,
+      tornDown: 0,
+    },
+  });
+});
+
+test("managed Pipeline start rejection preserves concurrently settled task attribution", async () => {
+  const taskId = "pipeline-sdk-settled-during-start";
+  const repoRoot = "/repo/settled-during-start";
+  const slug = "preserve-settled-launch-attribution";
+  const prUrl = "https://github.com/example/settled-during-start/pull/91";
+  const registry = new Registry();
+  new TaskManager(registry);
+  registry.upsertTask(mkTask({
+    id: taskId,
+    agent: "codex",
+    kind: "pipeline",
+    repoRoot,
+    intent: "Preserve settled launch attribution",
+  }));
+  let preallocatedSessionId = "";
+  let markStarted!: () => void;
+  let rejectStart!: (error: Error) => void;
+  const started = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
+  const supervisor = {
+    start: (input: Parameters<SdkSupervisor["start"]>[0]) => {
+      preallocatedSessionId = input.sessionId!;
+      return new Promise<Session>((_resolve, reject) => {
+        rejectStart = reject;
+        markStarted();
+      });
+    },
+    taskLiveness: () => null,
+  } as unknown as SdkSupervisor;
+  const dispatcher = new Dispatcher(registry, undefined, {
+    supervisor,
+    missionMcpDescriptor: async () => ({
+      serverName: "mission-control",
+      command: "/usr/bin/node",
+      args: ["/dist/mcp/server.mjs"],
+      env: {},
+    }),
+    verifyMissionMcpTools: async () => ({ ok: true }),
+    pipelineLaunch: async () => ({
+      ok: true,
+      launchRuntime: "agent-sdk",
+      cwd: repoRoot,
+      pipelineRun: {
+        provider: "ai-conductor",
+        repoRoot,
+        slug,
+      },
+    }),
+  });
+
+  const dispatching = dispatcher.dispatch(taskId);
+  await started;
+  registry.upsertPipelineRun({
+    ...run(),
+    repoRoot,
+    slug,
+    worktree: `${repoRoot}/.worktrees/${slug}`,
+    halt: null,
+    group: "processed",
+    steps: [{ name: "build", state: "done" }],
+    prUrl,
+    updatedAt: 2,
+  });
+  rejectStart(new Error("Codex SDK launch rejected after task settlement"));
+  await dispatching;
+
+  const settled = registry.getTask(taskId);
+  assert.deepEqual({
+    outcome: settled?.outcome,
+    outcomeUrl: settled?.outcomeUrl,
+    sessionId: settled?.sessionId,
+    status: settled?.status,
+  }, {
+    outcome: `pipeline opened ${prUrl}`,
+    outcomeUrl: prUrl,
+    sessionId: preallocatedSessionId,
+    status: "done",
+  });
+});
+
 test("cancellation during SDK start stops the newly created Engineer host", async () => {
   const registry = new Registry();
   registry.upsertTask(
@@ -353,8 +663,10 @@ test("cancellation during SDK start stops the newly created Engineer host", asyn
     markStarted = resolve;
   });
   const stopped: string[] = [];
+  let startingSessionId: string | undefined;
   const supervisor = {
-    start: () => new Promise<Session>((resolve) => {
+    start: (input: Parameters<SdkSupervisor["start"]>[0]) => new Promise<Session>((resolve) => {
+      startingSessionId = input.sessionId;
       release = resolve;
       markStarted();
     }),
@@ -365,7 +677,13 @@ test("cancellation during SDK start stops the newly created Engineer host", asyn
   } as unknown as SdkSupervisor;
   const dispatcher = new Dispatcher(registry, undefined, {
     supervisor,
-    missionMcpDescriptor: async () => null,
+    missionMcpDescriptor: async () => ({
+      serverName: "mission-control",
+      command: "/usr/bin/node",
+      args: ["/dist/mcp/server.mjs"],
+      env: {},
+    }),
+    verifyMissionMcpTools: async () => ({ ok: true }),
     pipelineLaunch: async () => ({
       ok: true,
       launchRuntime: "agent-sdk",
@@ -384,7 +702,7 @@ test("cancellation during SDK start stops the newly created Engineer host", asyn
   const current = registry.getTask("pipeline-sdk-cancel")!;
   registry.upsertTask({ ...current, status: "cancelled", updatedAt: Date.now() });
   const session = registry.registerSdkSession({
-    id: "sdk:pipeline-cancelled",
+    id: startingSessionId!,
     agent: "claude",
     name: "cancelled",
     cwd: "/repo/cancel",
@@ -793,7 +1111,7 @@ test("a legacy pipeline child binds its durable run and the processed projection
     agent: "claude",
     name: "engineer",
     nameSource: "process",
-    cwd: building.worktree,
+    cwd: `${building.worktree}/src`,
     gitBranch: "feature/phase-six",
     pid: 42,
     tty: "ttys42",
@@ -829,6 +1147,58 @@ test("a legacy pipeline child binds its durable run and the processed projection
   assert.equal(settled?.outcomeUrl, prUrl);
   assert.equal(settled?.homeName, "Pipeline lifecycle", "cleanup ownership is retained");
   assert.equal(registry.getSession("pipeline-child")?.task?.status, "done");
+});
+
+test("strong Terminal proof refuses to replace a different unobserved reservation", () => {
+  const registry = new Registry();
+  new TaskManager(registry);
+  const target: PipelineRun = {
+    ...run(),
+    slug: "terminal-existing-run",
+    worktree: "/repo/demo/.worktrees/terminal-existing-run",
+    halt: null,
+    group: "building",
+    steps: [{ name: "build", state: "in_progress" }],
+  };
+  const reservation = {
+    provider: target.provider,
+    repoRoot: target.repoRoot,
+    slug: "terminal-unobserved-reservation",
+  };
+  registry.initializePipelineRuns([target]);
+  registry.upsertTask(mkTask({
+    id: "pipeline-terminal-adoption",
+    kind: "pipeline",
+    repoRoot: target.repoRoot,
+    status: "running",
+    homeName: "Terminal adoption",
+    pipelineRun: reservation,
+  }));
+
+  registry.applyDiscovery([{
+    syntheticId: "pipeline-terminal-adopter",
+    agent: "claude",
+    name: "engineer",
+    nameSource: "process",
+    cwd: `${target.worktree}/src`,
+    gitBranch: "feature/terminal-existing-run",
+    pid: 43,
+    tty: "ttys43",
+    terminals: [mkMuxHandle({
+      session: "pipeline-terminal-home",
+      sessionName: "Terminal adoption",
+      paneId: "%43",
+    })],
+    startedAt: 1,
+  } as DiscoveredSession]);
+
+  assert.deepEqual({
+    pipelineRun: registry.getTask("pipeline-terminal-adoption")?.pipelineRun,
+    status: registry.getTask("pipeline-terminal-adoption")?.status,
+  }, {
+    pipelineRun: reservation,
+    status: "running",
+  });
 });
 
 test("a processed projection settles a prebound task without child-session discovery", () => {
@@ -873,6 +1243,238 @@ test("a processed projection settles a prebound task without child-session disco
   );
   assert.equal(registry.getTask("pipeline-prebound")?.sessionId, null);
   assert.equal(registry.getTask("pipeline-prebound")?.homeName, "Prebound pipeline");
+});
+
+function managedAdoptionFixture() {
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+  const target: PipelineRun = {
+    ...run(),
+    slug: "existing-run",
+    worktree: "/repo/demo/.worktrees/existing-run",
+    halt: null,
+    group: "building",
+    steps: [{ name: "build", state: "in_progress" }],
+    lastStep: "build",
+  };
+  const host = registry.registerSdkSession({
+    id: "sdk:pipeline-adoption",
+    agent: "codex",
+    name: "Pipeline adoption host",
+    cwd: target.repoRoot,
+    agentSessionId: "codex-pipeline-adoption",
+    gitBranch: null,
+    gitRoot: target.repoRoot,
+    repoRoot: target.repoRoot,
+  });
+  const reservation = {
+    provider: target.provider,
+    repoRoot: target.repoRoot,
+    slug: "prompt-derived-reservation",
+  };
+  registry.upsertTask(mkTask({
+    id: "pipeline-adoption",
+    agent: "codex",
+    kind: "pipeline",
+    repoRoot: target.repoRoot,
+    status: "running",
+    sessionId: host.id,
+    pipelineRun: reservation,
+  }));
+  return {
+    registry,
+    tasks,
+    target,
+    targetLink: {
+      provider: target.provider,
+      repoRoot: target.repoRoot,
+      slug: target.slug,
+    },
+    host,
+    reservation,
+    task: registry.getTask("pipeline-adoption")!,
+  };
+}
+
+test("a managed Pipeline host adopts an observed run without completing the task", () => {
+  const { registry, tasks, target, targetLink, host, task } = managedAdoptionFixture();
+  registry.initializePipelineRuns([target]);
+
+  const adopted = tasks.adoptPipelineRun(task, targetLink, {
+    kind: "managed",
+    session: host,
+  });
+
+  assert.equal(adopted.ok, true);
+  if (!adopted.ok) return;
+  assert.equal(adopted.replayed, false);
+  assert.deepEqual(adopted.task.pipelineRun, {
+    provider: target.provider,
+    repoRoot: target.repoRoot,
+    slug: target.slug,
+  });
+  assert.equal(adopted.task.status, "running", "adoption is not completion authority");
+  assert.equal(registry.getSession(host.id)?.pipeline, null, "the interactive host stays messageable");
+  assert.deepEqual(registry.getSession(host.id)?.task?.pipelineRun, adopted.task.pipelineRun);
+});
+
+test("managed Pipeline adoption replays without changing the durable binding", () => {
+  const { registry, tasks, target, targetLink, host, task } = managedAdoptionFixture();
+  registry.initializePipelineRuns([target]);
+  const first = tasks.adoptPipelineRun(task, targetLink, { kind: "managed", session: host });
+  assert.equal(first.ok, true);
+  const afterFirst = registry.getTask(task.id)!;
+
+  const replayed = tasks.adoptPipelineRun(afterFirst, targetLink, {
+    kind: "managed",
+    session: registry.getSession(host.id)!,
+  });
+  assert.deepEqual(replayed.ok ? replayed.replayed : null, true);
+  assert.deepEqual(registry.getTask(task.id)?.pipelineRun, targetLink);
+});
+
+test("only the processed provider projection settles an adopted Pipeline task", () => {
+  const { registry, tasks, target, targetLink, host, task } = managedAdoptionFixture();
+  registry.initializePipelineRuns([target]);
+  const adopted = tasks.adoptPipelineRun(task, targetLink, { kind: "managed", session: host });
+  assert.equal(adopted.ok, true);
+  assert.equal(registry.getTask(task.id)?.status, "running");
+
+  registry.upsertPipelineRun({
+    ...target,
+    group: "processed",
+    steps: [{ name: "build", state: "done" }],
+    updatedAt: 2,
+  });
+  assert.equal(registry.getTask(task.id)?.status, "done");
+});
+
+test("adopting an already-processed provider projection settles through the ordinary path", () => {
+  const { registry, tasks, target, targetLink, host, task } = managedAdoptionFixture();
+  registry.initializePipelineRuns([{
+    ...target,
+    group: "processed",
+    steps: [{ name: "build", state: "done" }],
+    prUrl: "https://github.com/example/demo/pull/77",
+  }]);
+
+  const adopted = tasks.adoptPipelineRun(task, targetLink, { kind: "managed", session: host });
+
+  assert.equal(adopted.ok, true);
+  assert.equal(registry.getTask(task.id)?.status, "done");
+  assert.equal(registry.getTask(task.id)?.outcomeUrl, "https://github.com/example/demo/pull/77");
+});
+
+test("managed Pipeline adoption refuses an unobserved target", () => {
+  const { registry, tasks, targetLink, host, task, reservation } = managedAdoptionFixture();
+  const result = tasks.adoptPipelineRun(task, targetLink, { kind: "managed", session: host });
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.equal(result.status, 409);
+  assert.deepEqual(registry.getTask(task.id)?.pipelineRun, reservation);
+});
+
+test("managed Pipeline adoption refuses replacing an observed reservation", () => {
+  const { registry, tasks, target, targetLink, host, task, reservation } = managedAdoptionFixture();
+  registry.initializePipelineRuns([
+    target,
+    { ...target, slug: reservation.slug, worktree: `/repo/demo/.worktrees/${reservation.slug}` },
+  ]);
+  const result = tasks.adoptPipelineRun(task, targetLink, { kind: "managed", session: host });
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.match(result.error, /already observed/);
+  assert.deepEqual(registry.getTask(task.id)?.pipelineRun, reservation);
+});
+
+test("managed Pipeline adoption refuses a run owned by another active task", () => {
+  const { registry, tasks, target, targetLink, host, task, reservation } = managedAdoptionFixture();
+  registry.initializePipelineRuns([target]);
+  registry.upsertTask(mkTask({
+    id: "competing-owner",
+    kind: "pipeline",
+    repoRoot: target.repoRoot,
+    status: "running",
+    pipelineRun: targetLink,
+  }));
+  const result = tasks.adoptPipelineRun(task, targetLink, { kind: "managed", session: host });
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.match(result.error, /competing-owner/);
+  assert.deepEqual(registry.getTask(task.id)?.pipelineRun, reservation);
+});
+
+test("managed Pipeline adoption refuses a different live SDK host", () => {
+  const { registry, tasks, target, targetLink, task, reservation } = managedAdoptionFixture();
+  registry.initializePipelineRuns([target]);
+  const wrongHost = registry.registerSdkSession({
+    id: "sdk:wrong-host",
+    agent: "codex",
+    name: "wrong host",
+    cwd: target.repoRoot,
+    agentSessionId: "codex-wrong-host",
+    gitBranch: null,
+    gitRoot: target.repoRoot,
+    repoRoot: target.repoRoot,
+  });
+  const result = tasks.adoptPipelineRun(task, targetLink, {
+    kind: "managed",
+    session: wrongHost,
+  });
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.equal(result.status, 403);
+  assert.deepEqual(registry.getTask(task.id)?.pipelineRun, reservation);
+});
+
+test("managed Pipeline adoption refuses stale, worker, non-Pipeline, and mismatched run identity", () => {
+  for (const mode of ["exited", "worker", "non-pipeline", "provider", "repository"] as const) {
+    const { registry, tasks, target, targetLink, host, task, reservation } = managedAdoptionFixture();
+    registry.initializePipelineRuns([target]);
+    let proof = host;
+    let resolvedTask = task;
+    let candidate = targetLink;
+
+    if (mode === "exited") {
+      registry.applyDriverEvent(host.id, { kind: "exited", reason: "done", resumable: false });
+      proof = registry.getSession(host.id)!;
+    } else if (mode === "worker") {
+      registry.applyDiscovery([{
+        syntheticId: "provider-worker-proof",
+        agent: "claude",
+        name: "provider worker",
+        nameSource: "process",
+        cwd: target.worktree,
+        gitBranch: "feature/provider-worker",
+        pid: 700,
+        tty: "ttys700",
+        terminals: [mkMuxHandle({
+          session: "provider-worker-home",
+          sessionName: "provider worker",
+          paneId: "%700",
+        })],
+        startedAt: 1,
+      } as DiscoveredSession]);
+      proof = registry.getSession("provider-worker-proof")!;
+      registry.upsertTask({
+        ...registry.getTask(task.id)!,
+        sessionId: proof.id,
+        updatedAt: Date.now(),
+      });
+      resolvedTask = registry.getTask(task.id)!;
+    } else if (mode === "non-pipeline") {
+      registry.upsertTask({ ...task, kind: "chat", updatedAt: Date.now() });
+      resolvedTask = registry.getTask(task.id)!;
+    } else if (mode === "provider") {
+      candidate = { ...targetLink, provider: "unsupported" as typeof targetLink.provider };
+    } else {
+      candidate = { ...targetLink, repoRoot: "/repo/another" };
+    }
+
+    const result = tasks.adoptPipelineRun(resolvedTask, candidate, {
+      kind: "managed",
+      session: proof,
+    });
+
+    assert.equal(result.ok, false, mode);
+    assert.deepEqual(registry.getTask(task.id)?.pipelineRun, reservation, mode);
+  }
 });
 
 test("a mismatched discovered child cannot reassign a prebound pipeline task", () => {

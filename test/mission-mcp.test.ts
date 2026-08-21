@@ -37,6 +37,7 @@ const {
   codexMissionMcpArgs,
   missionMcpConfigJson,
   missionMcpDescriptor,
+  missionMcpDescriptorForPipelineTask,
   missionMcpPaths,
   missionMcpProductIssueClient,
   missionMcpToolName,
@@ -44,6 +45,9 @@ const {
   verifyMissionMcpToolsForRunningSession,
 } = await import("../src/server/mission-mcp.ts");
 const { PRODUCT_ISSUE_CLIENT_ENV } = await import("../src/shared/product-issues.ts");
+const { PIPELINE_SESSION_ID_ENV, PIPELINE_TASK_ID_ENV } = await import(
+  "../src/shared/pipeline.ts"
+);
 const { mcpServerPath } = await import("../src/server/config.ts");
 const { askChannelArgs, ASK_TOOL } = await import("../src/server/ask-channel.ts");
 const { prepareCodexLaunch } = await import("../src/server/harness/codex/launch.ts");
@@ -90,6 +94,29 @@ test("the descriptor points at the ONE resolved server path with an absolute run
   // The agent launches this as an EXTERNAL process, so a bare `node` off the spawned
   // shell's PATH is not good enough.
   assert.ok(d.command.startsWith("/"), `runtime should be absolute, got ${d.command}`);
+});
+
+test("Pipeline task scoping clones the descriptor and preserves the shared registration", () => {
+  const descriptor = {
+    serverName: "mission-control",
+    command: "/usr/bin/node",
+    args: ["/dist/mcp/server.mjs"],
+    env: { MISSION_HOME: "/state" },
+  };
+  const scoped = missionMcpDescriptorForPipelineTask(
+    descriptor,
+    "pipeline-task",
+    "sdk:pipeline-host",
+  );
+  assert.notEqual(scoped, descriptor);
+  assert.notEqual(scoped?.args, descriptor.args);
+  assert.notEqual(scoped?.env, descriptor.env);
+  assert.deepEqual(scoped?.env, {
+    MISSION_HOME: "/state",
+    [PIPELINE_TASK_ID_ENV]: "pipeline-task",
+    [PIPELINE_SESSION_ID_ENV]: "sdk:pipeline-host",
+  });
+  assert.deepEqual(descriptor.env, { MISSION_HOME: "/state" });
 });
 
 test("the launch descriptor preserves Electron client context across the Node child boundary", () => {

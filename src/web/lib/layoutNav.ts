@@ -8,8 +8,6 @@ export interface MoveOptions {
   /** Every visible session id, in display order. */
   ids: readonly string[];
   currentId: string | null;
-  /** Live column count of the card grid (grid mode only). */
-  cols: number;
   /** Ids per board column, in column order (board mode only). Empty columns included. */
   columns: readonly (readonly string[])[];
 }
@@ -17,7 +15,7 @@ export interface MoveOptions {
 /**
  * Where the arrow keys land, given the layout on screen.
  *
- * Pure, and the one place the three layouts' navigation differs - so a strategy can
+ * Pure, and the one place the two layouts' navigation differs - so a strategy can
  * be reasoned about (and tested) without mounting a dashboard. Returns the id to
  * select, or null to stay put: every layout treats "no session that way" as a
  * no-op rather than wrapping, so holding an arrow parks you at the edge instead of
@@ -27,33 +25,17 @@ export function moveSelection(opts: MoveOptions): string | null {
   const { mode, key, ids, currentId } = opts;
   if (ids.length === 0) return null;
   // Nothing selected yet: the first arrow press picks up the first session, whichever
-  // direction it was - matching the grid's long-standing behaviour.
+  // direction it was.
   if (currentId === null || !ids.includes(currentId)) return ids[0] ?? null;
 
   if (mode === "board") return moveOnBoard(opts);
-  if (mode === "console") {
-    // The console rail is a single vertical column: Up/Down walk it a row at a time,
-    // and horizontal arrows have no spatial destination. This is the RAIL cursor's
-    // answer only - when the operator has Tabbed focus into the open detail, App
-    // routes vertical arrows to scroll that reader BEFORE reaching here, so this stays
-    // the pure "where does the rail selection land" question the two focus zones share.
-    if (key === "ArrowLeft" || key === "ArrowRight") return null;
-    const idx = ids.indexOf(currentId);
-    return ids[key === "ArrowDown" ? idx + 1 : idx - 1] ?? null;
-  }
-
-  // grid: walk the flat list, a row at a time for vertical moves.
+  // The console rail is a single vertical column: Up/Down walk it a row at a time,
+  // and horizontal arrows have no spatial destination. This is the rail cursor's
+  // answer only. App routes vertical arrows to scroll an active detail before reaching
+  // here, so this stays the pure "where does the rail selection land" question.
+  if (key === "ArrowLeft" || key === "ArrowRight") return null;
   const idx = ids.indexOf(currentId);
-  const cols = Math.max(1, opts.cols);
-  const next =
-    key === "ArrowRight"
-      ? idx + 1
-      : key === "ArrowLeft"
-        ? idx - 1
-        : key === "ArrowDown"
-          ? idx + cols
-          : idx - cols;
-  return ids[next] ?? null;
+  return ids[key === "ArrowDown" ? idx + 1 : idx - 1] ?? null;
 }
 
 /**

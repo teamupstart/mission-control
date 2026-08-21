@@ -49,8 +49,7 @@ function props(sessions: Session[]): SessionViewProps {
     onSelect: noop,
     onCursorTo: noop,
     onDeselect: noop,
-    expandedId: null,
-    onToggleExpand: noop,
+    detailId: null,
     onOpenReviews: noop,
     onOpenDiff: noop,
     onOpenFiles: noop,
@@ -151,7 +150,7 @@ test("a column rendered outside a board offers no width control", () => {
 test("the drilled-in rail offers no width control - it cannot move", () => {
   const session = mkSession();
   const html = renderToStaticMarkup(
-    createElement(BoardView, { ...props([session]), expandedId: session.id }),
+    createElement(BoardView, { ...props([session]), detailId: session.id }),
   );
   const rail = /<section class="board-col[^"]*is-rail[^"]*">.*?<\/header>/s.exec(html)?.[0] ?? "";
   assert.ok(rail, "a drill-in must produce a rail column");

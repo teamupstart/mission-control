@@ -26,9 +26,9 @@ async function shoot(page: Page, target: Locator, name: string): Promise<void> {
 }
 
 /**
- * The reasoning-effort chip on an Agent SDK Claude card.
+ * The reasoning-effort chip on an Agent SDK Claude Console detail.
  *
- * The regression it pins: those cards showed no effort at all. The daemon read Claude's
+ * The regression it pins: those sessions showed no effort at all. The daemon read Claude's
  * effort from ONE place - the `<local-command-stdout>` echo `/effort` writes into the
  * transcript - and an embedded session never types a slash command. Its level is a launch
  * option and a driver call, so nothing echoed, `meta.thinkingLevel` stayed null, and the
@@ -41,7 +41,7 @@ async function shoot(page: Page, target: Locator, name: string): Promise<void> {
  * driver, the driver's next turn records the new level, and the daemon reads it back.
  *
  * Only this layer can see that. The transcript unit tests prove the parse, the HTTP tests
- * prove the route, and neither of them can say whether a person looking at the card can
+ * prove the route, and neither of them can say whether a person looking at the detail can
  * see what their session is running at.
  */
 
@@ -63,24 +63,29 @@ async function dispatchClaude(page: Page, daemon: DaemonHandle, effort: string):
   await expect(dialog).toBeHidden();
 }
 
-test("an Agent SDK Claude card shows the effort it launched at, and can change it", async ({
+test("an Agent SDK Claude Console detail shows the effort it launched at, and can change it", async ({
   dashboard,
   daemon,
 }) => {
   await dispatchClaude(dashboard, daemon, "high");
 
-  const card = dashboard.locator("article.card").first();
-  await expect(card).toContainText("Agent SDK");
+  await dashboard
+    .getByRole("navigation", { name: "Sessions" })
+    .locator("button.rail-row")
+    .first()
+    .click();
+  const detail = dashboard.locator(".console-detail");
+  await expect(detail).toContainText("Agent SDK");
 
-  // THE REGRESSION. `high` is what the dispatch asked for, and the card says so - off the
+  // THE REGRESSION. `high` is what the dispatch asked for, and the detail says so - off the
   // turn record the driver wrote, with no slash command anywhere in the conversation.
-  const chip = card.getByRole("button", { name: /^Reasoning effort:/ });
+  const chip = detail.getByRole("button", { name: /^Reasoning effort:/ });
   await expect(chip).toHaveAccessibleName(
     "Reasoning effort: high. Change effort for this session",
     { timeout: 30_000 },
   );
   await expect(chip).toContainText("high");
-  await shoot(dashboard, card, "effort-chip-on-agent-sdk-card");
+  await shoot(dashboard, detail, "effort-chip-on-agent-sdk-detail");
 
   // Still a control, not a label: the levels this model offers are all reachable, because
   // the driver applies one atomically rather than walking a TUI picker one step at a time.
@@ -100,7 +105,7 @@ test("an Agent SDK Claude card shows the effort it launched at, and can change i
 
   await menu.getByRole("menuitemradio", { name: /^low / }).click();
   await expect(menu).toBeHidden();
-  // Claude's driver applies a level to the conversation it is already running, so the card
+  // Claude's driver applies a level to the conversation it is already running, so the detail
   // reports it immediately - no "next turn" pending state, which is Codex's shape.
   await expect(chip).toHaveAccessibleName(
     "Reasoning effort: low. Change effort for this session",
@@ -111,13 +116,11 @@ test("an Agent SDK Claude card shows the effort it launched at, and can change i
   // And it really reached the process, rather than being a browser-local optimism the next
   // metadata read would wipe: the next turn's record carries `low`, and that record is what
   // the daemon reads the chip back off.
-  await expect(card.getByRole("button", { name: "Expand conversation" })).toBeVisible();
-  await card.getByRole("button", { name: "Expand conversation" }).click();
-  const composer = card.getByPlaceholder(/^Reply to this session/);
+  const composer = detail.getByPlaceholder(/^Reply to this session/);
   await expect(composer).toBeEnabled();
   await composer.fill("run one more turn");
   await composer.press("Enter");
-  await expect(card.getByText("Mock reply to: run one more turn", { exact: true })).toBeVisible({
+  await expect(detail.getByText("Mock reply to: run one more turn", { exact: true })).toBeVisible({
     timeout: 40_000,
   });
   await expect(chip).toHaveAccessibleName(

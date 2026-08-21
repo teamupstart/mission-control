@@ -59,7 +59,7 @@ function observed(line: string): void {
  * Only the model is fake, per this suite's standing rule: the dispatch cuts a real worktree
  * and spawns a real (faked) agent binary, so the states asserted here are the real ones.
  */
-test("a dispatched task is visible while it provisions, then hands over to its session card", async ({
+test("a dispatched task is visible while it provisions, then hands over to its session row", async ({
   dashboard,
   daemon,
 }) => {
@@ -126,14 +126,16 @@ test("a dispatched task is visible while it provisions, then hands over to its s
   await shoot(dashboard, "starting-page");
   await shoot(dashboard, "starting-strip", strip);
 
-  // The handover, which is the half that keeps this from becoming a card that never leaves:
-  // the session arrives, the real card takes the task, and the placeholder withdraws. The
+  // The handover, which is the half that keeps this from becoming a row that never leaves:
+  // the session arrives, its fleet row takes the task, and the placeholder withdraws. The
   // strip removes itself from the page entirely once its last row is gone.
-  const card = dashboard.locator(".card", { hasText: title });
-  await expect(card).toBeVisible({ timeout: 60_000 });
+  const sessionRow = dashboard
+    .getByRole("navigation", { name: "Sessions" })
+    .locator("button.rail-row", { hasText: title });
+  await expect(sessionRow).toBeVisible({ timeout: 60_000 });
   await expect(strip).toBeHidden();
   observed(
-    "the session bound: the real card took the task and the Starting strip removed itself",
+    "the session bound: its fleet row took the task and the Starting strip removed itself",
   );
   await shoot(dashboard, "handover-page");
 });

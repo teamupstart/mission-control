@@ -162,8 +162,11 @@ test("an edited checkout postpones automatic cleanup; an untouched one is reclai
   // The agent goes away without recording an outcome, which is the ordinary way a task ends
   // up holding a checkout nobody has decided about. Its tree is KEPT - that is the existing
   // contract, and retention is what eventually bounds it.
-  const card = dashboard.locator("article.card", { hasText: dispatched.title });
-  await card.getByRole("button", { name: /Kill$/ }).click();
+  await dashboard
+    .getByRole("navigation", { name: "Sessions" })
+    .locator("button.rail-row", { hasText: dispatched.title })
+    .click();
+  await dashboard.locator(".console-detail").getByRole("button", { name: /kill$/i }).click();
   const kill = dashboard.getByRole("dialog", { name: "Kill session" });
   await expect(kill).toContainText("automatically after 30 days");
   await kill.getByRole("button", { name: "Kill" }).click();

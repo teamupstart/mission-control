@@ -222,7 +222,7 @@ export function ReportPanel({
   const [confirmCancel, setConfirmCancel] = useState<string | null>(null);
 
   // Escape is handled by the Overlay this panel renders into, NOT by App - App
-  // suppresses the grid's global keys while any overlay is up, so the overlay layer
+  // suppresses the app's global session keys while any overlay is up, so the overlay layer
   // has to close itself. That invariant is unchanged; it just lives in one place now.
 
   const { needsYou, working, idle } = useMemo(() => {

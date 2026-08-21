@@ -716,8 +716,8 @@ every run for no added signal.
 
 `e2e/.artifacts/multiline-textarea/` contains three captures showing five explicit input
 lines in every multiline surface covered by the regression: the dispatch brief, the
-collapsed-card composer, and the compact terminal-style composer. The browser assertions
-also prove a sixth line uses an internal scrollbar instead of growing the surrounding card
+Console reply composer, and the compact terminal-style composer. The browser assertions
+also prove a sixth line uses an internal scrollbar instead of growing the surrounding pane
 without a bound.
 
 Regenerate them with:
@@ -819,8 +819,8 @@ OBSERVED clicking the Shipped stage opened the Shipped drawer in place, without 
 OBSERVED the drawer's "Ship log →" escalation navigated to #/shipped
 OBSERVED the strip is fleet-only: it did not follow the navigation off the fleet page
   ✓  1 [chromium] › e2e/specs/line-strip.spec.ts:85:1 › the Line renders every stage, tracks the fleet live, and its stages reach their targets (1.4s)
-OBSERVED the strip renders once, outside <header class="topbar">, so --topbar-h and .card.expanded are untouched
-  ✓  2 [chromium] › e2e/specs/line-strip.spec.ts:168:1 › the strip sits outside the topbar, so it cannot shorten an expanded card (992ms)
+OBSERVED the strip renders once, outside <header class="topbar">, so the topbar and fleet body keep separate height budgets
+  ✓  2 [chromium] › e2e/specs/line-strip.spec.ts:168:1 › the strip sits outside the topbar, preserving separate height budgets (992ms)
 
   2 passed (2.9s)
 ```
@@ -917,7 +917,7 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
 
 ### The console detail's tab row, carrying the toolbar
 
-`e2e/.artifacts/console-tabs-toolbar/` carries three frames from
+`e2e/.artifacts/console-tabs-toolbar/` carries two frames from
 `specs/console-tabs-toolbar.spec.ts`, behind the same `MC_E2E_EVIDENCE` flag. The change is a
 band that stopped existing and two controls that moved into a row which already had room, so
 what a picture answers is whether the row still reads as a tab strip.
@@ -928,17 +928,12 @@ bands - head, `PATH`/`BRANCH`, tab strip - with **Terminal view**, **Terminal** 
 directly under the row. The worktree band that used to sit between them is gone, and the path
 appears exactly once, in the row above.
 
-`02-cards-keep-their-own.png` is the regression that a naive move would have shipped silently:
-the same controls on an expanded Cards card, in the pane-owned band, worktree caption and full
-path included - that host has nowhere better to put them, so it keeps them. The frame is taken
-in the run that also presses <kbd>t</kbd> there and gets the terminal chooser.
-
 `03-narrow-one-row.png` is the give-way ladder at a 1160px window, and it is the frame the
 ladder exists for: one line, every tab still carrying its own word, the three toolbar controls
 drawn as glyphs that still answer to a screen reader. That it is one row is checkable in the
 DOM as a height; that it still reads as a toolbar is legible only here.
 
-Regenerate all three with:
+Regenerate both with:
 
 ```sh
 env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
@@ -1130,15 +1125,14 @@ Attach the generated frames to the pull request; they are never committed.
 
 ### The bind chip, back after a finished run
 
-`e2e/.artifacts/workflow-bind-chip-returns/` carries four frames from
+`e2e/.artifacts/workflow-bind-chip-returns/` carries three frames from
 `specs/workflow-bind-chip-returns.spec.ts`. They exist because the fix is a control *appearing*,
 and the state it appears in used to be a dead end: a session whose review had completed hid the
 `＋ workflow` chip forever, so the outcome chip stood there with no next move beside it.
 
 `console-detail-approved-and-bind-chip.png` is the headline - a console detail header reading
 `⌁ Approved` and `＋ workflow` side by side, the history and the next move at once.
-`card-approved-and-bind-chip.png` is the same pairing on a Cards card, at the narrow width where
-the head has to wrap to fit both. `bind-dialog-from-finished-run.png` and
+`bind-dialog-from-finished-run.png` and
 `console-detail-bind-dialog.png` are where each chip leads: the bind dialog pinned to that
 session, with the bound version chosen and `Submit bound version` enabled - the resubmit the
 daemon accepts while the original binding is still active.

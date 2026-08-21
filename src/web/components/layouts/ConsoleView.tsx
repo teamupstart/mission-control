@@ -16,13 +16,10 @@ import { ensembleSummaryFor, type SessionViewProps } from "./types.ts";
  * Split-pane master/detail: a dense rail of every session, one always-open detail
  * beside it.
  *
- * The detail is a bespoke, tabbed reading of the session (see ConsoleDetail) - NOT the
- * grid's card dropped into a column. It's built from the same leaf pieces the card is
- * (transcript, work queue, action bar, session-bits), arranged for a pane
- * that has room the card never does: the conversation is permanent, and the sections
- * that share a card's height in the grid get a tab each here.
+ * The detail is a bespoke, tabbed reading of the session (see ConsoleDetail), built from
+ * the shared session leaf pieces (transcript, work queue, action bar, session-bits).
  *
- * Selection means something stricter here than in the grid: the selected session IS the
+ * Selection means the selected session IS the
  * mounted detail, and only a mounted ActionBar registers the handle the keyboard
  * shortcuts drive. Nothing selected means nothing to send into, so the pane says so
  * rather than silently swallowing a keystroke.

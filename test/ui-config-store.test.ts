@@ -18,7 +18,7 @@ const home = mkdtempSync(join(tmpdir(), "mission-ui-cfg-"));
 // Set before importing anything that resolves the state dir.
 process.env.HARNESS_HOME = join(home, "state");
 
-const { openDb, setAppConfig } = await import("../src/server/db.ts");
+const { getAppConfig, openDb, setAppConfig } = await import("../src/server/db.ts");
 const { getUiConfig, setUiConfig, uiConfigView } = await import("../src/server/ui-config.ts");
 const { UI_CONFIG_DEFAULTS } = await import("../src/shared/protocol.ts");
 
@@ -30,7 +30,7 @@ beforeEach(() => {
 
 test("an unset key reads as the shipped defaults", () => {
   const config = getUiConfig();
-  assert.equal(config.layout, "grid");
+  assert.equal(config.layout, "console");
   assert.equal(config.conversationView, "terminal");
   assert.equal(config.richText, true);
   assert.deepEqual(config.alerts, { notifications: false, sound: true });
@@ -72,6 +72,20 @@ test("a key from a retired preference is dropped rather than carried forever", (
   assert.ok(!("usageBarCollapsed" in config));
 });
 
+test("a stored Cards preference is rewritten to Console", () => {
+  setAppConfig("ui", { layout: "grid", richText: false });
+  assert.equal(getUiConfig().layout, "console");
+  assert.deepEqual(getAppConfig("ui"), {
+    ...UI_CONFIG_DEFAULTS,
+    richText: false,
+  });
+});
+
+test("new Cards preferences are rejected", () => {
+  assert.throws(() => setUiConfig({ layout: "grid" } as never));
+  assert.equal(getUiConfig().layout, "console");
+});
+
 test("the defaults the schema applies are the ones the web paints from", () => {
   // The web reads UI_CONFIG_DEFAULTS synchronously, before any fetch, to avoid pulling
   // zod into its bundle. If these drifted, a cold cache would paint one thing and the
@@ -87,8 +101,8 @@ test("configured is false until something is saved, and true once it is", () => 
 
 test("saving the defaults on purpose still counts as configured", () => {
   // The trap a value-compare would fall into: an operator who deliberately chose the
-  // grid has configured this, and adoption must not fire over the top of that choice.
-  setUiConfig({ layout: "grid" });
+  // Console has configured this, and adoption must not fire over the top of that choice.
+  setUiConfig({ layout: "console" });
   assert.equal(uiConfigView().configured, true);
   assert.deepEqual(uiConfigView().config, UI_CONFIG_DEFAULTS);
 });

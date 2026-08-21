@@ -29,8 +29,7 @@ function props(sessions: Session[]): SessionViewProps {
     onSelect: () => {},
     onCursorTo: () => {},
     onDeselect: () => {},
-    expandedId: null,
-    onToggleExpand: () => {},
+    detailId: null,
     onOpenReviews: () => {},
     onOpenDiff: () => {},
     onOpenFiles: () => {},
@@ -105,7 +104,7 @@ test("the keyboard-selected tile is marked without opening its console detail", 
 test("the tile shows what the session is doing right now", () => {
   const html = render(mkSession());
   assert.match(html, /tile-activity/);
-  assert.match(html, /editing SessionCard\.tsx/);
+  assert.match(html, /editing ConsoleDetail\.tsx/);
 });
 
 test("a bound workflow starts as an in-place Board disclosure, not a navigation flag", () => {

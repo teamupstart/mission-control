@@ -129,7 +129,7 @@ test("the jump renders for every file, and says why when it cannot act", () => {
   assert.doesNotMatch(viewer, /className="diff-open-file"[\s\S]{0,200}\sdisabled\b/);
 });
 
-test("both diff hosts route the jump through the one open-a-file path", () => {
+test("the shared diff reader routes the jump through the one open-a-file path", () => {
   const detail = readFileSync(
     fileURLToPath(new URL("../src/web/components/layouts/ConsoleDetail.tsx", import.meta.url)),
     "utf8",
@@ -141,8 +141,7 @@ test("both diff hosts route the jump through the one open-a-file path", () => {
 
   // Console and Board: the shared destination, without the prose parsing.
   assert.match(detail, /onOpenInFiles=\{\(path\) => view\.onOpenFilePath\(session\.id, path\)\}/);
-  // Cards: no Files tab, so the diff overlay stands down before the Files window opens.
-  assert.match(app, /closeDiff\(\);\s*\n\s*openSessionPath\(sessionId, path\);/);
+  assert.doesNotMatch(app, /closeDiff|setDiffSessionId/);
   // One destination, two entry points: prose hrefs still funnel through the exact-path
   // opener rather than duplicating the layout branching.
   assert.match(app, /openSessionPath\(sessionId, target\.path\);/);

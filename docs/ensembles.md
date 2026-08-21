@@ -27,10 +27,10 @@ invalidates the review, so the launch always confirms exactly what you reviewed.
 response and a retry return the same run, never a second fleet. Every candidate wears a distinct
 **E** mark (separate from a workflow's **W**) that opens the run and says what the member's own
 standing is - `E 3/5 · working`, or an attention-toned **needs an answer** the moment that
-candidate is waiting on you. Siblings are drawn *together*: Cards sorts them adjacent, and the
-Board and the Console rail group them under a header carrying the run's title, its stage word,
+candidate is waiting on you. Siblings are drawn *together*: the Board and the Console rail
+group them under a header carrying the run's title, its stage word,
 one dot per member of the roster and an **N needs you** rollup - see
-[Layout](ui.md#layout-cards-console-or-board). The **Ensembles** tab beside Workflows, Personas and
+[Layout](ui.md#layout-console-or-board-in-settings). The **Ensembles** tab beside Workflows, Personas and
 Runs is the monitoring, evidence, decision, recovery and history surface: it wears a badge
 counting the runs the daemon marks as needing attention, and lists runs attention-first from the
 one live SSE stream with their shared progress dots and `submitted/roster` counts (plus the
@@ -249,7 +249,7 @@ rationale is in [`docs/plans/best-of-n-swarm-dispatch/plan.md`](plans/best-of-n-
    **Launch N agents** confirms exactly what you reviewed. The launch is idempotent on a stable
    request id: a lost response and a retry return the same run, never a second fleet.
 3. The daemon pins **one full base commit** and launches 2-5 ordinary member tasks from it - every
-   candidate starts byte-identical. Each is a normal session in Cards, Console and Board, marked
+   candidate starts byte-identical. Each is a normal session in Console and Board, marked
    with an **E** chip that opens the run. Its task title starts with **Candidate N -** so sibling
    tasks remain identifiable wherever titles are truncated or scanned in a list.
 4. Each candidate implements and tests alone. Its prompt forbids pushing, opening a PR, or running
@@ -397,7 +397,7 @@ their existing routes; the lane only composes them in the run context.
 
 ## Layout signals: where a run shows up in the fleet
 
-A member is an ordinary session, so it appears in Cards, Console and Board like any other. What
+A member is an ordinary session, so it appears in Console and Board like any other. What
 the ensemble adds is drawn from two facts and nothing else - the run's live `EnsembleSummary` and
 the member link that rides on that session's task - so no surface re-derives a state the daemon
 already decided.
@@ -425,9 +425,8 @@ rail** (and the Board's drill-in, which is the same rail) carries title, stage w
 compact attention count, and **deliberately drops the strategy label**; it is the one header field
 a reader can also get from any member row's own chip, and at the rail's 260px floor adding it cuts
 the run's own name to a handful of characters ("Stabilize parser rollout" becomes "Stabi…").
-The strategy stays in the header's hover copy. **Cards** sorts siblings together without a frame,
-because its arrow keys are geometric against live CSS grid tracks. A cluster
-**never crosses a Board tone column**: a member waiting on your
+The strategy stays in the header's hover copy. A cluster **never crosses a Board tone column**:
+a member waiting on your
 answer sits in *needs you* with the run's header repeated there, and its working siblings stay in
 *working*. Moving them all would dilute the column whose whole job is "these are the things to act
 on"; the repeated header is what ties the halves back together.

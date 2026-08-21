@@ -21,6 +21,9 @@ const FRAMEWORK_RELATIVE_PATH = join(
 );
 const FRAMEWORK_LINK = "Electron Framework";
 const FRAMEWORK_TARGET = "Versions/Current/Electron Framework";
+const CURRENT_VERSION_LINK = join("Versions", "Current");
+const CURRENT_VERSION_TARGET = "A";
+const VERSIONED_FRAMEWORK_TARGET = join("Versions", CURRENT_VERSION_TARGET, FRAMEWORK_LINK);
 
 /**
  * The one fault, worded once.
@@ -43,12 +46,13 @@ function incompletePayload(targetPath) {
 }
 
 /**
- * Repair the one macOS Electron bundle defect a copied dependency tree can acquire.
+ * Repair the macOS Electron bundle links a copied dependency tree can lose.
  *
- * The 192 MB framework payload can be complete while its standard top-level symlink is
- * absent. Electron's executable still exists, so npm's package installer and our dependency
- * stamp both consider the package installed, but dyld aborts before a GUI test can start.
- * Restore only the canonical link and only when the payload it names is already present.
+ * The 192 MB framework payload can be complete while either its standard top-level symlink
+ * or the inner `Versions/Current` symlink is absent. Electron's executable still exists, so
+ * npm's package installer and our dependency stamp both consider the package installed, but
+ * dyld aborts before a GUI test can start. Restore only canonical links and only when the
+ * versioned payload is already present.
  */
 export function ensureElectronFramework(repoRoot, platform = process.platform) {
   if (platform !== "darwin") return "not-applicable";
@@ -56,6 +60,17 @@ export function ensureElectronFramework(repoRoot, platform = process.platform) {
   const frameworkDir = join(repoRoot, FRAMEWORK_RELATIVE_PATH);
   const linkPath = join(frameworkDir, FRAMEWORK_LINK);
   const targetPath = join(frameworkDir, FRAMEWORK_TARGET);
+  const currentVersionPath = join(frameworkDir, CURRENT_VERSION_LINK);
+  const versionedTargetPath = join(frameworkDir, VERSIONED_FRAMEWORK_TARGET);
+  let repaired = false;
+
+  if (!existsSync(targetPath)) {
+    const currentVersion = lstatSync(currentVersionPath, { throwIfNoEntry: false });
+    if (!currentVersion && existsSync(versionedTargetPath)) {
+      symlinkSync(CURRENT_VERSION_TARGET, currentVersionPath);
+      repaired = true;
+    }
+  }
 
   const entry = lstatSync(linkPath, { throwIfNoEntry: false });
   if (entry) {
@@ -65,7 +80,7 @@ export function ensureElectronFramework(repoRoot, platform = process.platform) {
       throw new Error(`refusing to replace unexpected Electron framework entry at ${linkPath}`);
     }
     if (!existsSync(targetPath)) throw incompletePayload(targetPath);
-    return "present";
+    return repaired ? "repaired" : "present";
   }
 
   if (!existsSync(targetPath)) throw incompletePayload(targetPath);

@@ -23,7 +23,7 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
  *
  * Only a browser can prove it. The markup test pins the rendered shape from a hand-built detail;
  * this drives a real dispatch, a real published workflow, a real review run to completion, and
- * reads the rail a person actually lands on from the card's own chip.
+ * reads the rail a person actually lands on from the Console detail's chip.
  *
  * No model tokens: the reviewers are answered by `e2e/fixtures/fake-agents.ts`, which returns a
  * schema-valid pass verdict for any Persona whose published guidance carries `E2E_PASS_VERDICT`.
@@ -150,17 +150,21 @@ test("a completed run lists its reviewers, and its tiles select their worklist d
 }) => {
   const runId = await seedApprovedRun(dashboard, daemon);
 
-  // Cards, then in from the card's own chip - the route a person takes, because an approved run
+  // Console, then in from the detail's own chip - the route a person takes, because an approved run
   // is first seen as `⌁ Approved` on the session it reviewed.
   const config = await fetch(`${daemon.baseURL}/api/ui/config`, {
     method: "PUT",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ layout: "grid" }),
+    body: JSON.stringify({ layout: "console" }),
   });
-  expect(((await config.json()) as { config?: { layout?: string } }).config?.layout).toBe("grid");
+  expect(((await config.json()) as { config?: { layout?: string } }).config?.layout).toBe("console");
   await dashboard.reload();
 
-  const chip = dashboard.locator("article.card .workflow-chip");
+  await dashboard.getByRole("navigation", { name: "Sessions" })
+    .locator("button.rail-row")
+    .first()
+    .click();
+  const chip = dashboard.locator(".console-detail .workflow-chip");
   await expect(chip).toHaveText("⌁Approved", { timeout: 10_000 });
   await chip.click();
   await expect(dashboard).toHaveURL(new RegExp(`#/runs/${runId}$`));

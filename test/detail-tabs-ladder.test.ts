@@ -4,12 +4,8 @@
  * Two silent failure classes come with that, and neither shows up as a compile error, a
  * console warning, or a diff that reads wrong.
  *
- * The first is a LOST CONTROL. `SessionLaunchers` had one deliberate mount in
- * `TranscriptPanel`, which the Cards layout and the console detail both host. Moving that
- * mount into `.detail-tabs` - which belongs to `ConsoleDetail`, a component Cards never
- * renders - deletes the launchers, the Terminal-view toggle and the `t` / `a` chords from
- * Cards entirely. It is gated per host instead, and the pieces of that arrangement are what
- * the first half of this file pins.
+ * The first is a LOST CONTROL. `SessionLaunchers` has one deliberate mount in the shared
+ * Console and Board detail. Its registration and visible controls must stay together.
  *
  * The second is the LADDER, and the failure modes are the ones `topbar-ladder.test.ts`
  * enumerates, because it is the same mechanism (`measuredLadder.ts`):
@@ -27,7 +23,7 @@
  *
  * Driven from source for the reason `topbar-ladder.test.ts` gives: there is no jsdom here.
  * What a browser has to answer instead - that the row actually stays on one line, that the
- * shed labels are still reachable, and that Cards really did keep everything - is
+ * shed labels are still reachable - is
  * `e2e/specs/console-tabs-toolbar.spec.ts`.
  */
 import { test } from "node:test";
@@ -48,8 +44,6 @@ const read = (path: string): string =>
 
 const css = read("src/web/styles.css");
 const detail = read("src/web/components/layouts/ConsoleDetail.tsx");
-const panel = read("src/web/components/TranscriptPanel.tsx");
-const card = read("src/web/components/SessionCard.tsx");
 
 /** Comments discuss `display: none` and rung numbers in prose, so they go first. */
 const bare = css.replace(/\/\*[\s\S]*?\*\//g, " ");
@@ -110,27 +104,6 @@ test("the console detail hosts the strip in its tab row and the panel draws none
   assert.doesNotMatch(row, /conv-launch-where|conv-launch-path/, "a worktree path is in the tab row");
 });
 
-test("the panel keeps its own strip for a host that provides none", () => {
-  // The default, which is what makes `SessionCard` need no change at all - and the reason
-  // this is a gate rather than a move. `.detail-tabs` belongs to `ConsoleDetail`, which the
-  // Cards layout never renders, so a moved mount is a deletion there.
-  assert.match(
-    panel,
-    /hostToolbar = false/,
-    "the panel no longer defaults to drawing its own strip, so a silent host loses it",
-  );
-  assert.match(
-    panel,
-    /\{!hostToolbar && \(\s*<SessionLaunchers/,
-    "the panel's strip is no longer gated on the host providing one",
-  );
-  assert.doesNotMatch(
-    card,
-    /hostToolbar/,
-    "SessionCard now says something about the toolbar - Cards must keep the panel-owned one",
-  );
-});
-
 test("exactly one strip per session registers the t / a chords", () => {
   // App keeps ONE launcher handle per session id and clears its parked `pendingLauncherAction`
   // only when a strip registers for that id. Two registrations race - the second overwrites
@@ -146,10 +119,8 @@ test("exactly one strip per session registers the t / a chords", () => {
     "the tab row's strip does not register, so `t` / `a` are dead in the console",
   );
   const transcript = detail.slice(detail.indexOf("<TranscriptPanel"));
-  // Comments stripped: the prop is NAMED in the note beside `hostToolbar` explaining where it
-  // went, and a scan that counted that would pass on a panel that really was handed it.
   const props = transcript.slice(0, transcript.indexOf("/>")).replace(/\/\/[^\n]*/g, " ");
-  assert.match(props, /hostToolbar/, "the console detail no longer suppresses the panel's strip");
+  assert.doesNotMatch(props, /hostToolbar/, "the retired host split returned");
   assert.doesNotMatch(
     props,
     /registerLaunchers/,
@@ -158,23 +129,11 @@ test("exactly one strip per session registers the t / a chords", () => {
   );
 });
 
-test("the hosted strip drops the worktree, and the pane-owned one keeps it", () => {
-  const pane = renderToStaticMarkup(createElement(SessionLaunchers, { session: mkSession() }));
-  const toolbar = renderToStaticMarkup(
-    createElement(SessionLaunchers, { session: mkSession(), place: "toolbar" }),
-  );
-  // The default is the shipped band, worktree and all - nothing else in the app says where a
-  // card's session lives.
-  assert.match(pane, /conv-launch-lbl">worktree/);
-  assert.match(pane, /conv-launch-path/);
-  // In a host toolbar the path would be the pane's SECOND copy: the `PATH`/`BRANCH` row two
-  // bands up already prints it in full.
+test("the launcher strip carries controls without duplicating the worktree", () => {
+  const toolbar = renderToStaticMarkup(createElement(SessionLaunchers, { session: mkSession() }));
   assert.doesNotMatch(toolbar, /conv-launch-lbl|conv-launch-path/);
-  // Both keep every control, which is the half a "drop the path" change could get wrong.
-  for (const html of [pane, toolbar]) {
-    assert.match(html, /aria-haspopup="menu"/, "the terminal launcher is gone");
-    assert.match(html, /launch-agent/, "the agent launcher is gone");
-  }
+  assert.match(toolbar, /aria-haspopup="menu"/, "the terminal launcher is gone");
+  assert.match(toolbar, /launch-agent/, "the agent launcher is gone");
 });
 
 // ---- the ladder ----
@@ -318,7 +277,7 @@ test("every control the ladder strips to a glyph still says what it is", () => {
   // of these is inside a `Tooltip`, which always renders its sentence into a hidden
   // `aria-describedby` node - so a collapsed control keeps both a name and an explanation.
   const html = renderToStaticMarkup(
-    createElement(SessionLaunchers, { session: mkSession(), place: "toolbar" }),
+    createElement(SessionLaunchers, { session: mkSession() }),
   );
   assert.match(html, /launch-word/, "the launcher buttons lost the span the ladder collapses");
   assert.match(html, /aria-describedby/, "a collapsed launcher would have no sentence left");

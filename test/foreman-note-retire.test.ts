@@ -105,7 +105,7 @@ test("answering the ask yourself retires the note pinned on it", () => {
   assert.equal(note.brief, null);
 });
 
-test("the retired note reaches the card, which is what makes the strip go", () => {
+test("the retired note reaches the session projection, which makes the Console strip go", () => {
   // Through the SESSION, not the note store. The strip renders `session.note` off an SSE
   // frame, so a retire that wrote the row without re-denormalizing would clear the database
   // and leave the pinned banner exactly where it was - the bug, with a tidier table.

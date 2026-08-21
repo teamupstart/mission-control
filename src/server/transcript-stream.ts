@@ -13,7 +13,7 @@ import {
 } from "./launch-presentation.ts";
 import { sleep } from "./util/timers.ts";
 
-// The live transcript feed behind the expanded card: send the recent history, then poll
+// The live transcript feed behind the session detail: send the recent history, then poll
 // the file and push turns as the agent appends them.
 //
 // Harness-agnostic - it holds the SSE loop and the attribution, and asks

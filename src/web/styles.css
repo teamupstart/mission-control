@@ -2441,10 +2441,7 @@ body {
 .app {
   max-width: 1400px;
   margin: 0 auto;
-  /* Bottom padding grows to clear the floating command bar (see --cmdbar-clearance,
-     set live in App while a session is selected) so an expanded card's tail and
-     compose box can always scroll out from under it. Falls back to the base gap. */
-  padding: 0 24px max(64px, var(--cmdbar-clearance, 0px));
+  padding: 0 24px 64px;
 }
 
 .app-banner {
@@ -2576,7 +2573,6 @@ body {
    switch the OS must not eat. */
 .is-desktop .ka-pop,
 .is-desktop .combobox-list,
-.is-desktop .cmdbar,
 /* The ⌘K search palette panel opens near the top of the viewport, so it can land inside
    the bar. Its backdrop is the shared `.modal-backdrop` above. */
 .is-desktop .pal,
@@ -3461,42 +3457,6 @@ body {
   padding: 0 9px;
 }
 
-/* ---- grid ---- */
-.grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
-  gap: 16px;
-}
-
-/* ---- card ---- */
-.card {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  gap: 13px;
-  padding: 15px 17px 13px;
-  background: linear-gradient(var(--panel), var(--panel-2));
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow);
-  overflow: hidden;
-  transition:
-    transform 0.16s ease,
-    border-color 0.16s ease;
-}
-.card::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 3px;
-  background: var(--tone-color, var(--neutral));
-}
-.card:hover {
-  transform: translateY(-2px);
-  border-color: color-mix(in oklab, var(--tone-color, var(--neutral)) 40%, var(--border));
-}
 .tone-working {
   --tone-color: var(--working);
 }
@@ -3515,35 +3475,6 @@ body {
 .tone-exited {
   opacity: 0.62;
 }
-.card.attention {
-  border-color: color-mix(in oklab, var(--attention) 45%, var(--border));
-  box-shadow:
-    var(--shadow),
-    0 0 0 1px color-mix(in oklab, var(--attention) 30%, transparent),
-    0 0 24px color-mix(in oklab, var(--attention) 16%, transparent);
-}
-/* Keyboard-selected card: a distinct green ring that survives hover + attention
-   and, crucially, stands apart from the blue "working" tone. */
-.card.selected,
-.card.selected:hover {
-  border-color: color-mix(in oklab, var(--select) 70%, var(--border));
-  box-shadow:
-    var(--shadow),
-    0 0 0 2px color-mix(in oklab, var(--select) 65%, transparent),
-    0 0 26px color-mix(in oklab, var(--select) 22%, transparent);
-}
-
-.card-head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  /* Crowded heads wrap instead of fighting: a held card carries a workflow chip, a held
-     pill AND a state badge, and before this the row resolved that by deleting the title
-     (min-width: 0) or clipping the trailing controls (a floor alone). A second chip row
-     only appears when the alternative was losing something. */
-  flex-wrap: wrap;
-  row-gap: 4px;
-}
 /* The harness's brand colour, and the only rule that draws it. `--agent-accent` is set
    inline by whoever renders the dot (`agentAccentStyle`, `session-bits.tsx`) off the
    agent's own declaration, so a new harness colours itself with no rule added here.
@@ -3557,28 +3488,6 @@ body {
   background: var(--agent-accent, var(--neutral));
   box-shadow: 0 0 8px color-mix(in oklab, var(--agent-accent, var(--neutral)) 60%, transparent);
 }
-.card-title {
-  /* A floor, not zero: with a workflow chip, a held pill and a state badge all in the head,
-     `min-width: 0` let the name shrink clean away - and a card whose every mark says "you
-     cannot use this one" still has to say WHICH one it is. Nine characters is enough for the
-     ellipsis to leave a recognisable stem; the chips after it are fixed-width and clip from
-     the tail, which costs a caret before it costs the name. */
-  min-width: 9ch;
-  flex: 1;
-}
-.card-title h2 {
-  margin: 0;
-  font-size: 15px;
-  font-weight: 640;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-/* Clipped to its column, which the h2 above it has always been.
-   `.card-title` is `flex: 1` in a header row of chips, so on a narrow card it can be
-   narrower than this line - and a bordered chip that overflows it juts out under the chip
-   beside it, where plain grey text merely ran on. The full value is on the tooltip and the
-   accessible name either way. */
 .name-source {
   display: block;
   max-width: 100%;
@@ -3793,32 +3702,6 @@ body {
   background: color-mix(in oklab, var(--danger) 14%, transparent);
 }
 
-/* ---- meta ---- */
-.card-meta {
-  display: flex;
-  gap: 18px;
-  margin: 0;
-  flex-wrap: wrap;
-}
-.card-meta > div {
-  min-width: 0;
-}
-.card-meta dt {
-  font-size: 10.5px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--dim);
-  margin-bottom: 2px;
-}
-.card-meta dd {
-  margin: 0;
-  font-size: 12.5px;
-  color: var(--muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 260px;
-}
 .mono {
   font-family: var(--mono);
 }
@@ -3970,9 +3853,7 @@ body {
   color: #e5877f;
 }
 
-/* Cost sits ON the runtime row rather than beside it, so card/detail/tile all wrap the
-   two together and the chip lands in the same flow as the model and context pills. */
-.card-runtime-line,
+/* Cost sits on the Board tile runtime row, so both wrap together. */
 .tile-runtime-line {
   display: flex;
   align-items: center;
@@ -3980,7 +3861,6 @@ body {
   flex-wrap: wrap;
 }
 /* The row inside already has its own margin; the wrapper must not add a second one. */
-.card-runtime-line > .card-runtime,
 .tile-runtime-line > .card-runtime {
   margin: 0;
 }
@@ -4024,21 +3904,18 @@ body {
   -webkit-box-orient: vertical;
   overflow: hidden;
   /* Wrap anywhere as a last resort: a Tier 1 goal can be a pasted path or URL with no
-     spaces in it, which would otherwise widen the card and scroll the whole grid. */
+     spaces in it, which would otherwise widen its detail surface. */
   overflow-wrap: anywhere;
   /* Never give ground to a squeeze - the clamp above decides this line's height, and
      nothing else may.
 
-     Not belt-and-braces: the card is a flex column and an EXPANDED one is a fixed-height
-     box, so its children are asked to shrink whenever the content wants more room than
-     the window allows. A flex item normally refuses, because its automatic minimum size
+     A flex child can be asked to shrink whenever the content wants more room than the
+     window allows. A flex item normally refuses, because its automatic minimum size
      is its own content - but that floor only holds while `overflow` is visible, and the
      line-clamp above needs `overflow: hidden`. Clamping is therefore what dropped this
      one item's floor to zero, and a zero floor doesn't take a share of the deficit, it
      takes ALL of it: on a short window the goal alone collapsed (measured: 0px tall for
-     19px of text), sliced through the middle of its own glyphs, while every sibling on
-     the card kept its full height. The card scrolls instead now - which is what the
-     `overflow-y: auto` on `.card.expanded` is there for. */
+     19px of text), sliced through the middle of its own glyphs. */
   flex: none;
 }
 
@@ -4064,25 +3941,6 @@ body {
   font-style: italic;
 }
 
-/* ---- footer ---- */
-.card-foot {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 7px;
-  row-gap: 5px;
-  font-size: 11.5px;
-  color: var(--muted);
-  padding-top: 3px;
-  border-top: 1px solid var(--border-soft);
-}
-/* Every atom here is a short label or chip, so the row wraps *between* them. Left
-   to shrink, a long pid or a 3-char uptime would instead break one mid-phrase and
-   stack "Claude / Code" two lines tall. */
-.card-foot > *:not(.spacer) {
-  flex: none;
-  white-space: nowrap;
-}
 .agent-name {
   color: var(--muted);
 }
@@ -5767,69 +5625,6 @@ a.btn {
   font-size: 12.5px;
 }
 
-/* ---- keyboard command bar ---- */
-.cmdbar {
-  position: fixed;
-  left: 50%;
-  bottom: 20px;
-  transform: translateX(-50%);
-  z-index: 40;
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  max-width: calc(100vw - 32px);
-  padding: 8px 10px 8px 16px;
-  font-size: 12.5px;
-  background: color-mix(in oklab, var(--panel) 90%, transparent);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  box-shadow: 0 10px 34px rgba(0, 0, 0, 0.5);
-  backdrop-filter: blur(12px);
-  animation: cmdbar-in 0.16s ease;
-}
-@keyframes cmdbar-in {
-  from {
-    opacity: 0;
-    transform: translate(-50%, 8px);
-  }
-}
-.cmdbar-name {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-weight: 620;
-  color: var(--fg);
-  /* Shrinkable, so a long name yields to the keycaps instead of pushing them off. */
-  min-width: 0;
-  max-width: 34vw;
-}
-/* The truncation has to live on the text itself: `text-overflow` does nothing on a
-   flex container, so with the rules up here the squeezed name clipped mid-glyph with
-   no ellipsis to say it had been cut. */
-.cmdbar-name-text {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.cmdbar-name .agent-dot {
-  flex: none;
-}
-.cmdbar-keys {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  flex-wrap: wrap;
-}
-.cmdbar-hint {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  margin-left: 4px;
-  padding-left: 10px;
-  border-left: 1px solid var(--border);
-  color: var(--dim);
-  font-size: 11.5px;
-}
 .keycap-btn {
   display: inline-flex;
   align-items: center;
@@ -5865,16 +5660,13 @@ kbd {
   min-width: 15px;
   text-align: center;
 }
-.cmdbar-hint kbd {
-  color: var(--muted);
-}
 
 /* The shortcut printed on a button the chord also drives (`Keycap.tsx`), everywhere
-   one appears: the card and console action rows, the console tabs, the card's diff
+   one appears: the Board tile and Console action rows, the Console tabs, the detail's diff
    pill, the topbar's Dispatch. Deliberately NOT the raised keycap above - it rides
    inside a control, so it has to read as an annotation on that button's label rather
    than as a second, smaller button sitting on top of one. This was `.act kbd`, which
-   styled the console footer alone and left the seven card buttons unstyled the day
+   styled the Console footer alone and left the Board buttons unstyled the day
    they grew keycaps.
 
    Every host below lays its children out with `gap`, never a margin here, because the
@@ -5939,232 +5731,6 @@ kbd {
 }
 .link-btn:hover {
   color: #fff;
-}
-
-/* ---- expandable conversation ---- */
-.expand-toggle {
-  flex: none;
-  width: 24px;
-  height: 24px;
-  display: grid;
-  place-items: center;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  background: var(--panel-2);
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1;
-  cursor: pointer;
-  transition: transform 0.15s ease, color 0.15s ease, border-color 0.15s ease;
-}
-.expand-toggle:hover {
-  color: var(--fg);
-  border-color: color-mix(in oklab, var(--fg) 30%, var(--border));
-}
-.expand-toggle.open {
-  transform: rotate(180deg);
-  color: var(--fg);
-}
-
-/* ---- focus (full-screen) mode ---- */
-/* Pressing `e` on the selected card lifts it out of the tile grid: it spans the
-   full width and jumps to the top (order), pushing every other session below it,
-   then grows to fill the screen beneath the sticky topbar so its conversation is
-   comfortable to read and reply to. `e` again drops it back into the grid.
-   Height is measured against the live topbar + floating command bar so the reply
-   box lands just above the command bar rather than behind it. */
-.card.expanded {
-  grid-column: 1 / -1;
-  order: -1;
-  /* Tighter than a tile's 13px, because on an expanded card this is not decoration - it
-     is the single largest line item on the card. Eleven gaps between twelve sections
-     came to 143px of the ~636px available, more than the conversation itself was left
-     with once Foreman's note was open. 9px buys the log back ~55px and reads as denser
-     on purpose: focus mode is the one place carrying every section at once. */
-  gap: 9px;
-  height: calc(100dvh - var(--topbar-h, 88px) - var(--cmdbar-clearance, 64px) - 28px);
-  min-height: 440px;
-  scroll-margin-top: calc(var(--topbar-h, 88px) + 16px);
-  /* Last resort, and normally inert. The card's height is fixed, so on a window short
-     enough that `min-height` wins, the sections' own minimums can still add up to more
-     than there is - and the base `.card` clips (`overflow: hidden`), which deleted the
-     reply box off the bottom rather than letting anyone reach it. Scrolling is a poor
-     answer next to a card that fits; it is a much better one than a control that isn't
-     there. On any window tall enough for the minimums, nothing overflows and no
-     scrollbar ever appears. */
-  overflow-y: auto;
-}
-/* Let the conversation flex to fill the tall card; the log scrolls internally so
-   the reply box stays pinned at the bottom and tail-follow keeps working.
-
-   The min-height is what keeps the reply box ON the card. A focus-mode card is a
-   fixed-height box, so every section competes for the same pixels - and the work queue
-   grows without limit as items are added. At 12 items it took 695 of the card's 901px,
-   squeezing this to 11px: the log collapsed to zero and the reply box, overflowing a
-   parent shorter than itself, fell outside the card's clip and off screen. A session
-   with a full queue was the one you couldn't read or reply to.
-
-   Sized to the compose box plus a sliver of log, NOT to a comfortable conversation.
-   It's a last line of defence, and a floor big enough to be comfortable would be big
-   enough to overflow a SHORT card (min-height: 440px) that renders fine today - which
-   would cause this very bug on a window that doesn't have it. Room to read no longer
-   comes from rationing the queue's share (`.card-panels` below moved the queue out of
-   this column entirely); this only guarantees you can always reply. */
-.card.expanded .transcript {
-  flex: 1 1 auto;
-  min-height: 96px;
-}
-.card.expanded .transcript-log {
-  flex: 1 1 auto;
-  min-height: 0;
-  max-height: none;
-}
-/* The queue + conversation region. On a card in the grid it's a plain column - the
-   drawer opens above the (absent) transcript, full width, exactly as it always did, and
-   the children's own `margin-top` still does the spacing, so there is no `gap` here to
-   double it up. The interesting case is the expanded card, below. */
-.card-panels {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-/* The queue and the conversation, side by side.
- *
- * Stacking them was the bug. An expanded card is a FIXED-height box whose chrome alone
- * takes ~375 of its ~636px, so the queue, Foreman's note and the log were left fighting
- * over ~260px - and vertical space is the only thing they were fighting over. Whoever
- * lost, lost badly: uncapped, the queue pushed the log clean off the bottom (measured at
- * y=1145 in a 636px card - zero pixels visible); capped, the panels crushed to 29px
- * slivers instead. There is no split of 260px that makes three panels comfortable.
- *
- * So stop splitting it. The expanded card is full-width by definition (`grid-column:
- * 1 / -1`) and was carrying ~700px of dead space to the right of a 108px log. Turned on
- * its side, the two panels each get the card's FULL height and the fight is over - the
- * queue can never push the log anywhere, because it isn't above it. */
-.card.expanded .card-panels {
-  flex: 1 1 auto;
-  flex-direction: row;
-  align-items: stretch;
-  gap: 14px;
-  /* Same bargain as always: yield to the card's height and let the panels scroll
-     internally, rather than growing the card and pushing the reply box out of reach. */
-  min-height: 0;
-}
-/* Wide enough to read an intent without wrapping every other word, narrow enough to
-   leave the conversation the larger share - it is still the reason the card is open.
-   `0 0 <basis>` rather than a percentage so the column is stable as the log's content
-   changes: a queue that resized itself whenever a tool chip landed would be its own
-   kind of broken. */
-.card.expanded .card-panels > .work-queue {
-  flex: 0 0 clamp(300px, 30%, 460px);
-  min-height: 0;
-  margin-top: 0;
-}
-/* Folded, the column is just a title bar - so it stops reserving a 300px column and
-   sits as a slim rail, handing the whole width back to the conversation. `align-self`
-   drops the row's `stretch` too, or the rail would be a full-height empty box with a
-   16px header adrift at the top of it. */
-.card.expanded .card-panels > .work-queue.wq-collapsed {
-  flex: 0 0 auto;
-  align-self: flex-start;
-}
-.card.expanded .card-panels > .transcript {
-  flex: 1 1 auto;
-  min-width: 0;
-  margin-top: 0;
-}
-/* Two columns need the width for two columns. Below this the queue's 300px would leave
-   the conversation under ~360px - a reply box you can't write in and turns that wrap
-   every third word - so the row gives up honestly and stacks again.
- *
- * Stacked here is not the bug it was, because the cap now resolves against `.card-panels`
- * rather than the whole card: it is a share of the space the queue and the log actually
- * share, so the log is guaranteed the other 60% no matter how long the batch gets. That
- * was impossible when the pair's only container was the card - a third of the CARD meant
- * nothing about what was left after the chrome and Foreman's note had taken theirs. */
-@media (max-width: 820px) {
-  .card.expanded .card-panels {
-    flex-direction: column;
-    gap: 12px;
-  }
-  .card.expanded .card-panels > .work-queue {
-    flex: 0 1 auto;
-    max-height: 40%;
-  }
-  /* Folded, it's a full-width title bar again - `flex-start` is a row idea and would
-     shrink-wrap it to its text here. */
-  .card.expanded .card-panels > .work-queue.wq-collapsed {
-    flex: 0 0 auto;
-    align-self: stretch;
-  }
-}
-/* Only `.wq-items` gives ground. Everything else here (the add box, the hints, the
-   wrap-up) is a control or a sentence, and a flex child shrinks by default - without
-   this the shrink would be shared out and squash the add box's textarea too. */
-.card.expanded .work-queue > :not(.wq-items) {
-  flex: none;
-}
-/* `min-height: 0` is what lets this absorb the cap. Left at the default (`auto` =
-   min-content = every item), the list refuses to shrink and its siblings spill out
-   through the panel's border and onto the transcript - the panel doesn't clip. Zeroed,
-   the list takes the squeeze and scrolls, which is what a bounded list should do. */
-.card.expanded .wq-items {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-}
-/* The same bounded-list argument, for the queue opened on a card still in the grid.
-   There's no card height to take a share of here, so the cap is a pixel count - enough
-   for a glance at the batch, short of a tile that stretches its whole grid row (every
-   card in a row matches the tallest) to push the rest of the fleet off screen. */
-.card:not(.expanded) .wq-items {
-  max-height: 232px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-}
-/* Foreman's note is the third panel competing for the same pixels, and it was the only
-   one never bounded - measured at 535px (a 322px brief) on a 636px card, which on its
-   own is more than the card has to give. Uncapped and unshrinkable, it evicted the
-   transcript exactly as an over-long queue did; capping the queue alone would just have
-   handed the same eviction to the next panel that grew. So it gets the treatment the
-   queue already had: a share of the card, and the prose inside it scrolls.
-
-   A smaller share than the queue's third because this is a *message*: the rule below
-   pins its heading, purpose and recommendation, so what the cap squeezes is the brief's
-   middle paragraphs and the Approve button stays where you left it.
-
-   The two heights are doing opposite jobs and both are load-bearing:
-
-   `overflow-y: auto` is the one that can't be dropped. The pinned children come to
-   ~212px all told, so on any card whose 30% is less than that the cap is asking for
-   something the content cannot give - and a panel with visible overflow answers that by
-   painting its text straight over its neighbours (measured: 216px of note in a 52px box,
-   bleeding across both the queue and the transcript). Scrolling is how a bounded box
-   says no.
-
-   `min-height` then has to be spelled out, precisely BECAUSE of that: overflow that
-   isn't `visible` zeroes a flex item's automatic minimum size (the same clause that let
-   `.goal` collapse to nothing), so without a floor this panel would answer a squeeze by
-   vanishing to a scrollbar instead. */
-.card.expanded .foreman-note {
-  flex: 0 1 auto;
-  min-height: 120px;
-  max-height: 30%;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-}
-/* Only the brief gives ground; the heading, the purpose line and the recommendation
-   (which carries Approve) stay whole - a note you have to scroll to find the button in
-   is a note that reads as broken. */
-.card.expanded .foreman-note > :not(.fn-brief) {
-  flex: none;
-}
-.card.expanded .fn-brief {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow-y: auto;
-  overscroll-behavior: contain;
 }
 
 .transcript {
@@ -6568,8 +6134,8 @@ kbd {
   min-height: 0;
   /* The relocation below queries `.transcript`, the split's full-width parent - it is
      the PANEL's width that decides the layout, never the viewport's: the same Console
-     detail exists at every window size, and an expanded Card's width depends on the
-     grid's column count. The `container-type` used to sit HERE, which is why the
+     detail exists at every window size, including inside the Board overlay. The
+     `container-type` used to sit HERE, which is why the
      stacked layout never actually engaged: a query container cannot style itself, so
      the `flex-direction: column` inside the query had no element it could match. */
 }
@@ -7184,60 +6750,8 @@ mark.find-hit.is-current {
   }
 }
 
-/* ---- conversation launchers (open a terminal, or the agent's own CLI) ----
-   A strip at the top of the transcript, so it reaches every layout that shows a
-   conversation from one mount. `flex: none` is load-bearing rather than tidy: the log
-   below it is `flex: 1 1 auto; min-height: 0` in both the expanded card and the console
-   detail, and a growable toolbar would take that height from the thing being read.
-   No vendor is named here - the agent button's colour arrives as the inline
-   `--agent-accent` the transcript already carries. */
+/* ---- conversation launchers (open a terminal, or the agent's own CLI) ---- */
 .conv-launch {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  padding: 6px 8px;
-  border: 1px solid var(--border);
-  border-radius: 9px;
-  background: var(--panel-2);
-}
-.conv-launch-where {
-  display: flex;
-  align-items: baseline;
-  gap: 7px;
-  min-width: 0;
-}
-.conv-launch-lbl {
-  flex: none;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.5px;
-  text-transform: uppercase;
-  color: var(--dim);
-}
-/* Ellipsis at the END. A `direction: rtl` trick clips the less useful half of a long path
-   but reorders the segments around the slashes - "~/.treehouse/pool" draws as
-   "treehouse/pool/.~" - so the path is simply truncated instead. */
-.conv-launch-path {
-  min-width: 0;
-  font-size: 10.5px;
-  color: var(--muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.conv-launch-sp {
-  flex: 1;
-}
-/* The same strip, hosted by a row that already has a band's chrome - the console detail's
-   tab strip (`SessionLaunchers place="toolbar"`). It gives up the border, the fill and the
-   padding, because a bordered box inside a bordered row is furniture rather than structure,
-   and it carries no worktree: the pane's `PATH`/`BRANCH` row two bands up already prints
-   that path, and a second copy is the duplication this placement exists to remove.
-
-   `margin-left: auto` is what pushes the run to the far end of the tab row, and it is why
-   `.foreman-rail` no longer carries one of its own - see the note there. */
-.conv-launch.in-toolbar {
   margin-left: auto;
   align-self: center;
   gap: 7px;
@@ -7783,8 +7297,8 @@ mark.find-hit.is-current {
   white-space: nowrap;
 }
 
-/* Below the panel width the expanded card sits at - the same breakpoint the activity rail
-   relocates on - the frame gives up its centred title, the send hint and the context
+/* Below the narrow session-detail breakpoint, the frame gives up its centred title,
+   the send hint and the context
    share. All three are the things a person can get elsewhere; the run state, the pid and
    the branch are not, so they stay and the row wraps under them if it has to. */
 @container (max-width: 560px) {
@@ -8117,18 +7631,6 @@ mark.find-hit.is-current {
   border-left: 2px solid var(--tone-color, var(--working));
   border-radius: 8px;
   min-width: 0;
-}
-/* Hugs its content on the card instead of stretching the column's full width.
-   The stretch was invisible for as long as a task title filled the bar. Now that the title
-   is dropped whenever the session's own name already carries it, the common remaining
-   content is a lone `SCOUT` badge - and a full-width bar holding one 40px badge reads as
-   something that failed to load. The console detail has always drawn this chip
-   content-sized, because its `.detail-sub` is a flex ROW, so this is the two layouts
-   agreeing rather than a new look. `max-width` keeps a long title ellipsising against the
-   card's width instead of overflowing it. */
-.card > .task-chip {
-  align-self: flex-start;
-  max-width: 100%;
 }
 /* Deliberately ONE rule for every kind, where the backlog card's `.bl-kind-*` gives each
    its own colour. `taskPillParts` draws `plan` here as well as `scout`, so the two chips
@@ -13860,7 +13362,7 @@ a.pipelines-chip.is-link:focus-visible {
   flex-wrap: wrap;
   gap: 6px;
 }
-/* Cards rather than tabs, where the workflow reader puts its round scrubber. There is one
+/* Compact panels rather than tabs, where the workflow reader puts its round scrubber. There is one
    projection of a pipeline run and no per-attempt snapshot to scrub to, so a control shaped
    like a tab would promise a history nothing can show. */
 .pipelines-attempt {
@@ -17218,8 +16720,8 @@ button.wf-carried.is-link:focus-visible {
 .settings-pane > .ts-panel {
   max-width: none;
 }
-/* Console and Board give their pages a fixed-height flex child rather than the grid's
-   scrolling document, so the page scrolls inside itself there - the same shape the
+/* Console and Board give their pages a fixed-height flex child rather than a
+   document-scrolling fleet, so the page scrolls inside itself there - the same shape the
    workflows page takes, for the same reason. */
 .app-console > .settings-page,
 .app-board > .settings-page {
@@ -18579,54 +18081,6 @@ select.foreman-model-input {
   min-width: 0;
 }
 
-/* Card-header flag: Foreman drafted/escalated something worth opening. */
-.foreman-flag {
-  font-size: 10.5px;
-  font-weight: 600;
-  padding: 2px 7px;
-  border-radius: 999px;
-  cursor: pointer;
-  border: 1px solid var(--border);
-  background: var(--panel-2);
-  white-space: nowrap;
-}
-.foreman-flag.ff-escalated {
-  color: var(--attention);
-  border-color: color-mix(in oklab, var(--attention) 45%, var(--border));
-  background: color-mix(in oklab, var(--attention) 12%, var(--panel));
-}
-.foreman-flag.ff-pending {
-  color: var(--working);
-  border-color: color-mix(in oklab, var(--working) 40%, var(--border));
-  background: color-mix(in oklab, var(--working) 10%, var(--panel));
-}
-
-/* Foreman panel inside an expanded card. */
-.foreman-note {
-  margin-top: 12px;
-  padding: 12px 14px;
-  border: 1px solid var(--border);
-  border-left: 3px solid var(--neutral);
-  border-radius: 10px;
-  background: var(--panel-2);
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.foreman-note.fn-escalated {
-  border-left-color: var(--attention);
-}
-.foreman-note.fn-pending {
-  border-left-color: var(--working);
-}
-.foreman-note.fn-answered {
-  border-left-color: var(--idle);
-}
-.fn-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
 .fn-badge {
   font-size: 10px;
   font-weight: 700;
@@ -18636,34 +18090,6 @@ select.foreman-model-input {
   border-radius: 999px;
   color: var(--bg);
   background: color-mix(in oklab, var(--idle) 78%, var(--fg));
-}
-.fn-disp {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--fg);
-}
-.fn-time {
-  margin-left: auto;
-  font-size: 11px;
-}
-.fn-purpose {
-  margin: 0;
-  font-size: 13px;
-  line-height: 1.55;
-  color: var(--fg);
-}
-.fn-brief {
-  font-size: 12.5px;
-  line-height: 1.55;
-  color: var(--muted);
-  border-top: 1px solid var(--border-soft);
-  padding-top: 8px;
-}
-.fn-brief :first-child {
-  margin-top: 0;
-}
-.fn-brief :last-child {
-  margin-bottom: 0;
 }
 .fn-rec {
   display: flex;
@@ -18687,15 +18113,6 @@ select.foreman-model-input {
   color: var(--fg);
   white-space: pre-wrap;
 }
-.fn-audit {
-  margin: 0;
-  font-size: 12px;
-  color: color-mix(in oklab, var(--idle) 70%, var(--fg));
-}
-.fn-actions {
-  display: flex;
-  gap: 8px;
-}
 .fn-hint {
   margin: 0;
   font-size: 11px;
@@ -18703,7 +18120,7 @@ select.foreman-model-input {
   color: var(--dim);
 }
 /* The allowlist hint names a repo path, which is long and has no spaces to break
-   at - without `anywhere` it rides straight out through the side of the card.
+   at - without `anywhere` it rides straight out through the side of the strip.
    Mirrors `.wq-hint code`, which says the same sentence in the queue panel. */
 .fn-hint code {
   font-family: var(--mono);
@@ -18894,8 +18311,8 @@ select.foreman-model-input {
    not the split, because `WorkflowRuns.tsx` already owns the run list and a second one here
    would be a worse copy that disagrees with it. So this stays a reading column at the width
    the rest of the settings page uses - the `max-width: none` above is for a form beside a
-   table, and a lone column of cards stretched to 1500px is a card title with a metre of
-   empty panel after it. Cards at `.sc-controls`' own width, and nothing pretending a second
+   table, and a lone column of panels stretched to 1500px leaves a metre of
+   empty space after its title. Panels stay at `.sc-controls`' own width, and nothing pretending a second
    column is coming. */
 .settings-pane > .settings-section.sc-section.sc-solo {
   max-width: 760px;
@@ -20994,64 +20411,6 @@ button.sc-row:focus-visible {
   min-height: calc(3lh + 18px);
 }
 
-/* ---- collapsed-card queue chip ---- */
-
-.queue-chip {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  width: 100%;
-  margin-top: 8px;
-  padding: 5px 9px;
-  border: 1px solid var(--border);
-  border-left: 3px solid var(--neutral);
-  border-radius: 8px;
-  background: var(--panel-2);
-  color: var(--muted);
-  font: inherit;
-  font-size: 11.5px;
-  text-align: left;
-  cursor: pointer;
-}
-.queue-chip:hover {
-  border-color: color-mix(in oklab, var(--working) 50%, var(--border));
-}
-.queue-chip.qc-sending,
-.queue-chip.qc-awaiting_pickup,
-.queue-chip.qc-in_progress,
-.queue-chip.qc-verifying {
-  border-left-color: var(--working);
-}
-.queue-chip.qc-proposed {
-  border-left-color: var(--attention);
-}
-/* Last, so an escalation outranks whatever the in-flight item happens to be doing:
-   work Foreman gave up on is the thing on this card that wants a human. */
-.queue-chip.qc-escalated {
-  border-left-color: var(--attention);
-}
-.queue-chip.qc-escalated .qc-count {
-  color: var(--attention);
-}
-.qc-count {
-  flex: none;
-  font-weight: 600;
-  color: var(--fg);
-}
-.qc-intent {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.qc-round {
-  flex: none;
-  font-family: var(--mono);
-  font-size: 10px;
-  color: var(--attention);
-}
-
 /* ---- foreman queue knobs ---- */
 
 .foreman-knobs {
@@ -21160,23 +20519,7 @@ button.sc-row:focus-visible {
 }
 
 /* ============================================================================
-   THE LINE - the fleet's pipeline strip
-   ----------------------------------------------------------------------------
-   Six stages and five wires above whichever layout is showing. Deliberately OUTSIDE
-   `<header class="topbar">`, and that placement is load-bearing twice over.
-
-   First, `--topbar-h` is measured off the header, and `.card.expanded` sizes itself
-   as `100dvh - var(--topbar-h) - ...`. A strip inside the header would silently take
-   ~90px off every focus-expanded card on the grid - a surface that has nothing to do
-   with the Line and whose height is already tuned against the reply box.
-
-   Second, the header renders on all three pages and the Line is fleet-only.
-
-   Being outside costs nothing in the two full-height shells because they are flex
-   columns: `.topbar` and `.line` are both `flex: none`, `.console`/`.board` are
-   `flex: 1; min-height: 0`, so the strip takes its height out of the layout rather
-   than out of the viewport and nothing overflows. On the grid the page scrolls, so
-   the strip simply scrolls away above the cards.
+   THE LINE - the fleet pipeline strip
    ============================================================================ */
 .line {
   display: flex;
@@ -22452,8 +21795,7 @@ span.line-run-prov {
 /* ============================================================================
    LAYOUTS - console and board
    ----------------------------------------------------------------------------
-   The card grid is the default and owns everything above; these two rearrange the
-   SAME cards. Both are full-height app shells rather than a scrolling page: their
+   Both supported layouts are full-height app shells rather than a scrolling page: their
    detail pane keeps a reply box pinned at the bottom, and a page that scrolls under
    it would carry that box off the screen.
    ============================================================================ */
@@ -22463,9 +21805,7 @@ span.line-run-prov {
   flex-direction: column;
   max-width: none;
   height: 100dvh;
-  /* No --cmdbar-clearance: the floating command bar is grid-only (see App), and these
-     shells don't scroll, so there is nothing to reserve room for. */
-  padding: 0;
+    padding: 0;
 }
 .app-console .topbar,
 .app-board .topbar {
@@ -22473,11 +21813,8 @@ span.line-run-prov {
   margin-bottom: 0;
   padding-inline: 22px;
 }
-/* Desktop shell: these two layouts run the topbar full-width (the shell sets
-   `max-width: none`), so the grid's trick - once the window passes 1400px the
-   centred dead space beside the column already clears the traffic lights - never
-   fires here: the topbar always starts hard against x=0. `padding-inline` above
-   also just overwrote the grid's window-scaled left clamp. So reserve a fixed
+/* Desktop shell: both supported layouts run the topbar full-width (the shell sets
+   `max-width: none`), so the topbar starts hard against x=0. Reserve a fixed
    inset wide enough to clear the lights at any width. Beats both the base
    `.is-desktop .topbar` and `.app-console .topbar` rules on specificity (0,3,0). */
 .is-desktop .app-console .topbar,
@@ -22631,7 +21968,7 @@ span.line-run-prov {
 }
 /* The selected row wears a full green selector frame, not the thin left edge it used to
    carry - a 2px inset that read as barely-there against a busy "working" row. The green
-   is the same `--select` the grid's card and the board's tile use, and it stands clear of
+   is the same `--select` the Board tile uses, and it stands clear of
    the blue "working" tone, so the selection is unmistakable in every state. The outline is
    inset (negative offset) so the dense list never clips it and it frames cleanly over the
    left tone bar. */
@@ -24849,8 +24186,7 @@ span.line-run-prov {
    Deliberately NOT dimmed the way `.tone-exited` is. Dimming says "deprioritise me", and a run
    mid-flight is among the most consequential things on the board - it is not yours to drive,
    which is a different statement from not worth reading. A tint, not a fade. */
-.tile.is-held,
-.card.is-held {
+.tile.is-held {
   --tone-color: var(--held);
   border-color: color-mix(in oklab, var(--held) 30%, var(--border));
   background: linear-gradient(color-mix(in oklab, var(--held) 7%, var(--panel)), var(--panel-2));
@@ -24859,11 +24195,8 @@ span.line-run-prov {
    (BacklogColumn.tsx) takes the tile's workflow run and refuses a session an open run holds,
    so a held tile never lights up, never hints, and never accepts a backlog drop. The drop is
    a reset, and resetting an agent mid-run is exactly what the held marking exists to stop. */
-/* One pill, two card-shaped surfaces: the Board tile's `.tile-held` and the Cards card's
-   `.card-held` are the same mark, and Cards NEEDS it more - it draws no section rule, so
-   the tag is that layout's whole answer to "why can I not use this idle agent". */
-.tile-held,
-.card-held {
+/* Board tiles mark sessions held by an open workflow run. */
+.tile-held {
   flex: none;
   padding: 1px 7px;
   font-size: 9.5px;
@@ -25330,36 +24663,6 @@ span.line-run-prov {
   margin: 0;
 }
 
-/* ---- hosting an expanded card inside a pane ----
-   `.card.expanded` is sized for focus mode in the grid: it spans every column, jumps to
-   the top of the grid, and measures itself against the viewport minus the topbar and the
-   command bar. Inside the console's detail pane every one of those is wrong - the pane
-   already has a size, and the card's job is simply to fill it. (The board no longer hosts
-   a card at all: it drills into the same ConsoleDetail the console opens.) */
-.app-console .card.expanded {
-  grid-column: auto;
-  order: 0;
-  flex: 1;
-  height: auto;
-  min-height: 0;
-  scroll-margin-top: 0;
-}
-/* Inside a pane, only the conversation/queue region may give up height (and Foreman's
-   note some of its own - it has a min-height and scrolls internally). Every other
-   section is a fixed-size row: a chip, a footer, a strip. There is no such thing as
-   half of one, but flex will make one anyway - and because several of these rows set
-   `overflow: hidden`, their automatic minimum resolves to zero, so they shrink to
-   NOTHING rather than refusing.
-
-   Scoped to the console on purpose. The grid's focus mode is a different bargain, tuned
-   against a full-width card and a viewport-derived height (see `.card.expanded`), and it
-   hits its limits from the other direction: forbidding the shrink there takes the compose
-   box from 6px inside the card to 11px below it. This pane sizes the card itself, so the
-   rows can keep their height honestly. */
-.app-console .card.expanded > *:not(.card-panels):not(.foreman-note) {
-  flex-shrink: 0;
-}
-
 /* ---- settings: layout picker ---- */
 .layout-picker {
   display: flex;
@@ -25493,7 +24796,7 @@ span.line-run-prov {
 }
 
 /* Below this the console's rail and the board's columns stop being a layout and start
-   being a squeeze. Both fall back to the card grid's shape rather than pretending. */
+   being a squeeze. Both collapse to one column rather than pretending. */
 @media (max-width: 760px) {
   .console {
     grid-template-columns: 1fr;
@@ -26078,14 +25381,9 @@ body.foreman-sidecar-open .modal-backdrop {
 /* ---------------------------------------------------------------------------
    Foreman: the strip, the inline episode, and the history drawer.
 
-   Replaces the single `.foreman-note` block in the detail pane, which carried the
-   record and the action together and pinned both - so a long escalation covered the
-   conversation it was about. The prose now scrolls with the chat (`.transcript-
+   The prose scrolls with the chat (`.transcript-
    episode`), the decision stays pinned as one line (`.foreman-strip`), and the
    archive lives behind a rail (`.foreman-drawer`).
-
-   `.foreman-note` itself is untouched: the grid card still uses it, where there is no
-   transcript to inline into and its own max-height cap already bounds it.
    --------------------------------------------------------------------------- */
 
 /* --- the pinned one-liner --- */
@@ -26185,7 +25483,7 @@ body.foreman-sidecar-open .modal-backdrop {
   max-height: 50vh;
   min-height: 0;
 }
-/* Only the recommendation gives ground, mirroring `.card.expanded .fn-brief`: the
+/* Only the recommendation gives ground: the
    actions stay pinned outside the scrolling region, because a note you have to scroll
    to reach Dismiss in is a note that reads as broken. `min-height` is spelled out
    because a non-visible overflow zeroes a flex item's automatic minimum. */

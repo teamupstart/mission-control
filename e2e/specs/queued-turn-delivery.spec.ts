@@ -43,10 +43,15 @@ async function dispatch(page: Page, daemon: DaemonHandle, agent: "claude" | "cod
   await dialog.getByRole("button", { name: "Dispatch now" }).click();
   await expect(dialog).toBeHidden();
 
-  // The dispatch opener is a real first turn. Start the queued-turn scenario only after it
-  // finishes: crossing that working-to-idle boundary while clicking Expand can legitimately
-  // replace the provisional card and clear its expanded state.
-  await expect(page.locator("article.card").first().locator(".badge-idle")).toBeVisible({
+  // The dispatch opener is a real first turn. Start the queued-turn scenario only after its
+  // rail row reaches idle.
+  await expect(
+    page
+      .getByRole("navigation", { name: "Sessions" })
+      .locator("button.rail-row")
+      .first()
+      .locator(".rail-state"),
+  ).toHaveText("idle", {
     timeout: 20_000,
   });
 }
@@ -74,9 +79,9 @@ test(`a queued conversation turn is delivered once the ${agent} agent goes idle`
 }) => {
   await dispatch(dashboard, daemon, agent);
 
-  const card = dashboard.locator("article.card").first();
-  await card.getByRole("button", { name: "Expand conversation" }).click();
-  await expect(card.getByRole("button", { name: "Collapse conversation" })).toBeVisible();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
+  await expect(card).toBeVisible();
 
   const composer = card.getByPlaceholder(/^Reply to this session/);
   await expect(composer).toBeEnabled();
@@ -136,9 +141,9 @@ test(`a queued turn still lands after the ${agent} driver takes a mid-turn messa
 }) => {
   await dispatch(dashboard, daemon, agent);
 
-  const card = dashboard.locator("article.card").first();
-  await card.getByRole("button", { name: "Expand conversation" }).click();
-  await expect(card.getByRole("button", { name: "Collapse conversation" })).toBeVisible();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
+  await expect(card).toBeVisible();
 
   const composer = card.getByPlaceholder(/^Reply to this session/);
   await expect(composer).toBeEnabled();
@@ -202,9 +207,9 @@ test("a Codex final answer releases a queued turn when later lifecycle notificat
 }) => {
   await dispatch(dashboard, daemon, "codex");
 
-  const card = dashboard.locator("article.card").first();
-  await card.getByRole("button", { name: "Expand conversation" }).click();
-  await expect(card.getByRole("button", { name: "Collapse conversation" })).toBeVisible();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
+  await expect(card).toBeVisible();
   const composer = card.getByPlaceholder(/^Reply to this session/);
   await expect(composer).toBeEnabled();
 

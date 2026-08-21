@@ -110,13 +110,13 @@ test("a dispatched plan is told to invoke the planning skill, in this harness's 
   await submit(dialog);
   await expect(dialog).toBeHidden();
 
-  const card = dashboard.locator("article.card").first();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
   await expect(card).toBeVisible();
   // Expanded rather than read from the card face: a card shows an ACTIVITY line while a turn
   // runs and drops it when the turn ends, so an assertion there races the turn boundary. The
   // conversation is read from the real transcript by the real SSE stream, and the fake echoes
   // the prompt it was handed - so the delivered contract arrives back here verbatim.
-  await card.getByRole("button", { name: "Expand conversation" }).click();
 
   // The operator's own words, unmodified. Nothing about the contract rewrites the request.
   await expect(card).toContainText(TASK, { timeout: 30_000 });
@@ -165,7 +165,7 @@ test("a plan dispatch with the planning skills off is refused on the form, namin
   // or agent was created for work that could not have been done.
   await expect(dialog).toBeVisible();
   await expect(dialog.getByPlaceholder("What should this agent do?")).toHaveValue(TASK);
-  await expect(dashboard.locator("article.card")).toHaveCount(0);
+  await expect(dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row")).toHaveCount(0);
 
   // The negative control, and the reason it is in the same test: same form, same repository,
   // same words, one field different. A gate written as a dispatch-wide check rather than a
@@ -175,9 +175,9 @@ test("a plan dispatch with the planning skills off is refused on the form, namin
   await submit(dialog);
   await expect(dialog).toBeHidden();
 
-  const shipCard = dashboard.locator("article.card").first();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const shipCard = dashboard.locator(".console-detail");
   await expect(shipCard).toBeVisible({ timeout: 30_000 });
-  await shipCard.getByRole("button", { name: "Expand conversation" }).click();
   await expect(shipCard).toContainText(TASK, { timeout: 30_000 });
   // And its intent is the operator's words and nothing else. The kind decides whether a
   // contract is composed at all, so a ship task on the same sentence carries none of it.

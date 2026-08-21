@@ -70,7 +70,6 @@ test("a report beyond the old file cap is clickable on the first Board conversat
   daemon,
 }) => {
   await dispatch(dashboard, daemon);
-  await expect(dashboard.getByRole("heading", { name: /Open README\.md From the Conversation/i })).toBeVisible();
   await useBoardTerminal(dashboard, daemon);
 
   const tile = dashboard.getByRole("button", { name: /Open README\.md From the Conversation/i });

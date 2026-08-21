@@ -166,11 +166,12 @@ test("dispatching an agent puts a live session on the fleet", async ({ dashboard
 
   await dispatch(dashboard, daemon);
 
-  const card = dashboard.locator("article.card").first();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
   await expect(card).toBeVisible();
   // Exactly one, not "at least one": the daemon has adopted the dispatch as a single
   // session rather than double-carding it, which is a real regression this repo has had.
-  await expect(dashboard.locator("article.card")).toHaveCount(1);
+  await expect(dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row")).toHaveCount(1);
   // Named by `deriveTitle`, which title-cases the intent. That is the SYNCHRONOUS name a
   // dispatch gets; `task-title.ts` refines it with a headless model call afterwards, so
   // asserting on the model's answer here would be racing an async refinement. What that
@@ -209,13 +210,14 @@ test("the dispatch shortcut works after focus leaves the task description", asyn
   await dashboard.keyboard.press("Control+Enter");
 
   await expect(dialog).toBeHidden();
-  await expect(dashboard.locator("article.card")).toHaveCount(1);
+  await expect(dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row")).toHaveCount(1);
 });
 
 test("an Agent SDK Fable 5 session uses its 1M context window", async ({ dashboard, daemon }) => {
   await dispatch(dashboard, daemon, { model: "claude-fable-5" });
 
-  const card = dashboard.locator("article.card").first();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
   await expect(card).toContainText("Agent SDK");
   await expect(card).toContainText("Fable 5");
   await expect(card).toContainText("1M");
@@ -226,7 +228,8 @@ test("an Agent SDK Fable 5 session uses its 1M context window", async ({ dashboa
 test("Complete closes promptly while an accepted SDK stop drains", async ({ dashboard, daemon }) => {
   await dispatch(dashboard, daemon, { task: "E2E_SLOW_SESSION_STOP finish and close" });
 
-  const card = dashboard.locator("article.card").first();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
   const complete = card.getByRole("button", { name: "Complete" });
   await expect(complete).toBeVisible();
   await settled(complete);
@@ -238,10 +241,15 @@ test("Complete closes promptly while an accepted SDK stop drains", async ({ dash
 
   // The fake keeps its SDK subprocess alive for four seconds after stdin closes. The modal
   // must follow the daemon's accepted stop rather than that later process exit and pump
-  // drain, while the retained card truthfully becomes unavailable in between.
+  // drain. Completing also closes the selected Console detail immediately, while the
+  // daemon truthfully reports the stopping state until the SDK process finishes draining.
   await expect(dialog).toBeHidden({ timeout: 1_500 });
-  await expect(card).toContainText("stopping");
+  await expect(card.getByText("No session selected")).toBeVisible();
   await expect(card.getByRole("button", { name: "Complete" })).toHaveCount(0);
+  await expect.poll(async () => {
+    const sessions = await api<Array<{ state: string }>>(daemon, "/api/sessions");
+    return sessions[0]?.state ?? "missing";
+  }).toBe("stopping");
   if (process.env.MC_E2E_EVIDENCE) {
     mkdirSync(EVIDENCE, { recursive: true });
     console.log("OBSERVED Complete closed while the accepted SDK stop was still draining");
@@ -250,14 +258,17 @@ test("Complete closes promptly while an accepted SDK stop drains", async ({ dash
     });
     console.log("CAPTURED e2e/.artifacts/dispatch-and-converse/complete-stopping-state.png");
   }
-  await expect(card).toContainText("exited", { timeout: 10_000 });
+  await expect.poll(async () => {
+    const sessions = await api<Array<{ state: string }>>(daemon, "/api/sessions");
+    return sessions[0]?.state ?? "removed";
+  }, { timeout: 10_000 }).toMatch(/^(exited|removed)$/);
 });
 
 test("typing into the conversation gets a reply back from the agent", async ({ dashboard, daemon }) => {
   await dispatch(dashboard, daemon);
 
-  const card = dashboard.locator("article.card").first();
-  await card.getByRole("button", { name: "Expand conversation" }).click();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
 
   // The composer is disabled until the session can be written to. For an SDK session
   // `canMessage` is true as soon as the runtime is known, but the card renders before the
@@ -338,13 +349,13 @@ test("typing into the conversation gets a reply back from the agent", async ({ d
   // "the conversation renders" is a claim that deserves to be seen rather than read.
   //
   // Behind an env flag, and gitignored, because the alternative is a binary that changes on
-  // every run: the card carries a relative timestamp and a fresh worktree uuid, so an
+  // every run: the detail carries a relative timestamp and a fresh worktree uuid, so an
   // unconditional capture would churn the repository for no added signal. Regenerate with
   // `MC_E2E_EVIDENCE=1 npm run test:e2e`. This follows the same shape as the `*-evidence`
   // generators under `scripts/`, which also produce pull-request artifacts on demand.
   if (process.env.MC_E2E_EVIDENCE) {
     mkdirSync(EVIDENCE, { recursive: true });
-    // The expanded card is a fixed-height box and its log scrolls, so a plain capture shows
+    // The Console detail is a fixed-height pane and its log scrolls, so a plain capture shows
     // only the last turn and a half. Unclip both FOR THE CAPTURE ONLY, so one image holds
     // all six turns. This changes nothing the test asserted - every expectation above has
     // already passed against the real, clipped layout - and the clipping itself is covered
@@ -368,7 +379,8 @@ test("Ship it starts No-Mistakes Review through the workflow route", async ({
   daemon,
 }) => {
   await dispatch(dashboard, daemon);
-  const card = dashboard.locator("article.card").first();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
   await expect(card).toBeVisible();
   // IDLE, not merely present. `dispatch` returns when the modal closes, which is well before
   // the launch turn ends - and the end of that turn runs the wrap-up flow, which ANSWERS the
@@ -410,7 +422,7 @@ test("Ship it starts No-Mistakes Review through the workflow route", async ({
     return session?.queue?.wrapupAskedAt !== null && session?.queue?.wrapupAnswered === false;
   }, { timeout: 40_000 }).toBe(true);
 
-  await card.getByRole("button", { name: "Queue" }).click();
+  await card.getByRole("tab", { name: "Work queue" }).click();
   const review = card.getByRole("button", { name: "Run No-Mistakes Review" });
   await expect(review).toBeVisible();
   await expect(card.getByLabel("Direct shipping instruction")).toBeVisible();
@@ -636,7 +648,8 @@ test("Foreman never resurfaces Ship it actions after a scout completes", async (
     task: "Compare the fleet layouts and report the findings",
     kind: "scout",
   });
-  const card = dashboard.locator("article.card").first();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
   await expect(card).toBeVisible();
 
   await expect.poll(async () =>
@@ -658,7 +671,7 @@ test("Foreman never resurfaces Ship it actions after a scout completes", async (
   if (!session) throw new Error("the dispatched scout never appeared in the fleet");
   const sessionId = session.id;
 
-  // Make the forbidden surface present first. This proves the same card can render the
+  // Make the forbidden surface present first. This proves the same detail can render the
   // controls and makes the later absence meaningful rather than a selector that never
   // matched. Answer the seeded ask before starting Foreman, then watch for any transient
   // reappearance while the real worker retires the scout completion.
@@ -685,7 +698,7 @@ test("Foreman never resurfaces Ship it actions after a scout completes", async (
     }>>(daemon, "/api/sessions")).find((candidate) => candidate.id === sessionId);
     return current?.queue?.wrapupAskedAt !== null && current?.queue?.wrapupAnswered === false;
   }, { timeout: 40_000 }).toBe(true);
-  await card.getByRole("button", { name: "Queue" }).click();
+  await card.getByRole("tab", { name: "Work queue" }).click();
   await expect(card.getByRole("button", { name: "Run No-Mistakes Review" })).toBeVisible();
   await expect(card.getByLabel("Direct shipping instruction")).toBeVisible();
   await expect(card.getByRole("button", { name: "Send direct PR instruction" })).toBeVisible();
@@ -698,7 +711,7 @@ test("Foreman never resurfaces Ship it actions after a scout completes", async (
 
   // The SDK acknowledgement already supplied the accepted human prompt and resolved
   // objective. The fake does not run machine-installed Claude hooks, so supply only the
-  // completion event Foreman needs as proof that this idle card completed a work cycle.
+  // completion event Foreman needs as proof that this idle session completed a work cycle.
   const token = readFileSync(join(daemon.home, "token"), "utf8").trim();
   const postHook = async (event: string, body: Record<string, unknown>): Promise<void> => {
     const hook = await fetch(`${daemon.baseURL}/hooks/${event}`, {
@@ -916,12 +929,12 @@ test("a managed launch shows only the human task request, and the agent still ge
 }) => {
   await dispatch(dashboard, daemon, { task: HUMAN_REQUEST });
 
-  const card = dashboard.locator("article.card").first();
-  await card.getByRole("button", { name: "Expand conversation" }).click();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const detail = dashboard.locator(".console-detail");
   // The agent has replied, so the launch turn has certainly been written and read back.
-  await expect(card.locator(".turn").getByText(`Mock reply to: ${HUMAN_REQUEST}`)).toBeVisible();
+  await expect(detail.locator(".turn").getByText(`Mock reply to: ${HUMAN_REQUEST}`)).toBeVisible();
 
-  const log = card.locator(".transcript-log");
+  const log = detail.locator(".transcript-log");
   /**
    * The operator's OWN turns, in whichever rendering is up.
    *
@@ -941,24 +954,24 @@ test("a managed launch shows only the human task request, and the agent still ge
 
   // 2. The Native rendering draws the same projection. It is a second renderer over the
   //    same rows, which is exactly how a fix applied to only one of them would be caught.
-  const terminalView = card.getByRole("button", { name: "Terminal view" });
+  const terminalView = detail.getByRole("button", { name: "Terminal view" });
   await terminalView.click();
-  await expect(card.getByRole("region", { name: "Conversation terminal" })).toBeVisible();
+  await expect(detail.getByRole("region", { name: "Conversation terminal" })).toBeVisible();
   // The terminal rendering draws a user turn as a command line rather than a bubble, so
   // the text lives under its own class. Same turn, same projection, different element.
   await expect(yourTurns()).toHaveCount(1);
   await expect(yourTurns().locator(".pty-command")).toHaveText(HUMAN_REQUEST);
   await terminalView.click();
-  await expect(card.getByRole("region", { name: "Conversation terminal" })).toHaveCount(0);
+  await expect(detail.getByRole("region", { name: "Conversation terminal" })).toHaveCount(0);
 
   // 3. Find-in-conversation cannot reach the hidden text - a hidden turn that is still
   //    searchable is the half-fix this asserts against - while the human request still is
   //    searchable, so find is looking at a real list. Under the "You" scope for the same
   //    reason the log assertions are: the agent's echo is a legitimate All-scope match.
-  await card.getByRole("heading", { name: /tidy the flexbox helper/i }).click();
+  await detail.locator(".detail-body").focus();
   await dashboard.keyboard.press("Meta+f");
-  const box = card.getByRole("searchbox", { name: "Find in conversation" });
-  const results = card.getByRole("complementary", { name: "Search results" });
+  const box = detail.getByRole("searchbox", { name: "Find in conversation" });
+  const results = detail.getByRole("complementary", { name: "Search results" });
   await box.fill("Mission Control execution authorization");
   await results.getByRole("button", { name: "You", exact: true }).click();
   await expect(results).toContainText("Nothing matches");
@@ -976,7 +989,7 @@ test("a managed launch shows only the human task request, and the agent still ge
 
   // 4. The Yours rail indexes the human request under the operator's own name, not the
   //    platform contract typed on their behalf.
-  const rail = card.getByRole("region", { name: "Conversation rail" });
+  const rail = detail.getByRole("region", { name: "Conversation rail" });
   await rail.getByRole("tab", { name: "Yours" }).click();
   await expect(rail.getByRole("button", { name: new RegExp(HUMAN_REQUEST) })).toBeVisible();
   await expect(rail).not.toContainText(PLATFORM_ONLY_LAUNCH_LINE);
@@ -987,31 +1000,31 @@ test("a managed launch shows only the human task request, and the agent still ge
   // passed against the real layout.
   if (process.env.MC_E2E_EVIDENCE) {
     mkdirSync(EVIDENCE, { recursive: true });
-    // Park the pointer off the card first: the Yours tab was just clicked, so its tooltip
+    // Park the pointer off the detail first: the Yours tab was just clicked, so its tooltip
     // is still open and lands over the controls above the log in the capture.
     await dashboard.mouse.move(0, 0);
-    await expect(card.getByText("The messages you sent in this conversation")).toHaveCount(0);
+    await expect(detail.getByText("The messages you sent in this conversation")).toHaveCount(0);
     console.log("OBSERVED the first user turn is the human task request, with no launch contract");
     console.log("OBSERVED the Yours rail indexes that same request");
-    await card.screenshot({ path: `${EVIDENCE}launch-turn-projection.png` });
+    await detail.screenshot({ path: `${EVIDENCE}launch-turn-projection.png` });
     console.log("CAPTURED e2e/.artifacts/dispatch-and-converse/launch-turn-projection.png");
   }
 
   // 5. A human follow-up with text overlapping the launch still renders and is searchable.
   //    Marker matching must be a fingerprint of one recorded turn, never "hide the first
   //    user message".
-  const reply = card.getByPlaceholder(/^Reply to this session/);
+  const reply = detail.getByPlaceholder(/^Reply to this session/);
   await expect(reply).toBeEnabled();
   const followUp = `${HUMAN_REQUEST} in the smaller file too`;
   await reply.fill(followUp);
   await reply.press("Enter");
-  await expect(card.locator(".turn").getByText(followUp, { exact: true })).toBeVisible();
+  await expect(detail.locator(".turn").getByText(followUp, { exact: true })).toBeVisible();
 
   // 6. Reloading re-reads the transcript from the daemon over a fresh stream. The launch
   //    text must not come back with it.
   await dashboard.reload();
-  const reopened = dashboard.locator("article.card").first();
-  await reopened.getByRole("button", { name: "Expand conversation" }).click();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const reopened = dashboard.locator(".console-detail");
   const reopenedLog = reopened.locator(".transcript-log");
   const reopenedYours = reopenedLog.locator('article[aria-label="you"]');
   await expect(reopenedYours.first().locator(".turn-text")).toHaveText(HUMAN_REQUEST);

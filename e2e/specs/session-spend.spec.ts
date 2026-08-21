@@ -87,7 +87,7 @@ async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {
     .selectOption("__none");
   await dialog.getByRole("button", { name: "Dispatch now" }).click();
   await expect(dialog).toBeHidden();
-  await expect(page.locator("article.card")).toHaveCount(1);
+  await expect(page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row")).toHaveCount(1);
 }
 
 test("successive cumulative SDK results add only incremental spend", async ({
@@ -110,8 +110,8 @@ test("successive cumulative SDK results add only incremental spend", async ({
   // not another standalone $5.00 turn. The ledger must therefore add only the $2.50 and 24,500
   // token delta. Summing the snapshots themselves, which was the production bug, would render
   // $7.50 and 74k here.
-  const card = dashboard.locator("article.card").first();
-  await card.getByRole("button", { name: "Expand conversation" }).click();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
   const reply = card.getByPlaceholder(/^Reply to this session/);
   await expect(reply).toBeEnabled();
   await reply.fill(FOLLOW_UP);
@@ -156,7 +156,8 @@ test("the session's own card carries what that session cost", async ({ dashboard
   // that earned it, through `noteKeyFor` and the driver's `bound` event.
   await dispatch(dashboard, daemon);
 
-  const card = dashboard.locator("article.card").first();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
   await expect(card).toBeVisible();
   await expect(card).toContainText("Agent SDK");
   await expect(card.getByText(/\$2\.50/)).toBeVisible();

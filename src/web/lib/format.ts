@@ -267,7 +267,7 @@ export function shortenCwd(cwd: string | null): string {
  *
  * A task's `fullTitle` must not replace a name the operator chose later, so the detail only
  * wins when the current session name still matches the task title (or the shortened stem the
- * task title starts with). Shared by Cards and Board so every title tooltip reveals the same
+ * task title starts with). Shared by Console and Board so every title tooltip reveals the same
  * text while the visible heading remains bounded.
  */
 export function sessionTitleDetail(session: Pick<Session, "name" | "task">): string {

@@ -196,9 +196,9 @@ async function establishLaunchPromptContext(
  * stream, and it is where the agent's own account of the submission actually lands.
  */
 async function scoutCard(page: Page) {
-  const card = page.locator("article.card").first();
+  await page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = page.locator(".console-detail");
   await expect(card).toBeVisible();
-  await card.getByRole("button", { name: "Expand conversation" }).click();
   return card;
 }
 

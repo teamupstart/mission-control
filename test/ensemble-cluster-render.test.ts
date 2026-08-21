@@ -56,8 +56,7 @@ function view(over: Partial<SessionViewProps> = {}): SessionViewProps {
     onSelect: () => {},
     onCursorTo: () => {},
     onDeselect: () => {},
-    expandedId: null,
-    onToggleExpand: () => {},
+    detailId: null,
     onOpenReviews: () => {},
     onOpenDiff: () => {},
     onOpenFiles: () => {},
@@ -311,7 +310,7 @@ test("the board's drilled-in column uses the SAME rail header the console does",
     sessions,
     ensembleSummaryByRun: SUMMARIES,
     selectedId: sessions[0]!.id,
-    expandedId: sessions[0]!.id,
+    detailId: sessions[0]!.id,
   });
   assert.match(html, /class="rail-cluster"/);
   assert.match(html, /class="rail-ensemble-group"/);

@@ -14,7 +14,7 @@ import type { Session } from "../src/shared/types.ts";
 // queue would quietly refuse to fold in whichever state you happened to be in.
 //
 // (The layout half of the fix - the queue sitting BESIDE the conversation rather than
-// above it, which is what stopped it pushing the log off an expanded card - is flexbox,
+// above it, which is what stopped it pushing the Console log out of view - is flexbox,
 // and there is no layout engine here to ask. That part is verified in a real browser.)
 
 function mkSession(over: Partial<Session> = {}): Session {

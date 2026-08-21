@@ -5,10 +5,10 @@
  * already does; Escape has to as well, or the keyboard has no way to back out of a menu the
  * mouse opened.
  *
- * And it has to STOP there: App's Escape (on `window`) collapses the expanded card and drops
- * the fleet selection. A popover Escape that bubbled on would close the menu AND undo the
- * selection behind it in one press. So each handler calls `stopPropagation`, and this file
- * pins both halves - close on Escape, and don't let it through - for both popovers.
+ * And it has to STOP there: App's Escape (on `window`) hands Console focus back to the rail,
+ * then drops the fleet selection. A popover Escape that bubbled on would close the menu AND
+ * navigate the Console behind it in one press. So each handler calls `stopPropagation`, and
+ * this file pins both halves - close on Escape, and don't let it through - for every popover.
  *
  * Driven from source, not a click: these popovers sit behind an SSE stream that hangs
  * headless automation, and there is no jsdom here to dispatch a real keydown into. This is
@@ -44,7 +44,7 @@ for (const file of ["ForemanBar.tsx", "AlertBar.tsx", "SpendChip.tsx", "KeepAwak
     const handler = escapeHandler(source);
     assert.match(handler, /e\.key === "Escape"/, "the handler does not act on Escape");
     assert.match(handler, /setOpen\(false\)/, "Escape does not close the popover");
-    // Without this, the same Escape reaches App and also collapses/deselects behind the menu.
+    // Without this, the same Escape reaches App and also navigates/deselects behind the menu.
     assert.match(handler, /e\.stopPropagation\(\)/, "Escape is allowed to bubble to App's global handler");
     // Only fire while the menu is open, so Escape is free for everything else otherwise.
     assert.match(handler, /open && e\.key === "Escape"/, "the handler acts even while the popover is closed");

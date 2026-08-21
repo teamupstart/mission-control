@@ -141,54 +141,6 @@ test("the default l shortcut opens the displayed HTML diff rendered in Files", a
   );
 });
 
-test("a changed HTML file in the Diff window opens rendered in the Files window", async ({
-  dashboard,
-  daemon,
-}) => {
-  await dispatch(dashboard, daemon);
-  const cwd = await sessionCwd(daemon);
-  writeFileSync(join(cwd, "alpha.txt"), "first change\n");
-  writeFileSync(
-    join(cwd, "beta.html"),
-    '<link rel="stylesheet" href="theme.css"><h1>Window change</h1>\n',
-  );
-  writeFileSync(join(cwd, "theme.css"), "h1 { color: rebeccapurple; }\n");
-
-  // Keep stylesheet preparation open long enough to observe the first paint. The HTML
-  // itself is already available and must render while this optional enhancement waits.
-  await dashboard.route("**/api/sessions/*/file?*", async (route) => {
-    const path = new URL(route.request().url()).searchParams.get("path");
-    if (path === "theme.css") {
-      await new Promise((resolve) => setTimeout(resolve, 1_000));
-    }
-    await route.continue();
-  });
-
-  // Cards is the shipped default. Its Diff action replaces one overlay with another,
-  // unlike Console where both readers are persistent tabs in one detail pane.
-  await dashboard.getByRole("button", { name: "View changes vs source branch" }).click();
-  const diff = dashboard.getByRole("dialog", { name: "Session diff" });
-  await expect(diff).toBeVisible();
-  await diff
-    .getByRole("navigation", { name: "Changed files" })
-    .getByRole("button", { name: /beta\.html/ })
-    .click();
-  await diff.getByRole("button", { name: "Open in Files" }).click();
-
-  await expect(diff).toBeHidden();
-  const filesWindow = dashboard.getByRole("dialog", { name: /Files for / });
-  await expect(filesWindow).toBeVisible();
-  await expect(
-    filesWindow
-      .getByRole("listbox", { name: "Session files" })
-      .getByRole("option", { name: "beta.html" }),
-  ).toHaveAttribute("aria-selected", "true");
-  const preview = filesWindow.frameLocator('iframe[title="Preview of beta.html"]');
-  const heading = preview.getByRole("heading", { name: "Window change" });
-  await expect(heading).toBeVisible({ timeout: 500 });
-  await expect(heading).toHaveCSS("color", "rgb(102, 51, 153)");
-});
-
 test("a changed file whose name ends in a line-number suffix opens as itself", async ({
   dashboard,
   daemon,

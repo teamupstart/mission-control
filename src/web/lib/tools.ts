@@ -1,6 +1,6 @@
 import type { ToolCall, TranscriptMessage } from "@shared/types.ts";
 
-// The expanded card's tool-call presentation. Pure, and here rather than in the
+// The session detail's tool-call presentation. Pure, and here rather than in the
 // component, so the parsing heuristics below can be checked against real transcript
 // inputs in a table test instead of through a DOM.
 

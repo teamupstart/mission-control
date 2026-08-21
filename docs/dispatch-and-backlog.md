@@ -350,7 +350,7 @@ updates to the model's a beat later. If `claude` is
 missing, logged out, or slow, that first-line title just stands - nothing breaks, and the
 dispatch still goes.
 
-The new session then shows up on the grid like any other, with an **intent chip** for the
+The new session then shows up in the fleet like any other, with an **intent chip** for the
 task it is running. A terminal-runtime session stays out of the way until you click
 **Focus**; an Agent SDK session has no tab and offers **Continue in terminal** instead.
 Choose **Add to backlog** instead of **Dispatch now** to shelve a task without launching
@@ -368,7 +368,7 @@ Which means the chip is often not drawn at all, and that is the point rather tha
 omission: an ordinary running ship task on the session it named has nothing to add to the
 name above it, and an empty tinted bar says less than no bar. It appears as soon as it is
 carrying something - a chosen kind, a title the session's name does not hold, the
-[recurring-mission](recurring-missions.md) origin mark, the merge outcome, or (on Cards)
+[recurring-mission](recurring-missions.md) origin mark, the merge outcome, or
 a `dispatching…` or `failed` word - and it carries the task's status as its colour
 whenever it is there.
 
@@ -405,8 +405,8 @@ waiting for, and neither manual launch, drag-to-assign, nor Foreman can start it
 Reopen the backlog task to add or remove dependencies; cycles are refused.
 
 Closing the dispatch form (<kbd>Esc</kbd>, a backdrop click, **Cancel**, or the ✕) **keeps
-what you've typed** - reopen and a half-written task is still there, so you can glance at
-the grid mid-thought without losing it. The draft is cleared only once the task is actually
+what you've typed** - reopen and a half-written task is still there, so you can leave the
+form mid-thought without losing it. The draft is cleared only once the task is actually
 dispatched or queued, or when you hit **Clear** to start a fresh one - either way the form
 comes back seeded with that repo, not blank. A submit that fails leaves the form open with
 your fields intact so you can retry.
@@ -446,7 +446,7 @@ checkout` naming the path; task-source sweeps report the same refusal in their r
 
 ### Hand a shelved task to an agent that's already running
 
-On the [Board](ui.md#layout-cards-console-or-board), **drag a backlog card onto an idle
+On the [Board](ui.md#layout-console-or-board-in-settings), **drag a backlog card onto an idle
 agent with live hook instrumentation** in the same repo and it starts there instead of in
 a new worktree. A passively confirmed Codex session can appear in the Idle column without
 lighting up as a drop target: the rollout proves its displayed state, but not that the
@@ -508,7 +508,7 @@ readable afterwards rather than a single row overwritten four times.
 ### Edit a shelved task
 
 **Click a backlog task and it opens back up in the form that wrote it** - on the
-[Board](ui.md#layout-cards-console-or-board)'s backlog column, by its name in the
+[Board](ui.md#layout-console-or-board-in-settings)'s backlog column, by its name in the
 [Roundup](attention-and-alerts.md#roundup) panel, or by its title in the Line's
 [Backlog drawer](ui.md#the-stage-drawers). Every field is editable, including its dependencies and more
 screenshots dropped onto it. Put **Model** or **Effort** back on its named **Default - …**

@@ -44,8 +44,8 @@ const EVIDENCE = artifactsDir("workflow-bind-chip-returns");
 
 /**
  * The chip's accessible name. The glyph is U+FF0B FULLWIDTH PLUS SIGN, not an ASCII `+` - it is
- * what `SessionCard` and `ConsoleDetail` both render, so it is what a person's screen reader and
- * this selector both read.
+ * what the shared session detail renders, so it is what a person's screen reader and this
+ * selector both read.
  */
 const BIND_CHIP = "＋ workflow";
 
@@ -199,7 +199,7 @@ async function openConsoleDetail(page: Page, daemon: DaemonHandle): Promise<void
   await expect(page.locator("header.detail-head")).toBeVisible();
 }
 
-test("an OPEN run withholds the bind chip from the card and the console detail", async ({
+test("an OPEN run withholds the bind chip from the shared session detail", async ({
   dashboard,
   daemon,
 }) => {
@@ -209,55 +209,33 @@ test("an OPEN run withholds the bind chip from the card and the console detail",
   // second binding the daemon refuses as a conflict.
   const session = await dispatchIdleAgent(dashboard, daemon, "get held by a run for the bind chip");
 
-  // Before any run exists, the chip is on offer - the state it has always been offered in, and
-  // the baseline that makes its absence below mean something.
-  const card = dashboard.getByRole("article");
-  await expect(card.getByRole("button", { name: BIND_CHIP })).toBeVisible();
+  await openConsoleDetail(dashboard, daemon);
+  const head = dashboard.locator("header.detail-head");
+  await expect(head.getByRole("button", { name: BIND_CHIP })).toBeVisible();
 
   await seedRun(daemon, session, "open", "E2E_FAIL_VERDICT", "waiting_for_session");
 
   // The chip goes, over SSE, with no reload: the run summary landing is what withdraws the offer.
-  await expect(card.getByRole("button", { name: "Review changes" })).toBeVisible();
-  await expect(card.getByRole("button", { name: BIND_CHIP })).toHaveCount(0);
-
-  // And the console detail header reads the same, because it reads the same predicate.
-  await openConsoleDetail(dashboard, daemon);
-  const head = dashboard.locator("header.detail-head");
   await expect(head.getByRole("button", { name: "Review changes" })).toBeVisible();
   await expect(head.getByRole("button", { name: BIND_CHIP })).toHaveCount(0);
 });
 
-test("a COMPLETED run gives the bind chip back, beside its outcome, on both surfaces", async ({
+test("a COMPLETED run gives the bind chip back beside its outcome", async ({
   dashboard,
   daemon,
 }) => {
   const session = await dispatchIdleAgent(dashboard, daemon, "finish a review for the bind chip");
   await seedRun(daemon, session, "done", "E2E_PASS_VERDICT", "completed");
 
-  // The pairing is the whole point, and it is why this fix is at the gate rather than in the
-  // newest-run-per-session map: `Approved` is drawn from that map's terminal run, so narrowing it
-  // would have deleted the history to restore the affordance. Both are here.
-  const card = dashboard.getByRole("article");
-  await expect(card.getByRole("button", { name: "Approved" })).toBeVisible();
-  await expect(card.getByRole("button", { name: armedChip("done") })).toBeVisible();
-  await shoot(dashboard, "card-approved-and-bind-chip");
-
-  // The restored chip must not COST anything. This head now carries an outcome chip, a bind chip
-  // and the state badge at once - the crowding `.card-head`'s wrap rule and `.card-title`'s 9ch
-  // floor were written for, since a held card already carried three trailing marks. So the name
-  // keeps a readable stem rather than being deleted, and the trailing caret stays inside the
-  // card rather than being clipped. Geometry, because no assertion on markup can say
-  // "still visible".
-  const title = card.locator(".card-title h2");
-  expect((await title.boundingBox())!.width).toBeGreaterThan(40);
-  const caret = card.getByRole("button", { name: "Expand conversation" });
-  const caretBox = (await caret.boundingBox())!;
-  const cardBox = (await card.boundingBox())!;
-  expect(caretBox.x + caretBox.width).toBeLessThanOrEqual(cardBox.x + cardBox.width);
+  await openConsoleDetail(dashboard, daemon);
+  const head = dashboard.locator("header.detail-head");
+  await expect(head.getByRole("button", { name: "Approved" })).toBeVisible();
+  await expect(head.getByRole("button", { name: armedChip("done") })).toBeVisible();
+  await shoot(dashboard, "console-detail-approved-and-bind-chip");
 
   // Reachable, not merely present: the chip opens the bind dialog, pinned to this session, so
   // the offer leads somewhere rather than being a decorative dead end of its own.
-  await card.getByRole("button", { name: armedChip("done") }).click();
+  await head.getByRole("button", { name: armedChip("done") }).click();
   const dialog = dashboard.getByRole("dialog", { name: "Bind workflow" });
   await expect(dialog).toBeVisible();
   const picker = dialog.getByRole("combobox", { name: "Session", exact: true });
@@ -274,16 +252,4 @@ test("a COMPLETED run gives the bind chip back, beside its outcome, on both surf
   await shoot(dashboard, "bind-dialog-from-finished-run");
   await dashboard.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
-
-  // The console detail header is the second gate, and a person comparing the two layouts side by
-  // side must not find the offer in one and a dead end in the other.
-  await openConsoleDetail(dashboard, daemon);
-  const head = dashboard.locator("header.detail-head");
-  await expect(head.getByRole("button", { name: "Approved" })).toBeVisible();
-  await expect(head.getByRole("button", { name: armedChip("done") })).toBeVisible();
-  // Captured before the click, because the modal covers the header it is evidence of.
-  await shoot(dashboard, "console-detail-approved-and-bind-chip");
-  await head.getByRole("button", { name: armedChip("done") }).click();
-  await expect(dashboard.getByRole("dialog", { name: "Bind workflow" })).toBeVisible();
-  await shoot(dashboard, "console-detail-bind-dialog");
 });

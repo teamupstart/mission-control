@@ -67,7 +67,7 @@ type DiffSelection = {
  *
  * Fetched rather than denormalized onto the session, unlike the note itself. An
  * episode carries a whole pane capture, and the session object rides the SSE snapshot
- * that every card in the fleet re-renders from - so denormalizing these would put a
+ * that every session surface in the fleet re-renders from - so denormalizing these would put a
  * terminal screenshot per session into every frame, to be read by the one panel that
  * is open.
  *
@@ -151,20 +151,17 @@ function useIntent(
 }
 
 /**
- * The console's detail pane: a bespoke, tabbed reading of ONE session - not the grid's
- * card dropped into a column.
+ * The shared Console and Board detail pane: a tabbed reading of one session.
  *
  * The chrome is fixed and always on screen (who this is, where it lives, its controls);
  * only the body switches between Conversation, Work queue, Workflows, Diff and Files. That
- * is the whole point of a split-pane console - the conversation gets the room a card can't
- * give it, and the sections that share a card's height in the grid get a tab each here
- * instead of stacking and fighting.
+ * is the whole point of a split-pane console: each section gets a tab instead of stacking
+ * and competing for height.
  *
  * The Conversation tab is the transcript and nothing else. The workflow ladder lives in
  * Workflows, which answers "how is this run going", while Conversation answers "what was said".
  *
- * Built from the same leaf pieces the card is (the transcript, the work queue, the action
- * bar, the session-bits), arranged fresh. Keyed by session id in the
+ * Built from the transcript, work queue, action bar, and shared session bits. Keyed by session id in the
  * parent, so switching sessions remounts it - the tab resets to the conversation and the
  * transcript starts clean, rather than showing the last session's Workflows tab.
  */
@@ -235,9 +232,7 @@ export function ConsoleDetail({
     if (view.conversationTabRequest?.sessionId === session.id) setTab("conversation");
   }, [view.conversationTabRequest, session.id]);
 
-  // And for Workflows, reached by the same shape of one-shot request. This tab has no
-  // grid equivalent to fall back to - Cards draws no tab strip - so the chord is a plain
-  // reveal here rather than a per-layout decision like the conversation's.
+  // And for Workflows, reached by the same shape of one-shot request.
   useEffect(() => {
     if (view.workflowsTabRequest?.sessionId === session.id) setTab("workflows");
   }, [view.workflowsTabRequest, session.id]);
@@ -261,7 +256,7 @@ export function ConsoleDetail({
     return () => view.registerDetailScroll(session.id, null);
   }, [session.id, tab, view.registerDetailScroll]);
 
-  // Unlike Cards, Console and Board have a session-owned Diff tab. An action-bar
+  // Console and Board have a session-owned Diff tab. An action-bar
   // shortcut or a commit-specific request therefore lands here instead of opening a modal.
   useEffect(() => {
     const request = view.diffTabRequest;
@@ -371,8 +366,7 @@ export function ConsoleDetail({
   const allowlisted = foremanAllowlisted(session.cwd, session.repoRoot, view.foremanAllowlist ?? []);
   const queueCount = session.queue?.openCount ?? 0;
   const invited = session.foremanInvite !== null;
-  // The shared reduction, so this pill and the card's cannot drift on what a kind badge
-  // or a repeated title is worth.
+  // The shared reduction keeps the task kind and title rules consistent across surfaces.
   const pill = taskPillParts(session);
 
   const tabs = useMemo(() => detailTabs({ queueCount }), [queueCount]);
@@ -441,7 +435,7 @@ export function ConsoleDetail({
         </div>
         <PrChip session={session} />
         <InspectorChip session={session} />
-        {/* One chip per review, exactly as the card draws them - a multi-repo task's session
+        {/* One chip per review: a multi-repo task's session
             names each repository, a single-repo one is unchanged. */}
         <WorkflowChips runs={workflowRuns} onOpen={view.onOpenWorkflowRun} />
         <EnsembleChip
@@ -457,7 +451,7 @@ export function ConsoleDetail({
             session.pipeline ? () => view.onOpenPipelineRun?.(session.pipeline!) : undefined
           }
         />
-        {/* The card's gate, read from the same helper: a terminal run releases the offer here
+        {/* The shared gate: a terminal run releases the offer here
             too, and stands its outcome chip next to it rather than instead of it. */}
         {sessionCanBindWorkflow(workflowRuns) && view.onBindWorkflow && (
           <Tooltip label={workflowBindChipTitle(workflowBinding)}>
@@ -545,8 +539,7 @@ export function ConsoleDetail({
               ))}
           </div>
           )}
-          {/* The same shared leaf the card draws, for the same reason it is a leaf: this
-              detail is served by two layouts, so a private copy misses one of them.
+          {/* The shared leaf is served by two layouts, so a private copy misses one of them.
               Renders nothing at all for a single-repo task. */}
           <TaskRepoPrs repoPrs={session.task.repoPrs} />
           </>
@@ -602,16 +595,11 @@ export function ConsoleDetail({
             session exactly as the tabs choose WHAT. Folding them in retires the worktree
             band above the log, and the conversation gets that height.
 
-            No worktree path comes with them (`place="toolbar"`). The `PATH`/`BRANCH` row two
-            bands up already prints it in full, and a second copy here would recreate the
-            duplication this change exists to remove.
-
-            The panel is told to draw no strip of its own (`hostToolbar`), and this mount
-            takes over `registerLaunchers` so the `t` / `a` chords still resolve in this host.
-            The Cards layout never renders this component and keeps the panel-owned strip. */}
+            The `PATH`/`BRANCH` row two bands up already prints the worktree in full, so the
+            launcher row carries controls only. This mount owns `registerLaunchers` so the
+            `t` / `a` chords resolve against the visible buttons. */}
         <SessionLaunchers
           session={session}
-          place="toolbar"
           registerLaunchers={view.registerLaunchers}
           leading={
             // Only on Conversation, because unlike the launchers this control is about the
@@ -689,17 +677,13 @@ export function ConsoleDetail({
               onReplyBox={setHasReply}
               onOpenFile={(href, probe) => view.onOpenFile(session.id, href, probe)}
               files={view.files}
-              // This detail hosts the launcher strip in its tab row, so the panel draws
-              // none - and `registerLaunchers` goes to that mount instead, since exactly
-              // one strip per session may hold App's handle.
-              hostToolbar
               registerFind={view.registerFind}
               resetNonce={view.resetNonces[session.id] ?? 0}
             />
           </div>
         )}
 
-        {/* Mounted unconditionally, exactly as the grid card does it. Gating this on
+        {/* Mounted unconditionally. Gating this on
             `session.queue` looked like an empty state but was a dead end: that summary is
             null until a queue row exists, and the only thing that creates one is adding an
             item - which happens in WorkQueue's own empty branch, along with the re-attach
@@ -796,9 +780,7 @@ export function ConsoleDetail({
         {live && (
           <ActionBar
             session={session}
-            variant="foot"
             hasReply={hasReply}
-            queueOpen={tab === "queue"}
             onToggleQueue={() => setTab((t) => (t === "queue" ? "conversation" : "queue"))}
             onFocusReply={focusReply}
             onDiff={() => view.onOpenDiff(session.id)}

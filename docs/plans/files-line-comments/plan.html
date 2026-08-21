@@ -159,7 +159,7 @@
   <header>
     <h1>Line comments in the Files workspace</h1>
     <div class="meta">
-      <span><strong>Status:</strong> Proposed - awaiting review</span>
+      <span><strong>Status:</strong> Approved - decisions recorded, phasing next</span>
       <span><strong>Date:</strong> 2026-08-21</span>
       <span><strong>Owner:</strong> Mission Control web dashboard and daemon</span>
     </div>
@@ -185,20 +185,22 @@
     <li><strong>A thread is drawn from durable state, never from the transcript.</strong> An MCP tool result cannot render itself - every harness parser drops a user turn that is purely a tool result as machine noise, which is why <code>ReviewAnswerCard</code> exists and is woven in by timestamp.</li>
   </ol>
 
-  <h2>Open decisions</h2>
-  <p>Three choices below change what gets built. This document records a recommendation for each; the approved answers get written back into this file before any implementation phase is scheduled.</p>
+  <h2>Settled decisions</h2>
+  <p>Every open choice has been answered. These are recorded here because the rest of the document is written against them.</p>
   <div class="table-wrap">
     <table>
-      <thead><tr><th>#</th><th>Decision</th><th>Recommendation</th></tr></thead>
+      <thead><tr><th>#</th><th>Decision</th><th>Answer</th></tr></thead>
       <tbody>
-        <tr><td>1</td><td>Which viewer surfaces accept comments in v1</td><td>Editor + Markdown Preview + HTML Preview</td></tr>
-        <tr><td>2</td><td>What a thread belongs to, and how long it lives</td><td>The checkout and the path, not the session</td></tr>
-        <tr><td>3</td><td>What the walkthrough does when the agent does not answer</td><td>Auto-advance after a grace window, marking the thread unanswered</td></tr>
+        <tr><td>1</td><td>Which viewer surfaces accept comments in v1</td><td><strong>Editor + Markdown Preview + HTML Preview</strong></td></tr>
+        <tr><td>2</td><td>What a thread belongs to, and how long it lives</td><td><strong>The session.</strong> Threads end with the session that owns them</td></tr>
+        <tr><td>3</td><td>What the walkthrough does when the agent does not answer</td><td><strong>Auto-advance after a grace window</strong>, marking the thread unanswered</td></tr>
+        <tr><td>4</td><td>How the review is delivered</td><td><strong>One comment at a time</strong>, not one batch</td></tr>
+        <tr><td>5</td><td>How the agent's reply returns</td><td><strong>A new MCP tool</strong>, with a transcript-id fallback</td></tr>
       </tbody>
     </table>
   </div>
-  <div class="note">
-    <p>Two questions the earlier draft asked are already settled and are not re-opened here: the review is delivered <strong>one comment at a time</strong> rather than as one batch, and the agent's reply returns through <strong>a new MCP tool with a transcript-id fallback</strong>.</p>
+  <div class="decision">
+    <p>Decision 2 went the other way from the recommendation this document originally carried, and it simplifies more than it costs. A session-scoped thread has one unambiguous owner, so the threads table keys on <code>session_id</code> directly, the one-in-flight index is naturally per-session, and cleanup rides the existing <code>session_remove</code> path rather than needing a worktree hook of its own. What it gives up is stated as a risk below: a review interrupted by a session ending does not survive it.</p>
   </div>
 
   <h2>Scope and effort</h2>
@@ -213,7 +215,7 @@
         <tr><td>Persistence</td><td>Two new tables, plus the <code>docs/sqlite-database.html</code> catalog and the table count in <code>test/db-shell.test.ts</code></td></tr>
         <tr><td>Wire protocol</td><td>Two new <code>ServerEvent</code> variants, new Zod schemas</td></tr>
         <tr><td>Agent surface</td><td>One new MCP tool, its entry in <code>MISSION_MCP_TOOLS</code>, and a <code>/mcp/*</code> route bound by <code>findSessionByEnv</code></td></tr>
-        <tr><td>Security-relevant</td><td>One new hashed bridge script in the shared HTML preview sandbox (decision 1 only)</td></tr>
+        <tr><td>Security-relevant</td><td>One new hashed bridge script in the shared HTML preview sandbox</td></tr>
         <tr><td>Main uncertainty</td><td>How often the agent's own edits invalidate the comments still queued behind them</td></tr>
       </tbody>
     </table>
@@ -233,7 +235,7 @@ pre        5 -&gt; 7
 table      9 -&gt; 11
 blockquote 13 -&gt; 13</code></pre></div>
   <p><code>react-markdown@10</code> passes that node to a custom component as <code>node?: Element</code> (<code>react-markdown/lib/index.d.ts:63</code>), so the anchor is available without a second parser. This was the single largest risk in the design and it is now settled.</p>
-  <p><strong>The HTML preview sandbox already has the bridge pattern this needs.</strong> <code>src/web/lib/htmlPreview.ts</code> pins <code>sandbox="allow-scripts"</code> with no <code>allow-same-origin</code>, and a CSP whose <code>script-src</code> names exactly two SHA-256 hashes - a scroll bridge and a link bridge. The document's own JavaScript is blocked by the hash allowlist, not by the sandbox. A comment bridge is a third hashed script following the same rule; it is a real change to a controlled security module and is the reason decision 1 exists.</p>
+  <p><strong>The HTML preview sandbox already has the bridge pattern this needs.</strong> <code>src/web/lib/htmlPreview.ts</code> pins <code>sandbox="allow-scripts"</code> with no <code>allow-same-origin</code>, and a CSP whose <code>script-src</code> names exactly two SHA-256 hashes - a scroll bridge and a link bridge. The document's own JavaScript is blocked by the hash allowlist, not by the sandbox. A comment bridge is a third hashed script following the same rule; it is a real change to a controlled security module, and decision 1 approved it as part of the feature's v1 surface.</p>
 
   <h3>Anchoring</h3>
   <p><strong>Anchored comments have a precedent with a stated rule.</strong> <code>inspector_comments</code> (<code>src/server/db.ts:1798-1817</code>) carries <code>path</code>, <code>line</code>, <code>title</code>, <code>body</code>, <code>severity</code>, <code>status</code> (<code>drafted | posting | open | resolved</code>), <code>replies</code>, and <code>answered_comment_id</code>, keyed uniquely by <code>(pr_key, fingerprint)</code>. The comment above it states the principle this plan adopts:</p>
@@ -284,7 +286,7 @@ blockquote 13 -&gt; 13</code></pre></div>
     <li><strong>A human reply in a thread re-enters the queue</strong> at the end, and is delivered in its turn exactly like a new comment.</li>
     <li><strong>The agent's reply appears in the thread it answers</strong>, live, without a refresh, and raises the Files tab's attention pip.</li>
     <li><strong>A human resolves a thread.</strong> The agent may mark a thread addressed, which shows as a suggestion; only a person closes it. Resolved threads collapse out of the gutter behind a "show resolved" toggle.</li>
-    <li><strong>The walkthrough stops rather than guesses.</strong> A session that cannot take a message, a file that has left the checkout, or a queue that has gone entirely outdated pauses the review and says which, keeping every unsent comment.</li>
+    <li><strong>The walkthrough stops rather than guesses.</strong> A session that cannot take a message, a file that has left the checkout, or a queue that has gone entirely outdated pauses the review and says which, keeping every unsent comment for as long as the session lives.</li>
     <li><strong>Comment mode changes nothing about editing.</strong> The Editor still edits and saves the exact source; Preview still renders it. Turning comment mode off leaves every thread in place.</li>
   </ol>
 
@@ -452,7 +454,7 @@ blockquote 13 -&gt; 13</code></pre></div>
   <p><strong>Advance signals</strong>, in order of strength:</p>
   <ol>
     <li><strong>A reply through the tool for the outstanding thread.</strong> The good path, and a real completion signal rather than an inference.</li>
-    <li><strong>The session settles idle with no reply.</strong> The agent answered in prose, or edited without answering. Decision 3 settles what happens: the recommendation is to advance after a grace window and mark the thread <code>sent, no reply</code>, because a walkthrough that needs a click per comment is not a walkthrough.</li>
+    <li><strong>The session settles idle with no reply.</strong> The agent answered in prose, or edited without answering. Per decision 3 the walkthrough waits out a grace window, marks the thread <code>sent, no reply</code>, and sends the next comment - because a walkthrough that needs a click per comment is not a walkthrough. The thread is not lost: it keeps its anchor and its marker, and the absence of a reply is what the marker shows.</li>
     <li><strong>Nothing.</strong> The session is working, blocked on you, or gone. The walkthrough waits, and <code>canMessage</code> refusing is a pause with a reason, not a lost comment.</li>
   </ol>
   <p><strong>Everything is durable.</strong> The walkthrough's state is columns on the queue, not memory, so a daemon restart resumes rather than re-sends. A send that lands in <code>uncertain</code> pauses the review and surfaces the existing Retry / Mark sent controls rather than inventing a second recovery path.</p>
@@ -461,7 +463,7 @@ blockquote 13 -&gt; 13</code></pre></div>
   <p>Two tables, following the house conventions: <code>TEXT PRIMARY KEY</code> from <code>randomUUID()</code> at the call site, epoch-millisecond <code>INTEGER NOT NULL</code> timestamps, <code>created_at</code> and <code>updated_at</code> on both, indices declared beside the table, and relations by convention rather than a <code>REFERENCES</code> clause.</p>
   <div class="code-wrap"><pre><code>file_comment_threads
   id            TEXT PRIMARY KEY
-  scope_key     TEXT NOT NULL   -- the checkout this thread belongs to
+  session_id    TEXT NOT NULL   -- the session this thread belongs to (decision 2)
   path          TEXT NOT NULL   -- repository-relative
   start_line    INTEGER NOT NULL
   end_line      INTEGER NOT NULL
@@ -486,8 +488,8 @@ file_comment_messages
   body          TEXT NOT NULL
   delivered_at  INTEGER         -- when it reached the agent; NULL while queued
   created_at    INTEGER NOT NULL</code></pre></div>
-  <p>A partial unique index on <code>(scope_key)</code> where <code>status = 'sending'</code> enforces one-comment-in-flight at the database rather than by convention, mirroring <code>idx_pending_turns_sending</code> and <code>one_inflight_per_queue</code>. <code>delivery_id</code> is the correlation <code>pending_turns</code> cannot carry: it lives here instead, so that table needs no new column.</p>
-  <p><code>scope_key</code> is what decision 2 settles. The recommendation is the resolved checkout root, so a thread outlives the session that started it and a new session on the same worktree inherits the conversation. Threads are removed when their worktree is, through the existing worktree removal path, never by inferring anything from a session's exit state.</p>
+  <p>A partial unique index on <code>(session_id)</code> where <code>status = 'sending'</code> enforces one-comment-in-flight at the database rather than by convention, mirroring <code>idx_pending_turns_sending</code> and <code>one_inflight_per_queue</code>. Because decision 2 scopes a thread to a session, that index is exactly the invariant the walkthrough needs and nothing broader. <code>delivery_id</code> is the correlation <code>pending_turns</code> cannot carry: it lives here instead, so that table needs no new column.</p>
+  <p><strong>Threads end with their session.</strong> Both tables are cleared on <code>session_remove</code> and on no other signal - never on <code>state === "exited"</code>, which is the standing rule for durable cleanup in this repository and the reason there is no second eviction path here. A session that is merely idle, disconnected, or restarting keeps every thread it owns.</p>
   <p>Drafts are persisted from the first keystroke rather than kept in browser state: the integrated tab and the extracted Files window are two live <code>FileWorkspace</code> instances that converge only through the daemon.</p>
 
   <h3>5. The payload</h3>
@@ -550,9 +552,10 @@ any unsent state ──the file moved under it──▶ outdated (reversible)</c
       <tbody>
         <tr><td>Markdown block elements carry exact source line ranges through this repo's plugin chain</td><td>Verified by running the chain in this checkout</td><td>99%</td><td>Markdown Preview falls back to Editor-only commenting</td></tr>
         <tr><td>Keeping one turn outstanding avoids tail-only recall, head-of-line blocking, and the missing correlation id</td><td>Verified against <code>pending_turns</code> schema, <code>recallPendingTurn</code>, and <code>claimNextPendingTurn</code></td><td>95%</td><td>The walkthrough needs its own delivery path rather than the outbox</td></tr>
-        <tr><td>A third hashed bridge grants the HTML preview sandbox no new capability</td><td>Inferred from <code>htmlPreview.ts:1-82</code>; the two existing bridges already read the document and post to the parent</td><td>90%</td><td>Decision 1 drops HTML Preview</td></tr>
+        <tr><td>A third hashed bridge grants the HTML preview sandbox no new capability</td><td>Inferred from <code>htmlPreview.ts:1-82</code>; the two existing bridges already read the document and post to the parent</td><td>90%</td><td>HTML Preview drops back to a later phase and the sandbox is left alone</td></tr>
         <tr><td>Rebuilding CodeMirror decorations from the anchor model survives the whole-document sync</td><td>Inferred from <code>FileEditor.tsx:155-162</code></td><td>85%</td><td>The sync path needs an explicit decoration rebuild hook</td></tr>
-        <tr><td>The reply tool is a reliable advance signal on the happy path</td><td>Inferred from the tool being named in the payload the agent just read</td><td>80%</td><td>Decision 3's idle fallback carries more of the traffic than expected</td></tr>
+        <tr><td>The reply tool is a reliable advance signal on the happy path</td><td>Inferred from the tool being named in the payload the agent just read</td><td>80%</td><td>The decision 3 idle fallback carries more of the traffic than expected</td></tr>
+        <tr><td>Session-scoped threads are the right lifetime for a spec conversation</td><td>Decided by the human in review; the conversation being had is with a particular session</td><td>75%</td><td>Threads need re-parenting to the checkout, which is a <code>session_id</code> to <code>scope_key</code> migration plus a worktree cleanup hook</td></tr>
         <tr><td>Re-anchoring keeps most of the queue valid while the agent edits between comments</td><td>Inferred; not measured, and one-at-a-time makes this materially harder than a batch</td><td>60%</td><td>More comments are held as outdated, so the review needs more of your attention than "start and walk away" implies</td></tr>
         <tr><td>An agent told "answer this one only, 9 more follow" will not over-scope</td><td>Inferred from prompt-instruction behavior generally; untested here</td><td>60%</td><td>Early comments get over-broad edits, invalidating more of the queue behind them</td></tr>
       </tbody>
@@ -571,6 +574,7 @@ any unsent state ──the file moved under it──▶ outdated (reversible)</c
         <tr><td>Pure</td><td><code>test/file-comment-payload.test.ts</code></td><td>The single-comment payload: bounding, position line, id</td></tr>
         <tr><td>Pure</td><td><code>test/file-comment-walkthrough.test.ts</code></td><td>The advance state machine: reply, idle fallback, hold-on-outdated, pause, resume, restart</td></tr>
         <tr><td>Schema</td><td><code>test/file-comment-contracts.test.ts</code></td><td>Zod bounds and refusals</td></tr>
+        <tr><td>Store</td><td><code>test/file-comments-lifecycle.test.ts</code></td><td><code>session_remove</code> clears both tables; <code>state === "exited"</code> alone clears nothing</td></tr>
         <tr><td>Store</td><td><code>test/file-comments-store.test.ts</code></td><td>SQL, status transitions, <code>queue_seq</code> rewrites, the single-flight index</td></tr>
         <tr><td>Migration</td><td><code>test/file-comments-migration.test.ts</code></td><td>Upgrade from a hand-written pre-feature database</td></tr>
         <tr><td>Routes</td><td><code>test/file-comments-http.test.ts</code></td><td>Every route through <code>buildApp()</code>, including the <code>/mcp/*</code> env join</td></tr>
@@ -601,7 +605,7 @@ any unsent state ──the file moved under it──▶ outdated (reversible)</c
     <li><strong>Comment mode in the Editor.</strong> The toolbar control, the CodeMirror gutter and widget, drafting, queueing, and the thread UI. Ends with comments that persist and render but never send.</li>
     <li><strong>The walkthrough.</strong> The single-comment payload, the advance state machine, the re-anchor-before-send pass, the queue controls, and the pause and refusal states. Ends with a review that reaches a real session one comment at a time, and with the measurement the two 60% assumptions need.</li>
     <li><strong>The agent's reply.</strong> The MCP tool, the <code>/mcp</code> route, live thread updates, the tab pip, and the transcript fallback. Ends with the reply advancing the queue instead of the idle fallback.</li>
-    <li><strong>Preview surfaces.</strong> Markdown block anchors and the HTML preview bridge, subject to decision 1. Ends with the feature on every surface it was asked for.</li>
+    <li><strong>Preview surfaces.</strong> Markdown block anchors and the HTML preview bridge. Ends with the feature on every surface decision 1 approved.</li>
   </ol>
   <p>The real phase documents, their merge order, and their scheduled tasks come from the phased-plan step, not from this list.</p>
 </main>

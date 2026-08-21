@@ -1,6 +1,6 @@
 # Line comments in the Files workspace
 
-**Status:** Proposed - awaiting review
+**Status:** Approved - decisions recorded, phasing next
 
 **Date:** 2026-08-21
 
@@ -60,21 +60,26 @@ Four decisions carry the design:
    cannot render itself - every harness parser drops a user turn that is purely a tool result
    as machine noise, which is why `ReviewAnswerCard` exists and is woven in by timestamp.
 
-## Open decisions
+## Settled decisions
 
-Three choices below change what gets built. This document records a recommendation for each;
-the approved answers get written back into this file before any implementation phase is
-scheduled.
+Every open choice has been answered. These are recorded here because the rest of the document
+is written against them.
 
-| # | Decision | Recommendation |
+| # | Decision | Answer |
 |---|---|---|
-| 1 | Which viewer surfaces accept comments in v1 | Editor + Markdown Preview + HTML Preview |
-| 2 | What a thread belongs to, and how long it lives | The checkout and the path, not the session |
-| 3 | What the walkthrough does when the agent does not answer | Auto-advance after a grace window, marking the thread unanswered |
+| 1 | Which viewer surfaces accept comments in v1 | **Editor + Markdown Preview + HTML Preview** |
+| 2 | What a thread belongs to, and how long it lives | **The session.** Threads end with the session that owns them |
+| 3 | What the walkthrough does when the agent does not answer | **Auto-advance after a grace window**, marking the thread unanswered |
+| 4 | How the review is delivered | **One comment at a time**, not one batch |
+| 5 | How the agent's reply returns | **A new MCP tool**, with a transcript-id fallback |
 
-Two questions the earlier draft asked are already settled and are not re-opened here: the
-review is delivered **one comment at a time** rather than as one batch, and the agent's reply
-returns through **a new MCP tool with a transcript-id fallback**.
+Decision 2 went the other way from the recommendation this document originally carried, and it
+simplifies more than it costs. A session-scoped thread has one unambiguous owner, so
+the threads table keys on `session_id` directly, the one-in-flight index is naturally
+per-session, and cleanup rides the existing `session_remove` path rather than needing a
+worktree hook of its own. What
+it gives up is stated as a risk below: a review interrupted by a session ending does not
+survive it.
 
 ## Scope and effort
 
@@ -88,7 +93,7 @@ This is a large feature. It is not a one-pull-request change and should not be p
 | Persistence | Two new tables, plus the `docs/sqlite-database.html` catalog and the table count in `test/db-shell.test.ts` |
 | Wire protocol | Two new `ServerEvent` variants, new Zod schemas |
 | Agent surface | One new MCP tool, its entry in `MISSION_MCP_TOOLS`, and a `/mcp/*` route bound by `findSessionByEnv` |
-| Security-relevant | One new hashed bridge script in the shared HTML preview sandbox (decision 1 only) |
+| Security-relevant | One new hashed bridge script in the shared HTML preview sandbox |
 | Main uncertainty | How often the agent's own edits invalidate the comments still queued behind them |
 
 One-at-a-time costs about a day more than a batch would, not less: the payload renderer gets
@@ -138,7 +143,7 @@ was the single largest risk in the design and it is now settled.
 CSP whose `script-src` names exactly two SHA-256 hashes - a scroll bridge and a link bridge.
 The document's own JavaScript is blocked by the hash allowlist, not by the sandbox. A comment
 bridge is a third hashed script following the same rule; it is a real change to a controlled
-security module and is the reason decision 1 exists.
+security module, and decision 1 approved it as part of the feature's v1 surface.
 
 ### Anchoring
 
@@ -302,7 +307,7 @@ the dashboard from its own state.
 
 15. **The walkthrough stops rather than guesses.** A session that cannot take a message, a file
     that has left the checkout, or a queue that has gone entirely outdated pauses the review and
-    says which, keeping every unsent comment.
+    says which, keeping every unsent comment for as long as the session lives.
 
 16. **Comment mode changes nothing about editing.** The Editor still edits and saves the exact
     source; Preview still renders it. Turning comment mode off leaves every thread in place.
@@ -428,9 +433,10 @@ to prevent.
 1. **A reply through the tool for the outstanding thread.** The good path, and a real
    completion signal rather than an inference.
 2. **The session settles idle with no reply.** The agent answered in prose, or edited without
-   answering. Decision 3 settles what happens: the recommendation is to advance after a grace
-   window and mark the thread `sent, no reply`, because a walkthrough that needs a click per
-   comment is not a walkthrough.
+   answering. Per decision 3 the walkthrough waits out a grace window, marks the thread
+   `sent, no reply`, and sends the next comment - because a walkthrough that needs a click per
+   comment is not a walkthrough. The thread is not lost: it keeps its anchor and its marker,
+   and the absence of a reply is what the marker shows.
 3. **Nothing.** The session is working, blocked on you, or gone. The walkthrough waits, and
    `canMessage` refusing is a pause with a reason, not a lost comment.
 
@@ -448,7 +454,7 @@ indices declared beside the table, and relations by convention rather than a `RE
 ```
 file_comment_threads
   id            TEXT PRIMARY KEY
-  scope_key     TEXT NOT NULL   -- the checkout this thread belongs to
+  session_id    TEXT NOT NULL   -- the session this thread belongs to (decision 2)
   path          TEXT NOT NULL   -- repository-relative
   start_line    INTEGER NOT NULL
   end_line      INTEGER NOT NULL
@@ -475,15 +481,17 @@ file_comment_messages
   created_at    INTEGER NOT NULL
 ```
 
-A partial unique index on `(scope_key)` where `status = 'sending'` enforces one-comment-in-flight
-at the database rather than by convention, mirroring `idx_pending_turns_sending` and
-`one_inflight_per_queue`. `delivery_id` is the correlation `pending_turns` cannot carry: it lives
-here instead, so that table needs no new column.
+A partial unique index on `(session_id)` where `status = 'sending'` enforces
+one-comment-in-flight at the database rather than by convention, mirroring
+`idx_pending_turns_sending` and `one_inflight_per_queue`. Because decision 2 scopes a thread to
+a session, that index is exactly the invariant the walkthrough needs and nothing broader.
+`delivery_id` is the correlation `pending_turns` cannot carry: it lives here instead, so that
+table needs no new column.
 
-`scope_key` is what decision 2 settles. The recommendation is the resolved checkout root, so a
-thread outlives the session that started it and a new session on the same worktree inherits the
-conversation. Threads are removed when their worktree is, through the existing worktree removal
-path, never by inferring anything from a session's exit state.
+**Threads end with their session.** Both tables are cleared on `session_remove` and on no other
+signal - never on `state === "exited"`, which is the standing rule for durable cleanup in this
+repository and the reason there is no second eviction path here. A session that is merely idle,
+disconnected, or restarting keeps every thread it owns.
 
 Drafts are persisted from the first keystroke rather than kept in browser state: the integrated
 tab and the extracted Files window are two live `FileWorkspace` instances that converge only
@@ -590,9 +598,10 @@ as `e2e/README.md` requires.
 |---|---|---|---|
 | Markdown block elements carry exact source line ranges through this repo's plugin chain | Verified by running the chain in this checkout | 99% | Markdown Preview falls back to Editor-only commenting |
 | Keeping one turn outstanding avoids tail-only recall, head-of-line blocking, and the missing correlation id | Verified against `pending_turns` schema, `recallPendingTurn`, and `claimNextPendingTurn` | 95% | The walkthrough needs its own delivery path rather than the outbox |
-| A third hashed bridge grants the HTML preview sandbox no new capability | Inferred from `htmlPreview.ts:1-82`; the two existing bridges already read the document and post to the parent | 90% | Decision 1 drops HTML Preview |
+| A third hashed bridge grants the HTML preview sandbox no new capability | Inferred from `htmlPreview.ts:1-82`; the two existing bridges already read the document and post to the parent | 90% | HTML Preview drops back to a later phase and the sandbox is left alone |
 | Rebuilding CodeMirror decorations from the anchor model survives the whole-document sync | Inferred from `FileEditor.tsx:155-162` | 85% | The sync path needs an explicit decoration rebuild hook |
-| The reply tool is a reliable advance signal on the happy path | Inferred from the tool being named in the payload the agent just read | 80% | Decision 3's idle fallback carries more of the traffic than expected |
+| The reply tool is a reliable advance signal on the happy path | Inferred from the tool being named in the payload the agent just read | 80% | The decision 3 idle fallback carries more of the traffic than expected |
+| Session-scoped threads are the right lifetime for a spec conversation | Decided by the human in review; the conversation being had is with a particular session | 75% | Threads need re-parenting to the checkout, which is a `session_id` to `scope_key` migration plus a worktree cleanup hook |
 | Re-anchoring keeps most of the queue valid while the agent edits between comments | Inferred; not measured, and one-at-a-time makes this materially harder than a batch | 60% | More comments are held as outdated, so the review needs more of your attention than "start and walk away" implies |
 | An agent told "answer this one only, 9 more follow" will not over-scope | Inferred from prompt-instruction behavior generally; untested here | 60% | Early comments get over-broad edits, invalidating more of the queue behind them |
 
@@ -613,6 +622,7 @@ anchored.
 | Pure | `test/file-comment-walkthrough.test.ts` | The advance state machine: reply, idle fallback, hold-on-outdated, pause, resume, restart |
 | Schema | `test/file-comment-contracts.test.ts` | Zod bounds and refusals |
 | Store | `test/file-comments-store.test.ts` | SQL, status transitions, `queue_seq` rewrites, the single-flight index |
+| Store | `test/file-comments-lifecycle.test.ts` | `session_remove` clears both tables; `state === "exited"` alone clears nothing |
 | Migration | `test/file-comments-migration.test.ts` | Upgrade from a hand-written pre-feature database |
 | Routes | `test/file-comments-http.test.ts` | Every route through `buildApp()`, including the `/mcp/*` env join |
 | Events | `test/file-comments-sse.test.ts` | Snapshot and incremental convergence |
@@ -657,8 +667,8 @@ Five phases, each independently mergeable and each leaving the product working:
    60% assumptions need.
 4. **The agent's reply.** The MCP tool, the `/mcp` route, live thread updates, the tab pip, and
    the transcript fallback. Ends with the reply advancing the queue instead of the idle fallback.
-5. **Preview surfaces.** Markdown block anchors and the HTML preview bridge, subject to
-   decision 1. Ends with the feature on every surface it was asked for.
+5. **Preview surfaces.** Markdown block anchors and the HTML preview bridge. Ends with the
+   feature on every surface decision 1 approved.
 
 The real phase documents, their merge order, and their scheduled tasks come from the phased-plan
 step, not from this list.

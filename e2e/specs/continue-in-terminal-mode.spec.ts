@@ -132,7 +132,7 @@ for (const { agent, chip, launcher, resumeWord, carried } of CASES) {
     // action this particular menu takes. The Terminal control opens a shell; it does not
     // resume the agent conversation merely because the neighbouring control does.
     const terminalChooser = card.locator(".conv-launch").getByRole("button", {
-      name: "t Terminal",
+      name: "Terminal",
       exact: true,
     });
     await terminalChooser.click();

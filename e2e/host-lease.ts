@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { createServer, type Server } from "node:net";
+import { connect, createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -11,6 +11,8 @@ const DEFAULT_WAIT_TIMEOUT_MS = 45 * 60_000;
 const LEASE_HOST = "127.0.0.1";
 const LEASE_PORT_BASE = 21_800;
 const LEASE_PORT_SPAN = 1_000;
+const LEASE_PROTOCOL = "mission-control-e2e-lease-v1:";
+const PROBE_TIMEOUT_MS = 1_000;
 
 export interface E2eLeaseOwner {
   token: string;
@@ -101,14 +103,53 @@ async function publishOwner(metadataPath: string, owner: E2eLeaseOwner): Promise
   }
 }
 
-async function tryListen(port: number): Promise<Server | null> {
-  const server = createServer();
+async function tryListen(port: number, token: string): Promise<Server | null> {
+  const server = createServer((socket) => socket.end(`${LEASE_PROTOCOL}${token}\n`));
   return await new Promise((resolve, reject) => {
     server.once("error", (error) => {
       if ((error as NodeJS.ErrnoException).code === "EADDRINUSE") resolve(null);
       else reject(error);
     });
     server.listen({ host: LEASE_HOST, port, exclusive: true }, () => resolve(server));
+  });
+}
+
+type LeaseProbe =
+  | { kind: "free" }
+  | { kind: "incompatible" }
+  | { kind: "lease"; token: string };
+
+async function probeLeaseHolder(port: number): Promise<LeaseProbe> {
+  return await new Promise((resolve) => {
+    const socket = connect({ host: LEASE_HOST, port });
+    let response = "";
+    let settled = false;
+    const finish = (result: LeaseProbe): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      socket.destroy();
+      resolve(result);
+    };
+    const parseResponse = (): LeaseProbe => {
+      const line = response.trim();
+      return line.startsWith(LEASE_PROTOCOL) && line.length > LEASE_PROTOCOL.length
+        ? { kind: "lease", token: line.slice(LEASE_PROTOCOL.length) }
+        : { kind: "incompatible" };
+    };
+    const timeout = setTimeout(() => finish({ kind: "incompatible" }), PROBE_TIMEOUT_MS);
+    socket.setEncoding("utf8");
+    socket.on("data", (chunk) => {
+      response += chunk;
+      if (response.length > 256) finish({ kind: "incompatible" });
+      else if (response.includes("\n")) finish(parseResponse());
+    });
+    socket.once("end", () => finish(parseResponse()));
+    socket.once("error", (error) => {
+      finish((error as NodeJS.ErrnoException).code === "ECONNREFUSED"
+        ? { kind: "free" }
+        : { kind: "incompatible" });
+    });
   });
 }
 
@@ -136,7 +177,8 @@ export async function acquireE2eHostLease(options: AcquireOptions): Promise<E2eH
   let reportedOwnerToken: string | null | undefined;
 
   for (;;) {
-    const server = await tryListen(requestedPort);
+    const token = randomUUID();
+    const server = await tryListen(requestedPort, token);
     if (server) {
       const address = server.address();
       if (!address || typeof address === "string") {
@@ -144,7 +186,7 @@ export async function acquireE2eHostLease(options: AcquireOptions): Promise<E2eH
         throw new Error("Could not read the Mission Control E2E host lease port.");
       }
       const owner: E2eLeaseOwner = {
-        token: randomUUID(),
+        token,
         pid: process.pid,
         acquiredAt: new Date().toISOString(),
         cwd: process.cwd(),
@@ -172,7 +214,22 @@ export async function acquireE2eHostLease(options: AcquireOptions): Promise<E2eH
       };
     }
 
-    const current = await readOwner(metadataPath);
+    let probe = await probeLeaseHolder(requestedPort);
+    if (probe.kind === "free") continue;
+    if (probe.kind === "incompatible") {
+      await sleep(100);
+      probe = await probeLeaseHolder(requestedPort);
+      if (probe.kind === "free") continue;
+      if (probe.kind === "incompatible") {
+        throw new Error(
+          `Port ${requestedPort} is in use by a process that is not a compatible `
+          + "Mission Control E2E host lease.",
+        );
+      }
+    }
+
+    const observed = await readOwner(metadataPath);
+    const current = observed?.token === probe.token ? observed : null;
     const currentToken = current?.token ?? null;
     if (reportedOwnerToken !== currentToken) {
       options.onWait?.(current);

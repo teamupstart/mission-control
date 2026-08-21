@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -74,6 +75,31 @@ test("a crashed owner leaves no kernel lease to reclaim", async () => {
     assert.notEqual(lease.owner.token, "dead-owner");
     await lease.release();
   } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("an unrelated process on the lease port fails fast", async () => {
+  const { root, metadataPath } = await fixture();
+  const unrelated = createServer((socket) => socket.end("not-a-mission-control-lease\n"));
+  try {
+    await new Promise<void>((resolve) => unrelated.listen(0, "127.0.0.1", resolve));
+    const address = unrelated.address();
+    assert.ok(address && typeof address !== "string");
+    await assert.rejects(
+      acquireE2eHostLease({
+        metadataPath,
+        port: address.port,
+        workers: 4,
+        waitTimeoutMs: 60_000,
+      }),
+      /not a compatible Mission Control E2E host lease/,
+    );
+  } finally {
+    await new Promise<void>((resolve, reject) => unrelated.close((error) => {
+      if (error) reject(error);
+      else resolve();
+    }));
     await rm(root, { recursive: true, force: true });
   }
 });

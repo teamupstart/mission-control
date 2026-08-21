@@ -70,6 +70,11 @@ test("waitForResolution reports in, and gives up when the client cancels", () =>
   assert.match(wait, /call\?\.signal\.aborted/, "a cancelled call still polls the daemon");
   assert.match(wait, /call\?\.signal\)/, "the in-flight long poll is not cancelled with it");
   assert.match(wait, /\/detach/, "a cancelled call can still strand the human's answer");
+  assert.match(
+    wait,
+    /if \(review\.status !== "pending"\) \{\s*\/\/[\s\S]*?if \(call\?\.signal\.aborted\)[\s\S]*?return review;/,
+    "cancellation after a resolved long poll bypasses the durable detach handoff",
+  );
 });
 
 for (const [name, nextName] of [

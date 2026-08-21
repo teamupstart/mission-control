@@ -147,7 +147,13 @@ async function waitForResolution(id: string, call?: BlockingCall): Promise<Revie
       const res = await http(`/mcp/reviews/${id}/wait`, "GET", undefined, false, call?.signal);
       if (!res.ok) throw new Error(`harness wait ${res.status}`);
       const review = (await res.json()) as ReviewItem;
-      if (review.status !== "pending") return review;
+      if (review.status !== "pending") {
+        // The host can cancel after the daemon has answered the long poll but before this
+        // result crosses the MCP response boundary. Recheck at the fast-path handoff so that
+        // cancellation takes the detach path below instead of silently losing the answer.
+        if (call?.signal.aborted) throw new Error("the client cancelled this request");
+        return review;
+      }
       beat();
     }
   } catch (error) {

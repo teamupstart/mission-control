@@ -50,6 +50,7 @@ const EMPTY_COMPLETIONS: ReadonlySet<SessionActionCompletionKind> = new Set();
 import type { WorkflowSelection } from "./WorkflowCanvas.tsx";
 import type { WorkflowConfirmRequest } from "./WorkflowConfirmModal.tsx";
 import { Tooltip } from "../components/Tooltip.tsx";
+import { DeleteButton } from "../components/DeleteButton.tsx";
 
 type WorkflowPatch = Partial<Pick<
   WorkflowDefinition,
@@ -408,7 +409,7 @@ export function WorkflowProperties({
               control without a matching remove is half an authoring loop. */}
           {!readOnly && selectedNode.kind !== "session" && (
             <Tooltip label="Remove this node and every route touching it">
-              <button className="btn btn-danger" onClick={removeSelection}>Delete node</button>
+              <DeleteButton className="btn btn-danger" shortcutPrimary onClick={removeSelection}>Delete node</DeleteButton>
             </Tooltip>
           )}
         </section>
@@ -419,7 +420,7 @@ export function WorkflowProperties({
           <p>{labelOf(selectedEdge.source)} to {labelOf(selectedEdge.target)}</p>
           {!readOnly && (
             <Tooltip label="Remove this connection between the two nodes">
-              <button className="btn btn-danger" onClick={removeSelection}>Delete edge</button>
+              <DeleteButton className="btn btn-danger" shortcutPrimary onClick={removeSelection}>Delete edge</DeleteButton>
             </Tooltip>
           )}
         </section>

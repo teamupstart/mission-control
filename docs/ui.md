@@ -830,7 +830,8 @@ names the layouts where a shortcut's target exists:
 | <kbd>v</kbd> | On the **Board** overview, show the selected card's full workflow or collapse it back to the active-rung preview. This is the keyboard equivalent of **Show full workflow** / **Collapse workflow** and never opens Conversation or another session-detail tab | Selected Board card with a workflow |
 | <kbd>g</kbd> | Show the selected session's conversation. **Console / Board drill-in** reveals the Conversation tab; the **Board** overview opens the drill-in, which starts there | Selected session |
 | <kbd>y</kbd> | Show the selected session's **Workflows** tab and workflow ladder. On the **Board** overview it drills in first; <kbd>w</kbd> opens the Library instead | Selected session |
-| <kbd>d</kbd> | Open the selected session's Console/Board Diff tab | Selected session |
+| <kbd>d</kbd> | Use the current **Delete** button. A focused row wins, followed by the current item or the only visible Delete control; the shortcut does nothing rather than guess between unrelated destructive rows | Focused row or active surface with Delete available |
+| <kbd>⇧</kbd><kbd>D</kbd> | Open the selected session's Console/Board Diff tab | Selected session |
 | <kbd>l</kbd> | Open the file displayed in the Diff reader in Files | Focused Diff reader |
 | <kbd>⇧</kbd><kbd>F</kbd> | Open Files for the selected Console/Board detail | Selected session |
 | <kbd>⇧</kbd><kbd>O</kbd> | Search checkout files; use the arrows and Enter to open one in Files | Selected session |
@@ -879,7 +880,8 @@ Complete and Kill in the Console
 footer; the Console's Conversation, Work queue, Diff and Files tabs; Dispatch and the Fleet,
 Library and Runs segments in the top bar; the Board tile's workflow disclosure; the Diff reader's
 Open in Files action; the **← Library** row at the top of every Library authoring rail; and the
-settings rail's search box. They
+settings rail's search box. Visible **Delete** controls carry the same resolved keycap; compact
+icon-only Delete controls name it in their tooltip. They
 show the *resolved* chord, so a rebind moves what they say and an unset action shows no keycap.
 A narrow Console or Board detail is the one place they come off on their own: the tabs' keycaps
 are the first thing that row gives up to stay on one line, and the chords keep working.

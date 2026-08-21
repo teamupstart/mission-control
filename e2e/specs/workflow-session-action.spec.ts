@@ -464,7 +464,9 @@ test("the Graph palette creates an action node with one complete port, and can d
   // append-only, and a rail that derived its own two-way split would caption the next adapter
   // as a session-turn completion.
   await expect(rail).toContainText("Completes when session turn finishes");
-  await rail.getByRole("button", { name: "Delete node" }).click();
+  const deleteNode = rail.getByRole("button", { name: "Delete node" });
+  await expect(deleteNode).toHaveAttribute("aria-keyshortcuts", "d");
+  await dashboard.keyboard.press("d");
   await dashboard.getByRole("dialog", { name: "Remove node" })
     .getByRole("button", { name: "Remove node" }).click();
   await expect(dashboard.locator('[data-node-kind="session_action"]')).toHaveCount(0);

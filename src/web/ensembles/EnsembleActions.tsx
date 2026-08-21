@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { EnsembleActionBody } from "@shared/protocol.ts";
 import { ensembleIsTerminal, ensembleReviewIsInfrastructureBlocked } from "@shared/ensemble.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
+import { DeleteButton } from "../components/DeleteButton.tsx";
 import { EnsembleDeleteModal } from "./EnsembleDeleteModal.tsx";
 import type { EnsembleRunDetailResponse } from "./types.ts";
 
@@ -140,9 +141,9 @@ export function EnsembleActions({
         )}
         {terminal && !confirmDelete && (
           <Tooltip label="Delete this run's history and private refs (tasks and workflow survive)">
-            <button className="btn btn-ghost danger" disabled={busy} onClick={() => setConfirmDelete(true)}>
+            <DeleteButton className="btn btn-ghost danger" disabled={busy} onClick={() => setConfirmDelete(true)}>
               Delete run…
-            </button>
+            </DeleteButton>
           </Tooltip>
         )}
       </div>

@@ -72,6 +72,7 @@ import {
   type PendingAttachment,
 } from "./ImageDrop.tsx";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
+import { DeleteButton } from "./DeleteButton.tsx";
 import { LabelChips, ScheduleSwitch } from "./session-bits.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 import {
@@ -3027,7 +3028,7 @@ function DispatchModal({
             competing with the primary, which is the same weight the Sitrep's Delete carries. */}
         {editing && (
           <Tooltip label="Delete this task from the backlog">
-            <button
+            <DeleteButton
               // The same pair the Sitrep's Delete wears, and the same pair every other
               // destructive control in the app wears (ReportPanel, WorkflowRuns,
               // WorkflowLibrary, ActionBar): one class for the danger tone, none for the
@@ -3038,7 +3039,7 @@ function DispatchModal({
               disabled={busy}
             >
               {pending === "delete" ? "Deleting…" : "Delete"}
-            </button>
+            </DeleteButton>
           </Tooltip>
         )}
         {/* Ensemble launches immediately and owns its own member backlog wave, so "Add to

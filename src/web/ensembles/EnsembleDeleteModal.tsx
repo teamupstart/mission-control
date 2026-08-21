@@ -1,6 +1,7 @@
 import type { EnsembleRun } from "@shared/ensemble.ts";
 import { Overlay, OVERLAY_IDS } from "../components/Overlay.tsx";
 import { Tooltip } from "../components/Tooltip.tsx";
+import { DeleteButton } from "../components/DeleteButton.tsx";
 
 /**
  * Confirm the one ensemble action that destroys retained evidence.
@@ -71,9 +72,9 @@ export function EnsembleDeleteModal({
             </button>
           </Tooltip>
           <Tooltip label="Permanently delete this run's history and private refs">
-            <button type="submit" className="btn btn-danger" disabled={busy}>
+            <DeleteButton type="submit" className="btn btn-danger" disabled={busy}>
               {busy ? "Deleting…" : "Delete run"}
-            </button>
+            </DeleteButton>
           </Tooltip>
         </footer>
       </form>

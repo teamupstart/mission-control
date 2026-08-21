@@ -126,6 +126,7 @@ import { useRichText } from "./lib/rich-text.ts";
 import { useDesktopUpdates } from "./useDesktopUpdates.ts";
 import { UpdateBanner } from "./components/UpdateBanner.tsx";
 import { useGuidedDispatch } from "./lib/guided-dispatch.ts";
+import { activateDeleteShortcut } from "./lib/delete-shortcut.ts";
 import {
   SeeWorkTourController,
   type SeeWorkTourNavigation,
@@ -1974,6 +1975,15 @@ export function App(): React.JSX.Element {
           ? document.activeElement
           : null);
         if (contextMenuRef.current?.openFromKeyboard(focusTarget)) e.preventDefault();
+        return;
+      }
+
+      // Delete is page-contextual rather than fleet-only. Every participating button
+      // registers itself in the DOM; resolution prefers the focused row/current surface and
+      // fails closed when several destructive controls are otherwise equally plausible.
+      // A bare binding never fires while typing, including confirmation phrase fields.
+      if (!typing && chord === bindings.delete && activateDeleteShortcut(e.target)) {
+        e.preventDefault();
         return;
       }
 

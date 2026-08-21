@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Overlay, OVERLAY_IDS } from "../Overlay.tsx";
 import { Tooltip } from "../Tooltip.tsx";
+import { DeleteButton } from "../DeleteButton.tsx";
 import { api } from "../../lib/api.ts";
 import { formatBytes } from "../../lib/format.ts";
 
@@ -131,9 +132,9 @@ export function ScoutDeleteModal({
               ? "Remove this bundle and its search entry from the library on this machine"
               : `Type ${CONFIRM_WORD} above to enable this`
           }>
-            <button type="submit" className="btn btn-danger" disabled={!armed}>
+            <DeleteButton type="submit" className="btn btn-danger" disabled={!armed}>
               {busy ? "Deleting…" : "Delete scout"}
-            </button>
+            </DeleteButton>
           </Tooltip>
         </footer>
       </form>

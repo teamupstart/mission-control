@@ -7,8 +7,9 @@ import { useScoutsCatalog } from "./useScoutsCatalog.ts";
 import { ScoutDeleteModal, type ScoutDeleteTarget } from "./ScoutDeleteModal.tsx";
 import { ScoutReader } from "./ScoutReader.tsx";
 import { Tooltip } from "../Tooltip.tsx";
+import { DeleteButton } from "../DeleteButton.tsx";
 import { SCOUT_STATUS_WORD, scoutLabel } from "./scout-labels.ts";
-import { chordFromEvent, useKeybindings } from "../../lib/keybindings.ts";
+import { chordFromEvent, formatChord, useKeybindings } from "../../lib/keybindings.ts";
 
 /**
  * The Scouts page: search rail, report reader, evidence spine.
@@ -383,6 +384,7 @@ export function ScoutsPage({
                         className={`scouts-row tone-${archive.status}${
                           archive.key === selectedKey ? " is-selected" : ""
                         }`}
+                        data-delete-shortcut-scope
                       >
                         <Tooltip label={`Read ${scoutLabel(archive)}${
                           archive.question ? ` - ${archive.question}` : ""
@@ -426,10 +428,11 @@ export function ScoutsPage({
                           ) : null}
                         </button>
                         </Tooltip>
-                        <Tooltip label={`Delete ${scoutLabel(archive)}`}>
-                          <button
+                        <Tooltip label={`Delete ${scoutLabel(archive)} (${formatChord(bindings.delete)})`}>
+                          <DeleteButton
                             type="button"
                             className="btn btn-ghost scouts-row-more"
+                            showShortcutHint={false}
                             aria-label={`Delete the scout archive ${scoutLabel(archive)}`}
                             onClick={(event) => {
                               invoker.current = event.currentTarget;
@@ -442,7 +445,7 @@ export function ScoutsPage({
                             }}
                           >
                             ⋯
-                          </button>
+                          </DeleteButton>
                         </Tooltip>
                       </div>
                     </li>

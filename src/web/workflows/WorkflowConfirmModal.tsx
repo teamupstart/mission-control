@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Overlay, OVERLAY_IDS } from "../components/Overlay.tsx";
 import { Tooltip } from "../components/Tooltip.tsx";
+import { DeleteButton } from "../components/DeleteButton.tsx";
 import {
   WorkflowEvidenceComposer,
   workflowEvidenceSubmission,
@@ -39,6 +40,8 @@ export interface WorkflowConfirmRequest {
   cancelHint?: string;
   /** Whether the confirm button reads as destructive. Removals do. */
   danger?: boolean;
+  /** Bind the confirm control to the shared Delete action. */
+  shortcut?: "delete";
   /**
    * An exact phrase the operator has to type before confirming, for the two actions the
    * DAEMON also demands one for (`restart-full`, `discard_and_new_round`).
@@ -149,14 +152,25 @@ export function WorkflowConfirmModal({
             : !evidenceReady
               ? "Finish the image evidence packet before submitting"
             : request.confirmHint}>
-            <button
-              type="submit"
-              className={request.danger ? "btn btn-danger" : "btn"}
-              disabled={!satisfied || !evidenceReady}
-              autoFocus={!request.requirePhrase}
-            >
-              {request.confirmLabel}
-            </button>
+            {request.shortcut === "delete" ? (
+              <DeleteButton
+                type="submit"
+                className={request.danger ? "btn btn-danger" : "btn"}
+                disabled={!satisfied || !evidenceReady}
+                autoFocus={!request.requirePhrase}
+              >
+                {request.confirmLabel}
+              </DeleteButton>
+            ) : (
+              <button
+                type="submit"
+                className={request.danger ? "btn btn-danger" : "btn"}
+                disabled={!satisfied || !evidenceReady}
+                autoFocus={!request.requirePhrase}
+              >
+                {request.confirmLabel}
+              </button>
+            )}
           </Tooltip>
         </footer>
       </form>

@@ -125,9 +125,13 @@ test("deleting a backlog task from its editor takes the card off the board", asy
   const deletion = dashboard.waitForResponse(
     (r) => r.request().method() === "DELETE" && /\/api\/tasks\//.test(r.url()),
   );
-  await dialog.getByRole("button", { name: "Delete" }).click();
+  const deleteButton = dialog.getByRole("button", { name: "Delete" });
+  await expect(deleteButton).toHaveAttribute("aria-keyshortcuts", "d");
+  await expect(deleteButton.locator("kbd.kb-hint")).toHaveText("d");
+  await deleteButton.focus();
+  await dashboard.keyboard.press("d");
 
-  // The click reached the route the Sitrep row has always used.
+  // The configurable shortcut reached the same route the button and Sitrep row use.
   expect((await deletion).status(), "the daemon accepted the delete").toBe(200);
   // The modal closes on its own - there is no row left for it to be a form over.
   await expect(dialog).toBeHidden();

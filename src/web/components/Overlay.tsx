@@ -272,7 +272,11 @@ export function Overlay({
   }, [isTop, closable, onClose, onEscape, onKeyDown]);
 
   return (
-    <div className="modal-backdrop" onClick={() => closable && onClose()}>
+    <div
+      className="modal-backdrop"
+      data-overlay-top={isTop ? "true" : undefined}
+      onClick={() => closable && onClose()}
+    >
       <Tag
         ref={surfaceRef}
         className={className}

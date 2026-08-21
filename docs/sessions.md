@@ -922,6 +922,11 @@ the agent wrote more than a reconnect can honestly be said to have missed. Both 
 honest answer rather than a continuation with an invisible hole in it, and scrolling up
 re-reads whatever was dropped.
 
+In both Chat and Terminal, the composer prompt reads `mission (s) >` with the operator's
+resolved **Send message** binding in parentheses. Rebinding that action changes both
+prompts too, and an unset action leaves the parentheses out rather than teaching a key
+that no longer works.
+
 ### Reading a conversation as a terminal
 
 A conversation can be drawn two ways. **Terminal**, the default, draws the conversation as

@@ -17,6 +17,7 @@ import { liveActivity } from "@shared/session.ts";
 import { pipelineRunHash } from "../workflows/useWorkflowRoute.ts";
 import { api, fetchTranscriptBefore } from "../lib/api.ts";
 import { clearDraft, readDraft, writeDraft } from "../lib/drafts.ts";
+import { formatChord, useKeybindings } from "../lib/keybindings.ts";
 import { sdkDeliveryConfirmation } from "../lib/sdk-delivery.ts";
 import {
   latestEditablePendingTurn,
@@ -250,6 +251,8 @@ export function TranscriptPanel({
   // The body below was written against these two names and still is; only the PROP changed.
   const sessionId = session.id;
   const agent = session.agent;
+  const { bindings } = useKeybindings();
+  const sendChord = formatChord(bindings.send);
   // Only a session with a checkout and a handler that can open one has any use for the
   // listing; without both, a path in the prose stays the text the agent typed.
   const filePaths = useWorkspacePaths(files, sessionId, Boolean(session.cwd && onOpenFile));
@@ -1053,12 +1056,12 @@ export function TranscriptPanel({
         <div className="compose-row">
           {/* Decorative, and marked as such: the box's accessible name stays its
               placeholder, which says what typing here does. A real `<label>` reading
-              "mission ❯" would replace that sentence with a glyph. */}
-          {terminal && (
-            <span className="pty-prompt" aria-hidden="true">
-              mission ❯
-            </span>
-          )}
+              "mission (s) >" would replace that sentence with a prompt. The key is the
+              resolved Send binding, not its default, so rebinding the focus action also
+              updates this cue. */}
+          <span className="pty-prompt" aria-hidden="true">
+            {`mission${sendChord ? ` (${sendChord})` : ""} >`}
+          </span>
           <textarea
             // Remount on reset so an open box drops the text the reset discarded;
             // `defaultValue` then re-hydrates from the emptied draft. See `resetNonce`.

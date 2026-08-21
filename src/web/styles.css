@@ -7643,13 +7643,14 @@ mark.find-hit.is-current {
   background: var(--panel);
 }
 .transcript[data-view="terminal"] .compose-row {
-  /* A multiline command still begins at the prompt. Centering this row put `mission ❯`
+  /* A multiline command still begins at the prompt. Centering this row put `mission (s) >`
      beside line three once the textarea grew to five lines. */
   align-items: flex-start;
   gap: 8px;
 }
 .pty-prompt {
   flex: none;
+  align-self: flex-start;
   margin-top: 4px;
   color: var(--working);
   font: 700 12.5px/1 var(--mono);

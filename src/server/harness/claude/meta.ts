@@ -1,4 +1,4 @@
-import type { ThinkingLevel } from "@shared/types.ts";
+import { THINKING_LEVELS, type ThinkingLevel } from "@shared/types.ts";
 import { effectiveContextWindow, isLongContext, parseContextWindowSize } from "@shared/model.ts";
 import type { RuntimeMetaRead, SessionActivityRead, TranscriptPassiveRead } from "../types.ts";
 import { readTailLines } from "../../util/file-tail.ts";
@@ -25,34 +25,90 @@ const EFFORT_SET_RE = new RegExp(`Set effort level to (${EFFORT})\\b`, "i");
 /** `/model … with <level> effort` echoes this variant. Anchored to "Set model to"
  *  so it can't match unrelated prose like "…done with high effort". */
 const EFFORT_WITH_RE = new RegExp(`Set model to [\\s\\S]*? with (${EFFORT}) effort\\b`, "i");
+/** A record's own `effort` field, as it is spelled on the wire. Only a pre-filter: the
+ *  same bytes can appear inside a tool result, so a match is checked against the parsed
+ *  record before it counts. */
+const RECORD_EFFORT_RE = new RegExp(`"effort"\\s*:\\s*"(?:${EFFORT})"`);
 
 /**
- * The session's current reasoning effort, scraped newest-first from the local-
- * command echoes Claude writes when you run `/effort` or `/model … with … effort`.
- * Null when the session never set it explicitly (its default isn't recorded), or
- * when the echo has scrolled out of the tail we scan on a long session - the
- * statusLine source fills both gaps. A heuristic, like ccstatusline's own scrape.
+ * The session's current reasoning effort, read newest-first from the two things a
+ * Claude transcript says about it.
+ *
+ * The first is the RECORD OF A TURN: every main-chain assistant record carries the
+ * level that turn actually ran under as a top-level `effort` field. That is the
+ * primary source, and the only one an embedded (Agent SDK) session ever produces -
+ * its effort is a launch option and a driver call, so no slash command is ever typed
+ * and nothing echoes one. Without it those cards showed no effort chip at all, which
+ * also left the picker unrenderable: it draws from the level it would be changing.
+ *
+ * The second is a local-command ECHO, written when a person runs `/effort` or
+ * `/model … with … effort` in the TUI. It is what a terminal session produces the
+ * instant the level changes, before any turn has run under it, so a newer echo
+ * outranks the older turn below it.
+ *
+ * Whichever is NEWER in the file wins - one reverse scan, no precedence between the
+ * two sources beyond position, because each is the truth as of where it sits. Null
+ * when neither is in the bounded tail we scan; the statusLine source fills that gap.
  * Pure, for testing.
  */
 export function latestEffortLevel(lines: string[]): ThinkingLevel | null {
   return latestEffort(lines).level;
 }
 
+function isThinkingLevel(value: unknown): value is ThinkingLevel {
+  return typeof value === "string" && (THINKING_LEVELS as readonly string[]).includes(value);
+}
+
+/**
+ * The turn-record effort, or null when this line is not one.
+ *
+ * Sidechain and API-error records are skipped for the same reason `latestAssistantUsage`
+ * skips them: a subagent runs at its own effort and an error record describes no turn.
+ */
+function recordEffort(record: Record<string, unknown>): ThinkingLevel | null {
+  if (record.type !== "assistant" || record.isSidechain || record.isApiErrorMessage) return null;
+  return isThinkingLevel(record.effort) ? record.effort : null;
+}
+
 function latestEffort(lines: string[]): { level: ThinkingLevel | null; revision: string | null } {
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i]!;
     if (!line.includes("effort")) continue; // cheap pre-filter before regex
-    const m = EFFORT_SET_RE.exec(line) ?? EFFORT_WITH_RE.exec(line);
-    if (!m) continue;
-    let revision: string | null = null;
+    // Both cheap tests before any parse: a transcript line can be hundreds of kilobytes of
+    // tool output that merely says the word, and this runs over the tail every poll tick.
+    // The regex only decides whether the line is worth parsing - whether the field is the
+    // RECORD's own, rather than a string inside somebody's tool result, is settled by
+    // `recordEffort` on the parsed object.
+    const echo = EFFORT_SET_RE.exec(line) ?? EFFORT_WITH_RE.exec(line);
+    if (!echo && !RECORD_EFFORT_RE.test(line)) continue;
+    let record: Record<string, unknown> | null = null;
     try {
-      const record = JSON.parse(line) as Record<string, unknown>;
+      record = JSON.parse(line) as Record<string, unknown>;
+    } catch {
+      record = null;
+    }
+    const fromTurn = echo || !record ? null : recordEffort(record);
+    if (fromTurn) {
+      // An ISO timestamp first here, unlike the echo below: turn records are what the
+      // freshness guards compare, and `isLaterEffortRevision` can only order two parseable
+      // dates. A uuid would make every later turn look no newer than the one a verified
+      // change was measured against, pinning the card to that reading for the rest of the
+      // conversation.
+      const revision =
+        typeof record!.timestamp === "string"
+          ? record!.timestamp
+          : typeof record!.uuid === "string"
+            ? record!.uuid
+            : null;
+      return { level: fromTurn, revision };
+    }
+    if (!echo) continue;
+    let revision: string | null = null;
+    if (record) {
       if (typeof record.uuid === "string") revision = record.uuid;
       else if (typeof record.timestamp === "string") revision = record.timestamp;
-    } catch {
-      revision = null;
     }
-    return { level: m[1]!.toLowerCase() as ThinkingLevel, revision };
+    return { level: echo[1]!.toLowerCase() as ThinkingLevel, revision };
   }
   return { level: null, revision: null };
 }

@@ -328,6 +328,58 @@ test("latestEffortLevel reads /effort and /model-with-effort echoes, newest wins
   assert.equal(latestEffortLevel([asstText, userPrompt]), null);
 });
 
+test("latestEffortLevel reads the effort a turn ran under off its assistant record", () => {
+  // An embedded (Agent SDK) session never types `/effort`, so the turn record is the only
+  // thing that ever says what it is running at.
+  const turn = (lvl: string, extra: object = {}): string =>
+    JSON.stringify({
+      type: "assistant",
+      isSidechain: false,
+      timestamp: "2026-07-22T12:00:00.000Z",
+      message: { role: "assistant", model: "claude-opus-4-8", usage: { input_tokens: 10 } },
+      effort: lvl,
+      ...extra,
+    });
+  assert.equal(latestEffortLevel([turn("high")]), "high");
+  assert.equal(latestEffortLevel([turn("medium"), turn("max")]), "max");
+  // A subagent's own level, and an error record that describes no turn, are not the
+  // session's effort.
+  assert.equal(latestEffortLevel([turn("low"), turn("max", { isSidechain: true })]), "low");
+  assert.equal(latestEffortLevel([turn("low"), turn("max", { isApiErrorMessage: true })]), "low");
+  // A level this build has never heard of is not a level.
+  assert.equal(latestEffortLevel([turn("ultra")]), null);
+  // The same bytes inside somebody's tool output are not the record's own field.
+  const quoted = JSON.stringify({
+    type: "user",
+    uuid: "u-1",
+    message: { role: "user", content: [{ type: "text", text: '{"effort":"max"}' }] },
+  });
+  assert.equal(latestEffortLevel([turn("low"), quoted]), "low");
+  assert.equal(latestEffortLevel([quoted]), null);
+  // Position decides between the two sources: a fresh `/effort` echo outranks the turn
+  // below it, and the next turn's record then outranks the echo.
+  assert.equal(latestEffortLevel([turn("medium"), effortSet("max")]), "max");
+  assert.equal(latestEffortLevel([effortSet("max"), turn("medium")]), "medium");
+});
+
+test("computeRuntimeMeta reports an embedded session's effort and an orderable revision", () => {
+  const m = computeRuntimeMeta([
+    JSON.stringify({
+      type: "assistant",
+      isSidechain: false,
+      uuid: "e3f8a77f-ed94-4760-97dd-baa78a15b525",
+      timestamp: "2026-07-22T12:00:00.000Z",
+      message: { role: "assistant", model: "claude-opus-4-8", usage: { input_tokens: 20_000 } },
+      effort: "high",
+    }),
+  ]);
+  assert.equal(m?.thinkingLevel, "high");
+  // The ISO timestamp, not the uuid: freshness guards can only order parseable dates, and
+  // an opaque revision would pin the card to the reading a verified change was measured
+  // against for the rest of the conversation.
+  assert.equal(m?.effortRevision, "2026-07-22T12:00:00.000Z");
+});
+
 test("computeRuntimeMeta derives model + context% from the newest assistant usage", () => {
   // A standard-window model (Haiku) exercises the plain 200k arithmetic.
   const m = computeRuntimeMeta([

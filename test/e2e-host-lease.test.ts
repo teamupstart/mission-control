@@ -104,6 +104,35 @@ test("an unrelated process on the lease port fails fast", async () => {
   }
 });
 
+test("a protocol mimic without matching metadata fails after a short grace period", async () => {
+  const { root, metadataPath } = await fixture();
+  const mimic = createServer((socket) => {
+    socket.end("mission-control-e2e-lease-v1:not-a-real-owner\n");
+  });
+  try {
+    await new Promise<void>((resolve) => mimic.listen(0, "127.0.0.1", resolve));
+    const address = mimic.address();
+    assert.ok(address && typeof address !== "string");
+    await assert.rejects(
+      acquireE2eHostLease({
+        metadataPath,
+        port: address.port,
+        workers: 4,
+        pollMs: 5,
+        waitTimeoutMs: 60_000,
+        metadataGraceMs: 25,
+      }),
+      /did not publish matching owner metadata within 25ms/,
+    );
+  } finally {
+    await new Promise<void>((resolve, reject) => mimic.close((error) => {
+      if (error) reject(error);
+      else resolve();
+    }));
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("concurrent waiters cannot hold the kernel lease together", async () => {
   const { root, metadataPath } = await fixture();
   try {

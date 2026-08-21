@@ -13,6 +13,7 @@ const LEASE_PORT_BASE = 21_800;
 const LEASE_PORT_SPAN = 1_000;
 const LEASE_PROTOCOL = "mission-control-e2e-lease-v1:";
 const PROBE_TIMEOUT_MS = 1_000;
+const OWNER_METADATA_GRACE_MS = 2_000;
 
 export interface E2eLeaseOwner {
   token: string;
@@ -35,6 +36,7 @@ interface AcquireOptions {
   metadataPath?: string;
   pollMs?: number;
   waitTimeoutMs?: number;
+  metadataGraceMs?: number;
   onWait?: (owner: E2eLeaseOwner | null) => void;
   // Used by the handoff regression test to hold metadata cleanup open.
   beforeReleaseMetadataRemoval?: () => Promise<void>;
@@ -175,8 +177,10 @@ export async function acquireE2eHostLease(options: AcquireOptions): Promise<E2eH
   const metadataPath = options.metadataPath ?? defaultE2eLeaseMetadataPath();
   const pollMs = options.pollMs ?? DEFAULT_POLL_MS;
   const waitTimeoutMs = options.waitTimeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS;
+  const metadataGraceMs = options.metadataGraceMs ?? OWNER_METADATA_GRACE_MS;
   const deadline = Date.now() + waitTimeoutMs;
   let reportedOwnerToken: string | null | undefined;
+  let unverifiedSince: number | null = null;
 
   for (;;) {
     const token = randomUUID();
@@ -240,6 +244,16 @@ export async function acquireE2eHostLease(options: AcquireOptions): Promise<E2eH
 
     const observed = await readOwner(metadataPath);
     const current = observed?.token === probe.token ? observed : null;
+    if (current) {
+      unverifiedSince = null;
+    } else if (unverifiedSince === null) {
+      unverifiedSince = Date.now();
+    } else if (Date.now() - unverifiedSince >= metadataGraceMs) {
+      throw new Error(
+        `Port ${requestedPort} speaks the Mission Control E2E lease protocol but did not `
+        + `publish matching owner metadata within ${metadataGraceMs}ms.`,
+      );
+    }
     const currentToken = current?.token ?? null;
     if (reportedOwnerToken !== currentToken) {
       options.onWait?.(current);

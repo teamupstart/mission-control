@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pipeline Task Run Adoption and Card Visibility</title>
+<style>
+:root{color-scheme:light dark;--bg:#f5f7fb;--panel:#fff;--ink:#182033;--muted:#5d677d;--line:#d8dfeb;--accent:#2463eb;--accent-soft:#eaf0ff;--good:#147d64;--good-soft:#e7f7f1;--warn:#a65b00;--warn-soft:#fff3df;--bad:#a43945;--bad-soft:#fdecef;--code:#eef2f7;--shadow:0 12px 30px rgba(29,42,74,.08)}
+@media(prefers-color-scheme:dark){:root{--bg:#0f1420;--panel:#171e2d;--ink:#eef3ff;--muted:#aab5cc;--line:#303a50;--accent:#86a7ff;--accent-soft:#202d4d;--good:#6ed8b7;--good-soft:#17362f;--warn:#ffc36f;--warn-soft:#3b2b18;--bad:#ff9eaa;--bad-soft:#3f2329;--code:#222b3c;--shadow:none}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.58 ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{max-width:1180px;margin:0 auto;padding:40px 24px 80px}a{color:var(--accent);text-underline-offset:3px}code{background:var(--code);border-radius:5px;padding:.12rem .35rem;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}.eyebrow{text-transform:uppercase;letter-spacing:.13em;font-size:12px;font-weight:800;color:var(--accent)}h1{font-size:clamp(34px,5vw,58px);line-height:1.02;letter-spacing:-.045em;margin:.2em 0 .32em;max-width:900px}h2{font-size:25px;line-height:1.18;letter-spacing:-.02em;margin:42px 0 14px}h3{font-size:18px;margin:28px 0 10px}.lead{font-size:19px;line-height:1.55;max-width:920px;color:var(--muted)}.hero,.panel{background:var(--panel);border:1px solid var(--line);border-radius:18px;box-shadow:var(--shadow)}.hero{padding:34px}.hero .answer{font-size:23px;line-height:1.42;font-weight:700;max-width:980px}.nav{display:flex;flex-wrap:wrap;gap:10px;margin-top:24px}.nav a{background:var(--accent-soft);border:1px solid var(--line);border-radius:999px;padding:7px 12px;text-decoration:none;font-weight:700}.grid{display:grid;grid-template-columns:repeat(12,1fr);gap:16px}.panel{padding:22px}.span-4{grid-column:span 4}.span-6{grid-column:span 6}.span-8{grid-column:span 8}.span-12{grid-column:span 12}.metric{font-size:34px;font-weight:850;letter-spacing:-.04em}.muted{color:var(--muted)}.good{background:var(--good-soft)}.warn{background:var(--warn-soft)}.bad{background:var(--bad-soft)}ul,ol{padding-left:22px}li+li{margin-top:7px}.table-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:14px;background:var(--panel)}table{border-collapse:collapse;width:100%;min-width:760px}th,td{text-align:left;vertical-align:top;padding:12px 14px;border-bottom:1px solid var(--line)}th{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}tr:last-child td{border-bottom:0}.flow{overflow-x:auto;padding:12px;border:1px solid var(--line);border-radius:18px;background:var(--panel)}.flow svg{display:block;min-width:1040px;width:100%;height:auto}.step{border-left:4px solid var(--accent)}.boundary{border-left:4px solid var(--bad)}.checks{columns:2;column-gap:34px}.checks li{break-inside:avoid}.footer{margin-top:50px;padding-top:18px;border-top:1px solid var(--line);color:var(--muted);font-size:13px}
+@media(max-width:820px){main{padding:22px 14px 54px}.hero{padding:24px}.span-4,.span-6,.span-8{grid-column:span 12}.checks{columns:1}h2{margin-top:34px}}</style>
+</head>
+<body><main>
+<div class="eyebrow">Implementation plan</div>
+<section class="hero">
+<h1>Pipeline Task Run Adoption and Card Visibility</h1>
+<p class="answer">Show the Pipeline run owned by a task on its interactive Engineer host card, and repair a prompt-slug mismatch only through an authenticated, launch-bound adoption handshake.</p>
+<p class="lead">The host remains interactive. The provider worker remains the only process-owned Pipeline session. Provider projection remains the only completion authority.</p>
+<nav class="nav" aria-label="Plan files"><a href="plan.md">Source plan</a><a href="phased-plan.html">Phased summary</a><a href="phase-1-adopt-and-surface-pipeline-run.html">Phase 1 detail</a></nav>
+</section>
+<h2>Decision snapshot</h2>
+<div class="grid">
+<section class="panel span-4 good"><div class="metric">1 phase</div><p>One lifecycle contract across adoption, projection, UI, and settlement.</p></section>
+<section class="panel span-4"><div class="metric">315 LOC</div><p>Estimated non-test implementation size in <code>ai-harness</code>.</p></section>
+<section class="panel span-4 warn"><div class="metric">0 heuristics</div><p>No title, prompt, transcript, PR, or singleton-run inference.</p></section>
+</div>
+<h2>Answer and boundaries</h2>
+<div class="grid">
+<section class="panel span-8"><h3>What changes</h3><ul><li><code>TaskSummary.pipelineRun</code> carries task ownership to the host.</li><li>A new <code>adopt_pipeline_run</code> tool accepts only the observed slug.</li><li>The daemon derives and validates task, session, repository, and provider.</li><li>Board, rail, and Console show a task-owned link with copy distinct from the worker chip.</li></ul></section>
+<section class="panel span-4 boundary"><h3>What stays fixed</h3><ul><li><code>Session.pipeline</code> stays null on the SDK host.</li><li>The host composer stays available.</li><li>Workers retain external-driver semantics.</li><li>Only provider projection settles the task.</li></ul></section>
+</div>
+<h2>Target flow</h2><div class="flow" role="img" aria-label="Pipeline task run adoption flow">
+<svg viewBox="0 0 1120 430" xmlns="http://www.w3.org/2000/svg">
+<defs><marker id="arr" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="currentColor"/></marker></defs>
+<style>.n{fill:var(--panel);stroke:var(--line);stroke-width:2}.t{fill:var(--ink);font:700 15px ui-sans-serif,sans-serif}.s{fill:var(--muted);font:13px ui-sans-serif,sans-serif}.a{stroke:var(--accent);stroke-width:3;fill:none;marker-end:url(#arr)}.g{stroke:var(--good);stroke-width:3;fill:none;marker-end:url(#arr)}.d{fill:var(--accent-soft);stroke:var(--accent);stroke-width:2}.p{fill:var(--good-soft);stroke:var(--good);stroke-width:2}</style>
+<rect class="n" x="20" y="34" width="190" height="72" rx="14"/><text class="t" x="40" y="63">Pipeline dispatch</text><text class="s" x="40" y="86">reserve prompt slug</text>
+<rect class="n" x="275" y="34" width="235" height="72" rx="14"/><text class="t" x="295" y="63">Interactive SDK host</text><text class="s" x="295" y="86">Session.pipeline stays null</text>
+<rect class="d" x="575" y="18" width="235" height="104" rx="14"/><text class="t" x="595" y="48">adopt_pipeline_run</text><text class="s" x="595" y="72">agent supplies observed slug</text><text class="s" x="595" y="94">daemon derives task and repo</text>
+<rect class="p" x="875" y="34" width="220" height="72" rx="14"/><text class="t" x="895" y="63">Task.pipelineRun</text><text class="s" x="895" y="86">guarded durable binding</text>
+<path class="a" d="M210 70H275"/><path class="a" d="M510 70H575"/><path class="g" d="M810 70H875"/>
+<rect class="n" x="875" y="180" width="220" height="72" rx="14"/><text class="t" x="895" y="209">TaskSummary link</text><text class="s" x="895" y="232">Board, rail, Console host</text>
+<path class="g" d="M985 106V180"/>
+<rect class="n" x="275" y="318" width="235" height="72" rx="14"/><text class="t" x="295" y="347">Provider worker</text><text class="s" x="295" y="370">Session.pipeline owns process</text>
+<rect class="n" x="575" y="318" width="235" height="72" rx="14"/><text class="t" x="595" y="347">Provider projection</text><text class="s" x="595" y="370">observes exact run state</text>
+<rect class="p" x="875" y="318" width="220" height="72" rx="14"/><text class="t" x="895" y="347">Task settlement</text><text class="s" x="895" y="370">only when adopted run ends</text>
+<path class="a" d="M510 354H575"/><path class="g" d="M810 354H875"/>
+<path class="a" d="M692 318V122"/><text class="s" x="707" y="220">target must already be observed</text>
+<path class="a" d="M575 354H510"/>
+<text class="s" x="28" y="404">Separate visual contracts: task ownership appears on the host; process ownership remains on the worker.</text>
+</svg></div>
+<h2>Guarded adoption contract</h2>
+<div class="grid">
+<section class="panel span-6 step"><h3>Authority</h3><ol><li>Caller is the task's live SDK host.</li><li>Task is active and kind <code>pipeline</code>.</li><li>Target is observed under the task's repository and provider.</li></ol></section>
+<section class="panel span-6 step"><h3>Compare-and-swap</h3><ol><li>Same target is an idempotent success.</li><li>A different current reservation must not exist in projection.</li><li>No other active task may own the target.</li></ol></section>
+</div>
+<h2>Implementation surfaces</h2>
+<div class="table-wrap"><table><thead><tr><th>Layer</th><th>Files</th><th>Change</th></tr></thead><tbody>
+<tr><td>Contracts</td><td><code>src/shared/types.ts</code><br><code>src/shared/protocol.ts</code></td><td>Task summary run link and strict launch-attributed request.</td></tr>
+<tr><td>Launch and MCP</td><td><code>src/server/mission-mcp.ts</code><br><code>src/mcp/server.ts</code><br><code>src/server/dispatcher.ts</code></td><td>Required tool, task-scoped environment, bundle preflight, and hidden adoption instruction.</td></tr>
+<tr><td>Lifecycle</td><td><code>src/server/routes.ts</code><br><code>src/server/tasks.ts</code><br><code>src/server/registry.ts</code></td><td>Attribute caller, guard adoption, persist, project, and reconcile processed targets.</td></tr>
+<tr><td>UI</td><td><code>src/web/components/session-bits.tsx</code><br><code>src/web/components/layouts/</code></td><td>Distinct task-owned marks on Board, rail, and Console.</td></tr>
+<tr><td>Docs</td><td><code>docs/pipelines.md</code></td><td>Explain task versus process ownership and failure rules.</td></tr>
+</tbody></table></div>
+<h2>Failure behavior</h2>
+<div class="grid">
+<section class="panel span-6 bad"><h3>Refuse without mutation</h3><ul><li>Unknown target</li><li>Target owned by another task</li><li>Current reservation already observed</li><li>Stale or wrong host</li><li>Cross-repository or provider mismatch</li></ul></section>
+<section class="panel span-6 good"><h3>Safe retries</h3><ul><li>Same-run replay succeeds idempotently.</li><li>Persistence failure keeps the old durable binding.</li><li>An already-processed target enters the ordinary settlement path immediately.</li></ul></section>
+</div>
+<h2>Verification and acceptance</h2>
+<ul class="checks"><li>Reproduce in the built dashboard before code changes.</li><li>Host card shows the task run on Board, rail, and Console.</li><li>Host remains messageable and outside the provider cluster.</li><li>Worker retains <code>Session.pipeline</code> and worker chip copy.</li><li>Adopted processed run settles the task.</li><li>Every refusal leaves the old binding unchanged.</li><li>Desktop and 420-pixel layouts are visually inspected.</li><li>Typecheck, lint, unit, build, smoke, and focused Playwright pass.</li></ul>
+<h2>Out of scope</h2>
+<p class="muted">No AI Conductor change, manual run picker, multi-repository Pipeline task, downstream model or effort change, managed-to-Terminal fallback, or dashboard reassignment of a live reservation.</p>
+<footer class="footer">Static implementation plan. Source Markdown is stored beside this page.</footer>
+</main></body></html>

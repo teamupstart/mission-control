@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AGENT_TYPES, type KeepAwakeStatus, type Session, type Task } from "@shared/types.ts";
 import { agentList } from "@shared/agent.ts";
-import { backlogTasks, canCycleMode, canInterruptSession } from "@shared/session.ts";
+import {
+  backlogTasks,
+  canCycleMode,
+  canInterruptSession,
+  provisioningTasks,
+} from "@shared/session.ts";
 import { agentLaunchAction } from "@shared/session-launch.ts";
 import { api, fetchRepos } from "./lib/api.ts";
 import { useEventStream } from "./useEventStream.ts";
@@ -33,6 +38,7 @@ import { KeepAwakeControl } from "./components/KeepAwakeControl.tsx";
 import { ShipLogPage } from "./components/ShipLogPage.tsx";
 import { ScoutsPage } from "./components/scouts/ScoutsPage.tsx";
 import { LineStrip } from "./components/LineStrip.tsx";
+import { StartingStrip } from "./components/StartingStrip.tsx";
 import { ReviewDrawer } from "./components/line/ReviewDrawer.tsx";
 import { DecideDrawer } from "./components/line/DecideDrawer.tsx";
 import { IntakeDrawer } from "./components/line/IntakeDrawer.tsx";
@@ -1512,6 +1518,11 @@ export function App(): React.JSX.Element {
     if (!q) return items;
     return items.filter((t) => matchesTaskFilter(t, q));
   }, [tasks, filter]);
+
+  // Dispatched, not yet standing on a session. Deliberately NOT narrowed by `filter`: this
+  // is the answer to "did my dispatch land?", asked in the seconds after pressing Dispatch,
+  // and a filter left over from browsing the fleet must not make the reply look like "no".
+  const dispatchingTasks = useMemo(() => provisioningTasks(tasks), [tasks]);
 
   const counts = useMemo(() => summarize(sessions), [sessions]);
   const pendingReviews = reviews.filter((r) => r.status === "pending");
@@ -3111,6 +3122,13 @@ export function App(): React.JSX.Element {
           onStage={onLineStage}
         />
 
+        {/* Dispatched, still provisioning. Here for the Line's reason and in the Line's slot:
+            above every layout and outside the `layoutHasContent` gate, because the state it
+            reports on is exactly the one where the board below has nothing to show yet - a
+            first dispatch onto a quiet fleet. It draws nothing at all when the list is empty,
+            so the steady-state page is unchanged. */}
+        <StartingStrip tasks={dispatchingTasks} />
+
         {/* The drawer, between the strip and the layouts and a sibling of both. It pushes
             the board down and hands the space back on close; the cards below are the same
             cards at the same size in every state, which is the one thing this whole surface
@@ -3280,7 +3298,13 @@ export function App(): React.JSX.Element {
           />
         )}
 
-        {sessions.length === 0 && (
+        {/* Not while something is starting. A dispatch that has been accepted but has not
+            bound its session yet is already drawn in the Starting strip above, and this
+            screen would sit directly under it saying the opposite - "No agent sessions
+            detected", telling the operator to go start one by hand in the seconds after they
+            asked for exactly that. Same rule the filter's empty state below already follows:
+            never report nothing while the something is on screen. */}
+        {sessions.length === 0 && dispatchingTasks.length === 0 && (
           <div className="empty">
             <p className="empty-title">No agent sessions detected</p>
             {/* Names the harnesses off the union, not by hand: an operator running an

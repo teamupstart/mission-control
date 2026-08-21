@@ -63,6 +63,26 @@ export function backlogTasks(tasks: Task[]): Task[] {
   return tasks.filter((t) => t.status === "backlog").sort(byPriorityThenAge);
 }
 
+/**
+ * Provisioning: dispatched, but with no session to stand on yet. Oldest first, so a burst
+ * dispatched together reads in the order it was sent.
+ *
+ * These tasks are the gap this projection exists to close. `create` inserts the row and
+ * broadcasts `task_upsert` synchronously, but the agent's session does not exist until the
+ * title has been summarised, a worktree provisioned and the terminal home discovered - and
+ * `backlogTasks` above excludes them (they are no longer `backlog`) while every other task
+ * surface reads `session.task` (there is no session). So a dispatched task rendered nowhere
+ * for several seconds looked to the operator like the dispatch had been dropped.
+ *
+ * Keyed on a null `sessionId` rather than on `status` alone: the moment the binding lands
+ * the real card takes over, and a task listed in both places would draw twice.
+ */
+export function provisioningTasks(tasks: Task[]): Task[] {
+  return tasks
+    .filter((t) => t.status === "dispatching" && t.sessionId === null)
+    .sort((a, b) => a.createdAt - b.createdAt);
+}
+
 /** Finished tasks (done/failed/cancelled), newest first. Caller slices to RECENT_TASKS_CAP. */
 export function finishedTasks(tasks: Task[]): Task[] {
   return tasks

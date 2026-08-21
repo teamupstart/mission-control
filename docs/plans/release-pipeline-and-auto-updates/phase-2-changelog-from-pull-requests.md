@@ -60,10 +60,15 @@ clothes - which is precisely the option D2 declined.
 
 ## Decision C1 - what owns the version, tag, and Release
 
-**This decision is not resolved and must not be guessed.** It is flagged for the human in the
-phased-plan index because one of its outcomes revisits approved decision D1.
+**RESOLVED 2026-08-21: C1-b.** The human chose the `workflow_dispatch` release. Implement that
+shape; C1-a is recorded below only so the rejected trade-off is legible, and must not be revived
+without a new decision.
 
-The two coherent shapes:
+Raised by GitHub Inspector on PR #713, which correctly observed that scheduling this phase with C1
+open would dispatch an agent into work it could not safely finish. The decision was taken before
+the planning pull request merged, so this phase is implementable as written.
+
+The two shapes that were considered:
 
 **C1-a. Keep Release Please; add native release notes.** Release Please continues to own the
 version, tag, Release, and `CHANGELOG.md`. Add `.github/release.yml` so the *GitHub Release body*
@@ -90,14 +95,19 @@ and publishes the Release.
   still holds, but its premise weakens.
 - Larger diff, and it discards working infrastructure Phase 1 just fixed.
 
-**Recommendation: C1-b**, because it is the only option that leaves one changelog, one source of
-truth, and an answer to "what decides the version". Phase 1 is deliberately robust to either
-outcome: the token it wires stays useful for tag-triggered CI, and the version-equality assertion
-is unchanged either way.
+**Chosen: C1-b.** It is the only option that leaves one changelog, one source of truth, and an
+answer to "what decides the version", and it is the closest thing in the plan to the "create a
+release in GitHub and it does the rest" the original request described.
+
+**Consequence for D1, recorded rather than assumed.** With no release pull request, the
+organization policy that blocked Release Please stops applying. D1's PAT is **still wanted and
+still in use** - it is what makes a release tag trigger `ci.yml` - but its original justification
+no longer carries the phase. Phase 1's work is not wasted and does not need revisiting: its token
+wiring and its tag/version equality assertion both survive this phase unchanged.
 
 ## Implementation steps
 
-Sequence depends on C1. Common to both:
+Steps 1-3 stand on their own; step 4 is the C1-b implementation.
 
 1. **Establish the label vocabulary.** Small and enforced - roughly `feature`, `fix`, `docs`,
    `internal`, `breaking`. Create them on the repository and document what each means and who
@@ -108,11 +118,16 @@ Sequence depends on C1. Common to both:
    into `Merge pull request #N from <branch>`, which carries nothing either generator can use, and
    20 of the last 245 commits are exactly that. This setting is what makes the rest of the phase
    hold; without it the generator has a hole in it by design.
-4. **Implement C1-a or C1-b** in `.github/workflows/release.yml`, preserving Phase 1's token wiring
-   and the `scripts/assert-release-version.mjs` equality assertion.
-5. **Document the release procedure.** There is no release runbook today. Update
-   `docs/desktop-and-packaging.md`'s **Release identity** section (`:134-164`) and add a runbook
-   under `docs/runbooks/` if C1-b makes releasing a human-operated action.
+4. **Implement C1-b** in `.github/workflows/release.yml`: a `workflow_dispatch` release taking a
+   `major`/`minor`/`patch` (or explicit version) input, which bumps `package.json` and
+   `package-lock.json`, generates notes from GitHub's `generate-release-notes` API, writes
+   `CHANGELOG.md`, commits, tags, and publishes the Release. Preserve Phase 1's token wiring and
+   the `scripts/assert-release-version.mjs` equality assertion. Removing the Release Please action
+   and its config is expected as part of this.
+5. **Document the release procedure.** There is no release runbook today, and under C1-b releasing
+   becomes a deliberate human action, so one is now required rather than optional. Rewrite
+   `docs/desktop-and-packaging.md`'s **Release identity** section (`:134-164`) - it currently
+   describes Release Please as the owner - and add a runbook under `docs/runbooks/`.
 
 ## Verification
 
@@ -128,7 +143,7 @@ No UI surface, so no Playwright spec is required.
 
 ## Merge and exit criteria
 
-1. C1 is resolved by the human and recorded in this file.
+1. Releasing is a `workflow_dispatch` run in which the human picks the bump (C1-b).
 2. Merge commits are disabled on the repository; squash is the only merge method.
 3. The label vocabulary exists and is documented.
 4. A release cut through the new path produces notes derived from pull request titles, grouped by
@@ -145,9 +160,12 @@ on it.
 ## Cross-phase audit record
 
 - **vs Phase 1:** depends on it. Both edit `.github/workflows/release.yml`; this phase must
-  preserve the token wiring and the version-equality assertion. If C1-b is chosen, this phase
-  removes the Release Please action that Phase 1 repaired - that is expected, not a conflict, and
-  Phase 1's token remains in use for tag-triggered CI.
+  preserve the token wiring and the version-equality assertion. Under the chosen C1-b this phase
+  **removes the Release Please action that Phase 1 repaired** - that is expected, not a conflict.
+  Phase 1's token remains in use so release tags trigger `ci.yml`, and its `release-as` pin must
+  already have been removed before this phase lands.
+- **C1 resolution (2026-08-21):** C1-b. Recorded here and in `phased-plan.md`; no earlier phase
+  needed editing as a result, which was the point of keeping Phase 1 robust to both outcomes.
 - **vs Phase 3:** fully disjoint. Phase 3 touches no release infrastructure and this phase touches
   no application code. They may merge in either order.
 - **vs Phase 4:** independent. Phase 4 verifies the install-and-update journey against whatever

@@ -42,20 +42,23 @@ absorbed.
 
 3. **Removing conventional commits removes the version-bump driver.** Release Please derives
    `major`/`minor`/`patch` from `feat:` / `fix:` / `!`. D2 removes that source and the approved plan
-   did not say what replaces it. This is decision **C1**, flagged below.
+   did not say what replaces it. This became decision **C1**, now resolved as C1-b - see below.
 
 4. **The source plan's G10 was wrong, and G8 was understated.** `e2e/specs/update-banner.spec.ts`
    does exist - the real gap is that every layer is tested against a fixture and none against
    reality. And `apply-update.mjs` deletes `previous-app.bundle` on *every* exit path, not only on
    success. Both corrected in `plan.md`.
 
-## Open decision C1 - carried into Phase 2
+## Decision C1 - resolved
 
-**Not resolved. Do not guess it.** One of its outcomes revisits approved decision D1, so it is
-surfaced here rather than decided.
+**Resolved 2026-08-21: C1-b, the `workflow_dispatch` release.**
 
-Once pull request titles and labels are the changelog source, what owns the version, tag, and
-Release?
+Raised by GitHub Inspector on PR #713, which correctly observed that scheduling Phase 2 with C1
+open would dispatch an agent into work it could not safely finish. Taken before the planning pull
+request merged, so no phase task was ever released against an open decision.
+
+The question was: once pull request titles and labels are the changelog source, what owns the
+version, tag, and Release?
 
 - **C1-a. Keep Release Please, add `.github/release.yml`** for the Release body. Smaller diff, but
   leaves two changelogs of differing quality - a second source of truth - and still needs a bump
@@ -68,9 +71,16 @@ Release?
   with no release pull request, D1's premise weakens - the PAT would then be needed only so the tag
   triggers CI.
 
-**Recommendation: C1-b.** Phase 1 is deliberately robust to either outcome: its token stays useful
-for tag-triggered CI, and its version-equality assertion is unchanged either way. Phase 2 is the
-only phase affected.
+**Chosen: C1-b** - the only option leaving one changelog, one source of truth, and an actual answer
+to "what decides the version", and the closest thing in the plan to the "create a release in GitHub
+and it does the rest" the original request described.
+
+**Effect on D1, recorded rather than assumed.** With no release pull request, the organization
+policy that blocked Release Please stops applying. The PAT is still wanted and still in use - it is
+what makes a release tag trigger `ci.yml` - but its original justification no longer carries
+Phase 2. **No earlier phase needed editing**, which was the point of keeping Phase 1 robust to both
+outcomes: its token wiring and tag/version equality assertion survive unchanged, and Phase 2 simply
+removes the Release Please action Phase 1 repaired.
 
 ## Sizing
 
@@ -79,13 +89,14 @@ Estimated **300-450 gross non-test implementation lines**, excluding tests, acro
 | Phase | Estimate | Basis |
 | --- | --- | --- |
 | 1 | 25-40 | Two workflow lines, one config key, one regex, one `if:` gate, ~15 lines of doc prose |
-| 2 | 80-150 | New `.github/release.yml`, workflow rework (much larger under C1-b), docs, runbook |
+| 2 | 130-150 | New `.github/release.yml`, the C1-b `workflow_dispatch` release replacing Release Please, docs, runbook |
 | 3 | 200-260 | CLT predicate ~25, timeout + retention ~50, gh classification + snapshot threading ~60, README ~40, plus renderer work if G9 changes the banner |
 | 4 | Unknown | Verification-led; the diff is whatever the first real run breaks |
 
-Assumptions: C1-a lands at the low end of Phase 2 and C1-b at the high end; Phase 3's G9 estimate
-assumes the recommended seam 1 (reuse `phase: "error"`) rather than an eighth phase, which would
-add renderer and e2e work.
+Assumptions: Phase 2 is sized for the chosen C1-b, which is the larger of the two shapes because it
+replaces Release Please rather than configuring alongside it. Phase 3's G9 estimate assumes the
+recommended seam 1 (reuse `phase: "error"`) rather than an eighth phase, which would add renderer
+and e2e work.
 
 ### Why four phases rather than one
 
@@ -98,8 +109,9 @@ each split needs its own justification.
   phase whose completion depends on a human merging a second, generated pull request.
 - **Phase 2 after Phase 1.** Both edit `.github/workflows/release.yml`, so they cannot run
   concurrently. The ordering is also substantive: Phase 2 redesigns what a release cycle produces
-  and should be designed against one that has actually run. Combining them would put an unresolved
-  design decision (C1) inside the phase that has to ship today.
+  and should be designed against one that has actually run. Combining them would also have put
+  decision C1 - open at the time these boundaries were drawn - inside the phase that has to ship
+  today.
 - **Phase 3 parallel to both.** Entirely disjoint file sets - `src/main/updater.ts`,
   `scripts/apply-update.mjs`, `scripts/install-app.mjs`, `scripts/init-prerequisites.mjs`,
   `README.md` against `.github/` and release config. It is also the largest phase; merging it into
@@ -144,9 +156,10 @@ each task points at.
 
 ## Cross-phase contracts
 
-- **`.github/workflows/release.yml`** is owned by Phase 1, then Phase 2. Phase 2 must preserve the
-  token wiring and the `scripts/assert-release-version.mjs` equality assertion regardless of what
-  it does to the changelog.
+- **`.github/workflows/release.yml`** is owned by Phase 1, then Phase 2. Under C1-b, Phase 2
+  replaces the Release Please action there with a `workflow_dispatch` release - but must preserve
+  the token wiring and the `scripts/assert-release-version.mjs` equality assertion. Phase 1's
+  `release-as` pin must already be removed before Phase 2 lands.
 - **`src/shared/update.ts`** is expected to be touched only by Phase 3. Phase 1 fixes G7 in
   `scripts/assert-release-version.mjs` specifically to keep this true. If Phase 1's
   reverse-divergence cleanup needs it, the two phases coordinate and whichever merges second

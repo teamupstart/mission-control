@@ -1,0 +1,849 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Release pipeline and auto-updates</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f7f7f5;
+    --panel: #ffffff;
+    --fg: #1c1d20;
+    --fg-muted: #5d6068;
+    --fg-faint: #7c8089;
+    --rule: #e0dfda;
+    --rule-strong: #c8c7c0;
+    --accent: #9a4d1f;
+    --accent-soft: #f4ece5;
+    --danger: #a3281f;
+    --danger-soft: #fbeceb;
+    --ok: #2f6b42;
+    --code-bg: #f0efeb;
+    --code-fg: #3a3b3f;
+    --pre-bg: #26272b;
+    --pre-fg: #ececea;
+    --decide: #2c5f8a;
+    --decide-soft: #eaf1f7;
+    --shadow: 0 1px 2px rgba(0,0,0,.05), 0 8px 24px rgba(0,0,0,.05);
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #131417;
+      --panel: #1a1c20;
+      --fg: #e6e6e4;
+      --fg-muted: #a7abb3;
+      --fg-faint: #878c95;
+      --rule: #2c2f35;
+      --rule-strong: #3d424a;
+      --accent: #e8a06a;
+      --accent-soft: #2a211a;
+      --danger: #f08a7f;
+      --danger-soft: #2d1c1a;
+      --ok: #8ed4a4;
+      --code-bg: #24272c;
+      --code-fg: #dcdfe4;
+      --pre-bg: #0e0f12;
+      --pre-fg: #e2e4e8;
+      --decide: #86b9e4;
+      --decide-soft: #17232e;
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 10px 30px rgba(0,0,0,.35);
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--sans);
+    font-size: 17px;
+    line-height: 1.7;
+    overflow-x: hidden;
+  }
+
+  .doc {
+    display: grid;
+    grid-template-columns:
+      [full-start] minmax(1rem, 1fr)
+      [main-start] min(72ch, calc(100% - 2rem))
+      [main-end] minmax(1rem, 1fr)
+      [full-end];
+    padding: 3.5rem 0 6rem;
+    row-gap: 0;
+  }
+  .doc > * { grid-column: main; }
+  .doc > .breakout {
+    grid-column: full;
+    justify-self: center;
+    width: min(1120px, calc(100% - 2rem));
+  }
+
+  h1, h2, h3 { line-height: 1.25; font-weight: 650; letter-spacing: -0.011em; }
+  h1 {
+    font-size: 2.35rem;
+    margin: 0 0 .35em;
+    letter-spacing: -0.025em;
+  }
+  h1 + .subtitle {
+    color: var(--fg-faint);
+    font-size: .82rem;
+    text-transform: uppercase;
+    letter-spacing: .1em;
+    margin: 0 0 2.6rem;
+  }
+  h2 {
+    font-size: 1.5rem;
+    margin: 2.9rem 0 .9rem;
+    padding-top: 1.6rem;
+    border-top: 1px solid var(--rule);
+  }
+  h3 {
+    font-size: 1.13rem;
+    margin: 2.1rem 0 .7rem;
+  }
+  p { margin: 0 0 1.05em; }
+  ul, ol { margin: 0 0 1.15em; padding-left: 1.45em; }
+  li { margin: 0 0 .5em; }
+  li > ul, li > ol { margin-top: .5em; }
+  strong { font-weight: 660; color: var(--fg); }
+  em { font-style: italic; color: var(--fg-muted); }
+
+  code {
+    font-family: var(--mono);
+    font-size: .855em;
+    background: var(--code-bg);
+    color: var(--code-fg);
+    padding: .13em .38em;
+    border-radius: 4px;
+    border: 1px solid var(--rule);
+    word-break: break-word;
+  }
+
+  pre {
+    margin: 0;
+    background: var(--pre-bg);
+    color: var(--pre-fg);
+    padding: 1rem 1.15rem;
+    border-radius: 8px;
+    overflow-x: auto;
+    font-family: var(--mono);
+    font-size: .85rem;
+    line-height: 1.55;
+  }
+  pre code {
+    background: none;
+    border: 0;
+    padding: 0;
+    color: inherit;
+    font-size: inherit;
+    white-space: pre;
+    word-break: normal;
+  }
+
+  /* callouts */
+  .callout {
+    border-left: 4px solid var(--accent);
+    background: var(--accent-soft);
+    padding: 1rem 1.2rem;
+    border-radius: 0 8px 8px 0;
+    margin: 0 0 1.3em;
+  }
+  .callout > :last-child { margin-bottom: 0; }
+  .callout.danger { border-left-color: var(--danger); background: var(--danger-soft); }
+  .callout.danger .callout-label { color: var(--danger); }
+  .callout-label {
+    display: block;
+    font-size: .72rem;
+    text-transform: uppercase;
+    letter-spacing: .11em;
+    font-weight: 700;
+    color: var(--accent);
+    margin-bottom: .45rem;
+  }
+  .callout pre { margin-top: .2rem; }
+
+  /* gap cards */
+  .gap {
+    border: 1px solid var(--rule);
+    background: var(--panel);
+    border-radius: 10px;
+    padding: .35rem 1.35rem 1.15rem;
+    margin: 0 0 1.15rem;
+    box-shadow: var(--shadow);
+  }
+  .gap > h3 {
+    margin-top: 1.15rem;
+    display: flex;
+    gap: .6rem;
+    align-items: baseline;
+  }
+  .gap .tag {
+    font-family: var(--mono);
+    font-size: .72rem;
+    font-weight: 700;
+    letter-spacing: .04em;
+    color: var(--accent);
+    background: var(--accent-soft);
+    border: 1px solid var(--rule-strong);
+    border-radius: 999px;
+    padding: .1rem .55rem;
+    flex: none;
+    position: relative;
+    top: -1px;
+  }
+  .gap > :last-child { margin-bottom: 0; }
+
+  /* decisions */
+  .decisions { margin-top: .4rem; }
+  .decision {
+    border: 1px solid var(--rule-strong);
+    border-top: 3px solid var(--decide);
+    background: var(--decide-soft);
+    border-radius: 10px;
+    padding: 1.05rem 1.35rem;
+    margin: 0 0 1rem;
+  }
+  .decision > :last-child { margin-bottom: 0; }
+  .decision .dkey {
+    display: block;
+    font-family: var(--mono);
+    font-size: .74rem;
+    font-weight: 700;
+    letter-spacing: .07em;
+    text-transform: uppercase;
+    color: var(--decide);
+    margin-bottom: .3rem;
+  }
+
+  /* phases */
+  .phase { margin-bottom: .4rem; }
+
+  /* table */
+  .tablewrap {
+    overflow-x: auto;
+    border: 1px solid var(--rule);
+    border-radius: 10px;
+    background: var(--panel);
+    margin: 0 0 1.3em;
+    box-shadow: var(--shadow);
+  }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    min-width: 30rem;
+    font-size: .93rem;
+  }
+  th, td {
+    text-align: left;
+    padding: .62rem 1rem;
+    border-bottom: 1px solid var(--rule);
+    vertical-align: top;
+  }
+  thead th {
+    font-size: .74rem;
+    text-transform: uppercase;
+    letter-spacing: .09em;
+    color: var(--fg-faint);
+    background: var(--code-bg);
+    white-space: nowrap;
+  }
+  tbody tr:last-child th, tbody tr:last-child td { border-bottom: 0; }
+  td strong { color: var(--danger); }
+
+  /* diagram */
+  figure.diagram {
+    margin: 0 0 1.6rem;
+    padding: 1.4rem 1.2rem 1rem;
+    border: 1px solid var(--rule);
+    background: var(--panel);
+    border-radius: 12px;
+    box-shadow: var(--shadow);
+    overflow-x: auto;
+  }
+  figure.diagram svg {
+    display: block;
+    width: 100%;
+    max-width: 100%;
+    min-width: 620px;
+    height: auto;
+    color: var(--fg);
+  }
+  figure.diagram figcaption {
+    margin-top: .9rem;
+    font-size: .82rem;
+    color: var(--fg-faint);
+    text-align: center;
+  }
+  .n-box { fill: var(--panel); stroke: var(--rule-strong); stroke-width: 1.5; }
+  .n-box.primary { fill: var(--accent-soft); stroke: var(--accent); }
+  .n-box.store { fill: var(--decide-soft); stroke: var(--decide); }
+  .n-label { fill: var(--fg); font-family: var(--mono); font-size: 12.5px; }
+  .n-label.plain { font-family: var(--sans); font-size: 13.5px; font-weight: 600; }
+  .edge { fill: none; stroke: var(--rule-strong); stroke-width: 1.6; }
+  .edge-label { fill: var(--fg-muted); font-family: var(--mono); font-size: 11px; }
+  .edge-label.sans { font-family: var(--sans); font-size: 11.5px; }
+
+  /* resolved decisions */
+  :root {
+    --settled: #2f6b42;
+    --settled-soft: #eef4ef;
+    --settled-tint: #f6faf7;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --settled: #8ed4a4;
+      --settled-soft: #17251c;
+      --settled-tint: #141d17;
+    }
+  }
+  .resolved-note {
+    display: flex;
+    gap: .7rem;
+    align-items: baseline;
+    border: 1px solid var(--rule);
+    border-left: 4px solid var(--settled);
+    background: var(--settled-soft);
+    border-radius: 0 8px 8px 0;
+    padding: .85rem 1.15rem;
+    margin: 0 0 1.4em;
+    color: var(--fg-muted);
+    font-size: .95rem;
+  }
+  .resolved-note .stamp {
+    flex: none;
+    font-family: var(--mono);
+    font-size: .68rem;
+    font-weight: 700;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--settled);
+    border: 1px solid var(--settled);
+    border-radius: 999px;
+    padding: .08rem .6rem;
+    position: relative;
+    top: -1px;
+  }
+  .resolved-note p { margin: 0; }
+
+  a { color: var(--decide); text-underline-offset: 2px; }
+  a:hover { color: var(--accent); }
+
+  .tablewrap.decisions-table {
+    border-top: 3px solid var(--settled);
+    background: var(--settled-tint);
+  }
+  .decisions-table table { min-width: 52rem; }
+  .decisions-table thead th { background: var(--settled-soft); color: var(--settled); }
+  .decisions-table thead th:first-child { width: 3.4rem; }
+  .decisions-table th[scope="row"] {
+    font-family: var(--mono);
+    font-size: .78rem;
+    letter-spacing: .05em;
+    color: var(--settled);
+    white-space: nowrap;
+  }
+  .decisions-table td { color: var(--fg-muted); }
+  .decisions-table td strong { color: var(--fg); font-weight: 660; }
+  .decisions-table td.chosen { color: var(--fg); }
+  .decisions-table td.chosen strong { color: var(--settled); }
+
+  .phases-table table { min-width: 46rem; }
+  .phases-table thead th:first-child { width: 3.4rem; }
+  .phases-table th[scope="row"] {
+    font-family: var(--mono);
+    font-size: .82rem;
+    font-weight: 700;
+    color: var(--accent);
+    white-space: nowrap;
+  }
+</style>
+</head>
+<body>
+<article class="doc">
+
+  <h1>Release pipeline and auto-updates</h1>
+  <p class="subtitle">docs/plans/release-pipeline-and-auto-updates/plan.md</p>
+
+  <h2>What this plan is</h2>
+
+  <p>You asked two things. First: confirm that a user can clone the repository, install the app, and
+  then be prompted to update from new GitHub Releases - and if not, say where it breaks. Second:
+  close whatever gaps remain in the release process itself, so that publishing a release from
+  GitHub (or from a local skill) tags, builds, and updates the changelog on its own.</p>
+
+  <p>The short answer to the first question is that the mechanism is built, thoroughly designed, and
+  covered by roughly sixty unit tests - and it has <strong>never once been able to fire</strong>, because no
+  GitHub Release has ever existed. The release workflow that would create one has failed on every
+  push to <code>main</code> since it landed, for a single reason that is a repository setting rather than a
+  code defect.</p>
+
+  <p>This plan states the audited path exactly, lists every gap found, and proposes the work to close
+  them.</p>
+
+  <h2>Part 1 - the audited path, as built</h2>
+
+  <p>The design is not what "auto-update from GitHub Releases" usually means, and the difference
+  matters for everything below. <strong>Nothing is ever downloaded.</strong> No release asset, no dmg, no zip.</p>
+
+  <p>The installed app uses the release only for its <strong>tag name</strong>. It then rebuilds itself from source
+  at that tag, in a git clone that only the updater owns, and swaps the resulting <code>.app</code> bundle into
+  place.</p>
+
+  <figure class="diagram breakout">
+    <svg viewBox="0 0 1300 570" role="img" aria-label="Install and update flow: the user's Mac runs make install, which invokes scripts/install-app.mjs; that queries GitHub Releases, clones the repository at the tag into ~/.mission-control/app-src, builds the app bundle, atomically swaps it into /Applications, and writes install-receipt.json. The installed app polls GitHub Releases every six hours, shows an update banner on a newer tag, and the banner runs scripts/apply-update.mjs, which re-enters the installer at the new ref.">
+      <defs>
+        <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"></path>
+        </marker>
+      </defs>
+
+      <g color="var(--rule-strong)">
+        <!-- U -> S : make install -->
+        <path class="edge" marker-end="url(#arrow)" d="M 220 230 H 283"></path>
+        <text class="edge-label sans" x="232" y="192" text-anchor="middle">make install</text>
+
+        <!-- S -> C : git clone + checkout tag -->
+        <path class="edge" marker-end="url(#arrow)" d="M 485 230 H 548"></path>
+        <text class="edge-label" x="497" y="192" text-anchor="middle">git clone + checkout tag</text>
+
+        <!-- C -> B : npm ci + npm run package -->
+        <path class="edge" marker-end="url(#arrow)" d="M 750 230 H 813"></path>
+        <text class="edge-label" x="762" y="192" text-anchor="middle">npm ci + npm run package</text>
+
+        <!-- B -> A : atomic swap -->
+        <path class="edge" marker-end="url(#arrow)" d="M 1015 230 H 1078"></path>
+        <text class="edge-label sans" x="1027" y="192" text-anchor="middle">atomic swap</text>
+
+        <!-- S -> GH : gh release list -->
+        <path class="edge" marker-end="url(#arrow)" d="M 385 200 V 100 H 616"></path>
+        <text class="edge-label" x="500" y="72" text-anchor="middle">gh release list</text>
+        <text class="edge-label" x="500" y="87" text-anchor="middle">--repo mancej-cyc/ai-harness</text>
+
+        <!-- A -> GH : every 6h, via gh -->
+        <path class="edge" marker-end="url(#arrow)" d="M 1180 200 V 70 H 846"></path>
+        <text class="edge-label sans" x="1012" y="58" text-anchor="middle">every 6h, via gh</text>
+
+        <!-- S -> R : writes -->
+        <path class="edge" marker-end="url(#arrow)" d="M 332 260 L 176 356"></path>
+        <text class="edge-label sans" x="246" y="298" text-anchor="middle">writes</text>
+
+        <!-- A -> BAN : newer tag -->
+        <path class="edge" marker-end="url(#arrow)" d="M 1180 260 V 348"></path>
+        <text class="edge-label sans" x="1192" y="310" text-anchor="start">newer tag</text>
+
+        <!-- BAN -> H : detached system node -->
+        <path class="edge" marker-end="url(#arrow)" d="M 1180 410 V 478"></path>
+        <text class="edge-label sans" x="1168" y="449" text-anchor="end">detached system node</text>
+
+        <!-- H -> S : --ref vX.Y.Z -->
+        <path class="edge" marker-end="url(#arrow)" d="M 1078 507 H 517 V 230 H 489"></path>
+        <text class="edge-label" x="529" y="330" text-anchor="start">--ref vX.Y.Z</text>
+      </g>
+
+      <!-- GitHub Releases (datastore) -->
+      <g>
+        <path class="n-box store" d="M 620 62 a 110 12 0 0 1 220 0 V 108 a 110 12 0 0 1 -220 0 Z"></path>
+        <ellipse class="n-box store" cx="730" cy="62" rx="110" ry="12"></ellipse>
+        <text class="n-label plain" x="730" y="95" text-anchor="middle">GitHub Releases</text>
+      </g>
+
+      <!-- User's Mac -->
+      <rect class="n-box" x="20" y="200" width="200" height="60" rx="9"></rect>
+      <text class="n-label plain" x="120" y="235" text-anchor="middle">User&#8217;s Mac</text>
+
+      <!-- scripts/install-app.mjs -->
+      <rect class="n-box primary" x="285" y="200" width="200" height="60" rx="9"></rect>
+      <text class="n-label" x="385" y="227" text-anchor="middle">scripts/</text>
+      <text class="n-label" x="385" y="245" text-anchor="middle">install-app.mjs</text>
+
+      <!-- ~/.mission-control/app-src -->
+      <rect class="n-box" x="550" y="200" width="200" height="60" rx="9"></rect>
+      <text class="n-label" x="650" y="227" text-anchor="middle">~/.mission-control/</text>
+      <text class="n-label" x="650" y="245" text-anchor="middle">app-src</text>
+
+      <!-- release/mac-arm64/Mission Control.app -->
+      <rect class="n-box" x="815" y="200" width="200" height="60" rx="9"></rect>
+      <text class="n-label" x="915" y="227" text-anchor="middle">release/mac-arm64/</text>
+      <text class="n-label" x="915" y="245" text-anchor="middle">Mission Control.app</text>
+
+      <!-- /Applications/Mission Control.app -->
+      <rect class="n-box primary" x="1080" y="200" width="200" height="60" rx="9"></rect>
+      <text class="n-label" x="1180" y="227" text-anchor="middle">/Applications/</text>
+      <text class="n-label" x="1180" y="245" text-anchor="middle">Mission Control.app</text>
+
+      <!-- install-receipt.json -->
+      <rect class="n-box" x="20" y="360" width="200" height="54" rx="9"></rect>
+      <text class="n-label" x="120" y="392" text-anchor="middle">install-receipt.json</text>
+
+      <!-- Update banner -->
+      <rect class="n-box" x="1080" y="350" width="200" height="60" rx="9"></rect>
+      <text class="n-label plain" x="1180" y="377" text-anchor="middle">Update banner:</text>
+      <text class="n-label plain" x="1180" y="395" text-anchor="middle">Update Now / Later</text>
+
+      <!-- scripts/apply-update.mjs -->
+      <rect class="n-box" x="1080" y="480" width="200" height="54" rx="9"></rect>
+      <text class="n-label" x="1180" y="503" text-anchor="middle">scripts/</text>
+      <text class="n-label" x="1180" y="521" text-anchor="middle">apply-update.mjs</text>
+    </svg>
+    <figcaption>Install and update flow.</figcaption>
+  </figure>
+
+  <h3>What is genuinely good here</h3>
+
+  <p>These are verified, not assumed, and they should survive any change this plan makes.</p>
+
+  <ul>
+    <li><strong>The trust boundary is real.</strong> Every <code>gh</code> call passes <code>--repo mancej-cyc/ai-harness</code>
+      explicitly (<code>src/main/updater.ts:96-120</code>), because <code>gh</code> otherwise infers the repository from
+      the working directory - so the same documented command run inside a fork would install
+      fork-controlled code under the same tag name. The canonical slug is a single export
+      (<code>src/shared/install-receipt-schema.mjs:22</code>).</li>
+    <li><strong>Prereleases and drafts are excluded in the query, not after it</strong>
+      (<code>--exclude-drafts --exclude-pre-releases</code>), and re-asserted defensively on the result
+      (<code>src/main/updater.ts:172-174</code>). Filtering after asking for "the latest" cannot recover.</li>
+    <li><strong>A failed release lookup is not an empty release list.</strong> "No stable release yet" falls back to
+      the default branch tip; "GitHub could not be asked" stops the install
+      (<code>scripts/install-app.mjs:190-194</code>).</li>
+    <li><strong>Rollback is layered.</strong> The helper backs up the bundle <em>and</em> the receipt, and restores both on
+      any failure, then relaunches the restored app (<code>scripts/apply-update.mjs:77-104, 171-192</code>). The
+      swap itself is copy-to-hidden-sibling then two same-directory renames
+      (<code>scripts/install-app.mjs:284-329</code>), so a full disk leaves the previous app in place.</li>
+    <li><strong>The updater is gated five ways</strong> - packaged only, arm64 only, managed receipt present,
+      canonical repo, system Node available (<code>src/main/updater.ts:355-388</code>) - so a developer's
+      <code>make install-app</code> build is never mistaken for a managed install.</li>
+    <li><strong>Gatekeeper is a non-issue by construction.</strong> Because the bundle is built on the user's own
+      machine and ad-hoc signed, nothing crosses a download boundary and no quarantine bit is ever
+      set. There is no <code>xattr</code> or <code>spctl</code> workaround anywhere, and none is needed.</li>
+  </ul>
+
+  <h3>Where it breaks</h3>
+
+  <div class="callout danger">
+    <span class="callout-label">Where it breaks</span>
+    <p><strong>It never starts.</strong> <code>latestStableRelease</code> returns <code>null</code>, so every check - background and manual
+    alike - lands on <code>up-to-date</code> (<code>src/main/updater.ts:455-457</code>). The app truthfully reports "you
+    are up to date" forever. There is no error, no log line, and no symptom a user could report.</p>
+  </div>
+
+  <h2>Part 2 - the gaps</h2>
+
+  <section class="gap">
+    <h3><span class="tag">G1</span> <span>The release workflow fails on every push to <code>main</code> (blocker)</span></h3>
+
+    <p>Verified against the live repository:</p>
+
+    <div class="tablewrap">
+      <table>
+        <thead>
+          <tr><th>Check</th><th>Result</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>gh release list</code></td><td>empty - zero releases, ever</td></tr>
+          <tr><td><code>gh api repos/.../tags</code></td><td>empty - zero tags, ever</td></tr>
+          <tr><td>Open release PR</td><td>none</td></tr>
+          <tr><td><code>CHANGELOG.md</code></td><td>does not exist</td></tr>
+          <tr><td>Last 5 <code>Release</code> workflow runs</td><td><strong>failure, failure, failure, failure, failure</strong></td></tr>
+          <tr><td>Commits waiting to be released</td><td>245</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>The failure is identical every time, and it is the last line of the run:</p>
+
+    <div class="callout danger">
+      <span class="callout-label">Every run ends here</span>
+      <pre><code>release-please failed: GitHub Actions is not permitted to create or approve pull requests.</code></pre>
+    </div>
+
+    <p>Release Please gets all the way through: it parses the history, computes the bump (<code>updating from
+    0.1.0 to 0.2.0</code>), builds the tree, creates the commit, and pushes the branch
+    <code>release-please--branches--main--components--mission-control</code>. Then it tries to open the pull
+    request and GitHub refuses.</p>
+
+    <p>This is the repository/organization Actions setting <strong>"Allow GitHub Actions to create and approve
+    pull requests."</strong> The repository reports <code>can_approve_pull_request_reviews: false</code>. The owner
+    <code>mancej-cyc</code> is an Organization, and this setting can be enforced org-wide, so it may need an org
+    admin rather than a repo admin - the current token has repo <code>admin: true</code> but is not an org admin,
+    so which level is authoritative here could not be read and must be confirmed at the point of fix.</p>
+
+    <p>Nothing in the repository can work around this. It is one toggle, or a different credential, or a
+    release design that does not need a pull request at all. Those are the options in D1 below.</p>
+  </section>
+
+  <section class="gap">
+    <h3><span class="tag">G2</span> <span>Commit titles are not conventional commits, so the changelog would be near-empty</span></h3>
+
+    <p>Even once G1 is unblocked, what Release Please produces would be poor. Of the last 245 commits on
+    <code>main</code>:</p>
+
+    <ul>
+      <li><strong>40</strong> parse as conventional commits (<code>feat:</code>, <code>fix:</code>, <code>docs:</code>, &hellip;).</li>
+      <li><strong>20</strong> are raw merge commits (<code>Merge pull request #707 from &hellip;</code>), which Release Please logs as
+        <code>commit could not be parsed</code> - these appear by the dozen in the failing run's log.</li>
+      <li>The remaining <strong>185</strong> are prose titles: <em>"Make workflow test evidence first-class and
+        auditable (#708)"</em>, <em>"Retire the Cards dashboard layout (#706)"</em>.</li>
+    </ul>
+
+    <p>Those 185 are the actual product changes, and every one of them would be invisible in
+    <code>CHANGELOG.md</code> and would contribute nothing to the version bump. The first release would ship a
+    changelog describing about a sixth of the work, and the semantic version would be decided by an
+    unrepresentative sample. <code>release.yml</code>'s own header comment assumes "conventional-commit squash
+    titles", which is a description of a convention the repository does not currently follow.</p>
+  </section>
+
+  <section class="gap">
+    <h3><span class="tag">G3</span> <span>Merge commits are enabled and in use</span></h3>
+
+    <p>The repository allows squash, merge, and rebase. Both styles appear in recent history. A merge
+    commit discards the PR title into <code>Merge pull request #N from &lt;branch&gt;</code>, which carries no
+    information Release Please can use. Squash-only is the setting that makes G2's fix stick.</p>
+  </section>
+
+  <section class="gap">
+    <h3><span class="tag">G4</span> <span>No Release ever carries a downloadable artifact</span></h3>
+
+    <p><code>ci.yml</code>'s <code>package</code> job builds the dmg, but:</p>
+
+    <ul>
+      <li>It runs on <code>startsWith(github.ref, 'refs/tags/')</code> or <code>workflow_dispatch</code>, and the release tag is
+        pushed with <code>GITHUB_TOKEN</code> - <strong>GitHub does not start workflow runs from that token</strong>, so the job
+        does not fire on a release. <code>release.yml:24-27</code> documents this as deliberate.</li>
+      <li>When it does run, it uploads to <code>actions/upload-artifact</code>, which expires in 90 days and requires
+        a logged-in GitHub session to download. It is <strong>not</strong> attached to the Release.</li>
+    </ul>
+
+    <p>For the source-build updater this is correct and costs nothing - the dmg is genuinely not needed.
+    It only matters if you ever want a person to download and run the app without cloning, which is a
+    scope decision (D3), and one that pulls in Developer ID signing and notarization, since a
+    downloaded bundle <em>would</em> be quarantined.</p>
+  </section>
+
+  <section class="gap">
+    <h3><span class="tag">G5</span> <span>The README never mentions the install path</span></h3>
+
+    <p>Your stated user journey is "clone the repo and install the application". <code>README.md</code>'s <strong>Quick
+    start</strong> offers <code>git clone</code>, <code>make init</code>, <code>npm run dev</code> - the development server on
+    <code>127.0.0.1:5173</code>. It does not mention <code>make install</code>, the desktop app, or updates at all. The
+    managed install is documented well, but only in <code>docs/overview.md:168-218</code>, well down a long page.
+    A cloner following the README lands in dev mode and never encounters the updater.</p>
+  </section>
+
+  <section class="gap">
+    <h3><span class="tag">G6</span> <span>Xcode Command Line Tools is an undocumented prerequisite</span></h3>
+
+    <p><code>npm run package</code> runs <code>scripts/build-keep-awake-native.mjs</code>, which shells out to <code>node-gyp
+    rebuild</code> for the Keep Awake native addon. That needs Xcode CLT. <code>docs/overview.md:174</code> lists the
+    prerequisites as <code>git</code>, an authenticated <code>gh</code>, and an Apple Silicon Mac. CLT is missing from that
+    list.</p>
+
+    <p>This is worse in the update path than the install path: the rebuild happens <strong>after the app has
+    quit</strong>, with no UI on screen, so a missing toolchain surfaces as a failed update rather than as a
+    failed install.</p>
+  </section>
+
+  <section class="gap">
+    <h3><span class="tag">G7</span> <span>The two version parsers disagree about prereleases</span></h3>
+
+    <p><code>scripts/assert-release-version.mjs:22</code> accepts <code>v1.2.3-rc.1</code>. <code>src/shared/update.ts:58</code> rejects
+    anything that is not exactly <code>\d+\.\d+\.\d+</code>. A prerelease tag would therefore pass the CI
+    assertion and then be permanently invisible to the updater. This is latent today only because
+    prereleases are excluded by the <code>gh</code> query anyway, but it is a trap for anyone who later reaches
+    for an rc.</p>
+  </section>
+
+  <section class="gap">
+    <h3><span class="tag">G8</span> <span>Applying an update is a long, silent, unbounded rebuild</span></h3>
+
+    <p>Accepting an update quits the app and runs <code>npm ci</code> plus a full <code>npm run package</code> on the user's
+    machine. Meanwhile:</p>
+
+    <ul>
+      <li>There is no progress reporting beyond a static "Preparing to update" line - the parent process
+        is already dead, so nothing <em>can</em> report.</li>
+      <li><code>install()</code> (<code>scripts/apply-update.mjs:136</code>) has <strong>no timeout</strong>. A hung <code>npm ci</code> leaves the user
+        with no app running and no interface at all, indefinitely.</li>
+      <li>The helper deletes its temp dir including <code>previous-app.bundle</code> in a <code>finally</code>
+        (<code>scripts/apply-update.mjs:214</code>), so the rollback material is gone on <strong>every</strong> exit path -
+        success and failure alike - and is unavailable even if the new app crashes on first launch.
+        Success is judged by <code>open</code>'s exit code, which does not mean the app stayed up.</li>
+    </ul>
+  </section>
+
+  <section class="gap">
+    <h3><span class="tag">G9</span> <span><code>gh</code> is a hard runtime dependency with a silent failure mode</span></h3>
+
+    <p>The install verifies <code>gh auth status</code>, but nothing keeps that true afterwards. Expired auth
+    degrades every background check to a quiet <code>idle</code> (<code>src/main/updater.ts:472-474</code>). A user whose
+    <code>gh</code> token lapsed silently stops receiving updates. Secondary rate limits (HTTP 403) are also not
+    special-cased and surface as a generic "cannot list releases here (exit N)".</p>
+  </section>
+
+  <section class="gap">
+    <h3><span class="tag">G10</span> <span>Nothing exercises the update surface against a real release</span></h3>
+
+    <p><strong>Corrected during phase investigation.</strong> An earlier draft of this plan said <code>e2e/</code> had no update
+    spec. It does: <code>e2e/specs/update-banner.spec.ts</code> covers the banner flow. The gap is narrower and
+    different from what was first written.</p>
+
+    <p>Nine unit test files cover the controller, the helper, and the banner, all against injected ports,
+    and the e2e spec stubs the entire desktop bridge with a fixed <code>available</code> snapshot. So every layer
+    is tested against a fixture, and <strong>no layer is tested against reality</strong>: <code>runGh</code>, the real detached
+    spawn, and the actual <code>git</code> / <code>npm ci</code> / <code>npm run package</code> build are never exercised, and there is
+    no e2e coverage of <code>install-app.mjs</code> or <code>apply-update.mjs</code> at all.</p>
+
+    <p>That is defensible for a feature gated behind Electron, a managed receipt, and a live GitHub
+    Release - but it means the seam that has never run in production is also the seam nothing tests.
+    Phase 4 exists to close that by running it for real, not by adding another fixture.</p>
+  </section>
+
+
+  <h2>Part 3 - proposed work</h2>
+
+  <p><strong>The definitive roadmap is <a href="phased-plan.md"><code>phased-plan.md</code></a></strong> (rendered:
+  <a href="phased-plan.html"><code>phased-plan.html</code></a>), with one file per phase beside it. That index owns the
+  phase boundaries, the dependency graph, the sizing rationale, and the cross-phase contracts, and it
+  is what the scheduled implementation tasks point at.</p>
+
+  <p>An earlier draft of this section carried a provisional A-D roadmap. It has been replaced rather
+  than kept alongside, because it had drifted into contradicting the real one in three ways that
+  would have misled anyone following it: it still asked Phase C to choose between changelog
+  alternatives that decision C1 has since settled, still asked Phase D to decide whether G10 warrants
+  an e2e spec, and ordered the real-journey verification <em>before</em> the update-safety work when the
+  actual graph makes verification depend on it.</p>
+
+  <p>The four phases:</p>
+
+  <div class="tablewrap phases-table breakout">
+    <table>
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Phase</th>
+          <th>Depends on</th>
+          <th>Owns</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <th scope="row">1</th>
+          <td><a href="phase-1-cut-the-first-release.md">Unblock the release trigger and cut v1.0.0</a></td>
+          <td>-</td>
+          <td>G1, G7, D1, D4</td>
+        </tr>
+        <tr>
+          <th scope="row">2</th>
+          <td><a href="phase-2-changelog-from-pull-requests.md">Generate the changelog from pull request titles and labels</a></td>
+          <td>1</td>
+          <td>G2, G3, D2, C1</td>
+        </tr>
+        <tr>
+          <th scope="row">3</th>
+          <td><a href="phase-3-install-and-update-safety.md">Close the install and update-safety gaps</a></td>
+          <td>-</td>
+          <td>G5, G6, G8, G9</td>
+        </tr>
+        <tr>
+          <th scope="row">4</th>
+          <td><a href="phase-4-prove-the-journey.md">Prove the journey against a real release</a></td>
+          <td>1, 3</td>
+          <td>G10</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p><strong>Phases 1 and 3 are concurrent</strong> - they share no files. Phase 2 follows Phase 1 because both edit
+  <code>.github/workflows/release.yml</code> and because a changelog redesign should be built against a release
+  cycle that has actually run. <strong>Phase 4 depends on Phase 3</strong>, so the one real end-to-end run
+  exercises the hardened install and update paths rather than rediscovering the gaps Phase 3 closes;
+  it is additionally gated on a human merging the release pull request Phase 1 produces, which is why
+  it cannot be an exit criterion of an earlier phase.</p>
+
+  <p>Two things settled since the review, both recorded in full in the phase files:</p>
+
+  <ul>
+    <li><strong>C1 - what owns the version, tag, and Release.</strong> Removing conventional commits as the changelog
+      source also removed the semver bump driver, which this plan did not anticipate. Resolved as
+      <strong>C1-b</strong>: a <code>workflow_dispatch</code> release where the human picks the bump and the workflow generates
+      notes from pull request titles and label categories. It replaces Release Please. The D1 token
+      remains in use, because it is what makes a release tag trigger <code>ci.yml</code>.</li>
+    <li><strong>G10</strong> is answered by running the journey for real in Phase 4, not by adding another fixture.</li>
+  </ul>
+
+  <section class="phase">
+    <h3>Not doing: artifact distribution</h3>
+
+    <p>D3. Releases will <strong>not</strong> carry a downloadable dmg. The source-build updater does not need one, and
+    adding it would pull in a paid Apple Developer ID plus notarization - without which a downloaded
+    bundle is quarantined and the current "it just opens" property is lost. G4 is therefore accepted
+    rather than fixed, and the dmg the <code>package</code> job builds stays a CI artifact.</p>
+  </section>
+
+  <h2 id="decisions-resolved">Decisions (resolved)</h2>
+
+  <div class="resolved-note">
+    <span class="stamp">Resolved</span>
+    <p>Resolved in the dashboard plan review on 2026-08-21.</p>
+  </div>
+
+  <div class="tablewrap decisions-table breakout">
+    <table>
+      <thead>
+        <tr>
+          <th><span aria-hidden="true"></span></th>
+          <th>Decision</th>
+          <th>Chosen</th>
+          <th>Why</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <th scope="row">D1</th>
+          <td>How to unblock the release trigger (G1)</td>
+          <td class="chosen"><strong>PAT or GitHub App token for Release Please</strong></td>
+          <td>Bypasses the organization policy outright instead of depending on an org admin, and does not recur for future repositories. Side effect: its tag push starts workflows, so <code>ci.yml</code>'s <code>package</code> job begins firing on release tags.</td>
+        </tr>
+        <tr>
+          <th scope="row">D2</th>
+          <td>What the changelog is generated from (G2)</td>
+          <td class="chosen"><strong>Pull request titles and labels</strong></td>
+          <td>Matches how this repository actually writes history. Conventional-commit parsing sees 40 of 245 commits and would ship a changelog describing a sixth of the work.</td>
+        </tr>
+        <tr>
+          <th scope="row">D3</th>
+          <td>Whether Releases carry a downloadable dmg (G4)</td>
+          <td class="chosen"><strong>No - source-build updater only</strong></td>
+          <td>The updater does not need an asset, and avoiding it avoids Developer ID signing and notarization entirely.</td>
+        </tr>
+        <tr>
+          <th scope="row">D4</th>
+          <td>The first release number</td>
+          <td class="chosen"><strong>v1.0.0</strong></td>
+          <td>1286 commits and a shipping product. Release Please's computed <code>0.2.0</code> derives from an unrepresentative minority of parseable commits. Far easier to choose now than later.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>Those are the decisions as taken, with the reasoning that applied at the time. One has since been
+  partly overtaken: <strong>D1's premise weakened when C1 resolved as C1-b.</strong> With no release pull request,
+  the organization policy it was chosen to bypass stops applying. The token is still wanted and still
+  in use - it is what makes a release tag trigger <code>ci.yml</code> - so D1's work stands and Phase 1 needed no
+  revision, but its original justification no longer carries Phase 2. See
+  <a href="phased-plan.md"><code>phased-plan.md</code></a> for the full record.</p>
+
+  <h3>A note on how this review was answered</h3>
+
+  <p>The review was submitted 1h52m after it was requested. The <code>request_plan_decisions</code> MCP call has a
+  30-minute idle timeout, so it had already aborted; the answers were persisted correctly in the
+  <code>reviews</code> table but were never delivered back to the waiting session, which had to recover them by
+  reading the database directly. Plan reviews are inherently human-paced and routinely take longer
+  than thirty minutes. This is worth fixing independently of this plan.</p>
+
+</article>
+</body>
+</html>

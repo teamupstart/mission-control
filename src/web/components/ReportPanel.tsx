@@ -1,5 +1,7 @@
 import { useMemo, useState } from "react";
 import type { BacklogPlan, Session, Task, TaskSummary } from "@shared/types.ts";
+import { TASK_WORKTREE_RETENTION_DAYS } from "@shared/types.ts";
+import { taskHasWorktrees } from "@shared/task-repos.ts";
 import {
   RECENT_TASKS_CAP,
   backlogTasks,
@@ -401,7 +403,9 @@ export function ReportPanel({
                     </Tooltip>
                   </span>
                 ) : (
-                  <Tooltip label="Record an outcome. The worktree + agent stay until you Clean up.">
+                  <Tooltip
+                    label={`Record an outcome. The worktree + agent stay until you Clean up, or until ${TASK_WORKTREE_RETENTION_DAYS} days pass without a change.`}
+                  >
                     <button className="btn" onClick={() => setMarking(s.task!.id)}>
                       Mark done…
                     </button>
@@ -469,9 +473,24 @@ export function ReportPanel({
                   onOpen={onOpenSchedule}
                 />
               </div>
-              {/* A cleanly-failed task (torn down, no worktree) can be retried in
-                  place - it re-provisions from scratch. */}
-              {t.status === "failed" && !t.worktreePath && (
+              {/* Automatic cleanup is retrying. Its own line, deliberately not folded into
+                  `outcome` or `error` above: those are the task's own record of what it
+                  produced and why it failed, and a maintenance note overwriting either would
+                  destroy the only account of the run. */}
+              {t.automaticCleanup && (
+                <div className="report-row-main">
+                  <span className="report-sub dim">
+                    automatic cleanup is retrying
+                    {t.automaticCleanup.detail ? ` - ${t.automaticCleanup.detail}` : ""}
+                  </span>
+                </div>
+              )}
+              {/* A cleanly-failed task (torn down, no worktree at all) can be retried in
+                  place - it re-provisions from scratch. `taskHasWorktrees` rather than the
+                  primary path alone: a task whose primary tree was released and whose attached
+                  repository's tree is still on disk is not resource-free, and offering Retry
+                  for it would re-dispatch onto a checkout the previous attempt still holds. */}
+              {t.status === "failed" && !taskHasWorktrees(t) && (
                 <div className="report-row-actions">
                   <Tooltip label="Dispatch this failed task again from scratch">
                     <button
@@ -484,14 +503,15 @@ export function ReportPanel({
                 </div>
               )}
               {/* A terminal task that still holds a worktree - a done task
-                  awaiting reclaim, or a failed-but-alive dispatch whose agent may
-                  still be running - is freed here (keeping its status + outcome). */}
-              {t.worktreePath && (
+                  awaiting reclaim, a failed-but-alive dispatch whose agent may
+                  still be running, or an attached-repository tree that survived a
+                  partial teardown - is freed here (keeping its status + outcome). */}
+              {taskHasWorktrees(t) && (
                 <div className="report-row-actions">
                   {confirmCancel === t.id ? (
                     <span className="report-cancel">
                       <span className="report-sub">reclaim worktree &amp; stop agent?</span>
-                      <Tooltip label="Reclaim this task's worktree and stop any agent still holding it">
+                      <Tooltip label="Reclaim this task's worktree and stop any agent still holding it. Uncommitted and unpushed work in it is deleted.">
                         <button className="btn btn-danger" onClick={() => void reclaim(t.id)}>
                           Clean up
                         </button>
@@ -503,7 +523,9 @@ export function ReportPanel({
                       </Tooltip>
                     </span>
                   ) : (
-                    <Tooltip label="Reclaim this task's worktree - asks for a confirming click first">
+                    <Tooltip
+                      label={`Reclaim this task's worktree - asks for a confirming click first. Left alone, it is removed automatically after ${TASK_WORKTREE_RETENTION_DAYS} days without a change.`}
+                    >
                       <button className="btn btn-danger-ghost" onClick={() => setConfirmCancel(t.id)}>
                         Clean up
                       </button>

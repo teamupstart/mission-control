@@ -40,6 +40,7 @@ import type {
   PromptedDirectHandoffKind,
   SessionQueue,
   Task,
+  TaskAutomaticCleanup,
   TaskPriority,
   TaskRepoEntry,
   TaskStatus,
@@ -57,7 +58,14 @@ import { readCheapAction, readDivergence, readSkipReason } from "@shared/foreman
 import { askPreviewForWire } from "@shared/foreman-ask.ts";
 import type { CheapAction, Divergence, SkipReason } from "@shared/foreman.ts";
 import { normalizeLabels } from "@shared/task.ts";
-import { isRetentionCandidate, taskResourceGeneration } from "./task-resource-generation.ts";
+import { TASK_AUTOMATIC_CLEANUP_DETAIL_LIMIT } from "@shared/types.ts";
+import { taskHasWorktrees } from "@shared/task-repos.ts";
+import {
+  isRetentionCandidate,
+  isRetentionRetryable,
+  taskHoldsCleanupResources,
+  taskResourceGeneration,
+} from "./task-resource-generation.ts";
 
 /**
  * Durable state. Live sessions are intentionally NOT persisted - they're rebuilt
@@ -4415,7 +4423,12 @@ function taskReposByTask(): Map<string, TaskRepoEntry[]> {
 function rowsToTasks(rows: TaskRow[]): Task[] {
   if (rows.length === 0) return [];
   const byTask = taskReposByTask();
-  return rows.map((r) => rowToTask(r, byTask.get(r.id) ?? []));
+  // One query for the whole batch, exactly as the repos are, and for the same reason: a
+  // per-task read here would be an N+1 on every `listTasks`, and this runs on the snapshot
+  // every browser gets on connect. The map is almost always empty - only a task whose
+  // automatic cleanup is mid-retry has a row that projects to anything.
+  const cleanup = taskAutomaticCleanupSummaries(rows.map((r) => r.id));
+  return rows.map((r) => rowToTask(r, byTask.get(r.id) ?? [], cleanup.get(r.id) ?? null));
 }
 
 /** Read a `tasks.labels` blob back as a clean string array; anything unusable is none. */
@@ -4500,7 +4513,11 @@ function parseEffort(agent: Task["agent"], raw: string | null): Task["effort"] {
  * `rows.map(rowToTask)` from compiling: `map` would pass the index there, and the
  * resulting type error is the whole point - see `rowsToTasks`.
  */
-function rowToTask(r: TaskRow, extraRepos: TaskRepoEntry[]): Task {
+function rowToTask(
+  r: TaskRow,
+  extraRepos: TaskRepoEntry[],
+  automaticCleanup: TaskAutomaticCleanup | null = null,
+): Task {
   return {
     id: r.id,
     title: r.title,
@@ -4560,6 +4577,7 @@ function rowToTask(r: TaskRow, extraRepos: TaskRepoEntry[]): Task {
     outcome: r.outcome,
     outcomeUrl: r.outcome_url,
     error: r.error,
+    automaticCleanup,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     dispatchedAt: r.dispatched_at,
@@ -4680,7 +4698,8 @@ export function getTask(id: string): Task | undefined {
   const r = openDb().prepare(`SELECT * FROM tasks WHERE id = ?`).get(id) as unknown as
     | TaskRow
     | undefined;
-  return r ? rowToTask(r, taskReposFor(r.id)) : undefined;
+  if (!r) return undefined;
+  return rowToTask(r, taskReposFor(r.id), taskAutomaticCleanupSummaries([r.id]).get(r.id) ?? null);
 }
 
 export function taskIdForSession(sessionId: string): string | null {
@@ -5917,8 +5936,12 @@ export function listDueTaskWorktreeRetention(now: number): TaskWorktreeRetention
 
 /**
  * Ledger rows that no longer describe anything: the task was deleted out from under them, it
- * is no longer terminal (a reschedule put it back in the backlog), or it holds no worktree at
- * all any more.
+ * is no longer terminal (a reschedule put it back in the backlog), or it holds nothing this
+ * cleanup is responsible for releasing.
+ *
+ * That last clause is `taskHoldsCleanupResources`, not `taskHasWorktrees`: a row whose cleanup
+ * released the final checkout and then failed on the terminal home still describes something,
+ * and pruning it would silently drop the retry that finishes the job.
  *
  * One query rather than a row-per-task probe, and answered from SQLite rather than from the
  * registry's in-memory map on purpose - the map is bounded and evicts, so "the registry does
@@ -5936,6 +5959,7 @@ export function listOrphanedTaskWorktreeRetentionIds(): string[] {
           OR t.status NOT IN ('done','failed','cancelled')
           OR (
             t.worktree_path IS NULL
+            AND t.home_name IS NULL
             AND NOT EXISTS (
               SELECT 1 FROM task_repos r
               WHERE r.task_id = t.id AND r.worktree_path IS NOT NULL
@@ -5959,6 +5983,11 @@ export type RetentionObservationOutcome =
   | "replaced"
   /** Same generation, different fingerprint: Git-visible work happened, so the clock resets. */
   | "changed"
+  /**
+   * A different generation on a row a failed cleanup left in `retry`: the resources SHRANK
+   * under that cleanup, so the row adopts them and keeps its already-expired deadline.
+   */
+  | "retry-adopted"
   /** Same generation, same fingerprint: only `observed_at` moves. */
   | "unchanged"
   /** An unknown read against an existing matching row: diagnosis recorded, clock untouched. */
@@ -6053,19 +6082,43 @@ export function recordTaskWorktreeObservation(
 
     let outcome: RetentionObservationOutcome;
     if (!existing) outcome = "seeded";
-    else if (existing.generation !== generation) outcome = "replaced";
-    else if (existing.fingerprint !== fingerprint) outcome = "changed";
+    else if (existing.generation !== generation) {
+      // A generation change on a row that is already in RETRY is not an external replacement,
+      // and treating it as one is the bug this branch exists to prevent. A row only reaches
+      // `retry` because a cleanup that was already DUE ran on this task and did not finish, and
+      // the shapes that shrink a task's resources from there - a partial provider release, a
+      // terminal home stopped before an archive refused - are that cleanup's own doing. A
+      // re-dispatch cannot land here at all: it puts the task back in the backlog, and a
+      // non-terminal task's row is pruned before any of this. So the survivor ADOPTS: new
+      // generation, new fingerprint, same activity boundary, same deadline. It was 30 days
+      // quiet before the failed attempt and it does not earn another month by surviving one.
+      outcome = existing.cleanup_state === "retry" ? "retry-adopted" : "replaced";
+    } else if (existing.fingerprint !== fingerprint) outcome = "changed";
     else outcome = "unchanged";
 
-    if (outcome === "unchanged") {
+    if (outcome === "retry-adopted") {
+      d.prepare(
+        `UPDATE task_worktree_retention
+         SET generation = ?, fingerprint = ?, observed_at = ?, updated_at = ?
+         WHERE task_id = ?`,
+      ).run(generation, fingerprint, now, now, taskId);
+    } else if (outcome === "unchanged") {
       d.prepare(
         `UPDATE task_worktree_retention SET observed_at = ?, last_error = NULL, updated_at = ?
          WHERE task_id = ?`,
       ).run(now, now, taskId);
     } else if (outcome === "changed") {
+      // Changed work outranks every cleanup state there is. A row that was mid-retry after a
+      // failed automatic reclaim, or one a claim is sitting on right now, goes back to plain
+      // observing with a full new window: somebody edited that checkout, so the tree is not
+      // stale any more and the backoff schedule its previous quiet earned no longer describes
+      // anything. Clearing `claim_token` here is also what makes an in-flight attempt's own
+      // later transition a no-op - every one of them requires the token it no longer holds -
+      // so a cleanup that was already running cannot finish against work that arrived under it.
       d.prepare(
         `UPDATE task_worktree_retention
          SET fingerprint = ?, last_changed_at = ?, observed_at = ?, cleanup_due_at = ?,
+             cleanup_state = 'observing', claim_token = NULL, claimed_at = NULL, retry_at = NULL,
              last_error = NULL, updated_at = ?
          WHERE task_id = ?`,
       ).run(fingerprint, now, now, now + retentionMs, now, taskId);
@@ -6091,6 +6144,416 @@ export function recordTaskWorktreeObservation(
     d.exec("ROLLBACK");
     throw err;
   }
+}
+
+// ---- task worktree retention: the cleanup claim state machine (Phase 2) ----
+//
+// Everything above records WHEN a terminal task's checkouts last changed. Everything below
+// decides who is allowed to act on that, and it is the half that deletes work.
+//
+// One rule holds all of it together: **the ledger row is the authority, and every transition
+// is a compare-and-swap against it inside a transaction.** The daemon also holds an in-memory
+// reservation in `TaskManager` (see `reserveTaskCleanup`), and that is not redundant with
+// this - the reservation closes overlap between two in-process callers within one daemon
+// life, and the row closes overlap across a restart, where the previous daemon's reservation
+// no longer exists but its claim is still written down.
+//
+// The claim states, and there are only three:
+//
+//   observing - the ordinary resting state. The clock runs, nobody is touching the trees.
+//   claimed   - one cleanup attempt owns this task's resources right now. Its `claim_token`
+//               is a value only that attempt holds, so a stale attempt from before a restart
+//               cannot finish someone else's work.
+//   retry     - a due attempt ran and did not fully release. The activity boundary is
+//               PRESERVED (this was already due; a failed cleanup is not new user activity),
+//               and `retry_at` holds it off with exponential backoff.
+//
+// A changed fingerprint always wins over any of them - see `recordTaskWorktreeObservation`,
+// which clears claim and retry state when it sees real work. Somebody edited that tree; it
+// gets a full new window, not the retry schedule its previous quiet earned.
+
+/** The three cleanup states a ledger row can rest in. Persisted verbatim in `cleanup_state`. */
+export type RetentionCleanupState = "observing" | "claimed" | "retry";
+
+/** Why a claim attempt was refused. Never surfaced to a browser - internal diagnosis only. */
+export type RetentionClaimRefusal =
+  /** No ledger row: nothing has successfully observed these resources yet. */
+  | "no-row"
+  /** The task vanished, went non-terminal, or released its last checkout. */
+  | "not-a-candidate"
+  /** The task no longer owns what the caller observed, or the row describes other resources. */
+  | "generation-moved"
+  /** Git-visible work landed since the caller's probe. The clock restarts, not the cleanup. */
+  | "activity-changed"
+  /** The deadline has not arrived, or backoff has not elapsed. */
+  | "not-due"
+  /** Another attempt already holds this row. */
+  | "already-claimed";
+
+export interface RetentionClaimInput {
+  taskId: string;
+  /** The generation the caller just proved, from a re-read of the task. */
+  generation: string;
+  /** The fingerprint from the caller's FRESH probe. Must equal the row's, or no claim. */
+  fingerprint: string;
+  /** A value only this attempt holds. Every later transition must present it. */
+  token: string;
+  now: number;
+}
+
+/**
+ * Take exclusive durable ownership of one task's cleanup, or say exactly why not.
+ *
+ * The fingerprint equality check is the load-bearing one and it is why this takes a
+ * fingerprint at all rather than reading the row's. The caller must have probed the trees
+ * moments ago; if what it saw differs from what the ledger's deadline was granted against,
+ * somebody worked in that checkout after the last observation and the row is about to be
+ * reset by the ordinary observation path. Claiming anyway would delete work that arrived
+ * between the last pass and this one - the exact window the 30-day rule exists to protect.
+ *
+ * An `unknown` probe cannot reach here at all: it has no digest to present, and there is
+ * deliberately no overload that lets a caller claim without one. "We could not read the tree"
+ * is never permission to remove it.
+ */
+export function claimTaskWorktreeCleanup(
+  input: RetentionClaimInput,
+): { claimed: true; row: TaskWorktreeRetentionRow } | { claimed: false; refusal: RetentionClaimRefusal } {
+  const d = openDb();
+  const { taskId, generation, fingerprint, token, now } = input;
+  d.exec("BEGIN IMMEDIATE");
+  try {
+    const refuse = (refusal: RetentionClaimRefusal) => {
+      d.exec("COMMIT");
+      return { claimed: false as const, refusal };
+    };
+    const existing = d
+      .prepare(`SELECT * FROM task_worktree_retention WHERE task_id = ?`)
+      .get(taskId) as unknown as TaskWorktreeRetentionDbRow | undefined;
+    if (!existing) return refuse("no-row");
+    // Re-derived here rather than trusted from the caller, for `recordTaskWorktreeObservation`'s
+    // reason: the comparison that authorizes a destructive act belongs in the transaction that
+    // writes, not in whatever the caller last looked at.
+    // The KEEPING rule, not the seeding one: a row whose cleanup released the last checkout
+    // and then failed on the terminal home is still this row's unfinished job, and judging it
+    // by `isRetentionCandidate` here would refuse every attempt that could finish it.
+    const current = getTask(taskId);
+    if (!current || !isRetentionRetryable(current)) return refuse("not-a-candidate");
+    if (taskResourceGeneration(current) !== generation) return refuse("generation-moved");
+    if (existing.generation !== generation) return refuse("generation-moved");
+    if (existing.fingerprint !== fingerprint) return refuse("activity-changed");
+    if (existing.cleanup_due_at > now) return refuse("not-due");
+    if (existing.retry_at !== null && existing.retry_at > now) return refuse("not-due");
+    if (existing.cleanup_state === "claimed") return refuse("already-claimed");
+    d.prepare(
+      `UPDATE task_worktree_retention
+       SET cleanup_state = 'claimed', claim_token = ?, claimed_at = ?, last_attempt_at = ?,
+           updated_at = ?
+       WHERE task_id = ?`,
+    ).run(token, now, now, now, taskId);
+    const row = d
+      .prepare(`SELECT * FROM task_worktree_retention WHERE task_id = ?`)
+      .get(taskId) as unknown as TaskWorktreeRetentionDbRow;
+    d.exec("COMMIT");
+    return { claimed: true, row: toRetentionRow(row) };
+  } catch (err) {
+    if (d.isTransaction) d.exec("ROLLBACK");
+    throw err;
+  }
+}
+
+/**
+ * The claim is finished and the task holds no checkout: drop the clock.
+ *
+ * The "holds no checkout" half is re-derived here rather than taken on the caller's word,
+ * because deleting the row is what grants a FULL FRESH 30-day window to whatever is observed
+ * next. A row deleted while a tree was still standing would silently restart that tree's
+ * clock - the one failure mode where a bug in cleanup makes the product forget instead of
+ * making it retry.
+ */
+export function completeTaskWorktreeCleanup(
+  taskId: string,
+  token: string,
+): { kind: "deleted" | "still-held" | "not-claimed" } {
+  const d = openDb();
+  d.exec("BEGIN IMMEDIATE");
+  try {
+    const existing = d
+      .prepare(`SELECT * FROM task_worktree_retention WHERE task_id = ?`)
+      .get(taskId) as unknown as TaskWorktreeRetentionDbRow | undefined;
+    if (!existing || existing.claim_token !== token) {
+      d.exec("COMMIT");
+      return { kind: "not-claimed" };
+    }
+    // Deleted only when there is genuinely nothing left for this cleanup to release. A
+    // teardown that handed back the last checkout and then failed on the terminal home has not
+    // finished, and deleting here would take the retry mechanism away while a live resource is
+    // still recorded - so that row is reported as still held and defers instead.
+    const current = getTask(taskId);
+    if (current && taskHoldsCleanupResources(current)) {
+      d.exec("COMMIT");
+      return { kind: "still-held" };
+    }
+    d.prepare(`DELETE FROM task_worktree_retention WHERE task_id = ?`).run(taskId);
+    d.exec("COMMIT");
+    return { kind: "deleted" };
+  } catch (err) {
+    if (d.isTransaction) d.exec("ROLLBACK");
+    throw err;
+  }
+}
+
+export interface RetentionDeferInput {
+  taskId: string;
+  token: string;
+  now: number;
+  /** When this task may be attempted again. Exponential, capped - the service owns the curve. */
+  retryAt: number;
+  /** Bounded internal classification. Never a raw provider exception - see `last_error`. */
+  error: string | null;
+  /**
+   * The generation of the resources STILL STANDING, when this attempt itself shrank the set.
+   *
+   * A partial release, or a quiescence that stopped a terminal home before a provider refused,
+   * both leave the task owning less than the claim was taken against. That is this cleanup's
+   * own mutation and not new user activity, so the row adopts it and KEEPS its due boundary:
+   * the remaining tree was already 30 days quiet and does not earn another month by having
+   * been half-released. Omit when nothing moved.
+   */
+  generation?: string;
+  /** The aggregate fingerprint of what remains, alongside `generation`. */
+  fingerprint?: string;
+}
+
+/**
+ * The attempt did not fully release: keep every fact, keep the due boundary, back off.
+ *
+ * `last_changed_at` and `cleanup_due_at` are deliberately untouched in every branch. The tree
+ * is past its deadline and stays past it; a provider refusal, an unreadable final probe, or an
+ * archive that would not settle are all reasons to try again later, never reasons to hand the
+ * checkout another 30 days of life.
+ */
+export function deferTaskWorktreeCleanup(
+  input: RetentionDeferInput,
+): { deferred: boolean; row: TaskWorktreeRetentionRow | null } {
+  const d = openDb();
+  const { taskId, token, now, retryAt } = input;
+  const error = input.error ? input.error.slice(0, RETENTION_ERROR_LIMIT) : null;
+  d.exec("BEGIN IMMEDIATE");
+  try {
+    const existing = d
+      .prepare(`SELECT * FROM task_worktree_retention WHERE task_id = ?`)
+      .get(taskId) as unknown as TaskWorktreeRetentionDbRow | undefined;
+    if (!existing || existing.claim_token !== token) {
+      d.exec("COMMIT");
+      return { deferred: false, row: existing ? toRetentionRow(existing) : null };
+    }
+    if (input.generation !== undefined && input.fingerprint !== undefined) {
+      d.prepare(
+        `UPDATE task_worktree_retention
+         SET generation = ?, fingerprint = ?, cleanup_state = 'retry', claim_token = NULL,
+             claimed_at = NULL, retry_at = ?, last_error = ?, updated_at = ?
+         WHERE task_id = ? AND claim_token = ?`,
+      ).run(input.generation, input.fingerprint, retryAt, error, now, taskId, token);
+    } else {
+      d.prepare(
+        `UPDATE task_worktree_retention
+         SET cleanup_state = 'retry', claim_token = NULL, claimed_at = NULL, retry_at = ?,
+             last_error = ?, updated_at = ?
+         WHERE task_id = ? AND claim_token = ?`,
+      ).run(retryAt, error, now, taskId, token);
+    }
+    const row = d
+      .prepare(`SELECT * FROM task_worktree_retention WHERE task_id = ?`)
+      .get(taskId) as unknown as TaskWorktreeRetentionDbRow;
+    d.exec("COMMIT");
+    return { deferred: true, row: toRetentionRow(row) };
+  } catch (err) {
+    if (d.isTransaction) d.exec("ROLLBACK");
+    throw err;
+  }
+}
+
+/**
+ * Let go without acting and without penalty: the world moved on under this claim.
+ *
+ * Used for the two outcomes that are not failures at all - a fresh probe found Git-visible
+ * work, or the task was re-dispatched/rescheduled/replaced while the attempt was in flight.
+ * Both hand the row straight back to ordinary observation, which is what then writes the
+ * correct new window from a real observation rather than from this attempt's guess.
+ */
+export function releaseTaskWorktreeCleanupClaim(taskId: string, token: string, now: number): boolean {
+  const changes = openDb()
+    .prepare(
+      `UPDATE task_worktree_retention
+       SET cleanup_state = 'observing', claim_token = NULL, claimed_at = NULL, retry_at = NULL,
+           updated_at = ?
+       WHERE task_id = ? AND claim_token = ?`,
+    )
+    .run(now, taskId, token).changes;
+  return Number(changes) > 0;
+}
+
+/**
+ * Reopen claims held by a daemon that is no longer running.
+ *
+ * Called once at startup, before the observer's first pass. A `claimed` row at that moment
+ * cannot belong to anyone: this process has just started and holds no claims, so the token on
+ * it was minted by a daemon that died mid-attempt. It becomes retryable rather than
+ * immediately claimable, because a crash during provider teardown is genuinely ambiguous -
+ * the tree may be half-removed, the lease may or may not have been returned - and the retry
+ * runs AFTER startup reconciliation has re-established what the task actually still owns.
+ *
+ * The deadline is untouched. The tree was due before the crash and is still due.
+ *
+ * `last_attempt_at` moves to now alongside `retry_at`, which resets the retry SCHEDULE to its
+ * base. Those two columns are the endpoints `nextRetryDelayMs` measures the last interval
+ * between, and leaving the crashed claim's timestamp in place would make the length of the
+ * outage read as the length of the last backoff - so a daemon that was off for a day would
+ * come back and immediately grant the maximum delay. An interrupted attempt is not a refusal,
+ * and it should not inherit a backoff it never earned.
+ */
+export function recoverAbandonedTaskWorktreeCleanups(now: number): number {
+  const changes = openDb()
+    .prepare(
+      `UPDATE task_worktree_retention
+       SET cleanup_state = 'retry', claim_token = NULL, claimed_at = NULL, retry_at = ?,
+           last_attempt_at = ?,
+           last_error = 'cleanup was interrupted by a daemon restart', updated_at = ?
+       WHERE cleanup_state = 'claimed'`,
+    )
+    .run(now, now, now).changes;
+  return Number(changes);
+}
+
+/**
+ * Settle a task whose agent restart proved gone, and carry its retention clock across, in ONE
+ * transaction.
+ *
+ * This exists because of a collision between two correct designs. The resource generation
+ * includes the bound session id, terminal home and terminal resource - it has to, because
+ * cleanup can clear all three, and a generation blind to them would survive a mutation that
+ * changed what cleanup would do. But restart reconciliation ALSO clears the session binding,
+ * for the unrelated reason that the session is provably dead. Left alone, that write moves the
+ * generation, the next observation calls the row "replaced", and a checkout 29 days into its
+ * window silently receives a fresh 30. Every restart would push the deadline out, and a daemon
+ * restarted weekly would never reclaim anything at all.
+ *
+ * So the settlement adopts the row instead: exact pre-settlement generation in, computed
+ * post-settlement generation out, and `fingerprint`, `last_changed_at`, `cleanup_due_at` and
+ * `retry_at` all preserved untouched. Nothing else about the row moves, and claim recovery
+ * stays the only thing that transitions claim state.
+ *
+ * One transaction rather than two writes, because the crash window between them is exactly the
+ * bug: a settled task on disk with the pre-settlement generation still on its row would be
+ * read by the next observation as an external replacement, which is the outcome this function
+ * exists to prevent.
+ *
+ * Three refusals, all of which write nothing:
+ *
+ *  - the task is gone, or no longer matches the frozen pre-settlement status and generation.
+ *    Something else moved it while the terminal probe was in flight; the caller re-reads.
+ *  - there is no row at all. That is not a failure: the settlement commits, and the first
+ *    successful observation of the settled resources grants the conservative full period. It
+ *    is reported as `adopted: false` so a caller can say which happened.
+ *  - the row belongs to a different generation than the one being settled from. It describes
+ *    resources this task does not own, so ordinary observation replaces it under the normal
+ *    external-generation rule rather than having this settlement adopt someone else's clock.
+ */
+export function settleTaskWithRetentionAdoption(input: {
+  /** The post-settlement task to persist, exactly as the caller wants it written. */
+  settled: Task;
+  /** The status the caller froze before probing. Not in the generation, so checked here. */
+  expectedStatus: TaskStatus;
+  /** `taskResourceGeneration` of the frozen pre-settlement task. */
+  expectedGeneration: string;
+  now: number;
+}): { committed: boolean; adopted: boolean; displaced: readonly string[] } {
+  const d = openDb();
+  const { settled, expectedStatus, expectedGeneration, now } = input;
+  d.exec("BEGIN IMMEDIATE");
+  try {
+    const current = getTask(settled.id);
+    if (
+      !current
+      || current.status !== expectedStatus
+      || taskResourceGeneration(current) !== expectedGeneration
+    ) {
+      d.exec("COMMIT");
+      return { committed: false, adopted: false, displaced: [] };
+    }
+    const existing = d
+      .prepare(`SELECT * FROM task_worktree_retention WHERE task_id = ?`)
+      .get(settled.id) as unknown as TaskWorktreeRetentionDbRow | undefined;
+    // `upsertTask` joins this transaction rather than opening its own - see its
+    // `ownsTransaction` guard - which is what makes the pair atomic.
+    const displaced = upsertTask(settled);
+    const after = taskResourceGeneration(settled);
+    let adopted = false;
+    if (existing && existing.generation === expectedGeneration) {
+      adopted = true;
+      if (after !== expectedGeneration) {
+        d.prepare(
+          `UPDATE task_worktree_retention SET generation = ?, updated_at = ?
+           WHERE task_id = ? AND generation = ?`,
+        ).run(after, now, settled.id, expectedGeneration);
+      }
+    }
+    d.exec("COMMIT");
+    return { committed: true, adopted, displaced };
+  } catch (err) {
+    if (d.isTransaction) d.exec("ROLLBACK");
+    throw err;
+  }
+}
+
+/**
+ * The bounded, browser-safe view of a task's automatic cleanup, or null.
+ *
+ * Null is the ordinary case and covers every task that is observing quietly, every task with
+ * no ledger row at all, and every task whose cleanup succeeded - so a dashboard that renders
+ * this only when non-null shows nothing until there is genuinely something to say.
+ *
+ * What crosses is the state, when it will be tried again, and a sentence a person can read.
+ * What does not cross, ever: the fingerprint, the generation, the claim token, raw git or
+ * provider output, and any path the task row does not already carry. This is a maintenance
+ * note on a card, not a debugging channel.
+ */
+export function taskAutomaticCleanupSummaries(
+  taskIds: readonly string[],
+): Map<string, TaskAutomaticCleanup> {
+  const out = new Map<string, TaskAutomaticCleanup>();
+  if (taskIds.length === 0) return out;
+  const d = openDb();
+  // No `IN (?, ?, …)` over the caller's ids, and that is not a style preference: `listTasks`
+  // passes EVERY task a long-lived install has ever filed, which would blow past SQLite's host
+  // parameter ceiling and turn the whole task list into an error. Selecting the retry rows
+  // themselves cannot: there is at most one row per resource-holding terminal task, and only
+  // the ones whose automatic cleanup is actually mid-retry are in this state - normally none.
+  // The single-id case still takes the indexed primary-key path, because `getTask` is hot.
+  const rows = (taskIds.length === 1
+    ? d.prepare(
+      `SELECT task_id, retry_at, last_error FROM task_worktree_retention
+       WHERE task_id = ? AND cleanup_state = 'retry'`,
+    ).all(taskIds[0]!)
+    : d.prepare(
+      `SELECT task_id, retry_at, last_error FROM task_worktree_retention
+       WHERE cleanup_state = 'retry'`,
+    ).all()) as unknown as Array<{
+      task_id: string;
+      retry_at: number | null;
+      last_error: string | null;
+    }>;
+  if (rows.length === 0) return out;
+  const wanted = new Set(taskIds);
+  for (const row of rows) {
+    if (!wanted.has(row.task_id)) continue;
+    out.set(row.task_id, {
+      state: "retrying",
+      retryAt: row.retry_at,
+      detail: row.last_error ? row.last_error.slice(0, TASK_AUTOMATIC_CLEANUP_DETAIL_LIMIT) : null,
+    });
+  }
+  return out;
 }
 
 // ---- task sources: what has already been filed ----

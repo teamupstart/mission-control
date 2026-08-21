@@ -26,6 +26,7 @@ import { TaskManager } from "./tasks.ts";
 import { QueueManager } from "./queue.ts";
 import { startPoller } from "./discovery/poller.ts";
 import {
+  defaultRetentionCleanupDeps,
   defaultRetentionObserverDeps,
   TaskWorktreeRetentionObserver,
 } from "./task-worktree-retention.ts";
@@ -402,6 +403,14 @@ const stopPoller = startPoller(registry);
 const retentionObserver = new TaskWorktreeRetentionObserver({
   listTasks: () => registry.listTasks(),
   ...defaultRetentionObserverDeps,
+  cleanup: {
+    ...defaultRetentionCleanupDeps,
+    // The single destructive capability, and it is `TaskManager`'s own guarded, queued entry
+    // rather than a provider or the allocator. Everything the sweep can delete, it deletes by
+    // asking the class that owns the task lifecycle to run its existing reclaim core.
+    reclaim: (request) => tasks.enqueueRetentionCleanup(request),
+    refreshSummary: (taskId) => registry.refreshTaskAutomaticCleanup(taskId),
+  },
 });
 registry.onSessionsObserved(() => retentionObserver.start());
 // Off unless MISSION_AGENTS_SHADOW_MS is set; returns a no-op stopper when disabled.

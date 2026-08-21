@@ -185,6 +185,7 @@ import {
   sessionWorkEpisodeFor,
   taskWorkEpisodeForSession,
   taskWorkEpisodeForTask,
+  taskAutomaticCleanupSummaries,
   taskHasPrCarryingBinding,
   updateWorkEpisodePr,
   primaryRepoPrForTask,
@@ -5477,11 +5478,54 @@ export class Registry extends EventEmitter {
 
   /** Persist + broadcast a task, and refresh any session bound to it. */
   upsertTask(task: Task, deferDependencyCleanup = false): void {
+    this.publishTask(task, dbUpsertTask(task), deferDependencyCleanup);
+  }
+
+  /**
+   * Broadcast a task that has ALREADY been persisted, without writing it again.
+   *
+   * The one caller is restart settlement, which has to commit the task row and the adoption
+   * of its retention deadline in a single SQLite transaction (see
+   * `settleTaskWithRetentionAdoption`). Publishing through `upsertTask` afterwards would
+   * re-write the row outside that transaction - harmless for the row itself, but it would
+   * also re-derive `automaticCleanup` and re-run the displacement query for a write that
+   * already happened, which is exactly the kind of duplicate the transaction exists to avoid.
+   *
+   * `displaced` is what the transaction's own `upsertTask` returned, so the in-memory
+   * unbinding of any session pointer this write moved still happens.
+   */
+  publishPersistedTask(task: Task, displaced: readonly string[]): void {
+    this.publishTask(task, displaced, false);
+  }
+
+  /**
+   * Refresh one task's derived automatic-cleanup summary and broadcast the whole task.
+   *
+   * Called by the retention service after it moves the ledger, and it re-reads rather than
+   * being handed a value so there is still exactly one place that decides what crosses to a
+   * browser - `taskAutomaticCleanupSummaries`. The event is the ordinary `task_upsert` every
+   * open dashboard already handles, which is why activating automatic cleanup needs no new
+   * `ServerEvent` and no polling.
+   *
+   * A task that is not in memory is skipped rather than loaded: it is outside the bounded
+   * recent-terminal window, so no dashboard is drawing it, and the summary will be projected
+   * the next time it is read from SQLite.
+   */
+  refreshTaskAutomaticCleanup(taskId: string): void {
+    const current = this.tasks.get(taskId);
+    if (!current) return;
+    const summary = taskAutomaticCleanupSummaries([taskId]).get(taskId) ?? null;
+    if (JSON.stringify(summary) === JSON.stringify(current.automaticCleanup)) return;
+    const next = { ...current, automaticCleanup: summary };
+    this.tasks.set(taskId, next);
+    this.emitEvent({ type: "task_upsert", task: next });
+  }
+
+  private publishTask(task: Task, displaced: readonly string[], deferDependencyCleanup: boolean): void {
     const previous = this.tasks.get(task.id);
     const dependenciesChanged = Boolean(
       previous && JSON.stringify(previous.dependencies) !== JSON.stringify(task.dependencies),
     );
-    const displaced = dbUpsertTask(task);
     for (const id of displaced) {
       const prior = this.tasks.get(id);
       if (!prior) continue;

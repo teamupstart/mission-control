@@ -57,7 +57,42 @@ export function taskResourceGeneration(task: Task): string {
   return createHash("sha256").update(canonical).digest("hex");
 }
 
-/** Is this task one the retention clock is allowed to run for at all? */
+/**
+ * Is this task one the retention clock is allowed to START for at all?
+ *
+ * Worktrees, deliberately: the clock measures Git-visible change, so a task with no checkout
+ * has nothing to measure and never earns a window. This is the rule for SEEDING a row, not for
+ * keeping one - see `taskHoldsCleanupResources`.
+ */
 export function isRetentionCandidate(task: Task): boolean {
   return isTerminalTask(task.status) && taskHasWorktrees(task);
+}
+
+/**
+ * Everything an automatic cleanup of this task is responsible for releasing.
+ *
+ * Wider than `isRetentionCandidate` on purpose, and the difference is the whole of the
+ * unfinished-cleanup case: a teardown can hand back the last checkout and then fail on the
+ * terminal home, which leaves a task that may not START a clock but whose cleanup is not
+ * finished. A row is seeded on the narrow rule and survives on this one, so the attempt stays
+ * retryable until there is genuinely nothing left to release.
+ *
+ * The same predicate startup reconciliation already reconciles on, shared rather than spelled
+ * twice so the two can never drift about what "still holds something" means.
+ */
+export function taskHoldsCleanupResources(task: Task): boolean {
+  return taskHasWorktrees(task) || Boolean(task.homeName);
+}
+
+/**
+ * May an existing ledger row still be worked - claimed, retried, finished?
+ *
+ * The keeping rule to `isRetentionCandidate`'s seeding rule. A row is only ever created for a
+ * task with checkouts, but once created it must survive until the cleanup it drives has
+ * released everything, and a teardown that hands back the final checkout and then fails on the
+ * terminal home ends exactly between those two facts. Judging that row by the seeding rule is
+ * what would delete the retry while a live resource is still recorded.
+ */
+export function isRetentionRetryable(task: Task): boolean {
+  return isTerminalTask(task.status) && taskHoldsCleanupResources(task);
 }

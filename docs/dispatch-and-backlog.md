@@ -564,6 +564,17 @@ the row, next to Mark done, which refuses to discard work for the same reason. A
 never had a worktree of its own - one you handed to an agent that was already running - has
 nothing to collect and says nothing about cleanup.
 
+That reprieve is not indefinite. A terminal task's checkouts are removed automatically once
+**30 days pass without a Git-visible change** in any of them - see
+[task worktree retention](worktrees-and-checks.md#task-worktree-retention). Uncommitted,
+untracked and unpushed work is deleted at that boundary, and any change to a tree resets the
+clock for the whole task. **Clean up** works exactly as before throughout the window, and when
+the automatic cleanup succeeds the row's cleanup control simply disappears from every open
+dashboard. If a due cleanup cannot finish - a provider refuses, a process still holds the
+tree, a checkout cannot be read - the resources stay recorded, the row says the cleanup is
+retrying, and it retries with backoff. That note never replaces the task's own outcome or
+failure reason.
+
 With no recorded merge, `failed` is the honest reading rather than a flattering one: an
 agent that finished and exited looks exactly like one that crashed, and the only thing
 actually observed is that the session went away without an outcome being recorded. Mark a
@@ -573,7 +584,11 @@ request is later observed to merge, it is
 [upgraded to done](inspector-and-shipping.md#a-merge-that-lands-when-nobody-is-watching).
 
 The same reconciliation runs against the first process sweep after a restart, which is what
-catches a task whose agent died while the daemon was down.
+catches a task whose agent died while the daemon was down. A restart settles that task and
+keeps every checkout it holds - it does not free one on the spot, because a reboot is not
+evidence that anybody is finished with the work in a tree. The retention clock a checkout
+already had survives the settlement rather than restarting, so a daemon restarted every day
+cannot postpone cleanup forever.
 
 ### Hold a backlog item back
 

@@ -13,7 +13,7 @@ running session.
 
 - **Direct prerequisite: Phase 1**, merged to the default branch. This phase consumes
   `src/shared/file-comment-anchor.ts`, the threads and messages tables, the thread routes
-  (including the status route it resolves through), the message-append route,
+  (including the status route it resolves through), the message-append and message-edit routes,
   and the two `ServerEvent` variants, and reimplements none of them.
 
 ## Scope
@@ -63,7 +63,11 @@ running session.
    no route of its own. Resolved threads collapse out of the gutter behind the toggle. Only a person closes a thread - phase 4 lets the agent mark one *addressed*, which shows
    as a suggestion and never as a closure.
 8. **Drafts persist from the first keystroke** through phase 1's message-edit route - a draft is an
-   ordinary undelivered message row, which is why it is editable - and not in browser state. The
+   ordinary undelivered message row, which is why it is editable - and not in browser state.
+9. **Submitting a comment queues it.** `draft` becomes `queued` and the thread takes the next
+   `queue_seq` for its session. This phase writes that column even though it cannot send: "comments
+   accumulate as an ordered review queue" is `plan.md`'s contract 5, and a phase 3 that opened onto
+   an empty queue would have nothing to drain. Phase 3 reorders and delivers; it does not fill. The
    integrated tab and the extracted `FileWindow` are two live `FileWorkspace` instances that
    converge only through the daemon.
 9. **`src/web/styles.css`** additions in the matching section.

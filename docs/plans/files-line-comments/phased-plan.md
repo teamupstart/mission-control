@@ -154,8 +154,17 @@ let phase 5 merge before the number that is meant to validate its premise even e
   Phase 3 enforces one turn outstanding on top of the index, never instead of it, and never widens
   the tuple to make a transition easier.
 - **One route per mutation, declared once** (Phase 1): create, list, delete, reorder, append a
-  message, edit an undelivered message, set status. Phase 2 resolves through the status route,
-  phase 4 stamps `addressed_at` through it, and phase 3 adds only `start`/`pause`/`resume`.
+  message, edit an undelivered message, mark read, set status. Phase 2 resolves through the status
+  route; phase 3 adds only `start`/`pause`/`resume`.
+- **`addressed_at` and `read_at` are written without a status change** (Phase 1):
+  `markFileCommentThreadAddressed` and `markFileCommentMessagesRead`. `addressed` is a suggestion
+  and `read` is a badge; neither closes a thread, so neither may ride the status route.
+- **`queue_seq` is Phase 2's** - a comment joins the review when it is submitted. Phase 3 reorders
+  and drains a queue phase 2 fills; it does not fill one.
+- **Preview line ranges come from a parse, never from matching text** (Phase 5): Markdown from
+  `node.position`, HTML from a position-tracking parse indexed by the bridge's structural path. The
+  DOM text of a block with nested markup is not a substring of its source, so text search would
+  refuse ordinary HTML.
 - **A turn carries one message, chosen by `delivered_at`** (Phase 1's column, Phase 3's rule): the
   thread's oldest human message where it is NULL. The thread is the queue position; the message is
   the payload. A requeued thread therefore sends the reply that requeued it, not the comment that

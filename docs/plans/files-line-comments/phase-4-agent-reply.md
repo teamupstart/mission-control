@@ -41,21 +41,33 @@ The queue stops advancing on an inference about idleness and starts advancing on
    `registry.findSessionByEnv(env, sessionId, cwd)` → 404 `"no matching session"`. Note `/mcp/*` is
    deliberately **not** behind `requireLoopback`; the token is the gate.
 5. **Persist, emit, advance.** The reply is stored through phase 1's `appendFileCommentMessage`
-   with author `agent` - the same function phase 2's reply box uses - `addressed?` stamps phase 1's
-   `addressed_at` through its status route (a suggestion, never a closure), the thread moves to
+   with author `agent` - the same function phase 2's reply box uses. `addressed?` calls phase 1's
+   `markFileCommentThreadAddressed`, **not the status route**: `addressed` is a suggestion and
+   never a closure, so it must be writable without moving the thread anywhere. Both writes happen
+   in one transaction with the insert, so a thread is never seen as addressed by a reply that did
+   not persist. The thread moves to
    `answered`, one `file_comment_thread_upsert` carries it to every dashboard, and the walkthrough
    releases the next comment.
    - `commentId` stays **required** even though only one comment is outstanding. It costs one field
      and it is what stops a late reply - the agent answering comment 3 after the walkthrough moved to
      comment 5 - from being misfiled onto the wrong thread.
-6. **The Files tab pip**, counting agent replies the human has not read - not queue depth, which is
-   the human's own work. `detailTabs()` (`src/web/lib/detailTabs.ts:43-51`) hard-codes `pip: 0` for
-   Files, but so do three of the other four tabs; only `queue` takes a count. Add a second field to
-   `DetailTabInputs` and supply it from `ConsoleDetail.tsx:378`.
-7. **The transcript fallback.** A session an operator started without the Claude integration has no
-   such tool. An assistant turn opening with the bracketed id is filed into that thread by the
-   transcript reader. Less precise, and the only thing that works everywhere.
-8. **`docs/sessions.md`**: what a comment looks like as a turn, and where it queues.
+6. **Name the tool in the payload.** Phase 3 shipped the closing instruction asking for an answer
+   in the next turn with no tool named, because this tool did not exist. Substitute
+   `respond_to_file_comments` and the thread's `short_id` into that one line and change nothing
+   else about the renderer. Without this the delivered payload never tells an agent how to reply,
+   which is the whole point of this phase.
+7. **The Files tab pip**, counting agent replies whose `read_at` is NULL - not queue depth, which is
+   the human's own work. Expanding a thread calls phase 1's `markFileCommentMessagesRead`, which is
+   what clears it. The count is durable rather than browser state because the integrated tab and
+   the extracted Files window are two instances that converge only through the daemon, so a badge
+   kept in one would be wrong in the other.
+   - `detailTabs()` (`src/web/lib/detailTabs.ts:43-51`) hard-codes `pip: 0` for Files, but so do
+     three of the other four tabs; only `queue` takes a count. Add a second field to
+     `DetailTabInputs` and supply it from `ConsoleDetail.tsx:378`.
+8. **The transcript fallback.** A session an operator started without the Claude integration has no
+   such tool. An assistant turn opening with the thread's `short_id` is filed into that thread by
+   the transcript reader. Less precise, and the only thing that works everywhere.
+9. **`docs/sessions.md`**: what a comment looks like as a turn, and where it queues.
 
 ## Non-goals
 

@@ -15,7 +15,9 @@ measurement the plan's two 60% assumptions need.
 - **Direct prerequisite: Phase 2**, merged. This phase consumes the threads table, the anchor
   module, `reanchor()`, and the thread UI.
 - **Phase 5 depends on this phase** and must not start before it merges - not for code, but for the
-  anchor-survival measurement below. Phase 4 does too. Neither owns a contract this phase consumes.
+  anchor-survival measurement below. **Phase 4 depends on this phase for code** - it hooks into the
+  outstanding-thread concept and the release point built here. Neither owns a contract this phase
+  consumes.
 
 ## Scope
 
@@ -49,13 +51,20 @@ measurement the plan's two 60% assumptions need.
      head-of-line blocking behind an `uncertain` row, and the missing correlation id from ever
      mattering.
    - `delivery_id` on the thread is that correlation. `pending_turns` gains no column.
+   - **Stamp the message with `markFileCommentMessageDelivered` as part of the same send.** That
+     one write does three jobs: it stops the message being sent again, it freezes it from further
+     editing, and it is what makes edit-unsent correctly refuse the outstanding comment. Skip it
+     and all three fail quietly.
 5. **Advance signals.** In this phase there is only one: the session settles idle. Per decision 3,
    wait a grace window, move the thread from `awaiting` to `unanswered`, and release the next.
    **Moving it out of `awaiting` is not bookkeeping** - `unanswered` sits outside phase 1's
    outstanding-status tuple, so it is what lets the next comment take the turn without colliding
    on the single-flight index. Phase 4 adds the
    stronger signal; the fallback stays as the floor.
-6. **Refusal and pause states.** `canMessage(session)` refusing is a pause with a reason, not a lost
+6. **Refusal and pause states**, all three `plan.md` promises: a session that cannot take a
+   message, **a file that has left the checkout** (the re-anchor pass has no bytes to search, which
+   is distinct from a quote that moved), and a queue with nothing left to send. Each pauses and
+   says which. `canMessage(session)` refusing is a pause with a reason, not a lost
    comment. A send that lands in `uncertain` pauses the review and surfaces the **existing** Retry /
    Mark sent controls rather than inventing a second recovery path.
 7. **Queue controls in the UI**: queue depth, Start review, Pause, reorder, edit-unsent, drop.
@@ -76,6 +85,10 @@ measurement the plan's two 60% assumptions need.
    route and is reused, not redeclared.
 10. **A live region** announcing which comment is outstanding and how many remain, so a screen-reader
    user is not left guessing.
+11. **Finish the deep-link last mile** so the walkthrough can move the reader to the comment it is
+   sending. `workspaceFileTarget` already parses `path:line`, but `App.tsx` discards `target.line`
+   and nothing scrolls the viewer to it (`plan.md`, "Deep-linking to a line is half-built"). This
+   phase owns it because this is the phase whose feature is incomplete without it.
 11. **`docs/ui.md`** and a short pointer in **`docs/work-queues.md`** saying what the review queue is
     *not*, so the two one-at-a-time mechanisms are not confused for each other.
 

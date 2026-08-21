@@ -88,7 +88,7 @@ This is a large feature. It is not a one-pull-request change and should not be p
 | Area | Expected scope |
 |---|---|
 | Production code | About 2,700 to 3,300 non-test lines |
-| Tests | About 900 to 1,200 lines across eight unit layers, plus three Playwright specs |
+| Tests | About 900 to 1,200 lines across ten unit layers, plus four Playwright specs |
 | Delivery estimate | About 13 to 19 engineering days across 5 phases |
 | Persistence | Three new tables, plus the `docs/sqlite-database.html` catalog and the table count in `test/db-shell.test.ts` |
 | Wire protocol | Two new `ServerEvent` variants, new Zod schemas |
@@ -237,7 +237,8 @@ be the first one without that accidental separation.
 **Deep-linking to a line is half-built.** `workspaceFileTarget`
 (`src/web/lib/workspaceLinks.ts:66-116`) already parses `path:line[:column]` and `#L12C3`, but
 `App.tsx:1345-1372` discards `target.line` and nothing ever scrolls the viewer to it. A
-walkthrough that moves the reader to the comment being sent needs that last mile finished.
+walkthrough that moves the reader to the comment being sent needs that last mile finished, and
+**phase 3 owns it** - it is the phase whose feature stops working without it.
 
 **The Files tab already has an unused attention pip.** `detailTabs()`
 (`src/web/lib/detailTabs.ts:44-50`) is a pure function over an input bag, with `pip: 0`
@@ -266,9 +267,9 @@ the dashboard from its own state.
 
 4. **In HTML Preview, any block-level element takes a comment** on the same interaction, with
    the anchor resolved back to the source line by matching the block's text in the file. Where
-   the text is not unique the comment is **refused**, with a reason naming why - the block's words
-   appear more than once in the source, so place it on the line you mean in the Editor. A location
-   nobody can trust is worse than no location.
+   the clicked block is resolved to its source lines by structural path rather than by matching its
+   text, so nested markup and repeated wording anchor like anything else. A path that no longer
+   resolves means the render is stale, and that is refused with a reload rather than guessed at.
 
 5. **Comments accumulate as an ordered review queue.** The toolbar shows the queue depth and a
    **Start review** control. Nothing reaches the agent until you start.
@@ -287,7 +288,8 @@ the dashboard from its own state.
 
 9. **Every remaining comment is re-anchored against the file before the next one is sent.** A
    comment whose anchor moved is sent with its new line, silently. A comment whose quoted text
-   the agent has since deleted is marked **outdated** and **held rather than sent**, with the
+   the agent has since deleted is marked **outdated**. If it is the one about to be sent it is
+    **held rather than sent**, with the
    walkthrough paused and the reason shown - because sending a comment about text that no
    longer exists is how a review goes wrong quietly.
 
@@ -398,11 +400,13 @@ parent enables comment mode over the existing `postMessage` channel. While enabl
 reports the nearest block-level ancestor's bounded `textContent` and its structural index path.
 It gains no capability the two existing bridges lack - it reads the document it is inside and
 posts to the parent that sent it - and it never gets `allow-same-origin`. The parent resolves
-the reported text to a source line by searching the file. Exactly one match anchors; zero or
-several refuse, because `reanchor()` has three outcomes and inventing a fourth to describe "about
-here" would spread an untrustworthy location through every consumer of the anchor model. Markdown
-Preview never takes this path - its blocks carry `node.position`, so their range is exact by
-construction. The sandbox constant stays a single exported value so no call site
+the reported **structural path** to a source line, against a position-tracking parse of the file -
+never by searching it for the block's text, which cannot work: the DOM text of
+`<p>Read <strong>this</strong></p>` appears nowhere in the source, and nested markup, entities and
+reflowed whitespace are ordinary HTML rather than edge cases. The quote is then the source slice at
+that range, so an HTML thread re-anchors through the same `reanchor()` as an editor thread. A path
+that no longer resolves means the render is stale: refuse and offer a reload. Markdown Preview never
+takes this path - its blocks carry `node.position` - so both surfaces get their range from a parse. The sandbox constant stays a single exported value so no call site
 can add a token.
 
 Images have no lines and take no comments. The control is disabled with a reason rather than
@@ -467,10 +471,12 @@ recovery path.
 
 ### 4. Data model
 
-Three tables, following the house conventions: `TEXT PRIMARY KEY` from `randomUUID()` at the call
-site, epoch-millisecond `INTEGER NOT NULL` timestamps, indices declared beside the table, and
-relations by convention rather than a `REFERENCES` clause, and `updated_at` on every table,
-because every row here can still change.
+Three tables, following the house conventions: epoch-millisecond `INTEGER NOT NULL` timestamps,
+indices declared beside the table, relations by convention rather than a `REFERENCES` clause, and
+`updated_at` on every table, because every row here can still change. The two tables with their
+own identity take a `TEXT PRIMARY KEY` from `randomUUID()` at the call site; `file_comment_reviews`
+is keyed by `session_id` instead, because there is exactly one review per session and inventing a
+second id for it would only create a way to have two.
 
 ```
 file_comment_threads
@@ -502,6 +508,7 @@ file_comment_messages
   session_id    TEXT             -- the session that wrote or received it
   body          TEXT NOT NULL
   delivered_at  INTEGER          -- when it reached the agent; NULL while queued
+  read_at       INTEGER          -- when a human read it; NULL while it counts toward the pip
   created_at    INTEGER NOT NULL
   updated_at    INTEGER NOT NULL -- editable until delivered_at is set, frozen after
 
@@ -534,6 +541,12 @@ turn. Because decision 2 scopes a thread to a session, that index is exactly the
 walkthrough needs and nothing broader.
 `delivery_id` is the correlation `pending_turns` cannot carry: it lives here instead, so that
 table needs no new column.
+
+**`read_at` is what the Files tab pip counts.** The pip is agent-authored messages whose
+`read_at` is NULL, for that session. It has to be a column rather than browser state for the same
+reason drafts are: the integrated tab and the extracted Files window are two live `FileWorkspace`
+instances that converge only through the daemon, so a badge kept in one of them is wrong in the
+other. Expanding a thread stamps it.
 
 **A message is editable until it is delivered, and frozen afterwards.** `delivered_at IS NULL` is
 the whole test. That is what makes a draft a draft: the opening comment is an ordinary message row
@@ -624,7 +637,7 @@ Two limits worth stating rather than discovering:
 - **A tool is not universally reachable.** Mission Control's MCP server reaches sessions the
   dashboard launched, and sessions on a machine where the Claude integration was installed. A
   session an operator started themselves without it has no such tool. The fallback is the
-  bracketed id in the payload: an assistant turn opening with `MC-a41f` is filed into that
+  `short_id` the payload already cites: an assistant turn opening with `MC-a41f` is filed into that
   thread by the transcript reader. Less precise, and the only thing that works everywhere.
 - **v1 ships one tool, not two.** There is no `list_file_comments` read tool; the delivered
   payload is the read path.
@@ -674,8 +687,8 @@ as `e2e/README.md` requires.
   checkout write model.
 - No settings toggle. Comment mode is a per-workspace mode, not a preference.
 - No `list_file_comments` read tool.
-- No comment on an HTML Preview block whose text is not unique in the source. It is refused with a
-  reason, and the Editor is the way to place it.
+- No comment on an HTML Preview block whose structural path no longer resolves against the file.
+  That means the render is stale; it is refused with a reload rather than guessed at.
 
 ## Risks and assumptions
 
@@ -708,7 +721,7 @@ anchored.
 | Schema | `test/file-comment-contracts.test.ts` | Zod bounds and refusals |
 | Store | `test/file-comments-store.test.ts` | SQL, status transitions, `queue_seq` rewrites, the single-flight index |
 | Store | `test/file-comments-lifecycle.test.ts` | `session_remove` orphans this session's threads by UPDATE; `state === "exited"` alone changes nothing; the prune deletes only settled rows |
-| Migration | `test/file-comments-migration.test.ts` | Upgrade from a hand-written pre-feature database |
+| Migration | `test/file-comments-migration.test.ts` | Idempotency, not an upgrade path: a new table needs no `migrate()` entry, so this proves re-opening keeps it |
 | Routes | `test/file-comments-http.test.ts` | Every route through `buildApp()`, including the `/mcp/*` env join |
 | Events | `test/file-comments-sse.test.ts` | Snapshot and incremental convergence |
 | Browser | `e2e/specs/file-line-comments.spec.ts` | Comment in the Editor, queue it, marker collapses, thread expands |
@@ -734,7 +747,8 @@ each durable claim twice: once through the DOM and once against the daemon's own
   one-at-a-time mechanisms are not confused for each other.
 - `docs/event-stream.md` - the new event variants and what bounds the collection.
 - `docs/sessions.md` - what a comment looks like as a turn, and where it queues.
-- `docs/sqlite-database.html` - the three new tables in their family, and all four counts.
+- `docs/sqlite-database.html` - the three new tables in their family, plus the three counts it
+  carries itself. The fourth is `test/db-shell.test.ts`.
 
 ## Delivery shape
 

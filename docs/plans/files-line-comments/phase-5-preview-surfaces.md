@@ -53,20 +53,30 @@ exact source lines. The feature now covers every surface decision 1 approved.
      invisibly as a bridge that simply does not run.
    - `src/web/components/scouts/ScoutReader.tsx` shares this module. It must be unaffected: the
      bridge is inert unless the parent enables it, and Scouts never will.
-3. **Resolving reported text to a source line** in the parent, by searching the file. Exactly one
-   match anchors the thread. **Zero or several matches refuse the comment**, with a reason the
-   person can read and act on - the block's text appears more than once in the source, so comment
-   on the line you mean in the Editor.
-   - Duplicate headings and repeated paragraphs are ordinary input, not an edge case. Expect the
-     refusal to fire in real documents and write its message for someone who has done nothing
-     wrong.
-   - There is deliberately **no third "approximately here" state**. `reanchor()` returns unchanged,
-     moved, or outdated, and phase 1 froze those three; an approximate anchor would be a fourth
-     that every consumer would have to learn, in exchange for a location nobody can trust. A
-     comment that cannot be placed exactly is not placed.
-   - This is the one asymmetry between the two preview surfaces, and it is not arbitrary: Markdown
-     blocks carry `node.position` from the parser, so their line range is exact by construction and
-     never searched for. Only the HTML bridge has to recover a location from text.
+3. **Resolving a clicked block to a source line, by structural path and not by text search.**
+   This is the part of the phase most likely to be got wrong, so it is specified rather than left
+   to the implementer.
+   - **Text search cannot do this job.** The DOM `textContent` of
+     `<p>Read <strong>this</strong></p>` is `Read this`, which is not a substring of the source at
+     all. Nested inline markup, character entities and reflowed whitespace each break the
+     equivalence, and all three are ordinary HTML rather than edge cases - so a text-matching
+     resolver refuses most real blocks while appearing to work on the simple ones it was tried on.
+   - **Parse the source with a position-tracking tokenizer in the parent** and build, for every
+     element, its structural path and its start and end line. The bridge already reports the
+     clicked block's structural index path, so resolution is a lookup in that map rather than a
+     search. Entities, nesting and whitespace never enter into it, because no text is compared.
+   - **The quote is the source slice** at the resolved range, not the DOM text. That is what lets an
+     HTML thread re-anchor through the same `reanchor()` as an editor thread instead of needing a
+     second rule.
+   - **Refusal narrows to one honest case:** the structural path does not resolve against the
+     current source, which means the file changed under a stale render. Say that, and offer a
+     reload. Duplicate headings and repeated paragraphs stop being a problem at all - the whole
+     class of ambiguity disappears with the search that created it.
+   - There is still deliberately **no "approximately here" state**. `reanchor()` returns unchanged,
+     moved or outdated, and phase 1 froze those three.
+   - Markdown Preview never takes this path: its blocks carry `node.position` from the parser. Both
+     surfaces now take their line range from a parse rather than from matching text, which is the
+     property that makes them behave alike.
 4. **`docs/ui.md`** - the preview surfaces.
 
 ## Non-goals
@@ -110,8 +120,10 @@ exact source lines. The feature now covers every surface decision 1 approved.
 
 - A comment made in Markdown Preview lands on the same source line the Editor shows.
 - A comment made in HTML Preview lands on the right line, or is refused with a reason a person can
-  act on. Covered both ways: a uniquely-worded block anchors, and a block whose text repeats is
-  refused rather than placed. No "approximately here" state exists to test.
+  act on. Cover the cases a text-matching resolver would have failed: **a block with nested inline
+  markup** (`<p>Read <strong>this</strong></p>`), **one containing a character entity**, and **two
+  blocks with identical text** - all three anchor correctly, because none is resolved by comparing
+  text. Refusal is tested against a stale render, not against duplicate wording.
 - All nine bare `<Markdown>` callers render unchanged.
 - The preview sandbox has three hashed scripts, no `allow-same-origin`, and one exported sandbox
   constant.
@@ -128,8 +140,8 @@ cross-file threads - is out of this plan's scope and starts a new one.
 ## Cross-phase audit record
 
 - Initial authoring, after Phase 4.
-- Confirmed this phase consumes only Phase 2's contracts in code (anchor module, eligibility
-  predicate, thread components) and none from Phase 3 or 4.
+- Confirmed this phase consumes phase 1's anchor module, `reanchor()` and create route, plus phase
+  2's eligibility predicate and thread components, and nothing from Phase 3 or 4 in code.
 - Review pass: **the prerequisite was moved from Phase 2 to Phase 3 anyway.** Phase 3 states that
   the anchor-survival measurement is owed "before phase 5", but with phase 5 depending only on
   phase 2 the two could run concurrently and this phase could merge before the measurement existed.
@@ -143,6 +155,11 @@ cross-file threads - is out of this plan's scope and starts a new one.
   `htmlPreview.ts` alone and is only visible in the test's extraction regex.
 - Review pass: scope item 3 and the exit criteria disagreed about ambiguous HTML anchors - one
   invented an "approximate" line, the other refused one. Settled on **refusal**, because the
-  alternative adds a fourth outcome to a `reanchor()` contract phase 1 froze at three, and buys a
-  location no consumer can trust. Duplicate headings are ordinary input, so this path is expected
-  to fire and its message is written for a person who has done nothing wrong.
+  alternative adds a fourth outcome to a `reanchor()` contract phase 1 froze at three.
+- Second review pass, and the more consequential one: **the resolver itself was wrong.** Both sides
+  of that disagreement assumed the source could be found by searching it for the block's text, and
+  it cannot - `<p>Read <strong>this</strong></p>` has DOM text that appears nowhere in the source,
+  and that is ordinary HTML. The design would have refused most real blocks while passing a demo.
+  Resolution is now a lookup by structural path against a position-tracking parse of the source -
+  a path the bridge was already reporting and the design was not using. The ambiguity question the
+  previous pass settled evaporates along with the search that created it.

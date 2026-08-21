@@ -43,8 +43,11 @@ change them cheaply. That ordering is deliberate - see the entry on `addColumn` 
      half of that window. An index over `sending` alone would let a second start or a resume open a
      new delivery while the first comment is still unanswered - the exact failure one-at-a-time
      exists to prevent, and the reason this is an index rather than a check in the manager.
-   - **Declare the whole shape now**, including `queue_seq`, `delivery_id`, `answered_at` - columns
-     phases 3 and 4 are the first to write. A shipped table cannot gain a column from the CREATE
+   - **Declare the whole shape now**, including `delivery_id`, `answered_at`, `addressed_at`,
+     `read_at` and every column of `file_comment_reviews` - columns phases 2, 3 and 4 are the first
+     to write. (`queue_seq` is phase 2's: a comment joins the review the moment it is submitted,
+     which is what "comments accumulate as an ordered review queue" means. Phase 3 reorders and
+     drains a queue phase 2 fills.) A shipped table cannot gain a column from the CREATE
      TABLE alone; it needs `addColumn` in `migrate()` forever after (`db.ts:3077-3079`).
    - **No `migrate()` entry is needed** for a new table: the schema literal runs on every open,
      before `migrate()`.
@@ -58,15 +61,23 @@ change them cheaply. That ordering is deliberate - see the entry on `addColumn` 
    - **`markFileCommentMessageDelivered(id, at)`** stamps `delivered_at`. The column is written by
      the delivery path in phase 3, so it needs its writer declared here alongside the insert -
      otherwise it is a column with no way to stop being NULL.
+   - **`markFileCommentThreadAddressed(threadId, at)`** stamps `addressed_at` and **changes no
+     status**. `addressed` is deliberately not a status - only a person closes a thread - so it
+     cannot ride the status route, which would have to move the thread somewhere to write anything.
+     Phase 4's reply route calls this in the same transaction as the reply insert, so a thread is
+     never seen as addressed by a reply that failed to persist.
+   - **`markFileCommentMessagesRead(threadId, at)`** stamps `read_at` on that thread's unread
+     agent messages. The Files tab pip counts messages where it is NULL, so this is what clears it.
    - **`updateFileCommentMessageBody(id, body)`, and the rule that governs it.** The comment text
      lives in `file_comment_messages`, not on the thread, so this is the only way any comment body
      is edited - phase 2's drafts-from-the-first-keystroke and phase 3's edit-unsent are both this
      one function. **It refuses a row whose `delivered_at` is set**, and that refusal is the
      contract, not a nicety: once the agent has read a comment, the dashboard's copy and the
      agent's copy have to stay the same text. Editable until delivered, frozen after.
-   - **`file_comment_messages` gets its writer here too.** Creating a thread writes its opening
-     message row; `appendFileCommentMessage(threadId, author, body)` writes every one after it, and
-     a thread's messages load with it. The `author` column is why one function serves both writers:
+   - **`file_comment_messages` gets its writer here too.** `appendFileCommentMessage(threadId,
+     author, body)` is the only insert - **thread creation calls it** for the opening message
+     rather than writing a row of its own, so there is one insert path and not two that can drift.
+     A thread's messages load with it. The `author` column is why one function serves both writers:
      phase 2's reply box passes `human`, phase 4's MCP tool passes `agent`, and neither invents a
      second insert. Without it phase 2 would ship a reply box with nothing behind it, or reopen
      this phase's already-merged store contract to add one.
@@ -84,15 +95,19 @@ change them cheaply. That ordering is deliberate - see the entry on `addColumn` 
 5. **Zod schemas in `src/shared/protocol.ts`** for every mutating route, in the house shape
    (`RenameArchiveSchema`, `protocol.ts:5535-5539`): doc comment, `export const XSchema`, then
    `export type X = z.infer<typeof XSchema>` immediately after. Bound every string.
-6. **Wire types in `src/shared/types.ts`**: the `FileCommentThread` entity, and two `ServerEvent`
-   arms named to the existing convention - `file_comment_thread_upsert` (carrying the thread) and
-   `file_comment_thread_remove` (carrying `id`).
+6. **Wire types in `src/shared/types.ts`**: the `FileCommentThread` entity **carrying its messages
+   in time order** - phase 2 renders a thread from one frame and phase 4 delivers a reply through
+   one, so a thread that arrives without its messages needs a second fetch neither phase has - and
+   two `ServerEvent` arms named to the existing convention: `file_comment_thread_upsert` (carrying
+   the thread) and `file_comment_thread_remove` (carrying `id`). **Bound the message list** in the
+   doc comment the way the collection bound is stated, and say what happens past it; a thread with
+   an unbounded reply history rides every snapshot.
 7. **`src/server/registry.ts`**: the collection on `snapshot()`, the emit helpers, and an
    **explicit decision on `LINE_INPUT_EVENTS`** (`registry.ts:431`) with the reason written beside
    it. The recommendation is **absent** - the Line strip does not read file comments - and
    `pipeline_upsert`'s deliberate absence is the precedent to follow.
 8. **Routes in `src/server/routes.ts`**: create, list, delete, reorder, **append a message**,
-   **edit an undelivered message's body**, and **set a thread's status** - the last is what phase 2's resolve control and phase
+   **edit an undelivered message's body**, **mark a thread read**, and **set a thread's status** - the last is what phase 2's resolve control and phase
    4's `addressed` both post to, and without it "edit" means the body only and neither can land.
    This phase owns the reorder route outright; phase 3 adds `start`/`pause`/`resume` beside it and
    does not redeclare it. `parseBody` for
@@ -116,7 +131,9 @@ change them cheaply. That ordering is deliberate - see the entry on `addColumn` 
 
 ## Repository findings this phase rests on
 
-- The schema is one `db.exec()` literal at `db.ts:533-2741`; `migrate(d)` runs after it at `:2699`.
+- The schema is one `db.exec()` literal; `migrate(d)` runs after it, not inside it. Read the file
+  for the current line numbers rather than trusting one written here - `db.ts` moved ~700 lines
+  during this plan's own review.
 - `test/db-shell.test.ts:58` asserts `75` tables and becomes `78`. A second test in the same file
   cross-checks each family's `<span>N tables</span>` against its row count.
 - No existing table is hard-`DELETE`d on `session_remove`; every subscriber orphans by UPDATE, and
@@ -144,7 +161,8 @@ change them cheaply. That ordering is deliberate - see the entry on `addColumn` 
 - `test/file-comment-contracts.test.ts` - Zod bounds and refusals.
 - `test/file-comments-store.test.ts` - SQL, status transitions, `queue_seq` rewrites, the
   `outdated` flag surviving a status change in both directions, message append and load order for
-  both authors, editing an undelivered message and **being refused on a delivered one**, and that the partial unique index refuses a second outstanding row for one session
+  both authors, editing an undelivered message and **being refused on a delivered one**, stamping
+  `addressed_at` and `read_at` without touching `status`, and that the partial unique index refuses a second outstanding row for one session
   **from either outstanding status** - a `sending` row beside an `awaiting` one, not just two
   `sending` rows. That asymmetric case is the one an index over a single status would pass.
 - `test/file-comments-lifecycle.test.ts` - `session_remove` orphans; `state === "exited"` alone
@@ -167,8 +185,10 @@ under `src/`. Run one file with
 
 ## Merge and exit criteria
 
-- A thread can be created, listed, edited, reordered, resolved, replied to, and deleted through
-  real routes, and a thread loads with its messages in time order.
+- A thread can be created, listed, edited, reordered, resolved, replied to, marked read, marked
+  addressed, and deleted through real routes, and a thread arrives on the wire with its messages
+  in time order.
+- `addressed_at` and `read_at` can each be written **without** the thread's status changing.
 - A thread survives a daemon restart and is orphaned when its session is removed - by both arms.
 - Both new event variants reach a browser, and the snapshot and the stream agree.
 - The database guide catalogs all three tables and all four counts agree.
@@ -185,8 +205,10 @@ Later phases may rely on, and must not change:
 - The outstanding-status tuple and the index built from it. Phase 3 enforces one turn outstanding
   on top of this, never instead of it, and never widens the tuple to make a transition easier -
   `unanswered` exists precisely so decision 3's auto-advance does not need it widened.
-- `short_id` minting, the status-setting route, and `markFileCommentMessageDelivered`. Phases 3 and
-  4 call all three; neither reimplements one.
+- `short_id` minting (creation), `markFileCommentMessageDelivered` (phase 3, at send), the
+  status-setting route (phases 2 and 4), `markFileCommentThreadAddressed` (phase 4) and
+  `markFileCommentMessagesRead` (phase 4). Each has exactly one declaration here; no phase
+  reimplements one, and none of them is a status change in disguise.
 - `appendFileCommentMessage` and its route: the only way a message row is written, by either
   author. Phase 2 calls it with `human`, phase 4 with `agent`.
 - `delivered_at` as the per-message delivery record, and `markFileCommentMessageDelivered` as its

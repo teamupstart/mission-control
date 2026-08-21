@@ -1,3 +1,5 @@
+import { tmpdir } from "node:os";
+
 import { Codex } from "@openai/codex-sdk";
 import type { LlmRunOptions } from "@shared/llm.ts";
 
@@ -33,6 +35,32 @@ export interface CodexSdkResult {
   threadId: string;
 }
 
+/**
+ * The posture every SDK run is pinned to, matching the exec transport's argv term for term.
+ *
+ * `workingDirectory` is the one that bites if it is left out. The SDK defaults the thread to
+ * the CURRENT PROCESS's directory, which for the daemon and the Foreman worker is a real
+ * checkout - so an omitted setting silently scopes a tool-less run to whatever repository
+ * happens to be open, while `codex exec` has always spawned in `tmpdir()`. These calls have
+ * no repository scope by design: `LlmRunOptions` carries no `cwd`, the only `cwd` in the
+ * model lives on `LlmToolGrant`, and this runner declares `sandbox: null` and refuses every
+ * grant outright. A run that may not be granted a directory must not inherit one either.
+ */
+const THREAD_POSTURE = {
+  skipGitRepoCheck: true,
+  sandboxMode: "read-only",
+  approvalPolicy: "never",
+  workingDirectory: tmpdir(),
+} as const;
+
+/**
+ * Provider config the exec transport spells as `-c` flags. Passed at the client because that
+ * is where the SDK flattens `--config` overrides; a thread option cannot express these.
+ */
+const CLIENT_CONFIG = {
+  features: { shell_tool: false, unified_exec: false },
+} as const;
+
 interface SdkThread {
   readonly id?: string | null;
   run(prompt: string, turnOptions?: { signal?: AbortSignal; outputSchema?: unknown }): Promise<{
@@ -42,8 +70,13 @@ interface SdkThread {
 }
 
 export interface CodexSdkDeps {
-  /** Constructs the client. Injected so a test need not spawn a real provider. */
-  createClient?: (codexPathOverride: string) => {
+  /**
+   * Constructs the client. Injected so a test need not spawn a real provider.
+   *
+   * Handed the WHOLE options object rather than just the path, so a test can assert the
+   * posture that reaches the provider instead of only the binary that runs it.
+   */
+  createClient?: (options: { codexPathOverride: string; config: unknown }) => {
     startThread(options?: unknown): SdkThread;
   };
 }
@@ -89,16 +122,17 @@ export async function runCodexSdkOneShot(
     throw new Error("the codex SDK transport does not support images");
   }
 
+  const clientOptions = { codexPathOverride: codexBin, config: CLIENT_CONFIG };
   const client = deps.createClient
-    ? deps.createClient(codexBin)
-    : new Codex({ codexPathOverride: codexBin });
+    ? deps.createClient(clientOptions)
+    : new Codex(clientOptions);
 
-  // The same posture the exec transport spells out in argv: no project rules, read-only, and
-  // never prompt for approval. A transport that quietly ran with wider powers than its
-  // sibling would make the config choice a security decision, which it must not be.
+  // The same posture the exec transport spells out in argv: no project rules, read-only,
+  // never prompt for approval, no shell, and a working directory outside any checkout. A
+  // transport that quietly ran with wider powers than its sibling would make the config
+  // choice a security decision, which it must not be.
   const thread = client.startThread({
-    skipGitRepoCheck: true,
-    sandboxMode: "read-only",
+    ...THREAD_POSTURE,
     ...(opts.model ? { model: opts.model } : {}),
   });
 

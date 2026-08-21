@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { tmpdir } from "node:os";
 
 import { codexRunner, configureCodexRunnerTransport } from "../src/server/llm/codex.ts";
 import { killLiveCodexSdkRuns, runCodexSdkOneShot } from "../src/server/llm/codex-sdk.ts";
@@ -25,7 +26,7 @@ test("the sdk transport drives the operator's configured binary, not the SDK's b
     "/opt/homebrew/bin/codex",
     { model: "gpt-5.6-luna" },
     {
-      createClient: (codexPathOverride) => {
+      createClient: ({ codexPathOverride }) => {
         sawPath = codexPathOverride;
         return {
           startThread: () => ({
@@ -201,6 +202,46 @@ test("usage rides back so an sdk run reaches the spend ledger like an exec one",
     cached_input_tokens: 0,
     output_tokens: 9,
   });
+});
+
+/**
+ * What is at stake, and this one is only visible from outside the file: the SDK defaults a
+ * thread's working directory to the CURRENT PROCESS's. Both processes that run this - the
+ * daemon and the Foreman worker - are started inside a real checkout, so leaving it unset
+ * scopes a tool-less run to whatever repository happens to be open, while `codex exec` has
+ * always spawned in `tmpdir()`.
+ *
+ * These calls are not repository-scoped by design. `LlmRunOptions` carries no `cwd` at all;
+ * the only `cwd` in the model belongs to `LlmToolGrant`, and this runner declares
+ * `sandbox: null` and refuses every grant outright (asserted above). A run that may not be
+ * GRANTED a directory must not INHERIT one, which is exactly what an unset default does.
+ */
+test("an sdk run is pinned to the exec transport's posture, not the process's", async () => {
+  let sawThread: Record<string, unknown> | undefined;
+  let sawConfig: unknown;
+  await runCodexSdkOneShot("x", "/bin/codex", {}, {
+    createClient: ({ config }) => {
+      sawConfig = config;
+      return {
+        startThread: (options) => {
+          sawThread = options as Record<string, unknown>;
+          return { id: "th_5", run: async () => ({ finalResponse: "ok" }) };
+        },
+      };
+    },
+  });
+
+  assert.equal(
+    sawThread?.workingDirectory,
+    tmpdir(),
+    "an unset working directory silently scopes the run to the daemon's own checkout",
+  );
+  assert.equal(sawThread?.sandboxMode, "read-only");
+  assert.equal(sawThread?.approvalPolicy, "never");
+  assert.equal(sawThread?.skipGitRepoCheck, true);
+  // The exec transport spells these as `-c features.shell_tool=false`. Same posture, and
+  // the SDK's spelling for them is a client-level config override rather than a thread one.
+  assert.deepEqual(sawConfig, { features: { shell_tool: false, unified_exec: false } });
 });
 
 test("a schema run sends the shape, so both transports answer alike", async () => {

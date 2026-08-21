@@ -66,22 +66,32 @@ The queue stops advancing on an inference about idleness and starts advancing on
    - **The insert is unconditional; the status change is not.** A reply is real content and is
      always persisted - dropping one because it arrived late would lose the agent's work. What is
      conditional is everything else:
-     - **Move the thread to `answered` only when it is in `awaiting` or `unanswered` and carries no
-       undelivered human message.** That second test is not a new invariant: it is the same
-       `delivered_at IS NULL` predicate the payload selection rule already uses, and an undelivered
-       human message *is* queued work.
-     - **Otherwise leave the status exactly as it is.** This is the case that matters. Decision 3
-       auto-advances, so a thread can time out to `unanswered`, the human can write a follow-up
-       that puts it back to `queued` with a fresh `queue_seq`, and only then can the agent's slow
-       reply land. Moving that thread to `answered` would take it out of the queue and the
-       follow-up would never be delivered - human work lost silently, with the reply that caused it
-       looking like a success. A `resolved` thread is left alone by the same rule: only a person
-       closes a thread, and a late reply does not reopen one.
-     - **Release the next comment only when the reply answers the outstanding delivery**, which is
-       what the ordinal is for: the cited ordinal must name the message that delivery actually
-       carried - the thread's human message with the greatest `delivered_at`, which is unambiguous
-       because only one turn is outstanding per session. A late reply persists, notifies, and
-       advances nothing.
+     **Two independent questions decide it, and collapsing them is how this went wrong once
+     already.** *Does this reply answer the outstanding delivery?* decides whether the turn is
+     released. *Does the thread still have queued work?* decides only where the thread goes
+     afterwards. The second must never be used to answer the first.
+     - **Does it answer the outstanding delivery?** The cited ordinal must name the message that
+       delivery actually carried - the thread's human message with the greatest `delivered_at`,
+       unambiguous because only one turn is outstanding per session.
+     - **If it does, release the turn, and in the same transaction put the thread where it belongs
+       next:**
+       - **undelivered human messages remain** - the human wrote a follow-up while the thread was
+         `awaiting` - so the thread goes to `answered` and is immediately requeued at the tail
+         through phase 1's `queueFileCommentThread`, which accepts `answered`. This needs no
+         exception to the allow-list: releasing first is what makes the requeue legal, and it is
+         the same "requeues when the turn resolves" rule phase 3 item 8 already states.
+       - **none remain** - the thread simply becomes `answered`.
+       Either way `delivery_id` is cleared and the next comment is released, because the turn is
+       genuinely over.
+     - **If it does not answer the outstanding delivery, persist and change nothing else.** A late
+       reply - one whose ordinal names an earlier delivery - leaves the status untouched, so a
+       thread the human already requeued keeps `queued` and its place, and a `resolved` thread stays
+       closed because only a person closes one.
+     - **Never leave a thread `awaiting` because it has queued work.** That is the trap: `awaiting`
+       is an outstanding status, `queueFileCommentThread` refuses it, and the partial unique index
+       blocks every later delivery - so the follow-up can never be sent and the whole review
+       deadlocks behind a comment that was, in fact, answered. Releasing first and requeueing from
+       `answered` is what avoids it.
        - This is the case the thread identifier alone cannot express, and it is reachable: comment
          1 times out, a follow-up on the same thread is delivered, and the late reply to comment 1
          arrives while that thread is legitimately outstanding again. Matching on the thread would
@@ -152,7 +162,10 @@ The queue stops advancing on an inference about idleness and starts advancing on
   the round-17 variant, which the thread identifier alone cannot survive: let that follow-up be
   **delivered** so the thread is outstanding again, and only then deliver the stale reply to the
   first comment. It must persist and advance nothing, rather than marking the follow-up's delivery
-  answered.
+  answered. Then the round-21 deadlock, which is the one that stops the whole review rather than
+  one thread: write a follow-up while the thread is `awaiting`, deliver the agent's reply to the
+  original, and assert the thread ends up `queued` at the tail with the next comment released - not
+  `awaiting` with the queue blocked behind it.
 - `e2e/specs/file-comment-walkthrough.spec.ts` gains a faked reply: read the token from
   `join(daemon.home, "token")`, `POST /mcp/file-comments/replies` with `x-harness-token`, `env: {}`
   and the session's `cwd`, exactly as `e2e/specs/review-answers-in-conversation.spec.ts:58-101`
@@ -172,6 +185,8 @@ The queue stops advancing on an inference about idleness and starts advancing on
   another session resolves to that session's thread and not this one.
 - A reply whose ordinal names an earlier delivery of a thread that is outstanding again persists on
   the thread and **does not** release the next comment.
+- A follow-up written while a thread is `awaiting`, answered by the agent, leaves that thread
+  **queued at the tail rather than stuck in `awaiting`**, and the review keeps moving.
 - The Files tab raises a pip when a reply arrives.
 - `npm run smoke` passes.
 
@@ -219,3 +234,13 @@ thread renders from durable state rather than from the transcript.
   no column moves; a bare handle - what the transcript fallback recovers - files the message and
   advances nothing. Same lesson as round 13: a rule that matches on an identity is only as good as
   the identity the agent is actually handed.
+- Review pass (round 21): **the round-14 conditional deadlocked the review.** It moved a thread to
+  `answered` only when it had no undelivered human message, and otherwise left the status alone - so
+  a follow-up written while the thread was `awaiting` left it `awaiting` after the agent answered.
+  `queueFileCommentThread` refuses `awaiting` (round 19), so the follow-up could never be queued,
+  and the partial unique index blocked every later delivery: the entire review stuck behind a
+  comment that had in fact been answered. The error was structural - one condition was deciding two
+  independent questions. *Does this reply answer the outstanding delivery* decides whether the turn
+  is released; *does the thread still have queued work* decides only where it goes afterwards. Split
+  apart, the fix needs no new exception: release to `answered`, then requeue from `answered`, which
+  the allow-list already permits.

@@ -94,6 +94,24 @@ measurement the plan's two 60% assumptions need.
    says which. `canMessage(session)` refusing is a pause with a reason, not a lost
    comment. A send that lands in `uncertain` pauses the review and surfaces the **existing** Retry /
    Mark sent controls rather than inventing a second recovery path.
+   - **Those controls act on `pending_turns`, so each needs a correlated write on this thread, in
+     the same transaction.** Without one the thread stays `sending` - an outstanding status - and
+     the partial unique index blocks every later delivery, so resolving the turn would leave the
+     review permanently stuck behind a comment the human just dealt with. There are exactly two
+     callbacks, and both reuse writers that already exist rather than adding a third path:
+     - **Mark sent** is the human supplying the confirmation the daemon could not observe, so it
+       performs the confirmed-delivery write: `markFileCommentMessageDelivered` stamps the message
+       and the thread moves `sending` → `awaiting`, `delivery_id` cleared. The review resumes, and
+       the grace window runs from here rather than from the original send - the agent has not been
+       waiting on it.
+     - **Retry** re-sends the same, still-undelivered message. `delivered_at` stays NULL and the
+       thread stays `sending` - it never left the outstanding set, so the index is untouched - but
+       `delivery_id` must be **re-pointed** at the new `pending_turns` row through
+       `beginFileCommentDelivery`, or the thread stays correlated to a row that is gone and the
+       confirmed-delivery signal for the new turn will not match it.
+     - A session that dies before either is chosen needs nothing here: phase 1's `session_remove`
+       arm takes the thread to `orphaned`, which is terminal, and the review pauses with no session
+       to resume against.
 7. **Queue controls in the UI**: queue depth, Start review, Pause, reorder, edit-unsent, drop.
    Edit-unsent is phase 1's message-edit route, which refuses a delivered row **and one whose
    thread is outstanding** - so the control is offered on queued comments and not on the one in
@@ -165,6 +183,10 @@ measurement the plan's two 60% assumptions need.
 
 - `test/file-comment-payload.test.ts` - bounding, the position line, the id, and a stable
   `payloadSha256`.
+- `test/file-comment-uncertain-recovery.test.ts` - Mark sent stamps the message and moves the
+  thread `sending` → `awaiting` so the review resumes; Retry leaves `delivered_at` NULL and
+  re-points `delivery_id`; and after either, the partial unique index permits the next delivery.
+  The failure this covers is a deadlock, not a wrong value, so assert the *next* comment goes.
 - `test/file-comment-walkthrough.test.ts` - the advance state machine: idle fallback, hold-on-
   outdated, pause, resume, restart-resumes-without-resending, **reply-after-answer delivers the
   reply rather than the opening comment**, and refusal when `canMessage` is
@@ -257,3 +279,10 @@ Phase 4 may rely on, and must not change:
   next comment on top of it and the depth-one guarantee would be gone. Appending still always
   works; the status now stays put, and the existing "requeues when the turn resolves" rule picks
   the message up.
+- Review pass (round 21): the `uncertain` pause deferred to the existing Retry / Mark sent controls
+  without saying what they do to *this* thread. They act on `pending_turns` only, so Mark sent would
+  have resolved the turn and left the thread `sending` - outstanding, indexed, and blocking every
+  later delivery - while Retry would have left `delivery_id` pointing at a row that no longer
+  exists, so the confirmed-delivery signal for the new turn would never match. Both callbacks now
+  have their correlated thread writes stated, reusing `markFileCommentMessageDelivered` and
+  `beginFileCommentDelivery` rather than adding a third recovery path.

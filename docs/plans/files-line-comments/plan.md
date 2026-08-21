@@ -708,10 +708,12 @@ flag. A human reply on an `answered` thread puts it back in the queue with its h
 `orphaned` is the one status reached without a human or an agent doing anything.
 
 Because decision 3 auto-advances, a reply can arrive after its thread has moved on, so **an agent
-reply always persists but only moves a thread that is still waiting for it** - one in `awaiting` or
-`unanswered` with no undelivered human message. A thread the human has already replied to is
-`queued` work and keeps that status, or the follow-up would drop out of the queue unsent; a
-`resolved` thread stays closed, because only a person closes one.
+reply always persists, but only a reply that answers the outstanding turn moves the thread.** When
+it does, the turn is released: the thread becomes `answered`, and if you wrote a follow-up while it
+was waiting, it goes straight back to the end of the queue so that follow-up still gets sent. When
+it does not - a late reply naming an earlier delivery - the thread keeps the status it had, so one
+you have already replied to keeps its place in the queue and a `resolved` one stays closed, because
+only a person closes one.
 
 ### 8. Keyboard and accessibility
 

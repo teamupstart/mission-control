@@ -132,7 +132,12 @@ change them cheaply. That ordering is deliberate - see the entry on `addColumn` 
      `queued` → `sending` and records the correlation in `delivery_id`. This is the write phase 3
      performs when it *submits*, and it deliberately does **not** stamp `delivered_at`:
      `pendingTurns.submit()` only enqueues a turn (`delivery: "pending"`, `submitVerified: false`),
-     so from here the thread is outstanding but not yet delivered. It is also where the partial
+     so from here the thread is outstanding but not yet delivered.
+     - **It is also the re-point.** Valid from `queued` for a first send, and from `sending` when
+       an `uncertain` delivery is being retried and the correlation is being replaced - phase 3's
+       recovery path. It refuses every other status. The single-flight index is unaffected by the
+       retry case, since `sending` is outstanding both before and after; re-pointing through this
+       function rather than a second writer is what keeps `delivery_id` to one declared writer. It is also where the partial
      unique index bites, which is the point - the index refuses a second `sending` row for the
      session rather than trusting phase 3's bookkeeping.
    - **`markFileCommentMessageDelivered(id, at)`** stamps `delivered_at` and completes that

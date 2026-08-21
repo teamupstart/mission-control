@@ -26,6 +26,7 @@ import type {
 } from "@shared/workflow.ts";
 import {
   WORKFLOW_RUN_SPENT_PHASES,
+  WORKFLOW_UNCHANGED_REPOSITORY_PHASE,
   isVerdictNode,
   verdictAuthor,
   workflowResumptionWithheldSentence,
@@ -1151,6 +1152,16 @@ export function deliveryKindLabel(kind: WorkflowDeliveryKind): string {
 export function runParkedSentence(detail: WorkflowRunDetail): string | null {
   const resumption = detail.resumption;
   if (!resumption) return null;
+  /*
+   * One statement of one fact. The pre-capture refusal above says the repository has not
+   * moved, in the operator's own terms and about the round they just tried to open; the
+   * observer's withheld reason is the same finding on a fifteen-second timer. Printing both
+   * reads as two separate problems, and the older half is the less useful one.
+   */
+  if (
+    resumption.reason === "repository_unchanged"
+    && detail.run.currentPhase === WORKFLOW_UNCHANGED_REPOSITORY_PHASE
+  ) return null;
   const sentence = workflowResumptionWithheldSentence(
     resumption.reason,
     resumption.round ?? detail.summary.round,
@@ -1159,6 +1170,33 @@ export function runParkedSentence(detail: WorkflowRunDetail): string | null {
   return resumption.resumesItself
     ? sentence
     : `${sentence} This review does not resume on its own, so the next round is yours to start.`;
+}
+
+/**
+ * Why the last resubmission was refused, for a run that still has a move.
+ *
+ * The header's existing sentence is the NO-MOVE one: it explains an empty action row. A
+ * refused resubmission is the opposite shape - the daemon said no, and put a different button
+ * in place of the one that was clicked - so nothing drew the reason, and the repaint from
+ * "Start repair round 2" to "Review it anyway" read as a click that had done something
+ * unexplained. That is the same complaint the grant's silence produced, one screen along.
+ *
+ * Two phases, two sentences, because the two refusals cost different things: one was declined
+ * before any round was opened, the other after a snapshot was already captured. Saying "no
+ * round was spent" about the second would be false.
+ */
+export function runRefusedSentence(detail: WorkflowRunDetail): string | null {
+  const round = detail.summary.round;
+  switch (detail.run.currentPhase) {
+    case WORKFLOW_UNCHANGED_REPOSITORY_PHASE:
+      return `The repository has not changed since round ${round} - same commit, same working`
+        + " tree - so that round was refused before it could be opened, and nothing was spent.";
+    case "unchanged_evidence":
+      return `The evidence captured for round ${round} is identical to the round before it,`
+        + " so the reviewers were not run against it.";
+    default:
+      return null;
+  }
 }
 
 /**
@@ -1185,7 +1223,14 @@ export function runGrantNotice(detail: WorkflowRunDetail): string | null {
   if (typeof grantedAtRound !== "number" || detail.summary.round > grantedAtRound) return null;
   const to = payload.to;
   const budget = typeof to === "number" ? to : detail.summary.maxRepairRounds;
-  return `Repair budget raised to ${budget} round${budget === 1 ? "" : "s"}.`;
+  /*
+   * Stated as the round it reaches, not as the budget it raised, because the eyebrow three
+   * lines above already prints `round N of ${maxRepairRounds + 1}`. Both numbers are correct
+   * and they are not the same number - the budget counts REPAIRS, the eyebrow counts rounds
+   * including the first submission - so a notice that said "raised to 3 rounds" beside an
+   * eyebrow reading "round 2 of 4" would make a reader stop and work out which one lied.
+   */
+  return `Repair budget raised. Round ${budget + 1} is now the last this run can reach.`;
 }
 
 const ATTEMPT_STATE_LABELS: Record<WorkflowNodeAttemptState, string> = {

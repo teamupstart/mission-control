@@ -1488,6 +1488,7 @@ button.wf-run-version:focus-visible {
    the working colour because it reports something that HAPPENED; the parked line stays muted
    because it reports something that is not happening. */
 .wf-run-granted,
+.wf-run-refused,
 .wf-run-parked {
   font-size: 12px;
   line-height: 1.5;
@@ -1498,6 +1499,13 @@ button.wf-run-version:focus-visible {
 .wf-run-granted {
   color: var(--working);
   font-weight: 600;
+}
+
+/* The refusal takes the attention colour rather than the working one: unlike the grant, it
+   reports something that did NOT happen at the operator's request, and the button beside it
+   is the override for it. */
+.wf-run-refused {
+  color: var(--attention);
 }
 
 .wf-run-parked {

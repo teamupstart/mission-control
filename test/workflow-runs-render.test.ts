@@ -2738,7 +2738,7 @@ test("a granted run says so, and says what is now waiting", () => {
     resumption: { reason: "repository_unchanged", round: 2, resumesItself: true },
   });
   const header = headerOf(html);
-  assert.match(header, /Repair budget raised to 4 rounds\./);
+  assert.match(header, /Repair budget raised\. Round 5 is now the last this run can reach\./);
   // And the reason nothing is happening YET, which is what makes the grant legible rather
   // than merely acknowledged: the budget moved, and the session still owes the repair.
   assert.match(header, /the repository has not changed since round 2/);
@@ -2792,4 +2792,72 @@ test("a parked run whose session is merely busy is not reported as stuck", () =>
   const header = headerOf(html);
   assert.match(header, /The session is still working\. The next round opens once it settles\./);
   assert.doesNotMatch(header, /yours to start/);
+});
+
+/**
+ * A refusal that repaints the primary has to say why it repainted.
+ *
+ * The header's existing sentence explains an EMPTY action row, so a refused resubmission -
+ * which leaves a different button standing - drew nothing at all. The operator clicked
+ * "Start repair round 2", got "Review it anyway", and was told nothing about what happened
+ * in between.
+ */
+test("a refused resubmission says what was refused and what it cost", () => {
+  const base = runningDetail();
+  const html = render({
+    ...base,
+    summary: { ...base.summary, status: "waiting_for_session", round: 2 },
+    run: { ...base.run, status: "waiting_for_session", currentPhase: "unchanged_repository" },
+  });
+  const header = headerOf(html);
+  assert.match(header, /The repository has not changed since round 2/);
+  // The half that distinguishes it from the post-capture refusal, and the half an operator
+  // deciding whether to override needs: this one was free.
+  assert.match(header, /nothing was spent/);
+});
+
+test("the post-capture refusal does not claim the round was free", () => {
+  const base = runningDetail();
+  const html = render({
+    ...base,
+    summary: { ...base.summary, status: "waiting_for_session", round: 2 },
+    run: { ...base.run, status: "waiting_for_session", currentPhase: "unchanged_evidence" },
+  });
+  const header = headerOf(html);
+  assert.match(header, /identical to the round before it/);
+  assert.doesNotMatch(header, /nothing was spent/);
+});
+
+/**
+ * The refusal and the observer's withheld tick are the same finding at two ages. Printing
+ * both reads as two separate problems, and the older half is the less useful one.
+ */
+test("an unmoved repository is stated once, not twice", () => {
+  const base = runningDetail();
+  const html = render({
+    ...base,
+    summary: { ...base.summary, status: "waiting_for_session", round: 2 },
+    run: { ...base.run, status: "waiting_for_session", currentPhase: "unchanged_repository" },
+    resumption: { reason: "repository_unchanged", round: 2, resumesItself: true },
+  });
+  const header = headerOf(html);
+  assert.match(header, /so that round was refused before it could be opened/);
+  assert.doesNotMatch(header, /Reviewing it again would return the same verdicts/);
+});
+
+/**
+ * A DIFFERENT withheld reason is not a duplicate and still gets said. "The session is still
+ * working" is the reason nothing is happening right now; the refusal is what happened before.
+ */
+test("a busy session is still reported beside a refusal", () => {
+  const base = runningDetail();
+  const html = render({
+    ...base,
+    summary: { ...base.summary, status: "waiting_for_session", round: 2 },
+    run: { ...base.run, status: "waiting_for_session", currentPhase: "unchanged_repository" },
+    resumption: { reason: "session_busy", round: 2, resumesItself: true },
+  });
+  const header = headerOf(html);
+  assert.match(header, /so that round was refused before it could be opened/);
+  assert.match(header, /The session is still working/);
 });

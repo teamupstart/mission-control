@@ -232,6 +232,14 @@ test("a repair round on unmoved work is refused before it costs one, and offers 
    */
   const anyway = header.getByRole("button", { name: "Review it anyway" });
   await expect(anyway).toBeVisible({ timeout: 20_000 });
+  /*
+   * And it says WHY it repainted. The header's older sentence explains an empty action row,
+   * so a refusal that leaves a different button standing used to draw nothing - which is the
+   * same "I clicked and something unexplained happened" the grant produced one screen along.
+   */
+  await expect(header.locator("p.wf-run-refused"))
+    .toContainText("The repository has not changed since round 1");
+  await expect(header.locator("p.wf-run-refused")).toContainText("nothing was spent");
   await shoot(dashboard, "01-unmoved-work-is-refused");
 
   // Nothing was spent. This is the whole point of probing before capturing rather than
@@ -323,8 +331,13 @@ test("the grant says what it bought and hands a self-resuming run back to its ob
    * The first silence. The grant's only visible consequence used to be the disappearance of
    * the button that caused it, which is indistinguishable from a button that crashed.
    */
-  await expect(header.locator("p.wf-run-granted"))
-    .toHaveText("Repair budget raised to 3 rounds.", { timeout: 20_000 });
+  await expect(header.locator("p.wf-run-granted")).toHaveText(
+    "Repair budget raised. Round 4 is now the last this run can reach.",
+    { timeout: 20_000 },
+  );
+  // The same number the eyebrow prints, in the same units. The budget it raised is 3, the
+  // round it reaches is 4, and two correct numbers three lines apart read as one wrong one.
+  await expect(header.locator(".workflow-eyebrow")).toContainText("round 2 of 4");
 
   /*
    * The second, and the one that made the report say "nothing happens". A blocked run is

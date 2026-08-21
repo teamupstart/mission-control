@@ -1005,6 +1005,11 @@ A resubmission the daemon refuses turns that same primary into the recovery for 
 refusal, which is the only state either recovery appears in. There are two, and they refuse
 different things:
 
+Both write a sentence into the header beside the button, which the older no-move sentence
+could not do: that one explains an *empty* action row, and a refusal leaves a button standing.
+A repaint from **Start repair round 2** to **Review it anyway** with nothing else on the page
+is the same unexplained click the grant used to produce.
+
 - **Review it anyway** answers `unchanged_repository`. Before capturing anything, the
   resubmit route asks the same two git reads the resumption observer gates on, and a
   repository byte-identical to the one the last round reviewed is refused there - no
@@ -1053,8 +1058,9 @@ Every arm restores a status something watches, because nothing polls a blocked r
 
 **And the grant says what it bought.** It was the one primary on the page with no visible
 result, so a click that worked was indistinguishable from a click that failed. The header now
-carries **Repair budget raised to N rounds.** for as long as that is still the last thing that
-happened, derived from the run's own event ledger and the current round rather than held in
+carries **Repair budget raised. Round N is now the last this run can reach.** for as long as
+that is still the last thing that happened - stated as a round rather than as a budget so it
+agrees with the eyebrow above it, which counts the first submission - derived from the run's own event ledger and the current round rather than held in
 component state - so a lost HTTP response, a replay under the retained request id, and a grant
 applied from another tab all produce it, and it clears itself the moment the round it bought
 actually starts. The same sentence is announced to a screen reader once, politely. Beside the primary sit at most

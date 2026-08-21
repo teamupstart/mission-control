@@ -75,6 +75,7 @@ import {
   runChangeWorklist,
   runGrantNotice,
   runParkedSentence,
+  runRefusedSentence,
   runRounds,
   runStalemates,
   runStatusLabel,
@@ -1817,6 +1818,7 @@ export function WorkflowRunView({
    */
   const sessionBound = detail.binding.sessionId !== null;
   const parkedSentence = runParkedSentence(detail);
+  const refusedSentence = runRefusedSentence(detail);
   /*
    * The grant's result, drawn and announced.
    *
@@ -1914,6 +1916,7 @@ export function WorkflowRunView({
               parked, the observer is withholding, and the header still offers a manual round.
               In that order, because it is the order the events happened in. */}
           {grantNotice && <p className="wf-run-granted">{grantNotice}</p>}
+          {refusedSentence && <p className="wf-run-refused">{refusedSentence}</p>}
           {parkedSentence && <p className="wf-run-parked">{parkedSentence}</p>}
           {detail.externalSource && <ExternalProvenance source={detail.externalSource} />}
           <small>Started {when(detail.run.startedAt)} · updated {relativeTime(detail.run.updatedAt)}</small>

@@ -131,9 +131,17 @@ async function openNextRound(
   runId: string,
   targetRound: number,
 ): Promise<void> {
-  // The first press deliberately captures fresh evidence. When that capture is unchanged,
-  // the daemon offers the explicit replay confirmation; when a prior repair delivery changed
-  // the bounded transcript, the fresh capture can open the target round on its own.
+  /*
+   * The first press deliberately captures fresh evidence, and the daemon answers it one of
+   * three ways.
+   *
+   * `opened` - a prior repair delivery moved the repository, so the fresh capture opens the
+   * target round on its own. `refused` - the pre-capture probe finds the repository exactly
+   * as the last round left it, so NOTHING is written: no submission, no round. `replay` - the
+   * older post-capture refusal, which now stands as a backstop; a submission exists and has
+   * failed. Under Preview delivery all three offer the same recovery label, so this helper
+   * only has to know which of them needs the second press.
+   */
   const primary = page.locator("header.wf-run-head button.btn-primary");
   await expect(primary).toHaveText("Preview fresh evidence");
   await primary.click();
@@ -150,16 +158,18 @@ async function openNextRound(
     const submission = detail.submissions.find((candidate) =>
       candidate.round === targetRound && candidate.segment === 0
     );
-    outcome = submission?.status === "failed" && detail.run.currentPhase === "unchanged_evidence"
-      ? "replay"
-      : submission && !["capturing", "failed", "cancelled"].includes(submission.status)
-        ? "opened"
-        : "";
+    outcome = detail.run.currentPhase === "unchanged_repository"
+      ? "refused"
+      : submission?.status === "failed" && detail.run.currentPhase === "unchanged_evidence"
+        ? "replay"
+        : submission && !["capturing", "failed", "cancelled"].includes(submission.status)
+          ? "opened"
+          : "";
     return outcome || `${submission?.status ?? "missing"}:${detail.run.currentPhase}`;
   }, {
-    message: `fresh capture should either open round ${targetRound} or offer exact replay`,
+    message: `fresh capture should open round ${targetRound}, refuse it, or offer exact replay`,
     timeout: 40_000,
-  }).toMatch(/^(opened|replay)$/);
+  }).toMatch(/^(opened|refused|replay)$/);
   if (outcome === "opened") return;
   await expect(primary).toHaveText("Preview unchanged");
   await primary.click();

@@ -52,10 +52,13 @@ import {
   WORKFLOW_LLM_CALL_STATES,
   WORKFLOW_LLM_PURPOSES,
   WORKFLOW_RESUMPTION_POLICIES,
+  WORKFLOW_RUN_SPENT_PHASES,
   WORKFLOW_TRIGGER_MODES,
   LEGACY_WORKFLOW_RESUMPTION_POLICY,
   SESSION_ACTION_COMPLETION_KINDS,
   emptyWorkflowCommandView,
+  workflowRoundLimitParkedPhase,
+  workflowRunResumesItself,
   personaOriginRank,
   personaSnapshotOf,
   personasForDisplay,
@@ -939,6 +942,7 @@ const WorkflowSubmissionRowSchema = z.object({
   evidence_group_key: text.optional().default(""),
   staged_image_generation: integer.nonnegative().optional().default(0),
   evidence_fingerprint: nonempty,
+  repository_fingerprint: nullableText.optional().default(null),
   context_json: nonempty,
   evidence_json: nonempty,
   pr_head_sha: nullableText,
@@ -981,6 +985,7 @@ export function parseWorkflowSubmissionRow(value: unknown): WorkflowSubmission {
     evidenceGroupKey: row.evidence_group_key || undefined,
     stagedImageGeneration: row.staged_image_generation ?? 0,
     evidenceFingerprint: row.evidence_fingerprint,
+    repositoryFingerprint: row.repository_fingerprint,
     context: parseJson(
       "workflow_submissions",
       row.id,
@@ -1354,12 +1359,18 @@ const WorkflowDeliveryRowSchema = z.object({
  * tell the run detail page a review had been delivered when what was delivered was a refusal,
  * and would lose the one phase a human scanning stalled runs needs to see.
  */
-const DELIVERY_RUN_PHASE: Record<WorkflowDeliveryKind, string> = {
+const DELIVERY_RUN_PHASE: Record<WorkflowDeliveryKind, string | null> = {
   persona_feedback: "persona_feedback",
   inspector_feedback: "inspector_findings",
   pr_handoff: "pr_handoff",
   unchanged_evidence_nudge: "unchanged_evidence",
   session_action: "session_action",
+  // `null` means LEAVE THE PHASE ALONE, and this is the only kind that asks for it. Every
+  // other packet moves the run into the state it created; a reminder creates no state. The
+  // run is parked for the same reason it was parked a minute ago - a persona's findings, or
+  // a pull-request handoff - and overwriting either with a phase of its own would report a
+  // review that was never re-delivered, on a run whose whole problem is that nothing moved.
+  parked_repair_reminder: null,
 };
 
 /**
@@ -4515,9 +4526,7 @@ export class WorkflowStore {
           state = "resubmitted";
           created = true;
         } else {
-          this.setRunState(run.id, "blocked", "round_limit", {
-            maxRepairRounds: run.maxRepairRounds,
-          }, input.now);
+          this.blockForRoundLimit(run, input.now);
           run = this.mustRun(run.id);
         }
       } else if (run.status === "capturing" || run.status === "running") {
@@ -4582,6 +4591,7 @@ export class WorkflowStore {
       context: WorkflowJson;
       evidence: WorkflowJson;
       fingerprint?: string;
+      repositoryFingerprint?: string;
       status?: WorkflowSubmission["status"];
     },
     now = Date.now(),
@@ -4590,12 +4600,13 @@ export class WorkflowStore {
     this.db.prepare(
       `UPDATE workflow_submissions
           SET context_json = ?, evidence_json = ?, evidence_fingerprint = ?,
-              status = ?, updated_at = ?
+              repository_fingerprint = ?, status = ?, updated_at = ?
         WHERE id = ?`,
     ).run(
       JSON.stringify(input.context),
       JSON.stringify(input.evidence),
       input.fingerprint ?? current.evidenceFingerprint,
+      input.repositoryFingerprint ?? current.repositoryFingerprint ?? null,
       input.status ?? current.status,
       now,
       id,
@@ -4618,6 +4629,36 @@ export class WorkflowStore {
         WHERE id = ? AND status NOT IN ('completed', 'cancelled', 'failed')`,
     ).run(status, currentPhase, gateState === null ? null : JSON.stringify(gateState), now, terminal ? 1 : 0, now, id);
     return this.mustRun(id);
+  }
+
+  /**
+   * Stop a run that has no repair round left to spend, remembering what it was doing.
+   *
+   * The one writer of the `round_limit` block, and it exists because there were five of
+   * them. Each spelled the same two-field payload by hand, which was harmless while the
+   * payload was only the budget and stopped being harmless the moment a grant needed to
+   * know the phase the run had been parked in - a fact four of the five call sites had in
+   * hand and none of them wrote down. Routing them through here is what makes
+   * `workflowRoundLimitParkedPhase` answerable at all.
+   *
+   * The Inspector gate's own round-limit block is deliberately NOT one of these callers:
+   * it carries its gate state through the block instead of the budget, and it is revived by
+   * the grant's existing `waiting_for_new_head` arm rather than by the parked phase.
+   *
+   * Re-blocking preserves the FIRST recorded phase. A run that blocked, was granted rounds,
+   * resumed and blocked again would otherwise record `round_limit` as the phase it was
+   * parked in, and a second grant would restore it into the very phase it is trying to
+   * leave.
+   */
+  blockForRoundLimit(run: WorkflowRun, now = Date.now()): WorkflowRun {
+    const parkedPhase = workflowRoundLimitParkedPhase(run.gateState)
+      ?? ((WORKFLOW_RUN_SPENT_PHASES as readonly string[]).includes(run.currentPhase)
+        ? null
+        : run.currentPhase);
+    return this.setRunState(run.id, "blocked", "round_limit", {
+      maxRepairRounds: run.maxRepairRounds,
+      ...(parkedPhase ? { parkedPhase } : {}),
+    }, now);
   }
 
   /**
@@ -5980,7 +6021,7 @@ export class WorkflowStore {
       this.setRunState(
         delivery.runId,
         nextStatus,
-        DELIVERY_RUN_PHASE[delivery.kind],
+        DELIVERY_RUN_PHASE[delivery.kind] ?? run.currentPhase,
         delivery.kind === "persona_feedback" || delivery.kind === "session_action"
           ? { deliveryId: delivery.id, transcriptAnchor }
           : run.gateState,
@@ -6168,7 +6209,7 @@ export class WorkflowStore {
           this.setRunState(
             delivery.runId,
             nextStatus,
-            DELIVERY_RUN_PHASE[delivery.kind],
+            DELIVERY_RUN_PHASE[delivery.kind] ?? run.currentPhase,
             delivery.kind === "persona_feedback"
               ? { deliveryId: delivery.id, resolvedByOperator: true }
               : run.gateState,
@@ -6879,6 +6920,49 @@ export class WorkflowStore {
     };
   }
 
+  /**
+   * The observer's last word on this run, for the page that has to explain a parked round.
+   *
+   * Scoped to a run that is actually parked. A withheld reason on a run that has since
+   * resumed, finished or been cancelled is history, and the ledger already holds it; repeating
+   * it in the header would explain a state the run left.
+   *
+   * `resumesItself` rides along because the two facts are only useful together. "Waiting on
+   * the session" means something quite different on a run whose loop closes by itself than on
+   * one under `manual` resumption or `preview` delivery, where nothing is coming and the next
+   * round is the operator's to start - and neither of those settings is visible anywhere else
+   * on the page.
+   */
+  private runResumptionState(
+    run: WorkflowRun,
+    binding: WorkflowBinding,
+    version: WorkflowVersion | null,
+  ): WorkflowRunDetail["resumption"] {
+    if (run.status !== "waiting_for_session") return null;
+    const withheld = this.listEvents(run.id)
+      .filter((event) => event.kind === "resumption_withheld")
+      .at(-1);
+    const payload = withheld?.payload;
+    if (!withheld || !payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+    const reason = payload.reason;
+    if (typeof reason !== "string") return null;
+    // Scoped to the round it was recorded against, not merely to the run being parked. A run
+    // that was withheld at round 1, resumed, and parked again at round 2 is waiting on
+    // something new; carrying the old sentence forward would explain the current silence with
+    // a reason that has already been answered - and the more rounds a run survives, the more
+    // confidently it would be wrong.
+    if ((payload.submissionId ?? null) !== (this.latestSubmission(run.id)?.id ?? null)) return null;
+    const round = payload.round;
+    return {
+      reason,
+      round: typeof round === "number" ? round : null,
+      resumesItself: workflowRunResumesItself({
+        resumptionPolicy: version?.resumptionPolicy,
+        deliveryMode: binding.deliveryMode,
+      }),
+    };
+  }
+
   runDetail(id: string): WorkflowRunDetail | null {
     const summary = this.runSummary(id);
     const run = this.getRun(id);
@@ -6917,6 +7001,7 @@ export class WorkflowStore {
       llmCallCount,
       nextLlmCallAfter: llmCalls.nextAfter,
       ...(offenders.length === 0 ? {} : { repeatOffenders: offenders }),
+      resumption: this.runResumptionState(run, binding, version),
       // Taken off the summary the join already resolved, not looked up a second way. The
       // detail's field predates the summary's and stays because the reader reads it here;
       // what must not exist twice is the RULE deciding whether a claim is this run's.

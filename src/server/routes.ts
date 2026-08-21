@@ -1965,7 +1965,13 @@ export function buildApp(
     const parsed = await parseBody(c, GrantWorkflowRepairRoundsSchema);
     if (!parsed.ok) return parsed.res;
     const result = manager.grantRepairRounds(c.req.param("id"), parsed.data);
-    return result.ok ? c.json({ run: result.value }) : workflowRuntimeFailure(c, result);
+    // `idempotent` reported, as every sibling action reports it. The manager has always
+    // computed it - a grant replayed under its retained request id resolves to the grant that
+    // already landed - and dropping it here left the browser unable to tell a fresh grant from
+    // a replay, on the one action whose success is otherwise invisible.
+    return result.ok
+      ? c.json({ run: result.value, idempotent: result.idempotent ?? false })
+      : workflowRuntimeFailure(c, result);
   });
   app.post("/api/workflow-runs/:id/prepare-pr", async (c) => {
     const manager = workflowManager();

@@ -772,8 +772,13 @@ test("a run blocked on a cleared check cleanup still offers the resubmission", (
     run: { ...base.run, status: "blocked", currentPhase: "check_cleanup_unresolved" },
   });
   assert.match(headerOf(html), /class="btn btn-primary"[^>]*>Preview fresh evidence</);
-  // The invitation names resuming, not a new round: the stalled round is what continues.
-  assert.ok(tooltipLabels(html).some((label) => label.includes("resume this run where it stalled")));
+  // The invitation names what actually happens: a fresh capture, and every reviewer again.
+  // It used to say "resume this run where it stalled", which described a round-preserving
+  // resumption the daemon has never performed - `manager.resubmit` opens `latest.round + 1`
+  // for a blocked run exactly as it does for a waiting one.
+  assert.ok(tooltipLabels(html).some((label) =>
+    label.includes("run every reviewer again from the top")));
+  assert.ok(!tooltipLabels(html).some((label) => label.includes("where it stalled")));
   assert.match(html, /Cancel run/);
   assertNoGraphIds(html);
 });
@@ -2711,4 +2716,80 @@ test("a gate that never ran is amber in the row AND in the card it opens", () =>
   }));
   assert.match(rowTagFor(passed, "check"), /is-tone-passed/);
   assert.match(passed.slice(passed.indexOf("wf-run-check is-passed")), /workflow-chip workflow-passed/);
+});
+
+/**
+ * The grant used to be the one primary on this page with no visible result.
+ *
+ * It raises a number and, on a self-resuming run, hands the run back to its observer. Neither
+ * draws anything, so the click read as a click that failed - and was reported as exactly that.
+ * Both halves are asserted here because both were missing: the sentence a person reads, and
+ * the sentence a screen reader is handed.
+ */
+test("a granted run says so, and says what is now waiting", () => {
+  const base = runningDetail();
+  const html = render({
+    ...base,
+    summary: { ...base.summary, status: "waiting_for_session", round: 2, maxRepairRounds: 4 },
+    run: { ...base.run, status: "waiting_for_session", currentPhase: "persona_feedback" },
+    events: [
+      { id: 7, runId: "run", timestamp: 20, kind: "repair_rounds_granted", payload: { from: 2, to: 4, round: 2 } },
+    ],
+    resumption: { reason: "repository_unchanged", round: 2, resumesItself: true },
+  });
+  const header = headerOf(html);
+  assert.match(header, /Repair budget raised to 4 rounds\./);
+  // And the reason nothing is happening YET, which is what makes the grant legible rather
+  // than merely acknowledged: the budget moved, and the session still owes the repair.
+  assert.match(header, /the repository has not changed since round 2/);
+  assert.match(header, /no round has been spent/);
+  assertNoGraphIds(html);
+});
+
+/**
+ * The notice is derived from the ledger and the current round, so it clears itself the moment
+ * the round it bought actually starts. Nothing has to remember to dismiss it.
+ */
+test("the grant notice disappears once the round it bought has started", () => {
+  const base = runningDetail();
+  const html = render({
+    ...base,
+    summary: { ...base.summary, round: 3, maxRepairRounds: 4 },
+    events: [
+      { id: 7, runId: "run", timestamp: 20, kind: "repair_rounds_granted", payload: { from: 2, to: 4, round: 2 } },
+    ],
+  });
+  assert.doesNotMatch(headerOf(html), /Repair budget raised/);
+});
+
+/**
+ * A parked run that does not resume itself must say so.
+ *
+ * "Waiting on the session" is a promise on a self-resuming run and an instruction on every
+ * other kind, and neither the resumption policy nor the delivery mode is visible anywhere
+ * else on the page - so an operator reading the first as the second waits for a round that
+ * is never coming.
+ */
+test("a parked run that will not resume itself names the operator as the next mover", () => {
+  const base = runningDetail();
+  const html = render({
+    ...base,
+    summary: { ...base.summary, status: "waiting_for_session" },
+    run: { ...base.run, status: "waiting_for_session", currentPhase: "persona_feedback" },
+    resumption: { reason: "repository_unchanged", round: 2, resumesItself: false },
+  });
+  assert.match(headerOf(html), /does not resume on its own, so the next round is yours to start/);
+});
+
+test("a parked run whose session is merely busy is not reported as stuck", () => {
+  const base = runningDetail();
+  const html = render({
+    ...base,
+    summary: { ...base.summary, status: "waiting_for_session" },
+    run: { ...base.run, status: "waiting_for_session", currentPhase: "persona_feedback" },
+    resumption: { reason: "session_busy", round: 2, resumesItself: true },
+  });
+  const header = headerOf(html);
+  assert.match(header, /The session is still working\. The next round opens once it settles\./);
+  assert.doesNotMatch(header, /yours to start/);
 });

@@ -1481,6 +1481,29 @@ button.wf-run-version:focus-visible {
   font-weight: 600;
 }
 
+/* Why a parked round is standing still, and what the grant just did.
+   Both share `.wf-run-why`'s measure and rhythm on purpose - they sit in the same identity
+   block, one under the other, and three paragraphs at three sizes would read as three
+   unrelated warnings rather than as one account of the run's state. The grant's line takes
+   the working colour because it reports something that HAPPENED; the parked line stays muted
+   because it reports something that is not happening. */
+.wf-run-granted,
+.wf-run-parked {
+  font-size: 12px;
+  line-height: 1.5;
+  max-width: 66ch;
+  padding: 1px 0 3px;
+}
+
+.wf-run-granted {
+  color: var(--working);
+  font-weight: 600;
+}
+
+.wf-run-parked {
+  color: var(--muted);
+}
+
 /* The bound session, as a link rather than a labelled button: the name IS the affordance,
    and a disabled one still has to say which session has gone. */
 .wf-run-session {

@@ -28,6 +28,7 @@ import {
   WORKFLOW_RUN_SPENT_PHASES,
   isVerdictNode,
   verdictAuthor,
+  workflowResumptionWithheldSentence,
   workflowRunGaveUp,
 } from "@shared/workflow.ts";
 import type { Stage } from "@shared/workflow-stages.ts";
@@ -1125,10 +1126,66 @@ const DELIVERY_KIND_LABELS: Record<WorkflowDeliveryKind, string> = {
   pr_handoff: "PR handoff",
   unchanged_evidence_nudge: "Nothing changed",
   session_action: "Session action",
+  parked_repair_reminder: "Reminder",
 };
 
 export function deliveryKindLabel(kind: WorkflowDeliveryKind): string {
   return DELIVERY_KIND_LABELS[kind];
+}
+
+/**
+ * Why a parked run is standing still, in one sentence, or nothing.
+ *
+ * The gap this closes is the quietest one on the page. A parked round shows a status and a
+ * primary and says nothing at all about the observer that is supposed to pick it up - so a
+ * run whose session simply never acted looked exactly like a run whose session was busy,
+ * for as long as it took the operator to give up and click. Every one of the observer's
+ * gates now records why it held, and this turns the last one into prose.
+ *
+ * The posture clause is appended rather than rendered separately because the two are one
+ * thought: "waiting on the session" is a promise on a self-resuming run and an instruction
+ * on every other kind, and an operator who cannot see which reads the first as the second.
+ * It is stated only when the loop does NOT close itself, since that is the case the page has
+ * never mentioned and the one where waiting is the wrong thing to do.
+ */
+export function runParkedSentence(detail: WorkflowRunDetail): string | null {
+  const resumption = detail.resumption;
+  if (!resumption) return null;
+  const sentence = workflowResumptionWithheldSentence(
+    resumption.reason,
+    resumption.round ?? detail.summary.round,
+  );
+  if (!sentence) return null;
+  return resumption.resumesItself
+    ? sentence
+    : `${sentence} This review does not resume on its own, so the next round is yours to start.`;
+}
+
+/**
+ * What the grant did, for as long as it is still the last thing that happened.
+ *
+ * The grant was the one primary on this page with no visible result. It raises a number and,
+ * for a self-resuming run, hands the run back to its observer - and neither of those draws
+ * anything, so the click read as a click that failed. It was reported as exactly that.
+ *
+ * Derived from the ledger and the current round rather than held in component state, which is
+ * what makes it correct rather than merely present. A grant whose HTTP response was lost, a
+ * grant replayed under its retained request id, and a grant applied from another tab all
+ * produce the same event and therefore the same notice; and the notice disappears on its own
+ * the moment the round it bought actually starts, with nothing to remember to clear.
+ */
+export function runGrantNotice(detail: WorkflowRunDetail): string | null {
+  const grant = [...detail.events].reverse()
+    .find((event) => event.kind === "repair_rounds_granted");
+  const payload = grant?.payload;
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+  const grantedAtRound = payload.round;
+  // Stale the instant a later round exists: the grant has been spent and the run's own state
+  // is the better story from then on.
+  if (typeof grantedAtRound !== "number" || detail.summary.round > grantedAtRound) return null;
+  const to = payload.to;
+  const budget = typeof to === "number" ? to : detail.summary.maxRepairRounds;
+  return `Repair budget raised to ${budget} round${budget === 1 ? "" : "s"}.`;
 }
 
 const ATTEMPT_STATE_LABELS: Record<WorkflowNodeAttemptState, string> = {

@@ -72,12 +72,16 @@ import type {
 import {
   WORKFLOW_EXTERNAL_SOURCE_KINDS,
   WORKFLOW_LIMITS,
+  WORKFLOW_UNCHANGED_REPOSITORY_PHASE,
   isSessionActionNode,
   isVerdictNode,
   manualWorkflowTriggerKey,
   normalizeWorkflowName,
   verdictAuthor,
+  workflowRoundLimitParkedPhase,
   workflowRunGaveUp,
+  workflowRunResumesItself,
+  type WorkflowResumptionWithheldReason,
 } from "@shared/workflow.ts";
 import {
   PersonaVerdictSchema,
@@ -109,10 +113,12 @@ import {
   probeMatchesEvidence,
   readWorkflowContextRaw,
   readWorkflowEvidenceProbe,
+  type WorkflowEvidenceProbe,
   readWorkflowRepositoryHead,
   readWorkflowRepositoryId,
   workflowCheckoutPath,
   workflowContextFingerprint,
+  workflowRepositoryFingerprint,
 } from "./context.ts";
 import {
   WorkflowEngine,
@@ -145,6 +151,7 @@ import {
   renderInspectorFeedback,
   renderPrHandoff,
   renderSessionAction,
+  renderParkedRepairReminder,
   renderUnchangedEvidenceNudge,
   renderWorkflowFeedback,
 } from "./feedback.ts";
@@ -225,6 +232,7 @@ export type WorkflowRuntimeMutation<T> =
         | "run_active"
         | "run_not_waiting"
         | "unchanged_evidence"
+        | "unchanged_repository"
         | "round_limit"
         | "not_infrastructure_failure"
         | "stale_capture"
@@ -353,6 +361,11 @@ export interface WorkflowManagerOptions {
    * `settledIdle` itself is the one shared predicate (`@shared/session.ts`).
    */
   resumptionSettleMs?: number;
+  /**
+   * How long a parked round with a delivered packet and an untouched repository may sit
+   * before the session is reminded once. Injectable so a test need not wait it out.
+   */
+  parkedReminderMs?: number;
 }
 
 /**
@@ -365,6 +378,19 @@ export interface WorkflowManagerOptions {
  */
 const WORKFLOW_RESUMPTION_INTERVAL_MS = 15_000;
 const WORKFLOW_RESUMPTION_SETTLE_MS = 10_000;
+
+/**
+ * How long a repair round may sit parked, packet delivered and repository untouched, before
+ * the session is reminded about it once.
+ *
+ * Well above any plausible repair, and deliberately so. The observer withholding a round is
+ * the NORMAL state for as long as an agent is thinking, reading, or running a test suite,
+ * and a reminder that arrives during ordinary work is an interruption that makes the agent
+ * worse at the thing it was already doing. Forty-five minutes is longer than every
+ * successful repair in the ledger this was measured against and far shorter than the
+ * multi-hour silences that produced no repair at all.
+ */
+const WORKFLOW_PARKED_REMINDER_MS = 45 * 60_000;
 
 /** Delivery states that mean the latest packet has not demonstrably reached the agent yet. */
 const UNDELIVERED_DELIVERY_STATES = ["prepared", "sending", "uncertain"] as const;
@@ -1794,13 +1820,55 @@ export class WorkflowManager {
     const latest = this.store.latestSubmission(run.id);
     if (!latest) return { ok: false, reason: "not_found", message: "The run has no submission" };
     if (latest.round > run.maxRepairRounds) {
-      this.store.setRunState(run.id, "blocked", "round_limit", { maxRepairRounds: run.maxRepairRounds }, now);
+      this.store.blockForRoundLimit(run, now);
       this.publishRun(run.id);
       return {
         ok: false,
         reason: "round_limit",
         message: "The workflow has exhausted its configured repair rounds",
       };
+    }
+    /*
+     * The same repository read the resumption observer gates on, asked here for the first
+     * time - and asked as a QUESTION rather than as a refusal.
+     *
+     * The observer has always declined to open a round whose repository is byte-identical
+     * to the failed one, on the grounds that a repair which changed no code is not a
+     * repair. This path never asked, so the button could spend a round proving what two
+     * git reads already knew, and the capture-time fingerprint could not catch it: that
+     * fingerprint includes the transcript anchor, and typing the repair packet into the
+     * pane is itself a transcript write, so it has moved before the operator can click.
+     *
+     * The refusal is not the observer's, though, and must not become it. A human sometimes
+     * has evidence the repository cannot hold - a manual verification recorded in the
+     * transcript is the documented case - so this states what it found, spends nothing, and
+     * leaves the same "review it anyway" move that answers `unchanged_evidence` standing
+     * one click away. `resubmitUnchanged` is that click, which is why it skips this
+     * entirely rather than getting a flag of its own to keep in step.
+     */
+    if (!input.resubmitUnchanged) {
+      const probe = await this.probeRepository(binding).catch(() => null);
+      const unchanged = probe && this.repositoryUnchangedSince(probe, binding, latest);
+      if (unchanged) {
+        this.store.setRunState(
+          run.id,
+          run.status,
+          WORKFLOW_UNCHANGED_REPOSITORY_PHASE,
+          { round: latest.round, evidenceFingerprint: latest.evidenceFingerprint },
+          now,
+        );
+        this.store.appendEvent(run.id, "resubmit_refused_unchanged_repository", {
+          round: latest.round,
+          evidenceFingerprint: latest.evidenceFingerprint,
+        }, now);
+        this.publishRun(run.id);
+        return {
+          ok: false,
+          reason: "unchanged_repository",
+          message: `The repository has not changed since round ${latest.round};`
+            + " confirm an unchanged resubmission to review it anyway",
+        };
+      }
     }
     const created = this.store.createRepairSubmission({
       id: randomUUID(),
@@ -2436,7 +2504,7 @@ export class WorkflowManager {
           phase: "inspector_findings",
           gateState: gate as unknown as WorkflowJson,
         }
-      : null;
+      : this.parkedRestoreForGrant(run);
     const updated = this.store.grantRunRepairRounds(run.id, granted, restore, {
       kind: "repair_rounds_granted",
       payload: {
@@ -2452,6 +2520,52 @@ export class WorkflowManager {
     }
     this.publishRun(run.id);
     return { ok: true, value: updated };
+  }
+
+  /**
+   * Put a granted parked round back where its own observer can see it, or leave it alone.
+   *
+   * This is the half of the grant that used to be missing, and the argument for it is the
+   * one already written above the Inspector arm: nothing polls a blocked run. That was a
+   * complete answer while every parked round waited for a human's click. It stopped being
+   * one at built-in version 7, which handed the repair loop to `sweepResumptions` - and
+   * that sweep filters on `waiting_for_session` and nothing else. So on exactly the
+   * workflows whose whole posture is "the loop closes itself", the grant was the one place
+   * it could not: the number moved, the run stayed blocked, and the operator was left
+   * looking at a button that had done its job silently and a run that had not moved.
+   *
+   * Restoring the status does NOT restart the round, and that distinction is the reason
+   * this is safe to do unconditionally for a self-resuming run. The observer still asks
+   * whether the repository moved before it opens anything. A session that did the repair
+   * gets its next round within a tick; a session that did nothing leaves the run parked
+   * rather than spending a granted round re-reviewing identical bytes, which is precisely
+   * the waste that exhausted the budget in the first place.
+   *
+   * Two runs are deliberately left blocked. A run under `manual` resumption or `preview`
+   * delivery has no observer coming for it, so restoring the status would replace an honest
+   * "this stopped" with a "still working" that nothing is working on - the same trade the
+   * Inspector arm exists to avoid. And a run blocked by a build that never recorded its
+   * parked phase cannot say what to restore it to; guessing would drop it into a branch
+   * that never ran. Both keep exactly the behaviour they had: raise the budget, and the
+   * operator resumes by hand.
+   */
+  private parkedRestoreForGrant(run: WorkflowRun): {
+    status: WorkflowRun["status"];
+    phase: string;
+    gateState: WorkflowJson | null;
+  } | null {
+    const parkedPhase = workflowRoundLimitParkedPhase(run.gateState);
+    if (!parkedPhase) return null;
+    const binding = this.store.getBinding(run.bindingId);
+    const version = this.store.getWorkflowVersionById(run.workflowVersionId);
+    if (!binding || !version) return null;
+    if (!workflowRunResumesItself({
+      resumptionPolicy: version.resumptionPolicy,
+      deliveryMode: binding.deliveryMode,
+    })) {
+      return null;
+    }
+    return { status: "waiting_for_session", phase: parkedPhase, gateState: null };
   }
 
   async preparePr(
@@ -2820,9 +2934,7 @@ export class WorkflowManager {
     const latest = this.store.latestSubmission(run.id);
     if (!latest) return { ok: false, reason: "not_found", message: "The run has no submission" };
     if (latest.round > run.maxRepairRounds) {
-      this.store.setRunState(run.id, "blocked", "round_limit", {
-        maxRepairRounds: run.maxRepairRounds,
-      }, now);
+      this.store.blockForRoundLimit(run, now);
       this.publishRun(run.id);
       return {
         ok: false,
@@ -5628,13 +5740,40 @@ export class WorkflowManager {
         };
       }
       const fingerprint = workflowContextFingerprint(context);
+      const repositoryFingerprint = workflowRepositoryFingerprint(context);
       const runnable = this.store.updateSubmissionCapture(submission.id, {
         context: workflowJson(context),
         evidence: workflowJson(context.evidence),
         fingerprint,
+        repositoryFingerprint,
         status: "running",
       }, Date.now());
-      if (previousFingerprint && fingerprint === previousFingerprint && !allowUnchanged) {
+      /*
+       * The WORK, not the submission's identity.
+       *
+       * Comparing identity here is what made this refusal unreachable in practice. Identity
+       * includes the transcript anchor; the repair packet is typed into that transcript
+       * before anyone can resubmit, so the two fingerprints had already diverged whether or
+       * not a byte of the work had. Two refusals fired in the system's whole history while
+       * whole runs spent their budgets re-reviewing byte-identical trees.
+       *
+       * The previous row is resolved through its identity because that is what the callers
+       * hand down, and it stays that way: identity is what trigger keys and idempotency are
+       * built on, and this is a read, not a second source of truth. Where the previous row
+       * predates the column it has no work-hash at all, so the comparison falls back to the
+       * identity it always used - historical rows keep historical behaviour rather than
+       * being retroactively judged by a hash they were never given.
+       */
+      const previous = previousFingerprint
+        ? this.store.listSubmissions(run.id)
+          .filter((row) => row.id !== submission.id
+            && row.evidenceFingerprint === previousFingerprint)
+          .at(-1) ?? null
+        : null;
+      const unchanged = previous?.repositoryFingerprint
+        ? previous.repositoryFingerprint === repositoryFingerprint
+        : Boolean(previousFingerprint) && fingerprint === previousFingerprint;
+      if (unchanged && !allowUnchanged) {
         const refusedAt = Date.now();
         this.store.setSubmissionState(submission.id, "failed", refusedAt);
         // Append BEFORE counting, so the count includes this refusal and the two reads can
@@ -6023,26 +6162,36 @@ export class WorkflowManager {
     binding: WorkflowBinding;
     session: Session;
     latest: WorkflowSubmission;
-  } | null {
+    withheld?: undefined;
+  } | {
+    run: WorkflowRun | null;
+    latest: WorkflowSubmission | null;
+    withheld: WorkflowResumptionWithheldReason | null;
+  } {
     const run = this.store.getRun(runId);
-    if (!run || run.status !== "waiting_for_session") return null;
+    // Not a withholding at all: the sweep pre-filters on this status, so reaching it here
+    // means the run moved out from under the tick. There is nothing to explain to anyone.
+    if (!run || run.status !== "waiting_for_session") return { run, latest: null, withheld: null };
+    const latest = this.store.latestSubmission(run.id);
+    const held = (reason: WorkflowResumptionWithheldReason) => ({ run, latest, withheld: reason });
     const version = this.store.getWorkflowVersionById(run.workflowVersionId);
-    if (version?.resumptionPolicy !== "auto") return null;
+    if (version?.resumptionPolicy !== "auto") return held("policy_manual");
     const binding = this.store.getBinding(run.bindingId);
-    if (!binding || binding.state !== "active" || !binding.sessionId) return null;
+    if (!binding || binding.state !== "active" || !binding.sessionId) return held("binding_inactive");
     const session = this.registry.getSession(binding.sessionId);
     // The same compatibility the capture path insists on: a session that vanished, exited, or
     // whose conversation was replaced is not the one this packet was typed into.
-    if (!session || session.state === "exited" || binding.noteKey !== noteKeyFor(session)) return null;
+    if (!session || session.state === "exited" || binding.noteKey !== noteKeyFor(session)) {
+      return held("session_unavailable");
+    }
     if (!settledIdle(session, now, this.options.resumptionSettleMs ?? WORKFLOW_RESUMPTION_SETTLE_MS)) {
-      return null;
+      return held("session_busy");
     }
     // Settled-idle answers "has it stopped"; this answers "has it stopped BECAUSE it is stuck
     // on you". A session parked on a permission prompt reads as idle and is the last thing
     // that should be handed another round of work.
-    if (reportBucket(session, sessions) === "needs-you") return null;
-    const latest = this.store.latestSubmission(run.id);
-    if (!latest) return null;
+    if (reportBucket(session, sessions) === "needs-you") return held("session_needs_you");
+    if (!latest) return { run, latest: null, withheld: null };
     // An undelivered or uncertain packet means the agent has not been told what to repair.
     // Resuming there would submit the same evidence back into the same review, which is a
     // round spent proving nothing - and under Preview delivery, which never types, it would
@@ -6050,46 +6199,246 @@ export class WorkflowManager {
     const inFlight = this.store.listDeliveries(run.id).some((delivery) =>
       delivery.submissionId === latest.id
       && (UNDELIVERED_DELIVERY_STATES as readonly string[]).includes(delivery.state));
-    if (inFlight) return null;
+    if (inFlight) return held("packet_undelivered");
     return { run, binding, session, latest };
+  }
+
+  /**
+   * Write down that the observer looked at this parked round and chose not to act.
+   *
+   * De-duplicated on (submission, reason) rather than rate-limited on time, because the
+   * sweep runs every 15 seconds and a run can sit parked for a working day: a timer would
+   * still bury the ledger, and a reason that has not changed is not news. A round that
+   * cycles through two reasons - busy, then unchanged - records both, in order, which is
+   * exactly the story an operator is trying to read.
+   *
+   * The event is the only transport. Run detail derives its sentence from the ledger it
+   * already streams, so there is no second field on the summary to keep in step, and a
+   * daemon restart loses nothing.
+   */
+  private recordResumptionWithheld(
+    run: WorkflowRun,
+    submission: WorkflowSubmission | null,
+    reason: WorkflowResumptionWithheldReason,
+    now: number,
+  ): void {
+    const priorWithheld = this.store.listEvents(run.id)
+      .filter((event) => event.kind === "resumption_withheld")
+      .at(-1);
+    const payload = priorWithheld?.payload;
+    if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+      const sameSubmission = (payload.submissionId ?? null) === (submission?.id ?? null);
+      if (sameSubmission && payload.reason === reason) return;
+    }
+    this.store.appendEvent(run.id, "resumption_withheld", {
+      submissionId: submission?.id ?? null,
+      round: submission?.round ?? null,
+      reason,
+    }, now);
+    this.publishRun(run.id);
+  }
+
+  /**
+   * Read the repository, and nothing else.
+   *
+   * Half of "has the work under review moved since this submission was captured?", which is
+   * the cheap pre-filter and the whole reason there is no "capture then discard" mode: an
+   * idle repair session with unchanged work must leave the run exactly where it is.
+   * Re-reading the diff, the transcript window and the standards on every tick to discover
+   * unchanged repair work is not free. `readWorkflowEvidenceProbe` costs two git commands and
+   * reads the repository only. Every field it reads is a fingerprint input, so a differing
+   * probe cannot lead to `unchanged_evidence`. Its content-sensitive diff fingerprint also
+   * detects edits inside a path that was already dirty in the failed round. The converse is
+   * deliberately not true: a transcript-only change leaves the probe matching while the full
+   * fingerprint has moved, and a repair that changed no code is not a repair.
+   *
+   * Split from the comparison below, and NOT folded into one `async` helper, because the tick
+   * count is load-bearing. `resumeParkedRun` re-checks the run's eligibility once this
+   * resolves, exactly because a concurrent write may move the run while git is running - and
+   * every extra microtask between the read and that re-check widens the window for one to
+   * land. Wrapping the read in an `async` function cost enough turns to change an outcome: a
+   * gate evaluation scheduled by the same session update landed first and pulled a settled
+   * `pr_handoff` run into `waiting_for_pr`, so the round its new head had earned was never
+   * opened. Returning the read's own promise keeps the caller to the single turn the git call
+   * itself needs, which is what it has always cost.
+   */
+  private probeRepository(binding: WorkflowBinding): Promise<WorkflowEvidenceProbe> {
+    return (this.options.readEvidenceProbe ?? readWorkflowEvidenceProbe)(this.registry, binding);
+  }
+
+  /**
+   * Does that probe describe the same work the submission was captured from?
+   *
+   * Synchronous, so it adds no turns, and shared so the observer and the manual resubmission
+   * cannot drift apart on what "changed" means - the two disagreeing is precisely the bug
+   * that let the button spend rounds the observer would have declined. `null` means the
+   * question could not be asked, which both callers read as "proceed": refusing a round over
+   * an unparsable snapshot would strand the run over bookkeeping.
+   */
+  private repositoryUnchangedSince(
+    probe: WorkflowEvidenceProbe,
+    binding: WorkflowBinding,
+    submission: WorkflowSubmission,
+  ): boolean | null {
+    const parsed = WorkflowContextSnapshotSchema.safeParse(submission.context);
+    if (!parsed.success) return null;
+    probe.stagedImageGeneration = this.store.workflowEvidenceGeneration(
+      binding.noteKey,
+      binding.repoRoot || binding.sessionCwd || "",
+    );
+    return probeMatchesEvidence(probe, parsed.data.evidence);
+  }
+
+  /**
+   * Remind the session once about a round it has left standing, or do nothing.
+   *
+   * Reached only from the observer's `repository_unchanged` arm, which means every gate
+   * before it already passed: the version resumes itself, the binding is active and live, the
+   * session is present, settled and not waiting on a human, and its packet was confirmed
+   * delivered. What remains is a session that was told what to fix, is not busy, and has not
+   * touched the tree - and the only thing standing between that and the multi-hour silences
+   * this exists to end is time.
+   *
+   * The clock runs from the DELIVERY, not from the run's `updatedAt`. A parked run's row is
+   * rewritten by anything that publishes it, this sweep's own withheld events included, so
+   * timing off the run would restart the countdown on every tick and the reminder would never
+   * fire. The delivery's `deliveredAt` is the moment the session was actually told.
+   *
+   * Preview delivery cannot reach here - `workflowRunResumesItself` is not consulted, but the
+   * confirmed-delivery gate stands in for it, because Preview never confirms one.
+   */
+  private maybeRemindParkedRound(
+    run: WorkflowRun,
+    binding: WorkflowBinding,
+    submission: WorkflowSubmission,
+    now: number,
+  ): void {
+    if (binding.deliveryMode !== "live") return;
+    const deliveries = this.store.listDeliveries(run.id);
+    // Once per parked round, whatever its outcome. A reminder that was refused at the pane or
+    // landed ambiguously has still been attempted, and attempting it again is how a stuck
+    // session ends up with three copies of the same paragraph.
+    if (deliveries.some((delivery) =>
+      delivery.kind === "parked_repair_reminder"
+      && delivery.submissionId === submission.id)) return;
+    const delivered = deliveries.find((delivery) =>
+      delivery.submissionId === submission.id
+      && delivery.state === "delivered"
+      && delivery.deliveredAt !== null);
+    if (!delivered?.deliveredAt) return;
+    const parkedMs = now - delivered.deliveredAt;
+    if (parkedMs < (this.options.parkedReminderMs ?? WORKFLOW_PARKED_REMINDER_MS)) return;
+    this.scheduleParkedRepairReminder(run.id, submission.id, Math.round(parkedMs / 60_000));
+  }
+
+  private scheduleParkedRepairReminder(
+    runId: string,
+    submissionId: string,
+    parkedMinutes: number,
+  ): void {
+    this.trackBackgroundTask(
+      this.prepareParkedRepairReminder(runId, submissionId, parkedMinutes).catch((error) => {
+        const run = this.store.getRun(runId);
+        if (!run || runIsTerminal(run)) return;
+        // Recorded, never escalated. Every other prepare failure blocks its run because the
+        // run cannot proceed without that packet; this one is an extra courtesy on a run that
+        // is already parked, and blocking it would turn a failed reminder into a worse
+        // outcome than never having tried to send one.
+        this.store.appendEvent(runId, "parked_reminder_failed", {
+          submissionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }),
+    );
+  }
+
+  private async prepareParkedRepairReminder(
+    runId: string,
+    submissionId: string,
+    parkedMinutes: number,
+  ): Promise<void> {
+    const run = this.store.getRun(runId);
+    const submission = this.store.getSubmission(submissionId);
+    const binding = run ? this.store.getBinding(run.bindingId) : null;
+    const version = run ? this.store.getWorkflowVersionById(run.workflowVersionId) : null;
+    const summary = run ? this.store.runSummary(runId) : null;
+    // Re-read rather than trust the sweep: the session may have started working, or a human
+    // may have resubmitted, between the tick that decided to remind and this task running.
+    if (
+      !run
+      || runIsTerminal(run)
+      || run.status !== "waiting_for_session"
+      || !submission
+      || this.store.latestSubmission(runId)?.id !== submission.id
+      || !binding
+      || binding.state !== "active"
+      || binding.deliveryMode !== "live"
+      || !binding.sessionId
+      || !version
+      || !summary
+    ) return;
+    const prior = [...this.store.listDeliveries(runId)].reverse().find((delivery) =>
+      delivery.kind === "persona_feedback"
+      && delivery.state === "delivered"
+      && delivery.payload.length > 0);
+    const rendered = renderParkedRepairReminder({
+      workflowName: summary.workflowName,
+      workflowVersion: version.version,
+      runId,
+      round: submission.round,
+      originalGoal: this.originalGoal(runId),
+      parkedMinutes,
+      priorPacket: prior?.payload ?? null,
+      workflowEvidence: versionSupportsWorkflowEvidence(version),
+    });
+    const prepared = this.store.prepareDelivery({
+      id: randomUUID(),
+      runId,
+      submissionId: submission.id,
+      kind: "parked_repair_reminder",
+      sessionId: binding.sessionId,
+      noteKey: binding.noteKey,
+      payload: rendered.payload,
+      payloadSha256: rendered.payloadSha256,
+    });
+    if (!prepared.idempotent) {
+      this.store.appendEvent(runId, "delivery_prepared", {
+        deliveryId: prepared.delivery.id,
+        payloadSha256: rendered.payloadSha256,
+        truncated: rendered.truncated,
+        kind: "parked_repair_reminder",
+        parkedMinutes,
+      });
+    }
+    this.publishRun(runId);
+    await this.deliverPrepared(prepared.delivery.id, false);
   }
 
   private async resumeParkedRun(runId: string, sessions: Session[], now: number): Promise<void> {
     const eligible = this.resumableRun(runId, sessions, now);
-    if (!eligible) return;
+    if (eligible.withheld !== undefined) {
+      if (eligible.run && eligible.withheld) {
+        this.recordResumptionWithheld(eligible.run, eligible.latest, eligible.withheld, now);
+      }
+      return;
+    }
     const { run, binding, latest } = eligible;
     if (latest.round > run.maxRepairRounds) {
       // The EXISTING refusal, not a new one. `claimCompletion` and `resolveDelivery` both end
       // an over-budget run this way, and a third spelling would be a second thing an operator
       // has to learn to recognise in run detail.
-      this.store.setRunState(run.id, "blocked", "round_limit", {
-        maxRepairRounds: run.maxRepairRounds,
-      }, now);
+      this.store.blockForRoundLimit(run, now);
       this.publishRun(run.id);
       return;
     }
-    const parsed = WorkflowContextSnapshotSchema.safeParse(latest.context);
-    if (!parsed.success) return;
-    // The cheap pre-filter, and the whole reason there is no "capture then discard" mode: an
-    // idle repair session with unchanged work must leave the run exactly where it is. A settled
-    // PR handoff is the explicit exception below because unchanged repository evidence proves
-    // it needs a fresh Inspector observation, not another submission. Re-reading the diff, the
-    // transcript window and the standards on every tick to discover unchanged repair work is
-    // not free. `readWorkflowEvidenceProbe` costs two git commands and reads the repository only.
-    // Every field it reads is a fingerprint input, so a differing probe cannot lead to
-    // `unchanged_evidence`. Its content-sensitive diff fingerprint also detects edits inside a
-    // path that was already dirty in the failed round. The converse is deliberately not true:
-    // a transcript-only change leaves the probe matching while the full fingerprint has moved,
-    // and the run stays parked because a repair that changed no code is not a repair.
-    const probe = await (this.options.readEvidenceProbe ?? readWorkflowEvidenceProbe)(
-      this.registry,
-      binding,
-    );
-    probe.stagedImageGeneration = this.store.workflowEvidenceGeneration(
-      binding.noteKey,
-      binding.repoRoot || binding.sessionCwd || "",
-    );
-    if (probeMatchesEvidence(probe, parsed.data.evidence)) {
+    // A settled PR handoff is the explicit exception below because unchanged repository
+    // evidence proves it needs a fresh Inspector observation, not another submission.
+    const probe = await this.probeRepository(binding);
+    const unchanged = this.repositoryUnchangedSince(probe, binding, latest);
+    if (unchanged === null) return;
+    if (unchanged) {
+      this.recordResumptionWithheld(run, latest, "repository_unchanged", now);
+      this.maybeRemindParkedRound(run, binding, latest, now);
       if (run.currentPhase === "pr_handoff") {
         const gate = this.gateState(run);
         if (gate?.prKey) {
@@ -6117,7 +6466,7 @@ export class WorkflowManager {
     // run while git was running, and the round we are about to create was computed from what
     // it looked like before.
     const stillEligible = this.resumableRun(runId, sessions, now);
-    if (!stillEligible || stillEligible.latest.id !== latest.id) return;
+    if (stillEligible.withheld !== undefined || stillEligible.latest.id !== latest.id) return;
     // Idempotent on the FAILED submission's fingerprint, which is the only one that exists
     // before capture. One auto-resumption per parked round, so two overlapping ticks - or a
     // daemon restart mid-capture - cannot open two.

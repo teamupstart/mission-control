@@ -209,7 +209,12 @@ interface Harness {
  * `probe` is what the observer will read next, and moving `head.sha` moves both, exactly as a
  * real commit would.
  */
-function harness(sessionId: string, resumptionIntervalMs?: number, cwd = "/repo"): Harness {
+function harness(
+  sessionId: string,
+  resumptionIntervalMs?: number,
+  cwd = "/repo",
+  parkedReminderMs?: number,
+): Harness {
   const registry = new Registry();
   registry.applyDiscovery([discovered({
     syntheticId: sessionId,
@@ -229,6 +234,7 @@ function harness(sessionId: string, resumptionIntervalMs?: number, cwd = "/repo"
     queueManager: queues,
     requireSkill: () => ({ ok: true, command: "/mission-pull-request" }),
     ...(resumptionIntervalMs === undefined ? {} : { resumptionIntervalMs }),
+    ...(parkedReminderMs === undefined ? {} : { parkedReminderMs }),
     inject: (async (
       _session: Session,
       payload: string,
@@ -344,13 +350,14 @@ async function personaFeedbackRun(
   resumptionIntervalMs?: number,
   initialProbe?: Partial<Probe>,
   cwd = "/repo",
+  over?: { maxRepairRounds?: number; parkedReminderMs?: number },
 ): Promise<Harness & { runId: string; bindingId: string; agentSessionId: string; paneId: string }> {
   seedVersion(versionId, PERSONA_GRAPH, { kind: "none" }, {
     triggerMode: "manual",
     deliveryMode: "live",
-    maxRepairRounds: 5,
+    maxRepairRounds: over?.maxRepairRounds ?? 5,
   }, resumptionPolicy);
-  const h = harness(sessionId, resumptionIntervalMs, cwd);
+  const h = harness(sessionId, resumptionIntervalMs, cwd, over?.parkedReminderMs);
   Object.assign(h.probe, initialProbe);
   const paneId = `%${sessionId.length}`;
   const agentSessionId = `agent-${sessionId}`;
@@ -1047,4 +1054,343 @@ test("new staged text evidence re-arms an auto repair without a commit", async (
     setWorkflowPolicy({ liveEnabled: true, repoAllowlist: ["/repo"] });
     rmSync(repo, { recursive: true, force: true });
   }
+});
+
+// ---------------------------------------------------------------------------
+// Granting rounds to a run whose loop is supposed to close itself.
+// ---------------------------------------------------------------------------
+
+/**
+ * Drive a persona run until its budget is gone and the observer has blocked it.
+ *
+ * The blocked state is produced BY the observer rather than written by hand, because the
+ * thing under test is what a grant does to a run the observer stopped - and a hand-written
+ * `round_limit` row would not carry the parked phase the real path records.
+ */
+async function spentPersonaRun(
+  sessionId: string,
+  versionId: string,
+  resumptionPolicy: WorkflowResumptionPolicy | null,
+): Promise<Harness & { runId: string; bindingId: string; agentSessionId: string; paneId: string }> {
+  const h = await personaFeedbackRun(
+    sessionId,
+    versionId,
+    resumptionPolicy,
+    undefined,
+    undefined,
+    "/repo",
+    { maxRepairRounds: 1 },
+  );
+  // Driven by hand rather than by the sweep, so the same helper reaches the spent state under
+  // BOTH resumption policies - a `manual` version is never touched by the observer, and that
+  // is the whole point of the counter-example this feeds.
+  h.head.sha = "head-2";
+  reportIdle(h, sessionId, h.agentSessionId, h.paneId);
+  const second = await h.manager.resubmit(h.runId, { requestId: "spend-1", evidence: [] });
+  assert.equal(second.ok, true, "round 2 was refused");
+  await waitFor(
+    () => h.store.latestSubmission(h.runId)?.round === 2
+      && h.store.getRun(h.runId)?.status === "waiting_for_session",
+    "round 2 never parked",
+  );
+  // Round 2 of 1, so the next attempt is over budget. Under `auto` the observer is what
+  // discovers that; under `manual` the observer never looks at the run at all, so the manual
+  // round is. Both go through the one store helper, so both record the parked phase - which
+  // is the fact the grant under test reads back.
+  h.head.sha = "head-3";
+  reportIdle(h, sessionId, h.agentSessionId, h.paneId);
+  await h.manager.sweepResumptions(SETTLED());
+  if (h.store.getRun(h.runId)?.currentPhase !== "round_limit") {
+    const over = await h.manager.resubmit(h.runId, { requestId: "spend-2", evidence: [] });
+    assert.equal(over.ok, false, "an over-budget manual round was accepted");
+    assert.equal(over.ok === false ? over.reason : "", "round_limit");
+  }
+  assert.equal(h.store.getRun(h.runId)?.currentPhase, "round_limit", "the run never went spent");
+  return h;
+}
+
+/**
+ * The half of the grant that was missing, and the reason it read as a button that did nothing.
+ *
+ * `grantRepairRounds` raised the budget and left the run `blocked`, on the documented grounds
+ * that "the resumption observer is not involved". That was true of every version published
+ * before built-in 7 and false of every one after it: `sweepResumptions` filters on
+ * `waiting_for_session` and nothing else, so on precisely the workflows whose posture is
+ * "the loop closes itself", the grant was the one place it could not. The operator saw a
+ * primary swap label and a run that never moved again without a second click.
+ */
+test("a grant hands a self-resuming run back to its own observer", async () => {
+  const h = await spentPersonaRun("grant-auto", "v-grant-auto", "auto");
+  const granted = h.manager.grantRepairRounds(h.runId, { requestId: "grant-1", rounds: 2 });
+  assert.equal(granted.ok, true, "the grant was refused");
+
+  const run = h.store.getRun(h.runId)!;
+  assert.equal(run.maxRepairRounds, 3, "the budget did not move");
+  assert.equal(run.status, "waiting_for_session", "the grant left the run where nothing polls it");
+  assert.equal(
+    run.currentPhase,
+    "persona_feedback",
+    "the grant restored a phase the run was never parked in",
+  );
+
+  // And the observer now does the rest, with no second click - but only because the session
+  // actually did something. That is the safety property the restore inherits for free.
+  h.head.sha = "head-4";
+  reportIdle(h, "grant-auto", h.agentSessionId, h.paneId);
+  await h.manager.sweepResumptions(SETTLED());
+  await waitFor(
+    () => h.store.latestSubmission(h.runId)?.round === 3,
+    "the granted round never opened by itself",
+  );
+  assert.equal(h.store.latestSubmission(h.runId)?.triggerSource, "session");
+  await h.manager.stop();
+});
+
+/**
+ * The counter-example, and the reason the restore is conditional rather than unconditional.
+ *
+ * Nothing is coming for a `manual` run. Restoring its status would replace an honest "this
+ * stopped" with a "still working" that no observer is working on - which is the exact trade
+ * the Inspector arm of this method already exists to refuse.
+ */
+test("a grant on a run that does not resume itself leaves it blocked for a human", async () => {
+  const h = await spentPersonaRun("grant-manual", "v-grant-manual", "manual");
+  const granted = h.manager.grantRepairRounds(h.runId, { requestId: "grant-2", rounds: 2 });
+  assert.equal(granted.ok, true);
+  const run = h.store.getRun(h.runId)!;
+  assert.equal(run.maxRepairRounds, 3, "the budget did not move");
+  assert.equal(run.status, "blocked", "a manual run was told it was working again");
+  assert.equal(run.currentPhase, "round_limit");
+
+  // The manual round is still available and still opens the next one, exactly as before.
+  const resumed = await h.manager.resubmit(h.runId, { requestId: "manual-1", evidence: [] });
+  assert.equal(resumed.ok, true, "the granted budget did not reach the manual round");
+  assert.equal(h.store.latestSubmission(h.runId)?.round, 3);
+  await h.manager.stop();
+});
+
+/**
+ * A run blocked by a build that never recorded its parked phase must not be guessed at.
+ *
+ * Restoring one of those into a phase whose branch never ran is worse than leaving it where
+ * it is, so absence keeps the behaviour the run was blocked under.
+ */
+test("a grant leaves a run blocked when the parked phase was never recorded", async () => {
+  const h = await spentPersonaRun("grant-legacy", "v-grant-legacy", "auto");
+  // Exactly what a pre-feature daemon wrote: the budget, and nothing else.
+  h.store.setRunState(h.runId, "blocked", "round_limit", {
+    maxRepairRounds: h.store.getRun(h.runId)!.maxRepairRounds,
+  });
+  const granted = h.manager.grantRepairRounds(h.runId, { requestId: "grant-3", rounds: 2 });
+  assert.equal(granted.ok, true);
+  assert.equal(h.store.getRun(h.runId)?.status, "blocked");
+  assert.equal(h.store.getRun(h.runId)?.maxRepairRounds, 3, "the budget still moved");
+  await h.manager.stop();
+});
+
+// ---------------------------------------------------------------------------
+// Saying why a parked round is standing still.
+// ---------------------------------------------------------------------------
+
+function withheldReasons(h: Harness, runId: string): string[] {
+  return h.store.listEvents(runId)
+    .filter((event) => event.kind === "resumption_withheld")
+    .map((event) => {
+      const payload = event.payload;
+      return payload && typeof payload === "object" && !Array.isArray(payload)
+        ? String(payload.reason)
+        : "";
+    });
+}
+
+/**
+ * The quietest failure the repair loop had.
+ *
+ * Every gate in `resumableRun` used to be a bare `return null`. A session that was told what
+ * to fix and simply never acted looked exactly like a session that was busy, for as long as
+ * it took a human to give up and click - and clicking spent a round to discover the tree was
+ * untouched. Runs sat like that for most of a working day.
+ */
+test("the observer records why it withheld, once per reason", async () => {
+  const h = await personaFeedbackRun("withheld", "v-withheld", "auto");
+  reportIdle(h, "withheld", h.agentSessionId, h.paneId);
+
+  // Nothing changed in the repository, which is the reason an operator will meet most often -
+  // and it is not a fault. It is the observer correctly refusing to spend a round.
+  await h.manager.sweepResumptions(SETTLED());
+  assert.deepEqual(withheldReasons(h, h.runId), ["repository_unchanged"]);
+
+  // Ticking again does not repeat it. The sweep runs every fifteen seconds and a run can sit
+  // parked for hours; a reason that has not changed is not news, and a per-tick event would
+  // bury the ledger a person reads to find out what happened.
+  await h.manager.sweepResumptions(SETTLED());
+  await h.manager.sweepResumptions(SETTLED());
+  assert.deepEqual(withheldReasons(h, h.runId), ["repository_unchanged"]);
+
+  // A DIFFERENT reason is news, and lands in order. Together they are the account of the run.
+  h.registry.applyHook({
+    agent: "claude",
+    event: "PreToolUse",
+    sessionId: h.agentSessionId,
+    cwd: "/repo",
+    transcriptPath: null,
+    env: { tmuxPane: h.paneId },
+    prCreated: false,
+  });
+  await h.manager.sweepResumptions(SETTLED());
+  assert.deepEqual(withheldReasons(h, h.runId), ["repository_unchanged", "session_busy"]);
+  await h.manager.stop();
+});
+
+/**
+ * Run detail carries the answer, as its own field.
+ *
+ * Deriving it from `events` would answer correctly on a short run and silently stop answering
+ * on a long one, because `events` is a page - which is exactly backwards, since the runs that
+ * accumulate hundreds of events are the ones whose history is hardest to read.
+ */
+test("run detail carries the withheld reason, and drops it once the run moves", async () => {
+  const h = await personaFeedbackRun("withheld-detail", "v-withheld-detail", "auto");
+  reportIdle(h, "withheld-detail", h.agentSessionId, h.paneId);
+  await h.manager.sweepResumptions(SETTLED());
+
+  const parked = h.store.runDetail(h.runId)!;
+  assert.equal(parked.resumption?.reason, "repository_unchanged");
+  assert.equal(parked.resumption?.round, 1);
+  assert.equal(parked.resumption?.resumesItself, true, "an auto/live run must read as self-resuming");
+
+  // Once the run is no longer parked the reason is history, and the ledger already holds it.
+  // Repeating it in the header would explain a state the run has left.
+  h.head.sha = "head-2";
+  await h.manager.sweepResumptions(SETTLED());
+  await waitFor(
+    () => h.store.latestSubmission(h.runId)?.round === 2,
+    "the moved head never opened a round",
+  );
+  assert.equal(h.store.runDetail(h.runId)?.resumption, null);
+  await h.manager.stop();
+});
+
+/**
+ * The reminder that ends a silent stall.
+ *
+ * Reached only when every other gate has passed: the version resumes itself, the binding is
+ * live, the session is present, settled and not waiting on a human, and its packet was
+ * confirmed delivered. What is left is a session that was told what to fix, is not busy, and
+ * has not touched the tree. The unchanged-evidence nudge cannot help there - it fires on a
+ * capture refusal, which the automatic path never reaches.
+ */
+test("a parked round with a delivered packet and no work gets exactly one reminder", async () => {
+  const h = await personaFeedbackRun(
+    "parked-nudge",
+    "v-parked-nudge",
+    "auto",
+    undefined,
+    undefined,
+    "/repo",
+    { parkedReminderMs: 0 },
+  );
+  assert.equal(h.injected.length, 1, "only the repair packet has been typed so far");
+  reportIdle(h, "parked-nudge", h.agentSessionId, h.paneId);
+
+  await h.manager.sweepResumptions(SETTLED());
+  await waitFor(
+    () => h.store.listDeliveries(h.runId).some((delivery) =>
+      delivery.kind === "parked_repair_reminder" && delivery.state === "delivered"),
+    "the parked round was never reminded",
+  );
+  const reminder = h.injected.at(-1)!;
+  assert.match(reminder, /This repair round has been open for/);
+  assert.match(reminder, /no change to the\nrepository/);
+  // It repeats what was asked rather than merely complaining that nothing happened.
+  assert.match(reminder, /The review packet you were handed asked for this:/);
+  // And it does not accuse: the session never claimed to be finished, so the blunt
+  // unchanged-evidence wording would be answering a claim nobody made.
+  assert.doesNotMatch(reminder, /reported complete/);
+
+  // Exactly one. A reminder that repeats is a session's context spent on the daemon asking
+  // the same question, and the second one has never unstuck anything.
+  await h.manager.sweepResumptions(SETTLED());
+  await h.manager.sweepResumptions(SETTLED());
+  assert.equal(
+    h.store.listDeliveries(h.runId).filter((d) => d.kind === "parked_repair_reminder").length,
+    1,
+  );
+  assert.equal(h.injected.length, 2, "the session was reminded more than once");
+  await h.manager.stop();
+});
+
+// ---------------------------------------------------------------------------
+// The manual round, and what it refuses to spend.
+// ---------------------------------------------------------------------------
+
+/**
+ * The button used to spend a round proving what two git reads already knew.
+ *
+ * The observer has always declined to open a round whose repository is byte-identical to the
+ * failed one. `manager.resubmit` never asked, and its capture-time guard could not catch it:
+ * that guard compared the submission's identity, which includes the transcript anchor, and
+ * typing the repair packet into the pane is itself a transcript write. In the ledger this was
+ * measured against, twelve of twenty manually-opened rounds reviewed byte-identical trees.
+ */
+test("a manual round refuses work that has not moved, and spends nothing", async () => {
+  const h = await personaFeedbackRun("manual-unchanged", "v-manual-unchanged", "auto");
+  const refused = await h.manager.resubmit(h.runId, { requestId: "same-1", evidence: [] });
+  assert.equal(refused.ok, false);
+  assert.equal(refused.ok === false ? refused.reason : "", "unchanged_repository");
+  assert.match(
+    refused.ok === false ? refused.message : "",
+    /repository has not changed since round 1/,
+  );
+  assert.equal(h.store.listSubmissions(h.runId).length, 1, "the refusal spent a round anyway");
+  assert.equal(h.store.getRun(h.runId)?.currentPhase, "unchanged_repository");
+
+  // It is a question, not the observer's refusal. A human sometimes holds evidence the
+  // repository cannot - a manual verification recorded in the transcript is the documented
+  // case - so confirming proceeds, and the round is spent knowingly.
+  const confirmed = await h.manager.resubmit(h.runId, {
+    requestId: "same-2",
+    evidence: [],
+    resubmitUnchanged: true,
+  });
+  assert.equal(confirmed.ok, true, "the confirmed round was refused");
+  assert.equal(h.store.latestSubmission(h.runId)?.round, 2);
+  await h.manager.stop();
+});
+
+/**
+ * The guard that had fired twice in the system's entire history.
+ *
+ * `evidenceFingerprint` is the submission's IDENTITY and includes the transcript anchor, so
+ * it had already moved by the time anyone could resubmit. Comparing the work instead is what
+ * lets the refusal mean what it says - and it is the only thing that reaches a Foreman claim,
+ * which never passes through the observer's repository probe at all.
+ */
+test("a transcript that grew is not a repair, even when the capture is reached", async () => {
+  const h = await personaFeedbackRun("fingerprint", "v-fingerprint", "auto");
+  const first = h.store.latestSubmission(h.runId)!;
+  assert.ok(first.repositoryFingerprint, "the capture stored no work-only fingerprint");
+
+  // The transcript moves; the tree does not. This is what delivering the packet alone does.
+  h.transcript.anchor += 4096;
+  const refused = await h.manager.resubmit(h.runId, {
+    requestId: "grew-1",
+    evidence: [],
+    // Past the pre-capture probe deliberately, so the capture-time guard is the one on trial.
+    resubmitUnchanged: false,
+  });
+  assert.equal(refused.ok, false);
+  assert.equal(refused.ok === false ? refused.reason : "", "unchanged_repository");
+
+  // Move the work, and the same capture runs: the guard is about the tree, not about caution.
+  h.head.sha = "head-2";
+  const accepted = await h.manager.resubmit(h.runId, { requestId: "grew-2", evidence: [] });
+  assert.equal(accepted.ok, true);
+  const second = h.store.latestSubmission(h.runId)!;
+  assert.notEqual(
+    second.repositoryFingerprint,
+    first.repositoryFingerprint,
+    "a moved head left the work-only fingerprint unchanged",
+  );
+  await h.manager.stop();
 });

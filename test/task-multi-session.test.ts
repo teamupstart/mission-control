@@ -14,7 +14,6 @@ import type { PrMatch } from "../src/server/registry.ts";
 import type { ResetResult, Session, Task } from "../src/shared/types.ts";
 import type { SessionFilesController } from "../src/web/lib/sessionFiles.ts";
 import type { SessionViewProps } from "../src/web/components/layouts/types.ts";
-import { SessionCard } from "../src/web/components/SessionCard.tsx";
 import { ConsoleDetail } from "../src/web/components/layouts/ConsoleDetail.tsx";
 import { SessionTile } from "../src/web/components/layouts/SessionTile.tsx";
 import { RailRow } from "../src/web/components/layouts/RailRow.tsx";
@@ -352,11 +351,9 @@ test("a task settled before the handover keeps the outcome it was settled with",
   assert.equal(a.sessionId, null, "and no longer claiming an agent that has moved on");
 });
 
-test("all four session surfaces show the task being executed after a second assignment", async () => {
-  // The layout-parity rule: a session is drawn by FOUR components, and only one of them is
-  // SessionCard. They all read `Session.task`, so the fix lives in the registry rather than
-  // in any of them - which is exactly the claim worth pinning, because a change made in the
-  // card alone would look right in one layout of three.
+test("all session surfaces show the task being executed after a second assignment", async () => {
+  // The detail, Board tile, and rail all read `Session.task`, so the fix lives in the
+  // registry rather than in any renderer.
   setShippingConfig({ closeSessionAfterMerge: false });
   const f = fleet("mission-multi-surfaces-");
   // A carries a recurring-mission origin and B a different one, because the rail is the one
@@ -377,11 +374,7 @@ test("all four session surfaces show the task being executed after a second assi
   assert.equal(assigned.ok, true, assigned.error ?? "");
 
   const session = f.registry.getSession(f.sessionId)!;
-  assert.equal(session.task?.id, f.taskB, "the summary the four surfaces read");
-
-  const card = renderToStaticMarkup(
-    createElement(SessionCard, { session, onOpenReviews: () => {} }),
-  );
+  assert.equal(session.task?.id, f.taskB, "the summary the three surfaces read");
   const detail = renderToStaticMarkup(
     createElement(ConsoleDetail, { session, view: viewFor(session) }),
   );
@@ -399,7 +392,7 @@ test("all four session surfaces show the task being executed after a second assi
     createElement(RailRow, { session, selected: false, onSelect: () => {} }),
   );
 
-  for (const [name, html] of [["card", card], ["console detail", detail], ["board tile", tile]] as const) {
+  for (const [name, html] of [["console detail", detail], ["board tile", tile]] as const) {
     assert.ok(html.includes("Ship B"), `${name} should show the task now executing`);
     assert.ok(!html.includes("Ship A"), `${name} should not show the finished task`);
   }
@@ -493,8 +486,7 @@ function viewFor(session: Session): SessionViewProps {
     onSelect: () => {},
     onCursorTo: () => {},
     onDeselect: () => {},
-    expandedId: null,
-    onToggleExpand: () => {},
+    detailId: null,
     onOpenReviews: () => {},
     onOpenDiff: () => {},
     onOpenFiles: () => {},

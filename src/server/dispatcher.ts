@@ -9,7 +9,11 @@ import type {
   ThinkingLevel,
   WorktreeProvider,
 } from "@shared/types.ts";
-import { capabilitiesFor } from "@shared/harness-capabilities.ts";
+import {
+  capabilitiesFor,
+  skillCommand,
+  supportsSdkSkillInvocation,
+} from "@shared/harness-capabilities.ts";
 import { pipelineRunKeyOf } from "@shared/pipeline.ts";
 import { innermostTerminalResourceId } from "@shared/pane.ts";
 import { deriveTitle as deriveTaskTitle } from "@shared/title.ts";
@@ -29,6 +33,8 @@ import type { SdkSupervisor } from "./sdk/supervisor.ts";
 import { heldHomeNames, homeAlive, homeNameRules, killHome, launchHome } from "./terminal/home.ts";
 import type { Registry } from "./registry.ts";
 import { verifyHeadIs } from "./git/ensemble-snapshot.ts";
+import { freshRemoteDefaultSha, originConfigured } from "./git/remote-default.ts";
+import { FULL_SHA } from "./workflows/commit-id.ts";
 import {
   kindMissionMcpRequirement,
   missionMcpDescriptor,
@@ -44,6 +50,7 @@ import {
   freezeScoutPromptBoundary,
 } from "./scouts/prompt-journal.ts";
 import { withRepoMemoryPointer } from "./memory.ts";
+import type { LaunchTurnMarker } from "./launch-presentation.ts";
 import { hasBin, resolveBinPath, run, type RunResult } from "./util/exec.ts";
 import { sleep } from "./util/timers.ts";
 import { prepareCodexLaunch } from "./harness/codex/launch.ts";
@@ -167,10 +174,49 @@ export class Dispatcher {
       planSkills?: typeof planSkillsForAgent;
       /** Server-owned immutable graph check; kept injectable so this launch layer stays DB-free. */
       workflowEvidenceEnabled?: (task: Pick<Task, "kind" | "workflowId">) => boolean;
+      /**
+       * Fired once, when a task first acquires the session it will run on.
+       *
+       * The seam that lets a launch stop waiting for a model to name it. Dispatch reads
+       * `task.title` to build the terminal home name, so naming used to gate the whole
+       * launch behind the titling call - measured at 4.5-7.7s against the configured
+       * provider, all of it in front of an agent that was otherwise ready to start. The
+       * launch now takes the heuristic title and the LATE title renames the session
+       * afterwards, which is the same operation `assign` already performs when it hands a
+       * task to a running agent.
+       *
+       * It has to be a notification rather than a return value because the two facts
+       * settle in either order: the model can answer before the session is discovered, or
+       * long after it. Whoever finishes second does the rename; this is the half that
+       * reports the session arriving.
+       *
+       * Deliberately fired from `patch`, which is the ONE place every runtime records its
+       * session - the terminal path, the embedded path and the pipeline path all land
+       * there. Hanging it off the three call sites instead would leave a runtime silently
+       * un-renamed the day a fourth is added.
+       */
+      onSessionBound?: (taskId: string) => void;
       resolveRuntime?: typeof resolveDispatchRuntime;
+      /**
+       * Which commit each of the task's repositories is frozen at before provisioning.
+       *
+       * A seam only so a focused test can prove the ORDERING - that a base failure happens
+       * in front of every lease and every spawn - without standing up a remote per case.
+       * Production always takes `resolveTaskBases`.
+       */
+      resolveBases?: typeof resolveTaskBases;
       /** Provider-owned launch facts for a pipeline task. */
       pipelineLaunch?: typeof pipelineTaskLaunch;
-      /** Terminal-home launch seam for focused pipeline dispatch tests. */
+      /**
+       * Terminal-home launch seam, used by BOTH terminal arms - the ordinary agent launch
+       * and the pipeline host.
+       *
+       * A focused test that needs to reach the delivery boundary has to stop short of the
+       * real backend: `spawnUniquely` opens an actual tmux session on the machine running
+       * the suite, which is a side effect a unit test has no business having and which
+       * collides with itself on a second run. Left unset - which is every daemon - the real
+       * launcher is used and nothing changes.
+       */
       spawn?: typeof spawnUniquely;
       /** The daemon's singleton native allocator. Focused tests may inject an isolated one. */
       worktrees?: WorktreeManager;
@@ -282,7 +328,18 @@ export class Dispatcher {
       // a failure part-way through returns every tree it had already taken, provider-aware,
       // and rethrows - so a partial dispatch never leaves leased trees nothing will ever
       // tear down. On a single-repo task this is exactly one call with slot 0.
-      const { primary: wt, extras } = await this.provisionAll(task, taskId, slug, shortId, baseSha);
+      //
+      // Every repository's base is frozen HERE, in front of the loop, rather than inside
+      // it: an unpinned task takes a freshly fetched remote-default commit instead of
+      // whatever the main checkout's local HEAD happens to be, and a fetch that fails in
+      // the third repository must not leave the first two leased. Placed after the cheap
+      // refusals above so a dispatch that was going to be turned away for its runtime or
+      // its harness capability does not pay for a network round trip first.
+      const bases = await (this.deps.resolveBases ?? resolveTaskBases)(
+        { primary: task.repoRoot, extras: task.extraRepos.map((entry) => entry.repoRoot) },
+        baseSha,
+      );
+      const { primary: wt, extras } = await this.provisionAll(task, taskId, slug, shortId, bases);
       // Record every worktree BEFORE spawning, so a spawn failure can still tear them down.
       // The collection lands in the SAME patch so every durable native owner becomes visible
       // atomically before provisional allocator state settles.
@@ -441,8 +498,13 @@ export class Dispatcher {
       // Pi is terminal-only today (`HARNESS_CAPABILITIES.pi.runtimes`), so this is its one
       // launch seam. Whoever gives it an SDK runtime composes the same pointer into turn
       // one on the embedded path, which returns above this line.
-      const piLaunch = task.agent === "pi"
-        ? preparePiLaunch(withRepoMemoryPointer(wt.path, intent))
+      // Held in its own binding because two different things need it: `preparePiLaunch`
+      // needs it to build the argv, and the launch marker needs to fingerprint the exact
+      // text that argv carries. Recomposing it at the second site is how the two answers
+      // drift apart.
+      const piText = task.agent === "pi" ? withRepoMemoryPointer(wt.path, intent) : null;
+      const piLaunch = piText !== null
+        ? preparePiLaunch(piText)
         : { args: [] as string[], sessionId: null };
       const askArgs = await askChannelArgs(task.agent, missionMcp);
       // Rendered by the harness that has to honour it, from a capability measured against a
@@ -507,7 +569,38 @@ export class Dispatcher {
         }
       }
 
-      const homeName = await spawnUniquely(label, shortId, wt.path, agentBin, agentArgs);
+      // Pi's launch marker goes down BEFORE the process starts, and under the FINAL key.
+      //
+      // Pi is the one harness whose turn one travels in the argv, so by the time anything can
+      // observe the conversation the prompt has already been written - there is no delivery
+      // seam later to record against. Recording after discovery instead would leave the
+      // ordering resting on two unstated accidents: that `locatePiTranscript` refuses a
+      // session with no `agentSessionId`, and that the bind and the write sit in one
+      // synchronous block. Either could be undone by an unrelated change - discovery learning
+      // to read `--session-id` off the argv is the obvious one, since the id is right there -
+      // and the symptom would be a first frame carrying the whole launch contract, which SSE
+      // never re-decorates afterwards.
+      //
+      // `preparePiLaunch` has already minted the native conversation id, so this needs no
+      // provisional key and no later move: it is written under the key the session will hold
+      // once `bindLaunchedAgentSession` runs.
+      const piMarker = piLaunch.sessionId && piText !== null
+        ? this.recordLaunchPresentationForKey(piLaunch.sessionId, piText, task.intent)
+        : null;
+      let homeName: string;
+      try {
+        homeName = await (this.deps.spawn ?? spawnUniquely)(
+          label,
+          shortId,
+          wt.path,
+          agentBin,
+          agentArgs,
+        );
+      } catch (err) {
+        // Nothing was launched, so the marker describes a turn that will never be written.
+        this.registry.discardLaunchTurn(piMarker);
+        throw err;
+      }
       this.patch(taskId, { homeName });
       if (await this.abortIfSettled(taskId)) return;
 
@@ -537,6 +630,8 @@ export class Dispatcher {
         ? this.registry.bindLaunchedAgentSession(ready.session.id, task.agent, piLaunch.sessionId)
         : ready.session;
       if (!session) throw new Error("agent session changed before its launch identity was recorded");
+      // Pi's launch marker was recorded before the spawn, under this exact key. Nothing to do
+      // here - see the note at that call site for why the ordering is not deferred to now.
       const { instrumented } = ready;
       const readyResourceId = innermostTerminalResourceId(session);
       if (readyResourceId) this.patch(taskId, { terminalResourceId: readyResourceId });
@@ -562,13 +657,26 @@ export class Dispatcher {
       // `session.prompt()` only after the TUI is initialized, so injecting it here would run
       // the task twice. Other terminal harnesses still need the pane delivery below.
       if (!piLaunch.sessionId) {
+        // Recorded BEFORE the paste, for the same reason the scout boundary above is: this
+        // is the last instant at which "what the agent is about to be told" is still a fact
+        // rather than a guess, and a marker written after an acknowledged delivery would
+        // race the transcript poller that has already read the turn.
+        const launchMarker = this.recordLaunchPresentation(
+          deliverySession.id,
+          intent,
+          task.intent,
+        );
         try {
           await this.deliverIntent(deliverySession.id, intent, wt.path, instrumented);
         } catch (err) {
           // A boundary with no delivery behind it claims the agent saw a task it never
           // received, and a later capture would anchor into a conversation that never
-          // started. Discard it before the failure propagates.
+          // started. Discard it before the failure propagates. The launch marker is
+          // discarded on the same terms and for the same reason: it would tell the dashboard
+          // to project a turn nothing ever wrote, and the next real human message under that
+          // key is what it would be compared against.
           discardScoutPromptBoundary(boundary);
+          this.registry.discardLaunchTurn(launchMarker);
           throw err;
         }
       }
@@ -665,21 +773,41 @@ export class Dispatcher {
     // dispatch sees the claim before this one yields to either host launcher.
     this.patch(taskId, { pipelineRun: launch.pipelineRun });
 
-    if (launch.launchRuntime === "claude-sdk") {
+    if (launch.launchRuntime === "agent-sdk") {
+      if (!supportsSdkSkillInvocation(task.agent, "engineer")) {
+        throw new Error(
+          `agent "${task.agent}" cannot host this managed Pipeline; choose an agent with Agent SDK support and a typed engineer skill invocation`,
+        );
+      }
+      const engineerCommand = skillCommand(task.agent, "engineer");
+      if (engineerCommand === null) {
+        throw new Error(
+          `agent "${task.agent}" has no typed engineer skill invocation; choose a supported Pipeline agent`,
+        );
+      }
       const supervisor = this.deps.supervisor;
       if (!supervisor) {
-        throw new Error("this build has no session supervisor, so it cannot launch Conductor through Claude Agent SDK");
+        throw new Error("this build has no session supervisor, so it cannot launch Conductor through Agent SDK");
       }
       const mcp = await (this.deps.missionMcpDescriptor ?? missionMcpDescriptor)();
+      // Held in its own binding for the same reason `piText` is: turn one now has a second
+      // reader, and the launch marker has to fingerprint the exact string the driver was
+      // given. Recomposing it at the second site is how the two answers drift apart.
+      const engineerPrompt = `${engineerCommand} ${task.intent}`;
       const session = await supervisor.start({
-        agent: "claude",
+        agent: task.agent,
         name: task.title.trim() || launch.cwd,
         cwd: launch.cwd,
-        prompt: launch.prompt,
+        prompt: engineerPrompt,
         acceptedGoalPrompt: task.intent,
+        // A pipeline task on this arm launches a directly streamable agent conversation, so
+        // it has the same launch turn to present as an ordinary embedded dispatch. The
+        // terminal arm below launches the Conductor host instead - not an agent conversation,
+        // no transcript turn, nothing to classify.
+        launchPresentation: { prompt: engineerPrompt, displayText: task.intent },
         model: null,
         effort: null,
-        permissionMode: null,
+        permissionMode: dispatchPermissionMode(task.agent),
         mcp,
         extraDirs: [],
         taskId,
@@ -703,6 +831,12 @@ export class Dispatcher {
       // session is linked now; a later `bound` event sees Task.sessionId and links then.
       this.registry.bindTaskToWorkEpisode(taskId, session.id);
       return;
+    }
+
+    if (task.agent !== "claude") {
+      throw new Error(
+        "Terminal Pipeline launches are Claude-only; choose Claude or switch the Pipelines launch runtime to Agent SDK",
+      );
     }
 
     const label = sessionLabel(task.title);
@@ -798,6 +932,11 @@ export class Dispatcher {
       cwd: wt.path,
       prompt: intent,
       acceptedGoalPrompt: task.intent,
+      // Turn one IS the composed prompt on this runtime, so the dashboard's projection is
+      // recorded here rather than at a delivery seam that does not exist. `task.intent` is
+      // the operator's own words; everything the composition added above stays in the
+      // transcript, in the agent's context, and in every server-side evidence read.
+      launchPresentation: { prompt: intent, displayText: task.intent },
       model,
       effort,
       permissionMode: dispatchPermissionMode(task.agent),
@@ -883,6 +1022,56 @@ export class Dispatcher {
       throw new Error("agent session exited before the initial prompt could be sent");
     }
     return session;
+  }
+
+  /**
+   * Record how the dashboard should present this launch, without ever risking the launch.
+   *
+   * Presentation is strictly secondary to delivery: the prompt reaching the agent is the
+   * task, and the conversation window drawing it nicely is a courtesy. So a failed marker
+   * write is logged and swallowed - the conversation simply renders the composed prompt the
+   * way it did before this feature existed, which is a degradation a person can read past
+   * rather than a dispatch that did not happen.
+   *
+   * Returns the marker so a caller whose delivery then fails can roll it back.
+   */
+  private recordLaunchPresentation(
+    sessionId: string,
+    prompt: string,
+    displayText: string | null,
+  ): LaunchTurnMarker | null {
+    try {
+      return this.registry.recordLaunchTurn(sessionId, prompt, displayText);
+    } catch (err) {
+      console.error(
+        `[dispatch] could not record the launch presentation for session ${sessionId}:`,
+        err instanceof Error ? err.message : String(err),
+      );
+      return null;
+    }
+  }
+
+  /**
+   * The same door addressed by logical conversation key rather than by session.
+   *
+   * For the one launch that has its native conversation id BEFORE it has a session: Pi's,
+   * minted by `preparePiLaunch` so it can travel in the argv. Recording under that key needs
+   * no session to look it up from, and no later move.
+   */
+  private recordLaunchPresentationForKey(
+    noteKey: string,
+    prompt: string,
+    displayText: string | null,
+  ): LaunchTurnMarker | null {
+    try {
+      return this.registry.recordLaunchTurnForKey(noteKey, prompt, displayText);
+    } catch (err) {
+      console.error(
+        `[dispatch] could not record the launch presentation for conversation ${noteKey}:`,
+        err instanceof Error ? err.message : String(err),
+      );
+      return null;
+    }
   }
 
   /**
@@ -1005,14 +1194,14 @@ export class Dispatcher {
     taskId: string,
     slug: string,
     shortId: string,
-    baseSha: string | null,
+    bases: TaskDispatchBases,
   ): Promise<{ primary: ProvisionedWorktree; extras: TaskRepoEntry[] }> {
     const primary = await provisionWorktree(
       task.repoRoot,
       taskId,
       slug,
       shortId,
-      baseSha,
+      bases.primary,
       0,
       this.worktrees,
     );
@@ -1023,14 +1212,15 @@ export class Dispatcher {
     try {
       for (const [index, entry] of task.extraRepos.entries()) {
         // Slot is the entry's position in `task_repos`, offset by one for the primary at
-        // slot 0. `baseSha` pins the PRIMARY's repo and means nothing in another one, so a
-        // secondary is cut from its own HEAD and records where that landed.
+        // slot 0. Its base was frozen alongside every other repository's before this loop
+        // started - a pin means nothing in another repository, so a secondary took its own
+        // repository's freshly fetched remote default and records where that landed.
         const wt = await provisionWorktree(
           entry.repoRoot,
           taskId,
           slug,
           shortId,
-          null,
+          bases.extras[index] ?? null,
           index + 1,
           this.worktrees,
         );
@@ -1103,6 +1293,19 @@ export class Dispatcher {
     const cur = this.registry.getTask(taskId);
     if (!cur) return;
     this.registry.upsertTask({ ...cur, ...fields, updatedAt: Date.now() });
+    // The one transition worth announcing: this task now has a session to be named on.
+    // Read off the BEFORE and AFTER rather than off `fields`, so a patch that merely
+    // restates the id it already had stays silent and the notification means "newly
+    // bound" exactly once.
+    if (cur.sessionId === null && typeof fields.sessionId === "string") {
+      // Never allowed to fail the launch. The listener renames a terminal home, which is
+      // cosmetic next to an agent that is already running with its worktree recorded.
+      try {
+        this.deps.onSessionBound?.(taskId);
+      } catch (err) {
+        console.error(`[dispatch] session-bound listener failed for ${taskId}:`, err);
+      }
+    }
   }
 }
 
@@ -1160,6 +1363,99 @@ function gitNeverAnswered(question: string, r: RunResult): Error {
     `could not determine ${question}: git did not answer ` +
       `(${r.stderr.trim() || `exit ${r.code}`}) - nothing was provisioned, so this can be retried`,
   );
+}
+
+/**
+ * Where an ordinary, unpinned task starts: a freshly fetched remote-default commit.
+ *
+ * The alternative - the main checkout's current local `HEAD` - is what shipped, and it is
+ * wrong for a scheduled task in two ways at once. It is whatever the operator happened to
+ * have checked out at that instant, which for a checkout sitting on a feature branch is a
+ * base nobody chose; and it is stale by however long it has been since somebody pulled,
+ * which for a task scheduled to run after a dependency merged is the specific commit the
+ * task exists to build on. Freezing the remote default makes both deterministic, and
+ * freezing ONE full id (rather than passing the ref name down) makes it observable: the
+ * task records exactly what it started from.
+ *
+ * Every uncertain answer fails the dispatch instead of falling back. The fallback is the
+ * dangerous direction here: refusing costs a retryable error before anything is
+ * provisioned, while guessing costs an agent that has already been launched from a base
+ * nobody can reconstruct afterwards. So only a `git remote` listing that SUCCEEDED and did
+ * not name `origin` may take the local-HEAD path - a probe that timed out cannot.
+ */
+export async function resolveDispatchBase(repoRoot: string): Promise<string> {
+  const origin = await originConfigured(repoRoot);
+  if (!origin.ok) {
+    throw new Error(
+      `could not determine whether ${repoRoot} has an origin remote: ${origin.reason} - ` +
+        "nothing was provisioned, so this can be retried",
+    );
+  }
+  // A local-only repository is ordinary - a scratch checkout, a fixture, a repo whose
+  // remote was never added. Its local HEAD is the only base that exists, so it is not a
+  // fallback so much as the whole answer.
+  if (!origin.value) {
+    const head = await headCommit(repoRoot);
+    if (!head) {
+      throw new Error(
+        `${repoRoot} has no origin remote and its exact HEAD commit could not be resolved`,
+      );
+    }
+    return head;
+  }
+  const fresh = await freshRemoteDefaultSha(repoRoot);
+  if (!fresh.ok) {
+    throw new Error(
+      `could not freeze ${repoRoot}'s remote default branch: ${fresh.reason} - ` +
+        "nothing was provisioned, so this can be retried",
+    );
+  }
+  return fresh.value;
+}
+
+/** The exact commit each of a task's repositories will be provisioned at, by slot. */
+export interface TaskDispatchBases {
+  /** Slot 0, the task's own repository. */
+  primary: string;
+  /** Slot n+1, aligned index-for-index with `task.extraRepos`. */
+  extras: string[];
+}
+
+/**
+ * Freeze every repository's base BEFORE the first worktree is taken.
+ *
+ * A multi-repository task is all-or-nothing, and resolving lazily inside the provisioning
+ * loop would break that in the one case it matters: the second repository's fetch fails,
+ * the first repository's lease already exists, and the unwind has to return a tree that
+ * should never have been taken. Resolving up front makes a fetch failure cost an error and
+ * nothing else.
+ *
+ * Sequential and memoized rather than concurrent. Two fetches racing in one repository
+ * contend for the same lock file for no benefit, and a task may legitimately attach the
+ * same repository twice; one resolution per distinct root, in a fixed order, keeps both the
+ * cost and the failure order predictable.
+ */
+export async function resolveTaskBases(
+  repoRoots: { primary: string; extras: readonly string[] },
+  /** The verified `options.baseSha`, which pins the PRIMARY repository only. */
+  pinned: string | null,
+  resolve: (repoRoot: string) => Promise<string> = resolveDispatchBase,
+): Promise<TaskDispatchBases> {
+  const frozen = new Map<string, string>();
+  const forRepo = async (repoRoot: string): Promise<string> => {
+    const already = frozen.get(repoRoot);
+    if (already) return already;
+    const resolved = await resolve(repoRoot);
+    frozen.set(repoRoot, resolved);
+    return resolved;
+  };
+  // A pin names one commit in one repository. It cannot mean anything in another, so an
+  // attached repository resolves its own remote default even on a pinned dispatch - the
+  // same rule the old code stated by passing `null` for every secondary.
+  const primary = pinned ?? (await forRepo(repoRoots.primary));
+  const extras: string[] = [];
+  for (const repoRoot of repoRoots.extras) extras.push(await forRepo(repoRoot));
+  return { primary, extras };
 }
 
 /**
@@ -1337,7 +1633,7 @@ async function headCommit(dir: string): Promise<string | null> {
     timeoutMs: GIT_PREFLIGHT_TIMEOUT_MS,
   });
   const sha = r.stdout.trim();
-  return r.code === 0 && /^[0-9a-f]{40}$/.test(sha) ? sha : null;
+  return r.code === 0 && FULL_SHA.test(sha) ? sha : null;
 }
 
 /**

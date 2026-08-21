@@ -36,7 +36,13 @@ const { Registry } = await import("../src/server/registry.ts");
 const { ReviewManager } = await import("../src/server/reviews.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
 const { QueueManager } = await import("../src/server/queue.ts");
-const { buildApp } = await import("../src/server/routes.ts");
+const { buildApp, WORKFLOW_EVIDENCE_BODY_MAX_BYTES } = await import("../src/server/routes.ts");
+const {
+  JSON_UTF8_MAX_BYTES_PER_CHAR,
+  WORKFLOW_IMAGE_LIMITS,
+  WORKFLOW_LIMITS,
+  WORKFLOW_TEXT_EVIDENCE_LIMITS,
+} = await import("../src/shared/workflow.ts");
 const {
   captureSubmissionImages,
   captureSubmissionTextArtifacts,
@@ -207,6 +213,28 @@ test("workflow image contracts default historical context and bind image citatio
       repositoryScope: "repo-01",
     }],
   }).success, true);
+  assert.equal(SubmitWorkflowEvidenceSchema.safeParse({
+    commandOutputs: [{
+      kind: "command",
+      clientItemId: "focused-command",
+      command: "node --test focused.test.ts",
+      exitCode: 0,
+      output: "ok 1 - focused behavior\n",
+      caption: "The focused behavior passed",
+      repositoryScope: "repo-01",
+    }],
+  }).success, true);
+  assert.equal(SubmitWorkflowEvidenceSchema.safeParse({
+    commandOutputs: [{
+      kind: "command",
+      clientItemId: "oversized-command",
+      command: "npm test",
+      exitCode: 0,
+      output: "x".repeat(64 * 1_024),
+      caption: "Too large once command metadata is included",
+      repositoryScope: "repo-01",
+    }],
+  }).success, false);
   assert.equal(SubmitWorkflowEvidenceSchema.safeParse({}).success, false);
   assert.equal(SubmitWorkflowEvidenceSchema.safeParse({
     images: [{ ...duplicate, kind: "agent", path: "screen.png" }],
@@ -218,6 +246,45 @@ test("workflow image contracts default historical context and bind image citatio
       repositoryScope: "repo-01",
     }],
   }).success, false);
+  assert.equal(SubmitWorkflowEvidenceSchema.safeParse({
+    images: [{ ...duplicate, kind: "agent", path: "screen.png" }],
+    commandOutputs: [{
+      kind: "command",
+      clientItemId: duplicate.clientItemId,
+      command: "npm test",
+      exitCode: 0,
+      output: "ok\n",
+      caption: "Duplicate id",
+      repositoryScope: "repo-01",
+    }],
+  }).success, false);
+});
+
+test("workflow evidence HTTP sizing reserves metadata for every command item", () => {
+  // The output, image-locator, text-locator, and envelope terms were already present. What must
+  // remain additional is the worst-case wire representation of every command item's metadata.
+  // Zod counts code units, while a caller may spell each one as a six-byte JSON escape.
+  const existingTerms =
+    WORKFLOW_TEXT_EVIDENCE_LIMITS.maxAggregateBytes * JSON_UTF8_MAX_BYTES_PER_CHAR
+    + (WORKFLOW_IMAGE_LIMITS.locatorJsonBytes + WORKFLOW_TEXT_EVIDENCE_LIMITS.locatorJsonBytes)
+      * JSON_UTF8_MAX_BYTES_PER_CHAR
+    + 32 * 1024;
+  const everyCommandItemMetadata =
+    WORKFLOW_TEXT_EVIDENCE_LIMITS.maxCount
+    * (
+      (
+        WORKFLOW_TEXT_EVIDENCE_LIMITS.clientItemIdChars
+        + WORKFLOW_TEXT_EVIDENCE_LIMITS.captionChars
+        + WORKFLOW_LIMITS.checkCommandLength
+      ) * JSON_UTF8_MAX_BYTES_PER_CHAR
+      + 512
+    );
+
+  assert.equal(
+    WORKFLOW_EVIDENCE_BODY_MAX_BYTES - existingTerms,
+    everyCommandItemMetadata,
+    "the stream guard must not reserve command metadata for only one item",
+  );
 });
 
 test("gitignored UTF-8 logs preserve BOM bytes when digest-bound and submission-frozen", async () => {
@@ -319,6 +386,74 @@ test("gitignored UTF-8 logs preserve BOM bytes when digest-bound and submission-
     store.resetForNoteKey("text-note");
     assert.deepEqual(store.listSubmissionTextArtifacts(created.submission.id), []);
     assert.deepEqual(store.listWorkflowEvidence("text-note").artifacts, []);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test("completed command output is staged directly and frozen as immutable text evidence", async () => {
+  const repo = realpathSync(mkdtempSync(join(tmpdir(), "mission-workflow-command-evidence-")));
+  const store = new WorkflowStore();
+  const output = "TAP version 13\nok 1 - focused regression\n";
+  try {
+    const staged = await stageAgentWorkflowEvidence({
+      store,
+      noteKey: "command-note",
+      task: taskAt(repo),
+      fallbackRoot: repo,
+      images: [],
+      commandOutputs: [{
+        kind: "command",
+        clientItemId: "focused-regression",
+        command: "node --test focused.test.ts",
+        exitCode: 0,
+        output,
+        caption: "The focused regression passed",
+        repositoryScope: "repo-01",
+      }],
+      now: 1,
+    });
+    assert.equal(staged.artifacts.length, 1);
+    assert.equal(staged.artifacts[0]?.sourceKind, "command");
+    assert.equal(staged.artifacts[0]?.displayName, "focused-regression-command-output.txt");
+
+    const binding = store.insertBinding({
+      id: "command-binding",
+      workflowVersionId: IMAGE_WORKFLOW_VERSION_ID,
+      noteKey: "command-note",
+      sessionId: "command-session",
+      sessionAgent: "codex",
+      sessionName: "command evidence",
+      sessionCwd: repo,
+      sessionRepoRoot: repo,
+      triggerMode: "manual",
+      deliveryMode: "preview",
+      maxRepairRounds: 5,
+      now: 2,
+    });
+    const created = store.createInitialSubmission(
+      { id: "command-run", binding, triggerSource: "manual", triggerKey: "command-run", now: 3 },
+      {
+        id: "command-submission",
+        triggerSource: "manual",
+        triggerKey: "command-run",
+        evidenceGroupKey: "manual:command-note:command-run",
+        context: {},
+        evidence: {},
+        now: 3,
+      },
+    );
+    const reserved = store.listReservedWorkflowEvidence(created.submission.id)[0];
+    assert.equal(reserved?.sourceKind, "command");
+    assert.match(reserved?.inlineContent ?? "", /^Command: node --test focused\.test\.ts/m);
+
+    const captured = await captureSubmissionTextArtifacts(store, created.submission.id, 4);
+    assert.equal(captured.length, 1);
+    assert.equal(
+      captured[0]?.content,
+      `Command: node --test focused.test.ts\nExit code: 0\nOutput:\n${output}`,
+    );
+    assert.equal(captured[0]?.sha256, staged.artifacts[0]?.sha256);
   } finally {
     rmSync(repo, { recursive: true, force: true });
   }

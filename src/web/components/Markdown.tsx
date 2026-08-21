@@ -233,8 +233,9 @@ function MarkdownBody({
  * was wrong. The ref the body keeps is refreshed DURING that body's render, so a
  * comparator that lets a new handler through without re-rendering pins every anchor to
  * the previous closure - and that closure carries App's `layout` and `sessions`, so
- * switching layout with the transcript text unchanged left path links opening the grid
- * overlay from Console. Skipping the render is only safe when the handler really has not
+ * switching between Console and Board with the transcript text unchanged left path links
+ * using the previous layout's destination behavior. Skipping the render is only safe when
+ * the handler really has not
  * changed, which is a promise the CALLER has to make; `TranscriptPanel` makes it with a
  * stable wrapper, so this stays a hit on every SSE frame without lying about it.
  */

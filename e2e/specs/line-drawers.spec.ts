@@ -367,48 +367,56 @@ test("a failed run's member card offers no Retry the server would refuse", async
   await shoot(dashboard, "failed-run-no-member-retry");
 });
 
-test("the drawer pushes the board down and hands the space back, and never resizes a card", async ({
+test("the drawer pushes the Board down and hands the space back without resizing a tile", async ({
   dashboard,
   daemon,
 }) => {
-  // One real session, because the promise being checked is about the CARD: no data changes,
+  const config = await fetch(`${daemon.baseURL}/api/ui/config`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ layout: "board" }),
+  });
+  expect(config.ok).toBe(true);
+  await dashboard.reload();
+
+  // One real session, because the promise being checked is about the tile: no data changes,
   // no layout changes, no resizing in any drawer state.
   await dashboard.getByRole("button", { name: "Dispatch" }).click();
   const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
   await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
   await dashboard.keyboard.press("Escape");
-  await dialog.getByPlaceholder("What should this agent do?").fill("hold a card for the drawer");
+  await dialog.getByPlaceholder("What should this agent do?").fill("hold a tile for the drawer");
   await dialog.locator("select").filter({ hasText: "finish without a Workflow" }).selectOption("__none");
   await dialog.getByRole("button", { name: "Dispatch now" }).click();
   await expect(dialog).toBeHidden();
 
-  // Idle first, then quiet. The card's height is a function of content still arriving from a
+  // Idle first, then quiet. The tile's height is a function of content still arriving from a
   // subprocess, and no amount of polling the DOM can tell "quiet" from "not started yet".
   await waitForIdleSession(daemon);
-  const card = dashboard.locator(".card").first();
-  await expect(card).toBeVisible();
-  const before = await settledBox(card);
+  const tile = dashboard.locator(".tile").first();
+  await expect(tile).toBeVisible();
+  const before = await settledBox(tile);
 
   await stage(dashboard, "Review").click();
   await expect(drawer(dashboard, "Review")).toBeVisible();
-  const open = await settledBox(card);
+  const open = await settledBox(tile);
   const panel = (await drawer(dashboard, "Review").boundingBox())!;
   await shoot(dashboard, "board-pushed-down");
 
-  // The board is still there, below the drawer, with the card in it - the drawer is a
+  // The Board is still there, below the drawer, with the tile in it: the drawer is a
   // sibling of the layout and not an overlay over it.
-  await expect(card).toBeVisible();
+  await expect(tile).toBeVisible();
   expect(open.y).toBeGreaterThan(panel.y + panel.height - 1);
   // It moved DOWN, by about the drawer's height. A drawer that overlaid would move it none.
   expect(open.y).toBeGreaterThan(before.y);
-  // And the card is the same card: same size, in every state.
+  // And the tile is the same tile: same size, in every state.
   expect(open.width).toBe(before.width);
   expect(open.height).toBe(before.height);
 
   // Closing hands the space back, exactly.
   await dashboard.keyboard.press("Escape");
   await expect(anyDrawer(dashboard)).toHaveCount(0);
-  const after = await settledBox(card);
+  const after = await settledBox(tile);
   expect(after.y).toBe(before.y);
   await shoot(dashboard, "board-returned");
   expect(after.width).toBe(before.width);

@@ -14,7 +14,7 @@ obligation:
    whoever answers can tell they are steering one competitor of a comparison.
 3. **Parked on a menu** - a session sitting on a terminal
    [option menu](sessions.md#answer-a-sessions-menu-from-the-dashboard). Listed, not answered in the
-   inbox: it deep-links to the session card, while an ensemble member's live lane in the run
+   inbox: it deep-links to the session detail, while an ensemble member's live lane in the run
    detail also renders the verified pane dialog in place.
 4. **Pipeline halts** - a [pipeline](pipelines.md) an external SDLC engine stopped and will not
    resume on its own. Each row names the feature, the [halt class](pipelines.md#a-halted-pipeline-in-the-inbox)
@@ -23,20 +23,20 @@ obligation:
    engine stops dispatching at a halt, so the agent that hit the gate has usually exited by the
    time anybody looks. Read-only here - clearing a halt is the engine's own CLI.
 5. **Waiting on you** - the backstop: a session the fleet paints amber that no section above
-   already accounts for. It deep-links to the card, because the answer goes to the agent.
+   already accounts for. It deep-links to the session detail, because the answer goes to the agent.
 6. **Stuck finalizations** - a promotion that stopped on an error.
 
 The count is **answers owed**, not rows: a session holding three questions is one row and
 three. It is a rendering of state the dashboard already has - it subscribes to nothing, decides
 no severity, and is not a second notifier; [Alerts and Away mode](#alerts--away-mode) still own
 what interrupts you. Escape closes it, like every overlay. Per-session entry points are
-unchanged: a card's review affordance and a board tile's flag still open that session's own
+unchanged: a session detail's review affordance and a board tile's flag still open that session's own
 review modal.
 
 ## Roundup
 
 Click **Roundup** for a one-look snapshot of every session, assembled from the same live
-data the grid shows: **who needs you** (needs-input, pending reviews, sessions sitting on an
+data the fleet shows: **who needs you** (needs-input, pending reviews, sessions sitting on an
 [option menu](sessions.md#answer-a-sessions-menu-from-the-dashboard)),
 **who's working** (with their intent + activity), **what's idle**, the **backlog**,
 and **recent outcomes**. Dispatch a backlog task, [edit it](dispatch-and-backlog.md#edit-a-shelved-task) by
@@ -54,7 +54,7 @@ looking away. Nothing about this panel changed.
 
 ## Alerts & Away mode
 
-So you don't have to watch the grid, the dashboard can **alert you when a session
+So you don't have to watch the fleet, the dashboard can **alert you when a session
 needs you**. The daemon already streams every attention event over SSE; the browser
 turns those into a **desktop (Chrome) notification + a short sound** the moment a
 session goes to `needs-input`, a session stops on an
@@ -181,14 +181,14 @@ granted permission yet - that click also unlocks the chime) and **Sound**. **Awa
 mode** sits below them in its own card, because it is not a third channel: it is
 daemon state that survives closing the tab.
 
-The card always states what would actually happen and names only the channels that are
+The session detail always states what would actually happen and names only the channels that are
 live. With desktop and sound on, for example, it reads "Blockers interrupt via desktop
 and sound; everything else waits in the digest". With **both channels off it says
 "Nothing can reach you"** and changes colour, because away mode is not itself a delivery
 path - with nothing to interrupt you on it can only hand you a digest when you get back,
 and the panel never claims otherwise.
 
-Switch away mode on and the card expands to show how long you have been gone
+Switch away mode on and the session detail expands to show how long you have been gone
 (`away 1h 04m`), how much has piled up (`7 buffered`), and a **Digest** button that
 unfolds a preview of what is waiting. That preview is a *look*: the real digest is
 written when you return, and reading it is what consumes it.
@@ -206,6 +206,6 @@ it. If the provider is missing or logged out, the narrative is simply absent and
 rollup carries the summary on its own. Which model writes it is
 **Settings → [Models](models.md#models-what-the-apps-own-model-work-runs-on) → Away digest**.
 
-The count on the card comes from `GET /api/away/buffer`, a read-only look at the window
+The count on the session detail comes from `GET /api/away/buffer`, a read-only look at the window
 still open - deliberately a separate route from `GET /api/away/digest`, which hands the
 buffer over exactly once and reports nothing at all until you are back at the desk.

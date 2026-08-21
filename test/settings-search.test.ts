@@ -78,7 +78,7 @@ function renderCategory(category: SettingsCategoryId): string {
       foreman: FOREMAN,
       cost: COST,
       llm: LLM,
-      layout: "grid",
+      layout: "console",
       onLayoutChange: () => {},
       settingsStatus: EVERY_CATEGORY,
       onStartSeeWorkTour: () => {},

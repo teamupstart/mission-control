@@ -23,17 +23,12 @@ import { assertElectronGuiLaunchAllowed } from "./helpers/electron-gui.ts";
  *     `flex: none` above a `flex: 1` body, the shell grows past the window and the detail
  *     pane's pinned reply box goes off the bottom of the screen - with no scrollbar to get
  *     it back, because the shell is the thing that does not scroll.
- *  2. It eats the expanded card. `.card.expanded` is
- *     `calc(100dvh - var(--topbar-h) - var(--cmdbar-clearance) - 28px)`, and `--topbar-h`
- *     is MEASURED off `<header class="topbar">` at runtime. Putting the strip inside that
- *     header - which is the obvious place, since the topbar is already the page's chrome -
- *     would silently take ~90px off every focus-expanded card on the grid, a surface with
- *     nothing to do with the Line. The strip is deliberately a sibling of the header, and
- *     the grid case here is what holds it there.
+ *  2. It changes the topbar measurement. The strip is deliberately a sibling of the header,
+ *     so the topbar and fleet body keep separate height budgets.
  *
  * And one that is only a fact about used height: the strip must be the SAME height whatever
  * it is saying. It sits directly above the board, so a stage whose sentence wrapped, or
- * whose sentence was empty, would move every card on the page.
+ * whose sentence was empty, would move every fleet surface on the page.
  *
  * Every one of those is a comparison between pages that were loaded into the same window in
  * turn, which makes the window's size a premise rather than a detail - see `VIEWPORT` and
@@ -74,15 +69,12 @@ const HEIGHT_BUDGET = { min: 70, max: 110 };
 /**
  * The window every number below is read in.
  *
- * Not a detail of the harness: `.card.expanded` is
- * `calc(100dvh - var(--topbar-h) - var(--cmdbar-clearance) - 28px)` and the grid cases pin
- * both tokens inline, so the card's height IS this viewport minus 180px - a reading of the
- * window with no layout in it at all. The two grid cases are then compared with each other,
- * which says something about the strip only while both were measured in the SAME window.
+ * The full-height Console cases are compared with each other, which says something about
+ * the strip only while all were measured in the same window.
  *
  * So the size is stated here, handed to the fixture, and checked per case on the way back by
  * `at`. CI has already produced the failure that motivates it: `720 !== 693`, which is a
- * 900px window and an 873px one, reported as the strip stealing 27px from a card it never
+ * 900px window and an 873px one, reported as the strip stealing 27px from a layout it never
  * touched.
  */
 const VIEWPORT = { width: 1400, height: 900 };
@@ -136,7 +128,6 @@ interface Measured {
   stages: number;
   bodyBottomOverflow: number | null;
   bodyHeight: number | null;
-  cardHeight: number | null;
   subHeights: number[];
   subOverflows: number[];
   /** The viewport this case's rects were laid out in, read beside them. */
@@ -153,27 +144,10 @@ const consoleShell = (summary: LineSummary | null): string =>
      <div class="console"><div class="console-rail"></div><div class="console-detail"></div></div>
    </div>`;
 
-/**
- * The grid page, with the two measured properties set to the values `App` publishes.
- *
- * They are set on `:root` here because the JavaScript that measures them lives in `App`,
- * which is not running - but the numbers are its numbers, and the whole point of the case
- * is that the strip must not change either of them.
- */
-const gridShell = (summary: LineSummary | null): string =>
-  `<div class="app" style="--topbar-h:88px;--cmdbar-clearance:64px">${TOPBAR}${strip(summary)}
-     <div class="card expanded" style="width:900px"><div class="card-panels"></div></div>
-   </div>`;
-
 const CASES: Array<[string, string]> = [
   ["console", consoleShell(FULL)],
   ["console-empty", consoleShell(null)],
   ["console-long", consoleShell(LONG)],
-  ["grid", gridShell(FULL)],
-  ["grid-without-strip", `<div class="app" style="--topbar-h:88px;--cmdbar-clearance:64px">${TOPBAR}
-     <nav class="line"></nav>
-     <div class="card expanded" style="width:900px"><div class="card-panels"></div></div>
-   </div>`],
 ];
 
 let measured: Record<string, Measured>;
@@ -216,9 +190,9 @@ before(() => {
  *
  * Every assertion in this file goes through here, so a window that changed size can only
  * ever be reported as a window that changed size. It is the difference between the two
- * sentences CI can print about the same event: "the strip took height out of the expanded
- * card", which sends somebody to `LineStrip.tsx` and `styles.css` looking for a bug that is
- * not there, and "grid-without-strip was measured in a 1400x873 window", which is true.
+ * sentences CI can print about the same event: "the strip took height out of the layout",
+ * which sends somebody to `LineStrip.tsx` and `styles.css` looking for a bug that is not
+ * there, and "console-without-strip was measured in a 1400x873 window", which is true.
  */
 function at(name: string): Measured {
   const m = measured[name];
@@ -268,26 +242,9 @@ test("a full-height shell still ends at the viewport, so the reply box stays rea
   assert.ok((m.bodyHeight ?? 0) > 600, `the console body collapsed to ${m.bodyHeight}px`);
 });
 
-test("the expanded card's height is the strip's business to stay out of", () => {
-  // The regression this exists to catch: putting the strip inside `<header class="topbar">`
-  // grows the measured `--topbar-h` and silently shortens every focus-expanded card on the
-  // grid. Same page, same tokens, with and without a populated strip - the card must not
-  // notice.
-  //
-  // Both cases are read through `at`, so the comparison is only ever made between two pages
-  // that were laid out in the same window. Without that, the difference this asserts on is
-  // indistinguishable from the window having changed size between two loads - and since the
-  // card is `100dvh` minus three pinned tokens, a window that moved by 27px produces a card
-  // that moved by 27px and an assertion that blames the strip for it.
-  const withStrip = at("grid").cardHeight;
-  const without = at("grid-without-strip").cardHeight;
-  assert.ok(withStrip && without, "both grid cases must measure a card");
-  assert.equal(withStrip, without, "the strip took height out of the expanded card");
-});
-
 test("the strip is the same height whatever it is saying", () => {
   // It sits directly above the board. A stage that grew a line when a workflow name got
-  // long - or lost one when a stage went quiet - would move every card on the page.
+  // long - or lost one when a stage went quiet - would move every fleet surface on the page.
   const full = at("console").lineBoxHeight;
   assert.equal(at("console-empty").lineBoxHeight, full, "an empty strip shrank");
   assert.equal(at("console-long").lineBoxHeight, full, "a wordy strip grew");

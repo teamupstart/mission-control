@@ -215,6 +215,32 @@ npm run dev
 Open `http://127.0.0.1:5173`. For the desktop shell, demo mode, hooks, state locations, and
 the full verification path, use the setup guide below.
 
+## Choose how the app's own model calls are made
+
+Beyond the agents in the cards, Mission Control makes a few model calls of its own - naming an
+untitled dispatch, refining a Goal, narrating the away digest, reviewing a pull request. Those
+run through a local CLI you are already logged in to, so there is no API key anywhere in this
+path, and **Settings → Models** picks which provider does that work.
+
+Each provider also has a *transport*: how the daemon talks to that CLI. Both are stored in the
+`llm` config, both can be pinned from the environment, and both resolve the same way - the saved
+setting first, then the environment variable, then the shipped default.
+
+| Provider | Values | Stored as | Environment | Default |
+|---|---|---|---|---|
+| Claude | `sdk`, `print` | `llm.claudeTransport` | `MISSION_CLAUDE_TRANSPORT` | `sdk` |
+| Codex | `exec`, `sdk` | `llm.codexTransport` | `MISSION_CODEX_TRANSPORT` | `exec` |
+
+For Codex, `exec` spawns `codex exec` and decodes its `--json` stream by hand; `sdk` drives the
+same binary through `@openai/codex-sdk` and reads typed thread events instead. **That is a choice
+about how a reply is parsed, not about how it is fetched.** Both transports spawn the same
+executable and pay the same model round trip, so selecting `sdk` buys typed events and a
+supported cancellation path - and does not make anything faster. Reach for it to debug or to get
+structured events, never to fix a slow dispatch.
+
+Full behavior, including why the SDK is pinned to the same binary `MISSION_CODEX_BIN` names, is in
+[configuration](docs/configuration.md) and [models](docs/models.md).
+
 ## Go deeper
 
 - [Documentation index](docs/README.md) - product behavior, configuration, and feature guides.

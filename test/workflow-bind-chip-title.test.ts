@@ -4,7 +4,7 @@ import { ownBindingBySession, workflowBindChipTitle } from "../src/web/lib/held.
 import { WORKFLOW_TRIGGER_MODES, type WorkflowBindingSummary } from "../src/shared/workflow.ts";
 
 // What is at stake: the bind chip's tooltip is the one sentence telling an operator whether a
-// review is coming on its own. It was written twice, in SessionCard and ConsoleDetail, and both
+// review is coming on its own. It is rendered in ConsoleDetail,
 // copies claimed the workflow "runs when this session's work is complete" for EVERY binding.
 // That holds only for `foreman_complete`. A `manual` binding waits for an explicit submit, so
 // the sentence promised an automatic review that was never coming.

@@ -207,8 +207,8 @@ test("capture the authoring and run surfaces", async ({ dashboard, daemon }) => 
   }, "PATCH");
   await api(daemon, `/api/session-actions/${action.id}`, { expectedRevision: 3 }, "DELETE");
 
-  // Back off the Board, so the builder rail is on screen rather than the tile columns.
-  await api(daemon, "/api/ui/config", { layout: "grid" }, "PUT");
+  // Return to Console, so the builder rail is on screen rather than the Board columns.
+  await api(daemon, "/api/ui/config", { layout: "console" }, "PUT");
   await dashboard.goto(`${daemon.baseURL}/#/workflows`);
   await dashboard.reload();
   await dashboard.getByRole("button", { name: /Ship it/ }).click();

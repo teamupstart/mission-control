@@ -5,7 +5,12 @@ import { z } from "zod";
 import type { ReviewItem } from "@shared/types.ts";
 import { ENSEMBLE_LIMITS } from "@shared/ensemble.ts";
 import { SCOUT_REPORT_PATH_SHAPE, SCOUT_SUBMISSION_LIMITS } from "@shared/scouts.ts";
-import { WORKFLOW_IMAGE_LIMITS, WORKFLOW_TEXT_EVIDENCE_LIMITS } from "@shared/workflow.ts";
+import {
+  WORKFLOW_IMAGE_LIMITS,
+  WORKFLOW_LIMITS,
+  WORKFLOW_TEXT_EVIDENCE_LIMITS,
+  workflowCommandEvidenceContent,
+} from "@shared/workflow.ts";
 import {
   BASE_URL,
   SCOUT_SUBMISSION_CREDENTIAL_HEADER,
@@ -628,9 +633,10 @@ server.registerTool(
   {
     title: "Register workflow evidence",
     description:
-      "Register gitignored screenshots and focused UTF-8 text/log artifacts for the Persona workflow " +
-      "that will run when this task completes. Mission Control freezes applicable evidence into the " +
-      "immutable submission. Do not commit evidence artifacts.",
+      "Register gitignored screenshots, focused UTF-8 text/log artifacts, or the exact command, exit " +
+      "code, and output from a completed focused check for the Persona workflow that will run when " +
+      "this task completes. Mission Control freezes applicable evidence into the immutable submission. " +
+      "Do not commit evidence artifacts.",
     inputSchema: {
       images: z.array(z.object({
         clientItemId: z.string().min(1).max(WORKFLOW_IMAGE_LIMITS.clientItemIdChars)
@@ -678,9 +684,50 @@ server.registerTool(
         )
         .optional()
         .describe("Optional gitignored focused test output or other UTF-8 text evidence."),
+      commandOutputs: z.array(z.object({
+        clientItemId: z.string().min(1).max(WORKFLOW_TEXT_EVIDENCE_LIMITS.clientItemIdChars)
+          .describe("Stable caller id used to make an identical registration idempotent."),
+        command: z.string().trim().min(1).max(WORKFLOW_LIMITS.checkCommandLength)
+          .describe("The exact focused command that completed."),
+        exitCode: z.number().int().min(0).max(2_147_483_647)
+          .describe("The completed command's process exit code."),
+        output: z.string().max(WORKFLOW_TEXT_EVIDENCE_LIMITS.maxBytesPerArtifact)
+          .describe("The exact completed stdout/stderr output. Empty is allowed when the command printed nothing."),
+        caption: z.string().trim().min(1).max(WORKFLOW_TEXT_EVIDENCE_LIMITS.captionChars)
+          .describe("A precise statement of the behavior this command output demonstrates."),
+        repositoryScope: z.union([
+          z.literal("all"),
+          z.string().regex(/^repo-\d{2}$/),
+        ]).describe("An issued repository slot such as repo-01, or all."),
+      }).superRefine((value, ctx) => {
+        if (
+          Buffer.byteLength(workflowCommandEvidenceContent(value))
+          > WORKFLOW_TEXT_EVIDENCE_LIMITS.maxBytesPerArtifact
+        ) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["output"],
+            message: `Workflow command evidence exceeds ${WORKFLOW_TEXT_EVIDENCE_LIMITS.maxBytesPerArtifact} UTF-8 bytes`,
+          });
+        }
+      }))
+        .max(WORKFLOW_TEXT_EVIDENCE_LIMITS.maxCount)
+        .refine(
+          (value) => new Set(value.map((item) => item.clientItemId)).size === value.length,
+          "Workflow evidence client item ids must be unique",
+        )
+        .refine(
+          (value) => value.reduce(
+            (sum, item) => sum + Buffer.byteLength(workflowCommandEvidenceContent(item)),
+            0,
+          ) <= WORKFLOW_TEXT_EVIDENCE_LIMITS.maxAggregateBytes,
+          `Workflow command evidence exceeds ${WORKFLOW_TEXT_EVIDENCE_LIMITS.maxAggregateBytes} aggregate UTF-8 bytes`,
+        )
+        .optional()
+        .describe("Optional exact output from completed focused commands, without creating a temporary file."),
     },
   },
-  async ({ images, artifacts }) => {
+  async ({ images, artifacts, commandOutputs }) => {
     try {
       const res = await http("/mcp/workflow-evidence", "POST", {
         env: ENV,
@@ -688,6 +735,7 @@ server.registerTool(
         cwd: process.cwd(),
         images: (images ?? []).map((image) => ({ kind: "agent", ...image })),
         artifacts: (artifacts ?? []).map((artifact) => ({ kind: "text", ...artifact })),
+        commandOutputs: (commandOutputs ?? []).map((artifact) => ({ kind: "command", ...artifact })),
       });
       if (!res.ok) {
         return textResult(
@@ -698,7 +746,8 @@ server.registerTool(
       const body = (await res.json()) as { images?: unknown[]; artifacts?: unknown[]; generation?: number };
       return textResult(
         `Registered ${body.images?.length ?? images?.length ?? 0} image(s) and `
-        + `${body.artifacts?.length ?? artifacts?.length ?? 0} text artifact(s) at workflow evidence `
+        + `${body.artifacts?.length ?? ((artifacts?.length ?? 0) + (commandOutputs?.length ?? 0))} `
+        + `text artifact(s) at workflow evidence `
         + `generation ${body.generation ?? 0}.`,
       );
     } catch (err) {

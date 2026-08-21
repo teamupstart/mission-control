@@ -337,9 +337,12 @@ test("an externally sourced finished run leaves the next one to its orchestrator
 });
 
 test("a waiting run resumes the review, in the binding's own voice", () => {
+  // The label NAMES THE ROUND it opens. It used to read "Resume review", which promised the
+  // stopped round would carry on; the daemon opens `latest.round + 1` and re-runs every node
+  // from an empty slate, so an operator counting rounds was counting the wrong thing.
   assert.deepEqual(
     moveOf({ status: "waiting_for_session", live: true }),
-    { kind: "resubmit", label: "Resume review" },
+    { kind: "resubmit", label: "Start repair round 3" },
   );
   // Preview mode is the label's own branch and not a caller's choice: a bound preview must
   // never invite an operator to a live submission.
@@ -582,7 +585,7 @@ test("a blocked fault that a fresh capture can clear still offers the resubmissi
   ]) {
     assert.deepEqual(
       moveOf({ status: "blocked", phase, live: true }),
-      { kind: "resubmit", label: "Resume review" },
+      { kind: "resubmit", label: "Start repair round 3" },
       `blocked/${phase} must still offer a resubmission`,
     );
   }
@@ -884,4 +887,48 @@ test("every move the table can produce is a sendable POST, and never sits beside
   }
   // The sweep has to actually reach moves, or it proves nothing about them.
   assert.ok(moves > 0, "the status sweep produced no moves at all");
+});
+
+/*
+ * The pre-capture refusal, and why it does not borrow the older one's sentence.
+ *
+ * `unchanged_evidence` refuses a snapshot that has already been taken, so its copy is about
+ * reusing that snapshot and the images frozen into it. `unchanged_repository` refuses two git
+ * reads BEFORE any submission exists: nothing was captured, nothing was frozen, and no round
+ * was spent. Telling that operator about reused images would describe a submission they do not
+ * have - and, worse, would leave the one fact they need unsaid, which is that proceeding costs
+ * a round on work that has not moved.
+ */
+test("a repository that has not moved offers the recovery, and names what proceeding costs", () => {
+  const move = runNextMove(detailFor({
+    status: "waiting_for_session",
+    phase: "unchanged_repository",
+    live: true,
+    round: 4,
+  }));
+  assert.equal(move?.kind, "resubmit-unchanged");
+  assert.equal(move?.label, "Review it anyway");
+  assert.equal(move?.body.resubmitUnchanged, true);
+  assert.match(move?.path ?? "", /\/resubmit$/);
+  assert.match(move?.confirm?.body ?? "", /repository has not changed since round 4/);
+  assert.match(move?.confirm?.body ?? "", /spends one repair round/);
+  // The escape hatch is named, because it is the reason this is a question and not a refusal.
+  assert.match(move?.confirm?.body ?? "", /transcript itself is the evidence/);
+  // And it must not claim to reuse a snapshot that was never taken.
+  assert.doesNotMatch(move?.confirm?.body ?? "", /snapshot already taken/);
+  assert.equal(runNoMoveReason(detailFor({
+    status: "waiting_for_session",
+    phase: "unchanged_repository",
+    live: true,
+  })), null);
+});
+
+test("the captured-snapshot refusal keeps its own sentence", () => {
+  const move = runNextMove(detailFor({
+    status: "waiting_for_session",
+    phase: "unchanged_evidence",
+    live: true,
+  }));
+  assert.equal(move?.label, "Review this snapshot anyway");
+  assert.match(move?.confirm?.body ?? "", /snapshot already taken/);
 });

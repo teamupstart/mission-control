@@ -1,6 +1,6 @@
 import { test, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -29,6 +29,7 @@ process.env.HARNESS_HOME = join(home, "state");
 const { openDb, setAppConfig } = await import("../src/server/db.ts");
 const {
   claudeTransportChoice,
+  codexTransportChoice,
   getLlmConfig,
   llmJobModel,
   llmRunnerChoice,
@@ -37,8 +38,12 @@ const {
 } = await import("../src/server/llm/config.ts");
 const { LLM_JOB_IDS, LLM_JOB_SPECS } = await import("../src/shared/llm-jobs.ts");
 const {
+  CLAUDE_TRANSPORT_ENV_VAR,
   CLAUDE_TRANSPORTS,
+  CODEX_TRANSPORT_ENV_VAR,
+  CODEX_TRANSPORTS,
   DEFAULT_CLAUDE_TRANSPORT,
+  DEFAULT_CODEX_TRANSPORT,
   DEFAULT_LLM_RUNNER_ID,
   LLM_RUNNER_IDS,
 } = await import(
@@ -85,6 +90,39 @@ test("an unknown Claude transport degrades to the shipped default", () => {
 
   process.env.MISSION_CLAUDE_TRANSPORT = "future-wire";
   assert.equal(claudeTransportChoice(), DEFAULT_CLAUDE_TRANSPORT);
+});
+
+/**
+ * What is at stake: the Codex transport is a choice about how a reply is PARSED, never about
+ * what is executed - the SDK spawns the same binary. So the shipped default must stay `exec`,
+ * and an unreadable stored value must degrade to it rather than take every background job
+ * down. Same ladder, same tolerance, and asserted separately from Claude's so a change to one
+ * cannot quietly move the other.
+ */
+test("Codex transport resolves config, then env, then the exec default", () => {
+  assert.equal(DEFAULT_CODEX_TRANSPORT, "exec", "the shipped path must remain the default");
+  assert.equal(codexTransportChoice(), DEFAULT_CODEX_TRANSPORT);
+
+  process.env.MISSION_CODEX_TRANSPORT = "sdk";
+  assert.equal(codexTransportChoice(), "sdk", "the environment fallback was ignored");
+
+  setLlmConfig({ codexTransport: "exec" });
+  assert.equal(codexTransportChoice(), "exec", "the stored choice must beat the environment");
+
+  setLlmConfig({ codexTransport: "sdk" });
+  assert.equal(codexTransportChoice(), "sdk");
+  delete process.env.MISSION_CODEX_TRANSPORT;
+});
+
+test("an unknown Codex transport degrades to the shipped default", () => {
+  setAppConfig("llm", { codexTransport: "future-wire", models: {} });
+  assert.doesNotThrow(() => getLlmConfig());
+  assert.equal(getLlmConfig().codexTransport, "");
+  assert.equal(codexTransportChoice(), DEFAULT_CODEX_TRANSPORT);
+
+  process.env.MISSION_CODEX_TRANSPORT = "future-wire";
+  assert.equal(codexTransportChoice(), DEFAULT_CODEX_TRANSPORT);
+  delete process.env.MISSION_CODEX_TRANSPORT;
 });
 
 test("a model override is stored and resolves as `config`", () => {
@@ -186,4 +224,66 @@ test("the status route carries every job, the runner, and the providers this bui
 
   setLlmConfig({ claudeTransport: "sdk" });
   assert.equal(llmStatus().claudeTransport, "sdk", "the resolved transport did not reach status");
+});
+
+/**
+ * What is at stake: both transports are chosen by an environment variable an operator types
+ * into a shell, and a variable nobody can find is a variable nobody can use. The project
+ * standard is that a configuration change lands with its documentation in the same commit - a
+ * rule that is only worth anything if something notices when it is skipped, which nothing did
+ * when the Codex transport first shipped.
+ *
+ * BOTH files, because they answer different questions and a reader arrives at only one of
+ * them: `README.md` is where someone deciding whether to touch this at all looks, and
+ * `docs/configuration.md` is the exhaustive table someone already reaching for the variable
+ * looks. Documenting a transport in one and not the other is the failure that was reviewed
+ * here, not a lesser version of it.
+ *
+ * Pinned for BOTH transports rather than only the newer one: the defect this guards is "a
+ * transport shipped undocumented", and asserting it asymmetrically would leave the next one to
+ * be caught by a human again.
+ */
+test("every headless transport env var is documented where an operator would look", () => {
+  const pages = ["../README.md", "../docs/configuration.md"];
+  for (const page of pages) {
+    const doc = readFileSync(new URL(page, import.meta.url), "utf8");
+    for (const name of [CLAUDE_TRANSPORT_ENV_VAR, CODEX_TRANSPORT_ENV_VAR]) {
+      assert.ok(
+        doc.includes(`\`${name}\``),
+        `${name} selects a transport but ${page.replace("../", "")} never names it`,
+      );
+    }
+  }
+});
+
+/**
+ * The values and the default, not just the variable name. A page that names
+ * `MISSION_CODEX_TRANSPORT` without saying what may be put in it, or which value holds when
+ * nobody sets it, has documented that a knob exists and nothing an operator can act on.
+ */
+test("the readme names every transport value and which one ships as the default", () => {
+  const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
+  for (const value of [...CLAUDE_TRANSPORTS, ...CODEX_TRANSPORTS]) {
+    assert.ok(readme.includes(`\`${value}\``), `README.md never names the \`${value}\` transport`);
+  }
+  assert.ok(
+    readme.includes("`llm.codexTransport`"),
+    "README.md does not say where a Codex transport choice is stored",
+  );
+  assert.ok(
+    readme.includes("`llm.claudeTransport`"),
+    "README.md does not say where a Claude transport choice is stored",
+  );
+  // The defaults ride in the table's own cells, so pin the rows rather than the bare words -
+  // "`sdk`" appears as a selectable value for both providers and proves nothing on its own.
+  assert.match(
+    readme,
+    /\| Codex \|[^\n]*\| `exec` \|\s*$/m,
+    `README.md must show ${DEFAULT_CODEX_TRANSPORT} as the shipped Codex default`,
+  );
+  assert.match(
+    readme,
+    /\| Claude \|[^\n]*\| `sdk` \|\s*$/m,
+    `README.md must show ${DEFAULT_CLAUDE_TRANSPORT} as the shipped Claude default`,
+  );
 });

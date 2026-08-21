@@ -20,10 +20,10 @@ test("Best-of-N member task titles start with their ordered candidate labels", a
     throw new Error(`ensemble creation answered ${response.status}: ${await response.text()}`);
   }
 
-  const sessionCards = dashboard.getByRole("article").filter({
-    has: dashboard.getByRole("button", { name: "Expand conversation" }),
-  });
-  await expect(sessionCards.getByRole("heading", { level: 2 })).toHaveText(
+  const sessionRows = dashboard
+    .getByRole("navigation", { name: "Sessions" })
+    .locator("button.rail-row");
+  await expect(sessionRows.locator(".rail-name")).toHaveText(
     [
       /^Candidate 1 - Prefix ensemble task/,
       /^Candidate 2 - Prefix ensemble task/,

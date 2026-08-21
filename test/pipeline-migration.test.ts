@@ -122,7 +122,7 @@ test("an upgraded machine reads the off posture, from zod defaults rather than a
   // shipped defaults, so there is no migration to get wrong and no state in between.
   const config = getPipelinesConfig();
   assert.equal(config.enabled, false);
-  assert.equal(config.launchRuntime, "claude-sdk");
+  assert.equal(config.launchRuntime, "agent-sdk");
   assert.deepEqual(config.repos, []);
 });
 

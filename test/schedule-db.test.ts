@@ -196,6 +196,7 @@ function mkTask(over: Partial<Task> = {}): Task {
     createdAt: T0,
     updatedAt: T0,
     dispatchedAt: null,
+    automaticCleanup: null,
     completedAt: null,
     ...over,
     pipelineRun: over.pipelineRun ?? null,

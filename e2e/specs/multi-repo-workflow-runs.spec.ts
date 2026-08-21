@@ -308,7 +308,8 @@ test("a two-repo task runs one review per changed repo, each named on the card",
 
   // The operator sees one chip per run, each naming the repository it reviews. A single chip
   // here would hide a repository's review behind whichever run updated last.
-  const card = dashboard.locator("article.card").first();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
   const chips = card.locator(".workflow-chip");
   await expect(chips).toHaveCount(2);
   await expect(card.locator(".workflow-chip-repo", { hasText: "demo-repo" })).toHaveCount(1);
@@ -351,7 +352,8 @@ test("a repo the task never changed gets no review at all", async ({ dashboard, 
   // One chip, and it is the attached repository's. Sampled over several ticks rather than
   // asserted once: "no second review appeared" is exactly the claim a single early read
   // passes by being taken before the second one would have been created.
-  const card = dashboard.locator("article.card").first();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
   await expect(card.locator(".workflow-chip")).toHaveCount(1);
   for (let i = 0; i < 5; i += 1) {
     const page = await api<{ items: RunRow[] }>(
@@ -394,7 +396,8 @@ test("a single-repo task still shows exactly one unnamed workflow chip", async (
   });
   await settledRuns(daemon, session.id, 1);
 
-  const card = dashboard.locator("article.card").first();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
   await expect(card.locator(".workflow-chip")).toHaveCount(1);
   await expect(card.locator(".workflow-chip-repo")).toHaveCount(0);
   await shoot(dashboard, "single-repo-unchanged", card);

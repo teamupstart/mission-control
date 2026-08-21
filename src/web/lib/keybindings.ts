@@ -1,6 +1,6 @@
 // Customizable keyboard shortcuts.
 //
-// The grid's global keys (drive/act on the selected card, open the overlays) all
+// The app's global keys (drive or act on the selected session, open the overlays) all
 // live here as an editable registry rather than being hard-coded in App. Each
 // action resolves to a *chord* - a canonical string like "s", "cmd+k", "/", or
 // "shift+Tab" - that both the runtime handler and the settings editor compare

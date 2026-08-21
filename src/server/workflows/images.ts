@@ -18,6 +18,7 @@ import { basename, dirname, extname, join, relative, resolve, sep } from "node:p
 import type { LlmImageInput } from "@shared/llm.ts";
 import type {
   WorkflowAgentEvidenceLocator,
+  WorkflowAgentCommandEvidenceLocator,
   WorkflowAgentTextEvidenceLocator,
   WorkflowEvidenceImage,
   WorkflowEvidenceTextArtifact,
@@ -26,7 +27,11 @@ import type {
   WorkflowStagedEvidenceList,
   WorkflowUploadEvidenceLocator,
 } from "@shared/workflow.ts";
-import { WORKFLOW_IMAGE_LIMITS, WORKFLOW_TEXT_EVIDENCE_LIMITS } from "@shared/workflow.ts";
+import {
+  WORKFLOW_IMAGE_LIMITS,
+  WORKFLOW_TEXT_EVIDENCE_LIMITS,
+  workflowCommandEvidenceContent,
+} from "@shared/workflow.ts";
 import { sniffRasterImageMimeType } from "@shared/images.ts";
 import { STATE_DIR } from "../config.ts";
 import { resolveCheckoutFile, resolveRoots, isIgnored } from "../archives/checkout.ts";
@@ -317,6 +322,7 @@ export async function stageAgentWorkflowEvidence(input: {
   fallbackRoot: string | null;
   images: readonly WorkflowAgentEvidenceLocator[];
   artifacts?: readonly WorkflowAgentTextEvidenceLocator[];
+  commandOutputs?: readonly WorkflowAgentCommandEvidenceLocator[];
   now?: number;
 }): Promise<WorkflowStagedEvidenceList> {
   const roots = await resolveRoots(scoutRepoSlots(input.task, input.fallbackRoot));
@@ -392,6 +398,45 @@ export async function stageAgentWorkflowEvidence(input: {
       mimeType: "text/plain",
       bytes: inspected.bytes,
       sha256: inspected.sha256,
+    });
+  }
+  for (const commandOutput of input.commandOutputs ?? []) {
+    const selected = rootForScope(roots, commandOutput.repositoryScope);
+    if (
+      commandOutput.repositoryScope !== "all"
+      && !findScoutRepoSlot(
+        scoutRepoSlots(input.task, input.fallbackRoot),
+        commandOutput.repositoryScope,
+      )
+    ) {
+      throw new WorkflowImageEvidenceError("repository_scope", "Evidence repository slot was not issued", 403);
+    }
+    const content = workflowCommandEvidenceContent(commandOutput);
+    const data = Buffer.from(content, "utf8");
+    artifactAggregate += data.byteLength;
+    if (
+      data.byteLength > WORKFLOW_TEXT_EVIDENCE_LIMITS.maxBytesPerArtifact
+      || artifactAggregate > WORKFLOW_TEXT_EVIDENCE_LIMITS.maxAggregateBytes
+    ) {
+      throw new WorkflowImageEvidenceError(
+        "artifact_aggregate",
+        "Workflow text evidence exceeds its byte limit",
+      );
+    }
+    writes.push({
+      id: randomUUID(),
+      clientItemId: commandOutput.clientItemId,
+      sourceKind: "command",
+      evidenceKind: "text",
+      sourceRoot: selected.realRoot,
+      sourceLocator: `command:${commandOutput.clientItemId}`,
+      inlineContent: content,
+      displayName: cleanDisplayName(`${commandOutput.clientItemId}-command-output.txt`),
+      caption: commandOutput.caption.trim(),
+      repositoryScope: commandOutput.repositoryScope,
+      mimeType: "text/plain",
+      bytes: data.byteLength,
+      sha256: createHash("sha256").update(data).digest("hex"),
     });
   }
   return input.store.stageWorkflowEvidence(input.noteKey, writes, input.now);
@@ -633,18 +678,36 @@ export async function captureSubmissionTextArtifacts(
   const writes: WorkflowSubmissionTextArtifactWrite[] = [];
   let aggregate = 0;
   for (const item of reserved) {
-    if (item.sourceKind !== "agent") {
+    let inspected: InspectedTextArtifact;
+    if (item.sourceKind === "agent") {
+      const resolved = await resolveCheckoutFile(item.sourceRoot, item.sourceLocator);
+      if (!resolved.ok) {
+        throw new WorkflowImageEvidenceError("artifact_path", `Reserved text evidence path ${resolved.reason}`);
+      }
+      inspected = inspectOpenTextFile(
+        resolved.path,
+        { bytes: item.bytes, sha256: item.sha256 },
+        item.sourceRoot,
+      );
+    } else if (item.sourceKind === "command" && item.inlineContent !== null && item.inlineContent !== undefined) {
+      const data = Buffer.from(item.inlineContent, "utf8");
+      const sha256 = createHash("sha256").update(data).digest("hex");
+      if (data.byteLength !== item.bytes || sha256 !== item.sha256) {
+        throw new WorkflowImageEvidenceError(
+          "artifact_changed",
+          "Reserved command evidence no longer matches its registered bytes",
+        );
+      }
+      inspected = {
+        path: item.sourceLocator,
+        bytes: data.byteLength,
+        mimeType: "text/plain",
+        sha256,
+        content: item.inlineContent,
+      };
+    } else {
       throw new WorkflowImageEvidenceError("artifact_source", "Reserved text evidence has an invalid source");
     }
-    const resolved = await resolveCheckoutFile(item.sourceRoot, item.sourceLocator);
-    if (!resolved.ok) {
-      throw new WorkflowImageEvidenceError("artifact_path", `Reserved text evidence path ${resolved.reason}`);
-    }
-    const inspected = inspectOpenTextFile(
-      resolved.path,
-      { bytes: item.bytes, sha256: item.sha256 },
-      item.sourceRoot,
-    );
     aggregate += inspected.bytes;
     if (aggregate > WORKFLOW_TEXT_EVIDENCE_LIMITS.maxAggregateBytes) {
       throw new WorkflowImageEvidenceError(

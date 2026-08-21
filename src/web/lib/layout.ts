@@ -1,13 +1,12 @@
 import { useCallback } from "react";
-import { LAYOUT_MODES } from "@shared/protocol.ts";
+import { LAYOUT_MODES, UI_CONFIG_DEFAULTS } from "@shared/protocol.ts";
 import type { LayoutMode } from "@shared/protocol.ts";
 import { updateUiConfig, useUiConfig } from "./uiConfig.ts";
 
 /**
- * Which arrangement the dashboard is in. The same sessions, the same cards, the
- * same actions - only the shape around them changes:
+ * Which arrangement the dashboard is in. The same sessions and actions are available;
+ * only the shape around them changes:
  *
- * - `grid`    the original: every session a card, one expands in place to focus.
  * - `console` split-pane: a rail of every session, one always-open detail beside it.
  * - `board`   kanban by state: a column per tone, drilling into the console detail on click.
  *
@@ -26,11 +25,6 @@ export const LAYOUTS: { id: LayoutMode; label: string; description: string }[] =
       "A column per state, so the fleet's shape reads at a glance. Opening a session drills into the console - that column becomes the rail, the full detail fills the rest, and Esc returns you to the board.",
   },
   {
-    id: "grid",
-    label: "Cards",
-    description: "Every session a card in a responsive grid. One expands in place to fill the screen.",
-  },
-  {
     id: "console",
     label: "Console",
     description:
@@ -39,41 +33,31 @@ export const LAYOUTS: { id: LayoutMode; label: string; description: string }[] =
 ];
 
 /**
- * Layouts an operator may select from Display settings.
- *
- * Cards remains in `LAYOUTS` because existing `grid` preferences and the dashboard's
- * rendering paths still support it. Its retirement is staged: it is deliberately absent
- * here so Settings cannot turn it on again while that implementation remains in place.
- */
-export const SELECTABLE_LAYOUTS = LAYOUTS.filter((layout) => layout.id !== "grid");
-
-/**
  * Which piece of state a layout has to drop to put its overview back.
  *
- * The grid's open detail is focus mode, so closing it is `expanded` and the selection
- * stays where it is - that is the keyboard's place among the cards, and losing it on
- * every close would make the arrow keys start from scratch. In the console the detail IS
- * the selection. The board has its own open layer so arrow-key selection can move over
+ * In the console the detail IS the selection. The board has its own open layer so arrow-key selection can move over
  * tiles without drilling into each one; Enter promotes that selection into the open layer.
  *
- * A fourth layout answers here rather than growing another `layout === "grid"` ternary
+ * A future layout answers here rather than growing another layout-specific ternary
  * inside App. Escape peels the same layers, one press at a time.
  */
-export function detailLayer(mode: LayoutMode): "expanded" | "selection" | "board" {
-  return mode === "grid" ? "expanded" : mode === "board" ? "board" : "selection";
+export function detailLayer(mode: LayoutMode): "selection" | "board" {
+  return mode === "board" ? "board" : "selection";
 }
 
 /**
  * A stored value is only trusted if it's still a layout we ship. Anything else -
  * a hand-edited key, a mode from a future version, a half-written string - falls
- * back to the grid rather than rendering nothing.
+ * back to Console rather than rendering nothing.
  *
  * `LAYOUT_MODES` is the shared list the daemon's schema validates against too, so a mode
  * cannot be renderable here and rejected there (or the reverse). `LAYOUTS` carries the
  * prose, which the daemon has no use for.
  */
 export function parseLayoutMode(raw: string | null | undefined): LayoutMode {
-  return (LAYOUT_MODES as readonly string[]).includes(raw ?? "") ? (raw as LayoutMode) : "grid";
+  return (LAYOUT_MODES as readonly string[]).includes(raw ?? "")
+    ? (raw as LayoutMode)
+    : UI_CONFIG_DEFAULTS.layout;
 }
 
 /** The chosen layout, stored in the daemon. */

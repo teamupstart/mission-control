@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -186,12 +187,19 @@ test("native Git operations fail closed when a subprocess outcome is unknown", a
   ).list(identity);
   assertUnknown(listed, /git worktree list/);
 
-  for (const unknownProbe of ["rev-parse", "status"]) {
+  const inspectSteps: Record<string, RegExp> = {
+    "rev-parse": /git rev-parse HEAD/,
+    status: /git status/,
+    // A detached-HEAD probe that never answered is not "detached". It gates the lease, so
+    // it fails the whole inspection rather than defaulting either way.
+    "symbolic-ref": /git symbolic-ref HEAD/,
+  };
+  for (const [unknownProbe, step] of Object.entries(inspectSteps)) {
     const inspected = await new NativeWorktreeGit(async (_bin, args) => {
       if (args.includes(unknownProbe)) return unknown(unknownProbe === "rev-parse" ? `${sha}\n` : "");
-      return known(unknownProbe === "status" ? `${sha}\n` : "");
+      return known(unknownProbe === "rev-parse" ? "" : `${sha}\n`);
     }).inspect(clone);
-    assertUnknown(inspected, unknownProbe === "rev-parse" ? /git rev-parse HEAD/ : /git status/);
+    assertUnknown(inspected, step);
   }
 
   const added = await new NativeWorktreeGit(async () => unknown()).add(
@@ -204,10 +212,19 @@ test("native Git operations fail closed when a subprocess outcome is unknown", a
   const fetched = await new NativeWorktreeGit(async () => unknown()).fetchDefaultSha(identity);
   assertUnknown(fetched, /git fetch origin/);
 
-  const resolved = await new NativeWorktreeGit(async (_bin, args) =>
+  // Return asks the REMOTE which branch it currently calls default, so an ls-remote that
+  // died is an unknown default rather than a licence to reuse the cached `origin/HEAD`.
+  const symref = await new NativeWorktreeGit(async (_bin, args) =>
     args.includes("fetch") ? known() : unknown(`${sha}\n`)
   ).fetchDefaultSha(identity);
-  assertUnknown(resolved, /git rev-parse origin\//);
+  assertUnknown(symref, /git ls-remote --symref origin HEAD/);
+
+  const resolved = await new NativeWorktreeGit(async (_bin, args) => {
+    if (args.includes("fetch")) return known();
+    if (args.includes("ls-remote")) return known(`ref: refs/heads/main\tHEAD\n${sha}\tHEAD\n`);
+    return unknown(`${sha}\n`);
+  }).fetchDefaultSha(identity);
+  assertUnknown(resolved, /git rev-parse refs\/remotes\/origin\/main/);
 
   const observed = await new NativeWorktreeGit(async () => unknown(`${sha}\n`))
     .observedDefaultSha(identity);
@@ -536,9 +553,11 @@ test("reset removes nonignored work while preserving ignored warm caches", async
   assert.equal((await m.release(first)).outcome, "released");
   assert.equal(existsSync(cache), true, "git clean -fd must preserve ignored caches");
   assert.equal(existsSync(scratch), false, "nonignored untracked work is removed on release");
+  assert.equal(detachedOnDisk(first.path), true, "a returned slot holds no branch");
   const second = lease(await acquire(m, clone, sha, "task-cache-2"));
   assert.equal(second.path, first.path);
   assert.equal(existsSync(cache), true);
+  assert.equal(detachedOnDisk(second.path), true, "…and neither does the reused one");
   await m.release(second);
 });
 
@@ -814,4 +833,176 @@ test("unknown Git add, lease commit, and return reset outcomes quarantine instea
     reason: "reset timed out",
   });
   assert.equal(returnManager.store.slot(held.slotId)?.state, "quarantined");
+});
+
+// ---- a slot never crosses a task boundary holding a branch -------------------------------
+//
+// The incident this closes: a scheduled task was leased a warm slot that was still standing
+// on the previous occupant's `codex/…` branch. Every check the allocator ran passed - the
+// path, the repository, the exact commit, a clean tree - because none of them asked which
+// branch, and the reset that made the tree clean moved that branch's tip rather than
+// letting go of its name. The agent then renamed the branch it thought was its own, the
+// registry correctly read one feature branch becoming another as a work-episode takeover,
+// and the task was unbound and cancelled eleven seconds later.
+
+/** `git symbolic-ref --quiet HEAD` as a boolean: true when no branch is checked out. */
+function detachedOnDisk(path: string): boolean {
+  try {
+    execFileSync("git", ["-C", path, "symbolic-ref", "--quiet", "HEAD"], { stdio: "pipe" });
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * The allocator as it shipped before this rule: a reset that hard-resets and cleans without
+ * ever letting go of the branch, and an inspection with nothing to say about it.
+ *
+ * Used to MANUFACTURE the bad state rather than to assert it - a slot left branch-attached
+ * in a warm pool by an older build is the population this change has to repair on contact,
+ * and the only honest way to produce one is to run the code that produced them.
+ */
+class PreDetachGit extends NativeWorktreeGit {
+  override async reset(path: string, commit: string): Promise<GitResult<void>> {
+    gitIn(path, "reset", "--hard", commit);
+    gitIn(path, "clean", "-fd");
+    return { ok: true, value: undefined };
+  }
+  override async inspect(path: string) {
+    const inspected = await super.inspect(path);
+    return inspected.ok ? { ...inspected, value: { ...inspected.value, detached: true } } : inspected;
+  }
+}
+
+test("a reused slot attached to the previous occupant's branch is leased detached", async () => {
+  const { clone } = mkOriginAndClone("mission-native-detach-");
+  const sha = gitIn(clone, "rev-parse", "HEAD");
+  const m = manager({ resolvePolicy: () => ({ enabled: true, maxSlots: 1, setupArgv: null }) });
+  const first = lease(await acquire(m, clone, sha, "task-attached-1"));
+
+  // The shape a finished agent leaves behind: a real feature branch, with a commit on it,
+  // tracking a real upstream.
+  gitIn(first.path, "checkout", "-qb", "codex/settings-status-hermetic-path");
+  writeFileSync(join(first.path, "work.txt"), "shipped\n");
+  gitIn(first.path, "add", "-A");
+  gitIn(first.path, "commit", "-qm", "the previous occupant's work");
+  gitIn(first.path, "push", "-q", "-u", "origin", "codex/settings-status-hermetic-path");
+  const branchSha = gitIn(first.path, "rev-parse", "codex/settings-status-hermetic-path");
+
+  assert.equal((await m.release(first)).outcome, "released");
+  // Return hands the slot back holding no name at all.
+  assert.equal(detachedOnDisk(first.path), true);
+  // …and the branch it was holding is still exactly where it was. The commits under that
+  // name are somebody's finished work and its pull request is keyed on it; releasing the
+  // checkout is not licence to move or delete the ref.
+  assert.equal(gitIn(clone, "rev-parse", "codex/settings-status-hermetic-path"), branchSha);
+
+  // The next task takes the same physical slot and starts with no branch, which is what
+  // makes its first real branch the SAME work episode rather than a takeover of somebody
+  // else's.
+  const wt = await provisionWorktree(clone, "task-attached-2", "slug", "abc123", sha, 0, m);
+  assert.equal(wt.path, first.path);
+  assert.equal(wt.provider, "mission");
+  assert.equal(wt.branch, null);
+  assert.equal(gitIn(wt.path, "rev-parse", "HEAD"), sha);
+  assert.equal(detachedOnDisk(wt.path), true);
+  assert.equal(gitIn(clone, "rev-parse", "codex/settings-status-hermetic-path"), branchSha);
+});
+
+test("a warm slot left attached by an older build is repaired on its next acquisition", async () => {
+  const { origin, clone } = mkOriginAndClone("mission-native-legacy-attached-");
+  writeFileSync(join(origin, ".gitignore"), "node_modules/\n");
+  gitIn(origin, "add", ".gitignore");
+  gitIn(origin, "commit", "-qm", "ignore warm cache");
+  gitIn(clone, "fetch", "-q", "origin");
+  gitIn(clone, "reset", "-q", "--hard", "origin/main");
+  const sha = gitIn(clone, "rev-parse", "HEAD");
+  const policy = { resolvePolicy: () => ({ enabled: true, maxSlots: 1, setupArgv: null }) };
+
+  const old = manager({ ...policy, git: new PreDetachGit() });
+  const first = lease(await acquire(old, clone, sha, "task-legacy-1"));
+  gitIn(first.path, "checkout", "-qb", "harness/left-behind");
+  mkdirSync(join(first.path, "node_modules"), { recursive: true });
+  writeFileSync(join(first.path, "node_modules", "cache.txt"), "warm\n");
+  assert.equal((await old.release(first)).outcome, "released");
+  // The population this repairs: available, clean, at the right commit, and attached.
+  assert.equal(detachedOnDisk(first.path), false, "sanity: the old build left it attached");
+
+  // A current build takes the same slot out of the same pool.
+  const now = manager(policy);
+  const second = lease(await acquire(now, clone, sha, "task-legacy-2"));
+  assert.equal(second.path, first.path);
+  assert.equal(detachedOnDisk(second.path), true);
+  assert.equal(gitIn(second.path, "rev-parse", "HEAD"), sha);
+  // Repaired without re-paying for the install the pool exists to keep.
+  assert.equal(existsSync(join(second.path, "node_modules", "cache.txt")), true);
+  // The name the older build left behind is still a ref, not collateral of the repair.
+  assert.match(gitIn(clone, "rev-parse", "--verify", "harness/left-behind"), /^[0-9a-f]{40}$/);
+});
+
+test("an attached or unprovable HEAD quarantines the slot instead of leasing it", async () => {
+  const attachedRepo = repository("mission-native-attached-gate-");
+  const attached = manager({
+    resolvePolicy: () => ({ enabled: true, maxSlots: 1, setupArgv: null }),
+    git: new (class extends NativeWorktreeGit {
+      override async inspect(path: string) {
+        const inspected = await super.inspect(path);
+        return inspected.ok
+          ? { ...inspected, value: { ...inspected.value, detached: false } }
+          : inspected;
+      }
+    })(),
+  });
+  const refused = await acquire(attached, attachedRepo.clone, attachedRepo.sha, "task-gate-1");
+  assert.equal(refused.outcome, "outcomeUnknown");
+  assert.match(
+    refused.outcome === "outcomeUnknown" ? refused.reason : "",
+    /detached-HEAD verification/,
+  );
+  // Not merely refused - held, so nothing hands the same slot to the next caller. `reset`
+  // reporting success is never enough on its own; this inspection is the durable proof.
+  assert.equal(attached.store.slots().every((slot) => slot.state === "quarantined"), true);
+
+  // The other half: a detached-state probe that never answered is not "detached".
+  const unknownRepo = repository("mission-native-unprovable-head-");
+  const unknown = manager({
+    resolvePolicy: () => ({ enabled: true, maxSlots: 1, setupArgv: null }),
+    git: new (class extends NativeWorktreeGit {
+      override async inspect() {
+        return {
+          ok: false as const,
+          reason: "git symbolic-ref HEAD failed: child disappeared",
+          outcomeUnknown: true,
+        };
+      }
+    })(),
+  });
+  const unproven = await acquire(unknown, unknownRepo.clone, unknownRepo.sha, "task-gate-2");
+  assert.equal(unproven.outcome, "outcomeUnknown");
+  assert.equal(unknown.store.slots().every((slot) => slot.state === "quarantined"), true);
+});
+
+test("Return cannot mark a slot available while it still holds a branch", async () => {
+  const { clone } = mkOriginAndClone("mission-native-return-gate-");
+  const sha = gitIn(clone, "rev-parse", "HEAD");
+  // A reset that resets and cleans without detaching - the pre-change allocator - meeting
+  // the current Return verification. The two gates are independent on purpose: either one
+  // alone would let an attached slot sit in the warm pool looking perfectly available.
+  const m = manager({
+    resolvePolicy: () => ({ enabled: true, maxSlots: 1, setupArgv: null }),
+    git: new (class extends NativeWorktreeGit {
+      override async reset(path: string, commit: string): Promise<GitResult<void>> {
+        gitIn(path, "reset", "--hard", commit);
+        gitIn(path, "clean", "-fd");
+        return { ok: true, value: undefined };
+      }
+    })(),
+  });
+  const held = lease(await acquire(m, clone, sha, "task-return-gate"));
+  gitIn(held.path, "checkout", "-qb", "harness/still-attached");
+
+  const released = await m.release(held);
+  assert.equal(released.outcome, "outcomeUnknown");
+  assert.equal(m.store.slots().every((slot) => slot.state === "quarantined"), true);
 });

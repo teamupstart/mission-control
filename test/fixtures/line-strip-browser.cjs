@@ -26,7 +26,6 @@ const MEASURE = `() => {
   const line = document.querySelector('.line');
   const lineRect = line.getBoundingClientRect();
   const body = document.querySelector('.console');
-  const card = document.querySelector('.card.expanded');
   const subs = [...document.querySelectorAll('.ls-sub')];
   return {
     // What the strip actually occupies, its own border box plus the space it
@@ -40,7 +39,6 @@ const MEASURE = `() => {
       ? Math.round(body.getBoundingClientRect().bottom - window.innerHeight)
       : null,
     bodyHeight: body ? Math.round(body.getBoundingClientRect().height) : null,
-    cardHeight: card ? Math.round(card.getBoundingClientRect().height) : null,
     // One line each, and clipped rather than wrapped when the sentence is long. A
     // sub that wrapped would grow the whole strip and step the board down a line.
     subHeights: subs.map((s) => s.clientHeight),

@@ -26,7 +26,7 @@ test("Console and Board route diff opens to their shared detail tab", () => {
     "utf8",
   );
 
-  assert.match(app, /if \(layout === "grid"\)[\s\S]*?setDiffSessionId\(sessionId\)/);
+  assert.doesNotMatch(app, /setDiffSessionId|<DiffViewer/);
   assert.match(app, /if \(layout === "board"\) setBoardOpen\(true\);[\s\S]*?setDiffTabRequest/);
   assert.match(
     detail,
@@ -50,7 +50,7 @@ test("explicit inline diff requests refetch and focus the reader", () => {
     /setDiff\(null\);\s*setLoading\(true\);[\s\S]*?fetchSessionDiff\([\s\S]*?\[session\.id, commit, requestNonce\]/,
   );
   assert.match(viewer, /contentRef\.current\?\.focus\(\{ preventScroll: true \}\)/);
-  assert.match(viewer, /onKeyDown=\{inline \? \(e\) => onViewerKey\(e\.nativeEvent\)/);
+  assert.match(viewer, /onKeyDown=\{\(e\) => onViewerKey\(e\.nativeEvent\)/);
   assert.match(
     viewer,
     /if \(!next && !previous\) return;\s*e\.preventDefault\(\);\s*if \(files\.length === 0\) return;/,

@@ -588,7 +588,7 @@ Two different things can be wrong with a key, and they are answered differently:
 
 - **The rail** searches. Results are newest first under day headings, each row carrying its
   title, time, artifact count and size, plus the daemon's snippet saying *why* it matched. For
-  a newly captured scout, that title is the same short name its live session card showed.
+  a newly captured scout, that title is the same short name its live session detail showed.
   Search covers titles, prompts, findings, report text and file metadata; a prompt match is
   labelled `prompt` without replacing that title. Press <kbd>/</kbd> to focus the search box;
   when focus is outside a text field or selector, <kbd>↑</kbd> and <kbd>↓</kbd> open the previous

@@ -12,6 +12,7 @@ import type { SdkSessionHandle, SdkTurn, SessionRequestAnswer } from "../harness
 import { sdkFor } from "../harness/index.ts";
 import { missionMcpDescriptor, type MissionMcpDescriptor } from "../mission-mcp.ts";
 import { SDK_SESSION_ID_PREFIX } from "../registry.ts";
+import type { LaunchPresentationInput } from "../launch-presentation.ts";
 import { sleep } from "../util/timers.ts";
 import {
   listSdkSessions,
@@ -164,6 +165,12 @@ export class SdkSupervisor {
      * but not in the objective a card shows. Defaults to the whole prompt for direct callers.
      */
     acceptedGoalPrompt?: string;
+    /**
+     * How the DASHBOARD should present turn one, when the composed prompt is not what a
+     * person should have to read. The dispatcher supplies the operator's own request; a
+     * direct caller supplies nothing and its turn one renders literally, as it always has.
+     */
+    launchPresentation?: LaunchPresentationInput;
     model: string | null;
     effort: ThinkingLevel | null;
     permissionMode: PermissionMode | null;
@@ -205,6 +212,7 @@ export class SdkSupervisor {
       },
       handle,
       acceptedInitialPrompt: input.acceptedGoalPrompt ?? input.prompt,
+      launchPresentation: input.launchPresentation,
       durable: {
         taskId: input.taskId,
         model: input.model,
@@ -230,6 +238,11 @@ export class SdkSupervisor {
     /** A fresh launch's already-accepted turn one, held until `bound` supplies its key. */
     acceptedInitialPrompt?: string;
     /**
+     * How the dashboard should present turn one. Persisted BEFORE registration - see the
+     * write below for why that ordering is the contract and not a preference.
+     */
+    launchPresentation?: LaunchPresentationInput;
+    /**
      * What only the ROW needs: the facts a resume has to be cut from, which the dashboard
      * has no question to ask of. Kept apart from the registration rather than folded into
      * it, so nothing durable is inferred from what a card happens to render.
@@ -252,6 +265,33 @@ export class SdkSupervisor {
       // a subprocess alive with no card, no row and no way for anyone to find it.
       void handle.stop().catch(() => {});
       throw new Error(refusal);
+    }
+    // BEFORE `registerSdkSession` and before the pump, and that ordering is the whole
+    // reason this is here rather than at the dispatcher's call site. Registration is what
+    // makes a session streamable, and the pump's first frames can carry turn one; a marker
+    // written after either of them races its own transcript and the conversation opens
+    // showing the launch contract until something else redraws it.
+    //
+    // Under the PROVISIONAL key, which for a fresh SDK session is the registration id -
+    // nothing has bound yet. `Registry.moveLaunchTurnOnInitialBind` carries it to the
+    // native conversation key when `bound` arrives.
+    //
+    // Best-effort, and deliberately so: the driver has already accepted turn one by this
+    // line. A presentation row that could sink an adoption would trade a live agent session
+    // for a display detail.
+    if (input.launchPresentation) {
+      try {
+        this.registry.recordLaunchTurnForKey(
+          registration.id,
+          input.launchPresentation.prompt,
+          input.launchPresentation.displayText,
+        );
+      } catch (err) {
+        console.error(
+          `[sdk] could not record the launch presentation for ${registration.id}:`,
+          err instanceof Error ? err.message : String(err),
+        );
+      }
     }
     upsertSdkSession({
       id: registration.id,

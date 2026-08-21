@@ -61,8 +61,8 @@ async function openConversationWithActivity(
 ): Promise<ReturnType<Page["locator"]>> {
   await dispatch(page, daemon);
 
-  const card = page.locator("article.card").first();
-  await card.getByRole("button", { name: "Expand conversation" }).click();
+  await page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = page.locator(".console-detail");
 
   const reply = card.getByPlaceholder(/^Reply to this session/);
   await expect(reply).toBeEnabled();
@@ -123,10 +123,10 @@ test("Find borrows the secondary rail and closing it restores Observed activity"
   const activity = card.getByRole("region", { name: "Conversation rail" });
   await expect(activity.getByText("bash", { exact: true })).toBeVisible();
 
-  // Select the card (the expand button deliberately does not), then open find with
-  // its chord. `Meta+f`, not `ControlOrMeta`: the app's chord grammar reads `cmd` off
+  // The helper selected the session before opening the detail. Open find with its chord.
+  // `Meta+f`, not `ControlOrMeta`: the app's chord grammar reads `cmd` off
   // `metaKey`, which is what Playwright synthesizes for Meta on every platform.
-  await card.locator(".card-meta").click();
+  await card.locator(".detail-body").focus();
   await dashboard.keyboard.press("Meta+f");
 
   // Find owns the column now - whole, not shared: its rail is visible, activity is gone.

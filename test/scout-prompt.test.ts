@@ -116,6 +116,10 @@ test("only a ship task whose selected graph runs Personas receives workflow evid
   const task = mkTask({ kind: "ship", workflowId: NO_MISTAKES_REVIEW_WORKFLOW_ID });
   const delivered = withTaskKindContract(task, task.intent, { workflowEvidence: true });
   assert.match(delivered, new RegExp(SUBMIT_WORKFLOW_EVIDENCE_TOOL));
+  assert.match(delivered, /Workflow evidence readiness/);
+  assert.match(delivered, /`commandOutputs`/);
+  assert.match(delivered, /ordinary tool-result bodies/);
+  assert.match(delivered, /do not submit one output per test/);
   assert.match(delivered, /gitignored/);
   assert.match(delivered, /Do not commit/);
   assert.match(delivered, /already authorized `submit_workflow_evidence`/);

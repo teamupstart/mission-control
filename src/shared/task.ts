@@ -321,7 +321,7 @@ const NO_PILL: TaskPillParts = { kind: null, title: null, silent: true };
  * defaults to `ship` - the MCP `create_task` tool cannot produce anything else - so a
  * badge rendered unconditionally reads `SHIP` in almost every session, is not
  * colour-differentiated in the console header, is frozen once the task leaves `backlog`,
- * and repeats the chip on the card you clicked through. Only a kind somebody deliberately
+ * and repeats the chip on the Board tile you clicked through. Only a kind somebody deliberately
  * chose says anything, so `ship` is the silent one and every other kind is drawn.
  *
  * Written as "not the default" rather than as a list of the kinds that are drawn, so a
@@ -335,7 +335,7 @@ const NO_PILL: TaskPillParts = { kind: null, title: null, silent: true };
  * then the only place the task now executing appears (`test/task-multi-session.test.ts`).
  *
  * Shared rather than inlined at each call site because a session is drawn by four
- * components: the console detail and the card both render this pill, and a rule applied
+ * components: the Console detail and the Board tile both render this pill, and a rule applied
  * to one of them would look right in one layout and wrong in the other.
  */
 export function taskPillParts(session: Pick<Session, "name" | "task">): TaskPillParts {

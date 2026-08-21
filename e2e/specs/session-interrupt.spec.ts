@@ -76,8 +76,12 @@ test("Ctrl+C keeps an interrupted Codex session idle after late child activity",
 }) => {
   await dispatch(dashboard, daemon, "codex");
 
-  const card = await selectTheOnlyCard(dashboard);
-  await card.getByRole("button", { name: "Expand conversation" }).click();
+  await dashboard
+    .getByRole("navigation", { name: "Sessions" })
+    .locator("button.rail-row")
+    .first()
+    .click();
+  const card = dashboard.locator(".console-detail");
   const composer = card.getByPlaceholder(/^Reply to this session/);
   await expect(composer).toBeEnabled();
   await expect(card).toContainText("Agent SDK");
@@ -118,17 +122,15 @@ test("Ctrl+C keeps an interrupted Codex session idle after late child activity",
  * Polled around the arrow press because the card arrives on an SSE frame: a press that lands
  * before the fleet has a session selects nothing and the key is spent.
  */
-async function selectTheOnlyCard(page: Page) {
-  await expect
-    .poll(
-      async () => {
-        await page.keyboard.press("ArrowRight");
-        return await page.locator("article.card.selected").count();
-      },
-      { message: "an arrow press should select the only card in the fleet" },
-    )
-    .toBe(1);
-  return page.locator("article.card.selected");
+async function selectTheOnlySession(page: Page) {
+  const row = page
+    .getByRole("navigation", { name: "Sessions" })
+    .locator("button.rail-row")
+    .first();
+  await expect(row).toBeVisible();
+  await row.click();
+  await expect(row).toHaveClass(/selected/);
+  return page.locator(".console-detail");
 }
 
 test("Ctrl+C stops the turn, drops the queue, and leaves the cursor in the composer", async ({
@@ -137,8 +139,7 @@ test("Ctrl+C stops the turn, drops the queue, and leaves the cursor in the compo
 }) => {
   await dispatch(dashboard, daemon);
 
-  const card = await selectTheOnlyCard(dashboard);
-  await card.getByRole("button", { name: "Expand conversation" }).click();
+  const card = await selectTheOnlySession(dashboard);
 
   const composer = card.getByPlaceholder(/^Reply to this session/);
   await expect(composer).toBeEnabled();
@@ -216,8 +217,7 @@ test("Ctrl+C over a selection copies instead of stopping the agent", async ({
   // copy in the app while interrupting the agent instead.
   await dispatch(dashboard, daemon);
 
-  const card = await selectTheOnlyCard(dashboard);
-  await card.getByRole("button", { name: "Expand conversation" }).click();
+  const card = await selectTheOnlySession(dashboard);
 
   const composer = card.getByPlaceholder(/^Reply to this session/);
   await expect(composer).toBeEnabled();

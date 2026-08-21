@@ -58,7 +58,7 @@ export function RailRow({
   // The rail draws its own badge, so it asks for the transient stop directly - the Console
   // is where a session is watched while it works, and so where the wait is most visible.
   const st = stateDisplay(session, useInterrupting(session.id));
-  // The same shared sentence the Board tile and the Cards card read. The rail shows more
+  // The same shared sentence the Board tile reads. The rail shows more
   // rows per screen than either, so it is the surface where "the section rule scrolled
   // away" happens soonest - the row has to carry its own answer here most of all.
   const heldBy = heldByRun(workflowRuns, st.tone);

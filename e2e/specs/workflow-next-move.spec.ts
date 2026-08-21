@@ -14,10 +14,11 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
  * because the snapshot has not moved, and the SAME single primary becomes the recovery for that
  * exact refusal.
  *
- * The second half is also the only place the request-id contract is observable. Replaying the
- * refused submission's own id revives it INSIDE the round it already opened; minting a fresh one
- * silently burns a repair round. Both outcomes look identical in the browser, so the round number
- * is read off the daemon at the end - it is the only witness.
+ * The second half is also the only place the cost of that refusal is observable. The daemon now
+ * asks the repository whether the work has moved BEFORE it captures anything, so a refusal opens
+ * no round and writes no submission - and the recovery that follows it opens exactly one. Both a
+ * refusal that quietly burned a round and a recovery that burned a second look identical in the
+ * browser, so the round number is read off the daemon at the end. It is the only witness.
  *
  * No other layer reaches this. The unit table decides the move from a detail handed to it; only a
  * browser against a live daemon proves the refusal round-trips and the primary repaints into its
@@ -147,11 +148,11 @@ test("the header offers one derived move, and it becomes the recovery for its ow
   expect((await probe(daemon, runId)).summary.round).toBe(1);
 
   /*
-   * Clicking it advances the run, and the advance the daemon actually makes is a refusal: the
-   * repair round is opened, its evidence is captured, and the fingerprint matches round 1's
-   * because nothing was ever delivered to the session. That parks the run in
-   * `unchanged_evidence` - a phase, persisted, which is why the affordance below survives a
-   * reload rather than living in component state.
+   * Clicking it advances the run, and the advance the daemon actually makes is a refusal: two
+   * git reads say the repository is byte-identical to the one round 1 already reviewed, because
+   * nothing was ever delivered to the session. That parks the run in `unchanged_repository` - a
+   * phase, persisted, which is why the affordance below survives a reload rather than living in
+   * component state.
   */
   await primary.click();
   await dashboard.getByRole("dialog", { name: "Preview fresh evidence" })
@@ -159,16 +160,20 @@ test("the header offers one derived move, and it becomes the recovery for its ow
     .click();
   await expect
     .poll(async () => (await probe(daemon, runId)).run.currentPhase, {
-      message: "the fresh resubmission should be refused for an unmoved evidence snapshot",
+      message: "the fresh resubmission should be refused for an unmoved repository",
       timeout: 40_000,
     })
-    .toBe("unchanged_evidence");
+    .toBe("unchanged_repository");
 
   const refused = await probe(daemon, runId);
   expect(refused.run.status).toBe("waiting_for_session");
-  // The refusal opened round 2 and failed its submission. Round 2 is the round the recovery below
-  // has to stay inside.
-  expect(refused.summary.round).toBe(2);
+  /*
+   * And the refusal cost NOTHING. It is asked before the capture precisely so that it can be
+   * free: round 1 is still the run's last round, and the recovery below is what opens round 2.
+   * The older refusal ran after the capture, so declining the work still spent the round - which
+   * is what made the header's own recovery read as a second charge for the same answer.
+   */
+  expect(refused.summary.round).toBe(1);
 
   // The SAME single primary is now the recovery, in the operator's language rather than the
   // route's. Still one control, not two.
@@ -195,7 +200,10 @@ test("the header offers one derived move, and it becomes the recovery for its ow
   // model tokens on evidence the operator has been told has not changed.
   await primary.click();
   const confirm = dashboard.getByRole("dialog");
-  await expect(confirm).toContainText("nothing about the work under review has changed");
+  // The sentence names what the daemon actually compared - the commit and the working tree -
+  // rather than an evidence snapshot the refusal never got as far as taking.
+  await expect(confirm).toContainText("has not changed since round 1");
+  await expect(confirm).toContainText("spends one repair round");
   await confirm.getByRole("button", { name: "Preview unchanged" }).click();
 
   /*
@@ -210,18 +218,18 @@ test("the header offers one derived move, and it becomes the recovery for its ow
       const state = await probe(daemon, runId);
       return `${state.run.status}/${state.run.currentPhase}`;
     }, {
-      message: "confirming the unchanged snapshot should re-run the review and park it again",
+      message: "confirming the unchanged work should re-run the review and park it again",
       timeout: 60_000,
     })
-    .toMatch(/^waiting_for_session\/(?!unchanged_evidence)/);
+    .toMatch(/^waiting_for_session\/(?!unchanged_)/);
 
   /*
-   * The witness for the request-id contract, and it is the only one.
+   * The witness for what the pair of clicks cost, and it is the only one.
    *
-   * Round 2 is REVIVED, so the run is still on round 2 - across the reload above. Had the click
-   * minted a fresh request id the daemon would have found no prior submission, taken the repair
-   * path, and opened round 3: a repair round spent on evidence the operator had already been told
-   * was identical, with the label, the confirm and the re-review all looking exactly the same.
+   * Round 2, not round 3 - across the reload above. The refusal opened no round, and the
+   * override opened exactly one. A daemon that charged for the refusal as well would leave the
+   * run on round 3 here while the label, the confirm and the re-review all looked exactly the
+   * same in the browser.
    */
   const after = await probe(daemon, runId);
   expect(after.summary.round).toBe(2);

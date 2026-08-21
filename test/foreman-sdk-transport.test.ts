@@ -22,6 +22,7 @@ globalThis.fetch = async () => Response.json(statusBody);
 const {
   ForemanClient,
   foremanClaudeTransportFallback,
+  foremanCodexTransportFallback,
 } = await import("../src/server/foreman/client.ts");
 const { installForemanShutdown } = await import("../src/server/foreman/shutdown.ts");
 const {
@@ -32,19 +33,40 @@ const {
 after(() => {
   globalThis.fetch = originalFetch;
   delete process.env.MISSION_CLAUDE_TRANSPORT;
+  delete process.env.MISSION_CODEX_TRANSPORT;
 });
 
 beforeEach(() => {
   statusBody = { runner: { id: "claude" }, claudeTransport: "print" };
   delete process.env.MISSION_CLAUDE_TRANSPORT;
+  delete process.env.MISSION_CODEX_TRANSPORT;
 });
 
-test("Foreman reads the daemon's resolved Claude transport beside its runner", async () => {
-  statusBody = { runner: { id: "codex" }, claudeTransport: "sdk" };
+test("Foreman reads the daemon's resolved transports beside its runner", async () => {
+  // BOTH transports off ONE status read. A worker that learned only Claude's would honour a
+  // saved `codexTransport` in the daemon and ignore it here, so Foreman's reviews and triage
+  // would quietly run on a transport the operator did not pick while the panel said they had.
+  statusBody = { runner: { id: "codex" }, claudeTransport: "sdk", codexTransport: "sdk" };
   assert.deepEqual(await new ForemanClient().llmSelection(), {
     runner: "codex",
     claudeTransport: "sdk",
+    codexTransport: "sdk",
   });
+});
+
+test("an older daemon degrades the Codex transport the same way Claude's degrades", async () => {
+  // A daemon that predates the field says nothing about it. The worker then takes its own
+  // environment, and finally this build's shipped default - never a value invented here.
+  statusBody = { runner: { id: "codex" }, claudeTransport: "sdk" };
+  assert.equal((await new ForemanClient().llmSelection()).codexTransport, "exec");
+
+  process.env.MISSION_CODEX_TRANSPORT = "sdk";
+  assert.equal((await new ForemanClient().llmSelection()).codexTransport, "sdk");
+  assert.equal(foremanCodexTransportFallback(), "sdk");
+
+  process.env.MISSION_CODEX_TRANSPORT = "future-wire";
+  assert.equal((await new ForemanClient().llmSelection()).codexTransport, "exec");
+  assert.equal(foremanCodexTransportFallback(), "exec");
 });
 
 test("an older daemon degrades through the worker environment and then the SDK default", async () => {
@@ -116,6 +138,33 @@ test("the Foreman worker's transitive module graph opens no database", () => {
   ]) {
     assert.equal(graph.has(forbidden), false, `${forbidden} entered the worker process`);
   }
+});
+
+/**
+ * What is at stake: learning the answer and APPLYING it are two separate steps, and this PR
+ * shipped the first without the second. `llmSelection` carried the Codex transport while the
+ * worker installed a resolver for Claude only, so a saved `sdk` reached this process and then
+ * changed nothing - the failure mode being that the panel reports a choice that took, and one
+ * of the two providers quietly ignores it.
+ *
+ * Read off the source because the alternative is booting the worker, which acquires a lease
+ * and starts a loop. What matters is that neither resolver can be dropped without this
+ * failing, which a scan for both calls does say.
+ */
+test("the worker installs a transport resolver for BOTH providers", () => {
+  const source = readFileSync(resolve(REPO, "src/server/foreman/worker.ts"), "utf8");
+  for (const install of [
+    "configureClaudeRunnerTransport(() => claudeTransport)",
+    "configureCodexRunnerTransport(() => codexTransport)",
+  ]) {
+    assert.ok(source.includes(install), `the worker never calls ${install}`);
+  }
+  // And keeps them in step: one status read refreshes both, so neither can go stale alone.
+  assert.match(
+    source,
+    /claudeTransport = llmSelection\.claudeTransport;\s*\n\s*codexTransport = llmSelection\.codexTransport;/,
+    "the worker does not refresh both transports from the same status read",
+  );
 });
 
 test("the worker's ordinary shutdown aborts an in-flight SDK query", async () => {

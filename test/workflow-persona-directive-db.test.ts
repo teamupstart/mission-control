@@ -96,6 +96,7 @@ test("an upgraded run persists feedback and snapshots each later Persona attempt
       .map((row) => row.name),
   );
   assert.ok(stagingColumns.has("evidence_kind"));
+  assert.ok(stagingColumns.has("inline_content"));
   assert.equal(store.listWorkflowEvidence("old-note").images[0]?.id, "old-image");
   assert.deepEqual(store.listWorkflowEvidence("old-note").artifacts, []);
 

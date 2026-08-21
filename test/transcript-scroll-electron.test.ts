@@ -36,7 +36,7 @@ import { mkSession } from "./helpers/session-fixture.ts";
  *
  * The cases cover the split's two owners in both hosts and at both container widths:
  * find CLOSED (Observed activity owns the secondary column), find OPEN (find owns it,
- * activity withheld), each in the Console detail and in an expanded card - and the
+ * activity withheld), each in the Console detail - and the
  * narrow-container layouts where activity collapses to a disclosure row that opens on
  * request while find still stacks its full rail.
  *
@@ -197,10 +197,7 @@ function findMarkup(): { bar: string; rail: string } {
 }
 
 /**
- * The two hosts that give the conversation a bounded height, as they nest in the app:
- * the Console detail's pane (`ConsoleDetail`) and an expanded card's panel row
- * (`SessionCard`). Their heights are the app's own - a detail pane fills the window, an
- * expanded card is the fixed-height box `.card.expanded` describes.
+ * The Console detail gives the conversation a bounded height, as it nests in the app.
  *
  * Each host appears at two widths, because the split is a container query and the
  * PANEL's width is what decides the layout: 640/900px puts `.find-split` above the
@@ -211,18 +208,12 @@ function findMarkup(): { bar: string; rail: string } {
 function page(panel: string, styles: string): string {
   const detail = (width: number): string =>
     `<div class="detail-body" style="height:600px;width:${width}px"><div class="detail-conv">${panel}</div></div>`;
-  const card = (width: number): string =>
-    `<div class="card expanded" style="height:636px;width:${width}px"><div class="card-panels">${panel}</div></div>`;
   const cases = [
     ["detail-closed", detail(640)],
     ["detail-open", detail(640)],
-    ["card-closed", card(900)],
-    ["card-open", card(900)],
     ["detail-narrow", detail(480)],
     ["detail-narrow-expanded", detail(480)],
     ["detail-narrow-open", detail(480)],
-    ["card-narrow", card(500)],
-    ["card-narrow-expanded", card(500)],
   ];
   return `<!doctype html><meta charset="utf-8"><style>${styles}</style>
     <script type="application/json" id="find-markup">${JSON.stringify(findMarkup())}</script>
@@ -260,13 +251,9 @@ before(() => {
 const ALL_CASES = [
   "detail-closed",
   "detail-open",
-  "card-closed",
-  "card-open",
   "detail-narrow",
   "detail-narrow-expanded",
   "detail-narrow-open",
-  "card-narrow",
-  "card-narrow-expanded",
 ];
 
 for (const name of ALL_CASES) {
@@ -340,7 +327,7 @@ for (const name of ALL_CASES) {
   });
 }
 
-for (const name of ["detail-open", "card-open", "detail-narrow-open"]) {
+for (const name of ["detail-open", "detail-narrow-open"]) {
   test(`an open find owns the secondary slot and keeps its rail inside the pane (${name})`, () => {
     const m = measured[name];
     assert.ok(m, `no geometry for ${name}`);
@@ -369,7 +356,7 @@ for (const name of ["detail-open", "card-open", "detail-narrow-open"]) {
   });
 }
 
-for (const name of ["detail-closed", "card-closed"]) {
+for (const name of ["detail-closed"]) {
   test(`observed activity rides its own overflow region beside the log (${name})`, () => {
     const m = measured[name];
     assert.ok(m, `no geometry for ${name}`);
@@ -392,7 +379,7 @@ for (const name of ["detail-closed", "card-closed"]) {
   });
 }
 
-for (const name of ["detail-narrow", "card-narrow"]) {
+for (const name of ["detail-narrow"]) {
   test(`narrow activity collapses to a reachable disclosure row (${name})`, () => {
     const m = measured[name];
     assert.ok(m, `no geometry for ${name}`);
@@ -411,7 +398,7 @@ for (const name of ["detail-narrow", "card-narrow"]) {
   });
 }
 
-for (const name of ["detail-narrow-expanded", "card-narrow-expanded"]) {
+for (const name of ["detail-narrow-expanded"]) {
   test(`expanded narrow activity is bounded and scrolls without evicting the composer (${name})`, () => {
     const m = measured[name];
     assert.ok(m, `no geometry for ${name}`);

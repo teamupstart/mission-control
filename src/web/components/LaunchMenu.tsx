@@ -231,18 +231,12 @@ function Launcher({
 }
 
 /**
- * The pair, plus - where it is the only thing saying so - the worktree they act on.
- *
- * Rendered by `TranscriptPanel` for a host that has nowhere better to put it, which is how
- * this reaches the expanded card from one mount rather than from placements kept in step by
- * hand. The console detail is the one host that DOES have somewhere better: it hosts this
- * strip in its own tab row and suppresses the panel's (`TranscriptPanel`'s `hostToolbar`).
+ * The terminal and agent launchers hosted in the detail tab row.
  */
 export function SessionLaunchers({
   session,
   registerLaunchers,
   leading,
-  place = "pane",
 }: {
   session: Session;
   registerLaunchers?: (id: string, handle: SessionLaunchersHandle | null) => void;
@@ -256,19 +250,6 @@ export function SessionLaunchers({
    * open the session.
    */
   leading?: React.ReactNode;
-  /**
-   * Where this strip is drawn, which settles two things it must not decide for itself.
-   *
-   * `"pane"` is its own band at the top of a conversation pane: it draws the band chrome
-   * and names the worktree, because in that host nothing else does.
-   *
-   * `"toolbar"` is a host row that already runs the full width - the console detail's tab
-   * strip. There the band chrome would be a box drawn inside a box, and the worktree would
-   * be the pane's SECOND copy of a path its `PATH`/`BRANCH` row already prints in full.
-   * Printing it twice is the duplication this placement exists to remove, so it is dropped
-   * rather than relocated.
-   */
-  place?: "pane" | "toolbar";
 }): React.JSX.Element {
   const [flash, setFlash] = useState<{ text: string; error: boolean } | null>(null);
   const terminalRef = useRef<LauncherHandle>(null);
@@ -300,8 +281,8 @@ export function SessionLaunchers({
   }
 
   // App drives these same controls for the customizable `t` / `a` shortcuts. Registering
-  // the pair from the conversation pane is what lets a collapsed Card or Board tile reveal
-  // this pane first, then trigger the exact menu the visible button owns.
+  // the pair from the shared detail is what lets a Board tile reveal this pane first, then
+  // trigger the exact menu the visible button owns.
   const latest = useRef({ action, agentBlocked, focusPane });
   latest.current = { action, agentBlocked, focusPane };
   useEffect(() => {
@@ -327,23 +308,7 @@ export function SessionLaunchers({
   }, [session.id, registerLaunchers]);
 
   return (
-    <div className={place === "toolbar" ? "conv-launch in-toolbar" : "conv-launch"}>
-      {place === "pane" && (
-        <>
-          <span className="conv-launch-where">
-            <span className="conv-launch-lbl">worktree</span>
-            {/* The path ellipsizes when the pane is narrow, so the full one has to be
-                readable somewhere - through the shared Tooltip, never a native `title`,
-                which renders in the OS style after a delay this app does not control. */}
-            <Tooltip label={session.cwd ?? "this session has no checkout"}>
-              <span className="conv-launch-path mono" dir="ltr">
-                {session.cwd ?? "none"}
-              </span>
-            </Tooltip>
-          </span>
-          <span className="conv-launch-sp" />
-        </>
-      )}
+    <div className="conv-launch in-toolbar">
       {flash && (
         <span className={`launch-flash${flash.error ? " is-error" : ""}`}>{flash.text}</span>
       )}

@@ -45,6 +45,7 @@ import { normalizePersonaVerdict, parsePersonaVerdict, verdictRequestedChanges }
 import { workflowLog } from "./log.ts";
 import { resolveSubmissionImageInputs } from "./images.ts";
 import { getWorkflowPolicy } from "./config.ts";
+import { testEvidenceAuditEvent } from "./test-evidence-audit.ts";
 import {
   DEFAULT_CHECK_CONCURRENCY,
   createCheckScheduler,
@@ -1066,6 +1067,18 @@ export class WorkflowEngine {
       persona: node.persona.name,
       verdict: verdict.verdict,
     }, this.now());
+    const evidenceAudit = testEvidenceAuditEvent({
+      persona: node.persona,
+      nodeId: node.id,
+      submission,
+      context: context.data,
+      verdict,
+      checkEvidence: claimed.checkEvidence ?? [],
+      operatorDirective: claimed.operatorDirective?.feedback ?? null,
+    });
+    if (evidenceAudit) {
+      this.store.appendEvent(run.id, "test_evidence_audit", jsonValue(evidenceAudit), this.now());
+    }
     this.advanceStructure(submission, version);
     this.onRunChanged(run.id);
   }

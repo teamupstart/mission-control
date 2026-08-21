@@ -115,6 +115,17 @@ function selectedLabel(select: Locator): Promise<string> {
   );
 }
 
+async function selectOnlySession(page: Page): Promise<Locator> {
+  await page
+    .getByRole("navigation", { name: "Sessions" })
+    .locator("button.rail-row")
+    .first()
+    .click();
+  const detail = page.locator(".console-detail");
+  await expect(detail.locator(".detail-title-line > h2")).toBeVisible();
+  return detail;
+}
+
 /**
  * Publish a workflow whose name sorts BEFORE the built-in review workflow.
  *
@@ -239,14 +250,15 @@ test("a dispatched session names its armed workflow, and the bind dialog opens o
       ?.workflowVersionId ?? "";
   }, { timeout: 30_000 }).toContain("no-mistakes-review");
 
+  const detail = await selectOnlySession(page);
   // 1. The chip names the workflow instead of offering to add one. This is the line the
   //    operator read as "nothing is attached".
-  const chip = page.getByRole("button", { name: /No-Mistakes Review v\d+/ }).first();
+  const chip = detail.getByRole("button", { name: /No-Mistakes Review v\d+/ }).first();
   await expect(chip).toBeVisible();
-  await expect(page.getByRole("button", { name: "＋ workflow" })).toHaveCount(0);
+  await expect(detail.getByRole("button", { name: "＋ workflow" })).toHaveCount(0);
   seen("session chip", await accessibleName(chip));
   seen("session chip tooltip", (await chip.getAttribute("title")) ?? "(via Tooltip wrapper)");
-  await shoot(page, "card-names-bound-workflow");
+  await shoot(page, "detail-names-bound-workflow");
 
   // 2. The dialog opens on what is actually bound - not on the workflow that merely sorts
   //    first. "Aardvark Review" is published and would win a catalog-position default.
@@ -317,7 +329,8 @@ test("a version picked while bindings are still loading is not reverted", async 
     await route.continue();
   });
 
-  await page.getByRole("button", { name: /No-Mistakes Review v\d+/ }).first().click();
+  const detail = await selectOnlySession(page);
+  await detail.getByRole("button", { name: /No-Mistakes Review v\d+/ }).first().click();
   const bind = page.getByRole("dialog", { name: "Bind workflow" });
   await expect(bind).toBeVisible();
 
@@ -432,7 +445,8 @@ test("a session bound to a superseded version still gets its defaults hint", asy
   });
 
   await page.reload();
-  await page.getByRole("button", { name: /No-Mistakes Review v8/ }).first().click();
+  const detail = await selectOnlySession(page);
+  await detail.getByRole("button", { name: /No-Mistakes Review v8/ }).first().click();
   const bind = page.getByRole("dialog", { name: "Bind workflow" });
   await expect(bind).toBeVisible();
 
@@ -463,8 +477,9 @@ test("a session with no workflow still offers to attach one", async ({ page, dae
   await dialog.getByRole("button", { name: "Dispatch now" }).click();
   await expect(dialog).toBeHidden();
 
-  const offer = page.getByRole("button", { name: "＋ workflow" }).first();
+  const detail = await selectOnlySession(page);
+  const offer = detail.getByRole("button", { name: "＋ workflow" }).first();
   await expect(offer).toBeVisible({ timeout: 60_000 });
   seen("session chip (nothing bound)", await accessibleName(offer));
-  await shoot(page, "card-unbound-still-offers");
+  await shoot(page, "detail-unbound-still-offers");
 });

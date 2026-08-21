@@ -93,9 +93,10 @@ test("attaching a second repo dispatches one session with a native lease in each
 
   // ONE session. The whole design decision this phase implements is one agent in shared
   // context, not one agent per repository.
-  const card = dashboard.locator("article.card").first();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
   await expect(card).toBeVisible();
-  await expect(dashboard.locator("article.card")).toHaveCount(1);
+  await expect(dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row")).toHaveCount(1);
 
   await expect.poll(() => provisionedTask(daemon, "Rename the shared field"), {
     message: "the task should durably record both native leases",
@@ -169,7 +170,7 @@ test("the launched agent is granted write access to the secondary worktree", asy
   daemon,
 }) => {
   await dispatchAcross(dashboard, daemon, [daemon.secondRepo], "Rename the shared field");
-  await expect(dashboard.locator("article.card").first()).toBeVisible();
+  await expect(dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first()).toBeVisible();
 
   // The grant as it reaches the PROCESS, which is the only form of it that matters. A
   // capability record that says `--add-dir` and a launch that never renders it look the
@@ -192,7 +193,7 @@ test("a single-repo dispatch is granted nothing extra", async ({ dashboard, daem
   // The other half of the promise: a form nobody attached anything to sends no repos, and
   // the resulting command line is exactly what it was before this feature existed.
   await dispatchAcross(dashboard, daemon, [], "Write a haiku about flexbox");
-  await expect(dashboard.locator("article.card").first()).toBeVisible();
+  await expect(dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first()).toBeVisible();
 
   await expect.poll(async () => (await provisionedTask(daemon, "Write a haiku about flexbox"))?.provider)
     .toBe("mission");

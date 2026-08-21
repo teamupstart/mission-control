@@ -33,8 +33,7 @@ function props(over: Partial<SessionViewProps> = {}): SessionViewProps {
     onSelect: () => {},
     onCursorTo: () => {},
     onDeselect: () => {},
-    expandedId: null,
-    onToggleExpand: () => {},
+    detailId: null,
     onOpenReviews: () => {},
     onOpenDiff: () => {},
     onOpenFiles: () => {},
@@ -198,7 +197,7 @@ test("zone transitions move DOM focus and hidden selections reset to the rail", 
   assert.match(app, /querySelector<HTMLElement>\("\.cdetail \.file-preview-reader"\)/);
   assert.match(app, /\?\? document\.querySelector<HTMLElement>\("\.cdetail \.detail-body"\)/);
   assert.match(app, /target\?\.focus\(\{ preventScroll: true \}\)/);
-  assert.match(app, /cardEls\.current\.get\(id\)\?\.focus\(\{ preventScroll: true \}\)/);
+  assert.match(app, /sessionEls\.current\.get\(id\)\?\.focus\(\{ preventScroll: true \}\)/);
   assert.match(consoleView, /onFocusCapture=\{\(\) => props\.onConsoleZoneChange\("rail"\)\}/);
   assert.match(consoleView, /onFocusCapture=\{\(\) => props\.onConsoleZoneChange\("detail"\)\}/);
   assert.doesNotMatch(railRow, /focusSelected/);

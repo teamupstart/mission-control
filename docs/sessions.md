@@ -21,7 +21,7 @@ branch. Sessions the daemon runs itself (Agent SDK
 own subtree, because those are the daemon's own subprocesses rather than somebody's session.
 Without that rule an embedded session's CLI subprocess - which inherits the terminal the
 daemon itself was started from, since the Agent SDK owns the spawn - would appear a second
-time as a terminal card, named after the daemon's tab and claiming its session's branch and
+time as a terminal session detail, named after the daemon's tab and claiming its session's branch and
 PR. Their Git facts are instead read directly from their working directory at launch or
 restoration and refreshed on the same cadence.
 This keeps the **PR chip** honest without a terminal session sharing the checkout. A pooled worktree is often leased with no branch at
@@ -33,7 +33,7 @@ standing in. A session running a
 [multi-repo task](dispatch-and-backlog.md#attaching-more-than-one-repository) owns one in each
 repository it changed, and the poller asks `gh` inside every attached worktree as well - still
 one call per checkout. Those do not crowd the chip, which keeps naming the session's own
-checkout; they appear as the card's per-repository lines, and it is those the completion
+checkout; they appear as the session detail's per-repository lines, and it is those the completion
 quorum and Foreman's [PR follow-through](work-queues.md#keeping-a-pr-on-track) read.
 
 ### The title bar stays compact at half-screen
@@ -182,7 +182,7 @@ by definition, and it is the same server the app types into.
 A backend can also declare that it cannot be trusted about something, which is not the same
 as lacking it. cmux 0.64.20 mis-reports the controlling tty of a workspace holding more than
 one terminal split - it hands the newer split's tty to the older surface - and the tty is
-the only thing joining a process to a pane. Rather than pass that on and bind a card to a
+the only thing joining a process to a pane. Rather than pass that on and bind a session detail to a
 pane its agent is not in, the adapter reports no tty for those workspaces: the session still
 appears, named `<agent> <pid>`. For the same reason a session **dispatched** into cmux gets
 no companion shell pane, since opening one is what would trigger it.
@@ -225,7 +225,7 @@ Mission Control *talks* to it at all. That is a session's **runtime**, and there
 - **Agent SDK** - the daemon runs the agent itself: Claude Code through
   `@anthropic-ai/claude-agent-sdk`, Codex through `codex app-server` (JSON-RPC over stdio).
   There is no pane. A permission prompt or an approval arrives as data, including what is
-  being asked and the exact rows to offer, which the card renders directly.
+  being asked and the exact rows to offer, which the session detail renders directly.
 
 Human messages from either conversation composer first enter Mission Control's **editable
 outbox**, on both runtimes. The full message appears as a `You · queued` turn instead of a
@@ -273,16 +273,16 @@ scoped to dispatch, exactly like the model and effort defaults next to it: a Cla
 you started yourself is pane-backed whatever this says, because Mission Control does not own
 your terminal.
 
-**What the Agent SDK runtime changes.** A dispatched session appears as a card with no
+**What the Agent SDK runtime changes.** A dispatched session appears as a session detail with no
 pane string under its title (it wears an `◈ Agent SDK` chip instead), and:
 
 - the task's prompt is the conversation's first turn - there is no paste to verify, no
   settle window, and no retry that can make an agent read its task twice;
-- permission prompts and plan approvals render as one-click rows on the card. A single
+- permission prompts and plan approvals render as one-click rows on the session detail. A single
   `AskUserQuestion` keeps those one-click choice rows and adds a separate custom-answer
   field; multi-question or multi-select asks show every question together and submit once.
   Each question accepts either its choice rows or non-empty custom text, and parallel asks
-  wait their turn on the same card instead of replacing one another. Claude's own question
+  wait their turn on the same session detail instead of replacing one another. Claude's own question
   tool is left enabled - the MCP ask-channel redirect exists because a menu on a child's
   terminal is unreadable, and here it is not;
 - the permission-mode and reasoning-effort pickers control the live embedded conversation,
@@ -295,7 +295,7 @@ pane string under its title (it wears an `◈ Agent SDK` chip instead), and:
   accepted prompt seeds Goal after the driver reports that native conversation id; launch
   manifests and execution contracts stay out of the displayed objective. Later accepted
   human turns enter the same Goal reconciliation queue. Automated Foreman and workflow turns
-  do not replace it. Cost and PR state reach the same card fields through those files and the
+  do not replace it. Cost and PR state reach the same session detail fields through those files and the
   driver too;
 - **Focus** is replaced by **Continue in terminal** (below).
 
@@ -340,7 +340,7 @@ runtime's.
 
 - **Approvals, not permission prompts.** Codex asks when a command needs to escape its
   sandbox - network access, a write outside the workspace. That arrives as the same
-  three-row ask (**Yes** / **Yes, and don't ask again** / **No**) on the card, carrying the
+  three-row ask (**Yes** / **Yes, and don't ask again** / **No**) on the session detail, carrying the
   command and the directory it would run in, and answering it releases the turn. If Codex
   also asks a question (`request_user_input`), it renders as a form exactly as Claude's
   does.
@@ -349,12 +349,12 @@ runtime's.
   for me** takes effect on the session's next turn. The *sandbox* is not: Codex cannot move
   a running thread between `read-only`, `workspace-write` and `danger-full-access`, so
   picking a profile that would need a different one is refused with a sentence saying to
-  continue in a terminal and use `/permissions`. The card's profile chip is read back from
+  continue in a terminal and use `/permissions`. The session detail's profile chip is read back from
   the rollout either way. After the embedded driver accepts a same-sandbox change, the chip
   shows the selected next-turn posture immediately; the next rollout then confirms it.
 - **Auto mode on dispatch** gives an embedded Codex the same posture it gives a terminal one
   (`workspace-write` with approvals on request), using Codex's native **Approve for me**
-  reviewer. Requests that reviewer does not approve still arrive on the card.
+  reviewer. Requests that reviewer does not approve still arrive on the session detail.
 - Codex's launch-scoped hooks are not injected: the event stream reports everything they
   did, so an embedded session needs neither them nor the
   `--dangerously-bypass-hook-trust` that rides with them. A Codex session dispatched in a
@@ -367,9 +367,9 @@ field is a regenerate-and-read-the-diff, not a hunt.
 
 #### Continue in terminal
 
-`⇧T`, or the button where **Focus** sits on a pane-backed card. It stops the driver and
+`⇧T`, or the button where **Focus** sits on a pane-backed session detail. It stops the driver and
 reopens **the same conversation** in a terminal home in the same checkout -
-`claude --resume <session id>` or `codex resume <thread id>`, whichever harness the card is.
+`claude --resume <session id>` or `codex resume <thread id>`, whichever harness the session detail is.
 Both vendors keep one session store across their programmatic and interactive surfaces,
 which is what makes this a handoff rather than a lost conversation. Discovery adopts the new
 process, and the task's binding follows it across even when discovery takes longer than the
@@ -381,11 +381,11 @@ running in auto back in the CLI's default mode. The handoff therefore re-asserts
 mode on the command line: `--permission-mode` for Claude, and `--sandbox` /
 `--ask-for-approval` (plus the approvals-reviewer override that separates **Ask for
 approval** from **Approve for me**) for Codex. The same carry applies when an exited
-session's card resumes its conversation. Model and reasoning effort are deliberately not
+session's session detail resumes its conversation. Model and reasoning effort are deliberately not
 re-stated; the resumed conversation carries those itself.
 
 It is one way. After the handoff the terminal session is the one holding the conversation;
-the embedded card goes away. Nothing is lost if the terminal cannot be opened - the error
+the embedded session detail goes away. Nothing is lost if the terminal cannot be opened - the error
 tells you the exact resume command to run yourself.
 
 ### Interrupt: stop the turn without ending the session
@@ -409,10 +409,10 @@ Messages that have already left for the agent are kept, as are any whose deliver
 uncertain - the second kind is a question waiting for you, and interrupting is not an answer
 to it.
 
-The queue is dropped **only when a turn was genuinely stopped.** A card reports what it was
+The queue is dropped **only when a turn was genuinely stopped.** A session detail reports what it was
 told a moment ago, so a turn can finish on its own between your keypress and the request
 arriving - which is likeliest exactly when you press this, as a turn looks like it is
-wrapping up. Nothing is stopped in that case and nothing is dropped, and the card says so:
+wrapping up. Nothing is stopped in that case and nothing is dropped, and the session detail says so:
 "That turn had already finished, so nothing was stopped - anything queued will still be
 delivered." Silently deleting queued messages there would destroy work that was about to be
 delivered normally, not work anybody asked to restart.
@@ -422,7 +422,7 @@ Codex and Pi TUIs alike, <kbd>Esc</kbd> interrupts a running turn while <kbd>⌃
 clears the input line and, pressed twice, quits the CLI - so forwarding your literal
 <kbd>⌃</kbd><kbd>C</kbd> into a terminal would kill the session it was meant to interrupt.
 What Mission Control writes into a pane is <kbd>Esc</kbd>. An Agent SDK session is stopped
-through its driver's own interrupt instead. One gesture, two mechanisms, and the card picks
+through its driver's own interrupt instead. One gesture, two mechanisms, and the session detail picks
 the right one from the session's runtime.
 
 Both runtimes are covered, on every agent that has them. Pi is terminal-only - it has no
@@ -430,7 +430,7 @@ embedded driver - so the pane keystroke is not one of two options for it but the
 there can be.
 
 **A terminal interrupt is fire-and-forget.** Nothing on that path reports back that the turn
-actually ended: the keystroke is written and the pane is not asked. The card shows an
+actually ended: the keystroke is written and the pane is not asked. The session detail shows an
 optimistic "interrupting" that the next real reading of the session replaces. An Agent SDK
 interrupt is confirmed by the driver, so it settles immediately.
 
@@ -458,7 +458,7 @@ every agent **declares** what it has: permission modes, skills, work queues, rea
 effort controls, a command that clears its context, an MCP client. Absent is a first-class
 answer.
 
-That is why the differences you see are consistent rather than piecemeal. A Codex card
+That is why the differences you see are consistent rather than piecemeal. A Codex session detail
 draws its permission picker using Codex's native `/permissions` menu, while
 <kbd>⇧</kbd><kbd>Tab</kbd> still does nothing because Codex has no mode cycle to walk; its
 work-queue drawer is available once that session's launch-scoped hooks have reported, so
@@ -481,7 +481,7 @@ name, transcript byline and brand colour (`AGENT_IDENTITY`, `src/shared/agent.ts
 the stylesheet mentions no agent at all - the colour arrives as one `--agent-accent`
 custom property, so a new harness colours its dot and its transcript byline with no CSS
 written. Everywhere a sentence has to say *which* agents a feature reaches - the dispatch
-form's agent picker, the skills rows, the auto-mode switch, the empty grid - that list is
+form's agent picker, the skills rows, the auto-mode switch, the empty fleet - that list is
 computed from the capability, never typed out.
 
 Adding a third agent means filling that declaration in. The types make it impossible to
@@ -502,7 +502,7 @@ up in `todo/pi-harness.md`.
 Passive discovery can tell a session is *alive*, but process discovery alone cannot
 say whether the agent is actively working, sitting idle, or waiting on you. Claude
 Code **hooks** close that gap: a tiny bridge reports each lifecycle event to the daemon
-so every card shows a live, precise state and a one-line activity. Codex can also
+so every session detail shows a live, precise state and a one-line activity. Codex can also
 confirm working and idle passively from explicit lifecycle markers in its rollout file;
 its hook-only safeguards remain separate, as described below.
 
@@ -537,13 +537,13 @@ then fails every event in every session on the machine with `MODULE_NOT_FOUND`.
 Install from a durable clone, or pass `--force` to override; `--uninstall` is
 always allowed, so an abandoned slot can still clean up after itself.
 
-Which events those are, and what each one means for a card, belongs to the agent rather
+Which events those are, and what each one means for a session detail, belongs to the agent rather
 than to the installer: both live on `HARNESSES.claude.hooks`
 (`src/server/harness/claude/hooks.ts`), which this script and the packaged app's
 **Install Claude integrations…** both read. Only the payload mapping - Claude's hook JSON
 keys - is in the bridge itself; the transport under it
 (`src/shared/hook-bridge.mjs`) names no agent. An agent that reports nothing declares
-`hooks: null` instead, and its cards are read passively, off discovery and whatever its
+`hooks: null` instead, and its session surfaces are read passively, off discovery and whatever its
 own session file says. Claude and Codex report hooks - Codex by a different route,
 [below](#precise-status-for-codex-hooks-that-ride-on-the-dispatch). Pi declares
 `hooks: null`; only a Mission Control-dispatched Pi has the exact transcript binding needed
@@ -555,7 +555,7 @@ restart them.** This is the #1 reason a busy agent is stuck on grey "running"
 right after installing - the fix is simply a fresh session (or a full Claude
 restart), not a code change.
 
-**3. Verify.** In a new session, run anything; its card should flip from grey
+**3. Verify.** In a new session, run anything; its session detail should flip from grey
 **running** to blue **working** within ~1s. Or ask the daemon directly:
 
 ```sh
@@ -606,10 +606,10 @@ repo):
 
 Each fired hook POSTs `{ agent, event, sessionId, cwd, env }` to
 `http://127.0.0.1:7317/hooks/<event>` with the `~/.mission-control/token`. The daemon
-binds it to the right card via the terminal pane env (`TMUX_PANE` /
+binds it to the right session detail via the terminal pane env (`TMUX_PANE` /
 `WEZTERM_PANE`) and maps the event to a state (see the table below). `agent` is what says
 whose event vocabulary `event` is written in: a pane outlives the agent in it, so an
-event is only ever applied to a card running the harness that sent it. It defaults to
+event is only ever applied to a session detail running the harness that sent it. It defaults to
 `claude` when absent, since a bridge installed by an older checkout predates any other.
 
 </details>
@@ -622,7 +622,7 @@ Codex reports too, and its ten events are declared on its own harness
 and `SubagentStop`. `PermissionRequest` is the one worth naming: it is Claude's
 `Notification` by another name, the single event that means *a human has to answer this*,
 so it maps straight to amber **needs input** rather than being swept into the working
-fallback. Nothing else fires while a session is parked on it, which is exactly when a card
+fallback. Nothing else fires while a session is parked on it, which is exactly when a session detail
 must not read as busy.
 
 **There is nothing to install, and that cuts both ways.** Claude's hooks are written once
@@ -664,10 +664,13 @@ that command's output, so your terminal looks exactly as it did. It is never ins
 you: a plain `npm run install-hooks`, and the packaged app's integrations, leave
 `statusLine` untouched.
 
-It makes the model / thinking / context figures on the cards exact (without it they come
+It makes the model / thinking / context figures on the session details exact (without it they come
 from a passive transcript read), and supplies the [cost telemetry](#cost-telemetry) plan
 meters for terminal Claude sessions. Embedded Claude SDK sessions have no terminal status
-line; they fetch the same account windows through the SDK instead. For the passive context
+line; they fetch the same account windows through the SDK instead. Reasoning effort needs
+no status line on either path: Claude writes the level each turn ran under onto that turn's
+own transcript record, which is where an embedded session's badge comes from - it never
+types `/effort`, so no slash-command echo would ever say. For the passive context
 meter, Mission Control applies each recognized model's default window: Fable 5, Opus 4.6+
 and Sonnet 4.6+ use 1M, while Opus/Sonnet 4.5 and Haiku 4.5 use 200k. An explicit window
 reported by Claude remains authoritative.
@@ -675,10 +678,12 @@ reported by Claude remains authoritative.
 When Mission Control can safely read and write the live session, its thinking badge is
 also a picker: click it to see the effort levels Mission Control can safely apply to the
 selected model and choose one for that session. A successful change uses the harness's
-native session-only control; it never changes that harness card's **Effort** select in
+native session-only control; it never changes that harness session detail's **Effort** select in
 **Settings → Harnesses** or what future sessions start with. Until the current model and
-effort have a trustworthy passive baseline, or when the pane cannot be written, the badge
-stays read-only. The same picker appears on Cards, in Console detail, and on Board tiles.
+effort have a trustworthy passive baseline, or when the session cannot be written to at
+all, the badge stays read-only. An embedded session has no pane and is still writable: its
+driver applies the level directly. The same picker appears in Console detail and on Board
+tiles.
 
 #### Levels that apply on the next turn
 
@@ -696,7 +701,7 @@ options. Two consequences are worth knowing:
   turn keeps its old level. Wait for the session to go idle if you want the new level to
   apply to what you are about to ask for.
 - **Nothing about the badge reverts on its own.** It stays pending until the session
-  actually starts a turn, however long that takes and however often the rest of the card
+  actually starts a turn, however long that takes and however often the rest of the session detail
   refreshes. When that turn starts, the badge settles on whatever the session really ran -
   normally the level you chose, or, if something else changed it in the meantime (a
   `/model` in a terminal on the same conversation, say), on that instead.
@@ -711,7 +716,7 @@ settles as soon as that turn runs.
 
 ### Session status colors
 
-Each card's status badge and its left edge stripe encode the session's state:
+Each session detail's status badge and its left edge stripe encode the session's state:
 
 | Color | State | Meaning |
 |-------|-------|---------|
@@ -726,7 +731,7 @@ Blue / green needs a trustworthy lifecycle source: the [Claude
 hooks](#precise-status-claude-hooks) you install once, the [Codex
 hooks](#precise-status-for-codex-hooks-that-ride-on-the-dispatch) that ride on a dispatch,
 or an exactly bound passive transcript such as a Mission Control-dispatched Pi session.
-Without one, a card shows grey **running** - with one exception: **needs an answer** is read
+Without one, a session detail shows grey **running** - with one exception: **needs an answer** is read
 off the terminal itself, so a session sitting on a menu goes amber whether or not it's
 instrumented. That exception is the point: an uninstrumented session waiting on a
 permission prompt is the most blocked thing on the board, and it used to report as grey
@@ -740,7 +745,7 @@ that enable them; <kbd>⇧</kbd><kbd>Tab</kbd> still cycles those modes. Codex o
 native **Ask for approval**, **Approve for me**, **Full Access**, and **Read Only** profiles
 through `/permissions`.
 Clicking either chip opens the same dashboard picker and drives the harness's own control.
-Like the thinking badge, it appears on Cards, in Console detail, and on Board tiles, so
+Like the thinking badge, it appears in Console detail and on Board tiles, so
 triaging from the board does not mean opening a session to change its permissions. In
 **Console detail it leads the header's runtime cluster** - mode, model, context, cost -
 rather than sitting in the pane's footer: the posture governs the session, while the three
@@ -783,14 +788,13 @@ reason. A handoff or resume is disabled until it has both a checkout and a conve
 a live pane remains focusable without either. If the harness cannot resume the conversation,
 the disabled agent button says so.
 
-This appears on **every layout that shows a conversation** - Cards, Console detail, and the
-Board's drilled-in pane - because it lives in the conversation panel itself rather than in
-any one card.
+This appears on **every layout that shows a conversation** - Console detail and the Board's
+drilled-in pane - because it lives in the shared conversation panel.
 
 ### Answer a session's menu from the dashboard
 
 When a session stops on an option menu - a **permission prompt**, an `AskUserQuestion`
-clarification, a **plan decision**, the folder-trust check - the card renders that menu's
+clarification, a **plan decision**, the folder-trust check - the session detail renders that menu's
 rows as **buttons**, with the question above them and each row's description beneath it.
 Click one and the daemon answers it in the terminal. Not just plan mode, and not only the
 ones Foreman declined: **every** menu a session is parked on is offered.
@@ -799,7 +803,7 @@ A **multi-select** `AskUserQuestion` renders as **checkboxes with a Submit butto
 because it is a form rather than a menu: in the terminal, Enter on one of its rows only
 ticks that row's box, and nothing reaches Claude until its `✔ Submit` tab is confirmed. Tick
 any number of rows, press **Submit answers**, and the daemon ticks what differs and walks
-Claude's own submit path. If Claude has further questions, the next one takes the card's
+Claude's own submit path. If Claude has further questions, the next one takes the session detail's
 place and you answer it the same way; if its review tab reports a question still unanswered,
 the form is left up rather than sent half-filled.
 
@@ -831,7 +835,7 @@ one grammar serve both - they differ, it turns out, by a single cursor glyph.
 
 The menu is read straight off the pane on the same ~1.5s sweep that reads the permission
 mode, so it needs **no hooks** and costs no extra work - and it clears the moment the menu
-does. On a menu the card also marks the row the terminal's own cursor is on, so this view
+does. On a menu the session detail also marks the row the terminal's own cursor is on, so this view
 and a tab open on the same session never disagree about what Enter would do. A dialog whose
 pane stops being readable - the window closed, the tmux server restarted - clears within a
 few sweeps rather than lingering as rows nothing can reach.
@@ -839,10 +843,10 @@ few sweeps rather than lingering as rows nothing can reach.
 **The reply box is closed while a menu is up**, deliberately. A dialog isn't a text box: it
 discards typed characters, and the Enter that follows confirms whichever row was already
 highlighted. The outbox rechecks for a dialog at the terminal write boundary, so a queued
-reply waits if a menu appears after the card's last refresh. The buttons are the only way to
+reply waits if a menu appears after the session detail's last refresh. The buttons are the only way to
 answer one.
 
-Because the card's copy of the menu is up to one sweep old, a click sends back the **label**
+Because the session detail's copy of the menu is up to one sweep old, a click sends back the **label**
 you were shown and the daemon re-reads the pane before pressing anything: if the screen has
 moved on - the menu closed, the rows repainted, [Foreman](foreman.md#foreman-auto-responder) got there
 first - the click is **refused and nothing is pressed** rather than landing on the wrong row.
@@ -869,7 +873,7 @@ composer unsubmitted, and the error says exactly that - leave copy-mode and pres
 ### Reading a session's whole conversation
 
 The Conversation tab opens on the session's **recent** turns, and scrolls back through the
-rest on demand. A card open reads a bounded tail rather than the file - a long session's
+rest on demand. A session detail open reads a bounded tail rather than the file - a long session's
 transcript runs to tens of megabytes, most of it tool output - so the panel is quick to
 open whatever the session has been doing.
 
@@ -903,13 +907,59 @@ anything about their wording. They had no author the daemon could attribute, so 
 to arrive wearing your byline, which made the conversation claim you had typed
 `[Image: original 2360x12932…]` or *Continue from where you left off.*
 
+#### The first turn of a dispatched session shows your request, not the whole launch prompt
+
+When Mission Control dispatches a task, the prompt it hands the agent is more than what you
+typed: it composes your request with several pieces of platform-owned context, which
+[dispatching an agent](dispatch-and-backlog.md) itemizes because it owns that composition.
+The agent needs all of it. You do not want to read it every time you open a card, and for a
+plan or scout task it is long enough to bury the reply underneath it.
+
+So the conversation shows **only your task request** as that first turn. Nothing is deleted
+and nothing is withheld:
+
+- the agent received the complete composed prompt, exactly as it always did;
+- the harness's own transcript file still holds that turn in full, byte for byte;
+- every server-side reader still sees the full text - Goal derivation, Foreman triage,
+  Workflow evidence, the Scout archive, review windows, and retro worthiness;
+- `GET /api/sessions/:id/transcript` serves the full turn, so an export or an audit is
+  unaffected.
+
+The substitution is a display projection, applied in the browser and applied once, so the
+Chat rendering, the Terminal rendering,
+[find-in-conversation](#find-in-a-conversation) and the
+[Yours rail](#the-rail-beside-the-conversation) all agree - the hidden text is not quietly
+searchable from one of them.
+
+It applies **only** to the turn that started a conversation Mission Control launched. It is
+never applied to:
+
+- a task assigned into a session that was already running - that turn is a message in an
+  ongoing conversation, and it renders in full;
+- anything you type yourself, including a follow-up whose wording resembles the launch;
+- a Foreman entry or a Workflow repair instruction;
+- an empty resume;
+- a session Mission Control merely discovered rather than launched;
+- the conversation after a `/clear`, which is a new conversation with no launch turn;
+- any transcript recorded before this behavior shipped. There is no backfill and no
+  guessing which historical turn was a launch instruction, so an older session reads
+  exactly as it did before.
+
+If a launch has no distinct request of yours to show, the turn is left out of the visible
+log rather than rendered as platform instructions or replaced with invented prose.
+
+It also applies to **one** turn, not to every turn that happens to carry the same text. The
+first time the conversation is read, the launch turn is pinned by its own transcript id; if the
+identical prompt arrives again later - a delivery Mission Control retried, or automation
+resending it - that later turn is a real message and renders in full.
+
 Scroll to the top of the log and the page above loads automatically, then the page above
 that, back to the session's first turn. **Load older messages** does the same on click,
 for when you would rather not scroll. Nothing appears once you reach the beginning: a
 short session shows no control at all.
 
 What you have scrolled back to is kept for recently viewed sessions, so switching to the
-Diff tab and back, collapsing a card, or moving between sessions usually returns you to
+Diff tab and back or moving between sessions usually returns you to
 the history you had - not to the tail again. The cache lasts for the browser tab; an
 evicted entry can always be fetched again by scrolling up.
 
@@ -920,6 +970,11 @@ turns in two cases only - the transcript was cleared or replaced under it (a `/c
 the agent wrote more than a reconnect can honestly be said to have missed. Both are the
 honest answer rather than a continuation with an invisible hole in it, and scrolling up
 re-reads whatever was dropped.
+
+In both Chat and Terminal, the composer prompt reads `mission (s) >` with the operator's
+resolved **Send message** binding in parentheses. Rebinding that action changes both
+prompts too, and an unset action leaves the parentheses out rather than teaching a key
+that no longer works.
 
 ### Reading a conversation as a terminal
 
@@ -965,8 +1020,8 @@ no exit code and no duration for any of them. Where it shows an elapsed time, th
 span between the run's first and last recorded turn, and its tooltip says so.
 
 **Settings → Display → Conversation** chooses the default for every session. Any single
-conversation can be flipped on its own with the **Terminal view** button - above the log on
-a card, in the detail's tab strip in Console and Board, where it appears only while the
+conversation can be flipped on its own with the **Terminal view** button in the detail's
+tab strip in Console and Board, where it appears only while the
 Conversation tab is the one you are reading. It
 wins over that default for that session until you close the tab - so one agent can be
 read as a chat log while the rest stay in the terminal stream. Nothing about the
@@ -997,11 +1052,6 @@ of the log still at the bottom of it.
 fixed chrome at the top of the pane, where it cost the conversation its height whether or
 not anything was running and described the present at the end of the pane furthest from
 where the present arrives.
-
-The session card keeps its own activity line, which is a field in the card's status block
-rather than chrome above a conversation - a collapsed card has no log for a tail row to sit
-in. Expanding one shows both: the card's line near the top, and the in-progress row at the
-tail of the panel the expansion just opened.
 
 ### The rail beside the conversation
 
@@ -1079,7 +1129,7 @@ tint of the same colour, so you can see where you are without reading the count.
 <kbd>Esc</kbd> closes find and takes the highlights and the rail with it.
 
 **The rail is there exactly when find is open.** There is no separate control for it, and
-it is never dropped to reclaim space - on a narrow card it moves below the conversation
+it is never dropped to reclaim space - on a narrow session detail it moves below the conversation
 rather than disappearing. Closed, find costs a conversation nothing at all.
 
 | Control | What it does |
@@ -1096,7 +1146,7 @@ The query is literal, not a pattern: `foo(bar)` finds those seven characters.
 
 Tool chips are searched too, because that is where the file paths are. Role bylines are
 not - otherwise `you` would match the label above every message you ever sent. Foreman's
-entries and your review answers are not searched either: they are cards rather than turns,
+entries and your review answers are not searched either: they are session surfaces rather than turns,
 and a match inside one has no single string whose offsets a highlight could name.
 
 One caveat the bar states rather than hides: the log holds the session's recent turns, not
@@ -1141,8 +1191,8 @@ backed by days of data rather than one sample.
 
 ### Goal
 
-Every instrumented card with a captured prompt carries a one-sentence **Goal** under its
-title, visible even while the card is collapsed. The Goal is the session's durable completion
+Every instrumented session detail with a captured prompt carries a one-sentence **Goal** under its
+title. The Goal is the session's durable completion
 objective, not a copy of the newest prompt or the step the agent happens to be working on.
 
 **Console detail draws it in the same place** - under the session's name, with the other
@@ -1160,7 +1210,7 @@ steering.
 
 An instruction still in the editable pending-turn outbox has not reached this pipeline. Once
 the agent accepts it, the instruction leaves the outbox, enters the reconciliation queue, and
-can update the card's tactical focus immediately. Agent SDK delivery records that boundary
+can update the session detail's tactical focus immediately. Agent SDK delivery records that boundary
 directly from the driver's acknowledgement; terminal delivery observes it through the
 harness's prompt hook.
 
@@ -1191,7 +1241,7 @@ text cannot be recovered.
 What it deliberately isn't:
 
 - **Not** what the session is doing this second. That's the activity ticker, which reads
-  on its own line on a card and at
+  on its own line on a session detail and at
   [the tail of the log](#the-step-the-current-turn-is-on) in the Console detail - "running
   Bash" is not a goal. The goal changes rarely and the ticker changes constantly, which is
   why they no longer share a band.
@@ -1202,13 +1252,13 @@ What it deliberately isn't:
 - `/clear` starts a new session, so it wipes the goal; `/compact` keeps the same session
   and leaves it alone.
 
-**Codex cards carry a Goal too**, and both tiers reach them. Agent SDK sessions for Claude
+**Codex sessions carry a Goal too**, and both tiers reach them. Agent SDK sessions for Claude
 and Codex capture their accepted launch and human follow-up prompts directly at the driver
 boundary. Terminal sessions capture prompts from their harness hooks; the refiner then reads
 the same transcript or rollout file the conversation pane does. An uninstrumented session
 you started yourself has no prompt to show and stays blank. Pi can read conversation turns
 too, so it has no permanent `GOAL_UNSUPPORTED` refusal; it does not yet push a prompt event,
-however, so current Pi cards do not seed a Goal. The permanent-refusal map is null for all
+however, so current Pi sessions do not seed a Goal. The permanent-refusal map is null for all
 three harnesses, and only agents whose harness can never read turns get an unsupported
 sentence.
 
@@ -1229,7 +1279,7 @@ npm run install-hooks -- --uninstall   # removes that block - and the hooks, and
                                        # cost telemetry, use Settings → Cost.
 ```
 
-Once any session or automation source has data, every priced session card carries a **cost
+Once any session or automation source has data, every priced session detail carries a **cost
 badge** beside its model / thinking / context row, and the topbar grows a **cost chip** -
 `≈$12.40 · $3.10/hr`, in the machinery purple cost wears everywhere. Clicking it opens the
 **Spend** popover, which carries the rest:
@@ -1315,7 +1365,7 @@ to. That spend is real - on a busy fleet it is the largest thing running when yo
 looking - and until it was attributed it was also invisible: a `codex exec --ephemeral` run
 writes no rollout file and exports nothing, while a headless Claude run *does* export
 OpenTelemetry, but under the fresh session id every headless run mints, so it landed in the
-ledger under a key belonging to no card and was silently counted as session spend.
+ledger under a key belonging to no session detail and was silently counted as session spend.
 
 Both now report themselves per subsystem and role. The Foreman's triage, full review,
 work-item verification, and backlog planning are separate from the GitHub Inspector's PR reviews
@@ -1384,7 +1434,7 @@ A plan meter disappears once its window resets rather than holding the last perc
 a quota that has already rolled over is not a figure worth showing, and the same rule
 already governs an account with no rate limits to report.
 
-**Every dollar figure is one API-equivalent estimate.** Session cards mark it `≈$`; so does
+**Every dollar figure is one API-equivalent estimate.** Session surfaces mark it `≈$`; so does
 the cost chip, and the Spend popover says so once in its footer rather than five times.
 **Automation** follows the valuation described above. Claude Code calculates its rows from request usage; Mission Control prices
 Codex requests at an immutable snapshot of OpenAI Standard API rates, including cache and
@@ -1457,7 +1507,7 @@ or log artifacts by issued repository slot or across all applicable repositories
 completion. It never tells the agent to commit evidence. A ship task without such a workflow
 keeps its prior Mission MCP launch and receives no evidence instructions:
 
-Registered evidence is visible in the session card's shared **Image evidence** composer before
+Registered evidence is visible in the session detail's shared **Image evidence** composer before
 **Ship it** or the built-in No-Mistakes review starts. A person can remove a stale registration,
 add screenshots by choosing, dropping, or pasting, and assign captions and repository scopes
 without moving the files into git. The same conversation-owned list appears in the initial
@@ -1544,11 +1594,11 @@ model's natural recovery is to ask again word for word. Two things keep that fro
 - If a retry happens anyway - a client that ignores progress, a dropped connection, a daemon
   restart - **an identical ask from the same session, while the first is still unanswered,
   re-attaches to the question that is already open** rather than opening a second one. You see
-  one card, you answer it once, and every call still listening is released by that one answer.
+  one session detail, you answer it once, and every call still listening is released by that one answer.
 
 The re-attach is deliberately narrow: it matches only a **pending** review with the same kind,
 the same wording, and the same offered options. A question you already answered is never reused,
-so an agent that legitimately asks the same thing again later gets a fresh card; a different
+so an agent that legitimately asks the same thing again later gets a fresh session detail; a different
 session's identical question is never folded into yours; and changing the options makes it a
 different question, because the options are what you are choosing between.
 

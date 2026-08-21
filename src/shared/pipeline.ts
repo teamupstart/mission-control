@@ -430,8 +430,15 @@ export const PipelineRepoSchema = z.object({
 export type PipelineRepo = z.infer<typeof PipelineRepoSchema>;
 
 /** The explicit host Mission Control starts for Conductor's interactive Engineer intake. */
-export const PIPELINE_LAUNCH_RUNTIMES = ["claude-sdk", "terminal"] as const;
+export const PIPELINE_LAUNCH_RUNTIMES = ["agent-sdk", "terminal"] as const;
 export type PipelineLaunchRuntime = (typeof PIPELINE_LAUNCH_RUNTIMES)[number];
+
+/** Canonical runtimes plus the persisted spelling accepted only while decoding old config. */
+const PipelineLaunchRuntimeInputSchema = z
+  .union([z.enum(PIPELINE_LAUNCH_RUNTIMES), z.literal("claude-sdk")])
+  .transform((runtime): PipelineLaunchRuntime =>
+    runtime === "claude-sdk" ? "agent-sdk" : runtime,
+  );
 
 /**
  * The whole `pipelines` blob: a schema-validated value over the `app_config` KV, the same
@@ -447,7 +454,7 @@ export type PipelineLaunchRuntime = (typeof PIPELINE_LAUNCH_RUNTIMES)[number];
 export const PipelinesConfigSchema = z.object({
   enabled: z.boolean().default(false),
   /** Controls Engineer's Mission Control host only. Conductor's build daemon remains external. */
-  launchRuntime: z.enum(PIPELINE_LAUNCH_RUNTIMES).default("claude-sdk"),
+  launchRuntime: PipelineLaunchRuntimeInputSchema.default("agent-sdk"),
   /** Foreman may unpark mechanical halts. Ships off and never widens to another class. */
   foremanMechanicalTriage: z.boolean().default(false),
   repos: z

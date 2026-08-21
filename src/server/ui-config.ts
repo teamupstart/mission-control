@@ -1,4 +1,4 @@
-import { UiConfigSchema } from "@shared/protocol.ts";
+import { UI_CONFIG_DEFAULTS, UiConfigSchema } from "@shared/protocol.ts";
 import type { UiConfig, UiConfigPatch, UiConfigView } from "@shared/protocol.ts";
 import { getAppConfig, setAppConfig } from "./db.ts";
 
@@ -13,9 +13,27 @@ import { getAppConfig, setAppConfig } from "./db.ts";
 
 const CONFIG_KEY = "ui";
 
+/**
+ * Cards was persisted as `grid` before that layout was retired. Keep the compatibility
+ * seam here, at the durable store boundary: the public schema rejects new `grid` writes,
+ * while a machine upgrading from an older build is rewritten to the supported Console
+ * layout the first time its config is read.
+ */
+function migrateRetiredLayout(raw: unknown): unknown {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return raw;
+  const stored = raw as Record<string, unknown>;
+  return stored.layout === "grid"
+    ? { ...stored, layout: UI_CONFIG_DEFAULTS.layout }
+    : raw;
+}
+
 /** The current config, with schema defaults applied over whatever was stored. */
 export function getUiConfig(): UiConfig {
-  return UiConfigSchema.parse(getAppConfig<unknown>(CONFIG_KEY) ?? {});
+  const stored = getAppConfig<unknown>(CONFIG_KEY);
+  const migrated = migrateRetiredLayout(stored ?? {});
+  const config = UiConfigSchema.parse(migrated);
+  if (migrated !== stored && stored !== undefined) setAppConfig(CONFIG_KEY, config);
+  return config;
 }
 
 /**

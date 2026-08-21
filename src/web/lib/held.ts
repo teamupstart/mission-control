@@ -60,7 +60,7 @@ export function newestSessionRun(
 /**
  * The run actually holding this session's next turn, or null when nothing is.
  *
- * This is what a card-shaped surface (Board tile, Cards card, rail row) uses to draw its held
+ * This is what a fleet surface (Board tile or rail row) uses to draw its held
  * mark AND to name it, and it is the SAME sentence `heldSessionIds` spells over the map -
  * stated once here so the two cannot drift, which is also why both read every run rather than
  * one. Scoped to the `idle` tone to match `orderSessions`: a held session that has stopped to
@@ -100,7 +100,7 @@ export function sessionIsHeld(
  * OWNS it right now - which is not the same question as "has this session ever had a run", and
  * the difference was a dead end: the `＋ workflow` chip asked the second question, so a session
  * whose review had finished hid the chip forever and could never be reviewed again from the
- * card or the console detail header.
+ * Board tile or Console detail header.
  *
  * The run it was bound to is still worth drawing after it ends - `WorkflowChip` says "Approved"
  * or "Preview cancelled" off the very same summary - so a terminal run shows BOTH: the outcome

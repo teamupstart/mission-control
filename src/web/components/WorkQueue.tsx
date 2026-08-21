@@ -25,7 +25,7 @@ import {
   workflowSessionEvidenceOwner,
 } from "../workflows/WorkflowEvidenceComposer.tsx";
 
-// The work-queue panel inside an expanded card: the batch of work queued for this
+// The work-queue panel inside an session detail: the batch of work queued for this
 // session, in the order you authored it. Items are drag-reorderable, editable, and
 // removable while they wait; the in-flight one shows what Foreman is doing to it.
 // Stops click propagation so interacting with it never selects/collapses the card.
@@ -155,7 +155,7 @@ export function WorkQueue({
   // essentially every idle conversational session. Those rows carry no work, but they
   // turned this branch off - so the add box switched to "Queue more work…" about work
   // nobody queued, and an empty `<ol className="wq-items">` (which flexes to fill an
-  // expanded card) opened a blank gap above everything below it. The ITEMS are the
+  // session detail) opened a blank gap above everything below it. The ITEMS are the
   // queue; the row is bookkeeping, and bookkeeping must not change what the human sees.
   //
   // The one thing such a row CAN carry is a wrap-up question, which is exactly how the
@@ -907,10 +907,10 @@ export function AddBox({
               e.preventDefault();
               onAdd();
             }
-            // Blur back to the grid so card keyboard nav (Enter to collapse) works again -
-            // the same escape the reply box offers. The grid's own Escape stands down
+            // Blur back to the fleet so session keyboard navigation works again -
+            // the same escape the reply box offers. The app's own Escape stands down
             // for this press (its guard reads the event's target, which is still this
-            // field), so one press leaves the box and the next collapses the card,
+            // field), so one press leaves the box and the next returns through the fleet,
             // peeling back one layer at a time rather than two at once.
             else if (e.key === "Escape") e.currentTarget.blur();
           }}
@@ -1079,10 +1079,8 @@ function Wrapup({
       <p className="wq-hint dim">Ship directly</p>
       {/* `rows` is the FLOOR, not the height: `field-sizing: content` grows this to fit
           (see styles.css). It has to, because the PR prefill now spells out CI and
-          conflicts rather than just "open a PR", and the same string is two lines in the
-          console detail pane and six in a grid card - no fixed row count reads well in
-          both, and you should not have to scroll a box to see what you are about to
-          send. */}
+          conflicts rather than just "open a PR". You should not have to scroll a box to
+          see what you are about to send. */}
       <textarea
         className="field-input"
         rows={3}

@@ -907,11 +907,10 @@ to arrive wearing your byline, which made the conversation claim you had typed
 #### The first turn of a dispatched session shows your request, not the whole launch prompt
 
 When Mission Control dispatches a task, the prompt it hands the agent is more than what you
-typed. It composes your request together with the repository manifest for a multi-repo task,
-the standing execution authorization, the task kind's contract, and - for Pi - a pointer at
-the checkout's committed agent memory. The agent needs all of it. You do not want to read it
-every time you open a card, and for a plan or scout task it is long enough to bury the reply
-underneath it.
+typed: it composes your request with several pieces of platform-owned context, which
+[dispatching an agent](dispatch-and-backlog.md) itemizes because it owns that composition.
+The agent needs all of it. You do not want to read it every time you open a card, and for a
+plan or scout task it is long enough to bury the reply underneath it.
 
 So the conversation shows **only your task request** as that first turn. Nothing is deleted
 and nothing is withheld:

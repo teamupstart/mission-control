@@ -5907,6 +5907,42 @@ kbd {
 .pending-turn.is-uncertain {
   border-left-color: var(--attention);
 }
+/* A queued row an open dialog is withholding. It borrows the attention colour from the
+   `.pane-dialog` above it on purpose: the two are one fact drawn in two places, and the
+   row is amber for exactly as long as that card is on screen. */
+.pending-turn.is-held {
+  border-left-color: var(--attention);
+}
+.pending-turn.is-held .pending-turn-state,
+.pending-turn-held {
+  color: var(--attention);
+}
+.pending-turn.is-held .turn-text {
+  border-color: color-mix(in oklab, var(--attention) 34%, var(--border));
+}
+.pending-turn-held {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+}
+.pending-turn-held .pth-glyph {
+  font-size: 11px;
+  line-height: 1;
+}
+.pending-turn-jump {
+  font: inherit;
+  color: var(--attention);
+  background: transparent;
+  border: 0;
+  padding: 1px 0;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.pending-turn-jump:hover,
+.pending-turn-jump:focus-visible {
+  color: var(--fg);
+  outline: none;
+}
 .pending-turn-role {
   display: flex;
   align-items: baseline;
@@ -5950,6 +5986,11 @@ kbd {
 }
 .pending-turn-error {
   flex-basis: 100%;
+}
+/* The ActionBar's mini-queue carries the same held state in its own, tighter idiom. */
+.compose-pending.is-held .compose-pending-state,
+.compose-pending.is-held button {
+  color: var(--attention);
 }
 
 /* ---- the turn currently arriving (TranscriptPanel's InProgressRow) ----

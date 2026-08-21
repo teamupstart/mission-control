@@ -10,8 +10,12 @@ import { clearDraft, readDraft, writeDraft } from "../lib/drafts.ts";
 import { formatChord, useKeybindings } from "../lib/keybindings.ts";
 import { clearInterrupting, interruptReport, markInterrupting } from "../lib/interrupting.ts";
 import { sdkDeliveryConfirmation } from "../lib/sdk-delivery.ts";
+import { revealPaneDialog } from "../lib/pane-dialog-anchor.ts";
 import {
   latestEditablePendingTurn,
+  PENDING_TURN_HELD_REASON,
+  PENDING_TURN_HELD_STATUS,
+  pendingTurnHold,
   pendingTurnStatus,
   RECALL_ACKNOWLEDGEMENT_LOST_MESSAGE,
   recallPendingTurnIntoDraft,
@@ -406,10 +410,28 @@ export function ActionBar({
         <div className="compose">
           {session.pendingTurns.length > 0 && (
             <div className="compose-pending-list" aria-label="Pending messages">
-              {session.pendingTurns.map((turn) => (
-                <div className={`compose-pending is-${turn.state}`} key={turn.id}>
+              {session.pendingTurns.map((turn) => {
+                const hold = pendingTurnHold(turn, session);
+                return (
+                <div
+                  className={`compose-pending is-${turn.state}${hold ? " is-held" : ""}`}
+                  key={turn.id}
+                >
                   <span className="compose-pending-text">{turn.text}</span>
-                  <span className="compose-pending-state">{pendingTurnStatus(turn)}</span>
+                  <Tooltip
+                    label={hold ? `${PENDING_TURN_HELD_REASON[hold]}.` : "Waiting to be delivered"}
+                  >
+                    <span className="compose-pending-state">
+                      {hold ? PENDING_TURN_HELD_STATUS : pendingTurnStatus(turn)}
+                    </span>
+                  </Tooltip>
+                  {hold === "review" && (
+                    <Tooltip label="Scroll to the review that is holding this message">
+                      <button type="button" onClick={() => revealPaneDialog(session.id)}>
+                        Go to review
+                      </button>
+                    </Tooltip>
+                  )}
                   {turn.id === latestEditable?.id && (
                     <Tooltip label="Move this queued message back into the send box">
                       <button type="button" disabled={busy !== null} onClick={() => void recallPending()}>
@@ -440,7 +462,8 @@ export function ActionBar({
                     </>
                   )}
                 </div>
-              ))}
+                );
+              })}
             </div>
           )}
           <textarea

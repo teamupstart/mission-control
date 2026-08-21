@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { MessageSendDisposition, PendingTurn, ServerEvent, Session } from "@shared/types.ts";
 import { canMessage } from "@shared/pane.ts";
-import { settledIdle } from "@shared/session.ts";
+import { activePaneDialog, settledIdle } from "@shared/session.ts";
 import { injectPrompt, type InjectResult } from "./actions.ts";
 import {
   claimNextPendingTurn,
@@ -516,7 +516,19 @@ export class PendingTurnManager {
       drainBoundary?.sessionId !== session.id &&
       session.stateConfirmed &&
       session.state === "idle" &&
-      session.paneDialog === null &&
+      // `activePaneDialog`, not the raw field, because that helper is where this codebase
+      // keeps the one notion of "a menu is covering this session" - the reply box, the
+      // attention buckets, Foreman's responder and the skills reload all ask it, and its
+      // own contract says readers ask here rather than reading the field. This gate was
+      // the last caller reading it directly, which left the DISPLAY of a held row and the
+      // rule that holds it derived from two different expressions.
+      //
+      // The swap cannot loosen delivery. The two differ only for `exited` and `stopping`,
+      // and the `state === "idle"` conjunct above already refuses both - so wherever this
+      // clause can decide anything, the field and the helper return the same value.
+      // `test/pending-turn-manager.test.ts` pins that over the whole `SessionState` union
+      // rather than leaving it as an argument someone has to re-derive.
+      activePaneDialog(session) === null &&
       !this.registry.sessionResetInProgress(session.id) &&
       canMessage(session)
     );

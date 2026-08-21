@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from "react";
+import { paneDialogAnchorId } from "../lib/pane-dialog-anchor.ts";
 import type { PaneDialog, PaneOption, SessionNoteSummary } from "@shared/types.ts";
 import { dialogIdentity } from "@shared/session.ts";
 import { api } from "../lib/api.ts";
@@ -187,7 +188,14 @@ export function PaneDialogPrompt({
   return (
     <Fragment>
       {/* Stops the click from reaching the card, which would toggle it expanded underneath. */}
-      <section className="pane-dialog" onClick={(e) => e.stopPropagation()}>
+      <section
+        className="pane-dialog"
+        id={paneDialogAnchorId(sessionId)}
+        // Focusable only as a jump target - "Go to review" on a held queued message lands
+        // here. Out of the tab order, so answering by keyboard still starts at the options.
+        tabIndex={-1}
+        onClick={(e) => e.stopPropagation()}
+      >
       <header className="pd-head">
         <span className="pd-badge">Waiting on you</span>
         <span className="pd-hint dim">
@@ -419,7 +427,14 @@ function DriverForm({
 
   return (
     <Fragment>
-      <section className="pane-dialog" onClick={(e) => e.stopPropagation()}>
+      <section
+        className="pane-dialog"
+        id={paneDialogAnchorId(sessionId)}
+        // Focusable only as a jump target - "Go to review" on a held queued message lands
+        // here. Out of the tab order, so answering by keyboard still starts at the options.
+        tabIndex={-1}
+        onClick={(e) => e.stopPropagation()}
+      >
       <header className="pd-head">
         <span className="pd-badge">Waiting on you</span>
         <span className="pd-hint dim">answer each, then submit</span>

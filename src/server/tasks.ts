@@ -3888,6 +3888,22 @@ export class TaskManager {
       }
       return; // resource-holding tasks stay loaded; live sessions re-bind by cwd
     }
+    // Everything past the terminal probe is destructive: it settles the row, publishes
+    // archives, and can stop the home and tear worktrees down. So it runs under the same
+    // in-process reservation every operator path takes - without it, a restart could be
+    // stopping this home while an operator's Remove, Cancel or Clean up stops it too, and
+    // hand the same lease back twice.
+    //
+    // Deliberately NOT held across the probe above. `homeAlive` reaches a terminal backend
+    // and can take seconds; refusing an operator for that whole window would be a worse
+    // bargain than the race it closes. The re-read and the ownership comparison that open
+    // the section below happen INSIDE the reservation, so an operator who won the race is
+    // observed rather than raced with.
+    await this.withCleanupReservation(t.id, undefined, () => this.reconcileAfterProbe(t));
+  }
+
+  /** The destructive tail of `reconcileOnStartup`, run under the cleanup reservation. */
+  private async reconcileAfterProbe(t: Task): Promise<void> {
     // A completion authority may have moved the row while the terminal probe awaited. The
     // pipeline projection is one such authority during boot restore. Re-read before cleanup
     // so its `done` result is preserved instead of being overwritten from the startup

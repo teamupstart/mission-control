@@ -132,6 +132,64 @@ test("startup cleanup stays one-deep per repository without delaying disjoint re
   assert.equal(maxActiveSameRepo, 1);
 });
 
+test("startup reconciliation holds the cleanup reservation an operator would take", async () => {
+  // Re-reading the task inside the queued job is necessary but not sufficient. This job can
+  // stop a terminal home and release leases, and an operator pressing Remove, Cancel or Clean
+  // up takes the in-process reservation and proceeds - so without the startup job taking it
+  // too, both could stop the same home and hand the same lease back twice. Asserted through
+  // the operator's own refusal rather than by reading the reservation set.
+  const registry = new Registry();
+  registry.upsertTask(mkTask({
+    id: "startup-reserved",
+    repoRoot: "/repo/reserved",
+    status: "done",
+    homeName: "reserved-home",
+    terminalResourceId: "reserved-res",
+  }));
+
+  let releaseTeardown!: () => void;
+  const mayFinish = new Promise<void>((resolve) => {
+    releaseTeardown = resolve;
+  });
+  let teardownEntered!: () => void;
+  const started = new Promise<void>((resolve) => {
+    teardownEntered = resolve;
+  });
+  const teardown: NonNullable<ConstructorParameters<typeof TaskManager>[5]>["teardown"] = async () => {
+    teardownEntered();
+    await mayFinish;
+  };
+
+  const manager = new TaskManager(
+    registry,
+    undefined,
+    { taskLiveness: () => false } as never,
+    undefined,
+    undefined,
+    { teardown },
+  );
+  await started;
+
+  const refused = await manager.reclaim("startup-reserved");
+  assert.equal(refused.ok, false, "an operator reclaim must not run alongside the startup job");
+  assert.match(String(refused.error), /already being cleaned up/);
+
+  releaseTeardown();
+  await eventually(
+    () => registry.getTask("startup-reserved")?.homeName === null,
+    "startup reconciliation did not finish",
+  );
+
+  // And the reservation is given back afterwards, so the task is operable again rather than
+  // wedged shut by the job that finished with it.
+  const after = await manager.reclaim("startup-reserved");
+  assert.notEqual(
+    String(after.error ?? ""),
+    "this task's resources are already being cleaned up",
+    "the reservation outlived the job that took it",
+  );
+});
+
 test("a dead agent's checkout is retained on restart, not freed on the spot", async () => {
   // The behaviour change this phase exists for. Before it, a proven-dead terminal home meant
   // `git worktree remove --force` during boot - so a machine reboot destroyed staged work, an

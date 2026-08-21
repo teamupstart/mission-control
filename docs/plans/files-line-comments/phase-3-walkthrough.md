@@ -26,8 +26,10 @@ measurement the plan's two 60% assumptions need.
    `plan.md` specifies: the thread's oldest human message whose `delivered_at` is NULL. Do not
    render "the thread's comment" - that is only well defined on a thread's first turn, and picking
    it is what makes a follow-up resend the original. Content as `plan.md` specifies - path, line
-   range, quoted anchor, that message's body, the thread's `short_id`, **the position line ("Comment 3 of
-   12")**, and the closing instruction to answer only this one. **One deliberate difference until
+   range, quoted anchor, that message's body, **the thread's `short_id` followed by the delivery
+   ordinal** (`MC-a41f.2` - the 1-based position of the message this turn carries among the
+   thread's human messages, which is derived and needs no column), **the position line ("Comment 3
+   of 12")**, and the closing instruction to answer only this one. **One deliberate difference until
    phase 4 lands:** that closing instruction asks for an answer in the next turn and names no
    tool, because `respond_to_file_comments` does not exist yet. Phase 4 substitutes the tool name
    into that single line and changes nothing else. The position line is not decoration: it is the
@@ -113,6 +115,13 @@ measurement the plan's two 60% assumptions need.
      depth-one guarantee this phase rests on. The message simply waits, and the existing rule above
      picks it up: when the turn resolves and undelivered human messages remain, the thread requeues
      for the next one. Editing is a different question and is refused outright while outstanding.
+   - **Both requeue paths go through phase 1's `queueFileCommentThread`**, which appends at the
+     tail with a fresh `queue_seq` - the follow-up on an `answered` or `unanswered` thread, and the
+     thread whose turn resolved with undelivered human messages still on it. Neither reuses the
+     thread's old position: "at the end" is the contract, and a reused number would send the
+     follow-up ahead of everything queued since. That operation refuses an outstanding thread
+     outright, which is the same guard as the bullet above, enforced once where it cannot be
+     forgotten.
    The `outdated` flag is a column beside the status, so it stays orthogonal and reversible
    throughout. The reply itself is still written by phase 1's
    `appendFileCommentMessage`; what this phase adds is the requeue that follows it.

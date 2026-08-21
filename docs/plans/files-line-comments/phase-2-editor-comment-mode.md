@@ -64,7 +64,8 @@ running session.
    as a suggestion and never as a closure.
 8. **Drafts persist from the first keystroke** through phase 1's message-edit route - a draft is an
    ordinary undelivered message row, which is why it is editable - and not in browser state.
-9. **Submitting a comment queues it**, through phase 1's **`queueFileCommentThread` route**.
+9. **Submitting a comment queues it**, through phase 1's **`queueFileCommentThread` route** - the
+   tail-append operation, of which this is the first of three callers.
    `draft` becomes `queued` and the thread takes the next `queue_seq` for its session, and those
    are **one call, not two**: composing the status route with the reorder route lets a second
    submit land between the requests and take the same number. This phase writes that column even

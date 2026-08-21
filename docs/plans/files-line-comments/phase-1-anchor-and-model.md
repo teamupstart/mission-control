@@ -62,9 +62,22 @@ change them cheaply. That ordering is deliberate - see the entry on `addColumn` 
    `upsertInspectorComment` / `loadInspectorComments` are): create, list by session, list by session
    and path, delete, reorder `queue_seq`, set and clear the `outdated` flag, read and write the
    review's run state, and the status transitions.
-   - **`queueFileCommentThread(threadId, now)` does both halves of submitting in one call**: moves
-     the thread `draft` → `queued` **and** allocates its `queue_seq` as
-     `COALESCE(MAX(queue_seq), -1) + 1` scoped to the session. Model it on `createPendingTurn`
+   - **`queueFileCommentThread(threadId, now)` places a thread at the tail of its session's queue**
+     in one call: sets the status to `queued` **and** allocates its `queue_seq` as
+     `COALESCE(MAX(queue_seq), -1) + 1` scoped to the session.
+     - **It is the only way a thread enters the queue, first time or not.** Three paths need it and
+       they are the same operation: phase 2 submitting a `draft`, a human follow-up on an
+       `answered` or `unanswered` thread, and phase 3 requeueing a thread whose turn resolved with
+       undelivered human messages left. Declaring it once is what stops the second and third being
+       improvised out of the generic status route, which cannot allocate a position at all.
+     - **A fresh tail number every time; the prior `queue_seq` is discarded, never reused.**
+       Reusing it would put a follow-up back in the original comment's old position, ahead of
+       comments the human queued in between - "re-enters the queue **at the end**" is the contract
+       in `plan.md`, and reuse quietly breaks it.
+     - **Refused from `sending` and `awaiting`.** Those are the outstanding statuses, and pulling a
+       thread out of that set while its turn is live in `pending_turns` would empty the set the
+       single-flight index is built on. The guard belongs here, on the operation, rather than being
+       restated at each of its three callers. Model it on `createPendingTurn`
      (`db.ts:8578`), which allocates `pending_turns.seq` exactly this way inside one
      `BEGIN IMMEDIATE` (`db.ts:8588` is the allocating select) - the house style every transaction
      in this file follows (`db.ts:516`).
@@ -235,7 +248,8 @@ change them cheaply. That ordering is deliberate - see the entry on `addColumn` 
 - `test/file-comments-store.test.ts` - SQL, status transitions, `queue_seq` rewrites, the
   `outdated` flag surviving a status change in both directions, **`queueFileCommentThread`
   allocating consecutive `queue_seq` values across repeated submits in one session and starting a
-  second session's queue at zero**, message append and load order for
+  second session's queue at zero, a requeue from `answered` landing at the **tail** rather than its
+  old position, and the same call **refused** on a `sending` or `awaiting` thread**, message append and load order for
   both authors, editing an undelivered message and **being refused on a delivered one and on one
   whose thread is merely outstanding**, stamping
   `addressed_at` and `read_at` without touching `status`, **`short_id` minting surviving a forced
@@ -372,3 +386,11 @@ the walkthrough state machine and payload (phase 3), the MCP tool (phase 4).
   route, modelled on `createPendingTurn`'s allocation. Recorded at the same time: no `UNIQUE` index
   on `(session_id, queue_seq)`, because this table reorders and `foreman_queue_items` shows why a
   reordering table cannot carry one - so a later change does not add it and break the reorder.
+- Review pass (round 17): `queueFileCommentThread` had been specified as `draft` → `queued`, which
+  covers only the first of its three callers. A human follow-up on an `answered` or `unanswered`
+  thread and a thread requeued when its turn resolves both need the same thing - the tail of the
+  queue with a fresh number - and neither could get it from a generic status update, while reusing
+  the thread's old `queue_seq` would send a follow-up ahead of everything queued since. Generalised
+  to a tail-append valid from any non-outstanding status, with the previous round's
+  "do not requeue an outstanding thread" guard moved onto the operation itself, where its three
+  callers cannot each forget it.

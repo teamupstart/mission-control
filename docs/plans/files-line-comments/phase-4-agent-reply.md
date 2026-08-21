@@ -27,6 +27,11 @@ The queue stops advancing on an inference about idleness and starts advancing on
      UUID. An implementation that reads `commentId` as `file_comment_threads.id` produces a tool no
      agent can call, which is the failure mode this bullet exists to prevent. Say so in the field's
      `.describe()` too, since that string is what the agent actually reads.
+   - **It is the full cited handle, ordinal included** - `MC-a41f.2`, not `MC-a41f`. The ordinal is
+     what makes the reply answer a *turn* instead of a thread, and without it the route cannot tell
+     a late reply to a thread's first delivery from an answer to its second. Accept a bare handle
+     as well, because that is what the transcript fallback recovers, but treat it as **unable to
+     confirm a delivery**: file the message on the thread and advance nothing.
    - **The tool name must be a bare string literal at the `registerTool(` call site.**
      `test/mission-mcp.test.ts:125-133` scrapes `/registerTool\(\s*"([a-z_]+)"/g` and asserts sorted
      set equality against `MISSION_MCP_TOOLS`. A named constant there breaks the scrape - which is
@@ -72,9 +77,16 @@ The queue stops advancing on an inference about idleness and starts advancing on
        follow-up would never be delivered - human work lost silently, with the reply that caused it
        looking like a success. A `resolved` thread is left alone by the same rule: only a person
        closes a thread, and a late reply does not reopen one.
-     - **Release the next comment only when the reply answers the outstanding delivery** - the
-       thread whose `delivery_id` is the turn actually in flight. A late reply persists, notifies,
-       and advances nothing.
+     - **Release the next comment only when the reply answers the outstanding delivery**, which is
+       what the ordinal is for: the cited ordinal must name the message that delivery actually
+       carried - the thread's human message with the greatest `delivered_at`, which is unambiguous
+       because only one turn is outstanding per session. A late reply persists, notifies, and
+       advances nothing.
+       - This is the case the thread identifier alone cannot express, and it is reachable: comment
+         1 times out, a follow-up on the same thread is delivered, and the late reply to comment 1
+         arrives while that thread is legitimately outstanding again. Matching on the thread would
+         mark the follow-up's delivery answered and release the next comment, having answered
+         nothing. Matching on the ordinal refuses that.
    - `commentId` stays **required** even though only one comment is outstanding. It costs one field
      and it is what stops a late reply - the agent answering comment 3 after the walkthrough moved to
      comment 5 - from being misfiled onto the wrong thread. Required and session-scoped are doing
@@ -95,7 +107,10 @@ The queue stops advancing on an inference about idleness and starts advancing on
      `DetailTabInputs` and supply it from `ConsoleDetail.tsx:378`.
 8. **The transcript fallback.** A session an operator started without the Claude integration has no
    such tool. An assistant turn opening with the thread's `short_id` is filed into that thread by
-   the transcript reader. Less precise, and the only thing that works everywhere.
+   the transcript reader. Less precise in a specific way: free text recovers the handle but not
+   reliably the ordinal, so a fallback reply is filed on the thread and **does not advance the
+   queue** - phase 3's own advance signal carries those sessions. It is the only thing that works
+   everywhere.
 9. **`docs/sessions.md`**: what a comment looks like as a turn, and where it queues.
 
 ## Non-goals
@@ -133,7 +148,11 @@ The queue stops advancing on an inference about idleness and starts advancing on
   round-14 case explicitly, because it is the one that loses data rather than merely misreporting:
   time a thread out to `unanswered`, add a human follow-up so it returns to `queued` with a
   `queue_seq`, then deliver the late agent reply - the message must persist while the thread stays
-  `queued`, keeps its place, and still delivers the follow-up. Cover `resolved` the same way.
+  `queued`, keeps its place, and still delivers the follow-up. Cover `resolved` the same way. Then
+  the round-17 variant, which the thread identifier alone cannot survive: let that follow-up be
+  **delivered** so the thread is outstanding again, and only then deliver the stale reply to the
+  first comment. It must persist and advance nothing, rather than marking the follow-up's delivery
+  answered.
 - `e2e/specs/file-comment-walkthrough.spec.ts` gains a faked reply: read the token from
   `join(daemon.home, "token")`, `POST /mcp/file-comments/replies` with `x-harness-token`, `env: {}`
   and the session's `cwd`, exactly as `e2e/specs/review-answers-in-conversation.spec.ts:58-101`
@@ -149,8 +168,10 @@ The queue stops advancing on an inference about idleness and starts advancing on
 - A reply persists, reaches every dashboard live, and releases the next comment.
 - A late reply lands on its own thread and advances nothing, and **does not move a thread the human
   has already requeued** - the follow-up is still delivered afterwards.
-- A reply quoting the `MC-xxxx` the payload printed resolves to that thread, and the same handle in
+- A reply quoting the `MC-xxxx.N` the payload printed resolves to that thread, and the same handle in
   another session resolves to that session's thread and not this one.
+- A reply whose ordinal names an earlier delivery of a thread that is outstanding again persists on
+  the thread and **does not** release the next comment.
 - The Files tab raises a pip when a reply arrives.
 - `npm run smoke` passes.
 
@@ -187,3 +208,14 @@ thread renders from durable state rather than from the transcript.
   conditional on the thread still being the one that reply answers. The gating predicate reuses the
   payload selection rule's `delivered_at IS NULL` rather than inventing a second notion of
   "pending", and the same rule leaves a `resolved` thread closed.
+- Review pass (round 17): round 14 made advancing conditional on "the reply answering the
+  outstanding delivery", but the only value the agent is given is the thread handle - and a thread
+  can be delivered more than once, so the handle cannot express which turn is being answered. The
+  reachable case: comment 1 times out, a follow-up on the same thread is delivered, the late reply
+  to comment 1 arrives while that thread is legitimately outstanding again, and matching on the
+  thread marks the follow-up's delivery answered and releases the next comment having answered
+  nothing. The payload now cites `MC-a41f.2` and the ordinal is matched against the message the
+  current delivery carried. It is derived from the thread's human messages rather than stored, so
+  no column moves; a bare handle - what the transcript fallback recovers - files the message and
+  advances nothing. Same lesson as round 13: a rule that matches on an identity is only as good as
+  the identity the agent is actually handed.

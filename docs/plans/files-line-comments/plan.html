@@ -466,7 +466,7 @@ blockquote 13 -&gt; 13</code></pre></div>
   <p>Three tables, following the house conventions: epoch-millisecond <code>INTEGER NOT NULL</code> timestamps, indices declared beside the table, relations by convention rather than a <code>REFERENCES</code> clause, and <code>updated_at</code> on every table, because every row here can still change. The two tables with their own identity take a <code>TEXT PRIMARY KEY</code> from <code>randomUUID()</code> at the call site; <code>file_comment_reviews</code> is keyed by <code>session_id</code> instead, because there is exactly one review per session and inventing a second id for it would only create a way to have two.</p>
   <div class="code-wrap"><pre><code>file_comment_threads
   id           TEXT PRIMARY KEY
-  short_id     TEXT NOT NULL     -- MC-a41f; what the payload cites and a reply quotes
+  short_id     TEXT NOT NULL     -- MC-a41f; the payload cites it plus a delivery ordinal
   session_id   TEXT NOT NULL     -- the session this thread belongs to (decision 2)
   path         TEXT NOT NULL     -- repository-relative
   start_line   INTEGER NOT NULL
@@ -523,10 +523,11 @@ docs/plans/x/plan.md, lines 84-86:
 
 This contradicts the diagram above it.
 
-Answer with mcp__mission-control__respond_to_file_comments quoting id MC-a41f.
+Answer with mcp__mission-control__respond_to_file_comments quoting id MC-a41f.2.
 Answer this comment only - the remaining 9 follow one at a time, so do not
 restructure beyond what this one asks for.</code></pre></div>
   <p><code>MC-a41f</code> is the thread's <code>short_id</code>: a stable, human-quotable handle minted beside the row's UUID and unique per session. The payload cites it, the reply tool takes it <strong>as its <code>commentId</code></strong>, and the transcript fallback matches it out of free text - which a UUID is too long and too easy to mangle for. It is the only comment identifier the agent is ever shown, so it is the only one the tool can accept. Because it is unique per session rather than globally, resolving it is always scoped to the session the reply arrived from.</p>
+  <p><strong>The trailing <code>.2</code> is the delivery ordinal</strong>, and it is what makes a reply answer a <em>turn</em> rather than a thread. A thread can be delivered more than once - it times out, you write a follow-up, it goes round again - so a handle alone cannot say which of those turns is being answered, and a late reply to the first would look exactly like an answer to the second. The ordinal is the position of the message this turn carries among the thread's human messages, so it needs no column: the payload prints it, the agent quotes it back, and the queue advances only when it names the message the current delivery actually carried. A reply that cites a bare handle with no ordinal - which is what the transcript fallback recovers - is still filed on the thread, but it cannot confirm a delivery, so it never advances the queue.</p>
   <p>The position line and the closing instruction are the mitigation for the one thing a batch does better: an agent that knows nine more comments are coming will not restructure the whole document on comment three.</p>
   <p>The renderer is server-side so the agent's copy and the dashboard's record cannot drift, and pure so it is tested without a session, a pane, or a database.</p>
 
@@ -537,7 +538,7 @@ restructure beyond what this one asks for.</code></pre></div>
   <p><code>commentId</code> stays required even though only one comment is outstanding. It costs one field and it is what stops a late reply - the agent answering comment 3 after the walkthrough moved to comment 5 - from being misfiled onto the wrong thread.</p>
   <p>Two limits worth stating rather than discovering:</p>
   <ul>
-    <li><strong>A tool is not universally reachable.</strong> Mission Control's MCP server reaches sessions the dashboard launched, and sessions on a machine where the Claude integration was installed. A session an operator started themselves without it has no such tool. The fallback is the <code>short_id</code> the payload already cites: an assistant turn opening with <code>MC-a41f</code> is filed into that thread by the transcript reader. Less precise, and the only thing that works everywhere.</li>
+    <li><strong>A tool is not universally reachable.</strong> Mission Control's MCP server reaches sessions the dashboard launched, and sessions on a machine where the Claude integration was installed. A session an operator started themselves without it has no such tool. The fallback is the <code>short_id</code> the payload already cites: an assistant turn opening with <code>MC-a41f</code> is filed into that thread by the transcript reader. Less precise in a specific way now worth naming - free text recovers the handle but not reliably the ordinal, so a fallback reply is filed on the thread and does not advance the queue. It is the only thing that works everywhere, and the walkthrough falls back to its own advance signal for those sessions.</li>
     <li><strong>v1 ships one tool, not two.</strong> There is no <code>list_file_comments</code> read tool; the delivered payload is the read path.</li>
   </ul>
 

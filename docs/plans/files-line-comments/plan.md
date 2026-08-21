@@ -497,7 +497,7 @@ second id for it would only create a way to have two.
 ```
 file_comment_threads
   id           TEXT PRIMARY KEY
-  short_id     TEXT NOT NULL     -- MC-a41f; what the payload cites and a reply quotes
+  short_id     TEXT NOT NULL     -- MC-a41f; the payload cites it plus a delivery ordinal
   session_id   TEXT NOT NULL     -- the session this thread belongs to (decision 2)
   path         TEXT NOT NULL     -- repository-relative
   start_line   INTEGER NOT NULL
@@ -621,7 +621,7 @@ docs/plans/x/plan.md, lines 84-86:
 
 This contradicts the diagram above it.
 
-Answer with mcp__mission-control__respond_to_file_comments quoting id MC-a41f.
+Answer with mcp__mission-control__respond_to_file_comments quoting id MC-a41f.2.
 Answer this comment only - the remaining 9 follow one at a time, so do not
 restructure beyond what this one asks for.
 ```
@@ -632,6 +632,16 @@ and the transcript fallback matches it out of free text - which a UUID is too lo
 mangle for. It is the only comment identifier the agent is ever shown, so it is the only one the
 tool can accept. Because it is unique per session rather than globally, resolving it is always
 scoped to the session the reply arrived from.
+
+**The trailing `.2` is the delivery ordinal**, and it is what makes a reply answer a *turn* rather
+than a thread. A thread can be delivered more than once - it times out, you write a follow-up, it
+goes round again - so a handle alone cannot say which of those turns is being answered, and a late
+reply to the first would look exactly like an answer to the second. The ordinal is the position of
+the message this turn carries among the thread's human messages, so it needs no column: the payload
+prints it, the agent quotes it back, and the queue advances only when it names the message the
+current delivery actually carried. A reply that cites a bare handle with no ordinal - which is what
+the transcript fallback recovers - is still filed on the thread, but it cannot confirm a delivery,
+so it never advances the queue.
 
 The position line and the closing instruction are the mitigation for the one thing a batch does
 better: an agent that knows nine more comments are coming will not restructure the whole document
@@ -666,7 +676,10 @@ Two limits worth stating rather than discovering:
   dashboard launched, and sessions on a machine where the Claude integration was installed. A
   session an operator started themselves without it has no such tool. The fallback is the
   `short_id` the payload already cites: an assistant turn opening with `MC-a41f` is filed into that
-  thread by the transcript reader. Less precise, and the only thing that works everywhere.
+  thread by the transcript reader. Less precise in a specific way now worth naming - free text
+  recovers the handle but not reliably the ordinal, so a fallback reply is filed on the thread and
+  does not advance the queue. It is the only thing that works everywhere, and the walkthrough falls
+  back to its own advance signal for those sessions.
 - **v1 ships one tool, not two.** There is no `list_file_comments` read tool; the delivered
   payload is the read path.
 

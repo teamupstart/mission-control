@@ -286,6 +286,70 @@
   .edge { fill: none; stroke: var(--rule-strong); stroke-width: 1.6; }
   .edge-label { fill: var(--fg-muted); font-family: var(--mono); font-size: 11px; }
   .edge-label.sans { font-family: var(--sans); font-size: 11.5px; }
+
+  /* resolved decisions */
+  :root {
+    --settled: #2f6b42;
+    --settled-soft: #eef4ef;
+    --settled-tint: #f6faf7;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --settled: #8ed4a4;
+      --settled-soft: #17251c;
+      --settled-tint: #141d17;
+    }
+  }
+  .resolved-note {
+    display: flex;
+    gap: .7rem;
+    align-items: baseline;
+    border: 1px solid var(--rule);
+    border-left: 4px solid var(--settled);
+    background: var(--settled-soft);
+    border-radius: 0 8px 8px 0;
+    padding: .85rem 1.15rem;
+    margin: 0 0 1.4em;
+    color: var(--fg-muted);
+    font-size: .95rem;
+  }
+  .resolved-note .stamp {
+    flex: none;
+    font-family: var(--mono);
+    font-size: .68rem;
+    font-weight: 700;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--settled);
+    border: 1px solid var(--settled);
+    border-radius: 999px;
+    padding: .08rem .6rem;
+    position: relative;
+    top: -1px;
+  }
+  .resolved-note p { margin: 0; }
+
+  a { color: var(--decide); text-underline-offset: 2px; }
+  a:hover { color: var(--accent); }
+
+  .tablewrap.decisions-table {
+    border-top: 3px solid var(--settled);
+    background: var(--settled-tint);
+  }
+  .decisions-table table { min-width: 52rem; }
+  .decisions-table thead th { background: var(--settled-soft); color: var(--settled); }
+  .decisions-table thead th:first-child { width: 3.4rem; }
+  .decisions-table th[scope="row"] {
+    font-family: var(--mono);
+    font-size: .78rem;
+    letter-spacing: .05em;
+    color: var(--settled);
+    white-space: nowrap;
+  }
+  .decisions-table td { color: var(--fg-muted); }
+  .decisions-table td strong { color: var(--fg); font-weight: 660; }
+  .decisions-table td.chosen { color: var(--fg); }
+  .decisions-table td.chosen strong { color: var(--settled); }
 </style>
 </head>
 <body>
@@ -618,7 +682,12 @@
     seam that has never run in production.</p>
   </section>
 
+
   <h2>Part 3 - proposed work</h2>
+
+  <p>The four open choices below were resolved in the dashboard review on 2026-08-21 and are recorded
+  under <a href="#decisions-resolved">Decisions</a>. The phases reflect what was chosen; the alternatives that
+  were not taken have been removed rather than left to re-litigate.</p>
 
   <section class="phase">
     <h3>Phase A - cut the first release (unblocks everything)</h3>
@@ -626,104 +695,150 @@
     <p>Nothing else in this plan can be verified until a release exists.</p>
 
     <ol>
-      <li>Resolve the pull-request permission per <strong>D1</strong>.</li>
-      <li>Confirm the release PR opens, review the generated <code>CHANGELOG.md</code> and the proposed version,
-        and merge it.</li>
-      <li>Confirm the follow-up run creates the <code>v0.2.0</code> tag and publishes the Release, and that
+      <li><strong>Give Release Please a credential that is allowed to open a pull request</strong> (D1). A fine-grained
+        PAT or a GitHub App installation token, stored as a repository secret and passed to the action
+        as <code>token:</code>. This sidesteps the organization policy rather than negotiating with it, and it does
+        not depend on an org admin being available.</li>
+      <li><strong>Set the first release to <code>1.0.0</code></strong> (D4). Release Please computed <code>0.2.0</code> from the minority of
+        commits it could parse, which is not a number anyone should have to defend. This needs
+        <code>"release-as": "1.0.0"</code> in <code>release-please-config.json</code> for the first run only, and it must be
+        removed immediately afterwards or every subsequent release is pinned to the same version.</li>
+      <li>Confirm the release pull request opens, review the generated <code>CHANGELOG.md</code>, and merge it.</li>
+      <li>Confirm the follow-up run creates the <code>v1.0.0</code> tag and publishes the Release, and that
         <code>scripts/assert-release-version.mjs</code> passes against it.</li>
-      <li>Fix G7 in the same change so the two parsers agree on what a version is.</li>
+      <li><strong>Fix G7 in the same change</strong> so <code>scripts/assert-release-version.mjs</code> and <code>src/shared/update.ts</code>
+        agree on what a version is. Today a <code>-rc.1</code> tag passes the CI assertion and is then permanently
+        invisible to the updater.</li>
     </ol>
+
+    <p>One consequence worth planning for: a PAT-pushed tag <strong>does</strong> start workflow runs, unlike the
+    <code>GITHUB_TOKEN</code>-pushed tag today. <code>ci.yml</code>'s <code>package</code> job is gated on <code>refs/tags/*</code> and will now
+    fire on every release. That is harmless - it builds a dmg and uploads it as a 90-day artifact
+    nobody has to consume - but it is a behaviour change, and <code>release.yml</code>'s header comment explicitly
+    documents the old assumption. Both the comment and the <code>package</code> job's gating need revisiting in
+    this phase: either let it run as a build check, or exclude release tags from it.</p>
   </section>
 
   <section class="phase">
     <h3>Phase B - prove the user journey end to end</h3>
 
-    <p>Only possible once Phase A has published a release.</p>
+    <p>Only possible once Phase A has published a release. This is the "make sure that works" the task
+    asked for; it cannot be done by reading code, which is why it is its own phase.</p>
 
     <ol>
-      <li>On a clean machine state, run <code>make install</code> and confirm it selects the published tag rather
-        than the default branch tip, and that the receipt records that tag.</li>
-      <li>Cut a second release (a trivial <code>fix:</code> is enough).</li>
-      <li>Confirm the installed app surfaces the banner, and that <strong>Update Now</strong> rebuilds, swaps, and
-        relaunches at the new version.</li>
-      <li>Confirm the negative path: force a build failure and verify the previous app and receipt are
-        both restored.</li>
+      <li>On a clean machine state, run <code>make install</code> and confirm it selects the published <code>v1.0.0</code> tag
+        rather than the default branch tip, and that the receipt records that tag.</li>
+      <li>Cut a second release.</li>
+      <li>Confirm the installed app surfaces the update banner, and that <strong>Update Now</strong> rebuilds, swaps,
+        and relaunches at the new version.</li>
+      <li>Confirm the negative path: force a build failure and verify the previous app <strong>and</strong> its receipt
+        are both restored, and the restored app relaunches.</li>
     </ol>
-
-    <p>This is the "make sure that works" you asked for. It cannot be done by reading code, and it is
-    deliberately its own phase.</p>
   </section>
 
   <section class="phase">
-    <h3>Phase C - make the changelog worth reading</h3>
+    <h3>Phase C - generate the changelog from pull request titles and labels</h3>
 
-    <p>Per <strong>D2</strong>. Whichever route is chosen, it should also close G3 by disabling merge commits so
-    squash titles are the only thing entering history.</p>
+    <p>D2. Conventional-commit parsing is the wrong tool for this repository's history - it reads 40 of
+    the last 245 commits and discards the 185 descriptive titles that are the actual product changes.
+    Generating from pull request titles and labels matches how history is already written, and it works
+    retroactively rather than only going forward.</p>
+
+    <ol>
+      <li>Replace the commit-message changelog source with a pull-request-derived one - GitHub's own
+        release-notes generator via <code>.github/release.yml</code>, or <code>git-cliff</code> configured against the GitHub
+        API. Keep Release Please as the thing that owns the version, tag, and Release if it can be fed
+        this way; otherwise this phase absorbs the tagging too.</li>
+      <li><strong>Close G3: disable merge commits on the repository</strong>, leaving squash-only. A merge commit
+        discards the pull request title into <code>Merge pull request #N from &lt;branch&gt;</code>, which carries nothing
+        either generator can use. This is the setting that makes the rest of the phase hold.</li>
+      <li>Adopt a small, enforced label vocabulary for the sections the changelog groups by.</li>
+    </ol>
   </section>
 
   <section class="phase">
     <h3>Phase D - close the install and update-safety gaps</h3>
 
     <ol>
-      <li>G5 - give the README a real install section pointing at <code>make install</code>, alongside the existing
-        dev quick start.</li>
-      <li>G6 - add Xcode Command Line Tools to the documented prerequisites, and make
-        <code>scripts/install-app.mjs</code> check for it up front so a missing toolchain fails at install time
-        with a clear message rather than mid-update with none.</li>
-      <li>G8 - put a timeout on <code>install()</code> in the update helper, and keep the previous bundle until the
-        relaunched app has been observed alive rather than deleting it the moment the install returns.</li>
-      <li>G9 - re-check <code>gh auth status</code> on the update path and surface lapsed auth as an actionable
-        state rather than silence, and special-case rate limiting.</li>
-      <li>G10 - decide whether any of this is worth an e2e spec, given the Electron gating.</li>
+      <li><strong>G5</strong> - give <code>README.md</code> a real install section pointing at <code>make install</code>, alongside the
+        existing dev quick start. A cloner following the README today lands in dev mode and never meets
+        the updater at all.</li>
+      <li><strong>G6</strong> - add Xcode Command Line Tools to the documented prerequisites, and make
+        <code>scripts/install-app.mjs</code> check for it up front, so a missing toolchain fails at install time
+        with a clear message rather than mid-update with no UI on screen.</li>
+      <li><strong>G8</strong> - put a timeout on <code>install()</code> in <code>scripts/apply-update.mjs</code>, and keep
+        <code>previous-app.bundle</code> until the relaunched app has been observed alive, rather than deleting it
+        the moment the install returns 0.</li>
+      <li><strong>G9</strong> - re-check <code>gh auth status</code> on the update path and surface lapsed auth as an actionable
+        state rather than silence; special-case HTTP 403 rate limiting instead of reporting it as a
+        generic non-zero exit.</li>
+      <li><strong>G10</strong> - decide whether any of this warrants an e2e spec given the Electron-preload gating, or
+        whether Phase B's manual verification is the honest coverage boundary.</li>
     </ol>
   </section>
 
   <section class="phase">
-    <h3>Phase E - artifact distribution (only if D3 says so)</h3>
+    <h3>Not doing: artifact distribution</h3>
 
-    <p>Attach a dmg to each Release, which requires the tag push to use a credential that starts
-    workflows, plus Developer ID signing and notarization so a downloaded bundle is not quarantined.
-    This is a materially larger change than the rest of this plan and is scoped out unless chosen.</p>
+    <p>D3. Releases will <strong>not</strong> carry a downloadable dmg. The source-build updater does not need one, and
+    adding it would pull in a paid Apple Developer ID plus notarization - without which a downloaded
+    bundle is quarantined and the current "it just opens" property is lost. G4 is therefore accepted
+    rather than fixed, and the dmg the <code>package</code> job builds stays a CI artifact.</p>
   </section>
 
-  <h2>Decisions</h2>
+  <h2 id="decisions-resolved">Decisions (resolved)</h2>
 
-  <p>These are the choices this plan cannot make for you. They are presented as selectable options in
-  the dashboard review.</p>
-
-  <div class="decisions">
-    <div class="decision">
-      <span class="dkey">D1</span>
-      <p><strong>D1 - how to unblock the release trigger.</strong> The setting toggle is the smallest fix but may need
-      an org admin, and it re-introduces the same failure for any future repository. A PAT or GitHub App
-      token avoids the org policy entirely and would also let the tag push start <code>ci.yml</code>. Replacing
-      Release Please with a <code>workflow_dispatch</code> workflow that tags and releases directly needs no
-      pull-request permission at all, at the cost of the review step the release PR gives you. A local
-      Claude skill keeps the whole thing on your machine, which you named as acceptable.</p>
-    </div>
-
-    <div class="decision">
-      <span class="dkey">D2</span>
-      <p><strong>D2 - what the changelog is generated from.</strong> Enforcing conventional PR titles with a title-lint
-      check is the conventional answer and fixes the problem going forward, but does nothing for the 245
-      commits already on <code>main</code> and adds a required check to every PR. Generating from PR titles and
-      labels instead - GitHub's own release-notes generator, or <code>git-cliff</code> - matches how this repository
-      actually writes history. Accepting a sparse changelog is a real option if the changelog is not
-      something you read.</p>
-    </div>
-
-    <div class="decision">
-      <span class="dkey">D3</span>
-      <p><strong>D3 - whether Releases carry a downloadable dmg.</strong> The updater does not need one. A download
-      path for people who will not clone does, and it drags in signing and notarization.</p>
-    </div>
-
-    <div class="decision">
-      <span class="dkey">D4</span>
-      <p><strong>D4 - what the first release is numbered.</strong> Release Please computed <code>0.2.0</code>. With 1286 commits
-      and a shipping product, <code>1.0.0</code> may be more honest, and it is far easier to choose now than later.</p>
-    </div>
+  <div class="resolved-note">
+    <span class="stamp">Resolved</span>
+    <p>Resolved in the dashboard plan review on 2026-08-21.</p>
   </div>
+
+  <div class="tablewrap decisions-table breakout">
+    <table>
+      <thead>
+        <tr>
+          <th><span aria-hidden="true"></span></th>
+          <th>Decision</th>
+          <th>Chosen</th>
+          <th>Why</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <th scope="row">D1</th>
+          <td>How to unblock the release trigger (G1)</td>
+          <td class="chosen"><strong>PAT or GitHub App token for Release Please</strong></td>
+          <td>Bypasses the organization policy outright instead of depending on an org admin, and does not recur for future repositories. Side effect: its tag push starts workflows, so <code>ci.yml</code>'s <code>package</code> job begins firing on release tags.</td>
+        </tr>
+        <tr>
+          <th scope="row">D2</th>
+          <td>What the changelog is generated from (G2)</td>
+          <td class="chosen"><strong>Pull request titles and labels</strong></td>
+          <td>Matches how this repository actually writes history. Conventional-commit parsing sees 40 of 245 commits and would ship a changelog describing a sixth of the work.</td>
+        </tr>
+        <tr>
+          <th scope="row">D3</th>
+          <td>Whether Releases carry a downloadable dmg (G4)</td>
+          <td class="chosen"><strong>No - source-build updater only</strong></td>
+          <td>The updater does not need an asset, and avoiding it avoids Developer ID signing and notarization entirely.</td>
+        </tr>
+        <tr>
+          <th scope="row">D4</th>
+          <td>The first release number</td>
+          <td class="chosen"><strong>v1.0.0</strong></td>
+          <td>1286 commits and a shipping product. Release Please's computed <code>0.2.0</code> derives from an unrepresentative minority of parseable commits. Far easier to choose now than later.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>A note on how this review was answered</h3>
+
+  <p>The review was submitted 1h52m after it was requested. The <code>request_plan_decisions</code> MCP call has a
+  30-minute idle timeout, so it had already aborted; the answers were persisted correctly in the
+  <code>reviews</code> table but were never delivered back to the waiting session, which had to recover them by
+  reading the database directly. Plan reviews are inherently human-paced and routinely take longer
+  than thirty minutes. This is worth fixing independently of this plan.</p>
 
 </article>
 </body>

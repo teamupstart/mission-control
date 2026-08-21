@@ -203,77 +203,104 @@ seam that has never run in production.
 
 ## Part 3 - proposed work
 
+The four open choices below were resolved in the dashboard review on 2026-08-21 and are recorded
+under [Decisions](#decisions-resolved). The phases reflect what was chosen; the alternatives that
+were not taken have been removed rather than left to re-litigate.
+
 ### Phase A - cut the first release (unblocks everything)
 
 Nothing else in this plan can be verified until a release exists.
 
-1. Resolve the pull-request permission per **D1**.
-2. Confirm the release PR opens, review the generated `CHANGELOG.md` and the proposed version,
-   and merge it.
-3. Confirm the follow-up run creates the `v0.2.0` tag and publishes the Release, and that
+1. **Give Release Please a credential that is allowed to open a pull request** (D1). A fine-grained
+   PAT or a GitHub App installation token, stored as a repository secret and passed to the action
+   as `token:`. This sidesteps the organization policy rather than negotiating with it, and it does
+   not depend on an org admin being available.
+2. **Set the first release to `1.0.0`** (D4). Release Please computed `0.2.0` from the minority of
+   commits it could parse, which is not a number anyone should have to defend. This needs
+   `"release-as": "1.0.0"` in `release-please-config.json` for the first run only, and it must be
+   removed immediately afterwards or every subsequent release is pinned to the same version.
+3. Confirm the release pull request opens, review the generated `CHANGELOG.md`, and merge it.
+4. Confirm the follow-up run creates the `v1.0.0` tag and publishes the Release, and that
    `scripts/assert-release-version.mjs` passes against it.
-4. Fix G7 in the same change so the two parsers agree on what a version is.
+5. **Fix G7 in the same change** so `scripts/assert-release-version.mjs` and `src/shared/update.ts`
+   agree on what a version is. Today a `-rc.1` tag passes the CI assertion and is then permanently
+   invisible to the updater.
+
+One consequence worth planning for: a PAT-pushed tag **does** start workflow runs, unlike the
+`GITHUB_TOKEN`-pushed tag today. `ci.yml`'s `package` job is gated on `refs/tags/*` and will now
+fire on every release. That is harmless - it builds a dmg and uploads it as a 90-day artifact
+nobody has to consume - but it is a behaviour change, and `release.yml`'s header comment explicitly
+documents the old assumption. Both the comment and the `package` job's gating need revisiting in
+this phase: either let it run as a build check, or exclude release tags from it.
 
 ### Phase B - prove the user journey end to end
 
-Only possible once Phase A has published a release.
+Only possible once Phase A has published a release. This is the "make sure that works" the task
+asked for; it cannot be done by reading code, which is why it is its own phase.
 
-1. On a clean machine state, run `make install` and confirm it selects the published tag rather
-   than the default branch tip, and that the receipt records that tag.
-2. Cut a second release (a trivial `fix:` is enough).
-3. Confirm the installed app surfaces the banner, and that **Update Now** rebuilds, swaps, and
-   relaunches at the new version.
-4. Confirm the negative path: force a build failure and verify the previous app and receipt are
-   both restored.
+1. On a clean machine state, run `make install` and confirm it selects the published `v1.0.0` tag
+   rather than the default branch tip, and that the receipt records that tag.
+2. Cut a second release.
+3. Confirm the installed app surfaces the update banner, and that **Update Now** rebuilds, swaps,
+   and relaunches at the new version.
+4. Confirm the negative path: force a build failure and verify the previous app **and** its receipt
+   are both restored, and the restored app relaunches.
 
-This is the "make sure that works" you asked for. It cannot be done by reading code, and it is
-deliberately its own phase.
+### Phase C - generate the changelog from pull request titles and labels
 
-### Phase C - make the changelog worth reading
+D2. Conventional-commit parsing is the wrong tool for this repository's history - it reads 40 of
+the last 245 commits and discards the 185 descriptive titles that are the actual product changes.
+Generating from pull request titles and labels matches how history is already written, and it works
+retroactively rather than only going forward.
 
-Per **D2**. Whichever route is chosen, it should also close G3 by disabling merge commits so
-squash titles are the only thing entering history.
+1. Replace the commit-message changelog source with a pull-request-derived one - GitHub's own
+   release-notes generator via `.github/release.yml`, or `git-cliff` configured against the GitHub
+   API. Keep Release Please as the thing that owns the version, tag, and Release if it can be fed
+   this way; otherwise this phase absorbs the tagging too.
+2. **Close G3: disable merge commits on the repository**, leaving squash-only. A merge commit
+   discards the pull request title into `Merge pull request #N from <branch>`, which carries nothing
+   either generator can use. This is the setting that makes the rest of the phase hold.
+3. Adopt a small, enforced label vocabulary for the sections the changelog groups by.
 
 ### Phase D - close the install and update-safety gaps
 
-1. G5 - give the README a real install section pointing at `make install`, alongside the existing
-   dev quick start.
-2. G6 - add Xcode Command Line Tools to the documented prerequisites, and make
-   `scripts/install-app.mjs` check for it up front so a missing toolchain fails at install time
-   with a clear message rather than mid-update with none.
-3. G8 - put a timeout on `install()` in the update helper, and keep the previous bundle until the
-   relaunched app has been observed alive rather than deleting it the moment the install returns.
-4. G9 - re-check `gh auth status` on the update path and surface lapsed auth as an actionable
-   state rather than silence, and special-case rate limiting.
-5. G10 - decide whether any of this is worth an e2e spec, given the Electron gating.
+1. **G5** - give `README.md` a real install section pointing at `make install`, alongside the
+   existing dev quick start. A cloner following the README today lands in dev mode and never meets
+   the updater at all.
+2. **G6** - add Xcode Command Line Tools to the documented prerequisites, and make
+   `scripts/install-app.mjs` check for it up front, so a missing toolchain fails at install time
+   with a clear message rather than mid-update with no UI on screen.
+3. **G8** - put a timeout on `install()` in `scripts/apply-update.mjs`, and keep
+   `previous-app.bundle` until the relaunched app has been observed alive, rather than deleting it
+   the moment the install returns 0.
+4. **G9** - re-check `gh auth status` on the update path and surface lapsed auth as an actionable
+   state rather than silence; special-case HTTP 403 rate limiting instead of reporting it as a
+   generic non-zero exit.
+5. **G10** - decide whether any of this warrants an e2e spec given the Electron-preload gating, or
+   whether Phase B's manual verification is the honest coverage boundary.
 
-### Phase E - artifact distribution (only if D3 says so)
+### Not doing: artifact distribution
 
-Attach a dmg to each Release, which requires the tag push to use a credential that starts
-workflows, plus Developer ID signing and notarization so a downloaded bundle is not quarantined.
-This is a materially larger change than the rest of this plan and is scoped out unless chosen.
+D3. Releases will **not** carry a downloadable dmg. The source-build updater does not need one, and
+adding it would pull in a paid Apple Developer ID plus notarization - without which a downloaded
+bundle is quarantined and the current "it just opens" property is lost. G4 is therefore accepted
+rather than fixed, and the dmg the `package` job builds stays a CI artifact.
 
-## Decisions
+## Decisions (resolved)
 
-These are the choices this plan cannot make for you. They are presented as selectable options in
-the dashboard review.
+Resolved in the dashboard plan review on 2026-08-21.
 
-**D1 - how to unblock the release trigger.** The setting toggle is the smallest fix but may need
-an org admin, and it re-introduces the same failure for any future repository. A PAT or GitHub App
-token avoids the org policy entirely and would also let the tag push start `ci.yml`. Replacing
-Release Please with a `workflow_dispatch` workflow that tags and releases directly needs no
-pull-request permission at all, at the cost of the review step the release PR gives you. A local
-Claude skill keeps the whole thing on your machine, which you named as acceptable.
+| | Decision | Chosen | Why |
+| --- | --- | --- | --- |
+| **D1** | How to unblock the release trigger (G1) | **PAT or GitHub App token for Release Please** | Bypasses the organization policy outright instead of depending on an org admin, and does not recur for future repositories. Side effect: its tag push starts workflows, so `ci.yml`'s `package` job begins firing on release tags. |
+| **D2** | What the changelog is generated from (G2) | **Pull request titles and labels** | Matches how this repository actually writes history. Conventional-commit parsing sees 40 of 245 commits and would ship a changelog describing a sixth of the work. |
+| **D3** | Whether Releases carry a downloadable dmg (G4) | **No - source-build updater only** | The updater does not need an asset, and avoiding it avoids Developer ID signing and notarization entirely. |
+| **D4** | The first release number | **v1.0.0** | 1286 commits and a shipping product. Release Please's computed `0.2.0` derives from an unrepresentative minority of parseable commits. Far easier to choose now than later. |
 
-**D2 - what the changelog is generated from.** Enforcing conventional PR titles with a title-lint
-check is the conventional answer and fixes the problem going forward, but does nothing for the 245
-commits already on `main` and adds a required check to every PR. Generating from PR titles and
-labels instead - GitHub's own release-notes generator, or `git-cliff` - matches how this repository
-actually writes history. Accepting a sparse changelog is a real option if the changelog is not
-something you read.
+### A note on how this review was answered
 
-**D3 - whether Releases carry a downloadable dmg.** The updater does not need one. A download
-path for people who will not clone does, and it drags in signing and notarization.
-
-**D4 - what the first release is numbered.** Release Please computed `0.2.0`. With 1286 commits
-and a shipping product, `1.0.0` may be more honest, and it is far easier to choose now than later.
+The review was submitted 1h52m after it was requested. The `request_plan_decisions` MCP call has a
+30-minute idle timeout, so it had already aborted; the answers were persisted correctly in the
+`reviews` table but were never delivered back to the waiting session, which had to recover them by
+reading the database directly. Plan reviews are inherently human-paced and routinely take longer
+than thirty minutes. This is worth fixing independently of this plan.

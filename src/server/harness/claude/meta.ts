@@ -60,6 +60,14 @@ function isThinkingLevel(value: unknown): value is ThinkingLevel {
 }
 
 /**
+ * A record's `timestamp` when it is one `isLaterEffortRevision` can actually order, else null.
+ */
+function parseableTimestamp(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  return Number.isFinite(Date.parse(value)) ? value : null;
+}
+
+/**
  * The turn-record effort, or null when this line is not one.
  *
  * Sidechain and API-error records are skipped for the same reason `latestAssistantUsage`
@@ -89,18 +97,13 @@ function latestEffort(lines: string[]): { level: ThinkingLevel | null; revision:
     }
     const fromTurn = echo || !record ? null : recordEffort(record);
     if (fromTurn) {
-      // An ISO timestamp first here, unlike the echo below: turn records are what the
-      // freshness guards compare, and `isLaterEffortRevision` can only order two parseable
-      // dates. A uuid would make every later turn look no newer than the one a verified
-      // change was measured against, pinning the card to that reading for the rest of the
-      // conversation.
-      const revision =
-        typeof record!.timestamp === "string"
-          ? record!.timestamp
-          : typeof record!.uuid === "string"
-            ? record!.uuid
-            : null;
-      return { level: fromTurn, revision };
+      // ONLY a parseable timestamp, unlike the echo below - never the uuid, and never a
+      // timestamp that is not one. Turn records are what the freshness guards compare, and
+      // `isLaterEffortRevision` orders them with `Date.parse`: an unorderable revision looks
+      // no newer than the one a verified change was measured against, however many turns
+      // have since run, which pins the card to that one reading. Answering null says "this
+      // read cannot order itself" rather than offering a value that silently never can.
+      return { level: fromTurn, revision: parseableTimestamp(record!.timestamp) };
     }
     if (!echo) continue;
     let revision: string | null = null;

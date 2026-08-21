@@ -380,6 +380,25 @@ test("computeRuntimeMeta reports an embedded session's effort and an orderable r
   assert.equal(m?.effortRevision, "2026-07-22T12:00:00.000Z");
 });
 
+test("computeRuntimeMeta reports no effort revision it could not order", () => {
+  // A record with no timestamp, and one whose timestamp is not a date, both answer null
+  // rather than something `isLaterEffortRevision` would silently never rank as newer.
+  const record = (extra: object): string =>
+    JSON.stringify({
+      type: "assistant",
+      isSidechain: false,
+      uuid: "e3f8a77f-ed94-4760-97dd-baa78a15b525",
+      message: { role: "assistant", model: "claude-opus-4-8", usage: { input_tokens: 20_000 } },
+      effort: "high",
+      ...extra,
+    });
+  for (const extra of [{}, { timestamp: "not a date" }, { timestamp: 17 }]) {
+    const m = computeRuntimeMeta([record(extra)]);
+    assert.equal(m?.thinkingLevel, "high", "the level is still read");
+    assert.equal(m?.effortRevision, null);
+  }
+});
+
 test("computeRuntimeMeta derives model + context% from the newest assistant usage", () => {
   // A standard-window model (Haiku) exercises the plain 200k arithmetic.
   const m = computeRuntimeMeta([

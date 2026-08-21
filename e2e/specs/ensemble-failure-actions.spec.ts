@@ -152,7 +152,8 @@ test("a failed ensemble can be dismissed without deletion, then deleted through 
   await expect(modal).toBeHidden();
   expect((await json<Detail>(daemon, `/api/ensembles/${runId}`)).run.status).toBe("failed");
 
-  await dashboard.keyboard.press("d");
+  await openDelete.click();
+  await expect(modal).toBeVisible();
   const deletedResponse = dashboard.waitForResponse(
     (response) =>
       response.url().endsWith(`/api/ensembles/${runId}`) &&

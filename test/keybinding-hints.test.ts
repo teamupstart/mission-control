@@ -47,7 +47,8 @@ const { mkSession } = await import("./helpers/session-fixture.ts");
 
 /** Every keycap the markup prints, in order. */
 function keycaps(html: string): string[] {
-  return [...html.matchAll(/<kbd class="kb-hint">([^<]*)<\/kbd>/g)].map((m) => m[1] ?? "");
+  return [...html.matchAll(/<kbd class="kb-hint" aria-hidden="true">([^<]*)<\/kbd>/g)]
+    .map((m) => m[1] ?? "");
 }
 
 function actionBar(): string {
@@ -109,9 +110,11 @@ test("a rebind moves what the buttons print, so a keycap is never a stale defaul
 
 /** The visible label of every keycap-carrying button, in drawn order. */
 function keycapLabels(html: string): string[] {
-  return [...html.matchAll(/<kbd class="kb-hint">[^<]*<\/kbd>(?:<!-- -->)?\s*([A-Za-z]+)/g)].map(
-    (m) => m[1] ?? "",
-  );
+  return [
+    ...html.matchAll(
+      /<kbd class="kb-hint" aria-hidden="true">[^<]*<\/kbd>(?:<!-- -->)?\s*([A-Za-z]+)/g,
+    ),
+  ].map((m) => m[1] ?? "");
 }
 
 test("the docs name the keycapped buttons in the order they are actually drawn", () => {

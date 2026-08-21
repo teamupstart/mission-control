@@ -210,7 +210,7 @@ test("Delete buttons advertise the resolved binding and use the shared keycap", 
   const html = renderToStaticMarkup(createElement(DeleteButton, { tooltip: "Delete this item" }, "Delete"));
   assert.match(html, /data-keybinding-action="delete"/);
   assert.match(html, /aria-keyshortcuts="d"/);
-  assert.match(html, /<kbd class="kb-hint">d<\/kbd>/);
+  assert.match(html, /<kbd class="kb-hint" aria-hidden="true">d<\/kbd>/);
   assert.match(html, /Delete this item/);
 });
 

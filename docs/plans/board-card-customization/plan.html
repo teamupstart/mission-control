@@ -1,0 +1,804 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Board card customization</title>
+<style>
+  :root {
+    --bg: #fbfcfe;
+    --bg-2: #f1f4f9;
+    --panel: #ffffff;
+    --fg: #1a2230;
+    --muted: #55637a;
+    --dim: #8a95a8;
+    --border: #dfe4ec;
+    --border-soft: #eaeef4;
+    --accent: #2f7df6;
+    --accent-soft: #e6f0ff;
+    --attention: #e0693b;
+    --working: #2f7df6;
+    --code-bg: #f3f5f9;
+    --shadow: 0 1px 2px rgba(20, 30, 50, 0.06), 0 8px 24px rgba(20, 30, 50, 0.06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0c0f14;
+      --bg-2: #12161d;
+      --panel: #161b23;
+      --fg: #e7ecf3;
+      --muted: #9aa6ba;
+      --dim: #67728a;
+      --border: #262d38;
+      --border-soft: #1c222b;
+      --accent: #5b9bff;
+      --accent-soft: #17253d;
+      --attention: #f0805a;
+      --working: #5b9bff;
+      --code-bg: #10151c;
+      --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 10px 30px rgba(0, 0, 0, 0.35);
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 15.5px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    padding: 40px 20px 96px;
+  }
+  main { max-width: 820px; margin: 0 auto; }
+
+  .eyebrow {
+    font-size: 12px; font-weight: 700; letter-spacing: 1.4px; text-transform: uppercase;
+    color: var(--accent); margin: 0 0 8px;
+  }
+  h1 { font-size: 30px; line-height: 1.2; margin: 0 0 12px; letter-spacing: -0.4px; }
+  h2 {
+    font-size: 20px; margin: 40px 0 12px; padding-top: 18px;
+    border-top: 1px solid var(--border-soft); letter-spacing: -0.2px;
+  }
+  h3 { font-size: 15.5px; margin: 22px 0 6px; color: var(--fg); }
+  p { margin: 12px 0; color: var(--fg); }
+  .lead { font-size: 17px; color: var(--muted); }
+  strong { color: var(--fg); font-weight: 650; }
+  em { color: var(--muted); }
+  a { color: var(--accent); }
+  ul, ol { margin: 12px 0; padding-left: 22px; }
+  li { margin: 6px 0; }
+  li::marker { color: var(--dim); }
+
+  code {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 0.86em; background: var(--code-bg);
+    border: 1px solid var(--border-soft); border-radius: 5px; padding: 1px 5px;
+  }
+  .scroll-x { overflow-x: auto; }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--border-soft); border-radius: 10px;
+    padding: 14px 16px; margin: 14px 0; font-size: 13px; line-height: 1.55;
+  }
+  pre code { background: none; border: 0; padding: 0; font-size: inherit; }
+
+  table { border-collapse: collapse; width: 100%; margin: 14px 0; font-size: 14px; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--border-soft); vertical-align: top; }
+  th { color: var(--dim); font-weight: 650; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; }
+  td code { white-space: nowrap; }
+
+  .callout {
+    display: flex; gap: 12px; margin: 18px 0; padding: 14px 16px;
+    background: var(--bg-2); border: 1px solid var(--border-soft);
+    border-left: 3px solid var(--accent); border-radius: 10px;
+  }
+  .callout .mark { font-size: 18px; line-height: 1.3; }
+  .callout p { margin: 0; color: var(--muted); font-size: 14.5px; }
+  .callout strong { color: var(--fg); }
+
+  .choice-grid { display: grid; gap: 14px; margin: 16px 0; }
+  @media (min-width: 620px) { .choice-grid { grid-template-columns: 1fr 1fr; } }
+  .choice {
+    border: 1px solid var(--border); border-radius: 12px; padding: 16px 16px 4px;
+    background: var(--panel); box-shadow: var(--shadow);
+  }
+  .choice.rec { border-color: color-mix(in oklab, var(--accent) 55%, var(--border)); }
+  .choice h4 { margin: 0 0 4px; font-size: 15px; display: flex; align-items: center; gap: 8px; }
+  .pill {
+    font-size: 10.5px; font-weight: 700; letter-spacing: 0.4px; text-transform: uppercase;
+    color: var(--accent); background: var(--accent-soft); border-radius: 999px; padding: 2px 8px;
+  }
+  .choice p { font-size: 14px; color: var(--muted); }
+
+  figure { margin: 22px 0; }
+  .diagram {
+    background: var(--panel); border: 1px solid var(--border-soft); border-radius: 14px;
+    padding: 18px; box-shadow: var(--shadow);
+  }
+  .diagram svg { width: 100%; height: auto; display: block; }
+  figcaption { margin-top: 10px; font-size: 13px; color: var(--dim); text-align: center; }
+
+  /* SVG theme hooks */
+  .d-frame { fill: none; stroke: var(--border); stroke-width: 1.5; }
+  .d-col { fill: var(--bg-2); stroke: var(--border-soft); stroke-width: 1; }
+  .d-col-hi { fill: var(--accent-soft); stroke: color-mix(in oklab, var(--accent) 45%, var(--border)); stroke-width: 1.5; }
+  .d-tile { fill: var(--panel); stroke: var(--border); stroke-width: 1; }
+  .d-tile-hi { fill: var(--panel); stroke: color-mix(in oklab, var(--accent) 55%, var(--border)); stroke-width: 1.5; }
+  .d-bar { fill: var(--bg-2); }
+  .d-tab-on { fill: var(--accent); }
+  .d-tab { fill: var(--border); }
+  .d-line { fill: var(--border); }
+  .d-reply { fill: var(--panel); stroke: color-mix(in oklab, var(--accent) 45%, var(--border)); stroke-width: 1.5; }
+  .d-arrow { fill: none; stroke: var(--accent); stroke-width: 2; }
+  .d-arrow-head { fill: var(--accent); }
+  .d-lbl { fill: var(--muted); font: 600 12px -apple-system, system-ui, sans-serif; }
+  .d-lbl-sm { fill: var(--dim); font: 500 9.5px -apple-system, system-ui, sans-serif; }
+  .d-lbl-acc { fill: var(--accent); font: 700 10px -apple-system, system-ui, sans-serif; }
+  .d-title { fill: var(--fg); font: 700 13px -apple-system, system-ui, sans-serif; }
+</style>
+<style>
+  .d-card { fill: var(--panel); stroke: var(--border); stroke-width: 1.2; }
+  .d-card-hi { fill: var(--panel); stroke: color-mix(in oklab, var(--accent) 55%, var(--border)); stroke-width: 1.6; }
+  .d-band { fill: var(--accent-soft); stroke: color-mix(in oklab, var(--accent) 45%, var(--border)); stroke-width: 1.3; }
+  .d-gone { fill: none; stroke: var(--dim); stroke-width: 1.2; stroke-dasharray: 4 4; }
+  .d-conv { fill: color-mix(in oklab, var(--working) 10%, var(--panel)); stroke: color-mix(in oklab, var(--working) 35%, var(--border)); stroke-width: 1.3; }
+  .d-arrow-new { fill: none; stroke: var(--accent); stroke-width: 2.4; }
+  .d-arrow-old { fill: none; stroke: var(--dim); stroke-width: 1.4; }
+  .d-arrow-head-dim { fill: var(--dim); }
+  .d-store { fill: var(--bg-2); stroke: var(--border); stroke-width: 1.4; }
+  .d-lbl-strong { fill: var(--fg); font: 650 11.5px -apple-system, system-ui, sans-serif; }
+  .d-lbl-mono { fill: var(--muted); font: 500 10px ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .d-lbl-gone { fill: var(--dim); font: 500 10px -apple-system, system-ui, sans-serif; }
+  .legend { display: flex; flex-wrap: wrap; gap: 16px; justify-content: center; margin-top: 10px; font-size: 12px; color: var(--dim); }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .swatch { width: 22px; height: 3px; border-radius: 2px; display: inline-block; }
+  .items-note { font-size: 13px; color: var(--dim); margin-top: -4px; }
+  /* A code block is the one thing here whose content cannot reflow. Let it scroll inside
+     its own box so the page body never scrolls sideways on a narrow window. */
+  pre { overflow-x: auto; }
+</style>
+</head>
+<body>
+<main>
+  <p class="eyebrow">Implementation plan · board &amp; settings</p>
+  <h1>Board card customization</h1>
+  <p class="lead">
+    A board card draws two dozen distinct things, and none of them can be turned off. Give the operator the
+    list and let them choose - then let the two facts they move onto the card, <strong>branch</strong>
+    and <strong>worktree</strong>, buy back the console detail band that currently holds them.
+  </p>
+
+  <h2>Goal</h2>
+  <p>
+    A board card draws two dozen distinct things. Every one of them was added because it was the triage signal
+    somebody needed, and none of them can be turned off. An operator who never uses Inspector reads the
+    Inspector flag anyway; an operator running a single model reads the model pill on every card
+    forever; an operator who lives in the worktree cannot see which worktree a card is in at all.
+  </p>
+  <p>
+    Give the operator the list and let them choose. <strong>Settings → Display → Board card</strong>
+    becomes a checklist of every optional item a card can draw, applied live to every card in every
+    column.
+  </p>
+  <p>Two items are new rather than merely toggleable:</p>
+  <ul>
+    <li><strong>Worktree</strong> is not on the card today at all. Adding it as an item makes the card
+      able to answer "which checkout is this", which currently requires drilling into the console.</li>
+    <li><strong>Branch</strong> is on the card today (<code>SessionTile.tsx:321</code>) but is not
+      toggleable and shares its slot with a fallback
+      (<code>session.gitBranch ?? session.nameSource</code>).</li>
+  </ul>
+  <p>
+    Once the card can carry both facts, the console detail's <code>PATH</code>/<code>BRANCH</code> band
+    stops being the only place they live, and an operator who has moved them to the card can switch the
+    band off and give its height back to the conversation.
+  </p>
+
+  <figure>
+    <div class="diagram">
+      <svg viewBox="0 0 990 330" role="img" aria-label="Before and after: today the worktree and branch live in the console detail's PATH slash BRANCH band; after, they can be drawn on the board card instead and the band retires, giving its height to the conversation.">
+        <text x="24" y="28" class="d-title">Today</text>
+        <text x="556" y="28" class="d-title">After - both cells hidden, task chip silent</text>
+
+        <!-- LEFT: card -->
+        <rect x="24" y="46" width="140" height="116" rx="9" class="d-card" />
+        <rect x="36" y="58" width="8" height="8" rx="4" class="d-line" />
+        <rect x="50" y="58" width="80" height="8" rx="4" class="d-line" />
+        <rect x="36" y="76" width="112" height="6" rx="3" class="d-line" />
+        <rect x="36" y="88" width="88" height="6" rx="3" class="d-line" />
+        <rect x="36" y="106" width="38" height="12" rx="6" class="d-col" />
+        <rect x="80" y="106" width="32" height="12" rx="6" class="d-col" />
+        <rect x="36" y="134" width="48" height="9" rx="4" class="d-col" />
+        <text x="90" y="142" class="d-lbl-gone">branch</text>
+        <text x="24" y="180" class="d-lbl-sm">Board card</text>
+
+        <!-- LEFT: console detail -->
+        <rect x="186" y="46" width="240" height="252" rx="11" class="d-frame" />
+        <rect x="198" y="58" width="216" height="38" rx="7" class="d-bar" />
+        <text x="306" y="81" text-anchor="middle" class="d-lbl-sm">detail-head</text>
+        <rect x="198" y="102" width="216" height="26" rx="6" class="d-band" />
+        <text x="306" y="119" text-anchor="middle" class="d-lbl-acc">PATH · BRANCH</text>
+        <rect x="198" y="134" width="216" height="20" rx="6" class="d-bar" />
+        <text x="306" y="148" text-anchor="middle" class="d-lbl-sm">tabs + launchers</text>
+        <rect x="198" y="160" width="216" height="126" rx="7" class="d-conv" />
+        <text x="306" y="226" text-anchor="middle" class="d-lbl">conversation</text>
+        <text x="186" y="316" class="d-lbl-sm">Console detail</text>
+
+        <!-- the move, across the gutter -->
+        <text x="491" y="96" text-anchor="middle" class="d-lbl-acc">moves to</text>
+        <text x="491" y="110" text-anchor="middle" class="d-lbl-acc">the card</text>
+        <path d="M 426 128 C 458 128 458 150 550 150" class="d-arrow-new" />
+        <path d="M 550 150 l -9 -5 l 0 10 z" class="d-arrow-head" />
+
+        <!-- RIGHT: card -->
+        <rect x="556" y="46" width="140" height="130" rx="9" class="d-card-hi" />
+        <rect x="568" y="58" width="8" height="8" rx="4" class="d-line" />
+        <rect x="582" y="58" width="80" height="8" rx="4" class="d-line" />
+        <rect x="568" y="76" width="112" height="6" rx="3" class="d-line" />
+        <rect x="568" y="88" width="88" height="6" rx="3" class="d-line" />
+        <rect x="568" y="106" width="38" height="12" rx="6" class="d-col" />
+        <rect x="612" y="106" width="32" height="12" rx="6" class="d-col" />
+        <rect x="568" y="130" width="48" height="9" rx="4" class="d-col-hi" />
+        <text x="624" y="138" class="d-lbl-acc">branch</text>
+        <rect x="568" y="148" width="48" height="9" rx="4" class="d-col-hi" />
+        <text x="624" y="156" class="d-lbl-acc">worktree</text>
+        <text x="556" y="194" class="d-lbl-sm">Board card</text>
+
+        <!-- RIGHT: console detail -->
+        <rect x="718" y="46" width="240" height="252" rx="11" class="d-frame" />
+        <rect x="730" y="58" width="216" height="38" rx="7" class="d-bar" />
+        <text x="838" y="81" text-anchor="middle" class="d-lbl-sm">detail-head</text>
+        <rect x="730" y="102" width="216" height="26" rx="6" class="d-gone" />
+        <text x="838" y="119" text-anchor="middle" class="d-lbl-gone">band retires · ~37-55px</text>
+        <rect x="730" y="134" width="216" height="20" rx="6" class="d-bar" />
+        <text x="838" y="148" text-anchor="middle" class="d-lbl-sm">tabs + launchers</text>
+        <rect x="730" y="160" width="216" height="126" rx="7" class="d-conv" />
+        <text x="838" y="226" text-anchor="middle" class="d-lbl">conversation, taller</text>
+        <text x="718" y="316" class="d-lbl-sm">Console detail</text>
+      </svg>
+    </div>
+    <figcaption>
+      The band retires only when nothing else occupies it - see finding F4, which is why the height is
+      quoted as a range and as a condition rather than as a promise.
+    </figcaption>
+  </figure>
+
+  <h2>What ships</h2>
+
+  <h3>1. A card item registry</h3>
+  <p>
+    One list, in <code>src/web/lib/board-card.ts</code>, of every optional item a card can draw: a
+    stable <code>id</code>, the label the settings panel prints, and the one-line description that
+    explains what the operator loses by unchecking it. The tile reads the same list. Nothing else may
+    hold a second copy - this is the same rule <code>LAYOUTS</code> follows for layout modes and
+    <code>detailTabs.ts</code> follows for the tab strip.
+  </p>
+
+  <h3>2. A <code>Board card</code> panel in Settings → Display</h3>
+  <p>
+    A checklist under <code>LayoutPanel</code>, <code>ConversationViewPanel</code> and
+    <code>AppearancePanel</code>, which are already stacked in that category as "one browser's
+    preference about this screen" (<code>SettingsPage.tsx:488-500</code>). Same
+    <code>.settings-toggle</code> control shape as <code>DispatchSettingsPanel.tsx:33</code>, one
+    <code>data-anchor="display/board-card"</code> for the ⌘K settings index.
+  </p>
+
+  <h3>3. The preference, in <code>app_config.ui</code></h3>
+  <p>
+    A new <code>UiConfig</code> key. No database migration and no new route: <code>app_config</code> is
+    a KV of JSON blobs (<code>db.ts:920</code>) and <code>UiConfigSchema</code> is not
+    <code>.strict()</code>, so a new field costs a default, a schema line, a <code>coerce()</code> line
+    and a hook. This is the payoff of the blob design and is written down at
+    <code>docs/agent-guides/change-contracts.md:36</code>.
+  </p>
+
+  <h3>4. The console detail band becomes optional</h3>
+  <p>
+    <code>.detail-sub</code>'s <code>path</code> and <code>branch</code> cells
+    (<code>ConsoleDetail.tsx:492-504</code>) each gain a visibility preference of their own. When both
+    are off and nothing else occupies the band, the whole <code>&lt;dl&gt;</code> stops rendering and
+    the conversation grows by its height.
+  </p>
+
+  <h2>Approved decisions</h2>
+  <p>
+    These were selected by the human during the plan review and are requirements, not open questions.
+  </p>
+
+  <div class="choice-grid">
+    <div class="choice rec">
+      <h4>D1 <span class="pill">approved</span></h4>
+      <p><strong>"Worktree selector" means a visibility checkbox</strong>, like every other card item.
+      Worktree joins the same checklist as model, effort and cost. It is not a per-fact
+      Card/Conversation/Both/Neither selector, and it is <strong>not</strong> a control that re-points
+      a session's worktree - F1 establishes that no such capability exists, and building one is a
+      different plan. This is what makes the conversation band retirable: the operator moves the fact
+      to the card, then switches the band off.</p>
+    </div>
+    <div class="choice rec">
+      <h4>D2 <span class="pill">approved</span></h4>
+      <p><strong>Defaults preserve today exactly; the operator opts in.</strong> An existing install
+      sees precisely what it saw before: every card item visible, and the console detail's
+      <code>PATH</code>/<code>BRANCH</code> band drawn as it is now. The alternative - shipping the new
+      arrangement as the default - was rejected: it would move facts on upgrade without being asked,
+      and would require amending the three e2e assertions F3 identifies rather than leaving them
+      untouched.</p>
+    </div>
+    <div class="choice rec">
+      <h4>D3 <span class="pill">approved</span></h4>
+      <p><strong>The attention flags stay always on.</strong> <code>.tile-marks</code> - note, review,
+      queue, PR, Inspector, schedule origin, ensemble - is <strong>not</strong> in the customizable
+      set. An operator cannot configure themselves into missing "this session needs you". The narrower
+      variant that unpinned only the integration-backed flags was also rejected: it splits one
+      visually uniform row into two classes with different rules, which is harder to explain than
+      either whole answer.</p>
+    </div>
+    <div class="choice rec">
+      <h4>D4 <span class="pill">approved</span></h4>
+      <p><strong>The panel carries a live preview card.</strong> A sample card sits in the panel and
+      redraws as items are toggled. This is the one panel in Display whose entire subject is what a
+      card looks like, so showing the answer in place is worth the fixture session it costs. See
+      <em>The preview card</em> below for the constraint that fixture carries.</p>
+    </div>
+  </div>
+
+  <h2>Repository findings</h2>
+  <p>
+    Investigated against the code before the design was written. Each of these contradicts a plausible
+    reading of the request and is binding on implementation.
+  </p>
+
+  <h3>F1 - There is no worktree switcher in this product, anywhere</h3>
+  <p>
+    Greps for <code>switch worktree</code>, <code>worktreeSelect</code>, <code>selectWorktree</code>,
+    <code>changeWorktree</code>, <code>WorktreePicker</code> and <code>worktreeSwitch</code> across
+    <code>src/</code>, <code>test/</code> and <code>e2e/</code> return nothing. A session's worktree is
+    leased by the daemon at dispatch and is never re-pointed from the dashboard.
+  </p>
+  <p>
+    What exists is worktree <strong>pool administration</strong>, in Settings only:
+    <code>useWorktrees.ts:31-44</code> and <code>WorktreeSettingsPanel.tsx</code>, whose per-slot card
+    offers Copy path, a terminal-backend <code>&lt;select&gt;</code>, Open terminal, Return and
+    Destroy. The <code>&lt;select&gt;</code> in <code>SlotCard</code> and the "Open a shell in the
+    worktree with" menu in <code>LaunchMenu.tsx:322</code> are <strong>terminal-app</strong> pickers,
+    not worktree pickers.
+  </p>
+  <p>
+    So "a work tree selector" cannot be reusing something that already ships. It is either a visibility
+    checkbox in the new list, or a genuinely new capability with no daemon support behind it - a
+    difference of an order of magnitude in scope. <strong>D1 settled this as the visibility
+    checkbox</strong>, so nothing in this plan re-points a worktree, and no daemon or route work is
+    owed.
+  </p>
+
+  <h3>F2 - The branch is already on the card; the worktree is not</h3>
+  <p>
+    <code>SessionTile.tsx:321</code> renders <code>session.gitBranch ?? session.nameSource</code> in
+    <code>.tile-foot</code>. The fallback matters: on a session with no branch that slot prints the
+    name source instead, so "hide the branch" and "hide the foot's left cell" are not the same
+    instruction. The item is the <em>branch</em>, and a session with no branch shows the fallback
+    exactly as it does today.
+  </p>
+  <p>
+    <code>session.cwd</code> is not rendered on the tile at any point. Worktree is a genuinely new
+    item, and it needs the same treatment the console detail gives it: <code>shortenCwd()</code> for
+    the visible string (<code>format.ts:254-263</code>, which only rewrites <code>/Users/x/</code> →
+    <code>~/</code>) with the full path in a tooltip. A pool worktree path is sixty characters of
+    bookkeeping - <code>TranscriptPanel.tsx:376-380</code> already says so in its own comment, and
+    prints only the leaf for that reason. <strong>The card should print the leaf, not the shortened
+    path</strong>, and carry the full path in the tooltip; <code>.tile-foot</code> is a two-cell row
+    with no room for sixty characters.
+  </p>
+
+  <h3>F3 - Two live assertions enforce that the worktree path appears exactly once</h3>
+  <ul>
+    <li><code>e2e/specs/console-tabs-toolbar.spec.ts:163-166</code> reads the path out of
+      <code>.detail-sub .kv</code>, takes its leaf, and asserts that leaf appears <strong>zero</strong>
+      times in the tab strip.</li>
+    <li><code>test/detail-tabs-ladder.test.ts:104</code> asserts the tab row's source contains no
+      <code>conv-launch-where|conv-launch-path</code>.</li>
+  </ul>
+  <p>
+    Both exist because the console-header-density work removed a duplicate path and these stop it
+    coming back. Neither is violated by putting the path on a board <strong>card</strong>: the board's
+    drill-in morphs the column into the console rail, and <code>RailRow</code> draws no
+    <code>cwd</code> (<code>RailRow.tsx:101-163</code>), so a card and a console detail are never on
+    screen together showing the same path. The assertions stay as they are.
+  </p>
+  <p>
+    But <code>:163</code> also <em>reads</em> <code>.detail-sub .kv</code> to get its subject, and
+    <code>e2e/specs/native-worktree-dispatch.spec.ts:107,110,178</code> assert
+    <code>.detail-sub dd.mono</code> contains <code>worktree-pools/</code> and that hovering it shows
+    the full path. <strong>If the conversation's path cell defaults to hidden, three e2e assertions
+    fail.</strong> <strong>D2 settled this by keeping the defaults</strong>, so all three specs are
+    left exactly as they are - and that is the property to check when reviewing the diff, because a
+    spec amended here is a sign the defaults drifted.
+  </p>
+
+  <h3>F4 - The vertical saving is real but conditional, and smaller than the old measurement implies</h3>
+  <p>
+    <code>docs/plans/console-header-density/plan.md:35</code> measured "killing the
+    <code>PATH</code>/<code>BRANCH</code> row is worth 55px". That number is still the right order of
+    magnitude - <code>.detail-sub</code> is <code>padding: 10px 22px</code> over an ~16px line plus a
+    1px border (<code>styles.css:22182-22219</code>) - but it was measured before the band acquired
+    company.
+  </p>
+  <p>
+    The same <code>&lt;dl&gt;</code> now also hosts the task chip
+    (<code>ConsoleDetail.tsx:507-537</code>) and <code>TaskRepoPrs</code> (<code>:544</code>). So
+    hiding <code>path</code> and <code>branch</code> collapses the band <strong>only when nothing else
+    is in it</strong>.
+  </p>
+  <p>
+    It usually is nothing else. <code>taskPillParts</code>
+    (<code>src/shared/task.ts:341-353</code>) returns <code>silent: true</code> when the kind is the
+    default <code>ship</code>, the task title equals <code>session.name</code>, and there is no outcome
+    and no <code>scheduleId</code> - which is the ordinary dispatched session, because
+    <code>dispatcher.ts:799</code> sets a dispatched session's name to the task title. So the common
+    case reclaims the whole band, and a scout task, a re-assigned session, a finished task with an
+    outcome link, a scheduled task or a multi-repo task keeps it and reclaims nothing.
+  </p>
+  <div class="callout">
+    <span class="mark">!</span>
+    <p><strong>The plan must say this in the product copy.</strong> A preference that promises height
+    and delivers it four times out of five is fine; one that promises unconditionally is a bug report
+    waiting to be filed.</p>
+  </div>
+
+  <h3>F5 - <code>RuntimeMetaRow</code> is shared with the console detail and must not inherit a card preference</h3>
+  <p>
+    <code>RuntimeMetaRow</code> (<code>session-bits.tsx:1566-1621</code>) draws the model pill, the
+    effort pill and the context meter, and is mounted by both <code>SessionTile.tsx:307</code> and
+    <code>ConsoleDetail.tsx:488</code>. Hiding the model on a card must not hide it in the console
+    detail.
+  </p>
+  <p>
+    The component already carries one prop of exactly this kind: <code>showEffort</code>
+    (<code>:1569</code>, <code>:1573-1574</code>), which the board sets <code>false</code> so it can
+    mount the interactive <code>EffortPicker</code> as a sibling
+    (<code>SessionTile.tsx:307-308</code>). Extending that idea is the right move, and re-inlining the
+    pills in the tile is not - a private copy is precisely what
+    <code>session-leaf-parity.test.ts</code> exists to catch.
+  </p>
+  <p>
+    Fold <code>showEffort</code> into one
+    <code>omit?: ReadonlySet&lt;"model" | "effort" | "context"&gt;</code> prop rather than growing a
+    third and fourth boolean. That also fixes the current oddity where one of the three pills has a
+    switch and the other two do not. The early return at <code>:1577</code> widens to "nothing left to
+    draw".
+  </p>
+
+  <h3>F6 - <code>coerce()</code> in the cache is the silent-failure point</h3>
+  <p>
+    <code>src/web/lib/uiCache.ts:87-102</code> rebuilds the cached config <strong>field by field,
+    never a spread</strong>, and its comment says why: a blob from another build can carry keys that no
+    longer mean anything, and picking fields drops them rather than forwarding them to the daemon
+    forever.
+  </p>
+  <p>
+    The consequence is that a new <code>UiConfig</code> key which is added to
+    <code>UI_CONFIG_DEFAULTS</code> and <code>UiConfigSchema</code> but <em>not</em> to
+    <code>coerce()</code> will type-check, round-trip through the daemon correctly, and
+    <strong>reset to its default on every cold paint</strong>. The <code>guidedDispatch</code> phase-1
+    commit (<code>8bb4a9ff</code>) touched <code>uiCache.ts</code> for exactly this reason.
+    <code>test/ui-config-cache.test.ts</code> is where the regression is pinned.
+  </p>
+
+  <h3>F7 - There is no cross-tab broadcast for <code>app_config.ui</code></h3>
+  <p>
+    <code>uiConfig.ts:23</code> states it: the store is deliberately un-polled, and "Reconciling tabs
+    live is a <code>ui_config</code> ServerEvent, noted as follow-up". There is no such event - the
+    only two hits in <code>src/</code> are prose. A second dashboard tab picks up a card-item change on
+    reload, not live.
+  </p>
+  <p>
+    This is pre-existing, applies equally to layout and every other display preference, and is
+    <strong>not</strong> in scope here. It is worth one line in the docs so the first person who
+    notices does not file it as a defect in this feature.
+  </p>
+
+  <h3>F8 - Nothing today pins the tile's optional items, which is both the opportunity and the trap</h3>
+  <p>
+    <code>test/board-tile-render.test.ts</code> pins the ticker, the runtime row's context percentage,
+    the no-meta empty case and the held tag. <code>test/board-tile-pr-link.test.ts</code> pins the PR
+    flag. <code>test/session-leaf-parity.test.ts</code> and <code>test/layout-parity.test.ts</code> pin
+    that the tile, rail and detail draw the <strong>same shared leaf</strong> for ensembles, Inspector,
+    schedules and runtime.
+  </p>
+  <p>
+    Those parity tests are the tension in this feature: they exist to stop three surfaces drifting on
+    what a fact is called, and this feature deliberately lets one surface stop drawing a fact. They
+    keep passing because the tile still mounts the same leaf - it just may not mount it at all - and
+    because the defaults draw everything. A registry-coverage test is what stops the next card item
+    from shipping un-toggleable, and is the direct analogue of the four topbar control registries an
+    earlier session learned about the hard way.
+  </p>
+  <h2>Design</h2>
+
+  <h3>The stored shape: a list of hidden ids, not a map of booleans</h3>
+  <pre><code>// src/shared/protocol.ts, inside UiConfigSchema
+boardCardHidden: z.array(z.string().min(1)).default([]),</code></pre>
+  <p>
+    An <strong>opt-out list of hidden ids</strong>, not
+    <code>{ model: true, cost: false, ... }</code>. Three reasons:
+  </p>
+  <ol>
+    <li>A card item shipped in a later build is visible to everyone automatically. With a booleans map
+      the key is simply absent from every stored config and has to fall back through a default anyway -
+      the list gets the same result with no per-item machinery.</li>
+    <li>An id from a future build, or one this build has retired, is inert. That is the same deliberate
+      looseness <code>keybindings: z.record(z.string())</code> documents at
+      <code>protocol.ts:2367-2374</code>: validating the id set here would mean a build that removed an
+      item could no longer read its own config.</li>
+    <li>The failure direction is safe. A renamed id lapses to <em>visible</em> - the operator sees a
+      fact they had hidden, which is a shrug. A booleans map inverted by a bad migration hides facts,
+      which is a support ticket.</li>
+  </ol>
+  <p>
+    <code>trustStaged: z.array(z.string().min(1))</code> in the same schema is the existing precedent
+    for a plain string array owned whole by one panel.
+  </p>
+  <p>
+    The ids and their prose live in <code>src/web/lib/board-card.ts</code>, not in
+    <code>src/shared/</code>, because the daemon stores them opaquely and has no use for prose it never
+    shows - exactly the split between <code>LAYOUT_MODES</code> (shared, validated) and
+    <code>LAYOUTS</code> (web, prose).
+  </p>
+
+  <h3>How a card reads it</h3>
+  <pre><code>// src/web/lib/board-card.ts
+export function useBoardCardItems(): (id: BoardCardItemId) =&gt; boolean;</code></pre>
+  <p>
+    One hook over <code>useUiConfig()</code>, returning a predicate. <code>SessionTile</code> calls it
+    once and gates each optional item on it. <code>useSyncExternalStore</code> is given
+    <code>getSnapshot</code> as its server snapshot too (<code>uiConfig.ts:100</code>), so the existing
+    <code>renderToStaticMarkup</code> tests keep working and read the shipped defaults.
+  </p>
+
+  <h3>The items</h3>
+  <div class="scroll-x">
+  <table>
+    <thead><tr><th>Item</th><th>Drawn at</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td>Goal</td><td><code>SessionTile.tsx:204</code></td><td>2-line clamp</td></tr>
+      <tr><td>Live activity</td><td><code>:212-219</code></td><td>already gated on <code>liveActivity()</code></td></tr>
+      <tr><td>Workflow panel</td><td><code>:226-251</code></td><td>the whole peek/ladder disclosure</td></tr>
+      <tr><td>Model</td><td><code>session-bits.tsx:1585</code></td><td>via F5's <code>omit</code></td></tr>
+      <tr><td>Context meter</td><td><code>session-bits.tsx:1607</code></td><td>via F5's <code>omit</code></td></tr>
+      <tr><td>Effort</td><td><code>SessionTile.tsx:308</code></td><td>the interactive <code>EffortPicker</code></td></tr>
+      <tr><td>Permission mode</td><td><code>:316</code></td><td>interactive</td></tr>
+      <tr><td>Cost</td><td><code>:317</code></td><td></td></tr>
+      <tr><td>Branch</td><td><code>:321</code></td><td>keeps the <code>nameSource</code> fallback, F2</td></tr>
+      <tr><td><strong>Worktree</strong></td><td>new, <code>.tile-foot</code></td><td>leaf plus full-path tooltip, F2</td></tr>
+      <tr><td>Last seen</td><td><code>:322-324</code></td><td></td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p>
+    Never optional, and the panel does not list them: the tone spine and card tone (that <em>is</em>
+    the state), the session name and its stretched open button, the agent dot, the <code>held</code>
+    tag - which <code>SessionTile.tsx:192-194</code> explains has to carry its own answer because the
+    section rule scrolls away - and the drag drop-hint, which is transient rather than a preference.
+  </p>
+  <p>
+    Also never optional, per <strong>D3</strong>: the attention flags in <code>.tile-marks</code>
+    (<code>:253-293</code>) - note, review, queue, PR, Inspector, schedule origin, ensemble. That row
+    means "things that want your attention", and an operator who hides <code>review</code> stops seeing
+    that a session needs them. The cost is accepted: an operator who has never enabled Inspector reads
+    its flag forever. Each of those flags already returns <code>null</code> when it has nothing to say,
+    so an unused integration draws nothing anyway - which is most of what a toggle would have bought.
+  </p>
+
+  <h3>The preview card</h3>
+  <p>
+    <strong>D4</strong> puts a sample card in the panel that redraws as items are toggled. It mounts
+    the real <code>SessionTile</code> against a fixture session, not a hand-drawn mock - a mock is a
+    second source of truth for what a card looks like, which is the thing this whole feature is built
+    around avoiding.
+  </p>
+  <p>
+    Two constraints follow. The fixture must populate every optional item, or toggling an item the
+    fixture lacks does nothing visible and reads as a broken checkbox. And the preview must not be
+    clickable through to a session that does not exist: it renders inert, with its open button and its
+    interactive pickers disabled.
+  </p>
+
+  <h3>The conversation band</h3>
+  <p>
+    <code>path</code> and <code>branch</code> in <code>.detail-sub</code> become two more entries in
+    the same registry, drawn in the panel under their own sub-heading so it is clear they are about a
+    different surface. They are not the same switch as the card's - an operator may reasonably want the
+    path in both places, or in neither, and coupling them would make one checkbox mean two things with
+    no way to express "neither".
+  </p>
+  <p>
+    When both are hidden, <code>taskPillParts(session).silent</code> is true and there are no repo PRs,
+    the <code>&lt;dl&gt;</code> must not render at all. A guard on the element, not <code>:empty</code>
+    in CSS: the band carries padding and a border, so an empty one is a visible bar of chrome saying
+    nothing - which is the exact thing <code>ConsoleDetail.tsx:505-509</code> already reasons about for
+    the task chip.
+  </p>
+
+  <h3>Flows</h3>
+  <p>
+    The preference itself reuses the shipped <code>app_config.ui</code> path end to end - no new route,
+    no new event, no database change. The one arrow that is new is <code>SessionTile</code> becoming a
+    <code>uiConfig</code> consumer, which it is not today.
+  </p>
+
+  <figure>
+    <div class="diagram">
+      <svg viewBox="0 0 960 300" role="img" aria-label="The board card panel writes through the existing updateUiConfig, PUT /api/ui/config and app_config.ui path into the uiConfig module store; the two new arrows out of that store feed SessionTile and the ConsoleDetail band.">
+        <!-- upstream panels -->
+        <rect x="20" y="40" width="152" height="52" rx="9" class="d-card" />
+        <text x="96" y="62" text-anchor="middle" class="d-lbl-strong">Layout · Conversation</text>
+        <text x="96" y="78" text-anchor="middle" class="d-lbl-sm">Appearance panels</text>
+
+        <rect x="20" y="150" width="152" height="56" rx="9" class="d-card-hi" />
+        <text x="96" y="172" text-anchor="middle" class="d-lbl-acc">NEW</text>
+        <text x="96" y="190" text-anchor="middle" class="d-lbl-strong">Board card panel</text>
+
+        <!-- chain -->
+        <rect x="214" y="150" width="140" height="56" rx="9" class="d-card" />
+        <text x="284" y="176" text-anchor="middle" class="d-lbl-strong">updateUiConfig()</text>
+        <text x="284" y="192" text-anchor="middle" class="d-lbl-sm">optimistic, reverts</text>
+
+        <rect x="396" y="150" width="160" height="56" rx="9" class="d-store" />
+        <text x="476" y="172" text-anchor="middle" class="d-lbl-mono">PUT /api/ui/config</text>
+        <text x="476" y="190" text-anchor="middle" class="d-lbl-mono">app_config.ui</text>
+
+        <rect x="598" y="150" width="140" height="56" rx="9" class="d-card" />
+        <text x="668" y="172" text-anchor="middle" class="d-lbl-strong">uiConfig store</text>
+        <text x="668" y="190" text-anchor="middle" class="d-lbl-sm">module-level</text>
+
+        <!-- arrows along the chain -->
+        <path d="M 172 178 L 208 178" class="d-arrow" />
+        <path d="M 208 178 l -9 -5 l 0 10 z" class="d-arrow-head" />
+        <path d="M 172 66 C 192 66 192 160 208 168" class="d-arrow-old" />
+        <path d="M 208 168 l -9 -3 l 2 10 z" class="d-arrow-head-dim" />
+        <path d="M 354 178 L 390 178" class="d-arrow" />
+        <path d="M 390 178 l -9 -5 l 0 10 z" class="d-arrow-head" />
+        <path d="M 556 178 L 592 178" class="d-arrow" />
+        <path d="M 592 178 l -9 -5 l 0 10 z" class="d-arrow-head" />
+
+        <!-- consumers -->
+        <rect x="790" y="30" width="150" height="40" rx="8" class="d-card" />
+        <text x="865" y="55" text-anchor="middle" class="d-lbl">App · layout</text>
+        <rect x="790" y="84" width="150" height="40" rx="8" class="d-card" />
+        <text x="865" y="103" text-anchor="middle" class="d-lbl">TranscriptPanel</text>
+        <text x="865" y="117" text-anchor="middle" class="d-lbl-sm">richText</text>
+
+        <rect x="790" y="164" width="150" height="46" rx="8" class="d-card-hi" />
+        <text x="865" y="182" text-anchor="middle" class="d-lbl-acc">NEW</text>
+        <text x="865" y="200" text-anchor="middle" class="d-lbl">SessionTile</text>
+        <rect x="790" y="224" width="150" height="46" rx="8" class="d-card-hi" />
+        <text x="865" y="242" text-anchor="middle" class="d-lbl-acc">NEW</text>
+        <text x="865" y="260" text-anchor="middle" class="d-lbl">ConsoleDetail band</text>
+
+        <path d="M 738 172 C 762 172 762 50 784 50" class="d-arrow-old" />
+        <path d="M 784 50 l -9 -4 l 1 9 z" class="d-arrow-head-dim" />
+        <path d="M 738 176 C 762 176 762 104 784 104" class="d-arrow-old" />
+        <path d="M 784 104 l -9 -4 l 1 9 z" class="d-arrow-head-dim" />
+        <path d="M 738 180 C 762 180 762 187 784 187" class="d-arrow-new" />
+        <path d="M 784 187 l -9 -5 l 0 10 z" class="d-arrow-head" />
+        <path d="M 738 184 C 762 184 762 247 784 247" class="d-arrow-new" />
+        <path d="M 784 247 l -9 -5 l 0 10 z" class="d-arrow-head" />
+      </svg>
+    </div>
+    <div class="legend">
+      <span><i class="swatch" style="background: var(--dim)"></i> already ships</span>
+      <span><i class="swatch" style="background: var(--accent)"></i> new in this plan</span>
+    </div>
+    <figcaption>
+      No new route, no new <code>ServerEvent</code>, no database change - the whole write path is the
+      one <code>layout</code> and <code>richText</code> already use.
+    </figcaption>
+  </figure>
+  <h2>Scope</h2>
+  <p>In scope:</p>
+  <ol>
+    <li>The card item registry and its <code>UiConfig</code> key, including the <code>coerce()</code>
+      line F6 requires.</li>
+    <li>The <code>Board card</code> settings panel in Display, its <code>data-anchor</code>, and its
+      <code>SETTINGS_CONTROLS</code> entry. The panel includes the live preview card D4 approved,
+      mounting the real <code>SessionTile</code> inert against a fixture that populates every optional
+      item.</li>
+    <li><code>SessionTile</code> gating each optional item, and the <code>RuntimeMetaRow</code>
+      <code>omit</code> prop F5 requires.</li>
+    <li>The new worktree item on the card, as leaf plus tooltip.</li>
+    <li><code>.detail-sub</code>'s <code>path</code> and <code>branch</code> cells becoming optional,
+      with the band's render guard.</li>
+    <li>Documentation and Playwright coverage for each of the above.</li>
+  </ol>
+  <p>Out of scope:</p>
+  <ul>
+    <li><strong><code>RailRow</code>.</strong> It draws a deliberately different, denser vocabulary -
+      goal-or-activity in one slot, no runtime row at all, marks compressed to
+      <code>◈ ◆ ≡N ≈$</code> glyphs (<code>RailRow.tsx:82-97,114</code>). Hiding "cost" on a card
+      should not touch a glyph that means something adjacent but not identical.</li>
+    <li><strong><code>BacklogCard</code>.</strong> It renders tasks, not sessions, and shares no item
+      with this list.</li>
+    <li><strong>A <code>ui_config</code> ServerEvent</strong> (F7). Pre-existing, applies to every
+      display preference, documented rather than fixed here.</li>
+    <li><strong>Re-pointing a session's worktree.</strong> D1 settled the selector as a visibility
+      checkbox, so no daemon, route or lease work is owed here.</li>
+    <li><strong>Making the attention flags toggleable.</strong> D3 pinned them on.</li>
+    <li><strong>Card density, ordering, or a compact variant.</strong> Only visibility. Reordering the
+      items is a different feature with a different control, and the per-column width toggle
+      (<code>BoardView.tsx:108-114</code>) is deliberately a gesture rather than a setting and stays
+      that way.</li>
+  </ul>
+
+  <h2>Test plan</h2>
+  <p><code>test/</code>:</p>
+  <ul>
+    <li><strong><code>board-card-items.test.ts</code></strong> - a source scan asserting every optional
+      conditional in <code>SessionTile.tsx</code> is gated on a registry id, and that every registry id
+      is reachable from the panel. This is the test that stops the next card item shipping
+      un-toggleable.</li>
+    <li><code>board-tile-render.test.ts</code> - extended: an item hidden leaves no trace in the
+      markup; the defaults render exactly what ships today.</li>
+    <li><code>ui-config-cache.test.ts</code> - the new key survives <code>coerce()</code> (F6).</li>
+    <li><code>settings-search.test.ts</code> - already fails on an anchor with no rendered control; the
+      new anchor satisfies it.</li>
+    <li><code>console-detail-header.test.ts</code> - the band renders nothing when both cells are
+      hidden and the pill is silent, and still renders when the pill is not.</li>
+    <li><code>session-leaf-parity.test.ts</code> / <code>layout-parity.test.ts</code> - unchanged and
+      still passing, which is the assertion that the tile still mounts the shared leaves rather than
+      inlining copies.</li>
+  </ul>
+  <p><code>e2e/</code>:</p>
+  <ul>
+    <li><strong><code>board-card-customization.spec.ts</code></strong> - the required UI spec. Open
+      Settings → Display, uncheck an item, return to the board, assert it is gone from every card,
+      re-check it, assert it is back. Selected by role and label; no <code>data-testid</code>.</li>
+    <li><strong><code>board-card-worktree.spec.ts</code></strong> - turning the worktree item on puts
+      the leaf on the card, and hovering it shows the full path.</li>
+    <li><strong><code>conversation-band-optional.spec.ts</code></strong> - with both cells hidden,
+      <code>.detail-sub</code> is absent and the transcript's share of <code>.detail-conv</code> rises.
+      Modelled on <code>console-tabs-toolbar.spec.ts:177-190</code>, which states its threshold as a
+      share rather than a pixel count for a reason worth copying: the absolute figure is a function of
+      the window and the font stack.</li>
+    <li><strong><code>board-card-preview.spec.ts</code></strong> - toggling an item in the panel
+      changes the preview card in place, without leaving Settings, and the preview's controls do not
+      navigate.</li>
+    <li><code>console-tabs-toolbar.spec.ts</code> and <code>native-worktree-dispatch.spec.ts</code> -
+      <strong>unchanged</strong>, which D2 guarantees. A diff that touches either of them has moved
+      the defaults (F3).</li>
+  </ul>
+  <p>
+    Not proposed: an Electron geometry test for the reclaimed height. The share-based e2e assertion
+    measures the same thing in the browser that actually lays the pane out, and the geometry suite's
+    job is used-height for overflow and clipping, which is not what changed.
+  </p>
+
+  <h2>Documentation</h2>
+  <ul>
+    <li><code>docs/ui.md</code> - the Board section and the Layout section, which is where an operator
+      looks for what a card draws.</li>
+    <li><code>docs/skills-and-settings.md</code> - the Settings chapter's category table gains the
+      panel.</li>
+    <li><code>docs/agent-guides/change-contracts.md</code> - a new contract line: <strong>a new board
+      card item is added to the registry, or it ships un-toggleable.</strong> This is the same class of
+      obligation as the settings-key contract already recorded at <code>:36</code>.</li>
+    <li><code>README.md</code> - one line if the feature is worth naming there.</li>
+  </ul>
+
+  <h2>Risks</h2>
+  <ul>
+    <li><strong>A hidden fact is a fact nobody misses until they need it.</strong> The mitigation is
+      that the panel's per-item description says what is lost, not what is drawn; that the genuinely
+      load-bearing items are not on the list at all (D3); and that the preview card (D4) shows the
+      consequence before the operator leaves the page.</li>
+    <li><strong>The preview drifts from the real card.</strong> Mitigated by mounting the real
+      <code>SessionTile</code> rather than a mock, which makes drift impossible rather than merely
+      unlikely.</li>
+    <li><strong>The height promise is conditional</strong> (F4). Mitigated by saying so in the panel
+      copy.</li>
+    <li><strong>The registry becomes a fifth thing to remember.</strong> Mitigated by the source-scan
+      test, which is the only mitigation that has ever worked in this repository for this class of
+      problem.</li>
+  </ul>
+</main>
+</body>
+</html>

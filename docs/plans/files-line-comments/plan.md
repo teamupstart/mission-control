@@ -690,6 +690,12 @@ outdated keeps the status it had, and if the quoted text comes back it re-anchor
 flag. A human reply on an `answered` thread puts it back in the queue with its history intact.
 `orphaned` is the one status reached without a human or an agent doing anything.
 
+Because decision 3 auto-advances, a reply can arrive after its thread has moved on, so **an agent
+reply always persists but only moves a thread that is still waiting for it** - one in `awaiting` or
+`unanswered` with no undelivered human message. A thread the human has already replied to is
+`queued` work and keeps that status, or the follow-up would drop out of the queue unsent; a
+`resolved` thread stays closed, because only a person closes one.
+
 ### 8. Keyboard and accessibility
 
 The comment control joins the existing tab-local `p` and `e` handling in

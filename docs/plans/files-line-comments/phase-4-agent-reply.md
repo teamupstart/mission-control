@@ -57,9 +57,24 @@ The queue stops advancing on an inference about idleness and starts advancing on
    `markFileCommentThreadAddressed`, **not the status route**: `addressed` is a suggestion and
    never a closure, so it must be writable without moving the thread anywhere. Both writes happen
    in one transaction with the insert, so a thread is never seen as addressed by a reply that did
-   not persist. The thread moves to
-   `answered`, one `file_comment_thread_upsert` carries it to every dashboard, and the walkthrough
-   releases the next comment.
+   not persist. One `file_comment_thread_upsert` carries the result to every dashboard.
+   - **The insert is unconditional; the status change is not.** A reply is real content and is
+     always persisted - dropping one because it arrived late would lose the agent's work. What is
+     conditional is everything else:
+     - **Move the thread to `answered` only when it is in `awaiting` or `unanswered` and carries no
+       undelivered human message.** That second test is not a new invariant: it is the same
+       `delivered_at IS NULL` predicate the payload selection rule already uses, and an undelivered
+       human message *is* queued work.
+     - **Otherwise leave the status exactly as it is.** This is the case that matters. Decision 3
+       auto-advances, so a thread can time out to `unanswered`, the human can write a follow-up
+       that puts it back to `queued` with a fresh `queue_seq`, and only then can the agent's slow
+       reply land. Moving that thread to `answered` would take it out of the queue and the
+       follow-up would never be delivered - human work lost silently, with the reply that caused it
+       looking like a success. A `resolved` thread is left alone by the same rule: only a person
+       closes a thread, and a late reply does not reopen one.
+     - **Release the next comment only when the reply answers the outstanding delivery** - the
+       thread whose `delivery_id` is the turn actually in flight. A late reply persists, notifies,
+       and advances nothing.
    - `commentId` stays **required** even though only one comment is outstanding. It costs one field
      and it is what stops a late reply - the agent answering comment 3 after the walkthrough moved to
      comment 5 - from being misfiled onto the wrong thread. Required and session-scoped are doing
@@ -114,7 +129,11 @@ The queue stops advancing on an inference about idleness and starts advancing on
   sessions each holding the same `short_id` file onto their own threads** - with the miss refused
   rather than resolved globally. That last case is the one a global lookup passes silently.
 - Extend `test/file-comment-walkthrough.test.ts`: a reply advances immediately, and a reply naming a
-  thread that is no longer outstanding lands on that thread without advancing anything.
+  thread that is no longer outstanding lands on that thread without advancing anything. Add the
+  round-14 case explicitly, because it is the one that loses data rather than merely misreporting:
+  time a thread out to `unanswered`, add a human follow-up so it returns to `queued` with a
+  `queue_seq`, then deliver the late agent reply - the message must persist while the thread stays
+  `queued`, keeps its place, and still delivers the follow-up. Cover `resolved` the same way.
 - `e2e/specs/file-comment-walkthrough.spec.ts` gains a faked reply: read the token from
   `join(daemon.home, "token")`, `POST /mcp/file-comments/replies` with `x-harness-token`, `env: {}`
   and the session's `cwd`, exactly as `e2e/specs/review-answers-in-conversation.spec.ts:58-101`
@@ -128,7 +147,8 @@ The queue stops advancing on an inference about idleness and starts advancing on
 
 - The tool appears in a real `tools/list` handshake against `dist/mcp/server.mjs`.
 - A reply persists, reaches every dashboard live, and releases the next comment.
-- A late reply lands on its own thread and advances nothing.
+- A late reply lands on its own thread and advances nothing, and **does not move a thread the human
+  has already requeued** - the follow-up is still delivered afterwards.
 - A reply quoting the `MC-xxxx` the payload printed resolves to that thread, and the same handle in
   another session resolves to that session's thread and not this one.
 - The Files tab raises a pip when a reply arrives.
@@ -158,3 +178,12 @@ thread renders from durable state rather than from the transcript.
   `.describe()`, and in the exit criteria. The same pass added the half that was missing everywhere:
   `short_id` is unique *per session*, so resolution must be session-scoped or a reply can be filed
   onto another session's identically-named thread - a silent cross-session write rather than a 404.
+- Review pass (round 14): **an unconditional `answered` transition could delete queued human work.**
+  Decision 3 auto-advances, and `unanswered ──human replies──▶ queued` is an approved transition, so
+  a thread can time out, be requeued by a follow-up, and only then receive the agent's slow reply.
+  Moving it to `answered` at that point takes it out of the queue and the follow-up is never
+  delivered - silently, with the reply that caused it reported as a success. The insert stays
+  unconditional (a reply is real content); the status change and the queue advance are now both
+  conditional on the thread still being the one that reply answers. The gating predicate reuses the
+  payload selection rule's `delivered_at IS NULL` rather than inventing a second notion of
+  "pending", and the same rule leaves a `resolved` thread closed.

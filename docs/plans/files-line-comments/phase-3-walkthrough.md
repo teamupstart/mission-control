@@ -223,3 +223,8 @@ Phase 4 may rely on, and must not change:
   an established fact rather than a new mechanism. The restart case needed no new design:
   `recoverSendingPendingTurns` already turns every in-flight row `uncertain`, which lands on this
   phase's existing pause-and-confirm path.
+- Review pass (round 14): this phase's requeue rule (item 8) turned out to be clobberable by phase
+  4's reply handler, which moved any replied-to thread to `answered` unconditionally. Fixed in
+  phase 4 rather than here - the requeue is correct, the transition that overwrote it was not - but
+  recorded here because the invariant that a requeued thread keeps its `queue_seq` until its
+  follow-up is delivered is this phase's to defend.

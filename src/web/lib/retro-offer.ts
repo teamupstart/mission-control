@@ -34,6 +34,12 @@ const WHAT_IT_DOES =
 /**
  * Why this session is worth retrospecting, in one clause.
  *
+ * `corrections` is named for the wire value it has always carried, and the sentence is not:
+ * the daemon sets that reason for any human steering during the work, which is a typed
+ * correction OR a decision made through a review surface (an answered `AskUserQuestion`, a
+ * `request_input`, a set of plan decisions). Saying only "you corrected it" told an operator
+ * who had answered a question that the offer was about something they never did.
+ *
  * Falls back to the plain sentence for a reason this build does not recognise rather than
  * dropping it: `RetroReason` is display vocabulary the daemon may extend, and a newer daemon's
  * reason arriving at an older dashboard must still explain the offer it is attached to.
@@ -41,7 +47,7 @@ const WHAT_IT_DOES =
 function because(reasons: RetroReason[]): string {
   const clauses = reasons.map((reason): string | null =>
     reason === "corrections"
-      ? "you corrected it during the work"
+      ? "you steered it during the work, by correcting it or answering its question"
       : reason === "findings"
         ? "GitHub Inspector raised findings that were then resolved"
         : null,

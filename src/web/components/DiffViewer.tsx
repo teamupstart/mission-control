@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Session, SessionDiff } from "@shared/types.ts";
 import { fetchSessionDiff } from "../lib/api.ts";
 import {
@@ -9,55 +9,11 @@ import {
 } from "../lib/diff.ts";
 import { chordFromEvent, useKeybindings } from "../lib/keybindings.ts";
 import { Keycap } from "./Keycap.tsx";
-import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
 /**
- * Full-screen viewer for a session's changes against its source branch. Fetches
- * the unified patch from the daemon and parses it into per-file hunks, then lays
- * it out master-detail: a list of changed files on the left, and the diff of the
- * one you pick on the right - so a big change reads file-by-file instead of as
- * one long scroll. Files move by click or ↑/↓ (j/k); the diff shows one file only.
- *
- * Given a `commit`, it shows what that ONE commit changed instead - how a
- * a caller asks to inspect one commit.
- */
-export function DiffViewer({
-  session,
-  commit,
-  onClose,
-  onOpenInFiles,
-}: {
-  session: Session;
-  commit?: string | null;
-  onClose: () => void;
-  onOpenInFiles?: (path: string) => void;
-}): React.JSX.Element {
-  const viewerKeyRef = useRef<((e: KeyboardEvent) => void) | null>(null);
-  return (
-    <Overlay
-      id={OVERLAY_IDS.diff}
-      onClose={onClose}
-      className="diff-viewer"
-      role="dialog"
-      ariaLabel="Session diff"
-      onKeyDown={(e) => viewerKeyRef.current?.(e)}
-    >
-      <DiffViewerContent
-        session={session}
-        commit={commit}
-        onClose={onClose}
-        onViewerKeyRef={viewerKeyRef}
-        onOpenInFiles={onOpenInFiles}
-      />
-    </Overlay>
-  );
-}
-
-/**
- * The console and board give a session's diff a real tab, so they reuse the same
- * reader without creating a screen-owning overlay. Cards do not have that tab and
- * continue to use the modal wrapper above.
+ * Console and Board give a session's diff a real tab, reusing one reader without a
+ * screen-owning overlay.
  */
 export function InlineDiffViewer({
   session,
@@ -74,7 +30,6 @@ export function InlineDiffViewer({
     <DiffViewerContent
       session={session}
       commit={commit}
-      inline
       requestNonce={requestNonce}
       onOpenInFiles={onOpenInFiles}
     />
@@ -84,17 +39,11 @@ export function InlineDiffViewer({
 function DiffViewerContent({
   session,
   commit,
-  onClose,
-  inline = false,
-  onViewerKeyRef,
   requestNonce,
   onOpenInFiles,
 }: {
   session: Session;
   commit?: string | null;
-  onClose?: () => void;
-  inline?: boolean;
-  onViewerKeyRef?: MutableRefObject<((e: KeyboardEvent) => void) | null>;
   requestNonce?: number;
   onOpenInFiles?: (path: string) => void;
 }): React.JSX.Element {
@@ -121,9 +70,9 @@ function DiffViewerContent({
   }, [session.id, commit, requestNonce]);
 
   useEffect(() => {
-    if (!inline || requestNonce === undefined) return;
+    if (requestNonce === undefined) return;
     contentRef.current?.focus({ preventScroll: true });
-  }, [inline, requestNonce]);
+  }, [requestNonce]);
 
   // Re-parse only when the patch changes, not on every render (selection change).
   const files = useMemo(() => (diff?.ok ? parsePatch(diff.patch) : []), [diff]);
@@ -138,11 +87,9 @@ function DiffViewerContent({
     : null;
   const { bindings } = useKeybindings();
 
-  // Escape belongs to the Overlay in Cards (App suppresses grid keys while one is open,
-  // so the overlay layer closes itself). File navigation is this reader's own: ↑/↓
-  // and j/k walk the list without leaving the keyboard. The modal hands it to Overlay;
-  // the inline reader attaches it to its focusable region, keeping those keys scoped to
-  // the embedded reader instead of changing the Console or Board selection.
+  // File navigation is this reader's own: ↑/↓ and j/k walk the list without leaving the
+  // keyboard. The inline reader attaches it to its focusable region, keeping those keys
+  // scoped to the embedded reader instead of changing the Console or Board selection.
   const onViewerKey = useCallback(
     (e: KeyboardEvent) => {
       if (chordFromEvent(e) === bindings.openDiffFile) {
@@ -165,8 +112,6 @@ function DiffViewerContent({
     },
     [activeTarget?.path, bindings.openDiffFile, files.length, onOpenInFiles],
   );
-  if (onViewerKeyRef) onViewerKeyRef.current = onViewerKey;
-
   // Keep the picked file visible in the list, and show its diff from the top.
   useEffect(() => {
     activeItemRef.current?.scrollIntoView({ block: "nearest" });
@@ -176,19 +121,14 @@ function DiffViewerContent({
   return (
     <div
       ref={contentRef}
-      className={`diff-viewer-content${inline ? " diff-viewer-inline" : ""}`}
-      role={inline ? "region" : undefined}
-      aria-label={inline ? "Session diff" : undefined}
-      tabIndex={inline ? -1 : undefined}
-      onKeyDown={inline ? (e) => onViewerKey(e.nativeEvent) : undefined}
+      className="diff-viewer-content diff-viewer-inline"
+      role="region"
+      aria-label="Session diff"
+      tabIndex={-1}
+      onKeyDown={(e) => onViewerKey(e.nativeEvent)}
     >
       <header className="diff-head">
         <div className="diff-title">
-          {!inline && (
-            <Tooltip label={session.name}>
-              <h2>{session.name}</h2>
-            </Tooltip>
-          )}
           {/* A commit diff is ONE commit, so it must not borrow the range
               wording below: "<branch> vs <base>" would read as everything since
               that parent, which is the larger diff and the wrong one. */}
@@ -217,13 +157,6 @@ function DiffViewerContent({
             </span>
           )}
         </div>
-        {onClose && (
-          <Tooltip label="Close the diff (Escape)">
-            <button className="icon-btn" aria-label="Close" onClick={onClose}>
-              ✕
-            </button>
-          </Tooltip>
-        )}
       </header>
 
       <div className="diff-body">

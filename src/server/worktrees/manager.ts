@@ -690,10 +690,16 @@ export class WorktreeManager {
           inspection.value.path !== reservation.path ||
           inspection.value.commonDirectory !== identity.gitCommonDirectory ||
           inspection.value.head !== input.baseSha ||
-          inspection.value.dirty
+          inspection.value.dirty ||
+          // Independent of `add`/`reset` having reported success. Creation detaches and the
+          // pool reset now detaches, but this is the durable proof taken immediately before
+          // the grant, so a slot can only be leased attached if BOTH the mutation and this
+          // observation are wrong at once. A warm slot left branch-attached by an older
+          // build is repaired by that reset and then proved here, on its next use.
+          !inspection.value.detached
         ) {
           const reason = inspection.ok
-            ? "materialized slot failed path, repository, exact HEAD, or cleanliness verification"
+            ? "materialized slot failed path, repository, exact HEAD, cleanliness, or detached-HEAD verification"
             : inspection.reason;
           this.quarantine(reservation, "materialized slot verification failed", reason);
           return { outcome: "outcomeUnknown", reason };
@@ -900,7 +906,12 @@ export class WorktreeManager {
         inspected.value.path !== slot.path ||
         inspected.value.head !== target.value ||
         inspected.value.dirty ||
-        inspected.value.commonDirectory !== pool.gitCommonDirectory
+        inspected.value.commonDirectory !== pool.gitCommonDirectory ||
+        // A slot goes back into the warm pool holding no branch, so the next acquisition
+        // starts from the same shape a brand-new slot does. Proved here as well as at
+        // acquisition because the two transitions are days apart in wall-clock time and
+        // either one alone would let an attached slot sit in the pool looking available.
+        !inspected.value.detached
       ) {
         const reason = inspected.ok ? "returned slot failed exact verification" : inspected.reason;
         this.quarantine(returning, "return verification failed", reason);

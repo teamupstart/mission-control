@@ -187,6 +187,7 @@ import {
 } from "@shared/harness-capabilities.ts";
 import { transcriptStreamHandler } from "./transcript-stream.ts";
 import { attributeTranscript } from "./transcript-attribution.ts";
+import { bindLaunchTurnMessage, resolveLaunchMarker } from "./launch-presentation.ts";
 import {
   claimForemanLease,
   claimForemanPlannerRetry,
@@ -358,8 +359,10 @@ import type {
 } from "./workflows/manager.ts";
 import {
   JSON_UTF8_MAX_BYTES_PER_CHAR,
+  WORKFLOW_IMAGE_LIMITS,
   WORKFLOW_LIMITS,
   WORKFLOW_RUN_STATUSES,
+  WORKFLOW_TEXT_EVIDENCE_LIMITS,
   legacyCheckCommands,
 } from "@shared/workflow.ts";
 import type { WorkflowConfig } from "@shared/workflow.ts";
@@ -456,6 +459,29 @@ const REVISION_ONLY_BODY_MAX_BYTES = 1024;
  */
 const PERSONA_IMPORT_BODY_MAX_BYTES = 32 * 1024;
 const WORKFLOW_BODY_MAX_BYTES = WORKFLOW_LIMITS.graphJsonBytes * 6 + 32 * 1024;
+/**
+ * Direct command evidence carries bounded content plus metadata for every item. Reserve the
+ * complete metadata envelope separately for the full accepted command count instead of relying
+ * on the aggregate content and locator terms. This deliberately gives the command string
+ * overlapping headroom. The fixed 512-byte allowance per item covers the bounded non-string
+ * fields, property names, and punctuation.
+ */
+const WORKFLOW_COMMAND_EVIDENCE_METADATA_MAX_BYTES =
+  WORKFLOW_TEXT_EVIDENCE_LIMITS.maxCount
+  * (
+    (
+      WORKFLOW_TEXT_EVIDENCE_LIMITS.clientItemIdChars
+      + WORKFLOW_TEXT_EVIDENCE_LIMITS.captionChars
+      + WORKFLOW_LIMITS.checkCommandLength
+    ) * JSON_UTF8_MAX_BYTES_PER_CHAR
+    + 512
+  );
+export const WORKFLOW_EVIDENCE_BODY_MAX_BYTES =
+  WORKFLOW_TEXT_EVIDENCE_LIMITS.maxAggregateBytes * JSON_UTF8_MAX_BYTES_PER_CHAR
+  + (WORKFLOW_IMAGE_LIMITS.locatorJsonBytes + WORKFLOW_TEXT_EVIDENCE_LIMITS.locatorJsonBytes)
+    * JSON_UTF8_MAX_BYTES_PER_CHAR
+  + WORKFLOW_COMMAND_EVIDENCE_METADATA_MAX_BYTES
+  + 32 * 1024;
 
 /**
  * Parse + validate a JSON request body against a schema. Returns the typed data,
@@ -1965,7 +1991,25 @@ export function buildApp(
     const parsed = await parseBody(c, GrantWorkflowRepairRoundsSchema);
     if (!parsed.ok) return parsed.res;
     const result = manager.grantRepairRounds(c.req.param("id"), parsed.data);
-    return result.ok ? c.json({ run: result.value }) : workflowRuntimeFailure(c, result);
+    /*
+     * `idempotent` reported, as every sibling action reports it.
+     *
+     * The manager has always computed it: `grantRepairRounds` looks for a
+     * `repair_rounds_granted` event carrying this same `requestId` and, finding one, returns
+     * the run it already granted with `idempotent: true`. That branch matters because the
+     * action store RETAINS its request id across a failed response, so a network error on a
+     * grant that committed comes back with the same id - and without it the replay would hit
+     * the `run_not_waiting` refusal, since the run is no longer spent precisely because the
+     * first attempt worked.
+     *
+     * Dropping the flag here left the browser unable to tell a fresh grant from a replay, on
+     * the one action whose success is otherwise invisible. The `?? false` is for the ok arms
+     * that never set it, not a default standing in for a manager that cannot answer; both
+     * halves are pinned end to end in `test/workflow-resumption.test.ts`.
+     */
+    return result.ok
+      ? c.json({ run: result.value, idempotent: result.idempotent ?? false })
+      : workflowRuntimeFailure(c, result);
   });
   app.post("/api/workflow-runs/:id/prepare-pr", async (c) => {
     const manager = workflowManager();
@@ -2452,7 +2496,7 @@ export function buildApp(
   app.get("/api/report", (c) => c.json(buildReport(registry.snapshot())));
   app.get("/api/report.md", (c) => c.text(renderReportMarkdown(buildReport(registry.snapshot()))));
   app.get("/events", sseHandler(registry));
-  // Live transcript for the expanded card (localhost-only, like the actions).
+  // Live transcript for the session detail (localhost-only, like the actions).
   app.get("/api/sessions/:id/transcript/stream", transcriptStreamHandler(registry));
   // One-shot transcript window for a non-streaming reader (Foreman's triage
   // reviewer, the queue verifier, and the dashboard's scroll-back).
@@ -2490,7 +2534,18 @@ export function buildApp(
       const turns = Number(c.req.query("turns"));
       const want = Number.isFinite(turns) && turns > 0 ? Math.min(turns, 200) : undefined;
       const page = t.read.before(t.path, before, want);
-      return c.json({ ...page, messages: attributeTranscript(session.id, page.messages) });
+      // The panel's own history pages, so they carry the same launch presentation the stream
+      // put on `init` - decorated here rather than in the reader, because paging back far
+      // enough to reach the launch turn must not make it reappear in full.
+      return c.json({
+        ...page,
+        messages: attributeTranscript(
+          session.id,
+          page.messages,
+          resolveLaunchMarker(registry, session.id),
+          (messageId) => bindLaunchTurnMessage(registry, session.id, messageId),
+        ),
+      });
     }
     const since = Number(c.req.query("since"));
     if (Number.isFinite(since) && since >= 0) return c.json(t.read.since(t.path, since));
@@ -2824,7 +2879,10 @@ export function buildApp(
     return c.body(null, 204);
   });
 
-  app.post("/mcp/workflow-evidence", async (c) => {
+  app.post("/mcp/workflow-evidence", bodyLimit({
+    maxSize: WORKFLOW_EVIDENCE_BODY_MAX_BYTES,
+    onError: (c) => c.json({ error: "Workflow evidence request is too large" }, 413),
+  }), async (c) => {
     if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
     const manager = workflowManager();
     if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
@@ -2842,6 +2900,7 @@ export function buildApp(
       return c.json(await manager.stageAgentEvidence(session.id, {
         images: parsed.data.images,
         artifacts: parsed.data.artifacts,
+        commandOutputs: parsed.data.commandOutputs,
       }));
     } catch (error) {
       const known = error instanceof WorkflowImageEvidenceError ? error : null;

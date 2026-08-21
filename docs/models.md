@@ -11,7 +11,10 @@ Two separate choices, deliberately.
 **The provider** is app-wide - it answers *how* a model is called, not which one. Two ship: the
 local `claude` CLI (the default) and `codex exec`. Claude's app-owned calls use one fresh Agent SDK
 query by default, with the one-shot `claude -p` transport retained as the
-[`MISSION_CLAUDE_TRANSPORT=print`](configuration.md) escape hatch. Either way there is no API key anywhere in this
+[`MISSION_CLAUDE_TRANSPORT=print`](configuration.md) escape hatch. Codex's app-owned calls have the same
+seam: `codex exec` by default, with [`MISSION_CODEX_TRANSPORT=sdk`](configuration.md) selecting `@openai/codex-sdk` over the
+same binary - a choice about how a reply is decoded, not about how it is fetched, so it changes
+nothing about latency. Either way there is no API key anywhere in this
 path - each bills through whatever its own CLI is logged in as. It is entirely
 independent of which harness a card runs, which is the point - you can review a Codex session with
 Claude, or run the cheap jobs on the account that has quota left. Picking a provider clears the

@@ -247,7 +247,7 @@ export function ForemanBar({
       if (open && ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
     }
     // Escape closes the popover the same way a click outside does. It stops there rather
-    // than bubbling to App's global Escape, which would ALSO collapse the expanded card or
+    // than bubbling to App's global Escape, which would ALSO collapse the session detail or
     // drop the fleet selection behind it - this popover is not a registered overlay, so
     // nothing else knows to swallow the key on its behalf.
     function onKey(e: KeyboardEvent): void {

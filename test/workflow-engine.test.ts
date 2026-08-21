@@ -1277,6 +1277,29 @@ test("a downstream Persona receives frozen Check evidence in its prompt and inpu
     outputBytes: Buffer.byteLength("TAP version 13\nok 13 - regression retained\n"),
     omittedBytes: 1_393,
   });
+  const auditEvent = store.listEvents("run-check-evidence")
+    .find((item) => item.kind === "test_evidence_audit")!;
+  assert.deepEqual(auditEvent.payload, {
+    nodeId: "auditor",
+    submissionId: "submission-check-evidence",
+    round: 1,
+    segment: 0,
+    firstSubmission: true,
+    outcome: "pass",
+    rejectionCategories: [],
+    evidenceReadiness: {
+      imageCount: 0,
+      textArtifactCount: 0,
+      checkCount: 1,
+      checkOmittedBytes: 1_393,
+      transcriptMessageCount: 0,
+      transcriptTruncated: false,
+      transcriptOmittedHeadBytes: 0,
+      transcriptMiddleOmitted: false,
+    },
+    downstreamProofRequests: [],
+    possibleDownstreamProofOverreach: false,
+  });
 });
 
 test("a repository-neutral global default runs, at the checkout root", async () => {

@@ -3,6 +3,8 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveAgentBin } from "../harness/index.ts";
+import { killLiveCodexSdkRuns, runCodexSdkOneShot, type CodexSdkDeps } from "./codex-sdk.ts";
+import { DEFAULT_CODEX_TRANSPORT, type CodexTransport } from "@shared/llm.ts";
 import { codexTokenSplit } from "../harness/codex/usage.ts";
 import { estimateStandardApiUsage } from "../harness/codex/pricing.ts";
 import { grantRefusal } from "@shared/llm.ts";
@@ -12,6 +14,30 @@ import type { LlmRunOptions, LlmRunner } from "@shared/llm.ts";
 import type { LlmSpendReport, LlmSpendRole } from "@shared/llm-spend.ts";
 
 const CODEX_BIN = resolveAgentBin("codex");
+
+// Process-local, and a function pointer rather than a direct `codexTransportChoice` call,
+// for the two reasons `claude.ts` states beside its own: this module cannot import
+// `./config.ts` without a cycle (config -> index -> codex), and the separate Foreman worker
+// installs the value it learns over HTTP so it stays a database non-reader. The fallback
+// covers direct use before either process installs a resolver and must match the shipped
+// default.
+let resolveCodexTransport: () => CodexTransport = () => DEFAULT_CODEX_TRANSPORT;
+let codexSdkDeps: CodexSdkDeps | undefined;
+
+/** Install this process's per-call Codex transport resolver, returning a restore hook. */
+export function configureCodexRunnerTransport(
+  resolver: () => CodexTransport,
+  deps?: CodexSdkDeps,
+): () => void {
+  const previous = resolveCodexTransport;
+  const previousDeps = codexSdkDeps;
+  resolveCodexTransport = resolver;
+  codexSdkDeps = deps;
+  return () => {
+    resolveCodexTransport = previous;
+    codexSdkDeps = previousDeps;
+  };
+}
 const DEFAULT_TIMEOUT_MS = Number(process.env.MISSION_CODEX_TIMEOUT_MS || 120_000);
 const FAILURE_DETAIL_MAX = 300;
 const live = new Set<ReturnType<typeof spawn>>();
@@ -37,6 +63,9 @@ function killTree(child: ReturnType<typeof spawn>): void {
 function killLiveCodexRuns(): void {
   for (const child of live) killTree(child);
   live.clear();
+  // The SDK transport's in-flight turns are children too, held by abort handle rather than
+  // by pid. A shutdown that killed only the spawned set would leave them running.
+  killLiveCodexSdkRuns();
   // Foreman's SIGINT/SIGTERM path exits synchronously after killing live model runs, so a
   // promise's `finally` is not guaranteed to run. Sweep the exact directories minted by
   // `materializeSchema` here as well; its ordinary cleanup is idempotent with this path.
@@ -233,6 +262,22 @@ export const codexRunner: LlmRunner = {
     if (grant) {
       const refusal = grantRefusal(codexRunner.sandbox, grant);
       throw new Error(`codex runner refused the tool grant: ${refusal ?? "unsupported grant"}`);
+    }
+    // The typed transport, when the operator has selected it. Resolved per call for the
+    // reason every other LLM config read is - a Settings edit must reach the next run
+    // rather than the next daemon restart. It spawns the SAME binary (see `codex-sdk.ts`),
+    // so this is a choice about how the reply is parsed, never about what is executed.
+    if (resolveCodexTransport() === "sdk") {
+      const sdk = await runCodexSdkOneShot(prompt, CODEX_BIN, opts, codexSdkDeps);
+      // Accounted exactly like the exec transport, through the same reporter. The SDK's
+      // `Turn.usage` carries the same field names `codexTokenSplit` already reads off
+      // `turn.completed`, so this is one shape reaching one ledger rather than a second
+      // accounting path that could drift from the first.
+      if (opts.role) {
+        const report = codexSpendReport(opts.role, opts.model ?? "", sdk, Date.now());
+        if (report) reportLlmSpend(report);
+      }
+      return sdk.text;
     }
     // Open and verify every image before schema materialization and, critically, before
     // the provider process is spawned. Empty and omitted lists preserve the former argv.

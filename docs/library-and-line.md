@@ -16,7 +16,7 @@ executable argvs. Saving one executes nothing; a workflow reaching that slot, la
 repository granted the Workflows cell in Trust, is what runs it.
 
 Switching primary pages changes only the dashboard body. The fleet header, live SSE
-connection, and Cards, Console, or Board selection stay mounted, so returning to **Fleet**
+connection, and Console or Board selection stay mounted, so returning to **Fleet**
 does not reconnect or discard the fleet view.
 
 `#/library` opens six shelves, each headed by the question it answers rather than by its own

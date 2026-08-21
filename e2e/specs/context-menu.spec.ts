@@ -58,15 +58,15 @@ async function pointForText(
   }, { needle, select, characterOffset });
 }
 
-test("context actions work by pointer and keyboard without leaking keys to the grid", async ({
+test("context actions work by pointer and keyboard without leaking keys to the dashboard", async ({
   dashboard,
   daemon,
 }) => {
   await dashboard.context().grantPermissions(["clipboard-read", "clipboard-write"]);
   await dispatch(dashboard, daemon);
 
-  const card = dashboard.locator("article.card").first();
-  await card.getByRole("button", { name: "Expand conversation" }).click();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
   const composer = card.getByPlaceholder(/^Reply to this session/);
   await expect(composer).toBeEnabled();
   await composer.fill(TURN);
@@ -97,8 +97,8 @@ test("context actions work by pointer and keyboard without leaking keys to the g
   menu = dashboard.getByRole("menu", { name: "Actions for this item" });
   await expect(menu.getByRole("menuitem", { name: "Copy URL" })).toBeVisible();
 
-  // While the anchored menu owns the keyboard, a bare grid shortcut cannot reach the selected
-  // card behind it. The menu stays up and no Kill dialog appears.
+  // While the anchored menu owns the keyboard, a bare dashboard shortcut cannot reach the
+  // selected session behind it. The menu stays up and no Kill dialog appears.
   await dashboard.keyboard.press("k");
   await expect(menu).toBeVisible();
   await expect(dashboard.getByRole("dialog", { name: "Kill session" })).toHaveCount(0);
@@ -117,8 +117,8 @@ test("context actions work by pointer and keyboard without leaking keys to the g
 
   // The host drops a selection that does not intersect the keyboard target, so an otherwise
   // actionless focused control cannot open a menu for text somewhere else in the document.
-  const collapse = card.getByRole("button", { name: "Collapse conversation" });
-  await collapse.focus();
+  const terminalView = card.getByRole("button", { name: "Terminal view" });
+  await terminalView.focus();
   await pointForText(turn, SELECTED, true);
   await dashboard.keyboard.press("Shift+F10");
   await expect(menu).toBeHidden();
@@ -331,10 +331,9 @@ test("context actions work by pointer and keyboard without leaking keys to the g
   expect(body.config?.keybindings?.contextMenu).toBe("Backspace");
   await dashboard.reload();
 
-  const reboundCard = dashboard.locator("article.card").first();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const reboundCard = dashboard.locator(".console-detail");
   await expect(reboundCard).toBeVisible();
-  const expand = reboundCard.getByRole("button", { name: "Expand conversation" });
-  if (await expand.isVisible()) await expand.click();
   const reboundComposer = reboundCard.getByPlaceholder(/^Reply to this session/);
   await reboundComposer.fill("native edit");
   await reboundComposer.focus();

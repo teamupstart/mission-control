@@ -12,8 +12,7 @@ const {
  * The sibling of `line-strip-browser.cjs`, and it exists for the same reason: the three
  * claims this surface makes are all about USED HEIGHT, which no assertion on markup can
  * produce. The drawer is hard-capped and scrolls inside itself; the board below it moves down
- * by exactly the drawer's height and no more; and a session card is the same size with the
- * drawer open as with it shut.
+ * by exactly the drawer's height and no more.
  *
  * One page per case, because the shell cases are `height: 100dvh` and a viewport holds one
  * of those at a time. The last of those claims is a comparison BETWEEN two of those pages,
@@ -26,7 +25,6 @@ const MEASURE = `() => {
   const body = document.querySelector('.line-drawer-body');
   const foot = document.querySelector('.line-drawer-foot');
   const shellBody = document.querySelector('.console');
-  const card = document.querySelector('.card.expanded');
   const rows = [...document.querySelectorAll('.line-drawer-rows > li')];
   const first = rows[0]?.getBoundingClientRect() ?? null;
   return {
@@ -62,7 +60,7 @@ const MEASURE = `() => {
       ),
     ].map((el) => el.scrollWidth - el.clientWidth))),
     firstRowTop: first ? Math.round(first.top) : null,
-    // The two boxes the drawer must not resize.
+    // The shell body the drawer must not overflow.
     shellBodyHeight: shellBody
       ? Math.round(shellBody.getBoundingClientRect().height)
       : null,
@@ -70,8 +68,6 @@ const MEASURE = `() => {
     shellBodyBottomOverflow: shellBody
       ? Math.round(shellBody.getBoundingClientRect().bottom - window.innerHeight)
       : null,
-    cardHeight: card ? Math.round(card.getBoundingClientRect().height) : null,
-    cardWidth: card ? Math.round(card.getBoundingClientRect().width) : null,
   };
 }`;
 

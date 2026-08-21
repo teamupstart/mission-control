@@ -60,7 +60,7 @@ async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {
     .selectOption("__none");
   await dialog.getByRole("button", { name: "Dispatch now" }).click();
   await expect(dialog).toBeHidden();
-  await expect(page.locator("article.card")).toHaveCount(1);
+  await expect(page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row")).toHaveCount(1);
 }
 
 /** Ask this session's human a question, over the same HTTP route the MCP child posts to. */
@@ -106,7 +106,8 @@ test("a retried ask does not put the same prompt in the queue twice", async ({
   const retry = await ask(daemon, ASK);
   expect(retry.id, "the retry was given its own review to wait on").toBe(first.id);
 
-  const card = dashboard.locator("article.card").first();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
   // The chip counts what is waiting on the operator, and only prints a number once there is
   // more than one to distinguish (`format.ts`). So the plain wording IS the assertion: with
   // the duplicate row this read "2 to review", which was the first place a person met it.
@@ -137,7 +138,8 @@ test("a different question from the same session still gets its own card", async
   await ask(daemon, ASK);
   await ask(daemon, { kind: "input", title: "What retry budget?", body: "What retry budget?" });
 
-  const card = dashboard.locator("article.card").first();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
   const chip = card.getByRole("button", { name: /to review/ });
   await expect(chip).toHaveText(/^2 to review/);
 

@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
 import { RASTER_IMAGE_MIME_TYPES } from "@shared/images.ts";
@@ -52,10 +52,13 @@ import {
   WORKFLOW_LLM_CALL_STATES,
   WORKFLOW_LLM_PURPOSES,
   WORKFLOW_RESUMPTION_POLICIES,
+  WORKFLOW_RUN_SPENT_PHASES,
   WORKFLOW_TRIGGER_MODES,
   LEGACY_WORKFLOW_RESUMPTION_POLICY,
   SESSION_ACTION_COMPLETION_KINDS,
   emptyWorkflowCommandView,
+  workflowRoundLimitParkedPhase,
+  workflowRunResumesItself,
   personaOriginRank,
   personaSnapshotOf,
   personasForDisplay,
@@ -939,6 +942,7 @@ const WorkflowSubmissionRowSchema = z.object({
   evidence_group_key: text.optional().default(""),
   staged_image_generation: integer.nonnegative().optional().default(0),
   evidence_fingerprint: nonempty,
+  repository_fingerprint: nullableText.optional().default(null),
   context_json: nonempty,
   evidence_json: nonempty,
   pr_head_sha: nullableText,
@@ -981,6 +985,7 @@ export function parseWorkflowSubmissionRow(value: unknown): WorkflowSubmission {
     evidenceGroupKey: row.evidence_group_key || undefined,
     stagedImageGeneration: row.staged_image_generation ?? 0,
     evidenceFingerprint: row.evidence_fingerprint,
+    repositoryFingerprint: row.repository_fingerprint,
     context: parseJson(
       "workflow_submissions",
       row.id,
@@ -1009,10 +1014,11 @@ const WorkflowEvidenceStagingRowSchema = z.object({
   id: nonempty.max(200),
   note_key: nonempty,
   client_item_id: nonempty.max(WORKFLOW_IMAGE_LIMITS.clientItemIdChars),
-  source_kind: z.enum(["agent", "upload", "retained"]),
+  source_kind: z.enum(["agent", "upload", "retained", "command"]),
   evidence_kind: z.enum(["image", "text"]).optional().default("image"),
   source_root: nonempty,
   source_locator: nonempty.max(WORKFLOW_IMAGE_LIMITS.relativePathChars),
+  inline_content: nullableText.optional().default(null),
   display_name: nonempty.max(WORKFLOW_IMAGE_LIMITS.displayNameChars),
   caption: nonempty.max(WORKFLOW_IMAGE_LIMITS.captionChars),
   repository_scope: WorkflowEvidenceRepositoryScopeSchema,
@@ -1043,8 +1049,29 @@ const WorkflowEvidenceStagingRowSchema = z.object({
   if (row.evidence_kind === "text" && row.mime_type !== "text/plain") {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["mime_type"], message: "Invalid text artifact MIME type" });
   }
-  if (row.evidence_kind === "text" && row.source_kind !== "agent") {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["source_kind"], message: "Text evidence must come from an agent path" });
+  if (row.evidence_kind === "text" && !["agent", "command"].includes(row.source_kind)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["source_kind"], message: "Text evidence must come from an agent path or command output" });
+  }
+  if (row.source_kind === "command" && row.evidence_kind !== "text") {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["evidence_kind"], message: "Command evidence must be text" });
+  }
+  if ((row.source_kind === "command") !== (row.inline_content !== null)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["inline_content"],
+      message: "Only command evidence carries inline content, and command evidence must carry it",
+    });
+  }
+  if (row.source_kind === "command" && row.inline_content !== null) {
+    const bytes = Buffer.byteLength(row.inline_content, "utf8");
+    const sha256 = createHash("sha256").update(Buffer.from(row.inline_content, "utf8")).digest("hex");
+    if (bytes !== row.bytes || sha256 !== row.sha256) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["inline_content"],
+        message: "Command evidence content does not match its byte count and digest",
+      });
+    }
   }
   const byteLimit = row.evidence_kind === "image"
     ? WORKFLOW_IMAGE_LIMITS.maxBytesPerImage
@@ -1058,7 +1085,11 @@ export type WorkflowEvidenceStagingRow = z.infer<typeof WorkflowEvidenceStagingR
 
 export function parseWorkflowEvidenceStagingRow(value: unknown): WorkflowEvidenceStagingRow {
   const row = parseShape("workflow_evidence_staging", WorkflowEvidenceStagingRowSchema, value);
-  return { ...row, evidence_kind: row.evidence_kind ?? "image" };
+  return {
+    ...row,
+    evidence_kind: row.evidence_kind ?? "image",
+    inline_content: row.inline_content ?? null,
+  };
 }
 
 const WorkflowSubmissionImageRowSchema = z.object({
@@ -1354,12 +1385,18 @@ const WorkflowDeliveryRowSchema = z.object({
  * tell the run detail page a review had been delivered when what was delivered was a refusal,
  * and would lose the one phase a human scanning stalled runs needs to see.
  */
-const DELIVERY_RUN_PHASE: Record<WorkflowDeliveryKind, string> = {
+const DELIVERY_RUN_PHASE: Record<WorkflowDeliveryKind, string | null> = {
   persona_feedback: "persona_feedback",
   inspector_feedback: "inspector_findings",
   pr_handoff: "pr_handoff",
   unchanged_evidence_nudge: "unchanged_evidence",
   session_action: "session_action",
+  // `null` means LEAVE THE PHASE ALONE, and this is the only kind that asks for it. Every
+  // other packet moves the run into the state it created; a reminder creates no state. The
+  // run is parked for the same reason it was parked a minute ago - a persona's findings, or
+  // a pull-request handoff - and overwriting either with a phase of its own would report a
+  // review that was never re-delivered, on a run whose whole problem is that nothing moved.
+  parked_repair_reminder: null,
 };
 
 /**
@@ -1794,11 +1831,13 @@ export interface WorkflowSubmissionInsert {
 export interface WorkflowStagedEvidenceWrite {
   id: string;
   clientItemId: string;
-  sourceKind: "agent" | "upload" | "retained";
+  sourceKind: "agent" | "upload" | "retained" | "command";
   /** Omitted by historical/image-only callers and therefore defaults to `image`. */
   evidenceKind?: "image" | "text";
   sourceRoot: string;
   sourceLocator: string;
+  /** Present only for bounded command output supplied directly through the evidence tool. */
+  inlineContent?: string | null;
   displayName: string;
   caption: string;
   repositoryScope: string;
@@ -3838,6 +3877,7 @@ export class WorkflowStore {
           && row.evidence_kind === (item.evidenceKind ?? "image")
           && row.source_root === item.sourceRoot
           && row.source_locator === item.sourceLocator
+          && row.inline_content === (item.inlineContent ?? null)
           && row.display_name === item.displayName
           && row.caption === item.caption
           && row.repository_scope === item.repositoryScope
@@ -3908,14 +3948,15 @@ export class WorkflowStore {
       const write = this.db.prepare(
         `INSERT INTO workflow_evidence_staging (
            id, note_key, client_item_id, source_kind, evidence_kind, source_root, source_locator,
-           display_name, caption, repository_scope, mime_type, bytes, sha256,
+           inline_content, display_name, caption, repository_scope, mime_type, bytes, sha256,
            generation, state, reserved_group_key, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'staged', NULL, ?, ?)
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'staged', NULL, ?, ?)
          ON CONFLICT(note_key, client_item_id) DO UPDATE SET
            source_kind = excluded.source_kind,
            evidence_kind = excluded.evidence_kind,
            source_root = excluded.source_root,
            source_locator = excluded.source_locator,
+           inline_content = excluded.inline_content,
            display_name = excluded.display_name,
            caption = excluded.caption,
            repository_scope = excluded.repository_scope,
@@ -3937,6 +3978,7 @@ export class WorkflowStore {
           item.evidenceKind ?? "image",
           item.sourceRoot,
           item.sourceLocator,
+          item.inlineContent ?? null,
           item.displayName,
           item.caption,
           item.repositoryScope,
@@ -3966,7 +4008,7 @@ export class WorkflowStore {
       images: rows.filter((row) => row.evidence_kind === "image").map((row): WorkflowStagedEvidenceImage => ({
         id: row.id,
         clientItemId: row.client_item_id,
-        sourceKind: row.source_kind,
+        sourceKind: row.source_kind as WorkflowStagedEvidenceImage["sourceKind"],
         displayName: row.display_name,
         caption: row.caption,
         repositoryScope: row.repository_scope,
@@ -3981,7 +4023,7 @@ export class WorkflowStore {
         (row): WorkflowStagedEvidenceTextArtifact => ({
           id: row.id,
           clientItemId: row.client_item_id,
-          sourceKind: "agent",
+          sourceKind: row.source_kind as WorkflowStagedEvidenceTextArtifact["sourceKind"],
           displayName: row.display_name,
           caption: row.caption,
           repositoryScope: row.repository_scope,
@@ -4066,6 +4108,7 @@ export class WorkflowStore {
         evidenceKind: row.evidence_kind,
         sourceRoot: row.source_root,
         sourceLocator: row.source_locator,
+        inlineContent: row.inline_content,
         displayName: row.display_name,
         caption: row.caption,
         repositoryScope: row.repository_scope,
@@ -4515,9 +4558,7 @@ export class WorkflowStore {
           state = "resubmitted";
           created = true;
         } else {
-          this.setRunState(run.id, "blocked", "round_limit", {
-            maxRepairRounds: run.maxRepairRounds,
-          }, input.now);
+          this.blockForRoundLimit(run, input.now);
           run = this.mustRun(run.id);
         }
       } else if (run.status === "capturing" || run.status === "running") {
@@ -4582,6 +4623,7 @@ export class WorkflowStore {
       context: WorkflowJson;
       evidence: WorkflowJson;
       fingerprint?: string;
+      repositoryFingerprint?: string;
       status?: WorkflowSubmission["status"];
     },
     now = Date.now(),
@@ -4590,12 +4632,13 @@ export class WorkflowStore {
     this.db.prepare(
       `UPDATE workflow_submissions
           SET context_json = ?, evidence_json = ?, evidence_fingerprint = ?,
-              status = ?, updated_at = ?
+              repository_fingerprint = ?, status = ?, updated_at = ?
         WHERE id = ?`,
     ).run(
       JSON.stringify(input.context),
       JSON.stringify(input.evidence),
       input.fingerprint ?? current.evidenceFingerprint,
+      input.repositoryFingerprint ?? current.repositoryFingerprint ?? null,
       input.status ?? current.status,
       now,
       id,
@@ -4618,6 +4661,36 @@ export class WorkflowStore {
         WHERE id = ? AND status NOT IN ('completed', 'cancelled', 'failed')`,
     ).run(status, currentPhase, gateState === null ? null : JSON.stringify(gateState), now, terminal ? 1 : 0, now, id);
     return this.mustRun(id);
+  }
+
+  /**
+   * Stop a run that has no repair round left to spend, remembering what it was doing.
+   *
+   * The one writer of the `round_limit` block, and it exists because there were five of
+   * them. Each spelled the same two-field payload by hand, which was harmless while the
+   * payload was only the budget and stopped being harmless the moment a grant needed to
+   * know the phase the run had been parked in - a fact four of the five call sites had in
+   * hand and none of them wrote down. Routing them through here is what makes
+   * `workflowRoundLimitParkedPhase` answerable at all.
+   *
+   * The Inspector gate's own round-limit block is deliberately NOT one of these callers:
+   * it carries its gate state through the block instead of the budget, and it is revived by
+   * the grant's existing `waiting_for_new_head` arm rather than by the parked phase.
+   *
+   * Re-blocking preserves the FIRST recorded phase. A run that blocked, was granted rounds,
+   * resumed and blocked again would otherwise record `round_limit` as the phase it was
+   * parked in, and a second grant would restore it into the very phase it is trying to
+   * leave.
+   */
+  blockForRoundLimit(run: WorkflowRun, now = Date.now()): WorkflowRun {
+    const parkedPhase = workflowRoundLimitParkedPhase(run.gateState)
+      ?? ((WORKFLOW_RUN_SPENT_PHASES as readonly string[]).includes(run.currentPhase)
+        ? null
+        : run.currentPhase);
+    return this.setRunState(run.id, "blocked", "round_limit", {
+      maxRepairRounds: run.maxRepairRounds,
+      ...(parkedPhase ? { parkedPhase } : {}),
+    }, now);
   }
 
   /**
@@ -5980,7 +6053,7 @@ export class WorkflowStore {
       this.setRunState(
         delivery.runId,
         nextStatus,
-        DELIVERY_RUN_PHASE[delivery.kind],
+        DELIVERY_RUN_PHASE[delivery.kind] ?? run.currentPhase,
         delivery.kind === "persona_feedback" || delivery.kind === "session_action"
           ? { deliveryId: delivery.id, transcriptAnchor }
           : run.gateState,
@@ -6168,7 +6241,7 @@ export class WorkflowStore {
           this.setRunState(
             delivery.runId,
             nextStatus,
-            DELIVERY_RUN_PHASE[delivery.kind],
+            DELIVERY_RUN_PHASE[delivery.kind] ?? run.currentPhase,
             delivery.kind === "persona_feedback"
               ? { deliveryId: delivery.id, resolvedByOperator: true }
               : run.gateState,
@@ -6879,6 +6952,76 @@ export class WorkflowStore {
     };
   }
 
+  /**
+   * The last grant this run was given, read from the WHOLE ledger rather than a page of it.
+   *
+   * `runDetail` ships the oldest two hundred events and a cursor, and a grant is a late event
+   * by construction - it cannot happen until a run has exhausted its repair budget. So a run
+   * that spent five rounds keeps its grant well outside the page the browser is handed, and a
+   * notice derived there would be absent on exactly the runs that were granted anything. This
+   * reads the ledger directly, on the server, where there is no page.
+   *
+   * The staleness rule stays in the browser: this says what was granted and when, and
+   * `runGrantNotice` decides whether that is still the last thing that happened. Deciding it
+   * here would put a presentation rule in the store and make the field lie to any other
+   * reader.
+   */
+  private runRepairGrant(runId: string): WorkflowRunDetail["repairGrant"] {
+    const granted = this.listEvents(runId)
+      .filter((event) => event.kind === "repair_rounds_granted")
+      .at(-1);
+    const payload = granted?.payload;
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+    const { round, from, to } = payload;
+    if (typeof round !== "number" || typeof from !== "number" || typeof to !== "number") {
+      return null;
+    }
+    return { round, from, to };
+  }
+
+  /**
+   * The observer's last word on this run, for the page that has to explain a parked round.
+   *
+   * Scoped to a run that is actually parked. A withheld reason on a run that has since
+   * resumed, finished or been cancelled is history, and the ledger already holds it; repeating
+   * it in the header would explain a state the run left.
+   *
+   * `resumesItself` rides along because the two facts are only useful together. "Waiting on
+   * the session" means something quite different on a run whose loop closes by itself than on
+   * one under `manual` resumption or `preview` delivery, where nothing is coming and the next
+   * round is the operator's to start - and neither of those settings is visible anywhere else
+   * on the page.
+   */
+  private runResumptionState(
+    run: WorkflowRun,
+    binding: WorkflowBinding,
+    version: WorkflowVersion | null,
+  ): WorkflowRunDetail["resumption"] {
+    if (run.status !== "waiting_for_session") return null;
+    const withheld = this.listEvents(run.id)
+      .filter((event) => event.kind === "resumption_withheld")
+      .at(-1);
+    const payload = withheld?.payload;
+    if (!withheld || !payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+    const reason = payload.reason;
+    if (typeof reason !== "string") return null;
+    // Scoped to the round it was recorded against, not merely to the run being parked. A run
+    // that was withheld at round 1, resumed, and parked again at round 2 is waiting on
+    // something new; carrying the old sentence forward would explain the current silence with
+    // a reason that has already been answered - and the more rounds a run survives, the more
+    // confidently it would be wrong.
+    if ((payload.submissionId ?? null) !== (this.latestSubmission(run.id)?.id ?? null)) return null;
+    const round = payload.round;
+    return {
+      reason,
+      round: typeof round === "number" ? round : null,
+      resumesItself: workflowRunResumesItself({
+        resumptionPolicy: version?.resumptionPolicy,
+        deliveryMode: binding.deliveryMode,
+      }),
+    };
+  }
+
   runDetail(id: string): WorkflowRunDetail | null {
     const summary = this.runSummary(id);
     const run = this.getRun(id);
@@ -6917,6 +7060,8 @@ export class WorkflowStore {
       llmCallCount,
       nextLlmCallAfter: llmCalls.nextAfter,
       ...(offenders.length === 0 ? {} : { repeatOffenders: offenders }),
+      repairGrant: this.runRepairGrant(id),
+      resumption: this.runResumptionState(run, binding, version),
       // Taken off the summary the join already resolved, not looked up a second way. The
       // detail's field predates the summary's and stays because the reader reads it here;
       // what must not exist twice is the RULE deciding whether a claim is this run's.

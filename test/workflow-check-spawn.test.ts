@@ -193,7 +193,13 @@ test("a relative ./script in the working directory is found - the onPath trap", 
 test("a timeout is infrastructure, never a non-zero exit", async () => {
   const { result, emptiness } = await run(["sh", "-c", "sleep 30"], { timeoutMs: 400 });
   assert.equal(result.kind, "infrastructure");
-  assert.match(result.kind === "infrastructure" ? result.reason : "", /did not finish within 400ms/);
+  const reason = result.kind === "infrastructure" ? result.reason : "";
+  assert.ok(
+    reason ===
+      "the check command did not finish within 400ms and its process group was terminated" ||
+      reason === "the check supervisor did not start within the command's 400ms timeout",
+    `unexpected timeout reason: ${reason}`,
+  );
   // And the tree is provably safe to hand back afterwards.
   assert.equal(emptiness, "empty");
 });

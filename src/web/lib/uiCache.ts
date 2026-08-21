@@ -66,7 +66,8 @@ function parseJson<T>(raw: string | null): T | null {
  */
 /**
  * A stored layout is only trusted if it is still a mode we ship. Anything else - a
- * hand-edit, a mode from a future build, a half-written string - is the grid. Checked
+ * hand-edit, a mode from a future build, a half-written string, or the retired `grid`
+ * mode - is Console. Checked
  * here rather than only at the render switch because an unrecognised mode read from an
  * old generation would otherwise be adopted and PUT to the daemon as if it were real.
  */

@@ -67,7 +67,7 @@ beneath it.
 Generated tasks carry their origin across the operator task surfaces: a provenance chip or
 compact glyph on the Board backlog card, the Sitrep backlog and recent outcomes, the Dispatch
 editor (read-only - the provenance is immutable and never part of a task update), and, once a
-task is bound to a session, on the card, the console detail, the board tile, and the rail. The
+task is bound to a session, on the session detail, the console detail, the board tile, and the rail. The
 mark or its tooltip identifies the schedule (by name while it remains in the live catalog,
 otherwise by ID) and scheduled time, and every mark deep-links to that run's history.
 

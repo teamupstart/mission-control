@@ -1,0 +1,356 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Why Test Evidence Auditor rejects so often</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f4f1eb;
+    --paper: #fffdf8;
+    --ink: #1e2527;
+    --muted: #5e6969;
+    --line: #d9d4ca;
+    --soft: #ece8df;
+    --teal: #0d7c78;
+    --teal-soft: #d8eeea;
+    --orange: #c25820;
+    --orange-soft: #f8e4d6;
+    --gold: #b07a05;
+    --red: #b63b38;
+    --green: #287a4a;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --sans: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #101617;
+      --paper: #171f20;
+      --ink: #edf2ef;
+      --muted: #a8b5b2;
+      --line: #344140;
+      --soft: #202a2b;
+      --teal: #5ac8be;
+      --teal-soft: #193b39;
+      --orange: #f08a4e;
+      --orange-soft: #492a1d;
+      --gold: #e2b44c;
+      --red: #ef7773;
+      --green: #6bc58b;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { background: var(--bg); }
+  body {
+    margin: 0;
+    color: var(--ink);
+    background:
+      radial-gradient(circle at 88% 3%, color-mix(in srgb, var(--teal) 10%, transparent), transparent 24rem),
+      var(--bg);
+    font: 15px/1.62 var(--sans);
+  }
+  main { width: min(1120px, calc(100% - 36px)); margin: 0 auto; padding: 46px 0 96px; }
+  .mast { border-bottom: 1px solid var(--line); padding: 0 0 30px; }
+  .eyebrow { margin: 0 0 12px; color: var(--teal); font: 700 11px/1 var(--mono); letter-spacing: .15em; text-transform: uppercase; }
+  h1 { max-width: 900px; margin: 0; font-size: clamp(34px, 6vw, 62px); line-height: 1.02; letter-spacing: -.045em; font-weight: 760; }
+  .question { max-width: 900px; margin: 22px 0 0; padding: 14px 18px; border-left: 3px solid var(--line); color: var(--muted); font-size: 14px; }
+  .answer { max-width: 980px; margin: 26px 0 0; font-size: clamp(18px, 2.5vw, 25px); line-height: 1.45; letter-spacing: -.012em; }
+  .answer strong { color: var(--orange); }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 22px; }
+  .chip { padding: 6px 10px; border: 1px solid var(--line); border-radius: 999px; background: var(--paper); color: var(--muted); font: 650 11px/1.2 var(--mono); }
+  .tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-top: 24px; }
+  .tile { min-height: 132px; padding: 17px; border: 1px solid var(--line); border-radius: 10px; background: var(--paper); }
+  .tile .k { color: var(--muted); font: 700 10px/1.25 var(--mono); letter-spacing: .09em; text-transform: uppercase; }
+  .tile .v { margin-top: 9px; font-size: 34px; line-height: 1; letter-spacing: -.04em; font-weight: 760; }
+  .tile .n { margin-top: 9px; color: var(--muted); font-size: 12px; line-height: 1.4; }
+  .tile.hot { border-top: 3px solid var(--orange); }
+  .tile.cool { border-top: 3px solid var(--teal); }
+  section { margin-top: 58px; }
+  h2 { margin: 0 0 8px; font-size: 28px; line-height: 1.15; letter-spacing: -.025em; }
+  h3 { margin: 28px 0 8px; font-size: 18px; line-height: 1.3; }
+  p { max-width: 82ch; margin: 0 0 13px; }
+  .lede { color: var(--muted); font-size: 16px; }
+  code { padding: 1px 5px; border: 1px solid var(--line); border-radius: 4px; background: var(--soft); font: .86em/1.4 var(--mono); overflow-wrap: anywhere; }
+  a { color: var(--teal); }
+  .callout { margin: 22px 0; padding: 16px 18px; border-left: 4px solid var(--orange); border-radius: 0 8px 8px 0; background: var(--orange-soft); }
+  .callout.good { border-color: var(--teal); background: var(--teal-soft); }
+  .callout p:last-child { margin-bottom: 0; }
+  .flow, .chart { margin: 24px 0; padding: 18px; border: 1px solid var(--line); border-radius: 10px; background: var(--paper); overflow-x: auto; }
+  .flow svg, .chart svg { display: block; min-width: 860px; width: 100%; height: auto; }
+  .caption { margin-top: 10px; color: var(--muted); font-size: 12px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 22px; }
+  .card { padding: 19px; border: 1px solid var(--line); border-radius: 10px; background: var(--paper); }
+  .card h3 { margin-top: 0; }
+  .card p:last-child { margin-bottom: 0; }
+  .table-wrap { overflow-x: auto; margin-top: 20px; border: 1px solid var(--line); border-radius: 10px; background: var(--paper); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { padding: 11px 13px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+  th { color: var(--muted); background: var(--soft); font: 700 10px/1.25 var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+  tbody tr:last-child td { border-bottom: 0; }
+  td.num { white-space: nowrap; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  .rank { display: inline-grid; place-items: center; width: 26px; height: 26px; margin-right: 8px; border-radius: 50%; background: var(--teal-soft); color: var(--teal); font: 750 12px/1 var(--mono); }
+  ol.recs { max-width: 950px; margin: 22px 0 0; padding: 0; list-style: none; counter-reset: rec; }
+  ol.recs > li { position: relative; margin: 0 0 14px; padding: 18px 20px 18px 62px; border: 1px solid var(--line); border-radius: 10px; background: var(--paper); counter-increment: rec; }
+  ol.recs > li::before { content: counter(rec, decimal-leading-zero); position: absolute; left: 18px; top: 20px; color: var(--teal); font: 760 15px/1 var(--mono); }
+  ol.recs h3 { margin: 0 0 6px; }
+  ul { margin: 8px 0 0; padding-left: 20px; }
+  li + li { margin-top: 5px; }
+  .priority { display: inline-block; margin-left: 6px; padding: 3px 7px; border-radius: 999px; background: var(--orange-soft); color: var(--orange); font: 750 10px/1 var(--mono); vertical-align: 2px; }
+  .prompt { margin-top: 18px; padding: 18px; border: 1px solid var(--line); border-radius: 10px; background: var(--soft); overflow-x: auto; }
+  .prompt pre { min-width: 680px; margin: 0; white-space: pre-wrap; color: var(--ink); font: 12px/1.6 var(--mono); }
+  .sources { columns: 2; column-gap: 34px; margin-top: 18px; }
+  .source { break-inside: avoid; margin-bottom: 13px; color: var(--muted); font-size: 12px; }
+  .limits { color: var(--muted); }
+  footer { margin-top: 58px; padding-top: 22px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+  @media (max-width: 820px) {
+    .tiles { grid-template-columns: 1fr 1fr; }
+    .grid2 { grid-template-columns: 1fr; }
+    .sources { columns: 1; }
+  }
+  @media (max-width: 520px) {
+    main { width: min(100% - 24px, 1120px); padding-top: 28px; }
+    .tiles { grid-template-columns: 1fr; }
+    .tile { min-height: auto; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <header class="mast">
+    <p class="eyebrow">Mission Control scout report · 20 Aug 2026</p>
+    <h1>Why Test Evidence Auditor rejects so often</h1>
+    <blockquote class="question">“Investigate why the Test Evidence Auditor constatly rejects sessions for lack of test evidence. Why does it happen? What is are the most common issues? Finally, lay out recommendations on how we can modify the workflow or session prompt to increase the likelihood sessions will have sufficient test evidence and are less likely to have test evidence rejected.”</blockquote>
+    <p class="answer"><strong>The auditor was usually not rejecting tests. It was rejecting an evidence packet that could not show the tests ran or the UI rendered.</strong> At the time of this snapshot, agents executed checks in tool calls, but Mission Control’s normalized transcript dropped tool-result bodies and the initial session appendix described only optional screenshots. A strict, intentionally fail-closed Persona then saw a diff, prose claims, and a broad check tail, but often no task-specific run output and no pixels.</p>
+    <div class="callout good">
+      <p><strong>Post-analysis status, 20 Aug 2026:</strong> This page records the pre-change baseline that motivated the implementation. The shipped session appendix is now a “Workflow evidence readiness” contract that explicitly documents direct <code>commandOutputs</code>, rendered <code>images</code>, and existing UTF-8 <code>artifacts</code>. The measurements below predate that change and should not be read as the current prompt contract. Recommendation 03, the pre-Persona readiness gate, was intentionally excluded from the implementation.</p>
+    </div>
+    <div class="chips">
+      <span class="chip">Primary cause: transport and prompt mismatch</span>
+      <span class="chip">Secondary cause: broad checks are not intent proof</span>
+      <span class="chip">Auditor overreach exists, but is not the main pattern</span>
+    </div>
+    <div class="tiles">
+      <div class="tile hot"><div class="k">All attempts rejected</div><div class="v">70.9%</div><div class="n">95 failures in 134 auditor attempts</div></div>
+      <div class="tile hot"><div class="k">First submissions rejected</div><div class="v">93.3%</div><div class="n">42 of 45 workflow runs</div></div>
+      <div class="tile cool"><div class="k">Current-guidance failure rate</div><div class="v">55.9%</div><div class="n">Improved from 76.0%, but still 19 of 34 attempts</div></div>
+      <div class="tile hot"><div class="k">Initial text artifacts</div><div class="v">0 / 17</div><div class="n">No current-guidance first submission registered focused output</div></div>
+    </div>
+  </header>
+
+  <section>
+    <h2>The failure is produced by the handoff between execution and review</h2>
+    <p class="lede">In the measured pre-change workflow, the evidence channel was capable but the initial prompt did not tell the agent to use its text half, and the ordinary transcript could not carry tool output as a fallback. The shipped readiness contract now closes that prompt gap.</p>
+    <figure class="flow">
+      <svg viewBox="0 0 1000 300" role="img" aria-label="Evidence flow showing tool output dropped before the immutable review snapshot">
+        <defs>
+          <marker id="arrow" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><path d="M0,0 L10,4 L0,8 z" fill="currentColor"/></marker>
+        </defs>
+        <g font-family="ui-sans-serif, system-ui" fill="none" stroke="currentColor">
+          <rect x="25" y="58" width="205" height="126" rx="14" fill="var(--teal-soft)" stroke="var(--teal)"/>
+          <text x="47" y="87" fill="var(--ink)" stroke="none" font-size="15" font-weight="700">1 · Agent does the work</text>
+          <text x="47" y="117" fill="var(--muted)" stroke="none" font-size="12">Runs focused tests</text>
+          <text x="47" y="138" fill="var(--muted)" stroke="none" font-size="12">Opens the UI</text>
+          <text x="47" y="159" fill="var(--muted)" stroke="none" font-size="12">Says “verified” in prose</text>
+
+          <path d="M230 121 H282" stroke="var(--muted)" stroke-width="2" marker-end="url(#arrow)"/>
+          <rect x="285" y="34" width="205" height="174" rx="14" fill="var(--orange-soft)" stroke="var(--orange)"/>
+          <text x="307" y="65" fill="var(--ink)" stroke="none" font-size="15" font-weight="700">2 · Transcript normalizer</text>
+          <text x="307" y="95" fill="var(--muted)" stroke="none" font-size="12">Keeps assistant prose</text>
+          <text x="307" y="116" fill="var(--muted)" stroke="none" font-size="12">Keeps tool name and input</text>
+          <text x="307" y="145" fill="var(--orange)" stroke="none" font-size="12" font-weight="700">Drops tool-result bodies</text>
+          <text x="307" y="170" fill="var(--muted)" stroke="none" font-size="12">Then clips turns and window</text>
+
+          <path d="M490 121 H542" stroke="var(--muted)" stroke-width="2" marker-end="url(#arrow)"/>
+          <rect x="545" y="34" width="205" height="174" rx="14" fill="var(--soft)" stroke="var(--line)"/>
+          <text x="567" y="65" fill="var(--ink)" stroke="none" font-size="15" font-weight="700">3 · Immutable snapshot</text>
+          <text x="567" y="95" fill="var(--muted)" stroke="none" font-size="12">Diff and prose claims</text>
+          <text x="567" y="116" fill="var(--muted)" stroke="none" font-size="12">4 KiB tail per broad Check</text>
+          <text x="567" y="145" fill="var(--teal)" stroke="none" font-size="12" font-weight="700">Only registered files add</text>
+          <text x="567" y="166" fill="var(--teal)" stroke="none" font-size="12" font-weight="700">actual logs and pixels</text>
+
+          <path d="M750 121 H802" stroke="var(--muted)" stroke-width="2" marker-end="url(#arrow)"/>
+          <rect x="805" y="58" width="170" height="126" rx="14" fill="var(--orange-soft)" stroke="var(--red)"/>
+          <text x="827" y="87" fill="var(--ink)" stroke="none" font-size="15" font-weight="700">4 · Auditor</text>
+          <text x="827" y="117" fill="var(--muted)" stroke="none" font-size="12">“A claim is not proof.”</text>
+          <text x="827" y="144" fill="var(--red)" stroke="none" font-size="12" font-weight="700">Fail when absent</text>
+
+          <path d="M126 184 V257 H647 V210" stroke="var(--teal)" stroke-width="2.5" stroke-dasharray="6 5" marker-end="url(#arrow)"/>
+          <text x="178" y="246" fill="var(--teal)" stroke="none" font-size="12" font-weight="700">The missing path: save gitignored screenshot/log, then register it before completion</text>
+        </g>
+      </svg>
+      <figcaption class="caption">Observed implementation path. Claude explicitly drops tool-result user records; Pi drops tool-result parts; Codex recognizes call records but does not ingest output records. Sources: <code>src/server/harness/claude/transcript.ts:90</code>, <code>src/server/harness/pi/transcript.ts:112</code>, <code>src/server/harness/codex/transcript.ts:102</code>.</figcaption>
+    </figure>
+
+    <div class="grid2">
+      <article class="card">
+        <h3>The auditor is designed to fail closed</h3>
+        <p>Its guidance says unit tests alone are insufficient, generic pass lines and prose claims do not count, UI-facing changes require reviewer-visible pixels, and absent evidence is a fail even when the code looks correct. That is deliberate behavior, not a random model tendency.</p>
+        <p class="caption">Source: <code>personas/test-evidence-auditor.md:8</code>, <code>:38</code>, <code>:47</code>, <code>:59</code>.</p>
+      </article>
+      <article class="card">
+        <h3>The delivery prompt understated the obligation</h3>
+        <p>In the analyzed snapshot, the ship-task appendix was titled “Optional visual workflow evidence.” It explained screenshots only and ended by calling registration optional. That historical mismatch was the basis for this finding. The shipped appendix now instructs sessions to use direct <code>commandOutputs</code>, <code>images</code>, or existing UTF-8 <code>artifacts</code> as appropriate.</p>
+        <p class="caption">Historical source: pre-change <code>src/server/workflows/agent-contract.ts:4</code>. Shipped contract: <code>src/server/workflows/agent-contract.ts:4-10</code>.</p>
+      </article>
+    </div>
+  </section>
+
+  <section>
+    <h2>What the local history shows</h2>
+    <p class="lede">Read-only SQLite snapshot taken at 2026-08-20 20:40 local time. It covers 134 Test Evidence Auditor attempts across 45 runs and 44 conversations from 2026-08-13 through 2026-08-20.</p>
+    <figure class="chart">
+      <svg viewBox="0 0 980 360" role="img" aria-label="Failure rates by Persona, with Test Evidence Auditor highest at 70.9 percent">
+        <g font-family="ui-sans-serif, system-ui">
+          <text x="22" y="27" fill="var(--ink)" font-size="15" font-weight="700">Persona attempt failure rate</text>
+          <text x="22" y="49" fill="var(--muted)" font-size="11">All completed local attempts in the snapshot</text>
+          <g stroke="var(--line)" stroke-width="1">
+            <line x1="280" x2="930" y1="75" y2="75"/><line x1="280" x2="930" y1="315" y2="315"/>
+            <line x1="280" x2="280" y1="75" y2="315"/><line x1="442.5" x2="442.5" y1="75" y2="315"/>
+            <line x1="605" x2="605" y1="75" y2="315"/><line x1="767.5" x2="767.5" y1="75" y2="315"/><line x1="930" x2="930" y1="75" y2="315"/>
+          </g>
+          <g fill="var(--muted)" font-size="10">
+            <text x="275" y="337">0%</text><text x="432" y="337">25%</text><text x="594" y="337">50%</text><text x="756" y="337">75%</text><text x="916" y="337">100%</text>
+          </g>
+          <g fill="var(--ink)" font-size="12">
+            <text x="22" y="105">Intent Conformance</text><text x="22" y="155">Code Risk</text><text x="22" y="205" font-weight="700">Test Evidence Auditor</text><text x="22" y="255">Documentation</text><text x="22" y="305">Code Quality</text>
+          </g>
+          <rect x="280" y="86" width="95.6" height="24" rx="4" fill="var(--teal)" opacity=".7"/><text x="385" y="103" fill="var(--ink)" font-size="12" font-weight="700">14.7%</text>
+          <rect x="280" y="136" width="249.6" height="24" rx="4" fill="var(--teal)" opacity=".7"/><text x="539" y="153" fill="var(--ink)" font-size="12" font-weight="700">38.4%</text>
+          <rect x="280" y="186" width="460.9" height="24" rx="4" fill="var(--orange)"/><text x="750" y="203" fill="var(--ink)" font-size="12" font-weight="800">70.9%</text>
+          <rect x="280" y="236" width="159.9" height="24" rx="4" fill="var(--teal)" opacity=".7"/><text x="449" y="253" fill="var(--ink)" font-size="12" font-weight="700">24.6%</text>
+          <rect x="280" y="286" width="169.7" height="24" rx="4" fill="var(--teal)" opacity=".7"/><text x="459" y="303" fill="var(--ink)" font-size="12" font-weight="700">26.1%</text>
+        </g>
+      </svg>
+      <figcaption class="caption">Test Evidence is the outlier. Its 70.9% failure rate is 32.5 points above Code Risk, the next highest. The detailed aggregate remains preserved with the original Mission Control scout archive and is intentionally not committed as repository evidence.</figcaption>
+    </figure>
+
+    <div class="callout good">
+      <p><strong>Native evidence support helped, but did not solve first-round readiness.</strong> Attempt failures fell from 76.0% under the legacy guidance snapshot to 55.9% under the current native-evidence guidance. Yet 14 of 17 current-guidance runs still failed their first auditor submission. Thirteen of those 17 initial packets had no image, and all 17 had no text artifact.</p>
+    </div>
+
+    <h3>Most common rejection reasons</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Rank</th><th>Issue</th><th>Observed frequency</th><th>Why the supplied evidence fails</th></tr></thead>
+        <tbody>
+          <tr><td class="num"><span class="rank">1</span></td><td><strong>No reviewer-visible UI artifact</strong></td><td class="num">16 / 20 current failure requests</td><td>A Playwright spec, DOM assertion, screenshot hook, local file, or prose description is not the pixels attached to the immutable submission. On current-guidance first failures, 11 of 14 requests were visual.</td></tr>
+          <tr><td class="num"><span class="rank">2</span></td><td><strong>No completed focused execution output</strong></td><td class="num">4 / 20 current failure requests</td><td>The test exists in the diff, but the snapshot does not show that exact behavior running to an exit code and final result. Across full current failure bodies, 12 of 19 also mention an execution gap, often alongside missing visuals.</td></tr>
+          <tr><td class="num"><span class="rank">3</span></td><td><strong>Broad Check output does not identify the changed behavior</strong></td><td class="num">19 / 34 current attempts failed despite Check evidence</td><td>Every current-guidance attempt had upstream Check evidence. The runner retains only the final 4,000 bytes per Check, so a large suite can show aggregate success while omitting the focused test name and scenario.</td></tr>
+          <tr><td class="num"><span class="rank">4</span></td><td><strong>Evidence is in the wrong place or too late</strong></td><td class="num">18 / 95 historical failure bodies</td><td>PR comments, PR attachments, files merely created in the checkout, and later workflow turns do not enter an already frozen snapshot. Native registration must happen before completion; human-facing PR evidence is a separate copy.</td></tr>
+          <tr><td class="num"><span class="rank">5</span></td><td><strong>The artifact exists but does not settle the claim</strong></td><td class="num">17 / 95 historical failure bodies</td><td>Examples include screenshots that hide the relevant path, cover only one of several UI states, or output truncated before the test footer. Presence is not sufficiency.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="caption">The current-guidance requested-change classification is exclusive and based on each requested-change title plus rationale. The broader historical-body counts overlap and are directional. The archived scout evidence records both methods.</p>
+  </section>
+
+  <section>
+    <h2>Recommendations from the pre-change analysis</h2>
+    <p class="lede">These recommendations explain the implementation this report motivated. The workflow and session-prompt fixes were shipped, except recommendation 03, the pre-Persona readiness gate.</p>
+    <ol class="recs">
+      <li>
+        <h3>Replace the optional visual appendix with an evidence-readiness contract <span class="priority">P0</span></h3>
+        <p>Tell every workflow-bound ship session, before implementation starts, exactly what the reviewer can and cannot see. Cover both <code>images</code> and <code>artifacts</code>. State that ordinary tool output, prose summaries, PR comments, and unregistered local files do not enter the Persona packet.</p>
+        <ul>
+          <li>For UI changes: require one runtime capture for each materially distinct state named in the intent, plus the focused browser-test output.</li>
+          <li>For API, CLI, lifecycle, and logic changes: require a focused test or reproducible request/response transcript tied to the acceptance criterion.</li>
+          <li>Require the agent to register the final successful output and captures before ending its task turn, with captions that name the behavior demonstrated.</li>
+          <li>Keep code/tests and proof separate: evidence files remain gitignored and uncommitted.</li>
+        </ul>
+      </li>
+      <li>
+        <h3>Make repair packets evidence-channel specific <span class="priority">P0</span></h3>
+        <p>The current suffix says only “verify the work.” When Test Evidence fails, append a deterministic recipe based on the requested evidence kind: use <code>artifacts</code> for a test transcript and <code>images</code> for a visual, register it after the final run, then stop. Warn that merely rerunning and summarizing will reproduce the same verdict. Keep Mission Control’s engine as the owner of resubmission.</p>
+      </li>
+      <li>
+        <h3>Add a pre-Persona evidence readiness gate <span class="priority">P1</span></h3>
+        <p>Before spending a Test Evidence model call, surface the immutable packet inventory: image count, text-artifact count, Check commands, retained bytes, omitted bytes, and acceptance criteria. Block or explicitly warn when a UI-facing change has zero images, or when a behavior change has neither a focused artifact nor a detailed task-specific Check. Prefer an explicit evidence map from the agent over filename heuristics.</p>
+      </li>
+      <li>
+        <h3>Give focused command output a first-class capture path <span class="priority">P1</span></h3>
+        <p>Do not rely on normalized conversation transcripts for tool output. Either add a small “run and register evidence” Mission tool that records command, exit code, HEAD, and bounded stdout/stderr atomically, or make the session helper create and register a gitignored UTF-8 log. Preserve head plus tail so the command and selected test names survive alongside the footer.</p>
+      </li>
+      <li>
+        <h3>Align the Persona guidance with the actual transport <span class="priority">P1</span></h3>
+        <p>Remove “evidence artifacts committed alongside it,” which conflicts with the repository’s no-evidence-commit rule and the task appendix’s “do not commit.” Explicitly say PR attachments are not Persona transport. Add a proportional matrix: focused regression output may settle pure logic; request/response settles API behavior; runtime pixels plus focused browser output settle UI behavior. Keep the fail-closed standard, but stop inviting impossible or downstream proof.</p>
+      </li>
+      <li>
+        <h3>Instrument evidence readiness and audit overreach <span class="priority">P2</span></h3>
+        <p>Track first-pass rate, staged image/text adoption, rejection reason, evidence omission bytes, and repair rounds by workflow version. Flag verdicts that ask for PR, CI, Inspector, or merge proof before those stages unless the original human intent explicitly requires it. This catches the small but real class of auditor overreach without weakening valid evidence failures.</p>
+      </li>
+    </ol>
+
+    <h3>Shipped evidence-readiness excerpt</h3>
+    <div class="prompt"><pre>## Workflow evidence readiness
+Before completing the task, make sure the next Persona can inspect evidence for each material
+acceptance criterion. Personas receive the diff, bounded transcript, upstream Check results,
+and evidence registered through Mission Control. They do not receive ordinary tool-result
+bodies, unregistered files, or later pull-request comments and checks.
+
+Use submit_workflow_evidence to close those visibility gaps: pass commandOutputs with the exact
+completed focused command, exit code, output, repository scope, and a precise caption; pass
+images with a checkout-relative gitignored PNG, JPEG, GIF, or WebP when the claim concerns
+rendered UI. Existing gitignored UTF-8 logs may instead use artifacts.
+
+Capture evidence after the final relevant run, check that registration succeeded, and keep it
+proportional. One focused artifact may prove many tests or acceptance criteria; do not submit
+one output per test or dump an entire large suite when a focused run demonstrates the behavior.
+
+Do not commit evidence artifacts. Native registration carries proof to the Persona and does not
+replace focused tests or verification.</pre></div>
+  </section>
+
+  <section>
+    <h2>Recommended rollout and success measure</h2>
+    <div class="grid2">
+      <article class="card">
+        <h3>First: prompt and packet wording</h3>
+        <p>This is the smallest, safest change and directly targets the zero-of-17 text-artifact adoption in initial current-guidance submissions. Ship it with reason telemetry and compare the next 30 runs.</p>
+      </article>
+      <article class="card">
+        <h3>Then: readiness gate and capture helper</h3>
+        <p>If first-pass failures remain above 30%, add the gate and atomic command capture. Target at least 70% first-pass acceptance, at most 1.5 auditor attempts per run, and zero UI first submissions with an empty image manifest.</p>
+      </article>
+    </div>
+    <div class="callout">
+      <p><strong>Do not “fix” this by weakening the auditor to accept green summaries.</strong> The useful contract is that the demonstrated behavior, not merely the implementation, reaches review. The repair is to reliably transport proportionate proof and reject impossible/downstream requests.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>Evidence and method</h2>
+    <div class="sources">
+      <p class="source"><code>personas/test-evidence-auditor.md:8-72</code><br>Published fail-closed evidence standard and UI visual requirement.</p>
+      <p class="source"><code>src/server/workflows/agent-contract.ts:4-11</code> pre-change snapshot<br>Historical visual-only wording and optional-registration statement that this report analyzed.</p>
+      <p class="source"><code>src/server/workflows/agent-contract.ts:4-10</code> shipped contract<br>Current readiness wording for direct command output, images, and existing UTF-8 artifacts.</p>
+      <p class="source"><code>src/mcp/server.ts:626-703</code><br>Native command-output, image, and text-artifact registration tool.</p>
+      <p class="source"><code>src/server/harness/claude/transcript.ts:90-142</code><br>Claude tool-result records are explicitly dropped.</p>
+      <p class="source"><code>src/server/harness/codex/transcript.ts:102-144</code><br>Codex parser retains calls and inputs but no output record arm.</p>
+      <p class="source"><code>src/server/harness/pi/transcript.ts:112-147</code><br>Pi tool-result parts are explicitly dropped.</p>
+      <p class="source"><code>src/server/workflows/context.ts:34-39,168-236,518-581</code><br>8,000-byte turns, 180,000-byte aggregate, and 12-head/68-tail transcript capture.</p>
+      <p class="source"><code>src/shared/workflow.ts:147-168</code> and <code>src/server/workflows/checks.ts:291-323</code><br>4,000-byte tail retention for each Workflow Check.</p>
+      <p class="source"><code>src/server/workflows/prompt.ts:78-136</code><br>Exact evidence made available to a Persona and later-stage PR/CI caution.</p>
+      <p class="source"><code>docs/workflows.md:630-710</code><br>Immutable capture timing, staged evidence lifecycle, and fresh-repair behavior.</p>
+      <p class="source"><code>.agents/memory/review-evidence-needs-the-pr.md:8-24</code><br>Observed distinction between native workflow evidence and human-facing PR evidence.</p>
+      <p class="source"><code>~/.mission-control/harness.db</code> read-only snapshot<br>Aggregate verdict, manifest, Check, run, and guidance-snapshot counts. Raw operator data was not copied into this report.</p>
+    </div>
+    <p>Database method: an online SQLite backup was taken read-only, then attempts were selected where <code>persona_snapshot_json.name = 'Test Evidence Auditor'</code>. First/latest outcomes used row numbering by run and submission round/segment. Current versus legacy guidance used the immutable guidance text stored on each attempt. Requested-change categories used an exclusive keyword classification over title plus rationale; whole-verdict issue counts were used only as overlapping directional context. The original Mission Control scout archive preserves the aggregate CSV.</p>
+  </section>
+
+  <section class="limits">
+    <h2>What this did not establish</h2>
+    <ul>
+      <li>This is one operator installation and 45 runs over seven days, not a cross-installation product sample. Thirty runs used No-Mistakes Review v8 and 15 used v10; guidance and evidence support changed during the period.</li>
+      <li>The report did not independently decide whether every rejected change actually worked. It evaluated what the immutable reviewer packet contained and why the Persona rejected it.</li>
+      <li>Keyword categories summarize recurring wording and can misclassify nuance. The current first-failure split is stronger: all 14 requested changes classified cleanly as 11 visual artifacts and 3 executed-test/output artifacts.</li>
+      <li>The proposed prompt and workflow changes were not A/B tested. The suggested targets are rollout criteria, not measured outcomes.</li>
+      <li>The measurements predate the shipped readiness contract. This report does not establish its post-rollout adoption or rejection rate.</li>
+      <li>The raw database snapshot was intentionally not included because it contains unrelated operator and session data. Only bounded aggregates are archived here.</li>
+    </ul>
+  </section>
+
+  <footer>Historical scout finding: Test Evidence Auditor exposed a proof-transport gap. The shipped readiness contract now makes task-specific command output, images, and existing text artifacts explicit completion evidence; post-rollout effectiveness remains unmeasured here.</footer>
+</main>
+</body>
+</html>

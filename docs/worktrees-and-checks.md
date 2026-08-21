@@ -14,6 +14,31 @@ applies per tree: each is leased, pinned and reclaimed on its own. Provisioning 
 all-or-nothing, so a dispatch that cannot cut one of them hands back the ones it already took
 rather than starting an agent with half its repositories.
 
+### Where a dispatch starts
+
+An ordinary task - one whose caller named no commit - freezes a base before anything is
+provisioned. Mission Control proves whether the repository has a remote named exactly `origin`,
+fetches it, then asks that remote for both halves of one answer: which branch it advertises as
+HEAD, and the commit that branch is on. The frozen base is the commit the remote stated, and the
+local remote-tracking ref has to agree with it - which is what proves the fetch brought that exact
+object down. A remote that advanced between the fetch and the observation disagrees, and is
+refused for retry rather than quietly frozen at the older commit. Every repository the task
+attaches is frozen the same way
+and before the first worktree is taken, so a failure in the third repository costs an error rather
+than two leases to unwind.
+
+The refusals are deliberate. A configured `origin` that cannot be fetched, a remote HEAD that
+cannot be proved, and a default branch that was advertised but not fetched all fail the dispatch
+before any tree or agent exists. So does a `git remote` listing that never answered - only a
+listing that succeeded and did not name `origin` establishes a repository with no remote, and only
+that repository freezes its current local `HEAD` instead. The remote is asked rather than the
+checkout's cached `refs/remotes/origin/HEAD`, because a fetch does not refresh that cache after a
+server-side default-branch rename.
+
+An explicit pinned base bypasses all of this: it is verified to be a real full commit ID in that
+repository and used unchanged, with no fetch. A pin names one commit in one repository, so a
+task's attached repositories still resolve their own remote defaults.
+
 ### Native pools
 
 Native pooling is enabled by default. The daemon lazily creates exact-commit, detached Git
@@ -21,6 +46,16 @@ worktrees beneath `MISSION_HOME/worktree-pools`, keyed by Git's physical common 
 than by the checkout path used to reach it. Released slot directories remain in place so ignored
 dependencies and build caches stay warm for the next lease. A repository-specific disable uses a
 cold disposable Git worktree beneath `MISSION_HOME/worktrees` instead.
+
+A slot never crosses a task boundary holding a branch. Reset detaches the checkout at the exact
+requested commit before it hard-resets and cleans, and both state transitions that hand a slot on
+- finalizing a lease and marking a returned slot available - independently prove path, repository,
+exact HEAD, cleanliness and detached HEAD from Git before they complete. An attached slot, or one
+whose detached state cannot be proved, is quarantined rather than leased. That makes acquisition
+repair a warm slot left attached by an older build on its next use.
+
+Detaching releases the checkout, never the name: the previous occupant's branch ref stays exactly
+where it was, and the reset's clean step still spares ignored files, so warm caches survive.
 
 Every slot carries a random lease ID and an exact task, check, or manual owner. Task and check
 rows persist that ID before work starts. Cleanup reads the recorded provider and lease ID rather
@@ -84,7 +119,8 @@ The operations have deliberately narrow meanings:
   preview therefore lists every native, legacy, or disposable Git path that task cleanup will
   touch, even when Return began from one slot. Check Return uses the recorded check provider and
   process-group recovery. Manual Return uses the exact durable lease. A successful native Return
-  resets to the freshly fetched remote default and keeps the warm slot.
+  resets to the freshly fetched remote default - the branch the remote advertises now, proved the
+  same way dispatch proves it - leaves the slot detached and clean, and keeps the warm slot.
 - **Prune** removes only the clean, merged, process-free, unreferenced available slots enumerated in
   its preview. Right-size is the same safety rule restricted to capacity above the configured
   maximum.
@@ -127,6 +163,63 @@ unverifiable leases with Treehouse itself after verifying their current owner. R
 Treehouse pool and installation only after **Settings > Worktrees** reports no durable legacy rows
 and every foreign lease has been reviewed. `MISSION_POOL_REAP_MS` is retired and ignored; if it remains set, startup names
 `MISSION_WORKTREE_SWEEP_MS` as the native maintenance replacement.
+
+### Task worktree retention
+
+A task's worktrees are not freed when the task ends. A `done`, `failed`, or `cancelled` task
+keeps every checkout it holds so a person can still read the work, commit it, push it, or
+reclaim it deliberately with **Clean up**. That reprieve is bounded: **Mission Control removes a
+terminal task's worktrees automatically after 30 days without a Git-visible change.**
+
+The policy is fixed and destructive at the boundary. Staged changes, unstaged changes,
+untracked files, local commits, and commits that were never pushed are all deleted when the
+window expires. None of them exempts a tree, and push, upstream, pull request, and merge status
+are deliberately not consulted at all. What they do is **reset the clock**: any change to the
+observable Git state grants another full 30 days from the moment it is observed.
+
+What counts as a change:
+
+- `HEAD`, including a new local commit;
+- the complete index - anything staged, unstaged, or removed from staging;
+- tracked worktree content, including deletions, mode changes, and symlink targets; and
+- every non-ignored untracked file and its current content.
+
+What does not: anything `.gitignore` covers. Warm dependency directories, build caches, and log
+files churn without anybody working, and a tree pinned by them would never be reclaimed.
+
+**One task has one deadline.** A multi-repository task's primary and attached checkouts are
+combined into a single fingerprint in repository order, so the most recently touched tree
+protects the whole set, and the task is reclaimed as one operation.
+
+**How the clock is kept.** The daemon observes each eligible task's checkouts on a fixed
+internal cadence, well inside the window, and persists the result - the fingerprint, when it
+last changed, and the resulting deadline - so a restart resumes the boundary that was actually
+granted rather than starting over. A restart no longer frees a checkout: when reconciliation
+proves a task's agent died with the daemon, the task settles honestly and keeps every worktree,
+provider, and lease fact for the same 30-day rule.
+
+**The clock starts when the tree is first observed, not when the task ended.** No timestamp in
+the database can prove when a checkout was last touched, so every tree that existed before this
+shipped - and every tree whose resources are replaced - is seeded at its first successful
+observation and gets one full window from there.
+
+**Uncertainty retries; it never deletes.** A checkout Git cannot be read, a provider that
+refuses, a process still occupying a tree, a scout report that cannot be published, or a
+partial multi-repository release all keep every durable resource fact, record a bounded reason,
+and try again with exponential backoff capped at a day. The tree stays past due - a failed
+cleanup never buys it another 30 days - and the ordinary **Clean up** action still reaches it.
+While a due cleanup is retrying, the task's card says so, separately from its outcome or
+failure reason.
+
+Cleanup runs through the same provider-aware teardown as **Clean up**, so a native slot, a
+disposable Git worktree, and a historical Treehouse lease are each released under the provider
+and lease identity recorded on the task. At most one automatic cleanup touches a given physical
+repository at a time, and it releases at background priority, so a large stale fleet cannot
+stand in front of a dispatch that needs a slot now.
+
+This policy applies only to worktrees Mission Control provisioned for a task. Manual
+development worktrees, [check leases](#check-leases), and Git worktrees Mission Control does not
+own are never touched by it.
 
 ### Check leases
 

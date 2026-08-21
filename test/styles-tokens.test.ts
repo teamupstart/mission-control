@@ -35,7 +35,6 @@ const css = readFileSync(
 const SET_FROM_JS = new Map<string, string>([
   ["--agent-accent", "a harness's colour, inline from AGENT_IDENTITY (see AGENTS.md)"],
   ["--topbar-h", "measured in App.tsx (see AGENTS.md)"],
-  ["--cmdbar-clearance", "measured in App.tsx (see AGENTS.md)"],
   ["--tt-caret", "the tooltip caret offset, inline from Tooltip.tsx"],
   ["--pct", "a bar's own fill percentage, inline from SpendChip.tsx"],
 ]);

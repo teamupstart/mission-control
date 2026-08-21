@@ -1,33 +1,25 @@
-import { SELECTABLE_LAYOUTS, type LayoutMode } from "../lib/layout.ts";
+import { LAYOUTS, type LayoutMode } from "../lib/layout.ts";
 import { Tooltip } from "./Tooltip.tsx";
 
 /**
- * The layout's shape, drawn rather than described - four tiles, a rail + pane, or
- * columns of descending height. Faster to tell apart than the words are, and it
+ * The layout's shape, drawn rather than described: a rail plus pane, or columns of
+ * descending height. Faster to tell apart than the words are, and it
  * survives the descriptions being skipped, which they will be.
  */
 function LayoutGlyph({ mode }: { mode: LayoutMode }): React.JSX.Element {
-  const rects: [number, number, number, number][] =
-    mode === "grid"
+  const rects: [number, number, number, number][] = mode === "console"
       ? [
-          [0, 0, 7, 6],
-          [8.5, 0, 7, 6],
-          [0, 7, 7, 6],
-          [8.5, 7, 7, 6],
+          [0, 0, 5, 4],
+          [0, 4.7, 5, 4],
+          [0, 9.4, 5, 3.6],
+          [6.2, 0, 9.3, 13],
         ]
-      : mode === "console"
-        ? [
-            [0, 0, 5, 4],
-            [0, 4.7, 5, 4],
-            [0, 9.4, 5, 3.6],
-            [6.2, 0, 9.3, 13],
-          ]
-        : [
-            [0, 0, 3.3, 13],
-            [4.1, 0, 3.3, 9],
-            [8.2, 0, 3.3, 6],
-            [12.3, 0, 3.3, 4],
-          ];
+      : [
+          [0, 0, 3.3, 13],
+          [4.1, 0, 3.3, 9],
+          [8.2, 0, 3.3, 6],
+          [12.3, 0, 3.3, 4],
+        ];
   return (
     <svg className="layout-glyph" viewBox="0 0 15.6 13" width="16" height="13" aria-hidden focusable="false">
       {rects.map(([x, y, w, h], i) => (
@@ -38,8 +30,8 @@ function LayoutGlyph({ mode }: { mode: LayoutMode }): React.JSX.Element {
 }
 
 /**
- * Which shape the dashboard takes: the card grid, the split-pane console, or the
- * state board. The same sessions and the same cards either way - only the
+ * Which shape the dashboard takes: the split-pane Console or the state Board. The same
+ * sessions and actions are available either way; only the
  * arrangement changes - so this is a preference about this screen, persisted per machine
  * through the daemon's UI configuration.
  *
@@ -67,7 +59,7 @@ export function LayoutPanel({
         aria-label="Dashboard layout"
         data-anchor="display/layout"
       >
-        {SELECTABLE_LAYOUTS.map((l) => (
+        {LAYOUTS.map((l) => (
           <label key={l.id} className={`layout-option${layout === l.id ? " is-on" : ""}`}>
             <Tooltip label={l.description}>
               <input
@@ -89,11 +81,9 @@ export function LayoutPanel({
         ))}
       </div>
       <p className="settings-hint">
-        Every layout reaches the same sessions and the same actions, so nothing is hidden by the
-        choice - only the shape around them changes. Only the card grid has a focus mode; the
-        console opens the selected session's detail as you move, so <kbd>e</kbd> and the floating
-        command bar don't apply there. The board keeps the two apart: the arrow keys move a
-        cursor over the tiles and <kbd>Enter</kbd> opens the one it's on.
+        Every layout reaches the same sessions and actions, so only their arrangement changes.
+        Console opens the selected session's detail as you move. Board keeps selection and detail
+        apart: the arrow keys move a cursor over tiles and <kbd>Enter</kbd> opens the selected one.
       </p>
     </section>
   );

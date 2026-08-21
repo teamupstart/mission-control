@@ -18,7 +18,7 @@ import {
  * stand-down guard, that effect's dependency array, and a session-disappeared effect).
  *
  * The failure that motivates this is silent: an overlay missing from the stand-down list
- * leaves the global key handler live, so grid shortcuts drive - and act on - the card
+ * leaves the global key handler live, so layout shortcuts drive - and act on - the session
  * behind the overlay you are looking at. Nothing throws; you just kill the wrong session.
  *
  * So membership is not a list anyone maintains. An `<Overlay>` registers itself on mount

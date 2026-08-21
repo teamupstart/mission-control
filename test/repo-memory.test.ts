@@ -161,9 +161,19 @@ test("the dispatcher composes pi's turn one through the pointer", () => {
   // shape the task has. (Pi declares no `multiRepoDispatch`, so today that composition is
   // always the identity for pi - but the seam is what this test pins, not the arithmetic.)
   const dispatcher = readFileSync(`${here}../src/server/dispatcher.ts`, "utf8");
+  // Bound to a NAMED composition rather than to one nested call, because the composed text
+  // now has a second reader: the launch-presentation marker fingerprints the exact string
+  // pi was launched with, and fingerprinting a recomposed copy is how the two answers drift
+  // apart. So what is pinned is that the pointer wraps the composed intent once, under a
+  // name, and that `preparePiLaunch` is handed that same name.
   assert.match(
     dispatcher,
-    /preparePiLaunch\(\s*withRepoMemoryPointer\(\s*wt\.path,\s*intent,?\s*\)\s*\)/,
+    /const piText\s*=[^;]*withRepoMemoryPointer\(\s*wt\.path,\s*intent,?\s*\)/,
     "pi's launch message must be composed through withRepoMemoryPointer",
+  );
+  assert.match(
+    dispatcher,
+    /preparePiLaunch\(\s*piText,?\s*\)/,
+    "and preparePiLaunch must receive that exact composed string",
   );
 });

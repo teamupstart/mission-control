@@ -11,7 +11,6 @@ import {
 } from "../src/shared/pipeline.ts";
 import {
   conductorEngineerArgv,
-  conductorEngineerPrompt,
 } from "../src/server/pipelines/conductor/index.ts";
 import {
   pipelineAutomationAction,
@@ -149,7 +148,62 @@ test("a pipeline task launches the provider in its repository without an agent b
   assert.deepEqual(task?.pipelineRun, link);
 });
 
-test("Claude SDK pipeline dispatch invokes /engineer directly with no terminal or worktree", async () => {
+test("a Codex pipeline task refuses the Claude-only Terminal runtime before spawn", async () => {
+  const registry = new Registry();
+  registry.upsertTask(
+    mkTask({
+      id: "pipeline-terminal-codex",
+      agent: "codex",
+      kind: "pipeline",
+      repoRoot: "/repo/terminal-codex",
+      intent: "Keep this Pipeline on Codex",
+      title: "Keep this Pipeline on Codex",
+    }),
+  );
+  const link = {
+    provider: "ai-conductor" as const,
+    repoRoot: "/repo/terminal-codex",
+    slug: "keep-this-pipeline-on-codex",
+  };
+  let spawned = false;
+  const dispatcher = new Dispatcher(registry, undefined, {
+    pipelineLaunch: async () => ({
+      ok: true,
+      launchRuntime: "terminal",
+      cwd: "/repo/terminal-codex",
+      argv: ["/bin/conduct-ts", "engineer", "--idea", "Keep this Pipeline on Codex"],
+      pipelineRun: link,
+    }),
+    spawn: async () => {
+      spawned = true;
+      return "unreachable terminal";
+    },
+  });
+
+  await dispatcher.dispatch("pipeline-terminal-codex");
+
+  const task = registry.getTask("pipeline-terminal-codex");
+  assert.deepEqual(
+    {
+      error: task?.error,
+      homeName: task?.homeName,
+      pipelineRun: task?.pipelineRun,
+      sessionId: task?.sessionId,
+      spawned,
+      status: task?.status,
+    },
+    {
+      error: "Terminal Pipeline launches are Claude-only; choose Claude or switch the Pipelines launch runtime to Agent SDK",
+      homeName: null,
+      pipelineRun: link,
+      sessionId: null,
+      spawned: false,
+      status: "failed",
+    },
+  );
+});
+
+test("managed SDK pipeline dispatch composes the selected host prompt with no terminal or worktree", async () => {
   const registry = new Registry();
   registry.upsertTask(
     mkTask({
@@ -179,9 +233,8 @@ test("Claude SDK pipeline dispatch invokes /engineer directly with no terminal o
     missionMcpDescriptor: async () => mcp,
     pipelineLaunch: async () => ({
       ok: true,
-      launchRuntime: "claude-sdk",
+      launchRuntime: "agent-sdk",
       cwd: "/repo/sdk",
-      prompt: conductorEngineerPrompt("Build the SDK path\nwithout changing the daemon"),
       pipelineRun: link,
     }),
     spawn: async () => {
@@ -194,14 +247,27 @@ test("Claude SDK pipeline dispatch invokes /engineer directly with no terminal o
 
   assert.equal(spawned, false);
   assert.deepEqual(supervisor.starts, [{
-    agent: "claude",
+    agent: "codex",
     name: "Build the SDK path",
     cwd: "/repo/sdk",
-    prompt: "/engineer Build the SDK path\nwithout changing the daemon",
+    prompt: "$engineer - run this skill now. Build the SDK path\nwithout changing the daemon",
     acceptedGoalPrompt: "Build the SDK path\nwithout changing the daemon",
+    // A pipeline task on this arm launches a directly streamable agent conversation, so it
+    // presents its launch turn exactly as an ordinary embedded dispatch does: the host's
+    // composed engineer invocation reaches the agent, the operator's own idea is what the
+    // conversation shows. The terminal arm above launches the Conductor host instead - not an
+    // agent conversation - and records no presentation at all.
+    //
+    // The marker's prompt is the SAME string as `prompt` above, spelled out rather than
+    // referenced so this stays a literal assertion: fingerprinting a recomposed copy of turn
+    // one is the exact defect that would make every pipeline launch render in full.
+    launchPresentation: {
+      prompt: "$engineer - run this skill now. Build the SDK path\nwithout changing the daemon",
+      displayText: "Build the SDK path\nwithout changing the daemon",
+    },
     model: null,
     effort: null,
-    permissionMode: null,
+    permissionMode: "approveForMe",
     mcp,
     extraDirs: [],
     taskId: "pipeline-sdk",
@@ -244,9 +310,8 @@ test("SDK preflight and start failures never fall back to Terminal", async () =>
       missionMcpDescriptor: async () => null,
       pipelineLaunch: async () => ({
         ok: true,
-        launchRuntime: "claude-sdk",
+        launchRuntime: "agent-sdk",
         cwd: `/repo/${mode}`,
-        prompt: "/engineer No fallback",
         pipelineRun: {
           provider: "ai-conductor",
           repoRoot: `/repo/${mode}`,
@@ -265,7 +330,7 @@ test("SDK preflight and start failures never fall back to Terminal", async () =>
     assert.equal(task?.status, "failed", mode);
     assert.match(
       task?.error ?? "",
-      mode === "missing" ? /no session supervisor/ : /Claude SDK launch refused by fixture/,
+      mode === "missing" ? /cannot launch Conductor through Agent SDK/ : /Claude SDK launch refused by fixture/,
       mode,
     );
     assert.equal(task?.homeName, null, mode);
@@ -303,9 +368,8 @@ test("cancellation during SDK start stops the newly created Engineer host", asyn
     missionMcpDescriptor: async () => null,
     pipelineLaunch: async () => ({
       ok: true,
-      launchRuntime: "claude-sdk",
+      launchRuntime: "agent-sdk",
       cwd: "/repo/cancel",
-      prompt: "/engineer Cancel while starting",
       pipelineRun: {
         provider: "ai-conductor",
         repoRoot: "/repo/cancel",

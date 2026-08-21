@@ -13,22 +13,22 @@ and get your decision back.
   controlling TTY → terminal pane, and registers the embedded sessions it dispatches.
   No per-session setup is required for terminal discovery.
 - **Names** each session from its **innermost terminal pane**, else the repo folder. Click a
-  card's title (or press <kbd>⇧</kbd><kbd>O</kbd>) to rename it. Where that name lands depends
+  session detail's title (or press <kbd>⇧</kbd><kbd>O</kbd>) to rename it. Where that name lands depends
   on the runtime, and both are durable: a **terminal** session's name IS its terminal home, so
   the rename moves the multiplexer session (and retitles the tabs hosting it) and the next
-  sweep reads it straight back onto the card; an **Agent SDK** session has no home, so the name
+  sweep reads it straight back onto the session detail; an **Agent SDK** session has no home, so the name
   is written to the row the daemon already keeps for it and comes back under that name after a
   restart. Any live session can be renamed except a terminal one found in no backend at all -
   that has nowhere to put a name, so its title isn't clickable - and one that has exited or is
   stopping. A Ghostty tab is named and still cannot be renamed, for a different reason: its
   titles are read-only, so that backend declares no retitle at all. See
   [Which terminal you use is declared](sessions.md#which-terminal-you-use-is-declared-not-assumed).
-  - A renamed Agent SDK session **stays** renamed. Left alone, its card follows the title of
+  - A renamed Agent SDK session **stays** renamed. Left alone, its session detail follows the title of
     the task it is running, which a dispatch refines with a headless model call moments after
     launching; typing a name overrides that for good. When a generated name is shortened on
-    the card, its rename tooltip and accessible description retain up to the accepted
+    the session detail, its rename tooltip and accessible description retain up to the accepted
     200-character title limit.
-- **Live** via Server-Sent Events - the grid updates as sessions start, work,
+- **Live** via Server-Sent Events - the fleet updates as sessions start, work,
   go idle, need input, or exit. No polling from the browser.
 - **Acts** on a session: send it a message, rename it, focus its tab, kill it, or
   reset its checkout back to origin (with a preview of exactly what that would
@@ -42,7 +42,7 @@ and get your decision back.
   answer - your decision flows straight back to the agent.
 - **Answers the menus** a session is parked on - a permission prompt, an
   `AskUserQuestion` clarification, a folder-trust check - as
-  [clickable options on the card](sessions.md#answer-a-sessions-menu-from-the-dashboard).
+  [clickable options on the session detail](sessions.md#answer-a-sessions-menu-from-the-dashboard).
   Terminal sessions are read straight off their pane, so that path works with or without
   hooks; Agent SDK sessions deliver the same asks as structured data.
 - **Dispatches** new agents: pick a repo, describe a task, and it launches an
@@ -68,11 +68,11 @@ and get your decision back.
   Control quits or restarts, never persisted or reacquired - and lid close, manual Sleep,
   and the battery safeguards all still win. macOS only; elsewhere it says so instead of
   pretending. See [Keep awake](sessions.md#keep-awake-prevent-idle-system-sleep).
-- **Tracks fleet economics**: a badge on every priced card and a topbar cost chip whose
+- **Tracks fleet economics**: a badge on every priced session detail and a topbar cost chip whose
   popover carries the sessions' Claude + Codex API-equivalent estimate, tokens, estimated
   cost per pull request, and rate-limit runway. A separate automation figure attributes the
   Foreman's and GitHub Inspector's own model spend by role. See [Cost telemetry](sessions.md#cost-telemetry).
-- **Says what each prompt-reporting session is for**: its card carries a one-sentence
+- **Says what each prompt-reporting session is for**: its session detail carries a one-sentence
   **Goal** - what that session is currently trying to solve - derived from your own
   prompts and refreshed as you steer it. No API key: it runs the configured local
   model provider.

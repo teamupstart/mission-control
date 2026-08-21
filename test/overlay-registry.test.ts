@@ -14,15 +14,14 @@ import { withOverlayHost } from "./helpers/overlay-host.ts";
 import { AssignResetModal } from "../src/web/components/AssignResetModal.tsx";
 import { ResetModal } from "../src/web/components/ResetModal.tsx";
 import { ReportPanel } from "../src/web/components/ReportPanel.tsx";
-import { DiffViewer } from "../src/web/components/DiffViewer.tsx";
 import { AwayDigestCard } from "../src/web/components/AwayDigestCard.tsx";
 import { mkSession } from "./helpers/session-fixture.ts";
 
 /**
  * The regression this file exists for: an overlay that is on screen but NOT counted as
  * open. App's global key handler stands down only while the registry says something is
- * up, so an uncounted overlay leaves grid shortcuts live - and `k` kills, `r` resets the
- * card BEHIND the thing you are looking at. Nothing throws and nothing renders wrong;
+ * up, so an uncounted overlay leaves session shortcuts live and can act on the detail
+ * behind the thing you are looking at. Nothing throws and nothing renders wrong;
  * you just act on the wrong session.
  *
  * Being counted is not a list anyone maintains - `<Overlay>` registers itself. So the
@@ -91,8 +90,9 @@ test("only the Overlay primitive renders a backdrop", () => {
  * invisible. All are anchored popovers, not screen-owning overlays, so they were left
  * out of the registry deliberately - but the consequence is real and NOT yet fixed: while
  * one is open, focus sits on a button (so the `typing` guard is false) and `anyOpen` is
- * false, so the grid shortcuts - INCLUDING kill and reset - still act on the card behind
- * the popover. A follow-up needs to decide whether anchored popovers register too.
+ * false, so session shortcuts - INCLUDING kill and reset - still act on the selected
+ * Console detail behind the popover. A follow-up needs to decide whether anchored popovers
+ * register too.
  *
  * `session-bits.tsx` is the dead-blocker resolver (`DeadBlockerButton`): a popover that
  * hangs off one backlog card and offers to reschedule or complete a stopped prerequisite.
@@ -106,8 +106,8 @@ test("only the Overlay primitive renders a backdrop", () => {
  * and routing it through `<Overlay>` would give it a backdrop and a modal posture that a
  * dropdown should not have. It carries the same unfixed consequence, and it is READ-ONLY,
  * which is the one thing that makes its share of the gap smaller: nothing inside it can act
- * on the session behind it, so a stray shortcut reaching through hits the same card it
- * would have hit with no popover open at all.
+ * on the session behind it, so a stray shortcut reaching through hits the same selected
+ * session it would have hit with no popover open at all.
  *
  * `line/NextUpPlanner.tsx` is the Backlog drawer's autopilot planner, and it joins for the
  * dead-blocker resolver's reason with one addition of its own. It is anchored to the
@@ -124,7 +124,7 @@ test("only the Overlay primitive renders a backdrop", () => {
  * `topbar-popover-dismiss.test.ts`, and a backdrop would give a dropdown a modal posture
  * it should not have. Its share of the gap matches SpendChip's shape too: the one control
  * inside it acts on HOST POWER, not on the session behind it, so a stray shortcut
- * reaching through hits the same card it would have hit with no popover open.
+ * reaching through hits the same selected session it would have hit with no popover open.
  *
  * `ForemanRecommendation.tsx` is the sidecar holding Foreman's reasoning about a review that
  * is open right now, and it is the one entry here whose posture is the POINT rather than a
@@ -220,11 +220,6 @@ const OVERLAYS: { name: string; el: () => React.JSX.Element }[] = [
       }),
   },
   {
-    name: "DiffViewer",
-    el: () =>
-      createElement(DiffViewer, { session: mkSession(), commit: null, onClose: () => {} }),
-  },
-  {
     name: "AwayDigestCard",
     el: () =>
       createElement(AwayDigestCard, {
@@ -279,7 +274,7 @@ test("every overlay id is declared once", () => {
   for (const id of ids) assert.ok(src.includes(`"${id}"`), `${id} missing from OVERLAY_IDS`);
 });
 
-test("an overlay that is open stands the grid down", () => {
+test("an overlay that is open stands session shortcuts down", () => {
   assert.equal(overlayGuards([]).anyOpen, false);
   assert.equal(overlayGuards([OVERLAY_IDS.diff]).anyOpen, true);
 });

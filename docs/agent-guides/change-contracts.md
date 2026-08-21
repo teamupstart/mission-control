@@ -638,16 +638,15 @@ Hook event vocabularies have one owner per harness. Launch-scoped Codex hooks an
 
 ## Layout and compose parity
 
-The three layouts are `grid`, `console`, and `board`. `App.tsx` owns session state; layouts arrange it.
+The two layouts are `console` and `board`. `App.tsx` owns session state; layouts arrange it.
 
-A session appears in four components:
+A session appears in three components:
 
-- `SessionCard.tsx`
 - `layouts/ConsoleDetail.tsx`
 - `layouts/SessionTile.tsx`
 - `layouts/RailRow.tsx`
 
-Add layout-visible props through `SessionViewProps` and `cardProps`. Shared leaves belong in `session-bits.tsx`. A new session signal must cover card chips, tile flags, and rail marks.
+Add layout-visible props through `SessionViewProps`. Shared leaves belong in `session-bits.tsx`. A new session signal must cover detail chips, tile flags, and rail marks.
 
 Compose surfaces:
 

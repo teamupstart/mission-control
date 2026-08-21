@@ -264,7 +264,7 @@ export function AlertBar({
       if (open && ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
     }
     // Escape closes the popover like a click outside, and stops there rather than bubbling
-    // to App's global Escape (which would collapse the expanded card or drop the fleet
+    // to App's global Escape (which would collapse the session detail or drop the fleet
     // selection behind it) - this popover is not a registered overlay, so nothing else
     // knows to swallow the key for it.
     function onKey(e: KeyboardEvent): void {

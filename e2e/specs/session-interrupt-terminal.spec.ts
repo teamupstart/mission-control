@@ -143,34 +143,33 @@ test.describe("terminal-runtime interrupt", () => {
 
     // Find OUR card, by the tmux session name we just generated. Never "the only card":
     // discovery is on, so the developer's own agents are on this fleet too.
-    const card = dashboard.locator("article.card").filter({ hasText: pane.session });
-    await expect(card).toHaveCount(1, { timeout: DISCOVERY_TIMEOUT });
-
-    // The runtime is the precondition of the whole spec, and the card states it by naming
-    // the pane it is bound to - `tmux · %<id>`, where an Agent SDK card says "Agent SDK".
-    // Asserted rather than assumed: a build where discovery quietly produced something else
-    // would otherwise leave this a second, weaker test of the driver path.
-    await expect(card).toContainText(/tmux · %\d+/);
+    const row = dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").filter({ hasText: pane.session });
+    await expect(row).toHaveCount(1, { timeout: DISCOVERY_TIMEOUT });
 
     // Nothing has been typed into that pane yet, which is what makes the byte assertion at
     // the end unambiguous.
     expect(pane.bytes()).toBe("");
 
     // Select the card, so the action bar the chord dispatches through is mounted.
-    await card.click();
-    await expect(card).toHaveClass(/selected/);
+    await row.click();
+    await expect(row).toHaveClass(/selected/);
+    const detail = dashboard.locator(".console-detail");
+    // The runtime is the precondition of the whole spec, and the Console detail states it
+    // by naming the pane it is bound to - `tmux · %<id>`, where an Agent SDK detail says
+    // "Agent SDK". Asserted rather than assumed so this cannot become a weaker driver test.
+    await expect(detail).toContainText(/tmux · %\d+/);
 
     // The control is live - this is the capability declaration doing its job. Before this
     // phase the same card drew it disabled with "can't yet stop a Claude Code turn running
     // in a terminal".
-    const interrupt = card.getByRole("button", { name: "interrupt" });
+    const interrupt = detail.getByRole("button", { name: "interrupt" });
     await expect(interrupt).toBeEnabled();
 
     if (process.env.MC_E2E_EVIDENCE) {
       mkdirSync(EVIDENCE, { recursive: true });
       // Off every control first: a resting pointer portals a tooltip over the row.
       await dashboard.mouse.move(0, 0);
-      await card.screenshot({ path: `${EVIDENCE}terminal-card-interrupt-enabled.png` });
+      await detail.screenshot({ path: `${EVIDENCE}terminal-detail-interrupt-enabled.png` });
     }
 
     await dashboard.keyboard.press(INTERRUPT);

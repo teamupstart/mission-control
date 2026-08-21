@@ -8,7 +8,7 @@ import { fetchTerminalTargets } from "./api.ts";
  * The `useOpenTargets` shape, for the same reasons and one extra. Availability is a fact
  * about the DAEMON's host - which terminals are installed there - so the browser cannot
  * derive it from `TERMINAL_BACKEND_IDS` and has to ask. And it is asked from EVERY
- * conversation pane: the console detail, the board drill-in and every expanded card mount
+ * conversation pane: the console detail, the board drill-in and every session detail mount
  * the same launcher, so without the memo a board with eight open sessions is eight
  * identical sweeps of the filesystem on the other end.
  *

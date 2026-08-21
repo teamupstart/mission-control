@@ -297,7 +297,7 @@ test("every teardown path publishes the plan before the checkout goes", async ()
   }
 });
 
-test("startup reconciliation publishes the plan of a task whose agent did not survive", async () => {
+test("a restart keeps the plan in its checkout instead of capturing it there and then", async () => {
   const h = harness();
   const { repoRoot, worktreePath } = makeCheckout({
     written: {
@@ -305,18 +305,35 @@ test("startup reconciliation publishes the plan of a task whose agent did not su
       "docs/plans/archive-rename/plan.html": planHtml("The kind-agnostic archive"),
     },
   });
-  // No session and no home name, so the startup pass reads the agent as gone and reclaims -
-  // the one destructive path the exit listener can never reach, because the agent died with
-  // the daemon and no `session_exit` was ever emitted.
+  // No session and no home name, so the startup pass reads the agent as gone. It used to
+  // reclaim right here, which made capture urgent: the tree was about to be removed. It no
+  // longer does - a restart settles the task and KEEPS its checkout under the 30-day
+  // retention rule - so a restart is no longer a deadline for capture either. The plan stays
+  // where the agent wrote it, and the shared reclaim core publishes it immediately before the
+  // teardown that would actually destroy it, whenever that eventually happens.
   h.registry.upsertTask(mkPlan({ id: "plan-startup", worktreePath, repoRoot, status: "running" }));
   const deadAgent = { taskLiveness: () => false } as unknown as ConstructorParameters<typeof TaskManager>[2];
-  new TaskManager(h.registry, undefined, deadAgent, undefined, h.archives);
+  const tasks = new TaskManager(h.registry, undefined, deadAgent, undefined, h.archives);
 
-  await waitFor(() =>
-    h.archives.captureJobsForTask("plan-startup").some((job) => job.status === "published"),
+  await waitFor(() => h.registry.getTask("plan-startup")?.status === "failed");
+  assert.equal(
+    h.registry.getTask("plan-startup")?.worktreePath,
+    worktreePath,
+    "the checkout a restart could not ask about is retained",
   );
-  const [job] = h.archives.captureJobsForTask("plan-startup");
-  assert.equal(job!.captureStatus, "complete");
+  assert.deepEqual(
+    h.archives.captureJobsForTask("plan-startup"),
+    [],
+    "nothing was captured, because nothing was about to be destroyed",
+  );
+
+  // And the capture still happens on the path that does destroy it.
+  assert.equal((await tasks.reclaim("plan-startup")).ok, true);
+  const published = h.archives
+    .captureJobsForTask("plan-startup")
+    .filter((job) => job.status === "published");
+  assert.equal(published.length, 1);
+  assert.equal(published[0]!.captureStatus, "complete");
 });
 
 // ---------------------------------------------------------------------------

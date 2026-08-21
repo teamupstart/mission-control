@@ -221,8 +221,7 @@ export async function pipelineTaskLaunch(
     }
   | {
       ok: true;
-      launchRuntime: "claude-sdk";
-      prompt: string;
+      launchRuntime: "agent-sdk";
       cwd: string;
       pipelineRun: PipelineRunLink;
     }
@@ -258,11 +257,10 @@ export async function pipelineTaskLaunch(
     };
   }
 
-  if (config.launchRuntime === "claude-sdk") {
+  if (config.launchRuntime === "agent-sdk") {
     return {
       ok: true,
       launchRuntime: config.launchRuntime,
-      prompt: provider.taskPrompt(intent),
       cwd: repoRoot,
       pipelineRun: identity,
     };

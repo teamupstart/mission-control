@@ -2,7 +2,6 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { SessionCard } from "../src/web/components/SessionCard.tsx";
 import { ConsoleDetail } from "../src/web/components/layouts/ConsoleDetail.tsx";
 import { ScheduleOriginChip } from "../src/web/components/session-bits.tsx";
 import { taskPillParts } from "../src/shared/task.ts";
@@ -26,19 +25,12 @@ import { containsMarkup } from "./helpers/markup.ts";
  * than a change. `ship` is silent because it is what you get by NOT choosing; a kind
  * somebody picked on purpose is worth a badge whatever it is called.
  *
- * Both reductions live in ONE shared predicate rather than in each component, because a
- * session is drawn by four of them and only one is `SessionCard`. That is the same rule
- * `task-multi-session.test.ts` states, and the reason the title is a comparison rather than
- * a deletion: a re-assigned session keeps the FIRST task's title as its name, so the pill is
- * the only place the task now executing is written.
+ * Both reductions live in ONE shared predicate rather than in each component. The title is
+ * a comparison rather than a deletion because a re-assigned session keeps the first task's
+ * title as its name, so the pill is the only place the task now executing is written.
  *
  * `createElement` rather than JSX because the runner's glob only matches .test.ts.
  */
-
-/** The two layouts that draw this pill, rendered from the same session. */
-function card(session: Session): string {
-  return renderToStaticMarkup(createElement(SessionCard, { session, onOpenReviews: () => {} }));
-}
 
 function detail(session: Session): string {
   return renderToStaticMarkup(
@@ -125,11 +117,9 @@ test("anything the pill hosts keeps it, one at a time", () => {
   );
 });
 
-test("a silent pill is not drawn at all on either layout", () => {
+test("a silent pill is not drawn in the shared detail", () => {
   const session = dispatched();
-  for (const [name, html] of [["card", card(session)], ["console detail", detail(session)]] as const) {
-    assert.ok(!html.includes("task-chip"), `${name} should draw no empty pill`);
-  }
+  assert.ok(!detail(session).includes("task-chip"));
 });
 
 test("a silent pill does not take the multi-repo pull-request row with it", () => {
@@ -161,88 +151,27 @@ test("a silent pill does not take the multi-repo pull-request row with it", () =
   const session = mkSession({ name: summary.title, task: summary });
   assert.equal(taskPillParts(session).silent, true, "the pill itself still has nothing to say");
 
-  for (const [name, html] of [["card", card(session)], ["console detail", detail(session)]] as const) {
-    assert.ok(!html.includes("task-chip"), `${name} should still draw no empty pill`);
-    assert.ok(html.includes("task-repo-prs"), `${name} should keep the per-repo list`);
-    assert.ok(html.includes("demo") && html.includes("second"), `${name} should name both repos`);
-  }
+  const html = detail(session);
+  assert.ok(!html.includes("task-chip"));
+  assert.ok(html.includes("task-repo-prs"));
+  assert.ok(html.includes("demo") && html.includes("second"));
 });
 
-test("the card keeps a pill for the transient status only it draws, and the detail does not", () => {
-  // The one place the two layouts deliberately differ, so both halves are asserted together
-  // rather than one of them being left to a reader's inference.
-  //
-  // `dispatching…` / `failed` are words only `SessionCard` draws - the console detail reads
-  // that state off its own badge - so the card ORs them into its gate at the point it draws
-  // them, and `taskPillParts` does not assert them for everyone. The consequence is that this
-  // fixture keeps a pill on the card and has none in the detail, where it would have been an
-  // empty bar carrying a red left edge and no words.
-  //
-  // Pinned in both directions because the split is a decision, not a side effect: moving the
-  // status word into the shared predicate would put an empty chip back in the detail, and
-  // dropping the card's OR would lose the only place `failed` is written.
-  for (const [status, word] of [["failed", "failed"], ["dispatching", "dispatching…"]] as const) {
-    const session = dispatched({ status });
-    assert.equal(taskPillParts(session).silent, true, `${status}: nothing the shared parts host`);
-
-    const cardHtml = card(session);
-    assert.ok(cardHtml.includes(`task-chip task-${status}`), `${status}: the card should keep the pill`);
-    assert.ok(
-      cardHtml.includes(`class="task-status">${word}<`),
-      `${status}: for the word it has to draw in it`,
-    );
-
-    assert.ok(
-      !detail(session).includes("task-chip"),
-      `${status}: the console detail draws no status word, so it should draw no pill either`,
-    );
-  }
-});
-
-test("a ship task draws no kind badge on either layout", () => {
+test("a ship task draws no kind badge in the shared detail", () => {
   // A task whose title the session does NOT carry, so the pill is drawn and the badge's
   // absence is a fact about the badge rather than about the whole chip having stood down.
   const session = mkSession({ name: "agent-1", task: mkTaskSummary({ kind: "ship" }) });
-  for (const [name, html] of [["card", card(session)], ["console detail", detail(session)]] as const) {
-    assert.ok(html.includes("task-chip"), `${name} should draw the pill for this fixture`);
-    assert.ok(!html.includes('class="task-kind"'), `${name} should draw no kind badge for a ship task`);
-    // And the word itself is nowhere near the pill, tooltip included - the tooltip used to
-    // read "ship task", which is the same constant in a second place.
-    assert.ok(!html.includes("ship task"), `${name} should not describe a ship task as one`);
-  }
+  const html = detail(session);
+  assert.ok(html.includes("task-chip"));
+  assert.ok(!html.includes('class="task-kind"'));
+  assert.ok(!html.includes("ship task"));
 });
 
-test("a scout task draws its kind badge on both layouts", () => {
-  // The whole point of the reduction: the value that IS worth reading survives.
-  const session = dispatched({ kind: "scout" });
-  for (const [name, html] of [["card", card(session)], ["console detail", detail(session)]] as const) {
-    // `Tooltip` merges `aria-describedby` onto the span it wraps, so match the class and
-    // its text rather than an exact tag.
-    assert.match(html, /class="task-kind"[^>]*>scout</, `${name} should draw the scout badge`);
-    assert.ok(html.includes("scout task"), `${name} should keep the badge's tooltip`);
-  }
-});
-
-test("a plan task draws its kind badge on both layouts", () => {
-  // Reaching the rendered markup, not just the predicate: the badge and its tooltip are
-  // both built from the kind, and a rule that widened only in `taskPillParts` would still
-  // leave a person with no way to tell a plan session from a ship one at a glance.
-  //
-  // The same class as `scout`, asserted rather than glossed over: this chip has ONE colour
-  // rule for every kind, so the two drawn kinds are told apart by the word. The backlog
-  // card is where they differ by colour (`.bl-kind-plan`).
-  const session = dispatched({ kind: "plan" });
-  for (const [name, html] of [["card", card(session)], ["console detail", detail(session)]] as const) {
-    assert.match(html, /class="task-kind"[^>]*>plan</, `${name} should draw the plan badge`);
-    assert.ok(html.includes("plan task"), `${name} should keep the badge's tooltip`);
-  }
-});
-
-test("a chat task draws its kind badge on both layouts", () => {
-  const session = dispatched({ kind: "chat" });
-  for (const [name, html] of [["card", card(session)], ["console detail", detail(session)]] as const) {
-    assert.match(html, /class="task-kind"[^>]*>chat</, `${name} should draw the chat badge`);
-    assert.ok(html.includes("chat task"), `${name} should keep the badge's tooltip`);
+test("non-default task kinds draw their badges in the shared detail", () => {
+  for (const kind of TASK_KINDS.filter((candidate) => candidate !== DEFAULT_TASK_KIND)) {
+    const html = detail(dispatched({ kind }));
+    assert.match(html, new RegExp(`class="task-kind"[^>]*>${kind}<`));
+    assert.ok(html.includes(`${kind} task`));
   }
 });
 
@@ -255,12 +184,10 @@ test("a session named after its task shows that title once, not twice", () => {
     scheduleOccurrenceId: "occ-1",
   });
   const session = mkSession({ name: summary.title, task: summary });
-  for (const [name, html] of [["card", card(session)], ["console detail", detail(session)]] as const) {
-    assert.ok(html.includes("task-chip"), `${name} should still draw the pill`);
-    assert.ok(!html.includes('class="task-title"'), `${name} should not repeat the title in the pill`);
-    // Still on screen - it is the session's name, which is what made the pill a duplicate.
-    assert.ok(html.includes("Fix the parser"), `${name} should still name the work`);
-  }
+  const html = detail(session);
+  assert.ok(html.includes("task-chip"));
+  assert.ok(!html.includes('class="task-title"'));
+  assert.ok(html.includes("Fix the parser"));
 });
 
 test("a session working on a task its name does not carry keeps the pill's title", () => {
@@ -268,9 +195,7 @@ test("a session working on a task its name does not carry keeps the pill's title
     name: "Ship A",
     task: mkTaskSummary({ id: "task-b", title: "Ship B" }),
   });
-  for (const [name, html] of [["card", card(session)], ["console detail", detail(session)]] as const) {
-    assert.match(html, /class="task-title"[^>]*>Ship B</, `${name} should name the task now executing`);
-  }
+  assert.match(detail(session), /class="task-title"[^>]*>Ship B</);
 });
 
 test("the pill survives its own text going quiet when it is still hosting something", () => {
@@ -290,14 +215,6 @@ test("the pill survives its own text going quiet when it is still hosting someth
     createElement(ScheduleOriginChip, { task: summary, scheduleNames: scheduleNameById }),
   );
 
-  const cardHtml = renderToStaticMarkup(
-    createElement(SessionCard, {
-      session,
-      onOpenReviews: () => {},
-      onOpenSchedule: () => {},
-      scheduleNameById,
-    }),
-  );
   const detailHtml = renderToStaticMarkup(
     createElement(ConsoleDetail, {
       session,
@@ -305,8 +222,6 @@ test("the pill survives its own text going quiet when it is still hosting someth
     }),
   );
 
-  for (const [name, html] of [["card", cardHtml], ["console detail", detailHtml]] as const) {
-    assert.ok(html.includes('class="task-chip task-running"'), `${name} should keep the pill`);
-    assert.ok(containsMarkup(html, chip), `${name} should keep the schedule-origin mark inside it`);
-  }
+  assert.ok(detailHtml.includes('class="task-chip task-running"'));
+  assert.ok(containsMarkup(detailHtml, chip));
 });

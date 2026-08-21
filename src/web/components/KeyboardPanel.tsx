@@ -31,7 +31,7 @@ function labelOf(id: ActionId): string {
  * This panel owns everything about recording a shortcut - the target being recorded, the
  * inline error, and the capture listener. The listener runs in the CAPTURE phase and
  * calls `stopPropagation`, so while a key is being recorded no other keydown handler
- * fires: not the grid's global keys, and not an overlay's or the settings page's
+ * fires: not the app's global keys, and not an overlay's or the settings page's
  * Escape. That is what lets `SettingsPage` keep a plain bubble-phase Escape listener
  * (Escape returns to the fleet) without having to know whether a shortcut is mid-capture -
  * the same contract `Overlay.tsx` relies on.
@@ -44,7 +44,7 @@ export function KeyboardPanel(): React.JSX.Element {
   const conflicts = findConflicts(bindings);
 
   // Capture the next keystroke for the action being recorded. Capture phase +
-  // stopPropagation so we intercept before the grid's global handler (and the overlay's
+  // stopPropagation so we intercept before the app's global handler (and the overlay's
   // Escape-to-close) ever sees it.
   useEffect(() => {
     if (!recording) return;

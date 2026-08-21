@@ -176,6 +176,18 @@ test("with both toggles on, Claude and Codex dispatch through the supervisor wit
       `run ${agent} through the embedded runtime`,
       "the card Goal keeps only the human-authored part of turn one",
     );
+    // And the dashboard's projection of turn one, which is a SEPARATE fact from the Goal:
+    // the prompt is what the runtime received, byte for byte, and the display text is what
+    // a person asked for. Composing one from the other at read time is what would let the
+    // conversation drift away from what the agent was really told.
+    assert.deepEqual(
+      start.launchPresentation,
+      {
+        prompt: start.prompt,
+        displayText: `run ${agent} through the embedded runtime`,
+      },
+      "the launch presentation carries the delivered prompt and the human request",
+    );
     assert.equal(start.taskId, `task-sdk-${agent}`);
     assert.ok(start.cwd.length > 0);
 

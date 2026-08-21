@@ -2320,8 +2320,14 @@ export function buildApp(
   app.delete("/api/file-comments/:id", (c) => {
     const unavailable = fileCommentsUnavailable(c);
     if (unavailable) return unavailable;
-    if (!fileComments!.delete(c.req.param("id"))) {
-      return c.json({ error: "no such comment thread" }, 404);
+    // Wrapped now that `delete` carries the lifetime guard: a stale dashboard holding the id
+    // of a thread whose session ended gets that guard's 409, not an opaque 500.
+    try {
+      if (!fileComments!.delete(c.req.param("id"))) {
+        return c.json({ error: "no such comment thread" }, 404);
+      }
+    } catch (error) {
+      return fileCommentFailure(c, error);
     }
     return c.json({ ok: true });
   });

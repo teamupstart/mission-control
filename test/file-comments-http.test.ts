@@ -20,6 +20,7 @@ const {
   loadFileCommentThread,
   openDb,
   orphanFileCommentThreadsForSession,
+  setFileCommentThreadStatus,
 } = await import("../src/server/db.ts");
 const { FILE_COMMENT_THREAD_MESSAGE_CAP } = await import("../src/shared/file-comments.ts");
 type Registry = import("../src/server/registry.ts").Registry;
@@ -381,6 +382,41 @@ test("a live session's thread cannot be orphaned through the status route", asyn
   assert.equal(loadFileCommentThread(t.id)?.status, "orphaned");
 });
 
+test("a comment out with the agent cannot be settled out from under its delivery", async () => {
+  // `sending` and `awaiting` are the two statuses the partial unique index is built on, so
+  // settling one to `draft` or `resolved` releases the session's single-flight slot while its
+  // pending turn can still reach the agent. The next queue then delivers a SECOND comment
+  // into a session that already has one outstanding, which is the exact harm one-at-a-time
+  // exists to prevent. A status write does not recall bytes already in the outbox.
+  reset();
+  const { beginFileCommentDelivery, markFileCommentMessageDelivered } = await import(
+    "../src/server/db.ts"
+  );
+  const t = await create();
+  await post(`/api/file-comments/${t.id}/queue`);
+  beginFileCommentDelivery(t.id, "delivery-out", Date.now());
+  assert.equal(loadFileCommentThread(t.id)?.status, "sending");
+
+  for (const status of ["draft", "resolved"]) {
+    const res = await post(`/api/file-comments/${t.id}/status`, { status });
+    assert.equal(res.status, 409, status);
+    assert.match(((await res.json()) as { error: string }).error, /out with the agent/, status);
+  }
+  assert.equal(loadFileCommentThread(t.id)?.status, "sending", "nothing moved it");
+
+  // The longer half of the outstanding window is refused for the same reason.
+  markFileCommentMessageDelivered(loadFileCommentThread(t.id)!.messages[0]!.id, Date.now());
+  assert.equal(loadFileCommentThread(t.id)?.status, "awaiting");
+  assert.equal((await post(`/api/file-comments/${t.id}/status`, { status: "resolved" })).status, 409);
+
+  // And this is not a hang. The grace window moves `awaiting` to `unanswered`, which sits
+  // OUTSIDE the outstanding tuple precisely so the queue can move on - and from there a
+  // person can close the thread normally.
+  setFileCommentThreadStatus(t.id, "unanswered", Date.now());
+  assert.equal((await post(`/api/file-comments/${t.id}/status`, { status: "resolved" })).status, 200);
+  assert.equal(loadFileCommentThread(t.id)?.status, "resolved");
+});
+
 test("a thread can be fetched whole, and deleted", async () => {
   reset();
   const t = await create();
@@ -424,6 +460,19 @@ test("a thread whose session has ended cannot be revived through a retained id",
     assert.equal(res.status, 409, path);
     assert.match(((await res.json()) as { error: string }).error, /session has ended/, path);
   }
+
+  // DELETE is the one that would really destroy it, so it carries the guard too. Orphaning
+  // deliberately KEEPS the row - the comment is a record of what was asked - and only the
+  // throttled prune removes it, once the session key is gone and the window has passed. A
+  // stale dashboard deleting an orphaned thread and its whole history would undo exactly the
+  // retention the three-mechanism lifetime promises.
+  const deleted = await app.request(`/api/file-comments/${t.id}`, {
+    method: "DELETE",
+    headers: HEADERS,
+  });
+  assert.equal(deleted.status, 409);
+  assert.match(((await deleted.json()) as { error: string }).error, /session has ended/);
+  assert.ok(loadFileCommentThread(t.id), "the orphaned row and its history survive");
 
   // Nothing was written, and nothing was republished.
   const settled = loadFileCommentThread(t.id)!;

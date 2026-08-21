@@ -6,7 +6,7 @@ import {
   type FileCommentSurface,
 } from "@shared/file-comment-anchor.ts";
 import type { FileCommentAuthor, HumanSettableThreadStatus } from "@shared/file-comments.ts";
-import { isHumanSettableThreadStatus } from "@shared/file-comments.ts";
+import { isHumanSettableThreadStatus, isOutstandingThreadStatus } from "@shared/file-comments.ts";
 import {
   FileCommentStoreError,
   appendFileCommentMessage,
@@ -139,7 +139,14 @@ export class FileCommentManager {
    * may reopen it, which is the existing two-step through the status route.
    */
   private writable(threadId: string): FileCommentThread {
-    const thread = this.get(threadId);
+    // Read the DURABLE row, never `get()`'s registry-first copy. The held frame is a wire
+    // artifact: it is whatever was last published, and the writers that move a thread without
+    // republishing are precisely the ones this guard has to see. Phase 3's
+    // `beginFileCommentDelivery` moves a row to `sending` from the outbox, so a guard reading
+    // the held copy would still see `queued` and let a person settle a comment that is
+    // already out with the agent - the hole this guard exists to close. One extra read per
+    // mutation is the price of the guard meaning what it says.
+    const thread = loadFileCommentThread(threadId);
     if (!thread) throw new FileCommentError("no such comment thread", 404);
     if (thread.status === "orphaned") {
       throw new FileCommentError("this comment's session has ended", 409);
@@ -277,7 +284,24 @@ export class FileCommentManager {
       // Without this an `orphaned` thread could be moved to a NON-terminal status and
       // upserted straight back into the live collection - the one transition that would make
       // `orphaned` reversible, and the only way out of a lifetime that has already ended.
-      this.writable(threadId);
+      const thread = this.writable(threadId);
+      // And a thread that is OUT WITH THE AGENT is not a thread a person can settle, in
+      // either direction. `sending` and `awaiting` are the two statuses the partial unique
+      // index is built on, so moving one to `draft` or `resolved` releases the session's
+      // single-flight slot while its pending turn can still reach the agent - after which the
+      // next queue delivers a second comment into a session that already has one outstanding.
+      // The bytes are in the outbox; a status write here does not recall them.
+      //
+      // Not a hang: the grace window moves `awaiting` to `unanswered`, which is settleable,
+      // and cancelling a live delivery means recalling the turn as well as moving the row.
+      // That is phase 3's, and it belongs in one transaction with the recall rather than in a
+      // status route that cannot see the outbox.
+      if (isOutstandingThreadStatus(thread.status)) {
+        throw new FileCommentError(
+          "this comment is already out with the agent; wait for a reply or the grace window",
+          409,
+        );
+      }
       if (!setFileCommentThreadStatus(threadId, status, Date.now())) {
         throw new FileCommentError("no such comment thread", 404);
       }
@@ -312,10 +336,30 @@ export class FileCommentManager {
     return thread;
   }
 
+  /**
+   * Delete a thread and its replies outright. The one operation that really does destroy the
+   * comment, so it is the one that most needs the lifetime guard rather than least.
+   *
+   * `writable()` applies here for the same reason it applies to every other thread-scoped
+   * mutation, and the earlier permissive version was a mistake: orphaning deliberately keeps
+   * the row - the comment is a record of what was asked - and only the throttled prune
+   * removes it, once the session key is gone AND the retention window has passed. A dashboard
+   * still holding the id of a thread that left the live collection could delete an orphaned
+   * thread and its whole history through this route, which is exactly the retention the
+   * three-mechanism lifetime promises, undone by a stale client.
+   *
+   * A person deleting a comment in a session that is still running is untouched; that is what
+   * this route is for.
+   */
   delete(threadId: string): boolean {
-    const gone = deleteFileCommentThread(threadId);
-    if (gone) this.registry.removeFileCommentThread(threadId);
-    return gone;
+    try {
+      this.writable(threadId);
+      const gone = deleteFileCommentThread(threadId);
+      if (gone) this.registry.removeFileCommentThread(threadId);
+      return gone;
+    } catch (err) {
+      throw this.asRouteError(err);
+    }
   }
 
   // ---- lifetime ----

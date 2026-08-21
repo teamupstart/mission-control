@@ -44,17 +44,16 @@ export function ensureElectronFramework(repoRoot, platform = process.platform) {
       throw new Error(`refusing to replace unexpected Electron framework entry at ${linkPath}`);
     }
     if (!existsSync(targetPath)) {
-      throw new Error(
-        `Electron's macOS framework payload is incomplete at ${targetPath}; run npm install again`,
-      );
+      return "payload-missing";
     }
     return "present";
   }
 
   if (!existsSync(targetPath)) {
-    throw new Error(
-      `Electron's macOS framework payload is incomplete at ${targetPath}; run npm install again`,
-    );
+    // The runtime preflight immediately following this check owns checksum-backed payload
+    // installation. Returning success here lets it repair the exact fresh-install failure
+    // where npm created the Electron package but left its generated `dist` tree absent.
+    return "payload-missing";
   }
 
   symlinkSync(FRAMEWORK_TARGET, linkPath);

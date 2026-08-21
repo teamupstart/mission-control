@@ -26,7 +26,7 @@ const frameworkDir = join(
 const payload = join(frameworkDir, "Versions/Current/Electron Framework");
 const link = join(frameworkDir, "Electron Framework");
 
-test("both published Electron test commands run both preflights in order", () => {
+test("both published Electron test commands run both preflights in repair order", () => {
   const packageJson = JSON.parse(
     readFileSync(join(import.meta.dirname, "..", "package.json"), "utf8"),
   ) as { scripts: Record<string, string> };
@@ -48,14 +48,11 @@ test("the macOS pretest restores a missing Electron framework link", () => {
   assert.equal(ensureElectronFramework(root, "darwin"), "present");
 });
 
-test("the pretest does not invent a framework payload or change other platforms", () => {
+test("a missing payload reaches the following runtime repair without changing other platforms", () => {
   const incomplete = mkdtempSync(join(tmpdir(), "mission-electron-incomplete-"));
   try {
     assert.equal(ensureElectronFramework(incomplete, "linux"), "not-applicable");
-    assert.throws(
-      () => ensureElectronFramework(incomplete, "darwin"),
-      /framework payload is incomplete.*npm install/i,
-    );
+    assert.equal(ensureElectronFramework(incomplete, "darwin"), "payload-missing");
   } finally {
     rmSync(incomplete, { recursive: true, force: true });
   }

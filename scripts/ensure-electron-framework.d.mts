@@ -1,4 +1,8 @@
-export type ElectronFrameworkState = "not-applicable" | "present" | "repaired";
+export type ElectronFrameworkState =
+  | "not-applicable"
+  | "payload-missing"
+  | "present"
+  | "repaired";
 
 export function ensureElectronFramework(
   repoRoot: string,

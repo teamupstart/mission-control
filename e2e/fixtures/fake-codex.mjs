@@ -270,15 +270,19 @@ writeFileSync(
   })}\n`,
 );
 
-function appendRollout(type, message) {
+function appendRolloutEvent(payload) {
   appendFileSync(
     rolloutPath,
     `${JSON.stringify({
       timestamp: new Date().toISOString(),
       type: "event_msg",
-      payload: { type, message },
+      payload,
     })}\n`,
   );
+}
+
+function appendRollout(type, message) {
+  appendRolloutEvent({ type, message });
 }
 
 /**
@@ -418,7 +422,7 @@ function runTurn(turnId, input, effort) {
     status: { type: "active", activeFlags: [] },
   });
 
-  const finish = (prompts, finalAnswerOnly = false) => {
+  const finish = (prompts, finalAnswerOnly = false, interrupted = false) => {
     clearInterval(openTurn?.usage);
     openTurn = null;
     for (const answered of prompts) appendRollout("agent_message", replyTo(answered));
@@ -441,9 +445,23 @@ function runTurn(turnId, input, effort) {
       });
       return;
     }
+    if (interrupted) {
+      // Real Codex writes lifecycle only for an interrupt. There is deliberately no
+      // user_message beside this record: the product's transcript adapter is responsible
+      // for projecting it into the same visible marker Claude writes itself.
+      appendRolloutEvent({
+        type: "turn_aborted",
+        turn_id: turnId,
+        reason: "interrupted",
+        completed_at: Math.floor(Date.now() / 1000),
+      });
+    }
     // ONE completion, however many prompts the turn absorbed - a steer joins the turn that
     // is running rather than creating another completion to wait for.
-    notify("turn/completed", { threadId: THREAD_ID, turn: turnOf(turnId, "completed") });
+    notify("turn/completed", {
+      threadId: THREAD_ID,
+      turn: turnOf(turnId, interrupted ? "interrupted" : "completed"),
+    });
     // The backstop the driver deliberately keeps: both fire today, in this order, and
     // `finishTurn` is idempotent.
     notify("thread/status/changed", { threadId: THREAD_ID, status: { type: "idle" } });
@@ -494,7 +512,7 @@ function runTurn(turnId, input, effort) {
       clearTimeout(turnState.timer);
       clearInterval(turnState.usage);
       // No agent message: the turn was cut off, so it never finished saying anything.
-      finish([]);
+      finish([], false, true);
       setImmediate(() => {
         notify("item/started", {
           threadId: LATE_CHILD_THREAD_ID,
@@ -535,7 +553,7 @@ function runTurn(turnId, input, effort) {
     turnState.timer = setTimeout(() => finish(turnState.prompts), HELD_TURN_MS);
     turnState.interrupt = () => {
       clearTimeout(turnState.timer);
-      finish([]);
+      finish([], false, true);
     };
     openTurn = turnState;
     return;

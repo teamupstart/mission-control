@@ -110,6 +110,27 @@ export function parseCodexMessages(records: unknown[]): TranscriptMessage[] {
     const p = (rec.payload ?? {}) as Record<string, unknown>;
     const ts = typeof rec.timestamp === "string" ? Date.parse(rec.timestamp) || 0 : 0;
     const id = String(p.id ?? p.call_id ?? `${rec.timestamp ?? "codex"}:b${batch}:${seq++}`);
+    // Codex records an operator interrupt as lifecycle only. Unlike Claude, it writes no
+    // companion user turn, so ignoring this record makes the conversation jump directly
+    // from the cut-off response to the next prompt with no indication that anyone stopped
+    // it. Project the marker Claude already writes verbatim so both harnesses tell the same
+    // human story. Narrowing to the measured reason matters: another future abort reason
+    // must not be attributed to the operator merely because it shares the record kind.
+    if (
+      rec.type === "event_msg" &&
+      p.type === "turn_aborted" &&
+      p.reason === "interrupted"
+    ) {
+      out.push({
+        id: `interrupt:${String(p.turn_id ?? id)}`,
+        role: "user",
+        text: "[Request interrupted by user]",
+        tools: [],
+        ts,
+      });
+      currentAssistant = null;
+      continue;
+    }
     if (rec.type === "event_msg" && (p.type === "user_message" || p.type === "agent_message")) {
       const text = typeof p.message === "string" ? p.message : typeof p.text === "string" ? p.text : "";
       const role = p.type === "user_message" ? "user" : "assistant";

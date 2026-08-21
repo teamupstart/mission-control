@@ -133,6 +133,7 @@ export type PaletteTarget =
   | { kind: "launch-ensemble"; strategyId: EnsembleStrategyId }
   | { kind: "bind-workflow" }
   | { kind: "start-see-work-tour" }
+  | { kind: "report-product-issue" }
   | { kind: "open-mission"; scheduleId: string };
 
 export interface PaletteRow {
@@ -510,6 +511,24 @@ const commandProvider: PaletteProvider = {
       target: { kind: "dispatch" },
     },
     {
+      id: "command:report-product-issue",
+      kind: "command",
+      title: "Report product feedback…",
+      detail: "File a public GitHub issue about Mission Control itself.",
+      // The five report types are the words someone reaches for here - they arrive
+      // thinking "bug" or "feature request", not "feedback" - so each one finds the row.
+      keywords: [
+        "bug",
+        "issue",
+        "feature request",
+        "docs",
+        "documentation",
+        "usability",
+        "feedback",
+      ],
+      target: { kind: "report-product-issue" },
+    },
+    {
       id: "command:bind-workflow",
       kind: "command",
       title: "Bind a workflow to a session…",
@@ -676,6 +695,8 @@ export function paletteRowHint(row: PaletteRow): string {
       return "Open the binding dialog to pick a session and a published workflow version.";
     case "start-see-work-tour":
       return "Start the temporary guided See the work comparison tour.";
+    case "report-product-issue":
+      return "Open the Feedback form to file a public GitHub issue about Mission Control.";
     case "open-mission":
       return "Open Recurring Missions on this schedule's run history.";
   }

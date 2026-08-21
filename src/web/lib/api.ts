@@ -109,6 +109,13 @@ import type {
 } from "@shared/pipeline.ts";
 import type { Attachment } from "@shared/attachments.ts";
 import type {
+  ProductIssuePreflight,
+  ProductIssueConfirmResponse,
+  ProductIssuePreviewResponse,
+  ProductIssueRequest,
+  ProductIssueSubmitResult,
+} from "@shared/product-issues.ts";
+import type {
   ArchiveDetail,
   ArchivePage,
   ArchiveSearchQuery,
@@ -1045,6 +1052,158 @@ export async function uploadImage(
     };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
+ * Public product reporting, all three calls in one place.
+ *
+ * The browser sends REPORTER CONTENT ONLY. Target repository, the three labels, the
+ * `dashboard` source, the environment block and the rendered Markdown body are the daemon's,
+ * derived per call from Phase 1's service - so there is nothing here for a stale tab, a
+ * crafted draft or a well-meaning refactor to steer.
+ *
+ * None of the three throw. A report form that vanished into a rejected promise would lose a
+ * draft someone just wrote, so a transport failure arrives as an ordinary typed outcome the
+ * modal can draw beside the fields that are still on screen.
+ */
+export async function fetchProductIssuePreflight(): Promise<ProductIssuePreflight> {
+  try {
+    const res = await fetch("/api/product-issues/preflight");
+    const data = (await res.json().catch(() => null)) as ProductIssuePreflight | null;
+    if (!data || typeof data.ready !== "boolean") {
+      return {
+        ready: false,
+        target: null,
+        attachments: { enabled: false, reason: null },
+        problems: [{ code: "invalid-target", message: `Mission Control replied HTTP ${res.status}` }],
+      };
+    }
+    return data;
+  } catch (err) {
+    return {
+      ready: false,
+      target: null,
+      attachments: { enabled: false, reason: null },
+      problems: [
+        {
+          code: "invalid-target",
+          message: err instanceof Error ? err.message : String(err),
+        },
+      ],
+    };
+  }
+}
+
+export async function previewProductIssue(
+  request: ProductIssueRequest,
+): Promise<ProductIssuePreviewResponse> {
+  try {
+    const res = await fetch("/api/product-issues/preview", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(request),
+    });
+    const data = (await res.json().catch(() => null)) as ProductIssuePreviewResponse | null;
+    if (!data || !("outcome" in data)) {
+      return {
+        outcome: "configuration",
+        message: `Mission Control could not build the preview (HTTP ${res.status})`,
+        retrySafe: true,
+      };
+    }
+    return data;
+  } catch (err) {
+    return {
+      outcome: "configuration",
+      message: err instanceof Error ? err.message : String(err),
+      retrySafe: true,
+    };
+  }
+}
+
+/**
+ * Take the confirming step for the report on screen.
+ *
+ * An ordinary loopback call that grants nothing by itself, which is the interesting part. The
+ * daemon answers it by asking the operator natively - a system dialog raised by the desktop
+ * shell, over a channel no HTTP caller participates in - and mints a grant only if a person
+ * clicks publish. So this resolves when that dialog is answered, and can resolve as a refusal
+ * because it was dismissed.
+ *
+ * That also means this call is slow by nature: a human is in it. Nothing here times out on
+ * their behalf; the daemon gives up after two minutes and answers honestly.
+ *
+ * Never throws, like every mutator here; a failure is a retry-safe refusal because confirming
+ * reaches no `gh` and publishes nothing.
+ */
+export async function confirmProductIssue(
+  request: ProductIssueRequest,
+): Promise<ProductIssueConfirmResponse> {
+  try {
+    const res = await fetch("/api/product-issues/confirm", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(request),
+    });
+    const data = (await res.json().catch(() => null)) as ProductIssueConfirmResponse | null;
+    if (!data || !("outcome" in data)) {
+      return {
+        outcome: "refused",
+        message: `Mission Control could not confirm the report (HTTP ${res.status})`,
+        retrySafe: true,
+      };
+    }
+    return data;
+  } catch (err) {
+    return {
+      outcome: "refused",
+      message: err instanceof Error ? err.message : String(err),
+      retrySafe: true,
+    };
+  }
+}
+
+/**
+ * File the confirmed report.
+ *
+ * `confirmationToken` is the single-use grant returned by `confirmProductIssue` for the
+ * preview that is on screen right now - the one a person read, and then confirmed. It is
+ * deliberately not fetched at press time: anything requested inside the click handler could
+ * return content React never rendered, which would publish something nobody was shown.
+ *
+ * A network error here is `unknown`, NOT a refusal: the request may well have created a
+ * public issue, and telling someone it is safe to retry is how a duplicate gets filed.
+ */
+export async function submitProductIssue(
+  request: ProductIssueRequest,
+  confirmationToken: string,
+): Promise<ProductIssueSubmitResult> {
+  try {
+    const res = await fetch("/api/product-issues", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...request, confirmationToken }),
+    });
+    const data = (await res.json().catch(() => null)) as ProductIssueSubmitResult | null;
+    if (!data || !("outcome" in data)) {
+      return {
+        outcome: "unknown",
+        message:
+          `Mission Control replied HTTP ${res.status} without a result; ` +
+          "check the target repository before reporting this again",
+        retrySafe: false,
+      };
+    }
+    return data;
+  } catch (err) {
+    return {
+      outcome: "unknown",
+      message:
+        `${err instanceof Error ? err.message : String(err)} - the issue may exist, ` +
+        "so check the target repository before reporting this again",
+      retrySafe: false,
+    };
   }
 }
 

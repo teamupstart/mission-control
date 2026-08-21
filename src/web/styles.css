@@ -28213,3 +28213,248 @@ body.foreman-sidecar-open .modal-backdrop {
 .inbox-runbook {
   font-size: 11px;
 }
+
+/* ---- public product feedback ---- */
+/* One dialog, reachable from the topbar glyph and the palette. It is wider than a confirm
+   because it carries a form AND the exact public content that form will publish, and the
+   second of those is the reason to read the first.
+
+   Everything below uses the shared tokens and the shared `.modal` structure. There is no
+   dedicated scrollport: `.modal-body` already caps at 74vh and scrolls, and the preview's
+   `<pre>` wraps rather than pushing the page sideways. */
+.feedback-modal {
+  width: min(640px, 100%);
+}
+.feedback-body {
+  display: grid;
+  gap: 14px;
+}
+/* Prominent, and prominent ONCE. A form where every element wore a danger border would
+   teach the eye to skip all of them, including this - so exactly one element carries the
+   warning tone and the fields beside it stay ordinary. */
+.feedback-warning {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in oklab, var(--attention) 40%, var(--border));
+  border-left: 3px solid var(--attention);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--attention) 8%, transparent);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.feedback-status {
+  margin: 0;
+  color: var(--dim);
+  font-size: 12px;
+}
+.feedback-error {
+  margin: 0;
+  color: var(--danger);
+  font-size: 12.5px;
+  line-height: 1.5;
+  /* A refusal can name a repository or a long CLI hint. Wrap it rather than letting the
+     dialog grow a horizontal scrollbar under the buttons. */
+  overflow-wrap: anywhere;
+}
+.feedback-types {
+  margin: 0;
+  padding: 0;
+  border: none;
+  display: grid;
+  gap: 4px;
+}
+.feedback-types legend {
+  padding: 0;
+  margin-bottom: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.feedback-type {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.feedback-type:hover {
+  background: var(--panel-2);
+}
+.feedback-type:has(input:checked) {
+  border-color: var(--border);
+  background: var(--panel-2);
+}
+.feedback-type:has(input:focus-visible) {
+  outline: 2px solid var(--select);
+  outline-offset: 1px;
+}
+.feedback-type-label {
+  font-size: 13px;
+  font-weight: 600;
+}
+.feedback-type-blurb {
+  font-size: 11.5px;
+  color: var(--dim);
+}
+.feedback-field {
+  display: grid;
+  gap: 5px;
+}
+.feedback-field-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.feedback-field-hint {
+  font-size: 11.5px;
+  color: var(--dim);
+  line-height: 1.5;
+}
+.feedback-field input[type="text"],
+.feedback-field textarea {
+  width: 100%;
+  font: inherit;
+  font-size: 13px;
+  color: var(--fg);
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+.feedback-field textarea {
+  resize: vertical;
+  line-height: 1.55;
+}
+.feedback-count {
+  justify-self: end;
+  font-size: 11px;
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+/* The screenshot region, drawn as the affordance it will become and inert as the one it
+   is. The copy carries the refusal, not the colour: a dimmed box with no sentence reads
+   as a rendering fault, and `not-allowed` alone is invisible to anyone not holding a
+   mouse. */
+.feedback-shots {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+}
+.feedback-shots h3,
+.feedback-preview h3 {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.feedback-shots.is-unavailable {
+  background: var(--panel-2);
+  cursor: not-allowed;
+}
+/* The real control, sized to sit with the rest of the form rather than at the browser's
+   own default. Left as a native `<input type="file">` on purpose: it is the control the
+   enablement follow-up switches on, and a styled stand-in would have to be replaced. */
+.feedback-shots input[type="file"] {
+  font: inherit;
+  font-size: 11.5px;
+  color: var(--dim);
+  max-width: 100%;
+}
+/* The button INSIDE the native input, which the browser otherwise draws in its own light
+   chrome - a pale "Choose Files" slab that reads as a rendering fault in a dark dialog. Styled
+   rather than replaced, so this stays the real control the enablement follow-up switches on. */
+.feedback-shots input[type="file"]::file-selector-button {
+  font: inherit;
+  font-size: 11.5px;
+  margin-right: 8px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--fg);
+}
+.feedback-shots.is-unavailable input[type="file"] {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+.feedback-shots.is-unavailable input[type="file"]::file-selector-button {
+  cursor: not-allowed;
+}
+.feedback-shots-reason {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--dim);
+}
+.feedback-preview {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel-2);
+}
+.feedback-preview-facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 4px 12px;
+  margin: 0;
+  font-size: 12px;
+}
+.feedback-preview-facts dt {
+  color: var(--dim);
+}
+.feedback-preview-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.feedback-target {
+  font-family: var(--mono);
+}
+.feedback-body-preview {
+  margin: 0;
+  padding: 8px 10px;
+  max-height: 220px;
+  overflow: auto;
+  background: var(--bg-2);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  /* Wrap rather than scroll sideways: the body is prose, and a reader confirming what
+     goes public should not have to drag a scrollbar to find the end of a sentence. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+/* The state between the two presses: confirmed, not yet published. Drawn on --attention
+   rather than --idle because it is the one moment in this dialog where the next press is
+   irreversible, and it must not read like the neutral "here is your issue" notice below. */
+.feedback-armed {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in oklab, var(--attention) 45%, var(--border));
+  background: color-mix(in srgb, var(--attention) 10%, transparent);
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+.feedback-created {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in oklab, var(--idle) 40%, var(--border));
+  background: color-mix(in srgb, var(--idle) 8%, transparent);
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+/* The created-issue link, which takes the primary button's place in the footer. An <a> and
+   not a button on purpose: it opens the issue, so it has to be middle-clickable and
+   copyable like every other link to a public URL. */
+.feedback-created-action {
+  text-decoration: none;
+}

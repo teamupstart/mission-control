@@ -210,6 +210,65 @@ actually has one, which makes their absence informative rather than grey furnitu
 whose session disappeared shows **Reviewers stopped** in grey rather than an amber
 **Reviewers**: those attempts were cancelled where they stood, so they are not waiting.
 
+## Report product feedback
+
+The ☺ glyph in the topbar's tool cluster - beside Settings and Alerts - and **Report product
+feedback…** in the palette's **Do** group open the same dialog. There is one of it, and one
+draft behind it, so it does not matter which door you use.
+
+The form is five report types (**Bug**, **Feature request**, **Documentation**, **Usability**,
+**Other**), a one-line title, and a details box whose prompt changes with the type while
+keeping whatever you have already written - deciding halfway through that this is a usability
+problem rather than a bug should not cost you the paragraph that made that clear.
+
+**Everything you write here becomes a public GitHub issue.** The warning saying so is the
+first thing in the dialog and never scrolls away. Do not paste credentials, customer data,
+file paths, or anything out of a private repository.
+
+Before the button lights up, the dialog shows you exactly what will be published: the target
+repository, the title, the three labels, the environment line, and the rendered issue body.
+None of that is composed in your browser - it is fetched from Mission Control, which is also
+the only thing that chooses it. The browser sends a type, a title and details, and nothing
+else. See [Public product issue reporting](security.md#public-product-issue-reporting) for
+what the environment line may contain and what it never contains.
+
+**Publishing takes two presses and a system dialog.** **Report publicly** does not publish. It
+asks Mission Control to confirm, and Mission Control puts a system dialog in front of you naming
+the repository and quoting your title, defaulting to Cancel. Say no and nothing is published and
+your draft is untouched. Say yes and the button renames itself to name that repository - **Publish
+to owner/name** - with a line beside it saying the same. That second press is the one that files a
+public issue, and nothing is fetched in between, so what you read is what goes. Editing anything
+takes the confirmation back and the button returns to **Report publicly**; so does leaving it for
+two minutes.
+
+**A daemon running outside the desktop app cannot publish.** It has no way to show you that
+dialog, so it says so when the form opens rather than at the moment you press. The full public
+body is still on screen, so you can file it yourself. See
+[Public product issue reporting](security.md#public-product-issue-reporting) for why the
+confirmation cannot live in the browser.
+
+**Screenshots are visibly unavailable.** The region is there, and it explains why: the GitHub
+CLI has no first-party attachment support yet, and [cli/cli#13256](https://github.com/cli/cli/issues/13256)
+tracks it upstream. Paste, drag-and-drop and file selection are all inert until that lands.
+Describe what you saw in Details instead.
+
+Your draft **survives closing the dialog**. Close it to go and re-read the thing you are
+reporting and the words are still there when you come back. Two things clear it: **Clear**,
+which you press on purpose, and a confirmed submission, after which the next opening starts
+empty because that report is already filed.
+
+Four things can come back, and they are deliberately different:
+
+| Outcome | What you see | What to do |
+| --- | --- | --- |
+| **Reported** | The target repository and a **View GitHub issue** link | Nothing. The draft is retired; reopening starts fresh |
+| **Refused** | What GitHub CLI objected to, with the draft untouched | Fix it and confirm again - nothing was published |
+| **Cannot report** | The specific missing piece - `gh auth login`, an unreachable repository, a label the target does not have | An operator fixes the configuration; the button stays disabled until preflight passes |
+| **Unknown** | "Check the target repository before reporting this again", and a disabled button | Go and look. The issue may or may not exist, and a second press is how a duplicate gets filed under your name |
+
+In [demo mode](demo-mode.md) the form opens and refuses: nothing is ever published from a
+demonstration.
+
 ## The palette (⌘K)
 
 <kbd>⌘</kbd><kbd>K</kbd> is the connective tissue across the primary pages: **one input** over
@@ -229,7 +288,7 @@ chip** and a second line saying what the thing is, or what it is doing right now
 | Group | Kinds | The second line says |
 | --- | --- | --- |
 | **Jump to** | `page`, `workflow`, `run`, `ensemble`, `persona`, `action`, `mission` | The authored fact for an asset (version and reviewer count, provider and model, cadence); the **live state** for a run or an ensemble - the same sentence its own page reads, and for a run the session it is reviewing, so four runs of one workflow are four different rows |
-| **Do** | `strategy`, `command` | Launch an ensemble on a strategy, dispatch an agent, bind a workflow to a session, open a blank draft on a Library shelf, or start the temporary **See the work** comparison tour |
+| **Do** | `strategy`, `command` | Launch an ensemble on a strategy, dispatch an agent, bind a workflow to a session, open a blank draft on a Library shelf, [report product feedback](#report-product-feedback), or start the temporary **See the work** comparison tour |
 | **Settings** | `setting` | The category and what the control does, plus its current value where the palette can flip it |
 
 Rows that need an answer - an ensemble awaiting your decision, a mission that is unhealthy, a

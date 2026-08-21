@@ -17,6 +17,7 @@ import { createWriteStream, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { BASE_URL } from "@shared/harness-runtime.mjs";
 import { loginShellPath } from "./path-env.ts";
+import { serveProductIssueConsent } from "./product-issue-consent.ts";
 
 export interface DaemonController {
   /** True when an existing daemon was reused rather than spawned by us. */
@@ -90,6 +91,10 @@ export async function startDaemon(opts: StartDaemonOptions): Promise<DaemonContr
         MISSION_WEB_DIR: opts.webDir,
       },
     });
+    // Publishing a public issue is confirmed HERE, not in the daemon and not in the page:
+    // the daemon asks down this port and only a click on the dialog this installs can answer
+    // yes. See ./product-issue-consent.ts for why it cannot be an HTTP question.
+    serveProductIssueConsent(child);
     child.stdout?.on("data", (d: Buffer) => log.write(d));
     child.stderr?.on("data", (d: Buffer) => log.write(d));
     child.on("exit", () => {

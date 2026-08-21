@@ -879,6 +879,21 @@ works in that checkout, the source works.
 Each issue becomes one task: its title, and an intent carrying the issue's **URL and body**,
 so the agent's first prompt has the actual text rather than a number to go and look up.
 
+#### Sweeping the public product-feedback tracker
+
+The [Feedback form](ui.md#report-product-feedback) and the agent's report tool both file into
+one public repository, and every report they file carries `status:needs-triage`. A GitHub
+Issues source pointed at that repository with **Labels (any of)** set to
+`status:needs-triage` and **Copy labels** on therefore sweeps exactly the untriaged reports
+and puts the type and source labels - `bug`, `feature-request`, `documentation`, `usability`,
+`other`, `source:dashboard`, `source:agent` - onto the backlog task, so what arrived from a
+person and what arrived from an agent stay distinguishable in the backlog. Removing
+`status:needs-triage` upstream is then how a report leaves the sweep.
+
+None of that is created by reporting. Submitting a report files an issue and nothing more:
+it does not create the public repository, create its eight labels, configure this source, or
+schedule anything. An operator sets all four up once, deliberately.
+
 **A broken `gh` never reads as "no issues".** A non-zero exit, unparseable output or an
 abandoned sweep is reported as an error on the source and shown in the panel - because an
 empty sweep and a broken one are otherwise indistinguishable, and the difference is a week

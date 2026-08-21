@@ -623,8 +623,11 @@ restructure beyond what this one asks for.
 ```
 
 `MC-a41f` is the thread's `short_id`: a stable, human-quotable handle minted beside the row's
-UUID and unique per session. The payload cites it, the reply tool takes it, and the transcript
-fallback matches it out of free text - which a UUID is too long and too easy to mangle for.
+UUID and unique per session. The payload cites it, the reply tool takes it **as its `commentId`**,
+and the transcript fallback matches it out of free text - which a UUID is too long and too easy to
+mangle for. It is the only comment identifier the agent is ever shown, so it is the only one the
+tool can accept. Because it is unique per session rather than globally, resolving it is always
+scoped to the session the reply arrived from.
 
 The position line and the closing instruction are the mitigation for the one thing a batch does
 better: an agent that knows nine more comments are coming will not restructure the whole document

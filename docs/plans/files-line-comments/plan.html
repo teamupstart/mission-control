@@ -526,7 +526,7 @@ This contradicts the diagram above it.
 Answer with mcp__mission-control__respond_to_file_comments quoting id MC-a41f.
 Answer this comment only - the remaining 9 follow one at a time, so do not
 restructure beyond what this one asks for.</code></pre></div>
-  <p><code>MC-a41f</code> is the thread's <code>short_id</code>: a stable, human-quotable handle minted beside the row's UUID and unique per session. The payload cites it, the reply tool takes it, and the transcript fallback matches it out of free text - which a UUID is too long and too easy to mangle for.</p>
+  <p><code>MC-a41f</code> is the thread's <code>short_id</code>: a stable, human-quotable handle minted beside the row's UUID and unique per session. The payload cites it, the reply tool takes it <strong>as its <code>commentId</code></strong>, and the transcript fallback matches it out of free text - which a UUID is too long and too easy to mangle for. It is the only comment identifier the agent is ever shown, so it is the only one the tool can accept. Because it is unique per session rather than globally, resolving it is always scoped to the session the reply arrived from.</p>
   <p>The position line and the closing instruction are the mitigation for the one thing a batch does better: an agent that knows nine more comments are coming will not restructure the whole document on comment three.</p>
   <p>The renderer is server-side so the agent's copy and the dashboard's record cannot drift, and pure so it is tested without a session, a pane, or a database.</p>
 

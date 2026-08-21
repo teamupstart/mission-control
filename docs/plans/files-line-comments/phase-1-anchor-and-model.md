@@ -63,8 +63,11 @@ change them cheaply. That ordering is deliberate - see the entry on `addColumn` 
    and path, delete, reorder `queue_seq`, set and clear the `outdated` flag, read and write the
    review's run state, and the status transitions.
    - **Minting `short_id`.** Creation derives the thread's `MC-xxxx` handle beside its UUID and
-     stores it, unique per session. It is what the payload cites and what the transcript fallback
-     matches, so it is generated once and never recomputed from the row.
+     stores it, unique per session. It is what the payload cites, what phase 4's reply tool takes
+     as its `commentId`, and what the transcript fallback matches - so it is generated once and
+     never recomputed from the row. **Unique per session means every lookup by `short_id` is
+     session-scoped**; it is not a global key, and resolving one without a session would let a
+     reply land on another session's thread.
    - **`beginFileCommentDelivery(threadId, deliveryId, deliveryRevision)`** moves a thread
      `queued` → `sending` and records the correlation in `delivery_id`. This is the write phase 3
      performs when it *submits*, and it deliberately does **not** stamp `delivered_at`:
@@ -307,3 +310,7 @@ the walkthrough state machine and payload (phase 3), the MCP tool (phase 4).
   `sending` window editable, and a comment whose bytes are already in `pending_turns.text` must not
   be rewritable. The refusal reuses the exported outstanding-status tuple rather than respelling
   the statuses.
+- Review pass (round 13): `short_id`'s uniqueness scope was stated but its consequence was not.
+  Unique *per session* means every lookup by it is session-scoped; phase 4 resolves a reply through
+  this column, and a global lookup there would land a reply on another session's thread. Recorded
+  here because the column and its uniqueness rule are this phase's.

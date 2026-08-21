@@ -1211,7 +1211,7 @@ function withheldReasons(h: Harness, runId: string): string[] {
  * it took a human to give up and click - and clicking spent a round to discover the tree was
  * untouched. Runs sat like that for most of a working day.
  */
-test("the observer records why it withheld, once per reason", async () => {
+test("the observer records why it withheld, as a transition rather than a tick", async () => {
   const h = await personaFeedbackRun("withheld", "v-withheld", "auto");
   reportIdle(h, "withheld", h.agentSessionId, h.paneId);
 
@@ -1239,6 +1239,34 @@ test("the observer records why it withheld, once per reason", async () => {
   });
   await h.manager.sweepResumptions(SETTLED());
   assert.deepEqual(withheldReasons(h, h.runId), ["repository_unchanged", "session_busy"]);
+
+  /*
+   * And a reason that COMES BACK is recorded again, which is the half that makes the last
+   * entry readable as the current one.
+   *
+   * De-duplicating globally on (submission, reason) would skip this write, because
+   * `repository_unchanged` is already in the ledger - and `session_busy` would then stand as
+   * the newest entry for the rest of the round. The header reads the newest entry, so it
+   * would go on saying "the session is still working" about a session that had been idle for
+   * an hour. A chat turn, a hook, or a test run is enough to produce that, so it is the
+   * ordinary case rather than a corner of one.
+   *
+   * What keeps the ledger small is that a new entry costs a real session state change, not a
+   * tick: the three sweeps above wrote one entry between them.
+   */
+  reportIdle(h, "withheld", h.agentSessionId, h.paneId);
+  await h.manager.sweepResumptions(SETTLED());
+  await h.manager.sweepResumptions(SETTLED());
+  assert.deepEqual(
+    withheldReasons(h, h.runId),
+    ["repository_unchanged", "session_busy", "repository_unchanged"],
+    "a reason that returns is the current one and has to be recorded as such",
+  );
+  assert.equal(
+    h.store.runDetail(h.runId)?.resumption?.reason,
+    "repository_unchanged",
+    "the header must report what holds now, not the newest reason it had never seen before",
+  );
   await h.manager.stop();
 });
 

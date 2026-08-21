@@ -6206,11 +6206,24 @@ export class WorkflowManager {
   /**
    * Write down that the observer looked at this parked round and chose not to act.
    *
-   * De-duplicated on (submission, reason) rather than rate-limited on time, because the
-   * sweep runs every 15 seconds and a run can sit parked for a working day: a timer would
-   * still bury the ledger, and a reason that has not changed is not news. A round that
-   * cycles through two reasons - busy, then unchanged - records both, in order, which is
-   * exactly the story an operator is trying to read.
+   * **This is a TRANSITION ledger, not a tick log and not a set.** An entry is written when
+   * the reason differs from the one immediately before it on the same submission, so the
+   * last entry is always the reason that holds right now - which is the whole point, because
+   * `runResumptionState` reads exactly that entry and the header prints it.
+   *
+   * It is not rate-limited on time. The sweep runs every 15 seconds and a run can sit parked
+   * for a working day, so a timer would still bury the ledger while a reason that has not
+   * changed is not news. What bounds the entry count is real session activity rather than
+   * the tick rate: reaching a different reason means the session actually left settled-idle,
+   * arrived at a permission prompt, or lost its binding.
+   *
+   * De-duplicating on (submission, reason) GLOBALLY was considered and rejected, and the
+   * reason is worth stating because the promise reads tidier than it behaves. A session that
+   * goes busy and settles again - a chat turn, a hook, a test run - would leave `session_busy`
+   * as the newest entry for the rest of the round, so the header would go on saying "the
+   * session is still working" about a session that had been idle for an hour. A stale
+   * sentence stated confidently is the exact failure this feature exists to end, and it would
+   * buy an entry count that is already bounded by the same session activity.
    *
    * The event is the only transport. Run detail derives its sentence from the ledger it
    * already streams, so there is no second field on the summary to keep in step, and a
@@ -6222,6 +6235,9 @@ export class WorkflowManager {
     reason: WorkflowResumptionWithheldReason,
     now: number,
   ): void {
+    // The IMMEDIATELY PRECEDING withheld entry, not any matching one. See above: a match
+    // further back is a reason this round has already left, and skipping the write because of
+    // it would leave that older reason standing as the newest thing the header can read.
     const priorWithheld = this.store.listEvents(run.id)
       .filter((event) => event.kind === "resumption_withheld")
       .at(-1);

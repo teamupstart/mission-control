@@ -1226,12 +1226,16 @@ Five things it deliberately does not do:
 **Every one of those refusals is now written down, and the run page reads them back.** The
 observer's gates were silent: a run under `auto` and `Live` that it declined to resume looked
 exactly like a run it had not reached yet, and "waiting on the session" is a promise on a
-self-resuming run and an instruction on every other kind. So each withheld tick records its
-reason once - `policy_manual`, `binding_inactive`, `session_unavailable`, `session_busy`,
-`session_needs_you`, `packet_undelivered`, `repository_unchanged` - deduplicated per submission
-so a sweep every fifteen seconds does not write a ledger entry every fifteen seconds. Run
-detail carries the latest one for the round it is actually parked in, and the header turns it
-into a sentence: "the repository has not changed since round 2. Reviewing it again would return
+self-resuming run and an instruction on every other kind. So the observer now names why it held -
+`policy_manual`, `binding_inactive`, `session_unavailable`, `session_busy`,
+`session_needs_you`, `packet_undelivered`, `repository_unchanged` - and writes it down as a
+**transition**: an entry is recorded when the reason differs from the one before it on the
+same round, so a sweep every fifteen seconds does not write an entry every fifteen seconds,
+and the newest entry is always the reason that holds now. A reason that recurs after another
+one is recorded again, deliberately: a session that goes busy and settles again would
+otherwise leave "the session is still working" standing over a session that had been idle for
+an hour. Run detail carries the latest entry for the round it is actually parked in, and the
+header turns it into a sentence: "the repository has not changed since round 2. Reviewing it again would return
 the same verdicts, so no round has been spent." A run that will not resume itself gets the
 clause that matters most - *this review does not resume on its own, so the next round is yours
 to start.*

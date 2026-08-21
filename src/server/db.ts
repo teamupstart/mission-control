@@ -59,7 +59,6 @@ import { askPreviewForWire } from "@shared/foreman-ask.ts";
 import type { CheapAction, Divergence, SkipReason } from "@shared/foreman.ts";
 import { normalizeLabels } from "@shared/task.ts";
 import { TASK_AUTOMATIC_CLEANUP_DETAIL_LIMIT } from "@shared/types.ts";
-import { taskHasWorktrees } from "@shared/task-repos.ts";
 import {
   isRetentionCandidate,
   isRetentionRetryable,

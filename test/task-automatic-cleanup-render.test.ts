@@ -94,7 +94,11 @@ test("a task whose home outlived its last checkout offers Clean up, never Retry"
       extraRepos: [attached(null)],
       homeName: "mission-home-1",
       terminalResourceId: "term-1",
-      automaticCleanup: { state: "retry", detail: "the terminal home would not stop", retryAt: 9 },
+      automaticCleanup: {
+        state: "retrying",
+        detail: "the terminal home would not stop",
+        retryAt: 9,
+      },
       completedAt: 5,
     }),
   ]);

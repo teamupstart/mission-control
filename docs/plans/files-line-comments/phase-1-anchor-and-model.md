@@ -35,7 +35,7 @@ change them cheaply. That ordering is deliberate - see the entry on `addColumn` 
      searched for at all - drop it from the signature and that rule cannot be evaluated, so every
      send rescans the whole file.
 2. **All three tables in `src/server/db.ts`**, appended to the one schema template literal, in the house
-   style of `inspector_comments` (`db.ts:1842-1861`): a comment block above the table stating the
+   style of `inspector_comments` (`db.ts:1837-1859`): a comment block above the table stating the
    rule it enforces, aligned column types, `--` comments naming each enum domain, indices declared
    immediately beneath.
    - `file_comment_threads`, `file_comment_messages` and `file_comment_reviews`, columns exactly as
@@ -45,7 +45,7 @@ change them cheaply. That ordering is deliberate - see the entry on `addColumn` 
    - A partial unique index on `(session_id) WHERE status IN ('sending', 'awaiting')`. Export the
      outstanding statuses as one `as const` tuple and build the predicate from it the way
      `inFlightIndexSql()` builds `one_inflight_per_queue` from `IN_FLIGHT_ITEM_STATES`
-     (`db.ts:2756-2759`), so enforcement and readers cannot drift. **Both statuses, not just
+     (`db.ts:2754-2761`), so enforcement and readers cannot drift. **Both statuses, not just
      `sending`:** a comment is outstanding until the agent answers it, and `awaiting` is the longer
      half of that window. An index over `sending` alone would let a second start or a resume open a
      new delivery while the first comment is still unanswered - the exact failure one-at-a-time
@@ -88,8 +88,8 @@ change them cheaply. That ordering is deliberate - see the entry on `addColumn` 
          applies. The two-step is the point, not an inconvenience.
        The guard belongs on the operation rather than being restated at each of its three callers,
        and the route is exposed, so it has to hold against a caller that is not one of them. Model it on `createPendingTurn`
-     (`db.ts:8578`), which allocates `pending_turns.seq` exactly this way inside one
-     `BEGIN IMMEDIATE` (`db.ts:8588` is the allocating select) - the house style every transaction
+     (`db.ts:8689`), which allocates `pending_turns.seq` exactly this way inside one
+     `BEGIN IMMEDIATE` (`db.ts:8699` is the allocating select) - the house style every transaction
      in this file follows (`db.ts:516`).
    - **It has to be one operation, and the reason is not the one it looks like.** `DatabaseSync` is
      fully synchronous and the daemon is the only writer, so the select and the update cannot
@@ -101,7 +101,7 @@ change them cheaply. That ordering is deliberate - see the entry on `addColumn` 
    - **No `UNIQUE` index on `(session_id, queue_seq)`, deliberately.** The closest analogue that
      also reorders is `foreman_queue_items`, which has none, because a full rewrite passes through
      states where two rows share a seq - see the two-pass scratch offset and its comment at
-     `db.ts:9482-9488`. `pending_turns` can afford `idx_pending_turns_order` (`db.ts:1736`) only
+     `db.ts:9593-9598`. `pending_turns` can afford `idx_pending_turns_order` (`db.ts:1738`) only
      because it never reorders. Ours does, so it follows `foreman_queue_items`. This is recorded so
      a later change does not "fix" the missing index and break the reorder route.
    - The reorder route rewrites with that same **two-pass scratch offset**, so the list never
@@ -142,7 +142,7 @@ change them cheaply. That ordering is deliberate - see the entry on `addColumn` 
      session rather than trusting phase 3's bookkeeping.
    - **`markFileCommentMessageDelivered(id, at)`** stamps `delivered_at` and completes that
      transition, `sending` → `awaiting`. Phase 3 calls it from the **confirmed-delivery** signal -
-     the one the two sites that retire a claimed row already raise (`pending-turns.ts:606`, `:849`,
+     the one the two sites that retire a claimed row already raise (`pending-turns.ts:671`, `:914`,
      both via `journalDelivered`) - and never at submit. Stamping at submit would mark a comment
      delivered while it was still queued in the outbox, where it can still be recalled, dropped, or
      turned `uncertain` by a restart.
@@ -182,16 +182,16 @@ change them cheaply. That ordering is deliberate - see the entry on `addColumn` 
 4. **A `FileCommentManager`** owning the session-scoped lifetime. This is the part the source plan
    got wrong; implement the repository's actual pattern, which is **three mechanisms**:
    - `registry.subscribe` on `session_remove` - mark that session's threads terminal
-     (`orphaned`), the way `ReviewManager.orphanReviewsFor` (`reviews.ts:357`) does. **Not a
+     (`orphaned`), the way `ReviewManager.orphanReviewsFor` (`reviews.ts:439`) does. **Not a
      `DELETE`,** and never keyed on `state === "exited"`.
    - `registry.onSessionsObserved(...)` - the same reconciliation for threads whose session vanished
-     while the daemon was down, mirroring `orphanReviewsWithNoLiveSession` (`reviews.ts:362`).
+     while the daemon was down, mirroring `orphanReviewsWithNoLiveSession` (`reviews.ts:444`).
      Without this arm, pre-restart rows survive forever.
    - A throttled prune of terminal rows against the live key set, in the shape of
-     `pruneSessionGoals` (`db.ts:7449`) / `Registry.pruneGoals` (`registry.ts:6541`), gated on
+     `pruneSessionGoals` (`db.ts:7560`) / `Registry.pruneGoals` (`registry.ts:6541`), gated on
      `sweptSessions`.
 5. **Zod schemas in `src/shared/protocol.ts`** for every mutating route, in the house shape
-   (`RenameArchiveSchema`, `protocol.ts:5535-5539`): doc comment, `export const XSchema`, then
+   (`RenameArchiveSchema`, `protocol.ts:5605-5609`): doc comment, `export const XSchema`, then
    `export type X = z.infer<typeof XSchema>` immediately after. Bound every string.
 6. **Wire types in `src/shared/types.ts`**: the `FileCommentThread` entity **carrying its messages
    in time order** - phase 2 renders a thread from one frame and phase 4 delivers a reply through
@@ -218,7 +218,7 @@ change them cheaply. That ordering is deliberate - see the entry on `addColumn` 
    This phase owns the reorder route outright; phase 3 adds `start`/`pause`/`resume` beside it and
    does not redeclare it. `parseBody` for
    every mutating route; no hand-parsed JSON. If a manager instance is needed, append it as the
-   **last** optional positional parameter of `buildApp` (currently `productIssues`, `routes.ts:859`)
+   **last** optional positional parameter of `buildApp` (currently `productIssues`, `routes.ts:860`)
    and answer **503** when absent.
 9. **Browser plumbing**: the exhaustive cases in `src/web/useEventStream.ts`, the collection on
    `MissionState`, the snapshot arm with a `?? []` version-skew guard, and helpers on

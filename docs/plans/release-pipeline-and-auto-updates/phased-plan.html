@@ -1,0 +1,710 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Phased plan - Release pipeline and auto-updates</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f7f7f5;
+    --panel: #ffffff;
+    --fg: #1c1d20;
+    --fg-muted: #5d6068;
+    --fg-faint: #7c8089;
+    --rule: #e0dfda;
+    --rule-strong: #c8c7c0;
+    --accent: #9a4d1f;
+    --accent-soft: #f4ece5;
+    --danger: #a3281f;
+    --danger-soft: #fbeceb;
+    --ok: #2f6b42;
+    --code-bg: #f0efeb;
+    --code-fg: #3a3b3f;
+    --pre-bg: #26272b;
+    --pre-fg: #ececea;
+    --decide: #2c5f8a;
+    --decide-soft: #eaf1f7;
+    --shadow: 0 1px 2px rgba(0,0,0,.05), 0 8px 24px rgba(0,0,0,.05);
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #131417;
+      --panel: #1a1c20;
+      --fg: #e6e6e4;
+      --fg-muted: #a7abb3;
+      --fg-faint: #878c95;
+      --rule: #2c2f35;
+      --rule-strong: #3d424a;
+      --accent: #e8a06a;
+      --accent-soft: #2a211a;
+      --danger: #f08a7f;
+      --danger-soft: #2d1c1a;
+      --ok: #8ed4a4;
+      --code-bg: #24272c;
+      --code-fg: #dcdfe4;
+      --pre-bg: #0e0f12;
+      --pre-fg: #e2e4e8;
+      --decide: #86b9e4;
+      --decide-soft: #17232e;
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 10px 30px rgba(0,0,0,.35);
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--sans);
+    font-size: 17px;
+    line-height: 1.7;
+    overflow-x: hidden;
+  }
+
+  .doc {
+    display: grid;
+    grid-template-columns:
+      [full-start] minmax(1rem, 1fr)
+      [main-start] min(72ch, calc(100% - 2rem))
+      [main-end] minmax(1rem, 1fr)
+      [full-end];
+    padding: 3.5rem 0 6rem;
+    row-gap: 0;
+  }
+  .doc > * { grid-column: main; }
+  .doc > .breakout {
+    grid-column: full;
+    justify-self: center;
+    width: min(1120px, calc(100% - 2rem));
+  }
+
+  h1, h2, h3 { line-height: 1.25; font-weight: 650; letter-spacing: -0.011em; }
+  h1 {
+    font-size: 2.35rem;
+    margin: 0 0 .35em;
+    letter-spacing: -0.025em;
+  }
+  h1 + .subtitle {
+    color: var(--fg-faint);
+    font-size: .82rem;
+    text-transform: uppercase;
+    letter-spacing: .1em;
+    margin: 0 0 2.6rem;
+  }
+  h2 {
+    font-size: 1.5rem;
+    margin: 2.9rem 0 .9rem;
+    padding-top: 1.6rem;
+    border-top: 1px solid var(--rule);
+  }
+  h3 {
+    font-size: 1.13rem;
+    margin: 2.1rem 0 .7rem;
+  }
+  p { margin: 0 0 1.05em; }
+  ul, ol { margin: 0 0 1.15em; padding-left: 1.45em; }
+  li { margin: 0 0 .5em; }
+  li > ul, li > ol { margin-top: .5em; }
+  strong { font-weight: 660; color: var(--fg); }
+  em { font-style: italic; color: var(--fg-muted); }
+
+  code {
+    font-family: var(--mono);
+    font-size: .855em;
+    background: var(--code-bg);
+    color: var(--code-fg);
+    padding: .13em .38em;
+    border-radius: 4px;
+    border: 1px solid var(--rule);
+    word-break: break-word;
+  }
+
+  pre {
+    margin: 0;
+    background: var(--pre-bg);
+    color: var(--pre-fg);
+    padding: 1rem 1.15rem;
+    border-radius: 8px;
+    overflow-x: auto;
+    font-family: var(--mono);
+    font-size: .85rem;
+    line-height: 1.55;
+  }
+  pre code {
+    background: none;
+    border: 0;
+    padding: 0;
+    color: inherit;
+    font-size: inherit;
+    white-space: pre;
+    word-break: normal;
+  }
+
+  /* callouts */
+  .callout {
+    border-left: 4px solid var(--accent);
+    background: var(--accent-soft);
+    padding: 1rem 1.2rem;
+    border-radius: 0 8px 8px 0;
+    margin: 0 0 1.3em;
+  }
+  .callout > :last-child { margin-bottom: 0; }
+  .callout.danger { border-left-color: var(--danger); background: var(--danger-soft); }
+  .callout.danger .callout-label { color: var(--danger); }
+  .callout-label {
+    display: block;
+    font-size: .72rem;
+    text-transform: uppercase;
+    letter-spacing: .11em;
+    font-weight: 700;
+    color: var(--accent);
+    margin-bottom: .45rem;
+  }
+  .callout pre { margin-top: .2rem; }
+
+  /* gap cards */
+  .gap {
+    border: 1px solid var(--rule);
+    background: var(--panel);
+    border-radius: 10px;
+    padding: .35rem 1.35rem 1.15rem;
+    margin: 0 0 1.15rem;
+    box-shadow: var(--shadow);
+  }
+  .gap > h3 {
+    margin-top: 1.15rem;
+    display: flex;
+    gap: .6rem;
+    align-items: baseline;
+  }
+  .gap .tag {
+    font-family: var(--mono);
+    font-size: .72rem;
+    font-weight: 700;
+    letter-spacing: .04em;
+    color: var(--accent);
+    background: var(--accent-soft);
+    border: 1px solid var(--rule-strong);
+    border-radius: 999px;
+    padding: .1rem .55rem;
+    flex: none;
+    position: relative;
+    top: -1px;
+  }
+  .gap > :last-child { margin-bottom: 0; }
+
+  /* decisions */
+  .decisions { margin-top: .4rem; }
+  .decision {
+    border: 1px solid var(--rule-strong);
+    border-top: 3px solid var(--decide);
+    background: var(--decide-soft);
+    border-radius: 10px;
+    padding: 1.05rem 1.35rem;
+    margin: 0 0 1rem;
+  }
+  .decision > :last-child { margin-bottom: 0; }
+  .decision .dkey {
+    display: block;
+    font-family: var(--mono);
+    font-size: .74rem;
+    font-weight: 700;
+    letter-spacing: .07em;
+    text-transform: uppercase;
+    color: var(--decide);
+    margin-bottom: .3rem;
+  }
+
+  /* phases */
+  .phase { margin-bottom: .4rem; }
+
+  /* table */
+  .tablewrap {
+    overflow-x: auto;
+    border: 1px solid var(--rule);
+    border-radius: 10px;
+    background: var(--panel);
+    margin: 0 0 1.3em;
+    box-shadow: var(--shadow);
+  }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    min-width: 30rem;
+    font-size: .93rem;
+  }
+  th, td {
+    text-align: left;
+    padding: .62rem 1rem;
+    border-bottom: 1px solid var(--rule);
+    vertical-align: top;
+  }
+  thead th {
+    font-size: .74rem;
+    text-transform: uppercase;
+    letter-spacing: .09em;
+    color: var(--fg-faint);
+    background: var(--code-bg);
+    white-space: nowrap;
+  }
+  tbody tr:last-child th, tbody tr:last-child td { border-bottom: 0; }
+  td strong { color: var(--danger); }
+
+  /* diagram */
+  figure.diagram {
+    margin: 0 0 1.6rem;
+    padding: 1.4rem 1.2rem 1rem;
+    border: 1px solid var(--rule);
+    background: var(--panel);
+    border-radius: 12px;
+    box-shadow: var(--shadow);
+    overflow-x: auto;
+  }
+  figure.diagram svg {
+    display: block;
+    width: 100%;
+    max-width: 100%;
+    min-width: 620px;
+    height: auto;
+    color: var(--fg);
+  }
+  figure.diagram figcaption {
+    margin-top: .9rem;
+    font-size: .82rem;
+    color: var(--fg-faint);
+    text-align: center;
+  }
+  .n-box { fill: var(--panel); stroke: var(--rule-strong); stroke-width: 1.5; }
+  .n-box.primary { fill: var(--accent-soft); stroke: var(--accent); }
+  .n-box.store { fill: var(--decide-soft); stroke: var(--decide); }
+  .n-label { fill: var(--fg); font-family: var(--mono); font-size: 12.5px; }
+  .n-label.plain { font-family: var(--sans); font-size: 13.5px; font-weight: 600; }
+  .edge { fill: none; stroke: var(--rule-strong); stroke-width: 1.6; }
+  .edge-label { fill: var(--fg-muted); font-family: var(--mono); font-size: 11px; }
+  .edge-label.sans { font-family: var(--sans); font-size: 11.5px; }
+
+  /* resolved decisions */
+  :root {
+    --settled: #2f6b42;
+    --settled-soft: #eef4ef;
+    --settled-tint: #f6faf7;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --settled: #8ed4a4;
+      --settled-soft: #17251c;
+      --settled-tint: #141d17;
+    }
+  }
+  .resolved-note {
+    display: flex;
+    gap: .7rem;
+    align-items: baseline;
+    border: 1px solid var(--rule);
+    border-left: 4px solid var(--settled);
+    background: var(--settled-soft);
+    border-radius: 0 8px 8px 0;
+    padding: .85rem 1.15rem;
+    margin: 0 0 1.4em;
+    color: var(--fg-muted);
+    font-size: .95rem;
+  }
+  .resolved-note .stamp {
+    flex: none;
+    font-family: var(--mono);
+    font-size: .68rem;
+    font-weight: 700;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--settled);
+    border: 1px solid var(--settled);
+    border-radius: 999px;
+    padding: .08rem .6rem;
+    position: relative;
+    top: -1px;
+  }
+  .resolved-note p { margin: 0; }
+
+  a { color: var(--decide); text-underline-offset: 2px; }
+  a:hover { color: var(--accent); }
+
+  .tablewrap.decisions-table {
+    border-top: 3px solid var(--settled);
+    background: var(--settled-tint);
+  }
+  .decisions-table table { min-width: 52rem; }
+  .decisions-table thead th { background: var(--settled-soft); color: var(--settled); }
+  .decisions-table thead th:first-child { width: 3.4rem; }
+  .decisions-table th[scope="row"] {
+    font-family: var(--mono);
+    font-size: .78rem;
+    letter-spacing: .05em;
+    color: var(--settled);
+    white-space: nowrap;
+  }
+  .decisions-table td { color: var(--fg-muted); }
+  .decisions-table td strong { color: var(--fg); font-weight: 660; }
+  .decisions-table td.chosen { color: var(--fg); }
+  .decisions-table td.chosen strong { color: var(--settled); }
+
+  /* phased-plan additions */
+  .backlink {
+    display: inline-flex;
+    justify-self: start;
+    align-items: baseline;
+    gap: .45rem;
+    font-size: .82rem;
+    font-weight: 600;
+    letter-spacing: .02em;
+    text-decoration: none;
+    color: var(--decide);
+    border: 1px solid var(--rule-strong);
+    background: var(--panel);
+    border-radius: 999px;
+    padding: .3rem .85rem;
+    margin: 0 0 1.8rem;
+    box-shadow: var(--shadow);
+  }
+  .backlink:hover { color: var(--accent); border-color: var(--accent); }
+  .backlink .arrow { font-family: var(--mono); font-size: .9em; }
+
+  .phase-table table { min-width: 58rem; }
+  .sizing-table table { min-width: 46rem; }
+  .phase-table td:first-child, .sizing-table td:first-child { white-space: nowrap; font-weight: 660; }
+  .phase-table td strong, .sizing-table td strong { color: var(--fg); }
+
+  .n-title { fill: var(--fg); font-family: var(--sans); font-size: 13px; font-weight: 700; letter-spacing: .01em; }
+  .n-sub { fill: var(--fg-muted); font-family: var(--sans); font-size: 12.5px; }
+  .group-box {
+    fill: none;
+    stroke: var(--accent);
+    stroke-width: 1.3;
+    stroke-dasharray: 6 5;
+    opacity: .75;
+  }
+  .group-label {
+    fill: var(--accent);
+    font-family: var(--mono);
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+  }
+</style>
+</head>
+<body>
+<article class="doc">
+
+  <h1>Phased plan - Release pipeline and auto-updates</h1>
+  <p class="subtitle">docs/plans/release-pipeline-and-auto-updates/phased-plan.md</p>
+
+  <a class="backlink" href="plan.html"><span class="arrow">&#8592;</span> Back to the source plan</a>
+
+  <p>Source plan: <a href="plan.md"><code>plan.md</code></a> (rendered: <a href="plan.html"><code>plan.html</code></a>).</p>
+
+  <h2>What this implements</h2>
+
+  <p>The approved plan found that Mission Control's auto-updater is built, well designed, and covered by
+  roughly sixty unit tests - and has never once been able to fire, because no GitHub Release has ever
+  existed. The <code>Release</code> workflow fails on every push to <code>main</code> with
+  <code>GitHub Actions is not permitted to create or approve pull requests</code>, so there are 0 releases, 0
+  tags, no <code>CHANGELOG.md</code>, and 245 commits waiting.</p>
+
+  <p>These phases unblock that, make the resulting changelog worth reading, close the install and
+  update-safety gaps found alongside it, and then prove the whole journey against a real release.</p>
+
+  <h2>Incorporated decisions</h2>
+
+  <div class="resolved-note">
+    <span class="stamp">Resolved</span>
+    <p>Resolved by the human in the dashboard plan review on 2026-08-21.</p>
+  </div>
+
+  <div class="tablewrap decisions-table breakout">
+    <table>
+      <thead>
+        <tr>
+          <th><span aria-hidden="true"></span></th>
+          <th>Decision</th>
+          <th>Chosen</th>
+          <th>Owned by</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <th scope="row">D1</th>
+          <td>How to unblock the release trigger</td>
+          <td class="chosen">PAT or GitHub App token for Release Please</td>
+          <td>Phase 1</td>
+        </tr>
+        <tr>
+          <th scope="row">D2</th>
+          <td>What the changelog is generated from</td>
+          <td class="chosen">Pull request titles and labels</td>
+          <td>Phase 2</td>
+        </tr>
+        <tr>
+          <th scope="row">D3</th>
+          <td>Whether Releases carry a downloadable dmg</td>
+          <td class="chosen">No - source-build updater only</td>
+          <td>Declined; not implemented</td>
+        </tr>
+        <tr>
+          <th scope="row">D4</th>
+          <td>The first release number</td>
+          <td class="chosen">v1.0.0</td>
+          <td>Phase 1</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2>Findings that change the approved plan</h2>
+
+  <p>Four things the repository disproved or complicated. Each is recorded here rather than silently
+  absorbed.</p>
+
+  <ol>
+    <li><strong>A PAT-pushed tag triggers workflows; a <code>GITHUB_TOKEN</code>-pushed tag does not.</strong> <code>ci.yml</code> already
+      has <code>push: tags: ['v*']</code> and the <code>package</code> job gate <code>startsWith(github.ref, 'refs/tags/')</code>. So
+      D1 makes the <code>package</code> job start firing on every release tag. Two comments assert the opposite
+      and become wrong the moment Phase 1 lands: <code>.github/workflows/release.yml:24-27</code> and
+      <code>docs/desktop-and-packaging.md:162-164</code>. Phase 1 owns correcting both.</li>
+    <li><strong>Labels are entirely unused.</strong> 0 of the last 100 merged pull requests carry any label, and the
+      repository has only GitHub's nine stock labels. D2's "titles" half works retroactively; its
+      "labels" half has no data, needs a vocabulary invented, and only pays off going forward. Phase 2
+      is scoped accordingly and must degrade gracefully for unlabelled work.</li>
+    <li><strong>Removing conventional commits removes the version-bump driver.</strong> Release Please derives
+      <code>major</code>/<code>minor</code>/<code>patch</code> from <code>feat:</code> / <code>fix:</code> / <code>!</code>. D2 removes that source and the approved plan
+      did not say what replaces it. This is decision <strong>C1</strong>, flagged below.</li>
+    <li><strong>The source plan's G10 was wrong, and G8 was understated.</strong> <code>e2e/specs/update-banner.spec.ts</code>
+      does exist - the real gap is that every layer is tested against a fixture and none against
+      reality. And <code>apply-update.mjs</code> deletes <code>previous-app.bundle</code> on <em>every</em> exit path, not only on
+      success. Both corrected in <a href="plan.html"><code>plan.md</code></a>.</li>
+  </ol>
+
+  <h2>Open decision C1 - carried into Phase 2</h2>
+
+  <div class="decision">
+    <span class="dkey">C1 &#183; open</span>
+
+    <p><strong>Not resolved. Do not guess it.</strong> One of its outcomes revisits approved decision D1, so it is
+    surfaced here rather than decided.</p>
+
+    <p>Once pull request titles and labels are the changelog source, what owns the version, tag, and
+    Release?</p>
+
+    <ul>
+      <li><strong>C1-a. Keep Release Please, add <code>.github/release.yml</code></strong> for the Release body. Smaller diff, but
+        leaves two changelogs of differing quality - a second source of truth - and still needs a bump
+        driver, which means either conventional titles after all (contradicting D2) or a per-pull-request
+        release label.</li>
+      <li><strong>C1-b. Replace Release Please with a <code>workflow_dispatch</code> release.</strong> A human picks the bump; the
+        workflow bumps, generates notes from pull request titles and label categories, tags, and
+        publishes. One changelog, one source of truth, an actual answer to "what decides the version",
+        and it is the "click a button in GitHub and it does the rest" the original request described. But
+        with no release pull request, D1's premise weakens - the PAT would then be needed only so the tag
+        triggers CI.</li>
+    </ul>
+
+    <p><strong>Recommendation: C1-b.</strong> Phase 1 is deliberately robust to either outcome: its token stays useful
+    for tag-triggered CI, and its version-equality assertion is unchanged either way. Phase 2 is the
+    only phase affected.</p>
+  </div>
+
+  <h2>Sizing</h2>
+
+  <p>Estimated <strong>300-450 gross non-test implementation lines</strong>, excluding tests, across all four phases.</p>
+
+  <div class="tablewrap sizing-table breakout">
+    <table>
+      <thead>
+        <tr><th>Phase</th><th>Estimate</th><th>Basis</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>1</td><td>25-40</td><td>Two workflow lines, one config key, one regex, one <code>if:</code> gate, ~15 lines of doc prose</td></tr>
+        <tr><td>2</td><td>80-150</td><td>New <code>.github/release.yml</code>, workflow rework (much larger under C1-b), docs, runbook</td></tr>
+        <tr><td>3</td><td>200-260</td><td>CLT predicate ~25, timeout + retention ~50, gh classification + snapshot threading ~60, README ~40, plus renderer work if G9 changes the banner</td></tr>
+        <tr><td>4</td><td>Unknown</td><td>Verification-led; the diff is whatever the first real run breaks</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>Assumptions: C1-a lands at the low end of Phase 2 and C1-b at the high end; Phase 3's G9 estimate
+  assumes the recommended seam 1 (reuse <code>phase: "error"</code>) rather than an eighth phase, which would
+  add renderer and e2e work.</p>
+
+  <h3>Why four phases rather than one</h3>
+
+  <p>The total is above the 200-line one-phase threshold, so the default is still a single phase and
+  each split needs its own justification.</p>
+
+  <ul>
+    <li><strong>Phase 1 separate from everything.</strong> It is the blocker, it is tiny, and it must land immediately
+      and alone. Bundling anything with it delays the unblock and confounds its success signal - "did a
+      release get cut" must not be entangled with "did the changelog rework work". It is also the only
+      phase whose completion depends on a human merging a second, generated pull request.</li>
+    <li><strong>Phase 2 after Phase 1.</strong> Both edit <code>.github/workflows/release.yml</code>, so they cannot run
+      concurrently. The ordering is also substantive: Phase 2 redesigns what a release cycle produces
+      and should be designed against one that has actually run. Combining them would put an unresolved
+      design decision (C1) inside the phase that has to ship today.</li>
+    <li><strong>Phase 3 parallel to both.</strong> Entirely disjoint file sets - <code>src/main/updater.ts</code>,
+      <code>scripts/apply-update.mjs</code>, <code>scripts/install-app.mjs</code>, <code>scripts/init-prerequisites.mjs</code>,
+      <code>README.md</code> against <code>.github/</code> and release config. It is also the largest phase; merging it into
+      Phase 1 would bury a one-line blocker fix inside a 250-line application change and make the
+      urgent part wait on the unhurried part.</li>
+    <li><strong>Phase 4 last.</strong> Gated on an event no agent controls - a human merging the release pull request
+      Phase 1 produces. It cannot be an exit criterion of an earlier phase for that reason, and it is
+      the only thing that tests the real seam rather than a fixture.</li>
+  </ul>
+
+  <p>No preparation, test-only, or documentation-only phases were created. Documentation and tests sit
+  in the phase that introduces the behavior they describe.</p>
+
+  <h2>Phases</h2>
+
+  <div class="tablewrap phase-table breakout">
+    <table>
+      <thead>
+        <tr><th>#</th><th>Phase</th><th>File</th><th>Depends on</th><th>Concurrency</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>1</td>
+          <td>Unblock the release trigger and cut v1.0.0</td>
+          <td><a href="phase-1-cut-the-first-release.md"><code>phase-1-cut-the-first-release.md</code></a></td>
+          <td>-</td>
+          <td>Group A</td>
+        </tr>
+        <tr>
+          <td>2</td>
+          <td>Generate the changelog from pull requests</td>
+          <td><a href="phase-2-changelog-from-pull-requests.md"><code>phase-2-changelog-from-pull-requests.md</code></a></td>
+          <td>1</td>
+          <td>-</td>
+        </tr>
+        <tr>
+          <td>3</td>
+          <td>Close the install and update-safety gaps</td>
+          <td><a href="phase-3-install-and-update-safety.md"><code>phase-3-install-and-update-safety.md</code></a></td>
+          <td>-</td>
+          <td>Group A</td>
+        </tr>
+        <tr>
+          <td>4</td>
+          <td>Prove the journey against a real release</td>
+          <td><a href="phase-4-prove-the-journey.md"><code>phase-4-prove-the-journey.md</code></a></td>
+          <td>1, 3</td>
+          <td>-</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>Dependency graph</h3>
+
+  <figure class="diagram breakout">
+    <svg viewBox="0 0 900 480" role="img" aria-label="Phase dependency graph, top to bottom. The planning session pull request is a prerequisite for Phase 1 (release trigger and v1.0.0) and Phase 3 (install and update safety), which form a concurrency group and may run in parallel. Phase 1 leads to Phase 2 (changelog from pull requests) and to Phase 4 (prove the journey). Phase 3 also leads to Phase 4, so Phase 4 has two incoming dependencies and sits below both.">
+      <defs>
+        <marker id="parrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"></path>
+        </marker>
+      </defs>
+
+      <!-- concurrency group -->
+      <rect class="group-box" x="50" y="170" width="800" height="125" rx="14"></rect>
+      <text class="group-label" x="822" y="194" text-anchor="end">concurrent &#183; group A</text>
+
+      <g color="var(--rule-strong)">
+        <!-- Planning PR -> Phase 1 -->
+        <path class="edge" marker-end="url(#parrow)" d="M 450 86 V 130 H 250 V 205"></path>
+        <!-- Planning PR -> Phase 3 -->
+        <path class="edge" marker-end="url(#parrow)" d="M 450 86 V 130 H 650 V 205"></path>
+        <!-- Phase 1 -> Phase 2 -->
+        <path class="edge" marker-end="url(#parrow)" d="M 200 261 V 380"></path>
+        <!-- Phase 1 -> Phase 4 -->
+        <path class="edge" marker-end="url(#parrow)" d="M 340 261 V 332 H 560 V 380"></path>
+        <!-- Phase 3 -> Phase 4 -->
+        <path class="edge" marker-end="url(#parrow)" d="M 700 261 V 380"></path>
+      </g>
+
+      <!-- Planning session PR -->
+      <rect class="n-box primary" x="300" y="30" width="300" height="56" rx="9"></rect>
+      <text class="n-label plain" x="450" y="64" text-anchor="middle">Planning session PR</text>
+
+      <!-- Phase 1 -->
+      <rect class="n-box" x="80" y="205" width="340" height="56" rx="9"></rect>
+      <text class="n-title" x="250" y="229" text-anchor="middle">Phase 1</text>
+      <text class="n-sub" x="250" y="248" text-anchor="middle">release trigger + v1.0.0</text>
+
+      <!-- Phase 3 -->
+      <rect class="n-box" x="480" y="205" width="340" height="56" rx="9"></rect>
+      <text class="n-title" x="650" y="229" text-anchor="middle">Phase 3</text>
+      <text class="n-sub" x="650" y="248" text-anchor="middle">install + update safety</text>
+
+      <!-- Phase 2 -->
+      <rect class="n-box" x="80" y="380" width="340" height="56" rx="9"></rect>
+      <text class="n-title" x="250" y="404" text-anchor="middle">Phase 2</text>
+      <text class="n-sub" x="250" y="423" text-anchor="middle">changelog from PRs</text>
+
+      <!-- Phase 4 -->
+      <rect class="n-box" x="480" y="380" width="340" height="56" rx="9"></rect>
+      <text class="n-title" x="650" y="404" text-anchor="middle">Phase 4</text>
+      <text class="n-sub" x="650" y="423" text-anchor="middle">prove the journey</text>
+    </svg>
+    <figcaption>Phase dependencies. Phases 1 and 3 are concurrency group A.</figcaption>
+  </figure>
+
+  <p><strong>Concurrency group A: Phases 1 and 3</strong> may run at the same time. They share no files and neither
+  consumes the other's output.</p>
+
+  <p><strong>Merge order:</strong> Phase 1 and Phase 3 in either order; Phase 2 after Phase 1; Phase 4 after both 1
+  and 3, and additionally after a human has merged the release pull request and <code>v1.0.0</code> exists.</p>
+
+  <p>Every phase task also depends on this planning session, whose pull request publishes the documents
+  each task points at.</p>
+
+  <h2>Cross-phase contracts</h2>
+
+  <ul>
+    <li><strong><code>.github/workflows/release.yml</code></strong> is owned by Phase 1, then Phase 2. Phase 2 must preserve the
+      token wiring and the <code>scripts/assert-release-version.mjs</code> equality assertion regardless of what
+      it does to the changelog.</li>
+    <li><strong><code>src/shared/update.ts</code></strong> is expected to be touched only by Phase 3. Phase 1 fixes G7 in
+      <code>scripts/assert-release-version.mjs</code> specifically to keep this true. If Phase 1's
+      reverse-divergence cleanup needs it, the two phases coordinate and whichever merges second
+      rebases. <strong>This is the single most likely conflict in the graph.</strong></li>
+    <li><strong>The tag/version equality</strong> - tag, <code>package.json</code>, and both <code>package-lock.json</code> version fields -
+      is invariant across every phase.</li>
+    <li><strong>The release query shape</strong> <code>--exclude-drafts --exclude-pre-releases</code> is invariant. Filtering
+      after selection cannot recover.</li>
+    <li><strong>The install receipt schema</strong> is append-only. No phase changes it.</li>
+  </ul>
+
+  <h2>Final verification</h2>
+
+  <p>The plan is delivered when:</p>
+
+  <ol>
+    <li><code>gh release list --repo mancej-cyc/ai-harness --exclude-drafts --exclude-pre-releases</code> returns a
+      release - the exact query the installer and updater use.</li>
+    <li>A release's notes describe the work that shipped rather than the fraction carrying a
+      conventional prefix.</li>
+    <li>A missing toolchain fails at install time with a clear message; a hung update is bounded; a
+      lapsed credential is visible.</li>
+    <li>Someone has installed from a real release, been offered a real update, applied it, and seen the
+      app return at the new version - <strong>and</strong> has seen a deliberately failed update leave the previous
+      app working.</li>
+    <li><code>docs/runbooks/release-verification.md</code> records the procedure.</li>
+  </ol>
+
+  <p>Gap coverage: G1/G7 &rarr; Phase 1; G2/G3 &rarr; Phase 2; G5/G6/G8/G9 &rarr; Phase 3; G10 &rarr; Phase 4; G4 &rarr; declined
+  by D3 and explicitly not implemented.</p>
+
+</article>
+</body>
+</html>

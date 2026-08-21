@@ -181,10 +181,10 @@ machine. Meanwhile:
   is already dead, so nothing *can* report.
 - `install()` (`scripts/apply-update.mjs:136`) has **no timeout**. A hung `npm ci` leaves the user
   with no app running and no interface at all, indefinitely.
-- On success the helper deletes its temp dir including `previous-app.bundle`
-  (`scripts/apply-update.mjs:214`), so once the install returns 0 there is no rollback material
-  left even if the new app crashes on launch. Success is judged by `open`'s exit code, which does
-  not mean the app stayed up.
+- The helper deletes its temp dir including `previous-app.bundle` in a `finally`
+  (`scripts/apply-update.mjs:214`), so the rollback material is gone on **every** exit path -
+  success and failure alike - and is unavailable even if the new app crashes on first launch.
+  Success is judged by `open`'s exit code, which does not mean the app stayed up.
 
 ### G9. `gh` is a hard runtime dependency with a silent failure mode
 
@@ -193,13 +193,21 @@ degrades every background check to a quiet `idle` (`src/main/updater.ts:472-474`
 `gh` token lapsed silently stops receiving updates. Secondary rate limits (HTTP 403) are also not
 special-cased and surface as a generic "cannot list releases here (exit N)".
 
-### G10. No end-to-end coverage of the update surface
+### G10. Nothing exercises the update surface against a real release
 
-Nine unit test files cover the controller, the helper, and the banner - all against injected
-ports. `runGh`, the real detached spawn, and the actual `git`/`npm ci`/`npm run package` build are
-never exercised. `e2e/` has no update spec, which is consistent with the feature being
-Electron-preload gated and invisible to the browser dashboard, but it does mean nothing tests the
-seam that has never run in production.
+**Corrected during phase investigation.** An earlier draft of this plan said `e2e/` had no update
+spec. It does: `e2e/specs/update-banner.spec.ts` covers the banner flow. The gap is narrower and
+different from what was first written.
+
+Nine unit test files cover the controller, the helper, and the banner, all against injected ports,
+and the e2e spec stubs the entire desktop bridge with a fixed `available` snapshot. So every layer
+is tested against a fixture, and **no layer is tested against reality**: `runGh`, the real detached
+spawn, and the actual `git` / `npm ci` / `npm run package` build are never exercised, and there is
+no e2e coverage of `install-app.mjs` or `apply-update.mjs` at all.
+
+That is defensible for a feature gated behind Electron, a managed receipt, and a live GitHub
+Release - but it means the seam that has never run in production is also the seam nothing tests.
+Phase 4 exists to close that by running it for real, not by adding another fixture.
 
 ## Part 3 - proposed work
 

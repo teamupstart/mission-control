@@ -656,10 +656,10 @@
         is already dead, so nothing <em>can</em> report.</li>
       <li><code>install()</code> (<code>scripts/apply-update.mjs:136</code>) has <strong>no timeout</strong>. A hung <code>npm ci</code> leaves the user
         with no app running and no interface at all, indefinitely.</li>
-      <li>On success the helper deletes its temp dir including <code>previous-app.bundle</code>
-        (<code>scripts/apply-update.mjs:214</code>), so once the install returns 0 there is no rollback material
-        left even if the new app crashes on launch. Success is judged by <code>open</code>'s exit code, which does
-        not mean the app stayed up.</li>
+      <li>The helper deletes its temp dir including <code>previous-app.bundle</code> in a <code>finally</code>
+        (<code>scripts/apply-update.mjs:214</code>), so the rollback material is gone on <strong>every</strong> exit path -
+        success and failure alike - and is unavailable even if the new app crashes on first launch.
+        Success is judged by <code>open</code>'s exit code, which does not mean the app stayed up.</li>
     </ul>
   </section>
 
@@ -673,13 +673,21 @@
   </section>
 
   <section class="gap">
-    <h3><span class="tag">G10</span> <span>No end-to-end coverage of the update surface</span></h3>
+    <h3><span class="tag">G10</span> <span>Nothing exercises the update surface against a real release</span></h3>
 
-    <p>Nine unit test files cover the controller, the helper, and the banner - all against injected
-    ports. <code>runGh</code>, the real detached spawn, and the actual <code>git</code>/<code>npm ci</code>/<code>npm run package</code> build are
-    never exercised. <code>e2e/</code> has no update spec, which is consistent with the feature being
-    Electron-preload gated and invisible to the browser dashboard, but it does mean nothing tests the
-    seam that has never run in production.</p>
+    <p><strong>Corrected during phase investigation.</strong> An earlier draft of this plan said <code>e2e/</code> had no update
+    spec. It does: <code>e2e/specs/update-banner.spec.ts</code> covers the banner flow. The gap is narrower and
+    different from what was first written.</p>
+
+    <p>Nine unit test files cover the controller, the helper, and the banner, all against injected ports,
+    and the e2e spec stubs the entire desktop bridge with a fixed <code>available</code> snapshot. So every layer
+    is tested against a fixture, and <strong>no layer is tested against reality</strong>: <code>runGh</code>, the real detached
+    spawn, and the actual <code>git</code> / <code>npm ci</code> / <code>npm run package</code> build are never exercised, and there is
+    no e2e coverage of <code>install-app.mjs</code> or <code>apply-update.mjs</code> at all.</p>
+
+    <p>That is defensible for a feature gated behind Electron, a managed receipt, and a live GitHub
+    Release - but it means the seam that has never run in production is also the seam nothing tests.
+    Phase 4 exists to close that by running it for real, not by adding another fixture.</p>
   </section>
 
 

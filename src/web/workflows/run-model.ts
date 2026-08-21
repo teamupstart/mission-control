@@ -26,8 +26,10 @@ import type {
 } from "@shared/workflow.ts";
 import {
   WORKFLOW_RUN_SPENT_PHASES,
+  WORKFLOW_UNCHANGED_REPOSITORY_PHASE,
   isVerdictNode,
   verdictAuthor,
+  workflowResumptionWithheldSentence,
   workflowRunGaveUp,
 } from "@shared/workflow.ts";
 import type { Stage } from "@shared/workflow-stages.ts";
@@ -1125,10 +1127,115 @@ const DELIVERY_KIND_LABELS: Record<WorkflowDeliveryKind, string> = {
   pr_handoff: "PR handoff",
   unchanged_evidence_nudge: "Nothing changed",
   session_action: "Session action",
+  parked_repair_reminder: "Reminder",
 };
 
 export function deliveryKindLabel(kind: WorkflowDeliveryKind): string {
   return DELIVERY_KIND_LABELS[kind];
+}
+
+/**
+ * Why a parked run is standing still, in one sentence, or nothing.
+ *
+ * The gap this closes is the quietest one on the page. A parked round shows a status and a
+ * primary and says nothing at all about the observer that is supposed to pick it up - so a
+ * run whose session simply never acted looked exactly like a run whose session was busy,
+ * for as long as it took the operator to give up and click. Every one of the observer's
+ * gates now records why it held, and this turns the last one into prose.
+ *
+ * The posture clause is appended rather than rendered separately because the two are one
+ * thought: "waiting on the session" is a promise on a self-resuming run and an instruction
+ * on every other kind, and an operator who cannot see which reads the first as the second.
+ * It is stated only when the loop does NOT close itself, since that is the case the page has
+ * never mentioned and the one where waiting is the wrong thing to do.
+ */
+export function runParkedSentence(detail: WorkflowRunDetail): string | null {
+  const resumption = detail.resumption;
+  if (!resumption) return null;
+  /*
+   * One statement of one fact. The pre-capture refusal above says the repository has not
+   * moved, in the operator's own terms and about the round they just tried to open; the
+   * observer's withheld reason is the same finding on a fifteen-second timer. Printing both
+   * reads as two separate problems, and the older half is the less useful one.
+   */
+  if (
+    resumption.reason === "repository_unchanged"
+    && detail.run.currentPhase === WORKFLOW_UNCHANGED_REPOSITORY_PHASE
+  ) return null;
+  const sentence = workflowResumptionWithheldSentence(
+    resumption.reason,
+    resumption.round ?? detail.summary.round,
+  );
+  if (!sentence) return null;
+  return resumption.resumesItself
+    ? sentence
+    : `${sentence} This review does not resume on its own, so the next round is yours to start.`;
+}
+
+/**
+ * Why the last resubmission was refused, for a run that still has a move.
+ *
+ * The header's existing sentence is the NO-MOVE one: it explains an empty action row. A
+ * refused resubmission is the opposite shape - the daemon said no, and put a different button
+ * in place of the one that was clicked - so nothing drew the reason, and the repaint from
+ * "Start repair round 2" to "Review it anyway" read as a click that had done something
+ * unexplained. That is the same complaint the grant's silence produced, one screen along.
+ *
+ * Two phases, two sentences, because the two refusals cost different things: one was declined
+ * before any round was opened, the other after a snapshot was already captured. Saying "no
+ * round was spent" about the second would be false.
+ */
+export function runRefusedSentence(detail: WorkflowRunDetail): string | null {
+  const round = detail.summary.round;
+  switch (detail.run.currentPhase) {
+    case WORKFLOW_UNCHANGED_REPOSITORY_PHASE:
+      return `The repository has not changed since round ${round} - same commit, same working`
+        + " tree - so that round was refused before it could be opened, and nothing was spent.";
+    case "unchanged_evidence":
+      return `The evidence captured for round ${round} is identical to the round before it,`
+        + " so the reviewers were not run against it.";
+    default:
+      return null;
+  }
+}
+
+/**
+ * What the grant did, for as long as it is still the last thing that happened.
+ *
+ * The grant was the one primary on this page with no visible result. It raises a number and,
+ * for a self-resuming run, hands the run back to its observer - and neither of those draws
+ * anything, so the click read as a click that failed. It was reported as exactly that.
+ *
+ * Derived from the ledger and the current round rather than held in component state, which is
+ * what makes it correct rather than merely present. A grant whose HTTP response was lost, a
+ * grant replayed under its retained request id, and a grant applied from another tab all
+ * produce the same event and therefore the same notice; and the notice disappears on its own
+ * the moment the round it bought actually starts, with nothing to remember to clear.
+ */
+export function runGrantNotice(detail: WorkflowRunDetail): string | null {
+  /*
+   * `detail.repairGrant`, NOT a scan of `detail.events`.
+   *
+   * The first version scanned the events, and they are a page - the oldest two hundred rows,
+   * with a cursor for the rest. A grant cannot happen until a run has exhausted its repair
+   * budget, so it is always a late event, and a run that spent five rounds keeps it outside
+   * that page entirely. The notice would have been missing on every run long enough to have
+   * been granted anything, which is the silence this whole thing exists to end.
+   */
+  const grant = detail.repairGrant;
+  if (!grant) return null;
+  // Stale the instant a later round exists: the grant has been spent and the run's own state
+  // is the better story from then on.
+  if (detail.summary.round > grant.round) return null;
+  const budget = grant.to;
+  /*
+   * Stated as the round it reaches, not as the budget it raised, because the eyebrow three
+   * lines above already prints `round N of ${maxRepairRounds + 1}`. Both numbers are correct
+   * and they are not the same number - the budget counts REPAIRS, the eyebrow counts rounds
+   * including the first submission - so a notice that said "raised to 3 rounds" beside an
+   * eyebrow reading "round 2 of 4" would make a reader stop and work out which one lied.
+   */
+  return `Repair budget raised. Round ${budget + 1} is now the last this run can reach.`;
 }
 
 const ATTEMPT_STATE_LABELS: Record<WorkflowNodeAttemptState, string> = {

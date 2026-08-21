@@ -1,5 +1,6 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -474,6 +475,32 @@ test("workflow evidence rows preserve old image defaults and validate text artif
       mime_type: "text/plain",
       source_kind: "upload",
     }),
+    WorkflowRowError,
+  );
+  const commandContent = "Command: npm test\nExit code: 0\nOutput:\nok 1\n";
+  const command = {
+    ...staged,
+    client_item_id: "command-client",
+    source_kind: "command",
+    evidence_kind: "text",
+    source_locator: "command:command-client",
+    inline_content: commandContent,
+    display_name: "command-output.txt",
+    mime_type: "text/plain",
+    bytes: Buffer.byteLength(commandContent),
+    sha256: createHash("sha256").update(commandContent).digest("hex"),
+  };
+  assert.equal(parseWorkflowEvidenceStagingRow(command).source_kind, "command");
+  assert.throws(
+    () => parseWorkflowEvidenceStagingRow({ ...command, sha256: "c".repeat(64) }),
+    WorkflowRowError,
+  );
+  assert.throws(
+    () => parseWorkflowEvidenceStagingRow({ ...command, inline_content: null }),
+    WorkflowRowError,
+  );
+  assert.throws(
+    () => parseWorkflowEvidenceStagingRow({ ...staged, inline_content: commandContent }),
     WorkflowRowError,
   );
 });

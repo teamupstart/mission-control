@@ -27,7 +27,7 @@ beforeEach(() => store.clear());
 
 test("nothing stored anywhere reads as the shipped defaults", () => {
   const config = readCache();
-  assert.equal(config.layout, "grid");
+  assert.equal(config.layout, "console");
   assert.equal(config.conversationView, "terminal");
   assert.equal(config.richText, true);
   assert.deepEqual(config.alerts, { notifications: false, sound: true });
@@ -77,7 +77,7 @@ test("a rendering this build does not ship reads as the shipped one", () => {
 test("a corrupt cache falls back to the defaults instead of throwing", () => {
   // A half-written value must cost a fetch, never a crash on the first paint.
   store.set("mission-control.ui", "{not json");
-  assert.equal(readCache().layout, "grid");
+  assert.equal(readCache().layout, "console");
 });
 
 test("no legacy settings on this origin reports nothing, not empty defaults", () => {
@@ -100,6 +100,14 @@ test("the newest generation wins when several are present", () => {
   store.set("fleet-control.layout", "console");
   store.set("mission-control.layout", "board");
   assert.equal(readLegacySettings()?.layout, "board");
+});
+
+test("a retired Cards preference is adopted as Console", () => {
+  store.set("mission-control.ui", JSON.stringify({ layout: "grid" }));
+  assert.equal(readCache().layout, "console");
+  store.clear();
+  store.set("mission-control.layout", "grid");
+  assert.equal(readLegacySettings()?.layout, "console");
 });
 
 test("the generations are read per setting, not as one block", () => {
@@ -125,9 +133,9 @@ test("dead fields from before away mode moved server-side are dropped", () => {
 
 test("an unrecognised layout is not adopted as if it were real", () => {
   // A mode from a future build (or a hand-edit) must not be PUT to the daemon looking
-  // valid. The render switch would fall through to the grid anyway; store what we'd draw.
+  // valid. Store the Console fallback the renderer will draw.
   store.set("mission-control.layout", "kanban");
-  assert.equal(readLegacySettings()?.layout, "grid");
+  assert.equal(readLegacySettings()?.layout, "console");
 });
 
 test("a corrupt legacy value falls back rather than discarding the rest", () => {

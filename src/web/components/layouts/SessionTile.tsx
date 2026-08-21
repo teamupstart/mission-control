@@ -89,7 +89,7 @@ export function SessionTile({
   const workflowRunId = workflowRun?.id ?? null;
   // Held reads off the run this tile was already handed, not a second lookup: the section rule
   // above it and this tag have to agree about the same session, and one source is how they do.
-  // `heldByRun` is the shared sentence, so the Cards card cannot spell it differently - and
+  // `heldByRun` is the shared sentence used across supported fleet surfaces, and
   // the run it returns is the one the tooltip names, so the mark cannot credit a sibling
   // review that has already finished.
   const heldBy = heldByRun(workflowRuns, st.tone);
@@ -306,12 +306,11 @@ export function SessionTile({
       <span className="tile-runtime-line">
         {session.meta && <RuntimeMetaRow meta={session.meta} session={session} showEffort={false} />}
         {session.meta?.thinkingLevel && <EffortPicker session={session} />}
-        {/* On this row rather than in `.tile-foot` where the card's footer keeps it: a
+        {/* On this row rather than in `.tile-foot`: a
             tile's foot is branch-and-timestamp, while mode is the same kind of thing as
             the effort chip beside it - what this session is allowed to do right now, and
-            changeable from here. This is the shared picker the card and console detail
-            mount, so
-            the three cannot drift on what a mode is called or how it is driven; it draws
+            changeable from here. This is the shared picker the Board tile and Console detail
+            mount, so the two cannot drift on what a mode is called or how it is driven; it draws
             nothing for a harness with no permission modes, and degrades to a read-only
             chip when there is no pane to drive its native control. */}
         <ModePicker session={session} />

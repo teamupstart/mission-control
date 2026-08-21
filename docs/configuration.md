@@ -7,7 +7,7 @@
 | `MISSION_WORKSPACE_DIRS` | `~/workspace` | colon-separated roots scanned for the dispatch repository picker |
 | `MISSION_POLL_MS` | `1500` | discovery interval |
 | `MISSION_AGENTS_SHADOW_MS` | `0` (off) | how often to take a [shadow reading](sessions.md#shadow-reading-claudes-own-session-state) of `claude agents --json` and log where it disagrees with our own discovery. Diagnostic only - it never feeds the registry. `0` or any non-positive value disables it; anything under `5000` is clamped up, since one reading spawns the full `claude` binary |
-| `MISSION_WORKTREE_SWEEP_MS` | `300000` | how often the daemon reconciles native worktree slots and reclaims eligible task and check leases. `0` (or any non-positive value) turns recurring reconciliation off; startup reconciliation still runs. An unparseable value falls back to the default, values under `30000` are clamped up, and values over `604800000` (7d) are clamped down |
+| `MISSION_WORKTREE_SWEEP_MS` | `300000` | how often the daemon reconciles native worktree slots and reclaims eligible task and check leases. `0` (or any non-positive value) turns recurring reconciliation off; startup reconciliation still runs. An unparseable value falls back to the default, values under `30000` are clamped up, and values over `604800000` (7d) are clamped down. It does **not** govern [task worktree retention](worktrees-and-checks.md#task-worktree-retention): the 30-day rule runs on its own fixed internal cadence, so setting this to `0` quietens native pool maintenance and leaves retention exactly as it was |
 | `MISSION_DISPATCH_READY_MS` | `30000` | dispatch: how long to wait for the agent's pane to be discovered before failing |
 | `MISSION_DISPATCH_SETTLE_MS` | `2000` | terminal-runtime dispatch: how long a discovered pane with no usable hook readiness signal must remain live before dispatch continues. This starts immediately for Pi, whose positional launch message needs no pane injection, and after a hook wait times out for a still-live session. An observed exit fails instead. Agent SDK dispatch does not use a settle delay |
 | `MISSION_DISPATCH_HOOK_READY_MS` | `20000` | terminal-runtime dispatch: how long to wait for the exact discovered session's first hook when that launch can produce one. Hook silence falls back to the settle above if the session is still live; an observed exit ends the wait immediately. The wait is skipped for hookless harnesses such as Pi and when a particular Codex launch could not install its [hook bridge](sessions.md#precise-status-for-codex-hooks-that-ride-on-the-dispatch) |
@@ -47,6 +47,7 @@
 | `MISSION_INSPECTOR_REPLY_TIMEOUT_MS` | `300000` | GitHub Inspector: hard cap on one follow-up reply - a smaller job than a review, but the same shape (the diff in the prompt, the same read-only tools), so it moves with the review's ceiling rather than sitting at a fraction of it |
 | `INSPECTOR_MAX_DIFF_BYTES` | `400000` | GitHub Inspector: cap on the diff put in a prompt, in UTF-8 **bytes** - so a diff of CJK, emoji or box-drawing content counts the 3-4 bytes each of those costs, and the cut lands on a character boundary rather than halfway through one. Read bare, unlike every other row here; `MISSION_INSPECTOR_MAX_DIFF_BYTES` (and the `FLEET_` / `HARNESS_` forms) still work and win where both are set. A refactor past this isn't reviewable in one pass anyway; the prompt says it was truncated so the model never concludes anything from the absence. Separately, a diff too large to hold in memory at all (16MB) is declined rather than reviewed - the PR is parked, and a later push that shrinks it below the ceiling gets reviewed |
 | `MISSION_CODEX_BIN` | `codex` | Codex CLI path override - both for dispatched agents and for every headless `codex exec` the app runs when Codex is the selected [provider](models.md#models-what-the-apps-own-model-work-runs-on) |
+| `MISSION_CODEX_TRANSPORT` | `exec` | Codex's headless wire protocol, the mirror of `MISSION_CLAUDE_TRANSPORT`: `exec` spawns `codex exec` and decodes its `--json` stream by hand; `sdk` drives the same binary through `@openai/codex-sdk` and reads typed thread events instead. The stored `llm.codexTransport` choice wins where set, then this environment fallback, then `exec`. **This is a parsing choice, not a faster path.** The SDK spawns the same executable, so both transports pay the identical model round trip - measured on `gpt-5.6-luna`, a title call is 4.5-7.7s wall of which only ~0.3-0.6s is the process. Pinning `sdk` buys typed events and a supported cancellation path; it does not buy latency, and it must not be chosen to fix a slow dispatch. The SDK is always pinned to the same binary `MISSION_CODEX_BIN` names, because installing it drops a second, differently versioned `codex` into `node_modules` and an unpinned SDK would silently run that one instead. Tool grants and image attachments are refused on `sdk` rather than dropped |
 | `MISSION_CODEX_TIMEOUT_MS` | `120000` | hard cap on a single headless `codex exec`, the mirror of `MISSION_CLAUDE_TIMEOUT_MS`. A caller that sets its own budget (the GitHub Inspector, the Goal refiner, the dispatch titler) passes it instead |
 | `MISSION_PI_BIN` | `pi` | Pi (`@earendil-works/pi-coding-agent`) CLI path override for dispatched agents. Pi is a discovered/dispatched harness, not one of the app's own headless model providers |
 | `MISSION_CODEX_HOOK` | app's `dist/satellites/codex-hook.mjs` | path to the bundled [Codex hook bridge](sessions.md#precise-status-for-codex-hooks-that-ride-on-the-dispatch) the dispatcher points a Codex launch at. If the path doesn't exist the hook overrides are dropped entirely and the session runs uninstrumented rather than failing to launch |
@@ -130,6 +131,7 @@ npm start              # daemon serving built UI
 npm run foreman        # Foreman worker (needs-you queue, work queues, PR follow-up, backlog autopilot)
 npm run build          # build web + MCP bundle
 npm test               # full test suite, including real Electron GUI geometry checks
+npm run test:workflow-evidence # focused evidence transport and Test Evidence audit checks
 npm run test:electron  # focused Electron GUI checks (see AGENTS.md for macOS Seatbelt guidance)
 npm run test:e2e       # Playwright: drive the real dashboard against a real daemon (after build)
 npx playwright install chromium # one-time setup for test:e2e (npm install does not fetch it)
@@ -149,8 +151,11 @@ npx tsx scripts/measure-inspector-prompt.ts # size the GitHub Inspector review p
 
 On macOS, `npm test` and `npm run test:electron` validate Electron's framework link before
 starting their suites. If a copied dependency tree contains the complete framework payload
-but is missing only Electron's standard top-level link, the pretest restores that link. An
-absent payload is refused with an instruction to reinstall dependencies.
+but is missing either canonical framework link, the pretest restores that link. If the payload
+itself is absent, the command-line pretest re-runs Electron's installer before asserting the
+links; the runtime integrity probe that follows still verifies the installed binary before any
+test starts. Direct callers of the framework inspection function remain fail-closed and name
+Electron's installer as the repair instead of manufacturing a payload.
 
 The same lease and pool policy are visible under **Settings > Worktrees**. The panel can set
 default and per-repository native enablement, maximum capacity, and an operator-authored setup

@@ -33,7 +33,7 @@ import { dialogMarker } from "../../src/server/foreman/pending.ts";
  * Everything is real except the model: a real dispatched SDK session, a real `can_use_tool`
  * request over the vendored SDK, a real review over the real `POST /mcp/reviews` channel, a
  * real note written through `PUT /api/sessions/:id/note`, real clicks on the real forms, and
- * the note read back out of the SSE stream the card renders from.
+ * the note read back out of the SSE stream the Console detail renders from.
  *
  * The note is SEEDED rather than produced by a real Foreman pass, which would cost a model
  * call per test. What that trades away is covered below it: `test/foreman-pending.test.ts`
@@ -88,7 +88,7 @@ async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {
     .selectOption("__none");
   await dialog.getByRole("button", { name: "Dispatch now" }).click();
   await expect(dialog).toBeHidden();
-  await expect(page.locator("article.card")).toHaveCount(1);
+  await expect(page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row")).toHaveCount(1);
 }
 
 /**
@@ -167,8 +167,8 @@ async function pinNote(
 
 /** Send the prompt that makes the agent ask, and wait for the form it raises. */
 async function askAndWait(page: Page): Promise<{ card: Locator; form: Locator }> {
-  const card = page.locator("article.card").first();
-  await card.getByRole("button", { name: "Expand conversation" }).click();
+  await page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = page.locator(".console-detail");
   const composer = card.getByPlaceholder(/^Reply to this session/);
   await expect(composer).toBeEnabled();
   await composer.fill(ASK_TURN);
@@ -179,10 +179,10 @@ async function askAndWait(page: Page): Promise<{ card: Locator; form: Locator }>
 }
 
 /** The separate Foreman panel that must not compete with a matching canonical ask. */
-const notePanel = (card: Locator): Locator => card.locator(".foreman-note");
+const notePanel = (card: Locator): Locator => card.locator(".foreman-strip");
 
 /**
- * A string that must no longer be anywhere on this card.
+ * A string that must no longer be anywhere in this detail.
  *
  * `toHaveCount(0)` on the text rather than `not.toContainText` on the panel, because the two
  * disagree about the BEST possible outcome. `not.toContainText` has to resolve its container
@@ -229,9 +229,11 @@ test("answering the agent's own question retires the note pinned on it", async (
 
   // Opening adds the other half: the full reasoning, bounded in a sidecar, still with no
   // second send path. The mark survives the disclosure it is independent of.
-  await recommendation.click();
   const sidecar = dashboard.getByRole("dialog", { name: "Foreman recommendation" });
-  await expect(sidecar).toContainText(SUGGESTION);
+  await expect(async () => {
+    if (!(await sidecar.isVisible())) await recommendation.click();
+    await expect(sidecar).toContainText(SUGGESTION, { timeout: 2_000 });
+  }).toPass({ timeout: 20_000 });
   await expect(sidecar).toContainText("Both are defensible");
   await expect(biome).toContainText("Foreman's pick");
   await expect(biome).toHaveAttribute("aria-checked", "false");
@@ -259,7 +261,7 @@ test("answering the agent's own question retires the note pinned on it", async (
   await expect(sidecar).toBeHidden();
   await expect(recommendation).toHaveCount(0);
 
-  // The same card, same run, after one answer and no Dismiss. This is the frame the bug report
+  // The same detail, same run, after one answer and no Dismiss. This is the frame the bug report
   // was missing.
   await shoot(dashboard, "note-retired-after-your-answer", card);
 });
@@ -323,8 +325,8 @@ test("answering the review channel's question retires it too", async ({ dashboar
 
   await pinNote(daemon, live.id, { marker: `review:${reviewId}`, disposition: "escalated" });
 
-  const card = dashboard.locator("article.card").first();
-  await card.getByRole("button", { name: "Expand conversation" }).click();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
   await expect(notePanel(card)).toHaveCount(0);
   await expect(card.getByRole("button", { name: "Approve & send" })).toHaveCount(0);
 
@@ -409,6 +411,8 @@ test("a note about a DIFFERENT ask is still yours to decide", async ({ dashboard
   });
 
   const note = notePanel(card);
+  await expect(note).toContainText("needs your decision");
+  await note.getByRole("button", { name: /Foreman needs your decision/ }).click();
   await expect(note).toContainText(other);
 
   await form.getByRole("radio", { name: /eslint/ }).click();
@@ -419,51 +423,4 @@ test("a note about a DIFFERENT ask is still yours to decide", async ({ dashboard
   // Still on screen, and still asking. The form's answer said nothing about this.
   await expect(note).toContainText("needs your decision");
   await expect(note).toContainText(other);
-});
-
-test("closing the recommendation does not reach the card behind it", async ({
-  dashboard,
-  daemon,
-}) => {
-  // A portal moves the DOM node but not the React tree, so a click inside the sidecar still
-  // bubbles to the JSX ancestors of the component that rendered it. The sidecar is a sibling
-  // of `PaneDialogPrompt`'s own guarded section, so that guard does not cover it, and the
-  // listener it reaches is the card's own onClick - which SELECTS the session. A panel that
-  // floats clear of the card, quietly changing which session the command bar is aimed at, is
-  // the kind of thing nobody connects back to having opened a recommendation.
-  //
-  // Driven on a COLLAPSED card because the card renders the prompt either way, and collapsed
-  // is the state where the panel is most obviously detached from what it would act on.
-  await dispatch(dashboard, daemon);
-  const { card } = await askAndWait(dashboard);
-
-  const live = await session(daemon);
-  expect(live.paneDialog, "the ask reached the card as a dialog").toBeTruthy();
-  await pinNote(daemon, live.id, {
-    marker: dialogMarker(live.paneDialog!),
-    disposition: "escalated",
-  });
-
-  // Back to collapsed, which is the state that has something to lose here. The prompt stays:
-  // a session parked on a menu is blocked, and that is what a collapsed card most needs to say.
-  await card.getByRole("button", { name: "Collapse conversation" }).click();
-  const expand = card.getByRole("button", { name: "Expand conversation" });
-  await expect(expand).toBeVisible();
-
-  const recommendation = card.getByRole("button", { name: "View Foreman recommendation" });
-  await expect(recommendation).toBeVisible();
-  await recommendation.click();
-  const sidecar = dashboard.getByRole("dialog", { name: "Foreman recommendation" });
-  await expect(sidecar).toContainText(SUGGESTION);
-
-  await expect(card).not.toHaveClass(/\bselected\b/);
-
-  await sidecar.getByRole("button", { name: "Close Foreman recommendation" }).click();
-  await expect(sidecar).toBeHidden();
-
-  // The panel closed and nothing behind it moved. Without the guard the card picks up
-  // `selected` here, because the card's own onClick selects the session - verified by
-  // removing the guard and watching this assertion, and only this one, fail.
-  await expect(card).not.toHaveClass(/\bselected\b/);
-  await expect(expand).toBeVisible();
 });

@@ -3,11 +3,9 @@ import type { ActionBarHandle } from "../ActionBar.tsx";
 import type { SessionLaunchersHandle } from "../LaunchMenu.tsx";
 import type { TranscriptFindHandle } from "../TranscriptPanel.tsx";
 import type { SessionFilesController } from "../../lib/sessionFiles.ts";
-import type { WorkspaceLinkHandler } from "../Markdown.tsx";
 import type { WorkflowBindingSummary, WorkflowRunSummary } from "@shared/workflow.ts";
 import type { EnsembleSummary } from "@shared/ensemble.ts";
 import type { PipelineRun, SessionPipelineLink } from "@shared/pipeline.ts";
-import { newestSessionRun } from "../../lib/held.ts";
 
 /** The Board card's in-place workflow disclosure, registered for App's global shortcut. */
 export interface WorkflowDisclosureHandle {
@@ -18,10 +16,9 @@ export interface WorkflowDisclosureHandle {
  * What every layout gets from App, which stays the single owner of session state.
  * A layout arranges; it never decides.
  *
- * One shared bundle rather than each view growing its own prop list: SessionCard
- * takes eighteen props, and three hand-written copies of that wiring is three
- * places for a layout to quietly stop passing (say) `pendingReviewIds` and start
- * lying about a stale Foreman draft. `cardProps` below is the single spelling.
+ * One shared bundle rather than each view growing its own prop list: Console and Board
+ * share the same detail component, and two hand-written copies of that wiring are two
+ * places for a layout to quietly stop passing a session signal.
  */
 export interface SessionViewProps {
   /** The visible, sorted sessions - already filtered; layouts render exactly these. */
@@ -55,7 +52,7 @@ export interface SessionViewProps {
   selectedId: string | null;
   /**
    * Which half of the Console holds the keyboard - the rail selector or the open
-   * conversation reader. Console-only: the grid and board ignore it. Drives whether the
+   * conversation reader. Console and the Board drill-in share it. Drives whether the
    * rail's selected row reads as active or handed-off, and which surface shows the focus
    * ring. App owns the transition (Tab / Shift+Tab / Escape); the view reports native
    * focus movement so the state stays aligned with the DOM.
@@ -74,9 +71,8 @@ export interface SessionViewProps {
   onCursorTo: (id: string) => void;
   /** Close the current detail: reverses the board drill-in or empties the console. */
   onDeselect: () => void;
-  /** Open detail id: grid focus mode, console selection, or the board's drill-in. */
-  expandedId: string | null;
-  onToggleExpand: (id: string) => void;
+  /** Open detail id: the Console selection or the Board's drill-in. */
+  detailId: string | null;
   onOpenReviews: (id: string) => void;
   onOpenDiff: (id: string, commit?: string) => void;
   /** One-shot request to reveal a session's integrated Diff tab, optionally at one fix. */
@@ -112,7 +108,7 @@ export interface SessionViewProps {
   /**
    * A kill landed on this session. The detail it was ordered from is now a dead
    * transcript, so App closes it: the board reverses its drill-in, the console empties
-   * its pane, the grid leaves focus mode. Not driven by the session disappearing - it
+   * its pane. Not driven by the session disappearing - it
    * lingers ~8s as `exited` first, which is the whole delay this removes.
    *
    * Fired by the confirm dialogs, both of which end the session - Complete closes it
@@ -223,56 +219,6 @@ export interface SessionViewProps {
    * which is the slug.
    */
   pipelineRunByKey?: ReadonlyMap<string, PipelineRun>;
-}
-
-/**
- * The props for one session's card, spelled once. Only the grid (Cards) renders a
- * SessionCard now, so it's the sole caller - the console and board drill into a bespoke
- * ConsoleDetail built from the same leaf pieces instead.
- */
-export function cardProps(p: SessionViewProps, s: Session) {
-  return {
-    session: s,
-    selected: s.id === p.selectedId,
-    onSelect: () => p.onSelect(s.id),
-    expanded: p.expandedId === s.id,
-    onToggleExpand: () => p.onToggleExpand(s.id),
-    onOpenReviews: () => p.onOpenReviews(s.id),
-    onOpenDiff: (commit?: string) => p.onOpenDiff(s.id, commit),
-    onOpenFiles: () => p.onOpenFiles(s.id),
-    onOpenFile: ((href: string, probe?: boolean) => p.onOpenFile(s.id, href, probe)) satisfies WorkspaceLinkHandler,
-    // Passed by reference, never dereferenced here: a card that is not expanded renders no
-    // transcript and must not pay for - or depend on - the store the transcript reads.
-    files: p.files,
-    onReset: () => p.onReset(s.id),
-    onComplete: () => p.onComplete(s.id),
-    onKill: () => p.onKill(s.id),
-    onKilled: () => p.onKilled(s.id),
-    resetNonce: p.resetNonces[s.id] ?? 0,
-    registerEl: p.registerEl,
-    registerActions: p.registerActions,
-    registerLaunchers: p.registerLaunchers,
-    registerFind: p.registerFind,
-    renaming: p.renamingId === s.id,
-    onRenameStart: () => p.onRenameStart(s.id),
-    onRenameClose: p.onRenameClose,
-    foremanMode: p.foremanMode,
-    foremanEnabled: p.foremanEnabled,
-    foremanAllowlist: p.foremanAllowlist,
-    inputReviewId: p.inputReviewBySession.get(s.id) ?? null,
-    pendingReviewIds: p.pendingReviewIds,
-    reviews: p.reviews,
-    workflowRuns: p.workflowRunsBySession?.get(s.id) ?? null,
-    workflowRun: newestSessionRun(p.workflowRunsBySession?.get(s.id)),
-    workflowBinding: p.workflowBindingBySession?.get(s.id) ?? null,
-    onOpenWorkflowRun: p.onOpenWorkflowRun,
-    onBindWorkflow: p.onBindWorkflow ? () => p.onBindWorkflow?.(s.id) : undefined,
-    onOpenSchedule: p.onOpenSchedule,
-    scheduleNameById: p.scheduleNameById,
-    onOpenEnsemble: p.onOpenEnsemble,
-    ensembleSummary: ensembleSummaryFor(p, s),
-    onOpenPipelineRun: p.onOpenPipelineRun,
-  };
 }
 
 /** The run summary behind this session's member link, when both are on hand. */

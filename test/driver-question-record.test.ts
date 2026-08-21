@@ -291,8 +291,21 @@ function seed(request: SessionRequest): {
   return { registry, reviews, app: mkApp(registry, reviews, fakeSupervisor()), id };
 }
 
+/**
+ * The retro reasons the card is currently carrying for this session.
+ *
+ * Read off the session PROJECTION rather than off any internal flag, because that is the
+ * only thing the dashboard ever sees: `retroOffer` consumes `Session.retro` and nothing
+ * else. An answered driver question has to reach it, since the answer exists nowhere a
+ * transcript scan can find it - the JSONL records it as a pure `tool_result`, which every
+ * harness parser drops.
+ */
+function retroReasons(registry: Registry_, id: string): string[] {
+  return registry.getSession(id)?.retro?.reasons ?? [];
+}
+
 test("answering a driver form leaves the conversation a record of it", async () => {
-  const { app, id } = seed(FORM);
+  const { app, registry, id } = seed(FORM);
   const res = await app.request(`/api/sessions/${encodeURIComponent(id)}/submit-options`, {
     method: "POST",
     headers: HEADERS,
@@ -327,6 +340,12 @@ test("answering a driver form leaves the conversation a record of it", async () 
     { decisionId: "q1", selected: ["q1o2"], other: null },
     { decisionId: "q2", selected: ["q2o1"], other: null },
   ]);
+
+  // And the same record makes the session worth retrospecting. Steering the work is steering
+  // it whichever channel carried the words, and this is the channel a transcript cannot see -
+  // the session this shipped for answered two dashboard questions, was reviewed clean, and
+  // was offered no retro at all.
+  assert.deepEqual(retroReasons(registry, id), ["corrections"]);
 });
 
 test("the record is born settled - it never flashes up as a form to answer", async () => {
@@ -353,7 +372,7 @@ test("the record is born settled - it never flashes up as a form to answer", asy
 test("Foreman's answer is recorded as Foreman's, and stays out of your conversation", async () => {
   // It is already in the log as its own episode card. Crediting it here too would show the
   // same moment twice, the second time as though you had chosen it yourself.
-  const { app, id } = seed(FORM);
+  const { app, registry, id } = seed(FORM);
   const res = await app.request(`/api/sessions/${encodeURIComponent(id)}/submit-options`, {
     method: "POST",
     headers: HEADERS,
@@ -367,12 +386,17 @@ test("Foreman's answer is recorded as Foreman's, and stays out of your conversat
   });
   assert.equal(res.status, 200, await res.clone().text());
   assert.deepEqual(loadHumanResolvedReviews(id), [], "not in the human's conversation");
+  assert.deepEqual(
+    retroReasons(registry, id),
+    [],
+    "and not human steering either - an automated decision teaches the repository nothing",
+  );
 });
 
 test("answering a permission prompt records nothing at all", async () => {
   // An auto-mode session answers dozens of these an hour, and none of them chose between
   // anything - the next turn states the outcome. Recording them would bury the log.
-  const { app, id } = seed(PERMISSION);
+  const { app, registry, id } = seed(PERMISSION);
   const res = await app.request(`/api/sessions/${encodeURIComponent(id)}/select-option`, {
     method: "POST",
     headers: HEADERS,
@@ -380,6 +404,7 @@ test("answering a permission prompt records nothing at all", async () => {
   });
   assert.equal(res.status, 200, await res.clone().text());
   assert.deepEqual(loadHumanResolvedReviews(id), []);
+  assert.deepEqual(retroReasons(registry, id), [], "clicking Yes on a prompt is not steering");
 });
 
 test("a question re-presented after a first answer records BOTH rounds", async () => {
@@ -461,7 +486,7 @@ test("a half-written record leaves no row at all, not one that half exists", asy
   // `selections`, and a BigInt is a value `JSON.stringify` refuses. That throws from exactly
   // where a disk error would, and `decisions` still serializes, so the INSERT lands first -
   // which is the ordering the hazard needs.
-  const { reviews, id } = seed(FORM);
+  const { registry, reviews, id } = seed(FORM);
   assert.throws(() =>
     reviews.record({
       sessionId: id,
@@ -482,10 +507,15 @@ test("a half-written record leaves no row at all, not one that half exists", asy
     .all(id) as unknown as Array<{ status: string; resolved_by: string | null }>;
   assert.deepEqual(rows, [], "the insert was rolled back with the update that failed");
   assert.deepEqual(loadHumanResolvedReviews(id), [], "and no answer reached the conversation");
+  assert.deepEqual(
+    retroReasons(registry, id),
+    [],
+    "nor the retro offer: the signal is raised after the commit, never before it",
+  );
 });
 
 test("a refused answer records nothing, because nothing was answered", async () => {
-  const { app, id } = seed(FORM);
+  const { app, registry, id } = seed(FORM);
   const res = await app.request(`/api/sessions/${encodeURIComponent(id)}/submit-options`, {
     method: "POST",
     headers: HEADERS,
@@ -495,6 +525,11 @@ test("a refused answer records nothing, because nothing was answered", async () 
   });
   assert.equal(res.status, 409);
   assert.deepEqual(loadHumanResolvedReviews(id), []);
+  assert.deepEqual(
+    retroReasons(registry, id),
+    [],
+    "an undelivered answer must not light the offer either",
+  );
 });
 
 // ---- and the Foreman note the answer makes spent -------------------------------------

@@ -175,12 +175,10 @@ test("a non-live mode explains the drafts, whatever the allowlist says", () => {
   assert.equal(hint({ mode: "semi-auto", cwd: null }), "drafts-only");
 });
 
-// ---- the chip: what a card claims about a batch you can't see ----
+// ---- the chip: what the Console Work queue tab claims about a batch you can't see ----
 //
-// This chip is the LAST surviving signal for a stopped session: an exited card renders
-// no ActionBar, so there is no Queue button, and this is the only way back into the
-// drawer. A label that reads as clean success on a batch Foreman actually gave up on is
-// worse than the unreachability it was added to fix - so these pin the honesty.
+// A label that reads as clean success on a batch Foreman actually gave up on is worse than
+// omitting the signal, so these pin the honesty.
 
 function mkSummary(over: Partial<SessionQueueSummary> = {}): SessionQueueSummary {
   return {

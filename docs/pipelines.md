@@ -117,9 +117,10 @@ operator who sees no pipelines has to be able to tell which:
   **Check again** re-runs the probe immediately rather than waiting out its cache.
 - **Observe pipelines** - the master switch. Turning it off stops every repository at once
   *without forgetting which ones you chose*, so turning it back on restores exactly that set.
-- **Launch runtime** - which Mission Control host starts Engineer. Claude Agent SDK is the
-  shipped default; Terminal is the explicit compatibility choice. The setting does not replace
-  the ai-conductor build daemon's own tmux supervision.
+- **Launch runtime** - which Mission Control host starts Engineer. Managed Agent SDK is the
+  shipped default and lets each Pipeline task select an eligible Claude or Codex host. Terminal
+  is the explicit Claude-only compatibility choice. The setting does not replace the
+  ai-conductor build daemon's own tmux supervision.
 - **Foreman triage** - a separate switch, off by default. When both it and Foreman are on,
   Foreman may unpark only a halt classified exactly `mechanical`, through the same daemon
   action route the dashboard uses. `needs-human`, `protected-artifact`, `legacy`,
@@ -653,13 +654,16 @@ an engine-only registration, or a failed observation write does not. An already-
 modal re-reads the daemon's active repository set after observation changes, so eligibility
 appears without a reload and never before the daemon confirms consent. Dispatch runs
 the configured Engineer host in the main checkout without provisioning a Mission Control
-worktree. **Claude Agent SDK** is the default: it starts one managed Claude session and sends
-the exact `/engineer <intent>` command as turn one, with no model, effort, or permission override
-and no extra repositories. **Terminal** is an explicit stored choice and keeps the compatibility
-path, opening `conduct-ts engineer --idea "<intent>"` with live stdin and `CLAUDECODE` removed.
-An SDK preflight or start failure fails the task and never calls the Terminal launcher. There is
-no Codex Engineer host. The launch setting does not affect ai-conductor's background build daemon,
-which retains its own tmux supervision.
+worktree. **Managed Agent SDK** is the default. Its per-task Agent selector offers only harnesses
+that can invoke Engineer through an SDK session, currently Claude and Codex. The selected host
+receives its native Engineer command as turn one: `/engineer <intent>` for Claude or
+`$engineer - run this skill now. <intent>` for Codex. The host uses the selected harness's
+configured model, effort, and permission defaults; Pipeline does not expose per-task model or
+effort controls. **Terminal** is an explicit stored Claude-only compatibility choice and opens
+`conduct-ts engineer --idea "<intent>"` with live stdin and `CLAUDECODE` removed. The server
+rejects a non-Claude Terminal task before spawning it. A managed SDK preflight or start failure
+fails the task and never calls the Terminal launcher. The launch setting does not affect
+ai-conductor's background build daemon, which retains its own tmux supervision.
 
 Before either host starts, the provider derives the same lowercase, ASCII-alphanumeric,
 hyphenated, 50-character idea slug Engineer uses for its plan and worktree. Mission Control
@@ -668,12 +672,13 @@ another live task already owning the same provider, repository, and slug. It the
 complete run link before starting the host, closing the interval in which two Mission Control
 dispatches could claim the same future run.
 
-Conductor owns downstream agent, model, and effort choices in either runtime. Agent, Model,
-Effort, attached repositories, After work, and the generic runtime picker stay unavailable, and
-backlog autopilot does not schedule Pipeline tasks. The SDK form records a session id and no home,
-which gives it managed focus, questions, cancellation, and restart recovery. The Terminal form
-records a home and no session id. Neither host owns completion: SDK idle, host pull-request merge,
-and host disappearance after the exact run appears cannot finish the task. A processed projection
+Conductor owns downstream agent, model, and effort choices in either runtime. Model, Effort,
+attached repositories, After work, and the generic runtime picker stay unavailable. Agent is
+available only for Managed Agent SDK host selection. Backlog autopilot does not schedule Pipeline
+tasks. The SDK form records a session id and no home, which gives it managed focus, questions,
+cancellation, and restart recovery. The Terminal form records a home and no session id. Neither
+host owns completion: SDK idle, host pull-request merge, and host disappearance after the exact
+run appears cannot finish the task. A processed projection
 for the exact prebound link settles the durable task and records the projected pull request as its
 outcome when present. A lost SDK host fails the task only when that exact run never appeared. The
 same provider link is restored after a daemon restart. A task saved by an older build with no link

@@ -59,6 +59,11 @@ test("every durable tuple this phase touches is APPENDED, never reordered", () =
     "pr_handoff",
     "unchanged_evidence_nudge",
     "session_action",
+    // Appended, at the end, where an append belongs. It is the one reminder a parked repair
+    // round sends, and it is its own kind rather than another `unchanged_evidence_nudge`
+    // because the two answer different things - a claim, and a silence - and a ledger a
+    // person reads to work out why a run sat still has to keep them apart.
+    "parked_repair_reminder",
   ]);
   assert.deepEqual([...WORKFLOW_RUN_STATUSES], [
     "capturing", "running", "waiting_for_session", "waiting_for_pr", "waiting_for_inspector",

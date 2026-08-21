@@ -115,17 +115,26 @@ test("an installed engine registers a workspace and observes it through one hone
   await expect(kind.locator('option[value="pipeline"]')).toHaveCount(0);
 });
 
-test("Engineer host defaults to SDK and persists an explicit Terminal choice", async ({
+test("Engineer host migrates the legacy SDK value and persists an explicit Terminal choice", async ({
   page,
   daemon,
 }) => {
+  const migration = await page.request.put(`${daemon.baseURL}/api/pipelines/config`, {
+    data: {
+      enabled: false,
+      foremanMechanicalTriage: false,
+      launchRuntime: "claude-sdk",
+      repos: [],
+    },
+  });
+  expect((await migration.json()).config.launchRuntime).toBe("agent-sdk");
   await openConductor(page, daemon.baseURL);
-  const sdk = page.getByRole("radio", { name: /Claude Agent SDK/ });
+  const sdk = page.getByRole("radio", { name: /Managed Agent SDK/ });
   const terminal = page.getByRole("radio", { name: /Terminal/ });
 
   await expect(sdk).toBeChecked();
   await expect(terminal).not.toBeChecked();
-  await expect(page.getByText(/shipped default, with no terminal fallback/)).toBeVisible();
+  await expect(page.getByText(/shipped default, with no Terminal fallback/)).toBeVisible();
 
   const selectTerminal = page.waitForResponse(
     (response) =>
@@ -135,7 +144,7 @@ test("Engineer host defaults to SDK and persists an explicit Terminal choice", a
   expect((await selectTerminal).ok()).toBe(true);
   await page.reload();
   await expect(terminal).toBeChecked();
-  await expect(page.getByText(/explicit compatibility host/)).toBeVisible();
+  await expect(page.getByText(/Claude-only compatibility host/)).toBeVisible();
 
   const selectSdk = page.waitForResponse(
     (response) =>

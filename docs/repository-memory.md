@@ -194,11 +194,26 @@ disabled.
 **The condition is two independent halves, and both must hold** (except in the Complete
 dialog - see below):
 
-1. **The session is worth retrospecting.** Either a human corrected it - a turn in its
-   transcript beyond the opening brief that Mission Control did not type itself - or the
-   GitHub Inspector raised findings on its pull request that were then resolved. A clean run nobody
+1. **The session is worth retrospecting.** Either a human **steered** it, or the GitHub
+   Inspector raised findings on its pull request that were then resolved. A clean run nobody
    had to steer teaches nothing, and gets no prompt. This rides the session payload as
    `Session.retro`, and the offer's tooltip names which reason applied.
+
+   Steering arrives down either of two channels, and both set the same one reason (whose wire
+   value is still `corrections`):
+
+   - **A transcript turn** beyond the opening brief that Mission Control did not type itself.
+     Automated deliveries - workflow repair packets, `/reload-skills`, the retro packet this
+     very offer sends - are `user` records on disk like any other, and are excluded by
+     attribution rather than by hope.
+   - **A review the human settled**: an answered `AskUserQuestion` form on a driver-run
+     session, a `request_input` or `request_plan_decisions` answer, an approved or rejected
+     diff, or a question dismissed without choosing. These exist nowhere a transcript scan
+     can find them - the JSONL records them as pure `tool_result`s, which every harness
+     parser drops - so the durable review row is the evidence, admitted by exactly the
+     predicate the conversation uses to decide whose voice an answer speaks in
+     (`isHumanResolvedReview`). Foreman's answers, pending questions, and reviews the daemon
+     orphaned when a session went away are not steering and never count.
 2. **The review has finished.** Either the bound workflow run's GitHub Inspector gate reads `clean`,
    or - for the great majority of sessions, which bind no workflow - the session's own
    GitHub Inspector chip reads clean. A dry-run review counts, because that chip counts it. A pull
@@ -225,3 +240,21 @@ the same ledger query that already builds the GitHub Inspector chip. The correct
 transcript, so it is polled (`MISSION_RETRO_SCAN_MS`, default 10s), reads only the bytes
 appended since the last pass, and stops reading a session entirely once it has flipped. Set
 it to `0` to switch transcript scanning off; the findings half still works.
+
+The review feed costs nothing to watch: a settlement is an event, so the daemon raises the
+same signal the moment a human-resolved review has been durably committed and published -
+never before, so a failed delivery or a rolled-back write cannot light the offer. After a
+daemon restart it is reconstructed from the durable review rows, with one indexed existence
+read taken as each terminal or SDK session is introduced into the live registry, and forgotten
+again when that session's row is evicted.
+
+Restoration follows OWNERSHIP, not merely the row: a review is that session's steering when it
+was settled while the session was live. The dangling case - a driver answer whose session is
+evicted while the answer is in flight to it - is excluded at the WRITE rather than filtered on
+the way back out: Mission Control refuses to record an answer for a session that no longer has
+a row, because it would be a conversation entry for a conversation nothing can render, and a
+durable row is indistinguishable from an ordinary answer for ever after. The delivery that did
+happen is still reported to the caller and logged; only the record is refused. That makes the
+exclusion a property of the table, so it holds on a later daemon exactly as it does on this
+one. Nothing about retro worthiness is persisted; the
+review history already is.

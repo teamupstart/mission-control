@@ -11,7 +11,7 @@ import { ACTIONS, isReservedChord } from "../src/web/lib/keybindings.ts";
  * Three things are at stake, and none of them fails loudly:
  *
  *  - `Enter` now means "open the tile the cursor is on", so it can no longer be handed
- *    out as a binding: it would work in Cards and Console and silently not on the board.
+ *    out as a binding: it would work in Console and silently not on the board.
  *  - Only the board's DRILL-IN draws an action bar, so a chord aimed at a tile the arrows
  *    merely landed on has nothing registered to run. It has to drill in first, or `s`,
  *    Shift+F, `q`, Shift+Tab and `k` are dead keys on one layout of three.
@@ -139,8 +139,7 @@ test("Enter opens session detail while Expand only toggles the Board workflow ca
   const enterArm = app.slice(app.indexOf('case "Enter":'), app.indexOf("// Actions on the selected card."));
   assert.match(enterArm, /layout === "board" && !boardOpen/);
   assert.match(enterArm, /setBoardOpen\(true\)/, "Enter no longer opens the board detail");
-  assert.match(enterArm, /layout === "grid"/);
-  assert.match(enterArm, /toggleExpand\(selectedId\)/, "Enter no longer toggles Cards focus mode");
+  assert.doesNotMatch(enterArm, /grid|toggleExpand/);
 
   // Expand: only the selected Board overview tile's registered workflow disclosure runs.
   const expandBlock = app.slice(

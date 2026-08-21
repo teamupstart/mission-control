@@ -109,8 +109,8 @@ for (const { agent, chip, launcher, resumeWord, carried } of CASES) {
   }) => {
     await dispatch(dashboard, daemon, agent);
 
-    const card = dashboard.locator("article.card").first();
-    await card.getByRole("button", { name: "Expand conversation" }).click();
+    await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+    const card = dashboard.locator(".console-detail");
 
     // The mode a person reads on the card before continuing - the dispatch default armed
     // it, and it is the exact thing the reopened CLI must still be in. This is the chip

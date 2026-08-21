@@ -3,7 +3,6 @@ import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
-import { settled } from "../fixtures/settle.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 /**
@@ -20,16 +19,12 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
  *  1. The controls are really in the tab row, they really work from there, and the pane's
  *     worktree path appears exactly ONCE - in the `PATH`/`BRANCH` row. Twice would recreate
  *     the duplication this whole effort started from.
- *  2. **Cards did not lose anything.** `SessionLaunchers` had a single deliberate mount in
- *     `TranscriptPanel`, and `.detail-tabs` belongs to `ConsoleDetail`, which the Cards
- *     layout never renders - so MOVING the mount would have deleted the strip, the toggle
- *     and the `t` / `a` chords from Cards. It is suppressed per-host instead, and this is
- *     the layer that can tell those two apart.
- *  3. The `t` / `a` chords still resolve in BOTH hosts. That break is silent: App parks a
+ *  2. The `t` / `a` chords still resolve from the shared Console/Board detail. That break is
+ *     silent: App parks a
  *     `pendingLauncherAction` and clears it only when a `SessionLaunchers` registers for
  *     that id, so a host with no strip leaves a pending action that never fires and a stale
  *     ref that fires on some unrelated later mount.
- *  4. The row stays ONE row on a narrow pane, and the labels it sheds keep their accessible
+ *  3. The row stays ONE row on a narrow pane, and the labels it sheds keep their accessible
  *     names. Modelled on `topbar-one-row.spec.ts`, including its width-based "is it actually
  *     drawn" poll - a visually-hidden label still has a 1x1 box, so Playwright counts it
  *     visible and `toBeVisible` cannot tell a shed label from a drawn one.
@@ -222,38 +217,6 @@ test("the toggle in the tab row really switches the conversation under it", asyn
   await expect(
     detail.locator(".detail-tabs").getByRole("button", { name: /Terminal$/ }),
   ).toBeVisible();
-});
-
-test("Cards keep their own toolbar, and t still opens it there", async ({ dashboard, daemon }) => {
-  // The regression that a naive move ships, and it is silent in both halves. `SessionLaunchers`
-  // is mounted from `TranscriptPanel`, whose only other host is the Cards layout - which never
-  // renders `ConsoleDetail` and so has no tab row to move anything into. And App clears its
-  // parked `pendingLauncherAction` only when a strip REGISTERS for that id, so a host with no
-  // strip leaves the chord dead and a stale ref behind.
-  await dispatch(dashboard, daemon, "keep the cards toolbar working");
-  const card = dashboard.locator("article.card").first();
-  await settled(card);
-  await card.getByRole("button", { name: "Expand conversation" }).click();
-
-  // Still the pane-owned band, worktree path and all - this host has nowhere better to put it.
-  const strip = card.locator(".conv-launch");
-  await expect(strip).toBeVisible();
-  // The caption by class rather than by text: the fixture's checkout is a temp directory
-  // whose own path contains the word, so `getByText` matches the caption and the path both.
-  await expect(strip.locator(".conv-launch-lbl")).toHaveText("worktree");
-  await expect(strip.locator(".conv-launch-path")).toHaveText(/^\/.+/);
-  await expect(strip.getByRole("button", { name: "Terminal view" })).toBeVisible();
-
-  // The chord, driven from the card the arrows have selected. It reaches the exact button
-  // the operator can see: the terminal launcher's own backend chooser opens.
-  await card.click({ position: { x: 8, y: 8 } });
-  await dashboard.keyboard.press("t");
-  const menu = card.getByRole("menu", { name: /Open a shell in the worktree with/ });
-  await expect(menu).toBeVisible();
-  await dashboard.keyboard.press("Escape");
-  await expect(menu).toHaveCount(0);
-
-  await shoot(dashboard, card, "02-cards-keep-their-own");
 });
 
 test("t reaches the tab row's launcher in the console too", async ({ dashboard, daemon }) => {

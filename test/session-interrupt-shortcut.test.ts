@@ -208,7 +208,7 @@ test("both runtimes are interruptible, and a runtime a harness lacks is still re
 
 // ---- the control ------------------------------------------------------------------
 
-function cardBar(session = mkSession({ runtime: "sdk", task: null })): string {
+function actionBar(session = mkSession({ runtime: "sdk", task: null })): string {
   return renderToStaticMarkup(
     createElement(ActionBar, {
       session,
@@ -216,42 +216,41 @@ function cardBar(session = mkSession({ runtime: "sdk", task: null })): string {
       onReset: () => {},
       onComplete: () => {},
       onKill: () => {},
-      onFiles: () => {},
     }),
   );
 }
 
 /** The interrupt button's opening tag, so `disabled` can be read off it alone. */
 function interruptButton(html: string): string {
-  const at = html.indexOf("btn-interrupt");
+  const at = html.indexOf("act-interrupt");
   assert.notEqual(at, -1, `no interrupt control was drawn: ${html}`);
   return html.slice(html.lastIndexOf("<button", at), html.indexOf(">", at) + 1);
 }
 
 test("a working embedded session gets a live control", () => {
-  const html = cardBar();
+  const html = actionBar();
   assert.doesNotMatch(interruptButton(html), /disabled/);
-  assert.match(html, /Interrupt/);
+  assert.match(html, /> interrupt<\/button>/);
 });
 
 test("a working terminal session gets the same live control, with no component change", () => {
   // The point of routing the offer through a capability: this component was written once,
-  // for the embedded runtime, and terminal cards lit up when `interrupt.runtimes` gained
-  // `"terminal"`. If this ever needs a runtime test in the component, the capability has
-  // stopped being the single gate.
-  const html = cardBar(mkSession({ runtime: "terminal", task: null }));
+  // for the embedded runtime, and terminal session details lit up when `interrupt.runtimes`
+  // gained `"terminal"`. If this ever needs a runtime test in the component, the capability
+  // has stopped being the single gate.
+  const html = actionBar(mkSession({ runtime: "terminal", task: null }));
   assert.doesNotMatch(interruptButton(html), /disabled/);
-  assert.match(html, /Interrupt/);
+  assert.match(html, /> interrupt<\/button>/);
   assert.doesNotMatch(html, /can&#x27;t yet stop/);
 });
 
 test("a pi session gets it too, on the only runtime pi has", () => {
-  const html = cardBar(mkSession({ runtime: "terminal", agent: "pi", task: null }));
+  const html = actionBar(mkSession({ runtime: "terminal", agent: "pi", task: null }));
   assert.doesNotMatch(interruptButton(html), /disabled/);
 });
 
 test("an idle session's control says there is nothing to stop, rather than failing on click", () => {
-  const html = cardBar(mkSession({ runtime: "sdk", state: "idle", task: null }));
+  const html = actionBar(mkSession({ runtime: "sdk", state: "idle", task: null }));
   assert.match(interruptButton(html), /disabled/);
   assert.match(html, /isn&#x27;t running a turn, so there is nothing to stop/);
 });
@@ -273,7 +272,8 @@ test("interrupting is a badge, not a session state, and never outranks a real re
   assert.equal(stateDisplay({ ...working, state: "stopping" }, true).label, "stopping");
   assert.equal(stateDisplay({ ...working, pendingReviews: 2 }, true).label, "2 to review");
   // But it DOES stand in for an ordinary reading, including the unconfirmed one - which is
-  // the case it matters most for, since that card would otherwise just say "running".
+  // the case it matters most for, since that session detail would otherwise just say
+  // "running".
   assert.equal(stateDisplay({ ...working, stateConfirmed: false }, true).label, "interrupting");
   assert.equal(stateDisplay({ ...working, stateConfirmed: false }).label, "running");
 });
@@ -281,8 +281,8 @@ test("interrupting is a badge, not a session state, and never outranks a real re
 test("a stop that found nothing takes the badge back and says so", async () => {
   // The race, at the surface that has to explain it. The request succeeded and no turn was
   // stopped, because it ended on its own between the keypress and the request landing - the
-  // card renders `working` from an SSE frame and is always slightly behind, which is why the
-  // control was still live.
+  // session detail renders `working` from an SSE frame and is always slightly behind, which
+  // is why the control was still live.
   //
   // Two consequences, and both are here because both are invisible defects. The badge must be
   // taken back NOW: there is no turn ending to produce the reading that would clear it, so it
@@ -304,7 +304,7 @@ test("a stop that found nothing takes the badge back and says so", async () => {
     interruptReport({ ok: true, stoppedTurn: true, droppedQueued: 1 }).flash,
     "Stopped, and dropped 1 queued message.",
   );
-  // Nothing queued is the ordinary case and needs no words: the badge and the card say it.
+  // Nothing queued is the ordinary case and needs no words: the badge and session state say it.
   assert.deepEqual(interruptReport({ ok: true, stoppedTurn: true, droppedQueued: 0 }), {
     settled: false,
     flash: null,
@@ -330,8 +330,8 @@ test("the optimistic badge is retired by a real reading and by its own timeout",
   reconcileInterrupting({ ...session, state: "idle" });
   assert.equal(isInterrupting(session.id), false);
 
-  // And a refusal takes it back immediately, because a card describing a stop the daemon
-  // declined is the one failure this presentation must not produce.
+  // And a refusal takes it back immediately, because a session detail describing a stop the
+  // daemon declined is the one failure this presentation must not produce.
   markInterrupting(session.id);
   clearInterrupting(session.id);
   assert.equal(isInterrupting(session.id), false);

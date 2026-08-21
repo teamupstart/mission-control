@@ -54,6 +54,13 @@ test("Display settings no longer offers the Cards layout", async ({ page, daemon
   await expect(picker.getByRole("radio", { name: /^Console\b/ })).toBeVisible();
   await expect(picker.getByRole("radio", { name: /^Cards\b/ })).toHaveCount(0);
 
+  const retiredWrite = await fetch(`${daemon.baseURL}/api/ui/config`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ layout: "grid" }),
+  });
+  expect(retiredWrite.status).toBe(400);
+
   if (process.env.MC_E2E_EVIDENCE === "1") {
     mkdirSync(EVIDENCE, { recursive: true });
     await page.mouse.move(0, 0);

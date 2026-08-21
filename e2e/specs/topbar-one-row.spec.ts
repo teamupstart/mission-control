@@ -101,11 +101,11 @@ async function busyFleet(page: Page, daemon: DaemonHandle): Promise<number> {
   await dialog.getByRole("button", { name: "Dispatch now" }).click();
   await expect(dialog).toBeHidden();
 
-  const card = page.locator("article.card").first();
+  await page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = page.locator(".console-detail");
   await expect(card).toBeVisible();
   await expect(card.locator(".badge-idle")).toBeVisible({ timeout: 15_000 });
-  await card.getByRole("button", { name: "Expand conversation" }).click();
-  await expect(card.getByRole("button", { name: "Collapse conversation" })).toBeVisible();
+  await expect(card).toBeVisible();
   const composer = card.getByPlaceholder(/^Reply to this session/);
   await expect(composer).toBeEnabled();
   await composer.fill(ASK_TURN);
@@ -283,7 +283,7 @@ test("the search is still a working control once it has collapsed to its glyph",
   // right on the width its rung fires at.
   await dashboard.setViewportSize({ width: 1200, height: 900 });
 
-  const card = dashboard.locator("article.card");
+  const card = dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row");
   await expect(card).toHaveCount(1);
   const field = dashboard.getByPlaceholder("Filter (/)");
   await expectDrawn(field, false, "precondition: the field starts collapsed at this width");

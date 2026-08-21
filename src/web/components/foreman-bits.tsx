@@ -11,14 +11,11 @@ import {
 import type { DeliveryTarget } from "../lib/foreman.ts";
 import { api } from "../lib/api.ts";
 
-// The parts both live Foreman surfaces need: the Approve/Dismiss machinery, and the
+// The parts the Console Foreman strip needs: the Approve/Dismiss machinery, and the
 // line explaining why a draft is asking rather than having been sent.
 //
-// Shared for the reason `closeForemanNote` is. The grid card and the console strip
-// render a note very differently - one is a panel inside a card, the other a pinned
-// one-liner - but they offer the SAME two decisions on the same record, and a second
-// copy of "what Approve does" is a second place for the stale-review rule to drift.
-// What differs between them is layout, which is what each file keeps.
+// Kept separate from the strip's layout because the delivery rule and the state around
+// an in-flight decision are one concern, while the pinned row is another.
 
 /**
  * Approve / Dismiss for one note, with the in-flight and just-acted state they share.

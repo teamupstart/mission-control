@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
-import { taskHasWorktrees, taskRepoRefs } from "@shared/task-repos.ts";
+import {
+  taskHasWorktrees,
+  taskHoldsCleanupResources,
+  taskRepoRefs,
+} from "@shared/task-repos.ts";
 import { isTerminalTask } from "@shared/task-status.ts";
 import type { Task } from "@shared/types.ts";
 
@@ -57,7 +61,30 @@ export function taskResourceGeneration(task: Task): string {
   return createHash("sha256").update(canonical).digest("hex");
 }
 
-/** Is this task one the retention clock is allowed to run for at all? */
+/**
+ * Is this task one the retention clock is allowed to START for at all?
+ *
+ * Worktrees, deliberately: the clock measures Git-visible change, so a task with no checkout
+ * has nothing to measure and never earns a window. This is the rule for SEEDING a row, not for
+ * keeping one - see `taskHoldsCleanupResources`.
+ */
 export function isRetentionCandidate(task: Task): boolean {
   return isTerminalTask(task.status) && taskHasWorktrees(task);
 }
+
+
+/**
+ * May an existing ledger row still be worked - claimed, retried, finished?
+ *
+ * The keeping rule to `isRetentionCandidate`'s seeding rule. A row is only ever created for a
+ * task with checkouts, but once created it must survive until the cleanup it drives has
+ * released everything, and a teardown that hands back the final checkout and then fails on the
+ * terminal home ends exactly between those two facts. Judging that row by the seeding rule is
+ * what would delete the retry while a live resource is still recorded.
+ */
+export function isRetentionRetryable(task: Task): boolean {
+  return isTerminalTask(task.status) && taskHoldsCleanupResources(task);
+}
+
+// The keeping rule lives in shared because the dashboard gates its controls on it too.
+export { taskHoldsCleanupResources };

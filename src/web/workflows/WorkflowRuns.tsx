@@ -73,6 +73,9 @@ import {
   reviewerAttempts,
   reviewerStatus,
   runChangeWorklist,
+  runGrantNotice,
+  runParkedSentence,
+  runRefusedSentence,
   runRounds,
   runStalemates,
   runStatusLabel,
@@ -1814,9 +1817,34 @@ export function WorkflowRunView({
    * a second source for one fact is how a link stays enabled onto a session that is gone.
    */
   const sessionBound = detail.binding.sessionId !== null;
+  const parkedSentence = runParkedSentence(detail);
+  const refusedSentence = runRefusedSentence(detail);
+  /*
+   * The grant's result, drawn and announced.
+   *
+   * Every other primary on this page produces something a person can see: a round starts, a
+   * status changes, a section fills in. The grant produces one larger integer, and its only
+   * visible consequence was the button quietly becoming a different button - which reads
+   * exactly like a click that did nothing, and was reported as one.
+   *
+   * `runGrantNotice` is the derived, self-clearing half. This announcement is the half a
+   * screen reader needs, and it fires on the TRANSITION rather than on the notice being
+   * present, so arriving at an already-granted run does not read a stale result aloud.
+   */
+  const grantNotice = runGrantNotice(detail);
+  const announcedGrant = useRef<string | null>(null);
+  const [grantAnnouncement, setGrantAnnouncement] = useState("");
+  useEffect(() => {
+    if (announcedGrant.current === grantNotice) return;
+    const first = announcedGrant.current === null;
+    announcedGrant.current = grantNotice;
+    if (first || !grantNotice) return;
+    setGrantAnnouncement(`${grantNotice} ${parkedSentence ?? "The review can continue."}`);
+  }, [grantNotice, parkedSentence]);
   return (
     <section className="wf-run-detail">
       <p className="sr-only" aria-live="assertive">{uncertainAnnouncement}</p>
+      <p className="sr-only" aria-live="polite">{grantAnnouncement}</p>
       <header className="wf-run-head">
         <div className="wf-run-identity">
           <p className="workflow-eyebrow">
@@ -1881,6 +1909,15 @@ export function WorkflowRunView({
               <b>{noMoveReason.cause}</b> {noMoveReason.consequence}
             </p>
           )}
+          {/* What the grant just did, then why the run is still standing still.
+              Both sit BELOW the no-move sentence and neither replaces it: that one explains
+              why there is no button, and these explain what happened and what is being waited
+              on. A run can legitimately want all three - it was just granted rounds, it is
+              parked, the observer is withholding, and the header still offers a manual round.
+              In that order, because it is the order the events happened in. */}
+          {grantNotice && <p className="wf-run-granted">{grantNotice}</p>}
+          {refusedSentence && <p className="wf-run-refused">{refusedSentence}</p>}
+          {parkedSentence && <p className="wf-run-parked">{parkedSentence}</p>}
           {detail.externalSource && <ExternalProvenance source={detail.externalSource} />}
           <small>Started {when(detail.run.startedAt)} · updated {relativeTime(detail.run.updatedAt)}</small>
         </div>

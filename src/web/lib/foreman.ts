@@ -96,8 +96,8 @@ export function allowlistSuggestion(session: Session): string | null {
 /**
  * What each disposition says the note is, in the human's terms.
  *
- * One copy, read by every live surface (the grid card, the console strip) and by the
- * episode record. The drawer's rows word two of these differently on purpose - they
+ * One copy, read by the Console strip and the episode record. The drawer's rows word
+ * two of these differently on purpose - they
  * print the author beside the state - so they keep their own map rather than bending
  * this one to serve both.
  */
@@ -226,9 +226,8 @@ export interface ForemanApprovalWriter extends ForemanWriter {
  * from a path that sets no marker). That is a no-op, deliberately: a missing audit row
  * must never be able to fail the human's actual decision.
  *
- * Shared by `ForemanNote` (the grid card) and `ForemanStrip` (the console), which
- * otherwise had this sequence written out twice - two copies of an ordering
- * constraint that is invisible unless you know why it exists.
+ * Kept here so every caller uses the same ordering constraint, which is invisible unless
+ * you know why it exists.
  */
 export async function closeForemanNote(
   writer: ForemanWriter,

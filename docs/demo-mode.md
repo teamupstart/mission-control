@@ -72,7 +72,7 @@ the `~/.mission-control-demo*` roots that `--check` already uses.
 
 `--fresh` runs `scripts/demo/seed.mjs`, and what it leaves behind is the first paint:
 
-- **Five session cards**, each restored from suspension with its whole conversation intact -
+- **Five session surfaces**, each restored from suspension with its whole conversation intact -
   paced assistant turns, tool chips, `TodoWrite` narration - and a **dirty worktree** behind
   it, so Diff and Files are full the moment you click a card. Two of them are **waiting on a
   question you can answer**, and each asks about its own work: a continuation is routed by the
@@ -92,7 +92,7 @@ the `~/.mission-control-demo*` roots that `--check` already uses.
 - **Reviews**: one pending `plan-decisions` prompt with selectable options, plus an approved
   plan and an answered question in a session's resolved history.
 - **One clean end-to-end Workflow run**, bound to a session, so the story a run tells is visible
-  from both ends: the card wears its `⌁ Approved` chip and the Runs page has the whole pipeline
+  from both ends: the session detail wears its `⌁ Approved` chip and the Runs page has the whole pipeline
   behind it. The graph is the built-in **No-Mistakes Review**'s version 3, stage for stage - the
   deterministic `typecheck`/`test` gate first, then Intent Conformance alone as the cheap judge,
   then Code Risk, Test Evidence, Documentation and the seeded custom Persona in parallel behind it,
@@ -115,7 +115,7 @@ the `~/.mission-control-demo*` roots that `--check` already uses.
   it still adopts and still reviews. So the seeded copy carries `completionPolicy: {kind:"none"}`
   and ends where its End node says it does.
 - **Two Recurring Missions** on the schedule spine, in your own timezone.
-- **A nonzero cost chip**, built the way a real fleet's is. Each card's own spend comes from the
+- **A nonzero cost chip**, built the way a real fleet's is. Each session detail's own spend comes from the
   usage its scripted CLI reports on every finished turn's `result` frame - the same figure
   `claudeTurnUsage` reads off a real embedded session, written by the same driver path - so the
   per-card figures and the topbar agree because they are the same rows. Behind them: spend from
@@ -188,7 +188,7 @@ The player matches the dispatched intent against every scenario's `match` substr
 (case-insensitive, checked against the task text only - never the surrounding prompt
 boilerplate, which would otherwise self-match on a RULES block's own worked examples); the
 scenario flagged `"default": true` runs when nothing matches. Steps play in order, each after
-its own `delayMs`, with the turn held open the whole time so the card stays "working."
+its own `delayMs`, with the turn held open the whole time so the session detail stays "working."
 `assistant` steps update the activity line; `tool` steps append a tool-use chip (`name` is any
 string - `Edit`, `Write`, `Bash`, and `TodoWrite` render specially, but nothing enforces the
 set); `editFile` steps write real content into the session's cwd - the actual git worktree
@@ -231,13 +231,13 @@ cannot vote on itself.
 **Every finished turn also reports what it cost**, in the `result` frame's own
 `modelUsage`/`total_cost_usd` shape. That is the demo's per-card spend, and it has to arrive this
 way: the driver owns an embedded session's ledger and the OTLP ingest drops every datapoint naming
-a driven session, so a card's cost cannot be posted in from outside.
+a driven session, so a session detail's cost cannot be posted in from outside.
 
 **A resumed player continues its session rather than starting a new one.** Given
 `--resume=<id>` it adopts that id, appends to the transcript already at that path instead of
 truncating it, and carries on its record numbering. All three matter: the driver re-binds the
 card on any new `session_id`, so a fresh one would repoint it at a transcript this process had
-just created empty - the card would come back with its whole conversation gone. A resumed
+just created empty - the session detail would come back with its whole conversation gone. A resumed
 session that is owed no continuation turn also emits a `result` shortly after `init`, because
 that frame is the only thing that moves a card off `starting`, and a restored card claiming to
 be starting up for the rest of the demo is both ugly and untrue.

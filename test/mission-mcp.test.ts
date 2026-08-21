@@ -162,6 +162,10 @@ test("submit_workflow_evidence publishes bounded text artifacts beside existing 
   assert.match(registration, /WORKFLOW_TEXT_EVIDENCE_LIMITS\.maxCount/);
   assert.match(registration, /WORKFLOW_TEXT_EVIDENCE_LIMITS\.locatorJsonBytes/);
   assert.match(registration, /kind: "text"/);
+  assert.match(registration, /commandOutputs: z\.array\(z\.object/);
+  assert.match(registration, /workflowCommandEvidenceContent/);
+  assert.match(registration, /kind: "command"/);
+  assert.match(registration, /exact command, exit/);
   assert.match(registration, /Do not commit evidence artifacts/);
   assert.match(registration, /text artifact\(s\)/);
 });

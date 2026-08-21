@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AGENT_TYPES, type KeepAwakeStatus, type Session, type Task } from "@shared/types.ts";
 import { agentList } from "@shared/agent.ts";
-import { backlogTasks, canCycleMode, canInterruptSession } from "@shared/session.ts";
+import {
+  backlogTasks,
+  canCycleMode,
+  canInterruptSession,
+  provisioningTasks,
+} from "@shared/session.ts";
 import { agentLaunchAction } from "@shared/session-launch.ts";
 import { api, fetchRepos } from "./lib/api.ts";
 import { useEventStream } from "./useEventStream.ts";
@@ -18,7 +23,6 @@ import { KillModal } from "./components/KillModal.tsx";
 import { ReportPanel } from "./components/ReportPanel.tsx";
 import { RecurringMissionsPanel } from "./components/RecurringMissionsPanel.tsx";
 import { AwayDigestCard } from "./components/AwayDigestCard.tsx";
-import { DiffViewer } from "./components/DiffViewer.tsx";
 import { AlertBar } from "./components/AlertBar.tsx";
 import { SettingsPage } from "./components/SettingsPage.tsx";
 import {
@@ -27,12 +31,12 @@ import {
 } from "./lib/settings-registry.ts";
 import { settingsGearDot } from "./lib/settings-dots.ts";
 import { ForemanBar } from "./components/ForemanBar.tsx";
-import { AgentDot } from "./components/session-bits.tsx";
 import { SpendChip } from "./components/SpendChip.tsx";
 import { KeepAwakeControl } from "./components/KeepAwakeControl.tsx";
 import { ShipLogPage } from "./components/ShipLogPage.tsx";
 import { ScoutsPage } from "./components/scouts/ScoutsPage.tsx";
 import { LineStrip } from "./components/LineStrip.tsx";
+import { StartingStrip } from "./components/StartingStrip.tsx";
 import { ReviewDrawer } from "./components/line/ReviewDrawer.tsx";
 import { DecideDrawer } from "./components/line/DecideDrawer.tsx";
 import { IntakeDrawer } from "./components/line/IntakeDrawer.tsx";
@@ -43,7 +47,6 @@ import { nextLineDrawer, type LineDrawerStage } from "./lib/line-drawer.ts";
 import type { LineStageId } from "@shared/line.ts";
 import { Keycap } from "./components/Keycap.tsx";
 import { Tooltip } from "./components/Tooltip.tsx";
-import { GridView } from "./components/layouts/GridView.tsx";
 import { ConsoleView } from "./components/layouts/ConsoleView.tsx";
 import { BoardView } from "./components/layouts/BoardView.tsx";
 import type {
@@ -224,7 +227,6 @@ interface SeeWorkTourSnapshot {
   route: MissionRoute;
   layout: LayoutMode;
   selectedId: string | null;
-  expandedId: string | null;
   boardOpen: boolean;
   filter: string;
   lineDrawer: LineDrawerStage | null;
@@ -316,8 +318,6 @@ export function App(): React.JSX.Element {
   // so it means nothing in the other layouts and is reset to "rail" whenever the selection
   // or layout changes (a fresh detail is never opened mid-read).
   const [consoleZone, setConsoleZone] = useState<"rail" | "detail">("rail");
-  // Only one card expands at a time - opening a new one collapses the previous.
-  const [expandedId, setExpandedId] = useState<string | null>(null);
   // Board keyboard selection is deliberately separate from its open console detail:
   // arrows move the cursor among tiles, then Enter promotes it into the drill-in.
   // Pointer clicks set both in one gesture, as they always have.
@@ -330,7 +330,7 @@ export function App(): React.JSX.Element {
   const [boardOpen, setBoardOpen] = useState(false);
   // Only whether the dispatch modal is open. The draft it edits belongs to
   // DispatchLayer, deliberately out of this component: App re-renders the whole
-  // session grid, and the draft has to survive a close without dragging every
+  // session layout, and the draft has to survive a close without dragging every
   // keystroke through it.
   const [dispatchOpen, setDispatchOpen] = useState(false);
   // The backlog task the dispatch modal is open OVER, when it was opened by clicking a
@@ -401,7 +401,6 @@ export function App(): React.JSX.Element {
     // without a page cap - see ScheduleHistory.
     scheduledFor: number | null;
   } | null>(null);
-  const [diffSessionId, setDiffSessionId] = useState<string | null>(null);
   const [filesSessionId, setFilesSessionId] = useState<string | null>(null);
   const [filePickerSessionId, setFilePickerSessionId] = useState<string | null>(null);
   const [fileTabRequest, setFileTabRequest] = useState<{
@@ -434,8 +433,6 @@ export function App(): React.JSX.Element {
     commit: string | null;
     nonce: number;
   } | null>(null);
-  /** When set, the diff viewer shows just this commit. */
-  const [diffCommit, setDiffCommit] = useState<string | null>(null);
   const [resetSessionId, setResetSessionId] = useState<string | null>(null);
   const [completeSessionId, setCompleteSessionId] = useState<string | null>(null);
   const [killSessionId, setKillSessionId] = useState<string | null>(null);
@@ -457,8 +454,8 @@ export function App(): React.JSX.Element {
     files.drop(id);
     setResetNonces((m) => ({ ...m, [id]: (m[id] ?? 0) + 1 }));
   }, [files.drop]);
-  // Which card's title is being edited (its inline rename box is open). App owns
-  // this so the rename shortcut and a title click drive the same one card.
+  // Which session title is being edited (its inline rename box is open). App owns
+  // this so the rename shortcut and a title click drive the same session.
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
 
@@ -472,7 +469,7 @@ export function App(): React.JSX.Element {
   // Read by the global key handler below instead of closing over `overlays` directly.
   // That handler is installed by a passive effect, so a closure over `overlays` keeps the
   // value from the render BEFORE the overlay opened until the next passive flush - and a
-  // keydown arriving in that interval drives the card behind the overlay. Synced in a
+  // keydown arriving in that interval drives the session behind the overlay. Synced in a
   // layout effect, which runs in the same commit as the overlay's own registration
   // (Overlay.tsx), so the guard is never behind what is on screen.
   const overlaysRef = useRef(overlays);
@@ -495,8 +492,8 @@ export function App(): React.JSX.Element {
     [navigate],
   );
 
-  // Live element + imperative-handle maps for the keyboard-selected card.
-  const cardEls = useRef<Map<string, HTMLElement>>(new Map());
+  // Live element + imperative-handle maps for the keyboard-selected session.
+  const sessionEls = useRef<Map<string, HTMLElement>>(new Map());
   const actionHandles = useRef<Map<string, ActionBarHandle>>(new Map());
   // Board workflow disclosures stay local to their tiles, but the global, rebindable
   // expand action needs to drive the selected one through the exact same transition as
@@ -518,10 +515,6 @@ export function App(): React.JSX.Element {
   // it hands the keyboard to the rail. Shared by the console and the board drill-in, which
   // mount the same ConsoleDetail.
   const readerTabbers = useRef<Map<string, (dir: -1 | 1) => "moved" | "edge">>(new Map());
-  // Set to the id a Cards Enter should drop the cursor into once its send box
-  // mounts (see the structural Enter arm and the effect that consumes it). A ref, not
-  // state: it arms a one-shot side effect, and must not itself cause a render.
-  const pendingReplyFocus = useRef<string | null>(null);
   // The board's arrow cursor, armed to take DOM focus once the tile it names has
   // rendered. Same one-shot ref as above, for the same reason.
   const pendingTileFocus = useRef<string | null>(null);
@@ -534,13 +527,12 @@ export function App(): React.JSX.Element {
     id: string;
     run: keyof SessionLaunchersHandle;
   } | null>(null);
-  const gridRef = useRef<HTMLElement>(null);
   const filterRef = useRef<HTMLInputElement>(null);
   const topbarRef = useRef<HTMLElement>(null);
 
   const registerEl = useCallback((id: string, el: HTMLElement | null) => {
-    if (el) cardEls.current.set(id, el);
-    else cardEls.current.delete(id);
+    if (el) sessionEls.current.set(id, el);
+    else sessionEls.current.delete(id);
   }, []);
 
   const registerWorkflowDisclosure = useCallback(
@@ -559,7 +551,7 @@ export function App(): React.JSX.Element {
     const active = document.activeElement as HTMLElement | null;
     const activeEditor = active?.closest("input, textarea, select, [contenteditable='true']");
     if (activeEditor && !active?.closest(".cdetail")) return;
-    cardEls.current.get(id)?.focus({ preventScroll: true });
+    sessionEls.current.get(id)?.focus({ preventScroll: true });
   }, []);
 
   const focusReaderBody = useCallback(() => {
@@ -623,10 +615,6 @@ export function App(): React.JSX.Element {
     [],
   );
 
-  const toggleExpand = useCallback((id: string) => {
-    setExpandedId((cur) => (cur === id ? null : id));
-  }, []);
-
   /**
    * A kill landed: close whatever detail it was ordered from, straight away.
    *
@@ -636,7 +624,7 @@ export function App(): React.JSX.Element {
    * change, its action bar already gone, with Escape the only way out. Killing is the one
    * gesture that ends the reason the detail was open, so it takes the detail with it.
    *
-   * Which layer that is is the layout's answer, not this callback's - `detailLayer`, the
+   * Which layer that is is the layout's answer, not this callback's. `detailLayer` is the
    * same split Escape peels one press at a time.
    */
   const onKilled = useCallback(
@@ -648,8 +636,7 @@ export function App(): React.JSX.Element {
         if (selectedId === id) setBoardOpen(false);
         return;
       }
-      const drop = layer === "expanded" ? setExpandedId : setSelectedId;
-      drop((cur) => (cur === id ? null : cur));
+      setSelectedId((cur) => (cur === id ? null : cur));
     },
     [layout, selectedId],
   );
@@ -804,7 +791,6 @@ export function App(): React.JSX.Element {
         route,
         layout,
         selectedId,
-        expandedId,
         boardOpen,
         filter,
         lineDrawer,
@@ -836,7 +822,7 @@ export function App(): React.JSX.Element {
         }
       });
     }
-  }, [boardOpen, expandedId, filter, layout, lineDrawer, route, selectedId, sessions, tasks]);
+  }, [boardOpen, filter, layout, lineDrawer, route, selectedId, sessions, tasks]);
 
   // Only an empty fleet needs a synthetic desk. Start its fixed Chat session as soon as the
   // repository is known, while the operator is reading the Line and Board stops. A late
@@ -924,7 +910,6 @@ export function App(): React.JSX.Element {
       showSessionDetail: () => {
         if (!enterFleet()) return false;
         setLayout("board");
-        setExpandedId(null);
         const previewSession = seeWorkTour.sessionId
           ? sessionsRef.current.find((session) => session.id === seeWorkTour.sessionId) ?? null
           : sessionsRef.current.find(
@@ -1012,7 +997,6 @@ export function App(): React.JSX.Element {
     navigate(snapshot.route);
     setLayout(snapshot.layout);
     setSelectedId(snapshot.selectedId);
-    setExpandedId(snapshot.expandedId);
     setBoardOpen(snapshot.boardOpen);
     setFilter(snapshot.filter);
     setLineDrawer(snapshot.lineDrawer);
@@ -1155,7 +1139,7 @@ export function App(): React.JSX.Element {
   /**
    * Open one workflow run's reader, from anywhere.
    *
-   * Six surfaces reach it now - a session card's workflow chip, the board tile, the runs
+   * Six surfaces reach it now - a session detail's workflow chip, the board tile, the runs
    * rail, the ensembles detail's handoff link, the Review drawer, and the Library's
    * cross-link - and they used to spell the destination themselves. One opener, because the
    * FILTER rule is the part worth stating once: a run opened while the runs page is already
@@ -1203,7 +1187,7 @@ export function App(): React.JSX.Element {
    */
   const openPipelineRun = useCallback(
     // The run's KEY, not a whole `PipelineRun`: a session's own `pipeline` link carries the
-    // three coordinates and nothing else, and it is the caller a card, a ladder and an inbox
+    // three coordinates and nothing else, and it is the caller a detail, a ladder and an inbox
     // row all reach this through. `pipelineRunRoute` asks for exactly these three, so both
     // shapes satisfy it structurally and neither caller has to destructure.
     (run: { provider: PipelineRun["provider"]; repoRoot: string; slug: string }): void => {
@@ -1284,10 +1268,6 @@ export function App(): React.JSX.Element {
   useEffect(() => {
     if (route.page !== "fleet") setLineDrawer(null);
   }, [route.page]);
-  const closeDiff = useCallback(() => {
-    setDiffSessionId(null);
-    setDiffCommit(null);
-  }, []);
   const closeReset = useCallback(() => setResetSessionId(null), []);
   const closeKill = useCallback(() => setKillSessionId(null), []);
   const closeFiles = useCallback(() => {
@@ -1320,11 +1300,6 @@ export function App(): React.JSX.Element {
     [],
   );
   const openDiff = useCallback((sessionId: string, commit?: string) => {
-    if (layout === "grid") {
-      setDiffCommit(commit ?? null);
-      setDiffSessionId(sessionId);
-      return;
-    }
     setSelectedId(sessionId);
     if (layout === "board") setBoardOpen(true);
     setDiffTabRequest((request) => ({
@@ -1345,13 +1320,9 @@ export function App(): React.JSX.Element {
   const openSessionPath = useCallback((sessionId: string, path: string): void => {
     files.ensure(sessionId);
     files.select(sessionId, path);
-    if (layout === "grid") {
-      setFilesSessionId(sessionId);
-    } else {
-      setSelectedId(sessionId);
-      if (layout === "board") setBoardOpen(true);
-      requestFilesTab(sessionId);
-    }
+    setSelectedId(sessionId);
+    if (layout === "board") setBoardOpen(true);
+    requestFilesTab(sessionId);
   }, [files.ensure, files.select, layout, requestFilesTab]);
 
   const openSessionFile = useCallback((
@@ -1387,7 +1358,6 @@ export function App(): React.JSX.Element {
    */
   const sessionBoundOverlays = useMemo(
     () => [
-      { sessionId: diffSessionId, close: closeDiff },
       { sessionId: resetSessionId, close: closeReset },
       { sessionId: completeSessionId, close: closeComplete },
       { sessionId: killSessionId, close: closeKill },
@@ -1399,14 +1369,12 @@ export function App(): React.JSX.Element {
       },
     ],
     [
-      diffSessionId,
       resetSessionId,
       completeSessionId,
       killSessionId,
       filesSessionId,
       filePickerSessionId,
       workflowBindingTarget,
-      closeDiff,
       closeReset,
       closeComplete,
       closeKill,
@@ -1449,23 +1417,6 @@ export function App(): React.JSX.Element {
   }, [workflowRuns]);
 
   /**
-   * The one run per session the surfaces that genuinely want one still read.
-   *
-   * Kept beside the list rather than replaced by it: the retro offer, the board tile's
-   * ladder and the console's Workflows tab each speak about one run, and a multi-repo
-   * session's newest is the right one for all three. Every surface that must not miss a
-   * sibling - the held join, the bind affordance, the chips - reads the list.
-   */
-  const workflowRunBySession = useMemo(() => {
-    const bySession = new Map<string, (typeof workflowRuns)[number]>();
-    for (const [sessionId, runs] of workflowRunsBySession) {
-      const newest = runs.reduce((best, run) => (run.updatedAt > best.updatedAt ? run : best));
-      bySession.set(sessionId, newest);
-    }
-    return bySession;
-  }, [workflowRunsBySession]);
-
-  /**
    * The workflow each live conversation is armed with, keyed by session.
    *
    * Only `active` bindings: orphaned and paused ones still exist and still describe the
@@ -1505,13 +1456,18 @@ export function App(): React.JSX.Element {
   // The same filter over the board's Backlog column. A backlog item is a card the
   // operator is looking at, so the one filter box has to narrow it too - it used to
   // read straight off the unfiltered task list, which left "ghostty" showing all
-  // fourteen items while the session grid beside it narrowed to none.
+  // fourteen items while the session layout beside it narrowed to none.
   const visibleBacklog = useMemo(() => {
     const q = filter.trim().toLowerCase();
     const items = backlogTasks(tasks);
     if (!q) return items;
     return items.filter((t) => matchesTaskFilter(t, q));
   }, [tasks, filter]);
+
+  // Dispatched, not yet standing on a session. Deliberately NOT narrowed by `filter`: this
+  // is the answer to "did my dispatch land?", asked in the seconds after pressing Dispatch,
+  // and a filter left over from browsing the fleet must not make the reply look like "no".
+  const dispatchingTasks = useMemo(() => provisioningTasks(tasks), [tasks]);
 
   const counts = useMemo(() => summarize(sessions), [sessions]);
   const pendingReviews = reviews.filter((r) => r.status === "pending");
@@ -1548,7 +1504,7 @@ export function App(): React.JSX.Element {
     for (const summary of ensembleSummaries) map.set(summary.id, summary);
     return map;
   }, [ensembleSummaries]);
-  // The same shape for the other kind of run a card can sit under - an external engine's
+  // The same shape for the other kind of run a session can sit under: an external engine's
   // pipeline - keyed by `pipelineRunKey` because that is what a session's own link
   // reconstitutes and what `orderSessions` buckets by. EMPTY on every fleet observing no
   // engine, which is the map every consumer of it is written to fall back from.
@@ -1616,36 +1572,29 @@ export function App(): React.JSX.Element {
     [fleet],
   );
 
-  // What "expanded" means depends on the layout, so App resolves it once here rather
-  // than leaving each view to force the prop:
-  //   grid    - focus mode: at most one card, toggled, usually none.
-  //   console - the detail pane IS the expanded card, so it's whatever is selected.
-  //   board   - the console detail is separate from the arrow-key cursor; Enter or a
-  //             click opens it, and what it opens is the cursor's session.
-  // Keeping the state honest (rather than overriding `expanded` at the call site) is
-  // what lets Escape, Enter and the card's own toggle all agree.
+  // Console's detail is its selection. Board keeps its detail separate from the arrow-key
+  // cursor; Enter or a click opens it, and what it opens is the cursor's session.
   const boardOpenId = boardOpen ? selectedId : null;
-  const expandedForView =
-    layout === "grid" ? expandedId : layout === "board" ? boardOpenId : selectedId;
+  const detailId = layout === "board" ? boardOpenId : selectedId;
 
   // A tab request is an instruction for the detail currently on screen, not a saved tab
   // preference. Leaving that detail consumes it so returning to the session later starts
   // on Conversation as usual.
   useEffect(() => {
     setFileTabRequest((request) =>
-      request && request.sessionId !== expandedForView ? null : request,
+      request && request.sessionId !== detailId ? null : request,
     );
-  }, [expandedForView]);
+  }, [detailId]);
   useEffect(() => {
     setDiffTabRequest((request) =>
-      request && request.sessionId !== expandedForView ? null : request,
+      request && request.sessionId !== detailId ? null : request,
     );
-  }, [expandedForView]);
+  }, [detailId]);
   useEffect(() => {
     setWorkflowsTabRequest((request) =>
-      request && request.sessionId !== expandedForView ? null : request,
+      request && request.sessionId !== detailId ? null : request,
     );
-  }, [expandedForView]);
+  }, [detailId]);
 
   const modalSession = reviewSessionId ? sessions.find((s) => s.id === reviewSessionId) : null;
   const modalReviews = modalSession
@@ -1716,7 +1665,6 @@ export function App(): React.JSX.Element {
     : null;
   const selected = selectedId ? visible.find((s) => s.id === selectedId) ?? null : null;
   const visibleSelectedId = selected?.id ?? null;
-  const diffSession = diffSessionId ? sessions.find((s) => s.id === diffSessionId) ?? null : null;
   const resetSession = resetSessionId ? sessions.find((s) => s.id === resetSessionId) ?? null : null;
   const completeSession = completeSessionId
     ? sessions.find((s) => s.id === completeSessionId) ?? null
@@ -1762,12 +1710,11 @@ export function App(): React.JSX.Element {
             setBoardOpen(true);
           }
         : setSelectedId,
-    // Selection alone, with no drill-in and no expansion, on every layout. The board is the
+    // Selection alone, with no drill-in. The board is the
     // one caller today (a tile's workflow panel), and it wants exactly what an arrow key does.
     onCursorTo: setSelectedId,
     onDeselect: layout === "board" ? () => setBoardOpen(false) : () => setSelectedId(null),
-    expandedId: expandedForView,
-    onToggleExpand: toggleExpand,
+    detailId,
     onOpenReviews: setReviewSessionId,
     onOpenDiff: openDiff,
     onOpenFiles: setFilesSessionId,
@@ -1835,12 +1782,12 @@ export function App(): React.JSX.Element {
   // Drop selection / collapse / close the diff if the session disappears
   // (exited + reaped, etc.).
   //
-  // The rename editor lives inside a card, so it reconciles against `visible` -
-  // the list the grid actually renders - rather than every known session. A card
-  // that leaves the filter (its status label is part of the haystack, so an agent
+  // The rename editor lives inside a session detail, so it reconciles against `visible`
+  // rather than every known session. A session that leaves the filter (its status label
+  // is part of the haystack, so an agent
   // going idle is enough) unmounts its editor without an unmount-time onBlur, and
   // nothing else would ever clear `renamingId`; the stand-down guard below would
-  // then swallow every grid shortcut for good. The overlay ids stay on `sessions`
+  // then swallow every session shortcut for good. The overlay ids stay on `sessions`
   // because their modals are bound to a session, not to a mounted card.
   useEffect(() => {
     if (selectedId && !sessions.some((s) => s.id === selectedId)) {
@@ -1849,7 +1796,6 @@ export function App(): React.JSX.Element {
       // re-open on whatever the cursor landed on next.
       setBoardOpen(false);
     }
-    if (expandedId && !sessions.some((s) => s.id === expandedId)) setExpandedId(null);
     for (const bound of sessionBoundOverlays) {
       if (bound.sessionId && !sessions.some((s) => s.id === bound.sessionId)) bound.close();
     }
@@ -1857,12 +1803,12 @@ export function App(): React.JSX.Element {
       if (!sessions.some((session) => session.id === id)) files.drop(id);
     }
     if (renamingId && !visible.some((s) => s.id === renamingId)) setRenamingId(null);
-  }, [sessions, visible, selectedId, expandedId, sessionBoundOverlays, renamingId, files.sessions, files.drop]);
+  }, [sessions, visible, selectedId, sessionBoundOverlays, renamingId, files.sessions, files.drop]);
 
-  // Keep the keyboard-selected card in view as selection moves.
+  // Keep the keyboard-selected session in view as selection moves.
   useEffect(() => {
     if (!selectedId) return;
-    cardEls.current.get(selectedId)?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    sessionEls.current.get(selectedId)?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [selectedId]);
 
   // The Console's keyboard lands on the rail whenever the selection or the layout
@@ -1887,15 +1833,15 @@ export function App(): React.JSX.Element {
     const id = pendingTileFocus.current;
     pendingTileFocus.current = null;
     if (!id || id !== selectedId) return;
-    cardEls.current
+    sessionEls.current
       .get(id)
       ?.querySelector<HTMLElement>("button.tile-open")
       ?.focus({ preventScroll: true });
   }, [selectedId]);
 
-  // Fit the topbar to one row, and publish the height it settles at as `--topbar-h` so a
-  // focus-expanded card can size itself to exactly fill the screen beneath the sticky bar.
-  // See `topbarLadder.ts` for why the rungs are measured rather than keyed on a width.
+  // Fit the topbar to one row, and publish the height it settles at as `--topbar-h` for
+  // the full-height Console and Board shells. See `topbarLadder.ts` for why the rungs are
+  // measured rather than keyed on a width.
   //
   // After EVERY render, not once on mount: the bar's width requirement is a function of its
   // content, and its content is the fleet. A session arriving adds a pulse segment, which is
@@ -1909,14 +1855,6 @@ export function App(): React.JSX.Element {
   // `observeTopbar`, with the reasoning, because telling those apart from the fit's own
   // settling is the subtle part and it belongs beside the fit.
   useEffect(() => (topbarRef.current ? observeTopbar(topbarRef.current) : undefined), []);
-
-  // When a card enters focus mode, lift it to the top of the viewport (just under
-  // the sticky topbar) so its now-full-screen conversation and reply box land
-  // fully in view. Collapsing (expandedId -> null) leaves the scroll position alone.
-  useEffect(() => {
-    if (!expandedId) return;
-    cardEls.current.get(expandedId)?.scrollIntoView({ block: "start", behavior: "smooth" });
-  }, [expandedId]);
 
   // The palette does NOT close when the page changes - that is the whole difference between
   // it and the settings-only search it replaced. It navigates for a living, and a row that
@@ -2056,15 +1994,15 @@ export function App(): React.JSX.Element {
         return;
       }
 
-      // Stand down while any overlay owns the screen (or a card's title is being
-      // edited), so grid shortcuts don't drive a background card behind it.
+      // Stand down while any overlay owns the screen (or a session title is being
+      // edited), so layout shortcuts don't drive a background session behind it.
       if (overlaysRef.current.anyOpen || renamingId) return;
 
       // Escape closes the Line's drawer, but only while the keyboard is INSIDE it or on the
       // strip that opened it.
       //
       // Scoped by focus rather than taken unconditionally, because Escape on this page is
-      // already a ladder that peels one layer at a time - expanded card, then reader, then
+      // already a ladder that peels one layer at a time - session detail, then reader, then
       // board drill-in, then selection - and the drawer is not above any of those. It is
       // beside them. A drawer left open while you work in the console reader must not eat
       // the Escape that hands the keyboard back to the rail; a drawer you are reading must
@@ -2134,7 +2072,7 @@ export function App(): React.JSX.Element {
       // message. The selection case is already settled at the top of this handler and must
       // not be re-implemented here.
       //
-      // It runs against the selected card's own bar, which is the same handle the
+      // It runs against the selected session's own bar, which is the same handle the
       // `BAR_ACTIONS` dispatch below reaches; with no bar mounted there is no composer to
       // have been typing in, so the guard takes it.
       if (typing && chord === bindings.interrupt && chordHasCommandModifier(chord)) {
@@ -2148,7 +2086,7 @@ export function App(): React.JSX.Element {
 
       if (typing) return;
 
-      // Global chords that don't need a selected card. Kept above the empty-grid
+      // Global chords that don't need a selected session. Kept above the empty-fleet
       // guard so dispatch still opens when there are no sessions yet.
       if (chord === bindings.dispatch) {
         e.preventDefault();
@@ -2169,18 +2107,8 @@ export function App(): React.JSX.Element {
       // Fixed structural navigation (not rebindable).
       switch (e.key) {
         case "Escape":
-          // Peel back one layer at a time: collapse an expanded card first, then
-          // (on a second press) cancel any pending action and drop the selection.
-          //
-          // Grid focus and the board drill-in each sit above selection. Closing either
-          // leaves the keyboard cursor parked on the card it came from.
-          if (layout === "grid" && expandedId) {
-            e.preventDefault();
-            setExpandedId(null);
-            return;
-          }
-          // The reader (console detail or board drill-in) sits above the selection the way
-          // grid focus does: if the keyboard is inside it, one Escape hands it back to the
+          // The reader (console detail or board drill-in) sits above the selection: if the
+          // keyboard is inside it, one Escape hands it back to the
           // rail, and only the NEXT closes the board drill-in or drops the selection.
           if (readerSession && target?.closest(".cdetail")) {
             e.preventDefault();
@@ -2219,7 +2147,6 @@ export function App(): React.JSX.Element {
             key: e.key as ArrowKey,
             ids,
             currentId: selectedId,
-            cols: columnCount(gridRef.current),
             columns: boardColumns,
           });
           if (nextId) {
@@ -2245,23 +2172,14 @@ export function App(): React.JSX.Element {
             setBoardOpen(true);
             return;
           }
-          // Cards keeps its conversation in an in-place focus expansion. Enter owns that
-          // structural reveal now; the rebindable expand action is reserved for the Board
-          // tile's workflow ladder below.
-          if (layout === "grid") {
-            e.preventDefault();
-            pendingReplyFocus.current = expandedId === selectedId ? null : selectedId;
-            toggleExpand(selectedId);
-            return;
-          }
           break;
       }
 
-      // Actions on the selected card.
+      // Actions on the selected session.
       if (chord === bindings.expand) {
         // This action is the Board card's in-place workflow disclosure only. It never
         // opens Conversation (Enter owns the drill-in), never closes an open drill-in,
-        // and stays unclaimed where there is no selected card with a bound workflow.
+        // and stays unclaimed where there is no selected session with a bound workflow.
         if (layout !== "board" || boardOpen || !selectedId) return;
         const disclosure = workflowDisclosureHandles.current.get(selectedId);
         if (!disclosure) return;
@@ -2278,15 +2196,11 @@ export function App(): React.JSX.Element {
         const reveal = conversationReveal({
           layout,
           hasSelection: sel != null,
-          selectedIsExpanded: sel != null && expandedId === sel.id,
           boardDetailOpen: boardOpen,
         });
         if (reveal === "none" || !sel) return;
         e.preventDefault();
-        // `already` deliberately falls through all three: the conversation is on screen,
-        // and this chord reveals rather than toggles.
-        if (reveal === "expand") toggleExpand(sel.id);
-        else if (reveal === "drill-in") setBoardOpen(true);
+        if (reveal === "drill-in") setBoardOpen(true);
         else if (reveal === "tab") requestConversationTab(sel.id);
         return;
       }
@@ -2307,13 +2221,11 @@ export function App(): React.JSX.Element {
         const reveal = conversationReveal({
           layout,
           hasSelection: true,
-          selectedIsExpanded: expandedId === sel.id,
           boardDetailOpen: boardOpen,
         });
         if (reveal === "none") return;
         pendingFind.current = sel.id;
-        if (reveal === "expand") toggleExpand(sel.id);
-        else if (reveal === "drill-in") setBoardOpen(true);
+        if (reveal === "drill-in") setBoardOpen(true);
         else if (reveal === "tab") requestConversationTab(sel.id);
         return;
       }
@@ -2326,28 +2238,17 @@ export function App(): React.JSX.Element {
       if (chord === bindings.files) {
         const sel = selectedId ? visible.find((s) => s.id === selectedId) : null;
         if (!sel?.cwd) return;
-        // Cards has no tab strip, so its expanded editor is the extracted workspace.
-        // Console and the Board drill-in reveal their shared integrated Files tab.
-        const gridExpanded = layout === "grid" && expandedId === sel.id;
         const detailOpen = layout === "console" || (layout === "board" && boardOpen);
-        if (!gridExpanded && !detailOpen) return;
+        if (!detailOpen) return;
         e.preventDefault();
-        if (layout === "grid") {
-          files.ensure(sel.id);
-          setFilesSessionId(sel.id);
-        } else {
-          requestFilesTab(sel.id);
-        }
+        requestFilesTab(sel.id);
         return;
       }
       // "Show me how this session's run is going" - the Workflows tab, which holds both the
-      // workflow ladder. Unlike the conversation, this surface has
-      // no Cards equivalent to fall back to (that layout draws no tab strip and never
-      // mounted the ladder), so the chord is left unclaimed there rather than swallowed to
-      // no effect - the fleet-wide Workflows page on `w` is what Cards has instead.
+      // workflow ladder.
       if (chord === bindings.sessionWorkflows) {
         const sel = selectedId ? visible.find((s) => s.id === selectedId) : null;
-        if (!sel || layout === "grid") return;
+        if (!sel) return;
         e.preventDefault();
         // The board's overview shows tiles, not the detail that owns the tab, so drill in
         // first - the same reveal-then-act `openDiff` performs for the Diff tab.
@@ -2374,7 +2275,7 @@ export function App(): React.JSX.Element {
       }
       // Hard-resets the selected session's checkout to origin's default branch and
       // clears its context - a "start this checkout over" chord, confirmed first by
-      // ResetModal. Needs a card with a working dir; without one we leave the chord
+      // ResetModal. Needs a session with a working dir; without one we leave the chord
       // alone, so the default Ctrl+R still falls through to a harmless browser reload.
       if (chord === bindings.reset) {
         const sel = selectedId ? visible.find((s) => s.id === selectedId) : null;
@@ -2385,7 +2286,7 @@ export function App(): React.JSX.Element {
       }
       // The review queue. The same click the attention-toned badge on the card performs,
       // and deliberately the same TARGET rule: the selected session when it is the one
-      // asking, otherwise the first session in grid order that is. Unclaimed - no
+      // asking, otherwise the first session in fleet order that is. Unclaimed - no
       // `preventDefault` - when nothing anywhere is waiting, so a bare `e` on a quiet
       // fleet stays the browser's.
       if (chord === bindings.review) {
@@ -2420,15 +2321,13 @@ export function App(): React.JSX.Element {
           }
         }
 
-        // Cards mount the toolbar only when expanded; the Board overview only after it
-        // drills in; Console and an already-open Board detail may be sitting on another
+        // The Board overview mounts the toolbar only after it drills in. Console and an
+        // already-open Board detail may be sitting on another
         // tab. Reveal Conversation in the appropriate vocabulary, then registration runs
         // the exact button action rather than choosing a terminal backend on the user's
         // behalf.
         pendingLauncherAction.current = { id: sel.id, run };
-        if (layout === "grid") {
-          if (expandedId !== sel.id) toggleExpand(sel.id);
-        } else if (layout === "board" && !boardOpen) {
+        if (layout === "board" && !boardOpen) {
           setBoardOpen(true);
         } else {
           requestConversationTab(sel.id);
@@ -2497,7 +2396,7 @@ export function App(): React.JSX.Element {
     // every render. It is safe to close over because everything it reads that can go stale
     // - `navigate` and `layout` - is already a dependency here, so the copy this listener
     // holds is rebuilt whenever either of them moves.
-  }, [visible, selectedId, selected, consoleZone, expandedId, boardOpen, renamingId, toggleExpand, bindings, layout, files.ensure, requestFilesTab, requestConversationTab, requestWorkflowsTab, showLauncherFocusError, openDiff, route.page, navigate, focusReaderRail, focusReaderBody, closeLineDrawer]);
+  }, [visible, selectedId, selected, consoleZone, boardOpen, renamingId, bindings, layout, files.ensure, requestFilesTab, requestConversationTab, requestWorkflowsTab, showLauncherFocusError, openDiff, route.page, navigate, focusReaderRail, focusReaderBody, closeLineDrawer]);
 
   // Run the chord the board's overview had to open a detail for. Deferred for the same
   // reason as the reply focus below - the action bar it drives mounts on the render this
@@ -2509,18 +2408,6 @@ export function App(): React.JSX.Element {
     if (!pending || pending.id !== boardOpenId) return;
     actionHandles.current.get(pending.id)?.[pending.run]();
   }, [boardOpenId]);
-
-  // Land the cursor in a card expanded with Enter. The panel that renders
-  // it mounts on the render this effect trails, so a synchronous focus in the chord
-  // handler would find no box - the wait is the whole reason this is deferred here.
-  // Routed through the SAME `startSend` the `s` shortcut uses, so an unavailable
-  // transcript falls back to the card's own compose box exactly as it does there,
-  // and the panel still never grabs focus on its own.
-  useEffect(() => {
-    const id = pendingReplyFocus.current;
-    pendingReplyFocus.current = null;
-    if (id && expandedId === id) actionHandles.current.get(id)?.startSend();
-  }, [expandedId]);
 
   /**
    * Record which asset a Library surface has open, in the address bar, without a history
@@ -3111,6 +2998,13 @@ export function App(): React.JSX.Element {
           onStage={onLineStage}
         />
 
+        {/* Dispatched, still provisioning. Here for the Line's reason and in the Line's slot:
+            above every layout and outside the `layoutHasContent` gate, because the state it
+            reports on is exactly the one where the board below has nothing to show yet - a
+            first dispatch onto a quiet fleet. It draws nothing at all when the list is empty,
+            so the steady-state page is unchanged. */}
+        <StartingStrip tasks={dispatchingTasks} />
+
         {/* The drawer, between the strip and the layouts and a sibling of both. It pushes
             the board down and hands the space back on close; the cards below are the same
             cards at the same size in every state, which is the one thing this whole surface
@@ -3195,31 +3089,14 @@ export function App(): React.JSX.Element {
 
             "Nothing" is per-layout, though. The board draws the Backlog column, which is
             content the other two have no place for, so a filter matching only backlog
-            items leaves the board with something to arrange and grid/console with none.
+            items leaves the board with something to arrange and Console with none.
             Reading `visible` alone here is what hid a task named "P5: Ghostty terminal
             emulator adapter" the moment you typed "ghostty". */}
         {layoutHasContent && (
           <>
-            {layout === "grid" && <GridView {...viewProps} gridRef={gridRef} />}
             {layout === "console" && <ConsoleView {...viewProps} />}
             {layout === "board" && <BoardView {...viewProps} />}
           </>
-        )}
-
-        {diffSession && (
-          <DiffViewer
-            session={diffSession}
-            commit={diffCommit}
-            onClose={closeDiff}
-            // Cards have no Files tab, so `openSessionPath` opens the Files WINDOW here.
-            // The diff has to stand down first or it sits on top of the file it just
-            // asked for - the one case where opening a file also closes something.
-            onOpenInFiles={(path) => {
-              const sessionId = diffSession.id;
-              closeDiff();
-              openSessionPath(sessionId, path);
-            }}
-          />
         )}
 
         {filesSession && (
@@ -3234,12 +3111,8 @@ export function App(): React.JSX.Element {
             onChoose={(path) => {
               files.select(filePickerSession.id, path);
               closeFilePicker();
-              if (layout === "grid") {
-                setFilesSessionId(filePickerSession.id);
-              } else {
-                if (layout === "board") setBoardOpen(true);
-                requestFilesTab(filePickerSession.id);
-              }
+              if (layout === "board") setBoardOpen(true);
+              requestFilesTab(filePickerSession.id);
             }}
           />
         )}
@@ -3280,7 +3153,13 @@ export function App(): React.JSX.Element {
           />
         )}
 
-        {sessions.length === 0 && (
+        {/* Not while something is starting. A dispatch that has been accepted but has not
+            bound its session yet is already drawn in the Starting strip above, and this
+            screen would sit directly under it saying the opposite - "No agent sessions
+            detected", telling the operator to go start one by hand in the seconds after they
+            asked for exactly that. Same rule the filter's empty state below already follows:
+            never report nothing while the something is on screen. */}
+        {sessions.length === 0 && dispatchingTasks.length === 0 && (
           <div className="empty">
             <p className="empty-title">No agent sessions detected</p>
             {/* Names the harnesses off the union, not by hand: an operator running an
@@ -3318,32 +3197,6 @@ export function App(): React.JSX.Element {
           </div>
         )}
 
-        {/* Grid only. The bar floats fixed over the bottom of the page, which is empty
-            space under a scrolling grid but is exactly where the console's detail pane and
-            the board's drill-in keep their reply box - it would sit on top of the control it
-            is advertising. Both of those layouts show the selected session's ActionBar
-            permanently instead, and every shortcut still works. */}
-        {selected && layout === "grid" && (
-          <CommandBar
-            session={selected}
-            bindings={bindings}
-            expanded={expandedId === selected.id}
-            onToggleExpand={() => toggleExpand(selected.id)}
-            onAction={(a) => actionHandles.current.get(selected.id)?.[a]()}
-            onDiff={() => openDiff(selected.id)}
-            onFiles={() => {
-              files.ensure(selected.id);
-              setFilesSessionId(selected.id);
-            }}
-            onFilePicker={() => {
-              files.ensure(selected.id);
-              setFilePickerSessionId(selected.id);
-            }}
-            onReset={() => setResetSessionId(selected.id)}
-            onRename={() => setRenamingId(selected.id)}
-            onDeselect={() => setSelectedId(null)}
-          />
-        )}
             </>
           )}
           overlays={(
@@ -3539,204 +3392,9 @@ export function App(): React.JSX.Element {
 }
 
 /**
- * Floating hint bar for the keyboard-selected session: names it and surfaces the
- * available shortcuts (also clickable). Actions are hidden for exited sessions,
- * which have no controls to drive.
- */
-function CommandBar({
-  session,
-  bindings,
-  expanded,
-  onToggleExpand,
-  onAction,
-  onDiff,
-  onFiles,
-  onFilePicker,
-  onReset,
-  onRename,
-  onDeselect,
-}: {
-  session: Session;
-  bindings: Record<ActionId, string>;
-  expanded: boolean;
-  onToggleExpand: () => void;
-  onAction: (
-    action:
-      | "startSend"
-      | "focusPane"
-      | "handoff"
-      | "toggleQueue"
-      | "cycleMode"
-      | "requestInterrupt"
-      | "requestKill",
-  ) => void;
-  onDiff: () => void;
-  onFiles: () => void;
-  onFilePicker: () => void;
-  onReset: () => void;
-  onRename: () => void;
-  onDeselect: () => void;
-}): React.JSX.Element {
-  const live = session.state !== "exited" && session.state !== "stopping";
-  // The shortcut represents Shift+Tab, so menu-based permission controls stay on their card
-  // picker rather than receiving a keystroke their TUI gives another meaning - the shared
-  // `canCycleMode` is the same gate the keydown handler and the ActionBar button use.
-  const showCycleMode = canCycleMode(session);
-  const canRename = canRenameSession(session);
-  const barRef = useRef<HTMLDivElement>(null);
-
-  // The bar floats fixed over the bottom of the page, so it hides whatever
-  // scrolls underneath it - the tail of an expanded card, its compose box, etc.
-  // Reserve exactly its footprint (height + its bottom offset + a little air) as
-  // page-bottom padding so every card can always scroll clear of it. Measured
-  // live because the bar wraps taller on narrow screens; cleared on deselect.
-  useEffect(() => {
-    const bar = barRef.current;
-    if (!bar) return;
-    const root = document.documentElement;
-    const apply = (): void => {
-      root.style.setProperty("--cmdbar-clearance", `${bar.offsetHeight + 36}px`);
-    };
-    apply();
-    const ro = new ResizeObserver(apply);
-    ro.observe(bar);
-    return () => {
-      ro.disconnect();
-      root.style.removeProperty("--cmdbar-clearance");
-    };
-  }, []);
-
-  return (
-    <div ref={barRef} className="cmdbar" role="toolbar" aria-label="Selected session actions">
-      <span className="cmdbar-name">
-        <AgentDot agent={session.agent} />
-        <span className="cmdbar-name-text">{session.name || "(unnamed)"}</span>
-      </span>
-      <span className="cmdbar-keys">
-        {live && (
-          <>
-            <Tooltip label="Type a message into this session's prompt">
-              <button className="keycap-btn" onClick={() => onAction("startSend")}>
-                <kbd>{formatChord(bindings.send)}</kbd> send
-              </button>
-            </Tooltip>
-            {/* One slot, two answers, because they are the same intent: get me to this
-                session in a terminal. A pane-backed one is already there and only needs
-                raising; an embedded one has no pane until this makes it one. */}
-            {session.runtime === "sdk" ? (
-              <Tooltip label="Stop the embedded driver and reopen this conversation in a terminal - one way">
-                <button className="keycap-btn" onClick={() => onAction("handoff")}>
-                  <kbd>{formatChord(bindings.handoff)}</kbd> terminal
-                </button>
-              </Tooltip>
-            ) : (
-              <Tooltip label="Bring this session's terminal pane to the front">
-                <button className="keycap-btn" onClick={() => onAction("focusPane")}>
-                  <kbd>{formatChord(bindings.focus)}</kbd> focus
-                </button>
-              </Tooltip>
-            )}
-            <Tooltip label="Show or hide this session's work queue">
-              <button className="keycap-btn" onClick={() => onAction("toggleQueue")}>
-                <kbd>{formatChord(bindings.queue)}</kbd> queue
-              </button>
-            </Tooltip>
-            {showCycleMode && (
-              <Tooltip label="Cycle this session's permission mode">
-                <button className="keycap-btn" onClick={() => onAction("cycleMode")}>
-                  <kbd>{formatChord(bindings.mode)}</kbd> mode
-                </button>
-              </Tooltip>
-            )}
-            {canRename && (
-              <Tooltip label="Rename this session's tab">
-                <button className="keycap-btn" onClick={onRename}>
-                  <kbd>{formatChord(bindings.rename)}</kbd> rename
-                </button>
-              </Tooltip>
-            )}
-            {/* Conditional like `mode` and `rename` above rather than standing chrome: this
-                strip is a row of offers, and a key that does nothing on an idle agent is
-                worse here than absent, because there is no tooltip-carrying disabled state
-                in a bar made entirely of keycaps. The shared gate is the same one the card's
-                button reads. */}
-            {canInterruptSession(session) && (
-              <Tooltip label="Stop what this agent is doing now and drop its queued messages">
-                <button className="keycap-btn" onClick={() => onAction("requestInterrupt")}>
-                  <kbd>{formatChord(bindings.interrupt)}</kbd> interrupt
-                </button>
-              </Tooltip>
-            )}
-            <Tooltip label="Terminate this agent">
-              <button className="keycap-btn" onClick={() => onAction("requestKill")}>
-                <kbd>{formatChord(bindings.kill)}</kbd> kill
-              </button>
-            </Tooltip>
-          </>
-        )}
-        {session.cwd && (
-          <>
-            <Tooltip label="View this checkout's changes vs its source branch">
-              <button className="keycap-btn" onClick={onDiff}>
-                <kbd>{formatChord(bindings.diff)}</kbd> diff
-              </button>
-            </Tooltip>
-            {expanded && (
-              <Tooltip label="Browse and edit this checkout's files">
-                <button className="keycap-btn" onClick={onFiles}>
-                  <kbd>{formatChord(bindings.files)}</kbd> files
-                </button>
-              </Tooltip>
-            )}
-            <Tooltip label="Jump to a file in this checkout by name">
-              <button className="keycap-btn" onClick={onFilePicker}>
-                <kbd>{formatChord(bindings.filePicker)}</kbd> find file
-              </button>
-            </Tooltip>
-          </>
-        )}
-        {live && session.cwd && (
-          <Tooltip label="Reset the checkout to origin's default branch and clear the agent's context">
-            <button className="keycap-btn" onClick={onReset}>
-              <kbd>{formatChord(bindings.reset)}</kbd> reset
-            </button>
-          </Tooltip>
-        )}
-        <Tooltip
-          label={
-            expanded
-              ? "Collapse this session's detail (Enter)"
-              : "Expand this session's detail (Enter)"
-          }
-        >
-          <button className="keycap-btn" onClick={onToggleExpand}>
-            <kbd>↵</kbd> {expanded ? "collapse" : "expand"}
-          </button>
-        </Tooltip>
-        <span className="cmdbar-hint">
-          <kbd>↑↓←→</kbd> move
-          <Tooltip label={expanded ? "Collapse this session's detail" : "Clear the current selection"}>
-            <button className="keycap-btn" onClick={expanded ? onToggleExpand : onDeselect}>
-              <kbd>esc</kbd> {expanded ? "collapse" : "deselect"}
-            </button>
-          </Tooltip>
-        </span>
-      </span>
-    </div>
-  );
-}
-
-/** Live column count of the responsive card grid, read from resolved tracks. */
-function columnCount(grid: HTMLElement | null): number {
-  if (!grid) return 1;
-  const tracks = getComputedStyle(grid).gridTemplateColumns.split(" ").filter(Boolean);
-  return Math.max(1, tracks.length);
-}
-
-/**
- * True when a session matches the nav-bar filter. Matches on the card's title,
+ * True when a session matches the nav-bar filter. Matches on the session title,
  * its human status *label* ("running", "needs input", "working", …), and the
- * agent type - so typing "codex", "idle", or a repo name all narrow the grid.
+ * agent type - so typing "codex", "idle", or a repo name all narrow the fleet.
  * Deliberately uses the display label, not the raw `state`: a passively-discovered
  * session's raw state is "working" even though its badge reads "running", so
  * matching raw state would make "working" hit every alive session.

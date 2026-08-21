@@ -31,6 +31,14 @@ daemon:
 If either launch path cannot prove it started as requested, dispatch fails instead of
 calling an unverified task running.
 
+Whichever path a launch takes, the agent receives the whole composed prompt - your request
+plus the repository manifest, the execution authorization, the kind's contract and Pi's
+memory pointer - and the harness records it in its own transcript file unchanged. The
+dashboard's conversation window is the one place that reads differently: it shows your task
+request as that first turn and leaves the platform-owned context out. See
+[the first turn of a dispatched session](sessions.md#the-first-turn-of-a-dispatched-session-shows-your-request-not-the-whole-launch-prompt)
+for what is and is not covered by that, and for why no evidence path is affected.
+
 An enabled conductor repository offers one different launch owner: **pipeline**. It creates
 the ordinary durable task row, derives conductor's canonical idea slug, and stores that exact
 provider run identity before it starts the configured Engineer host. Dispatch refuses an intent
@@ -342,7 +350,7 @@ updates to the model's a beat later. If `claude` is
 missing, logged out, or slow, that first-line title just stands - nothing breaks, and the
 dispatch still goes.
 
-The new session then shows up on the grid like any other, with an **intent chip** for the
+The new session then shows up in the fleet like any other, with an **intent chip** for the
 task it is running. A terminal-runtime session stays out of the way until you click
 **Focus**; an Agent SDK session has no tab and offers **Continue in terminal** instead.
 Choose **Add to backlog** instead of **Dispatch now** to shelve a task without launching
@@ -360,7 +368,7 @@ Which means the chip is often not drawn at all, and that is the point rather tha
 omission: an ordinary running ship task on the session it named has nothing to add to the
 name above it, and an empty tinted bar says less than no bar. It appears as soon as it is
 carrying something - a chosen kind, a title the session's name does not hold, the
-[recurring-mission](recurring-missions.md) origin mark, the merge outcome, or (on Cards)
+[recurring-mission](recurring-missions.md) origin mark, the merge outcome, or
 a `dispatching…` or `failed` word - and it carries the task's status as its colour
 whenever it is there.
 
@@ -397,8 +405,8 @@ waiting for, and neither manual launch, drag-to-assign, nor Foreman can start it
 Reopen the backlog task to add or remove dependencies; cycles are refused.
 
 Closing the dispatch form (<kbd>Esc</kbd>, a backdrop click, **Cancel**, or the ✕) **keeps
-what you've typed** - reopen and a half-written task is still there, so you can glance at
-the grid mid-thought without losing it. The draft is cleared only once the task is actually
+what you've typed** - reopen and a half-written task is still there, so you can leave the
+form mid-thought without losing it. The draft is cleared only once the task is actually
 dispatched or queued, or when you hit **Clear** to start a fresh one - either way the form
 comes back seeded with that repo, not blank. A submit that fails leaves the form open with
 your fields intact so you can retry.
@@ -438,7 +446,7 @@ checkout` naming the path; task-source sweeps report the same refusal in their r
 
 ### Hand a shelved task to an agent that's already running
 
-On the [Board](ui.md#layout-cards-console-or-board), **drag a backlog card onto an idle
+On the [Board](ui.md#layout-console-or-board-in-settings), **drag a backlog card onto an idle
 agent with live hook instrumentation** in the same repo and it starts there instead of in
 a new worktree. A passively confirmed Codex session can appear in the Idle column without
 lighting up as a drop target: the rollout proves its displayed state, but not that the
@@ -500,7 +508,7 @@ readable afterwards rather than a single row overwritten four times.
 ### Edit a shelved task
 
 **Click a backlog task and it opens back up in the form that wrote it** - on the
-[Board](ui.md#layout-cards-console-or-board)'s backlog column, by its name in the
+[Board](ui.md#layout-console-or-board-in-settings)'s backlog column, by its name in the
 [Roundup](attention-and-alerts.md#roundup) panel, or by its title in the Line's
 [Backlog drawer](ui.md#the-stage-drawers). Every field is editable, including its dependencies and more
 screenshots dropped onto it. Put **Model** or **Effort** back on its named **Default - …**
@@ -564,6 +572,17 @@ the row, next to Mark done, which refuses to discard work for the same reason. A
 never had a worktree of its own - one you handed to an agent that was already running - has
 nothing to collect and says nothing about cleanup.
 
+That reprieve is not indefinite. A terminal task's checkouts are removed automatically once
+**30 days pass without a Git-visible change** in any of them - see
+[task worktree retention](worktrees-and-checks.md#task-worktree-retention). Uncommitted,
+untracked and unpushed work is deleted at that boundary, and any change to a tree resets the
+clock for the whole task. **Clean up** works exactly as before throughout the window, and when
+the automatic cleanup succeeds the row's cleanup control simply disappears from every open
+dashboard. If a due cleanup cannot finish - a provider refuses, a process still holds the
+tree, a checkout cannot be read - the resources stay recorded, the row says the cleanup is
+retrying, and it retries with backoff. That note never replaces the task's own outcome or
+failure reason.
+
 With no recorded merge, `failed` is the honest reading rather than a flattering one: an
 agent that finished and exited looks exactly like one that crashed, and the only thing
 actually observed is that the session went away without an outcome being recorded. Mark a
@@ -573,7 +592,11 @@ request is later observed to merge, it is
 [upgraded to done](inspector-and-shipping.md#a-merge-that-lands-when-nobody-is-watching).
 
 The same reconciliation runs against the first process sweep after a restart, which is what
-catches a task whose agent died while the daemon was down.
+catches a task whose agent died while the daemon was down. A restart settles that task and
+keeps every checkout it holds - it does not free one on the spot, because a reboot is not
+evidence that anybody is finished with the work in a tree. The retention clock a checkout
+already had survives the settlement rather than restarting, so a daemon restarted every day
+cannot postpone cleanup forever.
 
 ### Hold a backlog item back
 

@@ -192,8 +192,14 @@ change them cheaply. That ordering is deliberate - see the entry on `addColumn` 
 8. **Routes in `src/server/routes.ts`**: create, list, delete, reorder, **queue a thread**
    (the `queueFileCommentThread` pair above - phase 2 calls this one route rather than composing
    the status and reorder routes), **append a message**,
-   **edit an undelivered message's body**, **mark a thread read**, and **set a thread's status** - the last is what phase 2's resolve control and phase
-   4's `addressed` both post to, and without it "edit" means the body only and neither can land.
+   **edit an undelivered message's body**, **mark a thread read**, and **set a thread's status** -
+   the last is what phase 2's resolve control posts to, and without it "edit" means the body only
+   and resolving cannot land.
+   - **`addressed` does not go through the status route, and gets no route here.** It is
+     `markFileCommentThreadAddressed` above, called inside phase 4's own reply route in the same
+     transaction as the insert. Nothing in the dashboard sets it - only an agent does - so there is
+     nothing here to expose. Routing it through the status route would force a status transition in
+     order to write a timestamp, which is exactly how an agent's suggestion becomes a closure.
    This phase owns the reorder route outright; phase 3 adds `start`/`pause`/`resume` beside it and
    does not redeclare it. `parseBody` for
    every mutating route; no hand-parsed JSON. If a manager instance is needed, append it as the
@@ -301,7 +307,8 @@ Later phases may rely on, and must not change:
 - `short_id` minting (creation), `beginFileCommentDelivery` (phase 3, at submit) and
   `markFileCommentMessageDelivered` (phase 3, on confirmed delivery - **not** at submit),
   `updateFileCommentThreadAnchor` (phase 3, re-anchor pass), the
-  status-setting route (phases 2 and 4), `markFileCommentThreadAddressed` (phase 4) and
+  status-setting route (phase 2's resolve control - **not** phase 4, which never touches it),
+  `markFileCommentThreadAddressed` (phase 4, from its own reply route) and
   `markFileCommentMessagesRead` (phase 4). Each has exactly one declaration here; no phase
   reimplements one, and none of them is a status change in disguise.
 - `appendFileCommentMessage` and its route: the only way a message row is written, by either
@@ -394,3 +401,11 @@ the walkthrough state machine and payload (phase 3), the MCP tool (phase 4).
   to a tail-append valid from any non-outstanding status, with the previous round's
   "do not requeue an outstanding thread" guard moved onto the operation itself, where its three
   callers cannot each forget it.
+- Review pass (round 18): the route inventory said phase 4's `addressed` posts to the status route,
+  contradicting this phase's own `markFileCommentThreadAddressed` contract three bullets earlier
+  ("it cannot ride the status route") and phase 4's explicit "**not** the status route". An
+  implementer working from the inventory would have turned an agent's suggestion into a closure, or
+  invented a status transition to carry a timestamp. The inventory now names phase 2's resolve
+  control alone and states that `addressed` gets no route here at all, because nothing in the
+  dashboard sets it. `phased-plan.md` already had this right, which is what made phase 1 the
+  outlier rather than the source.

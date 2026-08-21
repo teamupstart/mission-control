@@ -1965,10 +1965,22 @@ export function buildApp(
     const parsed = await parseBody(c, GrantWorkflowRepairRoundsSchema);
     if (!parsed.ok) return parsed.res;
     const result = manager.grantRepairRounds(c.req.param("id"), parsed.data);
-    // `idempotent` reported, as every sibling action reports it. The manager has always
-    // computed it - a grant replayed under its retained request id resolves to the grant that
-    // already landed - and dropping it here left the browser unable to tell a fresh grant from
-    // a replay, on the one action whose success is otherwise invisible.
+    /*
+     * `idempotent` reported, as every sibling action reports it.
+     *
+     * The manager has always computed it: `grantRepairRounds` looks for a
+     * `repair_rounds_granted` event carrying this same `requestId` and, finding one, returns
+     * the run it already granted with `idempotent: true`. That branch matters because the
+     * action store RETAINS its request id across a failed response, so a network error on a
+     * grant that committed comes back with the same id - and without it the replay would hit
+     * the `run_not_waiting` refusal, since the run is no longer spent precisely because the
+     * first attempt worked.
+     *
+     * Dropping the flag here left the browser unable to tell a fresh grant from a replay, on
+     * the one action whose success is otherwise invisible. The `?? false` is for the ok arms
+     * that never set it, not a default standing in for a manager that cannot answer; both
+     * halves are pinned end to end in `test/workflow-resumption.test.ts`.
+     */
     return result.ok
       ? c.json({ run: result.value, idempotent: result.idempotent ?? false })
       : workflowRuntimeFailure(c, result);

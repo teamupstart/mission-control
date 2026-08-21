@@ -1191,6 +1191,47 @@ test("the grant survives being pushed off the event page", async () => {
 });
 
 /**
+ * A replayed grant is that grant, and the route says so.
+ *
+ * The action store deliberately RETAINS its request id across a failed response, so a network
+ * error on a grant that actually committed comes back with the same id. The manager has always
+ * answered that with `idempotent: true` off the event ledger; what was missing was the route
+ * passing it on, and then anything pinning either half - which is why a reader could
+ * reasonably conclude the flag was hard-coded false.
+ *
+ * Driven through the HTTP route rather than the manager, because the manager's half was never
+ * the doubtful one: the question is what a browser is told.
+ */
+test("a replayed grant is reported as a replay, and grants nothing twice", async () => {
+  const h = await spentPersonaRun("grant-replay", "v-grant-replay", "auto");
+  const grant = async (): Promise<Response> =>
+    await h.app.request(`/api/workflow-runs/${h.runId}/grant-rounds`, {
+      method: "POST",
+      headers: { host: "127.0.0.1:7317", "content-type": "application/json" },
+      body: JSON.stringify({ requestId: "grant-replay-1", rounds: 2 }),
+    });
+
+  const first = await grant();
+  assert.equal(first.status, 200);
+  assert.equal((await first.json() as { idempotent: boolean }).idempotent, false);
+  assert.equal(h.store.getRun(h.runId)?.maxRepairRounds, 3);
+
+  const replay = await grant();
+  assert.equal(replay.status, 200, "a replay must not come back as the run_not_waiting refusal");
+  assert.equal(
+    (await replay.json() as { idempotent: boolean }).idempotent,
+    true,
+    "a replay reported as a fresh grant is the distinction this field exists to draw",
+  );
+  assert.equal(
+    h.store.getRun(h.runId)?.maxRepairRounds,
+    3,
+    "the replay granted a second pair of rounds",
+  );
+  await h.manager.stop();
+});
+
+/**
  * The counter-example, and the reason the restore is conditional rather than unconditional.
  *
  * Nothing is coming for a `manual` run. Restoring its status would replace an honest "this

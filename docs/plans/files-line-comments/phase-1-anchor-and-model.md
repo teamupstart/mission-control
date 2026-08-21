@@ -50,14 +50,20 @@ change them cheaply. That ordering is deliberate - see the entry on `addColumn` 
      before `migrate()`.
 3. **Store functions in `db.ts`**, Shape A (module-level exported functions, as
    `upsertInspectorComment` / `loadInspectorComments` are): create, list by session, list by session
-   and path, update body, delete, reorder `queue_seq`, set and clear the `outdated` flag, read and
-   write the review's run state, and the status transitions.
+   and path, delete, reorder `queue_seq`, set and clear the `outdated` flag, read and write the
+   review's run state, and the status transitions.
    - **Minting `short_id`.** Creation derives the thread's `MC-xxxx` handle beside its UUID and
      stores it, unique per session. It is what the payload cites and what the transcript fallback
      matches, so it is generated once and never recomputed from the row.
    - **`markFileCommentMessageDelivered(id, at)`** stamps `delivered_at`. The column is written by
      the delivery path in phase 3, so it needs its writer declared here alongside the insert -
      otherwise it is a column with no way to stop being NULL.
+   - **`updateFileCommentMessageBody(id, body)`, and the rule that governs it.** The comment text
+     lives in `file_comment_messages`, not on the thread, so this is the only way any comment body
+     is edited - phase 2's drafts-from-the-first-keystroke and phase 3's edit-unsent are both this
+     one function. **It refuses a row whose `delivered_at` is set**, and that refusal is the
+     contract, not a nicety: once the agent has read a comment, the dashboard's copy and the
+     agent's copy have to stay the same text. Editable until delivered, frozen after.
    - **`file_comment_messages` gets its writer here too.** Creating a thread writes its opening
      message row; `appendFileCommentMessage(threadId, author, body)` writes every one after it, and
      a thread's messages load with it. The `author` column is why one function serves both writers:
@@ -85,8 +91,8 @@ change them cheaply. That ordering is deliberate - see the entry on `addColumn` 
    **explicit decision on `LINE_INPUT_EVENTS`** (`registry.ts:431`) with the reason written beside
    it. The recommendation is **absent** - the Line strip does not read file comments - and
    `pipeline_upsert`'s deliberate absence is the precedent to follow.
-8. **Routes in `src/server/routes.ts`**: create, list, edit body, delete, reorder, **append a
-   message**, and **set a thread's status** - the last is what phase 2's resolve control and phase
+8. **Routes in `src/server/routes.ts`**: create, list, delete, reorder, **append a message**,
+   **edit an undelivered message's body**, and **set a thread's status** - the last is what phase 2's resolve control and phase
    4's `addressed` both post to, and without it "edit" means the body only and neither can land.
    This phase owns the reorder route outright; phase 3 adds `start`/`pause`/`resume` beside it and
    does not redeclare it. `parseBody` for
@@ -138,7 +144,7 @@ change them cheaply. That ordering is deliberate - see the entry on `addColumn` 
 - `test/file-comment-contracts.test.ts` - Zod bounds and refusals.
 - `test/file-comments-store.test.ts` - SQL, status transitions, `queue_seq` rewrites, the
   `outdated` flag surviving a status change in both directions, message append and load order for
-  both authors, and that the partial unique index refuses a second outstanding row for one session
+  both authors, editing an undelivered message and **being refused on a delivered one**, and that the partial unique index refuses a second outstanding row for one session
   **from either outstanding status** - a `sending` row beside an `awaiting` one, not just two
   `sending` rows. That asymmetric case is the one an index over a single status would pass.
 - `test/file-comments-lifecycle.test.ts` - `session_remove` orphans; `state === "exited"` alone
@@ -183,6 +189,9 @@ Later phases may rely on, and must not change:
   4 call all three; neither reimplements one.
 - `appendFileCommentMessage` and its route: the only way a message row is written, by either
   author. Phase 2 calls it with `human`, phase 4 with `agent`.
+- `updateFileCommentMessageBody` and its refusal on a delivered row: the only way a comment body is
+  edited. Phase 2's drafts and phase 3's edit-unsent are both this function, and no later phase
+  relaxes the refusal or moves the body onto the thread.
 - `status` and `outdated` as two dimensions. A later phase may add neither a status value that
   means outdated nor a second flag that means orphaned.
 - The three-mechanism session lifetime. No later phase adds a fourth teardown path.
@@ -210,6 +219,12 @@ the walkthrough state machine and payload (phase 3), the MCP tool (phase 4).
   index and deadlock the queue the index exists to protect. `unanswered` is now a declared status
   outside the tuple, which is the state the plan had been describing in prose as `sent, no reply`
   and never declaring.
+- Review pass: the previous round's phrasing that a message "cannot change once written" collided
+  with this phase's own edit-body operation, with phase 2's drafts-from-the-first-keystroke, and
+  with phase 3's edit-unsent - the body lives in `file_comment_messages`, so an immutable message
+  means an uneditable draft. The rule is narrower than that and is now stated as what it protects:
+  **editable until `delivered_at` is set, frozen after**, so a comment the agent has already read
+  cannot be rewritten behind it. `file_comment_messages` gains `updated_at` accordingly.
 - Same pass, four things consumed by later phases and declared by none: the walkthrough's run
   state (now `file_comment_reviews`), `addressed_at` for phase 4's `addressed?`, `short_id` for the
   payload's `MC-a41f` and the transcript fallback, and a writer for `delivered_at`. All are

@@ -62,7 +62,8 @@ running session.
 7. **Resolving.** A human resolves a thread through phase 1's status-setting route - this phase adds
    no route of its own. Resolved threads collapse out of the gutter behind the toggle. Only a person closes a thread - phase 4 lets the agent mark one *addressed*, which shows
    as a suggestion and never as a closure.
-8. **Drafts persist from the first keystroke** through phase 1's routes, not in browser state. The
+8. **Drafts persist from the first keystroke** through phase 1's message-edit route - a draft is an
+   ordinary undelivered message row, which is why it is editable - and not in browser state. The
    integrated tab and the extracted `FileWindow` are two live `FileWorkspace` instances that
    converge only through the daemon.
 9. **`src/web/styles.css`** additions in the matching section.

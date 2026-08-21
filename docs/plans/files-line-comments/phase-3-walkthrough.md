@@ -55,7 +55,9 @@ measurement the plan's two 60% assumptions need.
 6. **Refusal and pause states.** `canMessage(session)` refusing is a pause with a reason, not a lost
    comment. A send that lands in `uncertain` pauses the review and surfaces the **existing** Retry /
    Mark sent controls rather than inventing a second recovery path.
-7. **Queue controls in the UI**: queue depth, Start review, Pause, reorder, edit-unsent, drop. Pause
+7. **Queue controls in the UI**: queue depth, Start review, Pause, reorder, edit-unsent, drop.
+   Edit-unsent is phase 1's message-edit route, which refuses a delivered row - so the control is
+   offered on queued comments and not on the outstanding one. Pause
    takes effect after the outstanding comment resolves and never recalls a delivered one.
 8. **A human reply in a thread re-enters the queue** at the end, and is delivered in its turn
    exactly like a new comment. An `answered` thread that gains a human reply goes back to `queued`

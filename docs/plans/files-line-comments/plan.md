@@ -456,8 +456,8 @@ recovery path.
 
 Three tables, following the house conventions: `TEXT PRIMARY KEY` from `randomUUID()` at the call
 site, epoch-millisecond `INTEGER NOT NULL` timestamps, indices declared beside the table, and
-relations by convention rather than a `REFERENCES` clause. A row that can change carries
-`updated_at`; a message cannot change once written, so it carries only `created_at`.
+relations by convention rather than a `REFERENCES` clause, and `updated_at` on every table,
+because every row here can still change.
 
 ```
 file_comment_threads
@@ -490,6 +490,7 @@ file_comment_messages
   body          TEXT NOT NULL
   delivered_at  INTEGER          -- when it reached the agent; NULL while queued
   created_at    INTEGER NOT NULL
+  updated_at    INTEGER NOT NULL -- editable until delivered_at is set, frozen after
 
 file_comment_reviews
   session_id    TEXT PRIMARY KEY -- one review per session, per decision 2
@@ -520,6 +521,13 @@ turn. Because decision 2 scopes a thread to a session, that index is exactly the
 walkthrough needs and nothing broader.
 `delivery_id` is the correlation `pending_turns` cannot carry: it lives here instead, so that
 table needs no new column.
+
+**A message is editable until it is delivered, and frozen afterwards.** `delivered_at IS NULL` is
+the whole test. That is what makes a draft a draft: the opening comment is an ordinary message row
+you keep editing from the first keystroke, and so is a queued reply, which is why the walkthrough
+can offer edit-unsent at all. The moment a message reaches the agent it stops being editable,
+because from then on the dashboard's copy and the agent's copy have to be the same text - a
+comment you could rewrite after it was read would make every transcript a guess.
 
 **The review's run state is a table, not a derived value.** "Paused" and "never started" are the
 same set of rows - everything `queued`, nothing outstanding - so the walkthrough cannot tell them

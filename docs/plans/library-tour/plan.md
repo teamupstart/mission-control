@@ -241,18 +241,40 @@ worklist and verdicts; stop 14 follows the same run into its session's **Workflo
 This costs no tokens, adds no server surface, leaves nothing to clean up, and the artifact it
 teaches is genuinely the operator's own rather than a demo built to be taught.
 
-The tour picks that run with a single filtered read of the existing paged runs route -
-newest finished run whose workflow is the built-in No-Mistakes Review, falling back to the
-newest finished run of any workflow. Nothing is created, so there is nothing to remove on
-exit.
+The tour picks that run with a single filtered read of the existing paged runs route: the
+newest finished run whose `workflowId` is the built-in No-Mistakes Review, and nothing else.
+`WorkflowRunSummary` already carries `workflowId` and `status`, so that is an exact match on
+data the dashboard holds, with no second request and nothing created - so there is nothing
+to remove on exit.
 
-**When there is no run at all**, which is every fresh install, the two run stops degrade
-rather than disappear. They keep their titles and explain the same surfaces against the
-read-only built-in graph already on screen from stop 11, using the existing tour fallback
-mechanism - the same labelled dialog the current tour shows when a target has not mounted,
-with Back, Next and Exit still available. This is the one part of the tour whose content
-depends on the operator's own history, and it is why the fallback copy is written as a real
-stop rather than an apology.
+**A run of some other workflow is not a substitute, and the tour does not take one.** Stops
+13 and 14 arrive straight out of stop 11, and their copy names the five stages the operator
+has just been shown - typecheck and test, Intent Conformance, the two parallel review stages,
+the verified Pull Request action. An arbitrary workflow need not have any of that: a
+checks-only workflow reaches the worklist with no reviewer verdict to spotlight, and one with
+a different graph contradicts the stop that introduced it. `WorkflowRunSummary` carries no
+reviewer-verdict count either, so "a run with something in its worklist" is not a filter this
+read can even express without fetching a detail per candidate. Selecting the newest finished
+run of any workflow would have been a wider net catching mostly wrong fish.
+
+So there are exactly **two** states, and the second covers everything that is not the first:
+
+| The fleet has | Stops 13-14 show |
+| --- | --- |
+| A finished built-in No-Mistakes Review run | That run - `#/runs/<id>`, then its session's **Workflows** tab |
+| Anything else - no runs, only unfinished runs, or finished runs of other workflows only | Fallback copy on the read-only built-in graph |
+
+**The fallback is a real stop, not a gap.** Both stops keep their titles and explain the same
+two surfaces - what a pipeline strip, a review worklist and a stage ladder are for - against
+the read-only built-in graph already on screen from stop 11, using the existing tour fallback
+mechanism: the same labelled dialog the current tour shows when a target has not mounted, with
+Back, Next and Exit still available. This is the one part of the tour whose content depends on
+the operator's own history, which is why that copy is written rather than apologized for.
+
+One consequence worth stating: an operator who reviews only with their **own duplicate** of
+No-Mistakes gets the fallback, because a duplicate is a different workflow with a different
+id. Matching on shape rather than id would fix that and reintroduce exactly the fuzziness
+above, so the exact match stands.
 
 Two alternatives were considered and set aside. Launching a small real run would be the only
 way to show a run actually *moving*, but it spends model tokens on every start of a tour
@@ -322,7 +344,9 @@ Two guards follow from that, both of which the engine must carry:
   first without a model: a Persona whose guidance carries `E2E_PASS_VERDICT` is answered by
   `e2e/fixtures/fake-claude.mjs` with a schema-valid pass, which is how the existing workflow
   specs drive a real run to completion. So one spec seeds a finished run and asserts the tour
-  reads it, and one runs the tour on a fleet with no run and asserts the fallback copy.
+  reads it, and one runs the tour on a fleet whose only finished run belongs to a *different*
+  workflow and asserts the fallback copy - which is the case the two-state rule exists for, and
+  the one a spec asserting merely "no runs" would miss.
 - **Electron geometry** - the coachmark is a positioned popover over real surfaces; the
   existing tour's spec already measures that it never overlaps the control it is asking the
   operator to click, and the Library stops that spotlight a rail row or a chip need the same
@@ -366,7 +390,8 @@ Two guards follow from that, both of which the engine must carry:
 - **The last two stops depend on the operator's own history.** With the run stops reading a
   real finished run, a fleet that has never run No-Mistakes sees fallback copy instead of a
   run. That fallback is written as a real stop rather than an apology, and it is the one part
-  of the tour whose test needs both states covered: a seeded finished run, and none.
+  of the tour whose test needs both states covered: a seeded finished No-Mistakes run, and a
+  fleet without one.
 
 ## Decisions taken
 

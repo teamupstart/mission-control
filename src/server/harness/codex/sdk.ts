@@ -104,9 +104,10 @@ const FINAL_ANSWER_COMPLETION_GRACE_MS = 250;
  * configured value before adding this text below.
  */
 const MISSION_CONTROL_REVIEW_INSTRUCTION =
-  "When the operator must review alternatives, select an option, or answer any discrete " +
-  "multiple-choice question, call the Mission Control request_input MCP tool with options " +
-  "and wait for the response. Do not only present the choices as prose and end the turn.";
+  "Whenever the operator chooses among discrete options, call the Mission Control " +
+  "request_input MCP tool. Pass the choices through the tool's options field and wait for " +
+  "the structured response before continuing. Never end a turn by asking for a numbered " +
+  "or prose reply when the MCP tool is available.";
 
 /**
  * What a `permissionMode` MEANS to the app-server, and the exact inverse of what

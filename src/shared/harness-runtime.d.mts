@@ -14,6 +14,7 @@ export function tokenPath(): string;
 export function readToken(): string;
 export function ensureToken(): string;
 export const SCOUT_SUBMISSION_CREDENTIAL_HEADER: string;
+export const MISSION_SESSION_ID_ENV: string;
 export function scoutSubmissionCredentialPath(cwd: string): string;
 export function readScoutSubmissionCredential(cwd: string): string;
 

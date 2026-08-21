@@ -14,6 +14,7 @@ import {
 } from "@shared/workflow.ts";
 import {
   BASE_URL,
+  MISSION_SESSION_ID_ENV,
   SCOUT_SUBMISSION_CREDENTIAL_HEADER,
   captureTerminalEnv,
   readScoutSubmissionCredential,
@@ -34,7 +35,7 @@ import { reportProductIssueWithConfirmation } from "./product-issues.ts";
 // the same join key the hook bridge uses.
 
 const ENV = captureTerminalEnv();
-const SESSION_ID = process.env.CLAUDE_SESSION_ID ?? null;
+const SESSION_ID = process.env[MISSION_SESSION_ID_ENV] ?? process.env.CLAUDE_SESSION_ID ?? null;
 const PRODUCT_ISSUE_CLIENT = productIssueClientFromEnvironment(
   process.env[PRODUCT_ISSUE_CLIENT_ENV],
 );

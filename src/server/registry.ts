@@ -2872,8 +2872,8 @@ export class Registry extends EventEmitter {
 
   /**
    * Resolve which live session a hook / MCP call belongs to, using the terminal
-   * pane it captured (preferred), then a linked agent session id, then a unique
-   * cwd match. Shared by hook ingest and the MCP review channel.
+   * pane it captured (preferred), then its registered or linked agent session id,
+   * then a unique cwd match. Shared by hook ingest and the MCP review channel.
    */
   findSessionByEnv(
     env: HookIngest["env"],
@@ -2885,6 +2885,8 @@ export class Registry extends EventEmitter {
       for (const s of this.sessions.values()) if (sessionKey(s) === key) return s;
     }
     if (agentSessionId) {
+      const registered = this.sessions.get(agentSessionId);
+      if (registered) return registered;
       for (const s of this.sessions.values())
         if (s.agentSessionId === agentSessionId) return s;
     }
@@ -4509,7 +4511,13 @@ export class Registry extends EventEmitter {
   applyStatus(env: HookIngest["env"], agentSessionId: string | null, activity: string): void {
     const s = this.findSessionByEnv(env, agentSessionId);
     if (!s) return;
-    const nextAgentSessionId = agentSessionId ?? s.agentSessionId;
+    // An SDK-launched MCP bridge carries the registered Mission Control id so calls stay
+    // attributable even when several sessions share a cwd. That routing identity is not the
+    // harness conversation id: keep the binding the driver reported instead of rotating the
+    // transcript, note, queue and work-cycle keys to the synthetic card id.
+    const nextAgentSessionId = agentSessionId === s.id
+      ? s.agentSessionId
+      : agentSessionId ?? s.agentSessionId;
     const agentRebound =
       s.agentSessionId !== null &&
       nextAgentSessionId !== null &&

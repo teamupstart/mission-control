@@ -220,7 +220,7 @@ test("a launch initializes, starts a thread, binds it, and delivers turn one", a
   await drained;
 });
 
-test("a launch routes discrete review choices through Mission Control request_input", async (t) => {
+test("a launch preserves developer instructions and routes discrete choices through Mission Control", async (t) => {
   const server = new FakeServer(
     defaultReplies({
       "config/read": {
@@ -243,9 +243,9 @@ test("a launch routes discrete review choices through Mission Control request_in
   });
 
   const start = server.calls("thread/start")[0]?.params as Record<string, unknown>;
-  assert.match(
+  assert.equal(
     String(start.developerInstructions),
-    /Keep this operator instruction\.[\s\S]*(?:review alternatives|multiple-choice|discrete choices)[\s\S]*request_input[\s\S]*options[\s\S]*(?:do not|never)[\s\S]*choices[\s\S]*prose[\s\S]*end the turn/i,
+    "Keep this operator instruction.\n\nWhenever the operator chooses among discrete options, call the Mission Control request_input MCP tool. Pass the choices through the tool's options field and wait for the structured response before continuing. Never end a turn by asking for a numbered or prose reply when the MCP tool is available.",
   );
 });
 

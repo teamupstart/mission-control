@@ -340,10 +340,13 @@ test("stop() ends the pass and start() after it is inert", async () => {
   assert.equal(state.probes.length, 0, "a stopped observer does not begin observing");
 });
 
-test("the observer has no destructive capability, by construction and by import", () => {
-  // The Phase 1 invariant, pinned at the source. A cleanup path reaching this module - by
-  // import, by dependency, or by a helpfully added convenience - is the one change this phase
-  // must not ship, and it would not otherwise fail any behavioural test here.
+test("the retention service can only delete through TaskManager, by import and by shape", () => {
+  // Pinned at the source, because none of it would fail a behavioural test here. The service
+  // now DOES authorize deletion - that is the phase - so the invariant moved rather than
+  // disappeared: it may reach exactly one destructive capability, `TaskManager`'s own guarded
+  // automatic reclaim, and it may reach it only as an injected dependency. A provider, the
+  // allocator, a teardown helper or a filesystem removal appearing here would be the second
+  // cleanup path the approved plan forbids.
   const source = readFileSync(
     new URL("../src/server/task-worktree-retention.ts", import.meta.url),
     "utf8",
@@ -353,21 +356,40 @@ test("the observer has no destructive capability, by construction and by import"
     .filter((line) => !line.trimStart().startsWith("*") && !line.trimStart().startsWith("//"))
     .join("\n");
   for (const forbidden of [
-    "reclaim",
     "teardownWorktree",
-    "TaskManager",
     "WorktreeManager",
+    "LegacyTreehouse",
     "worktree remove",
     "releaseLease",
     "rmSync",
+    "killHome",
     "stopTerminal",
   ]) {
     assert.ok(
       !code.includes(forbidden),
-      `the observer must not reference ${forbidden} - Phase 1 reclaims nothing`,
+      `retention must not reference ${forbidden} - every release goes through TaskManager`,
     );
   }
+  // `TaskManager` is reachable only as a TYPE, for the request and outcome shapes. A value
+  // import of it would let this file call any lifecycle method it liked.
+  assert.ok(
+    /import type \{[^}]*\} from "\.\/tasks\.ts";/.test(code),
+    "tasks.ts is imported for types only",
+  );
+  assert.ok(!/^import \{[^}]*\} from "\.\/tasks\.ts";/m.test(code));
   // And the interval is its own, so quietening native pool maintenance cannot freeze the clock.
   assert.ok(!code.includes("WORKTREE_SWEEP_MS"));
   assert.ok(RETENTION_OBSERVE_INTERVAL_MS < RETENTION_WINDOW_MS / 10);
+});
+
+test("an observer built without cleanup deps still reclaims nothing", async () => {
+  // The Phase 1 shape, kept reachable on purpose: `cleanup` is optional, and without it no
+  // claim is ever taken and no task is ever handed anywhere. Every test above runs in this
+  // configuration, so this states what their silence already proves.
+  const task = mkT({ id: "o-no-cleanup" });
+  const { observer } = harness({ tasks: [task] });
+  await observer.runPass();
+  const row = getTaskWorktreeRetention("o-no-cleanup");
+  assert.equal(row?.cleanupState, "observing");
+  assert.equal(row?.claimToken, null);
 });

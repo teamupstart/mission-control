@@ -123,6 +123,28 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   | tee e2e/.artifacts/native-worktree-dispatch/focused-playwright-transcript.txt
 ```
 
+### Task worktree retention
+
+`e2e/.artifacts/task-worktree-retention/` carries the two frames of the 30-day rule: a checkout
+whose unpushed local commit postponed cleanup, still showing **Clean up**, and the same task
+after an untouched window expired, with the cleanup control gone and its native slot back in
+the pool. The spec dispatches through a real native worktree, kills the agent without an
+outcome, makes a real git commit in the tree, and moves the retention ledger's own timestamps
+backwards while the daemon is stopped - a fixture technique, since the duration has no
+production setting and retention has no off switch.
+
+Regenerate the frames and transcript with:
+
+```sh
+mkdir -p e2e/.artifacts/task-worktree-retention
+set -o pipefail   # or the pipe below reports tee's success, not Playwright's
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/task-worktree-retention.spec.ts \
+  --workers=1 --reporter=list \
+  | tee e2e/.artifacts/task-worktree-retention/focused-playwright-transcript.txt
+```
+
 ### Scout prompt context reader
 
 `e2e/.artifacts/scout-prompt-context/` holds the five frames from the finished-scout flow:

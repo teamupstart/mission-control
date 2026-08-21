@@ -421,3 +421,75 @@ server lifecycle, destructive safety, UI behavior, documentation, and browser pr
 - Inspector restart audit on 2026-08-20: the settled task and matching ledger generation now move in
   one transaction, preserving the prior fingerprint and deadline instead of triggering a second
   first-observation grace period.
+
+### Implementation audit and deviations
+
+Recorded here as the phase document asks, and repeated in the pull request.
+
+- **The Phase 1 observer became the retention service rather than gaining a sibling.** The proposed
+  route reads either way; extending it keeps the one scheduler the cross-phase contract requires.
+  Its zero-cleanup source scan moved with it: the module still imports no provider, allocator, or
+  teardown function, and now asserts that `tasks.ts` is reachable for TYPES only, so the single
+  destructive capability stays the injected `TaskManager` entry.
+- **No migration was needed.** Phase 1's claim columns covered every transition, which is what that
+  phase declared them for.
+- **A due task is claimed from the observation pass's own fresh probe** rather than from a separate
+  `listDueTaskWorktreeRetention()` sweep. The pass has just read the real checkouts, so the
+  "fresh successful probe matching the row" precondition is established by construction and no
+  checkout is hashed twice per pass. Every retention candidate is in the registry map, because
+  Phase 1 made `pruneTerminalTasks` keep resource holders, so no second query is needed to find one.
+- **Retry backoff doubles from the row's own two endpoints rather than from an attempt counter.**
+  `retry_at` is when the current attempt became allowed and `last_attempt_at` is when the previous
+  one ran, so their difference is the interval that just elapsed and doubling it is a true attempt
+  progression - 1h, 2h, 4h, capped at a day - without the column the phase would rather not add.
+  An earlier revision derived the delay from total overdue time instead; review caught that it
+  repeats the base once before doubling (due, +1h, +2h, +4h), which buys a refusing provider an
+  extra early destructive attempt. Abandoned-claim recovery resets both endpoints together, so a
+  long outage is not mistaken for a long backoff.
+- **`recordTaskWorktreeObservation` gained a `retry-adopted` outcome** as a backstop under the
+  claim-scoped adoption the phase specifies. The claim adopts a shrunken generation directly; the
+  backstop covers the one case it cannot - a cleanup that failed AND left the remaining trees
+  unreadable, so nothing trustworthy could be adopted at the time. A generation change found on a
+  row already in `retry` preserves its fingerprint boundary and deadline. A row in any other state
+  still follows the ordinary external-replacement rule.
+- **A queued cleanup is abandoned cleanly if the daemon is shutting down.** Shutdown awaits the
+  retention pass so a probe cannot outlive the allocator; without this, quitting during a large
+  same-repository sweep would have waited for every queued teardown. A job that has not started
+  releases its claim untouched; one already in teardown is never interrupted.
+- **The teardown seam already used by startup reconciliation now also covers automatic cleanup**, so
+  the destructive-race tests drive the real reclaim core without a real provider. The manual paths
+  deliberately keep calling `teardownWorktree` directly at foreground priority.
+- **`TaskManagerStartupDeps.teardown`, `remove()` and `reschedule()` moved to the all-repository
+  predicate** alongside candidate loading, restart reconciliation and the UI, because an
+  attached-only survivor was equally invisible to those two.
+- **Restart settlement retains a home-only task's existing behavior.** A task holding a dead
+  terminal home and no checkout has no Git-visible state to observe and no local work to protect,
+  so it keeps its immediate reclaim; retention is a worktree policy, and holding a ledger row open
+  for a shell would be inventing one. This is the phase's own "do not keep a worktree ledger alive
+  solely for a home" rule applied at the other end.
+- **A restart no longer settles scout and plan archives.** They are published by the shared reclaim
+  core immediately before the teardown that would destroy them, which is both later and safer than
+  a restart that no longer destroys anything - so a reboot is no longer a deadline for capture.
+  `test/plan-capture.test.ts` now pins that pair.
+- **The browser summary is projected without an `IN (?, …)` over the caller's task ids.** `listTasks`
+  passes every task an install has ever filed, which would exceed SQLite's host-parameter ceiling;
+  the retry rows are selected directly instead, and the single-id case keeps its primary-key path.
+- **An unfinished cleanup keeps its row and stays retryable, which is a deliberate departure
+  from this document.** The phase text says that if no worktree remains but a terminal-home
+  cleanup failed, worktree retention is complete and no ledger should be kept alive for a home.
+  The approved acceptance criterion says the opposite - the record remains retryable for exactly
+  that outcome - and the criterion governs. The two are reconcilable in practice, and the
+  distinction is between SEEDING and KEEPING: a row is still only ever created for a task with
+  checkouts (`isRetentionCandidate`, unchanged, and `observe` refuses to seed one for a home),
+  but once created it survives until the cleanup it drives has released everything
+  (`isRetentionRetryable`). Nothing starts a clock for a home; an unfinished job simply finishes.
+  Concretely: `complete` deletes only when the task holds nothing left to release, the orphan
+  prune no longer drops a row whose task still holds a home, the claim and both reclaim guards
+  judge by the keeping rule, and the sweep works those rows. The reclaim core keeps every durable
+  fact it did not actually release, terminal identity included - clearing `homeName` there would
+  delete the only record of a live resource, which is the same "keep every remaining fact" rule
+  the rest of this phase already follows. A resumed attempt takes no fingerprint and needs none:
+  that guard exists to refuse destroying a checkout somebody worked in, and this task has none
+  left, so probing would compare the digest of nothing against trees already gone and refuse the
+  attempt that finishes the release forever. Ownership and generation are still checked twice,
+  the deadline never moves, and the retry keeps the same bounded exponential backoff.

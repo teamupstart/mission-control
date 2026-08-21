@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { Session } from "@shared/types.ts";
+import { TASK_WORKTREE_RETENTION_DAYS } from "@shared/types.ts";
 import { muxHandle } from "@shared/pane.ts";
 import { api } from "../lib/api.ts";
 import { AgentDot } from "./session-bits.tsx";
@@ -18,7 +19,9 @@ import { Tooltip } from "./Tooltip.tsx";
  * So the dialog's job is to name the consequence and offer the other door. What it must
  * NOT do is take the checkout: `agentWentAway` keeps the worktree, branch and home for a
  * confirmed Clean up precisely so a mis-aimed kill costs nothing that git cannot give
- * back.
+ * back. That reprieve is no longer indefinite, which is why the copy says so: an untouched
+ * checkout is reclaimed automatically after the retention window, uncommitted and unpushed
+ * work included.
  */
 export function KillModal({
   session,
@@ -100,7 +103,9 @@ export function KillModal({
                 and kills its {killsMux.backend} session <code>{killsMux.session}</code>
               </>
             ) : null}
-            . Its checkout is kept - free it later with Clean up.
+            . Its checkout is kept - free it later with Clean up, or leave it and Mission
+            Control removes it automatically after {TASK_WORKTREE_RETENTION_DAYS} days
+            without a change.
           </p>
 
           {task && (

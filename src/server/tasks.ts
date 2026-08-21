@@ -48,6 +48,7 @@ import {
 } from "./actions.ts";
 import {
   getTask as getDurableTask,
+  settleTaskWithRetentionAdoption,
   historicalTaskWorkEpisodeBindingsForTask,
   primaryRepoPrForTask,
   reserveRetroFollowup,
@@ -57,7 +58,13 @@ import {
   workEpisodeRepoPrsForTask,
   type TaskWorkEpisodeBinding,
 } from "./db.ts";
-import { taskMergeQuorum, type QuorumVerdict } from "@shared/task-repos.ts";
+import { taskHasWorktrees, taskMergeQuorum, taskRepoRefs, type QuorumVerdict } from "@shared/task-repos.ts";
+import {
+  isRetentionRetryable,
+  taskHoldsCleanupResources,
+  taskResourceGeneration,
+} from "./task-resource-generation.ts";
+import { readFailureClass, type ActivityFingerprint } from "./git/worktree-activity.ts";
 import {
   missionMcpDescriptor,
   verifyMissionMcpToolsForRunningSession,
@@ -233,30 +240,128 @@ export const INTERRUPTED_BEFORE_PROVISION_ERROR =
 export const INTERRUPTED_CHAT_BEFORE_PROVISION_ERROR =
   "Chat dispatch was interrupted before a worktree or agent was created. Launch a new chat from Dispatch.";
 
+/**
+ * One authorized automatic cleanup, as the retention service presents it.
+ *
+ * The claim facts are passed in rather than read here on purpose: the ledger is retention's
+ * to own, and `TaskManager` must not learn to read or write it. What it receives is "here is
+ * a generation and a fingerprint somebody durably claimed, and here is how to re-measure the
+ * second one" - and everything it decides, it decides by re-measuring.
+ */
+export interface AutomaticReclaimRequest {
+  taskId: string;
+  /** The resource generation the ledger claim was taken against. */
+  generation: string;
+  /** The aggregate Git-visible fingerprint that claim was taken against. */
+  fingerprint: string;
+  /**
+   * Phase 1's aggregate activity probe, injected.
+   *
+   * Injected rather than imported so this file gains no second opinion about what counts as
+   * Git-visible activity, and so a test can drive both guards without a real checkout.
+   */
+  probe: (task: Task) => Promise<ActivityFingerprint>;
+  /**
+   * "Has the caller given up on this?" - checked once, when the job reaches the front of the
+   * repository queue.
+   *
+   * Cleanup is serialized per physical repository, so a due fleet in one repository is a
+   * queue of teardowns, and the daemon awaits the retention pass during shutdown so a probe
+   * cannot outlive the allocator. Without this, quitting during a large sweep would wait for
+   * every queued teardown to run. A job that has not STARTED is abandoned cleanly instead -
+   * its claim goes back untouched and the deadline it was working toward is still there on
+   * the next boot. A job already past this point is not interrupted: it is mid-teardown, and
+   * the safe place to stop is after it finishes accounting for what it released.
+   */
+  abandoned?: () => boolean;
+}
+
+/**
+ * What an automatic attempt actually did. Every branch is a durable transition for the caller.
+ *
+ * The distinction that matters most is between `activity-changed` and everything else that
+ * stops a teardown: fresh work means the tree earns a whole new 30-day window, while an
+ * external replacement means the old window applies to nothing and observation starts over,
+ * and a refusal means the tree is still due and should be retried without either.
+ */
+export type AutomaticReclaimOutcome =
+  /** Every worktree released. The task update has already gone out. */
+  | { kind: "reclaimed" }
+  /** A fresh probe disagreed with the claim: somebody worked in that checkout. */
+  | { kind: "activity-changed" }
+  /** The task, its attempt, or its recorded resources were replaced by something else. */
+  | { kind: "ownership-changed"; detail: string }
+  /** A required validation could not be trusted. Never treated as inactivity. */
+  | { kind: "validation-unknown"; detail: string }
+  /** A scout report could not be published, so its tree must not be removed yet. */
+  | { kind: "archive-refused"; detail: string }
+  /** Quiescence or provider teardown refused. Whatever came back is already released. */
+  | { kind: "failed"; detail: string };
+
 export interface TaskManagerStartupDeps {
-  /** Injectable only so startup cleanup ordering can be exercised without real providers. */
+  /**
+   * The BACKGROUND teardown seam, injectable so cleanup ordering can be exercised without real
+   * providers.
+   *
+   * Covers the two paths that release a tree on the daemon's own initiative - startup
+   * reconciliation and automatic retention cleanup - and deliberately not the manual ones. An
+   * operator's Clean up, Cancel, Remove and Reschedule keep calling `teardownWorktree`
+   * directly at `foreground` priority, because there is nothing about them a test needs to
+   * stand in for and every one of them is somebody watching.
+   */
   teardown?: typeof teardownWorktree;
 }
 
-interface StartupCleanupJob {
+interface TaskCleanupJob {
   taskId: string;
   repoKeys: readonly string[];
   run: () => Promise<void>;
 }
 
 /**
- * Starts at most one reconciliation touching a given repository.
+ * Starts at most one background cleanup touching a given repository.
  *
- * Bounding work per repository prevents restart recovery from issuing a same-repository
- * cleanup convoy all at once. Jobs touching disjoint repositories may still progress together.
+ * Bounding work per repository is what keeps restart recovery - and now automatic retention
+ * cleanup, which can come due for a hundred tasks in the same repository on the same morning -
+ * from issuing a same-repository convoy all at once. Jobs touching disjoint repositories still
+ * progress together, so a fleet spread over several repositories is not serialized into one
+ * queue by accident.
+ *
+ * This is deliberately NOT a priority queue and does not know about foreground work. The
+ * native allocator already gives `WorktreeManager.release("foreground")` precedence over
+ * background releases, and duplicating that ordering here would be a second scheduler with a
+ * second opinion. What this owns is narrower and is the thing the allocator cannot see: two
+ * cleanups reaching into the same physical repository's `.git` at once.
+ *
+ * Shared by startup reconciliation and retention rather than copied, because the KEY SPACE is
+ * the contract - both must canonicalize repository roots the same way, or two jobs on the same
+ * repository spelled differently would run together and the bound would silently not exist.
  */
-class StartupCleanupQueue {
-  private pending: StartupCleanupJob[] = [];
+class TaskCleanupQueue {
+  private pending: TaskCleanupJob[] = [];
   private activeRepoKeys = new Set<string>();
+  /** In-flight and queued jobs by task, so the same task cannot be enqueued twice. */
+  private readonly enqueued = new Set<string>();
 
-  enqueue(job: StartupCleanupJob): void {
+  /**
+   * Queue a job, or refuse when this task already has one.
+   *
+   * The refusal matters for retention: a pass that comes round again while a task's cleanup
+   * is still waiting behind a busy repository must not stack a second attempt behind the
+   * first. Returns false so the caller can leave its ledger claim alone rather than treating
+   * the queue as an acceptance.
+   */
+  enqueue(job: TaskCleanupJob): boolean {
+    if (this.enqueued.has(job.taskId)) return false;
+    this.enqueued.add(job.taskId);
     this.pending.push(job);
     this.drain();
+    return true;
+  }
+
+  /** How many jobs are queued or running. Retention bounds its own fan-in against this. */
+  get size(): number {
+    return this.enqueued.size;
   }
 
   private drain(): void {
@@ -277,6 +382,7 @@ class StartupCleanupQueue {
         })
         .finally(() => {
           for (const key of job.repoKeys) this.activeRepoKeys.delete(key);
+          this.enqueued.delete(job.taskId);
           this.drain();
         });
     }
@@ -284,7 +390,7 @@ class StartupCleanupQueue {
 }
 
 /** Every repository whose cleanup one task can reach, in the queue's canonical key space. */
-function startupCleanupRepoKeys(task: Task): string[] {
+function taskCleanupRepoKeys(task: Task): string[] {
   return [...new Set(
     [task.repoRoot, ...task.extraRepos.map((entry) => entry.repoRoot)].map(canonicalWorktreePath),
   )];
@@ -293,7 +399,13 @@ function startupCleanupRepoKeys(task: Task): string[] {
 function needsStartupReconcile(task: Task): boolean {
   return (
     task.status === "dispatching" ||
-    ((Boolean(task.worktreePath) || Boolean(task.homeName)) &&
+    // `taskHasWorktrees` rather than the primary path alone. A multi-repo teardown clears each
+    // repository's path as that tree is actually released, so a run that released the primary
+    // and then failed on an attached repository leaves a terminal task whose primary is null
+    // and whose attached checkout is still on disk - and reading the primary alone meant
+    // nothing reconciled that survivor on restart at all. Home ownership stays a separate
+    // disjunct: a task holding only a dead terminal home has no checkout to observe.
+    (taskHoldsCleanupResources(task) &&
       (task.status === "running" ||
         task.status === "failed" ||
         task.status === "done" ||
@@ -537,6 +649,25 @@ export class TaskManager {
   private assigningTasks = new Set<string>();
   private assigningSessions = new Set<string>();
   private reschedulingTasks = new Set<string>();
+  /**
+   * Repository-serialized background cleanup, shared by startup reconciliation and by
+   * automatic worktree retention. See `TaskCleanupQueue`.
+   */
+  private readonly cleanupQueue = new TaskCleanupQueue();
+  /**
+   * Tasks whose resources one destructive path currently owns.
+   *
+   * The in-process half of a two-part exclusion, and it is not redundant with the retention
+   * ledger's claim. The ledger closes overlap ACROSS daemon lives - a claim written before a
+   * crash is still there afterwards. This closes overlap WITHIN one, between callers that
+   * never look at the ledger at all: manual Clean up, Remove, Cancel, Reschedule, startup
+   * reconciliation, and another automatic attempt. Two of those tearing the same tree down
+   * together is a double `git worktree remove` and a lease returned twice.
+   *
+   * Held across the whole destructive window, quiescence and archives included, because those
+   * are exactly the awaits during which a second caller used to be able to walk in.
+   */
+  private readonly cleanupReservations = new Set<string>();
   /** One completion in flight per task, so two signals cannot both publish one archive. */
   private completing = new Map<string, Promise<Task | null>>();
   /** Tasks concluded from an agent's idleness, and so reversible. See `reopenIfWorkResumed`. */
@@ -589,7 +720,6 @@ export class TaskManager {
     // A restart severs the in-flight dispatch promises but leaves worktrees + terminal
     // homes on disk. Reconcile every task that still holds resources by checking
     // whether its agent's terminal home survived (any backend, resolved by name).
-    const startupCleanup = new StartupCleanupQueue();
     for (const t of registry.listTasks()) {
       // Every `dispatching` task needs reconciling even before it acquired a
       // worktree (a restart mid-provision would otherwise strand it forever);
@@ -601,9 +731,9 @@ export class TaskManager {
         void this.reconcileOnStartup(t);
         continue;
       }
-      startupCleanup.enqueue({
+      this.cleanupQueue.enqueue({
         taskId: t.id,
-        repoKeys: startupCleanupRepoKeys(t),
+        repoKeys: taskCleanupRepoKeys(t),
         run: async () => {
           // A queued job can wait minutes. Re-read instead of resurrecting the startup
           // snapshot after an operator has already reclaimed, removed, or rescheduled it.
@@ -1736,6 +1866,9 @@ export class TaskManager {
       outcome: null,
       outcomeUrl: null,
       error: null,
+      // A brand new task has no checkout, so retention has nothing to observe and nothing to
+      // say. It stays null until an automatic cleanup of this task's trees actually fails.
+      automaticCleanup: null,
       createdAt: now,
       updatedAt: now,
       dispatchedAt: null,
@@ -2871,6 +3004,15 @@ export class TaskManager {
   async cancel(id: string): Promise<Ok> {
     const t = this.registry.getTask(id);
     if (!t) return { ok: false, error: "no such task" };
+    return this.withCleanupReservation<Ok>(
+      id,
+      { ok: false, error: "this task's resources are being cleaned up - try again in a moment" },
+      () => this.cancelReserved(id, t),
+    );
+  }
+
+  /** `cancel`'s body, once the cleanup reservation is held. */
+  private async cancelReserved(id: string, t: Task): Promise<Ok> {
     // Stop an agent we launched BEFORE inspecting its checkout. Otherwise a scout can finish
     // writing after capture published an immutable partial but before teardown deletes the
     // tree. Assigned tasks own no worktree and no home, so this deliberately preserves the
@@ -3237,6 +3379,13 @@ export class TaskManager {
     if (this.reschedulingTasks.has(id)) {
       return { ok: false, error: "task is being rescheduled" };
     }
+    if (this.cleanupReservations.has(id)) {
+      // A reschedule tears the old attempt's tree down before re-filing it, so it is one of
+      // the destructive paths and must not run alongside another. It refuses rather than
+      // waits: the caller is an operator, and a background cleanup that is already releasing
+      // these exact resources makes the re-file safe a moment later anyway.
+      return { ok: false, error: "this task's resources are being cleaned up - try again in a moment" };
+    }
     const t = this.registry.getTask(id);
     if (!t) return { ok: false, error: "no such task" };
     if (!taskKindAllowsBacklog(t.kind)) {
@@ -3249,6 +3398,7 @@ export class TaskManager {
       };
     }
     this.reschedulingTasks.add(id);
+    this.cleanupReservations.add(id);
     try {
       try {
         await this.quiesceLaunchedAgentBeforeCapture(this.registry.getTask(id) ?? t);
@@ -3265,7 +3415,11 @@ export class TaskManager {
       const archived = await this.settleArchivesBeforeTeardown(id);
       if (!archived.ok) return archived;
       this.autoCompleted.delete(id);
-      if (t.worktreePath || t.homeName) {
+      // `taskHasWorktrees` rather than the primary path: a task whose primary tree was
+      // released and whose attached repository's tree survived a partial teardown still has
+      // something to release, and reading the primary alone skipped it entirely - re-filing
+      // the task on top of a checkout the previous attempt still held.
+      if (taskHasWorktrees(t) || t.homeName) {
         try {
           const current = this.registry.getTask(id) ?? t;
           await teardownWorktree(current, this.legacyWorktrees, "foreground", this.worktrees);
@@ -3310,7 +3464,238 @@ export class TaskManager {
       return { ok: true };
     } finally {
       this.reschedulingTasks.delete(id);
+      this.cleanupReservations.delete(id);
     }
+  }
+
+  /**
+   * Take exclusive in-process ownership of a task's resources for the duration of `fn`.
+   *
+   * Every destructive path in this class runs inside one of these. A caller that finds the
+   * task already reserved is REFUSED rather than queued: all of these are either an operator
+   * click, which should say so immediately rather than block on a background sweep, or a
+   * background attempt, which has a retry schedule of its own and loses nothing by waiting
+   * for the next one.
+   */
+  private async withCleanupReservation<T>(
+    id: string,
+    conflict: T,
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    if (this.cleanupReservations.has(id)) return conflict;
+    this.cleanupReservations.add(id);
+    try {
+      return await fn();
+    } finally {
+      this.cleanupReservations.delete(id);
+    }
+  }
+
+  /** Is some destructive path already holding this task? Read by the non-destructive guards. */
+  taskCleanupIsReserved(id: string): boolean {
+    return this.cleanupReservations.has(id);
+  }
+
+  /**
+   * The ownership facts a reserved cleanup must find UNCHANGED at its destructive boundary.
+   *
+   * Deliberately narrower than the resource generation, and the difference is the whole point
+   * of there being two guards. The generation includes `homeName`, `terminalResourceId` and
+   * `sessionId` - it has to, because cleanup can clear all three - so comparing the generation
+   * after quiescence would have every automatic attempt reject the mutation it just performed
+   * itself, forever. What this carries instead is the set of things a reserved cleanup does NOT
+   * touch before teardown: the attempt boundary, the status, and the exact ordered tuple of
+   * repository roots, checkout paths, providers and leases that `teardownWorktree` will act on.
+   *
+   * A change here between the first guard and the last means somebody ELSE moved the task -
+   * a reschedule, a manual reclaim, a re-dispatch - and the attempt aborts.
+   */
+  private stableCleanupOwnership(task: Task): string {
+    return JSON.stringify({
+      status: task.status,
+      dispatchedAt: task.dispatchedAt,
+      repos: taskRepoRefs(task).map((ref) => [
+        ref.position,
+        ref.repoRoot,
+        ref.worktreePath,
+        ref.provider,
+        ref.worktreeLeaseId,
+      ]),
+    });
+  }
+
+  /**
+   * Reclaim a terminal task's worktrees because their 30-day retention window expired.
+   *
+   * The automatic twin of `reclaim()`, sharing its teardown, its partial-release accounting
+   * and its task update - and differing only in what it must PROVE before it is allowed to
+   * run. A person clicking Clean up is the authorization; here the authorization is a
+   * persisted claim, so this re-establishes at every step that the claim still describes
+   * reality.
+   *
+   * The order of the two guards is load-bearing and was got wrong once already:
+   *
+   *  1. Before anything mutates - before quiescence, before archives - the complete claimed
+   *     generation and the claimed fingerprint must both still hold. This is the check that
+   *     can safely be strict, because nothing has happened yet.
+   *  2. Immediately before `teardownWorktree`, the stable ownership snapshot and a FRESH
+   *     fingerprint must both still hold. Quiescence and archive settlement legitimately
+   *     stop the terminal home and clear the session, so this guard deliberately does not
+   *     look at those - it looks at the attempt, the status and the exact trees about to be
+   *     removed, plus whether anything wrote into them while the agent was being stopped.
+   *
+   * Everything is reported rather than thrown, because the caller has durable state to move
+   * and needs to know WHICH of these happened: fresh work postpones, an external replacement
+   * abandons, and an unreadable tree or a refusing provider retries.
+   */
+  async reclaimForRetention(request: AutomaticReclaimRequest): Promise<AutomaticReclaimOutcome> {
+    const { taskId } = request;
+    return this.withCleanupReservation<AutomaticReclaimOutcome>(
+      taskId,
+      { kind: "ownership-changed", detail: "another cleanup holds this task" },
+      async () => {
+        /**
+         * The activity half of both guards.
+         *
+         * A task with no checkout left is skipped rather than probed, and that is not a
+         * loosened guard: what a fingerprint buys is "never destroy a tree somebody has worked
+         * in", and this task has no tree - only an unreleased terminal home, which carries no
+         * unpushed work. Probing it would compare the digest of nothing against the digest of
+         * the trees that are already gone and refuse the attempt that finishes the release,
+         * forever. Ownership and generation are still checked, both times.
+         */
+        const activityUnchanged = async (t: Task): Promise<AutomaticReclaimOutcome | null> => {
+          if (!taskHasWorktrees(t)) return null;
+          const read = await request.probe(t);
+          if (read.kind === "unknown") return { kind: "validation-unknown", detail: read.reason };
+          if (read.digest !== request.fingerprint) return { kind: "activity-changed" };
+          return null;
+        };
+
+        // --- guard 1: nothing has been mutated yet, so this can be strict ---
+        const before = this.registry.getTask(taskId) ?? getDurableTask(taskId);
+        // The KEEPING rule: an attempt that has to finish releasing a terminal home left over
+        // from a partial teardown reaches here holding no worktree at all.
+        if (!before || !isRetentionRetryable(before)) {
+          return { kind: "ownership-changed", detail: "task no longer holds these resources" };
+        }
+        if (taskResourceGeneration(before) !== request.generation) {
+          return { kind: "ownership-changed", detail: "task resources were replaced" };
+        }
+        const preflight = await activityUnchanged(before);
+        if (preflight) return preflight;
+        const ownership = this.stableCleanupOwnership(before);
+
+        // --- the reserved cleanup itself, which may legitimately move terminal identity ---
+        try {
+          await this.quiesceLaunchedAgentBeforeCapture(before);
+        } catch (error) {
+          return { kind: "failed", detail: `could not stop the task agent (${readFailureClass(error)})` };
+        }
+        const archived = await this.settleArchivesBeforeTeardown(taskId);
+        if (!archived.ok) {
+          return { kind: "archive-refused", detail: "this task's archive could not be published" };
+        }
+
+        // --- guard 2: the trees about to be removed, and what is in them, right now ---
+        const current = this.registry.getTask(taskId) ?? getDurableTask(taskId);
+        if (!current || !isRetentionRetryable(current)) {
+          return { kind: "ownership-changed", detail: "task no longer holds these resources" };
+        }
+        if (this.stableCleanupOwnership(current) !== ownership) {
+          return { kind: "ownership-changed", detail: "task resources were replaced" };
+        }
+        const final = await activityUnchanged(current);
+        if (final) return final;
+
+        // Past the last guard, and only now. `autoCompleted` is a one-way in-memory drop that
+        // makes an inferred completion irreversible, and doing it above would mean an attempt
+        // that correctly aborted had still quietly changed the task's lifecycle on its way out.
+        this.autoCompleted.delete(taskId);
+        try {
+          // `background`, unlike every manual path's `foreground`. The native allocator uses
+          // that to let an operator's dispatch acquire ahead of maintenance, which is the
+          // ordering that keeps a large stale fleet from standing in front of live work.
+          const teardown = this.startupDeps.teardown ?? ((target, legacy, priority) =>
+            teardownWorktree(target, legacy ?? this.legacyWorktrees, priority, this.worktrees));
+          await teardown(current, this.legacyWorktrees, "background");
+        } catch (error) {
+          const partial = this.registry.getTask(taskId) ?? current;
+          // Every durable resource fact this attempt did not actually release SURVIVES,
+          // terminal identity included. A teardown that handed back the last checkout and then
+          // failed on the home leaves that home genuinely still there, so clearing the field
+          // would delete the only record of a live resource; the ledger row stays retryable
+          // instead, and finishes the release on a later attempt.
+          this.registry.upsertTask({
+            ...partial,
+            ...releasedTaskResources(partial, reclaimedFrom(error)),
+            updatedAt: Date.now(),
+          });
+          // Deliberately NOT written onto `task.error`. That field is this task's own record
+          // of why the work failed, and a maintenance failure overwriting it would destroy the
+          // only account of the run. The bounded explanation rides `automaticCleanup` instead.
+          return { kind: "failed", detail: `could not release this task's resources (${readFailureClass(error)})` };
+        }
+        const after = this.registry.getTask(taskId) ?? current;
+        this.registry.upsertTask({
+          ...after,
+          ...releasedTaskResources(after, null),
+          homeName: null,
+          terminalResourceId: null,
+          sessionId: null,
+          updatedAt: Date.now(),
+        });
+        return { kind: "reclaimed" };
+      },
+    );
+  }
+
+  /**
+   * Run one retention cleanup through the shared repository-serialized queue.
+   *
+   * Retention enters here rather than calling `reclaimForRetention` directly so that automatic
+   * cleanup and startup reconciliation contend for a repository through ONE mechanism. The
+   * refusal when the queue already holds this task is not an error: the ledger claim stays
+   * exactly as it was and the next pass tries again.
+   */
+  async enqueueRetentionCleanup(
+    request: AutomaticReclaimRequest,
+  ): Promise<AutomaticReclaimOutcome | { kind: "not-queued" }> {
+    const task = this.registry.getTask(request.taskId) ?? getDurableTask(request.taskId);
+    if (!task) return { kind: "not-queued" };
+    type Settled = AutomaticReclaimOutcome | { kind: "not-queued" };
+    let resolve!: (outcome: Settled) => void;
+    const settled = new Promise<Settled>((r) => {
+      resolve = r;
+    });
+    const accepted = this.cleanupQueue.enqueue({
+      taskId: request.taskId,
+      repoKeys: taskCleanupRepoKeys(task),
+      run: async () => {
+        // Queue position is never authorization. A job can wait minutes behind a busy
+        // repository, and `reclaimForRetention` re-reads and re-probes everything from
+        // scratch - this call site proves nothing on its own.
+        if (request.abandoned?.()) {
+          resolve({ kind: "not-queued" });
+          return;
+        }
+        // Always resolves, including on a throw from deep inside teardown. The caller awaits
+        // this to move durable ledger state, so a promise that never settles would strand the
+        // claim on the row and stall the whole observation pass behind it.
+        try {
+          resolve(await this.reclaimForRetention(request));
+        } catch (error) {
+          resolve({ kind: "failed", detail: `cleanup failed unexpectedly (${readFailureClass(error)})` });
+        }
+      },
+    });
+    if (!accepted) return { kind: "not-queued" };
+    return settled;
+  }
+
+  /** Queued plus in-flight background cleanups, so retention can bound how many it adds. */
+  get pendingCleanupJobs(): number {
+    return this.cleanupQueue.size;
   }
 
   /**
@@ -3321,6 +3706,19 @@ export class TaskManager {
   async reclaim(id: string): Promise<Ok> {
     const t = this.registry.getTask(id);
     if (!t) return { ok: false, error: "no such task" };
+    // Reserved for the same reason the automatic path is, and against the same set of
+    // callers - including that automatic path. Two teardowns of one tree is a double
+    // `git worktree remove` and a lease handed back twice; an operator who clicks while a
+    // background cleanup is mid-flight is told so rather than made to wait behind it.
+    return this.withCleanupReservation<Ok>(
+      id,
+      { ok: false, error: "this task's resources are already being cleaned up" },
+      () => this.reclaimReserved(id, t),
+    );
+  }
+
+  /** `reclaim`'s body, once the reservation is held. */
+  private async reclaimReserved(id: string, t: Task): Promise<Ok> {
     try {
       await this.quiesceLaunchedAgentBeforeCapture(t);
     } catch (error) {
@@ -3368,6 +3766,15 @@ export class TaskManager {
   async remove(id: string): Promise<Ok> {
     const t = this.registry.getTask(id);
     if (!t) return { ok: false, error: "no such task" };
+    return this.withCleanupReservation<Ok>(
+      id,
+      { ok: false, error: "this task's resources are being cleaned up - try again in a moment" },
+      () => this.removeReserved(id, t),
+    );
+  }
+
+  /** `remove`'s body, once the cleanup reservation is held. */
+  private async removeReserved(id: string, t: Task): Promise<Ok> {
     if (t.status === "running" || t.status === "dispatching") {
       return { ok: false, error: "cancel the task before removing it" };
     }
@@ -3386,8 +3793,11 @@ export class TaskManager {
     if (!archived.ok) return archived;
     this.autoCompleted.delete(id);
     // A terminal task may still hold a tree (e.g. a failed-but-alive dispatch);
-    // reclaim it so removing the record never leaks a worktree/lease.
-    if (t.worktreePath || t.homeName) {
+    // reclaim it so removing the record never leaks a worktree/lease. `taskHasWorktrees`
+    // rather than the primary path, for the reason `reschedule` says above: an attached-only
+    // survivor of a partial teardown is a real checkout, and removing the row without it
+    // leaks the tree and its lease with no record left that could ever reclaim them.
+    if (taskHasWorktrees(t) || t.homeName) {
       try {
         await teardownWorktree(t, this.legacyWorktrees, "foreground", this.worktrees);
       } catch (error) {
@@ -3527,6 +3937,22 @@ export class TaskManager {
       }
       return; // resource-holding tasks stay loaded; live sessions re-bind by cwd
     }
+    // Everything past the terminal probe is destructive: it settles the row, publishes
+    // archives, and can stop the home and tear worktrees down. So it runs under the same
+    // in-process reservation every operator path takes - without it, a restart could be
+    // stopping this home while an operator's Remove, Cancel or Clean up stops it too, and
+    // hand the same lease back twice.
+    //
+    // Deliberately NOT held across the probe above. `homeAlive` reaches a terminal backend
+    // and can take seconds; refusing an operator for that whole window would be a worse
+    // bargain than the race it closes. The re-read and the ownership comparison that open
+    // the section below happen INSIDE the reservation, so an operator who won the race is
+    // observed rather than raced with.
+    await this.withCleanupReservation(t.id, undefined, () => this.reconcileAfterProbe(t));
+  }
+
+  /** The destructive tail of `reconcileOnStartup`, run under the cleanup reservation. */
+  private async reconcileAfterProbe(t: Task): Promise<void> {
     // A completion authority may have moved the row while the terminal probe awaited. The
     // pipeline projection is one such authority during boot restore. Re-read before cleanup
     // so its `done` result is preserved instead of being overwritten from the startup
@@ -3546,18 +3972,68 @@ export class TaskManager {
       return;
     }
     t = currentAfterProbe;
-    // The agent is gone - reclaim its worktree. Terminal tasks keep their status and outcome.
-    //
-    // This is the startup half of cleanup safety, and the one the exit listener cannot reach:
-    // the agent died WITH the daemon, so no `session_exit` was ever emitted and no job was
-    // ever reserved. A scout's report is sitting untracked in the tree about to be removed,
-    // so it is archived first. A refusal keeps the tree - the row already reads as
-    // resource-holding, so the operator gets the ordinary Clean up affordance and a retry.
+    const settledStatus = t.status === "done" || t.status === "cancelled" ? t.status : "failed";
+    const settledError =
+      t.status === "done" || t.status === "cancelled"
+        ? t.error
+        : t.status === "dispatching"
+          ? "dispatch interrupted by a restart - re-dispatch"
+          : "the agent's session did not survive a restart";
+
+    if (taskHasWorktrees(t)) {
+      // The agent died WITH the daemon, and this used to be where its checkout was removed on
+      // the spot. It no longer is, and that is the point of the approved policy: a tree with
+      // staged work, a local commit, or an afternoon of untracked notes in it is not less
+      // valuable because the machine rebooted, and a restart is not evidence that anybody is
+      // finished with it. So the task is SETTLED - honest status, honest reason, dead session
+      // binding cleared - and every worktree, provider and lease fact it holds is preserved
+      // for the same 30-day clock a task that ended while the daemon was up gets. The operator
+      // keeps the ordinary Clean up affordance throughout, and retention reclaims it later.
+      //
+      // Nothing is archived here either. A scout's report stays in its tree and is published by
+      // the shared reclaim core immediately before the teardown that would actually destroy it,
+      // which is both later and better: a restart is no longer a deadline for capture.
+      //
+      // The settlement and the retention ledger's adoption of it go in one transaction because
+      // the session binding is part of the resource generation. Written separately, a crash
+      // between them - or simply the ordinary next observation - would read the settled task as
+      // a brand new set of resources and hand a checkout 29 days into its window a fresh 30.
+      const expectedStatus = t.status;
+      const expectedGeneration = taskResourceGeneration(t);
+      const now = Date.now();
+      const settled: Task = {
+        ...t,
+        status: settledStatus,
+        error: settledError,
+        // The one resource fact restart is entitled to clear, and only because the existing
+        // reconciliation contract has just PROVEN this session gone. Everything else -
+        // worktree paths, providers, leases, the terminal home and its resource id - is
+        // retained so the shared reclaim core can resolve it safely whenever cleanup runs.
+        sessionId: null,
+        updatedAt: now,
+      };
+      const result = settleTaskWithRetentionAdoption({
+        settled,
+        expectedStatus,
+        expectedGeneration,
+        now,
+      });
+      // A refusal means the task moved under this job between the re-read above and the
+      // transaction. Nothing was written at all - not half a task update, not a stranded
+      // ledger row - and the next pass or the next event reconciles whatever it became.
+      if (result.committed) this.registry.publishPersistedTask(settled, result.displaced);
+      return;
+    }
+
+    // No checkout at all, only a dead terminal home. There is nothing here for a Git-visible
+    // activity clock to observe and nothing of a person's work to protect, so this keeps the
+    // behavior it always had: stop the home, clear its identity, and settle. Retention is a
+    // worktree policy, and holding a ledger row open for a shell would be inventing one.
     const archived = await this.settleArchivesBeforeTeardown(t.id);
     if (!archived.ok) {
       this.registry.upsertTask({
         ...t,
-        status: t.status === "done" || t.status === "cancelled" ? t.status : "failed",
+        status: settledStatus,
         error: t.status === "done" || t.status === "cancelled" ? t.error : archived.error ?? null,
         sessionId: null,
         updatedAt: Date.now(),
@@ -3575,7 +4051,7 @@ export class TaskManager {
         // Whatever came back is released even though the teardown failed overall; the rest
         // keeps its record so it stays reclaimable. See `releasedTaskResources`.
         ...releasedTaskResources(t, reclaimedFrom(error)),
-        status: t.status === "done" || t.status === "cancelled" ? t.status : "failed",
+        status: settledStatus,
         error:
           t.status === "done" || t.status === "cancelled"
             ? t.error
@@ -3587,13 +4063,8 @@ export class TaskManager {
     }
     this.registry.upsertTask({
       ...t,
-      status: t.status === "done" || t.status === "cancelled" ? t.status : "failed",
-      error:
-        t.status === "done" || t.status === "cancelled"
-          ? t.error
-          : t.status === "dispatching"
-            ? "dispatch interrupted by a restart - re-dispatch"
-            : "the agent's session did not survive a restart",
+      status: settledStatus,
+      error: settledError,
       ...releasedTaskResources(t, null),
       homeName: null,
       terminalResourceId: null,

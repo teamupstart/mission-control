@@ -121,6 +121,25 @@ export function taskHasWorktrees(task: TaskRepoSource): boolean {
 }
 
 /**
+ * Does this task still hold ANYTHING a cleanup is responsible for releasing?
+ *
+ * The "both" the note above points at: worktrees or a terminal home. It is the rule for
+ * whether a cleanup is FINISHED, as distinct from `taskHasWorktrees`, which is the rule for
+ * whether a retention clock may run - and the gap between them is real. A teardown can hand
+ * back the final checkout and then fail to stop the home, leaving a task that holds no tree
+ * and is nonetheless not done with.
+ *
+ * Here in shared rather than beside the server's generation helpers because the dashboard
+ * needs the same answer: a row offering Retry for such a task would re-dispatch a task that
+ * still owns a resource, on top of a cleanup that has not finished with it.
+ */
+export function taskHoldsCleanupResources(
+  task: TaskRepoSource & { homeName: string | null },
+): boolean {
+  return taskHasWorktrees(task) || Boolean(task.homeName);
+}
+
+/**
  * Every repository of a MULTI-repo task with the pull request it has produced, primary
  * first - the list a card, a console and the report all draw.
  *

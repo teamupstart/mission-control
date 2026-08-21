@@ -482,6 +482,7 @@ test("rename: 404 unknown session, 400 invalid name, and it's wired to the actio
     createdAt: 0,
     updatedAt: 0,
     dispatchedAt: null,
+    automaticCleanup: null,
     completedAt: null,
   } satisfies Task);
   const taken = await app.request("/api/sessions/ren-1/rename", {

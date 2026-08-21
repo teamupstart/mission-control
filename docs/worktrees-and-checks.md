@@ -164,6 +164,63 @@ Treehouse pool and installation only after **Settings > Worktrees** reports no d
 and every foreign lease has been reviewed. `MISSION_POOL_REAP_MS` is retired and ignored; if it remains set, startup names
 `MISSION_WORKTREE_SWEEP_MS` as the native maintenance replacement.
 
+### Task worktree retention
+
+A task's worktrees are not freed when the task ends. A `done`, `failed`, or `cancelled` task
+keeps every checkout it holds so a person can still read the work, commit it, push it, or
+reclaim it deliberately with **Clean up**. That reprieve is bounded: **Mission Control removes a
+terminal task's worktrees automatically after 30 days without a Git-visible change.**
+
+The policy is fixed and destructive at the boundary. Staged changes, unstaged changes,
+untracked files, local commits, and commits that were never pushed are all deleted when the
+window expires. None of them exempts a tree, and push, upstream, pull request, and merge status
+are deliberately not consulted at all. What they do is **reset the clock**: any change to the
+observable Git state grants another full 30 days from the moment it is observed.
+
+What counts as a change:
+
+- `HEAD`, including a new local commit;
+- the complete index - anything staged, unstaged, or removed from staging;
+- tracked worktree content, including deletions, mode changes, and symlink targets; and
+- every non-ignored untracked file and its current content.
+
+What does not: anything `.gitignore` covers. Warm dependency directories, build caches, and log
+files churn without anybody working, and a tree pinned by them would never be reclaimed.
+
+**One task has one deadline.** A multi-repository task's primary and attached checkouts are
+combined into a single fingerprint in repository order, so the most recently touched tree
+protects the whole set, and the task is reclaimed as one operation.
+
+**How the clock is kept.** The daemon observes each eligible task's checkouts on a fixed
+internal cadence, well inside the window, and persists the result - the fingerprint, when it
+last changed, and the resulting deadline - so a restart resumes the boundary that was actually
+granted rather than starting over. A restart no longer frees a checkout: when reconciliation
+proves a task's agent died with the daemon, the task settles honestly and keeps every worktree,
+provider, and lease fact for the same 30-day rule.
+
+**The clock starts when the tree is first observed, not when the task ended.** No timestamp in
+the database can prove when a checkout was last touched, so every tree that existed before this
+shipped - and every tree whose resources are replaced - is seeded at its first successful
+observation and gets one full window from there.
+
+**Uncertainty retries; it never deletes.** A checkout Git cannot be read, a provider that
+refuses, a process still occupying a tree, a scout report that cannot be published, or a
+partial multi-repository release all keep every durable resource fact, record a bounded reason,
+and try again with exponential backoff capped at a day. The tree stays past due - a failed
+cleanup never buys it another 30 days - and the ordinary **Clean up** action still reaches it.
+While a due cleanup is retrying, the task's card says so, separately from its outcome or
+failure reason.
+
+Cleanup runs through the same provider-aware teardown as **Clean up**, so a native slot, a
+disposable Git worktree, and a historical Treehouse lease are each released under the provider
+and lease identity recorded on the task. At most one automatic cleanup touches a given physical
+repository at a time, and it releases at background priority, so a large stale fleet cannot
+stand in front of a dispatch that needs a slot now.
+
+This policy applies only to worktrees Mission Control provisioned for a task. Manual
+development worktrees, [check leases](#check-leases), and Git worktrees Mission Control does not
+own are never touched by it.
+
 ### Check leases
 
 A [Workflow check](workflows.md#workflows-and-personas) runs a build in an isolated worktree of its

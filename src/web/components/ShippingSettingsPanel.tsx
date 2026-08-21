@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { InspectorInspection } from "@shared/types.ts";
+import { TASK_WORKTREE_RETENTION_DAYS } from "@shared/types.ts";
 import { repoAllowlisted } from "@shared/allowlist.ts";
 // The standing folds moved to `lib/pr-standing.ts` when the Ship log became their second
 // reader, and are NOT re-exported from here: this panel is one consumer of them now, and a
@@ -374,7 +375,7 @@ export function ShippingSettingsPanel({
             </p>
             <p className="settings-hint">
               {closeAfterMerge
-                ? "A finished agent otherwise counts against the fleet ceiling for as long as it lives. Its checkout is reclaimed only when it holds no uncommitted or untracked files; otherwise it is kept for Clean up."
+                ? `A finished agent otherwise counts against the fleet ceiling for as long as it lives. Its checkout is reclaimed only when it holds no uncommitted or untracked files; otherwise it is kept for Clean up, and removed automatically after ${TASK_WORKTREE_RETENTION_DAYS} days without a Git-visible change.`
                 : "The agent stays, keeping its checkout and its context, and the autopilot may hand it the next task in place - no worktree to provision, but it carries the last task's context into the next one."}
             </p>
           </ConsoleCard>

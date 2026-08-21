@@ -240,6 +240,7 @@ const BASE_TASK = {
   createdAt: 1,
   updatedAt: 1,
   dispatchedAt: null,
+  automaticCleanup: null,
   completedAt: null,
 };
 

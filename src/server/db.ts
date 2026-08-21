@@ -2832,6 +2832,13 @@ function migrate(d: DatabaseSync): void {
   // inventing a completion boundary, and generation zero means no staged set was observed.
   addColumn(d, "workflow_submissions", "evidence_group_key", "TEXT NOT NULL DEFAULT ''");
   addColumn(d, "workflow_submissions", "staged_image_generation", "INTEGER NOT NULL DEFAULT 0");
+  // The same capture hashed without its transcript anchor, so "has the work changed since the
+  // round that asked for a fix?" stops being answered by the submission's identity. Nullable
+  // with no default and no backfill on purpose: a row written before this column existed has
+  // no such hash, and inventing one would be inventing a comparison. The unchanged-evidence
+  // guard falls back to the full fingerprint for those rows, which is exactly what it did
+  // before, so an upgraded database keeps its historical behaviour on historical rows.
+  addColumn(d, "workflow_submissions", "repository_fingerprint", "TEXT");
   addColumn(d, "workflow_evidence_owners", "all_generation", "INTEGER NOT NULL DEFAULT 0");
   // Existing staged rows are images. The append-only kind lets text/log evidence share the
   // reservation and generation lifecycle without changing any historical row's meaning.

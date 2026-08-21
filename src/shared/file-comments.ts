@@ -240,3 +240,26 @@ export function holdsQueuePosition(status: FileCommentThreadStatus): boolean {
  * makes room, which is the behaviour a person hitting this would expect.
  */
 export const FILE_COMMENT_THREADS_PER_SESSION_MAX = 200;
+
+/**
+ * How many messages one thread may RETAIN, as opposed to how many ride the wire.
+ *
+ * `FILE_COMMENT_THREAD_MESSAGE_CAP` bounds the snapshot and nothing else - past it a frame
+ * carries a tail and `messageCount` reports the truth. That is deliberately not a retention
+ * policy, because `GET /api/file-comments/:id` exists precisely to return everything. But
+ * "everything" was itself unbounded: a session appending replies in a loop grew SQLite and
+ * that response without limit, so the frame cap read as a bound on the feature when it was
+ * only a bound on one of its two read paths.
+ *
+ * Ten times the wire cap. The distance between the two is the point - the frame cap has to be
+ * small because every thread rides every reconnect snapshot, and retention can be generous
+ * because one thread is only read when somebody asks for it. 500 replies on a single line of
+ * a single file is not a conversation that should have kept going; it is a loop.
+ *
+ * Refused at the append, never trimmed. Dropping the oldest messages would quietly destroy
+ * the original comment - the one the whole thread is anchored to and the one an orphaned
+ * thread is retained FOR - to make room for the newest reply, which is the wrong trade in
+ * every direction. A person who reaches this starts a new thread, which is what the length
+ * was already telling them to do.
+ */
+export const FILE_COMMENT_MESSAGES_PER_THREAD_MAX = FILE_COMMENT_THREAD_MESSAGE_CAP * 10;

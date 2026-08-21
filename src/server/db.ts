@@ -59,6 +59,7 @@ import { readPersistedEnum } from "@shared/schedules.ts";
 import { HUMAN_REVIEW_STATUSES, isHumanResolvedReview } from "@shared/review-item.ts";
 import { IN_FLIGHT_ITEM_STATES, TERMINAL_ITEM_STATES } from "@shared/queue.ts";
 import {
+  FILE_COMMENT_MESSAGES_PER_THREAD_MAX,
   FILE_COMMENT_THREAD_MESSAGE_CAP,
   FILE_COMMENT_THREADS_PER_SESSION_MAX,
   OUTSTANDING_THREAD_STATUSES,
@@ -10774,6 +10775,15 @@ export function appendFileCommentMessage(input: {
     .prepare(`SELECT id FROM file_comment_threads WHERE id = ?`)
     .get(input.threadId) as { id?: string } | undefined;
   if (!exists?.id) return null;
+  const held = d
+    .prepare(`SELECT COUNT(*) AS n FROM file_comment_messages WHERE thread_id = ?`)
+    .get(input.threadId) as unknown as { n: number };
+  if (Number(held.n) >= FILE_COMMENT_MESSAGES_PER_THREAD_MAX) {
+    throw new FileCommentStoreError(
+      `this comment already holds ${FILE_COMMENT_MESSAGES_PER_THREAD_MAX} messages; ` +
+        `start a new comment rather than continuing this one`,
+    );
+  }
   insertFileCommentMessageRow(d, input);
   touchFileCommentThread(input.threadId, input.now);
   const row = d
@@ -10831,6 +10841,17 @@ export function updateFileCommentMessageBody(
     )
     .get(id) as unknown as (FileCommentMessageRow & { thread_status: string }) | undefined;
   if (!row) return null;
+  // An agent's reply is a RECORD, not a draft, and nothing edits it - not this route, not
+  // phase 4's own tool. The two refusals below are both about the SEND window, and an agent
+  // reply is on the wrong side of it for either to fire: it arrives undelivered (nobody sends
+  // it anywhere) and it moves its thread to `answered`, which is not outstanding. So without
+  // this check any caller holding a message id could rewrite what the agent said, which is
+  // the same forgery `AppendFileCommentMessageSchema` refuses at creation - a reply the UI
+  // renders as the agent's answer, written by somebody else - only worse, because it destroys
+  // a real answer instead of inventing one beside it.
+  if (row.author !== "human") {
+    throw new FileCommentStoreError("an agent's reply is a record and cannot be edited");
+  }
   if (row.delivered_at !== null) {
     throw new FileCommentStoreError("a message the agent has already been sent cannot be edited");
   }

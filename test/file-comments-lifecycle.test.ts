@@ -180,11 +180,18 @@ test("the prune is the third mechanism, and never the first two's substitute", (
 
   const survivor = seed("alive", h.held);
   h.live("alive");
+  // A cutoff strictly AFTER the settle, because the window is `updated_at < cutoff` and the
+  // orphan above stamped `updated_at` from the same clock. Passing `Date.now()` for both made
+  // this test's result depend on whether the two calls landed in the same millisecond - it
+  // passed alone and failed under the suite's concurrency. The strict comparison is correct
+  // (a row settled exactly AT the cutoff is not yet past the window); the test was the thing
+  // asserting a boundary it did not mean to.
+  const past = Date.now() + 1;
   // An EMPTY live set means "liveness unknown", never "nothing is live".
-  assert.equal(pruneFileCommentThreads([], Date.now()), 0);
+  assert.equal(pruneFileCommentThreads([], past), 0);
   assert.ok(loadFileCommentThread(t.id));
 
-  assert.equal(pruneFileCommentThreads(["alive"], Date.now()), 1);
+  assert.equal(pruneFileCommentThreads(["alive"], past), 1);
   assert.equal(loadFileCommentThread(t.id), null);
   assert.ok(loadFileCommentThread(survivor.id), "a live session's thread is never pruned");
 });

@@ -19,6 +19,7 @@ const {
   appendFileCommentMessage,
   loadFileCommentThread,
   openDb,
+  loadFileCommentThreadWithFullHistory,
   loadFileCommentThreadsForSession,
   orphanFileCommentThreadsForSession,
   setFileCommentThreadStatus,
@@ -462,6 +463,75 @@ test("a whitespace-only quote is refused rather than stored unanchorable", async
   const res = await post("/api/sessions/live/file-comments", { ...COMMENT, quote: "  \n  " });
   assert.equal(res.status, 400);
   assert.equal(loadFileCommentThreadsForSession("live").length, 0, "nothing was written");
+});
+
+test("an agent's reply cannot be rewritten through the edit route", async () => {
+  // The same forgery the append schema refuses at creation, through the other door - and
+  // worse, because it destroys a real answer rather than inventing one beside it. Neither
+  // existing refusal fires: an agent reply arrives UNDELIVERED (nobody sends it anywhere) and
+  // moves its thread to `answered`, which is not outstanding.
+  reset();
+  const t = await create();
+  const agentReply = appendFileCommentMessage({
+    id: "agent-record",
+    threadId: t.id,
+    author: "agent",
+    sessionId: "live",
+    body: "the agent's real answer",
+    now: Date.now(),
+  })!;
+  assert.equal(agentReply.deliveredAt, null, "undelivered, so the send-window guard cannot fire");
+
+  const forged = await post(`/api/file-comment-messages/${agentReply.id}`, {
+    body: "something the agent never said",
+  });
+  assert.equal(forged.status, 409);
+  assert.match(((await forged.json()) as { error: string }).error, /record and cannot be edited/);
+  assert.equal(
+    loadFileCommentThread(t.id)!.messages.find((m) => m.id === agentReply.id)?.body,
+    "the agent's real answer",
+    "the record is intact",
+  );
+
+  // A person's own undelivered message is still editable - that is what the route is for.
+  const mine = loadFileCommentThread(t.id)!.messages[0]!;
+  assert.equal((await post(`/api/file-comment-messages/${mine.id}`, { body: "reworded" })).status, 200);
+});
+
+test("a thread retains a bounded history, and says so rather than trimming", async () => {
+  // The 50-message frame cap bounds the SNAPSHOT only; `GET /api/file-comments/:id` returns
+  // everything, and "everything" was itself unbounded - so a session appending in a loop grew
+  // SQLite and that response without limit.
+  reset();
+  const { FILE_COMMENT_MESSAGES_PER_THREAD_MAX } = await import("../src/shared/file-comments.ts");
+  const t = await create();
+  // The opening comment is already message 1.
+  for (let i = 1; i < FILE_COMMENT_MESSAGES_PER_THREAD_MAX; i += 1) {
+    appendFileCommentMessage({
+      id: `bulk-${i}`,
+      threadId: t.id,
+      author: "human",
+      sessionId: "live",
+      body: `reply ${i}`,
+      now: Date.now(),
+    });
+  }
+  const full = await app.request(`/api/file-comments/${t.id}`, { headers: HEADERS });
+  const { thread } = (await full.json()) as { thread: FileCommentThread };
+  assert.equal(thread.messageCount, FILE_COMMENT_MESSAGES_PER_THREAD_MAX);
+
+  const refused = await post(`/api/file-comments/${t.id}/messages`, { body: "one too many" });
+  assert.equal(refused.status, 409);
+  assert.match(((await refused.json()) as { error: string }).error, /start a new comment/);
+
+  // REFUSED, never trimmed. Dropping the oldest would destroy the original comment - the one
+  // the thread is anchored to, and the one an orphaned thread is retained for - to make room
+  // for the newest reply.
+  const after = loadFileCommentThreadWithFullHistory(t.id)!;
+  assert.equal(after.messageCount, FILE_COMMENT_MESSAGES_PER_THREAD_MAX, "nothing was dropped");
+  assert.equal(after.messages[0]!.body, COMMENT.body, "the original comment survives");
+  // And the two caps are different numbers bounding different things.
+  assert.ok(FILE_COMMENT_MESSAGES_PER_THREAD_MAX > FILE_COMMENT_THREAD_MESSAGE_CAP);
 });
 
 test("a thread can be fetched whole, and deleted", async () => {

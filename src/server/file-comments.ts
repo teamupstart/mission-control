@@ -205,18 +205,25 @@ export class FileCommentManager {
 
   /** The only way a message row is written, by either author. */
   appendMessage(threadId: string, author: FileCommentAuthor, body: string): FileCommentMessage {
-    const thread = this.writable(threadId);
-    const message = appendFileCommentMessage({
-      id: randomUUID(),
-      threadId,
-      author,
-      sessionId: thread.sessionId,
-      body,
-      now: Date.now(),
-    });
-    if (!message) throw new FileCommentError("no such comment thread", 404);
-    this.publish(threadId);
-    return message;
+    try {
+      // Wrapped like the other writes: the store refuses a thread that has reached its
+      // retention bound, and an unmapped `FileCommentStoreError` would reach the route as a
+      // 500 rather than a 409 saying what to do about it.
+      const thread = this.writable(threadId);
+      const message = appendFileCommentMessage({
+        id: randomUUID(),
+        threadId,
+        author,
+        sessionId: thread.sessionId,
+        body,
+        now: Date.now(),
+      });
+      if (!message) throw new FileCommentError("no such comment thread", 404);
+      this.publish(threadId);
+      return message;
+    } catch (err) {
+      throw this.asRouteError(err);
+    }
   }
 
   editMessage(messageId: string, body: string): FileCommentThread {

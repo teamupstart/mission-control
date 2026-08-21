@@ -260,7 +260,10 @@ interface TourStep {
   ready?(runtime: TourRuntime, registry: TourTargetRegistry): boolean;
   /** What to say while it is not. Today's `fallbackDescription()` switch. */
   fallback?(runtime: TourRuntime): string | null;
-  /** Runtime moved under this step - advance, retreat, or stay. Today's `refresh()`. */
+  /**
+   * Runtime moved under this step - advance, retreat, or stay. Today's `refresh()`.
+   * Returns the step id to move to, or null to stay put.
+   */
   reconcile?(runtime: TourRuntime): string | null;
 }</code></pre>
 

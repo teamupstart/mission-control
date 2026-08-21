@@ -839,50 +839,59 @@ export class SdkSupervisor {
         );
       }
     }
-    const handle = await spec.launch({
-      cwd: row.cwd,
-      // No prompt: this is a continuation, and re-sending the original intent would make the
-      // agent start the task over on top of whatever it had already done.
-      prompt: "",
-      model: row.model,
-      effort: row.effort,
-      permissionMode: row.permissionMode,
-      mcp,
-      // Rebuilt from the task row rather than remembered on the session row, because the
-      // task is where the repo set durably lives - and this grant can only be made at
-      // launch, so a resumed multi-repo session that omitted it would come back able to
-      // read its secondary worktrees and unable to write to them, which is the failure
-      // nobody would attribute to a daemon restart.
-      extraDirs: (task?.extraRepos ?? [])
-        .map((entry) => entry.worktreePath)
-        .filter((p): p is string => p !== null),
-      resume: row.agentSessionId,
-    });
-    this.adopt({
-      registration: {
-        id: row.id,
-        agent: row.agent,
-        name: restoredName(row, task?.title ?? null),
+    if (task?.kind === "pipeline") {
+      this.registry.beginManagedPipelineLaunch(task.id, row.id, row.cwd);
+    }
+    try {
+      const handle = await spec.launch({
         cwd: row.cwd,
-        // An idle resume emits a binding but owes no assistant/result frame, so carry the
-        // durable no-turn fact into the card that binding confirms. Fresh launches and
-        // interrupted restores stay `starting`; the latter receives its recovery turn below.
-        initialState: row.turnInProgress ? "starting" : "idle",
-        permissionMode: row.permissionMode,
-        gitBranch: task?.branch ?? null,
-        gitRoot: row.cwd,
-        repoRoot: task?.repoRoot ?? null,
-      },
-      handle,
-      durable: {
-        taskId: row.taskId,
+        // No prompt: this is a continuation, and re-sending the original intent would make the
+        // agent start the task over on top of whatever it had already done.
+        prompt: "",
         model: row.model,
         effort: row.effort,
-        agentSessionId: row.agentSessionId,
-        turnInProgress: row.turnInProgress,
-        acceptedTurns: 0,
-      },
-    });
+        permissionMode: row.permissionMode,
+        mcp,
+        // Rebuilt from the task row rather than remembered on the session row, because the
+        // task is where the repo set durably lives - and this grant can only be made at
+        // launch, so a resumed multi-repo session that omitted it would come back able to
+        // read its secondary worktrees and unable to write to them, which is the failure
+        // nobody would attribute to a daemon restart.
+        extraDirs: (task?.extraRepos ?? [])
+          .map((entry) => entry.worktreePath)
+          .filter((p): p is string => p !== null),
+        resume: row.agentSessionId,
+      });
+      this.adopt({
+        registration: {
+          id: row.id,
+          agent: row.agent,
+          name: restoredName(row, task?.title ?? null),
+          cwd: row.cwd,
+          // An idle resume emits a binding but owes no assistant/result frame, so carry the
+          // durable no-turn fact into the card that binding confirms. Fresh launches and
+          // interrupted restores stay `starting`; the latter receives its recovery turn below.
+          initialState: row.turnInProgress ? "starting" : "idle",
+          permissionMode: row.permissionMode,
+          gitBranch: task?.branch ?? null,
+          gitRoot: row.cwd,
+          repoRoot: task?.repoRoot ?? null,
+        },
+        handle,
+        durable: {
+          taskId: row.taskId,
+          model: row.model,
+          effort: row.effort,
+          agentSessionId: row.agentSessionId,
+          turnInProgress: row.turnInProgress,
+          acceptedTurns: 0,
+        },
+      });
+    } finally {
+      if (task?.kind === "pipeline") {
+        this.registry.endManagedPipelineLaunch(task.id, row.id);
+      }
+    }
     if (row.turnInProgress) {
       try {
         // Through the ordinary send path AFTER adoption: Codex can resume with an active

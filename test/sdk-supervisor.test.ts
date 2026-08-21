@@ -815,7 +815,17 @@ test("restore resumes the same conversation rather than starting a new one", asy
 
 test("restore preserves a managed Pipeline task's launch-scoped MCP identity", async () => {
   const handle = fakeHandle();
-  const fake = withFakeDriver(async () => handle);
+  const registry = new Registry();
+  let launchAuthorityObserved = false;
+  const fake = withFakeDriver(async () => {
+    assert.deepEqual(registry.managedPipelineLaunch("sdk:restore-pipeline"), {
+      taskId: "task-restore-pipeline",
+      sessionId: "sdk:restore-pipeline",
+      cwd: "/repo/restore-pipeline",
+    });
+    launchAuthorityObserved = true;
+    return handle;
+  });
   const descriptor = {
     serverName: "mission-control",
     command: "/usr/bin/node",
@@ -835,7 +845,6 @@ test("restore preserves a managed Pipeline task's launch-scoped MCP identity", a
       status: "running",
       turnInProgress: false,
     });
-    const registry = new Registry();
     registry.upsertTask(mkTask({
       id: "task-restore-pipeline",
       kind: "pipeline",
@@ -869,7 +878,9 @@ test("restore preserves a managed Pipeline task's launch-scoped MCP identity", a
         MISSION_PIPELINE_SESSION_ID: "sdk:restore-pipeline",
       },
     });
+    assert.equal(launchAuthorityObserved, true);
     assert.equal(registry.getSession("sdk:restore-pipeline")?.pipeline, null);
+    assert.equal(registry.managedPipelineLaunch("sdk:restore-pipeline"), null);
   } finally {
     fake.restore();
   }

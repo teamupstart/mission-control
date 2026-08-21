@@ -226,8 +226,8 @@ test.describe("a session an external engine is driving", () => {
 
     // Find OUR cards by the tmux session names we generated. Never "the only card":
     // discovery is on, so the developer's own agents are on this fleet too.
-    const drivenCard = dashboard.locator("article.card").filter({ hasText: driven.session });
-    const ordinaryCard = dashboard.locator("article.card").filter({ hasText: ordinary.session });
+    const drivenCard = dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").filter({ hasText: driven.session });
+    const ordinaryCard = dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").filter({ hasText: ordinary.session });
     await expect(drivenCard).toHaveCount(1, { timeout: SETTLE });
     await expect(ordinaryCard).toHaveCount(1, { timeout: SETTLE });
     // The runtime is the precondition of the whole spec, and the card states it by naming the
@@ -252,7 +252,6 @@ test.describe("a session an external engine is driving", () => {
     // is what a busy agent's looks like, so an operator waits for it to come back; this one
     // never does, and the card says who to act through instead.
     await drivenCard.click();
-    await drivenCard.getByRole("button", { name: "Expand conversation" }).click();
     await expect(
       drivenCard.getByText("Driven by ai-conductor - act through its run in Runs"),
     ).toBeVisible();
@@ -268,7 +267,6 @@ test.describe("a session an external engine is driving", () => {
     // (4) THE CONTROL, again: an agent in the same repository, outside every worktree, keeps
     // the composer exactly where it was. This is the fail-open guarantee on the surface an
     // operator with no engine installed looks at all day.
-    await ordinaryCard.getByRole("button", { name: "Expand conversation" }).click();
     await expect(ordinaryCard.getByPlaceholder(/^Reply to this session/)).toBeVisible();
     await expect(ordinaryCard.getByRole("button", { name: "Send", exact: true })).toBeVisible();
   });
@@ -281,7 +279,7 @@ test.describe("a session an external engine is driving", () => {
     const driven = startPane(conductorWorktree(daemon.repo, "add-widgets"), "grouped");
     panes.push(driven);
     await expect(
-      dashboard.locator("article.card").filter({ hasText: driven.session }),
+      dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").filter({ hasText: driven.session }),
     ).toHaveCount(1, { timeout: SETTLE });
 
     // The board frames the sessions of one run and heads the frame with the run itself, which
@@ -312,7 +310,7 @@ test.describe("a session an external engine is driving", () => {
     const driven = startPane(conductorWorktree(daemon.repo, "add-widgets"), "ladder");
     panes.push(driven);
     await expect(
-      dashboard.locator("article.card").filter({ hasText: driven.session }),
+      dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").filter({ hasText: driven.session }),
     ).toHaveCount(1, { timeout: SETTLE });
 
     // Into the conversation window, chosen off the rail the way a person chooses one.
@@ -434,7 +432,7 @@ test.describe("a session an external engine is driving", () => {
     const driven = startPane(conductorWorktree(daemon.repo, "add-widgets"), "consent");
     panes.push(driven);
 
-    const card = dashboard.locator("article.card").filter({ hasText: driven.session });
+    const card = dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").filter({ hasText: driven.session });
     await expect(card).toHaveCount(1, { timeout: SETTLE });
     await expect(card.locator("button.pipeline-chip")).toHaveCount(1, { timeout: SETTLE });
 
@@ -445,14 +443,13 @@ test.describe("a session an external engine is driving", () => {
     await expect(dashboard.getByText(/On, but no repository is switched on/)).toBeVisible();
 
     await dashboard.goto(`${daemon.baseURL}/#/fleet`);
-    const back = dashboard.locator("article.card").filter({ hasText: driven.session });
+    const back = dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").filter({ hasText: driven.session });
     await expect(back).toHaveCount(1, { timeout: SETTLE });
     // The badge is gone and NOTHING ELSE about the session moved: same card, same pane, and a
     // mode chip that is a control again.
     await expect(back.locator("button.pipeline-chip")).toHaveCount(0, { timeout: SETTLE });
     await expect(back).toContainText(/tmux · %\d+/);
     await expect(back.locator("button.mode-btn")).toHaveCount(1);
-    await back.getByRole("button", { name: "Expand conversation" }).click();
     await expect(back.getByPlaceholder(/^Reply to this session/)).toBeVisible();
     await expect(back.locator("p.compose-notice")).toHaveCount(0);
 

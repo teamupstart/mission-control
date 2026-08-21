@@ -166,11 +166,12 @@ test("dispatching an agent puts a live session on the fleet", async ({ dashboard
 
   await dispatch(dashboard, daemon);
 
-  const card = dashboard.locator("article.card").first();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
   await expect(card).toBeVisible();
   // Exactly one, not "at least one": the daemon has adopted the dispatch as a single
   // session rather than double-carding it, which is a real regression this repo has had.
-  await expect(dashboard.locator("article.card")).toHaveCount(1);
+  await expect(dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row")).toHaveCount(1);
   // Named by `deriveTitle`, which title-cases the intent. That is the SYNCHRONOUS name a
   // dispatch gets; `task-title.ts` refines it with a headless model call afterwards, so
   // asserting on the model's answer here would be racing an async refinement. What that
@@ -209,13 +210,14 @@ test("the dispatch shortcut works after focus leaves the task description", asyn
   await dashboard.keyboard.press("Control+Enter");
 
   await expect(dialog).toBeHidden();
-  await expect(dashboard.locator("article.card")).toHaveCount(1);
+  await expect(dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row")).toHaveCount(1);
 });
 
 test("an Agent SDK Fable 5 session uses its 1M context window", async ({ dashboard, daemon }) => {
   await dispatch(dashboard, daemon, { model: "claude-fable-5" });
 
-  const card = dashboard.locator("article.card").first();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
   await expect(card).toContainText("Agent SDK");
   await expect(card).toContainText("Fable 5");
   await expect(card).toContainText("1M");
@@ -226,7 +228,8 @@ test("an Agent SDK Fable 5 session uses its 1M context window", async ({ dashboa
 test("Complete closes promptly while an accepted SDK stop drains", async ({ dashboard, daemon }) => {
   await dispatch(dashboard, daemon, { task: "E2E_SLOW_SESSION_STOP finish and close" });
 
-  const card = dashboard.locator("article.card").first();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
   const complete = card.getByRole("button", { name: "Complete" });
   await expect(complete).toBeVisible();
   await settled(complete);
@@ -256,8 +259,8 @@ test("Complete closes promptly while an accepted SDK stop drains", async ({ dash
 test("typing into the conversation gets a reply back from the agent", async ({ dashboard, daemon }) => {
   await dispatch(dashboard, daemon);
 
-  const card = dashboard.locator("article.card").first();
-  await card.getByRole("button", { name: "Expand conversation" }).click();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
 
   // The composer is disabled until the session can be written to. For an SDK session
   // `canMessage` is true as soon as the runtime is known, but the card renders before the
@@ -368,7 +371,8 @@ test("Ship it starts No-Mistakes Review through the workflow route", async ({
   daemon,
 }) => {
   await dispatch(dashboard, daemon);
-  const card = dashboard.locator("article.card").first();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
   await expect(card).toBeVisible();
   // IDLE, not merely present. `dispatch` returns when the modal closes, which is well before
   // the launch turn ends - and the end of that turn runs the wrap-up flow, which ANSWERS the
@@ -636,7 +640,8 @@ test("Foreman never resurfaces Ship it actions after a scout completes", async (
     task: "Compare the fleet layouts and report the findings",
     kind: "scout",
   });
-  const card = dashboard.locator("article.card").first();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
   await expect(card).toBeVisible();
 
   await expect.poll(async () =>

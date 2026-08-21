@@ -140,7 +140,6 @@ async function useRendering(page: Page, daemon: DaemonHandle, view: "chat" | "te
  */
 async function openConversation(card: Locator): Promise<void> {
   await settled(card);
-  await card.getByRole("button", { name: "Expand conversation" }).click();
   await expect(card.locator(".transcript")).toBeVisible();
 }
 
@@ -156,7 +155,8 @@ async function seedRun(card: Locator, reply: Locator): Promise<void> {
 
 test("the terminal rendering draws the conversation as one stream", async ({ dashboard, daemon }) => {
   await dispatch(dashboard, daemon, "exercise the terminal rendering");
-  const card = dashboard.locator("article.card").first();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
   await openConversation(card);
 
   // This suite pins its ordinary dashboard fixture to Chat so rendering-focused specs state
@@ -290,7 +290,8 @@ test("a Foreman completion review keeps terminal provenance and gains chat hiera
 }) => {
   await useRendering(dashboard, daemon, "terminal");
   await dispatch(dashboard, daemon, "show Foreman's completion review clearly");
-  const card = dashboard.locator("article.card").first();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
   await openConversation(card);
 
   const target = await session(daemon);
@@ -367,7 +368,8 @@ test("a Codex run of commands folds into one record too", async ({ dashboard, da
   // The chat log first, on this suite's pinned precondition, because the reader feeds BOTH
   // renderings and the fold is shared. Here the run is one `turn-toolrun` row - "codex
   // executed" and its chips - where it used to be three chips hanging off the preamble turn.
-  const chat = dashboard.locator("article.card").first();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const chat = dashboard.locator(".console-detail");
   await openConversation(chat);
   await seedRun(chat, chat.getByPlaceholder(/^Reply to this session/));
   const chatRun = chat.locator(".turn-toolrun");
@@ -385,7 +387,8 @@ test("a Codex run of commands folds into one record too", async ({ dashboard, da
   await shoot(dashboard, chat, "05-codex-folded-run-chat");
 
   await useRendering(dashboard, daemon, "terminal");
-  const card = dashboard.locator("article.card").first();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
   await openConversation(card);
   const terminal = card.getByRole("region", { name: "Conversation terminal" });
   await expect(terminal).toContainText("mission-control: conversation · codex");
@@ -433,59 +436,60 @@ test("one session reads as a terminal while the rest stay on the chat log", asyn
   daemon,
 }) => {
   // The per-session half of the switch, and the claim that makes it worth having: flipping
-  // one session must say nothing about the next one. Two sessions, because a single card
+  // one session must say nothing about the next one. Two sessions, because a single detail
   // cannot tell "this session changed" from "the dashboard changed".
   await dispatch(dashboard, daemon, "read this one as a terminal");
   await dispatch(dashboard, daemon, "stay on the chat log");
-  const cards = dashboard.locator("article.card");
-  await expect(cards).toHaveCount(2);
+  const rows = dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row");
+  await expect(rows).toHaveCount(2);
 
   // Addressed by their own goals rather than by position: the fleet reorders as sessions
-  // settle, so `nth(1)` after a collapse is whichever card the sort left there - which is
-  // how "the other one is untouched" would silently assert against the same card twice.
-  const first = cards.filter({ hasText: "read this one as a terminal" });
-  const second = cards.filter({ hasText: "stay on the chat log" });
-  await openConversation(first);
-  const toggle = first.getByRole("button", { name: "Terminal view" });
+  // settle, so address each rail row by its goal instead of by position.
+  const first = rows.filter({ hasText: "read this one as a terminal" });
+  const second = rows.filter({ hasText: "stay on the chat log" });
+  await first.click();
+  const detail = dashboard.locator(".console-detail");
+  await openConversation(detail);
+  const toggle = detail.getByRole("button", { name: "Terminal view" });
   await expect(toggle).toHaveAttribute("aria-pressed", "false");
   // Nothing to mark yet: this session reads exactly like the rest of the fleet.
   await expect(toggle).not.toHaveClass(/is-overridden/);
   await toggle.click();
   await expect(toggle).toHaveAttribute("aria-pressed", "true");
-  await expect(first.getByRole("region", { name: "Conversation terminal" })).toBeVisible();
+  await expect(detail.getByRole("region", { name: "Conversation terminal" })).toBeVisible();
   await expect(toggle).toHaveClass(/is-overridden/);
 
-  await shoot(dashboard, first, "02-per-session-override");
+  await shoot(dashboard, detail, "02-per-session-override");
 
-  // The other card, opened after: untouched by a choice that belongs to its neighbour.
-  await first.getByRole("button", { name: "Collapse conversation" }).click();
-  await openConversation(second);
-  await expect(second.getByRole("region", { name: "Conversation terminal" })).toHaveCount(0);
-  await expect(second.getByRole("button", { name: "Terminal view" })).toHaveAttribute(
+  // The other session, selected after: untouched by a choice that belongs to its neighbour.
+  await second.click();
+  await openConversation(detail);
+  await expect(detail.getByRole("region", { name: "Conversation terminal" })).toHaveCount(0);
+  await expect(detail.getByRole("button", { name: "Terminal view" })).toHaveAttribute(
     "aria-pressed",
     "false",
   );
-  await expect(second.getByPlaceholder(/^Reply to this session/)).toBeVisible();
+  await expect(detail.getByPlaceholder(/^Reply to this session/)).toBeVisible();
 
-  // And the first card kept its choice across being collapsed and reopened - the override
-  // outlives the panel that made it, which is why it is not state inside that panel.
-  await second.getByRole("button", { name: "Collapse conversation" }).click();
-  await openConversation(first);
-  await expect(first.getByRole("region", { name: "Conversation terminal" })).toBeVisible();
+  // And the first session kept its choice across selection changes.
+  await first.click();
+  await openConversation(detail);
+  await expect(detail.getByRole("region", { name: "Conversation terminal" })).toBeVisible();
 });
 
-test("the frame fits both places a conversation is mounted, at both widths", async ({
+test("the frame fits the shared detail at narrow and wide widths", async ({
   dashboard,
   daemon,
 }) => {
-  // The expanded card is narrower than the console detail pane and crosses the container
-  // breakpoint the conversation already had. Markup cannot say "still on screen", so this
+  // The narrow Console detail crosses the conversation's container breakpoint. Markup
+  // cannot say "still on screen", so this
   // one measures: the status line is the last row in the frame and the one carrying the
   // session's state, so a frame that overflows loses exactly the thing worth keeping.
   await dispatch(dashboard, daemon, "fit the frame at every width");
   await useRendering(dashboard, daemon, "terminal");
 
-  const card = dashboard.locator("article.card").first();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
   await openConversation(card);
   const frame = card.getByRole("region", { name: "Conversation terminal" });
   const statusLine = card.getByRole("region", { name: "Session status" });
@@ -509,11 +513,9 @@ test("the frame fits both places a conversation is mounted, at both widths", asy
   // And the box is still reachable, which is the other thing a squeezed frame loses.
   await expect(card.getByPlaceholder(/^Send the next instruction/)).toBeVisible();
 
-  await shoot(dashboard, card, "03-narrow-card");
+  await shoot(dashboard, card, "03-narrow-detail");
 
-  // The console detail is the other mount, and the wider one. Same frame, from the same
-  // panel - reached by actually switching layouts, because the claim is about a surface a
-  // person arrives at rather than about a selector.
+  // The same detail at a wide viewport restores the optional title.
   await dashboard.setViewportSize({ width: 1400, height: 900 });
   const response = await fetch(`${daemon.baseURL}/api/ui/config`, {
     method: "PUT",
@@ -545,7 +547,8 @@ test("a session's own choice beats the dashboard default, and the tab forgets it
   await dispatch(dashboard, daemon, "override the terminal default");
   await useRendering(dashboard, daemon, "terminal");
 
-  const card = dashboard.locator("article.card").first();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
   await openConversation(card);
   // The default put this session in the terminal...
   const toggle = card.getByRole("button", { name: "Terminal view" });
@@ -566,7 +569,8 @@ test("a session's own choice beats the dashboard default, and the tab forgets it
   // The override is honestly scoped to the tab: a reload starts over from the daemon's
   // default. Nothing persists it, and this is the assertion that keeps it that way.
   await dashboard.reload();
-  const reloaded = dashboard.locator("article.card").first();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const reloaded = dashboard.locator(".console-detail");
   await openConversation(reloaded);
   await expect(reloaded.getByRole("region", { name: "Conversation terminal" })).toBeVisible();
 });

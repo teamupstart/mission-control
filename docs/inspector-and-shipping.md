@@ -160,17 +160,17 @@ reading order is budget order: at the bundle's byte cap the memory index is the 
 dropped, never the contract for the code under review, and the prompt says documents were
 omitted.
 
-### On the card
+### On the session detail
 
 A session whose pull request has been adopted grows a `⌕` chip beside its PR chip, and the
 mark next to the glyph is where the review stands: no mark at all means adopted but not
 looked at yet, `✓` means reviewed with nothing outstanding, a number is the count of open
 findings, and `!` means the last round didn't complete. It's a mark rather than a word
-because a word costs the card title the width it needs; the sentence is in the tooltip. In
+because a word costs the session detail title the width it needs; the sentence is in the tooltip. In
 `dry-run` the chip is set apart - a dashed border, a dotted underline in the rail - and the
 tooltip says nothing was posted.
 
-Cards, board tiles and the console detail all carry it, and there it opens the pull
+Board tiles and the console detail both carry it, and there it opens the pull
 request. The console rail carries the same mark without the link, and only when there is
 something to say - open findings or a failed round - because a rail line is scanned rather
 than read.
@@ -287,7 +287,7 @@ The middle two are worth stating plainly because they are not obvious: dry run s
 publishing stops. So "the GitHub Inspector reviewed this push" is true in dry run, and it is not
 sufficient - **dry run means dry for the merge too**. While YOLO mode is armed, Shipping's
 **Prerequisites** card names whichever of the three is in the way and links to the control
-that fixes it; each reason also appears per pull request in the *Merge queue*. The card
+that fixes it; each reason also appears per pull request in the *Merge queue*. The session detail
 says so only while something is genuinely unmet - a checklist of green ticks is one nobody
 reads on the day a tick turns red.
 

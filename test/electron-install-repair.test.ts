@@ -52,6 +52,31 @@ test("the macOS pretest restores a missing Electron framework link", () => {
   assert.equal(ensureElectronFramework(root, "darwin"), "present");
 });
 
+test("the macOS pretest restores a missing current-version link", () => {
+  const copiedRoot = mkdtempSync(join(tmpdir(), "mission-electron-current-"));
+  const copiedFramework = join(
+    copiedRoot,
+    "node_modules/electron/dist/Electron.app/Contents/Frameworks/Electron Framework.framework",
+  );
+  const copiedPayload = join(copiedFramework, "Versions/A/Electron Framework");
+  const copiedCurrent = join(copiedFramework, "Versions/Current");
+  const copiedLink = join(copiedFramework, "Electron Framework");
+
+  try {
+    mkdirSync(join(copiedFramework, "Versions/A"), { recursive: true });
+    writeFileSync(copiedPayload, "framework payload");
+    symlinkSync("Versions/Current/Electron Framework", copiedLink);
+
+    assert.equal(ensureElectronFramework(copiedRoot, "darwin"), "repaired");
+    assert.equal(lstatSync(copiedCurrent).isSymbolicLink(), true);
+    assert.equal(readlinkSync(copiedCurrent), "A");
+    assert.equal(existsSync(copiedLink), true, "both framework links must resolve to the payload");
+    assert.equal(ensureElectronFramework(copiedRoot, "darwin"), "present");
+  } finally {
+    rmSync(copiedRoot, { recursive: true, force: true });
+  }
+});
+
 test("the pretest does not invent a framework payload or change other platforms", () => {
   const incomplete = mkdtempSync(join(tmpdir(), "mission-electron-incomplete-"));
   try {

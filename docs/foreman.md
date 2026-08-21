@@ -11,7 +11,7 @@ the goal **and the session's terminal screen to see the ask itself**. Foreman th
 - **escalates** the genuine forks - a call that hinges on your intent, or anything
   destructive/risky - as a framed **decision brief** with its recommendation, and pings you;
 - writes a 1-2 sentence **Purpose** on every session it inspects - the recent context
-  bearing on *this* decision, shown in the expanded card. It reads the session's
+  bearing on *this* decision, shown in the session detail. It reads the session's
   [Goal](sessions.md#goal) rather than re-deriving it, so the two don't say the same thing twice.
 
 The screen matters more than it sounds: a prompt that is *waiting on you* - a menu, a
@@ -106,7 +106,7 @@ Each session is reviewed in a **fresh headless model call**, using Claude's Agen
 by default, so context never bleeds between reviews. Foreman ships **enabled but inert**, and the distinction is the whole point:
 it starts in **dry-run**, its repository allowlist starts empty, and its worker is a separate
 process nothing starts for you. So on a fresh install Foreman types nothing, sends nothing and
-runs nothing - it *drafts* answers onto the card until you trust it. `enabled` flipped on
+runs nothing - it *drafts* answers onto the session detail until you trust it. `enabled` flipped on
 because it is a prerequisite gate rather than an action: while it shipped off, a **Foreman
 Complete** workflow binding could not be created at all, which left
 [the repair loop](workflows.md#the-repair-loop-end-to-end) unreachable on a fresh install no matter what
@@ -124,8 +124,8 @@ pick a mode.
 
 | Mode | What it does |
 |------|--------------|
-| **dry-run** (default) | drafts a reply onto the card; never sends |
-| **semi-auto** | drafts a reply with a one-click **Approve & send** on the card |
+| **dry-run** (default) | drafts a reply onto the session detail; never sends |
+| **semi-auto** | drafts a reply with a one-click **Approve & send** on the session detail |
 | **live** | sends the reply on your behalf - but only in repos you've **allowlisted** |
 
 Live sending is gated by an explicit **repo allowlist**, granted in
@@ -156,12 +156,12 @@ the separate note stays visible because its marker names a different ask. An esc
 fires a browser **alert**. The top-bar chip shows the mode, whether the worker is running, and
 the queue depth.
 
-For a draft or escalation that has no canonical review form, the card keeps the existing
+For a draft or escalation that has no canonical review form, the session detail keeps the existing
 **◆ decision** or **✎ draft** flag. Its expanded note carries the brief, recommendation and
 the applicable **Approve & send / Dismiss** controls. An answered session carries a
 `✓ Foreman answered: …` audit line.
 
-Foreman's completion checks use the card's [durable Goal](sessions.md#goal), while its latest tactical
+Foreman's completion checks use the session detail's [durable Goal](sessions.md#goal), while its latest tactical
 focus remains separate.
 
 **Settings → Foreman** groups its durable controls into four tabs: **Posture** for the cheap
@@ -205,7 +205,7 @@ completed plan task reaches the ordinary **Ship it / Straight to PR** handling a
 gets. The exemption is keyed on the durable `Kind`, so a **ship** task that produces only
 mockups - or only plans - is judged exactly as it was before.
 
-In the [Console and Board](ui.md#layout-cards-console-or-board) detail, a standalone Foreman
+In the [Console and Board](ui.md#layout-console-or-board-in-settings) detail, a standalone Foreman
 decision is arranged differently because a permanent conversation gives it somewhere better
 to sit: the note is rendered **in the transcript**, as a turn at the point it spoke, and what
 you still *owe* is a one-line strip above it. When the same ask already has a normal review,

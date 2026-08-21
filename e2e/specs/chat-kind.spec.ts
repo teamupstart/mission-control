@@ -196,7 +196,8 @@ test("a fake-agent chat survives idle and a later turn until Complete and close"
   await dialog.getByRole("button", { name: "Dispatch now" }).click();
   await expect(dialog).toBeHidden();
 
-  const card = dashboard.locator("article.card").first();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
   await expect(card).toBeVisible();
   await expect(card.getByText("chat", { exact: true })).toBeVisible();
 
@@ -274,7 +275,6 @@ test("a fake-agent chat survives idle and a later turn until Complete and close"
   await expect(card.getByRole("button", { name: "Run No-Mistakes Review" })).toHaveCount(0);
   await expect(card.getByLabel("Direct shipping instruction")).toHaveCount(0);
 
-  await card.getByRole("button", { name: "Expand conversation" }).click();
   const reply = card.getByPlaceholder(/^Reply to this session/);
   await expect(reply).toBeEnabled();
   await reply.fill(LATER_TURN);

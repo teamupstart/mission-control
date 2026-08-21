@@ -205,13 +205,13 @@ async function refreshInspections(daemon: DaemonHandle): Promise<void> {
 }
 
 /**
- * Assert this card's action row is on screen and carries NO retro offer.
+ * Assert this detail's action row is on screen and carries no retro offer.
  *
  * Two things make this more than `toHaveCount(0)`, and both were found by breaking the
  * predicate on purpose and watching the naive version stay green:
  *
- *  - The row is ANCHORED first. `SessionCard` drops the whole ActionBar once a session
- *    exits, so a card that has merely gone quiet satisfies "no Run retro" trivially - and
+ *  - The row is anchored first. The detail drops the whole ActionBar once a session
+ *    exits, so a detail that has merely gone quiet satisfies "no Run retro" trivially, and
  *    the fake agent does exit, about twenty seconds in. Complete is the neighbour the offer
  *    renders beside, so its presence is what makes the absence next to it mean something.
  *  - The count is READ ONCE rather than asserted with a retrying matcher. `toHaveCount(0)`
@@ -235,7 +235,8 @@ test("a corrected session is offered a retro once its review is clean, and one c
   await enableRetroSkill(daemon);
   const session = await dispatch(dashboard, daemon);
 
-  const card = dashboard.locator("article.card").first();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
   // Nothing yet: one human turn (the dispatched brief) and no pull request. This assertion is
   // the reason the whole spec is not decoration - it establishes that the control is ABSENT
   // before the conditions hold, so its later appearance is caused rather than coincidental.
@@ -246,7 +247,6 @@ test("a corrected session is offered a retro once its review is clean, and one c
   // The correction. A second human turn is what makes this session worth retrospecting, and
   // it is typed through the composer rather than seeded, so the daemon's scan reads the same
   // bytes a person's message would leave.
-  await card.getByRole("button", { name: "Expand conversation" }).click();
   const reply = card.getByPlaceholder(/^Reply to this session/);
   await expect(reply).toBeEnabled();
   await reply.fill(CORRECTION);
@@ -339,9 +339,9 @@ test("a retro clicked after merge starts one follow-up and keeps the source task
 }) => {
   await enableRetroSkill(daemon);
   const session = await dispatch(dashboard, daemon);
-  const card = dashboard.locator("article.card").first();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
 
-  await card.getByRole("button", { name: "Expand conversation" }).click();
   const reply = card.getByPlaceholder(/^Reply to this session/);
   await reply.fill(CORRECTION);
   await reply.press("Enter");
@@ -474,7 +474,8 @@ test("a session nobody corrected is never offered a retro, however clean its rev
   const current = (await sessions(daemon)).find((s) => s.id === session.id);
   expect(current?.retro, "an uncorrected session carries no worthiness signal").toBeUndefined();
 
-  const card = dashboard.locator("article.card").first();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
   // Wait for the clean review to reach the DOM before asserting the offer did not.
   //
   // This barrier is the whole test, and it was missing: the poll above reads the ROUTE, and a

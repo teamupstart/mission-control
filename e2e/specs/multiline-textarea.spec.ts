@@ -102,7 +102,8 @@ test("multiline text boxes grow through five lines before scrolling", async ({
   await dialog.getByRole("button", { name: "Dispatch now" }).click();
   await expect(dialog).toBeHidden();
 
-  const card = dashboard.locator("article.card").first();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
   const send = card.getByRole("button", { name: "Send" });
   await expect(send).toBeEnabled();
   await send.click();
@@ -116,7 +117,6 @@ test("multiline text boxes grow through five lines before scrolling", async ({
   await compactComposer.press("Escape");
   await expect(compactComposer).toHaveCount(0);
 
-  await card.getByRole("button", { name: "Expand conversation" }).click();
   await card.getByRole("button", { name: "Terminal view" }).click();
   const terminalComposer = card.getByPlaceholder("Send the next instruction to this process…");
   await expect(terminalComposer).toBeEnabled();

@@ -88,7 +88,7 @@ async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {
     .selectOption("__none");
   await dialog.getByRole("button", { name: "Dispatch now" }).click();
   await expect(dialog).toBeHidden();
-  await expect(page.locator("article.card")).toHaveCount(1);
+  await expect(page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row")).toHaveCount(1);
 }
 
 /**
@@ -167,8 +167,8 @@ async function pinNote(
 
 /** Send the prompt that makes the agent ask, and wait for the form it raises. */
 async function askAndWait(page: Page): Promise<{ card: Locator; form: Locator }> {
-  const card = page.locator("article.card").first();
-  await card.getByRole("button", { name: "Expand conversation" }).click();
+  await page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = page.locator(".console-detail");
   const composer = card.getByPlaceholder(/^Reply to this session/);
   await expect(composer).toBeEnabled();
   await composer.fill(ASK_TURN);
@@ -323,8 +323,8 @@ test("answering the review channel's question retires it too", async ({ dashboar
 
   await pinNote(daemon, live.id, { marker: `review:${reviewId}`, disposition: "escalated" });
 
-  const card = dashboard.locator("article.card").first();
-  await card.getByRole("button", { name: "Expand conversation" }).click();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
   await expect(notePanel(card)).toHaveCount(0);
   await expect(card.getByRole("button", { name: "Approve & send" })).toHaveCount(0);
 
@@ -419,51 +419,4 @@ test("a note about a DIFFERENT ask is still yours to decide", async ({ dashboard
   // Still on screen, and still asking. The form's answer said nothing about this.
   await expect(note).toContainText("needs your decision");
   await expect(note).toContainText(other);
-});
-
-test("closing the recommendation does not reach the card behind it", async ({
-  dashboard,
-  daemon,
-}) => {
-  // A portal moves the DOM node but not the React tree, so a click inside the sidecar still
-  // bubbles to the JSX ancestors of the component that rendered it. The sidecar is a sibling
-  // of `PaneDialogPrompt`'s own guarded section, so that guard does not cover it, and the
-  // listener it reaches is the card's own onClick - which SELECTS the session. A panel that
-  // floats clear of the card, quietly changing which session the command bar is aimed at, is
-  // the kind of thing nobody connects back to having opened a recommendation.
-  //
-  // Driven on a COLLAPSED card because the card renders the prompt either way, and collapsed
-  // is the state where the panel is most obviously detached from what it would act on.
-  await dispatch(dashboard, daemon);
-  const { card } = await askAndWait(dashboard);
-
-  const live = await session(daemon);
-  expect(live.paneDialog, "the ask reached the card as a dialog").toBeTruthy();
-  await pinNote(daemon, live.id, {
-    marker: dialogMarker(live.paneDialog!),
-    disposition: "escalated",
-  });
-
-  // Back to collapsed, which is the state that has something to lose here. The prompt stays:
-  // a session parked on a menu is blocked, and that is what a collapsed card most needs to say.
-  await card.getByRole("button", { name: "Collapse conversation" }).click();
-  const expand = card.getByRole("button", { name: "Expand conversation" });
-  await expect(expand).toBeVisible();
-
-  const recommendation = card.getByRole("button", { name: "View Foreman recommendation" });
-  await expect(recommendation).toBeVisible();
-  await recommendation.click();
-  const sidecar = dashboard.getByRole("dialog", { name: "Foreman recommendation" });
-  await expect(sidecar).toContainText(SUGGESTION);
-
-  await expect(card).not.toHaveClass(/\bselected\b/);
-
-  await sidecar.getByRole("button", { name: "Close Foreman recommendation" }).click();
-  await expect(sidecar).toBeHidden();
-
-  // The panel closed and nothing behind it moved. Without the guard the card picks up
-  // `selected` here, because the card's own onClick selects the session - verified by
-  // removing the guard and watching this assertion, and only this one, fail.
-  await expect(card).not.toHaveClass(/\bselected\b/);
-  await expect(expand).toBeVisible();
 });

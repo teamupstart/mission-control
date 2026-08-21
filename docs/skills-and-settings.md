@@ -1,26 +1,21 @@
 # Half-written text is kept
 
-A session card **keeps what you've typed** until it is successfully submitted. Conversation
-messages then remain visible in the editable outbox until delivery. Three boxes hold a draft:
+A session **keeps what you've typed** until it is successfully submitted. Conversation
+messages then remain visible in the editable outbox until delivery. Two surfaces hold drafts:
 
 - the **Work queue** panel's add box,
-- the **reply** box under the transcript on an expanded card, and
-- the **send** box - opened by <kbd>s</kbd> on the selected session, or by **Send** on the
-  card.
+- the **reply** box under the transcript, and
+- the fallback **send** box opened by <kbd>s</kbd> when the selected detail is on another tab.
 
-A card only ever has **one** box to send from - at any moment, in every state. The rule
-keys off whether a reply box actually *exists*, not off whether the card is expanded:
-whenever the transcript is carrying one, <kbd>s</kbd> and **Send** put the cursor *there*
-rather than opening a second, and a send box already open closes itself the moment a reply
-box appears. When there's genuinely no reply box - an expanded card whose transcript can't
-be read renders no reply row - **Send** opens the card's own box, which is exactly right:
-one box either way. Nothing is lost when one closes, because the text is in the draft map;
-press **Send** again and it's waiting in it.
+The detail only ever has **one** box to send from. Whenever the transcript carries its reply
+box, <kbd>s</kbd> focuses that box rather than opening a second. On another detail tab,
+<kbd>s</kbd> opens the footer's fallback box. Nothing is lost when either closes because the
+text lives in the per-session draft map; press <kbd>s</kbd> again and it is waiting.
 
-Each survives everything that isn't you deleting text: **collapsing the card** (opening any
-other card collapses this one - only one is expanded at a time), a **filter** that hides the
-card, and **Cancel** / <kbd>Esc</kbd> on the send box. Glance at the grid mid-sentence and
-come back - your text is still there, exactly as the [dispatch form](dispatch-and-backlog.md#dispatch-an-agent)
+Each survives everything that is not you deleting text: selecting another session, a
+**filter** that hides the session, and **Cancel** / <kbd>Esc</kbd> on the send box. Move
+around the fleet mid-sentence and come back; your text is still there, exactly as the
+[dispatch form](dispatch-and-backlog.md#dispatch-an-agent)
 treats a half-written task.
 
 A draft is forgotten on **successful submission**: a send that creates a durable pending
@@ -30,7 +25,7 @@ were replying to, so their half-written text goes with it, and an open reply box
 the spot rather than keeping stale text behind the closing modal. The **queue add box is
 kept** through a reset, since it composes new work rather than a reply to the discarded task.
 A send that *fails* deliberately keeps your text - it's all you have and you're about to retry
-it. Drafts are per session and never bleed from one card into another.
+it. Drafts are per session and never bleed from one session into another.
 
 Once **Send** succeeds, the composer draft becomes a durable queued turn. The full conversation
 turn stays visible beneath the conversation while Mission Control owns it. The compact Send
@@ -46,8 +41,8 @@ Two things worth knowing:
 
 - The scope is this **browser tab**. A reload starts over; drafts aren't stored anywhere.
 - **Images are the exception - only the text comes back.** A screenshot dropped on the queue
-  add box is gone once you close the drawer, and one on the reply box once the card
-  collapses, so attach yours when you're ready to send. (The
+  add box is gone once you leave the Work queue tab, and one on the reply box is gone once
+  you switch sessions, so attach yours when you're ready to send. (The
   [dispatch form](dispatch-and-backlog.md#dispatch-an-agent) is the one that keeps its attachments across a close.)
 
 ## Skills (every session, mixed reload behavior)

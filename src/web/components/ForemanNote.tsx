@@ -7,7 +7,7 @@ import { DraftHint, useForemanDecision } from "./foreman-bits.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 import { relativeTime } from "../lib/format.ts";
 
-// The Foreman panel inside an expanded card: the session's Purpose, plus - when
+// The Foreman panel inside an session detail: the session's Purpose, plus - when
 // Foreman drafted or escalated - the decision brief + its recommended answer, and
 // one-click controls to send or dismiss a pending draft. When Foreman already
 // answered live, a compact audit line. Read-mostly; it stops click propagation so

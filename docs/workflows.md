@@ -598,13 +598,13 @@ not. Delete asks for confirmation and cannot be undone.
 ### Manual Preview runs
 
 Bind a session to an exact published workflow version from the workflow history or from any
-fleet layout, then choose **Preview**. On a Cards card and in the Console and Board detail
+fleet layout, then choose **Preview**. In the Console and Board detail
 header the chip states what the session is armed with, naming the workflow and its version -
 **⌘ No-Mistakes Review v10**. It falls back to an offer, **＋ workflow**, in two cases: nothing is
 bound at all, and the binding that exists is no longer `active` - `orphaned` after its session
 disappeared, or `paused` after the conversation changed. Those rows are not archived and the
 bind dialog still reattaches them, but neither will run when this session's work completes, so
-naming one on a card would promise a review that is not coming. The card answers "is a review
+naming one in session detail would promise a review that is not coming. The detail answers "is a review
 going to run here"; the dialog is where a binding that stopped being able to answer yes gets
 repaired. That distinction matters most for the Foreman-complete trigger, where the binding
 exists for the whole working life of the session and the first run does not appear until the
@@ -613,7 +613,7 @@ The chip is present whenever no run currently *owns* that session - which includ
 whose last run has finished. A finished run shows both: its outcome chip (**Approved**,
 **Preview cancelled**, **Preview failed**) as history, and the chip as the next move. Only an
 open run withdraws the offer, on the same
-[held-ness join](ui.md#layout-cards-console-or-board) the held tag and the backlog drop target
+[held-ness join](ui.md#layout-console-or-board-in-settings) the held tag and the backlog drop target
 read, because that is the window in which the daemon would refuse a second binding anyway as a
 conflict. A binding records the conversation note key, harness, name, working directory, and
 repository root, and pins the immutable version id. Publishing or editing a newer workflow
@@ -741,7 +741,7 @@ content.
 Filesystem removal follows a durable cleanup ledger, so restart can finish an interrupted
 trash transition without deleting a referenced retained file. Compact run
 summaries update over the existing SSE stream, while detailed evidence and timelines are
-loaded on demand for a selected run or a bound Board tile. Cards, Console, and Board show the
+loaded on demand for a selected run or a bound Board tile. Console and Board show the
 same workflow status. Run history pages use the updated-time cursor index, select the bounded
 page before enrichment, and batch the latest attempts in one follow-up query. Summary reads
 never load submission context or evidence. Detail reads batch attempts and receipts for the

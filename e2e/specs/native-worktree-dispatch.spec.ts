@@ -101,7 +101,7 @@ test("native dispatch isolates concurrent work, cleans ownership, and reuses bot
     ownerKey: `${first.id}:1`,
   });
 
-  const firstCard = dashboard.locator("article.card", { hasText: first.title });
+  const firstCard = dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row", { hasText: first.title });
   await expect(firstCard).toContainText("worktree-pools/");
   if (process.env.MC_E2E_EVIDENCE === "1") {
     mkdirSync(EVIDENCE, { recursive: true });
@@ -171,7 +171,7 @@ test("native dispatch isolates concurrent work, cleans ownership, and reuses bot
   });
 
   if (process.env.MC_E2E_EVIDENCE === "1") {
-    const reusedCard = dashboard.locator("article.card", { hasText: reused.title });
+    const reusedCard = dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row", { hasText: reused.title });
     await reusedCard.locator(".card-meta dd.mono").first().hover();
     await expect(dashboard.locator(".tooltip")).toHaveText(reused.worktreePath!);
     await dashboard.screenshot({ path: `${EVIDENCE}native-reuse-with-concurrent-slot.png`, fullPage: true });

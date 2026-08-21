@@ -52,7 +52,7 @@ async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {
   // The modal closing means the REQUEST was accepted, not that the session exists. Every
   // spec here goes on to bind a review to that session by cwd, so wait for the card - the
   // user-visible fact that the fleet has adopted it.
-  await expect(page.locator("article.card")).toHaveCount(1);
+  await expect(page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row")).toHaveCount(1);
 }
 
 /**
@@ -119,8 +119,8 @@ const THREE_OPTIONS = {
 
 /** Open the session's conversation and return the log. */
 async function openConversation(page: Page): Promise<Locator> {
-  const card = page.locator("article.card").first();
-  await card.getByRole("button", { name: "Expand conversation" }).click();
+  await page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = page.locator(".console-detail");
   return card.locator(".transcript-log");
 }
 
@@ -132,7 +132,8 @@ test("answering a three-option question puts the choice in the conversation", as
   await ask(daemon, THREE_OPTIONS);
 
   // The card announces the pending question, which is the entry point a person uses.
-  const card = dashboard.locator("article.card").first();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
   await card.getByRole("button", { name: "to review" }).click();
 
   // Deliberately NOT the recommended option: a replay that quietly drew the recommendation
@@ -182,7 +183,8 @@ test("a typed answer appears in the conversation as the text submitted", async (
     body: "What should the retry budget be?",
   });
 
-  const card = dashboard.locator("article.card").first();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
   await card.getByRole("button", { name: "to review" }).click();
 
   const form = dashboard.locator(".review-modal");
@@ -208,7 +210,8 @@ test("your answer is told apart from your own turn and from Foreman's", async ({
   await dispatch(dashboard, daemon);
   await ask(daemon, THREE_OPTIONS);
 
-  const card = dashboard.locator("article.card").first();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
   await card.getByRole("button", { name: "to review" }).click();
   const form = dashboard.locator(".review-modal");
   await form.getByRole("radio", { name: /No cache at all/ }).check();

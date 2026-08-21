@@ -60,7 +60,7 @@ export function newestSessionRun(
 /**
  * The run actually holding this session's next turn, or null when nothing is.
  *
- * This is what a card-shaped surface (Board tile, Cards card, rail row) uses to draw its held
+ * This is what a fleet surface (Board tile or rail row) uses to draw its held
  * mark AND to name it, and it is the SAME sentence `heldSessionIds` spells over the map -
  * stated once here so the two cannot drift, which is also why both read every run rather than
  * one. Scoped to the `idle` tone to match `orderSessions`: a held session that has stopped to

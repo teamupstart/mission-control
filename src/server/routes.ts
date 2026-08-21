@@ -2452,7 +2452,7 @@ export function buildApp(
   app.get("/api/report", (c) => c.json(buildReport(registry.snapshot())));
   app.get("/api/report.md", (c) => c.text(renderReportMarkdown(buildReport(registry.snapshot()))));
   app.get("/events", sseHandler(registry));
-  // Live transcript for the expanded card (localhost-only, like the actions).
+  // Live transcript for the session detail (localhost-only, like the actions).
   app.get("/api/sessions/:id/transcript/stream", transcriptStreamHandler(registry));
   // One-shot transcript window for a non-streaming reader (Foreman's triage
   // reviewer, the queue verifier, and the dashboard's scroll-back).

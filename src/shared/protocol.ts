@@ -2287,7 +2287,7 @@ export type PipelineConsoleBody = z.infer<typeof PipelineConsoleSchema>;
  * against the same list the render switch branches on. The labels and descriptions stay
  * in the web lib - the daemon has no use for prose it never shows.
  */
-export const LAYOUT_MODES = ["grid", "console", "board"] as const;
+export const LAYOUT_MODES = ["console", "board"] as const;
 export const LayoutModeSchema = z.enum(LAYOUT_MODES);
 /** Derived from the array, not from the schema, so reading it costs the web no zod. */
 export type LayoutMode = (typeof LAYOUT_MODES)[number];
@@ -2343,7 +2343,7 @@ export type ConversationView = (typeof CONVERSATION_VIEWS)[number];
  * the right rule and the breach is a defect to fix, not a licence to add a second one.
  */
 export const UI_CONFIG_DEFAULTS = {
-  layout: "grid",
+  layout: "console",
   conversationView: "terminal",
   keybindings: {},
   alerts: { notifications: false, sound: true },

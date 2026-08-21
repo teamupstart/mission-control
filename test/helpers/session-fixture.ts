@@ -93,7 +93,7 @@ export function mkSession(over: Partial<Session> = {}): Session {
     instrumented: true,
     stateConfirmed: true,
     hooksSeen: true,
-    activity: "editing SessionCard.tsx",
+    activity: "editing ConsoleDetail.tsx",
     startedAt: null,
     firstSeen: 0,
     lastSeen: 0,

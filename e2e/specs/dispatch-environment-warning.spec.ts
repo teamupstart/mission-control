@@ -327,7 +327,7 @@ test("the warning never blocks a dispatch - the agent still goes out", async ({
   // a form that swallowed the click would look identical up to here. The agent behind this is
   // the fake `MISSION_CLAUDE_BIN`, so the launch costs no model tokens.
   await expect(dialog).toBeHidden();
-  await expect(dashboard.locator("article.card")).toHaveCount(1);
+  await expect(dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row")).toHaveCount(1);
 });
 
 test("an unreadable state file is reported as its own problem", async ({ dashboard, daemon }) => {

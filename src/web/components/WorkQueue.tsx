@@ -25,7 +25,7 @@ import {
   workflowSessionEvidenceOwner,
 } from "../workflows/WorkflowEvidenceComposer.tsx";
 
-// The work-queue panel inside an expanded card: the batch of work queued for this
+// The work-queue panel inside an session detail: the batch of work queued for this
 // session, in the order you authored it. Items are drag-reorderable, editable, and
 // removable while they wait; the in-flight one shows what Foreman is doing to it.
 // Stops click propagation so interacting with it never selects/collapses the card.
@@ -155,7 +155,7 @@ export function WorkQueue({
   // essentially every idle conversational session. Those rows carry no work, but they
   // turned this branch off - so the add box switched to "Queue more work…" about work
   // nobody queued, and an empty `<ol className="wq-items">` (which flexes to fill an
-  // expanded card) opened a blank gap above everything below it. The ITEMS are the
+  // session detail) opened a blank gap above everything below it. The ITEMS are the
   // queue; the row is bookkeeping, and bookkeeping must not change what the human sees.
   //
   // The one thing such a row CAN carry is a wrap-up question, which is exactly how the

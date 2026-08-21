@@ -61,8 +61,8 @@ async function openConversationWithActivity(
 ): Promise<ReturnType<Page["locator"]>> {
   await dispatch(page, daemon);
 
-  const card = page.locator("article.card").first();
-  await card.getByRole("button", { name: "Expand conversation" }).click();
+  await page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = page.locator(".console-detail");
 
   const reply = card.getByPlaceholder(/^Reply to this session/);
   await expect(reply).toBeEnabled();

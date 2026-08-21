@@ -153,7 +153,7 @@ test("an operator can withdraw Foreman from a session and invite it back", async
 }) => {
   await put(daemon, "/api/foreman/config", { enabled: true });
   await dispatch(dashboard, daemon);
-  await expect(dashboard.locator("article.card")).toHaveCount(1);
+  await expect(dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row")).toHaveCount(1);
 
   const tabs = await openDetail(dashboard, daemon);
 

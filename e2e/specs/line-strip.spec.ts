@@ -165,14 +165,13 @@ test("the Line renders every stage, tracks the fleet live, and its stages reach 
   observed("the strip is fleet-only: it did not follow the navigation off the fleet page");
 });
 
-test("the strip sits outside the topbar, so it cannot shorten an expanded card", async ({
+test("the strip sits outside the topbar, preserving separate height budgets", async ({
   dashboard,
 }) => {
-  // `--topbar-h` is measured off `<header class="topbar">` and `.card.expanded` sizes itself
-  // against it. A strip inside that header would take ~90px off every focus-expanded card on
-  // the grid. The Electron test measures the consequence; this is the structural fact it
-  // rests on, checked against the app as actually composed rather than against a fixture.
+  // `--topbar-h` is measured off `<header class="topbar">`. A strip inside that header would
+  // mix its budget into the topbar's. The Electron test measures the consequence; this is
+  // the structural fact it rests on, checked against the app rather than a fixture.
   await expect(dashboard.locator("header.topbar .line")).toHaveCount(0);
   await expect(dashboard.locator(".line")).toHaveCount(1);
-  observed("the strip renders once, outside <header class=\"topbar\">, so --topbar-h and .card.expanded are untouched");
+  observed("the strip renders once, outside <header class=\"topbar\">, so the topbar and fleet body keep separate height budgets");
 });

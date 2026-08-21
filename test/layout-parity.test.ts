@@ -1,6 +1,6 @@
 // The Ensemble member signal has to reach every layout, the same way the Workflow marks do:
-// a shared leaf drawn in all four renderers, an `onOpenEnsemble` that flows through the one
-// prop bag so `GridView` cannot silently drop it, and a tone/label vocabulary that stays
+// a shared leaf drawn in the detail, tile, and rail, an `onOpenEnsemble` that flows through
+// the shared prop bag, and a tone/label vocabulary that stays
 // DISTINCT from the Workflow marks so the two never conflate on one session. If a renderer
 // re-inlines its own variant or a prop stops being threaded, this fails.
 import { test } from "node:test";
@@ -69,16 +69,14 @@ test("a session with no ensemble link draws no mark at all", () => {
   }
 });
 
-test("all four session renderers reference the shared ensemble leaf", () => {
+test("all three session renderers reference the shared ensemble leaf", () => {
   const read = (p: string): string => readFileSync(new URL(p, import.meta.url), "utf8");
-  assert.match(read("../src/web/components/SessionCard.tsx"), /<EnsembleChip/);
   assert.match(read("../src/web/components/layouts/ConsoleDetail.tsx"), /<EnsembleChip/);
   assert.match(read("../src/web/components/layouts/SessionTile.tsx"), /<EnsembleTileFlag/);
   assert.match(read("../src/web/components/layouts/RailRow.tsx"), /<EnsembleRailMark/);
 });
 
-test("onOpenEnsemble flows through SessionViewProps and cardProps so GridView cannot drop it", () => {
+test("onOpenEnsemble flows through SessionViewProps", () => {
   const types = readFileSync(new URL("../src/web/components/layouts/types.ts", import.meta.url), "utf8");
   assert.match(types, /onOpenEnsemble\?:/);
-  assert.match(types, /onOpenEnsemble: p\.onOpenEnsemble/);
 });

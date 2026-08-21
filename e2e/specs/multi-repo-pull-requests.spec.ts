@@ -231,7 +231,8 @@ test("a two-repo task shows a pull request per repo and completes only on the se
   // The card names each repository beside its own pull request. One link per repo, each
   // pointing at that repo's pull request - which is the thing a single outcome link could
   // never say.
-  const card = dashboard.locator("article.card").first();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
   const primaryLink = card.getByRole("link", { name: /demo-repo/ });
   const secondLink = card.getByRole("link", { name: /second-repo/ });
   await expect(primaryLink).toHaveAttribute("href", PR_PRIMARY);
@@ -312,7 +313,8 @@ test("a single-repo task still shows one outcome and no per-repo lines", async (
   // no pull request on, and would make the absence below prove nothing.
   scriptPullRequests(daemon, task);
 
-  const card = dashboard.locator("article.card").first();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
   await expect(card).toBeVisible();
   // The session's own PR chip is unchanged and still there; the per-repo list is not drawn at
   // all. Asserted as absence AFTER a pull request exists, so this cannot pass by nothing

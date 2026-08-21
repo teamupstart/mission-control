@@ -9,7 +9,7 @@ import {
   SETTINGS_SCOPES,
   type SettingsCategoryId,
 } from "../src/web/lib/settings-registry.ts";
-import { SELECTABLE_LAYOUTS } from "../src/web/lib/layout.ts";
+import { LAYOUTS } from "../src/web/lib/layout.ts";
 import { CONVERSATION_VIEW_OPTIONS } from "../src/web/lib/conversation-view.ts";
 import type { ForemanState } from "../src/web/useForeman.ts";
 import type { CostState } from "../src/web/useCost.ts";
@@ -71,7 +71,7 @@ function render(
       foreman: opts.foreman ?? FOREMAN,
       cost: COST,
       llm: LLM,
-      layout: "grid",
+      layout: "console",
       onLayoutChange: () => {},
       settingsStatus: opts.settingsStatus ?? null,
       onStartSeeWorkTour: () => {},
@@ -294,20 +294,18 @@ test("every glyph in Settings declares its own size", () => {
   }
 });
 
-test("the layout picker omits Cards while leaving its live layout state alone", () => {
+test("the layout picker offers only Console and Board", () => {
   const html = render("display");
   assert.deepEqual(
-    SELECTABLE_LAYOUTS.map((layout) => layout.label),
+    LAYOUTS.map((layout) => layout.label),
     ["Board", "Console"],
     "only supported settings choices are offered",
   );
-  // Cards is still renderable for stored grid preferences, but it is no longer a control a
-  // person can choose in Display settings. Scoped by `name`, because Display holds a second
-  // radio group (the conversation rendering).
+  // Scoped by `name`, because Display holds a second radio group for conversation rendering.
   const radios = (html.match(/<input[^>]*type="radio"[^>]*>/g) ?? []).filter((i) =>
     i.includes('name="layout"'),
   );
-  assert.equal(radios.length, SELECTABLE_LAYOUTS.length, "one radio per selectable layout");
+  assert.equal(radios.length, LAYOUTS.length, "one radio per supported layout");
   assert.ok(!radios.some((i) => i.includes('value="grid"')), "Cards cannot be enabled from settings");
 });
 

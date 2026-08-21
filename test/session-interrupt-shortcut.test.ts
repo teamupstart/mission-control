@@ -208,7 +208,7 @@ test("both runtimes are interruptible, and a runtime a harness lacks is still re
 
 // ---- the control ------------------------------------------------------------------
 
-function cardBar(session = mkSession({ runtime: "sdk", task: null })): string {
+function actionBar(session = mkSession({ runtime: "sdk", task: null })): string {
   return renderToStaticMarkup(
     createElement(ActionBar, {
       session,
@@ -216,7 +216,6 @@ function cardBar(session = mkSession({ runtime: "sdk", task: null })): string {
       onReset: () => {},
       onComplete: () => {},
       onKill: () => {},
-      onFiles: () => {},
     }),
   );
 }
@@ -229,7 +228,7 @@ function interruptButton(html: string): string {
 }
 
 test("a working embedded session gets a live control", () => {
-  const html = cardBar();
+  const html = actionBar();
   assert.doesNotMatch(interruptButton(html), /disabled/);
   assert.match(html, /Interrupt/);
 });
@@ -239,19 +238,19 @@ test("a working terminal session gets the same live control, with no component c
   // for the embedded runtime, and terminal cards lit up when `interrupt.runtimes` gained
   // `"terminal"`. If this ever needs a runtime test in the component, the capability has
   // stopped being the single gate.
-  const html = cardBar(mkSession({ runtime: "terminal", task: null }));
+  const html = actionBar(mkSession({ runtime: "terminal", task: null }));
   assert.doesNotMatch(interruptButton(html), /disabled/);
   assert.match(html, /Interrupt/);
   assert.doesNotMatch(html, /can&#x27;t yet stop/);
 });
 
 test("a pi session gets it too, on the only runtime pi has", () => {
-  const html = cardBar(mkSession({ runtime: "terminal", agent: "pi", task: null }));
+  const html = actionBar(mkSession({ runtime: "terminal", agent: "pi", task: null }));
   assert.doesNotMatch(interruptButton(html), /disabled/);
 });
 
 test("an idle session's control says there is nothing to stop, rather than failing on click", () => {
-  const html = cardBar(mkSession({ runtime: "sdk", state: "idle", task: null }));
+  const html = actionBar(mkSession({ runtime: "sdk", state: "idle", task: null }));
   assert.match(interruptButton(html), /disabled/);
   assert.match(html, /isn&#x27;t running a turn, so there is nothing to stop/);
 });

@@ -1453,7 +1453,7 @@ export function StateBadge({
 }): React.JSX.Element {
   // The transient stop lives beside the durable state rather than replacing it: one badge,
   // and the same one, so a card never grows a second place that says what a session is
-  // doing. Cards and the Console detail both draw this component, so both follow.
+  // doing. The Console detail draws this component, so it follows.
   const st = stateDisplay(session, useInterrupting(session.id));
   if (session.pendingReviews > 0 && onOpenReviews) {
     return (

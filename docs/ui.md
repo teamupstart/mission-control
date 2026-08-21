@@ -45,7 +45,7 @@ reads it:
 |-------|-------------|
 | ⇊ Intake | **Drawer** - every task source and recurring mission, with its health line |
 | ☰ Backlog | **Drawer** - the queue in the order autopilot would take it, with the triage moves on each row, escalating to the [Sitrep](attention-and-alerts.md#roundup) |
-| ▶ Working | The fleet, with the filter cleared - so the count and the cards agree again |
+| ▶ Working | The fleet, with the filter cleared, so the count and the sessions agree again |
 | ⌁ Review | **Drawer** - one ladder per live run |
 | ⧉ Decide | **Drawer** - the condensed decision dossier, one row per live ensemble, with confirmed cancellation; its header also counts unacknowledged failed runs until they are dismissed from the full ensemble page |
 | ⚑ Shipped | **Drawer** - the week's adopted pull requests, newest first, escalating to the [Ship log](library-and-line.md#the-ship-log) |
@@ -57,9 +57,8 @@ clipped to one row so the strip's height never moves. The flowing dots on the wi
 ### The stage drawers
 
 A drawer opens **between the strip and the board**, pushing the board down; closing it hands
-the space straight back. It is not an overlay and it is not inside a layout - **session cards
-are the same cards at the same size in every drawer state**, which the geometry tests measure
-rather than assert.
+the space straight back. It is not an overlay and it is not inside a layout. The supported
+session layouts keep their geometry in every drawer state, which the geometry tests measure.
 
 - **Toggle.** A second click on the same stage closes it. So does <kbd>esc</kbd>, and so does
   the **✕** in its header. Clicking a *different* stage swaps the content in place rather than
@@ -324,7 +323,7 @@ traces the active area, while the coachmark uses the existing panel tokens, a qu
 and a fourteen-segment pipeline rail in its header. Past segments stay muted amber, the current
 segment glows, and the footer keeps Exit separate from the Back and primary actions.
 
-The controller snapshots the route, layout, selection, Cards expansion, Board drill-in,
+The controller snapshots the route, layout, selection, Board drill-in,
 filter, and open Line drawer before it moves anything. Exit tour, backdrop dismissal,
 <kbd>Esc</kbd>, completion, and controller errors all restore that snapshot. Every terminal
 path records fixed outcomes and stops both temporary sessions when they exist: `Tour
@@ -350,25 +349,24 @@ Reduced-motion preference turns off both Driver.js animation and the spike's tra
 
 ## Layout (console or board in Settings)
 
-The same fleet has three supported shapes. **Settings → Display → Layout** (the ⚙ gear, or <kbd>⌘</kbd><kbd>,</kbd>)
-currently lets you switch live between the two non-Cards layouts, and the choice persists per machine:
+The same fleet has two supported shapes. **Settings → Display → Layout** (the ⚙ gear, or <kbd>⌘</kbd><kbd>,</kbd>)
+lets you switch live between them, and the choice persists per machine:
 
 | Layout | Shape | Good for |
 |--------|-------|----------|
 | **Console** | A dense rail of every session with one always-open detail pane beside it. | Working *one* session while keeping an eye on the rest - the conversation is permanent, not a click away. |
 | **Board** | A column per state; clicking a card - or pressing <kbd>Enter</kbd> on the one the arrow keys are on - drills that column into the console's detail. | Reading the fleet's shape at a glance. "How many need me" is a column's height, not eight badges. |
 
-Existing Cards preferences remain supported while that layout is retired, but Cards is no
-longer an option in Display settings. Switching layouts does not change the underlying sessions. Controls repeated across
+Stored preferences for the retired `grid` layout migrate to Console when loaded. New
+configuration accepts only Console or Board, so the dashboard cannot render the retired layout.
+Switching layouts does not change the underlying sessions. Controls repeated across
 surfaces come from the *same* leaf pieces so their behavior stays aligned. What changes is
 how they're arranged - dense overview surfaces select a subset, while Console and the
-Board's drill-in expose the complete detail - and the console's permanent conversation
-earns two surfaces a card has nowhere to put:
+Board's drill-in expose the complete detail, while Console keeps the conversation permanently
+available:
 
-- **Cards** renders the full session card. The **Console** gives
-  the selected session a bespoke, tabbed detail instead - **Conversation / Work queue /
-  Workflows / Diff / Files** - because a split pane has room a card doesn't: the conversation
-  is permanent, and the sections that share a card's height in the grid get a tab each. The
+- **Console** gives the selected session a tabbed detail - **Conversation / Work queue /
+  Workflows / Diff / Files**. The
   **Conversation tab is the transcript and its reply box, and nothing else**: the workflow
   ladder lives in **Workflows** (<kbd>y</kbd>), which is the tab that answers *how is this
   run going* while Conversation answers *what was said*. The controls for getting *at* this
@@ -379,18 +377,15 @@ earns two surfaces a card has nowhere to put:
   word, then the launchers' words and chord hints, then Foreman's word - so it stays one
   line, every tab keeps its own word, and every control keeps its name for a screen reader
   and its tooltip for a pointer. The chords keep working at every width.
-  The **Board** drills into that same detail when you open a card.
-  In Console and Board, the
+  The **Board** drills into that same detail when you open a tile. In Console and Board, the
   Diff tab contains the complete checkout diff reader; the footer action and <kbd>d</kbd>
-  reveal it in place. Cards keep the diff in a modal viewer.
+  reveal it in place.
 - **The console's two extras are Foreman's**, and both need a conversation to exist:
   its notes render inline in the transcript, and a **Foreman · N** rail at the far end of
   the tab row opens their history. The rail is deliberately *not* a sixth tab - Work queue,
   Workflows and Diff are things the session *has*, while Foreman is an observer talking
-  *about* it. A card keeps the full note block instead, since it has no transcript to inline
-  into.
-- **Cards** is the only layout with an in-place focus mode, so its floating command bar is
-  unique to it. On the **board**'s overview <kbd>v</kbd> (expand) opens the drill-in the way
+  *about* it.
+- On the **board**'s overview <kbd>v</kbd> (expand) opens the drill-in the way
   <kbd>Enter</kbd> does, and closes it again. In the console, and in the board once you're
   drilled in, the open detail *is* the selected session, so there is nothing left to expand,
   and its controls are on screen permanently instead of on a bar that floats over them.
@@ -412,7 +407,7 @@ earns two surfaces a card has nowhere to put:
 - **The board separates the two**, because its overview is worth reading without being
   dragged through every transcript on the way. The arrow keys move a visible cursor from
   tile to tile and open nothing; <kbd>Enter</kbd> drills the selected one into the console
-  detail, and <kbd>Esc</kbd> comes back out with the cursor still on the card you left. Once
+  detail, and <kbd>Esc</kbd> comes back out with the cursor still on the tile you left. Once
   you're in, the arrow keys keep moving the open detail through the board - the drill-in
   is always the selected session. Clicking a tile still does both in the one gesture.
   Acting on the cursor works either way: <kbd>s</kbd>, <kbd>⇧</kbd><kbd>F</kbd>, <kbd>q</kbd> and
@@ -430,9 +425,7 @@ earns two surfaces a card has nowhere to put:
   version above the members' rows - the title, the stage word, the dots and a compact `!N`
   attention count, but not the strategy, which at the rail's narrowest would cost the run's own
   name the room it needs (it stays in the hover copy, and on every member row's chip). Arrow
-  keys walk straight past the header, so navigation is unchanged. **Cards** sorts siblings next
-  to each other but grows no frame: its arrow keys are geometric against the live CSS grid
-  tracks, and a header cell would silently break <kbd>↑</kbd>/<kbd>↓</kbd>.
+  keys walk straight past the header, so navigation is unchanged.
   A cluster never crosses a Board column: if one member is waiting on your answer it sits in
   **needs you** with the run's header repeated there, rather than dragging its working siblings
   out of the column that describes what they are. Dragging a backlog card onto a clustered tile
@@ -457,15 +450,13 @@ earns two surfaces a card has nowhere to put:
   `completed`, `cancelled` or `failed` releases its session back to free immediately, and a
   held session that stops to ask a question moves to **needs you** like any other, because
   there the operator is the one who has to act. The **Console** rail draws the same rule, since
-  it renders the same ordering, and **Cards** wears the same spine and tag on its cards - that
-  layout draws no section rule, so the mark is its whole answer. A held tile also refuses the
+  it renders the same ordering. A held tile also refuses the
   backlog drag: dropping a card
   hands work over by resetting the agent, and a held agent's next turn belongs to its run - so
   during a drag the card lights up only over agents that are genuinely free.
 - **Killing a session closes its detail** once shutdown is accepted, without waiting for an
   Agent SDK subprocess and event stream to finish draining. The board goes straight back to
-  its columns, the console empties its pane, and Cards leaves focus mode with the card still
-  selected. The card reads **stopping** during that drain, then **exited** until its ordinary
+  its columns, and the console empties its pane. The session reads **stopping** during that drain, then **exited** until its ordinary
   eviction; durable task, workflow, and review cleanup still begins only on `session_remove`.
 - **Double-click a column head to widen that column.** A board column is sized for a
   glance, and sometimes a glance is not enough: titles wrap to three lines, goals clamp at
@@ -482,7 +473,7 @@ earns two surfaces a card has nowhere to put:
   case-insensitive substring match against a session's title, status and agent - and, on the
   board, against a backlog task's title, status, agent and labels. So `ghostty` finds the
   queued *P5: Ghostty terminal emulator adapter* whether or not any live session matches, and
-  the board stays on screen to show it. Cards and Console draw no tasks, so there a query
+  the board stays on screen to show it. Console draws no tasks, so there a query
   matching only backlog items correctly reads as "nothing matches".
 - **The arrow keys follow the shape** - see below.
 
@@ -582,8 +573,8 @@ line breaks** in chat turns, which is what the transcript did before it parsed m
 so no existing message reflows into a run-on paragraph.
 
 Links in a formatted transcript that resolve inside that session's checkout open in the
-same session's Files workspace. Console and Board reveal their integrated Files tab; Cards
-reuse the extracted Files window. Checkout-relative links and absolute paths beneath the
+same session's Files workspace. Console and Board reveal their integrated Files tab.
+Checkout-relative links and absolute paths beneath the
 checkout are accepted, including optional line and column suffixes. External links keep
 their normal browser behavior, and resolved paths outside the checkout never open. HTML,
 Markdown, and browser image formats (APNG, AVIF, BMP, GIF, ICO, JPEG, PNG, SVG, and WebP) open
@@ -727,16 +718,16 @@ menu, so **Copy** never refers to text away from the pointer.
 
 ## Keyboard shortcuts
 
-The dashboard is keyboard-driven - use the arrow keys to navigate Cards and Board, to walk
+The dashboard is keyboard-driven - use the arrow keys to navigate Board, to walk
 the Console rail or scroll its open reader, then act without reaching for the mouse. The table
 names the layouts where a shortcut's target exists:
 
 | Key | Action | Scope |
 |-----|--------|-------|
-| <kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> | Around the grid in **Cards**; in **Console** and the **Board** drill-in <kbd>↑</kbd>/<kbd>↓</kbd> walk the rail selection, or scroll the reader's active tab once you <kbd>Tab</kbd> into it (and move through files while its inline Diff reader is focused); along and across the columns in the **Board** overview. On **Scouts**, <kbd>↑</kbd>/<kbd>↓</kbd> open the adjacent report in the current results when focus is outside a text field or selector. With nothing selected, the first arrow selects the first session | Anywhere |
+| <kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> | In **Console** and the **Board** drill-in <kbd>↑</kbd>/<kbd>↓</kbd> walk the rail selection, or scroll the reader's active tab once you <kbd>Tab</kbd> into it (and move through files while its inline Diff reader is focused); along and across the columns in the **Board** overview. On **Scouts**, <kbd>↑</kbd>/<kbd>↓</kbd> open the adjacent report in the current results when focus is outside a text field or selector. With nothing selected, the first arrow selects the first session | Anywhere |
 | <kbd>Tab</kbd> | **Console & board drill-in:** step into the open detail and one tab right each press - Conversation → Work queue → Workflows → Diff → Files - clamping at the last rather than tabbing away. The reader takes a soft ring and <kbd>↑</kbd>/<kbd>↓</kbd> scroll whichever tab shows; <kbd>⇧</kbd><kbd>Tab</kbd> walks back, and from the conversation (or <kbd>Esc</kbd>) hands the keyboard to the rail | Open detail (Console or Board) |
-| <kbd>Enter</kbd> | Open the selected session's detail. **Cards**: focus-expands or collapses the selected card. **Board**: opens the drill-in. Console already shows the selected session. On a focused link or button Enter activates that instead, as it always does | Anywhere |
-| <kbd>Esc</kbd> | Peel back exactly one layer per press - first close whatever's open on top of the grid (a panel, a dialog, the away digest), then leave a focused text box, then collapse an expanded card (**Cards**), hand a Console reader back to its rail, or leave the drill-in with the cursor still on it (**Board**), then deselect. In guided dispatch's Repo step, the first press closes the repo list and leaves the pass for the ordinary form; a second closes the modal | Anywhere |
+| <kbd>Enter</kbd> | Open the selected session's detail. **Board** opens the drill-in; Console already shows the selected session. On a focused link or button Enter activates that instead, as it always does | Anywhere |
+| <kbd>Esc</kbd> | Peel back exactly one layer per press - first close an open panel, dialog, or away digest, then leave a focused text box, hand a Console reader back to its rail, or leave the drill-in with the cursor still on it (**Board**), then deselect. In guided dispatch's Repo step, the first press closes the repo list and leaves the pass for the ordinary form; a second closes the modal | Anywhere |
 | <kbd>Esc</kbd> | Leave the [authoring surface](library-and-line.md#getting-back-out-of-an-authoring-surface) for `#/library`, one layer per press: an open dialog closes itself, then a focused editor or field is left, then the page. An unsaved draft raises the same leave-with-unsaved-changes question the **← Library** row does | Library: a Persona, Action, Command or workflow |
 | <kbd>f</kbd> | Open **Fleet** | Anywhere |
 | <kbd>w</kbd> | Open the **Library** | Anywhere |
@@ -758,18 +749,18 @@ names the layouts where a shortcut's target exists:
 | <kbd>/</kbd> | Focus the filter box (sessions, plus the board's backlog), or **Scouts** search while on that page | Anywhere |
 | <kbd>⌘</kbd><kbd>K</kbd> | Open [the palette](#the-palette-k) over workflows, runs, ensembles, Personas, actions, missions and settings - it opens where you are and never navigates to open; press again to close | Anywhere |
 | <kbd>⇧</kbd><kbd>F10</kbd> or the Menu key | Open the [context menu](#context-menus) for the focused item or text field | Anywhere |
-| <kbd>e</kbd> | Open the review queue waiting on you. Uses the selected session when it is the one asking; otherwise jumps to the first session in grid order that is, selecting its card on the way. Unclaimed when nothing anywhere is waiting. This is the keyboard equivalent of clicking the amber **to review** badge | Any session with a pending review |
+| <kbd>e</kbd> | Open the review queue waiting on you. Uses the selected session when it is the one asking; otherwise jumps to the first session in fleet order that is. Unclaimed when nothing anywhere is waiting. This is the keyboard equivalent of clicking the amber **to review** badge | Any session with a pending review |
 | <kbd>v</kbd> | On the **Board** overview, show the selected card's full workflow or collapse it back to the active-rung preview. This is the keyboard equivalent of **Show full workflow** / **Collapse workflow** and never opens Conversation or another session-detail tab | Selected Board card with a workflow |
-| <kbd>g</kbd> | Show the selected session's conversation. **Console / Board drill-in**: reveals the Conversation tab. **Board** overview: opens the drill-in, which starts there. **Cards**: expands the card, where the transcript already lives. Only ever reveals - <kbd>Enter</kbd> owns the Cards toggle | Selected session |
-| <kbd>y</kbd> | Show the selected session's **Workflows** tab and workflow ladder. On the **Board** overview it drills in first. Cards draws no tab strip and never showed the ladder, so the chord is unclaimed there; <kbd>w</kbd> opens the Library instead | Selected session (Console or Board) |
-| <kbd>d</kbd> | Open the selected session's diff (in the Console/Board Diff tab, or the Cards modal) | Selected session |
+| <kbd>g</kbd> | Show the selected session's conversation. **Console / Board drill-in** reveals the Conversation tab; the **Board** overview opens the drill-in, which starts there | Selected session |
+| <kbd>y</kbd> | Show the selected session's **Workflows** tab and workflow ladder. On the **Board** overview it drills in first; <kbd>w</kbd> opens the Library instead | Selected session |
+| <kbd>d</kbd> | Open the selected session's Console/Board Diff tab | Selected session |
 | <kbd>l</kbd> | Open the file displayed in the Diff reader in Files | Focused Diff reader |
-| <kbd>⇧</kbd><kbd>F</kbd> | Open Files for the expanded card or the selected Console/Board detail | Selected expanded/detail session |
+| <kbd>⇧</kbd><kbd>F</kbd> | Open Files for the selected Console/Board detail | Selected session |
 | <kbd>⇧</kbd><kbd>O</kbd> | Search checkout files; use the arrows and Enter to open one in Files | Selected session |
-| <kbd>s</kbd> | Send a message to the selected session (on an expanded card, jumps to the reply box already there) | Selected session |
+| <kbd>s</kbd> | Send a message to the selected session | Selected session |
 | <kbd>↑</kbd> | Recall the newest editable queued message into the box, with the caret at the end. The box must be empty and have no attachments | Empty message composer |
-| <kbd>t</kbd> | Open the **Terminal** launcher for the selected session's worktree. In Console and Board the launcher is in the detail's tab strip and answers from any tab; on a card, if its conversation is not visible this reveals it first, then opens the terminal chooser | Selected session |
-| <kbd>a</kbd> | Open the selected session's **Codex / Claude** launcher: focus its existing terminal pane, or choose a terminal in which to resume it - revealing the conversation first only where the launcher lives above it | Selected session |
+| <kbd>t</kbd> | Open the **Terminal** launcher for the selected session's worktree. In Console and Board the launcher is in the detail's tab strip and answers from any tab | Selected session |
+| <kbd>a</kbd> | Open the selected session's **Codex / Claude** launcher: focus its existing terminal pane, or choose a terminal in which to resume it | Selected session |
 | <kbd>p</kbd> | Focus the selected session's pane | Selected session |
 | <kbd>⇧</kbd><kbd>T</kbd> | **Continue in terminal**: hand the selected Agent SDK session to a terminal, continuing the same conversation. One way, and does nothing on a session that already has a pane | Selected session |
 | <kbd>q</kbd> | Show / hide the selected session's work queue | Selected session |
@@ -806,12 +797,10 @@ looking at keeps its own letter. Rebind **Open reviews** if you would rather hav
 ### Keycaps on the buttons
 
 The buttons those shortcuts drive print the key on their own face - Terminal and
-Codex / Claude in the conversation toolbar (the strip above a card's conversation, and the
-Console and Board detail's tab strip); Send, Focus, Files, Queue, Reset, Interrupt,
-Complete and Kill on a card; Focus, Diff, Reset, Interrupt, Complete and Kill in the Console
-footer; the Console's
-Conversation, Work queue, Diff and Files tabs; a card's `diff` pill; Dispatch and the Fleet,
-Library and Runs segments in the top bar; the Board card's workflow disclosure; the Diff reader's
+Codex / Claude in the Console and Board detail's tab strip; Focus, Diff, Reset, Interrupt,
+Complete and Kill in the Console
+footer; the Console's Conversation, Work queue, Diff and Files tabs; Dispatch and the Fleet,
+Library and Runs segments in the top bar; the Board tile's workflow disclosure; the Diff reader's
 Open in Files action; the **← Library** row at the top of every Library authoring rail; and the
 settings rail's search box. They
 show the *resolved* chord, so a rebind moves what they say and an unset action shows no keycap.
@@ -819,6 +808,6 @@ A narrow Console or Board detail is the one place they come off on their own: th
 are the first thing that row gives up to stay on one line, and the chords keep working.
 
 **Settings → Keyboard → Show keybindings on buttons** turns them off once you've learnt
-them. Small icon-only controls (the ⚙ gear and the expand chevron) never
+them. Small icon-only controls (such as the ⚙ gear) never
 carry one - a keycap would be larger than the icon - and name their key in the tooltip
-instead. The command bar is unaffected either way: it is nothing but keycaps.
+instead.

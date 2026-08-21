@@ -73,7 +73,7 @@ async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {
   // The dispatched card, NOT a card count. Process discovery is machine-wide, so on a
   // developer box driving real agents this daemon also finds their sessions, and every
   // absolute figure here would be a function of what else happens to be running.
-  await expect(page.locator("article.card").filter({ hasText: "Check the Linter Config" })).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").filter({ hasText: "Check the Linter Config" })).toBeVisible();
 }
 
 /**

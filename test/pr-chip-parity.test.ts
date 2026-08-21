@@ -15,7 +15,7 @@ import { mkSession } from "./helpers/session-fixture.ts";
  * What is at stake: the four session drawings agreeing about whether a session HAS a pull
  * request.
  *
- * They used to disagree. `PrChip` (Cards, Console) gated on `prUrl`; `PrTileFlag` (Board)
+ * They used to disagree. `PrChip` (Console) gated on `prUrl`; `PrTileFlag` (Board)
  * and the rail's inlined markup gated on `prNumber`. Those coincide only because the server
  * writes `prNumber` exclusively as `prNumberFromUrl(prUrl)` beside the URL itself - so a
  * pull request whose URL did not parse to a number drew a chip on two surfaces and nothing

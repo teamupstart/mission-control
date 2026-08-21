@@ -184,12 +184,12 @@ async function conversationWithMessages(
 ): Promise<ReturnType<Page["locator"]>> {
   await dispatch(page, daemon);
 
-  // The card is an `article`, and so is every turn inside it now that both renderings
-  // draw a turn as one - so the heading it carries is what tells the two apart. Filtering
-  // on a role rather than reaching for `article.card` keeps every selector in this spec
-  // to a role, a label, a placeholder or text a person can read on screen.
-  const card = page.getByRole("article").filter({ has: page.getByRole("heading", { name: CARD_TITLE }) });
-  await card.getByRole("button", { name: "Expand conversation" }).click();
+  const row = page
+    .getByRole("navigation", { name: "Sessions" })
+    .locator("button.rail-row")
+    .filter({ hasText: CARD_TITLE });
+  await row.click();
+  const card = page.locator(".console-detail");
 
   const reply = card.getByPlaceholder(/^Reply to this session/);
   await expect(reply).toBeEnabled();

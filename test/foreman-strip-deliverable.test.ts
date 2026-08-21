@@ -158,12 +158,7 @@ test("the strip unmounts for a note that owes nothing, from the shared predicate
   }
 });
 
-// ---- the same note, in the grid card ----
-
-test("the grid card explains an undeliverable note too", () => {
-  // Four components draw a session and only one of them is SessionCard; the note is shared by
-  // two of them. A card that stays silent about why Foreman never sent this leaves the grid
-  // showing a suggested answer with no account of it.
+test("the full Foreman note explains an undeliverable reply", () => {
   const html = renderToStaticMarkup(
     createElement(ForemanNote, {
       session: mkSession({ terminals: [] }),

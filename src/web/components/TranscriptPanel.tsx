@@ -72,7 +72,6 @@ import {
   type PendingAttachment,
 } from "./ImageDrop.tsx";
 import { Tooltip } from "./Tooltip.tsx";
-import { SessionLaunchers, type SessionLaunchersHandle } from "./LaunchMenu.tsx";
 
 /**
  * Reconnect backoff for the transcript stream, which this panel drives itself rather than
@@ -96,12 +95,10 @@ const RECONNECT_MAX_MS = 8000;
 const TURN_FLASH_MS = 2000;
 
 /**
- * Imperative surface the card holds onto so the send shortcut can reach this panel's
- * reply box - the card's single compose box while it's expanded.
+ * Imperative surface the detail holds so the send shortcut can reach this panel's reply box.
  */
 export interface TranscriptHandle {
-  /** Focus the reply box, reporting whether there was one (a collapsed card has no
-   *  panel mounted at all, and the caller then owns the send flow itself). */
+  /** Focus the reply box, reporting whether one is mounted. */
   focusReply: () => boolean;
   /** Scroll to the inline Foreman entry for this episode marker, if it's rendered. */
   scrollToEpisode: (marker: string | null) => void;
@@ -133,7 +130,7 @@ interface FindState {
 const FIND_INITIAL: FindState = { query: "", caseSensitive: false, scope: "all", index: 0 };
 
 /**
- * The expanded card's live conversation. Opens a dedicated SSE stream to the
+ * A session detail's live conversation. Opens a dedicated SSE stream to the
  * session's transcript (the server tails the JSONL file), renders the turns, and
  * offers an inline reply that types straight into the agent's prompt. Images can
  * be dropped or pasted onto the reply box; they upload as they land and ride along
@@ -148,10 +145,8 @@ export function TranscriptPanel({
   onReplyBox,
   onOpenFile,
   files,
-  registerLaunchers,
   registerFind,
   resetNonce = 0,
-  hostToolbar = false,
   ref,
 }: {
   /**
@@ -219,32 +214,7 @@ export function TranscriptPanel({
    * panel does not browse files, it only needs to know which words name one.
    */
   files?: SessionFilesController;
-  /**
-   * Register the launch buttons so App's selection shortcuts drive these exact controls.
-   *
-   * Ignored when `hostToolbar` is set, because there is then no strip here to register -
-   * the host mounts its own and passes this itself. Exactly one `SessionLaunchers` per
-   * session may register: App keeps one handle per id, so a second mount would overwrite
-   * the first and the first's unmount would then delete a live registration.
-   */
-  registerLaunchers?: (id: string, handle: SessionLaunchersHandle | null) => void;
   registerFind?: (id: string, handle: TranscriptFindHandle | null) => void;
-  /**
-   * The host draws the launcher strip itself, so this panel must not draw a second one.
-   *
-   * It exists because the strip has three hosts and only one of them has somewhere better
-   * to put it. The expanded card and the board's collapsed tiles have no toolbar of their
-   * own, so the conversation pane owns the strip there and always has. The console detail
-   * has a tab row that already runs the full width, and hosting the strip in it is what
-   * lets the worktree band above the transcript stop existing
-   * (`docs/plans/console-header-density/plan.md`).
-   *
-   * Defaulted to the shipped behaviour so a host that says nothing keeps its strip. Moving
-   * the mount instead of gating it would have DELETED the strip - and the Terminal-view
-   * toggle, and the `t` / `a` chords - from the Cards layout, which never renders
-   * `ConsoleDetail`.
-   */
-  hostToolbar?: boolean;
   ref?: React.Ref<TranscriptHandle>;
 }): React.JSX.Element {
   // The body below was written against these two names and still is; only the PROP changed.
@@ -253,8 +223,8 @@ export function TranscriptPanel({
   // Only a session with a checkout and a handler that can open one has any use for the
   // listing; without both, a path in the prose stays the text the agent typed.
   const filePaths = useWorkspacePaths(files, sessionId, Boolean(session.cwd && onOpenFile));
-  // Both hosts build `onOpenFile` as a fresh closure every render (`cardProps`,
-  // ConsoleDetail's inline arrow), and `Markdown` is memoized on its props - including
+  // ConsoleDetail builds `onOpenFile` as a fresh closure every render, and `Markdown` is
+  // memoized on its props, including
   // this one, because it must be: a skipped render leaves the rendered anchors calling
   // the previous closure, which carries App's `layout` and `sessions`. Handing the same
   // wrapper down every time makes that comparison true HONESTLY, so the turns below stay
@@ -383,7 +353,7 @@ export function TranscriptPanel({
    * that is the whole design: a second conversation implementation is how the two would
    * drift apart on the next fix that only landed in one of them.
    */
-  const { view, overridden, setView } = useSessionConversationView(sessionId);
+  const { view } = useSessionConversationView(sessionId);
   const terminal = view === "terminal";
   // The prompt's `~/leaf`, not the whole checkout: a worktree path is 60 characters of
   // pool bookkeeping and the strip directly above already prints it in full. `promptPath`
@@ -525,8 +495,8 @@ export function TranscriptPanel({
 
   // The panel deliberately never takes focus on its own (see below), but the send
   // shortcut is an explicit "I want to type now" - so it gets a way in. Reported as a
-  // boolean rather than assumed: a collapsed card has no panel mounted at all, and the
-  // card must know that to fall back to its own send box.
+  // boolean rather than assumed: the detail may have another tab mounted and must know
+  // whether to fall back to its own send box.
   useImperativeHandle(ref, () => ({
     focusReply: () => {
       const el = inputRef.current;
@@ -1157,7 +1127,7 @@ export function TranscriptPanel({
   );
 
   return (
-    // Stop clicks inside the panel from re-selecting / collapsing the card. The accent
+    // Stop clicks inside the panel from changing the selected session. The accent
     // is set here rather than per turn: every assistant byline in this log belongs to
     // the same harness, and the stylesheet then names no agent to colour them.
     <div
@@ -1166,17 +1136,6 @@ export function TranscriptPanel({
       style={agentAccentStyle(agent)}
       onClick={(e) => e.stopPropagation()}
     >
-      {/* Suppressed, not moved: a host that provides a toolbar mounts this strip itself,
-          and one that does not keeps the pane-owned one. See `hostToolbar`. */}
-      {!hostToolbar && (
-        <SessionLaunchers
-          session={session}
-          registerLaunchers={registerLaunchers}
-          leading={
-            <ConversationViewToggle terminal={terminal} overridden={overridden} onChange={setView} />
-          }
-        />
-      )}
       {terminal ? (
         // A region rather than a bare div: the frame is a named part of the page, and
         // naming it is what lets a reader (and a browser test) address the terminal as
@@ -1205,8 +1164,7 @@ export function TranscriptPanel({
  * It sits beside the launchers because that strip is already the answer to "where am I and
  * how do I get at this session".
  *
- * Exported so a host that provides its own toolbar (`hostToolbar`) can render it into that
- * toolbar's `leading` slot rather than reimplementing it. It takes its state as props and
+ * Exported so ConsoleDetail can render it into the toolbar's `leading` slot. It takes its state as props and
  * holds none, so the caller's `useSessionConversationView` is still the single reader of
  * that module's map - which matters, because that hook notifies only its OWN caller. A
  * console-detail caller works because the panel re-renders as its child; a SIBLING of the

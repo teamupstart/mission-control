@@ -50,24 +50,10 @@ function keycaps(html: string): string[] {
   return [...html.matchAll(/<kbd class="kb-hint">([^<]*)<\/kbd>/g)].map((m) => m[1] ?? "");
 }
 
-function cardBar(): string {
+function actionBar(): string {
   return renderToStaticMarkup(
     createElement(ActionBar, {
       session: mkSession({ task: null }),
-      onToggleQueue: () => {},
-      onReset: () => {},
-      onComplete: () => {},
-      onKill: () => {},
-      onFiles: () => {},
-    }),
-  );
-}
-
-function footBar(): string {
-  return renderToStaticMarkup(
-    createElement(ActionBar, {
-      session: mkSession({ task: null }),
-      variant: "foot",
       onDiff: () => {},
       onReset: () => {},
       onComplete: () => {},
@@ -83,47 +69,42 @@ function setHints(on: boolean): void {
 test("hints are on out of the box, so the shortcuts are discoverable without being sought", () => {
   resetAll();
   setHints(true);
-  // The card row in drawn order: Send, Focus, Files, Queue, Reset, Interrupt, Complete,
-  // Kill - every one of them bound, and every one of them silent about it before this.
-  // Interrupt sits immediately BEFORE the Complete/Kill pair rather than inside it: those
-  // two are the ways a session ends and their adjacency is deliberate, while this is the
-  // rung short of both.
-  assert.deepEqual(keycaps(cardBar()), ["s", "p", "⇧F", "q", "⌃R", "⌃C", "c", "k"]);
+  assert.deepEqual(keycaps(actionBar()), ["p", "d", "⌃R", "⌃C", "c", "k"]);
 });
 
 test("turning the preference off leaves the buttons, and not one keycap", () => {
   resetAll();
   setHints(false);
-  const card = cardBar();
-  assert.equal(keycaps(card).length, 0);
-  assert.ok(!card.includes("kb-hint"), "no empty keycap element left behind either");
+  const bar = actionBar();
+  assert.equal(keycaps(bar).length, 0);
+  assert.ok(!bar.includes("kb-hint"), "no empty keycap element left behind either");
   // The controls themselves are untouched - this is a presentation switch, not a feature
   // flag on the action row.
-  for (const label of ["Send", "Focus", "Files", "Queue", "Reset", "Interrupt", "Complete", "Kill"]) {
-    assert.ok(card.includes(label), `${label} is still drawn`);
+  for (const label of ["focus", "diff", "reset", "interrupt", "complete", "kill"]) {
+    assert.ok(bar.includes(label), `${label} is still drawn`);
   }
   setHints(true);
 });
 
-test("the console footer answers to the same switch the card does", () => {
+test("the console footer answers to the shared hints switch", () => {
   // Its five buttons carried an unconditional <kbd> before `Keycap.tsx`, so an operator
   // who turned hints off would have kept them here and nowhere else.
   resetAll();
   setHints(false);
-  assert.equal(keycaps(footBar()).length, 0);
+  assert.equal(keycaps(actionBar()).length, 0);
   setHints(true);
-  assert.deepEqual(keycaps(footBar()), ["p", "d", "⌃R", "⌃C", "c", "k"]);
+  assert.deepEqual(keycaps(actionBar()), ["p", "d", "⌃R", "⌃C", "c", "k"]);
 });
 
 test("a rebind moves what the buttons print, so a keycap is never a stale default", () => {
   resetAll();
   setHints(true);
   setBinding("kill", "cmd+x");
-  const caps = keycaps(cardBar());
+  const caps = keycaps(actionBar());
   assert.ok(caps.includes(formatChord("cmd+x")), "the rebound chord reaches the button");
   assert.ok(!caps.includes("k"), "and the default it replaced is gone");
   resetAll();
-  assert.ok(keycaps(cardBar()).includes("k"), "resetting puts the default back");
+  assert.ok(keycaps(actionBar()).includes("k"), "resetting puts the default back");
 });
 
 /** The visible label of every keycap-carrying button, in drawn order. */
@@ -150,15 +131,13 @@ test("the docs name the keycapped buttons in the order they are actually drawn",
   assert.ok(section.length > 0, "the Keycaps enumeration is gone from docs/ui.md");
 
   for (const [surface, endsAt, labels] of [
-    ["the card row", "on a card", keycapLabels(cardBar())],
-    ["the Console footer", "in the Console\nfooter", keycapLabels(footBar())],
+    ["the Console footer", "in the Console\nfooter", keycapLabels(actionBar())],
   ] as const) {
     const clause = section.slice(0, section.indexOf(endsAt));
     assert.ok(clause.length > 0, `docs/ui.md no longer says "${endsAt}"`);
     let at = 0;
     for (const label of labels) {
-      // Case-insensitive: the card row capitalises its labels and the console footer does
-      // not, while the prose names each control once.
+      // Case-insensitive so prose capitalization stays free to change.
       const found = clause.toLowerCase().indexOf(label.toLowerCase(), at);
       assert.notEqual(
         found,

@@ -3,8 +3,7 @@ import type { Session } from "@shared/types.ts";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
 import { canCycleMode, canInterruptSession } from "@shared/session.ts";
 import { interruptUnsupportedWhy } from "@shared/harness-capabilities.ts";
-import { canMessage, messageBlockReason, muxHandle } from "@shared/pane.ts";
-import { pipelineDrivenSentence } from "@shared/pipeline.ts";
+import { canMessage, muxHandle } from "@shared/pane.ts";
 import { api, type ActionResult } from "../lib/api.ts";
 import { retroOffer, retroOutcome } from "../lib/retro-offer.ts";
 import { clearDraft, readDraft, writeDraft } from "../lib/drafts.ts";
@@ -24,8 +23,8 @@ import { useTourTaskTargetRef } from "../tour/target-context.tsx";
 
 /**
  * Imperative surface an ActionBar registers with the App so keyboard shortcuts
- * (send / focus / queue / mode / kill / esc on the selected card) drive the exact
- * same compose, queue, mode-cycle and confirm-kill flows as the on-card buttons -
+ * (send / focus / queue / mode / kill / esc on the selected session) drive the exact
+ * same compose, queue, mode-cycle and confirm-kill flows as the detail controls -
  * one source of truth for both.
  */
 export interface ActionBarHandle {
@@ -52,11 +51,10 @@ export interface ActionBarHandle {
 }
 
 /**
- * What "Continue in terminal" does, said once so the card row and the console footer
- * cannot describe the same click differently.
+ * What "Continue in terminal" does, said once for the shared session footer.
  *
  * It names the one-way part, because that is the thing an operator cannot undo by clicking
- * again: after this the terminal session holds the conversation and this card is gone.
+ * again: after this the terminal session holds the conversation and this detail is gone.
  */
 const HANDOFF_LABEL =
   "Stop the embedded driver and reopen this exact conversation in a terminal. One way - the terminal session takes over from here.";
@@ -64,8 +62,8 @@ const HANDOFF_LABEL =
 /**
  * Per-session controls: focus its pane, send a message into its prompt, show its
  * work queue, reset its checkout, stop the turn it is running, complete its task, or
- * terminate it. "Send" puts a cursor in this card's one compose box; "Queue" toggles the
- * work-queue panel.
+ * terminate it. "Send" puts a cursor in the detail's one compose box; "Queue" toggles the
+ * work-queue tab.
  *
  * "Interrupt" is the one control here that acts immediately and asks nothing, and that is
  * the measure of it: it ends a TURN, not the session, so there is nothing to undo and
@@ -82,16 +80,13 @@ const HANDOFF_LABEL =
 export function ActionBar({
   session,
   hasReply = false,
-  queueOpen = false,
   onToggleQueue,
   onFocusReply,
   registerActions,
   onReset,
   onComplete,
   onKill,
-  variant = "card",
   onDiff,
-  onFiles,
   workflowRun = null,
 }: {
   session: Session;
@@ -104,31 +99,19 @@ export function ActionBar({
    * Inspector chip, which is the only predicate available to a session with no workflow.
    */
   workflowRun?: WorkflowRunSummary | null;
-  /**
-   * Which control set to draw. "card" (default, unchanged) is the grid's full row -
-   * Send / Focus / Queue / Reset / Interrupt / Kill. "foot" is the console's detail
-   * footer, which matches the mockup: Focus / Diff / Reset / Interrupt / Kill, since Send
-   * is the conversation's own reply box and Queue is a tab. The imperative HANDLE is
-   * identical either way, so every keyboard shortcut still works in both - only the buttons
-   * drawn differ. */
-  variant?: "card" | "foot";
-  /** Reveal the session detail's Diff tab. Only drawn by the "foot" variant. */
+  /** Reveal the session detail's Diff tab. */
   onDiff?: () => void;
-  /** Open the checkout's extracted file workspace. */
-  onFiles?: () => void;
   /**
-   * Whether the card is currently carrying the transcript's reply box - the live
+   * Whether the detail is currently carrying the transcript's reply box - the live
    * answer to "is there already a compose box here?", reported by the panel itself
    * rather than inferred from whatever the caller thinks it is showing.
    */
   hasReply?: boolean;
-  /** Whether the work-queue panel is currently showing, so Queue can read as pressed. */
-  queueOpen?: boolean;
-  /** Show / hide this card's work-queue panel. */
+  /** Show / hide this session's work-queue panel. */
   onToggleQueue?: () => void;
   /**
    * Put the cursor in the transcript's reply box, returning whether there was one to
-   * focus. A card may only ever have ONE compose box: when the expanded transcript is
+   * focus. A detail may only ever have one compose box: when the transcript is
    * carrying it, Send hands off here instead of opening a second one beside it.
    */
   onFocusReply?: () => boolean;
@@ -175,9 +158,6 @@ export function ActionBar({
   // Delivery, not pane mechanics: the Send box asks whether a turn can REACH this
   // session, which a driver-run one answers yes to without holding a pane.
   const canSend = canMessage(session);
-  // And WHY, when it cannot. An engine-driven session HAS a pane, so the old blanket "No
-  // pane to send to" was false on the one card where the reason matters most.
-  const block = messageBlockReason(session);
   // No pane to raise, so Focus is replaced rather than disabled: the affordance an embedded
   // session wants in that slot is the handoff that GIVES it one.
   const isEmbedded = session.runtime === "sdk";
@@ -187,23 +167,21 @@ export function ActionBar({
   const killsMux = muxHandle(session);
   // Queued work is the reason to open a hidden panel, so the button carries the count
   // rather than making you press it to find out whether anything is waiting.
-  const openQueued = session.queue?.openCount ?? 0;
   const latestEditable = latestEditablePendingTurn(session.pendingTurns);
   // An OFFER, not permanent chrome: it appears at the one moment the plan chose and is
   // absent every other time, so its presence is itself the message. That is why there is no
-  // disabled Retro anywhere in this row - a greyed-out button on every card for the whole
+  // disabled Retro anywhere in this row - a greyed-out button for the whole
   // life of a session would say "you could have retrospected" rather than "now is the time".
   const retro = retroOffer(session, workflowRun);
 
-  // Written once and used by both variants, so the two rows cannot drift into telling
-  // different stories about the same click.
+  // Written once so every control tells the same story about the click.
   const completeLabel = session.task
     ? `Record an outcome for "${session.task.title}" and close this session (${formatChord(bindings.complete)})`
     : "This session has no Mission Control task to complete";
   const killLabel = killsMux
     ? `Terminates the agent and kills its ${killsMux.backend} session "${killsMux.session}" - confirms first (${formatChord(bindings.kill)})`
     : `Terminates the agent process - confirms first (${formatChord(bindings.kill)})`;
-  // Drawn on every card, and DISABLED rather than hidden when it cannot be used, because
+  // Drawn in every session detail, and DISABLED rather than hidden when it cannot be used, because
   // the two reasons it cannot are worth different sentences and both are worth reading. A
   // harness/runtime pair with no mechanism gets the capability's own words - which is what
   // makes the next phase turn this control on by declaring a capability rather than by
@@ -282,16 +260,14 @@ export function ActionBar({
 
   function startSend() {
     if (!canSend) return;
-    // An expanded card already has a compose box - the transcript's reply. Send means
-    // "let me type", not "give me another box", so put the cursor in that one. Only a
-    // collapsed card, with no transcript panel mounted at all, opens our own.
+    // A mounted transcript already has a compose box. Send means "let me type", not
+    // "give me another box", so put the cursor in that one. Another tab opens our own.
     if (onFocusReply?.()) return;
     setComposing(true);
   }
 
-  // A card has at most ONE send input, and the transcript's reply box wins whenever it
-  // exists: this box may only be open while there is genuinely no other. So close it the
-  // moment a reply box appears - the card expanding under a box already open here.
+  // A detail has at most one send input, and the transcript's reply box wins whenever it
+  // exists. Close this fallback the moment that reply box appears.
   // The text is in the draft map, so reopening Send brings it straight back.
   useEffect(() => {
     if (hasReply) setComposing(false);
@@ -304,9 +280,9 @@ export function ActionBar({
   /**
    * "Continue in terminal": stop the driver and reopen the same conversation in a pane.
    *
-   * One-way, and the card says so rather than asking: the alternative to offering it is an
+   * One-way, and the detail says so rather than asking: the alternative to offering it is an
    * embedded session an operator cannot take over, which is the one thing the runtime
-   * genuinely costs them. The card that comes back is a NEW session (a terminal one that
+   * genuinely costs them. The detail that comes back is a NEW session (a terminal one that
    * discovery adopted), so this one disappears - which is why nothing here waits for a
    * success message to render.
    */
@@ -361,14 +337,14 @@ export function ActionBar({
    * keeps everything else, and a confirm step in front of a stop someone wants immediately
    * is the feature failing at the moment it is used.
    *
-   * `startSend` rather than a focus call of its own, so the cursor lands wherever this card
+   * `startSend` rather than a focus call of its own, so the cursor lands wherever this detail
    * puts a composer - the transcript's reply box when one is mounted, this bar's own box
    * otherwise. That is the same routing the `s` chord takes, and it is the point of the
    * gesture: the replacement instruction gets typed now, not after the agent finishes work
    * nobody wants.
    *
    * The optimistic badge is raised before the request and cleared on refusal, because the
-   * failure the operator must never see is a card that says "interrupting" about a stop the
+   * failure the operator must never see is a detail that says "interrupting" about a stop the
    * daemon declined. A success leaves it up for the next real reading to retire.
    */
   async function requestInterrupt(): Promise<void> {
@@ -512,7 +488,7 @@ export function ActionBar({
             </button>
           </Tooltip>
         </div>
-      ) : variant === "foot" ? (
+      ) : (
         // The console footer: the mockup's Focus / Diff / Reset / Kill, plus Interrupt.
         // Send lives in the conversation's reply box and Queue is a tab, so neither is
         // drawn here - but the handle above still carries startSend and toggleQueue, so
@@ -585,104 +561,6 @@ export function ActionBar({
             <Tooltip label={killLabel}>
               <button className="act act-danger" onClick={requestKill}>
                 <Keycap action="kill" /> kill
-              </button>
-            </Tooltip>
-          )}
-        </>
-      ) : (
-        <>
-          <Tooltip
-            label={
-              canSend
-                ? `Type into this session's prompt (${formatChord(bindings.send)})`
-                : block === "pipeline" && session.pipeline
-                  ? pipelineDrivenSentence(session.pipeline)
-                  : "No pane to send to"
-            }
-          >
-            <button className="btn" disabled={!canSend} onClick={startSend}>
-              <Keycap action="send" /> Send
-            </button>
-          </Tooltip>
-          {isEmbedded ? (
-            <Tooltip label={`${HANDOFF_LABEL} (${formatChord(bindings.handoff)})`}>
-              <button className="btn" onClick={handoff} disabled={busy === "handoff"}>
-                <Keycap action="handoff" />{" "}
-                {busy === "handoff" ? "Opening…" : "Continue in terminal"}
-              </button>
-            </Tooltip>
-          ) : (
-            <Tooltip
-              label={`Bring this session's terminal pane to the front (${formatChord(bindings.focus)})`}
-            >
-              <button className="btn" onClick={focusPane}>
-                <Keycap action="focus" /> Focus
-              </button>
-            </Tooltip>
-          )}
-          {session.cwd && onFiles && (
-            <Tooltip label={`Browse and edit checkout files (${formatChord(bindings.files)})`}>
-              <button className="btn" onClick={onFiles}>
-                <Keycap action="files" /> Files
-              </button>
-            </Tooltip>
-          )}
-          {onToggleQueue && (
-            <Tooltip
-              label={`${queueOpen ? "Hide" : "Show"} the work queued for this session (${formatChord(bindings.queue)})`}
-            >
-              <button
-                className={`btn btn-queue${queueOpen ? " on" : ""}`}
-                aria-expanded={queueOpen}
-                onClick={onToggleQueue}
-              >
-                <Keycap action="queue" /> Queue
-                {openQueued > 0 && <span className="btn-count">{openQueued}</span>}
-              </button>
-            </Tooltip>
-          )}
-          {session.cwd && onReset && (
-            <Tooltip
-              label={`Reset checkout to origin's default branch and clear context (${formatChord(bindings.reset)})`}
-            >
-              <button className="btn btn-reset" onClick={onReset}>
-                <Keycap action="reset" /> Reset
-              </button>
-            </Tooltip>
-          )}
-          <span className="actions-spacer" />
-          {retro && (
-            <Tooltip label={retro.tooltip}>
-              <button
-                className="btn btn-retro"
-                onClick={() => void runRetro()}
-                disabled={busy === "retro"}
-              >
-                {busy === "retro" ? "Sending…" : retro.label}
-              </button>
-            </Tooltip>
-          )}
-          <Tooltip label={interruptLabel}>
-            <button
-              className="btn btn-interrupt"
-              onClick={() => void requestInterrupt()}
-              disabled={!interruptable || busy === "interrupt"}
-            >
-              <Keycap action="interrupt" />{" "}
-              {busy === "interrupt" ? "Interrupting…" : "Interrupt"}
-            </button>
-          </Tooltip>
-          {onComplete && (
-            <Tooltip label={completeLabel}>
-              <button className="btn btn-complete" onClick={requestComplete} disabled={!session.task}>
-                <Keycap action="complete" /> Complete
-              </button>
-            </Tooltip>
-          )}
-          {onKill && (
-            <Tooltip label={killLabel}>
-              <button className="btn btn-danger-ghost" onClick={requestKill}>
-                <Keycap action="kill" /> Kill
               </button>
             </Tooltip>
           )}

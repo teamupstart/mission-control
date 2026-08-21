@@ -72,7 +72,7 @@ async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {
     .selectOption("__none");
   await dialog.getByRole("button", { name: "Dispatch now" }).click();
   await expect(dialog).toBeHidden();
-  await expect(page.locator("article.card")).toHaveCount(1);
+  await expect(page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row")).toHaveCount(1);
 }
 
 /**
@@ -83,8 +83,8 @@ async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {
  * on, which is the reading the feature is about.
  */
 async function askAndWait(page: Page): Promise<{ card: Locator; form: Locator }> {
-  const card = page.locator("article.card").first();
-  await card.getByRole("button", { name: "Expand conversation" }).click();
+  await page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = page.locator(".console-detail");
   const composer = card.getByPlaceholder(/^Reply to this session/);
   await expect(composer).toBeEnabled();
   await composer.fill(ASK_TURN);

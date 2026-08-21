@@ -71,7 +71,8 @@ test("a shortened generated name keeps its full name in the tooltip", async ({
 }) => {
   await dispatch(dashboard, daemon, LONG_TASK);
 
-  const card = dashboard.locator("article.card").first();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
   await expect(card).toContainText("Agent SDK", { timeout: 30_000 });
 
   const title = card.getByRole("heading").getByRole("button");
@@ -96,7 +97,8 @@ test("a shortened generated name keeps its full name in the tooltip", async ({
 test("clicking an SDK session's title renames it, durably", async ({ dashboard, daemon }) => {
   await dispatch(dashboard, daemon);
 
-  const card = dashboard.locator("article.card").first();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
   await expect(card).toContainText("Agent SDK", { timeout: 30_000 });
 
   // The card's only heading is its title. Selecting the button THROUGH it is what pins the
@@ -125,7 +127,8 @@ test("clicking an SDK session's title renames it, durably", async ({ dashboard, 
   // on every read of its durable row, so without a column to put this in the reload below
   // brings the dispatch's title straight back.
   await dashboard.reload();
-  const reloaded = dashboard.locator("article.card").first();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const reloaded = dashboard.locator(".console-detail");
   await expect(reloaded.getByRole("heading")).toContainText("renamed by hand");
   await expect(reloaded.getByRole("heading")).not.toContainText(DERIVED_TITLE);
 });
@@ -137,7 +140,8 @@ test("an SDK session's title takes a name no terminal home could hold", async ({
   // name rules just because that is where rename already lived.
   await dispatch(dashboard, daemon);
 
-  const card = dashboard.locator("article.card").first();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
   const title = card.getByRole("heading").getByRole("button");
   await expect(title).toBeVisible();
   await settled(title);
@@ -154,7 +158,8 @@ test("an SDK session's title takes a name no terminal home could hold", async ({
 test("Escape leaves an SDK session's title alone", async ({ dashboard, daemon }) => {
   await dispatch(dashboard, daemon);
 
-  const card = dashboard.locator("article.card").first();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
   const title = card.getByRole("heading").getByRole("button");
   await expect(title).toBeVisible();
   await settled(title);

@@ -27,9 +27,9 @@ import { useCallback, useState } from "react";
 export type DraftKind =
   /** The work queue's "queue more work" add box. */
   | "queue"
-  /** The expanded card's transcript reply box. */
+  /** The session detail's transcript reply box. */
   | "reply"
-  /** The ActionBar send box, which opens on a collapsed OR an expanded card. */
+  /** The ActionBar send box, which opens on a collapsed OR an session detail. */
   | "send";
 
 const drafts = new Map<string, string>();

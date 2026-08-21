@@ -30,10 +30,8 @@ import { assertElectronGuiLaunchAllowed } from "./helpers/electron-gui.ts";
  *     flex column whose comment says outright that it does not scroll, so a drawer that was
  *     not `flex: none` above a `flex: 1` body would push the shell past the window with no
  *     scrollbar to get it back - the reply box would simply be off the screen.
- *  3. **Cards never resize.** The plan's third decision, in as many words. `.card.expanded`
- *     is `calc(100dvh - var(--topbar-h) - ...)`, and `--topbar-h` is MEASURED off the topbar
- *     at runtime - so the way this breaks is by putting the drawer somewhere that changes
- *     that measurement, which is invisible until a card is a line shorter than it was.
+ *  3. **The fleet body never resizes horizontally.** The drawer takes vertical space above
+ *     the supported layout without changing that layout's column geometry.
  *
  * And one that is a fact about the row rather than the panel: a row is the SAME height
  * whatever it is saying. Three rows is a cap you can state only if a row is one height.
@@ -72,7 +70,7 @@ const BODY_CAP = { min: 150, max: 200 };
  * The window every number below is read in, and the 900px the band above is stated against.
  *
  * The cases here are compared with each other - the board's top with the drawer open against
- * with it shut, a card on the grid page against the same card beside a drawer - and each of
+ * with it shut - and each of
  * those boxes is sized off `100dvh`. Two pages measured in two different windows therefore
  * differ by exactly the amount the window moved, and the assertion blames the drawer for it.
  * The sibling strip file has CI's example of that failure written out in full; the window is
@@ -218,8 +216,6 @@ interface Measured {
   shellBodyHeight: number | null;
   shellBodyTop: number | null;
   shellBodyBottomOverflow: number | null;
-  cardHeight: number | null;
-  cardWidth: number | null;
   /** The viewport this case's rects were laid out in, read beside them. */
   viewport: { width: number; height: number };
 }
@@ -237,22 +233,13 @@ const consoleShell = (drawerHtml: string): string =>
      <div class="console"><div class="console-rail"></div><div class="console-detail"></div></div>
    </div>`;
 
-/** The grid page, with the two measured properties set to the values `App` publishes. */
-const gridShell = (drawerHtml: string): string =>
-  `<div class="app" style="--topbar-h:88px;--cmdbar-clearance:64px">${TOPBAR}${strip()}${drawerHtml}
-     <div class="card expanded" style="width:900px"><div class="card-panels"></div></div>
-   </div>`;
-
 const CASES: Array<[string, string]> = [
   ["console-many", consoleShell(drawer(MANY))],
   ["console-two", consoleShell(drawer(MANY.slice(0, 2)))],
   ["console-wordy", consoleShell(drawer(WORDY))],
   ["console-piled", consoleShell(drawer(PILED))],
   ["console-backlog", consoleShell(backlogDrawer(QUEUE))],
-  ["console-closed", consoleShell("")],
-  ["grid-open", gridShell(drawer(MANY))],
-  ["grid-closed", gridShell("")],
-];
+  ["console-closed", consoleShell("")],];
 
 let measured: Record<string, Measured>;
 
@@ -294,7 +281,7 @@ before(() => {
  *
  * Every assertion in this file goes through here, so a window that changed size between two
  * loads can only ever be reported as a window that changed size - never as "the drawer took
- * height out of the card", which is a sentence that sends somebody to read a component that
+ * height out of the layout", which is a sentence that sends somebody to read a component that
  * is behaving perfectly.
  */
 function at(name: string): Measured {
@@ -460,15 +447,4 @@ test("the board moves down by the drawer, and the shell still ends at the viewpo
   // And it is a real body, not a collapsed one - the drawer took its height out of the
   // layout, which is only meaningful if there is a layout left.
   assert.ok((open.shellBodyHeight ?? 0) > 400, `the console body collapsed to ${open.shellBodyHeight}px`);
-});
-
-test("a session card is the same card with the drawer open", () => {
-  // The plan's third decision, in as many words: no data changes, no layout changes, no
-  // resizing in any drawer state. `.card.expanded` sizes itself off the MEASURED `--topbar-h`,
-  // so this breaks by putting the drawer somewhere that changes that measurement.
-  const open = at("grid-open");
-  const closed = at("grid-closed");
-  assert.ok(open.cardHeight && closed.cardHeight, "both grid cases must measure a card");
-  assert.equal(open.cardHeight, closed.cardHeight, "the drawer took height out of the card");
-  assert.equal(open.cardWidth, closed.cardWidth, "the drawer took width off the card");
 });

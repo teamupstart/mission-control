@@ -22,14 +22,12 @@ const src = (rel: string): string =>
   readFileSync(fileURLToPath(new URL(`../src/web/${rel}`, import.meta.url)), "utf8");
 
 test("every layout says which layer a kill closes", () => {
-  // A fourth layout answers here, not in another `layout === "grid"` ternary in App.
+  // A future layout answers here, not in another layout-specific branch in App.
   for (const l of LAYOUTS) {
-    assert.ok(["expanded", "selection", "board"].includes(detailLayer(l.id)), `${l.id} has no layer`);
+    assert.ok(["selection", "board"].includes(detailLayer(l.id)), `${l.id} has no layer`);
   }
-  // The grid keeps its selection - that's the keyboard's place among the cards, and focus
-  // mode is the only thing filling the screen. Console drops its selection; board drops
-  // its separate drill-in while leaving the new keyboard cursor parked on the card.
-  assert.equal(detailLayer("grid"), "expanded");
+  // Console drops its selection; Board drops its separate drill-in while leaving the
+  // keyboard cursor parked on the tile.
   assert.equal(detailLayer("console"), "selection");
   assert.equal(detailLayer("board"), "board");
 });
@@ -73,14 +71,10 @@ test("App wires both dialogs back to the one detail-closing callback", () => {
   }
 });
 
-test("both surfaces that draw the end-a-session buttons are wired to them", () => {
-  // SessionCard is the grid's; ConsoleDetail is the console's AND the board's. A bar
-  // that forgot to pass these draws no Complete and no Kill at all - the props gate the
-  // buttons - so this is what keeps the pair in every layout.
-  for (const rel of ["components/SessionCard.tsx", "components/layouts/ConsoleDetail.tsx"]) {
-    const text = src(rel);
-    const bar = text.slice(text.indexOf("<ActionBar"), text.indexOf("/>", text.indexOf("<ActionBar")));
-    assert.match(bar, /onComplete=/, `${rel} renders an ActionBar with no onComplete: ${bar}`);
-    assert.match(bar, /onKill=/, `${rel} renders an ActionBar with no onKill: ${bar}`);
-  }
+test("the shared Console and Board detail wires both end-a-session buttons", () => {
+  const rel = "components/layouts/ConsoleDetail.tsx";
+  const text = src(rel);
+  const bar = text.slice(text.indexOf("<ActionBar"), text.indexOf("/>", text.indexOf("<ActionBar")));
+  assert.match(bar, /onComplete=/, `${rel} renders an ActionBar with no onComplete: ${bar}`);
+  assert.match(bar, /onKill=/, `${rel} renders an ActionBar with no onKill: ${bar}`);
 });

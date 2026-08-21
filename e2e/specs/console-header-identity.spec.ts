@@ -201,7 +201,7 @@ test("the kind badge is a scout's alone, and the pill stops repeating the sessio
   await dispatch(dashboard, daemon, SCOUT, "scout");
   await sessions(daemon, 2);
 
-  const cards = dashboard.locator("article.card");
+  const cards = dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row");
   await expect(cards).toHaveCount(2);
   const shipCard = cards.filter({ has: dashboard.getByRole("heading", { name: SHIP.title }) });
   const scoutCard = cards.filter({ has: dashboard.getByRole("heading", { name: SCOUT.title }) });
@@ -248,7 +248,8 @@ test("a silent pill does not take a multi-repo task's pull-request row with it",
   await dispatch(dashboard, daemon, SHIP, "ship", [daemon.secondRepo]);
   await sessions(daemon, 1);
 
-  const card = dashboard.locator("article.card").first();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
   await expect(card).toBeVisible();
 
   // The row is there, naming both repositories and each one's pull-request state.

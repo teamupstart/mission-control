@@ -207,19 +207,15 @@ function bar(session: Session, over: Record<string, unknown> = {}): string {
   );
 }
 
-test("both ActionBar variants draw Retro at the moment, and neither draws it before", () => {
+test("ActionBar draws Retro at the moment and not before", () => {
   const session = reviewed();
-  const card = bar(session);
-  assert.match(card, /class="btn btn-retro"[^>]*>Run retro</, card);
-  const foot = bar(session, { variant: "foot" });
+  const foot = bar(session);
   assert.match(foot, /class="act act-retro"[^>]*>retro</, foot);
 
-  // ABSENT rather than disabled, on both. A greyed-out Retro standing on every card for the
-  // whole life of every session says "you could have retrospected", which is the opposite of
-  // the message an offer carries.
+  // ABSENT rather than disabled. Permanent grey chrome would say "you could have
+  // retrospected", which is the opposite of the message an offer carries.
   const early = reviewed({ retro: undefined });
-  assert.doesNotMatch(bar(early), /btn-retro/);
-  assert.doesNotMatch(bar(early, { variant: "foot" }), /act-retro/);
+  assert.doesNotMatch(bar(early), /act-retro/);
 });
 
 test("the ActionBar's Retro carries the same sentence the predicate wrote", () => {
@@ -233,8 +229,8 @@ test("a workflow run still mid-gate withholds Retro from the bar", () => {
   // The bar reads the run when its host has one, so this is the case that proves the prop is
   // wired rather than ignored: same session, same worthiness, run says not yet.
   const session = reviewed({ inspector: inspector({ open: 3 }) });
-  assert.doesNotMatch(bar(session, { workflowRun: run({ gate: "findings" }) }), /btn-retro/);
-  assert.match(bar(session, { workflowRun: run({ gate: "clean" }) }), /btn-retro/);
+  assert.doesNotMatch(bar(session, { workflowRun: run({ gate: "findings" }) }), /act-retro/);
+  assert.match(bar(session, { workflowRun: run({ gate: "clean" }) }), /act-retro/);
 });
 
 test("the Complete dialog offers a retro before completing, and never instead of it", () => {

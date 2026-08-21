@@ -65,7 +65,7 @@ async function dispatch(
     .selectOption("__none");
   await dialog.getByRole("button", { name: "Dispatch now" }).click();
   await expect(dialog).toBeHidden();
-  await expect(page.locator("article.card")).toHaveCount(expected);
+  await expect(page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row")).toHaveCount(expected);
 }
 
 /**
@@ -124,7 +124,8 @@ test("e opens the review queue of the session that is asking", async ({ dashboar
 
   // The badge is the thing the chord stands in for, so wait for it rather than for a count:
   // it appearing is the fleet having heard about the review.
-  const card = dashboard.locator("article.card").first();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
   await expect(card.getByRole("button", { name: "to review" })).toBeVisible();
 
   // Nothing is selected, and the chord still finds the session asking.
@@ -143,7 +144,7 @@ test("the badge prints the chord that opens it", async ({ dashboard, daemon }) =
 
   // A bare letter keycap stays lowercase (`formatChord` only uppercases a MODIFIED letter),
   // so this asserts the exact glyph a person reads on the badge.
-  const badge = dashboard.locator("article.card").first().getByRole("button", { name: "to review" });
+  const badge = dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().getByRole("button", { name: "to review" });
   await expect(badge.locator("kbd.kb-hint")).toHaveText("e");
 });
 
@@ -167,15 +168,16 @@ test("e travels to the first session asking when the selected one has nothing wa
   // Exactly one of the two is asking. Which CARD that is gets read off the DOM rather than
   // assumed: a pending review tones a session `attention`, which re-sorts it to the front of
   // the grid, so the asking card is not the one that was dispatched second.
-  const asking = dashboard
-    .locator("article.card")
+  const rows = dashboard.getByRole("navigation", { name: "Sessions" });
+  const asking = rows
+    .locator("button.rail-row")
     .filter({ has: dashboard.getByRole("button", { name: "to review" }) });
   await expect(asking).toHaveCount(1);
 
   // Select the OTHER card - the one with no queue of its own. Without the travel rule the
   // chord would be dead here, which is the whole point of the test.
-  const quiet = dashboard
-    .locator("article.card")
+  const quiet = rows
+    .locator("button.rail-row")
     .filter({ hasNot: dashboard.getByRole("button", { name: "to review" }) });
   await expect(quiet).toHaveCount(1);
   await quiet.click();
@@ -197,7 +199,8 @@ test("e is left to the browser on a fleet with nothing waiting", async ({ dashbo
   await dispatch(dashboard, daemon, 1);
   await checkouts(daemon, 1);
 
-  const card = dashboard.locator("article.card").first();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
   await card.click();
   await expect(card.getByRole("button", { name: "to review" })).toHaveCount(0);
 

@@ -14,15 +14,14 @@ import { withOverlayHost } from "./helpers/overlay-host.ts";
 import { AssignResetModal } from "../src/web/components/AssignResetModal.tsx";
 import { ResetModal } from "../src/web/components/ResetModal.tsx";
 import { ReportPanel } from "../src/web/components/ReportPanel.tsx";
-import { DiffViewer } from "../src/web/components/DiffViewer.tsx";
 import { AwayDigestCard } from "../src/web/components/AwayDigestCard.tsx";
 import { mkSession } from "./helpers/session-fixture.ts";
 
 /**
  * The regression this file exists for: an overlay that is on screen but NOT counted as
  * open. App's global key handler stands down only while the registry says something is
- * up, so an uncounted overlay leaves grid shortcuts live - and `k` kills, `r` resets the
- * card BEHIND the thing you are looking at. Nothing throws and nothing renders wrong;
+ * up, so an uncounted overlay leaves session shortcuts live and can act on the detail
+ * behind the thing you are looking at. Nothing throws and nothing renders wrong;
  * you just act on the wrong session.
  *
  * Being counted is not a list anyone maintains - `<Overlay>` registers itself. So the
@@ -218,11 +217,6 @@ const OVERLAYS: { name: string; el: () => React.JSX.Element }[] = [
         onOpenReviews: () => {},
         onEditTask: () => {},
       }),
-  },
-  {
-    name: "DiffViewer",
-    el: () =>
-      createElement(DiffViewer, { session: mkSession(), commit: null, onClose: () => {} }),
   },
   {
     name: "AwayDigestCard",

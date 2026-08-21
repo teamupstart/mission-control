@@ -86,7 +86,7 @@ async function dispatchCodex(page: Page, daemon: DaemonHandle): Promise<void> {
   await expect(dialog).toBeHidden();
   // The opener is a real first turn; it is the one that writes the first `turn_context`, so
   // the chip has nothing to read until it is over.
-  await expect(page.locator("article.card").first().locator(".badge-idle")).toBeVisible({
+  await expect(page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().locator(".badge-idle")).toBeVisible({
     timeout: 30_000,
   });
 }
@@ -106,9 +106,9 @@ test("a Codex effort chosen mid-turn reads as pending and settles on the next tu
 }) => {
   await dispatchCodex(dashboard, daemon);
 
-  const card = dashboard.locator("article.card").first();
-  await card.getByRole("button", { name: "Expand conversation" }).click();
-  await expect(card.getByRole("button", { name: "Collapse conversation" })).toBeVisible();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
+  await expect(card).toBeVisible();
 
   // What the conversation is actually running, read off the rollout the fake wrote.
   const chip = card.getByRole("button", { name: /^Reasoning effort:/ });

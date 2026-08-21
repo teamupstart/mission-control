@@ -630,8 +630,8 @@ export interface Session {
    * instrumented Claude session rather than by Foreman on the ones it inspects.
    *
    * A sibling of `note` rather than a field inside it, because Foreman does not own this
-   * sentence and the card must be free to show it without showing (or gating on) anything
-   * of Foreman's - the whole point of the feature is that it is visible on a collapsed card.
+   * sentence and the dashboard must be free to show it without showing (or gating on)
+   * anything of Foreman's - the feature remains visible in fleet summaries.
    * Null for a session that has taken no prompt yet, and for a Codex session, which carries
    * no hooks to derive one from.
    */
@@ -2778,7 +2778,7 @@ export type ServerEvent =
    */
   | { type: "archive_changed" };
 
-// ---- session transcript (expanded card) ----
+// ---- session transcript (session detail) ----
 
 /** One tool call in a turn: what was invoked, and what it was invoked with. */
 export interface ToolCall {
@@ -2798,7 +2798,7 @@ export interface ToolCall {
   input?: string;
 }
 
-/** One normalized turn from a Claude/Codex transcript, for the expanded card. */
+/** One normalized turn from a Claude/Codex transcript, for the session detail. */
 export interface TranscriptMessage {
   /** Stable id (the record uuid) - used to de-dupe across init/append. */
   id: string;

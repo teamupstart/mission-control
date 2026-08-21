@@ -89,7 +89,7 @@ export function SessionTile({
   const workflowRunId = workflowRun?.id ?? null;
   // Held reads off the run this tile was already handed, not a second lookup: the section rule
   // above it and this tag have to agree about the same session, and one source is how they do.
-  // `heldByRun` is the shared sentence, so the Cards card cannot spell it differently - and
+  // `heldByRun` is the shared sentence used across supported fleet surfaces, and
   // the run it returns is the one the tooltip names, so the mark cannot credit a sibling
   // review that has already finished.
   const heldBy = heldByRun(workflowRuns, st.tone);

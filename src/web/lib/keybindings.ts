@@ -474,7 +474,10 @@ export function ariaKeyshortcuts(chord: string): string | undefined {
     alt: "Alt",
     shift: "Shift",
   };
-  return [...mods.map((mod) => ariaMods[mod] ?? mod), key].join("+");
+  const ariaKey = mods.includes("shift") && key.length === 1 && isCased(key)
+    ? key.toUpperCase()
+    : key;
+  return [...mods.map((mod) => ariaMods[mod] ?? mod), ariaKey].join("+");
 }
 
 /** True when a chord targets a reserved navigation key and so can't be bound. */

@@ -166,7 +166,8 @@ test("formatChord leaves uncased and named keys alone", () => {
 
 test("ARIA shortcuts use KeyboardEvent modifier names", () => {
   assert.equal(ariaKeyshortcuts("d"), "d");
-  assert.equal(ariaKeyshortcuts("shift+d"), "Shift+d");
+  assert.equal(ariaKeyshortcuts("shift+d"), "Shift+D");
+  assert.equal(ariaKeyshortcuts("cmd+shift+k"), "Meta+Shift+K");
   assert.equal(ariaKeyshortcuts("cmd+ctrl+k"), "Meta+Control+k");
   assert.equal(ariaKeyshortcuts(""), undefined);
 });

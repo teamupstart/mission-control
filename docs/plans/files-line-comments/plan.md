@@ -266,8 +266,9 @@ the dashboard from its own state.
 
 4. **In HTML Preview, any block-level element takes a comment** on the same interaction, with
    the anchor resolved back to the source line by matching the block's text in the file. Where
-   the text is not unique the thread still carries its exact quote and reports its line as
-   approximate rather than inventing one.
+   the text is not unique the comment is **refused**, with a reason naming why - the block's words
+   appear more than once in the source, so place it on the line you mean in the Editor. A location
+   nobody can trust is worse than no location.
 
 5. **Comments accumulate as an ordered review queue.** The toolbar shows the queue depth and a
    **Start review** control. Nothing reaches the agent until you start.
@@ -397,8 +398,11 @@ parent enables comment mode over the existing `postMessage` channel. While enabl
 reports the nearest block-level ancestor's bounded `textContent` and its structural index path.
 It gains no capability the two existing bridges lack - it reads the document it is inside and
 posts to the parent that sent it - and it never gets `allow-same-origin`. The parent resolves
-the reported text to a source line by searching the file, falling back to an approximate anchor
-when the text is not unique. The sandbox constant stays a single exported value so no call site
+the reported text to a source line by searching the file. Exactly one match anchors; zero or
+several refuse, because `reanchor()` has three outcomes and inventing a fourth to describe "about
+here" would spread an untrustworthy location through every consumer of the anchor model. Markdown
+Preview never takes this path - its blocks carry `node.position`, so their range is exact by
+construction. The sandbox constant stays a single exported value so no call site
 can add a token.
 
 Images have no lines and take no comments. The control is disabled with a reason rather than
@@ -648,6 +652,8 @@ as `e2e/README.md` requires.
   checkout write model.
 - No settings toggle. Comment mode is a per-workspace mode, not a preference.
 - No `list_file_comments` read tool.
+- No comment on an HTML Preview block whose text is not unique in the source. It is refused with a
+  reason, and the Editor is the way to place it.
 
 ## Risks and assumptions
 

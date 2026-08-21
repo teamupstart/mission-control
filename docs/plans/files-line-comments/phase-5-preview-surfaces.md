@@ -53,9 +53,20 @@ exact source lines. The feature now covers every surface decision 1 approved.
      invisibly as a bridge that simply does not run.
    - `src/web/components/scouts/ScoutReader.tsx` shares this module. It must be unaffected: the
      bridge is inert unless the parent enables it, and Scouts never will.
-3. **Resolving reported text to a source line** in the parent, by searching the file. Where the text
-   is not unique the thread still carries its exact quote and reports its line as **approximate**
-   rather than inventing one.
+3. **Resolving reported text to a source line** in the parent, by searching the file. Exactly one
+   match anchors the thread. **Zero or several matches refuse the comment**, with a reason the
+   person can read and act on - the block's text appears more than once in the source, so comment
+   on the line you mean in the Editor.
+   - Duplicate headings and repeated paragraphs are ordinary input, not an edge case. Expect the
+     refusal to fire in real documents and write its message for someone who has done nothing
+     wrong.
+   - There is deliberately **no third "approximately here" state**. `reanchor()` returns unchanged,
+     moved, or outdated, and phase 1 froze those three; an approximate anchor would be a fourth
+     that every consumer would have to learn, in exchange for a location nobody can trust. A
+     comment that cannot be placed exactly is not placed.
+   - This is the one asymmetry between the two preview surfaces, and it is not arbitrary: Markdown
+     blocks carry `node.position` from the parser, so their line range is exact by construction and
+     never searched for. Only the HTML bridge has to recover a location from text.
 4. **`docs/ui.md`** - the preview surfaces.
 
 ## Non-goals
@@ -98,9 +109,9 @@ exact source lines. The feature now covers every surface decision 1 approved.
 ## Merge and exit criteria
 
 - A comment made in Markdown Preview lands on the same source line the Editor shows.
-- A comment made in HTML Preview lands on the right line, or is refused with a reason. There is no
-  third "approximately here" state: `reanchor()` returns unchanged, moved, or outdated, phase 1
-  froze those three, and a resolution this phase cannot make exactly is one it does not make.
+- A comment made in HTML Preview lands on the right line, or is refused with a reason a person can
+  act on. Covered both ways: a uniquely-worded block anchors, and a block whose text repeats is
+  refused rather than placed. No "approximately here" state exists to test.
 - All nine bare `<Markdown>` callers render unchanged.
 - The preview sandbox has three hashed scripts, no `allow-same-origin`, and one exported sandbox
   constant.
@@ -130,3 +141,8 @@ cross-file threads - is out of this plan's scope and starts a new one.
   implementation detail: it is a silent failure, not a loud one.
 - Recorded the no-literal-`<` constraint on the third bridge, which is not obvious from reading
   `htmlPreview.ts` alone and is only visible in the test's extraction regex.
+- Review pass: scope item 3 and the exit criteria disagreed about ambiguous HTML anchors - one
+  invented an "approximate" line, the other refused one. Settled on **refusal**, because the
+  alternative adds a fourth outcome to a `reanchor()` contract phase 1 froze at three, and buys a
+  location no consumer can trust. Duplicate headings are ordinary input, so this path is expected
+  to fire and its message is written for a person who has done nothing wrong.

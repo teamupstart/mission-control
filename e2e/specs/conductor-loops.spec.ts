@@ -226,7 +226,13 @@ test("SDK pipeline dispatch invokes Engineer directly and stays provider-owned",
     .poll(() => codexPrompts(daemon)[0], {
       message: "the SDK host should receive the direct Engineer command as turn one",
     })
-    .toBe(`$engineer - run this skill now. ${intent}`);
+    .toBe(
+      `$engineer - run this skill now. ${intent}\n\n` +
+      "[Mission Control launch context: the reserved Pipeline run is " +
+      "build-the-sdk-hosted-pipeline-route. If Engineer resumes a different existing run, " +
+      "call adopt_pipeline_run with that run's slug before continuing. No call is needed " +
+      "when Engineer creates the reserved run.]",
+    );
 });
 
 test.describe("managed Pipeline run adoption", () => {

@@ -111,6 +111,40 @@ test("both harnesses hand the shared fold a run it can actually fold", () => {
   assert.deepEqual(shape(claudeRun), shape(codexRun));
 });
 
+test("Codex projects an interrupted rollout turn as the same visible marker Claude writes", () => {
+  const interruptedAt = "2026-08-18T15:14:57.635Z";
+  const messages = parseCodexMessages([
+    {
+      type: "event_msg",
+      timestamp: interruptedAt,
+      payload: {
+        type: "turn_aborted",
+        turn_id: "turn-interrupted",
+        reason: "interrupted",
+      },
+    },
+    {
+      type: "event_msg",
+      timestamp: "2026-08-18T15:15:00.000Z",
+      payload: {
+        type: "turn_aborted",
+        turn_id: "turn-failed-for-another-reason",
+        reason: "replaced",
+      },
+    },
+  ]);
+
+  assert.deepEqual(messages, [
+    {
+      id: "interrupt:turn-interrupted",
+      role: "user",
+      text: "[Request interrupted by user]",
+      tools: [],
+      ts: Date.parse(interruptedAt),
+    },
+  ]);
+});
+
 test("a window seam rejoins one split run but never welds a run onto prose", () => {
   // `joinCodexBatches` has two jobs and only one of them is a merge. Both are asserted here
   // because the merge is the dangerous one: welding a run onto the prose above it is exactly how

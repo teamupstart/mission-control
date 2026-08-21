@@ -19,9 +19,14 @@ import { api, fetchTranscriptBefore } from "../lib/api.ts";
 import { clearDraft, readDraft, writeDraft } from "../lib/drafts.ts";
 import { formatChord, useKeybindings } from "../lib/keybindings.ts";
 import { sdkDeliveryConfirmation } from "../lib/sdk-delivery.ts";
+import { revealPaneDialog } from "../lib/pane-dialog-anchor.ts";
 import {
   latestEditablePendingTurn,
+  PENDING_TURN_HELD_REASON,
+  PENDING_TURN_HELD_STATUS,
+  pendingTurnHold,
   pendingTurnStatus,
+  type PendingTurnHold,
   RECALL_ACKNOWLEDGEMENT_LOST_MESSAGE,
   recallPendingTurnIntoDraft,
   shouldRecallPendingTurn,
@@ -970,6 +975,8 @@ export function TranscriptPanel({
             turn={turn}
             editable={latestEditable?.id === turn.id}
             busy={pendingAction === turn.id}
+            hold={pendingTurnHold(turn, session)}
+            onGoToReview={() => revealPaneDialog(sessionId)}
             onEdit={() => void recall(turn)}
             onRetry={() => void retry(turn)}
             onMarkSent={() => void markSent(turn)}
@@ -1360,23 +1367,32 @@ export function PendingTurnView({
   turn,
   editable,
   busy = false,
+  hold = null,
   onEdit,
   onRetry,
   onMarkSent,
+  onGoToReview,
 }: {
   turn: PendingTurn;
   editable: boolean;
   busy?: boolean;
+  /** What is withholding this row from the agent, if anything. See `pendingTurnHold`. */
+  hold?: PendingTurnHold;
   onEdit?: () => void;
   onRetry?: () => void;
   onMarkSent?: () => void;
+  onGoToReview?: () => void;
 }): React.JSX.Element {
   return (
-    <div className={`turn turn-user pending-turn is-${turn.state}`} data-pending-state={turn.state}>
+    <div
+      className={`turn turn-user pending-turn is-${turn.state}${hold ? " is-held" : ""}`}
+      data-pending-state={turn.state}
+      data-pending-held={hold ?? undefined}
+    >
       <div className="turn-role pending-turn-role">
         <span>You</span>
         <span className="pending-turn-state" role="status">
-          {pendingTurnStatus(turn)}
+          {hold ? PENDING_TURN_HELD_STATUS : pendingTurnStatus(turn)}
         </span>
       </div>
       <div className="turn-text">{turn.text}</div>
@@ -1402,8 +1418,37 @@ export function PendingTurnView({
             </Tooltip>
           </>
         )}
-        {turn.state === "queued" && editable && (
-          <span className="pending-turn-hint">Up Arrow in an empty reply box</span>
+        {/* The reason takes the hint's place rather than sitting beside it. Both are
+            secondary text on one line, and a held row's answer to "why is this still
+            here" outranks a keystroke the Edit button next to it already offers. */}
+        {hold ? (
+          <span className="pending-turn-held">
+            {/* A text-style glyph, not the emoji stop sign: this line is 10.5px and an
+                emoji renders in its own colours at its own weight, which at that size is a
+                coloured smudge that ignores the amber the rest of the row is saying it in.
+                Same reason `.compose-notice` uses a bare arrow. */}
+            <span className="pth-glyph" aria-hidden>
+              ⊘
+            </span>
+            {PENDING_TURN_HELD_REASON[hold]}
+            {/* A jump only where there is something to jump TO. `activePaneDialog` reports
+                nothing for a dying session, so `ConsoleDetail` renders no dialog card in
+                the `shutdown` window and this button would land on an anchor that is not
+                in the document. */}
+            {hold === "review" && onGoToReview && (
+              <>
+                {" · "}
+                <Tooltip label="Scroll to the review that is holding this message, and focus it">
+                  <button type="button" className="pending-turn-jump" onClick={onGoToReview}>
+                    Go to review
+                  </button>
+                </Tooltip>
+              </>
+            )}
+          </span>
+        ) : (
+          turn.state === "queued" &&
+          editable && <span className="pending-turn-hint">Up Arrow in an empty reply box</span>
         )}
         {turn.lastError && <span className="pending-turn-error">{turn.lastError}</span>}
       </div>

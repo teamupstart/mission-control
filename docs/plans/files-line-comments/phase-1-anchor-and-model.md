@@ -27,11 +27,14 @@ change them cheaply. That ordering is deliberate - see the entry on `addColumn` 
      small local digest rather than `node:crypto`, which this directory forbids;
    - `reanchor(anchor, newText)` returning one of: unchanged, moved (with the new range), or
      `outdated`. Rules in `plan.md` under "The anchor". Pure, no I/O.
-2. **Both tables in `src/server/db.ts`**, appended to the one schema template literal, in the house
+2. **All three tables in `src/server/db.ts`**, appended to the one schema template literal, in the house
    style of `inspector_comments` (`db.ts:1842-1861`): a comment block above the table stating the
    rule it enforces, aligned column types, `--` comments naming each enum domain, indices declared
    immediately beneath.
-   - `file_comment_threads` and `file_comment_messages`, columns exactly as `plan.md` specifies.
+   - `file_comment_threads`, `file_comment_messages` and `file_comment_reviews`, columns exactly as
+     `plan.md` specifies. The third is the walkthrough's run state - one row per session, holding
+     `idle | running | paused` and the pause reason. Phase 3 is its only writer, but it is declared
+     here with the others for the same reason they are: a shipped table cannot gain a column back.
    - A partial unique index on `(session_id) WHERE status IN ('sending', 'awaiting')`. Export the
      outstanding statuses as one `as const` tuple and build the predicate from it the way
      `inFlightIndexSql()` builds `one_inflight_per_queue` from `IN_FLIGHT_ITEM_STATES`
@@ -47,8 +50,14 @@ change them cheaply. That ordering is deliberate - see the entry on `addColumn` 
      before `migrate()`.
 3. **Store functions in `db.ts`**, Shape A (module-level exported functions, as
    `upsertInspectorComment` / `loadInspectorComments` are): create, list by session, list by session
-   and path, update body, delete, reorder `queue_seq`, set and clear the `outdated` flag, and the
-   status transitions.
+   and path, update body, delete, reorder `queue_seq`, set and clear the `outdated` flag, read and
+   write the review's run state, and the status transitions.
+   - **Minting `short_id`.** Creation derives the thread's `MC-xxxx` handle beside its UUID and
+     stores it, unique per session. It is what the payload cites and what the transcript fallback
+     matches, so it is generated once and never recomputed from the row.
+   - **`markFileCommentMessageDelivered(id, at)`** stamps `delivered_at`. The column is written by
+     the delivery path in phase 3, so it needs its writer declared here alongside the insert -
+     otherwise it is a column with no way to stop being NULL.
    - **`file_comment_messages` gets its writer here too.** Creating a thread writes its opening
      message row; `appendFileCommentMessage(threadId, author, body)` writes every one after it, and
      a thread's messages load with it. The `author` column is why one function serves both writers:
@@ -76,15 +85,18 @@ change them cheaply. That ordering is deliberate - see the entry on `addColumn` 
    **explicit decision on `LINE_INPUT_EVENTS`** (`registry.ts:431`) with the reason written beside
    it. The recommendation is **absent** - the Line strip does not read file comments - and
    `pipeline_upsert`'s deliberate absence is the precedent to follow.
-8. **Routes in `src/server/routes.ts`**: create, list, edit, delete, reorder, and **append a
-   message** to a thread. `parseBody` for
+8. **Routes in `src/server/routes.ts`**: create, list, edit body, delete, reorder, **append a
+   message**, and **set a thread's status** - the last is what phase 2's resolve control and phase
+   4's `addressed` both post to, and without it "edit" means the body only and neither can land.
+   This phase owns the reorder route outright; phase 3 adds `start`/`pause`/`resume` beside it and
+   does not redeclare it. `parseBody` for
    every mutating route; no hand-parsed JSON. If a manager instance is needed, append it as the
    **last** optional positional parameter of `buildApp` (currently `productIssues`, `routes.ts:859`)
    and answer **503** when absent.
 9. **Browser plumbing**: the exhaustive cases in `src/web/useEventStream.ts`, the collection on
    `MissionState`, the snapshot arm with a `?? []` version-skew guard, and helpers on
    `src/web/lib/api.ts` (note the path - it is `lib/api.ts`, not `api.ts`).
-10. **`docs/sqlite-database.html`**: both tables in a family, the family's `N tables` count, **and**
+10. **`docs/sqlite-database.html`**: all three tables in a family, the family's `N tables` count, **and**
     the two hand-maintained totals at `:429` (lede prose) and `:437` (metric tile).
 11. **`docs/event-stream.md`**: both new event variants and what bounds the collection. They ship
     here, so they are documented here.
@@ -99,7 +111,7 @@ change them cheaply. That ordering is deliberate - see the entry on `addColumn` 
 ## Repository findings this phase rests on
 
 - The schema is one `db.exec()` literal at `db.ts:533-2741`; `migrate(d)` runs after it at `:2699`.
-- `test/db-shell.test.ts:58` asserts `75` tables and becomes `77`. A second test in the same file
+- `test/db-shell.test.ts:58` asserts `75` tables and becomes `78`. A second test in the same file
   cross-checks each family's `<span>N tables</span>` against its row count.
 - No existing table is hard-`DELETE`d on `session_remove`; every subscriber orphans by UPDATE, and
   every one has an `onSessionsObserved` second arm.
@@ -149,11 +161,11 @@ under `src/`. Run one file with
 
 ## Merge and exit criteria
 
-- A thread can be created, listed, edited, reordered, replied to, and deleted through real
-  routes, and a thread loads with its messages in time order.
+- A thread can be created, listed, edited, reordered, resolved, replied to, and deleted through
+  real routes, and a thread loads with its messages in time order.
 - A thread survives a daemon restart and is orphaned when its session is removed - by both arms.
 - Both new event variants reach a browser, and the snapshot and the stream agree.
-- The database guide catalogs both tables and all four counts agree.
+- The database guide catalogs all three tables and all four counts agree.
 - Typecheck, lint, and the full unit suite pass.
 
 ## Downstream handoff
@@ -161,9 +173,14 @@ under `src/`. Run one file with
 Later phases may rely on, and must not change:
 
 - The `FileCommentAnchor` shape and `reanchor()`'s three outcomes.
-- Both tables' full column shape, including the columns phases 3 and 4 are first to write.
+- All three tables' full column shape, including the columns phases 3 and 4 are first to write:
+  `queue_seq`, `delivery_id`, `answered_at`, `addressed_at`, and every column of
+  `file_comment_reviews`.
 - The outstanding-status tuple and the index built from it. Phase 3 enforces one turn outstanding
-  on top of this, never instead of it, and never widens the tuple to make a transition easier.
+  on top of this, never instead of it, and never widens the tuple to make a transition easier -
+  `unanswered` exists precisely so decision 3's auto-advance does not need it widened.
+- `short_id` minting, the status-setting route, and `markFileCommentMessageDelivered`. Phases 3 and
+  4 call all three; neither reimplements one.
 - `appendFileCommentMessage` and its route: the only way a message row is written, by either
   author. Phase 2 calls it with `human`, phase 4 with `agent`.
 - `status` and `outdated` as two dimensions. A later phase may add neither a status value that
@@ -187,3 +204,14 @@ the walkthrough state machine and payload (phase 3), the MCP tool (phase 4).
   And the `file_comment_messages` write path existed in no phase at all, while phase 2 shipped a
   reply box and phase 4 an agent reply - both now call one function declared here. `plan.md` and
   `plan.html` carry the same two corrections.
+- Second review pass, after the outstanding-status index was widened to cover `awaiting`: that
+  widening broke decision 3. Auto-advancing after a grace window means sending comment 2 while
+  comment 1 is still unanswered, so a timed-out thread left in `awaiting` would collide on the
+  index and deadlock the queue the index exists to protect. `unanswered` is now a declared status
+  outside the tuple, which is the state the plan had been describing in prose as `sent, no reply`
+  and never declaring.
+- Same pass, four things consumed by later phases and declared by none: the walkthrough's run
+  state (now `file_comment_reviews`), `addressed_at` for phase 4's `addressed?`, `short_id` for the
+  payload's `MC-a41f` and the transcript fallback, and a writer for `delivered_at`. All are
+  declared here, because a shipped table cannot gain a column from `CREATE TABLE` afterwards - the
+  trap this phase already names.

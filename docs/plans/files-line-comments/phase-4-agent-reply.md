@@ -41,13 +41,15 @@ The queue stops advancing on an inference about idleness and starts advancing on
    `registry.findSessionByEnv(env, sessionId, cwd)` → 404 `"no matching session"`. Note `/mcp/*` is
    deliberately **not** behind `requireLoopback`; the token is the gate.
 5. **Persist, emit, advance.** The reply is stored through phase 1's `appendFileCommentMessage`
-   with author `agent` - the same function phase 2's reply box uses - the thread moves to
+   with author `agent` - the same function phase 2's reply box uses - `addressed?` stamps phase 1's
+   `addressed_at` through its status route (a suggestion, never a closure), the thread moves to
    `answered`, one `file_comment_thread_upsert` carries it to every dashboard, and the walkthrough
    releases the next comment.
    - `commentId` stays **required** even though only one comment is outstanding. It costs one field
      and it is what stops a late reply - the agent answering comment 3 after the walkthrough moved to
      comment 5 - from being misfiled onto the wrong thread.
-6. **The Files tab pip.** `detailTabs()` (`src/web/lib/detailTabs.ts:43-51`) hard-codes `pip: 0` for
+6. **The Files tab pip**, counting agent replies the human has not read - not queue depth, which is
+   the human's own work. `detailTabs()` (`src/web/lib/detailTabs.ts:43-51`) hard-codes `pip: 0` for
    Files, but so do three of the other four tabs; only `queue` takes a count. Add a second field to
    `DetailTabInputs` and supply it from `ConsoleDetail.tsx:378`.
 7. **The transcript fallback.** A session an operator started without the Claude integration has no

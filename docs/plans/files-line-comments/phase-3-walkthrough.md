@@ -14,22 +14,26 @@ measurement the plan's two 60% assumptions need.
 
 - **Direct prerequisite: Phase 2**, merged. This phase consumes the threads table, the anchor
   module, `reanchor()`, and the thread UI.
-- May merge in either order with **Phase 5**. Neither owns a contract the other consumes. Expect a
-  textual conflict in `FileWorkspace.tsx` - this phase edits the toolbar region (`:422-444`), phase
-  5 edits the renderer branch (`:446-487`).
+- **Phase 5 depends on this phase** and must not start before it merges - not for code, but for the
+  anchor-survival measurement below. Phase 4 does too. Neither owns a contract this phase consumes.
 
 ## Scope
 
 1. **The single-comment payload renderer**, pure, in the `src/server/workflows/feedback.ts` family:
-   bounded fields, stable shape, a `payloadSha256`. Content exactly as `plan.md` specifies - path,
-   line range, quoted anchor, the comment, **the position line ("Comment 3 of 12")**, and the
-   closing instruction to answer only this one. The position line is not decoration: it is the
+   bounded fields, stable shape, a `payloadSha256`. Content as `plan.md` specifies - path, line
+   range, quoted anchor, the comment, the thread's `short_id`, **the position line ("Comment 3 of
+   12")**, and the closing instruction to answer only this one. **One deliberate difference until
+   phase 4 lands:** that closing instruction asks for an answer in the next turn and names no
+   tool, because `respond_to_file_comments` does not exist yet. Phase 4 substitutes the tool name
+   into that single line and changes nothing else. The position line is not decoration: it is the
    stated mitigation for the one thing a batch does better, and an agent that knows nine more are
    coming will not restructure the document on comment three.
    Server-side so the agent's copy and the dashboard's record cannot drift; pure so it is tested
    without a session, a pane, or a database.
-2. **The walkthrough state machine**, durable on the threads table rather than in memory, so a
-   daemon restart resumes instead of re-sending.
+2. **The walkthrough state machine**, durable rather than in memory, so a daemon restart resumes
+   instead of re-sending. Per-comment progress lives on the threads; the review's own
+   `idle | running | paused` and its pause reason live in phase 1's `file_comment_reviews` row,
+   because "paused" and "never started" are otherwise the same set of threads.
 3. **The re-anchor-before-send pass.** Before every send, re-anchor every unsent comment against the
    file's current bytes. Three outcomes, per `plan.md`: moved (send silently), outdated at the head
    (hold and pause with the reason), outdated further down (mark in place and carry on).
@@ -43,7 +47,10 @@ measurement the plan's two 60% assumptions need.
      mattering.
    - `delivery_id` on the thread is that correlation. `pending_turns` gains no column.
 5. **Advance signals.** In this phase there is only one: the session settles idle. Per decision 3,
-   wait a grace window, mark the thread `sent, no reply`, and release the next. Phase 4 adds the
+   wait a grace window, move the thread from `awaiting` to `unanswered`, and release the next.
+   **Moving it out of `awaiting` is not bookkeeping** - `unanswered` sits outside phase 1's
+   outstanding-status tuple, so it is what lets the next comment take the turn without colliding
+   on the single-flight index. Phase 4 adds the
    stronger signal; the fallback stays as the floor.
 6. **Refusal and pause states.** `canMessage(session)` refusing is a pause with a reason, not a lost
    comment. A send that lands in `uncertain` pauses the review and surfaces the **existing** Retry /
@@ -55,7 +62,8 @@ measurement the plan's two 60% assumptions need.
    with its history intact - the `outdated` flag is a column beside the status, so it stays
    orthogonal and reversible throughout. The reply itself is still written by phase 1's
    `appendFileCommentMessage`; what this phase adds is the requeue that follows it.
-9. **Routes** for start, pause, resume, and reorder, each with a `parseBody` schema.
+9. **Routes** for start, pause and resume, each with a `parseBody` schema. Reorder is phase 1's
+   route and is reused, not redeclared.
 10. **A live region** announcing which comment is outstanding and how many remain, so a screen-reader
    user is not left guessing.
 11. **`docs/ui.md`** and a short pointer in **`docs/work-queues.md`** saying what the review queue is

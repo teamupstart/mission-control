@@ -241,7 +241,9 @@ walkthrough that moves the reader to the comment being sent needs that last mile
 
 **The Files tab already has an unused attention pip.** `detailTabs()`
 (`src/web/lib/detailTabs.ts:44-50`) is a pure function over an input bag, with `pip: 0`
-hard-coded for Files. The open queue depth is exactly what it is for.
+hard-coded for Files. **It counts agent replies you have not read** - not the open queue depth,
+which is your own work and needs no badge. That is also why it stays at zero until the reply tool
+exists.
 
 **A tool result cannot draw itself in the conversation.** The header comment on
 `src/web/components/ReviewAnswer.tsx:8-13` records that every harness parser drops a user turn
@@ -289,7 +291,8 @@ the dashboard from its own state.
    longer exists is how a review goes wrong quietly.
 
 10. **A sent comment collapses to a marker on its line** showing its state - awaiting an answer,
-    answered with a reply count, outdated, or resolved. The marker is a real button with an
+    answered with a reply count, unanswered, or resolved - with the outdated flag shown alongside
+    whichever of those it is. The marker is a real button with an
     accessible name, reachable by keyboard.
 
 11. **Expanding a marker opens the thread**: the original comment, every agent reply, every
@@ -433,8 +436,8 @@ to prevent.
 1. **A reply through the tool for the outstanding thread.** The good path, and a real
    completion signal rather than an inference.
 2. **The session settles idle with no reply.** The agent answered in prose, or edited without
-   answering. Per decision 3 the walkthrough waits out a grace window, marks the thread
-   `sent, no reply`, and sends the next comment - because a walkthrough that needs a click per
+   answering. Per decision 3 the walkthrough waits out a grace window, moves the thread
+   from `awaiting` to `unanswered`, and sends the next comment - because a walkthrough that needs a click per
    comment is not a walkthrough. The thread is not lost: it keeps its anchor and its marker,
    and the absence of a reply is what the marker shows.
 3. **Nothing.** The session is working, blocked on you, or gone. The walkthrough waits, and
@@ -447,27 +450,29 @@ recovery path.
 
 ### 4. Data model
 
-Two tables, following the house conventions: `TEXT PRIMARY KEY` from `randomUUID()` at the call
+Three tables, following the house conventions: `TEXT PRIMARY KEY` from `randomUUID()` at the call
 site, epoch-millisecond `INTEGER NOT NULL` timestamps, `created_at` and `updated_at` on both,
 indices declared beside the table, and relations by convention rather than a `REFERENCES` clause.
 
 ```
 file_comment_threads
   id           TEXT PRIMARY KEY
+  short_id     TEXT NOT NULL     -- MC-a41f; what the payload cites and a reply quotes
   session_id   TEXT NOT NULL     -- the session this thread belongs to (decision 2)
   path         TEXT NOT NULL     -- repository-relative
   start_line   INTEGER NOT NULL
   end_line     INTEGER NOT NULL
   quote        TEXT NOT NULL
-  quote_hash   TEXT NOT NULL     -- sha256(path + quote); excludes the line
+  quote_hash   TEXT NOT NULL     -- sha256(path + LF + normalized quote); excludes the line
   revision     TEXT              -- file revision the anchor was last valid against
   surface      TEXT NOT NULL     -- editor | markdown | html
-  status       TEXT NOT NULL     -- draft | queued | sending | awaiting | answered | resolved | orphaned
+  status       TEXT NOT NULL     -- draft|queued|sending|awaiting|answered|unanswered|resolved|orphaned
   outdated     INTEGER NOT NULL  -- 1 when the quote no longer resolves; not a status
   queue_seq    INTEGER           -- position in the review; NULL once terminal
   delivery_id  TEXT              -- the pending_turns row currently carrying it
   sent_at      INTEGER
   answered_at  INTEGER
+  addressed_at INTEGER           -- the agent's "I handled this"; never a closure
   resolved_at  INTEGER
   created_at   INTEGER NOT NULL
   updated_at   INTEGER NOT NULL
@@ -480,6 +485,13 @@ file_comment_messages
   body          TEXT NOT NULL
   delivered_at  INTEGER          -- when it reached the agent; NULL while queued
   created_at    INTEGER NOT NULL
+
+file_comment_reviews
+  session_id    TEXT PRIMARY KEY -- one review per session, per decision 2
+  state         TEXT NOT NULL    -- idle | running | paused
+  pause_reason  TEXT             -- why it stopped; NULL unless paused
+  started_at    INTEGER
+  updated_at    INTEGER NOT NULL
 ```
 
 A partial unique index on `(session_id)` where `status IN ('sending', 'awaiting')` enforces
@@ -491,14 +503,31 @@ an index naming only `sending` would let a second start or a resume open a new d
 the first comment is still unanswered, which is the one thing one-at-a-time exists to prevent.
 Build it from the TypeScript tuple the way `inFlightIndexSql` builds
 `one_inflight_per_queue` from `IN_FLIGHT_ITEM_STATES`, so the enforcement and its readers cannot
-drift. Because decision 2 scopes a thread to a session, that index is exactly the invariant the
+drift.
+
+**This is why `unanswered` is a status of its own.** Decision 3 auto-advances after a grace
+window, which means the walkthrough sends comment 2 while comment 1 has still never been
+answered. If the abandoned thread stayed `awaiting` it would remain in the outstanding set and
+the index would refuse the next delivery - the guarantee would deadlock the queue it exists to
+protect. Timing out therefore moves `awaiting` to `unanswered`, which is outside the tuple. The
+thread keeps its anchor, its marker and its place in the file; what it does not keep is the
+turn. Because decision 2 scopes a thread to a session, that index is exactly the invariant the
 walkthrough needs and nothing broader.
 `delivery_id` is the correlation `pending_turns` cannot carry: it lives here instead, so that
 table needs no new column.
 
+**The review's run state is a table, not a derived value.** "Paused" and "never started" are the
+same set of rows - everything `queued`, nothing outstanding - so the walkthrough cannot tell them
+apart by looking at threads, and between two comments the outstanding set is briefly empty, which
+would make a derived "running" flicker. `file_comment_reviews` is one row per session holding the
+state and, when paused, the reason a human needs to see. It is keyed by `session_id` because
+decision 2 already scoped a review to exactly one.
+
 **`outdated` is a column, not a status.** A thread whose quote has stopped resolving is still
-queued, or still answered - losing that is losing its place in the review, and the flag is
-reversible where a status transition would not be. Two dimensions, so two columns. `orphaned`
+queued, or still awaiting, or still answered - losing that is losing its place in the review, and
+the flag is reversible where a status transition would not be. Any thread can carry it; the
+walkthrough's re-anchor pass is simply the thing that sets it most often, because it runs over
+every unsent comment before each send. Two dimensions, so two columns. `orphaned`
 *is* a status, and a terminal one: it is what a thread becomes when the session that owns it
 goes away, and there is nothing left to be in the middle of.
 
@@ -532,6 +561,10 @@ Answer with mcp__mission-control__respond_to_file_comments quoting id MC-a41f.
 Answer this comment only - the remaining 9 follow one at a time, so do not
 restructure beyond what this one asks for.
 ```
+
+`MC-a41f` is the thread's `short_id`: a stable, human-quotable handle minted beside the row's
+UUID and unique per session. The payload cites it, the reply tool takes it, and the transcript
+fallback matches it out of free text - which a UUID is too long and too easy to mangle for.
 
 The position line and the closing instruction are the mitigation for the one thing a batch does
 better: an agent that knows nine more comments are coming will not restructure the whole document
@@ -580,10 +613,13 @@ draft ──queue──▶ queued ──send──▶ sending ──delivered─
                     │                                        ▼
                     └──────────────────────────────────── answered ──human resolves──▶ resolved
 
+awaiting ──grace window expires──▶ unanswered        (decision 3: auto-advance)
+unanswered ──human replies──▶ queued                 (the thread is not lost)
+
 any status ──its session is removed──▶ orphaned (terminal)
 
 outdated is a flag beside the status, not one of its values:
-any unsent thread ──the file moved under it──▶ outdated = 1 ──the quote returns──▶ outdated = 0
+any thread ──the file moved under it──▶ outdated = 1 ──the quote returns──▶ outdated = 0
 ```
 
 `outdated` is orthogonal and reversible, which is why it is a column: a thread that goes
@@ -643,7 +679,7 @@ anchored.
 | Pure | `test/file-comment-walkthrough.test.ts` | The advance state machine: reply, idle fallback, hold-on-outdated, pause, resume, restart |
 | Schema | `test/file-comment-contracts.test.ts` | Zod bounds and refusals |
 | Store | `test/file-comments-store.test.ts` | SQL, status transitions, `queue_seq` rewrites, the single-flight index |
-| Store | `test/file-comments-lifecycle.test.ts` | `session_remove` clears both tables; `state === "exited"` alone clears nothing |
+| Store | `test/file-comments-lifecycle.test.ts` | `session_remove` orphans this session's threads by UPDATE; `state === "exited"` alone changes nothing; the prune deletes only settled rows |
 | Migration | `test/file-comments-migration.test.ts` | Upgrade from a hand-written pre-feature database |
 | Routes | `test/file-comments-http.test.ts` | Every route through `buildApp()`, including the `/mcp/*` env join |
 | Events | `test/file-comments-sse.test.ts` | Snapshot and incremental convergence |
@@ -657,7 +693,7 @@ from a model.
 
 Two obligations that are easy to miss and fail the suite: `docs/sqlite-database.html` catalogs
 every table exactly once, including its family's `N tables` count, and `test/db-shell.test.ts:58`
-hard-codes the total at 75 - which becomes 77.
+hard-codes the total at 75 - which becomes 78.
 
 The walkthrough specs seed threads straight into the daemon's database with `withDaemonDb`, the
 way `e2e/specs/inspector-resolve-findings.spec.ts` already seeds `inspector_comments`, and assert
@@ -676,7 +712,7 @@ each durable claim twice: once through the DOM and once against the daemon's own
 
 Five phases, each independently mergeable and each leaving the product working:
 
-1. **The anchor and the model.** The shared anchor module, both tables, the store, the routes,
+1. **The anchor and the model.** The shared anchor module, all three tables, the store, the routes,
    the events, and the schemas. No UI. Ends with a database that can hold a queue and a route
    suite that proves it.
 2. **Comment mode in the Editor.** The toolbar control, the CodeMirror gutter and widget,

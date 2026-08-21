@@ -267,7 +267,7 @@ blockquote 13 -&gt; 13</code></pre></div>
 
   <h3>Where this lands in the UI</h3>
   <p><strong>Deep-linking to a line is half-built.</strong> <code>workspaceFileTarget</code> (<code>src/web/lib/workspaceLinks.ts:66-116</code>) already parses <code>path:line[:column]</code> and <code>#L12C3</code>, but <code>App.tsx:1345-1372</code> discards <code>target.line</code> and nothing ever scrolls the viewer to it. A walkthrough that moves the reader to the comment being sent needs that last mile finished.</p>
-  <p><strong>The Files tab already has an unused attention pip.</strong> <code>detailTabs()</code> (<code>src/web/lib/detailTabs.ts:44-50</code>) is a pure function over an input bag, with <code>pip: 0</code> hard-coded for Files. The open queue depth is exactly what it is for.</p>
+  <p><strong>The Files tab already has an unused attention pip.</strong> <code>detailTabs()</code> (<code>src/web/lib/detailTabs.ts:44-50</code>) is a pure function over an input bag, with <code>pip: 0</code> hard-coded for Files. <strong>It counts agent replies you have not read</strong> - not the open queue depth, which is your own work and needs no badge. That is also why it stays at zero until the reply tool exists.</p>
   <p><strong>A tool result cannot draw itself in the conversation.</strong> The header comment on <code>src/web/components/ReviewAnswer.tsx:8-13</code> records that every harness parser drops a user turn that is purely a tool result. Anything the agent sends back has to be persisted and rendered by the dashboard from its own state.</p>
 
   <h2>User-visible contract</h2>
@@ -281,7 +281,7 @@ blockquote 13 -&gt; 13</code></pre></div>
     <li><strong>The next comment goes when the agent answers the current one.</strong> An answer through the reply tool advances the queue immediately. The Files tab shows which comment is outstanding and how many remain.</li>
     <li><strong>The queue stays yours while it runs.</strong> Reorder it, edit any comment that has not been sent, drop one the agent has already made moot, or <strong>Pause</strong> the walkthrough. Pausing takes effect after the outstanding comment resolves; it never recalls a comment already delivered.</li>
     <li><strong>Every remaining comment is re-anchored against the file before the next one is sent.</strong> A comment whose anchor moved is sent with its new line, silently. A comment whose quoted text the agent has since deleted is marked <strong>outdated</strong> and <strong>held rather than sent</strong>, with the walkthrough paused and the reason shown - because sending a comment about text that no longer exists is how a review goes wrong quietly.</li>
-    <li><strong>A sent comment collapses to a marker on its line</strong> showing its state - awaiting an answer, answered with a reply count, outdated, or resolved. The marker is a real button with an accessible name, reachable by keyboard.</li>
+    <li><strong>A sent comment collapses to a marker on its line</strong> showing its state - awaiting an answer, answered with a reply count, unanswered, or resolved - with the outdated flag shown alongside whichever of those it is. The marker is a real button with an accessible name, reachable by keyboard.</li>
     <li><strong>Expanding a marker opens the thread</strong>: the original comment, every agent reply, every later human reply, in time order, with a reply box.</li>
     <li><strong>A human reply in a thread re-enters the queue</strong> at the end, and is delivered in its turn exactly like a new comment.</li>
     <li><strong>The agent's reply appears in the thread it answers</strong>, live, without a refresh, and raises the Files tab's attention pip.</li>
@@ -454,29 +454,31 @@ blockquote 13 -&gt; 13</code></pre></div>
   <p><strong>Advance signals</strong>, in order of strength:</p>
   <ol>
     <li><strong>A reply through the tool for the outstanding thread.</strong> The good path, and a real completion signal rather than an inference.</li>
-    <li><strong>The session settles idle with no reply.</strong> The agent answered in prose, or edited without answering. Per decision 3 the walkthrough waits out a grace window, marks the thread <code>sent, no reply</code>, and sends the next comment - because a walkthrough that needs a click per comment is not a walkthrough. The thread is not lost: it keeps its anchor and its marker, and the absence of a reply is what the marker shows.</li>
+    <li><strong>The session settles idle with no reply.</strong> The agent answered in prose, or edited without answering. Per decision 3 the walkthrough waits out a grace window, moves the thread from <code>awaiting</code> to <code>unanswered</code>, and sends the next comment - because a walkthrough that needs a click per comment is not a walkthrough. The thread is not lost: it keeps its anchor and its marker, and the absence of a reply is what the marker shows.</li>
     <li><strong>Nothing.</strong> The session is working, blocked on you, or gone. The walkthrough waits, and <code>canMessage</code> refusing is a pause with a reason, not a lost comment.</li>
   </ol>
   <p><strong>Everything is durable.</strong> The walkthrough's state is columns on the queue, not memory, so a daemon restart resumes rather than re-sends. A send that lands in <code>uncertain</code> pauses the review and surfaces the existing Retry / Mark sent controls rather than inventing a second recovery path.</p>
 
   <h3>4. Data model</h3>
-  <p>Two tables, following the house conventions: <code>TEXT PRIMARY KEY</code> from <code>randomUUID()</code> at the call site, epoch-millisecond <code>INTEGER NOT NULL</code> timestamps, <code>created_at</code> and <code>updated_at</code> on both, indices declared beside the table, and relations by convention rather than a <code>REFERENCES</code> clause.</p>
+  <p>Three tables, following the house conventions: <code>TEXT PRIMARY KEY</code> from <code>randomUUID()</code> at the call site, epoch-millisecond <code>INTEGER NOT NULL</code> timestamps, <code>created_at</code> and <code>updated_at</code> on both, indices declared beside the table, and relations by convention rather than a <code>REFERENCES</code> clause.</p>
   <div class="code-wrap"><pre><code>file_comment_threads
   id           TEXT PRIMARY KEY
+  short_id     TEXT NOT NULL     -- MC-a41f; what the payload cites and a reply quotes
   session_id   TEXT NOT NULL     -- the session this thread belongs to (decision 2)
   path         TEXT NOT NULL     -- repository-relative
   start_line   INTEGER NOT NULL
   end_line     INTEGER NOT NULL
   quote        TEXT NOT NULL
-  quote_hash   TEXT NOT NULL     -- sha256(path + quote); excludes the line
+  quote_hash   TEXT NOT NULL     -- sha256(path + LF + normalized quote); excludes the line
   revision     TEXT              -- file revision the anchor was last valid against
   surface      TEXT NOT NULL     -- editor | markdown | html
-  status       TEXT NOT NULL     -- draft | queued | sending | awaiting | answered | resolved | orphaned
+  status       TEXT NOT NULL     -- draft|queued|sending|awaiting|answered|unanswered|resolved|orphaned
   outdated     INTEGER NOT NULL  -- 1 when the quote no longer resolves; not a status
   queue_seq    INTEGER           -- position in the review; NULL once terminal
   delivery_id  TEXT              -- the pending_turns row currently carrying it
   sent_at      INTEGER
   answered_at  INTEGER
+  addressed_at INTEGER           -- the agent's "I handled this"; never a closure
   resolved_at  INTEGER
   created_at   INTEGER NOT NULL
   updated_at   INTEGER NOT NULL
@@ -488,9 +490,18 @@ file_comment_messages
   session_id    TEXT             -- the session that wrote or received it
   body          TEXT NOT NULL
   delivered_at  INTEGER          -- when it reached the agent; NULL while queued
-  created_at    INTEGER NOT NULL</code></pre></div>
-  <p>A partial unique index on <code>(session_id)</code> where <code>status IN ('sending', 'awaiting')</code> enforces one-comment-outstanding at the database rather than by convention, mirroring <code>idx_pending_turns_sending</code> and <code>one_inflight_per_queue</code>. <strong>The predicate covers every outstanding status, not just <code>sending</code>.</strong> A comment is outstanding from the moment it is handed to the outbox until the agent answers it, and <code>awaiting</code> is by far the longer half of that - an index naming only <code>sending</code> would let a second start or a resume open a new delivery while the first comment is still unanswered, which is the one thing one-at-a-time exists to prevent. Build it from the TypeScript tuple the way <code>inFlightIndexSql</code> builds <code>one_inflight_per_queue</code> from <code>IN_FLIGHT_ITEM_STATES</code>, so the enforcement and its readers cannot drift. Because decision 2 scopes a thread to a session, that index is exactly the invariant the walkthrough needs and nothing broader. <code>delivery_id</code> is the correlation <code>pending_turns</code> cannot carry: it lives here instead, so that table needs no new column.</p>
-  <p><strong><code>outdated</code> is a column, not a status.</strong> A thread whose quote has stopped resolving is still queued, or still answered - losing that is losing its place in the review, and the flag is reversible where a status transition would not be. Two dimensions, so two columns. <code>orphaned</code> <em>is</em> a status, and a terminal one: it is what a thread becomes when the session that owns it goes away, and there is nothing left to be in the middle of.</p>
+  created_at    INTEGER NOT NULL
+
+file_comment_reviews
+  session_id    TEXT PRIMARY KEY -- one review per session, per decision 2
+  state         TEXT NOT NULL    -- idle | running | paused
+  pause_reason  TEXT             -- why it stopped; NULL unless paused
+  started_at    INTEGER
+  updated_at    INTEGER NOT NULL</code></pre></div>
+  <p>A partial unique index on <code>(session_id)</code> where <code>status IN ('sending', 'awaiting')</code> enforces one-comment-outstanding at the database rather than by convention, mirroring <code>idx_pending_turns_sending</code> and <code>one_inflight_per_queue</code>. <strong>The predicate covers every outstanding status, not just <code>sending</code>.</strong> A comment is outstanding from the moment it is handed to the outbox until the agent answers it, and <code>awaiting</code> is by far the longer half of that - an index naming only <code>sending</code> would let a second start or a resume open a new delivery while the first comment is still unanswered, which is the one thing one-at-a-time exists to prevent. Build it from the TypeScript tuple the way <code>inFlightIndexSql</code> builds <code>one_inflight_per_queue</code> from <code>IN_FLIGHT_ITEM_STATES</code>, so the enforcement and its readers cannot drift.</p>
+  <p><strong>This is why <code>unanswered</code> is a status of its own.</strong> Decision 3 auto-advances after a grace window, which means the walkthrough sends comment 2 while comment 1 has still never been answered. If the abandoned thread stayed <code>awaiting</code> it would remain in the outstanding set and the index would refuse the next delivery - the guarantee would deadlock the queue it exists to protect. Timing out therefore moves <code>awaiting</code> to <code>unanswered</code>, which is outside the tuple. The thread keeps its anchor, its marker and its place in the file; what it does not keep is the turn. Because decision 2 scopes a thread to a session, that index is exactly the invariant the walkthrough needs and nothing broader. <code>delivery_id</code> is the correlation <code>pending_turns</code> cannot carry: it lives here instead, so that table needs no new column.</p>
+  <p><strong>The review's run state is a table, not a derived value.</strong> "Paused" and "never started" are the same set of rows - everything <code>queued</code>, nothing outstanding - so the walkthrough cannot tell them apart by looking at threads, and between two comments the outstanding set is briefly empty, which would make a derived "running" flicker. <code>file_comment_reviews</code> is one row per session holding the state and, when paused, the reason a human needs to see. It is keyed by <code>session_id</code> because decision 2 already scoped a review to exactly one.</p>
+  <p><strong><code>outdated</code> is a column, not a status.</strong> A thread whose quote has stopped resolving is still queued, or still awaiting, or still answered - losing that is losing its place in the review, and the flag is reversible where a status transition would not be. Any thread can carry it; the walkthrough's re-anchor pass is simply the thing that sets it most often, because it runs over every unsent comment before each send. Two dimensions, so two columns. <code>orphaned</code> <em>is</em> a status, and a terminal one: it is what a thread becomes when the session that owns it goes away, and there is nothing left to be in the middle of.</p>
   <p><strong>Threads end with their session.</strong> On <code>session_remove</code> that session's threads are settled to <code>orphaned</code> by UPDATE - not deleted, and never keyed on <code>state === "exited"</code>, which is the standing rule for durable cleanup in this repository and the reason there is no second eviction path here. Two mechanisms complete it, both copied from <code>ReviewManager</code> rather than invented: a reconciliation arm for sessions that went away while the daemon was down, and a throttled prune that finally deletes settled rows whose session key is gone. A session that is merely idle, disconnected, or restarting keeps every thread it owns.</p>
   <p>Drafts are persisted from the first keystroke rather than kept in browser state: the integrated tab and the extracted Files window are two live <code>FileWorkspace</code> instances that converge only through the daemon.</p>
 
@@ -507,6 +518,7 @@ This contradicts the diagram above it.
 Answer with mcp__mission-control__respond_to_file_comments quoting id MC-a41f.
 Answer this comment only - the remaining 9 follow one at a time, so do not
 restructure beyond what this one asks for.</code></pre></div>
+  <p><code>MC-a41f</code> is the thread's <code>short_id</code>: a stable, human-quotable handle minted beside the row's UUID and unique per session. The payload cites it, the reply tool takes it, and the transcript fallback matches it out of free text - which a UUID is too long and too easy to mangle for.</p>
   <p>The position line and the closing instruction are the mitigation for the one thing a batch does better: an agent that knows nine more comments are coming will not restructure the whole document on comment three.</p>
   <p>The renderer is server-side so the agent's copy and the dashboard's record cannot drift, and pure so it is tested without a session, a pane, or a database.</p>
 
@@ -529,10 +541,13 @@ restructure beyond what this one asks for.</code></pre></div>
                     │                                        ▼
                     └──────────────────────────────────── answered ──human resolves──▶ resolved
 
+awaiting ──grace window expires──▶ unanswered        (decision 3: auto-advance)
+unanswered ──human replies──▶ queued                 (the thread is not lost)
+
 any status ──its session is removed──▶ orphaned (terminal)
 
 outdated is a flag beside the status, not one of its values:
-any unsent thread ──the file moved under it──▶ outdated = 1 ──the quote returns──▶ outdated = 0</code></pre></div>
+any thread ──the file moved under it──▶ outdated = 1 ──the quote returns──▶ outdated = 0</code></pre></div>
   <p><code>outdated</code> is orthogonal and reversible, which is why it is a column: a thread that goes outdated keeps the status it had, and if the quoted text comes back it re-anchors and clears the flag. A human reply on an <code>answered</code> thread puts it back in the queue with its history intact. <code>orphaned</code> is the one status reached without a human or an agent doing anything.</p>
 
   <h3>8. Keyboard and accessibility</h3>
@@ -579,7 +594,7 @@ any unsent thread ──the file moved under it──▶ outdated = 1 ──the 
         <tr><td>Pure</td><td><code>test/file-comment-payload.test.ts</code></td><td>The single-comment payload: bounding, position line, id</td></tr>
         <tr><td>Pure</td><td><code>test/file-comment-walkthrough.test.ts</code></td><td>The advance state machine: reply, idle fallback, hold-on-outdated, pause, resume, restart</td></tr>
         <tr><td>Schema</td><td><code>test/file-comment-contracts.test.ts</code></td><td>Zod bounds and refusals</td></tr>
-        <tr><td>Store</td><td><code>test/file-comments-lifecycle.test.ts</code></td><td><code>session_remove</code> clears both tables; <code>state === "exited"</code> alone clears nothing</td></tr>
+        <tr><td>Store</td><td><code>test/file-comments-lifecycle.test.ts</code></td><td><code>session_remove</code> orphans this session's threads by UPDATE; <code>state === "exited"</code> alone changes nothing; the prune deletes only settled rows</td></tr>
         <tr><td>Store</td><td><code>test/file-comments-store.test.ts</code></td><td>SQL, status transitions, <code>queue_seq</code> rewrites, the single-flight index</td></tr>
         <tr><td>Migration</td><td><code>test/file-comments-migration.test.ts</code></td><td>Upgrade from a hand-written pre-feature database</td></tr>
         <tr><td>Routes</td><td><code>test/file-comments-http.test.ts</code></td><td>Every route through <code>buildApp()</code>, including the <code>/mcp/*</code> env join</td></tr>
@@ -591,7 +606,7 @@ any unsent thread ──the file moved under it──▶ outdated = 1 ──the 
     </table>
   </div>
   <p>The e2e specs spend no model tokens: agent binaries are already redirected by <code>e2e/fixtures/fake-agents.ts</code>, and replies arrive through the daemon's own MCP route rather than from a model.</p>
-  <p>Two obligations that are easy to miss and fail the suite: <code>docs/sqlite-database.html</code> catalogs every table exactly once, including its family's <code>N tables</code> count, and <code>test/db-shell.test.ts:58</code> hard-codes the total at 75 - which becomes 77.</p>
+  <p>Two obligations that are easy to miss and fail the suite: <code>docs/sqlite-database.html</code> catalogs every table exactly once, including its family's <code>N tables</code> count, and <code>test/db-shell.test.ts:58</code> hard-codes the total at 75 - which becomes 78.</p>
   <p>The walkthrough specs seed threads straight into the daemon's database with <code>withDaemonDb</code>, the way <code>e2e/specs/inspector-resolve-findings.spec.ts</code> already seeds <code>inspector_comments</code>, and assert each durable claim twice: once through the DOM and once against the daemon's own route.</p>
 
   <h2>Documentation</h2>
@@ -606,7 +621,7 @@ any unsent thread ──the file moved under it──▶ outdated = 1 ──the 
   <h2>Delivery shape</h2>
   <p>Five phases, each independently mergeable and each leaving the product working:</p>
   <ol>
-    <li><strong>The anchor and the model.</strong> The shared anchor module, both tables, the store, the routes, the events, and the schemas. No UI. Ends with a database that can hold a queue and a route suite that proves it.</li>
+    <li><strong>The anchor and the model.</strong> The shared anchor module, all three tables, the store, the routes, the events, and the schemas. No UI. Ends with a database that can hold a queue and a route suite that proves it.</li>
     <li><strong>Comment mode in the Editor.</strong> The toolbar control, the CodeMirror gutter and widget, drafting, queueing, and the thread UI. Ends with comments that persist and render but never send.</li>
     <li><strong>The walkthrough.</strong> The single-comment payload, the advance state machine, the re-anchor-before-send pass, the queue controls, and the pause and refusal states. Ends with a review that reaches a real session one comment at a time, and with the measurement the two 60% assumptions need.</li>
     <li><strong>The agent's reply.</strong> The MCP tool, the <code>/mcp</code> route, live thread updates, the tab pip, and the transcript fallback. Ends with the reply advancing the queue instead of the idle fallback.</li>

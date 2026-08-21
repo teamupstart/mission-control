@@ -18,7 +18,8 @@ resolved. Five phases; four merge serially and the last runs concurrently with p
 Each of these contradicts or materially extends the source plan. They are the reason the phase
 boundaries are where they are.
 
-1. **The plan's cleanup design does not match anything in this repository.** It says both tables
+1. **The plan's cleanup design did not match anything in this repository** (since corrected in
+   `plan.md` itself). It said both tables
    are "cleared on `session_remove` and on no other signal." No table works that way. Every
    durable `session_remove` subscriber *orphans or settles by UPDATE* - `orphanReviewsFor`
    (`reviews.ts:357`), `reconcileTasksBoundTo` (`tasks.ts:1357`), `orphanBinding`
@@ -36,7 +37,7 @@ boundaries are where they are.
    the CREATE TABLE edit, so phase 1 declares the full shape up front - the house preference,
    stated at `db.ts`, beside `task_worktree_retention`.
 3. **The table count lives in four places and only two are enforced.**
-   `test/db-shell.test.ts:58` (`75`, becomes `77`) and the per-family `<span>N tables</span>` are
+   `test/db-shell.test.ts:58` (`75`, becomes `78`) and the per-family `<span>N tables</span>` are
    tested; `sqlite-database.html:429` (lede prose) and `:437` (metric tile) are hand-maintained and
    drift silently.
 4. **`previewable` does not mean "can take a comment"** - it includes `image`
@@ -137,15 +138,27 @@ let phase 5 merge before the number that is meant to validate its premise even e
 - **`src/shared/file-comment-anchor.ts`** (Phase 1): the only definition of an anchor and the only
   re-anchor implementation. Browser-safe, no `node:` imports. Phases 2, 3 and 5 consume it; none
   reimplements it.
-- **`file_comment_threads` / `file_comment_messages`** (Phase 1): the full column shape is declared
-  in phase 1 including columns phases 3 and 4 will be the first to write, so no later phase needs an
-  `addColumn`.
+- **`file_comment_threads` / `file_comment_messages` / `file_comment_reviews`** (Phase 1): the full
+  column shape of all three is declared in phase 1, including the columns phases 3 and 4 will be the
+  first to write - `queue_seq`, `delivery_id`, `answered_at`, `addressed_at`, and every column of
+  the reviews row - so no later phase needs an `addColumn`.
 - **`status` and `outdated` are two dimensions** (Phase 1): `outdated` is a column, not a status
   value, because a thread whose quote stopped resolving keeps its place in the queue and the flag
   clears if the text comes back. `orphaned` is a status, and terminal. No later phase adds a status
   meaning outdated or a flag meaning orphaned.
 - **`appendFileCommentMessage`** (Phase 1): the only writer of a `file_comment_messages` row, for
   either author. Phase 2's reply box passes `human`; phase 4's MCP tool passes `agent`.
+- **The outstanding-status tuple and its partial unique index** (Phase 1): `sending` and `awaiting`
+  both. `unanswered` sits outside it on purpose - decision 3 auto-advances after a grace window,
+  so a timed-out thread has to leave the outstanding set or the next delivery collides with it.
+  Phase 3 enforces one turn outstanding on top of the index, never instead of it, and never widens
+  the tuple to make a transition easier.
+- **One route per mutation, declared once** (Phase 1): create, list, edit body, delete, reorder,
+  append a message, set status. Phase 2 resolves through the status route, phase 4 stamps
+  `addressed_at` through it, and phase 3 adds only `start`/`pause`/`resume`.
+- **`file_comment_reviews`** (Phase 1, written only by Phase 3): the review's `idle | running |
+  paused` and its pause reason. Run state is not derived from thread statuses - "paused" and
+  "never started" are the same rows, and between two comments the outstanding set is briefly empty.
 - **Session-scoped lifetime is three mechanisms** (Phase 1): orphan-on-`session_remove`, a
   reconcile arm on `onSessionsObserved`, and a throttled prune of terminal rows. No later phase adds
   a fourth teardown path.

@@ -98,7 +98,9 @@ exact source lines. The feature now covers every surface decision 1 approved.
 ## Merge and exit criteria
 
 - A comment made in Markdown Preview lands on the same source line the Editor shows.
-- A comment made in HTML Preview lands on the right line, or is honestly marked approximate.
+- A comment made in HTML Preview lands on the right line, or is refused with a reason. There is no
+  third "approximately here" state: `reanchor()` returns unchanged, moved, or outdated, phase 1
+  froze those three, and a resolution this phase cannot make exactly is one it does not make.
 - All nine bare `<Markdown>` callers render unchanged.
 - The preview sandbox has three hashed scripts, no `allow-same-origin`, and one exported sandbox
   constant.

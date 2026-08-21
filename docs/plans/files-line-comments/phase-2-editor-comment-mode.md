@@ -12,7 +12,8 @@ running session.
 ## Entry criteria and dependencies
 
 - **Direct prerequisite: Phase 1**, merged to the default branch. This phase consumes
-  `src/shared/file-comment-anchor.ts`, both tables, the thread routes, the message-append route,
+  `src/shared/file-comment-anchor.ts`, the threads and messages tables, the thread routes
+  (including the status route it resolves through), the message-append route,
   and the two `ServerEvent` variants, and reimplements none of them.
 
 ## Scope
@@ -58,8 +59,8 @@ running session.
    writes no message row of its own, and phase 4's agent reply arrives through the same function.
    Replying here does not queue anything - phase 3 is what makes a reply re-enter the queue, and
    until it merges a reply is a durable note on the thread.
-7. **Resolving.** A human resolves a thread; resolved threads collapse out of the gutter behind the
-   toggle. Only a person closes a thread - phase 4 lets the agent mark one *addressed*, which shows
+7. **Resolving.** A human resolves a thread through phase 1's status-setting route - this phase adds
+   no route of its own. Resolved threads collapse out of the gutter behind the toggle. Only a person closes a thread - phase 4 lets the agent mark one *addressed*, which shows
    as a suggestion and never as a closure.
 8. **Drafts persist from the first keystroke** through phase 1's routes, not in browser state. The
    integrated tab and the extracted `FileWindow` are two live `FileWorkspace` instances that
@@ -148,5 +149,5 @@ Later phases may rely on, and must not change:
 - Review pass: **Phase 1 was changed on this phase's behalf.** It published thread create, edit,
   delete and reorder but no way to write a `file_comment_messages` row, so the reply box in step 6
   had nothing behind it. Rather than move the reply box to phase 3, the write path moved up into
-  phase 1, which already owns both tables and now declares one append function for both authors.
+  phase 1, which already owns the tables and now declares one append function for both authors.
   Recorded in phase 1's scope, exit criteria, and handoff.

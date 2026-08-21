@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
-import { taskHasWorktrees, taskRepoRefs } from "@shared/task-repos.ts";
+import {
+  taskHasWorktrees,
+  taskHoldsCleanupResources,
+  taskRepoRefs,
+} from "@shared/task-repos.ts";
 import { isTerminalTask } from "@shared/task-status.ts";
 import type { Task } from "@shared/types.ts";
 
@@ -68,21 +72,6 @@ export function isRetentionCandidate(task: Task): boolean {
   return isTerminalTask(task.status) && taskHasWorktrees(task);
 }
 
-/**
- * Everything an automatic cleanup of this task is responsible for releasing.
- *
- * Wider than `isRetentionCandidate` on purpose, and the difference is the whole of the
- * unfinished-cleanup case: a teardown can hand back the last checkout and then fail on the
- * terminal home, which leaves a task that may not START a clock but whose cleanup is not
- * finished. A row is seeded on the narrow rule and survives on this one, so the attempt stays
- * retryable until there is genuinely nothing left to release.
- *
- * The same predicate startup reconciliation already reconciles on, shared rather than spelled
- * twice so the two can never drift about what "still holds something" means.
- */
-export function taskHoldsCleanupResources(task: Task): boolean {
-  return taskHasWorktrees(task) || Boolean(task.homeName);
-}
 
 /**
  * May an existing ledger row still be worked - claimed, retried, finished?
@@ -96,3 +85,6 @@ export function taskHoldsCleanupResources(task: Task): boolean {
 export function isRetentionRetryable(task: Task): boolean {
   return isTerminalTask(task.status) && taskHoldsCleanupResources(task);
 }
+
+// The keeping rule lives in shared because the dashboard gates its controls on it too.
+export { taskHoldsCleanupResources };

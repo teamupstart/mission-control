@@ -79,6 +79,32 @@ test("an attached-only survivor still offers Clean up and is not offered Retry",
   );
 });
 
+test("a task whose home outlived its last checkout offers Clean up, never Retry", () => {
+  // The shape an unfinished cleanup leaves: every tree came back, the terminal home did not.
+  // `taskHasWorktrees` is false here, so gating Retry on it would offer to re-dispatch a task
+  // that still owns a resource - and start a reschedule against a cleanup still retrying.
+  const html = panel([
+    mkTask({
+      id: "home-survivor",
+      title: "Home survived",
+      status: "failed",
+      error: "the agent gave up",
+      worktreePath: null,
+      provider: null,
+      extraRepos: [attached(null)],
+      homeName: "mission-home-1",
+      terminalResourceId: "term-1",
+      automaticCleanup: { state: "retry", detail: "the terminal home would not stop", retryAt: 9 },
+      completedAt: 5,
+    }),
+  ]);
+  assert.ok(
+    !html.includes(">Retry<"),
+    "a task still holding a terminal home is not resource-free",
+  );
+  assert.ok(html.includes("Clean up"), "and the operator is left a way to release it by hand");
+});
+
 test("a fully released failed task is offered Retry and no cleanup", () => {
   const html = panel([
     mkTask({

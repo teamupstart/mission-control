@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import type { BacklogPlan, Session, Task, TaskSummary } from "@shared/types.ts";
 import { TASK_WORKTREE_RETENTION_DAYS } from "@shared/types.ts";
-import { taskHasWorktrees } from "@shared/task-repos.ts";
+import { taskHoldsCleanupResources } from "@shared/task-repos.ts";
 import {
   RECENT_TASKS_CAP,
   backlogTasks,
@@ -485,12 +485,15 @@ export function ReportPanel({
                   </span>
                 </div>
               )}
-              {/* A cleanly-failed task (torn down, no worktree at all) can be retried in
-                  place - it re-provisions from scratch. `taskHasWorktrees` rather than the
-                  primary path alone: a task whose primary tree was released and whose attached
-                  repository's tree is still on disk is not resource-free, and offering Retry
-                  for it would re-dispatch onto a checkout the previous attempt still holds. */}
-              {t.status === "failed" && !taskHasWorktrees(t) && (
+              {/* A cleanly-failed task - one holding NOTHING - can be retried in place, since
+                  it re-provisions from scratch. `taskHoldsCleanupResources` rather than the
+                  primary path or even the worktree set: a task whose primary tree was released
+                  and whose attached repository's tree is still on disk is not resource-free,
+                  and neither is one whose last checkout came back but whose terminal home a
+                  failed cleanup could not stop. Offering Retry for either re-dispatches on top
+                  of a resource the previous attempt still holds, and starts a reschedule
+                  against a cleanup that is still retrying. */}
+              {t.status === "failed" && !taskHoldsCleanupResources(t) && (
                 <div className="report-row-actions">
                   <Tooltip label="Dispatch this failed task again from scratch">
                     <button
@@ -502,11 +505,13 @@ export function ReportPanel({
                   </Tooltip>
                 </div>
               )}
-              {/* A terminal task that still holds a worktree - a done task
-                  awaiting reclaim, a failed-but-alive dispatch whose agent may
-                  still be running, or an attached-repository tree that survived a
-                  partial teardown - is freed here (keeping its status + outcome). */}
-              {taskHasWorktrees(t) && (
+              {/* A terminal task that still holds something - a done task awaiting reclaim, a
+                  failed-but-alive dispatch whose agent may still be running, an
+                  attached-repository tree that survived a partial teardown, or a terminal home
+                  a failed cleanup could not stop - is freed here (keeping its status +
+                  outcome). The same rule Retry is gated on, so exactly one of the two is
+                  offered and a half-released task is never left with neither. */}
+              {taskHoldsCleanupResources(t) && (
                 <div className="report-row-actions">
                   {confirmCancel === t.id ? (
                     <span className="report-cancel">

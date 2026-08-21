@@ -76,7 +76,7 @@ boundaries are where they are.
 
 ## Sizing
 
-Estimated **3,400 to 4,400 gross non-test implementation lines**, counting shared contracts,
+Estimated **3,600 to 4,700 gross non-test implementation lines**, counting shared contracts,
 persistence, server, MCP, and browser code together. Assumptions: the anchor module is pure and
 compact; the three renderer integrations do not share code beyond the anchor type; `styles.css`
 additions are counted; documentation and tests are excluded from the number but not from the work.
@@ -100,8 +100,10 @@ boundary that materially reduces risk, not by layer:
   measurement rather than for code, which is argued under the dependency graph below.
 
 **Phase 1 is the largest, and it grew during review.** It began at roughly 1,100-1,400 lines
-against two tables; eight review rounds added a third table, fourteen columns, four store
-functions and three routes, so budget **1,600 to 2,000**. The growth was not scope creep - every
+against two tables; eighteen review rounds added a third table, fourteen columns, eight store
+functions and five routes, so budget **1,800 to 2,300**. The last nine rounds added no columns at
+all - they added *writers* for columns that already existed, and guards on them, which is a
+different and cheaper kind of growth than the first eight. The growth was not scope creep - every
 addition was a column or a call some later phase already consumed and no phase declared - but the
 implementing agent should know it is walking into the biggest phase in the plan, not the estimate
 written before review.
@@ -115,11 +117,25 @@ its run-state store functions into phase 3 costs nothing structurally; it only s
 guide edit and the table count across two commits, which is why it is offered as a lever rather
 than taken here.
 
-That coupling is worth stating plainly for whoever implements this: across eight review rounds,
-four findings were caused by a previous round's fix. Phase 1's invariants - the outstanding-status
-tuple, `delivered_at` doing three jobs, status versus flag versus timestamp - are tight enough
-that changing one sentence reliably breaks a neighbour. Change them deliberately, and re-read the
-cross-phase contracts below before you do.
+That coupling is worth stating plainly for whoever implements this: across eighteen review rounds,
+**seven findings were caused by a previous round's fix** - and three of those seven landed in the
+last four rounds, so the rate did not decay as the plan settled. Phase 1's invariants - the
+outstanding-status tuple, `delivered_at` doing three jobs, status versus flag versus timestamp -
+are tight enough that changing one sentence reliably breaks a neighbour. Change them deliberately,
+and re-read the cross-phase contracts below before you do.
+
+Two failure shapes account for nearly all of them, and both are worth carrying into the
+implementation rather than rediscovering:
+
+- **A value the design relies on that nothing supplies or writes.** A `revision` no caller could
+  pass, a `delivery_id` with no writer, a `commentId` the agent is never shown, a `queue_seq` no
+  operation allocates. Each read as complete prose and could not be built. When a phase names a
+  column or an argument, find the line that writes it before believing it exists.
+- **A rule stated unconditionally that has a reachable state where it must not apply.** "A human
+  reply re-enters the queue", "the thread moves to `answered`", "valid from any non-outstanding
+  status". Each was true in the case it was written for. Prefer naming the states a rule applies
+  to over excluding the ones it does not: "everything except X" silently grows every time a status
+  is added, and this plan added two mid-review.
 
 ## Phases
 

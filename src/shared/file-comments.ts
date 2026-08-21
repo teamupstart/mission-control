@@ -146,34 +146,47 @@ export const FILE_COMMENT_TEXT_LIMITS = {
 /**
  * The statuses a PERSON may set through `POST /api/file-comments/:id/status`.
  *
- * Every status except `orphaned`, and the exception is the whole reason this tuple exists
- * rather than the route reusing `FILE_COMMENT_THREAD_STATUSES`.
+ * Two of the eight, and the smallness is the point: this route is for the decisions a human
+ * makes about a thread, and every OTHER status is the recorded outcome of a mechanism, owned
+ * by exactly one writer that does bookkeeping no request can reproduce.
  *
- * `orphaned` is not a thing anyone decides. It is what a thread becomes when the session
- * that owns it goes away, and it is reached by exactly one of the three lifetime mechanisms
- * - `session_remove`, the first-completed-sweep reconciliation, or (for deletion) the
- * throttled prune - never by a request. Leaving it reachable from the dashboard gave an
- * ordinary caller a way to settle a LIVE session's thread to a terminal status and drop it
- * out of the live collection, after which every subsequent write on it was refused with
- * "this comment's session has ended" about a session that had not ended. That is a lie the
- * UI would repeat, and `orphaned` is terminal, so there is no way back from it.
+ * - `draft` - withdraw a thread from the queue, and the way back from `resolved`. The store
+ *   drops its `queue_seq` with it, because a draft holding a queue position is a hole.
+ * - `resolved` - the human close, and the only terminal status a person reaches.
  *
- * A person who wants a thread gone has two doors that mean what they say: `resolved`, which
- * is the human close, and `DELETE /api/file-comments/:id`.
+ * What is deliberately NOT here, and who owns each instead:
  *
- * The STORE's writer is untouched: `orphanFileCommentThreadsForSession` still writes the
- * status, because session cleanup is the mechanism that is supposed to. What is closed here
- * is the request-side door, not the column.
+ * - `queued` belongs to `POST /api/file-comments/:id/queue`, which ALLOCATES the tail
+ *   position in the same transaction. Setting the status alone would leave a queued thread
+ *   with a null `queue_seq` - in the review by status, and nowhere in its order.
+ * - `sending` and `awaiting` are delivery states, written by `beginFileCommentDelivery` and
+ *   `markFileCommentMessageDelivered` from phase 3's outbox signals. Setting either by
+ *   request would make a thread outstanding with no delivery behind it, and the partial
+ *   unique index would then refuse the session's next real send.
+ * - `answered` is phase 4's, stamped with the reply that justifies it. Setting it by request
+ *   on an `awaiting` thread is the worse direction: it RELEASES the single-flight index while
+ *   the original comment is still out with the agent, so a second comment can be delivered
+ *   into a session that already has one outstanding - which is the exact harm one-at-a-time
+ *   exists to prevent.
+ * - `unanswered` is phase 3's grace-window timeout.
+ * - `orphaned` is not a decision at all. It is what a thread becomes when the session that
+ *   owns it goes away, written by session cleanup alone
+ *   (`orphanFileCommentThreadsForSession`). While it was reachable here, a caller could
+ *   settle a LIVE session's thread to a terminal status and drop it out of the live
+ *   collection, after which every later write on it was refused with "this comment's session
+ *   has ended" about a session still running - and `orphaned` is terminal, so there was no
+ *   way back.
+ *
+ * Every one of those writers is untouched by this tuple. What it closes is the request-side
+ * door, not the column.
+ *
+ * Spelled out rather than derived, because `z.enum` needs a literal tuple. The `satisfies`
+ * clause catches a RENAME; a test pins the membership, which is what catches an ADDITION.
  */
 export const HUMAN_SETTABLE_THREAD_STATUSES = [
   "draft",
-  "queued",
-  "sending",
-  "awaiting",
-  "answered",
-  "unanswered",
   "resolved",
-] as const satisfies readonly Exclude<FileCommentThreadStatus, "orphaned">[];
+] as const satisfies readonly FileCommentThreadStatus[];
 export type HumanSettableThreadStatus = (typeof HUMAN_SETTABLE_THREAD_STATUSES)[number];
 
 const HUMAN_SETTABLE = new Set<string>(HUMAN_SETTABLE_THREAD_STATUSES);
@@ -183,4 +196,23 @@ export function isHumanSettableThreadStatus(
   value: string,
 ): value is HumanSettableThreadStatus {
   return HUMAN_SETTABLE.has(value);
+}
+
+/**
+ * The statuses that hold a place in a session's review queue.
+ *
+ * `queue_seq` is meaningful for exactly these, so `setFileCommentThreadStatus` clears it for
+ * everything else. Withdrawing a `queued` thread to `draft` while it kept its number left a
+ * draft sitting in the order, and resolving one left a permanent hole.
+ */
+export const QUEUE_POSITION_THREAD_STATUSES = [
+  "queued",
+  "sending",
+  "awaiting",
+] as const satisfies readonly FileCommentThreadStatus[];
+
+const HOLDS_QUEUE_POSITION = new Set<string>(QUEUE_POSITION_THREAD_STATUSES);
+
+export function holdsQueuePosition(status: FileCommentThreadStatus): boolean {
+  return HOLDS_QUEUE_POSITION.has(status);
 }

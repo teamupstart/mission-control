@@ -188,8 +188,9 @@ test("a refused requeue is a 409 with a reason, never an opaque 500", async () =
   const res = await post(`/api/file-comments/${t.id}/queue`);
   assert.equal(res.status, 409);
   assert.match(((await res.json()) as { error: string }).error, /cannot be queued/);
-  // Reopening stays possible and stays deliberate: un-resolve, then requeue normally.
-  await post(`/api/file-comments/${t.id}/status`, { status: "answered" });
+  // Reopening stays possible and stays deliberate: un-resolve back to `draft`, then requeue
+  // normally. `draft` and `resolved` are the two decisions this route takes.
+  assert.equal((await post(`/api/file-comments/${t.id}/status`, { status: "draft" })).status, 200);
   assert.equal((await post(`/api/file-comments/${t.id}/queue`)).status, 200);
 });
 
@@ -303,14 +304,53 @@ test("the dashboard reply route cannot forge an agent answer", async () => {
   );
 });
 
-test("the status route takes every declared status and nothing else", async () => {
+test("the status route takes the two human decisions and no mechanism's outcome", async () => {
+  // Every status except these two is the recorded outcome of a mechanism, owned by one writer
+  // that does bookkeeping a request cannot reproduce. Exposing them here was not merely
+  // untidy:
+  //
+  // - `answered` on an `awaiting` thread RELEASES the single-flight index while the original
+  //   comment is still out with the agent, so a second comment can be delivered into a
+  //   session that already has one outstanding - the exact harm one-at-a-time prevents.
+  // - `sending` or `awaiting` on a draft makes a thread outstanding with no delivery behind
+  //   it, after which the index refuses the session's next REAL send.
+  // - `queued` sets the status without allocating a position, leaving a thread in the review
+  //   by status and nowhere in its order.
   reset();
   const t = await create();
-  assert.equal((await post(`/api/file-comments/${t.id}/status`, { status: "answered" })).status, 200);
+  assert.equal((await post(`/api/file-comments/${t.id}/status`, { status: "resolved" })).status, 200);
+  assert.equal((await post(`/api/file-comments/${t.id}/status`, { status: "draft" })).status, 200);
+  for (const status of ["queued", "sending", "awaiting", "answered", "unanswered", "orphaned"]) {
+    assert.equal(
+      (await post(`/api/file-comments/${t.id}/status`, { status })).status,
+      400,
+      status,
+    );
+  }
+  assert.equal(loadFileCommentThread(t.id)?.status, "draft", "nothing moved the thread");
   // `addressed` is not a status and gets no route: only a person closes a thread, and
   // routing an agent's suggestion through a status transition is how it becomes a closure.
   assert.equal((await post(`/api/file-comments/${t.id}/status`, { status: "addressed" })).status, 400);
   assert.equal((await post(`/api/file-comments/${t.id}/status`, {})).status, 400);
+});
+
+test("withdrawing or closing a queued thread takes its place in the queue with it", async () => {
+  // `queue_seq` is meaningful only while a thread holds a position. A withdrawn thread that
+  // kept its number sat in the order as a `draft`; a closed one left a permanent hole, and
+  // the consecutive order is what phase 3 reads to find the head of the review.
+  reset();
+  const a = await create();
+  const b = await create();
+  await post(`/api/file-comments/${a.id}/queue`);
+  await post(`/api/file-comments/${b.id}/queue`);
+  assert.deepEqual(
+    [loadFileCommentThread(a.id)?.queueSeq, loadFileCommentThread(b.id)?.queueSeq],
+    [0, 1],
+  );
+  assert.equal((await post(`/api/file-comments/${a.id}/status`, { status: "draft" })).status, 200);
+  assert.equal(loadFileCommentThread(a.id)?.queueSeq, null, "withdrawn, and out of the order");
+  assert.equal((await post(`/api/file-comments/${b.id}/status`, { status: "resolved" })).status, 200);
+  assert.equal(loadFileCommentThread(b.id)?.queueSeq, null, "closed, and out of the order");
 });
 
 test("a live session's thread cannot be orphaned through the status route", async () => {
@@ -378,7 +418,7 @@ test("a thread whose session has ended cannot be revived through a retained id",
     [`/api/file-comment-messages/${message}`, { body: "an edit after the session ended" }],
     [`/api/file-comments/${t.id}/queue`, undefined],
     [`/api/file-comments/${t.id}/read`, undefined],
-    [`/api/file-comments/${t.id}/status`, { status: "answered" }],
+    [`/api/file-comments/${t.id}/status`, { status: "resolved" }],
   ] as const) {
     const res = await post(path, body);
     assert.equal(res.status, 409, path);

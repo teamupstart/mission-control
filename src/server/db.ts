@@ -62,6 +62,7 @@ import {
   FILE_COMMENT_THREAD_MESSAGE_CAP,
   OUTSTANDING_THREAD_STATUSES,
   REQUEUEABLE_THREAD_STATUSES,
+  holdsQueuePosition,
   isFileCommentThreadStatus,
   type FileCommentAuthor,
   type FileCommentReviewState,
@@ -10904,11 +10905,18 @@ export function reorderFileCommentQueue(
     const d = openDb();
     const live = d
       .prepare(
-        `SELECT id, status FROM file_comment_threads WHERE session_id = ? AND queue_seq IS NOT NULL`,
+        `SELECT id, status FROM file_comment_threads
+          WHERE session_id = ? AND queue_seq IS NOT NULL
+          ORDER BY queue_seq`,
       )
       .all(sessionId) as unknown as { id: string; status: string }[];
     const eligible = new Set(live.map((r) => r.id));
-    const ordered = orderedIds.filter((id) => eligible.has(id));
+    // DEDUPED, first occurrence winning. A drag list is assembled by a browser and arrives
+    // over HTTP, so `[a, a, b]` is a reachable body - and writing `a` twice would advance the
+    // running index twice, leaving `a` at 1 and `b` at 2 with position 0 unfilled. The
+    // consecutive-order contract this function promises is what a later phase reads to find
+    // the head of the review, so a hole is not cosmetic.
+    const ordered = [...new Set(orderedIds.filter((id) => eligible.has(id)))];
     // Anything the caller did not name keeps its relative order behind the named ones, so a
     // partial list is a promotion rather than a silent truncation of the queue.
     const rest = live
@@ -11106,16 +11114,19 @@ export function setFileCommentThreadStatus(
     .prepare(`SELECT id FROM file_comment_threads WHERE id = ?`)
     .get(threadId) as { id?: string } | undefined;
   if (!exists?.id) return null;
-  const terminal = status === "resolved" || status === "orphaned";
+  // A queue position is meaningful only while the thread holds one. Clearing it here is what
+  // keeps a withdrawn thread from sitting in the order as a `draft`, and a closed one from
+  // leaving a permanent hole in it.
+  const keepsPosition = holdsQueuePosition(status);
   d.prepare(
     `UPDATE file_comment_threads
         SET status = ?,
-            queue_seq = CASE WHEN ? = 1 THEN NULL ELSE queue_seq END,
+            queue_seq = CASE WHEN ? = 1 THEN queue_seq ELSE NULL END,
             answered_at = CASE WHEN ? = 'answered' THEN COALESCE(answered_at, ?) ELSE answered_at END,
             resolved_at = CASE WHEN ? = 'resolved' THEN ? ELSE NULL END,
             updated_at = ?
       WHERE id = ?`,
-  ).run(status, terminal ? 1 : 0, status, now, status, now, now, threadId);
+  ).run(status, keepsPosition ? 1 : 0, status, now, status, now, now, threadId);
   return loadFileCommentThread(threadId);
 }
 

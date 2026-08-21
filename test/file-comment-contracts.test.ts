@@ -14,8 +14,10 @@ import {
   FILE_COMMENT_THREAD_STATUSES,
   HUMAN_SETTABLE_THREAD_STATUSES,
   OUTSTANDING_THREAD_STATUSES,
+  QUEUE_POSITION_THREAD_STATUSES,
   REQUEUEABLE_THREAD_STATUSES,
   TERMINAL_THREAD_STATUSES,
+  holdsQueuePosition,
   isHumanSettableThreadStatus,
   isOutstandingThreadStatus,
   isRequeueableThreadStatus,
@@ -122,18 +124,44 @@ test("the reorder list is bounded, and the status route takes only declared stat
   assert.equal(SetFileCommentStatusSchema.safeParse({ status: "orphaned" }).success, false);
 });
 
-test("the human-settable tuple is the persisted one minus `orphaned`, exactly", () => {
-  // The tuple is spelled out rather than derived, because `z.enum` needs a literal. The
-  // `satisfies` clause beside it catches a RENAME; this catches an ADDITION - a status added
-  // to `FILE_COMMENT_THREAD_STATUSES` and forgotten here would be silently unreachable from
-  // the dashboard, and one added to BOTH by reflex would reopen the hole if it were another
-  // status only cleanup should write.
-  assert.deepEqual(
-    [...HUMAN_SETTABLE_THREAD_STATUSES],
-    FILE_COMMENT_THREAD_STATUSES.filter((status) => status !== "orphaned"),
-  );
-  assert.equal(isHumanSettableThreadStatus("orphaned"), false);
-  assert.equal(isHumanSettableThreadStatus("resolved"), true, "the human close still is one");
+test("the status route is human DECISIONS only, never a mechanism's recorded outcome", () => {
+  // Pinned as an explicit membership rather than as "the persisted tuple minus one", because
+  // the rule is not an exclusion list - it is that every status except these two is the
+  // outcome of a mechanism with its own writer, and a status added to
+  // `FILE_COMMENT_THREAD_STATUSES` later is one of those until somebody argues otherwise.
+  // Deriving it would have made a new status human-settable by default, which is the wrong
+  // default in both directions this has already failed in.
+  assert.deepEqual([...HUMAN_SETTABLE_THREAD_STATUSES], ["draft", "resolved"]);
+  // `draft` withdraws a thread from the queue and is the way back from `resolved`; `resolved`
+  // is the human close.
+  assert.equal(isHumanSettableThreadStatus("draft"), true);
+  assert.equal(isHumanSettableThreadStatus("resolved"), true);
+  // The delivery states, in particular: `answered` on an `awaiting` thread would release the
+  // single-flight index while the original comment is still out with the agent, and
+  // `sending`/`awaiting` on a draft would make a thread outstanding with no delivery.
+  for (const status of ["queued", "sending", "awaiting", "answered", "unanswered", "orphaned"]) {
+    assert.equal(isHumanSettableThreadStatus(status), false, status);
+    assert.equal(SetFileCommentStatusSchema.safeParse({ status }).success, false, status);
+  }
+  // Every one of them is still a real persisted status with a real writer; only the request
+  // door is closed.
+  for (const status of HUMAN_SETTABLE_THREAD_STATUSES) {
+    assert.equal(FILE_COMMENT_THREAD_STATUSES.includes(status), true, status);
+  }
+});
+
+test("a queue position belongs to the statuses that actually hold one", () => {
+  // `setFileCommentThreadStatus` clears `queue_seq` for everything outside this tuple, which
+  // is what keeps a withdrawn thread from sitting in the order as a `draft` and a closed one
+  // from leaving a permanent hole in it.
+  assert.deepEqual([...QUEUE_POSITION_THREAD_STATUSES], ["queued", "sending", "awaiting"]);
+  assert.equal(holdsQueuePosition("draft"), false);
+  assert.equal(holdsQueuePosition("resolved"), false);
+  // The outstanding statuses keep their place: a comment out with the agent is still the head
+  // of the review.
+  for (const status of OUTSTANDING_THREAD_STATUSES) {
+    assert.equal(holdsQueuePosition(status), true, status);
+  }
 });
 
 test("the lifecycle tuples say exactly what the index and the allow-list are built from", () => {

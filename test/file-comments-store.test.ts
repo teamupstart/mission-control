@@ -402,6 +402,31 @@ test("reordering rewrites the whole queue and never leaves a hole", () => {
   assert.equal(loadFileCommentThread(stranger.id)?.queueSeq, 0);
 });
 
+test("a repeated id in the drag list does not punch a hole in the order", () => {
+  // The list is assembled by a browser and arrives over HTTP, so `[a, a, b]` is a reachable
+  // body. Writing `a` twice advanced the running index twice, leaving `a` at 1 and `b` at 2
+  // with position 0 unfilled - a permanent hole in the consecutive order this function
+  // promises, and the order phase 3 reads to find the head of the review. First occurrence
+  // wins, which is what a drag actually means.
+  const ids = [make(), make(), make()].map((t) => t.id);
+  for (const [i, id] of ids.entries()) queueFileCommentThread(id, 2_400 + i);
+  const reordered = reorderFileCommentQueue("s1", [ids[1]!, ids[1]!, ids[0]!, ids[1]!], 2_500);
+  const order = reordered
+    .filter((t) => t.queueSeq !== null)
+    .map((t) => [t.id, t.queueSeq]);
+  assert.deepEqual(order, [
+    [ids[1]!, 0],
+    [ids[0]!, 1],
+    [ids[2]!, 2],
+  ]);
+  // Stated as the invariant rather than only as this example: the positions are 0..n-1 with
+  // nothing missing and nothing repeated.
+  assert.deepEqual(
+    order.map(([, seq]) => seq),
+    order.map((_, index) => index),
+  );
+});
+
 test("a terminal status drops the thread out of the queue", () => {
   const t = make();
   queueFileCommentThread(t.id, 2_000);

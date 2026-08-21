@@ -411,7 +411,7 @@ on:</p>
     <tr><td><code>build</code></td><td><code>.pipeline/build-outcome.json</code> (<code>version: 1</code>)</td><td>per-lap <code>outcome</code>, <code>terminalOutcome</code>, <code>gate</code>, <code>rung</code> (<code>model</code>/<code>effort</code>), <code>treeBefore</code>→<code>treeAfter</code>, <code>note[]</code>, <code>category</code></td></tr>
     <tr><td><code>build</code></td><td><code>.pipeline/audit-trail/batch-N/review.json</code></td><td>the code-review evaluator's verdict and findings per batch</td></tr>
     <tr><td><code>test_suite</code></td><td><code>.pipeline/test-suite-evidence.json</code> (<code>version: 3</code>)</td><td><code>outcome</code>, <code>reason</code>, <code>command</code>, <code>durationMs</code>, <code>exitCode</code>, bounded <code>stdout</code>/<code>stderr</code></td></tr>
-    <tr><td><code>acceptance_specs</code></td><td><code>acceptance-specs-red.json</code>, <code>acceptance-specs-dispositions.md</code></td><td>RED evidence and the per-criterion dispositions</td></tr>
+    <tr><td><code>acceptance_specs</code></td><td><code>.pipeline/acceptance-specs-red.json</code>, <code>.pipeline/acceptance-specs-dispositions.md</code></td><td>RED evidence and the per-criterion dispositions</td></tr>
     <tr><td><code>remediate</code></td><td><code>.pipeline/remediation.json</code></td><td><code>dispositions[]</code>: <code>id</code>, <code>disposition</code>, <code>category</code>, <code>rationale</code>, <code>tasks[]</code></td></tr>
     <tr><td><code>prd_audit</code></td><td><code>.pipeline/prd-audit.md</code></td><td>the <code>FR / Verdict / Gap-class / Evidence / Accepted?</code> table</td></tr>
     <tr><td><code>manual_test</code></td><td><code>.pipeline/manual-test-results.md</code></td><td>the latest <code>## Attempt N</code> region</td></tr>
@@ -427,7 +427,8 @@ on:</p>
 this build</em> rather than as an error or as absent. That is the same tolerance rule the step
 table already runs under, applied to a second frozen contract. A file that is simply not there -
 and most of these are optional, tier-dependent or skill-dependent;
-<code>verify-claims-*.md</code>, <code>summary.json</code> and <code>fr-coverage.md</code> are
+<code>.pipeline/verify-claims-*.md</code>, <code>.pipeline/summary.json</code> and
+<code>.pipeline/fr-coverage.md</code> are
 all absent from the live run - contributes no band.</p>
 
 <h3>5. Artifacts</h3>

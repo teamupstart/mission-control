@@ -211,7 +211,7 @@ versioned or parsed by a named engine symbol, so the reader has something stable
 | `build` | `.pipeline/build-outcome.json` (`version: 1`) | per-lap `outcome`, `terminalOutcome`, `gate`, `rung` (`model`/`effort`), `treeBefore`→`treeAfter`, `note[]`, `category` |
 | `build` | `.pipeline/audit-trail/batch-N/review.json` | the code-review evaluator's verdict and findings per batch |
 | `test_suite` | `.pipeline/test-suite-evidence.json` (`version: 3`) | `outcome`, `reason`, `command`, `durationMs`, `exitCode`, bounded `stdout`/`stderr` |
-| `acceptance_specs` | `.pipeline/acceptance-specs-red.json`, `acceptance-specs-dispositions.md` | RED evidence and the per-criterion dispositions |
+| `acceptance_specs` | `.pipeline/acceptance-specs-red.json`, `.pipeline/acceptance-specs-dispositions.md` | RED evidence and the per-criterion dispositions |
 | `remediate` | `.pipeline/remediation.json` | `dispositions[]`: `id`, `disposition`, `category`, `rationale`, `tasks[]` |
 | `prd_audit` | `.pipeline/prd-audit.md` | the `FR / Verdict / Gap-class / Evidence / Accepted?` table |
 | `manual_test` | `.pipeline/manual-test-results.md` | the latest `## Attempt N` region |
@@ -223,8 +223,8 @@ versioned or parsed by a named engine symbol, so the reader has something stable
 A file whose version this build does not know is reported as *recorded, and not readable by this
 build* rather than as an error or as absent. That is the same tolerance rule the step table
 already runs under, applied to a second frozen contract. A file that is simply not there - and
-most of these are optional, tier-dependent or skill-dependent; `verify-claims-*.md`,
-`summary.json` and `fr-coverage.md` are all absent from the live run - contributes no band.
+most of these are optional, tier-dependent or skill-dependent; `.pipeline/verify-claims-*.md`,
+`.pipeline/summary.json` and `.pipeline/fr-coverage.md` are all absent from the live run - contributes no band.
 
 ### 5. Artifacts
 

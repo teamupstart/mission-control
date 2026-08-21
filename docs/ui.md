@@ -414,6 +414,24 @@ available:
   <kbd>k</kbd> pressed on the overview drill in and then do what they say. The one exception
   is <kbd>⇧</kbd><kbd>Tab</kbd>, which cycles the selected tile's permission mode in place
   without opening its detail.
+- **You choose what a card draws.** **Settings → Display → Board card** is a checklist of
+  every optional item a session card can state - goal, live activity, workflow, model,
+  context meter, reasoning effort, permission mode, cost, branch, worktree and last seen -
+  and unchecking one applies to every card in every column immediately. A live preview card
+  sits in the panel and redraws as you toggle, so you can see what you are trading without
+  leaving Settings. Two things are deliberately not on the list. The **attention flags** -
+  a draft or escalated note, a review, a queued turn, a pull request, an Inspector verdict,
+  a recurring mission, an ensemble - are always drawn, because no preference should be able
+  to make a session that needs you look like one that does not; each of them already draws
+  nothing when it has nothing to say. Nor are the things that *are* the card: the tone
+  spine, the name, the agent dot and the **held** tag. The **defaults draw exactly the card
+  the previous release drew**, so upgrading moves nothing; the one new item, the
+  **worktree**, starts off. Switched on, it prints the checkout's directory name in the
+  branch row with the whole path on hover - the leaf rather than the path, because a pool
+  worktree path is sixty characters of bookkeeping and that row is two cells sharing one
+  line. The choice is per browser and stored through the daemon, so it survives a reload;
+  a second dashboard tab already open picks it up on its next load rather than live, which
+  is true of every Display preference.
 - **An [ensemble](ensembles.md#multi-agent-ensembles)'s members are drawn together, in every layout.**
   Sibling candidates of one run used to scatter through the fleet like unrelated work; now one
   ordering decides where every session goes, and it puts them adjacent. On the **Board** they

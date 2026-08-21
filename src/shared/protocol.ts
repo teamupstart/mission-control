@@ -2352,6 +2352,18 @@ export const UI_CONFIG_DEFAULTS = {
   keybindingHints: true,
   guidedDispatch: true,
   trustStaged: [],
+  /**
+   * NOT empty, and this is the one place the reason is written down.
+   *
+   * The default is "the card this build's predecessor drew", not "every item this build
+   * knows about". Every other id in the registry names something a card already drew, so
+   * its absence here means visible and an upgrade moves nothing. `worktree` is the one
+   * item that is NEW to the card, so shipping it visible would put a fact on every card
+   * in every column on upgrade without anyone asking - which is exactly what defaulting
+   * to today's rendering exists to prevent. It is hidden until an operator opts in, and
+   * un-hiding it is the ordinary checkbox: the id leaves this list like any other.
+   */
+  hiddenDisplayItems: ["worktree"],
 } as const;
 
 export const UiConfigSchema = z.object({
@@ -2414,6 +2426,31 @@ export const UiConfigSchema = z.object({
    * and the allowlists win.
    */
   trustStaged: z.array(z.string().min(1)).default([]),
+  /**
+   * Which optional items the Display category has been told NOT to draw - board card
+   * items now, and whatever else Display learns to make optional later.
+   *
+   * A list of HIDDEN ids rather than a map of booleans, for three reasons. An item a
+   * later build adds is visible to everyone automatically, because its id is simply
+   * absent from every stored list. An id from a future build, or one this build has
+   * retired, is inert instead of a parse error. And the failure direction is safe: a
+   * renamed id lapses to VISIBLE, which is a shrug, where a booleans map inverted by a
+   * bad migration hides facts, which is a support ticket.
+   *
+   * The ids are deliberately NOT validated here, the same looseness `keybindings` above
+   * documents and for the same reason: the id set is a web-only concept (the prose and
+   * the registry live in `src/web/lib/board-card.ts`, which the daemon has no use for),
+   * and validating it would mean a build that retired an item could no longer READ its
+   * own config. `trustStaged` above is the existing precedent for a plain string array
+   * owned whole by one panel.
+   *
+   * Persisted on operators' machines, so the name is effectively permanent: it is
+   * `hiddenDisplayItems` and not `boardCardHidden` because ONE array serves every group
+   * the Board card panel sections, not the card alone.
+   */
+  hiddenDisplayItems: z
+    .array(z.string().min(1))
+    .default([...UI_CONFIG_DEFAULTS.hiddenDisplayItems]),
 });
 export type UiConfig = z.infer<typeof UiConfigSchema>;
 

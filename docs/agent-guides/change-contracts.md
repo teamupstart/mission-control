@@ -41,6 +41,15 @@ When adding a dashboard preference to `UiConfig`, three edits are one obligation
 
 Read it through one hook per preference (`useRichText`, `useGuidedDispatch`), never a `useState` over the same key: several surfaces may offer one preference, and two of them must not be able to disagree.
 
+**A new board card item is added to the registry, or it ships un-toggleable.** The optional
+items a session card draws live in one list, `DISPLAY_ITEMS` in `src/web/lib/board-card.ts`,
+with the ids the operator's `hiddenDisplayItems` stores and the prose Settings prints.
+`SessionTile` gates each one on `useDisplayItems()` and `BoardCardPanel` draws a checkbox per
+entry, so all three move together or the item is compulsory for everyone. `test/board-card-items.test.ts`
+is the source scan that fails on it, and it also pins the two things the list may not become:
+the attention flags in `.tile-marks` stay always on, and the shipped default is the card the
+previous release drew rather than everything this build can draw.
+
 MCP arguments are deliberately validated twice: in `src/shared/protocol.ts` and `src/mcp/server.ts`. Change both.
 
 A new MCP **tool** carries two more obligations, and skipping either is silent. Add its name to `MISSION_MCP_TOOLS` (`src/server/mission-mcp.ts`), or no launch can pre-approve it and calling it stops the agent on a permission prompt. Then rebuild: a dispatched agent runs the built `dist/mcp/server.mjs`, which only `npm run build` refreshes and which git ignores, so source alone never reaches a session. `npm run smoke` fails on either mistake, the daemon warns at startup, and a launch that requires an unpublished tool is refused before the agent spawns.

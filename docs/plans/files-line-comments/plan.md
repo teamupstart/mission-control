@@ -265,9 +265,8 @@ the dashboard from its own state.
    list, table, code block, or diagram reveals a margin control; the comment anchors to that
    block's exact source line range.
 
-4. **In HTML Preview, any block-level element takes a comment** on the same interaction, with
-   the anchor resolved back to the source line by matching the block's text in the file. Where
-   the clicked block is resolved to its source lines by structural path rather than by matching its
+4. **In HTML Preview, any block-level element takes a comment** on the same interaction. The
+   clicked block is resolved to its source lines by structural path rather than by matching its
    text, so nested markup and repeated wording anchor like anything else. A path that no longer
    resolves means the render is stale, and that is refused with a reload rather than guessed at.
 
@@ -367,15 +366,25 @@ imports - owns the whole anchor question.
 | `startLine`, `endLine` | 1-based, inclusive, in the file's source |
 | `quote` | The anchored source text, bounded |
 | `quoteHash` | `sha256(path + "\n" + normalized quote)`, excluding the line numbers, exactly as the Inspector's `fingerprint()` excludes them |
-| `revision` | The `SessionFileDocument.revision` the anchor was last valid against |
+| `revision` | The `SessionFileDocument.revision` the anchor was last valid against. A successful re-anchor advances it; an `outdated` one leaves it alone |
 | `surface` | `editor`, `markdown`, or `html` - which renderer produced it |
 
-Re-anchoring is a pure function of `(anchor, newText)`:
+Re-anchoring is a pure function of `(anchor, newText, revision)`, where `revision` is the revision
+of `newText`:
 
-- **Revision unchanged** - the lines are exact, nothing to do.
+- **Revision unchanged** - `revision` matches the anchor's, so the lines are exact and there is
+  nothing to do.
 - **Quote found exactly once** - move the anchor to it. Silent.
 - **Quote found several times** - take the occurrence nearest the previous line. Silent.
 - **Quote not found** - set `outdated`. Keep the quote, the last known line, and the status.
+
+Still exactly three outcomes - unchanged, moved, outdated. The revision rides on the outcome rather
+than adding a fourth: a successful re-anchor carries it out for the caller to persist, and
+**`outdated` does not advance it**, because the column records the revision the anchor was last
+*valid* against and an outdated anchor was not valid against this one. The revision has to be
+passed in rather than read by the caller, because the first rule above is what decides whether the
+quote is searched for at all - without it that rule cannot be evaluated and every send rescans the
+whole file.
 
 No I/O, which makes it the cheapest part of the feature to test exhaustively and the part most
 worth testing that way.

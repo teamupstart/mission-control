@@ -25,8 +25,15 @@ change them cheaply. That ordering is deliberate - see the entry on `addColumn` 
    - `quoteHash` = `sha256(path + "\n" + normalized quote)`, excluding the line numbers, exactly as
      `fingerprint()` (`src/server/inspector/marker.ts:140-148`) excludes them. Use Web Crypto or a
      small local digest rather than `node:crypto`, which this directory forbids;
-   - `reanchor(anchor, newText)` returning one of: unchanged, moved (with the new range), or
-     `outdated`. Rules in `plan.md` under "The anchor". Pure, no I/O.
+   - `reanchor(anchor, newText, revision)`, where `revision` is the revision of `newText`,
+     returning one of: unchanged, moved (with the new range), or `outdated`. Rules in `plan.md`
+     under "The anchor". Pure, no I/O.
+   - **Still exactly three outcomes.** The revision rides on the outcome rather than adding a
+     fourth: a successful re-anchor carries it out so the caller can persist it, and `outdated`
+     does not advance it. **The revision is an argument, not something the caller resolves
+     afterwards**, because the "revision unchanged" rule is what decides whether the quote is
+     searched for at all - drop it from the signature and that rule cannot be evaluated, so every
+     send rescans the whole file.
 2. **All three tables in `src/server/db.ts`**, appended to the one schema template literal, in the house
    style of `inspector_comments` (`db.ts:1842-1861`): a comment block above the table stating the
    rule it enforces, aligned column types, `--` comments naming each enum domain, indices declared
@@ -61,6 +68,14 @@ change them cheaply. That ordering is deliberate - see the entry on `addColumn` 
    - **`markFileCommentMessageDelivered(id, at)`** stamps `delivered_at`. The column is written by
      the delivery path in phase 3, so it needs its writer declared here alongside the insert -
      otherwise it is a column with no way to stop being NULL.
+   - **`updateFileCommentThreadAnchor(threadId, { startLine, endLine, revision, outdated })`** is
+     what makes the re-anchor pass durable. `reanchor()` is pure and only returns an outcome, so
+     without a writer a thread that moved would be recomputed from its original anchor on every
+     send and `revision` could never leave the value creation gave it. Phase 3 calls this once per
+     comment in its re-anchor pass; it is the only writer of `start_line`, `end_line`, `revision`
+     and `outdated` after creation. It **changes no status** - `outdated` is a flag beside the
+     status, and whether to hold a comment at the head of the queue is phase 3's decision, not this
+     function's.
    - **`markFileCommentThreadAddressed(threadId, at)`** stamps `addressed_at` and **changes no
      status**. `addressed` is deliberately not a status - only a person closes a thread - so it
      cannot ride the status route, which would have to move the thread somewhere to write anything.
@@ -157,7 +172,8 @@ change them cheaply. That ordering is deliberate - see the entry on `addColumn` 
 
 - `test/file-comment-anchor.test.ts` - re-anchoring: exact, moved, duplicated (nearest wins), gone,
   and reversible. Pure, so cover it exhaustively; this is the cheapest place in the feature to be
-  thorough.
+  thorough. Include the revision cases: a matching revision short-circuits without searching, a
+  successful re-anchor carries the new revision out, and an `outdated` one does not.
 - `test/file-comment-contracts.test.ts` - Zod bounds and refusals.
 - `test/file-comments-store.test.ts` - SQL, status transitions, `queue_seq` rewrites, the
   `outdated` flag surviving a status change in both directions, message append and load order for
@@ -198,14 +214,16 @@ under `src/`. Run one file with
 
 Later phases may rely on, and must not change:
 
-- The `FileCommentAnchor` shape and `reanchor()`'s three outcomes.
+- The `FileCommentAnchor` shape, `reanchor()`'s `(anchor, newText, revision)` signature, and its
+  three outcomes.
 - All three tables' full column shape, including the columns phases 3 and 4 are first to write:
   `queue_seq`, `delivery_id`, `answered_at`, `addressed_at`, and every column of
   `file_comment_reviews`.
 - The outstanding-status tuple and the index built from it. Phase 3 enforces one turn outstanding
   on top of this, never instead of it, and never widens the tuple to make a transition easier -
   `unanswered` exists precisely so decision 3's auto-advance does not need it widened.
-- `short_id` minting (creation), `markFileCommentMessageDelivered` (phase 3, at send), the
+- `short_id` minting (creation), `markFileCommentMessageDelivered` (phase 3, at send),
+  `updateFileCommentThreadAnchor` (phase 3, re-anchor pass), the
   status-setting route (phases 2 and 4), `markFileCommentThreadAddressed` (phase 4) and
   `markFileCommentMessagesRead` (phase 4). Each has exactly one declaration here; no phase
   reimplements one, and none of them is a status change in disguise.
@@ -256,3 +274,12 @@ the walkthrough state machine and payload (phase 3), the MCP tool (phase 4).
   payload's `MC-a41f` and the transcript fallback, and a writer for `delivered_at`. All are
   declared here, because a shipped table cannot gain a column from `CREATE TABLE` afterwards - the
   trap this phase already names.
+- Review pass (round 11): **the anchor contract promised a column no function could write.**
+  `FileCommentAnchor` carried `revision`, and `plan.md`'s very first re-anchoring rule was "revision
+  unchanged" - but `reanchor(anchor, newText)` was never given the current revision, so that rule
+  was unevaluable, and no store function anywhere in this phase wrote `start_line`, `end_line` or
+  `revision` after creation. Phase 3's "moved (send silently)" outcome therefore had nowhere to
+  land: every send would have rescanned from the original anchor and `revision` would have kept its
+  creation value forever. Fixed by taking the revision as an argument and adding
+  `updateFileCommentThreadAnchor` as its single writer. The three outcomes phase 5 depends on are
+  unchanged - the revision rides on the outcome rather than becoming a fourth.

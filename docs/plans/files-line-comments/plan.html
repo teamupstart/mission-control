@@ -275,7 +275,7 @@ blockquote 13 -&gt; 13</code></pre></div>
     <li><strong>A Comment control appears in the file toolbar</strong>, beside Preview and Editor, whenever a text file is open. It toggles comment mode for that workspace and carries a tab-local chord alongside the existing <code>p</code> and <code>e</code>.</li>
     <li><strong>In comment mode, the Editor gutter takes a comment on any line.</strong> Clicking a line number, or pressing the chord with the cursor on a line, opens a composer under that line. A selection spanning several lines anchors to the whole range.</li>
     <li><strong>In Markdown Preview, any rendered block takes a comment.</strong> Hovering a paragraph, heading, list, table, code block, or diagram reveals a margin control; the comment anchors to that block's exact source line range.</li>
-    <li><strong>In HTML Preview, any block-level element takes a comment</strong> on the same interaction, with the anchor resolved back to the source line by matching the block's text in the file. Where the clicked block is resolved to its source lines by structural path rather than by matching its text, so nested markup and repeated wording anchor like anything else. A path that no longer resolves means the render is stale, and that is refused with a reload rather than guessed at.</li>
+    <li><strong>In HTML Preview, any block-level element takes a comment</strong> on the same interaction. The clicked block is resolved to its source lines by structural path rather than by matching its text, so nested markup and repeated wording anchor like anything else. A path that no longer resolves means the render is stale, and that is refused with a reload rather than guessed at.</li>
     <li><strong>Comments accumulate as an ordered review queue.</strong> The toolbar shows the queue depth and a <strong>Start review</strong> control. Nothing reaches the agent until you start.</li>
     <li><strong>Starting the review sends the first comment only.</strong> One turn, carrying that comment's path, line range, quoted anchor text, and its position in the review ("comment 3 of 12"), with an instruction to answer this one and expect the rest to follow.</li>
     <li><strong>The next comment goes when the agent answers the current one.</strong> An answer through the reply tool advances the queue immediately. The Files tab shows which comment is outstanding and how many remain.</li>
@@ -415,18 +415,19 @@ blockquote 13 -&gt; 13</code></pre></div>
         <tr><td><code>startLine</code>, <code>endLine</code></td><td>1-based, inclusive, in the file's source</td></tr>
         <tr><td><code>quote</code></td><td>The anchored source text, bounded</td></tr>
         <tr><td><code>quoteHash</code></td><td><code>sha256(path + "\n" + normalized quote)</code>, excluding the line numbers, exactly as the Inspector's <code>fingerprint()</code> excludes them</td></tr>
-        <tr><td><code>revision</code></td><td>The <code>SessionFileDocument.revision</code> the anchor was last valid against</td></tr>
+        <tr><td><code>revision</code></td><td>The <code>SessionFileDocument.revision</code> the anchor was last valid against. A successful re-anchor advances it; an <code>outdated</code> one leaves it alone</td></tr>
         <tr><td><code>surface</code></td><td><code>editor</code>, <code>markdown</code>, or <code>html</code> - which renderer produced it</td></tr>
       </tbody>
     </table>
   </div>
-  <p>Re-anchoring is a pure function of <code>(anchor, newText)</code>:</p>
+  <p>Re-anchoring is a pure function of <code>(anchor, newText, revision)</code>, where <code>revision</code> is the revision of <code>newText</code>:</p>
   <ul>
-    <li><strong>Revision unchanged</strong> - the lines are exact, nothing to do.</li>
+    <li><strong>Revision unchanged</strong> - <code>revision</code> matches the anchor's, so the lines are exact and there is nothing to do.</li>
     <li><strong>Quote found exactly once</strong> - move the anchor to it. Silent.</li>
     <li><strong>Quote found several times</strong> - take the occurrence nearest the previous line. Silent.</li>
     <li><strong>Quote not found</strong> - set <code>outdated</code>. Keep the quote, the last known line, and the status.</li>
   </ul>
+  <p>Still exactly three outcomes - unchanged, moved, outdated. The revision rides on the outcome rather than adding a fourth: a successful re-anchor carries it out for the caller to persist, and <strong><code>outdated</code> does not advance it</strong>, because the column records the revision the anchor was last <em>valid</em> against and an outdated anchor was not valid against this one. The revision has to be passed in rather than read by the caller, because the first rule above is what decides whether the quote is searched for at all - without it that rule cannot be evaluated and every send rescans the whole file.</p>
   <p>No I/O, which makes it the cheapest part of the feature to test exhaustively and the part most worth testing that way.</p>
 
   <h3>2. Comment mode on three surfaces</h3>

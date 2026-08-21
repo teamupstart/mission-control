@@ -40,8 +40,13 @@ measurement the plan's two 60% assumptions need.
    `idle | running | paused` and its pause reason live in phase 1's `file_comment_reviews` row,
    because "paused" and "never started" are otherwise the same set of threads.
 3. **The re-anchor-before-send pass.** Before every send, re-anchor every unsent comment against the
-   file's current bytes. Three outcomes, per `plan.md`: moved (send silently), outdated at the head
-   (hold and pause with the reason), outdated further down (mark in place and carry on).
+   file's current bytes, passing the file's current revision. Three outcomes, per `plan.md`: moved
+   (send silently), outdated at the head (hold and pause with the reason), outdated further down
+   (mark in place and carry on).
+   - **Persist every outcome through phase 1's `updateFileCommentThreadAnchor`.** `reanchor()` is
+     pure, so nothing is durable until this pass writes it; skip the write and a moved comment is
+     recomputed from its original anchor on every send and `revision` never advances, which defeats
+     the short-circuit the first rule exists to provide.
 4. **Delivery, keeping exactly one turn outstanding.** Submit through the existing human outbox:
    `POST /api/sessions/:id/inject` with `origin: "human"` and `buffer: true` is intercepted at
    `routes.ts:3391-3394` into `pendingTurns.submit(session.id, text)` - a **synchronous**,
@@ -181,3 +186,7 @@ Phase 4 may rely on, and must not change:
   there, so this phase adds no column and needs no `addColumn`.
 - Phase 4's advance signal was checked against this phase's state machine: adding a stronger signal
   is additive, so no edit to Phase 1 or 2 is required.
+- Review pass (round 11): the re-anchor pass named three outcomes but never persisted any of them.
+  Phase 1 gained `updateFileCommentThreadAnchor` and this pass now calls it once per comment, and
+  passes the file's current revision into `reanchor()` so the "revision unchanged" short-circuit
+  can actually fire.

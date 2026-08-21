@@ -142,7 +142,7 @@ change them cheaply. That ordering is deliberate - see the entry on `addColumn` 
      session rather than trusting phase 3's bookkeeping.
    - **`markFileCommentMessageDelivered(id, at)`** stamps `delivered_at` and completes that
      transition, `sending` → `awaiting`. Phase 3 calls it from the **confirmed-delivery** signal -
-     the one the two sites that retire a claimed row already raise (`pending-turns.ts:606`, `:849`,
+     the one the two sites that retire a claimed row already raise (`pending-turns.ts:618`, `:861`,
      both via `journalDelivered`) - and never at submit. Stamping at submit would mark a comment
      delivered while it was still queued in the outbox, where it can still be recalled, dropped, or
      turned `uncertain` by a restart.

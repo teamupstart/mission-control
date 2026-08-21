@@ -172,7 +172,7 @@ the wire either; the browser receives counts only. The thread UI is greenfield.
 
 ### Delivery and queueing
 
-**Delivery must be `/inject`, not `/send`.** `TranscriptPanel.tsx:767-776` states why: `/send`
+**Delivery must be `/inject`, not `/send`.** `TranscriptPanel.tsx:759-766` states why: `/send`
 types character by character, so every newline lands as an Enter and submits early. A multi-line
 payload has to arrive as one bracketed paste.
 

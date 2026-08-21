@@ -29,7 +29,7 @@ running session.
    - Images take no comments: disable the control with a reason rather than hiding it.
    - Do not style by descendant of `.file-toolbar` or `.file-mode` - `PersonaEditor.tsx`,
      `SessionActionEditor.tsx` and `ForemanProfileEditor.tsx` reuse those classes
-     (`styles.css:16829-16834`).
+     (`styles.css:16400-16411`).
 3. **The chord.** Extend the capture-phase handler at `FileWorkspace.tsx:129-156`.
    **This is a decision to make and record in the PR, not a detail:** the mnemonic `c` is the global
    Complete-task action (`docs/ui.md:783`). Shadowing a global in-surface is established - `p`

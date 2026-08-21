@@ -66,7 +66,7 @@ measurement the plan's two 60% assumptions need.
      `delivered_at`.**
    - **`delivered_at` is stamped from the confirmed-delivery signal.** That signal already exists
      and already has a consumer: the only two sites that retire a claimed row
-     (`pending-turns.ts:606` and `:849`) both call `journalDelivered` (`:865`), whose comment
+     (`pending-turns.ts:618` and `:861`) both call `journalDelivered` (`:877`), whose comment
      states the rule - those are the places a row "positively reached the agent" - and
      `journalScoutPrompt` is its existing subscriber. Stamping there is a second subscriber to an
      established fact, not a new mechanism. That write stamps `delivered_at` and moves the thread
@@ -165,7 +165,7 @@ measurement the plan's two 60% assumptions need.
 ## Repository findings this phase rests on
 
 - **Do not use `/send`.** It types character by character, so every newline submits early
-  (`TranscriptPanel.tsx:767-776`). A multi-line payload must arrive as one bracketed paste, which is
+  (`TranscriptPanel.tsx:759-766`). A multi-line payload must arrive as one bracketed paste, which is
   `/inject`.
 - **Do not hold the queue in `pending_turns`.** It gives strict one-at-a-time FIFO, but only the
   tail row is recallable (`test/pending-turn-db.test.ts:51` pins *"an older row cannot jump the

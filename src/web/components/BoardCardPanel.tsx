@@ -14,17 +14,23 @@ import { SessionTile } from "./layouts/SessionTile.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
 /**
- * What a session card draws, as a checklist the operator owns.
+ * What a session draws about itself, as a checklist the operator owns.
  *
  * A board card draws two dozen distinct things and every one of them used to be
- * compulsory. This panel is the list, and `lib/board-card.ts` is the registry both this
- * and `SessionTile` read - so a new card item is added there or it ships un-toggleable,
- * which is the contract `test/board-card-items.test.ts` enforces.
+ * compulsory. This panel is the list, and `lib/board-card.ts` is the registry this,
+ * `SessionTile` and `ConsoleDetail` all read - so a new item is added there or it ships
+ * un-toggleable, which is the contract `test/board-card-items.test.ts` enforces.
  *
  * One section per distinct group present in the registry, rather than one hard-coded
- * section: the console detail's header band becomes optional in the next phase as entries
- * in the SAME array, and its section has to appear without this file being restructured.
- * A group with no entries draws nothing, so today this renders exactly one section.
+ * section. That is what let the console detail's `PATH`/`BRANCH` band become optional as
+ * entries in the SAME array, with its section appearing here without this file being
+ * restructured; a group with no entries draws nothing, so a third surface would section
+ * itself the same way.
+ *
+ * The preview beside the checklist is a board card, and only the board card's items move
+ * it. That is honest rather than incomplete: the console detail is a full-height pane and
+ * a thumbnail of one would say less than the sentence each conversation item already
+ * carries.
  *
  * No props and no effects, like `DispatchSettingsPanel`: `useUiConfig()` is synchronous
  * with shipped defaults, so the anchor and every control are present on the first paint
@@ -46,10 +52,10 @@ function ItemSection({
   /**
    * Whether this section names itself.
    *
-   * While the registry has exactly one group the panel's own `<h3>` already names it, and
-   * a sub-heading repeating "Board card" under "Board card" is noise. The moment a second
-   * group has entries, both sections need saying apart - so the answer is derived from how
-   * many sections there are rather than hard-coded per group.
+   * While the registry had exactly one group the panel's own `<h3>` already named it, and
+   * a sub-heading repeating "Board card" under "Board card" would have been noise. Two
+   * groups have entries now, so both sections say themselves apart - and the answer is
+   * still derived from how many sections there are rather than hard-coded per group.
    */
   showHeading: boolean;
 }): React.JSX.Element | null {
@@ -98,7 +104,11 @@ export function BoardCardPanel(): React.JSX.Element {
   return (
     <section className="settings-section" data-anchor="display/board-card">
       <div className="settings-section-head">
-        <h3>Board card</h3>
+        {/* Names the two surfaces this section governs, not just the first of them. The
+            anchor stays `display/board-card` - it is what the settings index, two e2e
+            specs and any bookmarked deep link point at, and renaming an anchor to match a
+            heading is how a jump becomes a jump to nothing. */}
+        <h3>Session display</h3>
       </div>
 
       <div className="board-card-customizer">
@@ -145,7 +155,7 @@ export function BoardCardPanel(): React.JSX.Element {
       </div>
 
       <p className="settings-hint">
-        These are the runtime and context facts a card states. The flags that ask for you -
+        These are the runtime and context facts a session states. The flags that ask for you -
         a draft or escalated note, a review, a queued turn, a pull request, an Inspector
         verdict, a recurring mission, an ensemble - are always drawn and are not on this
         list, so no setting here can make a session that needs you look like one that does

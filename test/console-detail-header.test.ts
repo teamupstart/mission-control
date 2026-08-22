@@ -7,7 +7,9 @@ import { ModePicker } from "../src/web/components/ModePicker.tsx";
 import { RuntimeMetaRow } from "../src/web/components/session-bits.tsx";
 import { GOAL_UNSUPPORTED } from "../src/shared/goal.ts";
 import type { Session, SessionGoalSummary } from "../src/shared/types.ts";
-import { meta, mkSession } from "./helpers/session-fixture.ts";
+import { meta, mkSession, mkTaskSummary } from "./helpers/session-fixture.ts";
+import { updateUiConfig } from "../src/web/lib/uiConfig.ts";
+import { UI_CONFIG_DEFAULTS } from "../src/shared/protocol.ts";
 import { mkSessionView } from "./helpers/session-view.ts";
 import { containsMarkup, hasTooltip } from "./helpers/markup.ts";
 
@@ -203,4 +205,166 @@ test("the conversation has no leading status band, and .transcript stays a direc
   const html = render(mkSession({ goal: goal(), activity: "running Bash", state: "working" }));
   const conv = html.slice(html.indexOf('<div class="detail-conv">'));
   assert.match(conv, /^<div class="detail-conv"><div class="transcript"/);
+});
+
+/**
+ * The `PATH`/`BRANCH` band, and the container that stops drawing when it is empty.
+ *
+ * Two facts and a preference each, plus the rule that makes the height real: the band also
+ * hosts a task's chip and its pull requests, so hiding both cells collapses it only when
+ * nothing else is in it. Both halves are pinned below, and the second is what stops the
+ * guard from degenerating into "hide the band whenever the cells are hidden" - which would
+ * take a scout task's kind, a re-assigned session's title, an outcome link and a multi-repo
+ * task's pull requests off screen with them.
+ *
+ * `updateUiConfig` is how the hidden list is set, rather than a prop: the registry is read
+ * through `useUiConfig`, which is a `useSyncExternalStore` whose server snapshot is its
+ * client snapshot, so a static render sees whatever the module store currently holds. The
+ * fetch below is why a set STICKS - `updateUiConfig` takes its optimistic commit back when
+ * the daemon refuses, and there is no daemon here.
+ */
+Object.defineProperty(globalThis, "fetch", {
+  configurable: true,
+  value: async () =>
+    new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }),
+});
+
+/** The band, or null when the component drew none at all. */
+function band(html: string): string | null {
+  const start = html.indexOf('<dl class="detail-sub">');
+  if (start < 0) return null;
+  return html.slice(start, html.indexOf("</dl>", start));
+}
+
+/** Render a session with a chosen hidden list in force, restoring the shipped default after. */
+async function renderHiding(
+  hidden: readonly string[],
+  session: Session,
+): Promise<string> {
+  await updateUiConfig({ hiddenDisplayItems: [...hidden] });
+  try {
+    return render(session);
+  } finally {
+    await updateUiConfig({
+      hiddenDisplayItems: [...UI_CONFIG_DEFAULTS.hiddenDisplayItems],
+    });
+  }
+}
+
+const BOTH_OFF = ["detailPath", "detailBranch"];
+
+/** A dispatched session whose task pill is silent - the ordinary case F4 describes. */
+function silentTaskSession(over: Partial<Session> = {}): Session {
+  const title = "Fix the parser";
+  return mkSession({
+    name: title,
+    task: mkTaskSummary({ title, fullTitle: title, kind: "ship" }),
+    ...over,
+  });
+}
+
+test("both cells ship visible, so an upgrade moves nothing", async () => {
+  // D2. Not "the defaults are `[]`" - the claim is about what a reader sees, which is the
+  // only form of it the three e2e specs reading `.detail-sub` care about.
+  const html = render(mkSession());
+  const sub = band(html);
+  assert.ok(sub, "the band should draw for a session with a path and a branch");
+  assert.match(sub, /<dt>path<\/dt>/);
+  assert.match(sub, /<dt>branch<\/dt>/);
+  assert.ok(sub.includes("/wt/app-bugfixes".slice(-12)), "the path cell lost its value");
+  assert.ok(sub.includes("harness/app-bugfixes"), "the branch cell lost its value");
+});
+
+test("hiding the path removes the cell and leaves the branch alone", async () => {
+  const sub = band(await renderHiding(["detailPath"], mkSession()));
+  assert.ok(sub, "hiding one cell should not collapse the band");
+  assert.ok(!sub.includes("<dt>path</dt>"), "the path cell is still drawn");
+  assert.match(sub, /<dt>branch<\/dt>/);
+});
+
+test("hiding the branch removes the cell and leaves the path alone", async () => {
+  const sub = band(await renderHiding(["detailBranch"], mkSession()));
+  assert.ok(sub, "hiding one cell should not collapse the band");
+  assert.match(sub, /<dt>path<\/dt>/);
+  assert.ok(!sub.includes("<dt>branch</dt>"), "the branch cell is still drawn");
+});
+
+test("the path keeps its untruncated tooltip, which is the only place the full path is readable", () => {
+  // Guarded here because the cell moved inside a conditional, and a Tooltip left behind in
+  // that move would fail nothing else in this file.
+  const html = render(mkSession());
+  assert.ok(hasTooltip(html, "/wt/app-bugfixes"), "the path cell lost its full-path tooltip");
+});
+
+test("with both cells off and nothing else in it, the band does not render at all", async () => {
+  // The height, at its narrowest: not an empty `<dl>` with its padding and its border, which
+  // would be a bar of chrome saying nothing. The element is absent.
+  const html = await renderHiding(BOTH_OFF, silentTaskSession());
+  assert.equal(band(html), null, "an empty band is still drawn");
+  assert.ok(!html.includes("detail-sub"), "the band's class survives somewhere");
+});
+
+test("a session with no task at all collapses the band too", async () => {
+  const html = await renderHiding(BOTH_OFF, mkSession({ task: null }));
+  assert.equal(band(html), null, "an empty band is still drawn");
+});
+
+test("a session with no branch keeps its band for the path alone", async () => {
+  // The branch cell's own condition survives the preference: the gate is additional, not a
+  // replacement, so a branchless session is unchanged by having `detailBranch` on.
+  const sub = band(render(mkSession({ gitBranch: null })));
+  assert.ok(sub, "the band should still draw for the path");
+  assert.ok(!sub.includes("<dt>branch</dt>"));
+});
+
+test("a speaking task chip keeps the band even with both cells hidden", async () => {
+  // F4's other half, and the reason the guard asks the container rather than the cells. A
+  // scout task's kind is the only place that fact appears in the console.
+  const html = await renderHiding(
+    BOTH_OFF,
+    silentTaskSession({ task: mkTaskSummary({ kind: "scout", title: "Fix the parser" }) }),
+  );
+  const sub = band(html);
+  assert.ok(sub, "the band collapsed and took the task chip with it");
+  assert.match(sub, /class="task-kind"/);
+});
+
+test("a task's pull requests keep the band even with both cells hidden", async () => {
+  const html = await renderHiding(
+    BOTH_OFF,
+    silentTaskSession({
+      task: mkTaskSummary({
+        title: "Fix the parser",
+        repoPrs: [
+          {
+            repoRoot: "/repos/app",
+            primary: true,
+            prUrl: "https://github.com/o/app/pull/7",
+            prState: "open",
+            mergedAt: null,
+            feedback: null,
+          },
+        ],
+      }),
+    }),
+  );
+  const sub = band(html);
+  assert.ok(sub, "the band collapsed and took the repo pull requests with it");
+  assert.match(sub, /class="task-repo-prs"/);
+});
+
+test("the collapsed band leaves nothing behind in its place", async () => {
+  // Nothing structural hung off `.detail-sub`: both neighbours own their own bottom rule, so
+  // its absence must leave no spacer, no empty wrapper and no compensating element. Stated
+  // as "what follows the header is what used to follow the band", which is the same claim
+  // without naming whichever element that happens to be.
+  const session = silentTaskSession();
+  const withBand = render(session);
+  const afterBand = withBand.slice(withBand.indexOf("</dl>") + "</dl>".length);
+  const collapsed = await renderHiding(BOTH_OFF, session);
+  const afterHead = collapsed.slice(collapsed.indexOf("</header>") + "</header>".length);
+  assert.equal(afterHead, afterBand);
 });

@@ -211,4 +211,10 @@ test("a refused first submission reaches the readiness panel as a rate an operat
   await expect(readiness.getByText("100% (1 of 1 first submissions)").first()).toBeVisible();
 
   await shoot(card, "measured");
+  // The card in situ, after the readings above have been asserted. The isolated shot proves
+  // what the panel says; this one proves an operator can find it - it sits in the Workflows
+  // settings column with the rest of the subsystem's cards, which is the claim "an operator
+  // can check this without an agent" actually rests on.
+  await card.scrollIntoViewIfNeeded();
+  await shoot(dashboard, "settings-in-place");
 });

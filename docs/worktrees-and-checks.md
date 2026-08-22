@@ -91,20 +91,48 @@ active lease.
 
 ### Settings > Worktrees
 
-Open **Settings > Worktrees** to configure and inspect the allocator. The page is split into three
-parts:
+Open **Settings > Worktrees** to configure and inspect the allocator. The page answers one
+question first - do I have room, and what is holding the rest? - and is split into three groups, in
+this order:
 
-- **Policy** controls the default enablement and maximum. Expanding a native repository shows its
-  effective override and an optional setup argv. The argv is operator-authored, stored as separate
-  arguments, and runs only when Mission Control creates a new slot. It never runs when a warm slot
-  is leased again. Lowering capacity below the current count marks the difference as **over
-  capacity** and offers a right-size preview; saving policy never deletes a slot.
-- **Native inventory** shows available, leased, quarantined, and over-capacity counts. Each slot
-  carries its exact manager path, observed HEAD, relationship to the remote default, cleanliness,
-  process count, disk estimate, and owner. **Copy path** stays in the browser. **Open terminal**
-  asks the daemon's registered terminal launcher to open a login shell in the manager-known path.
-- **Legacy drain** classifies historical Treehouse resources as exact, unverifiable, foreign, or
-  unreadable. Only an exact durable owner with a clean, process-free checkout offers Return.
+- **Pools** leads. Each repository gets one full-width capacity bar whose *track width is that
+  pool's configured maximum*, so free capacity, leased slots, quarantine, and overflow read in one
+  glance. The bar's segments are leased, available, and quarantined, and the hatched remainder is
+  room to grow. Because the track is the maximum and not the occupancy, one slot is the same
+  fraction of every bar sharing a maximum, and a bar cannot grow past its own ceiling. Over
+  capacity is therefore not a fourth segment and not a wider bar: a pool past its maximum fills
+  the track and spills, marked by an amber hatched cap at the track's end and counted in words
+  beside it. The tradeoff, taken deliberately: when the slots that fit already consume the
+  ceiling, a small trailing state has no width left to draw, so the legend - not the fill - is
+  where every count is guaranteed to appear.
+
+  Nothing on the bar is carried by colour, or by the absence of it: the legend beneath
+  it names all four lifecycle counts as text in every state - **zeroes included**, because a state
+  the track has no width to draw is still one you came here to ask about - the bar itself is an
+  image with a composed label naming those same four counts and the maximum, and over capacity is
+  spelled **over the maximum** in words. An over-capacity pool offers its right-size preview on
+  that row.
+
+  Opening a pool's disclosure shows its effective override, an optional setup argv, the maintenance
+  actions, and the bounded slot detail. The argv is operator-authored, stored as separate arguments,
+  and runs only when Mission Control creates a new slot. It never runs when a warm slot is leased
+  again. Each slot carries its exact manager path, observed HEAD, relationship to the remote
+  default, cleanliness, process count, disk estimate, and owner. **Copy path** stays in the browser.
+  **Open terminal** asks the daemon's registered terminal launcher to open a login shell in the
+  manager-known path.
+
+  The group states loading, empty, and unavailable separately, and never renders a heading over
+  nothing. An inventory that could not be observed says so and offers Refresh; it is never drawn as
+  zero pools.
+- **Defaults** controls the default enablement and maximum, and affects future acquisitions only.
+  Each bar above is drawn against its own pool's *effective* maximum, which is **Default maximum
+  slots** for every repository that has not set an override - so changing the default visibly
+  reflows those bars, and leaves an overridden pool's bar where its own maximum puts it. Lowering
+  a maximum below the pool's current count marks the difference **over the maximum** and offers a
+  right-size preview; saving policy never deletes a slot.
+- **Treehouse** classifies historical Treehouse resources as exact, unverifiable, foreign, or
+  unreadable, and shows the four classification counts only when at least one is non-zero. Only an
+  exact durable owner with a clean, process-free checkout offers Return.
 
 All mutations begin with a server preview. The dialog lists the fixed paths, owners, disk estimate,
 risks, blockers, and consequences. Dirty or unlanded exact targets require an explicit

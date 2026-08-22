@@ -113,6 +113,37 @@ restarts while the model is judging discards the stale result without consuming 
 An incomplete verdict consumes the completed generation without sending the agent back, because
 Foreman did not commission that work. Untick both triggers and Foreman never wraps up on its own.
 
+**A dispatched ship task is judged against the boundary it was actually given.** Every ship task
+is delivered a completion handoff telling it to stop before commit, push, pull request, review
+and CI - Mission Control owns those. Its durable objective, written by a human, routinely still
+says "open a reviewable pull request". So the verifier is handed that boundary as trusted policy
+beside the objective: the objective is still the thing being judged, but the deferred
+post-completion work is not a blocking gap at this first handoff. The objective is never
+rewritten, and the boundary is never inferred from what the agent wrote in its transcript - it is
+resolved from the task's durable **Kind**, so a personal pane-typed session and every non-ship
+kind are unaffected. The same boundary applies whether completion routes to a Workflow or to
+Straight to PR; the binding decides what happens *after* completion, not what implementation-
+complete means. Nothing else about the evidence bar moves: a missing implementation, an untested
+new code path or missing required documentation is still blocking.
+
+**Every consumed generation records why it stopped.** The same statement that consumes a
+generation stores its outcome - `held`, `workflow_claimed`, `asked`, `direct_handoff`, `retired`,
+`empty`, or `verification_failed` - along with a bounded summary and, for a hold, its blocking
+gaps. That reason is *current projection*, replaced wholesale by the next generation; the
+Foreman episode ledger remains the history. It exists because a silent hold used to spend a
+completed generation and leave nothing behind: every later tick skipped the generation as already
+handled, and what the verifier believed was missing survived only in a log line.
+`verification_failed` is deliberately distinct from `held` - infrastructure giving up is not a
+model's verdict, and it carries no gaps because nobody judged the work. `direct_handoff_undelivered`
+is the same kind of distinction on the shipping path: the handoff is recorded before the instruction
+is typed, so that it can never be typed twice, and when the typing then fails the record says so
+instead of claiming the agent was handed work it never received. The Ship it? card is the recovery,
+exactly as it always was. Only a hold may carry
+gaps, and that holds on the way back out too: a stored reason that breaks it is read as no
+decision at all rather than quietly stripped of the gaps it should not have had. A row written before this
+was recorded reads as consumed with an unknown reason, which is not the same as fresh work, so an
+upgrade never replays a spent generation.
+
 The action is the same whichever trigger fired:
 
 | Then | What it does |

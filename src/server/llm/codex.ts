@@ -51,7 +51,22 @@ function headlessEnv(): NodeJS.ProcessEnv {
   return env;
 }
 
+/**
+ * Runs this process killed, whose settlement is a shutdown rather than an exit status.
+ *
+ * A group kill is not guaranteed to end the process we spawned. `codex` is a launcher, and
+ * the fake one this repository tests against is a shell: when the signal reaches the
+ * foreground child first, the shell can survive the race, report `Killed: 9` for that child
+ * and RUN ON to the end of its script - exiting 0, with a full event stream on stdout. A
+ * runner that decides "killed" from the exit status alone reads that as a completed run and
+ * resolves, so a review that shutdown cancelled comes back looking like a review that
+ * finished. Whether the process dies by signal or limps to a clean exit is a race; that a
+ * killed run never resolves must not be.
+ */
+const killedRuns = new WeakSet<ReturnType<typeof spawn>>();
+
 function killTree(child: ReturnType<typeof spawn>): void {
+  killedRuns.add(child);
   try {
     if (child.pid) process.kill(-child.pid, "SIGKILL");
     else child.kill("SIGKILL");
@@ -348,12 +363,17 @@ export const codexRunner: LlmRunner = {
         // work that was killed seconds earlier, which is both a wrong diagnosis and, on the
         // shutdown path, a hang.
         //
-        // Only for a signal. An ordinary exit keeps waiting for `close`, because there the
-        // remaining stdio IS the answer and settling early would truncate a large stdout.
-        child.on("exit", (_code, signal) => {
-          if (signal === null || settled) return;
+        // Only for a signal, or for a run this process killed. An ordinary exit keeps waiting
+        // for `close`, because there the remaining stdio IS the answer and settling early
+        // would truncate a large stdout. A killed run has no answer worth waiting for, and
+        // its exit status is not evidence it was spared - see `killedRuns`.
+        child.on("exit", (code, signal) => {
+          if (settled) return;
+          const killed = killedRuns.has(child);
+          if (signal === null && !killed) return;
           done();
-          reject(new Error(`codex exited ${signal}: ${codexFailureDetail(out, err)}`));
+          const how = signal ?? (killed ? "on shutdown" : code);
+          reject(new Error(`codex exited ${how}: ${codexFailureDetail(out, err)}`));
         });
         child.on("close", (code) => {
           done();

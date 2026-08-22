@@ -1,4 +1,9 @@
 import type { Task, TaskKind } from "@shared/types.ts";
+import {
+  deferredImperativeList,
+  taskCompletionContract,
+  type TaskCompletionContract,
+} from "@shared/task-completion.ts";
 import { planContractAppendix, type PlanSkillInvocations } from "./plans/prompt.ts";
 import { scoutReportAppendix } from "./scouts/prompt.ts";
 import { scoutRepoSlots } from "./scouts/repos.ts";
@@ -62,12 +67,33 @@ export interface TaskContractInputs {
  * `Record<TaskKind, …>` is the enforcement, matching `TASK_KIND_INFO`: a new kind does not
  * compile until it has said what its delivery contract is, including saying it is nothing.
  */
+/**
+ * The ship task's delivered completion handoff, rendered from the SHARED contract.
+ *
+ * The deferral sentence lists `TaskCompletionContract.deferred` rather than restating it,
+ * because this appendix and Foreman's verify prompt have to draw the same line: the
+ * verifier judges the durable objective, which routinely still asks for a pull request
+ * that this very paragraph forbade, and a second hand-maintained list of deferred actions
+ * is exactly how the two surfaces would drift apart. The surrounding prose stays
+ * hand-written - this is the text an agent reads on its first turn, and a mechanically
+ * assembled paragraph would read worse for no gain - so `test/task-completion.test.ts`
+ * pins that both renderings name the same actions.
+ */
+const SHIP_COMPLETION_CONTRACT = requireCompletionContract("ship");
+
 const SHIP_COMPLETION_HANDOFF = [
   "## Ship task completion handoff",
   "Implement and verify the requested change, then report that the work is complete and end this turn.",
-  "During this initial task turn, do not commit, push, create or update a pull request, or wait for pull-request CI, even if the task request or repository instructions normally include those steps.",
+  `During this initial task turn, do not ${deferredImperativeList(SHIP_COMPLETION_CONTRACT)}, even if the task request or repository instructions normally include those steps.`,
   "Mission Control owns what happens after this completion. Foreman will either start the task's selected workflow or send a later instruction for the direct pull-request path. Only an instruction delivered after this handoff, from Foreman or the workflow, starts commit, push, pull-request, and CI follow-through.",
 ].join("\n");
+
+/** The kind's contract, or a loud failure - `ship` has one and this file depends on it. */
+function requireCompletionContract(kind: TaskKind): TaskCompletionContract {
+  const contract = taskCompletionContract(kind);
+  if (!contract) throw new Error(`task kind ${kind} has no completion contract to deliver`);
+  return contract;
+}
 
 const KIND_CONTRACT: Record<TaskKind, (task: Task, inputs: TaskContractInputs) => string | null> = {
   ship: () => SHIP_COMPLETION_HANDOFF,

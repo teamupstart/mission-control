@@ -551,6 +551,14 @@ test("a killed Codex run settles when the process dies, not when its stdio does"
   // and reported "timed out" for work that was killed immediately. Killing must settle the
   // run at the process's death, which is a fact about the process rather than about who else
   // is holding a pipe.
+  //
+  // The kill lands on the process GROUP, and which member it ends first is a race. Usually
+  // the shell dies and reports `SIGKILL`; sometimes the shell outlives the `sleep` it is
+  // waiting on, prints `Killed: 9` for that child, runs on to the end of the script and
+  // exits 0 with a full event stream on stdout. Both are this case. A runner that reads
+  // "killed" off the exit status resolves the second one, handing back a completed-looking
+  // review for work that shutdown cancelled - so this asserts a rejection either way, and
+  // the run's own record of having been killed is what makes that deterministic.
   clearRecording();
   process.env.RUN_CODEX_ORPHAN = "1";
   const started = Date.now();

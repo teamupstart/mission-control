@@ -4585,6 +4585,7 @@ export class WorkflowStore {
               binding.noteKey,
               input.guardCwd === undefined ? binding.sessionCwd : input.guardCwd,
               input.expectedWorkCycle!,
+              input.summary,
               input.now,
             );
         if (!retired) {
@@ -7405,6 +7406,7 @@ export class WorkflowStore {
     noteKey: string,
     sessionCwd: string | null,
     expectedWorkCycle: { logicalKey: string; generation: number },
+    summary: string,
     now: number,
   ): boolean {
     if (expectedWorkCycle.logicalKey !== noteKey) return false;
@@ -7413,6 +7415,16 @@ export class WorkflowStore {
       sessionCwd,
       generation: expectedWorkCycle.generation,
       ask: false,
+      // The claim's own reason, written by the SAME statement that spends the generation
+      // and inside this transaction - so a claim that later throws rolls the reason back
+      // with the consumption it described. Routing this through the ordinary consume route
+      // instead would split one atomic claim into two writes a crash could land between,
+      // which is why `workflow_claimed` is the one outcome that route refuses.
+      decision: {
+        outcome: "workflow_claimed",
+        summary,
+        gaps: [],
+      },
       // A Workflow claim is not a direct-shipping handoff. Foreman submits the bound
       // Workflow and never types the direct PR instruction here, so latching one would
       // permanently disarm prompted completion for this intent episode against an action

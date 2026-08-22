@@ -27,6 +27,21 @@ async function close(server: Server): Promise<void> {
 }
 
 /**
+ * How long this fixture waits on its MCP child, and why it is not a small number.
+ *
+ * The child is `node --import tsx src/mcp/server.ts`: a cold Node start plus a TypeScript
+ * transform, spawned while the rest of the suite is running its own processes. Nothing here
+ * is testing how fast that is - the assertions are about which identity the child reports -
+ * so a tight budget can only ever convert "the machine was busy" into "the identity was
+ * wrong". At 5 seconds it did exactly that, failing 9 runs out of 10 against a concurrent
+ * full suite, always at the client timeout and never at an assertion. The generous value
+ * costs nothing on an idle machine, where these connect in well under a second.
+ */
+const MCP_TIMEOUT_MS = 60_000;
+/** Comfortably clear of two `MCP_TIMEOUT_MS` waits, so the case still fails as a case. */
+const CASE_TIMEOUT_MS = 150_000;
+
+/**
  * Every variable `captureTerminalEnv` reads, so the operator's terminal cannot decide the
  * result.
  *
@@ -85,13 +100,26 @@ async function captureRequestInput(identityEnv: IdentityEnv): Promise<Record<str
 
   try {
     const port = await listen(daemon);
-    const childEnv = {
+    const childEnv: Record<string, string | undefined> = {
       ...process.env,
       ...identityEnv,
       MISSION_HOME: missionHome,
       MISSION_PORT: String(port),
     };
     if (!identityEnv.MISSION_SESSION_ID) delete childEnv.MISSION_SESSION_ID;
+    // The case above states the WHOLE terminal identity this child may report, so anything
+    // `captureTerminalEnv` reads that the case did not set has to go - it inherits
+    // `process.env`, and the operator's own terminal sets these too.
+    //
+    // `TERM_PROGRAM` is the one that actually bit: it is unset under CI's piped shell and
+    // set to `WezTerm`, `iTerm.app`, `Apple_Terminal` or `vscode` whenever the suite is run
+    // from a real terminal, so this assertion's exactness was really an assertion about
+    // where it happened to be running. Deleting rather than pinning an expected value keeps
+    // the test's point intact: the child reports the identity it was GIVEN and nothing the
+    // machine underneath it happened to export.
+    for (const name of ["TMUX_PANE", "WEZTERM_PANE", "TERM_PROGRAM"] as const) {
+      if (!(name in identityEnv)) delete childEnv[name];
+    }
     transport = new StdioClientTransport({
       command: process.execPath,
       args: [
@@ -104,14 +132,14 @@ async function captureRequestInput(identityEnv: IdentityEnv): Promise<Record<str
       stderr: "pipe",
     });
     client = new Client({ name: "review-identity-test", version: "1" });
-    await client.connect(transport, { timeout: 5_000 });
+    await client.connect(transport, { timeout: MCP_TIMEOUT_MS });
     await client.callTool(
       {
         name: "request_input",
         arguments: { question: "Which identity owns this review?" },
       },
       undefined,
-      { timeout: 5_000 },
+      { timeout: MCP_TIMEOUT_MS },
     );
     if (!captured.review) throw new Error("fake daemon did not capture the review request");
     return captured.review;
@@ -123,7 +151,7 @@ async function captureRequestInput(identityEnv: IdentityEnv): Promise<Record<str
   }
 }
 
-test("request_input prefers the Mission Control session identity", { timeout: 10_000 }, async () => {
+test("request_input prefers the Mission Control session identity", { timeout: CASE_TIMEOUT_MS }, async () => {
   const captured = await captureRequestInput({
     MISSION_SESSION_ID: "sdk:mission",
     CLAUDE_SESSION_ID: "claude:legacy",
@@ -146,7 +174,7 @@ test("request_input prefers the Mission Control session identity", { timeout: 10
   );
 });
 
-test("request_input preserves terminal identity without a Mission session", { timeout: 10_000 }, async () => {
+test("request_input preserves terminal identity without a Mission session", { timeout: CASE_TIMEOUT_MS }, async () => {
   const captured = await captureRequestInput({
     CLAUDE_SESSION_ID: "claude:terminal",
     TMUX_PANE: "%4",

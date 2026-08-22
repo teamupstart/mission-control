@@ -1314,8 +1314,94 @@ export interface SessionQueue {
    * generation, so that is what is recorded here.
    */
   promptedDirectHandoff: PromptedDirectHandoff | null;
+  /**
+   * WHY the current consumed generation stopped where it did, or null.
+   *
+   * `promptedConsumedGeneration` answers "has this settled completion been handled" and
+   * nothing else, which is exactly the state that made the reported deadlock invisible: a
+   * verifier judged a finished implementation incomplete, the hold spent the generation,
+   * and every later tick skipped it as handled with no record of what it believed was
+   * missing. This field is that record.
+   *
+   * CURRENT PROJECTION, NOT HISTORY. It is written in the same statement that consumes a
+   * generation and replaced wholesale by the next one; `foreman_episodes` remains the
+   * append-only ledger of what Foreman did. The two answer different questions - this one
+   * answers "what may recovery do now".
+   *
+   * Null means one of two different things, and a reader must keep them apart: a row
+   * written before this field existed (legacy, still consumed, never replay it), or state
+   * that failed validation (malformed JSON, an outcome this build cannot interpret, a
+   * mismatched logical key, a generation that is not the consumed one). Both read as "no
+   * actionable decision", which is the fail-closed answer; only the second is a bug, and
+   * `toPromptedDecision` in `server/db.ts` logs it.
+   */
+  promptedDecision: PromptedCompletionDecision | null;
   updatedAt: number;
   items: WorkItem[];
+}
+
+/**
+ * Why one prompted completion generation was consumed. APPEND-ONLY and persisted: a value
+ * is added beside the existing ones, never renamed or reordered, and a build that cannot
+ * interpret a stored value reads the whole decision as absent rather than guessing.
+ *
+ * - `held`: the verifier judged the work unfinished, or contradicted itself with a
+ *   blocking gap on a complete verdict. The summary and blocking gaps are stored.
+ * - `workflow_claimed`: a bound Workflow claimed the completion and owns the session.
+ * - `asked`: Foreman raised the Ship it? card for a human instead of acting.
+ * - `direct_handoff`: Foreman typed the direct shipping instruction for this generation.
+ * - `direct_handoff_undelivered`: the handoff was recorded and the instruction then FAILED to
+ *   reach the agent. The mark is written before anything types, deliberately, because a
+ *   retried direct injection is the double push - so the mark cannot be rolled back and this
+ *   is what keeps the record honest instead. The generation stays consumed and the Ship it?
+ *   card is the recovery; a later reader must not treat this as work that was handed over.
+ * - `retired`: consumed with no wrap-up action - a scout report, a review-only artifact,
+ *   or another non-shipping settled turn.
+ * - `empty`: the session changed nothing, so there was nothing to ship.
+ * - `verification_failed`: verification INFRASTRUCTURE failed repeatedly and hit its cap.
+ *   Deliberately not `held`: no model ever judged this work, so a later recovery must not
+ *   send a verifier summary back that does not exist.
+ */
+export const PROMPTED_COMPLETION_OUTCOMES = [
+  "held",
+  "workflow_claimed",
+  "asked",
+  "direct_handoff",
+  "retired",
+  "empty",
+  "verification_failed",
+  "direct_handoff_undelivered",
+] as const;
+export type PromptedCompletionOutcome = (typeof PROMPTED_COMPLETION_OUTCOMES)[number];
+
+/** One bounded blocking gap carried on a `held` decision. */
+export interface PromptedCompletionGap {
+  /** The verifier's stable slug for the problem. */
+  id: string;
+  /** Repo-relative path the gap is about, or "" when the verifier named none. */
+  path: string;
+  /** What is missing, concretely. Bounded at the schema, because it may later be typed. */
+  detail: string;
+}
+
+/**
+ * The current prompted completion decision for one logical session.
+ *
+ * `logicalKey` and `generation` are carried IN the record rather than left implicit in the
+ * row, so a reader can refuse a decision that does not belong to the row's own key or to
+ * its current consumed generation instead of trusting placement. That refusal is the whole
+ * fail-closed contract: a decision is actionable only when it is demonstrably about the
+ * generation the queue says was consumed.
+ */
+export interface PromptedCompletionDecision {
+  logicalKey: string;
+  generation: number;
+  outcome: PromptedCompletionOutcome;
+  /** Bounded human-readable reason: the verifier's summary, or why no verdict exists. */
+  summary: string;
+  /** Blocking gaps, non-empty only for `held`. Bounded in count and length. */
+  gaps: PromptedCompletionGap[];
+  decidedAt: number;
 }
 
 /**

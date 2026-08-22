@@ -48,6 +48,7 @@ import { SCOUT_REPORT_PATH_SHAPE, SCOUT_SUBMISSION_LIMITS, scoutReportSlug } fro
 import { TERMINAL_BACKEND_IDS } from "./terminal.ts";
 import {
   AGENT_TYPES,
+  PROMPTED_COMPLETION_OUTCOMES,
   PROMPTED_DIRECT_HANDOFF_KINDS,
   SESSION_RUNTIMES,
   TASK_KINDS,
@@ -3225,6 +3226,51 @@ const SessionIntentGuardSchema = z.object({
  */
 export const PromptedDirectHandoffKindSchema = z.enum(PROMPTED_DIRECT_HANDOFF_KINDS);
 
+/** Bounds on the stored reason. See `PromptedCompletionDispositionSchema`. */
+export const PROMPTED_DECISION_SUMMARY_MAX = 2000;
+export const PROMPTED_DECISION_GAPS_MAX = 3;
+export const PROMPTED_DECISION_GAP_ID_MAX = 120;
+export const PROMPTED_DECISION_GAP_PATH_MAX = 400;
+export const PROMPTED_DECISION_GAP_DETAIL_MAX = 600;
+
+/**
+ * WHY a consumption is happening, supplied by the caller and stored beside the generation
+ * it consumes.
+ *
+ * The caller sends only the REASON. `logicalKey` and `generation` are not accepted here:
+ * the daemon already re-verified both against live lifecycle state at this boundary, so
+ * taking them from the request would let a caller label a decision with a key or a
+ * generation the write did not actually spend. The stored
+ * `PromptedCompletionDecision` is composed from the verified values instead, which is what
+ * makes "the decision belongs to the consumed generation" a property of the transaction
+ * rather than a claim a reader has to trust.
+ *
+ * Every bound is enforced here and not merely hoped for: the summary and gap text are
+ * model-authored, they are persisted onto a row every queue read re-serves, and Phase 2
+ * types the gaps back into a tool-enabled agent.
+ */
+export const PromptedCompletionDispositionSchema = z.object({
+  outcome: z.enum(PROMPTED_COMPLETION_OUTCOMES),
+  summary: z.string().max(PROMPTED_DECISION_SUMMARY_MAX).default(""),
+  gaps: z
+    .array(
+      z.object({
+        id: z.string().min(1).max(PROMPTED_DECISION_GAP_ID_MAX),
+        path: z.string().max(PROMPTED_DECISION_GAP_PATH_MAX).default(""),
+        detail: z.string().min(1).max(PROMPTED_DECISION_GAP_DETAIL_MAX),
+      }),
+    )
+    .max(PROMPTED_DECISION_GAPS_MAX)
+    .optional()
+    .default([]),
+}).refine(
+  // Only a verifier verdict produces gaps. A `retired` or `empty` consumption carrying
+  // "blocking gaps" would hand Phase 2 feedback no model ever wrote.
+  (decision) => decision.outcome === "held" || decision.gaps.length === 0,
+  { message: "Only a held prompted completion may carry blocking gaps" },
+);
+export type PromptedCompletionDisposition = z.infer<typeof PromptedCompletionDispositionSchema>;
+
 /**
  * Consume one completed work-cycle generation for the `prompted` trigger.
  *
@@ -3232,6 +3278,21 @@ export const PromptedDirectHandoffKindSchema = z.enum(PROMPTED_DIRECT_HANDOFF_KI
  * rotated conversation, changed intent, restarted turn, or newer completion therefore
  * cannot spend either the stale or current generation.
  */
+/**
+ * Correct a recorded direct handoff whose instruction never reached the agent.
+ *
+ * The REASON only - no disposition, and no way to name one. The single legal transition is
+ * `direct_handoff` -> `direct_handoff_undelivered` for the generation the row already
+ * consumed, and the daemon derives both ends from stored state, so this route cannot be
+ * used to write a decision, to spend a generation, or to relabel one that stopped for some
+ * other reason.
+ */
+export const PromptedHandoffUndeliveredSchema = z.object({
+  logicalKey: z.string().min(1).max(NOTE_KEY_MAX),
+  generation: z.number().int().min(1),
+});
+export type PromptedHandoffUndelivered = z.infer<typeof PromptedHandoffUndeliveredSchema>;
+
 export const PromptedWrapupSchema = z.object({
   logicalKey: z.string().min(1).max(NOTE_KEY_MAX),
   generation: z.number().int().min(1),
@@ -3248,9 +3309,45 @@ export const PromptedWrapupSchema = z.object({
   // A constrained kind rather than a boolean so the durable row says which handoff it
   // was. Foreman supplies it over this route; Foreman never writes SQLite itself.
   directHandoff: PromptedDirectHandoffKindSchema.nullable().optional().default(null),
+  // WHY this generation stopped here, written in the same statement that consumes it.
+  //
+  // Nullable and defaulted for WIRE compatibility only - a request from a build that
+  // predates this field still consumes, and consuming CLEARS any stale decision rather
+  // than leaving one that claims to describe a generation it never saw. Nothing
+  // synthesizes a reason from the shape of the request: a `held` invented for a caller
+  // that never said so is exactly the false state Phase 2 would then act on. Every
+  // in-repository caller passes one, and `ForemanClient.consumePromptedGeneration`
+  // requires it in its signature so a new call site cannot forget.
+  decision: PromptedCompletionDispositionSchema.nullable().optional().default(null),
 }).refine(
   (body) => !(body.ask && body.directHandoff),
   { message: "A prompted consumption cannot both raise the Ship it? card and hand off to direct shipping" },
+).refine(
+  // The two action latches and the recorded reason are three views of ONE consumption, so
+  // a request that disagrees with itself is refused rather than half-applied. Checked on
+  // the wire because this is the boundary where the caller's intent is still legible.
+  // BOTH directions. An action without its reason is a consumption nobody can explain; a
+  // reason without its action is worse, because it is a consumption that describes an event
+  // that never happened. The second is the one a one-way check misses: `asked` with no card
+  // raised, or `direct_handoff` with no latch written and therefore nothing that could have
+  // been typed, both persist as decisions Phase 2 would read as work already handed over.
+  (body) => !body.decision || body.ask === (body.decision.outcome === "asked"),
+  { message: "The asked outcome and the Ship it? card are one consumption: record both or neither" },
+).refine(
+  (body) => !body.decision || Boolean(body.directHandoff) === (body.decision.outcome === "direct_handoff"),
+  { message: "The direct_handoff outcome and the handoff latch are one consumption: record both or neither" },
+).refine(
+  // `workflow_claimed` is written only inside the Workflow claim transaction, which never
+  // travels over this route. Accepting it here would let an ordinary consume forge a claim
+  // that no run exists for.
+  (body) => body.decision?.outcome !== "workflow_claimed",
+  { message: "Only the Workflow claim transaction may record a workflow_claimed outcome" },
+).refine(
+  // `direct_handoff_undelivered` is a CORRECTION, reachable only from a stored
+  // `direct_handoff` for a generation this route already consumed. A consumption that
+  // opened with it would be claiming an injection failed that nothing ever attempted.
+  (body) => body.decision?.outcome !== "direct_handoff_undelivered",
+  { message: "Only the undelivered-handoff correction may record a direct_handoff_undelivered outcome" },
 );
 export type PromptedWrapup = z.infer<typeof PromptedWrapupSchema>;
 

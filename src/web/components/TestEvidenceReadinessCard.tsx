@@ -88,6 +88,21 @@ export function sliceLabel(slice: TestEvidenceAuditSlice): string {
 }
 
 /**
+ * A slice's identity as a stable React key.
+ *
+ * Every field the aggregate groups by, so two rows can never collide: the label alone is not
+ * an identity, since it deliberately omits the persona and shows a truncated digest.
+ */
+export function sliceIdentity(slice: TestEvidenceAuditSlice): string {
+  return [
+    slice.workflowId ?? "?",
+    slice.workflowVersion ?? "?",
+    slice.personaId ?? "?",
+    slice.guidanceDigest ?? "?",
+  ].join(":");
+}
+
+/**
  * One captioned block of readings.
  *
  * The caption is a real `<h4>` and the group is named BY it rather than beside it: three
@@ -240,7 +255,7 @@ export function TestEvidenceReadinessCard({
                   above it, restated in smaller type. */}
               {aggregate.slices.map((slice) => (
                 <Row
-                  key={`${slice.workflowId ?? "?"}:${slice.workflowVersion ?? "?"}:${slice.guidanceDigest ?? "?"}`}
+                  key={sliceIdentity(slice)}
                   label={sliceLabel(slice)}
                   value={`${slice.attempts} attempts · first pass `
                     + formatAuditRate(slice.firstSubmissionAccepted, "first submissions")}

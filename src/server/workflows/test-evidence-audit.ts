@@ -205,13 +205,26 @@ function rate(count: number, total: number): TestEvidenceAuditRate {
   return { count, total, rate: total === 0 ? null : count / total };
 }
 
-/** The identity a slice is grouped by, as one key, with unknown fields kept distinguishable. */
+/**
+ * The identity a slice is grouped by, as one key, with unknown fields kept distinguishable.
+ *
+ * The Persona REVISION is deliberately not part of this. The digest is a hash of the exact
+ * guidance the attempt ran with, so two revisions carrying byte-identical guidance are the
+ * same guidance - and a Persona edit that changed something else (its name, its model, its
+ * description) would otherwise split one guidance into two slices. That split costs more than
+ * a duplicated row: these rates exist to compare one guidance revision against the next, and
+ * halving a population halves the confidence in both halves of it while making the two rows
+ * indistinguishable on the panel, which labels a slice by version and digest.
+ *
+ * The persona ID stays, because the same guidance text under a different Persona is a
+ * different subject. This tuple is exactly what the panel draws, which is also what keeps its
+ * React keys unique.
+ */
 function sliceKey(record: TestEvidenceAuditRecord): string {
   return JSON.stringify([
     record.workflowId ?? null,
     record.workflowVersion ?? null,
     record.guidance?.personaId ?? null,
-    record.guidance?.revision ?? null,
     record.guidance?.digest ?? null,
   ]);
 }
@@ -309,6 +322,17 @@ export function aggregateTestEvidenceAudit(
       firstAccepted: 0,
       failures: 0,
     };
+    // The newest revision seen carrying this guidance. Revisions no longer separate slices,
+    // so this answers "which Persona revision is this guidance current as of", not "which one
+    // produced every attempt below" - the earlier revisions that carried the same bytes are
+    // counted in the same row.
+    const revision = record.guidance?.revision ?? null;
+    if (
+      revision !== null
+      && (accumulator.slice.personaRevision === null || revision > accumulator.slice.personaRevision)
+    ) {
+      accumulator.slice.personaRevision = revision;
+    }
     accumulator.slice.attempts += 1;
     if (failed) accumulator.failures += 1;
     if (record.firstSubmission) {

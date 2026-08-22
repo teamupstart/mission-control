@@ -1560,8 +1560,12 @@ first-pass acceptance (round 1, segment 0), the failure rate over all auditor at
 attempts per run, the possible-overreach rate, each rejection category's share of the failing
 attempts, and evidence-readiness adoption on first submissions: how many carried no image, no text
 artifact, and no upstream Check, how many had a truncated transcript, and how many bytes Check
-retention and transcript head-clipping dropped. Attempts are also broken down by workflow version
-and guidance digest, which is what makes a guidance revision comparable with the one before it.
+retention and transcript head-clipping dropped. Attempts are also broken down by workflow version,
+Persona and guidance digest, which is what makes a guidance revision comparable with the one
+before it. The Persona *revision* is not part of that grouping: the digest identifies the exact
+guidance bytes, so a Persona edit that left the guidance alone keeps its attempts in the same row
+rather than halving the population behind two identically labelled ones. A row reports the newest
+revision seen carrying its guidance.
 
 It is advisory and strictly read-only. It re-runs no Persona, rewrites no verdict, gates nothing,
 and holds no state; the Persona's published judgment is unaffected by anything shown here. Only
@@ -1572,7 +1576,9 @@ An empty population is reported as **no reading**, never as 0%, so a fleet that 
 auditor cannot be mistaken for one whose first-pass acceptance is zero. The aggregate reads the
 newest 2,000 events (`GET /api/workflows/test-evidence-audit`, optional `limit`); when older
 attempts fall outside that window, or an event cannot be read back, the panel says so rather than
-presenting a partial history as the whole one.
+presenting a partial history as the whole one. A window whose events could not be read back at
+all is distinguished from one with no events: an auditor that has never run and telemetry that
+cannot be decoded lead to opposite conclusions, so neither borrows the other's wording.
 
 Workflow health is read under **Settings → Workflows**, and refreshes on its own while that
 panel is open. It reports active runs, queued and running Persona calls, waiting, uncertain and

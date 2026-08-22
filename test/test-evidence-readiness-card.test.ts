@@ -20,6 +20,7 @@ import {
   TestEvidenceReadinessCard,
   formatAuditRate,
   meetsTarget,
+  sliceIdentity,
   sliceLabel,
 } from "../src/web/components/TestEvidenceReadinessCard.tsx";
 import type { TestEvidenceAuditAggregate } from "../src/shared/workflow.ts";
@@ -187,6 +188,23 @@ test("a capped window and unreadable rows are stated instead of quietly narrowin
 test("a one-revision fleet is not given a by-revision list that restates its headline", () => {
   const html = render({ ...MEASURED, slices: [MEASURED.slices[0]!] });
   assert.doesNotMatch(html, /By guidance revision/);
+});
+
+/**
+ * Two slices the panel labels identically must still be distinct React keys.
+ *
+ * `sliceLabel` deliberately omits the Persona and truncates the digest, so it is a caption and
+ * not an identity - keying rows by it would collide. The key carries every field the aggregate
+ * groups by instead, which is the same tuple, so a row can never duplicate another's key.
+ */
+test("a slice key carries every grouping field, not just the visible label", () => {
+  const base = MEASURED.slices[0]!;
+  const other = { ...base, personaId: "persona-other" };
+  assert.equal(sliceLabel(base), sliceLabel(other), "the labels are the same by design");
+  assert.notEqual(sliceIdentity(base), sliceIdentity(other));
+  assert.equal(sliceIdentity(base), sliceIdentity({ ...base, personaRevision: 99 }));
+  const html = render({ ...MEASURED, slices: [base, other] });
+  assert.match(html, /By guidance revision/);
 });
 
 test("no reading is never spelled as a zero reading", () => {

@@ -189,6 +189,8 @@ function row(over: {
   overreach?: boolean;
   workflowVersion?: number;
   digest?: string;
+  personaId?: string;
+  revision?: number;
 } = {}): TestEvidenceAuditEventRow {
   const round = over.round ?? 1;
   const segment = over.segment ?? 0;
@@ -200,7 +202,11 @@ function row(over: {
       submissionId: "submission",
       workflowId: "workflow-review",
       workflowVersion: over.workflowVersion ?? 8,
-      guidance: { personaId: "builtin:test-evidence-auditor", revision: 1, digest: over.digest ?? "aaaaaaaaaaaa" },
+      guidance: {
+        personaId: over.personaId ?? "builtin:test-evidence-auditor",
+        revision: over.revision ?? 1,
+        digest: over.digest ?? "aaaaaaaaaaaa",
+      },
       round,
       segment,
       firstSubmission: round === 1 && segment === 0,
@@ -335,6 +341,43 @@ test("attempts slice by workflow version and guidance digest, keeping unidentifi
   assert.equal(unknown.workflowVersion, null);
   assert.equal(unknown.attempts, 1);
   assert.equal(aggregate.attempts, 4);
+});
+
+/**
+ * A Persona edit that did not touch the guidance must not split the guidance's population.
+ *
+ * The digest is a hash of the exact guidance an attempt ran with, so two revisions carrying
+ * identical bytes are one guidance. Grouping by revision as well used to open a second slice
+ * for a rename or a model change - two rows the panel labels identically, each computing its
+ * rates over half the attempts, which is the opposite of what a before/after comparison needs.
+ * A revision that DID change the guidance changes the digest, so real revisions still separate.
+ */
+test("a Persona edit that leaves the guidance identical stays one slice", () => {
+  const aggregate = aggregateTestEvidenceAudit([
+    row({ runId: "run-1", revision: 1, digest: "aaaaaaaaaaaa", outcome: "fail", rejectionCategories: ["visual_artifact"] }),
+    row({ runId: "run-2", revision: 4, digest: "aaaaaaaaaaaa", outcome: "pass" }),
+    row({ runId: "run-3", revision: 2, digest: "aaaaaaaaaaaa", outcome: "pass" }),
+  ], WINDOW);
+  assert.equal(aggregate.slices.length, 1, "identical guidance must not be split by revision");
+  const [only] = aggregate.slices;
+  assert.equal(only!.attempts, 3);
+  // Reported over the WHOLE population, which is the point of not splitting it.
+  assert.deepEqual(only!.firstSubmissionAccepted, { count: 2, total: 3, rate: 2 / 3 });
+  // The newest revision seen carrying this guidance, not the first and not the last read.
+  assert.equal(only!.personaRevision, 4);
+});
+
+/** Same guidance text under a different Persona is a different subject, and stays apart. */
+test("identical guidance under two Personas remains two slices", () => {
+  const aggregate = aggregateTestEvidenceAudit([
+    row({ runId: "run-1", personaId: "builtin:test-evidence-auditor", digest: "aaaaaaaaaaaa" }),
+    row({ runId: "run-2", personaId: "persona-other", digest: "aaaaaaaaaaaa" }),
+  ], WINDOW);
+  assert.equal(aggregate.slices.length, 2);
+  assert.deepEqual(
+    aggregate.slices.map((slice) => slice.personaId).sort(),
+    ["builtin:test-evidence-auditor", "persona-other"],
+  );
 });
 
 /**

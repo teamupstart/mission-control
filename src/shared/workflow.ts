@@ -3749,6 +3749,12 @@ export interface TestEvidenceAuditSlice {
   workflowId: string | null;
   workflowVersion: number | null;
   personaId: string | null;
+  /**
+   * The newest Persona revision observed carrying this guidance, not a grouping field.
+   *
+   * Slices are keyed by guidance DIGEST, so a Persona edit that left the guidance byte-identical
+   * keeps its attempts in this one row rather than opening a second, identically labelled one.
+   */
   personaRevision: number | null;
   guidanceDigest: string | null;
   attempts: number;

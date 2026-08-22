@@ -99,7 +99,7 @@ function runner(verdict: () => "pass" | "fail"): LlmRunner {
  *
  * Five seconds was the original figure on the theory that a sweep and a store write are a
  * tick away, and on an idle machine they are: this file runs in under two seconds on its own.
- * It is not idle under `npm test`, where `--test-concurrency=2` keeps another file's HTTP
+ * It is not idle under `npm test`, where `--test-concurrency=6` keeps other files' HTTP
  * servers, spawned `node --import tsx` children and real Electron geometry tests on the same
  * CPU, and a wall-clock budget measures the machine's load rather than the code's progress.
  * The wait at "an action pipeline captures a segment per action" timed out at exactly this

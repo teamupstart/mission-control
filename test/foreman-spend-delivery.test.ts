@@ -228,7 +228,7 @@ function spoolRunIds(path: string): string[] {
  *
  * The condition here needs a `node --import tsx` child to boot, compile TypeScript and
  * complete an HTTP POST, which is around a second on an idle machine and several under
- * `npm test`, where two test files run concurrently and every other one is spawning
+ * `npm test`, where six test files run concurrently and several others are spawning
  * something too.
  *
  * It flaked for exactly that reason, and the flake was expensive out of proportion to
@@ -248,8 +248,8 @@ const SPAWN_WAIT_MS = 30_000;
  * The default budget for an in-process wait - no spawn, no compile, nothing off-box.
  *
  * Two seconds was the original default on the theory that a flush here is a tick away, and
- * on an idle machine it is. It is not on a shared CI runner: `test-concurrency=2` keeps
- * another file's HTTP servers, retries and spawned children busy on the same event loop and
+ * on an idle machine it is. It is not on a shared CI runner: `test-concurrency=6` keeps
+ * other files' HTTP servers, retries and spawned children busy on the same event loop and
  * the same CPU, and this file's own drained-queue assertions mean one slow poll fails not
  * just its own case but every case after it, cascading down the file. `eventually` at
  * `test/foreman-spend-delivery.test.ts:645` timed out at exactly this default under CI load

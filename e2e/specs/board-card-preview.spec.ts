@@ -80,6 +80,32 @@ test("the preview redraws as items are toggled, and never navigates", async ({
     await panel.screenshot({ path: `${EVIDENCE}01-defaults.png` });
     // eslint-disable-next-line no-console
     console.log("CAPTURED e2e/.artifacts/board-card-preview/01-defaults.png");
+
+    // And the conversation section on its own, large enough to read. The whole-panel frame
+    // above proves the two sections sit together; this one is where a reviewer can actually
+    // read the sentence that says the reclaimed height is CONDITIONAL, which is the claim
+    // the copy is carrying. Clipped from the section heading to the last row of the section
+    // rather than screenshotting an element, because the heading, the blurb and the two rows
+    // are siblings in the checklist rather than one container.
+    const heading = panel.getByRole("heading", { name: "Conversation header" });
+    const lastRow = panel.getByRole("checkbox", { name: "Git branch", exact: true });
+    const top = await heading.boundingBox();
+    const bottom = await lastRow.boundingBox();
+    const column = await panel.locator(".board-card-checklist").boundingBox();
+    if (top && bottom && column) {
+      await page.screenshot({
+        path: `${EVIDENCE}03-conversation-header-section.png`,
+        clip: {
+          x: column.x - 4,
+          y: top.y - 10,
+          width: column.width + 8,
+          // Past the last checkbox's own row, so its wrapped description is in frame too.
+          height: bottom.y + 64 - top.y,
+        },
+      });
+      // eslint-disable-next-line no-console
+      console.log("CAPTURED e2e/.artifacts/board-card-preview/03-conversation-header-section.png");
+    }
   }
 
   // In place: no navigation, no reload. The URL is checked after each toggle because the

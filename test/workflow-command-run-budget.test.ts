@@ -185,17 +185,19 @@ function spy() {
   };
 }
 
-test("the default budget is one run, and the ceiling is the repair-round ceiling", () => {
+test("the default budget is one run, and the ceiling covers every round a run can reach", () => {
   // Both halves of this are load-bearing claims made in prose elsewhere, so they are asserted
   // rather than trusted. The default is what every existing catalog silently adopts on
   // upgrade; the ceiling is what makes "keep running it every round, as it always did"
-  // expressible at all, because a run can never exceed that many rounds.
+  // expressible at all, and the plus one is not slack. A run is an initial submission followed
+  // by at most `repairRoundsMax` repair rounds, so `repairRoundsMax` alone would leave the
+  // option labelled "every round" one execution short of the last round it promises.
   assert.equal(WORKFLOW_COMMAND_DEFAULT_MAX_RUNS, 1);
   assert.equal(WORKFLOW_LIMITS.commandMaxRunsMin, 1);
   assert.equal(
     WORKFLOW_LIMITS.commandMaxRunsMax,
-    WORKFLOW_LIMITS.repairRoundsMax,
-    "a budget at the ceiling must be one a run can never spend",
+    WORKFLOW_LIMITS.repairRoundsMax + 1,
+    "a budget at the ceiling must cover every round a run can reach, and no more",
   );
   assert.equal(emptyWorkflowCommandView("test").maxRuns, WORKFLOW_COMMAND_DEFAULT_MAX_RUNS);
 });

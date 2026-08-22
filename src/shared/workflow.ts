@@ -133,15 +133,19 @@ export const WORKFLOW_LIMITS = {
    */
   commandMaxRunsMin: 1,
   /**
-   * The ceiling on the same budget, which is `repairRoundsMax` on purpose.
+   * The ceiling on the same budget: `repairRoundsMax` PLUS ONE, and the plus one is the point.
    *
-   * A run cannot exceed that many repair rounds and a check node runs at most once per
-   * submission, so a budget set here is a budget the run can never spend - which is exactly
-   * how "run it every round, as it always did" has to be expressible. Tying the two together
-   * rather than picking an independent number keeps that property true if the round ceiling
-   * ever moves.
+   * A run is an initial submission followed by up to `repairRoundsMax` repair rounds - a new
+   * one is created while `round <= maxRepairRounds`, so the highest round a run can reach is
+   * `maxRepairRounds + 1`. A check node runs at most once per submission, so that is also the
+   * most times a Command can execute in one run. Setting the ceiling to `repairRoundsMax`
+   * alone would leave the option labelled "every round" one execution short, and the last
+   * repair round an operator paid for would skip the gate they asked to run every time.
+   *
+   * Derived from the round ceiling rather than written as a number, so the two cannot drift
+   * apart if that ceiling ever moves.
    */
-  commandMaxRunsMax: 20,
+  commandMaxRunsMax: 21,
   checkCommandArgs: 32,
   checkCommandArg: 1_000,
   checkCommandLength: 4_000,

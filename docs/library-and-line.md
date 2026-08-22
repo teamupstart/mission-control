@@ -64,8 +64,8 @@ against any repository. This shelf is where *this machine* says what each slot r
   matching path wins, and a nested override also decides which directory the command runs in;
 - **how often this Command may run** - how many times it may actually execute inside one
   workflow run, counted across every repair round and shared by every check node that resolves
-  to this slot. It defaults to once, and the ceiling of 20 is the repair-round ceiling, so it
-  means "every round". Once a run has spent the budget the gate is skipped with a note saying
+  to this slot. It defaults to once, and the ceiling of 21 is the initial submission plus the
+  repair-round ceiling, so it means "every round". Once a run has spent the budget the gate is skipped with a note saying
   so, and CI is what still runs the command against the merge commit.
   [Workflows](workflows.md#command-nodes) describes what spends a run and what starts the
   count over.

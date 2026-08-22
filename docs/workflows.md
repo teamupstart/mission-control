@@ -505,8 +505,8 @@ rather than silently overwriting unsaved typing.
 **A Command runs once per workflow run by default.** Beside the command itself, each slot
 carries **how often this Command may run** - how many times it may actually execute inside a
 single workflow run, counted across every repair round. The default is **once**, and the
-ceiling is 20, which is the repair-round ceiling and therefore means "every round, without
-ever being skipped".
+ceiling is 21, which is the initial submission plus the repair-round ceiling and therefore
+means "every round, without ever being skipped".
 
 This exists because a slow gate is slow in every round. A twenty-minute test suite that
 re-runs on each repair round is the largest fixed cost in a long workflow, and the rounds after

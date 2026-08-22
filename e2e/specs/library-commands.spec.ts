@@ -263,9 +263,10 @@ test("an unconfigured slot's run budget reads once per run, in the control and i
     .toContainText("Runs once per workflow run");
 
   // The ceiling is offered as a plain choice rather than hidden behind a number box, and it
-  // says what it MEANS - a budget equal to the repair-round cap can never be spent.
-  await expect(budget.getByRole("option")).toHaveCount(20);
-  await expect(budget.getByRole("option", { name: "20 times per run (every round)" }))
+  // says what it MEANS - a budget covering the initial submission plus every repair round can
+  // never be spent, which is one more than the repair-round cap.
+  await expect(budget.getByRole("option")).toHaveCount(21);
+  await expect(budget.getByRole("option", { name: "21 times per run (every round)" }))
     .toHaveCount(1);
 
   // Untouched, so nothing to save. A default that arrived as a dirty draft would offer to

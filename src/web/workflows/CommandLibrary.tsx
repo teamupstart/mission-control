@@ -90,9 +90,9 @@ export const COMMAND_MAX_RUNS_CHOICES: number[] = Array.from(
  * One budget as its option label.
  *
  * The ceiling says "every round" because that is what it MEANS rather than what it counts: a
- * run cannot exceed `repairRoundsMax` rounds, so a budget equal to it can never be spent, and
- * an operator looking for "keep running this like it used to" needs to find it without doing
- * that arithmetic themselves.
+ * run is an initial submission plus at most `repairRoundsMax` repair rounds, so a budget of
+ * one more than that cap can never be spent, and an operator looking for "keep running this
+ * like it used to" needs to find it without doing that arithmetic themselves.
  */
 export function commandMaxRunsLabel(runs: number): string {
   if (runs === 1) return "Once per run";

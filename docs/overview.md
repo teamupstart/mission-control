@@ -171,9 +171,11 @@ and - crucially - **delivers alerts even with the window closed** (a browser tab
 make install        # install the app from a clean, updater-owned clone
 ```
 
-That is the whole install. It needs `git`, an authenticated `gh` (`gh auth login`), and an
-Apple Silicon Mac - it refuses an Intel host rather than building an app that cannot run
-there. From a fresh clone it:
+That is the whole install. It needs `git`, an authenticated `gh` (`gh auth login`), the Xcode
+command line tools (`xcode-select --install`, for the native keep-awake module node-gyp
+compiles during packaging), and an Apple Silicon Mac - it refuses an Intel host rather than
+building an app that cannot run there. Each is checked before the clone, so a missing one
+costs seconds rather than failing at the end of a full build. From a fresh clone it:
 
 - establishes a **separate clone of this repository at `~/.mission-control/app-src` that only
   the updater ever touches**. Your own worktree is never built, fetched, or checked out by it;

@@ -37,7 +37,14 @@ export function UpdateBanner(props: UpdateBannerProps): React.JSX.Element | null
           <p>{snapshot.message}</p>
         </div>
         <div className="app-banner-actions">
-          {snapshot.manual && snapshot.retryable && (
+          {/*
+            Retry follows `retryable` alone, not `manual && retryable`. The error phase is now
+            reachable from a background check for a standing, user-actionable failure - a lapsed
+            `gh` credential - and that is precisely the state where someone runs `gh auth login`
+            and wants to re-check from here. Gating on `manual` would leave the one error we
+            chose to interrupt them with as the only one offering no way forward.
+          */}
+          {snapshot.retryable && (
             <Tooltip label="Check for the update again">
               <button type="button" className="btn btn-primary" onClick={props.onCheck}>Retry</button>
             </Tooltip>

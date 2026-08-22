@@ -44,7 +44,7 @@ reads it:
 | Stage | Click opens |
 |-------|-------------|
 | ⇊ Intake | **Drawer** - every task source and recurring mission, with its health line |
-| ☰ Backlog | **Drawer** - the queue in the order autopilot would take it, with the triage moves on each row, escalating to the [Sitrep](attention-and-alerts.md#roundup) |
+| ☰ Backlog | **Drawer** - the queue in the order you arranged, which is the order autopilot takes it in, with the triage moves on each row, escalating to the [Sitrep](attention-and-alerts.md#roundup) |
 | ▶ Working | The fleet, with the filter cleared, so the count and the sessions agree again |
 | ⌁ Review | **Drawer** - one ladder per live run |
 | ⧉ Decide | **Drawer** - the condensed decision dossier, one row per live ensemble, with confirmed cancellation; its header also counts unacknowledged failed runs until they are dismissed from the full ensemble page |
@@ -100,7 +100,7 @@ on a failed call would be lying about the queue it is describing.
 |--------|---------------|--------------|
 | **Review** | The session, the workflow and version, the repair round, a compact pipeline of chips (evidence → reviewers → session action → GitHub Inspector), and what the run is doing - **including why it stopped**, as `Blocked · session gone`. A run stopped on *you* is marked amber; a run that has stopped and will not move on its own is marked red. Three or more runs stopped for the *same* reason are one bar instead of three rows. A run an ensemble handed off wears its **⧉ from an ensemble** provenance, which opens that ensemble | The one remedy that run's state actually takes - `Dismiss`, `Retry`, `Resubmit`, `Restart…`, or `Dismiss all` for a bar - then `Open run` → `#/runs/:id`, `All runs →` → `#/runs`, and `Bind a workflow…` opens the binding dialog |
 | **Decide** | What was at stake, elapsed, the candidate progress dots, and what the run wants next. The ones awaiting an answer sort first. A terminal failure remains in the header attention count until **Dismiss failure** acknowledges it without deleting its history | `Decide` (awaiting an answer) or `Open full dossier` → `#/ensembles/:id`, `All ensembles →` → `#/ensembles` |
-| **Backlog** | One queued task: its title (which reopens the [Dispatch](dispatch-and-backlog.md#dispatch-an-agent) form over it), its kind, agent and age, and the marks for its state - **next up**, what it is waiting on, **parked**. The ready band is in [plan order](work-queues.md#backlog-autopilot-foreman-schedules-the-fleet), so the top row is what autopilot takes next; blocked and parked follow. **next up** is a button: it opens the [planner](#the-autopilot-planner), which says why that row is the row | `Launch now` dispatches it into a fresh worktree, the switch parks or resumes it, the picker sets its priority, and a dead prerequisite resolves from the row it is blocking. The footer carries the [autopilot switch and its readout](#the-autopilot-planner), and `Sitrep →` opens the [Roundup](attention-and-alerts.md#roundup) |
+| **Backlog** | One queued task: its title (which reopens the [Dispatch](dispatch-and-backlog.md#dispatch-an-agent) form over it), its kind, agent and age, and the marks for its state - **next up**, what it is waiting on, **parked**. The ready band is in [the order you set](dispatch-and-backlog.md#the-backlog-order-is-the-one-you-set), so the top row is what autopilot takes next; blocked and parked follow. **next up** is a button: it opens the [planner](#the-autopilot-planner), which says what Foreman knows about that row | `Launch now` dispatches it into a fresh worktree, the switch parks or resumes it, the picker sets its priority, and a dead prerequisite resolves from the row it is blocking. The footer carries the [autopilot switch and its readout](#the-autopilot-planner), and `Sitrep →` opens the [Roundup](attention-and-alerts.md#roundup) |
 | **Intake** | Each source's last sweep and what it filed, or the error it failed with; each mission's cadence, next firing, and health | `Settings` → task sources, `Open` → [Recurring Missions](recurring-missions.md#recurring-missions) |
 | **Shipped** | One adopted pull request: its merge state as a **mark and a word** (merged / open / gone), its title - falling back to the branch, then to its own number - over `owner/repo#N`, the session that opened it, and when. Newest adoption first, over the same rolling seven days the count above it is folded from. Chips in the header split the week **All / Merged / Open / Gone** with their counts, and are toggles | The pull request itself on GitHub, and `Ship log →` → [`#/shipped`](library-and-line.md#the-ship-log) |
 
@@ -124,8 +124,8 @@ state as a mark, and each band is a **named list** for a reader who cannot see t
 
 The header counts `4 ready · 1 blocked · 1 parked`, dropping whatever is zero, and goes amber
 with **nothing ready** on exactly the strip's own condition: items are queued and none of them
-can start, so capacity will never clear it. **Only ready rows carry the priority picker** -
-priority orders the queue, and setting it on a row that cannot run orders nothing - while a
+can start, so capacity will never clear it. **Only ready rows carry the priority picker** - a
+row that cannot run is a row whose triage mark has nothing to inform yet - while a
 parked row keeps its switch and a row blocked by a cancelled or failed prerequisite keeps the
 [resolve button](dispatch-and-backlog.md#resolve-a-stopped-dependency), which targets the dead task and so releases
 every dependent rather than just that row. A task that is both parked *and*
@@ -134,23 +134,25 @@ row prints both marks so resuming it does not silently fail to reach the ready b
 
 #### The autopilot planner
 
-The drawer says *what* autopilot would take next by putting the queue in the machine's own
-order and marking its head. **The mark is a button, and pressing it says why.** The panel it
-opens is anchored under the mark and carries four things:
+The drawer says *what* autopilot would take next by putting the queue in
+[your](dispatch-and-backlog.md#the-backlog-order-is-the-one-you-set) order and marking its
+head. The head is the head **because that is where you put it** - so the panel behind the
+mark is not a justification of the position, it is what Foreman knows about the task
+sitting in it. The panel is anchored under the mark and carries four things:
 
 - The task itself - priority, title, kind and agent, and an excerpt of its intent.
 - **Foreman's own recorded reason**, quoted and attributed. Every plan entry has carried a
   `reason` since the [autopilot](work-queues.md#backlog-autopilot-foreman-schedules-the-fleet) shipped;
-  this is the first surface that shows it. When the plan named the task but recorded no
-  reason, the panel says that. When the plan does not name the task at all - the unplanned
-  tail `readyBacklog` appends oldest-first - it says the fallback ordering put it there,
-  rather than implying a decision nobody made.
+  this is the first surface that shows it. It explains the task's *dependencies*, not its
+  position - the plan supplies edges and the position is yours. When the plan named the
+  task but recorded no reason, the panel says that; when the plan does not name it at all,
+  the panel says so rather than implying a decision nobody made.
 - **The computed facts**, checkable against the rows behind the panel: its priority and how
-  many ready items outrank it, its age and whether it is the oldest, that nothing upstream
-  blocks it, and how many tasks finishing it would unblock. These deliberately do not
-  flatter the plan: dependencies beat priority, so a `low` task legitimately leads a
-  `blocker`, and the panel reports that rather than claiming the top row is the most
-  important one.
+  many ready items carry a higher one, its age and whether it is the oldest, that nothing
+  upstream blocks it, and how many tasks finishing it would unblock. These deliberately do
+  not flatter the queue: priority does not decide position, so a `low` task legitimately
+  leads a `blocker`, and the panel reports that rather than claiming the top row is the
+  most important one.
 - **`Launch now`**, the same dispatch the row carries. The panel closes on the click; the
   drawer stays, and the row leaves the ready band when the daemon says so.
 
@@ -473,11 +475,12 @@ available:
   <kbd>k</kbd> pressed on the overview drill in and then do what they say. The one exception
   is <kbd>⇧</kbd><kbd>Tab</kbd>, which cycles the selected tile's permission mode in place
   without opening its detail.
-- **You choose what a card draws.** **Settings → Display → Board card** is a checklist of
-  every optional item a session card can state - goal, live activity, workflow, model,
-  context meter, reasoning effort, permission mode, cost, branch, worktree and last seen -
-  and unchecking one applies to every card in every column immediately. A live preview card
-  sits in the panel and redraws as you toggle, so you can see what you are trading without
+- **You choose what a session draws.** **Settings → Display → Session display** is a
+  checklist of every optional item a session states about itself. Under **Board card** sit
+  the card's own - goal, live activity, workflow, model, context meter, reasoning effort,
+  permission mode, cost, branch, worktree and last seen - and unchecking one applies to
+  every card in every column immediately. A live preview card sits in the panel and redraws
+  as you toggle, so you can see what you are trading without
   leaving Settings. Two things are deliberately not on the list. The **attention flags** -
   a draft or escalated note, a review, a queued turn, a pull request, an Inspector verdict,
   a recurring mission, an ensemble - are always drawn, because no preference should be able
@@ -491,6 +494,17 @@ available:
   line. The choice is per browser and stored through the daemon, so it survives a reload;
   a second dashboard tab already open picks it up on its next load rather than live, which
   is true of every Display preference.
+- **The same panel governs the conversation header.** Under **Conversation header** in that
+  checklist sit the console detail's two facts above the transcript - the session's
+  **working directory** and its **Git branch**. Both ship visible, so nothing moves until you
+  ask. Switch both off and the whole band stops rendering, giving its height back to the
+  conversation - **but only when nothing else is in it.** That band is also where a task's
+  chip and its pull requests go, so an ordinary dispatched session collapses it while a
+  scout task, a session re-assigned to a later task, a task carrying an outcome link, a
+  scheduled task and a multi-repo task each keep it. The panel says so where you choose.
+  These two switches are separate from the card's **Branch** and **Worktree** items on
+  purpose: you can keep the path on the card and drop it from the console, have it in both
+  places, or have it in neither.
 - **An [ensemble](ensembles.md#multi-agent-ensembles)'s members are drawn together, in every layout.**
   Sibling candidates of one run used to scatter through the fleet like unrelated work; now one
   ordering decides where every session goes, and it puts them adjacent. On the **Board** they

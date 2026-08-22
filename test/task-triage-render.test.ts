@@ -130,23 +130,68 @@ test("labels beyond the card's cap are counted, never silently dropped", () => {
 });
 
 test("the backlog column offers retriage on every card", () => {
-  // The backlog is sorted by priority, so this control is what makes the field usable
-  // at the one place the backlog is actually read.
+  // The backlog is the surface triage actually happens on, so this control is what makes
+  // the field usable at the one place the backlog is read - even though it no longer
+  // moves the card.
   const html = column([mkTask({ id: "t1", title: "Pick me" }), mkTask({ id: "t2", title: "Then me" })]);
   assert.equal(html.split("bl-prio").length - 1, 2, "one retriage control per card");
   assert.ok(html.includes("Priority for Pick me"), "the control is labelled per task");
 });
 
-test("fed the shared projection, the column draws the urgent card at the top", () => {
+test("fed the shared projection, the column draws the operator's order", () => {
   // The column does NOT sort - BoardView hands it `backlogTasks(...)`, which is the one
   // place the order lives (and is unit-tested in task-triage.test.ts). What this pins is
-  // the composition: a reader scanning the column top-down sees priority order, and the
-  // column renders in the order it was given rather than regrouping by anything else.
+  // the composition: the column renders in the order it was given rather than regrouping
+  // by anything of its own. The fixture is deliberately one where priority and rank
+  // DISAGREE, so a column that quietly re-sorted by priority would fail here.
   const html = column(
     backlogTasks([
-      mkTask({ id: "t1", title: "Later", createdAt: 100 }),
-      mkTask({ id: "t2", title: "Urgent", createdAt: 900, priority: "blocker" }),
+      mkTask({ id: "t1", title: "Later", createdAt: 100, backlogRank: 2048, priority: "blocker" }),
+      mkTask({ id: "t2", title: "First", createdAt: 900, backlogRank: 1024 }),
     ]),
   );
-  assert.ok(html.indexOf("Urgent") < html.indexOf("Later"));
+  assert.ok(html.indexOf("First") < html.indexOf("Later"));
+});
+
+test("every card carries the four move controls, named for its own task", () => {
+  // The keyboard route into reordering, and the reason this phase ships a usable feature
+  // rather than a route with no caller. Selected by `aria-label` because the app selects
+  // by role and label and never by `data-testid` - and phase 2's drag work and the e2e
+  // spec both select by this exact wording.
+  const html = column(
+    backlogTasks([
+      mkTask({ id: "t1", title: "First", backlogRank: 1024 }),
+      mkTask({ id: "t2", title: "Second", backlogRank: 2048 }),
+    ]),
+  );
+  for (const move of ["to top", "up", "down", "to bottom"]) {
+    assert.ok(html.includes(`Move &quot;First&quot; ${move}`), `First is missing "${move}"`);
+    assert.ok(html.includes(`Move &quot;Second&quot; ${move}`), `Second is missing "${move}"`);
+  }
+});
+
+test("the ends of the column disable the moves that have nowhere to go", () => {
+  // A live control that does nothing reads as broken. The first card's `up` and `to top`
+  // are disabled and the last card's `down` and `to bottom` are, which is also how the
+  // column says "this IS the top" without drawing a second mark to say so.
+  const html = column(
+    backlogTasks([
+      mkTask({ id: "t1", title: "First", backlogRank: 1024 }),
+      mkTask({ id: "t2", title: "Last", backlogRank: 2048 }),
+    ]),
+  );
+  // The rendered attribute order is React's, so match the label and the `disabled` flag
+  // within one tag rather than assuming they are adjacent.
+  const buttons = html.match(/<button[^>]*>/g) ?? [];
+  const at = (title: string, move: string): string => {
+    const tag = buttons.find((b) => b.includes(`Move &quot;${title}&quot; ${move}`));
+    assert.ok(tag, `${title} has no "${move}" control at all`);
+    return tag;
+  };
+  assert.ok(at("First", "up").includes("disabled"), "the first card cannot move up");
+  assert.ok(at("First", "to top").includes("disabled"), "the first card is already the top");
+  assert.ok(!at("First", "down").includes("disabled"), "the first card can move down");
+  assert.ok(at("Last", "down").includes("disabled"), "the last card cannot move down");
+  assert.ok(at("Last", "to bottom").includes("disabled"), "the last card is already the bottom");
+  assert.ok(!at("Last", "to top").includes("disabled"), "the last card can move to the top");
 });

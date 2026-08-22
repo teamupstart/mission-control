@@ -25,7 +25,7 @@ import { LineDrawer, LineDrawerEmpty } from "./LineDrawer.tsx";
 import { NextUpPlanner } from "./NextUpPlanner.tsx";
 
 /**
- * BACKLOG - the queue in the order autopilot would take it, and the moves that change it.
+ * BACKLOG - the queue in the order the operator arranged, and the moves that change it.
  *
  * This stage opened the SITREP for its whole life before now, and the Sitrep is a good panel
  * answering a different question. It reads the whole fleet - who needs you, who is working,
@@ -37,10 +37,11 @@ import { NextUpPlanner } from "./NextUpPlanner.tsx";
  * Four decisions shape the file.
  *
  *  1. **The daemon's order, not a second one.** The ready band is `readyBacklog(tasks, plan)`
- *     verbatim - plan-entry order first, then the unplanned tail oldest-first - which is the
- *     exact list `backlog-machine.ts` schedules from and the exact derivation the strip's own
- *     sentence is folded from. The head of it IS "next up"; there is no separate marker
- *     computation to drift from the one the board draws.
+ *     verbatim - the operator's `backlogRank` order, filtered to what can start right now -
+ *     which is the exact list `backlog-machine.ts` schedules from and the exact derivation
+ *     the strip's own sentence is folded from. The head of it IS "next up"; there is no
+ *     separate marker computation to drift from the one the board draws. The stored plan
+ *     supplies the dependency edges the filter asks about and never the position.
  *  2. **It reads what the browser already holds.** Unlike Intake and Shipped, this drawer
  *     fetches nothing on open: the task list arrives over SSE and `foreman.backlogPlan` is
  *     already polled every 4s by `useForeman`. A stage click costs one render.
@@ -49,11 +50,15 @@ import { NextUpPlanner } from "./NextUpPlanner.tsx";
  *     priority is the same `updateTask { priority }` the board's picker writes. A refusal is
  *     reported on the drawer and the row STAYS, because a triage surface that dropped a row
  *     on a failed call would be lying about the queue.
- *  4. **Three bands, and only the first one gets the ordering levers.** Ready rows are the
- *     ones actually being ordered, so they carry the priority select; blocked and parked rows
+ *  4. **Three bands, and only the first one gets the triage lever.** Ready rows are the ones
+ *     a human is choosing between, so they carry the priority select; blocked and parked rows
  *     carry the one move that would change their state at all - resolve the dead prerequisite,
- *     or flip the switch back on. Offering a priority picker on a row that cannot run whatever
- *     you set it to is a control that answers a question nobody asked.
+ *     or flip the switch back on. Priority is annotation and moves nothing, so a picker on a
+ *     row that cannot run whatever you set it to informs no decision anyone is making.
+ *
+ *     The controls that DO change the order live on the board's card (`BacklogColumn`), which
+ *     is the surface reordering happens on. Duplicating them here would be a second place to
+ *     get the anchor arithmetic right for no question this panel is being asked.
  *
  *  5. **It explains itself, one layer down.** The `next up` mark is a trigger
  *     (`NextUpPlanner`): press it and the drawer says WHY that row is the row - Foreman's
@@ -94,8 +99,9 @@ function partition(tasks: Task[], plan: BacklogPlan | null, index: BacklogIndex)
     blockers: blockersIn(task, index),
     deadBlockers: deadBlockersFor(task, index),
   });
-  // `backlogTasks` is priority-then-age, which is the right order for the second band and the
-  // wrong one for the first: the ready band's whole point is that it is in PLAN order.
+  // One order for both bands now (`backlogTasks` is `byBacklogRank`), which is why this is a
+  // plain set difference rather than a re-sort: a blocked row sits exactly where the operator
+  // left it, and moves into the ready band in place when it unblocks.
   const rest = backlogTasks(tasks).filter((t) => !readyIds.has(t.id));
   return [
     ...ready.map((t) => row(t, "ready")),
@@ -235,10 +241,10 @@ function BacklogRow({
         {/* The priority control IS the mark, never a read-only chip with an editor beside it -
             the board card settled this argument and the reasoning carries: two of them meant
             the same task said "BLOCKER" and "Blocker" inches apart. Ready rows only, because
-            priority orders the queue and these are the rows in it. */}
+            these are the rows a human is choosing between. */}
         {band === "ready" && (
           <span className={`bl-prio${task.priority ? ` prio-${task.priority}` : " is-unset"}`}>
-            <Tooltip label={`Priority for "${task.title}" - decides where it sits in the queue`}>
+            <Tooltip label={`Priority for "${task.title}" - a triage mark, not its place in the queue`}>
               <select
                 aria-label={`Priority for ${task.title}`}
                 value={task.priority ?? ""}

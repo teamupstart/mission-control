@@ -150,7 +150,7 @@ function foldIntake(input: LineFoldInput): LineStageSummary {
  * BACKLOG - filed and not started.
  *
  * `readyBacklog` decides what "ready" means, not this: it already folds the scheduling gate,
- * declared dependencies and Foreman's plan into one ordering, and it is what the board's
+ * declared dependencies and Foreman's inferred edges into one list, in the operator's order, and it is what the board's
  * "next up" marker and the autopilot both select from. A second definition here would put a
  * different task's name on the strip than on the column.
  */

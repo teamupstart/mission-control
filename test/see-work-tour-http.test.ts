@@ -17,6 +17,7 @@ function tourTask(overrides: Partial<Task> = {}): Task {
     priority: null,
     labels: ["tour-demo"],
     dependencies: [],
+    backlogRank: null,
     enabled: true,
     model: "gpt-5.6-terra",
     effort: null,

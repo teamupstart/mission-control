@@ -27,6 +27,7 @@ import {
 } from "../TranscriptPanel.tsx";
 import { SessionLaunchers } from "../LaunchMenu.tsx";
 import { useSessionConversationView } from "../../lib/conversation-view.ts";
+import { useDisplayItems } from "../../lib/board-card.ts";
 import { fitDetailTabs, observeDetailTabs } from "../../detailTabsLadder.ts";
 import {
   AgentDot,
@@ -370,6 +371,25 @@ export function ConsoleDetail({
   // The shared reduction keeps the task kind and title rules consistent across surfaces.
   const pill = taskPillParts(session);
 
+  // The `.detail-sub` band, cell by cell, so the container can answer whether it has
+  // anything at all to say.
+  //
+  // The two preferences are ADDITIONAL gates, not replacements: the branch cell still
+  // requires a branch to exist, and the path cell still draws for a session with no cwd
+  // (its tooltip is what says so). Both ship visible, so a profile that has never opened
+  // the Display panel gets the band the previous release drew.
+  const shown = useDisplayItems();
+  const showPath = shown("detailPath");
+  const showBranch = shown("detailBranch") && Boolean(session.gitBranch);
+  // `silent` is already true for a session with no task, so this needs no separate guard.
+  const showTaskChip = !pill.silent;
+  const showRepoPrs = (session.task?.repoPrs.length ?? 0) > 0;
+  // Guarded as an element rather than with CSS `:empty`. The band carries padding and a
+  // border, so an empty one is a visible bar of chrome saying nothing - the same reasoning
+  // the task chip below already applies to itself - and `:empty` would be defeated anyway
+  // by the whitespace JSX leaves between children.
+  const bandHasContent = showPath || showBranch || showTaskChip || showRepoPrs;
+
   const tabs = useMemo(() => detailTabs({ queueCount }), [queueCount]);
   const tabLabel = tabs.find((t) => t.id === tab)?.label ?? "Detail";
 
@@ -502,14 +522,23 @@ export function ConsoleDetail({
         <CostChip cost={session.cost} />
       </header>
 
+      {/* Drawn only when it has an occupant. Nothing structural hangs off this element:
+          `.detail-head` and `.detail-tabs` each own their own bottom rule, so the band's
+          absence leaves the head's border directly above the tab strip with no doubled and
+          no missing divider, and no compensating rule is needed. */}
+      {bandHasContent && (
       <dl className="detail-sub">
-        <div className="kv">
-          <dt>path</dt>
-          <Tooltip label={session.cwd ?? "This session has no working directory"}>
-            <dd className="mono">{shortenCwd(session.cwd)}</dd>
-          </Tooltip>
-        </div>
-        {session.gitBranch && (
+        {showPath && (
+          <div className="kv">
+            <dt>path</dt>
+            {/* The tooltip carries the UNTRUNCATED path, and is the only place it is
+                readable. It goes wherever this cell goes. */}
+            <Tooltip label={session.cwd ?? "This session has no working directory"}>
+              <dd className="mono">{shortenCwd(session.cwd)}</dd>
+            </Tooltip>
+          </div>
+        )}
+        {showBranch && (
           <div className="kv">
             <dt>branch</dt>
             <dd className="mono branch">{session.gitBranch}</dd>
@@ -558,6 +587,7 @@ export function ConsoleDetail({
           </>
         )}
       </dl>
+      )}
 
       {/* Gated on the invite, not just on `drawerOpen`: this is Foreman's record of a
           session it is in, and the header's one action is to leave. A session it has been

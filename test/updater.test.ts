@@ -7,6 +7,7 @@ import {
   latestStableRelease,
   sanitizeLogLine,
   sanitizeReleaseNotes,
+  surfacesFromBackgroundCheck,
   UpdateController,
   UPDATE_GH_ARGS,
   type ReleaseInfo,
@@ -212,6 +213,108 @@ test("missing and unauthenticated gh failures have specific safe messages", asyn
     latestStableRelease(async () => ({ code: 1, stdout: "", stderr: "authentication required" })),
     /not authenticated/,
   );
+});
+
+test("rate limiting reads as rate limiting, and does not read as a lapsed credential", async () => {
+  // GitHub's own 403 body advertises that "higher rate limits apply to authenticated requests",
+  // so the auth test has to run second or a working credential is reported as lapsed.
+  await assert.rejects(
+    latestStableRelease(async () => ({
+      code: 1,
+      stdout: "",
+      stderr:
+        "HTTP 403: API rate limit exceeded for user ID 1; higher rate limits apply to authenticated requests",
+    })),
+    /rate limit is reached/,
+  );
+  await assert.rejects(
+    latestStableRelease(async () => ({ code: 1, stdout: "", stderr: "HTTP 401: Bad credentials" })),
+    /not authenticated/,
+  );
+  // And a URL that merely contains "login" is not an auth failure.
+  await assert.rejects(
+    latestStableRelease(async () => ({
+      code: 1,
+      stdout: "",
+      stderr: "could not resolve host github.com/login-service",
+    })),
+    /cannot list releases here/,
+  );
+});
+
+test("a 403 that is not a rate limit is not reported as one", async () => {
+  // 403 is also how GitHub refuses authorization outright. Reporting that as a rate limit tells
+  // someone to wait an hour for a permission they will never be granted - and this class is
+  // deliberately suppressed during background checks, so the wait would be silent too.
+  for (const stderr of [
+    "HTTP 403: Resource not accessible by integration",
+    "HTTP 403: Must have admin rights to Repository",
+  ]) {
+    await assert.rejects(
+      latestStableRelease(async () => ({ code: 1, stdout: "", stderr })),
+      (error: unknown) => {
+        assert.doesNotMatch(String((error as Error).message), /rate limit/i);
+        return true;
+      },
+    );
+  }
+  // 429 is used for nothing else, so it still counts on the code alone.
+  await assert.rejects(
+    latestStableRelease(async () => ({ code: 1, stdout: "", stderr: "HTTP 429: Too Many Requests" })),
+    /rate limit is reached/,
+  );
+});
+
+test("only a standing, user-actionable failure may interrupt a background check", () => {
+  assert.equal(surfacesFromBackgroundCheck("gh-auth"), true);
+  assert.equal(surfacesFromBackgroundCheck("gh-missing"), true);
+  // These clear themselves; a banner for them trains people to dismiss the one that matters.
+  assert.equal(surfacesFromBackgroundCheck("gh-rate-limited"), false);
+  assert.equal(surfacesFromBackgroundCheck("gh-failed"), false);
+});
+
+test("a lapsed gh credential becomes visible without anyone running a manual check", async () => {
+  const f = fixture({
+    latestRelease: async () => {
+      throw await latestStableRelease(async () => ({
+        code: 1,
+        stdout: "",
+        stderr: "HTTP 401: Bad credentials",
+      })).catch((error: unknown) => error);
+    },
+  });
+  await f.controller.start();
+
+  const background = await f.controller.check(false);
+
+  assert.equal(background.phase, "error");
+  if (background.phase === "error") {
+    assert.match(background.message, /gh auth login/);
+    // Reached the banner, not a modal: a background check never interrupts with a dialog.
+    assert.equal(background.manual, false);
+    assert.equal(background.retryable, true);
+  }
+  assert.equal(f.events.filter((event) => event.startsWith("error-dialog")).length, 0);
+  f.controller.stop();
+});
+
+test("a rate-limited background check still returns quietly to idle", async () => {
+  const f = fixture({
+    latestRelease: async () => {
+      throw await latestStableRelease(async () => ({
+        code: 1,
+        stdout: "",
+        stderr: "HTTP 403: API rate limit exceeded",
+      })).catch((error: unknown) => error);
+    },
+  });
+  await f.controller.start();
+
+  assert.equal((await f.controller.check(false)).phase, "idle");
+  const manual = await f.controller.check(true);
+  assert.equal(manual.phase, "error");
+  if (manual.phase === "error") assert.match(manual.message, /rate limit is reached/);
+  f.controller.stop();
 });
 
 test("background failures return quietly to idle while manual failures are actionable", async () => {

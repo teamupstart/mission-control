@@ -8,9 +8,10 @@ import { updateUiConfig, useUiConfig } from "./uiConfig.ts";
  * signal somebody needed, and until now none of them could be turned off: an operator who
  * never uses Inspector read the Inspector flag anyway, and an operator running a single
  * model read the model pill on every card forever. This registry is the list the operator
- * gets to choose from, and the SessionTile reads the same list - nothing else may hold a
- * second copy. That is the rule `LAYOUTS` follows for layout modes and `detailTabs.ts`
- * follows for the tab strip, and `test/board-card-items.test.ts` is what enforces it here.
+ * gets to choose from, and every surface that draws an optional item reads the same list -
+ * `SessionTile` for the card, `ConsoleDetail` for the band above the conversation. Nothing
+ * else may hold a second copy. That is the rule `LAYOUTS` follows for layout modes and
+ * `detailTabs.ts` follows for the tab strip, and `test/board-card-items.test.ts` is what enforces it here.
  *
  * WEB-ONLY, deliberately, and not `src/shared/`. The daemon stores the hidden ids opaquely
  * (`UiConfig.hiddenDisplayItems`) and has no use for prose it never shows - exactly the
@@ -31,11 +32,11 @@ import { updateUiConfig, useUiConfig } from "./uiConfig.ts";
 /**
  * Which surface an item is drawn on, and therefore which section of the panel lists it.
  *
- * `"conversation"` is declared here and deliberately unpopulated: the console detail's
- * `PATH`/`BRANCH` band becomes optional in the next phase, as two more entries in THIS
- * array rather than a second config key. The panel renders one section per distinct group
- * it finds, so those entries appear with no panel restructuring - and a group with no
- * entries draws no section, so this build has exactly one and no dead surface.
+ * `"conversation"` names the console detail's `PATH`/`BRANCH` band, which is now optional
+ * through two more entries in THIS array rather than through a second config key. The
+ * panel renders one section per distinct group it finds, so those entries arrived with no
+ * panel restructuring - and a group with no entries draws no section, so a third surface
+ * would add a third group and be sectioned the same way.
  */
 export type DisplayItemGroup = "card" | "conversation";
 
@@ -128,6 +129,36 @@ export const DISPLAY_ITEMS = [
     label: "Last seen",
     description:
       "How long ago the session last did anything, or how long it has been up. Hidden, a stalled card looks the same as a busy one.",
+  },
+  /**
+   * The console detail's `PATH`/`BRANCH` band.
+   *
+   * Deliberately NOT the same switches as the card's `branch` and `worktree` above. An
+   * operator may want the path on the card and not over the conversation, in both places,
+   * or in neither, and one checkbox meaning two surfaces could not express "neither".
+   *
+   * Both descriptions state the condition rather than promising height back: the same band
+   * hosts a task's chip and its pull requests, so it collapses only when nothing else is in
+   * it. That is the ordinary dispatched session and not a scout, a re-assigned, a
+   * scheduled, an outcome-carrying or a multi-repo one.
+   */
+  {
+    id: "detailPath",
+    group: "conversation",
+    label: "Working directory",
+    description:
+      "The session's directory above the conversation, shortened, with the full path on hover. Hidden, the console no longer states where the session is running - turn the card's Worktree item on if you still want it somewhere.",
+  },
+  {
+    id: "detailBranch",
+    group: "conversation",
+    label: "Git branch",
+    // "Git branch" rather than "Branch": a checkbox's accessible name is the whole answer a
+    // screen reader gives, and the card already has a "Branch". Two controls in one panel
+    // announcing the same name are two controls nobody can tell apart - and `getByRole`
+    // would not be able to either.
+    description:
+      "The git branch above the conversation. Independent of the card's Branch item, so you can keep the branch on the card and drop it here.",
   },
 ] as const satisfies readonly DisplayItem[];
 

@@ -124,7 +124,7 @@ async function useBoardLayout(page: Page, daemon: DaemonHandle): Promise<void> {
 async function openEditor(page: Page, title: string): Promise<Locator> {
   const card = page.locator(".bl-card", { hasText: title });
   await expect(card).toBeVisible();
-  await card.getByRole("button", { name: title }).click();
+  await card.getByRole("button", { name: title, exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Edit a backlog task" });
   await expect(dialog).toBeVisible();
   return dialog;

@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, realpathSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
@@ -41,6 +42,21 @@ const RUN_SCHEMA_PATH = join(home, "schema-path");
 const RUN_SCHEMA = join(home, "schema");
 const RUN_STDIN = join(home, "stdin");
 const RUN_ORPHAN_READY = join(home, "orphan-ready");
+/**
+ * How the fake binary stays alive until it is killed, WITHOUT forking.
+ *
+ * It used to be `sleep 30`, and that is a fall-through waiting to happen: `sleep` is an
+ * external command, so under the process pressure of a full concurrent suite its fork can
+ * fail, and a shell whose `sleep` failed does not stop - it runs on into the success output
+ * below and exits 0. The orphan test then watched a run it believed it had killed RESOLVE
+ * six seconds later, when the surviving pipe-holder finally let `close` fire, and reported
+ * "Missing expected rejection" for a fixture problem.
+ *
+ * `read` is a shell builtin and opening a FIFO with no writer blocks in the shell itself, so
+ * the hold costs no process and cannot fail to be taken. Nothing ever opens the write end.
+ */
+const RUN_HOLD_FIFO = join(home, "hold-fifo");
+execFileSync("mkfifo", [RUN_HOLD_FIFO]);
 process.env.RUN_ARGS = RUN_ARGS;
 process.env.RUN_CWD = RUN_CWD;
 process.env.RUN_ENV = RUN_ENV;
@@ -49,6 +65,7 @@ process.env.RUN_SCHEMA = RUN_SCHEMA;
 process.env.RUN_STDIN = RUN_STDIN;
 process.env.RUN_NODE = process.execPath;
 process.env.RUN_ORPHAN_READY = RUN_ORPHAN_READY;
+process.env.RUN_HOLD_FIFO = RUN_HOLD_FIFO;
 
 const fakeBin = join(home, "fake-claude.sh");
 writeFileSync(
@@ -99,10 +116,12 @@ if [ "$RUN_CODEX_ORPHAN" = "1" ]; then
   # and fd 1 is this run's stdout, so the pipe stays open after the shell is gone.
   "$RUN_NODE" -e 'require("child_process").spawn(process.execPath,["-e","setTimeout(()=>{},6000)"],{detached:true,stdio:["ignore",1,2]}).unref()'
   : > "$RUN_ORPHAN_READY"
-  sleep 30
+  read _ < "$RUN_HOLD_FIFO"
+  exit 97
 fi
 if [ "$RUN_CODEX_WAIT" = "1" ]; then
-  sleep 30
+  read _ < "$RUN_HOLD_FIFO"
+  exit 97
 fi
 printf '%s\\n' '{"type":"thread.started","thread_id":"thread-abc"}'
 printf '%s\\n' '{"type":"turn.started"}'
@@ -548,7 +567,11 @@ test("a killed Codex run settles when the process dies, not when its stdio does"
   try {
     await assertSoon(() => existsSync(RUN_ORPHAN_READY));
     codexRunner.killLiveRuns?.();
-    await assert.rejects(run, /codex exited/);
+    // The SIGNAL, not merely "exited". Settling on the process's death is the whole subject
+    // here, and an exit CODE reaching this line would mean the fake had run to an end of its
+    // own and the pipe-holder alone delayed the answer - which is the bug, arriving disguised
+    // as a pass or as a timing failure. Naming the signal makes that state say what it is.
+    await assert.rejects(run, /codex exited SIGKILL/);
     const elapsed = Date.now() - started;
     // Well under the 6s the survivor holds the pipe for: this is the whole assertion, and a
     // looser bound would pass on the `close` that eventually arrives when the survivor exits.

@@ -3,6 +3,7 @@ import {
   cloneElement,
   isValidElement,
   useCallback,
+  useEffect,
   useId,
   useState,
   type ReactElement,
@@ -157,6 +158,23 @@ export function Tooltip({
     onBlur?: (e: React.FocusEvent<HTMLElement>) => void;
   };
   const disabled = isDisabled(props);
+
+  // A trigger that DISABLES ITSELF while its tip is open would otherwise strand the bubble
+  // on screen, covering whatever sits under it until something else happens to move the
+  // pointer or focus.
+  //
+  // Not a hypothetical: the backlog's move controls disable as a RESULT of being pressed -
+  // sending a card to the top is exactly what makes `to top` inapplicable - and the branch
+  // below swaps the cloned child for the anchor span at that moment, so the child's own
+  // `onBlur` unmounts without ever firing. The browser does not help either: it drops focus
+  // from a disabled element without a blur event of its own.
+  //
+  // Hiding on the transition rather than on every render, so a tip that is legitimately
+  // open on a control that was already disabled - hovering the anchor span to read WHY it
+  // is unavailable - is left alone.
+  useEffect(() => {
+    if (disabled) hide();
+  }, [disabled, hide]);
 
   // Merge our listeners onto the child (chaining any it already has) rather than wrapping
   // it, so the trigger's own layout - e.g. flex sizing in the card header - is untouched.

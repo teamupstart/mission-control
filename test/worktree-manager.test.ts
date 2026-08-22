@@ -444,38 +444,26 @@ test("an ambiguous native acquisition never creates a disposable task or check t
   assert.equal(new CheckLeaseStore(db).get("check-unknown"), null);
 });
 
-/**
- * How long a NON-BLOCKED acquisition or release is given to settle while the slow fetch is
- * still held open.
- *
- * The property is an ordering one - "this work did not queue behind that fetch" - and the
- * only lever a test has on it is a budget, because the two are concurrent. What makes a
- * generous budget correct rather than merely lenient is the gate below: `finishSlowFetch()`
- * is called only AFTER both of these have been waited on, so work that genuinely serialized
- * behind the fetch cannot settle at ANY budget, while work that did not needs milliseconds.
- * The number therefore only decides how long a real regression takes to report.
- *
- * It was 1000ms, which is inside the range a release doing real git work in a temp repository
- * reaches on a loaded machine - so it reported "blocked" for work that was merely slow, and
- * did it about a third of the time when this file's own sibling cases ran beside it. Sized
- * well clear of that, and still comfortably inside the case timeout so a true failure is this
- * assertion's sentence rather than an anonymous runner timeout.
- */
-const CONCURRENT_SETTLE_MS = 10_000;
-
 test(
   "a slow release fetch does not block another slot acquisition or release",
-  { timeout: 30_000 },
+  { timeout: 10_000 },
   async () => {
     const { clone, sha } = repository("mission-native-slot-concurrency-");
     let fetchCalls = 0;
     let announceSlowFetch!: () => void;
-    let finishSlowFetch!: () => void;
+    let openGate!: () => void;
+    // Read after the two independent operations settle, so "they did not wait for it" is
+    // asserted against the gate's actual state rather than against a stopwatch.
+    let gateOpen = false;
+    const finishSlowFetch = (): void => {
+      gateOpen = true;
+      openGate();
+    };
     const slowFetchStarted = new Promise<void>((resolve) => {
       announceSlowFetch = resolve;
     });
     const slowFetchGate = new Promise<void>((resolve) => {
-      finishSlowFetch = resolve;
+      openGate = resolve;
     });
     class SlowFirstFetchGit extends NativeWorktreeGit {
       override async fetchDefaultSha(): Promise<GitResult<string>> {
@@ -498,34 +486,24 @@ test(
 
     const thirdAcquire = acquire(m, clone, sha, "task-parallel-acquire");
     const secondRelease = m.release(second);
-    const settlesBefore = <T>(promise: Promise<T>, timeoutMs: number): Promise<boolean> =>
-      new Promise((resolve) => {
-        const timer = setTimeout(() => resolve(false), timeoutMs);
-        timer.unref();
-        void promise.then(
-          () => {
-            clearTimeout(timer);
-            resolve(true);
-          },
-          () => {
-            clearTimeout(timer);
-            resolve(true);
-          },
-        );
-      });
-    const [acquireProgressed, releaseProgressed] = await Promise.all([
-      settlesBefore(thirdAcquire, CONCURRENT_SETTLE_MS),
-      settlesBefore(secondRelease, CONCURRENT_SETTLE_MS),
-    ]);
-    finishSlowFetch();
 
-    const [firstReleased, thirdResult, secondReleased] = await Promise.all([
-      firstRelease,
-      thirdAcquire,
-      secondRelease,
-    ]);
-    assert.equal(acquireProgressed, true, "a different slot acquisition must not wait for the fetch");
-    assert.equal(releaseProgressed, true, "a different slot release must not wait for the fetch");
+    // Awaited with NO deadline of their own, which is the point. The claim is that neither
+    // of these waits on the first slot's gated fetch, and the honest proof is that both
+    // finish while that gate is still shut - not that both finish inside some number of
+    // milliseconds. A wall-clock race reports a busy machine as a broken lock, which is
+    // exactly what it did here: this repository's own suite runs several files at once, and
+    // a release that does real work in a temp git repository can lose a one-second race
+    // while being perfectly independent.
+    //
+    // If the independence ever DOES break, these two awaits deadlock against a gate nobody
+    // will open, and the test's own `timeout` reports it. Slow and unambiguous beats fast
+    // and wrong: a regression cannot pass here, and a loaded machine cannot fail here.
+    const thirdResult = await thirdAcquire;
+    const secondReleased = await secondRelease;
+    assert.equal(gateOpen, false, "both finished before the slow fetch was ever released");
+
+    finishSlowFetch();
+    const firstReleased = await firstRelease;
     assert.equal(firstReleased.outcome, "released");
     assert.equal(secondReleased.outcome, "released");
     const third = lease(thirdResult);

@@ -5,6 +5,7 @@ import { homedir, tmpdir, userInfo } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { STATE_DIRS } from "@shared/harness-runtime.mjs";
 import { DB_PATH, envVar } from "./config.ts";
+import { RANK_STEP, repairBacklogRanks } from "./backlog-rank.ts";
 import { supportsEffort } from "@shared/harness-capabilities.ts";
 import type { LaunchTurnMarker } from "./launch-presentation.ts";
 import {
@@ -942,6 +943,7 @@ export function openDb(): DatabaseSync {
     CREATE TABLE IF NOT EXISTS session_launch_turns (
       note_key     TEXT PRIMARY KEY,   -- noteKeyFor(s), same key as session_notes
       fingerprint  TEXT NOT NULL,      -- sha256 of the trimmed prompt delivered to the agent
+      echo_fingerprint TEXT,           -- sha256 of that prompt whitespace-collapsed, or NULL
       display_text TEXT,               -- the human request, or NULL to omit the turn
       message_id   TEXT,               -- native id of the projected turn, NULL until seen
       created_at   INTEGER NOT NULL,
@@ -3125,6 +3127,30 @@ function migrate(d: DatabaseSync): void {
   // column existed, so backfilling anything else would park their backlog on upgrade
   // and the autopilot would go quiet with nothing on screen to explain it.
   addColumn(d, "tasks", "enabled", "INTEGER NOT NULL DEFAULT 1");
+  // `backlog_rank`: the operator's backlog order, and the only one - see
+  // `docs/plans/backlog-manual-order/plan.md`. Nullable rather than defaulted, because
+  // there is no honest default: a rank is a position among the OTHER backlog rows, which a
+  // column default cannot express. `addColumn` returning true is the repo's established
+  // one-time-backfill hook (`migrateTaskHomeName` is the worked example), and the backfill
+  // is what makes upgrade day invisible: today's backlog is numbered in the order the board
+  // was already drawing it.
+  if (addColumn(d, "tasks", "backlog_rank", "INTEGER")) backfillBacklogRank(d);
+  // Beside its column and never in the CREATE TABLE block above - that block is
+  // `IF NOT EXISTS`, so it does not run on an existing database and this statement would
+  // reference a column the ALTER had not added yet. The pair is what the ordered read wants.
+  d.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_backlog_rank ON tasks(status, backlog_rank);`);
+  // Deliberately NOT gated on `addColumn`'s return. The backfill runs exactly once, and a
+  // row can lose its rank long after it - an older build opening this database writes NULL
+  // into the column it does not know about, a restored or hand-edited row can carry
+  // anything. An unranked row does not sort harmlessly to the bottom; it pushes every task
+  // filed after it above itself (see `appendRank`). One repair, at every start, and a
+  // SELECT-and-nothing-else once the backlog is clean.
+  //
+  // `repairBacklogRanks`, which HEALS the rows that have no rank and touches nothing else.
+  // It cannot renumber the column - a repair with no room reports that instead - because
+  // reaching for the full renormalize here would quietly undo the operator's spacing on a
+  // start that happened to find one NULL row.
+  repairBacklogRanks(d);
   addColumn(d, "tasks", "terminal_resource_id", "TEXT");
   // Recurring Missions provenance. Editing the CREATE TABLE block above is not enough:
   // it is `IF NOT EXISTS`, so an operator upgrading into this build keeps the table they
@@ -3540,6 +3566,12 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "session_goals", "prompt_revision", "INTEGER NOT NULL DEFAULT 0");
   addColumn(d, "session_goals", "resolved_prompt_revision", "INTEGER NOT NULL DEFAULT 0");
   addColumn(d, "session_goals", "pending_prompts", "TEXT NOT NULL DEFAULT '[]'");
+  // Nullable with no backfill, and both halves of that are the design. The value is a
+  // fingerprint of the prompt that was delivered, which is deliberately not stored, so an
+  // existing row cannot be recomputed - and a guessed one would suppress a real instruction.
+  // A marker written before this column simply cannot recognize its echo, which is the
+  // behaviour that shipped without it.
+  addColumn(d, "session_launch_turns", "echo_fingerprint", "TEXT");
   //
   // `usage_sources` is new; its defensive cursor-state migrations above also make
   // intermediate development databases safe to reopen. `usage_ledger` does need a user
@@ -3744,6 +3776,45 @@ function migrateWorktreeOrdinalHighWater(d: DatabaseSync): void {
     } catch {}
     throw error;
   }
+}
+
+/**
+ * Number today's backlog the first time `backlog_rank` exists, in the order the board was
+ * already drawing - most urgent first, oldest first inside a priority - so an operator who
+ * upgrades into manual ordering sees exactly the column they saw yesterday, and only then
+ * starts rearranging it.
+ *
+ * Runs once, hung off `addColumn`'s did-it-add return. A row that loses its rank LATER is
+ * not this function's problem and cannot be: see the unconditional `repairBacklogRanks`
+ * call at the call site.
+ *
+ * The `CASE` is a hand-copy of `PRIORITY_RANK`/`UNSET_RANK` from `src/shared/task.ts` into
+ * SQL - `blocker` 4, `high` 3, `med` 2, unset 1, `low` 0, with unset deliberately ABOVE
+ * `low` - because `byPriorityThenAge` cannot be called from inside a SQL statement and
+ * loading the whole backlog to sort it in JS would be a second ordering to keep in step.
+ * Nothing but a test will notice the two drifting, so `test/backlog-rank.test.ts` asserts
+ * they agree for every priority including unset. Ties break on `created_at` then `id`, the
+ * same total order the comparator uses, so the numbering is deterministic.
+ */
+function backfillBacklogRank(d: DatabaseSync): void {
+  d.exec(`
+    WITH ranked AS (
+      SELECT id, ROW_NUMBER() OVER (
+        ORDER BY CASE priority
+                   WHEN 'blocker' THEN 4
+                   WHEN 'high' THEN 3
+                   WHEN 'med' THEN 2
+                   WHEN 'low' THEN 0
+                   ELSE 1
+                 END DESC,
+                 created_at ASC,
+                 id ASC
+      ) AS n
+      FROM tasks WHERE status = 'backlog'
+    )
+    UPDATE tasks SET backlog_rank = (SELECT n FROM ranked WHERE ranked.id = tasks.id) * ${RANK_STEP}
+    WHERE id IN (SELECT id FROM ranked);
+  `);
 }
 
 function migrateTaskHomeName(d: DatabaseSync): void {
@@ -4636,6 +4707,9 @@ interface TaskRow {
   labels: string | null;
   dependencies: string | null;
   enabled: number;
+  // `unknown`, not `number | null`: the column is bare INTEGER affinity, so anything a
+  // build or a hand edit wrote is what comes back. `rowToTask` validates rather than casts.
+  backlog_rank: unknown;
   model: string | null;
   effort: string | null;
   workflow_id: string | null;
@@ -4922,6 +4996,16 @@ function rowToTask(
     // column somehow reads NULL, is schedulable - the direction that degrades to the
     // behaviour every install already had rather than to a silently frozen backlog.
     enabled: r.enabled !== 0,
+    // Validated, not cast, for the reason `kind` above is - but with a stricter question,
+    // because this value is ARITHMETIC downstream. `typeof === "number"` is not enough: a
+    // REAL, a fraction and `NaN` all satisfy it, and each would poison the allocator that
+    // reads `max(backlog_rank)` and adds a step to it. Anything else reads as unranked,
+    // which sorts last and is what `healUnranked` then places properly.
+    //
+    // This protects what the daemon SERVES and nothing more: the allocator asks the column
+    // directly through `backlogRankRows` and never comes through here, which is why the
+    // write path carries the same check rather than trusting this one.
+    backlogRank: Number.isSafeInteger(r.backlog_rank) ? (r.backlog_rank as number) : null,
     model: r.model,
     effort: parseEffort(r.agent as Task["agent"], r.effort),
     workflowId: r.workflow_id,
@@ -4988,7 +5072,8 @@ export function upsertTask(t: Task): string[] {
     }
     d.prepare(
       `INSERT INTO tasks (
-         id, title, intent, kind, agent, priority, labels, dependencies, enabled, model, effort,
+         id, title, intent, kind, agent, priority, labels, dependencies, enabled, backlog_rank,
+         model, effort,
          workflow_id, source_id, external_id, source_url, repo_root,
          pipeline_provider, pipeline_slug, worktree_path, branch, provider, worktree_lease_id,
          base_sha,
@@ -4996,11 +5081,12 @@ export function upsertTask(t: Task): string[] {
          schedule_id, schedule_occurrence_id, scheduled_for,
          status, outcome, outcome_url, error,
          created_at, updated_at, dispatched_at, completed_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          title=excluded.title, intent=excluded.intent, kind=excluded.kind, agent=excluded.agent,
          priority=excluded.priority, labels=excluded.labels, dependencies=excluded.dependencies,
-         enabled=excluded.enabled, model=excluded.model, effort=excluded.effort,
+         enabled=excluded.enabled, backlog_rank=excluded.backlog_rank,
+         model=excluded.model, effort=excluded.effort,
          workflow_id=excluded.workflow_id,
          source_id=excluded.source_id, external_id=excluded.external_id,
          source_url=excluded.source_url,
@@ -5024,6 +5110,7 @@ export function upsertTask(t: Task): string[] {
       t.labels.length > 0 ? JSON.stringify(t.labels) : null,
       t.dependencies.length > 0 ? JSON.stringify(t.dependencies) : null,
       t.enabled ? 1 : 0,
+      t.backlogRank,
       t.model,
       t.effort,
       t.workflowId,
@@ -7919,6 +8006,7 @@ export function pruneForemanInvites(liveKeys: Iterable<string>, olderThan: numbe
 interface SessionLaunchTurnRow {
   note_key: string;
   fingerprint: string;
+  echo_fingerprint: string | null;
   display_text: string | null;
   message_id: string | null;
   created_at: number;
@@ -7929,6 +8017,7 @@ function rowToLaunchTurn(r: SessionLaunchTurnRow): LaunchTurnMarker {
   return {
     noteKey: r.note_key,
     fingerprint: r.fingerprint,
+    echoFingerprint: r.echo_fingerprint,
     displayText: r.display_text,
     messageId: r.message_id,
     createdAt: r.created_at,
@@ -7948,10 +8037,12 @@ export function upsertSessionLaunchTurn(marker: LaunchTurnMarker): void {
   openDb()
     .prepare(
       `INSERT INTO session_launch_turns
-         (note_key, fingerprint, display_text, message_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?)
+         (note_key, fingerprint, echo_fingerprint, display_text, message_id,
+          created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(note_key) DO UPDATE SET
          fingerprint=excluded.fingerprint,
+         echo_fingerprint=excluded.echo_fingerprint,
          display_text=excluded.display_text,
          message_id=excluded.message_id,
          updated_at=excluded.updated_at`,
@@ -7959,6 +8050,7 @@ export function upsertSessionLaunchTurn(marker: LaunchTurnMarker): void {
     .run(
       marker.noteKey,
       marker.fingerprint,
+      marker.echoFingerprint,
       marker.displayText,
       marker.messageId,
       marker.createdAt,
@@ -7969,7 +8061,8 @@ export function upsertSessionLaunchTurn(marker: LaunchTurnMarker): void {
 export function getSessionLaunchTurn(noteKey: string): LaunchTurnMarker | undefined {
   const r = openDb()
     .prepare(
-      `SELECT note_key, fingerprint, display_text, message_id, created_at, updated_at
+      `SELECT note_key, fingerprint, echo_fingerprint, display_text, message_id,
+              created_at, updated_at
          FROM session_launch_turns WHERE note_key = ?`,
     )
     .get(noteKey) as unknown as SessionLaunchTurnRow | undefined;
@@ -7980,7 +8073,8 @@ export function getSessionLaunchTurn(noteKey: string): LaunchTurnMarker | undefi
 export function loadSessionLaunchTurns(): LaunchTurnMarker[] {
   const rows = openDb()
     .prepare(
-      `SELECT note_key, fingerprint, display_text, message_id, created_at, updated_at
+      `SELECT note_key, fingerprint, echo_fingerprint, display_text, message_id,
+              created_at, updated_at
          FROM session_launch_turns ORDER BY updated_at DESC`,
     )
     .all() as unknown as SessionLaunchTurnRow[];

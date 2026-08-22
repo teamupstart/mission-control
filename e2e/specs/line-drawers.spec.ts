@@ -1322,19 +1322,20 @@ const queueTitles = (page: Page): Promise<string[]> =>
 const bandRows = (page: Page, band: "Ready, in the order autopilot would take them" | "Blocked and parked"): Locator =>
   drawer(page, "Backlog").getByRole("list", { name: band }).locator("li");
 
-test("the ready band is Foreman's plan order, and the head of it is what autopilot takes next", async ({
+test("the ready band is the operator's order, and the head of it is what autopilot takes next", async ({
   dashboard,
   daemon,
 }) => {
-  // Priority-then-age is the order the BOARD column uses, so seeding the plan's last item as
-  // the only `blocker` is what makes this a test of plan order rather than of any order at
-  // all: a drawer that re-sorted by priority would put "Hot but planned last" on top and
-  // mark it next up, contradicting the machine that is about to take something else.
-  const first = await seedTask(daemon, "Planned first", { priority: "low" });
-  const second = await seedTask(daemon, "Planned second");
-  const hot = await seedTask(daemon, "Hot but planned last", { priority: "blocker" });
+  // Two orders this must NOT be, and the fixture rules out both. The last-arriving item is
+  // the only `blocker`, so a drawer that sorted by priority would put "Hot but filed last"
+  // on top; and the stored plan lists the three in yet another order, so a drawer that
+  // walked the plan would put "Filed second" on top. Either would contradict the machine,
+  // which takes the operator's top-ranked ready item.
+  const first = await seedTask(daemon, "Filed first", { priority: "low" });
+  const second = await seedTask(daemon, "Filed second");
+  const hot = await seedTask(daemon, "Hot but filed last", { priority: "blocker" });
   await put(daemon, "/api/backlog/plan", {
-    entries: [first, second, hot].map(({ id }) => ({ taskId: id, dependsOn: [], reason: null })),
+    entries: [second, hot, first].map(({ id }) => ({ taskId: id, dependsOn: [], reason: null })),
     note: null,
   });
 
@@ -1342,13 +1343,12 @@ test("the ready band is Foreman's plan order, and the head of it is what autopil
   const backlog = drawer(dashboard, "Backlog");
   await expect(backlog).toBeVisible();
 
-  // The plan arrives on `useForeman`'s 4s poll rather than over SSE, so the order is what is
-  // polled for - and the count is asserted first, since three rows in any order is the state
-  // BEFORE the plan lands.
+  // The plan arrives on `useForeman`'s 4s poll rather than over SSE, so this polls too -
+  // both to let the plan land and to prove that when it does, it does not move anything.
   await expect(backlog.locator(".line-drawer-count")).toHaveText("3 ready");
   await expect
     .poll(() => queueTitles(dashboard), { timeout: 20_000 })
-    .toEqual(["Planned first", "Planned second", "Hot but planned last"]);
+    .toEqual(["Filed first", "Filed second", "Hot but filed last"]);
 
   // Exactly one next-up mark, and it is on the head. Two would be two answers to a question
   // that has one.
@@ -1411,36 +1411,42 @@ test("blocked and parked rows sit in their own band, saying why, and moving betw
   const stored = await api<Array<{ id: string; enabled: boolean }>>(daemon, "/api/tasks");
   expect(stored.find((t) => t.id === held.id)?.enabled).toBe(false);
 
-  // ---- the ordering lever is only on the rows being ordered ----
+  // ---- the triage lever is only on the rows a human is choosing between ----
 
-  // A priority set on a blocked row orders nothing, so the picker is not offered there.
+  // A priority set on a row that cannot run whatever you set it to informs no decision
+  // anyone is making, so the picker is not offered there.
   await expect(backlog.getByLabel("Priority for Lay the base")).toBeVisible();
   await expect(backlog.getByLabel("Priority for Build on the base")).toHaveCount(0);
 });
 
-test("the priority picker round-trips through the daemon and re-sorts the queue", async ({
+test("the priority picker round-trips through the daemon, and moves nothing", async ({
   dashboard,
   daemon,
 }) => {
-  // No plan seeded on purpose: with none, `readyBacklog` falls back to priority-then-age,
-  // which is what makes the re-sort visible from the picker alone.
-  await seedTask(daemon, "Was on top");
-  const climber = await seedTask(daemon, "Was underneath");
+  // Priority is pure annotation now. The write still has to reach the daemon and come back -
+  // this is a round trip, not a local `<select>` - and the queue has to stay exactly where
+  // the operator arranged it, because an order a chip can rearrange is not an order you set.
+  await seedTask(daemon, "Stays on top");
+  const climber = await seedTask(daemon, "Stays underneath");
 
   await stage(dashboard, "Backlog").click();
-  await expect.poll(() => queueTitles(dashboard)).toEqual(["Was on top", "Was underneath"]);
+  await expect.poll(() => queueTitles(dashboard)).toEqual(["Stays on top", "Stays underneath"]);
 
-  await drawer(dashboard, "Backlog").getByLabel("Priority for Was underneath")
+  await drawer(dashboard, "Backlog").getByLabel("Priority for Stays underneath")
     .selectOption("blocker");
 
-  // The row moves under the cursor, which is the feedback that makes it obvious the field
-  // does something - and it moves because the DAEMON re-sorted, not because the select did.
-  await expect.poll(() => queueTitles(dashboard)).toEqual(["Was underneath", "Was on top"]);
-  await expect(drawer(dashboard, "Backlog").getByText("next up", { exact: true })).toHaveCount(1);
-  await expect(bandRows(dashboard, "Ready, in the order autopilot would take them").first())
-    .toContainText("Was underneath");
+  // The chip lands - read off the row, so this is the daemon's answer and not the select's
+  // own value - and the row it is on has not moved.
+  await expect(drawer(dashboard, "Backlog").getByLabel("Priority for Stays underneath"))
+    .toHaveValue("blocker");
   const stored = await api<Array<{ id: string; priority: string | null }>>(daemon, "/api/tasks");
   expect(stored.find((t) => t.id === climber.id)?.priority).toBe("blocker");
+  // Read ONCE rather than through a retrying web-first assertion: the claim is that the
+  // order never became wrong, and a poll would happily wait out a transient re-sort.
+  expect(await queueTitles(dashboard)).toEqual(["Stays on top", "Stays underneath"]);
+  await expect(bandRows(dashboard, "Ready, in the order autopilot would take them").first())
+    .toContainText("Stays on top");
+  await expect(drawer(dashboard, "Backlog").getByText("next up", { exact: true })).toHaveCount(1);
 });
 
 test("Launch now dispatches the row, and the queue it left stops counting it", async ({
@@ -1566,9 +1572,10 @@ test("the next-up mark opens the planner, which quotes Foreman's own reason", as
   // earlier can wait for the plan - these two tasks are already in this order without it.
   await expect(pop).toContainText(REASON, { timeout: 20_000 });
   await expect(pop.locator("cite")).toHaveText("Foreman's plan");
-  // The rule that put it on top, then the facts a reader can check against the rows behind
-  // the panel. "unblocks 1 task" names the task in the blocked band underneath.
-  await expect(pop).toContainText("plan order · 2 ready");
+  // The rule in force - one rule, and it is the operator's - then the facts a reader can
+  // check against the rows behind the panel. "unblocks 1 task" names the task in the
+  // blocked band underneath.
+  await expect(pop).toContainText("your order · 2 ready");
   await expect(pop).toContainText("high priority - nothing ready outranks it");
   await expect(pop).toContainText("the oldest of the 2 ready");
   await expect(pop).toContainText("no blockers - nothing upstream is holding it");
@@ -1621,16 +1628,17 @@ test("the planner explains an unplanned head instead of implying Foreman chose i
   dashboard,
   daemon,
 }) => {
-  // No plan seeded at all: `readyBacklog` appends anything the plan does not name, oldest
-  // first, so the fallback is what put this task on top. The panel has to say that rather
-  // than quoting a reason that does not exist.
+  // No plan seeded at all. The operator's rank is what put this task on top either way, so
+  // what the panel owes the reader is not a reason for the POSITION but the fact that this
+  // task has had no dependency read - rather than quoting a reason that does not exist.
   await seedTask(daemon, "Nobody has planned this");
 
   await stage(dashboard, "Backlog").click();
   await nextUpTrigger(dashboard).click();
   const pop = planner(dashboard);
   await expect(pop).toContainText("Foreman's plan does not name this one yet");
-  await expect(pop).toContainText("priority, then age · 1 ready");
+  await expect(pop).toContainText("so it has had no dependency read");
+  await expect(pop).toContainText("your order · 1 ready");
   await expect(pop.locator("cite")).toHaveCount(0);
   // No downstream line when it releases nothing - never "unblocks 0 tasks".
   await expect(pop).not.toContainText("unblocks");

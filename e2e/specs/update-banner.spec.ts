@@ -112,6 +112,26 @@ test("desktop update banner exposes the complete update flow while the browser s
   await dashboard.getByRole("button", { name: "Retry" }).click();
   await expect(status).toContainText("0.2.0");
 
+  // A background check now surfaces a standing, user-actionable failure instead of returning
+  // silently to idle, so a lapsed `gh` credential reaches a person who never ran a manual
+  // check - and reaches them with the retry they need after running `gh auth login`.
+  await dashboard.evaluate((next: UpdateSnapshot) => {
+    (window as Window & { __pushUpdateSnapshot(next: UpdateSnapshot): void }).__pushUpdateSnapshot(next);
+  }, {
+    phase: "error",
+    currentVersion: "0.1.0",
+    message: "GitHub CLI is not authenticated. Run `gh auth login`, then check again.",
+    manual: false,
+    retryable: true,
+    lastOutcome: null,
+  } satisfies UpdateSnapshot);
+  await expect(status).toContainText("update check failed");
+  await expect(status).toContainText("gh auth login");
+  await screenshot("background-auth-error");
+  await expect(dashboard.getByRole("button", { name: "Retry" })).toBeVisible();
+  await dashboard.getByRole("button", { name: "Retry" }).click();
+  await expect(status).toContainText("0.2.0");
+
   await dashboard.evaluate((next: UpdateSnapshot) => {
     (window as Window & { __pushUpdateSnapshot(next: UpdateSnapshot): void }).__pushUpdateSnapshot(next);
   }, {

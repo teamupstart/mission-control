@@ -50,6 +50,7 @@ import {
   ghPrerequisiteMessage,
   gitPrerequisiteMessage,
   nodePrerequisiteMessage,
+  xcodeToolsPrerequisiteMessage,
 } from "./init-prerequisites.mjs";
 
 /** The bundle name `electron-builder.yml` produces, and the one installed. */
@@ -424,6 +425,15 @@ function installApp(options) {
   const gitProblem = gitPrerequisiteMessage(capture("git", ["--version"]).status === 0);
   if (gitProblem) fail(gitProblem);
   ok("git available");
+
+  // Asked here rather than discovered in step 6, where node-gyp's own text is buried in the
+  // package output and `run()` reports only "`npm run package` failed".
+  const xcodeProblem = xcodeToolsPrerequisiteMessage({
+    platform: process.platform,
+    installed: capture("xcode-select", ["-p"]).status === 0,
+  });
+  if (xcodeProblem) fail(xcodeProblem);
+  ok("Xcode command line tools available");
 
   const ghVersion = capture(GH_BIN, ["--version"]);
   const ghAuth = ghVersion.status === 0 ? capture(GH_BIN, GH_ARGS.authStatus()) : null;

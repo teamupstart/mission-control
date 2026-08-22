@@ -41,14 +41,26 @@ const MCP_TIMEOUT_MS = 60_000;
 /** Comfortably clear of two `MCP_TIMEOUT_MS` waits, so the case still fails as a case. */
 const CASE_TIMEOUT_MS = 150_000;
 
-async function captureRequestInput(
-  identityEnv: {
-    MISSION_SESSION_ID?: string;
-    CLAUDE_SESSION_ID: string;
-    TMUX_PANE: string;
-    WEZTERM_PANE: string;
-  },
-): Promise<Record<string, unknown>> {
+/**
+ * Every variable `captureTerminalEnv` reads, so the operator's terminal cannot decide the
+ * result.
+ *
+ * `TERM_PROGRAM` is the one that used to be missing here, and it is not optional decoration:
+ * the child is spawned with `...process.env`, so a suite run from WezTerm or iTerm handed the
+ * MCP server a third identity field the assertion below did not expect, and this file failed
+ * on a developer's machine while passing on CI and in a bare shell. A test that names the
+ * inputs it controls has to name all of them - a captured field left to the environment is an
+ * assertion about the machine, not about the code.
+ */
+interface IdentityEnv {
+  MISSION_SESSION_ID?: string;
+  CLAUDE_SESSION_ID: string;
+  TMUX_PANE: string;
+  WEZTERM_PANE: string;
+  TERM_PROGRAM: string;
+}
+
+async function captureRequestInput(identityEnv: IdentityEnv): Promise<Record<string, unknown>> {
   const missionHome = mkdtempSync(join(tmpdir(), "mission-review-mcp-"));
   writeFileSync(join(missionHome, "token"), "integration-token\n");
   const captured = { review: null as Record<string, unknown> | null };
@@ -145,8 +157,11 @@ test("request_input prefers the Mission Control session identity", { timeout: CA
     CLAUDE_SESSION_ID: "claude:legacy",
     TMUX_PANE: "%3",
     WEZTERM_PANE: "19",
+    TERM_PROGRAM: "WezTerm",
   });
 
+  // Every terminal field is dropped, not merely the two panes: a Mission session identifies
+  // itself, so the pane hints it would otherwise be bound by are noise.
   assert.deepEqual(
     {
       sessionId: captured.sessionId,
@@ -164,8 +179,12 @@ test("request_input preserves terminal identity without a Mission session", { ti
     CLAUDE_SESSION_ID: "claude:terminal",
     TMUX_PANE: "%4",
     WEZTERM_PANE: "20",
+    TERM_PROGRAM: "WezTerm",
   });
 
+  // All three fields `captureTerminalEnv` reads, each pinned to a value this test set. The
+  // emulator is part of the terminal identity the daemon binds on, so it belongs in the
+  // expectation rather than being whatever the machine happened to export.
   assert.deepEqual(
     {
       sessionId: captured.sessionId,
@@ -173,7 +192,7 @@ test("request_input preserves terminal identity without a Mission session", { ti
     },
     {
       sessionId: "claude:terminal",
-      env: { tmuxPane: "%4", weztermPane: "20" },
+      env: { tmuxPane: "%4", weztermPane: "20", termProgram: "WezTerm" },
     },
   );
 });

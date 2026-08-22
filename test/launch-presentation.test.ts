@@ -1071,6 +1071,21 @@ function submitPrompt(
   });
 }
 
+/** One completed turn: the agent works and parks, advancing the work-cycle generation. */
+function workAndPark(
+  registry: InstanceType<typeof Registry>,
+  noteKey: string,
+  cwd: string,
+): void {
+  registry.applyHook({
+    agent: "claude", event: "PreToolUse", sessionId: noteKey, cwd,
+    transcriptPath: null, env: {}, toolName: "Edit",
+  });
+  registry.applyHook({
+    agent: "claude", event: "Stop", sessionId: noteKey, cwd, transcriptPath: null, env: {},
+  });
+}
+
 test("a launch already seeded into the Goal does not open a second revision from its hook echo", () => {
   const registry = new Registry();
   const { id, noteKey, cwd } = boundSession(registry);
@@ -1104,6 +1119,33 @@ test("the echo guard needs a seeded Goal, so a hook-only launch still captures o
   // writes when it retries an unacknowledged paste.
   submitPrompt(registry, noteKey, cwd, COMPOSED);
   assert.equal(registry.getGoal(id)?.promptRevision, 1, "a retried paste is not a new ask");
+});
+
+test("the echo guard expires with the opening turn, so re-sending the launch text later counts", () => {
+  // A marker lives as long as its conversation does. Matching on it alone would suppress
+  // the launch text FOREVER - so a human who scrolls back, copies the prompt out of the
+  // transcript and sends it again to rerun the task would be silently ignored. The window
+  // is the opening turn, which is the only turn a launch can be delivered in.
+  const registry = new Registry();
+  const { id, noteKey, cwd } = boundSession(registry);
+  registry.recordLaunchTurn(id, COMPOSED, HUMAN);
+  registry.captureAcceptedPrompt(id, HUMAN, noteKey);
+
+  submitPrompt(registry, noteKey, cwd, COMPOSED);
+  assert.equal(registry.getGoal(id)?.promptRevision, 1, "the launch echo is still absorbed");
+
+  // ...and a redelivery inside that same opening turn still is, which is the retry
+  // `deliverIntent` writes for an unacknowledged paste.
+  submitPrompt(registry, noteKey, cwd, COMPOSED);
+  assert.equal(registry.getGoal(id)?.promptRevision, 1, "a same-turn retry is not a new ask");
+
+  workAndPark(registry, noteKey, cwd);
+
+  // The agent has parked, so the only thing that can send this text now is a person.
+  submitPrompt(registry, noteKey, cwd, COMPOSED);
+  const goal = registry.getGoal(id);
+  assert.equal(goal?.promptRevision, 2, "re-sending the launch after the turn is an instruction");
+  assert.equal(goal?.pendingPrompts.at(-1)?.prompt, COMPOSED.replace(/\s+/g, " ").trim());
 });
 
 test("the inverted ordering falls back to capturing, and lands in the reconciler's easy direction", () => {

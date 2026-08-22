@@ -1256,9 +1256,16 @@ broader objective, which is the ordinary steering case the reconciler is built t
 fallback is always to capture rather than to discard: a prompt that cannot be recognized as
 the launch is queued.
 
+**Recognition lasts for the opening turn only.** A launch is delivered before its
+conversation has finished anything, so that is the whole window in which one can arrive.
+Once the agent has completed a turn the recognition is over, and the same text sent again
+counts as the instruction it now is - which is what you want when you scroll back, copy your
+original prompt out of the conversation and send it again to rerun the task. Inside the
+opening turn a redelivery is still absorbed, because that is Mission Control re-sending a
+prompt it could not confirm the agent received, not you asking twice.
+
 A launch that has no driver door, such as a terminal paste, is unaffected for the same
-reason: its hook delivery is the first arrival and so is the capture, and a redelivery of the
-identical prompt is recognized as the same launch rather than counted again.
+reason: its hook delivery is the first arrival and so is the capture.
 
 Each reconciliation records one of five relationships:
 

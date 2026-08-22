@@ -6585,7 +6585,7 @@ export class Registry extends EventEmitter {
   private captureHookGoalPrompt(s: Session, spec: HookSpec, evt: HookIngest, now: number): void {
     const prompt = spec.promptText(evt);
     if (!prompt) return;
-    if (this.isSeededLaunchEcho(noteKeyFor(s), prompt)) return;
+    if (this.isSeededLaunchEcho(s, prompt)) return;
     this.captureAcceptedPrompt(s.id, prompt, noteKeyFor(s), now);
   }
 
@@ -6608,7 +6608,7 @@ export class Registry extends EventEmitter {
    * prompted wrap-up skips the session at "the latest instruction has unresolved intent"
    * every tick. A dispatched task simply never reaches the Workflow it was bound to.
    *
-   * BOTH CONJUNCTS ARE LOAD-BEARING, and each guards a different failure:
+   * ALL THREE CONJUNCTS ARE LOAD-BEARING, and each guards a different failure:
    *
    * - The echo fingerprint is what makes this the launch rather than something shaped like
    *   it. Absent (a marker predating the column) it never matches, and the old duplicate
@@ -6619,6 +6619,9 @@ export class Registry extends EventEmitter {
    *   first means the first delivery always lands and only a duplicate is refused - which
    *   also, for free, absorbs the identical turn `deliverIntent` writes when it retries an
    *   unacknowledged paste.
+   * - Generation zero is what makes it THIS DELIVERY. Without it the suppression never
+   *   expires, and a human who copies the prompt back out of the transcript to rerun the
+   *   task is silently ignored. See the window comment on the check itself.
    *
    * Ordering is not assumed as a matter of taste: `SdkBound` precedes the first
    * `UserPromptSubmit` in 238 of 238 dispatched sessions on this machine, minimum gap 84ms,
@@ -6628,10 +6631,28 @@ export class Registry extends EventEmitter {
    * the direction the reconciler handles, since a narrower human ask against a broader
    * objective is exactly the `steer` it is built to read.
    */
-  private isSeededLaunchEcho(noteKey: string, prompt: string): boolean {
+  private isSeededLaunchEcho(s: Session, prompt: string): boolean {
+    const noteKey = noteKeyFor(s);
     const marker = this.launchTurns.get(noteKey);
     if (!marker?.echoFingerprint) return false;
     if ((this.goals.get(noteKey)?.promptRevision ?? 0) < 1) return false;
+    // THE DELIVERY WINDOW. A marker lives as long as its conversation does, so matching on
+    // it alone would suppress the launch text FOREVER - including a human who scrolls back,
+    // copies the prompt out of the transcript and sends it again to rerun the task. That is
+    // an accepted instruction and it has to open a revision.
+    //
+    // A launch is delivered before its conversation has finished anything, so the window is
+    // exactly "no turn has completed yet". `completeWorkCycle` is the only thing that
+    // advances the generation, and it runs on the harness's turn-end signal, so generation
+    // zero means the opening turn is still the one in progress. It reads from
+    // `session_work_cycles`, so a daemon restart mid-session does not re-arm the window,
+    // and a fresh dispatch has no row at all.
+    //
+    // This keeps the retry it is meant to absorb: `deliverIntent` re-pastes an
+    // unacknowledged prompt within the same opening turn, which is still generation zero.
+    // The case it now lets through is the one that arrives after the agent has parked,
+    // which is the only way a human can be the one re-sending it.
+    if ((s.workCycle?.generation ?? 0) > 0) return false;
     return marker.echoFingerprint === launchEchoFingerprint(prompt);
   }
 

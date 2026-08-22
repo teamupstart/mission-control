@@ -260,6 +260,7 @@ function workflowState(
   over: Partial<{ repoAllowlist: string[]; checksEnabled: boolean; config: null }> = {},
 ): WorkflowSettingsState {
   return {
+    testEvidenceAudit: null,
     config:
       over.config === null
         ? null

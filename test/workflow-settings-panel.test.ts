@@ -41,7 +41,7 @@ import {
   pollRacedByWrite,
   type WorkflowSettingsState,
 } from "../src/web/useWorkflowSettings.ts";
-import type { WorkflowConfig } from "../src/shared/workflow.ts";
+import type { TestEvidenceAuditAggregate, WorkflowConfig } from "../src/shared/workflow.ts";
 import { DEFAULT_WORKFLOW_CONFIG, type WorkflowStatus } from "../src/shared/workflow.ts";
 import { withOverlayHost } from "./helpers/overlay-host.ts";
 
@@ -70,10 +70,42 @@ const STATUS: WorkflowStatus = {
   lastRetentionDeleted: 0,
 };
 
+/**
+ * One aggregate reading, used where the poll rule needs a third value it can follow.
+ *
+ * Not a realistic fleet: it exists so a read that landed can be told apart from one that did
+ * not, which is the only thing `applyWorkflowPoll` decides about it.
+ */
+const AUDIT: TestEvidenceAuditAggregate = {
+  attempts: 0,
+  runs: 0,
+  attemptsPerRun: null,
+  malformed: 0,
+  truncated: false,
+  scanLimit: 2000,
+  oldestAt: null,
+  newestAt: null,
+  firstSubmissionAccepted: { count: 0, total: 0, rate: null },
+  attemptFailures: { count: 0, total: 0, rate: null },
+  rejectionCategories: [],
+  readiness: {
+    withoutImages: { count: 0, total: 0, rate: null },
+    withoutTextArtifacts: { count: 0, total: 0, rate: null },
+    withoutChecks: { count: 0, total: 0, rate: null },
+    transcriptTruncated: { count: 0, total: 0, rate: null },
+    checkOmittedBytes: 0,
+    transcriptOmittedHeadBytes: 0,
+  },
+  possibleOverreach: { count: 0, total: 0, rate: null },
+  slices: [],
+  slicesOmitted: 0,
+};
+
 function state(over: Partial<WorkflowSettingsState> = {}): WorkflowSettingsState {
   return {
     config: null,
     status: null,
+    testEvidenceAudit: null,
     update: async () => true,
     error: null,
     ...over,
@@ -107,6 +139,7 @@ test("every control the search index points at is on the panel", () => {
     "workflows/live-delivery",
     "workflows/allowlist",
     "workflows/retention",
+    "workflows/test-evidence",
     "workflows/health",
   ]) {
     assert.ok(html.includes(`data-anchor="${anchor}"`), `panel is missing ${anchor}`);
@@ -150,6 +183,7 @@ test("the anchors are drawn before the daemon has answered", () => {
     "workflows/live-delivery",
     "workflows/allowlist",
     "workflows/retention",
+    "workflows/test-evidence",
     "workflows/health",
   ]) {
     assert.ok(html.includes(`data-anchor="${anchor}"`), `pre-poll panel is missing ${anchor}`);
@@ -550,23 +584,23 @@ const SAVED: WorkflowConfig = { ...DEFAULT_WORKFLOW_CONFIG, liveEnabled: false }
 test("a poll that could not read is unknown, not the last thing that was true", () => {
   // Both reads failed while a good reading was on screen: both go unknown.
   assert.deepEqual(
-    applyWorkflowPoll({ config: null, status: null }, false, CONFIG),
-    { config: null, status: null },
+    applyWorkflowPoll({ config: null, status: null, testEvidenceAudit: null }, false, CONFIG),
+    { config: null, status: null, testEvidenceAudit: null },
   );
   // One read failed and the other did not - they are independent, so a healthy status does
   // not vouch for a config nobody could read, or the other way round.
   assert.deepEqual(
-    applyWorkflowPoll({ config: CONFIG, status: null }, false, CONFIG),
-    { config: CONFIG, status: null },
+    applyWorkflowPoll({ config: CONFIG, status: null, testEvidenceAudit: null }, false, CONFIG),
+    { config: CONFIG, status: null, testEvidenceAudit: null },
   );
   assert.deepEqual(
-    applyWorkflowPoll({ config: null, status: STATUS }, false, CONFIG),
-    { config: null, status: STATUS },
+    applyWorkflowPoll({ config: null, status: STATUS, testEvidenceAudit: AUDIT }, false, CONFIG),
+    { config: null, status: STATUS, testEvidenceAudit: AUDIT },
   );
   // And an ordinary successful poll still lands both.
   assert.deepEqual(
-    applyWorkflowPoll({ config: CONFIG, status: STATUS }, false, null),
-    { config: CONFIG, status: STATUS },
+    applyWorkflowPoll({ config: CONFIG, status: STATUS, testEvidenceAudit: AUDIT }, false, null),
+    { config: CONFIG, status: STATUS, testEvidenceAudit: AUDIT },
   );
 });
 
@@ -576,10 +610,10 @@ test("a poll that could not read is unknown, not the last thing that was true", 
 // config the operator had just successfully saved, which is the same lie in the other
 // direction.
 test("a config read that lost a race with a write is dropped, failed or not", () => {
-  assert.equal(applyWorkflowPoll({ config: CONFIG, status: STATUS }, true, SAVED).config, SAVED);
-  assert.equal(applyWorkflowPoll({ config: null, status: STATUS }, true, SAVED).config, SAVED);
+  assert.equal(applyWorkflowPoll({ config: CONFIG, status: STATUS, testEvidenceAudit: AUDIT }, true, SAVED).config, SAVED);
+  assert.equal(applyWorkflowPoll({ config: null, status: STATUS, testEvidenceAudit: AUDIT }, true, SAVED).config, SAVED);
   // Status is never raced - nothing in this panel writes it - so it lands either way.
-  assert.equal(applyWorkflowPoll({ config: null, status: STATUS }, true, SAVED).status, STATUS);
+  assert.equal(applyWorkflowPoll({ config: null, status: STATUS, testEvidenceAudit: AUDIT }, true, SAVED).status, STATUS);
 });
 
 // The race the Inspector caught on round 2 of #258, and the reason the write clock counts

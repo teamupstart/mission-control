@@ -8,6 +8,7 @@ import type { WorkflowSettingsState } from "../useWorkflowSettings.ts";
 import type { SettingsNavigate } from "../lib/settings-registry.ts";
 import { Tooltip } from "./Tooltip.tsx";
 import { TrustGrantSummary } from "./TrustPanel.tsx";
+import { TestEvidenceReadinessCard } from "./TestEvidenceReadinessCard.tsx";
 import {
   ConsoleCard,
   ConsoleLinkStrip,
@@ -274,7 +275,7 @@ export function WorkflowSettingsPanel({
    */
   onOpenRuns?: (filters: WorkflowRunFilters) => void;
 }): React.JSX.Element {
-  const { config, status, update, error } = state;
+  const { config, status, testEvidenceAudit, update, error } = state;
   const [confirm, setConfirm] = useState<WorkflowConfirmRequest | null>(null);
   const [busy, setBusy] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
@@ -658,6 +659,14 @@ export function WorkflowSettingsPanel({
             waiting or failed sits outside that population and is never counted against it.
           </p>
         </ConsoleCard>
+
+        {/* Sits with the health card rather than with the policy switches above, because it
+            is a READING and not a setting: nothing in it can be changed from here. It is
+            above the health group rather than inside it because the two answer different
+            questions - health is "is the subsystem working", this is "is the evidence
+            contract working" - and the second is the one an operator opens this panel to ask
+            after a run was rejected. */}
+        <TestEvidenceReadinessCard aggregate={testEvidenceAudit} workflows={workflows} />
 
         {/* The strip sits ABOVE the health card rather than inside it: it is the escalation
             summary, and the card under it is the residue - throughput and sweep bookkeeping

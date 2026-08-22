@@ -6510,6 +6510,45 @@ export class WorkflowStore {
     ).all(runId) as unknown[]).map(parseWorkflowEventRow);
   }
 
+  /**
+   * The newest events of one kind across EVERY run, for a fleet-wide aggregate.
+   *
+   * Newest-first in SQL and reversed here, so the cap keeps the most recent window rather
+   * than the oldest one, and the caller still reads in append order. `truncated` is returned
+   * rather than inferred by the caller comparing lengths: an aggregate that silently drops
+   * older attempts reads as a complete history of the fleet, which is the one thing this
+   * telemetry must not do.
+   *
+   * A malformed payload becomes `null` rather than throwing. One unreadable row must not
+   * cost an operator the other 1,999, and the aggregate counts what it could not read.
+   */
+  listEventsOfKind(kind: string, limit: number): {
+    rows: { runId: string; timestamp: number; payload: unknown }[];
+    truncated: boolean;
+  } {
+    const rows = this.db.prepare(
+      `SELECT run_id, ts, payload_json FROM workflow_events
+        WHERE event_kind = ?
+        ORDER BY id DESC
+        LIMIT ?`,
+    ).all(kind, limit + 1) as { run_id: string; ts: number; payload_json: string }[];
+    const truncated = rows.length > limit;
+    return {
+      rows: rows.slice(0, limit).reverse().map((row) => ({
+        runId: String(row.run_id),
+        timestamp: Number(row.ts),
+        payload: ((): unknown => {
+          try {
+            return JSON.parse(row.payload_json);
+          } catch {
+            return null;
+          }
+        })(),
+      })),
+      truncated,
+    };
+  }
+
   listEventPage(runId: string, after = 0, limit = DEFAULT_DETAIL_PAGE_SIZE): WorkflowEventPage {
     const rows = (this.db.prepare(
       `SELECT * FROM workflow_events

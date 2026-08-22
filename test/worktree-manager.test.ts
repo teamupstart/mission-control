@@ -245,7 +245,18 @@ test("concurrent acquires receive different exact slots and respect capacity", a
     acquire(m, clone, sha, "task-3"),
   ]);
   const acquired = results.filter((result) => result.outcome === "acquired");
-  assert.equal(acquired.length, 2);
+  // The refusals are named in the message, not just counted. This case failed once under a
+  // loaded full-suite run with a bare `1 !== 2`, which says nothing about WHY a second slot
+  // was not handed out - a genuine capacity refusal, a quarantined slot and a git subprocess
+  // that fell over under load are three different bugs and that assertion could not tell
+  // them apart. The assertion itself is unchanged; only its diagnosis is.
+  assert.equal(
+    acquired.length,
+    2,
+    `expected two of three concurrent acquires to win a slot, got: ${JSON.stringify(
+      results.map((result) => (result.outcome === "acquired" ? "acquired" : [result.outcome, result.reason])),
+    )}`,
+  );
   assert.equal(new Set(acquired.map((result) => result.lease.path)).size, 2);
   assert.equal(results.filter((result) => result.outcome === "notAcquired").length, 1);
   for (const result of acquired) {

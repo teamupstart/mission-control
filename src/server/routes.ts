@@ -379,7 +379,8 @@ import {
   WORKFLOW_TEXT_EVIDENCE_LIMITS,
   legacyCheckCommands,
 } from "@shared/workflow.ts";
-import type { WorkflowConfig } from "@shared/workflow.ts";
+import type { TestEvidenceAuditAggregate, WorkflowConfig } from "@shared/workflow.ts";
+import { TEST_EVIDENCE_AUDIT_SCAN_LIMIT } from "./workflows/test-evidence-audit.ts";
 import { WorkflowCommandManager } from "./workflows/commands.ts";
 import type { WorkflowCommandMutation } from "./workflows/commands.ts";
 import {
@@ -1619,6 +1620,20 @@ export function buildApp(
     return manager
       ? c.json(manager.status())
       : c.json({ error: "Workflow manager unavailable" }, 503);
+  });
+  // Read-only advisory telemetry over events the engine already appended, on a literal
+  // path registered before `/api/workflows/:id` so the id route cannot swallow it.
+  app.get("/api/workflows/test-evidence-audit", (c) => {
+    const manager = workflowManager();
+    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+    const raw = c.req.query("limit");
+    const limit = raw === undefined ? TEST_EVIDENCE_AUDIT_SCAN_LIMIT : Number(raw);
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > TEST_EVIDENCE_AUDIT_SCAN_LIMIT) {
+      return c.json({
+        error: `limit must be an integer from 1 through ${TEST_EVIDENCE_AUDIT_SCAN_LIMIT}`,
+      }, 400);
+    }
+    return c.json(manager.testEvidenceAudit(limit) satisfies TestEvidenceAuditAggregate);
   });
   app.put("/api/workflows/config", async (c) => {
     const parsed = await parseBody(c, WorkflowConfigSchema);

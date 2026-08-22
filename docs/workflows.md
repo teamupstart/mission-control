@@ -758,10 +758,19 @@ require PR checks, remote CI, or Inspector evidence that can only exist later in
 Every completed built-in Test Evidence Auditor attempt also appends a bounded
 `test_evidence_audit` workflow event. It records first-submission status, pass or fail, rejection
 categories, image, text, Check, and transcript readiness counts, truncation facts, and later-stage
-proof terms. A later-stage request is flagged as possible overreach when the matching term is absent
-from the original goal, human decisions, acceptance criteria, constraints, and operator directive.
-The flag is telemetry rather than a verdict rewrite, so operators can measure prompt quality without
+proof terms. It also records the identity of what produced the attempt: the workflow id and
+published version number, the Persona id and revision, and a twelve-character digest of the exact
+immutable guidance the attempt ran with. The digest is identity, never prose - no guidance text,
+prompt, diff, transcript, verdict wording, operator directive, or session content is written into
+the event - and it is what makes a before-and-after comparison across guidance revisions possible.
+A later-stage request is flagged as possible overreach when the matching term is absent from the
+original goal, human decisions, acceptance criteria, constraints, and operator directive. The flag
+is telemetry rather than a verdict rewrite, so operators can measure prompt quality without
 silently replacing the published Persona's judgment.
+
+Those events are read back under **Settings → Workflows → Test evidence readiness**, so the
+measurement does not need an agent, a script, or a SQLite session. See
+[Test evidence readiness](#test-evidence-readiness).
 
 The durable engine records attempts and edge receipts, waits for all inputs at an all-pass
 Join, retries transient infrastructure failures with bounded backoff, and stops at the
@@ -1572,6 +1581,37 @@ Workflow-owned model calls record the actual runner, model, attempt, state, timi
 output bytes, retry, and classified error. The local runner returns text but no authoritative
 price, so the monetary field remains `null` and the UI says **Cost unavailable from this runner**.
 It is never displayed as zero, inferred from the fleet ledger, or estimated.
+
+### Test evidence readiness
+
+**Settings → Workflows → Test evidence readiness** aggregates the `test_evidence_audit` events
+above across every retained run and refreshes on the same tick as Workflow health. It reports
+first-pass acceptance (round 1, segment 0), the failure rate over all auditor attempts, auditor
+attempts per run, the possible-overreach rate, each rejection category's share of the failing
+attempts, and evidence-readiness adoption on first submissions: how many carried no image, no text
+artifact, and no upstream Check, how many had a truncated transcript, and how many bytes Check
+retention and transcript head-clipping dropped. Attempts are also broken down by workflow version,
+Persona and guidance digest, which is what makes a guidance revision comparable with the one
+before it. The Persona *revision* is not part of that grouping: the digest identifies the exact
+guidance bytes, so a Persona edit that left the guidance alone keeps its attempts in the same row
+rather than halving the population behind two identically labelled ones. A row reports the newest
+revision seen carrying its guidance, and is labelled with the workflow's name from the live
+catalog (a short id when that workflow no longer exists), its version, and the guidance digest -
+so two workflows reviewing with the same auditor are never two rows an operator cannot tell
+apart. A Persona is named on the row only when it is not the built-in auditor.
+
+It is advisory and strictly read-only. It re-runs no Persona, rewrites no verdict, gates nothing,
+and holds no state; the Persona's published judgment is unaffected by anything shown here. Only
+counts, durable enums and identifiers cross the wire - never prompt, diff, transcript, guidance,
+verdict or session content.
+
+An empty population is reported as **no reading**, never as 0%, so a fleet that has never run the
+auditor cannot be mistaken for one whose first-pass acceptance is zero. The aggregate reads the
+newest 2,000 events (`GET /api/workflows/test-evidence-audit`, optional `limit`); when older
+attempts fall outside that window, or an event cannot be read back, the panel says so rather than
+presenting a partial history as the whole one. A window whose events could not be read back at
+all is distinguished from one with no events: an auditor that has never run and telemetry that
+cannot be decoded lead to opposite conclusions, so neither borrows the other's wording.
 
 Workflow health is read under **Settings → Workflows**, and refreshes on its own while that
 panel is open. It reports active runs, queued and running Persona calls, waiting, uncertain and

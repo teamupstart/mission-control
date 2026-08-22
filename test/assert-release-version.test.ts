@@ -10,7 +10,7 @@ const agreeing = { packageVersion: "1.2.3", lockVersion: "1.2.3", lockPackageVer
 
 test("a vX.Y.Z tag names its version", () => {
   assert.equal(versionFromTag("v1.2.3"), "1.2.3");
-  assert.equal(versionFromTag("v1.2.3-rc.1"), "1.2.3-rc.1");
+  assert.equal(versionFromTag("v1.2.3-rc.1"), null);
   assert.equal(versionFromTag("1.2.3"), null);
   assert.equal(versionFromTag("mission-control-v1.2.3"), null);
   assert.equal(versionFromTag(""), null);

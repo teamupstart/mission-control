@@ -17,14 +17,17 @@ name: Release
 # `package.json` - rather than left for the action to infer, because there is no tag history to
 # infer it from and an invented first version would not match the shipped app.
 #
+# Release Please uses the `RELEASE_PLEASE_TOKEN` personal access token instead of GITHUB_TOKEN.
+# The organization policy prevents GitHub Actions' default token from opening pull requests. The
+# token must be scoped to this repository with contents, issues, and pull-request write access.
+#
 # Two things this deliberately does NOT do:
 #
 #   * It does not publish to npm. The package is private and the artifact is a macOS app built
 #     on the user's own machine.
-#   * It does not build the dmg. The tag it pushes is created with GITHUB_TOKEN, and GitHub does
-#     not start workflow runs from those, so `ci.yml`'s `package` job does not fire here and
-#     cannot race this job. Packaging a tag stays a manual `workflow_dispatch`, which is what it
-#     already was.
+#   * It does not attach a dmg to the GitHub Release. Because the release tag is pushed with the
+#     personal access token above, it starts `ci.yml` and that workflow's `package` job builds
+#     the dmg as a separate release check. The dmg remains a 90-day Actions artifact.
 #
 # `CHANGELOG.md` is generated. Never hand-edit it.
 
@@ -52,6 +55,7 @@ jobs:
         id: release
         uses: googleapis/release-please-action@v4
         with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 

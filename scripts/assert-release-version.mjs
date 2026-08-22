@@ -19,7 +19,7 @@ import { fileURLToPath } from "node:url";
 
 /** The version a `vX.Y.Z` tag names, or `null` when the tag is not one. */
 export function versionFromTag(tag) {
-  const match = /^v(\d+\.\d+\.\d+(?:-[\w.-]+)?(?:\+[\w.-]+)?)$/.exec(String(tag ?? "").trim());
+  const match = /^v(\d+\.\d+\.\d+)$/.exec(String(tag ?? "").trim());
   return match?.[1] ?? null;
 }
 

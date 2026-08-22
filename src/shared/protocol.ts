@@ -1114,6 +1114,33 @@ export type CompleteTask = z.infer<typeof CompleteTaskSchema>;
 export const RescheduleTaskSchema = z.object({}).strict();
 
 /**
+ * Move one backlog task in the operator's order - the ONE route that writes
+ * `Task.backlogRank`, and the only way the order ever changes by hand.
+ *
+ * AN ANCHOR, NEVER AN INDEX. An index is a claim about a list the caller last saw, and the
+ * daemon's list has moved on since - a task dispatched, a sweep filed three more. Naming
+ * the neighbour says what the operator actually meant ("above this card"), and the daemon
+ * re-reads that neighbour inside the transaction, so two dashboards reordering at once
+ * produce two orderings that are each a real ordering of the real backlog.
+ *
+ * A discriminated union rather than one object with an optional anchor, so "before with no
+ * anchor" is rejected by the schema instead of by a hand-written check in the route.
+ *
+ * Deliberately NOT part of `DispatchSchema` or `UpdateTaskSchema`: a rank is never
+ * something a creating or editing caller names, because "where in the queue" is a
+ * statement about the queue and not about the task. Keeping it off `UpdateTaskSchema` also
+ * keeps `isAnnotationOnlyUpdate` - which counts patch keys - from ever having to learn
+ * about it.
+ */
+export const ReorderTaskSchema = z.discriminatedUnion("position", [
+  z.object({ position: z.literal("top") }),
+  z.object({ position: z.literal("bottom") }),
+  z.object({ position: z.literal("before"), anchorTaskId: z.string().min(1) }),
+  z.object({ position: z.literal("after"), anchorTaskId: z.string().min(1) }),
+]);
+export type ReorderTask = z.infer<typeof ReorderTaskSchema>;
+
+/**
  * Edit a task - what the dispatch modal sends when it is reopened on a backlog card,
  * and what the backlog column's priority picker sends.
  *

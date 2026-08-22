@@ -385,6 +385,82 @@ test("assignment still happens AT the ceiling - it consumes no new session", () 
   assert.equal(a.kind, "assign");
 });
 
+// ---- the operator's order --------------------------------------------------------------
+
+test("dispatch takes the TOP-RANKED ready item, not the oldest and not the plan's first", () => {
+  // Step 5 is head-first with no exception, and the head is the operator's. The fixture
+  // makes all three candidate orders differ: `wanted` is ranked first, filed LAST, and
+  // listed last by the plan - so a scheduler reading age or plan order takes a different
+  // task and this fails.
+  const other = mkTask({ backlogRank: 2048, createdAt: 1 });
+  const wanted = mkTask({ backlogRank: 1024, createdAt: 9_000 });
+  const a = decide({
+    tasks: [other, wanted],
+    plan: mkPlan([
+      [other.id, []],
+      [wanted.id, []],
+    ]),
+  });
+  assert.equal(a.kind, "dispatch");
+  assert.equal(a.kind === "dispatch" ? a.task.id : "", wanted.id);
+});
+
+test("reordering changes what is dispatched, with NO replan", () => {
+  // Why rank lives on the task row rather than in the stored plan: `planStale` is coverage,
+  // so moving a card cannot make the plan stale and cannot cost a model call. A design that
+  // stored the order in the plan would replan on every drag.
+  const first = mkTask({ backlogRank: 1024 });
+  const second = mkTask({ backlogRank: 2048 });
+  const plan = mkPlan([
+    [first.id, []],
+    [second.id, []],
+  ]);
+  const before = decide({ tasks: [first, second], plan });
+  assert.equal(before.kind === "dispatch" ? before.task.id : "", first.id);
+
+  // Exactly what a reorder writes: one row's rank, and nothing else.
+  const moved = [{ ...first, backlogRank: 4096 }, second];
+  assert.equal(planStale(moved, plan), false, "a reorder must not make the plan stale");
+  const after = decide({ tasks: moved, plan });
+  assert.equal(after.kind, "dispatch", "still dispatching - no replan was triggered");
+  assert.equal(after.kind === "dispatch" ? after.task.id : "", second.id);
+});
+
+test("the ASSIGN scan is the one documented exception, and it is KEPT", () => {
+  // Dispatch follows the operator's order absolutely; assign does not, deliberately. A free
+  // agent can only take a task in ITS repo on ITS harness, so a top-ranked task with no home
+  // would otherwise idle that agent to protect a position. Documented in
+  // docs/dispatch-and-backlog.md#the-backlog-order-is-the-one-you-set and pinned here, so a
+  // later reader does not "fix" it into strict head-first.
+  const head = mkTask({ repoRoot: "/other-repo", backlogRank: 1024 });
+  const lower = mkTask({ backlogRank: 2048 });
+  const free = mkSession();
+  const a = decide({
+    tasks: [head, lower],
+    sessions: [free],
+    plan: mkPlan([
+      [head.id, []],
+      [lower.id, []],
+    ]),
+    cfg: cfg({ allowlist: ["/repo", "/other-repo"] }),
+  });
+  assert.equal(a.kind, "assign");
+  assert.equal(a.kind === "assign" ? a.task.id : "", lower.id, "a lower item with a home wins");
+
+  // And the exception is exactly that narrow: with no free agent to justify it, the SAME
+  // backlog dispatches the head the operator put first.
+  const noAgents = decide({
+    tasks: [head, lower],
+    sessions: [],
+    plan: mkPlan([
+      [head.id, []],
+      [lower.id, []],
+    ]),
+    cfg: cfg({ allowlist: ["/repo", "/other-repo"] }),
+  });
+  assert.equal(noAgents.kind === "dispatch" ? noAgents.task.id : "", head.id);
+});
+
 test("a later ready item with a home wins over launching a worktree for the head", () => {
   const head = mkTask({ repoRoot: "/other-repo" });
   const later = mkTask();

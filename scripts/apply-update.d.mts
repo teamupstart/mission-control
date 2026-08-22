@@ -20,13 +20,18 @@ export interface ApplyOperations {
 }
 
 export const UPDATE_OUTCOME_SCHEMA: number;
+export const INSTALL_TIMEOUT_MS: number;
+export const RETAINED_FAILURE_DIR_NAME: string;
 export function parseArgs(argv: string[]): {
   args: ApplyUpdateArgs | null;
   problem: string | null;
 };
 export function sanitizeDiagnostic(value: unknown): string;
 export function writeOutcome(path: string, outcome: Record<string, unknown>): void;
-export function realApplyOperations(logPath: string): ApplyOperations;
+export function realApplyOperations(
+  logPath: string,
+  installTimeoutMs?: number,
+): ApplyOperations;
 export function runApplyUpdate(
   args: ApplyUpdateArgs,
   ops?: ApplyOperations,

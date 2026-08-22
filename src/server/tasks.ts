@@ -10,7 +10,7 @@ import type {
   TaskKind,
   TaskPriority,
 } from "@shared/types.ts";
-import type { TaskDependencyInput, UpdateTask } from "@shared/protocol.ts";
+import type { ReorderTask, TaskDependencyInput, UpdateTask } from "@shared/protocol.ts";
 import type { TaskSourceRef } from "@shared/task-source.ts";
 import { pipelineRunKeyOf, type PipelineRun, type PipelineRunLink } from "@shared/pipeline.ts";
 import { isAnnotationOnlyUpdate } from "@shared/protocol.ts";
@@ -48,6 +48,7 @@ import {
 } from "./actions.ts";
 import {
   getTask as getDurableTask,
+  openDb,
   settleTaskWithRetentionAdoption,
   historicalTaskWorkEpisodeBindingsForTask,
   primaryRepoPrForTask,
@@ -55,10 +56,12 @@ import {
   retroFollowupForTask,
   taskReposFor,
   taskWorkEpisodeForTask,
+  upsertTask as dbUpsertTask,
   workEpisodeRepoPrsForTask,
   type TaskWorkEpisodeBinding,
 } from "./db.ts";
 import { taskHasWorktrees, taskMergeQuorum, taskRepoRefs, type QuorumVerdict } from "@shared/task-repos.ts";
+import { appendRank, placeBacklogRank, prependRank } from "./backlog-rank.ts";
 import {
   isRetentionRetryable,
   taskHoldsCleanupResources,
@@ -219,6 +222,16 @@ export interface Ok {
   ok: boolean;
   error?: string;
 }
+
+/**
+ * What `reorder` answers with. The status is chosen HERE rather than reverse-engineered
+ * from the sentence at the route, because the two refusals read the same to a string match
+ * and mean opposite things to a caller: 404 is "that card is gone, stop drawing it" and 409
+ * is "that card moved on, re-read and try again".
+ */
+export type TaskReorderResult =
+  | { ok: true; task: Task }
+  | { ok: false; status: 404 | 409; error: string };
 
 /** A user-fixable dependency selection conflict, safe to return as HTTP 409. */
 export class TaskDependencyError extends Error {}
@@ -1943,6 +1956,18 @@ export class TaskManager {
     const workflowId = resolveTaskWorkflowId(input.workflowId);
     const dependencies = this.resolveDependencies(input.dependencies ?? [], id);
     const mustBacklog = dependencies.some((dependency) => dependency.satisfiedAt === null);
+    const backlogged = Boolean(input.backlog) || mustBacklog;
+    // The ONE edit that makes "work that files itself arrives at the bottom" true for every
+    // automatic filer at once - a task source sweep, a recurring mission, a retro follow-up,
+    // an ensemble member, an MCP `create_task`. They all come through here with
+    // `backlog: true`, so none of them needs to know the rule and none of them can forget
+    // it. Nothing that files itself gets to jump the queue the operator arranged.
+    //
+    // A task dispatched straight out (no backlog stop) gets no rank at all: rank is
+    // meaningful only in the backlog, and inventing one for a row that never sits there
+    // would put a number in the column that means nothing. `reschedule` is what gives one
+    // to a task that arrives in the backlog later.
+    const backlogRank = backlogged ? this.allocateBacklogRank("bottom") : null;
     const task: Task = {
       id,
       title: explicitTitle || deriveTitle(input.intent),
@@ -1952,6 +1977,7 @@ export class TaskManager {
       priority: input.priority ?? null,
       labels: input.labels ?? [],
       dependencies,
+      backlogRank,
       // Human and internal callers remain schedulable by default. A task source can make
       // the opposite choice explicit in its settings, so every item it files arrives on
       // hold for review without a second, non-atomic update after creation.
@@ -2000,7 +2026,7 @@ export class TaskManager {
       scheduleId: internal?.schedule?.scheduleId ?? null,
       scheduleOccurrenceId: internal?.schedule?.scheduleOccurrenceId ?? null,
       scheduledFor: internal?.schedule?.scheduledFor ?? null,
-      status: input.backlog || mustBacklog ? "backlog" : "dispatching",
+      status: backlogged ? "backlog" : "dispatching",
       outcome: null,
       outcomeUrl: null,
       error: null,
@@ -3513,6 +3539,131 @@ export class TaskManager {
    * change. Its declared dependencies are kept too - re-running it means re-running it
    * under the same prerequisites, which the backlog re-evaluates on the next plan.
    */
+  /**
+   * Allocate a rank at one end of the backlog, publishing any row a repair moved on the way.
+   *
+   * Every allocation is a potential repair - `appendRank` and `prependRank` heal a row
+   * that has no rank before they read the end they are extending - and a repair that moved
+   * rows nobody was told about would leave every open dashboard drawing a stale column
+   * until the next reload. So the publish is here rather than at each caller. In the
+   * ordinary case it publishes nothing, because in the ordinary case the repair wrote
+   * nothing.
+   *
+   * NULL when that end of the rank space has no integer left. The task is then filed with
+   * no rank at all, which `byBacklogRank` sorts LAST - which is the bottom, which is where
+   * an arrival belongs. Several such arrivals keep their order, because the comparator
+   * breaks the tie by age. The alternative - renumbering the whole backlog to manufacture
+   * one gap - is the thing sparse ranks exist to avoid, and it would rewrite an order the
+   * operator arranged in order to file a task they did not ask to have filed anywhere in
+   * particular.
+   */
+  private allocateBacklogRank(end: "top" | "bottom"): number | null {
+    const d = openDb();
+    const placement = end === "top" ? prependRank(d) : appendRank(d);
+    if (!placement) return null;
+    this.publishBacklogRanks(placement.normalized);
+    return placement.rank;
+  }
+
+  /** Broadcast rows a rank repair rewrote in SQL, so the in-memory snapshot follows. */
+  private publishBacklogRanks(ranks: ReadonlyMap<string, number>): void {
+    for (const [id, backlogRank] of ranks) {
+      const task = this.registry.getTask(id);
+      if (!task || task.backlogRank === backlogRank) continue;
+      // Already persisted by the normalize, so this publishes without writing again.
+      this.registry.publishPersistedTask({ ...task, backlogRank }, []);
+    }
+  }
+
+  /**
+   * Move a backlog task in the operator's order - the one route that writes a rank by hand.
+   *
+   * Every refusal is a state the operator can SEE, which is why none of them is a silent
+   * no-op: a card that dispatched between the click and the request is a 409, and a control
+   * that quietly sprang back would look broken rather than late.
+   *
+   * The placement, any renormalization it needed and the row write all happen inside ONE
+   * transaction. Two dashboards reordering at once therefore produce two orderings that are
+   * each a real ordering of the real backlog, and never a half-applied one - there is no
+   * lock and no version field, because the anchor is re-read inside the transaction rather
+   * than trusted from the request.
+   *
+   * A reorder never makes Foreman's plan stale. `planStale` is COVERAGE - does every
+   * plannable backlog item have an entry - not a fingerprint of the order, so moving a card
+   * costs zero model calls. That is the reason rank lives on the task row and not in the
+   * stored plan.
+   */
+  reorder(id: string, request: ReorderTask): TaskReorderResult {
+    const task = this.registry.getTask(id);
+    if (!task) return { ok: false, status: 404, error: "no such task" };
+    if (task.status !== "backlog") {
+      return {
+        ok: false,
+        status: 409,
+        error: `task is ${task.status}, only a backlog task can be reordered`,
+      };
+    }
+    const anchorId = "anchorTaskId" in request ? request.anchorTaskId : null;
+    if (anchorId !== null) {
+      if (anchorId === id) {
+        return { ok: false, status: 409, error: "a task cannot be moved relative to itself" };
+      }
+      const anchor = this.registry.getTask(anchorId);
+      if (!anchor) return { ok: false, status: 404, error: "no such anchor task" };
+      if (anchor.status !== "backlog") {
+        return {
+          ok: false,
+          status: 409,
+          error: `the anchor task is ${anchor.status}, so it has no place in the backlog order`,
+        };
+      }
+    }
+    const d = openDb();
+    const ownsTransaction = !d.isTransaction;
+    if (ownsTransaction) d.exec("BEGIN IMMEDIATE");
+    let moved: Task;
+    let normalized: ReadonlyMap<string, number>;
+    let displaced: readonly string[] = [];
+    try {
+      const placement = placeBacklogRank(d, id, request.position, anchorId);
+      // The backlog has no integer left where the operator pointed. Refused rather than
+      // approximated: a move that silently landed somewhere else is worse than one that
+      // says it could not happen.
+      if (!placement) {
+        if (ownsTransaction && d.isTransaction) d.exec("ROLLBACK");
+        return { ok: false, status: 409, error: "the backlog has no room left at that position" };
+      }
+      normalized = placement.normalized;
+      // Re-read INSIDE the transaction: a normalize may have just rewritten this very
+      // row's rank, and writing the pre-normalize snapshot back would undo it.
+      const current = this.registry.getTask(id) ?? task;
+      moved = {
+        ...current,
+        backlogRank: placement.rank,
+        updatedAt: Date.now(),
+      };
+      // Persisted INSIDE the transaction, published only after it commits.
+      //
+      // `upsertTask` would do both at once, and a `task_upsert` cannot be recalled: if
+      // COMMIT then threw, the catch below would roll the row back while every connected
+      // dashboard had already drawn the card in its new place, and the registry's
+      // in-memory copy - now disagreeing with SQLite - could persist that phantom move
+      // later. Being synchronous prevents an interleaving, which is a different hazard
+      // and not this one. This is the same split `settleTaskWithRetentionAdoption` uses,
+      // and `publishPersistedTask` exists for it.
+      displaced = dbUpsertTask(moved);
+      if (ownsTransaction) d.exec("COMMIT");
+    } catch (error) {
+      if (ownsTransaction && d.isTransaction) d.exec("ROLLBACK");
+      throw error;
+    }
+    this.registry.publishPersistedTask(moved, displaced);
+    // Also after the commit, and only for the rows the repair moved - the one the operator
+    // asked about was published just above.
+    this.publishBacklogRanks(new Map([...normalized].filter(([rowId]) => rowId !== id)));
+    return { ok: true, task: moved };
+  }
+
   async reschedule(id: string): Promise<Ok> {
     if (this.reschedulingTasks.has(id)) {
       return { ok: false, error: "task is being rescheduled" };
@@ -3586,6 +3737,12 @@ export class TaskManager {
         ...cur,
         status: "backlog",
         enabled: true,
+        // A re-entering task KEEPS the rank it already has, so a recovered dispatch
+        // reappears where it was rather than at the bottom of a queue it never left. A task
+        // that never had one - dispatched straight out, never a backlog row - is appended,
+        // because arriving somewhere is the whole rule and an unranked row would sit below
+        // everything filed after it.
+        backlogRank: cur.backlogRank ?? this.allocateBacklogRank("bottom"),
         // Everything came back: this path returns early when the teardown throws.
         ...releasedTaskResources(cur, null),
         homeName: null,

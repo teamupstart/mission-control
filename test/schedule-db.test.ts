@@ -172,6 +172,7 @@ function mkTask(over: Partial<Task> = {}): Task {
         satisfiedAt: null,
       },
     ],
+    backlogRank: 2048,
     enabled: false,
     model: "claude-opus-4-8",
     effort: "xhigh",

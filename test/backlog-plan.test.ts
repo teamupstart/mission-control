@@ -42,6 +42,20 @@ function mkTask(over: Partial<Task> = {}): Task {
 
 const report = (tasks: BacklogReport["tasks"], note?: string): BacklogReport => ({ tasks, note });
 
+/** An unmet operator-declared dependency on `taskId`, in the shape the task row carries. */
+const dep = (taskId: string): Task["dependencies"][number] => ({
+  type: "task",
+  taskId,
+  title: taskId,
+  sessionId: null,
+  episodeId: null,
+  agentSessionId: null,
+  branch: null,
+  prUrl: null,
+  selectedAt: null,
+  satisfiedAt: null,
+});
+
 /** Turn a sanitized plan into a stored one, so the shared readers can be pointed at it. */
 function stored(input: ReturnType<typeof sanitizePlan>): BacklogPlan {
   return {
@@ -403,9 +417,13 @@ test("a completed scout remains blocked without a merged PR", () => {
 
 // ---- ordering ------------------------------------------------------------------------
 
-test("ready items come back in PLAN order, not creation order", () => {
-  const first = mkTask();
-  const second = mkTask();
+test("ready items come back in the OPERATOR's order, whatever the plan says", () => {
+  // The behaviour change at the heart of manual ordering. `readyBacklog` used to walk
+  // `plan.entries` first, so for any item the plan covered a model decided what Foreman
+  // took next. Now the plan supplies edges and the rank supplies position - and this
+  // fixture is one where the two disagree, so a surviving plan-walk fails here.
+  const first = mkTask({ backlogRank: 1024 });
+  const second = mkTask({ backlogRank: 2048 });
   const ready = readyBacklog(
     [first, second],
     planFor([
@@ -413,14 +431,112 @@ test("ready items come back in PLAN order, not creation order", () => {
       [first.id, []],
     ]),
   );
-  assert.deepEqual(ready.map((t) => t.id), [second.id, first.id]);
+  assert.deepEqual(ready.map((t) => t.id), [first.id, second.id]);
 });
 
-test("an item the plan does not name is scheduled after the ones it does, oldest first", () => {
-  const planned = mkTask();
-  const fresh = mkTask();
+test("an item the plan does not name sits at its rank, not in a tail", () => {
+  // There is no "unplanned tail" any more: an item the plan has never seen is unblocked
+  // and sits exactly where the operator put it, which here is ABOVE the planned one.
+  const planned = mkTask({ backlogRank: 2048 });
+  const fresh = mkTask({ backlogRank: 1024 });
   const ready = readyBacklog([planned, fresh], planFor([[planned.id, []]]));
-  assert.deepEqual(ready.map((t) => t.id), [planned.id, fresh.id]);
+  assert.deepEqual(ready.map((t) => t.id), [fresh.id, planned.id]);
+});
+
+test("every ready item has zero unmet edges, so no ready pair can be ordered by a dependency", () => {
+  // THE INVARIANT THE WHOLE PHASE RESTS ON, pinned as a property rather than left as a
+  // comment. Dropping the plan-walk is safe precisely because a ready item has no unmet
+  // edge - so an edge from one ready item to another is impossible by construction, the
+  // ready set has no internal edges, and ANY total order over it is dependency-safe.
+  //
+  // Asserted over a table of backlogs and plans rather than one example, because a single
+  // fixture would only prove the filter works for that fixture.
+  const cases: Array<{ name: string; tasks: Task[]; plan: BacklogPlan | null }> = [];
+
+  const chainA = mkTask({ backlogRank: 4096 });
+  const chainB = mkTask({ backlogRank: 1024 });
+  const chainC = mkTask({ backlogRank: 2048 });
+  cases.push({
+    name: "a chain listed against the operator's order",
+    tasks: [chainA, chainB, chainC],
+    plan: planFor([
+      [chainC.id, [chainB.id]],
+      [chainB.id, [chainA.id]],
+      [chainA.id, []],
+    ]),
+  });
+
+  const diamondTop = mkTask({ backlogRank: 3072 });
+  const diamondL = mkTask({ backlogRank: 1024 });
+  const diamondR = mkTask({ backlogRank: 2048 });
+  const diamondBottom = mkTask({ backlogRank: 512 });
+  cases.push({
+    name: "a diamond whose sink is ranked first",
+    tasks: [diamondTop, diamondL, diamondR, diamondBottom],
+    plan: planFor([
+      [diamondTop.id, []],
+      [diamondL.id, [diamondTop.id]],
+      [diamondR.id, [diamondTop.id]],
+      [diamondBottom.id, [diamondL.id, diamondR.id]],
+    ]),
+  });
+
+  const loneA = mkTask({ backlogRank: 2048 });
+  const loneB = mkTask({ backlogRank: 1024 });
+  cases.push({ name: "no plan at all", tasks: [loneA, loneB], plan: null });
+
+  const declared = mkTask({ backlogRank: 1024 });
+  const dependent = mkTask({
+    backlogRank: 512,
+    dependencies: [dep(declared.id)],
+  });
+  cases.push({
+    name: "an operator-declared edge against the rank",
+    tasks: [declared, dependent],
+    plan: null,
+  });
+
+  for (const { name, tasks, plan } of cases) {
+    const ready = readyBacklog(tasks, plan);
+    const readyIds = new Set(ready.map((t) => t.id));
+    for (const task of ready) {
+      assert.deepEqual(
+        blockersFor(task, plan, tasks),
+        [],
+        `${name}: ${task.id} is ready with an unmet blocker`,
+      );
+    }
+    // The consequence, stated separately because it is the claim the plan-walk removal
+    // actually rests on: no ready item names another ready item as a prerequisite.
+    for (const task of ready) {
+      for (const blocker of blockersFor(task, plan, tasks)) {
+        assert.ok(!readyIds.has(blocker.taskId), `${name}: a ready pair carries an edge`);
+      }
+    }
+    // And the list is genuinely in rank order, not accidentally in plan order.
+    assert.deepEqual(
+      ready.map((t) => t.id),
+      [...ready].sort((a, b) => (a.backlogRank ?? 0) - (b.backlogRank ?? 0)).map((t) => t.id),
+      `${name}: the ready list is not in rank order`,
+    );
+  }
+});
+
+test("a reorder does not make the plan stale, so moving a card costs no model call", () => {
+  // Why rank lives on the task row and not in the stored plan. `planStale` is COVERAGE -
+  // does every plannable item have an entry - and a rank change touches neither the set of
+  // items nor the set of entries.
+  const a = mkTask({ backlogRank: 1024 });
+  const b = mkTask({ backlogRank: 2048 });
+  const plan = planFor([
+    [a.id, []],
+    [b.id, []],
+  ]);
+  assert.equal(planStale([a, b], plan), false);
+  // The same two tasks with their ranks swapped - which is exactly what a reorder writes.
+  const moved = [{ ...a, backlogRank: 4096 }, b];
+  assert.equal(planStale(moved, plan), false);
+  assert.deepEqual(readyBacklog(moved, plan).map((t) => t.id), [b.id, a.id]);
 });
 
 test("next up is the first READY item, skipping a blocked head", () => {

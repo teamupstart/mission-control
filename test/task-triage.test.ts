@@ -17,11 +17,15 @@ import { mkTask } from "./helpers/session-fixture.ts";
  * every existing task already has rows for, and the whole design rests on "unset" being
  * a real, distinct answer rather than a synonym for `low` or for `[]`.
  *
- * Two ways that goes wrong and neither would fail a typecheck. If unset sorted to the
- * bottom, one task marked `low` would outrank an entire untriaged backlog and the
- * board's order would change for everyone on upgrade. And if label cleaning lived
- * anywhere but the schema, a task source writing without a human in the loop could put
- * duplicates, whitespace and an unbounded list onto a card. These pin both.
+ * Two ways that goes wrong and neither would fail a typecheck. If unset ranked below
+ * `low`, every surface that COMPARES urgency would say an untriaged task is less urgent
+ * than one somebody deliberately deprioritised. And if label cleaning lived anywhere but
+ * the schema, a task source writing without a human in the loop could put duplicates,
+ * whitespace and an unbounded list onto a card. These pin both.
+ *
+ * Priority no longer ORDERS the backlog - `byBacklogRank` does, and the operator writes it
+ * (`test/backlog-rank.test.ts`). What survives here is priority as annotation, and the
+ * `byPriorityThenAge` comparator that the one-time `backlog_rank` backfill still runs.
  */
 
 test("priority ranks ascending, with unset between low and med", () => {
@@ -35,30 +39,34 @@ test("priority ranks ascending, with unset between low and med", () => {
   assert.equal(new Set(ranks).size, ranks.length, "no two priorities may share a rank");
 });
 
-test("an untriaged backlog keeps the oldest-first order it always had", () => {
-  // The upgrade case: nobody has set a priority, so nothing may reorder.
+test("the backlog is in RANK order, and priority does not move a card", () => {
+  // The decision this whole feature turns on, stated as a test rather than as a comment:
+  // a `blocker` ranked last stays last. An order a priority chip could rearrange is not
+  // an order the operator set.
   const tasks = [
-    mkTask({ id: "c", createdAt: 300 }),
-    mkTask({ id: "a", createdAt: 100 }),
-    mkTask({ id: "b", createdAt: 200 }),
+    mkTask({ id: "old-low", createdAt: 100, priority: "low", backlogRank: 1024 }),
+    mkTask({ id: "new-blocker", createdAt: 900, priority: "blocker", backlogRank: 5120 }),
+    mkTask({ id: "untriaged", createdAt: 200, backlogRank: 2048 }),
+    mkTask({ id: "older-high", createdAt: 300, priority: "high", backlogRank: 3072 }),
+    mkTask({ id: "newer-high", createdAt: 400, priority: "high", backlogRank: 4096 }),
   ];
   assert.deepEqual(
     backlogTasks(tasks).map((t) => t.id),
-    ["a", "b", "c"],
+    ["old-low", "untriaged", "older-high", "newer-high", "new-blocker"],
   );
 });
 
-test("the backlog sorts urgent first, then oldest first within a priority", () => {
+test("an unranked row sorts LAST, whatever its priority or its age", () => {
+  // A row an older build wrote, or a restored one. It must not lead the column on the
+  // strength of being old - the daemon repairs it (`normalizeBacklogRanks`), and until it
+  // does the comparator has to put it where an unplaced arrival belongs.
   const tasks = [
-    mkTask({ id: "old-low", createdAt: 100, priority: "low" }),
-    mkTask({ id: "new-blocker", createdAt: 900, priority: "blocker" }),
-    mkTask({ id: "untriaged", createdAt: 200 }),
-    mkTask({ id: "older-high", createdAt: 300, priority: "high" }),
-    mkTask({ id: "newer-high", createdAt: 400, priority: "high" }),
+    mkTask({ id: "unranked-blocker", createdAt: 1, priority: "blocker", backlogRank: null }),
+    mkTask({ id: "ranked", createdAt: 900, backlogRank: 4096 }),
   ];
   assert.deepEqual(
     backlogTasks(tasks).map((t) => t.id),
-    ["new-blocker", "older-high", "newer-high", "untriaged", "old-low"],
+    ["ranked", "unranked-blocker"],
   );
 });
 
@@ -75,6 +83,10 @@ test("the backlog projection still filters to backlog status", () => {
   );
 });
 
+// `byPriorityThenAge` orders nothing in the product any more; its ONE caller is the
+// one-time `backlog_rank` backfill in `migrate()`, which numbers an upgrading operator's
+// backlog in the order their board was already showing. That one call has to be right,
+// which is why this stays.
 test("byPriorityThenAge is a total order - equal tasks compare equal", () => {
   const a = mkTask({ id: "a", createdAt: 5, priority: "med" });
   const b = mkTask({ id: "b", createdAt: 5, priority: "med" });

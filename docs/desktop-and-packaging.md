@@ -103,8 +103,15 @@ plain browser dashboard has no update bridge, renders no update banner, and star
 Choose **Check for Updates…** from either the application menu or the tray for an immediate manual
 check. A native dialog reports that the app is current or offers the same **Update Now** and **Later**
 choice. This native path remains available while the dashboard window is hidden. The app also checks
-after a short startup delay, every six hours with jitter, and once after returning from a long sleep;
-background failures stay quiet and are written to the local update log.
+after a short startup delay, every six hours with jitter, and once after returning from a long sleep.
+
+Background failures stay quiet and are written to the local update log, with one exception. A
+failure that will still be there in six hours and that only the operator can clear - `gh` missing,
+or a lapsed `gh` credential - reaches the banner from a background check as well, because a
+condition nobody is ever told about is a condition nobody fixes. Everything that clears itself
+stays silent: a rate limit (which reads as a rate limit, not as a lapsed credential) and any other
+transient failure return to idle exactly as before. A background check still never opens a native
+dialog; only a manual check does.
 
 Updates are deliberately inert in development, on Intel Macs, without a managed-install receipt,
 without a system Node.js binary, or when `--from-origin` installed a non-canonical repository. A
@@ -119,13 +126,26 @@ exit, backs up the installed bundle and receipt, and invokes the updater-owned c
 `scripts/install-app.mjs --ref <tag>` path. The install script remains the only owner of checkout,
 build, version verification, and the atomic bundle swap.
 
+The build is bounded by its own 45-minute timeout, separate from the two-minute wait for the app to
+quit, and reported in its own words - a wedged `npm` would otherwise leave the person with the app
+already backed up, no new app, and a helper that never returns.
+
 The helper relaunches the installed bundle by its exact path. A build, verification, swap, outcome,
-or relaunch failure restores both the previous app and its receipt before relaunching it. The result
-is stored in the versioned `update-outcome.json` marker. On the next launch, the native dialog and
-dashboard banner report a safe success or failure summary; a failure is therefore visible without
-opening the local log. **Retry** runs a fresh check, while **Dismiss** hides that result until update
-state changes. Diagnostic output remains only in the rotating `update.log` in the state directory,
-with credentials and absolute paths redacted.
+or relaunch failure restores both the previous app and its receipt before relaunching it. A failure
+also copies what it was holding to `failed-update/` in the state directory before its temp directory
+is removed: the previous app bundle, the previous receipt, and the bundle that failed. That is the
+evidence of how it broke and a second, by-hand rollback if the automatic one did not take. It keeps
+one attempt's worth - the next update clears it as it starts, before anything that could fail,
+so it holds the latest attempt however that attempt ended and cannot accumulate. If that copy cannot be made at all, because the state directory is full or unwritable,
+nothing is deleted to compensate: the helper's temp directory is left in place holding the backup,
+and the failed bundle stays beside the installed app. The operator whose state directory is too
+broken to hold a second copy is exactly the one who must not lose the first.
+
+The result is stored in the versioned `update-outcome.json` marker. On the next launch, the
+native dialog and dashboard banner report a safe success or failure summary; a failure is
+therefore visible without opening the local log. **Retry** runs a fresh check, while **Dismiss**
+hides that result until update state changes. Diagnostic output remains only in the rotating
+`update.log` in the state directory, with credentials and absolute paths redacted.
 
 This updates only the packaged application and its updater-owned clone. A separately installed
 daemon LaunchAgent still runs from the repository path recorded in its plist and is not changed by
@@ -145,8 +165,11 @@ The action authenticates with the `RELEASE_PLEASE_TOKEN` Actions secret, which c
 access token scoped to this repository with contents, issues, and pull-request write access. The
 organization policy prevents the default `GITHUB_TOKEN` from opening pull requests, so replacing
 the configured token with the default token makes the Release workflow fail on every push to
-`main`. The first release is pinned to `v1.0.0` through the package's `release-as` setting; remove
-that one-time pin after `v1.0.0` is published so later releases resume normal version calculation.
+`main`. The first release was pinned to `v1.0.0` through the package's `release-as` setting. That
+one-time pin was removed once `v1.0.0` published, so releases now resume normal version
+calculation from the conventional-commit history. Leaving it in place is not a cosmetic oversight:
+`release-as` forces the same version on every subsequent run, so with the manifest already at
+`1.0.0` release-please proposes `1.0.0` again and no later release can be cut at all.
 
 One equality is load-bearing and therefore enforced rather than assumed: the tag, `package.json`,
 and both version fields in `package-lock.json` must name the same version.

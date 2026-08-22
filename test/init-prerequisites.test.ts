@@ -9,7 +9,9 @@ import {
   nodeMajor,
   nodePrerequisiteMessage,
   REQUIRED_ARCH,
+  xcodeToolsPrerequisiteMessage,
 } from "../scripts/init-prerequisites.mjs";
+import { nativeBuildTarget } from "../scripts/build-keep-awake-native.mjs";
 
 test("init prerequisite checks accept supported Node versions", () => {
   assert.equal(nodeMajor("v24.0.0"), 24);
@@ -57,5 +59,26 @@ test("the installer and the running app describe a broken gh identically", () =>
   assert.equal(
     ghPrerequisiteMessage({ installed: true, authenticated: false }),
     "gh is not authenticated - run `gh auth login`",
+  );
+});
+
+test("a missing Xcode command line toolchain is refused before the build, by name", () => {
+  // git via Homebrew needs no command line tools, so `gitPrerequisiteMessage` passing says
+  // nothing about whether node-gyp can run. This is the check that does.
+  assert.equal(
+    xcodeToolsPrerequisiteMessage({ platform: "darwin", installed: true }),
+    null,
+  );
+  const missing = String(xcodeToolsPrerequisiteMessage({ platform: "darwin", installed: false }));
+  assert.match(missing, /xcode-select --install/);
+  assert.match(missing, /node-gyp/);
+});
+
+test("the Xcode toolchain is asked for only where a native build actually happens", () => {
+  // `nativeBuildTarget` skips every non-Darwin platform, so there is nothing to be missing.
+  assert.equal(nativeBuildTarget("linux", "x64").kind, "skip");
+  assert.equal(
+    xcodeToolsPrerequisiteMessage({ platform: "linux", installed: false }),
+    null,
   );
 });

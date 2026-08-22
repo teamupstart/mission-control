@@ -83,12 +83,18 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
 
 ### The Board card panel and its preview
 
-`e2e/.artifacts/board-card-preview/` carries the **Settings → Display → Board card**
+`e2e/.artifacts/board-card-preview/` carries the **Settings → Display → Session display**
 checklist beside its live preview card, twice: once at the shipped defaults - every item
 checked except the worktree, which is the one item no card drew before this feature - and
 once with Goal and Model unchecked and the worktree switched on, so the same frame shows
-what each checkbox actually costs and buys. No agent is dispatched, so nothing runs but the
-settings page and a daemon.
+what each checkbox actually costs and buys. Both sections are in frame, the board card's
+eleven items and the conversation header's two, which is why the viewport is 1700px tall.
+No agent is dispatched, so nothing runs but the settings page and a daemon.
+
+`e2e/.artifacts/conversation-band-optional/` is the other half of that feature and carries
+the *pane* rather than the panel: the console detail with its `PATH`/`BRANCH` band, and the
+same detail with both cells switched off, where the band is gone and the header's rule sits
+directly above the tab strip. It deliberately takes no picture of the panel - see above.
 
 The viewport is deliberately taller than the panel. An element screenshot taken across a
 scroll is stitched rather than photographed, and the seam reads as a missing row in a frame

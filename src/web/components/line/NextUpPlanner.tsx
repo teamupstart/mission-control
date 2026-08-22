@@ -23,10 +23,10 @@ import { Tooltip } from "../Tooltip.tsx";
  *  2. **Foreman's words are quoted, and the computed facts are separate.** The reason is
  *     the planner model's own sentence and is printed verbatim, attributed. Everything
  *     under it is derived here from the same task list the rows are drawn from, so a
- *     reader can check every line against the panel behind the popover. Where the two
- *     disagree - a plan that put a `low` task first - the facts say so
- *     (`plannerFacts`), because a surface that only ever agreed with the model would be
- *     worth nothing on the day the model is wrong.
+ *     reader can check every line against the panel behind the popover. Where the facts
+ *     and the arrangement disagree - a `low` task sitting first because that is where it
+ *     was put - the facts say so (`plannerFacts`), because a surface that only ever
+ *     flattered the queue would be worth nothing on the day the queue is wrong.
  *  3. **Fixed positioning, not absolute.** The drawer's body is capped at three rows and
  *     scrolls (`.line-drawer-body`), and the drawer itself clips (`overflow: hidden`) so
  *     its rounded corners hold. An absolutely-positioned popover inside that is cut off
@@ -139,13 +139,11 @@ export function PlannerPopover({
     >
       <header className="bl-planner-head">
         <h3 className="bl-planner-title">Next up</h3>
-        {/* The rule in force, not a label: `readyBacklog` walks Foreman's plan first and
-            falls back to priority-then-age for anything the plan does not name. Which of
-            the two put this task on top is the first thing the reason below has to be
-            read against. */}
-        <p className="bl-planner-order">
-          {planned ? "plan order" : "priority, then age"} · {readyCount} ready
-        </p>
+        {/* The rule in force, not a label. There is one rule now and it is the operator's:
+            `readyBacklog` returns the backlog in `backlogRank` order, filtered to what can
+            start. Saying so here is what stops the quoted reason below from being read as
+            an explanation of the POSITION, which it is not and never was. */}
+        <p className="bl-planner-order">your order · {readyCount} ready</p>
         <span className="bl-planner-spacer" />
         <Tooltip label="Close this - the queue behind it stays open">
           <button
@@ -175,13 +173,14 @@ export function PlannerPopover({
             <cite>Foreman's plan</cite>
           </blockquote>
         ) : (
-          // Two different absences, said differently. A planned task with no recorded
-          // reason and a task the plan never named are not the same state: the second one
-          // is being ordered by the fallback, which is a fact about how it got here.
+          // Two different absences, said differently. A task the plan covered with no
+          // recorded reason and a task the plan never named are not the same state: the
+          // second has had no dependency read at all, which is worth knowing before you
+          // trust that nothing is waiting on it.
           <p className="bl-planner-noreason">
             {planned
-              ? "Foreman planned it here and recorded no reason."
-              : "Foreman's plan does not name this one yet, so the fallback ordering put it first."}
+              ? "Foreman covered this one and recorded no reason."
+              : "Foreman's plan does not name this one yet, so it has had no dependency read."}
           </p>
         )}
         <ul className="bl-planner-why">

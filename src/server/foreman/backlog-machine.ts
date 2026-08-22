@@ -277,8 +277,8 @@ function freeAgentFor(
  *  3. the plan does not cover the backlog -> replan first, scheduling NOTHING this
  *     tick. Acting on a plan that has never seen the newest item is how two tasks that
  *     conflict get started together. Once planning has failed its cap the machine stops
- *     asking and drops to SERIAL mode instead: one task in flight at a time, oldest
- *     first. Serial execution satisfies every possible dependency order by
+ *     asking and drops to SERIAL mode instead: one task in flight at a time, taken from
+ *     the top of the operator's order. Serial execution satisfies every possible dependency order by
  *     construction, so a broken planner degrades to slow rather than to wrong. The gate
  *     covers ASSIGNS as well as launches - typing a task into an idle agent starts it
  *     just as thoroughly as cutting a worktree does, and serial mode is precisely the
@@ -298,8 +298,11 @@ function freeAgentFor(
  *
  * The mode gate sits at the END rather than the top, so a dry run reports the decision
  * it would have taken instead of a flat "off". That is the whole value of dry-run here:
- * the ordering and the dependency read are what you want to check before you trust it
- * to launch anything.
+ * the dependency read is what you want to check before you trust it to launch anything.
+ *
+ * THE ORDER IS THE OPERATOR'S, and `readyBacklog` arrives here already in it - see
+ * docs/plans/backlog-manual-order/plan.md. Step 5 takes the head, full stop. Step 4 is
+ * the ONE documented exception to that, argued where it is written below.
  */
 export function decideBacklogTick(input: BacklogTickInput): BacklogAction {
   const { tasks, sessions, plan, cfg, now } = input;
@@ -387,11 +390,20 @@ export function decideBacklogTick(input: BacklogTickInput): BacklogAction {
     };
   }
 
-  // Step 4: prefer a free agent anywhere in the ready set, not just for the head. The
-  // backlog is a set of items whose ordering constraints are already stated explicitly
-  // as dependencies - unlike the work queue, where the human's sequence IS the meaning
-  // - so taking a later item that has a home costs the head nothing and saves a
-  // worktree. The head is still what gets launched when nothing can be assigned.
+  // Step 4: prefer a free agent anywhere in the ready set, not just for the head.
+  //
+  // THE ONE PLACE THIS FILE DOES NOT FOLLOW THE OPERATOR'S ORDER ABSOLUTELY, kept
+  // deliberately and documented rather than left to be discovered (see
+  // docs/dispatch-and-backlog.md#the-backlog-order-is-the-one-you-set). A free agent can
+  // only take a task in ITS repo on ITS harness, so if the head is a Codex task in repo A
+  // and the only idle agent is a Claude agent in repo B, the head has no home and a lower
+  // item does. Strict head-first would honour the arrangement absolutely and idle that
+  // agent rather than let a lower item pass, which is the worse trade: the operator's
+  // order is a statement about what matters, not an instruction to leave capacity unused.
+  //
+  // Step 5 below is head-first with no exception, so the arrangement decides everything
+  // this scan is choosing BETWEEN, and decides outright whenever a fresh worktree is what
+  // gets cut.
   for (const task of candidates) {
     const session = freeAgentFor(task, sessions, tasks, cfg, now, unassignable);
     if (!session) continue;

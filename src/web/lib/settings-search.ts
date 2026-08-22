@@ -143,6 +143,33 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     ],
     kind: "jump",
   },
+  {
+    // Same panel, same anchor, second subject. An operator who wants the path gone from
+    // above the conversation would never type "board card" to find it, and the panel's
+    // heading is the only other thing that could lead them there. Two entries pointing at
+    // one anchor is what the index is for: it is a control-level index, and this section
+    // governs two controls' worth of surface.
+    id: "conversation-header",
+    label: "Conversation header",
+    description:
+      "Choose whether the console states a session's working directory and branch above its conversation.",
+    category: "display",
+    anchor: "display/board-card",
+    keywords: [
+      "path",
+      "working directory",
+      "cwd",
+      "branch",
+      "console",
+      "detail",
+      "conversation",
+      "header",
+      "band",
+      "hide",
+      "show",
+    ],
+    kind: "jump",
+  },
   ...KEYBOARD_CONTROLS,
   {
     id: "guided-dispatch",

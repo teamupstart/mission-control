@@ -77,7 +77,7 @@ test("Add to backlog can create a task parked from autopilot", async ({ dashboar
 
   // Reopening the stored task reads the same switch back, rather than resetting to the
   // fresh-form default and silently enabling it on the next save.
-  await card.getByRole("button", { name: title }).click();
+  await card.getByRole("button", { name: title, exact: true }).click();
   const editor = dashboard.getByRole("dialog", { name: "Edit a backlog task" });
   await expect(
     editor.getByRole("switch", { name: "Allow backlog autopilot to schedule this task" }),

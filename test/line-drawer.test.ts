@@ -939,21 +939,21 @@ const dependsOn = (taskId: string, title: string): TaskDependency => ({
   satisfiedAt: null,
 });
 
-test("the ready band is the plan's order, not the board's, and its head is next up", () => {
-  // `backlogTasks` sorts priority-then-age, so a board reading these three would put the
-  // BLOCKER first. The plan puts it last, and the plan is what the machine schedules from -
-  // a drawer that answered "what would autopilot take next" in priority order would name the
-  // wrong task under a strip folded from `readyBacklog`.
+test("the ready band is the OPERATOR's order, and its head is next up", () => {
+  // Two orders this must not be. A `blocker` ranked last stays last, so the drawer is not
+  // reading priority; and the stored plan lists the three in a different order again, so it
+  // is not reading that either. Both wrong answers would name the wrong task under a strip
+  // folded from `readyBacklog`, which schedules from the operator's rank.
   const tasks = [
-    backlogTask({ id: "hot", title: "Hot but planned last", priority: "blocker" }),
-    backlogTask({ id: "first", title: "Planned first", priority: "low" }),
-    backlogTask({ id: "second", title: "Planned second", priority: "med" }),
+    backlogTask({ id: "hot", title: "Hot but ranked last", priority: "blocker", backlogRank: 3072 }),
+    backlogTask({ id: "first", title: "Ranked first", priority: "low", backlogRank: 1024 }),
+    backlogTask({ id: "second", title: "Ranked second", priority: "med", backlogRank: 2048 }),
   ];
-  const html = backlogDrawer(tasks, mkPlan(["first", "second", "hot"]));
-  assert.deepEqual(rowTitles(html), ["Planned first", "Planned second", "Hot but planned last"]);
+  const html = backlogDrawer(tasks, mkPlan(["second", "hot", "first"]));
+  assert.deepEqual(rowTitles(html), ["Ranked first", "Ranked second", "Hot but ranked last"]);
   // Exactly one next-up mark, on the head. Two would be two answers to a question with one.
   assert.equal([...html.matchAll(/class="bl-next bl-next-trigger"/g)].length, 1);
-  assert.match(html, /Planned first[\s\S]*bl-next[\s\S]*Planned second/);
+  assert.match(html, /Ranked first[\s\S]*bl-next[\s\S]*Ranked second/);
   assert.match(html, /3 ready/);
   // One band, so one list. A second, empty one would announce a group with nothing in it.
   assert.equal([...html.matchAll(/class="line-drawer-rows"/g)].length, 1);
@@ -1103,9 +1103,11 @@ test("the planner quotes Foreman's own words, and says whose they are", () => {
   // half came from a model.
   assert.match(html, /<blockquote class="bl-planner-reason">[\s\S]*<cite>Foreman&#x27;s plan<\/cite>/);
   assert.match(html, /aria-label="Why Persist review verdicts is next up"/);
-  // The ordering rule in force is stated beside the count, because "plan order" and
-  // "priority, then age" are two different reasons for the same row being on top.
-  assert.match(html, /plan order · 3 ready/);
+  // The ordering rule in force is stated beside the count. There is exactly one rule now
+  // and it is the operator's, which is what stops the quoted reason above from being read
+  // as an explanation of the POSITION - it explains the dependencies.
+  assert.match(html, /your order · 3 ready/);
+  assert.doesNotMatch(html, /plan order|priority, then age/);
   assert.match(html, /no blockers - nothing upstream is holding it/);
   // The one action, and not the mockup's second one: "Skip once" has no backing route
   // and park is the deferral that does.
@@ -1114,17 +1116,21 @@ test("the planner quotes Foreman's own words, and says whose they are", () => {
 });
 
 test("a missing reason and a missing plan entry are two different sentences", () => {
+  // Neither is about position - the operator's rank put this row on top either way. What
+  // differs is what Foreman KNOWS: a covered task with no recorded reason has had a
+  // dependency read that said nothing, and an uncovered one has had no read at all, which
+  // is worth knowing before trusting that nothing is waiting on it.
   const planned = plannerPop({ planned: true, reason: null });
-  assert.match(planned, /Foreman planned it here and recorded no reason\./);
-  assert.match(planned, /plan order/);
+  assert.match(planned, /Foreman covered this one and recorded no reason\./);
 
-  // The unplanned tail: `readyBacklog` appends anything the plan does not name, so the
-  // fallback ordering is what put this task on top - and the panel says so rather than
-  // implying Foreman chose it.
   const unplanned = plannerPop({ planned: false, reason: null });
   assert.match(unplanned, /Foreman&#x27;s plan does not name this one yet/);
-  assert.match(unplanned, /priority, then age · 3 ready/);
-  assert.doesNotMatch(unplanned, /plan order/);
+  assert.match(unplanned, /so it has had no dependency read/);
+  // The order line is the same on both, because the order is the same on both.
+  for (const html of [planned, unplanned]) {
+    assert.match(html, /your order · 3 ready/);
+    assert.doesNotMatch(html, /plan order|priority, then age/);
+  }
 });
 
 test("the computed facts are checkable against the band, and never flatter the plan", () => {

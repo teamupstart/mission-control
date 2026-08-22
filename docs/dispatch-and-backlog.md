@@ -684,23 +684,69 @@ Opening it names the stopped prerequisite and offers two ways out:
 Either action targets the *dead* task, so resolving it once frees every dependent behind
 it, not just the card you clicked from.
 
+### The backlog order is the one you set
+
+The backlog has **one order, and it is yours.** Foreman takes the highest ready item in
+the order you arranged - not the oldest, not the highest-priority, and not an order a
+model picked.
+
+Every card in the board's Backlog column carries four controls: **top**, **up**, **down**
+and **bottom**. They are ordinary buttons, so Tab reaches them and Enter presses them, and
+each one names the task it moves (`Move "Fix the flaky test" to top`). The card moves when
+the daemon says it moved - nothing is drawn optimistically - and a refusal is shown rather
+than swallowed: a card that dispatched between the click and the request answers `409` and
+says so.
+
+Focus stays where you put it. Pressing **up** on the second card lands it at the top, which
+disables the very button you pressed, so focus moves to **down** - the opposite move, still
+live, still on the same card. Where the button you pressed is still live, focus simply stays
+on it, and a card can be walked down the column by pressing the same key over and over.
+
+Three rules follow from "the order is yours", and all three are deliberate:
+
+- **Work that files itself arrives at the bottom.** A [task source](#task-sources-pulling-work-into-the-backlog)
+  sweep, a [recurring mission](recurring-missions.md), a retro follow-up, an ensemble
+  member, an agent's own `create_task` - none of them gets to jump the queue you arranged.
+- **Dependencies still gate everything.** Moving a blocked item to the top makes it the
+  first thing to run *when it unblocks*, and not one moment before. Nothing about
+  [declared dependencies](#resolve-a-stopped-dependency) or `launch anyway` changes.
+- **A task that comes back keeps its place.** Rescheduling a cancelled or failed task, or
+  a dispatch that a restart recovered before it provisioned anything, puts the card back
+  where it was rather than at the bottom of a queue it never left.
+
+**The one exception, stated rather than left to be discovered.** Foreman starts work two
+ways, and only one of them follows your order absolutely. Dispatching into a fresh
+worktree takes the head of the ready list, full stop. *Assigning* to an agent that is
+already running scans down the list for the first item that has a free agent **in its
+repo, on its harness** - so if your top item is a Codex task in repo A and the only free
+agent is a Claude agent in repo B, a lower item is assigned first. That is kept
+deliberately: the alternative idles a free agent to protect a position, which is the worse
+trade. Your order still decides everything the scan is choosing *between*.
+
 ### Priority and labels
 
 A task can carry a **priority** and any number of **labels**. Both are optional, both
 default to nothing, and neither is ever inferred - a task is marked because you marked it.
 
-| Priority | Sorts | Reads as |
-|---|---|---|
-| **Blocker** | 1st | the only one in the danger colour, outlined so it is findable across a full board |
-| **High** | 2nd | |
-| **Medium** | 3rd | |
-| *(unset)* | 4th | the default - no chip is drawn at all |
-| **Low** | last | a deliberate demotion, *below* work nobody has looked at |
+| Priority | Reads as |
+|---|---|
+| **Blocker** | the only one in the danger colour, outlined so it is findable across a full board |
+| **High** | |
+| **Medium** | |
+| *(unset)* | the default - no chip is drawn at all |
+| **Low** | a deliberate demotion of something you looked at and decided can wait |
 
-That ordering is the one surprising part, and it's deliberate: **unset sorts above Low,
-not at the bottom**. `Low` means "I looked at this and it can wait", so it belongs under
-work nobody has triaged yet - and a backlog you have never triaged keeps exactly the
-oldest-first order it always had.
+**Priority does not sort the backlog, and never moves a card.** The order is yours and
+only yours - see [The backlog order is the one you
+set](#the-backlog-order-is-the-one-you-set) below. The chip is the signal you scan the
+column *for* when deciding what to move; it colours the card and it filters, and that is
+the whole of its job.
+
+That is a real trade and it is worth saying plainly: **a swept `P0` lands at the bottom
+and stays there until somebody moves it.** A label-to-priority mapping used to lift a
+swept issue up the column on its own. It no longer does, because an order a cron loop can
+rearrange is not an order you set - and the next surprise would be a `P0` you had
+deliberately parked at position 20 jumping back to the top overnight.
 
 **Labels** are plain strings, not key/value pairs - `infra`, `flaky`, `Type: Bug`. They're
 trimmed, de-duplicated case-insensitively (the first spelling wins, so a tag swept from
@@ -708,15 +754,14 @@ another system keeps its case), capped at 32 characters each and 12 per task. Th
 form takes them comma-separated and previews the chips you'll actually get, so a trailing
 comma or a repeat is visibly a no-op.
 
-The **backlog column** on the board sorts by priority and lets you retriage in place - the
-chip on each card is a picker, and changing it re-sorts the column under your cursor. The
-Line's [Backlog drawer](ui.md#the-stage-drawers) carries the same picker on its ready rows. The
-**Sitrep** shows both marks on every backlog row, and `Copy as markdown` carries them
-(`- [blocker] "Fix the thing" (ship) {infra, flaky} - /repo`).
+The **backlog column** on the board lets you retriage in place - the chip on each card is
+a picker. The Line's [Backlog drawer](ui.md#the-stage-drawers) carries the same picker on
+its ready rows. The **Sitrep** shows both marks on every backlog row, and `Copy as
+markdown` carries them (`- [blocker] "Fix the thing" (ship) {infra, flaky} - /repo`).
 
-Priority and labels are annotation - nothing is provisioned from them - so they can be
-changed at any point in a task's life, including while its agent is running
-(`PATCH /api/tasks/:id`). They are deliberately *not* shown on session cards yet: the
+Priority and labels are pure annotation - nothing is provisioned from them and nothing is
+scheduled from them - so they can be changed at any point in a task's life, including
+while its agent is running (`PATCH /api/tasks/:id`). They are deliberately *not* shown on session cards yet: the
 card, rail and tile each have their own mark vocabulary and adding a fourth signal to all
 three is its own change.
 

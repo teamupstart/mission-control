@@ -12,8 +12,12 @@
 import { existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { execFileSync } from "node:child_process";
-import { chromiumPrerequisiteMessage, nodePrerequisiteMessage } from "./init-prerequisites.mjs";
+import { execFileSync, spawnSync } from "node:child_process";
+import {
+  chromiumPrerequisiteMessage,
+  nodePrerequisiteMessage,
+  xcodeToolsPrerequisiteMessage,
+} from "./init-prerequisites.mjs";
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), "..");
 const argv = new Set(process.argv.slice(2));
@@ -75,7 +79,22 @@ const nodeProblem = nodePrerequisiteMessage(process.versions.node);
 if (nodeProblem) fail(nodeProblem);
 ok(`Node.js ${process.versions.node}`);
 
-// 2. Node dependencies -------------------------------------------------------
+// 2. Toolchain prerequisite ---------------------------------------------------
+// The build below compiles native/keep-awake with node-gyp, and this script's `run()` only
+// warns on failure. So without the tools the build warns past node-gyp, `dist/native` is never
+// written, and the daemon refuses to start later on an artifact that was never produced.
+// Not asked when `--skip-build` means no native build is going to happen at all.
+if (!skipBuild) {
+  heading("Xcode command line tools prerequisite");
+  const xcodeProblem = xcodeToolsPrerequisiteMessage({
+    platform: process.platform,
+    installed: spawnSync("xcode-select", ["-p"], { encoding: "utf8" }).status === 0,
+  });
+  if (xcodeProblem) fail(xcodeProblem);
+  ok("Xcode command line tools available");
+}
+
+// 3. Node dependencies -------------------------------------------------------
 heading("Node dependencies");
 if (existsSync(join(repo, "node_modules"))) {
   ok("node_modules present");
@@ -85,7 +104,7 @@ if (existsSync(join(repo, "node_modules"))) {
   if (run("npm", ["install", "--no-audit", "--no-fund"])) ok("dependencies installed");
 }
 
-// 3. Browser prerequisite -----------------------------------------------------
+// 4. Browser prerequisite -----------------------------------------------------
 if (withE2e) {
   heading("Playwright Chromium prerequisite");
   const path = await chromiumPath();
@@ -93,7 +112,7 @@ if (withE2e) {
   ok(`Chromium available (${path})`);
 }
 
-// 4. Build -------------------------------------------------------------------
+// 5. Build -------------------------------------------------------------------
 heading("Build (web UI + MCP bundle)");
 if (skipBuild) {
   ok("skipped (--skip-build)");
@@ -101,7 +120,7 @@ if (skipBuild) {
   ok("built dist/web + dist/mcp");
 }
 
-// 5. Claude status hooks -----------------------------------------------------
+// 6. Claude status hooks -----------------------------------------------------
 heading("Claude status hooks");
 if (skipHooks) {
   ok("skipped (--skip-hooks) - wire later with `npm run install-hooks`");

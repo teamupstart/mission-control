@@ -59,6 +59,7 @@ import {
   OtlpMetricsSchema,
   PendingTurnRevisionSchema,
   ReattachQueueSchema,
+  ReorderTaskSchema,
   RescheduleTaskSchema,
   RenameSchema,
   ReorderQueueSchema,
@@ -5633,6 +5634,28 @@ export function buildApp(
       confirmReset: parsed.data.confirmReset,
     });
     return c.json(r, r.ok ? 200 : r.error === "no such task" ? 404 : 409);
+  });
+
+  /**
+   * Move one backlog task in the operator's order - the one route that writes a rank.
+   *
+   * The body names an ANCHOR rather than an index, for the reason `ReorderTaskSchema` gives:
+   * an index is a claim about a list the caller last saw, and the daemon's has moved on.
+   *
+   *   404 no such task, or no such anchor
+   *   409 the task is not in the backlog, the anchor is not in the backlog, or the anchor is
+   *       the task itself - every one of them a state conflict the operator can see
+   *   200 the updated `Task`
+   *
+   * A 200 returns the moved task, like its dispatch/assign/complete siblings, so the caller
+   * reads the new rank off the reply instead of racing its own `task_upsert`.
+   */
+  app.post("/api/tasks/:id/reorder", async (c) => {
+    const parsed = await parseBody(c, ReorderTaskSchema);
+    if (!parsed.ok) return parsed.res;
+    const r = tasks.reorder(c.req.param("id"), parsed.data);
+    if (!r.ok) return c.json({ error: r.error }, r.status);
+    return c.json(r.task);
   });
 
   app.post("/api/tasks/:id/cancel", async (c) => {

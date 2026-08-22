@@ -85,7 +85,7 @@ with Treehouse itself after confirming their current owner. Do not convert them 
 delete their directories behind Treehouse's bookkeeping. See
 [Legacy Treehouse compatibility](worktrees-and-checks.md#legacy-treehouse-compatibility).
 
-**Settings > Worktrees > Legacy drain** shows the same provider reading with its exact
+**Settings > Worktrees > Treehouse** shows the same provider reading with its exact
 classification. An exact row offers a preview-first Return only when durable owner identity,
 cleanliness, and empty occupancy all agree. Unverifiable, foreign, and unreadable rows show
 remediation instead of a Force button. Treehouse can be removed after that section reports no

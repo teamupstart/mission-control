@@ -1,13 +1,17 @@
-# Settings > Worktrees: three layout directions
+# Settings > Worktrees: capacity-first layout
 
-- **Status:** Awaiting review. Planning only - this document proposes no application changes by itself.
+- **Status:** Approved for phased implementation planning
 - **Date:** 2026-08-21
+- **Scope:** Planning only. This document proposes no application changes by itself.
 - **Surface:** `src/web/components/WorktreeSettingsPanel.tsx` and the `wt-` block in
   `src/web/styles.css` (lines 403-781).
-- **Trigger:** The pane does not read as part of Mission Control. This plan diagnoses why,
-  in specifics, and offers three layouts to choose between.
+- **Decision record:** All three plan choices and the phased implementation follow-up were
+  submitted in Mission Control on 2026-08-21:
+  - **Layout direction:** B - Capacity-first.
+  - **Safety callout:** demote it to the lead paragraph.
+  - **Scope:** restyle plus empty and loading states.
 
-## What is actually wrong
+## Why the pane looks wrong
 
 This is not a taste complaint. The pane breaks nine concrete conventions the rest of Settings
 keeps, and each one is checkable.
@@ -24,14 +28,14 @@ keeps, and each one is checkable.
 | 8 | **The wrong row shape for policy.** House style is a plain `.kb-row`: label and description left, control right, no box. Worktrees instead puts two filled cards in a `1.4fr / 0.6fr` grid, so the checkbox floats alone in a wide box while the number input crowds its own three-line description. | `styles.css:477-481` vs `:16871` and `HarnessesPanel.tsx:291-333` |
 | 9 | **Full-width rules between sections.** `.wt-section` draws a `border-top` on every section. No other pane rules its sections apart; inside the 900px measure they read as table borders. | `styles.css:463-466` |
 
-Two further gaps, visible the moment the pane is opened on a machine with no pools:
+Two further gaps, both in scope for this change:
 
 - **The empty state is blank.** With `inventory` still null, `02 · Native inventory / Pool ledger`
   renders a heading, a Refresh button, and nothing else - a heading over void. The
   "No native pool exists yet" hint only appears once the fetch resolves to an empty array.
-- **It will not scale.** The source plan recorded a live pool of **54 slots** on this machine.
+- **It does not scale.** The source plan recorded a live pool of **54 slots** on this machine.
   The current design renders pools as a card grid and paginates slots 12 at a time inside each
-  card, inside a 900px measure. That shape stops working an order of magnitude below the real number.
+  card, inside a 900px measure.
 
 ## What the house style actually is
 
@@ -53,82 +57,32 @@ Taken from the two panes either side of Worktrees in the rail.
 The pane already has a legitimate left-accent-bar precedent in `.harness-card`. What it does not
 have precedent for is the square corners, the numbering, the tinted callout, and the mono count tiles.
 
-## The three directions
+## The adopted layout: capacity-first
 
-Each is a complete layout for the whole pane, not a palette swap. Mockups of all three are
-rendered in `plan.html` beside this file.
-
-### Direction A - Settings-native
-
-**Thesis:** the pane should be unremarkable. It is a settings pane in a settings app; the pools are
-the interesting thing, not the chrome. Adopt the Harnesses layout wholesale.
-
-```
-Worktrees                                         [THIS MACHINE]
-Mission Control owns these checkouts. Policy changes affect future
-leases only, and every cleanup is previewed and rechecked against
-task, check, manual lease, Git, and process ownership first.
-
-Defaults
-  Use native worktrees                                    [ x ]
-  New acquisitions get a pooled checkout...
-  Default maximum slots                                  [ 16 ]
-  Lowering this marks pools over capacity. It never prunes.
-
-Pools                                              Refresh
-  +--------------------------+  +--------------------------+
-  | * ai-harness      12 / 16|  | * docs-site        3 / 8 |
-  | Available   4            |  | Available   3            |
-  | Leased      8            |  | Leased      0            |
-  | Quarantined 0            |  | Quarantined 0            |
-  | Disk        3.1 GB       |  | Disk        410 MB       |
-  | > 12 slots               |  | > 3 slots                |
-  +--------------------------+  +--------------------------+
-  Pools are created lazily on first acquisition.
-
-Treehouse
-  Nothing left to drain. All 0 historical leases are returned.
-```
-
-- The safety promise becomes the lead sentence. No box, no kicker, no numbering.
-- Policy becomes two `.kb-row`s, identical in shape to Harnesses' `Auto mode on dispatch`.
-- Pools become `.harness-card`-shaped cards on the same `auto-fit / minmax(300px, 1fr)` grid,
-  with a 3px left accent carrying the health tone and a rounded 10px corner.
-- The ledger counts become a label/value grid inside the card instead of mono tiles.
-- Slot detail lives behind the card's disclosure, as it does today.
-- Treehouse is the last group and collapses to a single dim sentence when all four counts are zero.
-
-**Cost.** At the 900px measure two cards per row leaves each ~440px, which is tight for a slot's
-path, HEAD, and five actions - slot detail stays behind a disclosure and keeps its bounded scroll.
-It does not fix the scale problem; it makes a small pool pleasant and leaves a large one paginated.
-
-**Gain.** Lowest risk and smallest diff. Reuses `.kb-row`, `.harness-card`, `.skill-badge`,
-`.skill-switch` and `.settings-hint` verbatim, so it inherits every future change to them. The pane
-stops announcing itself.
-
-### Direction B - Capacity-first
-
-**Thesis:** an operator arrives at this pane with one question - *do I have room, and what is
+**Thesis.** An operator arrives at this pane with one question - *do I have room, and what is
 holding the rest?* Answer it in the first 200 pixels, and give `Default maximum` a meaning a number
 input cannot carry.
+
+The mockup is rendered in `plan.html` beside this file.
 
 ```
 Worktrees                                         [THIS MACHINE]
 Mission Control owns these checkouts. Every cleanup is previewed
-and rechecked before it can mutate a path.
+and rechecked against task, check, manual lease, Git, and process
+ownership before it can mutate a path.
 
 Pools                                              Refresh
   ai-harness                          8 leased · 4 free · 16 max
   [########====----------------|.....................]
-   leased    free   room to grow     ^ max        > 12 slots
+   8 leased   4 free   4 more may be created         > 12 slots
 
   docs-site                            0 leased · 3 free · 8 max
   [===--------------|...............]
-   free    room to grow  ^ max                     > 3 slots
+   3 free    5 more may be created                    > 3 slots
 
-  overflowing-repo                  18 leased · 0 free · 16 max
-  [############################!!]  OVER CAPACITY
-   leased                    over    Preview safe prune >
+  line-drawers                      17 leased · 0 free · 16 max
+  [############################!!]
+   17 leased  1 quarantined  2 over    [Preview safe prune]
 
 Defaults           affects future acquisitions only
   Use native worktrees                                    [ x ]
@@ -138,92 +92,73 @@ Treehouse
   Nothing left to drain.
 ```
 
-- **Signature: the capacity bar.** One track per pool, segmented into leased (`--working`),
-  available (`--idle`) and quarantined (`--danger`), The track's full width *is* the
-  configured maximum, so the unfilled remainder reads directly as room to grow and is hatched to
-  say so. A pool over its maximum spills past the track in `--attention` hatching, and the
-  safe-prune preview surfaces on that row. Lowering the default maximum visibly reflows every bar,
-  which is exactly the feedback the current number input withholds.
-- Order inverts. Pools come first because they are the answer; `Defaults` moves below them,
-  labelled with the constraint the plan already states - it affects future acquisitions only.
-- Pools are full-width rows rather than a card grid, because the bar needs the width.
-- Per-pool overrides live inside the pool's disclosure, next to the bar they change.
-- Treehouse renders as one attention-toned row while anything is undrained, and one dim
-  sentence once it is not.
+### The signature: the capacity bar
 
-**Cost.** The bar is a new component with no existing precedent in the app, so it is new CSS to
-maintain and it needs an accessible text equivalent carrying the same counts (a `role="img"` with a
-composed label, or a visually-hidden restatement). It is the largest new-invention risk of the three.
+One track per pool, segmented into leased (`--working`), available (`--idle`) and quarantined
+(`--danger`). The track's full width **is** the configured maximum, so the unfilled remainder reads
+directly as room to grow and is hatched to say so. A pool over its maximum spills past the track in
+`--attention` hatching, and the safe-prune preview surfaces on that row. Lowering the default
+maximum visibly reflows every bar, which is exactly the feedback the current number input withholds.
 
-**Gain.** The pane answers its actual question at a glance, and the one control that today reads as
-an arbitrary number becomes legible. Over-capacity - which the source plan calls out as a real
-lifecycle gap, since lowering the ceiling does not right-size a grown pool - becomes visible instead
-of being a word in a chip.
+The bar is the pane's one new component and the only place its boldness is spent. Everything around
+it is an existing house primitive.
 
-### Direction C - Master-detail
+**Accessibility.** The bar is decorative on its own, so it carries no meaning colour alone must
+convey. Each segment's count is restated in the legend beneath it as text, and the bar itself takes
+`role="img"` with a composed label naming every count and the maximum. The over-capacity state is
+labelled with the words `over the maximum`, never by the amber hatching alone.
 
-**Thesis:** this is not a form with an inventory attached, it is an inventory with a form attached.
-Task sources already opted out of the 900px measure for exactly this shape. Worktrees has the same
-shape and more rows.
+### Structure
 
-```
-Worktrees                                                              [THIS MACHINE]
-+----------------------------------------------+  +------------------------------+
-| [All] [Leased] [Free] [Quarantined] [Legacy]  |  | ai-harness / slot 7          |
-| filter paths...                               |  |                        LEASED|
-|                                               |  | Path  ~/.mission-control/... |
-| ai-harness                            12 slots|  | HEAD  9f3c1ad                |
-|  o slot 1  ~/.mc/wt/ai-harness-1  free    -   |  | Base  2 commits behind main  |
-|  * slot 2  ~/.mc/wt/ai-harness-2  leased  4h  |  | Work  3 dirty · 1 untracked  |
-|  * slot 7  ~/.mc/wt/ai-harness-7  leased  12m |  | Procs 1 (node)               |
-|  ! slot 9  ~/.mc/wt/ai-harness-9  quarant -   |  | Disk  260 MB                 |
-|  ...                                          |  | Owner task #418 >            |
-|                                               |  |                              |
-| docs-site                              3 slots|  | Cleanup is previewed and     |
-|  o slot 1  ~/.mc/wt/docs-site-1   free    -   |  | rechecked against ownership  |
-|  ...                                          |  | before it can mutate a path. |
-|                                               |  |                              |
-| Treehouse (legacy)                     0 rows |  | [Copy] [Terminal] [Return]   |
-+----------------------------------------------+  +------------------------------+
-```
+1. **Lead paragraph.** The safety promise becomes the pane's opening sentence, in the shape
+   Harnesses uses. The tinted box, the green `--select` kicker, and the three mono count tiles are
+   all removed - the counts they carried are now visible per pool on the bars.
+2. **Pools, first.** Full-width rows rather than a card grid, because the bar needs the width. Each
+   row: tone dot, pool name, path in mono, counts, the bar, the legend, and a disclosure into slot
+   detail and per-pool overrides. Slot detail keeps its existing bounded scroll and pagination.
+3. **Defaults, below the pools.** Two `.kb-row`s identical in shape to Harnesses'
+   `Auto mode on dispatch`, under a group label qualified `affects future acquisitions only` -
+   which is the constraint the source plan already states, surfaced where it applies.
+4. **Treehouse, last.** One `--attention`-toned row while anything is undrained; one dim sentence
+   once nothing is.
 
-- Opt out of `max-width: 900px`, the way `.ts-panel` already does.
-- **Left:** one scrolling list of every slot across every pool, grouped under pool headers. One row
-  per slot: tone dot, slot id, path in mono, state, lease age. A filter strip above it, plus a text
-  filter over paths and owners.
-- **Right (sticky, ~320px):** the selected slot's full detail and its actions. With nothing
-  selected, the column shows the global defaults and the selected pool's overrides - so policy is
-  present without owning a section.
-- The safety promise appears once, immediately above the actions, where it is load-bearing rather
-  than decorative.
-- Legacy Treehouse rows become a filter value in the same list, so `ownedExact`,
-  `identityUnverifiable`, `foreign` and `unreadable` are inspected with the same affordances, with
-  actions disabled and the reason shown in the detail column.
+No numbering, no section rules, no square corners. Sections are separated by space, as they are
+everywhere else in Settings.
 
-**Cost.** The largest change of the three. It needs a new layout shell, selection state, a narrow-width
-story (list-then-detail push navigation), and a new answer for settings search: the three current
-`data-anchor` values map to filters rather than to sections, so `settings-search.ts` anchors must be
-re-cut. The existing `e2e/specs/settings-worktrees.spec.ts` is rewritten wholesale rather than adjusted.
+### Empty and loading states
 
-**Gain.** The only direction that scales to the pool sizes this machine actually produces. It also
-removes the pane's worst structural problem - that reaching one slot means expanding one pool, then
-paging within it - and puts every slot one filter away.
+In scope by decision, and each state gets real copy rather than a blank region.
 
-## Comparison
+- **Loading, first open.** The Pools group renders skeleton rows - a name-width and a bar-width
+  block per row - so the group has shape while Git, process, and provider state are observed. It
+  never renders a heading over void.
+- **No pools yet.** "No pools yet. Mission Control creates one the first time something needs a
+  checkout in a repository." An invitation to act, not a report of absence.
+- **Nothing to drain.** "Nothing left to drain. All historical leases have been returned, and new
+  work never acquires Treehouse resources." The four classification counts appear only when at
+  least one is non-zero.
+- **Inventory unavailable.** The manager returning `503` is distinguished from an empty inventory:
+  the group states that state could not be observed and offers Refresh, rather than claiming zero
+  pools.
 
-| | A - Settings-native | B - Capacity-first | C - Master-detail |
-| --- | --- | --- | --- |
-| Fixes the nine theme breaks | Yes | Yes | Yes |
-| New components to maintain | None | The capacity bar | Layout shell, selection, filters |
-| Reuses `.kb-row` / `.harness-card` | Fully | Partly | Little |
-| Scales to ~54 slots | No | Partly | Yes |
-| Makes `Default maximum` legible | No | Yes | No |
-| Keeps the 900px measure | Yes | Yes | No - opts out |
-| Narrow-width work | None beyond today | Bar reflow | New push navigation |
-| `e2e` spec impact | Selectors adjusted | Selectors adjusted, bar assertions added | Rewritten |
-| Relative size | Small | Medium | Large |
+## Alternatives considered and not taken
 
-## What does not change in any direction
+Both were rendered as full mockups and reviewed alongside the adopted direction.
+
+- **A - Settings-native.** Adopt the Harnesses layout wholesale: pools as rounded left-accent cards
+  on the existing `auto-fit / minmax(300px, 1fr)` grid, counts as a label/value grid inside each
+  card. Smallest diff and zero new primitives. **Not taken** because it fixes the theme breaks and
+  nothing else - `Default maximum` stays an arbitrary number, and over-capacity stays a word in a
+  chip.
+- **C - Master-detail.** Opt out of the 900px measure the way `.ts-panel` already does, and render
+  one filterable list of every slot across every pool beside a sticky detail-and-actions column.
+  The only direction that scales cleanly to the ~54 slots this machine actually produces.
+  **Not taken** for cost: a new layout shell, selection state, list-then-detail push navigation at
+  narrow widths, re-cut `settings-search.ts` anchors, and a wholesale rewrite of
+  `e2e/specs/settings-worktrees.spec.ts`. Worth revisiting if pool counts keep growing - the
+  capacity bar composes with it rather than blocking it.
+
+## What does not change
 
 These are contracts from the source plan and must survive the restyle intact.
 
@@ -231,27 +166,23 @@ These are contracts from the source plan and must survive the restyle intact.
   consequences, require the server-supplied acknowledgement keys, execute against the opaque token,
   and treat a `409` as a stale preview rather than a failure.
 - No `data-testid`. Selection stays by role, label, and placeholder.
-- The three `data-anchor` values feeding settings search must keep resolving to something, whatever
-  the layout does to sections.
+- The three `data-anchor` values feeding settings search must keep resolving. `worktrees/policy`
+  moves down the pane with the Defaults group; it does not disappear.
 - Colour never carries state alone. Every tone is paired with a word.
 - Inventory stays out of `MissionState`; only the `worktreesRevision` counter lives there.
 - Legacy rows without provable identity get an explanation, never a disabled `Force` button.
+- Lowering the maximum never prunes as a side effect. The bar makes the over-capacity state
+  visible; it does not make it self-correcting.
 
-## Verification any direction owes
+## Verification
 
-- A Playwright spec in `e2e/` for the new layout, extending `e2e/specs/settings-worktrees.spec.ts`.
-  It covers the empty pane, a populated pool, the disclosure, and one preview-and-cancel round trip.
-- The Electron geometry test for the pane at a narrow width, since the current design's overflow
-  behaviour is the part most likely to regress.
+- A Playwright spec in `e2e/`, extending `e2e/specs/settings-worktrees.spec.ts`: the loading and
+  empty states, a populated pool with its bar and legend counts, an over-capacity pool offering the
+  prune preview, the disclosure into slot detail, and one preview-and-cancel round trip.
+- A `renderToStaticMarkup` case pinning the bar's segment widths and its composed `role="img"`
+  label against a known inventory, since those are arithmetic and cheap to assert directly.
+- The Electron geometry test for the pane at a narrow width, since overflow behaviour is the part
+  most likely to regress.
 - `npm run typecheck`, `npm run lint`, `npm test`, `npm run build`, `npm run test:e2e`.
-- Screenshots of the pane empty and populated, attached to the pull request rather than committed.
-
-## Open choices
-
-Three, presented in the dashboard rather than here:
-
-1. **Which layout direction** - A, B, or C.
-2. **What happens to the safety callout** - restyle the box, demote it to the lead paragraph, or
-   move it beside the actions in the preview dialog where it is load-bearing.
-3. **Scope** - theme conformance only, or also the empty and loading states, or also a full
-   accessibility and narrow-width pass.
+- Screenshots of the pane loading, empty, populated, and over capacity, attached to the pull
+  request rather than committed.

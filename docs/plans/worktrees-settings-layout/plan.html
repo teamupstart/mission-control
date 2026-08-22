@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Settings &gt; Worktrees: three layout directions</title>
+<title>Settings &gt; Worktrees: capacity-first layout</title>
 <style>
   :root {
     color-scheme: light dark;
@@ -253,22 +253,41 @@
     .wrap { padding: 32px 16px 80px; }
     .m-md { grid-template-columns: minmax(0, 1fr); }
   }
+
+  /* Decision record and states */
+  .decided { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); margin: 0 0 22px; }
+  .decided > div { border: 1px solid var(--page-line); border-left: 3px solid var(--page-accent); border-radius: 0 10px 10px 0; padding: 11px 14px; background: var(--page-card); }
+  .decided h5 { margin: 0 0 4px; font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: var(--page-dim); }
+  .decided p { margin: 0; font-size: 14px; font-weight: 600; }
+  .notaken { opacity: .96; }
+  .notaken .mock { filter: saturate(.82); }
+  .tag-no { display: inline-block; font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .07em; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--page-line); color: var(--page-dim); vertical-align: middle; margin-left: 10px; }
+  .m-skel { height: 9px; border-radius: 5px; background: linear-gradient(90deg, var(--panel-2), var(--panel), var(--panel-2)); }
+  .m-empty { border: 1px dashed var(--border); border-radius: 10px; padding: 18px 20px; text-align: center; }
+  .m-empty p { margin: 0; font-size: 11.5px; color: var(--dim); line-height: 1.5; }
+  .m-empty b { display: block; color: var(--muted); font-size: 12.5px; font-weight: 560; margin-bottom: 3px; }
 </style>
-</head>
 <body>
 <div class="wrap">
 
 <header class="doc">
-  <h1>Settings &gt; Worktrees: three layout directions</h1>
+  <h1>Settings &gt; Worktrees: capacity-first layout</h1>
   <ul class="meta">
-    <li><strong>Status:</strong> Awaiting review. Planning only - this document proposes no application changes by itself.</li>
+    <li><strong>Status:</strong> Approved for phased implementation planning.</li>
     <li><strong>Date:</strong> 2026-08-21</li>
+    <li><strong>Scope:</strong> Planning only. This document proposes no application changes by itself.</li>
     <li><strong>Surface:</strong> <code>src/web/components/WorktreeSettingsPanel.tsx</code> and the <code>wt-</code> block in <code>src/web/styles.css</code> (lines 403-781).</li>
-    <li><strong>Trigger:</strong> The pane does not read as part of Mission Control. This plan diagnoses why, in specifics, and offers three layouts to choose between.</li>
   </ul>
+  <h4 style="margin-top:24px">Decisions submitted in Mission Control, 2026-08-21</h4>
+  <div class="decided">
+    <div><h5>Layout direction</h5><p>B - Capacity-first</p></div>
+    <div><h5>Safety callout</h5><p>Demote to the lead paragraph</p></div>
+    <div><h5>Scope</h5><p>Restyle plus empty and loading states</p></div>
+    <div><h5>Follow-up</h5><p>Create phased implementation plan</p></div>
+  </div>
 </header>
 
-<h2>What is actually wrong</h2>
+<h2>Why the pane looks wrong</h2>
 <p>This is not a taste complaint. The pane breaks nine concrete conventions the rest of Settings keeps, and each one is checkable.</p>
 
 <div class="scroll">
@@ -288,10 +307,10 @@
 </table>
 </div>
 
-<p>Two further gaps, visible the moment the pane is opened on a machine with no pools:</p>
+<p>Two further gaps, both in scope for this change:</p>
 <ul>
   <li><strong>The empty state is blank.</strong> With <code>inventory</code> still null, <code>02 · Native inventory / Pool ledger</code> renders a heading, a Refresh button, and nothing else - a heading over void. The "No native pool exists yet" hint only appears once the fetch resolves to an empty array.</li>
-  <li><strong>It will not scale.</strong> The source plan recorded a live pool of <strong>54 slots</strong> on this machine. The current design renders pools as a card grid and paginates slots 12 at a time inside each card, inside a 900px measure. That shape stops working an order of magnitude below the real number.</li>
+  <li><strong>It does not scale.</strong> The source plan recorded a live pool of <strong>54 slots</strong> on this machine. The current design renders pools as a card grid and paginates slots 12 at a time inside each card, inside a 900px measure.</li>
 </ul>
 
 <h4>The pane today</h4>
@@ -329,99 +348,14 @@
   <li><strong>Lead:</strong> one prose paragraph, <code>--muted</code>, with <code>&lt;strong&gt;</code> carrying the emphasis. No box.</li>
   <li><strong>Group label:</strong> sentence case, 12px, <code>font-weight: 600</code> (<code>Per harness</code>, <code>Layout</code>, <code>Conversation</code>).</li>
   <li><strong>Control row:</strong> <code>.kb-row</code> - <code>9px 10px</code> padding, <code>border-radius: 9px</code>, transparent border, <code>--panel-2</code> on hover. Label 12.5px / weight 540, description 11.5px <code>--muted</code>, control right.</li>
-  <li><strong>Card:</strong> <code>.harness-card</code> - <code>border-radius: 10px</code>, <code>1px solid --border</code>, <code>3px</code> <strong>left</strong> accent, <code>--bg-2</code> fill, <code>13px 16px 14px</code> padding, in a <code>repeat(auto-fit, minmax(300px, 1fr))</code> grid.</li>
+  <li><strong>Card:</strong> <code>.harness-card</code> - <code>border-radius: 10px</code>, <code>1px solid --border</code>, <code>3px</code> <strong>left</strong> accent, <code>--bg-2</code> fill, in a <code>repeat(auto-fit, minmax(300px, 1fr))</code> grid.</li>
   <li><strong>Badge:</strong> <code>.skill-badge</code> - 9.5px uppercase, <code>border-radius: 5px</code>, tone via <code>color-mix(in oklab, &lt;tone&gt; 34%, var(--border))</code> border over a 9% fill.</li>
   <li><strong>Closing note:</strong> <code>.settings-hint</code> at 11.5px <code>--dim</code>, explaining the consequence of the group above.</li>
   <li><strong>Measure:</strong> <code>.settings-pane &gt; .settings-section</code> is capped at <code>max-width: 900px</code>. Task sources opts out (<code>.ts-panel { max-width: none }</code>) because it is master-detail.</li>
 </ul>
 <p>The pane already has a legitimate left-accent-bar precedent in <code>.harness-card</code>. What it does not have precedent for is the square corners, the numbering, the tinted callout, and the mono count tiles.</p>
 
-<h2>The three directions</h2>
-<p>Each is a complete layout for the whole pane, not a palette swap. All three mockups below use Mission Control's real theme tokens and the same fictional inventory - two healthy pools, one over capacity - so they can be compared directly.</p>
-
-<h3>Direction A - Settings-native</h3>
-<p class="thesis"><strong>Thesis:</strong> the pane should be unremarkable. It is a settings pane in a settings app; the pools are the interesting thing, not the chrome. Adopt the Harnesses layout wholesale.</p>
-
-<div class="mock">
-  <div class="mock-inner">
-    <div class="m-head"><h3>Worktrees</h3><span class="m-scope">This machine</span></div>
-    <p class="m-lead">Mission Control owns these checkouts. Policy changes affect <strong>future leases only</strong>, and every cleanup is previewed and rechecked against task, check, manual lease, Git, and process ownership before it can mutate a path.</p>
-
-    <div class="m-group">
-      <div class="m-group-head"><h4>Defaults</h4></div>
-      <div class="m-row">
-        <div class="m-row-text">
-          <span class="m-row-label">Use native worktrees</span>
-          <span class="m-row-desc">New acquisitions get a pooled checkout Mission Control manages. Turn this off and they fall back to an isolated clone. Existing slots are preserved either way.</span>
-        </div>
-        <div class="m-row-ctl"><span class="m-check"></span></div>
-      </div>
-      <div class="m-row">
-        <div class="m-row-text">
-          <span class="m-row-label">Default maximum slots</span>
-          <span class="m-row-desc">How far a pool may grow before Mission Control stops creating slots. Lowering it marks pools over capacity; it never prunes as a side effect.</span>
-        </div>
-        <div class="m-row-ctl"><span class="m-num">16</span></div>
-      </div>
-    </div>
-
-    <div class="m-group">
-      <div class="m-group-head"><h4>Pools</h4><button class="m-btn">Refresh</button></div>
-      <div class="m-cards">
-        <div class="m-card ok">
-          <div class="m-card-head"><span class="m-dot ok"></span><span class="m-card-name">ai-harness</span><span class="m-card-spacer"></span><span class="m-badge ok">Healthy</span></div>
-          <div class="m-card-grid">
-            <span class="m-card-k">Slots</span><span class="m-card-v">12 of 16</span>
-            <span class="m-card-k">Available</span><span class="m-card-v">4</span>
-            <span class="m-card-k">Leased</span><span class="m-card-v">8</span>
-            <span class="m-card-k">Quarantined</span><span class="m-card-v">0</span>
-            <span class="m-card-k">Disk</span><span class="m-card-v">3.1 GB</span>
-          </div>
-          <p class="m-card-path">~/.mission-control/worktrees/ai-harness</p>
-          <div class="m-disclose"><span class="m-chev">›</span> Show 12 slots and pool overrides</div>
-        </div>
-        <div class="m-card ok">
-          <div class="m-card-head"><span class="m-dot ok"></span><span class="m-card-name">docs-site</span><span class="m-card-spacer"></span><span class="m-badge ok">Healthy</span></div>
-          <div class="m-card-grid">
-            <span class="m-card-k">Slots</span><span class="m-card-v">3 of 8</span>
-            <span class="m-card-k">Available</span><span class="m-card-v">3</span>
-            <span class="m-card-k">Leased</span><span class="m-card-v">0</span>
-            <span class="m-card-k">Quarantined</span><span class="m-card-v">0</span>
-            <span class="m-card-k">Disk</span><span class="m-card-v">410 MB</span>
-          </div>
-          <p class="m-card-path">~/.mission-control/worktrees/docs-site</p>
-          <div class="m-disclose"><span class="m-chev">›</span> Show 3 slots and pool overrides</div>
-        </div>
-        <div class="m-card warn">
-          <div class="m-card-head"><span class="m-dot warn"></span><span class="m-card-name">line-drawers</span><span class="m-card-spacer"></span><span class="m-badge warn">Over capacity</span></div>
-          <div class="m-card-grid">
-            <span class="m-card-k">Slots</span><span class="m-card-v">18 of 16</span>
-            <span class="m-card-k">Available</span><span class="m-card-v">0</span>
-            <span class="m-card-k">Leased</span><span class="m-card-v">17</span>
-            <span class="m-card-k">Quarantined</span><span class="m-card-v">1</span>
-            <span class="m-card-k">Disk</span><span class="m-card-v">6.4 GB</span>
-          </div>
-          <p class="m-card-path">~/.mission-control/worktrees/line-drawers</p>
-          <div class="m-disclose"><span class="m-chev">›</span> Show 18 slots and pool overrides</div>
-        </div>
-      </div>
-      <p class="m-hint">Pools are created lazily on first acquisition, so a repository appears here only after something has needed a checkout in it.</p>
-    </div>
-
-    <div class="m-group">
-      <div class="m-group-head"><h4>Treehouse</h4></div>
-      <p class="m-hint" style="margin-top:2px">Nothing left to drain. All historical leases have been returned, and new work never acquires Treehouse resources.</p>
-    </div>
-  </div>
-</div>
-<p class="mock-cap">Direction A at the 900px measure. Every primitive on screen already exists: <code>.kb-row</code>, <code>.harness-card</code>, <code>.skill-badge</code>, <code>.skill-switch</code>, <code>.settings-hint</code>.</p>
-
-<h4>Cost</h4>
-<p>At the 900px measure two cards per row leaves each ~440px, which is tight for a slot's path, HEAD, and five actions - slot detail stays behind a disclosure and keeps its bounded scroll. It does not fix the scale problem; it makes a small pool pleasant and leaves a large one paginated.</p>
-<h4>Gain</h4>
-<p>Lowest risk and smallest diff. Reuses <code>.kb-row</code>, <code>.harness-card</code>, <code>.skill-badge</code>, <code>.skill-switch</code> and <code>.settings-hint</code> verbatim, so it inherits every future change to them. The pane stops announcing itself.</p>
-
-<h3>Direction B - Capacity-first</h3>
+<h2>The adopted layout: capacity-first</h2>
 <p class="thesis"><strong>Thesis:</strong> an operator arrives at this pane with one question - <em>do I have room, and what is holding the rest?</em> Answer it in the first 200 pixels, and give <code>Default maximum</code> a meaning a number input cannot carry.</p>
 
 <div class="mock">
@@ -516,17 +450,106 @@
     </div>
   </div>
 </div>
-<p class="mock-cap">Direction B at the 900px measure. The bar is the one new component; everything below it is the house row.</p>
+<p class="mock-cap">The adopted layout at the 900px measure. The bar is the one new component; everything below it is an existing house primitive.</p>
 
-<h4>The signature</h4>
-<p>One track per pool, segmented into leased (<code>--working</code>), available (<code>--idle</code>) and quarantined (<code>--danger</code>), The track's full width <em>is</em> the configured maximum, so the unfilled remainder reads directly as room to grow and is hatched to say so. A pool over its maximum spills past the track in <code>--attention</code> hatching, and the safe-prune preview surfaces on that row. Lowering the default maximum visibly reflows every bar, which is exactly the feedback the current number input withholds.</p>
-<h4>Cost</h4>
-<p>The bar is a new component with no existing precedent in the app, so it is new CSS to maintain and it needs an accessible text equivalent carrying the same counts (a <code>role="img"</code> with a composed label, or a visually-hidden restatement). It is the largest new-invention risk of the three.</p>
-<h4>Gain</h4>
-<p>The pane answers its actual question at a glance, and the one control that today reads as an arbitrary number becomes legible. Over-capacity - which the source plan calls out as a real lifecycle gap, since lowering the ceiling does not right-size a grown pool - becomes visible instead of being a word in a chip.</p>
+<h3>The signature: the capacity bar</h3>
+<p>One track per pool, segmented into leased (<code>--working</code>), available (<code>--idle</code>) and quarantined (<code>--danger</code>). The track's full width <strong>is</strong> the configured maximum, so the unfilled remainder reads directly as room to grow and is hatched to say so. A pool over its maximum spills past the track in <code>--attention</code> hatching, and the safe-prune preview surfaces on that row. Lowering the default maximum visibly reflows every bar, which is exactly the feedback the current number input withholds.</p>
+<p>The bar is the pane's one new component and the only place its boldness is spent. Everything around it is an existing house primitive.</p>
+<h4>Accessibility</h4>
+<p>The bar is decorative on its own, so it carries no meaning colour alone must convey. Each segment's count is restated in the legend beneath it as text, and the bar itself takes <code>role="img"</code> with a composed label naming every count and the maximum. The over-capacity state is labelled with the words <code>over the maximum</code>, never by the amber hatching alone.</p>
 
-<h3>Direction C - Master-detail</h3>
-<p class="thesis"><strong>Thesis:</strong> this is not a form with an inventory attached, it is an inventory with a form attached. Task sources already opted out of the 900px measure for exactly this shape. Worktrees has the same shape and more rows.</p>
+<h3>Structure</h3>
+<ol>
+  <li><strong>Lead paragraph.</strong> The safety promise becomes the pane's opening sentence, in the shape Harnesses uses. The tinted box, the green <code>--select</code> kicker, and the three mono count tiles are all removed - the counts they carried are now visible per pool on the bars.</li>
+  <li><strong>Pools, first.</strong> Full-width rows rather than a card grid, because the bar needs the width. Each row: tone dot, pool name, path in mono, counts, the bar, the legend, and a disclosure into slot detail and per-pool overrides. Slot detail keeps its existing bounded scroll and pagination.</li>
+  <li><strong>Defaults, below the pools.</strong> Two <code>.kb-row</code>s identical in shape to Harnesses' <code>Auto mode on dispatch</code>, under a group label qualified <em>affects future acquisitions only</em> - which is the constraint the source plan already states, surfaced where it applies.</li>
+  <li><strong>Treehouse, last.</strong> One <code>--attention</code>-toned row while anything is undrained; one dim sentence once nothing is.</li>
+</ol>
+<p>No numbering, no section rules, no square corners. Sections are separated by space, as they are everywhere else in Settings.</p>
+
+<h3>Empty and loading states</h3>
+<p>In scope by decision, and each state gets real copy rather than a blank region.</p>
+
+<div class="mock">
+  <div class="mock-inner">
+    <div class="m-group" style="margin-top:0">
+      <div class="m-group-head"><h4>Pools</h4><button class="m-btn">Refresh</button></div>
+      <div class="m-pool">
+        <div class="m-pool-head"><span class="m-dot"></span><span class="m-skel" style="width:120px"></span><span class="m-pool-counts"><span class="m-skel" style="width:110px;display:inline-block"></span></span></div>
+        <div class="m-bar"><div class="m-seg" style="width:100%;background:var(--panel-2)"></div></div>
+      </div>
+      <div class="m-pool">
+        <div class="m-pool-head"><span class="m-dot"></span><span class="m-skel" style="width:86px"></span><span class="m-pool-counts"><span class="m-skel" style="width:110px;display:inline-block"></span></span></div>
+        <div class="m-bar"><div class="m-seg" style="width:100%;background:var(--panel-2)"></div></div>
+      </div>
+      <p class="m-hint">Observing Git, process, and provider state…</p>
+    </div>
+  </div>
+</div>
+<p class="mock-cap"><strong>Loading, first open.</strong> Skeleton rows give the group shape while Git, process, and provider state are observed. It never renders a heading over void.</p>
+
+<div class="mock">
+  <div class="mock-inner">
+    <div class="m-group" style="margin-top:0">
+      <div class="m-group-head"><h4>Pools</h4><button class="m-btn">Refresh</button></div>
+      <div class="m-empty"><p><b>No pools yet</b>Mission Control creates one the first time something needs a checkout in a repository.</p></div>
+    </div>
+    <div class="m-group">
+      <div class="m-group-head"><h4>Treehouse</h4></div>
+      <p class="m-hint" style="margin-top:2px">Nothing left to drain. All historical leases have been returned, and new work never acquires Treehouse resources.</p>
+    </div>
+  </div>
+</div>
+<p class="mock-cap"><strong>Empty.</strong> An invitation to act, not a report of absence. The four Treehouse classification counts appear only when at least one is non-zero.</p>
+
+<ul>
+  <li><strong>Inventory unavailable.</strong> The manager returning <code>503</code> is distinguished from an empty inventory: the group states that state could not be observed and offers Refresh, rather than claiming zero pools.</li>
+</ul>
+
+<h2>Alternatives considered and not taken</h2>
+<p>Both were rendered as full mockups and reviewed alongside the adopted direction.</p>
+
+<div class="notaken">
+<h3>A - Settings-native <span class="tag-no">Not taken</span></h3>
+<p>Adopt the Harnesses layout wholesale: pools as rounded left-accent cards on the existing <code>auto-fit / minmax(300px, 1fr)</code> grid, counts as a label/value grid inside each card. Smallest diff and zero new primitives. <strong>Not taken</strong> because it fixes the theme breaks and nothing else - <code>Default maximum</code> stays an arbitrary number, and over-capacity stays a word in a chip.</p>
+
+<div class="mock">
+  <div class="mock-inner">
+    <div class="m-head"><h3>Worktrees</h3><span class="m-scope">This machine</span></div>
+    <p class="m-lead">Mission Control owns these checkouts. Policy changes affect <strong>future leases only</strong>, and every cleanup is previewed and rechecked against task, check, manual lease, Git, and process ownership before it can mutate a path.</p>
+    <div class="m-group">
+      <div class="m-group-head"><h4>Defaults</h4></div>
+      <div class="m-row">
+        <div class="m-row-text"><span class="m-row-label">Use native worktrees</span><span class="m-row-desc">New acquisitions get a pooled checkout Mission Control manages. Turn this off and they fall back to an isolated clone.</span></div>
+        <div class="m-row-ctl"><span class="m-check"></span></div>
+      </div>
+      <div class="m-row">
+        <div class="m-row-text"><span class="m-row-label">Default maximum slots</span><span class="m-row-desc">How far a pool may grow before Mission Control stops creating slots. Lowering it marks pools over capacity; it never prunes as a side effect.</span></div>
+        <div class="m-row-ctl"><span class="m-num">16</span></div>
+      </div>
+    </div>
+    <div class="m-group">
+      <div class="m-group-head"><h4>Pools</h4><button class="m-btn">Refresh</button></div>
+      <div class="m-cards">
+        <div class="m-card ok">
+          <div class="m-card-head"><span class="m-dot ok"></span><span class="m-card-name">ai-harness</span><span class="m-card-spacer"></span><span class="m-badge ok">Healthy</span></div>
+          <div class="m-card-grid"><span class="m-card-k">Slots</span><span class="m-card-v">12 of 16</span><span class="m-card-k">Available</span><span class="m-card-v">4</span><span class="m-card-k">Leased</span><span class="m-card-v">8</span><span class="m-card-k">Disk</span><span class="m-card-v">3.1 GB</span></div>
+          <p class="m-card-path">~/.mission-control/worktrees/ai-harness</p>
+          <div class="m-disclose"><span class="m-chev">›</span> Show 12 slots and pool overrides</div>
+        </div>
+        <div class="m-card warn">
+          <div class="m-card-head"><span class="m-dot warn"></span><span class="m-card-name">line-drawers</span><span class="m-card-spacer"></span><span class="m-badge warn">Over capacity</span></div>
+          <div class="m-card-grid"><span class="m-card-k">Slots</span><span class="m-card-v">18 of 16</span><span class="m-card-k">Available</span><span class="m-card-v">0</span><span class="m-card-k">Leased</span><span class="m-card-v">17</span><span class="m-card-k">Disk</span><span class="m-card-v">6.4 GB</span></div>
+          <p class="m-card-path">~/.mission-control/worktrees/line-drawers</p>
+          <div class="m-disclose"><span class="m-chev">›</span> Show 18 slots and pool overrides</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<h3>C - Master-detail <span class="tag-no">Not taken</span></h3>
+<p>Opt out of the 900px measure the way <code>.ts-panel</code> already does, and render one filterable list of every slot across every pool beside a sticky detail-and-actions column. The only direction that scales cleanly to the ~54 slots this machine actually produces. <strong>Not taken</strong> for cost: a new layout shell, selection state, list-then-detail push navigation at narrow widths, re-cut <code>settings-search.ts</code> anchors, and a wholesale rewrite of <code>e2e/specs/settings-worktrees.spec.ts</code>. Worth revisiting if pool counts keep growing - the capacity bar composes with it rather than blocking it.</p>
 
 <div class="mock">
   <div class="mock-inner wide">
@@ -534,30 +557,17 @@
     <div class="m-md">
       <div>
         <div class="m-filters">
-          <span class="m-filter on">All 33</span>
-          <span class="m-filter">Leased 25</span>
-          <span class="m-filter">Free 7</span>
-          <span class="m-filter">Quarantined 1</span>
-          <span class="m-filter">Over capacity 2</span>
-          <span class="m-filter">Treehouse 0</span>
+          <span class="m-filter on">All 33</span><span class="m-filter">Leased 25</span><span class="m-filter">Free 7</span><span class="m-filter">Quarantined 1</span><span class="m-filter">Over capacity 2</span><span class="m-filter">Treehouse 0</span>
         </div>
         <div class="m-search">Filter by path, branch, or owner…</div>
-
         <div class="m-poolhead"><b>ai-harness</b> <span>12 slots · 3.1 GB</span></div>
         <div class="m-slot"><span class="m-dot ok"></span><span class="m-slot-id">slot 1</span><span class="m-slot-path">~/.mission-control/worktrees/ai-harness-1</span><span class="m-badge ok">Free</span><span class="m-slot-age">-</span></div>
-        <div class="m-slot"><span class="m-dot busy"></span><span class="m-slot-id">slot 2</span><span class="m-slot-path">~/.mission-control/worktrees/ai-harness-2</span><span class="m-badge busy">Leased</span><span class="m-slot-age">4h</span></div>
         <div class="m-slot sel"><span class="m-dot busy"></span><span class="m-slot-id">slot 7</span><span class="m-slot-path">~/.mission-control/worktrees/ai-harness-7</span><span class="m-badge busy">Leased</span><span class="m-slot-age">12m</span></div>
         <div class="m-slot"><span class="m-dot bad"></span><span class="m-slot-id">slot 9</span><span class="m-slot-path">~/.mission-control/worktrees/ai-harness-9</span><span class="m-badge bad">Quarantined</span><span class="m-slot-age">-</span></div>
-
-        <div class="m-poolhead"><b>docs-site</b> <span>3 slots · 410 MB</span></div>
-        <div class="m-slot"><span class="m-dot ok"></span><span class="m-slot-id">slot 1</span><span class="m-slot-path">~/.mission-control/worktrees/docs-site-1</span><span class="m-badge ok">Free</span><span class="m-slot-age">-</span></div>
-        <div class="m-slot"><span class="m-dot ok"></span><span class="m-slot-id">slot 2</span><span class="m-slot-path">~/.mission-control/worktrees/docs-site-2</span><span class="m-badge ok">Free</span><span class="m-slot-age">-</span></div>
-
         <div class="m-poolhead"><b>line-drawers</b> <span>18 slots · 6.4 GB · over capacity</span></div>
         <div class="m-slot"><span class="m-dot busy"></span><span class="m-slot-id">slot 3</span><span class="m-slot-path">~/.mission-control/worktrees/line-drawers-3</span><span class="m-badge busy">Leased</span><span class="m-slot-age">2d</span></div>
         <div class="m-slot"><span class="m-dot warn"></span><span class="m-slot-id">slot 17</span><span class="m-slot-path">~/.mission-control/worktrees/line-drawers-17</span><span class="m-badge warn">Over max</span><span class="m-slot-age">6h</span></div>
       </div>
-
       <div class="m-detail">
         <div class="m-detail-head"><span class="m-dot busy"></span><span class="m-detail-title">ai-harness / slot 7</span><span class="m-card-spacer"></span><span class="m-badge busy">Leased</span></div>
         <dl class="m-dl">
@@ -566,72 +576,36 @@
           <dt>Base</dt><dd>2 commits behind main</dd>
           <dt>Work</dt><dd>3 dirty · 1 untracked</dd>
           <dt>Processes</dt><dd>1 (node)</dd>
-          <dt>Disk</dt><dd>260 MB</dd>
-          <dt>Lease</dt><dd>12 minutes</dd>
           <dt>Owner</dt><dd>Task #418 ›</dd>
         </dl>
         <p class="m-safety">Returning this slot is previewed first and rechecked against task, check, manual lease, Git, and process ownership. Work is retained until the task is explicitly cleaned up.</p>
-        <div class="m-actions">
-          <button class="m-btn m-btn-solid">Copy path</button>
-          <button class="m-btn m-btn-solid">Open terminal</button>
-          <button class="m-btn m-btn-solid">Return</button>
-          <button class="m-btn m-btn-danger">Destroy</button>
-        </div>
+        <div class="m-actions"><button class="m-btn m-btn-solid">Copy path</button><button class="m-btn m-btn-solid">Open terminal</button><button class="m-btn m-btn-solid">Return</button><button class="m-btn m-btn-danger">Destroy</button></div>
       </div>
     </div>
   </div>
 </div>
-<p class="mock-cap">Direction C, opting out of the 900px measure the way <code>.ts-panel</code> already does. With nothing selected, the right column shows the global defaults and the selected pool's overrides instead of a slot.</p>
-
-<h4>Cost</h4>
-<p>The largest change of the three. It needs a new layout shell, selection state, a narrow-width story (list-then-detail push navigation), and a new answer for settings search: the three current <code>data-anchor</code> values map to filters rather than to sections, so <code>settings-search.ts</code> anchors must be re-cut. The existing <code>e2e/specs/settings-worktrees.spec.ts</code> is rewritten wholesale rather than adjusted.</p>
-<h4>Gain</h4>
-<p>The only direction that scales to the pool sizes this machine actually produces. It also removes the pane's worst structural problem - that reaching one slot means expanding one pool, then paging within it - and puts every slot one filter away.</p>
-
-<h2>Comparison</h2>
-<div class="scroll">
-<table>
-<thead><tr><th></th><th>A - Settings-native</th><th>B - Capacity-first</th><th>C - Master-detail</th></tr></thead>
-<tbody>
-<tr><td>Fixes the nine theme breaks</td><td>Yes</td><td>Yes</td><td>Yes</td></tr>
-<tr><td>New components to maintain</td><td>None</td><td>The capacity bar</td><td>Layout shell, selection, filters</td></tr>
-<tr><td>Reuses <code>.kb-row</code> / <code>.harness-card</code></td><td>Fully</td><td>Partly</td><td>Little</td></tr>
-<tr><td>Scales to ~54 slots</td><td>No</td><td>Partly</td><td>Yes</td></tr>
-<tr><td>Makes <code>Default maximum</code> legible</td><td>No</td><td>Yes</td><td>No</td></tr>
-<tr><td>Keeps the 900px measure</td><td>Yes</td><td>Yes</td><td>No - opts out</td></tr>
-<tr><td>Narrow-width work</td><td>None beyond today</td><td>Bar reflow</td><td>New push navigation</td></tr>
-<tr><td><code>e2e</code> spec impact</td><td>Selectors adjusted</td><td>Selectors adjusted, bar assertions added</td><td>Rewritten</td></tr>
-<tr><td>Relative size</td><td>Small</td><td>Medium</td><td>Large</td></tr>
-</tbody>
-</table>
 </div>
 
-<h2>What does not change in any direction</h2>
+<h2>What does not change</h2>
 <p>These are contracts from the source plan and must survive the restyle intact.</p>
 <ul>
   <li>Every mutation stays preview-first: request a preview, show affected paths, blockers and consequences, require the server-supplied acknowledgement keys, execute against the opaque token, and treat a <code>409</code> as a stale preview rather than a failure.</li>
   <li>No <code>data-testid</code>. Selection stays by role, label, and placeholder.</li>
-  <li>The three <code>data-anchor</code> values feeding settings search must keep resolving to something, whatever the layout does to sections.</li>
+  <li>The three <code>data-anchor</code> values feeding settings search must keep resolving. <code>worktrees/policy</code> moves down the pane with the Defaults group; it does not disappear.</li>
   <li>Colour never carries state alone. Every tone is paired with a word.</li>
   <li>Inventory stays out of <code>MissionState</code>; only the <code>worktreesRevision</code> counter lives there.</li>
   <li>Legacy rows without provable identity get an explanation, never a disabled <code>Force</code> button.</li>
+  <li>Lowering the maximum never prunes as a side effect. The bar makes the over-capacity state visible; it does not make it self-correcting.</li>
 </ul>
 
-<h2>Verification any direction owes</h2>
+<h2>Verification</h2>
 <ul>
-  <li>A Playwright spec in <code>e2e/</code> for the new layout, extending <code>e2e/specs/settings-worktrees.spec.ts</code>. It covers the empty pane, a populated pool, the disclosure, and one preview-and-cancel round trip.</li>
-  <li>The Electron geometry test for the pane at a narrow width, since the current design's overflow behaviour is the part most likely to regress.</li>
+  <li>A Playwright spec in <code>e2e/</code>, extending <code>e2e/specs/settings-worktrees.spec.ts</code>: the loading and empty states, a populated pool with its bar and legend counts, an over-capacity pool offering the prune preview, the disclosure into slot detail, and one preview-and-cancel round trip.</li>
+  <li>A <code>renderToStaticMarkup</code> case pinning the bar's segment widths and its composed <code>role="img"</code> label against a known inventory, since those are arithmetic and cheap to assert directly.</li>
+  <li>The Electron geometry test for the pane at a narrow width, since overflow behaviour is the part most likely to regress.</li>
   <li><code>npm run typecheck</code>, <code>npm run lint</code>, <code>npm test</code>, <code>npm run build</code>, <code>npm run test:e2e</code>.</li>
-  <li>Screenshots of the pane empty and populated, attached to the pull request rather than committed.</li>
+  <li>Screenshots of the pane loading, empty, populated, and over capacity, attached to the pull request rather than committed.</li>
 </ul>
-
-<h2>Open choices</h2>
-<p>Three, presented as selectable options in the Mission Control dashboard rather than here:</p>
-<div class="cg">
-  <div><h5>Layout direction</h5><p>A, B, or C.</p></div>
-  <div><h5>The safety callout</h5><p>Restyle the box, demote it to the lead paragraph, or move it beside the actions in the preview dialog where it is load-bearing.</p></div>
-  <div><h5>Scope</h5><p>Theme conformance only, or also the empty and loading states, or also a full accessibility and narrow-width pass.</p></div>
-</div>
 
 <footer class="doc">
   Source: <code>docs/plans/worktrees-settings-layout/plan.md</code>. This page is a rendering of that

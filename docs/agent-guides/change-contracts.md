@@ -634,6 +634,14 @@ synthesize one for a caller that supplied none. `held` means a model judged the 
 `verification_failed` means verification infrastructure gave up and nobody judged it, so the two
 must not be collapsed.
 
+An action and its reason are ONE consumption, checked in both directions on the wire. `ask`
+with the `asked` outcome, a direct-handoff latch with the `direct_handoff` outcome - either
+without the other is refused. The reverse direction is the one that matters most: an outcome
+with no matching action persists a decision describing an event that never happened, and
+that is precisely what a later reader would act on. `workflow_claimed` and
+`direct_handoff_undelivered` are refused on this route outright, because each is written
+somewhere else - the Workflow claim transaction, and the undelivered-handoff correction.
+
 One amendment exists, and it NARROWS: a `direct_handoff` whose instruction failed to reach the
 agent becomes `direct_handoff_undelivered` for that same generation. It is a correction, not a
 third writer - it cannot create a decision, spend a generation, or produce any other outcome, and

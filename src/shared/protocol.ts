@@ -3326,17 +3326,28 @@ export const PromptedWrapupSchema = z.object({
   // The two action latches and the recorded reason are three views of ONE consumption, so
   // a request that disagrees with itself is refused rather than half-applied. Checked on
   // the wire because this is the boundary where the caller's intent is still legible.
-  (body) => !body.decision || !body.ask || body.decision.outcome === "asked",
-  { message: "A prompted consumption that raises the Ship it? card must record the asked outcome" },
+  // BOTH directions. An action without its reason is a consumption nobody can explain; a
+  // reason without its action is worse, because it is a consumption that describes an event
+  // that never happened. The second is the one a one-way check misses: `asked` with no card
+  // raised, or `direct_handoff` with no latch written and therefore nothing that could have
+  // been typed, both persist as decisions Phase 2 would read as work already handed over.
+  (body) => !body.decision || body.ask === (body.decision.outcome === "asked"),
+  { message: "The asked outcome and the Ship it? card are one consumption: record both or neither" },
 ).refine(
-  (body) => !body.decision || !body.directHandoff || body.decision.outcome === "direct_handoff",
-  { message: "A prompted consumption that latches a direct handoff must record the direct_handoff outcome" },
+  (body) => !body.decision || Boolean(body.directHandoff) === (body.decision.outcome === "direct_handoff"),
+  { message: "The direct_handoff outcome and the handoff latch are one consumption: record both or neither" },
 ).refine(
   // `workflow_claimed` is written only inside the Workflow claim transaction, which never
   // travels over this route. Accepting it here would let an ordinary consume forge a claim
   // that no run exists for.
   (body) => body.decision?.outcome !== "workflow_claimed",
   { message: "Only the Workflow claim transaction may record a workflow_claimed outcome" },
+).refine(
+  // `direct_handoff_undelivered` is a CORRECTION, reachable only from a stored
+  // `direct_handoff` for a generation this route already consumed. A consumption that
+  // opened with it would be claiming an injection failed that nothing ever attempted.
+  (body) => body.decision?.outcome !== "direct_handoff_undelivered",
+  { message: "Only the undelivered-handoff correction may record a direct_handoff_undelivered outcome" },
 );
 export type PromptedWrapup = z.infer<typeof PromptedWrapupSchema>;
 

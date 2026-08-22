@@ -597,10 +597,46 @@ test("the prompted consume wire contract records a reason it cannot disagree wit
     false,
   );
 
+  // BOTH directions, because the reverse is the one that persists a lie. An action without
+  // its reason leaves a consumption nobody can explain; a reason without its action leaves a
+  // consumption describing an event that never happened - and Phase 2 reads exactly that.
+  assert.equal(
+    PromptedWrapupSchema.safeParse({ ...base, decision: { outcome: "asked" } }).success,
+    false,
+    "the asked outcome without the card that was supposedly raised",
+  );
+  assert.equal(
+    PromptedWrapupSchema.safeParse({ ...base, decision: { outcome: "direct_handoff" } }).success,
+    false,
+    "the direct_handoff outcome with no latch, so nothing could have been typed",
+  );
+  assert.equal(
+    PromptedWrapupSchema.safeParse({
+      ...base,
+      directHandoff: "direct-ship",
+      decision: { outcome: "direct_handoff" },
+    }).success,
+    true,
+  );
+
   // `workflow_claimed` is written only inside the Workflow claim transaction. Accepting it
   // here would let an ordinary consume forge a claim that no run exists for.
   assert.equal(
     PromptedWrapupSchema.safeParse({ ...base, decision: { outcome: "workflow_claimed" } }).success,
+    false,
+  );
+  // `direct_handoff_undelivered` is a correction to a handoff this route already recorded,
+  // so opening a consumption with it claims an injection failed that nothing ever attempted.
+  assert.equal(
+    PromptedWrapupSchema.safeParse({
+      ...base,
+      directHandoff: "direct-ship",
+      decision: { outcome: "direct_handoff_undelivered" },
+    }).success,
+    false,
+  );
+  assert.equal(
+    PromptedWrapupSchema.safeParse({ ...base, decision: { outcome: "direct_handoff_undelivered" } }).success,
     false,
   );
 });

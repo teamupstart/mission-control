@@ -141,12 +141,21 @@ keeps a single release pull request current on the default branch. Merging that 
 the release: the tag and the GitHub Release follow from the next run. Never hand-edit
 `CHANGELOG.md`.
 
+The action authenticates with the `RELEASE_PLEASE_TOKEN` Actions secret, which contains a personal
+access token scoped to this repository with contents, issues, and pull-request write access. The
+organization policy prevents the default `GITHUB_TOKEN` from opening pull requests, so replacing
+the configured token with the default token makes the Release workflow fail on every push to
+`main`. The first release is pinned to `v1.0.0` through the package's `release-as` setting; remove
+that one-time pin after `v1.0.0` is published so later releases resume normal version calculation.
+
 One equality is load-bearing and therefore enforced rather than assumed: the tag, `package.json`,
 and both version fields in `package-lock.json` must name the same version.
 [`scripts/assert-release-version.mjs`](../scripts/assert-release-version.mjs) proves it, and runs
 both in the release workflow and in `ci.yml`'s `package` job, where it blocks a mismatched tag
 from producing a dmg. A release the updater can compare against is exactly a release whose tag
-equals the version the app reports.
+equals the version the app reports. The accepted release-tag grammar is exactly a stable,
+`v`-prefixed three-part version such as `v1.2.3`; bare versions, prereleases, and build metadata
+are rejected because the install and update queries deliberately exclude prereleases.
 
 Releases are selected - by the install path and by the updater alike - from an explicitly
 filtered list:
@@ -159,9 +168,11 @@ Filtering after asking for "the latest" cannot recover: once a prerelease has be
 is no route back to the newest stable release, and every stable install silently stops updating
 with nothing logged anywhere.
 
-Tags created by the release workflow are pushed with `GITHUB_TOKEN`, and GitHub does not start
-workflow runs from those, so the `package` job does not fire on a release tag and cannot race the
-release. Packaging a tag stays a manual `workflow_dispatch`.
+Tags created by the release workflow are pushed with the configured personal access token, so they
+start a new `ci.yml` run. Its `package` job builds the macOS dmg, checks that the tag and package
+versions agree, and uploads the dmg as a 90-day Actions artifact. This is a separate release build
+check; the dmg is not attached to the GitHub Release. The package job can also be run manually
+through `workflow_dispatch`.
 
 See [Configuration and commands](configuration.md) for operating the app. Packaging and
 build-surface rules are authoritative in the [Electron and build surfaces contract](agent-guides/change-contracts.md#electron-and-build-surfaces)

@@ -448,7 +448,9 @@ checkout` naming the path; task-source sweeps report the same refusal in their r
 
 On the [Board](ui.md#layout-console-or-board-in-settings), **drag a backlog card onto an idle
 agent with live hook instrumentation** in the same repo and it starts there instead of in
-a new worktree. A passively confirmed Codex session can appear in the Idle column without
+a new worktree. It is the same drag that [reorders the column](#the-backlog-order-is-the-one-you-set);
+the drop target decides which one you get, so a card released over a tile is handed over
+and a card released between two cards is moved. A passively confirmed Codex session can appear in the Idle column without
 lighting up as a drop target: the rollout proves its displayed state, but not that the
 reset and prompt handover can be observed safely. The task owns no checkout of its own -
 the agent keeps the one it had - which is exactly why cancelling it later never runs
@@ -690,7 +692,16 @@ The backlog has **one order, and it is yours.** Foreman takes the highest ready 
 the order you arranged - not the oldest, not the highest-priority, and not an order a
 model picked.
 
-Every card in the board's Backlog column carries four controls: **top**, **up**, **down**
+**Drag a card up or down the column and it stays where you drop it.** A thin line shows
+where it will land, and the card is dimmed while it is in the air. This is the same drag
+that [hands a card to an idle agent](#hand-a-shelved-task-to-an-agent-thats-already-running)
+- there is no handle, no modifier and no mode, and *where you drop it* is the only thing
+that decides which of the two happens: a gap in the Backlog column reorders, an agent tile
+hands it over. Dropping a card back where it already was does nothing at all. A multi-repo
+task can be reordered like any other, even though no agent tile will accept it - those are
+dispatch-only, and that is about assigning them, not about where they sit in the queue.
+
+Every card in the board's Backlog column also carries four controls: **top**, **up**, **down**
 and **bottom**. They are ordinary buttons, so Tab reaches them and Enter presses them, and
 each one names the task it moves (`Move "Fix the flaky test" to top`). The card moves when
 the daemon says it moved - nothing is drawn optimistically - and a refusal is shown rather

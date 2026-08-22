@@ -23637,6 +23637,59 @@ span.line-run-prov {
 .board-backlog .board-col-head h2 {
   color: color-mix(in oklab, var(--pr-merged) 65%, var(--fg));
 }
+/* The column's own spacing comes from the drop gaps rather than from the body's flex
+   `gap`, which is what lets a drop target sit between two cards without adding a second
+   space beside every one of them. The numbers are the ones the body used: 9px between
+   cards, and 9px at each end (the top and bottom gaps standing in for the padding this
+   column therefore drops on those two edges). Same picture as before, now with somewhere
+   to aim. */
+.board-backlog .board-col-body {
+  gap: 0;
+  padding: 0 9px;
+}
+/* A place to put a card, between two cards or at either end. Zero-height and carrying no
+   ink of its own until a card is in the air: a list that reflows while you are dragging
+   over it is a list you cannot aim at, so nothing here changes size at any point in a
+   drag. The hit area is stretched WELL past the 9px slot, because a 9px target is one you
+   miss - and it is inert until the column is reordering, so it can never swallow a click
+   meant for a card or a file dropped on the dashboard. */
+.bl-gap {
+  flex: none;
+  position: relative;
+  height: 9px;
+  pointer-events: none;
+}
+.bl-gap::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -7px;
+  bottom: -7px;
+}
+.board-backlog.is-reordering .bl-gap,
+.board-backlog.is-reordering .bl-drop-empty {
+  pointer-events: auto;
+}
+/* The one line the gesture draws: where the card would land. Absolutely positioned so it
+   costs no layout - the cards on either side do not move to make room for it. */
+.bl-gap.is-over::after,
+.bl-drop-empty.is-over::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(50% - 1px);
+  height: 2px;
+  border-radius: 2px;
+  background: var(--pr-merged);
+  box-shadow: 0 0 6px color-mix(in oklab, var(--pr-merged) 55%, transparent);
+}
+/* The empty column's message doubles as its single drop target, so the first card of an
+   empty backlog has somewhere to land. */
+.bl-drop-empty {
+  position: relative;
+}
 .bl-card {
   position: relative;
   display: flex;
@@ -23673,6 +23726,11 @@ span.line-run-prov {
 .bl-card.is-busy {
   opacity: 0.55;
   cursor: default;
+}
+/* The card in the air. Dimmed so the drag reads as a MOVE - the card is being taken from
+   here - rather than as a copy being dropped somewhere while the original sits still. */
+.bl-card.is-lifted {
+  opacity: 0.4;
 }
 /* A button, because the title is the keyboard route into the task editor - stripped
    back to the text it was, since the whole card is already the click target and a

@@ -140,7 +140,7 @@ renders the leaf with the full path in a tooltip, per that component's stated ru
 │   ✓ codex  · terminal    prompt text        composed above turn one             │
 │   ✓ pi     · terminal    prompt text        composed above turn one             │
 │   ✗ sessions started outside Mission Control      not reachable - see below     │
-│   ✗ Foreman / Inspector / Persona review prompts  see decision 4                │
+│   ✗ Foreman / Inspector / Persona review prompts  not in scope - see below      │
 │                                                                                 │
 │  [ Save ]  [ Revert ]                        [ Use global default ]  [ Preview ] │
 └─────────────────────────────────────────────────────────────────────────────────┘
@@ -293,8 +293,9 @@ Two consequences worth writing down:
 and adopts them; there is no argv to carry a flag and no turn one to compose into. The only
 way to reach them would be to type a turn into a live session the operator is working in -
 which is what `src/server/injections.ts` exists to *record as non-human*, and which would be
-indistinguishable from Foreman typing at them. This plan does not do it. Decision 3 asks
-whether an explicit, operator-initiated one-click injection should be offered instead.
+indistinguishable from Foreman typing at them. This plan does not do it, and the panel says
+so in a shipped, tested string rather than a placeholder. An explicit operator-initiated
+injection was considered at review and deferred; it would sit on this same store.
 
 **The dashboard composer.** `POST /api/sessions/:id/inject` (`routes.ts:3712`) passes text
 through untouched, and is the only agent-facing channel with no composition step at all.
@@ -304,10 +305,12 @@ where an out-of-band channel exists it already governs every turn.
 **Mission Control's own review prompts** - Foreman triage, GitHub Inspector, workflow
 Personas - read the [standards bundle](../../inspector-and-shipping.md) and nothing else
 (`src/server/standards.ts:109`, consumed at `routes.ts:2882`, `inspector/worker.ts:898`,
-`workflows/context.ts:416`). Whether standing instructions join that bundle is **decision
-4**. It is genuinely useful - "never run E2E locally" is a thing an Inspector should not
-fail a pull request over - and it is genuinely a widening, because that bundle is capped at
-64KB per prompt and already drops the memory index first when it overflows.
+`workflows/context.ts:416`). Standing instructions **do not join that bundle**, decided at
+review. Joining it is genuinely useful - "never run E2E locally" is a thing an Inspector
+should not fail a pull request over - but it is also a widening: the bundle is capped at
+64KB per prompt and already drops the memory index first when it overflows, and what it
+carries today is *what the repository asserts*, which this deliberately is not. Revisit
+with evidence from the session path.
 
 ---
 
@@ -406,18 +409,20 @@ against `e2e/fixtures/fake-agents.ts`, so no model tokens are spent.
 
 ---
 
-## Open decisions
+## Decisions taken
 
-Four choices are genuinely open and belong to the human rather than to this document. They
-are presented as selectable options in the dashboard review:
+Four choices were open at review and are now settled. They are recorded here rather than
+left as alternatives, because a phase that re-litigates one of them is a phase doing the
+wrong work.
 
-1. **Where the editor lives** - a new settings category, folded into Trust (which already
-   owns the repository × subsystem table), or added to the existing Worktrees repository
-   cards.
-2. **How the text is delivered** - out-of-band where the harness and runtime have a channel
-   and prompt text where they do not, prompt text uniformly everywhere, or written into the
-   checkout's own agent config.
-3. **How far it reaches** - Mission-Control-launched sessions only, or additionally offered
-   as an explicit one-click injection into an adopted session the operator selects.
-4. **Whether Mission Control's own review prompts get it** - whether standing instructions
-   join the standards bundle read by Foreman, the GitHub Inspector and workflow Personas.
+| Decision | Adopted | Rejected, and why |
+|---|---|---|
+| **Where the editor lives** | A new **Standing instructions** settings category, in the *Sessions* group with a `This machine` scope badge | *Trust* owns the repository list but its badge is "Acts on GitHub" and its shape is a boolean grant matrix, not prose. The *Worktrees* cards already do override/inherited, but filing session behaviour inside checkout policy hides it. |
+| **How the text is delivered** | **Out-of-band where the harness and runtime have a channel, prompt text where they do not** - which makes wiring Claude's SDK `systemPrompt.append` and Codex's `developerInstructions` part of this work | Uniform prompt text is simpler and visible in the transcript, but it occupies turn one, can be compacted away, and does not govern later turns. Writing into the checkout's own agent config would reach more sessions by writing repo content, which is the exact thing this feature exists to avoid. |
+| **How far it reaches** | **Mission-Control-launched sessions only** - dispatch and assignment | A one-click injection into an adopted session was considered and deferred: it is a second delivery path, and the panel's honest "not reachable" line is the better first answer. Not foreclosed; it would sit on this same store. |
+| **MC's own review prompts** | **No - sessions only, for now.** Standing instructions do not join the standards bundle | Foreman, the Inspector and Personas would stop flagging work for obeying an instruction the operator gave, which is real. But the bundle is capped at 64KB per prompt and already drops the memory index first when it overflows, and the bundle's meaning today is "what the repository asserts" - which this deliberately is not. Revisit with evidence from the session path. |
+
+Two of these constrain the phasing directly. The delivery decision means **no phase may
+ship a harness the reach block would have to lie about** - the out-of-band channels land
+with the feature, not after it. The reach decision means the panel's "not reachable" line
+is a shipped, tested string rather than a placeholder.

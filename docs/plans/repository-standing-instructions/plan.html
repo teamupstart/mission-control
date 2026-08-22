@@ -244,7 +244,7 @@ Skills - because that is precisely what it does. It never writes <code>~/</code>
   <text x="252" y="388" class="dim">a workflow Command override already resolves.</text>
 </svg>
 </div>
-<p class="cap">Mockup 1 — the rail entry sits in <strong>Sessions</strong> with a
+<p class="cap">Mockup 1 - the rail entry sits in <strong>Sessions</strong> with a
 <em>This machine</em> scope badge, and the panel is a machine-wide default above a list of
 repository exceptions.</p>
 
@@ -314,7 +314,7 @@ in a tooltip, per that component's stated rule.</p>
   <text x="36" y="378" fill="var(--bad)" font-size="12">✗</text>
   <text x="56" y="378" class="lbl">sessions started outside Mission Control</text>
   <text x="400" y="378" class="dim">not reachable</text>
-  <text x="700" y="378" class="dim">see below</text>
+  <text x="700" y="378" class="dim">by design</text>
 
   <!-- buttons -->
   <rect x="20" y="410" width="66" height="26" rx="6" fill="var(--accent)"/>
@@ -327,7 +327,7 @@ in a tooltip, per that component's stated rule.</p>
   <text x="801" y="427" text-anchor="middle" class="lbl">Preview</text>
 </svg>
 </div>
-<p class="cap">Mockup 2 — the <strong>reach</strong> block is not decoration. It is stated per
+<p class="cap">Mockup 2 - the <strong>reach</strong> block is not decoration. It is stated per
 harness <em>and</em> runtime, because that is the granularity at which the answer differs.</p>
 
 <div class="callout">
@@ -392,7 +392,7 @@ is trusted and wrong. The panel states the answer where the text is written.</p>
   <text x="20" y="286" class="dim">composer uses. Neither is editable there; one editor, in Settings, is the point.</text>
 </svg>
 </div>
-<p class="cap">Mockup 3 — the cost is made visible where it is spent, and both surfaces name
+<p class="cap">Mockup 3 - the cost is made visible where it is spent, and both surfaces name
 the delivery mechanism rather than only the fact of delivery.</p>
 
 <h2>How it reaches a session</h2>
@@ -432,10 +432,10 @@ out-of-band channel, and they are not the same channel:</p>
 <thead><tr><th>Harness · runtime</th><th>Out-of-band channel</th><th>Status today</th></tr></thead>
 <tbody>
 <tr><td><code>claude · terminal</code></td><td><code>--append-system-prompt</code></td><td><span class="tag ok">in use</span> <code>ask-channel.ts:192</code></td></tr>
-<tr><td><code>claude · sdk</code></td><td><code>systemPrompt: { preset: "claude_code", append }</code></td><td>available, <strong>unused</strong> — <code>harness/claude/sdk.ts:1130-1180</code></td></tr>
+<tr><td><code>claude · sdk</code></td><td><code>systemPrompt: { preset: "claude_code", append }</code></td><td>available, <strong>unused</strong> - <code>harness/claude/sdk.ts:1130-1180</code></td></tr>
 <tr><td><code>codex · sdk</code></td><td><code>developerInstructions</code> on <code>thread/start</code></td><td><span class="tag ok">in use</span> <code>harness/codex/sdk.ts:1440</code> already merges a configured value</td></tr>
-<tr><td><code>codex · terminal</code></td><td>none — launch prep is <code>-c</code> overrides and hooks only</td><td><code>harness/codex/launch.ts:67-87</code></td></tr>
-<tr><td><code>pi · terminal</code></td><td>none — Pi has no file or config channel</td><td>stated at <code>dispatcher.ts:490-499</code></td></tr>
+<tr><td><code>codex · terminal</code></td><td>none - launch prep is <code>-c</code> overrides and hooks only</td><td><code>harness/codex/launch.ts:67-87</code></td></tr>
+<tr><td><code>pi · terminal</code></td><td>none - Pi has no file or config channel</td><td>stated at <code>dispatcher.ts:490-499</code></td></tr>
 </tbody>
 </table>
 </div>
@@ -454,11 +454,11 @@ export interface StandingInstructionsSpec {
 }</code></pre>
 
 <ul>
-<li><strong>An out-of-band channel exists</strong> — the text never occupies a conversation
+<li><strong>An out-of-band channel exists</strong> - the text never occupies a conversation
 turn, is never summarised away by compaction, and governs every turn of the session rather
 than only the first. This is strictly the better delivery and is preferred wherever it is
 available.</li>
-<li><strong>No channel</strong> (codex terminal, pi) — the text is composed into turn one as a
+<li><strong>No channel</strong> (codex terminal, pi) - the text is composed into turn one as a
 fenced <code>## Standing instructions for this repository</code> block, the exact degradation
 Pi's memory pointer already makes.</li>
 </ul>
@@ -566,8 +566,9 @@ sessions by TTY and adopts them; there is no argv to carry a flag and no turn on
 into. The only way to reach them would be to type a turn into a live session the operator is
 working in - which is what <code>src/server/injections.ts</code> exists to <em>record as
 non-human</em>, and which would be indistinguishable from Foreman typing at them. This plan
-does not do it. Decision 3 asks whether an explicit, operator-initiated one-click injection
-should be offered instead.</p>
+does not do it, and the panel says so in a shipped, tested string rather than a placeholder.
+An explicit operator-initiated injection was considered at review and deferred; it would sit
+on this same store.</p>
 
 <p><strong>The dashboard composer.</strong> <code>POST /api/sessions/:id/inject</code>
 (<code>routes.ts:3712</code>) passes text through untouched, and is the only agent-facing
@@ -579,11 +580,12 @@ governs every turn.</p>
 workflow Personas - read the <a href="../../inspector-and-shipping.md">standards bundle</a> and
 nothing else (<code>src/server/standards.ts:109</code>, consumed at
 <code>routes.ts:2882</code>, <code>inspector/worker.ts:898</code>,
-<code>workflows/context.ts:416</code>). Whether standing instructions join that bundle is
-<strong>decision 4</strong>. It is genuinely useful - "never run E2E locally" is a thing an
-Inspector should not fail a pull request over - and it is genuinely a widening, because that
+<code>workflows/context.ts:416</code>). Standing instructions <strong>do not join that
+bundle</strong>, decided at review. Joining it is genuinely useful - "never run E2E locally"
+is a thing an Inspector should not fail a pull request over - but it is also a widening: the
 bundle is capped at 64KB per prompt and already drops the memory index first when it
-overflows.</p>
+overflows, and what it carries today is <em>what the repository asserts</em>, which this
+deliberately is not. Revisit with evidence from the session path.</p>
 
 <h2>Data model and routes</h2>
 
@@ -633,9 +635,9 @@ app - including its compare-and-swap ETag, its <code>bodyLimit</code> <code>413<
 <table>
 <thead><tr><th>Method</th><th>Path</th><th>Body</th><th>Answers</th></tr></thead>
 <tbody>
-<tr><td><code>GET</code></td><td><code>/api/instructions</code></td><td>—</td><td>default, every override, one opaque ETag</td></tr>
+<tr><td><code>GET</code></td><td><code>/api/instructions</code></td><td>-</td><td>default, every override, one opaque ETag</td></tr>
 <tr><td><code>PUT</code></td><td><code>/api/instructions</code></td><td><code>{ expectedEtag, default?, repositories? }</code></td><td><code>200</code> view, <code>409</code> conflict with <code>current</code>, <code>413</code> too large</td></tr>
-<tr><td><code>GET</code></td><td><code>/api/instructions/resolved?repoRoot=</code></td><td>—</td><td>the exact composed text and mechanism for one repo</td></tr>
+<tr><td><code>GET</code></td><td><code>/api/instructions/resolved?repoRoot=</code></td><td>-</td><td>the exact composed text and mechanism for one repo</td></tr>
 </tbody>
 </table>
 </div>
@@ -656,7 +658,7 @@ block entirely, the same convention <code>WorktreesConfigPatchSchema</code> uses
 <tr><td><code>test/</code> node:test</td><td>composition: the block lands above the intent and below nothing; a repo with no rules produces a <strong>byte-identical</strong> prompt to today, on all five harness · runtime pairs</td></tr>
 <tr><td><code>test/</code> node:test</td><td>multi-repo: one labelled block per attached repo that has rules, in manifest order</td></tr>
 <tr><td><code>test/</code> HTTP</td><td>ETag conflict returns <code>409</code> carrying the current view; oversize body returns <code>413</code>; the resolved route agrees with the composer</td></tr>
-<tr><td><code>renderToStaticMarkup</code></td><td><code>settings-sidebar-render.test.ts</code> walks the registry — the new category must be reachable, contiguous within its group, and its <code>data-anchor</code>s unique</td></tr>
+<tr><td><code>renderToStaticMarkup</code></td><td><code>settings-sidebar-render.test.ts</code> walks the registry - the new category must be reachable, contiguous within its group, and its <code>data-anchor</code>s unique</td></tr>
 <tr class="hi"><td><strong><code>e2e/</code> Playwright</strong></td><td><strong>required.</strong> Settings → Standing instructions: type a rule for a repository, save, reload, read it back. Dispatch into that repository against the fake agent and assert the rule reached it. Dispatch into a repository with no rule and assert it did not.</td></tr>
 </tbody>
 </table>
@@ -688,25 +690,46 @@ reachable but one is unexercised in this codebase. Each needs a test that proves
 arrived, not merely that the option was passed.</li>
 </ul>
 
-<h2>Open decisions</h2>
+<h2>Decisions taken</h2>
 
-<p>Four choices are genuinely open and belong to the human rather than to this document. They
-are presented as selectable options in the dashboard review:</p>
+<p>Four choices were open at review and are now settled. They are recorded here rather than
+left as alternatives, because a phase that re-litigates one of them is a phase doing the wrong
+work.</p>
 
-<ol>
-<li><strong>Where the editor lives</strong> — a new settings category, folded into Trust (which
-already owns the repository × subsystem table), or added to the existing Worktrees repository
-cards.</li>
-<li><strong>How the text is delivered</strong> — out-of-band where the harness and runtime have
-a channel and prompt text where they do not, prompt text uniformly everywhere, or written into
-the checkout's own agent config.</li>
-<li><strong>How far it reaches</strong> — Mission-Control-launched sessions only, or
-additionally offered as an explicit one-click injection into an adopted session the operator
-selects.</li>
-<li><strong>Whether Mission Control's own review prompts get it</strong> — whether standing
-instructions join the standards bundle read by Foreman, the GitHub Inspector and workflow
-Personas.</li>
-</ol>
+<div class="scroll">
+<table>
+<thead><tr><th>Decision</th><th>Adopted</th><th>Rejected, and why</th></tr></thead>
+<tbody>
+<tr>
+<td><strong>Where the editor lives</strong></td>
+<td>A new <strong>Standing instructions</strong> settings category, in the <em>Sessions</em> group with a <code>This machine</code> scope badge</td>
+<td><em>Trust</em> owns the repository list but its badge is "Acts on GitHub" and its shape is a boolean grant matrix, not prose. The <em>Worktrees</em> cards already do override/inherited, but filing session behaviour inside checkout policy hides it.</td>
+</tr>
+<tr>
+<td><strong>How the text is delivered</strong></td>
+<td><strong>Out-of-band where the harness and runtime have a channel, prompt text where they do not</strong> - which makes wiring Claude's SDK <code>systemPrompt.append</code> and Codex's <code>developerInstructions</code> part of this work</td>
+<td>Uniform prompt text is simpler and visible in the transcript, but it occupies turn one, can be compacted away, and does not govern later turns. Writing into the checkout's own agent config would reach more sessions by writing repo content - the exact thing this feature exists to avoid.</td>
+</tr>
+<tr>
+<td><strong>How far it reaches</strong></td>
+<td><strong>Mission-Control-launched sessions only</strong> - dispatch and assignment</td>
+<td>A one-click injection into an adopted session was considered and deferred: it is a second delivery path, and the panel's honest "not reachable" line is the better first answer. Not foreclosed; it would sit on this same store.</td>
+</tr>
+<tr>
+<td><strong>MC's own review prompts</strong></td>
+<td><strong>No - sessions only, for now.</strong> Standing instructions do not join the standards bundle</td>
+<td>Foreman, the Inspector and Personas would stop flagging work for obeying an instruction the operator gave, which is real. But the bundle is capped at 64KB and already drops the memory index first when it overflows, and its meaning today is "what the repository asserts" - which this deliberately is not.</td>
+</tr>
+</tbody>
+</table>
+</div>
+
+<div class="callout req">
+<p>Two of these constrain the phasing directly. The delivery decision means <strong>no phase may
+ship a harness the reach block would have to lie about</strong> - the out-of-band channels land
+with the feature, not after it. The reach decision means the panel's "not reachable" line is a
+shipped, tested string rather than a placeholder.</p>
+</div>
 
 <p class="cap">Source of truth: <code>docs/plans/repository-standing-instructions/plan.md</code>.
 This page is a rendering of it.</p>

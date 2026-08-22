@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Foreman ship shepherd: phased implementation</title>
+<style>
+  :root { color-scheme:light dark; --bg:#f2f0e9; --paper:#fffdf8; --ink:#171a1d; --muted:#61686d; --line:#d8d3c8; --soft:#ebe7de; --blue:#2d6297; --blue-soft:#e1ebf5; --green:#1f7657; --green-soft:#def0e7; --amber:#a65f19; --amber-soft:#f7e6d4; --red:#a33e3e; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; --sans:ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+  @media(prefers-color-scheme:dark){:root{--bg:#111518;--paper:#181e22;--ink:#edf1f2;--muted:#a7b0b5;--line:#303940;--soft:#222a2f;--blue:#80b3e3;--blue-soft:#203344;--green:#70c7a4;--green-soft:#1d382d;--amber:#e4a65f;--amber-soft:#3c2b1d;--red:#ef8989}}
+  *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.62 var(--sans)}main{width:min(1100px,calc(100% - 30px));margin:auto;padding:42px 0 96px}header{padding:clamp(26px,5vw,54px);background:var(--paper);border:1px solid var(--line);border-top:5px solid var(--green);border-radius:14px;box-shadow:0 16px 44px rgba(0,0,0,.08)}.eyebrow{margin:0 0 13px;color:var(--green);font:700 11px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase}h1{margin:0;font-size:clamp(36px,7vw,62px);line-height:1.02;letter-spacing:-.042em}.lead{max-width:820px;margin:21px 0 0;color:var(--muted);font-size:19px}.status{display:inline-block;margin-top:22px;padding:7px 10px;color:var(--green);background:var(--green-soft);border-radius:6px;font:700 11px/1 var(--mono);letter-spacing:.05em}section{margin-top:48px}h2{margin:0 0 10px;font-size:27px;letter-spacing:-.02em}h3{margin:27px 0 8px;font-size:18px}p{max-width:82ch;margin:0 0 14px}ul,ol{max-width:86ch;padding-left:23px}li{margin:7px 0}code{padding:1px 5px;border:1px solid var(--line);border-radius:4px;background:var(--soft);font:.88em var(--mono)}a{color:var(--blue)}.cards{display:grid;grid-template-columns:repeat(2,1fr);gap:16px;margin:22px 0}.card{padding:22px;background:var(--paper);border:1px solid var(--line);border-radius:11px}.card .kicker{color:var(--blue);font:700 11px/1.2 var(--mono);letter-spacing:.08em;text-transform:uppercase}.card h3{margin:9px 0 8px;font-size:21px}.card p{color:var(--muted);font-size:13.5px}.card .estimate{margin-top:13px;color:var(--ink);font:700 12px var(--mono)}.table-wrap{overflow-x:auto;margin:18px 0 26px;border:1px solid var(--line);border-radius:10px;background:var(--paper)}table{min-width:800px;width:100%;border-collapse:collapse}th,td{padding:11px 13px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}th{background:var(--soft);color:var(--muted);font:700 10px/1.3 var(--mono);letter-spacing:.08em;text-transform:uppercase}tr:last-child td{border-bottom:0}.callout{max-width:930px;padding:18px 20px;margin:20px 0;border-left:4px solid var(--amber);background:var(--amber-soft);border-radius:0 9px 9px 0}.decision{padding:16px 18px;margin:12px 0;background:var(--paper);border:1px solid var(--line);border-radius:9px}.decision b{color:var(--green)}figure{margin:23px 0;padding:20px;overflow-x:auto;background:var(--paper);border:1px solid var(--line);border-radius:12px}svg{display:block;width:980px;height:260px;max-width:none}figcaption{margin-top:12px;color:var(--muted);font-size:13px}.checks{display:grid;grid-template-columns:repeat(2,1fr);gap:11px;margin-top:18px}.check{padding:13px 15px;background:var(--paper);border:1px solid var(--line);border-radius:8px}.check::before{content:"✓";color:var(--green);font-weight:800;margin-right:8px}footer{margin-top:52px;padding-top:18px;border-top:1px solid var(--line);color:var(--muted);font-size:12px}@media(max-width:760px){main{width:min(100% - 20px,1100px);padding-top:18px}.cards,.checks{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <p class="eyebrow">Approved phased implementation</p>
+    <h1>Foreman ship shepherd</h1>
+    <p class="lead">Two merge units first correct the trusted completion boundary and persist its decision, then add a guarded pre-PR recovery loop with operator controls, audit, and escalation.</p>
+    <span class="status">2 PHASES · 1,250–1,750 ESTIMATED PRODUCTION LINES</span>
+  </header>
+
+  <section>
+    <h2>Approved product decisions</h2>
+    <div class="decision"><b>Coverage</b><p>Every invited task-owned <code>ship</code> session before its first task-owned pull request, for both Workflow and Straight-to-PR paths.</p></div>
+    <div class="decision"><b>Reasoning</b><p>Structural recovery where durable state identifies the next step; one tool-less model call only for an ambiguous non-empty implementation.</p></div>
+    <div class="decision"><b>Timing</b><p>A 20-minute initial quiet threshold, then three attempts at 20, 40, and 80 minute delays before human escalation.</p></div>
+    <p>Recorded by Mission Control review <code>2535938c-6519-4bfc-9051-3080328e1f7e</code>. There are no unresolved product choices.</p>
+  </section>
+
+  <section>
+    <h2>Why two phases</h2>
+    <div class="callout"><strong>The timer is not the foundation.</strong> The current verifier can reject implementation as incomplete because the durable objective still asks for a pull request that Mission Control explicitly deferred. Recovery built on that verdict would repeat the contradiction. Completion truth and its durable reason must land first.</div>
+    <p>The estimated non-test change is 1,250 to 1,750 lines across shared contracts, SQLite, Workflow claim transactions, Foreman policy and worker orchestration, configuration, and React. One phase would combine two high-risk state machines. Three phases would split the UI from the live automation it controls or leave the targeted-model branch incomplete.</p>
+  </section>
+
+  <section>
+    <h2>Dependency and ownership flow</h2>
+    <figure>
+      <svg viewBox="0 0 980 260" role="img" aria-labelledby="phase-title phase-desc">
+        <title id="phase-title">Two dependency-linked implementation phases</title>
+        <desc id="phase-desc">The planning artifacts merge first. Phase 1 establishes completion truth and durable decisions. Phase 2 consumes that contract to provide guarded recovery and controls.</desc>
+        <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10Z" fill="currentColor"/></marker></defs>
+        <g fill="none" stroke="currentColor" stroke-width="2"><path d="M260 130H365" marker-end="url(#arrow)"/><path d="M615 130H720" marker-end="url(#arrow)"/></g>
+        <g font-family="ui-sans-serif,system-ui">
+          <rect x="30" y="75" width="230" height="110" rx="12" fill="var(--paper)" stroke="var(--line)"/><text x="50" y="104" font-size="11" font-weight="700" fill="var(--green)">PUBLICATION GATE</text><text x="50" y="133" font-size="18" font-weight="700" fill="var(--ink)">Planning artifacts</text><text x="50" y="158" font-size="13" fill="var(--muted)">Merge before tasks release</text>
+          <rect x="365" y="55" width="250" height="150" rx="12" fill="var(--blue-soft)" stroke="var(--blue)"/><text x="385" y="84" font-size="11" font-weight="700" fill="var(--blue)">PHASE 1</text><text x="385" y="113" font-size="18" font-weight="700" fill="var(--ink)">Completion truth</text><text x="385" y="138" font-size="13" fill="var(--muted)">Trusted ship boundary</text><text x="385" y="159" font-size="13" fill="var(--muted)">Atomic decision projection</text><text x="385" y="184" font-size="12" fill="var(--blue)">500–720 lines</text>
+          <rect x="720" y="55" width="230" height="150" rx="12" fill="var(--green-soft)" stroke="var(--green)"/><text x="740" y="84" font-size="11" font-weight="700" fill="var(--green)">PHASE 2</text><text x="740" y="113" font-size="18" font-weight="700" fill="var(--ink)">Guarded recovery</text><text x="740" y="138" font-size="13" fill="var(--muted)">CAS attempts + worker pass</text><text x="740" y="159" font-size="13" fill="var(--muted)">Controls, audit, escalation</text><text x="740" y="184" font-size="12" fill="var(--green)">750–1,030 lines</text>
+        </g>
+      </svg>
+      <figcaption>There is no concurrency group. Phase 2 directly consumes Phase 1's schema, outcome vocabulary, generation identity, and trusted verifier contract.</figcaption>
+    </figure>
+  </section>
+
+  <section>
+    <h2>Implementation phases</h2>
+    <div class="cards">
+      <article class="card"><span class="kicker">Phase 1</span><h3>Explicit completion boundary and durable decision projection</h3><p>Make the verifier honor the authoritative ship handoff, add an append-only prompted outcome vocabulary, and atomically store each disposition with generation consumption or Workflow claim.</p><p class="estimate">500–720 production lines</p><p><a href="phase-1-explicit-completion-and-decision-projection.md">Open detailed Phase 1 guide</a></p></article>
+      <article class="card"><span class="kicker">Phase 2</span><h3>Pre-PR shepherd recovery loop and controls</h3><p>Add daemon-owned attempt claims, structural and targeted-model recovery, 20/40/80 timing, configuration, drawer and ledger visibility, escalation, and Playwright proof.</p><p class="estimate">750–1,030 production lines</p><p><a href="phase-2-pre-pr-shepherd-and-controls.md">Open detailed Phase 2 guide</a></p></article>
+    </div>
+  </section>
+
+  <section>
+    <h2>Repository decisions established during phasing</h2>
+    <div class="table-wrap"><table><thead><tr><th>Finding</th><th>Phased decision</th></tr></thead><tbody>
+      <tr><td>The task handoff already defers PR work, but the verifier receives only the objective.</td><td>Use one exhaustive shared task completion registry and pass its ship contract as trusted policy.</td></tr>
+      <tr><td><code>foreman_queues</code> records consumption, not why it stopped.</td><td>Phase 1 owns one current decision projection written atomically at ordinary and Workflow claim boundaries.</td></tr>
+      <tr><td>Generic prompted completion is intentionally a bystander.</td><td>Keep it quiet for personal sessions; Phase 2 recovery is restricted to invited task-owned ship sessions.</td></tr>
+      <tr><td>The source outcome list does not represent verifier infrastructure exhaustion.</td><td>Add append-only <code>verification_failed</code> and escalate it without a recovery-model call.</td></tr>
+      <tr><td>Multi-repository PR state already comes from the existing observer.</td><td>Extract a full task-owned-open-PR predicate; never create a new poller or trust only the primary scalar.</td></tr>
+      <tr><td>Review follow-through already owns fresh checks and uncertain delivery.</td><td>Follow its pure-policy and mark-before-inject pattern, sharing one pass-wide touched-pane set.</td></tr>
+    </tbody></table></div>
+  </section>
+
+  <section>
+    <h2>Cross-phase contracts</h2>
+    <div class="checks">
+      <div class="check">Phase 1 alone defines completion truth and outcome ids.</div>
+      <div class="check">Phase 2 adds recovery state without rewriting the decision.</div>
+      <div class="check">The daemon is the only SQLite writer and final claim authority.</div>
+      <div class="check">The existing GitHub observer is the only PR reader.</div>
+      <div class="check">Unknown injection outcomes remain claimed.</div>
+      <div class="check">One Foreman instruction may reach a pane per worker pass.</div>
+      <div class="check">Queue, Workflow, pending-turn, and human owners take precedence.</div>
+      <div class="check">Any observed task-owned PR ends pre-PR shepherding.</div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Verification bar</h2>
+    <p>Phase 1 proves the exact false-hold regression, atomic disposition storage, Workflow claim consistency, migration, and unchanged personal-session behavior. Phase 2 proves every eligibility gate and reason, exact 20/40/80 timing, model isolation, restart and delivery semantics, multi-repository PR suppression, UI configuration, and one-send coordination.</p>
+    <p>Both phases run focused tests, the full unit suite, typecheck, lint, build, and smoke. Phase 2 additionally runs the built Playwright Foreman flow with fake agents and no model spend.</p>
+  </section>
+
+  <footer>Source of truth: <code>docs/plans/foreman-ship-shepherd/phased-plan.md</code> · Approved source: <code>docs/plans/foreman-ship-shepherd/plan.md</code></footer>
+</main>
+</body>
+</html>

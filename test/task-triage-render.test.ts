@@ -195,3 +195,31 @@ test("the ends of the column disable the moves that have nowhere to go", () => {
   assert.ok(at("Last", "to bottom").includes("disabled"), "the last card is already the bottom");
   assert.ok(!at("Last", "to top").includes("disabled"), "the last card can move to the top");
 });
+
+test("the column offers one place to drop a card for every place a card can go", () => {
+  // N cards, N+1 gaps: above the first, between each pair, and below the last. The drag
+  // and the move buttons are the same reorder reached two ways, so the column has to offer
+  // the drag every position the buttons can reach - a list with no target above its first
+  // card is one you cannot drag anything to the top of.
+  const html = column(
+    backlogTasks([
+      mkTask({ id: "t1", title: "First", backlogRank: 1024 }),
+      mkTask({ id: "t2", title: "Second", backlogRank: 2048 }),
+      mkTask({ id: "t3", title: "Third", backlogRank: 3072 }),
+    ]),
+  );
+  assert.equal(html.split('class="bl-gap"').length - 1, 4, "one gap per card, plus one");
+  // Drawn between the cards rather than collected at one end, which is what makes each gap
+  // mean a different position.
+  const at = (needle: string): number => html.indexOf(needle);
+  assert.ok(at('class="bl-gap"') < at("First"), "there is a target above the first card");
+  assert.ok(html.lastIndexOf('class="bl-gap"') > at("Third"), "and one below the last");
+});
+
+test("an empty backlog is still a place a card can be dropped", () => {
+  // The column never hides when empty because it is a target, and a target with no drop
+  // point in it is a target you cannot drop into. The message itself is the target.
+  const html = column([]);
+  assert.ok(html.includes("bl-drop-empty"), "the empty message accepts a drop");
+  assert.ok(html.includes("Nothing queued"), "and still says what it always said");
+});

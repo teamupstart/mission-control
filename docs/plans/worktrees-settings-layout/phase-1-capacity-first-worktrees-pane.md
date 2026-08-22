@@ -94,12 +94,14 @@ Correct across everything that remains:
 - Make slot cards use the same **left** accent as repository cards and `.harness-card`. The
   `border-top` variant goes.
 
-Add the capacity bar rules. Segments are flex children of a rounded track; leased, available and
-quarantined are solid tone fills, room-to-grow is a hatched `repeating-linear-gradient` in
-`--border`, and overflow is a hatched `--attention`. Keep the hatch angles identical so the two
-hatched states read as the same idea in two tones. Respect `prefers-reduced-motion` if any
-transition is added to the segments; a width transition on a data change is optional and must not be
-the only cue.
+Add the capacity bar rules. Composition segments are flex children of a rounded track; leased,
+available and quarantined are solid tone fills, and room-to-grow is a hatched
+`repeating-linear-gradient` in `--border`. The over-capacity overlay is **not** a flex child - it is
+absolutely positioned within the track from the maximum marker to the right edge, hatched in
+`--attention`, so it re-tints the segments beneath it without contributing width. Keep the hatch
+angles identical so the two hatched states read as the same idea in two tones. Respect
+`prefers-reduced-motion` if any transition is added to the segments; a width transition on a data
+change is optional and must not be the only cue.
 
 ### 2. Restructure the panel
 
@@ -127,14 +129,41 @@ legend, and the existing disclosure into slot detail and per-pool overrides. `Sl
 A small local component taking the repository's `counts` and `policy.maxSlots`.
 
 Geometry - derive it in one place and export it so the test can assert it directly rather than
-scraping markup:
+scraping markup.
 
-- The denominator is `max(maxSlots, counts.total)`. When a pool is within its maximum the track's
-  full width is the maximum; when it is over, the track extends to the actual slot count so the
-  overflow has somewhere to be drawn.
-- Segments in order: leased, available, quarantined, then either room-to-grow
-  (`maxSlots - total`, when positive) or overflow (`total - maxSlots`, when positive). Never both.
+**Over capacity is a position on the track, not a fourth segment.** This is the one part of the bar
+easy to get wrong: if overflow is appended as its own segment after the composition counts, the
+segments sum to `total + (total - maxSlots)` against a denominator of `total`, and the bar renders
+past 100% and clips. An 18-slot pool with a maximum of 16 would lay out 20 units in an 18-unit
+track. Model it as a marker plus an overlay instead:
+
+- The denominator is `max(maxSlots, counts.total)`, guarded to be greater than zero.
+- **Composition segments** are leased, available, and quarantined, in that order. They sum to
+  `counts.total` by construction, so they occupy `total / denominator` of the track and can never
+  exceed it.
+- **Room to grow** is `maxSlots - total` when positive, hatched in `--border`, filling the track to
+  100%. It is mutually exclusive with being over capacity.
+- **The configured maximum** sits at `maxSlots / denominator`. When the pool is within its maximum
+  that is the track's right edge, so nothing is drawn - the edge already says it. When the pool is
+  over, the overlay begins there: a region of width `(total - maxSlots) / denominator` anchored to
+  the right edge, carrying translucent amber hatching **on top of** the composition segments
+  beneath it. The overlay's leading edge is the maximum marker; a separate marker element is
+  redundant and, being amber on amber, invisible.
+- **The hatching must be translucent**, not an opaque fill. An opaque overlay hides the
+  leased/available/quarantined composition of exactly the slots the operator is being asked to
+  prune. Verified in the mockup: at 3px bands over 4px gaps the quarantined segment beneath stays
+  legible.
+- The overlay is positioned, not summed. Composition plus room-to-grow is exactly 100% in every
+  case, and the overlay re-tints a slice of it rather than adding width.
 - Guard `maxSlots <= 0` and a zero denominator rather than emitting `NaN%`.
+
+Worked example, which the test should pin: 17 leased, 1 quarantined, 18 total, maximum 16.
+Denominator 18. Leased 94.4%, quarantined 5.6%, sum 100%. Overlay spans 88.9% to 100%, so the
+quarantined segment sits under it and must remain readable. Within-maximum example: 8 leased, 4 available, 12 total, maximum 16. Denominator 16. Leased
+50%, available 25%, room to grow 25%, no overlay.
+
+Keeping the overlay on top preserves the leased/available/quarantined breakdown of the slots that
+happen to be over the maximum, which collapsing them into one amber segment would discard.
 
 Accessibility, which is a requirement and not a polish item:
 
@@ -184,7 +213,10 @@ self-correcting.
 
 - **`test/worktree-settings-panel.test.ts`** - extend the existing fixture. Pin the bar's segment
   widths and its composed `role="img"` label for a within-maximum pool and for the over-capacity
-  pool already in the fixture. Assert the `maxSlots <= 0` guard emits no `NaN`. Assert the three
+  pool already in the fixture, using the two worked examples in step 3. **Assert the invariant
+  directly: composition segments plus room-to-grow sum to exactly 100% in both cases, and the
+  over-capacity overlay adds no width.** That is the assertion that would have caught the geometry
+  defect this plan carried at review. Assert the `maxSlots <= 0` guard emits no `NaN`. Assert the three
   `data-anchor` values are still present. Assert the Treehouse counts are absent when all four
   totals are zero.
 - **`e2e/specs/settings-worktrees.spec.ts`** - extend rather than replace. Cover: the loading
@@ -225,6 +257,16 @@ There is no later phase. What a future change may rely on:
 
 ## Cross-phase audit record
 
+- **2026-08-21, review round 1.** The Inspector found a real arithmetic defect in step 3: overflow
+  was specified as a fourth segment appended after leased/available/quarantined, which sum to
+  `total` already. Against a denominator of `max(maxSlots, total)` that lays out
+  `total + (total - maxSlots)` units in a `total`-unit track - 20 units in 18 for the fixture's
+  over-capacity pool, or 111% of the track. Reproduced arithmetically before accepting. Corrected to
+  a marker-plus-overlay model: composition segments and room-to-grow sum to exactly 100%, and the
+  over-capacity overlay is absolutely positioned rather than summed. The correction also preserves
+  the leased/available/quarantined breakdown of the over-maximum slots, which the appended-segment
+  model discarded. `plan.md`, `plan.html`, and the test requirements were updated to match; no
+  approved decision changed, since this is geometry inside the adopted direction.
 - **2026-08-21, initial.** Single-phase plan; no inter-phase contracts to reconcile. Audited against
   the source plan: all four submitted decisions are owned by this phase - direction B (steps 1-3),
   the callout demoted to the lead paragraph (step 2.1), empty and loading states (step 4), and the

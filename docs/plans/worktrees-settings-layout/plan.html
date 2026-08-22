@@ -191,7 +191,10 @@
   .m-seg.leased { background: color-mix(in oklab, var(--working) 78%, var(--bg)); }
   .m-seg.free { background: color-mix(in oklab, var(--idle) 70%, var(--bg)); }
   .m-seg.quar { background: color-mix(in oklab, var(--danger) 72%, var(--bg)); }
-  .m-seg.over { background: repeating-linear-gradient(135deg, color-mix(in oklab, var(--attention) 80%, var(--bg)) 0 4px, color-mix(in oklab, var(--attention) 45%, var(--bg)) 4px 8px); }
+  /* Over capacity is a POSITION, not a fourth segment: the overlay is absolutely positioned
+     from the maximum marker to the right edge, so it re-tints the composition segments beneath
+     it without contributing width. Segments always sum to exactly 100%. */
+  .m-over { position: absolute; top: 0; bottom: 0; right: 0; background: repeating-linear-gradient(135deg, color-mix(in oklab, var(--attention) 88%, transparent) 0 3px, transparent 3px 7px); }
   .m-seg.grow { background: repeating-linear-gradient(135deg, transparent 0 5px, color-mix(in oklab, var(--border) 85%, transparent) 5px 10px); }
   .m-legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 7px; font-size: 10.5px; color: var(--dim); }
   .m-legend span { display: inline-flex; align-items: center; gap: 5px; }
@@ -412,14 +415,14 @@
           <span class="m-pool-counts">17 leased · 0 free · 16 max</span>
         </div>
         <div class="m-bar">
-          <div class="m-seg leased" style="width:83%"></div>
-          <div class="m-seg quar" style="width:6%"></div>
-          <div class="m-seg over" style="width:11%"></div>
+          <div class="m-seg leased" style="width:94.4%"></div>
+          <div class="m-seg quar" style="width:5.6%"></div>
+          <div class="m-over" style="left:88.9%"></div>
         </div>
         <div class="m-legend">
           <span><i class="m-key leased"></i>17 leased</span>
           <span style="color:var(--danger)"><i class="m-key quar"></i>1 quarantined</span>
-          <span style="color:var(--attention)"><i class="m-key over"></i>2 over the maximum</span>
+          <span style="color:var(--attention)"><i class="m-key over"></i>2 over the maximum (16 max)</span>
           <span class="m-max"><button class="m-btn m-btn-solid">Preview safe prune</button></span>
         </div>
       </div>
@@ -453,7 +456,8 @@
 <p class="mock-cap">The adopted layout at the 900px measure. The bar is the one new component; everything below it is an existing house primitive.</p>
 
 <h3>The signature: the capacity bar</h3>
-<p>One track per pool, segmented into leased (<code>--working</code>), available (<code>--idle</code>) and quarantined (<code>--danger</code>). The track's full width <strong>is</strong> the configured maximum, so the unfilled remainder reads directly as room to grow and is hatched to say so. A pool over its maximum spills past the track in <code>--attention</code> hatching, and the safe-prune preview surfaces on that row. Lowering the default maximum visibly reflows every bar, which is exactly the feedback the current number input withholds.</p>
+<p>One track per pool, segmented into leased (<code>--working</code>), available (<code>--idle</code>) and quarantined (<code>--danger</code>). The track's full width <strong>is</strong> the configured maximum, so the unfilled remainder reads directly as room to grow and is hatched to say so.</p>
+<p>Over capacity is a <strong>position on the track, not a fourth category</strong>. The composition segments always sum to the pool's actual slot count, the configured maximum is marked where it falls, and the region past that marker carries a translucent <code>--attention</code> hatched overlay on top of the segments beneath it. That keeps the bar at exactly 100% in every case, and preserves the leased/available/quarantined breakdown of the slots that happen to be over the maximum - the quarantined slot in the third row is still legible under the hatching. The safe-prune preview surfaces on that row. Lowering the default maximum visibly reflows every bar, which is exactly the feedback the current number input withholds.</p>
 <p>The bar is the pane's one new component and the only place its boldness is spent. Everything around it is an existing house primitive.</p>
 <h4>Accessibility</h4>
 <p>The bar is decorative on its own, so it carries no meaning colour alone must convey. Each segment's count is restated in the legend beneath it as text, and the bar itself takes <code>role="img"</code> with a composed label naming every count and the maximum. The over-capacity state is labelled with the words <code>over the maximum</code>, never by the amber hatching alone.</p>

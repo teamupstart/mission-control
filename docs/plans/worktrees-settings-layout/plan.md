@@ -96,9 +96,15 @@ Treehouse
 
 One track per pool, segmented into leased (`--working`), available (`--idle`) and quarantined
 (`--danger`). The track's full width **is** the configured maximum, so the unfilled remainder reads
-directly as room to grow and is hatched to say so. A pool over its maximum spills past the track in
-`--attention` hatching, and the safe-prune preview surfaces on that row. Lowering the default
-maximum visibly reflows every bar, which is exactly the feedback the current number input withholds.
+directly as room to grow and is hatched to say so.
+
+Over capacity is a **position on the track, not a fourth category**. The composition segments always
+sum to the pool's actual slot count, the configured maximum is marked where it falls, and the region
+past that marker carries an `--attention` hatched overlay on top of the segments beneath it. That
+keeps the bar at exactly 100% in every case, and preserves the leased/available/quarantined
+breakdown of the slots that happen to be over the maximum. The safe-prune preview surfaces on that
+row. Lowering the default maximum visibly reflows every bar, which is exactly the feedback the
+current number input withholds.
 
 The bar is the pane's one new component and the only place its boldness is spent. Everything around
 it is an existing house primitive.

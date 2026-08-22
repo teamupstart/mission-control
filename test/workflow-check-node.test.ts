@@ -48,7 +48,7 @@ const policyWith = (over: Partial<WorkflowPolicy> = {}): WorkflowPolicy => ({
 
 /** One slot's catalog entry, in the grouped shape the daemon projects. */
 const commandView = (
-  over: Partial<Pick<WorkflowCommandView, "defaultCommand" | "overrides">> = {},
+  over: Partial<Pick<WorkflowCommandView, "defaultCommand" | "overrides" | "maxRuns">> = {},
   slot: WorkflowCheckSlot = "test",
 ): WorkflowCommandView => ({ ...emptyWorkflowCommandView(slot), ...over });
 
@@ -73,10 +73,18 @@ const at = (
   policy: WorkflowPolicy,
   command: WorkflowCommandView | null = TEST_COMMAND,
   slot: WorkflowCheckSlot = "test",
+  // A run with budget to spare, which is what every case here that is not about the budget
+  // means. A granting reservation rather than null: null declines the budget rule entirely,
+  // and would make these cases blind to a regression that skipped a gate it should have run.
+  reserveRun: (() => { granted: boolean; spent: number }) | null = () => ({
+    granted: true,
+    spent: 0,
+  }),
 ) => ({
   slot,
   policy,
   command,
+  reserveRun,
   cwd: `${REPO}-worktree`,
   repoRoot: REPO,
   headSha: "a".repeat(40),
@@ -186,6 +194,7 @@ test("a nested command reaches the executor with the directory it was configured
   await runCheck({
     slot: "test",
     policy: ALLOWED,
+    reserveRun: () => ({ granted: true, spent: 0 }),
     command: commandView({
       overrides: [
         { repoRoot: REPO, command: ["npm", "test"] },

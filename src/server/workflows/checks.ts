@@ -2,6 +2,8 @@ import { createLimiter } from "../llm/structured.ts";
 import { resolveRepoPath } from "../repos.ts";
 import {
   WORKFLOW_EXECUTION_LIMITS,
+  WORKFLOW_LIMITS,
+  WORKFLOW_COMMAND_DEFAULT_MAX_RUNS,
   checkBlockedReason,
   checkCommandSubpath,
   formatCheckCommand,
@@ -16,17 +18,34 @@ import {
 // process.
 //
 // The ladder here is the whole gate: which command applies, whether the operator authorized
-// running one, and what an exit code means. Only the last rung spawns anything, and it is
-// reached through `CheckRunDeps.execute` - a seam, in the `PaneDeps.pane` shape, so this
+// running one, whether this build can run one at all, whether the Command has any of its
+// per-run budget left, and what an exit code means. Only the last rung spawns anything, and it
+// is reached through `CheckRunDeps.execute` - a seam, in the `PaneDeps.pane` shape, so this
 // module's rules are driven by tests with nothing installed and the execution runtime is a
 // separate implementation unit that plugs in behind one function type.
 //
-// THE THREE PASSING OUTCOMES ARE THE POINT. A gate nobody configured, a gate nobody
-// authorized, and a gate no runtime can serve are all things the operator has to be told
-// about and none of them is evidence against the change under review. Each returns a
-// sentence and lets the graph advance; only a command that ran and exited non-zero fails.
-// A shipped workflow carrying check gates has to be safe on a machine that configured none
-// of them, or it is a shipped workflow that is broken by default.
+// The budget rung is deliberately the LAST one before that spawn. Claiming a run is the only
+// irreversible thing this module does, so it happens once every cheaper reason to decline has
+// been ruled out; a claim taken earlier would be spent by gates that never executed anything.
+//
+// THE PASSING OUTCOMES ARE THE POINT. A gate nobody configured, a gate nobody authorized, a
+// gate no runtime can serve, and a gate whose command has already run as often as this run
+// allows are all things the operator has to be told about, and none of them is evidence
+// against the change under review. Each returns a sentence and lets the graph advance; only a
+// command that ran and exited non-zero fails. A shipped workflow carrying check gates has to
+// be safe on a machine that configured none of them, or it is a shipped workflow that is
+// broken by default.
+
+/**
+ * The answer to one claim on a Command's per-run execution budget.
+ *
+ * `spent` is what had been spent when the claim was refused, so the note can say how many
+ * times the command actually ran rather than only that a limit exists.
+ */
+export interface CheckRunReservation {
+  granted: boolean;
+  spent: number;
+}
 
 /**
  * Why an attempt could not produce a verdict at all.
@@ -215,6 +234,11 @@ function trimTrailingSlash(p: string): string {
   return p.length > 1 && p.endsWith("/") ? p.slice(0, -1) : p;
 }
 
+/** `1 time` / `3 times`, so the skip note reads as a sentence rather than a field dump. */
+function runCount(runs: number): string {
+  return runs === 1 ? "once" : `${runs} times`;
+}
+
 /**
  * Decide one Check node.
  *
@@ -237,6 +261,21 @@ export async function runCheck(
      * the command: the same argv is authorised in one repository and not in another.
      */
     policy: Pick<WorkflowPolicy, "checksEnabled" | "repoAllowlist">;
+    /**
+     * Claim one execution of this Command against its run budget, or null when the caller is
+     * not running inside a workflow run.
+     *
+     * A CALLBACK rather than a number, and it is called at the exact moment the ladder decides
+     * to spawn. The budget belongs to the Command, so two check nodes naming the same slot
+     * share it and can be deciding at the same time; a count handed in beforehand would have
+     * been read before either of them ran and would let both through. Handing in the claim
+     * itself keeps this module the one that decides, while the caller owns where the durable
+     * record of that decision lives.
+     *
+     * Null declines the budget rule entirely, which is what a caller with no run - a probe, a
+     * test of the resolution ladder - genuinely means. It is NOT a reservation that failed.
+     */
+    reserveRun: (() => CheckRunReservation) | null;
     cwd: string | null;
     repoRoot: string | null;
     headSha: string | null;
@@ -286,6 +325,39 @@ export async function runCheck(
   const execute = deps.execute ?? null;
   if (!execute) {
     return outcome(slot, "unavailable", CHECK_RUNTIME_UNAVAILABLE_NOTE, { command });
+  }
+
+  // THE LAST RUNG BEFORE THE SPAWN, and that position is the invariant rather than a
+  // preference: reaching it is what SPENDS a run, so every refusal above it - an unconfigured
+  // slot, an unauthorized repository, a session with no repository, and a build that cannot
+  // execute a command at all - costs the Command nothing.
+  //
+  // The runtime check in particular has to come first. A reservation taken before it would be
+  // claimed and then thrown away on every platform that cannot run Commands, and a later round
+  // or a sibling gate on a machine that CAN run them would be refused as `budget_spent` for
+  // executions that never happened. That is the budget counting opportunities, which is
+  // exactly what it must not do.
+  //
+  // The claim is made here rather than merely tested here, because two gates naming this slot
+  // decide concurrently: `reserveCheckRun` counts and records in one synchronous transaction,
+  // so the second to ask sees the first. There is deliberately no await between this line and
+  // the spawn below - anything inserted between them would be work done under a claim that
+  // might still be abandoned.
+  const reservation = input.reserveRun ? input.reserveRun() : null;
+  if (reservation && !reservation.granted) {
+    const allowed = Math.max(
+      WORKFLOW_LIMITS.commandMaxRunsMin,
+      input.command?.maxRuns ?? WORKFLOW_COMMAND_DEFAULT_MAX_RUNS,
+    );
+    return outcome(
+      slot,
+      "budget_spent",
+      `The ${slot} Command already ran ${runCount(reservation.spent)} in this workflow run, `
+      + `which is the most its ${allowed === 1 ? "limit of one run" : `limit of ${allowed} runs`} `
+      + "allows, so this gate was skipped rather than running it again. CI still runs it "
+      + "against the merge commit.",
+      { command },
+    );
   }
 
   const result = await execute({

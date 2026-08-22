@@ -37,7 +37,7 @@ export interface PipelineStatus {
   /** Why this status was skipped or otherwise needs more context. */
   tooltip?: string;
   /** Machine-readable reason for a deliberate skip; labels remain presentation only. */
-  skipKind?: "carried_pass" | "unconfigured_check" | "unavailable_check";
+  skipKind?: "carried_pass" | "unconfigured_check" | "unavailable_check" | "budget_check";
   /**
    * This advanced the pipeline without being earned - a check that was skipped or could not
    * run, rather than one that ran and succeeded.

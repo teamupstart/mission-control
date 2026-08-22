@@ -297,12 +297,13 @@ test("a rule whose command cannot be split says so where its argv would be", () 
 test("blank means no default, and one save carries a slot's whole state", () => {
   // The rule that makes "no machine-wide default" expressible at all. An empty argv would be
   // a command that runs nothing, which the route refuses and the runtime could not execute.
-  const blank = commandUpdateBody({ defaultText: "   ", overrides: [] }, 3);
+  const blank = commandUpdateBody({ defaultText: "   ", overrides: [], maxRuns: 1 }, 3);
   assert.ok(blank.ok && blank.body.defaultCommand === null);
   assert.deepEqual(blank.ok && blank.body, {
     expectedRevision: 3,
     defaultCommand: null,
     overrides: [],
+    maxRuns: 1,
   });
 
   // Both halves, always, under the revision the draft was taken from: a partial save of a
@@ -313,6 +314,7 @@ test("blank means no default, and one save carries a slot's whole state", () => 
       { repoRoot: "/z", command: ["z"] },
       { repoRoot: "/a", command: ["a"] },
     ],
+    maxRuns: 1,
   }, 7);
   assert.ok(whole.ok);
   assert.deepEqual(whole.body.defaultCommand, ["npm", "run", "test", "--", "--grep", "a b"]);
@@ -321,7 +323,7 @@ test("blank means no default, and one save carries a slot's whole state", () => 
   assert.deepEqual(whole.body.overrides.map((entry) => entry.repoRoot), ["/a", "/z"]);
 
   // A line that does not parse is refused with the parser's own sentence rather than sent.
-  const broken = commandUpdateBody({ defaultText: 'npm "unclosed', overrides: [] }, 1);
+  const broken = commandUpdateBody({ defaultText: 'npm "unclosed', overrides: [], maxRuns: 1 }, 1);
   assert.equal(broken.ok, false);
   assert.ok(!broken.ok && broken.error.length > 0);
 });
@@ -335,6 +337,7 @@ test("dirtiness is measured against the stored slot, not against the text", () =
   assert.deepEqual(draft, {
     defaultText: "npm test",
     overrides: [{ repoRoot: "/a", command: ["a"] }],
+    maxRuns: 1,
   });
   assert.equal(commandDraftDirty(draft, stored), false);
   // Trailing whitespace re-parses to the same argv, so it is not a change an operator has to
@@ -346,6 +349,10 @@ test("dirtiness is measured against the stored slot, not against the text", () =
   assert.equal(commandDraftDirty({ ...draft, defaultText: "" }, stored), true);
   assert.equal(commandDraftDirty({ ...draft, defaultText: "npm run test" }, stored), true);
   assert.equal(commandDraftDirty({ ...draft, overrides: [] }, stored), true);
+  // The run budget is part of the slot, so moving it alone is an unsaved change like any
+  // other - otherwise the guard would let an operator navigate away from the one edit on
+  // this screen that changes nothing visible in the table below it.
+  assert.equal(commandDraftDirty({ ...draft, maxRuns: 3 }, stored), true);
   assert.equal(
     commandDraftDirty({ ...draft, overrides: [{ repoRoot: "/a", command: ["b"] }] }, stored),
     true,
@@ -356,6 +363,7 @@ test("dirtiness is measured against the stored slot, not against the text", () =
       {
         defaultText: "npm test",
         overrides: [{ repoRoot: "/b", command: ["b"] }, { repoRoot: "/a", command: ["a"] }],
+        maxRuns: 1,
       },
       view({
         defaultCommand: ["npm", "test"],
@@ -367,7 +375,7 @@ test("dirtiness is measured against the stored slot, not against the text", () =
   // A slot the snapshot has not delivered is dirty the moment anything is typed into it, and
   // clean while it is untouched.
   assert.equal(commandDraftDirty(commandDraftFrom(null), null), false);
-  assert.equal(commandDraftDirty({ defaultText: "npm test", overrides: [] }, null), true);
+  assert.equal(commandDraftDirty({ defaultText: "npm test", overrides: [], maxRuns: 1 }, null), true);
 });
 
 test("the picker offers granted repositories first, then the workspace scan", () => {

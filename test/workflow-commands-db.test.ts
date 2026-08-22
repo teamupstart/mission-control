@@ -96,7 +96,11 @@ test("an upgrading database receives both command tables without losing what it 
   assert.deepEqual(
     (db.prepare(`PRAGMA table_info(workflow_commands)`).all() as unknown as Array<{ name: string }>)
       .map((column) => column.name),
-    ["slot", "default_command_json", "revision", "created_at", "updated_at"],
+    // `max_runs` sits where `CREATE TABLE` puts it, because this fixture had no
+    // `workflow_commands` table at all. A database that DID carry one gets the same column
+    // appended by `addColumn` instead, which is a different order and the same schema - see
+    // the upgrade case below.
+    ["slot", "default_command_json", "max_runs", "revision", "created_at", "updated_at"],
   );
   assert.deepEqual(
     (db.prepare(`PRAGMA table_info(workflow_command_overrides)`)
@@ -190,6 +194,7 @@ test("a second start imports nothing, and cannot resurrect a command an operator
   assert.equal(
     store.replaceWorkflowCommandCas("test", before.revision, {
       defaultCommand: null,
+      maxRuns: 1,
       overrides: [{ repoRoot: "/repo", command: ["npm", "test"] }],
     }).ok,
     true,
@@ -198,6 +203,7 @@ test("a second start imports nothing, and cannot resurrect a command an operator
   assert.equal(
     store.replaceWorkflowCommandCas("lint", lint.revision, {
       defaultCommand: null,
+      maxRuns: 1,
       overrides: [],
     }).ok,
     true,

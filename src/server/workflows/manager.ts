@@ -2508,7 +2508,7 @@ export class WorkflowManager {
           gateState: gate as unknown as WorkflowJson,
         }
       : this.parkedRestoreForGrant(run);
-    const updated = this.store.grantRunRepairRounds(run.id, granted, restore, {
+    const updated = this.store.grantRunRepairRounds(run.id, granted, restore, latest.round + 1, {
       kind: "repair_rounds_granted",
       payload: {
         requestId: input.requestId,
@@ -2767,6 +2767,10 @@ export class WorkflowManager {
       evidence: {},
       now,
     });
+    // The restart's whole purpose is another real attempt at the graph, so the Commands it
+    // re-reaches must be allowed to run again rather than reporting a budget the abandoned
+    // Inspector-only repair spent. Written against the round the new submission just took.
+    this.store.setRunCheckBudgetEpoch(run.id, created.submission.round, now);
     this.store.appendEvent(run.id, "inspector_only_abandoned_for_full_restart", {
       requestId: input.requestId,
       priorPrKey: gate.prKey,

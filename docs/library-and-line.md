@@ -26,7 +26,7 @@ noun:
 | --- | --- | --- |
 | Missions · Sources | Where does work come from? | Recurring missions and a link to task sources in Settings |
 | Workflows | What counts as done? | Workflow cards - version, reviewer count, draft validation errors. The builder is one level deeper |
-| Commands | What does each standard gate run? | The four portable workflow slots - `test`, `lint`, `typecheck`, `build` - each with what it runs on this machine |
+| Commands | What does each standard gate run? | The four portable workflow slots - `test`, `lint`, `typecheck`, `build` - each with what it runs on this machine, and how often a run may run it |
 | Personas | Who does the reviewing? | The fixed Foreman System profile, followed by Persona cards with the provider and model each resolves to |
 | Actions | What can a run tell the session to do? | [Session action](workflows.md#session-actions) cards - required skill and what proves completion |
 | Ensembles | Not sure of the best approach? | Strategy launchers (Best of N, Panel vote, Consensus) that open Dispatch already in Ensemble mode on that strategy |
@@ -61,14 +61,21 @@ against any repository. This shelf is where *this machine* says what each slot r
 - one optional **global default** per slot, which is repository-neutral and runs at the root
   of whatever checkout the run leased;
 - zero or more **overrides**, keyed by repository or by a subdirectory inside one. The longest
-  matching path wins, and a nested override also decides which directory the command runs in.
+  matching path wins, and a nested override also decides which directory the command runs in;
+- **how often this Command may run** - how many times it may actually execute inside one
+  workflow run, counted across every repair round and shared by every check node that resolves
+  to this slot. It defaults to once, and the ceiling of 20 is the repair-round ceiling, so it
+  means "every round". Once a run has spent the budget the gate is skipped with a note saying
+  so, and CI is what still runs the command against the merge commit.
+  [Workflows](workflows.md#command-nodes) describes what spends a run and what starts the
+  count over.
 
 A slot with neither passes with a note rather than failing, which is what lets a shipped
 workflow name `typecheck` on a machine that has never configured one.
 
-Saving replaces a slot's default and its complete override list in one compare-and-swap, so
-the two halves can never be stored apart, and a second window's save is refused rather than
-silently overwriting your unsaved typing. Commands are stored as argv and executed without a
+Saving replaces a slot's default, its complete override list and its run budget in one
+compare-and-swap, so the parts can never be stored apart, and a second window's save is refused
+rather than silently overwriting your unsaved typing. Commands are stored as argv and executed without a
 shell: there are no pipes, no redirection, no environment interpolation and no shell-mode
 toggle, and the editor shows the exact split under every rule before you save.
 

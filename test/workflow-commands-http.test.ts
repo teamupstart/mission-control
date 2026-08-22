@@ -66,7 +66,7 @@ test("an unknown slot is 404 on read and on write, rather than minting a fifth s
   assert.equal((await request("/api/workflow-commands/deploy")).status, 404);
   const written = await request("/api/workflow-commands/deploy", {
     method: "PUT",
-    body: body({ expectedRevision: 1, defaultCommand: ["x"], overrides: [] }),
+    body: body({ expectedRevision: 1, defaultCommand: ["x"], overrides: [], maxRuns: 1 }),
   });
   assert.equal(written.status, 404);
   assert.equal((await written.json() as { code: string }).code, "workflow_command_not_found");
@@ -84,6 +84,7 @@ test("one update replaces the default and the complete override list atomically"
     body: body({
       expectedRevision: 1,
       defaultCommand: ["npm", "test"],
+      maxRuns: 1,
       overrides: [
         { repoRoot: "/repo/packages/web", command: ["pnpm", "-C", ".", "test"] },
         { repoRoot: "/repo", command: ["npm", "run", "test:ci"] },
@@ -106,7 +107,7 @@ test("one update replaces the default and the complete override list atomically"
   // Removal is expressible: a shorter list is the removal, and a null default clears it.
   const cleared = await request("/api/workflow-commands/test", {
     method: "PUT",
-    body: body({ expectedRevision: 2, defaultCommand: null, overrides: [] }),
+    body: body({ expectedRevision: 2, defaultCommand: null, overrides: [], maxRuns: 1 }),
   });
   assert.equal(cleared.status, 200);
   const empty = await cleared.json() as { defaultCommand: null; overrides: unknown[] };
@@ -118,11 +119,11 @@ test("a stale revision is refused with the current view, so neither window silen
   const { request } = fixture();
   await request("/api/workflow-commands/lint", {
     method: "PUT",
-    body: body({ expectedRevision: 1, defaultCommand: ["npm", "run", "lint"], overrides: [] }),
+    body: body({ expectedRevision: 1, defaultCommand: ["npm", "run", "lint"], overrides: [], maxRuns: 1 }),
   });
   const stale = await request("/api/workflow-commands/lint", {
     method: "PUT",
-    body: body({ expectedRevision: 1, defaultCommand: ["eslint", "."], overrides: [] }),
+    body: body({ expectedRevision: 1, defaultCommand: ["eslint", "."], overrides: [], maxRuns: 1 }),
   });
   assert.equal(stale.status, 409);
   const refusal = await stale.json() as {
@@ -143,11 +144,11 @@ test("every invalid write is a visible refusal rather than a silently repaired o
   // A missing half is not a partial update: it would silently clear what it omitted.
   assert.equal(await refused({ expectedRevision: 1, defaultCommand: ["x"] }), 400);
   assert.equal(await refused({ expectedRevision: 1, overrides: [] }), 400);
-  assert.equal(await refused({ defaultCommand: null, overrides: [] }), 400);
+  assert.equal(await refused({ defaultCommand: null, overrides: [], maxRuns: 1 }), 400);
   // Empty argv, over-long argument, too many arguments, empty path.
-  assert.equal(await refused({ expectedRevision: 1, defaultCommand: [], overrides: [] }), 400);
+  assert.equal(await refused({ expectedRevision: 1, defaultCommand: [], overrides: [], maxRuns: 1 }), 400);
   assert.equal(
-    await refused({ expectedRevision: 1, defaultCommand: ["x".repeat(5_000)], overrides: [] }),
+    await refused({ expectedRevision: 1, defaultCommand: ["x".repeat(5_000)], overrides: [], maxRuns: 1 }),
     400,
   );
   assert.equal(
@@ -162,6 +163,7 @@ test("every invalid write is a visible refusal rather than a silently repaired o
     await refused({
       expectedRevision: 1,
       defaultCommand: null,
+      maxRuns: 1,
       overrides: [{ repoRoot: "", command: ["npm"] }],
     }),
     400,
@@ -172,6 +174,7 @@ test("every invalid write is a visible refusal rather than a silently repaired o
     await refused({
       expectedRevision: 1,
       defaultCommand: null,
+      maxRuns: 1,
       overrides: [
         { repoRoot: "/repo", command: ["a"] },
         { repoRoot: "/repo", command: ["b"] },
@@ -213,6 +216,7 @@ test("a catalog at its ceiling in non-ASCII characters is accepted, not refused 
     expectedRevision: 1,
     defaultCommand: widestArgv(),
     overrides,
+    maxRuns: 1,
   };
   // The claim, stated as an arithmetic fact before the assertion rests on it: this body is
   // multiple bytes per character, so a character-shaped ceiling is nowhere near it.
@@ -249,7 +253,7 @@ test("the legacy config route reads overrides out of the catalog and writes back
   // A global default first, through the catalog's own route.
   await request("/api/workflow-commands/test", {
     method: "PUT",
-    body: body({ expectedRevision: 1, defaultCommand: ["npm", "test"], overrides: [] }),
+    body: body({ expectedRevision: 1, defaultCommand: ["npm", "test"], overrides: [], maxRuns: 1 }),
   });
 
   const emitted: string[] = [];
@@ -364,6 +368,7 @@ test("a legacy save that cannot persist policy rolls its commands back too", () 
     commands.replace("lint", {
       expectedRevision: 1,
       defaultCommand: null,
+      maxRuns: 1,
       overrides: [{ repoRoot: "/repo", command: ["npm", "run", "lint"] }],
     }).ok,
     true,

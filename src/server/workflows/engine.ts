@@ -27,6 +27,7 @@ import type {
 } from "@shared/workflow.ts";
 import type { WorkflowVerdictNode } from "@shared/workflow.ts";
 import {
+  WORKFLOW_COMMAND_DEFAULT_MAX_RUNS,
   WORKFLOW_EXECUTION_LIMITS,
   checkOutcomePasses,
   isVerdictNode,
@@ -1176,6 +1177,23 @@ export class WorkflowEngine {
         slot: node.slot,
         command: this.workflowCommand(node.slot),
         policy: this.workflowPolicy(),
+        /*
+         * Handed as a claim rather than a count, because the budget belongs to the COMMAND:
+         * every check node resolving to this slot spends one shared allowance, and two of
+         * them can be deciding at the same moment. `reserveCheckRun` counts and records in
+         * one synchronous transaction, so the second to ask sees the first's reservation
+         * instead of the same stale zero.
+         *
+         * Called only if the ladder gets as far as spawning - resolution, authorization and
+         * locatability are all asked first, and none of them may spend a run.
+         */
+        reserveRun: () => this.store.reserveCheckRun(
+          run.id,
+          claimed.id,
+          node.slot,
+          this.workflowCommand(node.slot)?.maxRuns ?? WORKFLOW_COMMAND_DEFAULT_MAX_RUNS,
+          run.checkBudgetEpochRound ?? null,
+        ),
         cwd: binding.sessionCwd,
         repoRoot: binding.sessionRepoRoot,
         headSha: submission.prHeadSha ?? context.data.evidence.headSha,

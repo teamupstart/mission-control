@@ -31,6 +31,7 @@ interface CommandView {
   slot: string;
   defaultCommand: string[] | null;
   overrides: Array<{ repoRoot: string; command: string[] }>;
+  maxRuns: number;
   revision: number;
 }
 
@@ -231,6 +232,107 @@ test("a global default is typed, previewed, saved, and lands in the daemon's cat
   await dashboard.goto(`${daemon.baseURL}/#/library`);
   await expect(card(dashboard, "test")).toContainText("Global default");
   await expect(card(dashboard, "lint")).toContainText("Not configured");
+});
+
+test("an unconfigured slot's run budget reads once per run, in the control and in words", async ({
+  dashboard,
+  daemon,
+}) => {
+  /*
+   * The budget's default is the one value nobody chooses, so it is the one that has to be
+   * right on a slot nobody has touched. `maxRuns` is stored per slot and a slot with no row
+   * behind it still has to answer the question - and answer it the same way twice, once as
+   * the selected option and once as the sentence underneath.
+   *
+   * Both halves are asserted because they are computed apart: the option comes from
+   * `commandMaxRunsLabel`, the sentence from `workflowCommandRunsFact`, and a screen that
+   * says "Once per run" over "Runs up to 3 times per workflow run" is worse than either
+   * being wrong on its own.
+   */
+  const opening = slotOf(await catalog(daemon), "lint");
+  expect(opening.maxRuns).toBe(1);
+
+  await dashboard.goto(`${daemon.baseURL}/#/library/commands/lint`);
+  await expect(dashboard.getByRole("heading", { name: "lint", exact: true })).toBeVisible();
+
+  const budget = dashboard.getByLabel("How often this Command may run");
+  await expect(budget).toBeVisible();
+  await expect(budget).toHaveValue("1");
+  await expect(budget.locator("option:checked")).toHaveText("Once per run");
+  await expect(dashboard.locator(".wf-command-budget"))
+    .toContainText("Runs once per workflow run");
+
+  // The ceiling is offered as a plain choice rather than hidden behind a number box, and it
+  // says what it MEANS - a budget equal to the repair-round cap can never be spent.
+  await expect(budget.getByRole("option")).toHaveCount(20);
+  await expect(budget.getByRole("option", { name: "20 times per run (every round)" }))
+    .toHaveCount(1);
+
+  // Untouched, so nothing to save. A default that arrived as a dirty draft would offer to
+  // write a row for every slot an operator merely looked at.
+  await expect(dashboard.getByRole("button", { name: "Save Command" })).toBeDisabled();
+});
+
+test("changing only the run budget saves the whole slot, and it survives a reload", async ({
+  dashboard,
+  daemon,
+}) => {
+  /*
+   * The budget is not an argv, and this screen's save is a whole-state compare-and-swap
+   * carrying the default, every override and `maxRuns` together. So the case that matters is
+   * the one where the budget is the ONLY thing that moved: a dirty check that only watched
+   * the command text would leave Save disabled and the choice would evaporate on the next
+   * navigation, with nothing on screen to say it had.
+   *
+   * Asserted twice, like every durable claim here, because the editor renders what it just
+   * sent: a budget that never reached the catalog looks identical on screen while every
+   * repair round goes on re-running the gate.
+   */
+  await dashboard.goto(`${daemon.baseURL}/#/library/commands/build`);
+  await expect(dashboard.getByRole("heading", { name: "build", exact: true })).toBeVisible();
+  await expect(dashboard.getByLabel("Default command")).toHaveValue("");
+
+  const budget = dashboard.getByLabel("How often this Command may run");
+  await budget.selectOption("3");
+
+  // The sentence follows the control before anything is stored - the operator is choosing
+  // against what it says, not against what was saved last time.
+  await expect(dashboard.locator(".wf-command-budget"))
+    .toContainText("Runs up to 3 times per workflow run");
+
+  // Dirty on the budget alone, with the command box still empty.
+  const save = dashboard.getByRole("button", { name: "Save Command" });
+  await expect(save).toBeEnabled();
+  await save.click();
+  await expect(save).toBeDisabled();
+
+  // The daemon's own catalog moved, and the empty default did not become a stored argv on
+  // the way through.
+  await expect
+    .poll(async () => slotOf(await catalog(daemon), "build"), {
+      message: "Save should carry maxRuns through /api/workflow-commands",
+    })
+    .toMatchObject({ maxRuns: 3, defaultCommand: null, overrides: [] });
+  // And no other slot was written by a save that names one.
+  expect(slotOf(await catalog(daemon), "test").maxRuns).toBe(1);
+
+  // A reload proves it is stored rather than merely rendered, in both the control and the
+  // sentence the control is read through.
+  await dashboard.reload();
+  await expect(dashboard.getByRole("heading", { name: "build", exact: true })).toBeVisible();
+  await expect(dashboard.getByLabel("How often this Command may run")).toHaveValue("3");
+  await expect(dashboard.locator(".wf-command-budget"))
+    .toContainText("Runs up to 3 times per workflow run");
+  await expect(dashboard.getByRole("button", { name: "Save Command" })).toBeDisabled();
+
+  // The budget rides along with an argv too, rather than being a second write that a later
+  // command save could quietly reset.
+  await dashboard.getByLabel("Default command").fill("npm run build");
+  await dashboard.getByRole("button", { name: "Save Command" }).click();
+  await expect(dashboard.getByRole("button", { name: "Save Command" })).toBeDisabled();
+  await expect
+    .poll(async () => slotOf(await catalog(daemon), "build"))
+    .toMatchObject({ maxRuns: 3, defaultCommand: ["npm", "run", "build"] });
 });
 
 test("an override, a nested override, and a removal all survive a reload", async ({
@@ -530,8 +632,12 @@ test("a revision that lands while you are typing is surfaced, never silently app
     `${daemon.baseURL}/api/workflow-commands/lint`,
     {
       data: {
+        // `maxRuns` is required rather than defaulted, so a second window replacing this slot
+        // has to carry the budget it read - the route refuses a write that would silently
+        // reset an operator's configured budget while saving something else.
         expectedRevision: before.revision,
         defaultCommand: ["eslint", "."],
+        maxRuns: before.maxRuns,
         overrides: [],
       },
     },
@@ -557,6 +663,7 @@ test("a revision that lands while you are typing is surfaced, never silently app
     data: {
       expectedRevision: current.revision,
       defaultCommand: ["eslint", "--max-warnings=0", "."],
+      maxRuns: current.maxRuns,
       overrides: [],
     },
   });

@@ -123,6 +123,25 @@ export const WORKFLOW_LIMITS = {
    * configuration, and the bound's job is to stop one write making every later read expensive.
    */
   commandOverrides: 200,
+  /**
+   * The floor under a Command's per-run execution budget.
+   *
+   * ONE, not zero. Zero would read as "never run this gate", and that is a decision this
+   * catalog already expresses by leaving the slot unconfigured - a second way to say it
+   * would be a second thing to check before believing a gate is active, and the one an
+   * operator is least likely to look at.
+   */
+  commandMaxRunsMin: 1,
+  /**
+   * The ceiling on the same budget, which is `repairRoundsMax` on purpose.
+   *
+   * A run cannot exceed that many repair rounds and a check node runs at most once per
+   * submission, so a budget set here is a budget the run can never spend - which is exactly
+   * how "run it every round, as it always did" has to be expressible. Tying the two together
+   * rather than picking an independent number keeps that property true if the round ceiling
+   * ever moves.
+   */
+  commandMaxRunsMax: 20,
   checkCommandArgs: 32,
   checkCommandArg: 1_000,
   checkCommandLength: 4_000,
@@ -2102,11 +2121,52 @@ export interface WorkflowCommandView {
   defaultCommand: string[] | null;
   /** Unique by `repoRoot` within the slot, canonical paths, longest match wins. */
   overrides: WorkflowCommandOverride[];
+  /**
+   * How many times this Command may actually EXECUTE inside one workflow run, across every
+   * repair round, before the gate that would have run it is skipped instead.
+   *
+   * A property of the Command rather than of the node that names it, because the cost this
+   * bounds is the command's own: a test suite that takes twenty minutes takes twenty minutes
+   * in every workflow that gates on it, and an operator who has decided that suite is worth
+   * running once per run should not have to re-decide it in each graph.
+   *
+   * So the allowance is SHARED by every check node resolving to this slot, not handed to each
+   * of them. A graph gating on `test` twice spends one execution between the two, and with a
+   * limit of one the second is skipped inside the same round. Per-node budgets would make this
+   * number mean "how many times each place a workflow mentions the command may run it", which
+   * is not what an operator setting a maximum on the command itself has said - and would let a
+   * limit of one execute a twenty-minute suite twice in one round.
+   *
+   * The default is 1, and that is a deliberate statement about where the remaining coverage
+   * comes from: the first round gates on a real execution, and the repair rounds after it
+   * lean on CI, which runs the full suite against the merge commit anyway. Raising it buys
+   * re-validation of a repair at the cost of running the suite again.
+   *
+   * Counts EXECUTIONS, not opportunities. A round in which the gate was skipped for a budget
+   * it had already spent, an unconfigured slot, a repository the operator has not granted, or
+   * a build with no execution runtime never reached a command, so none of them spend a run -
+   * `WorkflowStore.reserveCheckRun` is claimed at the moment the ladder decides to spawn, and
+   * nothing above that rung claims one. An infrastructure retry is the same execution asked
+   * again and is bounded separately by `MAX_INFRA_ATTEMPTS`.
+   */
+  maxRuns: number;
   /** Compare-and-swap token. Starts at 1 for a seeded, never-edited slot. */
   revision: number;
   createdAt: number;
   updatedAt: number;
 }
+
+/**
+ * How many times a Command executes per run when nobody has said otherwise.
+ *
+ * ONE, which is a behaviour change for every catalog that existed before this field and is
+ * meant to be: the gate used to re-run in full on every repair round, and the time that spent
+ * is the whole reason this setting exists. Stated as a named constant because three places
+ * have to agree on it - the column default an upgrading database takes, the schema default a
+ * write path applies, and the projection of a slot that has never been stored - and a literal
+ * `1` repeated in three files is three chances to disagree.
+ */
+export const WORKFLOW_COMMAND_DEFAULT_MAX_RUNS = 1;
 
 /** The projected state of a slot nobody has configured yet. */
 export function emptyWorkflowCommandView(
@@ -2117,10 +2177,40 @@ export function emptyWorkflowCommandView(
     slot,
     defaultCommand: null,
     overrides: [],
+    maxRuns: WORKFLOW_COMMAND_DEFAULT_MAX_RUNS,
     revision: 1,
     createdAt: now,
     updatedAt: now,
   };
+}
+
+/**
+ * Whether a Command has already executed as many times as this run allows it to.
+ *
+ * A `>=` rather than a `>`, and the asymmetry is the point: `spent` counts executions that
+ * have FINISHED, so an attempt asking this question is about to become the `spent + 1`th.
+ *
+ * Defensive on the ceiling rather than trusting it. A `maxRuns` of zero or below would make
+ * every gate skip forever, which is a way to switch a Command off that this catalog already
+ * has a better answer for (do not configure one), and a row hand-edited to `0` must not turn
+ * into a silently dead gate. The floor is applied here rather than at the read boundary so
+ * every caller - engine, store projection, and Library form alike - gets the same answer.
+ */
+export function checkRunBudgetSpent(spent: number, maxRuns: number): boolean {
+  return spent >= Math.max(1, maxRuns);
+}
+
+/**
+ * The Command's run budget as the sentence the Library and the workflow palette show.
+ *
+ * Says "per workflow run" rather than "per round" because the budget spans rounds - that IS
+ * the feature - and an operator reading "once" beside a gate they watched run in round one
+ * needs to know round two will not run it again.
+ */
+export function workflowCommandRunsFact(maxRuns: number): string {
+  const runs = Math.max(1, maxRuns);
+  if (runs === 1) return "Runs once per workflow run";
+  return `Runs up to ${runs} times per workflow run`;
 }
 
 /**
@@ -2568,19 +2658,41 @@ export function checkBlockedReason(
  *
  * APPEND-ONLY: a status reaches durable `output_json`, which run detail reads back.
  *
- * Three of the four PASS. `skipped` and `unavailable` are the difference between "nobody
- * configured this" and "somebody has to authorize it", and both carry a note rather than
- * silently letting the graph through - a shipped workflow with check gates has to be safe
- * on a machine that configured none of them, and an operator has to be able to tell a gate
- * that passed from a gate that never ran.
+ * Four of the five PASS, and every one of those four says something different about WHY the
+ * graph advanced without a green command. `skipped` is "nobody configured this", `unavailable`
+ * is "somebody has to authorize it", and `budget_spent` is "this machine configured it, it
+ * ran earlier in this very run, and the operator capped how often it may run". All of them
+ * carry a note rather than silently letting the graph through - a shipped workflow with check
+ * gates has to be safe on a machine that configured none of them, and an operator has to be
+ * able to tell a gate that passed from a gate that never ran.
+ *
+ * `budget_spent` is its OWN status rather than a `skipped` carrying different prose, and that
+ * is the honesty property this vocabulary exists for. Every surface keys its explanation off
+ * the status - `CHECK_STATUS_SENTENCES` in `run-model.ts` is a `Record` over this exact enum -
+ * so folding a budget skip into `skipped` would have the ladder tell an operator that no
+ * Command is configured for a slot they configured themselves, about a gate they watched run
+ * one round earlier. That is a worse lie than the one the note would have corrected, because
+ * the ladder is where it is read and the note is not shown there.
  */
-export const WORKFLOW_CHECK_STATUSES = ["passed", "failed", "skipped", "unavailable"] as const;
+export const WORKFLOW_CHECK_STATUSES = [
+  "passed",
+  "failed",
+  "skipped",
+  "unavailable",
+  "budget_spent",
+] as const;
 export type WorkflowCheckStatus = (typeof WORKFLOW_CHECK_STATUSES)[number];
 
 export interface WorkflowCheckOutcome {
   status: WorkflowCheckStatus;
   slot: WorkflowCheckSlot;
-  /** Null whenever no command was resolved, which is every `skipped` outcome. */
+  /**
+   * Null whenever no command was resolved, which is every `skipped` outcome.
+   *
+   * A `budget_spent` outcome DOES carry one: resolution succeeded and the argv is exactly
+   * what the run declined to spend time on again, which is what an operator needs to see to
+   * decide whether the cap is set where they want it.
+   */
   command: string[] | null;
   exitCode: number | null;
   /** Bounded and tail-biased: a failure's last lines are the useful ones. */
@@ -2591,7 +2703,14 @@ export interface WorkflowCheckOutcome {
   note: string;
 }
 
-/** Whether this outcome lets the graph advance. Only `failed` does not. */
+/**
+ * Whether this outcome lets the graph advance. Only `failed` does not.
+ *
+ * Written as "is not failed" rather than as a list of the passing statuses on purpose: a
+ * status appended later passes by default, which is the safe direction for a vocabulary whose
+ * additions have all been reasons a gate did not run. A new BLOCKING status would have to say
+ * so here explicitly, and that is a change somebody has to make deliberately.
+ */
 export function checkOutcomePasses(outcome: Pick<WorkflowCheckOutcome, "status">): boolean {
   return outcome.status !== "failed";
 }
@@ -3001,6 +3120,21 @@ export interface WorkflowRun {
    * run, and no sibling Persona or other run may inherit it.
    */
   personaDirectives?: WorkflowPersonaDirective[];
+  /**
+   * The repair round this run's Command execution budgets start counting from, or null to
+   * count every execution the run has made.
+   *
+   * Only the two operator escape hatches write it - granting repair rounds and the full
+   * restart out of an Inspector-only repair - and both write the round their new submission
+   * will carry. An operator who has explicitly asked for another round is asking for another
+   * real attempt at the gate, so the rounds they bought must not all skip a Command that
+   * spent its budget before they intervened. Nothing else resets it: ordinary repair rounds
+   * are exactly what the budget exists to bound.
+   *
+   * Optional for the reason `disabledNodeIds` is: a detail payload written by an older
+   * daemon still parses, and absent reads as "count from the beginning".
+   */
+  checkBudgetEpochRound?: number | null;
   startedAt: number;
   updatedAt: number;
   completedAt: number | null;

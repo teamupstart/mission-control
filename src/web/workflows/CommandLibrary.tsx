@@ -2,10 +2,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   WORKFLOW_CHECK_SLOTS,
   WORKFLOW_COMMAND_PURPOSE,
+  WORKFLOW_COMMAND_DEFAULT_MAX_RUNS,
+  WORKFLOW_LIMITS,
   checkCommandRoot,
   formatCheckCommand,
   parseCheckCommand,
   workflowCommandFact,
+  workflowCommandRunsFact,
   WORKFLOW_COMMAND_UNKNOWN,
 } from "@shared/workflow.ts";
 import type {
@@ -66,6 +69,35 @@ export interface CommandDraft {
   /** Blank means "no global default", which is `null` on the wire and never an empty argv. */
   defaultText: string;
   overrides: WorkflowCommandOverride[];
+  /**
+   * How many times this Command may execute in one workflow run.
+   *
+   * A NUMBER in the draft rather than typed text, because the control is a bounded select
+   * and there is no half-typed state to represent. That is the whole reason it is a select:
+   * every other field here can be mid-edit and invalid, and a budget that could be blank,
+   * `abc`, or `0` would need three refusal sentences for a value with twenty legal answers.
+   */
+  maxRuns: number;
+}
+
+/** Every budget an operator may choose, smallest first. */
+export const COMMAND_MAX_RUNS_CHOICES: number[] = Array.from(
+  { length: WORKFLOW_LIMITS.commandMaxRunsMax - WORKFLOW_LIMITS.commandMaxRunsMin + 1 },
+  (_unused, index) => WORKFLOW_LIMITS.commandMaxRunsMin + index,
+);
+
+/**
+ * One budget as its option label.
+ *
+ * The ceiling says "every round" because that is what it MEANS rather than what it counts: a
+ * run cannot exceed `repairRoundsMax` rounds, so a budget equal to it can never be spent, and
+ * an operator looking for "keep running this like it used to" needs to find it without doing
+ * that arithmetic themselves.
+ */
+export function commandMaxRunsLabel(runs: number): string {
+  if (runs === 1) return "Once per run";
+  if (runs >= WORKFLOW_LIMITS.commandMaxRunsMax) return `${runs} times per run (every round)`;
+  return `${runs} times per run`;
 }
 
 /**
@@ -90,6 +122,9 @@ export function commandDraftFrom(view: WorkflowCommandView | null): CommandDraft
       repoRoot: entry.repoRoot,
       command: [...entry.command],
     })),
+    // A slot the catalog has not delivered opens at the same budget a fresh one carries, so
+    // the control never shows a number the daemon would disagree with.
+    maxRuns: view?.maxRuns ?? WORKFLOW_COMMAND_DEFAULT_MAX_RUNS,
   };
 }
 
@@ -109,6 +144,7 @@ export function commandDraftDirty(draft: CommandDraft, view: WorkflowCommandView
   const storedDefault = view?.defaultCommand ?? null;
   if (draft.defaultText.trim() !== "" && !parsed.ok) return true;
   if (JSON.stringify(nextDefault) !== JSON.stringify(storedDefault)) return true;
+  if (draft.maxRuns !== (view?.maxRuns ?? WORKFLOW_COMMAND_DEFAULT_MAX_RUNS)) return true;
   return JSON.stringify([...draft.overrides].sort(byRepoRoot))
     !== JSON.stringify((view?.overrides ?? []).map((entry) => ({
       repoRoot: entry.repoRoot,
@@ -120,9 +156,10 @@ export function commandDraftDirty(draft: CommandDraft, view: WorkflowCommandView
  * The draft as the update body Phase 1's route accepts, or the sentence saying why it is not
  * one yet.
  *
- * Both fields are always present, because the route replaces a slot's COMPLETE state in one
- * compare-and-swap: omitting `overrides` would clear every exception, and omitting
- * `defaultCommand` would clear the machine-wide command. There is no partial save to make.
+ * Every field is always present, because the route replaces a slot's COMPLETE state in one
+ * compare-and-swap: omitting `overrides` would clear every exception, omitting
+ * `defaultCommand` would clear the machine-wide command, and the route refuses a body with no
+ * `maxRuns` rather than guessing at a budget. There is no partial save to make.
  *
  * Pure and exported: a static render cannot type into the box, so this is the only place the
  * blank-means-null rule and the parse refusal are assertable.
@@ -130,7 +167,15 @@ export function commandDraftDirty(draft: CommandDraft, view: WorkflowCommandView
 export function commandUpdateBody(
   draft: CommandDraft,
   expectedRevision: number,
-): { ok: true; body: { expectedRevision: number; defaultCommand: string[] | null; overrides: WorkflowCommandOverride[] } }
+): {
+  ok: true;
+  body: {
+    expectedRevision: number;
+    defaultCommand: string[] | null;
+    overrides: WorkflowCommandOverride[];
+    maxRuns: number;
+  };
+}
   | { ok: false; error: string } {
   const line = draft.defaultText.trim();
   let defaultCommand: string[] | null = null;
@@ -145,6 +190,7 @@ export function commandUpdateBody(
       expectedRevision,
       defaultCommand,
       overrides: [...draft.overrides].sort(byRepoRoot),
+      maxRuns: draft.maxRuns,
     },
   };
 }
@@ -689,8 +735,12 @@ export function CommandLibrary({
                 ? "No exceptions in this slot - every repository resolves to the default"
                 : "Repository exceptions in this slot. Where two match, the longest path wins."}
             />
+            {/* Named `execution` rather than `runs`, which it was until the run budget moved
+                in above it. Two chips-worth of "runs" on one screen - one meaning "how the
+                command is executed", the other "how many times it may be" - is a collision an
+                operator has to resolve by reading both, and only one of them is a setting. */}
             <LibraryPropertyChip
-              name="runs"
+              name="execution"
               value="no shell, commit-pinned checkout"
               align="end"
               tooltip="A Command is executed without a shell, in a commit-pinned checkout, and only in a repository granted the Workflows cell in Trust"
@@ -733,6 +783,42 @@ export function CommandLibrary({
             </p>
           )}
           {error && <p className="wf-error" role="alert">{error}</p>}
+
+          {/* The one setting on this screen that is not an argv, and it sits above the table
+              rather than inside it because it belongs to the SLOT: the default and every
+              override are the same Command, and a budget that lived on a row would invite the
+              reading that each exception carries its own.
+
+              A select rather than a number box. Every other input here can be mid-edit and
+              invalid, and that is fine for text that is parsed on save - but a budget has
+              twenty legal answers, and letting an operator type `0` or leave it blank would
+              buy three refusal sentences for nothing. The ceiling is `repairRoundsMax`, so
+              the last option genuinely means "as often as it ever did". */}
+          <div className="wf-command-budget">
+            <label htmlFor="workflow-command-max-runs">How often this Command may run</label>
+            <Tooltip label="How many times a single workflow run may execute this Command, across every repair round and shared by every gate that runs it. Once the run has spent it, the gate is skipped with a note and CI is what still runs the command.">
+              <select
+                id="workflow-command-max-runs"
+                className="field-input"
+                value={draft.maxRuns}
+                onChange={(event) => {
+                  const runs = Number(event.target.value);
+                  setDraft((current) => ({ ...current, maxRuns: runs }));
+                }}
+              >
+                {COMMAND_MAX_RUNS_CHOICES.map((runs) => (
+                  <option key={runs} value={runs}>{commandMaxRunsLabel(runs)}</option>
+                ))}
+              </select>
+            </Tooltip>
+            <p className="wf-command-hint">
+              {workflowCommandRunsFact(draft.maxRuns)}, counting only the times it actually
+              executes and shared by every gate that runs this Command. Once a workflow run has
+              spent this budget, later gates and repair rounds are skipped with a note instead
+              of running the command again - CI still runs it against the merge commit.
+              Granting a run more repair rounds starts the count over.
+            </p>
+          </div>
 
           {/* The precedence, said once, above the table that draws it. Everything here used
               to be split across two section hints that never mentioned each other - one
@@ -908,8 +994,8 @@ export function CommandLibrary({
           </div>
 
           <p className="wf-command-hint wf-command-save-note">
-            Save replaces this slot's default and its whole override list together, so the two
-            halves can never be stored apart.
+            Save replaces this slot's default, its whole override list and its run budget
+            together, so the parts can never be stored apart.
           </p>
         </article>
       </div>

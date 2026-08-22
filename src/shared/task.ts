@@ -1,7 +1,7 @@
 // Kind, priority and label vocabulary for dispatched tasks, shared by the server (route
 // validation, the roundup report, task sources) and the web app (the dispatch form,
 // the board's backlog column, the roundup panel) so the two can never disagree about
-// what a label is or which task outranks which.
+// what a label is or what a priority chip means.
 //
 // Priority and labels are OPTIONAL and default to nothing: `priority: null` and
 // `labels: []`. Nothing in the product infers either one - a task carries a priority
@@ -201,8 +201,9 @@ export function taskKindAllowsBacklog(kind: TaskKind): boolean {
 export const BACKLOG_TASK_KINDS = TASK_KINDS.filter(taskKindAllowsBacklog);
 
 /**
- * The priorities, in ascending urgency. Array order is picker order, sort order, and
- * the order the README's table lists - one array so a fifth level is one edit.
+ * The priorities, in ascending urgency. Array order is picker order and the order the
+ * README's table lists - one array so a fifth level is one edit. It is NOT a backlog sort
+ * order; nothing sorts by priority (see `byBacklogRank`).
  */
 export const TASK_PRIORITIES = ["low", "med", "high", "blocker"] as const;
 
@@ -215,14 +216,16 @@ export const PRIORITY_LABELS: Record<TaskPriority, string> = {
 };
 
 /**
- * Sort rank, ascending. The interesting value is the one for *unset*, which sits
- * between `low` and `med` rather than at the bottom.
+ * Urgency rank, ascending. The interesting value is the one for *unset*, which sits
+ * between `low` and `med` rather than at the bottom: `low` is an explicit demotion BELOW
+ * the default, and everything above it is an explicit promotion. Bottom would say the
+ * false thing - that an item nobody has looked at is less urgent than one somebody
+ * deliberately marked as able to wait.
  *
- * Bottom would be the obvious choice and it is the wrong one: every task that exists
- * today is unset, so a single item somebody deliberately marked `low` would sort above
- * the entire backlog. Ranking unset just under `med` says the true thing instead -
- * `low` is an explicit demotion *below* the default, and everything above it is an
- * explicit promotion. A backlog nobody has triaged keeps the order it always had.
+ * NOT A SORT RANK ANY MORE. The backlog is in the operator's order (`byBacklogRank`), and
+ * this survives for two readers that compare urgency without ordering anything: the
+ * planner panel's "N of the ready carry a higher priority" line, and the one-time
+ * `backlog_rank` backfill through `byPriorityThenAge`.
  */
 const PRIORITY_RANK: Record<TaskPriority, number> = { low: 0, med: 2, high: 3, blocker: 4 };
 const UNSET_RANK = 1;
@@ -266,12 +269,57 @@ export function normalizeLabels(raw: readonly string[]): string[] {
 }
 
 /**
- * Order two tasks for the backlog: most urgent first, and oldest first within a
- * priority so a triaged batch still drains in the order it was authored.
+ * Order two tasks by priority, most urgent first and oldest first within a priority.
+ *
+ * NO LONGER THE BACKLOG'S ORDER. The backlog is ordered by `byBacklogRank` below - the
+ * operator arranges it and priority is pure annotation, which is the whole point of the
+ * manual-order feature (see `docs/plans/backlog-manual-order/plan.md`). This survives for
+ * exactly one job: the one-time `backlog_rank` backfill in `migrate()`, which numbers an
+ * upgrading operator's backlog in the order their board was already showing so upgrade day
+ * changes nothing visible. Nothing else calls it, and nothing else should.
  */
 export function byPriorityThenAge(a: Task, b: Task): number {
   const rank = priorityRank(b.priority) - priorityRank(a.priority);
   return rank !== 0 ? rank : a.createdAt - b.createdAt;
+}
+
+/**
+ * The fields `byBacklogRank` needs, so it can order rows read straight out of SQLite
+ * (`normalizeBacklogRanks`) with the same comparator the browser orders `Task`s with.
+ * A `Task` satisfies this structurally, so callers pass one unchanged.
+ */
+export interface BacklogRanked {
+  id: string;
+  createdAt: number;
+  backlogRank: number | null;
+}
+
+/**
+ * Order the backlog: the operator's arrangement, ascending, unranked rows last.
+ *
+ * The single comparator every backlog surface reads through - `backlogTasks` sorts by it,
+ * and the board column, the Line drawer, the Sitrep, `plannableBacklog` and `readyBacklog`
+ * all come through there. One order, so none of them can drift from the scheduler.
+ *
+ * THE TWO-STEP COMPARISON IS LOAD-BEARING AND THE ONE-LINER IS WRONG. The obvious
+ * `(a.backlogRank ?? Infinity) - (b.backlogRank ?? Infinity)`, guarded with
+ * `Number.isFinite`, looks equivalent and is not: a finite rank minus `Infinity` is
+ * `-Infinity`, the guard rejects it, and the comparison falls through to `createdAt` - so
+ * an old unranked row sorts AHEAD of every ranked one, the exact opposite of the rule.
+ * Hence the explicit mixed-case branch, and only then the age fallback.
+ *
+ * Total on purpose. `Infinity - Infinity` is `NaN` and a `NaN`-returning comparator sorts
+ * unpredictably, which is why two unranked rows fall through to `createdAt` and then `id`.
+ * Two rows can genuinely share a rank (a restored backup, a hand-edited database), and
+ * returning 0 there would let two cards swap places between renders for no reason a human
+ * could see.
+ */
+export function byBacklogRank(a: BacklogRanked, b: BacklogRanked): number {
+  const ar = a.backlogRank ?? Infinity;
+  const br = b.backlogRank ?? Infinity;
+  if (ar !== br && Number.isFinite(ar - br)) return ar - br;
+  if (ar !== br) return ar === Infinity ? 1 : -1;
+  return a.createdAt - b.createdAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 }
 
 /** What a session's task pill has left to say once the constants and duplicates are dropped. */

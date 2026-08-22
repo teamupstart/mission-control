@@ -214,6 +214,7 @@ const BASE_TASK = {
   priority: null,
   labels: [],
   dependencies: [],
+  backlogRank: null,
   enabled: true,
   model: null,
   effort: null,

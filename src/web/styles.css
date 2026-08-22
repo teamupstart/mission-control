@@ -23714,6 +23714,50 @@ span.line-run-prov {
   font-size: 10px;
   color: var(--dim);
 }
+/* The order controls. Quiet by default and lit on hover or focus, because they are on
+   EVERY card in the column: four permanently-filled buttons per row would turn a backlog
+   you read by shape into a wall of chrome, and the thing a human scans this column for is
+   the titles. They stay present rather than hover-revealed - a control that appears only
+   under a pointer is one a keyboard never finds. */
+.bl-move {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.bl-move-btn {
+  font: inherit;
+  font-size: 10px;
+  line-height: 1.4;
+  padding: 1px 6px;
+  color: var(--dim);
+  background: transparent;
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  cursor: pointer;
+  transition:
+    color 0.12s ease,
+    border-color 0.12s ease,
+    background 0.12s ease;
+}
+.bl-move-btn:hover:not(:disabled),
+.bl-move-btn:focus-visible {
+  color: var(--fg);
+  background: var(--panel-2);
+  border-color: color-mix(in oklab, var(--pr-merged) 45%, var(--border));
+}
+.bl-move-btn:focus-visible {
+  outline: 2px solid var(--select);
+  outline-offset: 1px;
+}
+/* At the end of the column, so this move has nowhere to go. Dimmed rather than removed:
+   the row keeps its shape down the whole column, and the first card's `up` staying
+   visible-but-dead is what says "this IS the top" rather than leaving a gap to interpret. */
+.bl-move-btn:disabled {
+  cursor: default;
+  opacity: 0.35;
+}
 /* The priority control is styled AS the chip rather than beside one - see the comment in
    BacklogColumn.tsx. It keeps the shared CSS-painted picker but replaces the closed
    control's chrome, so the same priority looks identical whether you are reading it in

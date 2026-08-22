@@ -57,6 +57,7 @@ import type {
   PipelinesConfigPatch,
   PipelineInstallerLaunchBody,
   TaskSourcesConfigPatch,
+  ReorderTask,
   UpdateTask,
   TaskDependencyInput,
   EnsembleActionBody,
@@ -1548,6 +1549,20 @@ export const api = {
    */
   updateTask: (id: string, patch: UpdateTask) =>
     post(`/api/tasks/${encodeURIComponent(id)}/update`, patch),
+  /**
+   * Move a backlog task in the operator's order - the ONLY client entry point for a rank,
+   * which is not writable through `updateTask` or any create body.
+   *
+   * `before`/`after` name the NEIGHBOUR rather than a position number, because an index is
+   * a claim about the list this browser last rendered and the daemon's list has moved on
+   * since. The refusals are worth surfacing rather than swallowing: a 404 means the card is
+   * gone and a 409 means it moved on, and both are things the operator can see.
+   */
+  reorderTask: (id: string, body: ReorderTask) =>
+    post<ActionResult & { task?: Task }>(
+      `/api/tasks/${encodeURIComponent(id)}/reorder`,
+      body,
+    ),
   /**
    * Hand a backlog task to an agent that is already running, rather than launching one.
    * Dashboard callers claim `overrideDisabled` for the manual handoff; without it the

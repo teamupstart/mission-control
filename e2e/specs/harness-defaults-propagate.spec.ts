@@ -76,6 +76,8 @@ test("Settings waits for a saved runtime rather than guessing during its first r
 
   await dashboard.goto(`${daemon.baseURL}/#/settings`);
   await dashboard.getByRole("tab", { name: /Harnesses/ }).click();
+  // Proves a read was genuinely intercepted, so the assertion below cannot pass vacuously.
+  // WHICH read it was is deliberately not asserted - the Settings tab's own is held too.
   await gateHit;
   await expect(dashboard.getByText("Loading saved runtime default for Claude Code.")).toBeVisible();
   await expect(

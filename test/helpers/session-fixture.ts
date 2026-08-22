@@ -142,6 +142,9 @@ export function mkTask(over: Partial<Task> = {}): Task {
     priority: null,
     labels: [],
     dependencies: [],
+    // Unranked: this task is not in the backlog, which is the only place a rank means
+    // anything. A backlog fixture that cares about order sets one.
+    backlogRank: null,
     // The default every task is created with, so a test that says nothing about the
     // autopilot toggle keeps describing a schedulable backlog item.
     enabled: true,

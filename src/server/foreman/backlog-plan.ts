@@ -134,12 +134,12 @@ export type BacklogPlanResult =
  *  - **Cycles broken.** Two tasks waiting on each other deadlock the pair FOREVER, and
  *    invisibly: a blocked card looks exactly like a card correctly waiting its turn.
  *    Broken by finding the cycles themselves and dropping ONLY the edges that close
- *    one. The narrowness is the point: the model is asked for a topological order but
- *    routinely answers in priority order, and a repair that judged edges by position
- *    in that array would delete perfectly good dependencies - the one thing this
- *    feature exists to produce - every time it did. The entries are then emitted in a
- *    topological order derived from the surviving edges, so the model's ordering
- *    signal still shows through wherever it does not contradict a dependency.
+ *    one. The narrowness is the point: the model's array order is an incidental
+ *    artefact - nothing schedules from it - and a repair that judged edges by position
+ *    in it would delete perfectly good dependencies, the one thing this feature exists
+ *    to produce, every time the model listed things in a different order than it
+ *    declared them. The entries are then emitted in a topological order derived from
+ *    the surviving edges, which keeps the stored plan readable as a graph.
  *  - **Missing entries appended.** A backlog item with no entry leaves `planStale` true
  *    forever, so the worker replans on every single tick - an unbounded loop of Sonnet
  *    calls that produces nothing. Appended unblocked, at the end, which is the safe
@@ -150,8 +150,10 @@ export type BacklogPlanResult =
 export function sanitizePlan(report: BacklogReport, backlog: Task[]): BacklogPlanInput {
   const known = new Set(backlog.map((t) => t.id));
 
-  // The model's order, restricted to real backlog ids and deduplicated. It is a
-  // preference, not a constraint: it breaks ties in the topological sort below.
+  // The model's order, restricted to real backlog ids and deduplicated. It is neither a
+  // preference nor a constraint on SCHEDULING - the operator's `backlogRank` decides that
+  // - it only breaks ties in the topological sort below, so the stored plan reads as a
+  // coherent graph rather than in whatever order the reply arrived.
   const order: string[] = [];
   const placed = new Set<string>();
   for (const t of report.tasks) {
@@ -266,10 +268,16 @@ function dropCyclicEdges(order: string[], deps: Map<string, string[]>): void {
  * Order the ids so every dependency precedes the item that waits on it, breaking ties
  * by the model's own order.
  *
- * `readyBacklog` filters on blockers rather than position, so this ordering is a
- * READOUT more than a schedule - but it is the readout the board's column and the
- * "next up" mark are drawn from, and a plan that listed an item above the thing it
- * waits on would be telling the operator the opposite of what the scheduler will do.
+ * This ordering is a READOUT and nothing else - the sentence the old comment here ended
+ * on the other side of. `readyBacklog` filtered on blockers rather than position even
+ * then; now it does not read this order at all, because the backlog is in the order the
+ * operator arranged (see docs/plans/backlog-manual-order/plan.md). What survives is a
+ * stored plan that reads as a dependency graph rather than as a shuffled list, which is
+ * worth keeping for anyone reading the plan itself.
+ *
+ * DELIBERATELY NOT DELETED along with its reader. Removing the ordering from the writer
+ * would be churn with no reader change behind it, and would make every stored plan
+ * harder to read for nothing.
  *
  * `deps` must already be acyclic; the fallback below only keeps this total.
  */

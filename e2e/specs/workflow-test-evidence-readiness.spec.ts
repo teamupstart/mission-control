@@ -259,7 +259,7 @@ test("two workflows sharing the auditor draw two rows an operator can tell apart
   // Both are the same auditor at the same guidance, which is precisely why the workflow name
   // is the only thing separating them.
   await expect(slices.locator("p").filter({ hasText: "E2E readiness alpha" }))
-    .toContainText("1 attempts · first pass 0% (0 of 1 first submissions)");
+    .toContainText("1 attempt · first pass 0% (0 of 1 first submissions)");
   await expect(slices.getByText("persona")).toHaveCount(0);
 
   await shoot(card, "two-workflows");

@@ -152,6 +152,35 @@ test("a window whose every event is unreadable says so, not that the auditor nev
   assert.doesNotMatch(html, /%/);
 });
 
+/**
+ * A capped window and an unreadable one are both true at once, and both have to be said.
+ *
+ * If the newest `scanLimit` events are all malformed, the window is truncated AND unreadable.
+ * Reporting only the second told an operator nothing could be read while hiding that older -
+ * possibly perfectly readable - attempts were never looked at. The remedies differ: one is a
+ * corrupt payload to investigate, the other is a window to widen.
+ */
+test("an unreadable window still says its window was capped", () => {
+  const html = render({ ...EMPTY, attempts: 0, malformed: 4, truncated: true, scanLimit: 4 });
+  assert.match(html, /No Test Evidence Auditor attempt could be read back/);
+  assert.match(html, /could not be read back/);
+  assert.match(html, /only the newest 4 are counted/);
+});
+
+/** A row for a single attempt reads as one attempt. */
+test("a one-attempt guidance row is described in the singular", () => {
+  const html = render({
+    ...MEASURED,
+    slices: [
+      { ...MEASURED.slices[0]!, attempts: 1 },
+      { ...MEASURED.slices[1]!, attempts: 2 },
+    ],
+  });
+  assert.match(html, /1 attempt · first pass/);
+  assert.doesNotMatch(html, /1 attempts/);
+  assert.match(html, /2 attempts · first pass/);
+});
+
 test("one unreadable attempt is described in the singular", () => {
   assert.match(render({ ...EMPTY, attempts: 0, malformed: 1 }), /1 recorded attempt\s+could not/);
   assert.match(

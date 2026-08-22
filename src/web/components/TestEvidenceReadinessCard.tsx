@@ -153,6 +153,28 @@ function Group({
   );
 }
 
+/**
+ * The window was capped, said in every state that has one.
+ *
+ * This has to outlive the branch it started in. A window whose newest `scanLimit` events are
+ * ALL unreadable is both truncated and unreadable, and reporting only the second one tells an
+ * operator that nothing could be read while hiding that older attempts - possibly perfectly
+ * readable ones - were never looked at. The two facts have different remedies: one is a
+ * corrupt payload to investigate, the other is a window to widen with `limit`.
+ */
+function TruncationNotice({
+  aggregate,
+}: {
+  aggregate: TestEvidenceAuditAggregate;
+}): React.JSX.Element | null {
+  if (!aggregate.truncated) return null;
+  return (
+    <p className="settings-hint">
+      Older attempts are outside this window: only the newest {aggregate.scanLimit} are counted.
+    </p>
+  );
+}
+
 function Row({ label, value }: { label: string; value: string }): React.JSX.Element {
   return (
     <p className="sc-health-row">
@@ -217,6 +239,7 @@ export function TestEvidenceReadinessCard({
             {" "}could not be read back, so no rate can be computed. This is a malformed or
             unrecognised telemetry payload, not an auditor that has never run.
           </p>
+          <TruncationNotice aggregate={aggregate} />
         </>
       ) : (
         <>
@@ -294,7 +317,8 @@ export function TestEvidenceReadinessCard({
                   label={sliceLabel(slice, slice.workflowId === null
                     ? null
                     : workflowNames.get(slice.workflowId) ?? null)}
-                  value={`${slice.attempts} attempts · first pass `
+                  value={`${slice.attempts} ${slice.attempts === 1 ? "attempt" : "attempts"}`
+                    + " · first pass "
                     + formatAuditRate(slice.firstSubmissionAccepted, "first submissions")}
                 />
               ))}
@@ -304,12 +328,7 @@ export function TestEvidenceReadinessCard({
           {/* Both of these are said out loud rather than left to be inferred from a rate that
               looks complete. A capped window and an unreadable row each mean the numbers
               above describe less than the operator thinks they do. */}
-          {aggregate.truncated && (
-            <p className="settings-hint">
-              Older attempts are outside this window: only the newest {aggregate.scanLimit}{" "}
-              are counted.
-            </p>
-          )}
+          <TruncationNotice aggregate={aggregate} />
           {aggregate.malformed > 0 && (
             <p className="settings-warn">
               {aggregate.malformed} recorded {aggregate.malformed === 1 ? "attempt" : "attempts"}

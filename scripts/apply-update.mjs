@@ -173,13 +173,20 @@ export function realApplyOperations(logPath, installTimeoutMs = INSTALL_TIMEOUT_
       }
       throw new Error("the app did not quit before the update timeout");
     },
-    install: (node, script, tag) => {
+    install: (node, script, tag, appsDir) => {
       // SIGKILL, not the default SIGTERM: this child is the last thing standing between the
       // person and a rollback, and it must be gone before one starts. Its own grandchildren
       // (npm, electron-builder) do outlive it, but they only ever write inside the
-      // updater-owned clone - nothing moves an app into /Applications except the child that
-      // was just killed - so they waste cycles rather than racing the rollback.
-      const result = spawnSync(node, [script, "--ref", tag], {
+      // updater-owned clone - nothing moves an app into the installed location except the
+      // child that was just killed - so they waste cycles rather than racing the rollback.
+      // `--apps-dir` is forwarded from the receipt's own `appPath`, not left to the
+      // install script's `/Applications` default. For an ordinary install the two are the
+      // same string, so nothing changes. For an install made somewhere else - which is the
+      // only way the release-verification runbook can exercise this path without touching
+      // the operator's real app - the default would have rebuilt into `/Applications` while
+      // the backup, the rollback, and the relaunch all still pointed at the receipt's path,
+      // leaving the update reported as applied and the running app still on the old version.
+      const result = spawnSync(node, [script, "--ref", tag, "--apps-dir", appsDir], {
         encoding: "utf8",
         maxBuffer: 10 * 1024 * 1024,
         timeout: installTimeoutMs,
@@ -309,7 +316,12 @@ export async function runApplyUpdate(args, ops = realApplyOperations(args.logPat
     if (hadReceipt) ops.copy(receiptPath, backupReceipt);
     backupReady = true;
 
-    ops.install(process.execPath, join(args.sourceClone, "scripts", "install-app.mjs"), args.targetTag);
+    ops.install(
+      process.execPath,
+      join(args.sourceClone, "scripts", "install-app.mjs"),
+      args.targetTag,
+      dirname(args.appPath),
+    );
     record({ result: "success", targetVersion, recordedAt: ops.nowIso() });
     try {
       ops.launch(args.appPath);

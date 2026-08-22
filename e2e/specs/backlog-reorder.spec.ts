@@ -581,14 +581,24 @@ test("the same drag still hands a card to an idle agent", async ({ dashboard, da
   // And the daemon answered, in the browser, about THIS agent - the answer names the task
   // it is already carrying, which nothing but the assign path could have produced.
   //
-  // Why the answer is a refusal, stated rather than left to look like a broken feature: the
-  // only agent an e2e run can stand up is one Mission Control dispatched, and a dispatched
-  // agent is carrying its own task in its own checkout. `TaskManager.assign` refuses to
-  // give it a second one - a CAPACITY rule older than this phase and untouched by it, which
-  // `test/task-assign.test.ts` pins on its own, and which cannot be cleared here because
-  // freeing that agent's checkout ("Clean up") also stops the agent. What a browser has to
-  // prove is the half a browser owns: the drop landed on the tile, ran the assign, and did
-  // not reorder. It did.
+  // WHY THE ANSWER IS A REFUSAL, and where the rest of this claim is proved. The handover
+  // ends by typing into a live agent's terminal, and nothing in this repository can host
+  // one: `paneAcceptsPrompt` refuses any session whose control is not `keystroke`, this
+  // daemon's only terminal backend is a recording fake, and passive discovery is off
+  // (`MISSION_POLL_MS=0`, so a suite run never cards the operator's own agents). So the
+  // only agent an e2e run can stand up is a dispatched SDK one, which is also carrying its
+  // own task in its own checkout - and `TaskManager.assign` refuses it a second one, a
+  // CAPACITY rule older than this phase and untouched by it. Freeing that checkout ("Clean
+  // up") stops the agent, so there is no order of operations that reaches a free one.
+  //
+  // The claim is therefore split, with ONE stubbed hop between the halves and no gap:
+  //   here          - a card dropped on an idle agent's tile produces exactly one
+  //                   `POST /api/tasks/:id/assign` naming that session, and no reorder;
+  //   test/task-assign.test.ts, "the drop's own arguments hand the task to the agent"
+  //                 - that exact request hands the task over: status running, on that
+  //                   session, owning no checkout of its own.
+  // Every case in that file stubs the pane for the same reason this one cannot avoid the
+  // refusal, and it is the same single hop in both places.
   await expect(
     dashboard.getByRole("status").filter({ hasText: "it takes one task at a time" }),
   ).toBeVisible();

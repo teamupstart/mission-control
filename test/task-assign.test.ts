@@ -806,6 +806,49 @@ test("a clean, queue-less agent takes the drop with no confirmation at all", asy
  * about an assign already says "fresh start" (branch back to origin's default, queue
  * dropped, context cleared); the name was the one thing left behind.
  */
+/**
+ * The board's drag, in the arguments the drop actually sends.
+ *
+ * `dropTaskOnSession` calls `api.assignTask(id, session.id, true)`, which posts
+ * `{sessionId, overrideDisabled: true, confirmReset: false}`, and the route forwards those
+ * two flags verbatim. `e2e/specs/backlog-reorder.spec.ts` proves in a browser that a card
+ * dropped on an idle agent's tile produces exactly that request and no reorder; this is the
+ * other half of the same claim - that this request HANDS THE TASK OVER.
+ *
+ * The two halves are split because the last hop cannot be hosted anywhere in this repo: a
+ * handover ends by typing into a live agent's terminal, and `paneAcceptsPrompt` refuses any
+ * session whose control is not `keystroke`. The e2e daemon runs with passive discovery off
+ * (`MISSION_POLL_MS=0`, so a suite run never cards the operator's own agents) and its only
+ * terminal backend is a recording fake, so no keystroke-capable session can exist there -
+ * which is why every case in this file stubs the pane too. The stub is the same one hop in
+ * both places, and it is the only one.
+ */
+test("the drop's own arguments hand the task to the agent", async () => {
+  const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-drop-args-");
+  gitIn(clone, "checkout", "-q", "--detach");
+  r.upsertTask(mkTask({ repoRoot: clone, title: "Hand me over" }));
+
+  const res = await tasks.assign("t1", sessionId, {
+    // Exactly what `POST /api/tasks/:id/assign` derives from the drop's body.
+    overrideDisabled: true,
+    confirmReset: false,
+    paneReady,
+    reset: cleanReset,
+    inject: async () => ({ ok: true, pasted: true, submitVerified: true }),
+  });
+
+  assert.equal(res.ok, true, res.error);
+  assert.equal(res.resetConfirm, undefined, "a clean agent is handed the task with no question");
+  // The outcome the gesture promises: the task is no longer in the backlog, and it is on
+  // the agent that was dropped onto.
+  const handed = r.getTask("t1");
+  assert.equal(handed?.status, "running");
+  assert.equal(handed?.sessionId, sessionId);
+  // And it owns no checkout of its own - the agent kept the one it had, which is the
+  // difference between a handover and a dispatch.
+  assert.equal(handed?.worktreePath, null);
+});
+
 test("a handover names the agent's terminal after the task it just took", async () => {
   const { r, tasks, sessionId, clone } = setupOnTmux("mission-assign-rename-", "pool-worktree-3");
   gitIn(clone, "checkout", "-q", "--detach");

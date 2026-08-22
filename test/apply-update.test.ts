@@ -25,7 +25,12 @@ function args(stateDirectory: string) {
 }
 
 function operations(
-  options: { installFails?: boolean; launchFails?: boolean; retainFails?: boolean } = {},
+  options: {
+    installFails?: boolean;
+    launchFails?: boolean;
+    retainFails?: boolean;
+    waitFails?: boolean;
+  } = {},
 ) {
   const actions: string[] = [];
   let firstLaunch = true;
@@ -43,6 +48,7 @@ function operations(
     nowIso: () => "2026-08-19T14:00:00.000Z",
     waitForParent: async (pid: number) => {
       actions.push(`wait:${pid}`);
+      if (options.waitFails) throw new Error("the app did not quit before the update timeout");
     },
     install: (node: string, script: string, tag: string) => {
       actions.push(`install:${node}:${script}:${tag}`);
@@ -75,7 +81,16 @@ test("the helper waits, backs up, installs the exact tag, records success, and r
   assert.deepEqual(result, { ok: true, message: null });
   assert.equal(outcome.result, "success");
   assert.equal(outcome.targetVersion, "1.2.4");
-  assert.ok(f.actions[0]?.startsWith("wait:42"));
+  // The wait comes before every action that touches the installed app - which is what this
+  // pinned, and is not the same as being literally first now that clearing the previous
+  // attempt's retained evidence runs ahead of it. That clear touches only the state directory.
+  const waitIndex = f.actions.indexOf("wait:42");
+  assert.ok(waitIndex >= 0);
+  assert.ok(
+    f.actions
+      .slice(0, waitIndex)
+      .every((action) => action === `remove:${join(state, RETAINED_FAILURE_DIR_NAME)}`),
+  );
   assert.ok(f.actions.some((action) => action.includes("previous-app.bundle")));
   assert.ok(
     f.actions.some(
@@ -223,6 +238,29 @@ test("a failed update leaves the previous app and the broken one behind to inspe
   );
 });
 
+test("a failure before there is any backup still clears the last attempt's evidence", async (t) => {
+  // `fail()` only retains when `backupReady` is true, so a failure that happens BEFORE the
+  // backup exists - the app never quitting, or the app being gone already - retains nothing.
+  // If clearing lived beside the outcomes, an older attempt's evidence would survive underneath
+  // it and the documented one-attempt lifetime would be false for exactly these cases.
+  const state = await mkdtemp(join(tmpdir(), "mission-apply-early-failure-"));
+  t.after(() => rm(state, { recursive: true, force: true }));
+  const f = operations({ waitFails: true });
+
+  const result = await runApplyUpdate(args(state), f.ops);
+  const outcome = JSON.parse(await readFile(join(state, "update-outcome.json"), "utf8"));
+  const clearIndex = f.actions.indexOf(`remove:${join(state, RETAINED_FAILURE_DIR_NAME)}`);
+
+  assert.equal(result.ok, false);
+  assert.equal(outcome.result, "failure");
+  // Cleared, and cleared BEFORE the operation that failed - not after it, which never runs.
+  assert.ok(clearIndex >= 0);
+  assert.ok(clearIndex < f.actions.indexOf("wait:42"));
+  // Nothing was backed up, so nothing is retained in its place and nothing was rolled back.
+  assert.ok(!f.actions.some((action) => action.endsWith(`->${join(state, RETAINED_FAILURE_DIR_NAME)}`)));
+  assert.ok(!f.actions.some((action) => action.includes("rollback-")));
+});
+
 test("a successful update clears what the last failed one retained", async (t) => {
   const state = await mkdtemp(join(tmpdir(), "mission-apply-retain-clear-"));
   t.after(() => rm(state, { recursive: true, force: true }));
@@ -231,8 +269,10 @@ test("a successful update clears what the last failed one retained", async (t) =
   const result = await runApplyUpdate(args(state), f.ops);
 
   assert.equal(result.ok, true);
-  // Retention is one attempt's worth: it cannot accumulate across updates.
-  assert.ok(f.actions.includes(`remove:${join(state, RETAINED_FAILURE_DIR_NAME)}`));
+  // Retention is one attempt's worth: it cannot accumulate across updates. Cleared as the
+  // attempt starts, so this holds however the attempt ends.
+  const clearIndex = f.actions.indexOf(`remove:${join(state, RETAINED_FAILURE_DIR_NAME)}`);
+  assert.ok(clearIndex >= 0 && clearIndex < f.actions.indexOf("wait:42"));
   assert.ok(!f.actions.some((action) => action.startsWith(`copy:`) && action.endsWith(RETAINED_FAILURE_DIR_NAME)));
 });
 

@@ -164,9 +164,17 @@ function ghFailure(result: CommandResult): UpdateError {
     );
   }
   const detail = firstLine(result.stderr || result.stdout);
-  // Rate limiting first. GitHub's own 403 body reads "higher rate limits apply to authenticated
-  // requests", so an auth test run first would claim a working credential had lapsed.
-  if (/rate limit|HTTP 403|HTTP 429|abuse detection/i.test(detail)) {
+  // Rate limiting first, because GitHub's own rate-limit body reads "higher rate limits apply to
+  // authenticated requests" and an auth test running first would call a working credential
+  // lapsed.
+  //
+  // The status code alone decides nothing here. 403 is also how GitHub answers "Resource not
+  // accessible by integration" and every other authorization refusal, and telling someone to
+  // wait an hour for a permission they will never be granted is worse than saying nothing -
+  // this class is suppressed during background checks precisely because it clears itself. So a
+  // 403 has to carry a rate-limit marker of its own to land here; only 429, which GitHub uses
+  // for nothing else, is taken on the code.
+  if (/rate limit|HTTP 429|abuse detection|secondary rate/i.test(detail)) {
     return new UpdateError(
       "GitHub's API rate limit is reached, so releases cannot be checked right now. It resets within the hour and Mission Control will check again on its own.",
       true,

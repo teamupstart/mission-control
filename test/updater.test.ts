@@ -242,6 +242,29 @@ test("rate limiting reads as rate limiting, and does not read as a lapsed creden
   );
 });
 
+test("a 403 that is not a rate limit is not reported as one", async () => {
+  // 403 is also how GitHub refuses authorization outright. Reporting that as a rate limit tells
+  // someone to wait an hour for a permission they will never be granted - and this class is
+  // deliberately suppressed during background checks, so the wait would be silent too.
+  for (const stderr of [
+    "HTTP 403: Resource not accessible by integration",
+    "HTTP 403: Must have admin rights to Repository",
+  ]) {
+    await assert.rejects(
+      latestStableRelease(async () => ({ code: 1, stdout: "", stderr })),
+      (error: unknown) => {
+        assert.doesNotMatch(String((error as Error).message), /rate limit/i);
+        return true;
+      },
+    );
+  }
+  // 429 is used for nothing else, so it still counts on the code alone.
+  await assert.rejects(
+    latestStableRelease(async () => ({ code: 1, stdout: "", stderr: "HTTP 429: Too Many Requests" })),
+    /rate limit is reached/,
+  );
+});
+
 test("only a standing, user-actionable failure may interrupt a background check", () => {
   assert.equal(surfacesFromBackgroundCheck("gh-auth"), true);
   assert.equal(surfacesFromBackgroundCheck("gh-missing"), true);

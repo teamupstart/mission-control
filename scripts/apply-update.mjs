@@ -37,9 +37,10 @@ export const INSTALL_TIMEOUT_MS = 45 * 60 * 1000;
 /**
  * Where a failed update leaves what it was holding.
  *
- * Lifetime: until the next update attempt resolves, success or failure. That is one attempt's
- * worth of evidence - enough to inspect the broken bundle and to roll back a second time by
- * hand - and it cannot accumulate.
+ * Lifetime: until the next update attempt STARTS - cleared before that attempt does anything
+ * that can fail, so it holds one attempt's worth however that attempt ends, including the
+ * failures that happen before there is a backup to retain in its place. That is enough to
+ * inspect the broken bundle and to roll back a second time by hand, and it cannot accumulate.
  */
 export const RETAINED_FAILURE_DIR_NAME = "failed-update";
 
@@ -234,7 +235,6 @@ export async function runApplyUpdate(args, ops = realApplyOperations(args.logPat
    */
   const retainFailure = () => {
     try {
-      ops.remove(retained);
       ops.copy(tempDirectory, retained);
       return true;
     } catch (error) {
@@ -291,6 +291,17 @@ export async function runApplyUpdate(args, ops = realApplyOperations(args.logPat
 
   try {
     record({ result: "in-progress", targetVersion, recordedAt: ops.nowIso() });
+    // The single owner of the retention lifetime, and it runs here rather than beside either
+    // outcome because the failures BEFORE the backup exists - the app never quitting, the app
+    // being gone already - reach `fail()` with `backupReady` still false and would leave an
+    // older attempt's evidence in place while the documented lifetime claims one attempt's
+    // worth. Those failures leave the installed app untouched, so there is nothing to retain
+    // in their place; clearing here is what makes "one attempt's worth" true for all of them.
+    try {
+      ops.remove(retained);
+    } catch (error) {
+      ops.log(`could not clear the retained failure directory: ${error?.message ?? error}`);
+    }
     await ops.waitForParent(args.parentPid);
     if (!ops.exists(args.appPath)) throw new Error("the installed app is missing before the update");
     ops.copy(args.appPath, backupApp);
@@ -300,13 +311,6 @@ export async function runApplyUpdate(args, ops = realApplyOperations(args.logPat
 
     ops.install(process.execPath, join(args.sourceClone, "scripts", "install-app.mjs"), args.targetTag);
     record({ result: "success", targetVersion, recordedAt: ops.nowIso() });
-    // A successful update supersedes whatever the last failed one left behind. This is the
-    // other half of the retention lifetime: one attempt's worth, never an accumulation.
-    try {
-      ops.remove(retained);
-    } catch (error) {
-      ops.log(`could not clear the retained failure directory: ${error?.message ?? error}`);
-    }
     try {
       ops.launch(args.appPath);
     } catch (error) {

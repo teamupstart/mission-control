@@ -135,8 +135,8 @@ or relaunch failure restores both the previous app and its receipt before relaun
 also copies what it was holding to `failed-update/` in the state directory before its temp directory
 is removed: the previous app bundle, the previous receipt, and the bundle that failed. That is the
 evidence of how it broke and a second, by-hand rollback if the automatic one did not take. It keeps
-one attempt's worth - the next update clears it, whether that one succeeds or fails - so it cannot
-accumulate. If that copy cannot be made at all, because the state directory is full or unwritable,
+one attempt's worth - the next update clears it as it starts, before anything that could fail,
+so it holds the latest attempt however that attempt ended and cannot accumulate. If that copy cannot be made at all, because the state directory is full or unwritable,
 nothing is deleted to compensate: the helper's temp directory is left in place holding the backup,
 and the failed bundle stays beside the installed app. The operator whose state directory is too
 broken to hold a second copy is exactly the one who must not lose the first.

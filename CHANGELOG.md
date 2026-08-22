@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.1](https://github.com/mancej-cyc/ai-harness/compare/v1.0.0...v1.0.1) (2026-08-22)
+
+
+### Bug Fixes
+
+* **release:** unpin release-as so releases after v1.0.0 can be cut ([#732](https://github.com/mancej-cyc/ai-harness/issues/732)) ([e4eefe5](https://github.com/mancej-cyc/ai-harness/commit/e4eefe532c7a823a61ef654a67b812bb0908e570))
+
 ## [1.0.0](https://github.com/mancej-cyc/ai-harness/compare/v0.1.0...v1.0.0) (2026-08-22)
 
 

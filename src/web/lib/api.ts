@@ -1557,9 +1557,15 @@ export const api = {
    * a claim about the list this browser last rendered and the daemon's list has moved on
    * since. The refusals are worth surfacing rather than swallowing: a 404 means the card is
    * gone and a 409 means it moved on, and both are things the operator can see.
+   *
+   * A 200 carries the moved task's own fields at the TOP level, not under a `task` key:
+   * this route replies with the bare `Task`, like its dispatch/assign/push siblings, and
+   * `request` adds the `ok`. So the new rank reads off `r.backlogRank` - typing it as
+   * `{ task?: Task }` would describe the tours routes, which really do wrap it, and would
+   * hand every caller an always-undefined field.
    */
   reorderTask: (id: string, body: ReorderTask) =>
-    post<ActionResult & { task?: Task }>(
+    post<ActionResult & Partial<Task>>(
       `/api/tasks/${encodeURIComponent(id)}/reorder`,
       body,
     ),

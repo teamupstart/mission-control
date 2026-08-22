@@ -246,3 +246,53 @@ test("a reorder is one row and one event, until a collision makes it every row",
     assert.ok(Number.isSafeInteger(task.backlogRank), `${task.title} has an unusable rank`);
   }
 });
+
+/**
+ * A reorder that cannot COMMIT must leave no trace - not in SQLite, and not on the wire.
+ *
+ * The bug this pins: the row write used to go through `registry.upsertTask`, which
+ * persists AND broadcasts in one call, with `COMMIT` as the next statement. A `task_upsert`
+ * cannot be recalled, so a COMMIT that threw rolled the row back underneath dashboards
+ * that had already drawn the card in its new place - and left the registry's in-memory copy
+ * disagreeing with the database, where a later persistence could make the phantom move
+ * durable. That node:sqlite is synchronous rules out an interleaving, which is a different
+ * hazard and never protected against this one.
+ *
+ * COMMIT is broken deliberately rather than waited for, because the real triggers - a full
+ * disk, a busy database - are not reproducible on demand and the ordering is what matters.
+ */
+test("a reorder whose COMMIT fails publishes nothing and changes nothing", async () => {
+  const h = setup(["a", "b", "c"]);
+  const before = h.order();
+  const rankBefore = h.registry.getTask("c")!.backlogRank;
+
+  const seen: string[] = [];
+  const unsubscribe = h.registry.subscribe((e) => {
+    if (e.type === "task_upsert") seen.push(e.task.id);
+  });
+
+  const d = openDb();
+  const realExec = d.exec.bind(d);
+  (d as unknown as { exec: (sql: string) => void }).exec = (sql: string) => {
+    if (sql.trim().toUpperCase() === "COMMIT") throw new Error("disk full");
+    return realExec(sql);
+  };
+
+  try {
+    const res = await h.reorder("c", { position: "top" });
+    // However the route surfaces it, what matters is that it did not report success.
+    assert.notEqual(res.status, 200);
+  } finally {
+    (d as unknown as { exec: (sql: string) => void }).exec = realExec;
+    unsubscribe();
+  }
+
+  assert.deepEqual(seen, [], "a rolled-back move must never reach a dashboard");
+  assert.equal(h.registry.getTask("c")!.backlogRank, rankBefore);
+  assert.deepEqual(h.order(), before);
+  // The durable row is the one that decides; a fresh registry re-reads it from SQLite.
+  const durable = openDb()
+    .prepare(`SELECT backlog_rank AS rank FROM tasks WHERE id = ?`)
+    .get("c") as { rank: number | null } | undefined;
+  assert.equal(durable?.rank, rankBefore);
+});

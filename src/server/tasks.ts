@@ -56,6 +56,7 @@ import {
   retroFollowupForTask,
   taskReposFor,
   taskWorkEpisodeForTask,
+  upsertTask as dbUpsertTask,
   workEpisodeRepoPrsForTask,
   type TaskWorkEpisodeBinding,
 } from "./db.ts";
@@ -3622,6 +3623,7 @@ export class TaskManager {
     if (ownsTransaction) d.exec("BEGIN IMMEDIATE");
     let moved: Task;
     let normalized: ReadonlyMap<string, number>;
+    let displaced: readonly string[] = [];
     try {
       const placement = placeBacklogRank(d, id, request.position, anchorId);
       // The backlog has no integer left where the operator pointed. Refused rather than
@@ -3640,17 +3642,24 @@ export class TaskManager {
         backlogRank: placement.rank,
         updatedAt: Date.now(),
       };
-      // Writes and publishes together, which puts the `task_upsert` inside the
-      // transaction - acceptable only because COMMIT is the very next statement and
-      // nothing can interleave between them: node:sqlite is synchronous.
-      this.registry.upsertTask(moved);
+      // Persisted INSIDE the transaction, published only after it commits.
+      //
+      // `upsertTask` would do both at once, and a `task_upsert` cannot be recalled: if
+      // COMMIT then threw, the catch below would roll the row back while every connected
+      // dashboard had already drawn the card in its new place, and the registry's
+      // in-memory copy - now disagreeing with SQLite - could persist that phantom move
+      // later. Being synchronous prevents an interleaving, which is a different hazard
+      // and not this one. This is the same split `settleTaskWithRetentionAdoption` uses,
+      // and `publishPersistedTask` exists for it.
+      displaced = dbUpsertTask(moved);
       if (ownsTransaction) d.exec("COMMIT");
     } catch (error) {
       if (ownsTransaction && d.isTransaction) d.exec("ROLLBACK");
       throw error;
     }
-    // After the commit, and only for the rows the repair moved - `upsertTask` above already
-    // published the one the operator asked about.
+    this.registry.publishPersistedTask(moved, displaced);
+    // Also after the commit, and only for the rows the repair moved - the one the operator
+    // asked about was published just above.
     this.publishBacklogRanks(new Map([...normalized].filter(([rowId]) => rowId !== id)));
     return { ok: true, task: moved };
   }

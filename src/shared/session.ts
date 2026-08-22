@@ -4,7 +4,7 @@
 // card's `stateDisplay` in src/web/lib/format.ts (same attention precedence).
 
 import type { PaneDialog, Session, Task } from "./types.ts";
-import { byPriorityThenAge } from "./task.ts";
+import { byBacklogRank } from "./task.ts";
 import { canInterrupt, capabilitiesFor } from "./harness-capabilities.ts";
 import { canWriteTo } from "./pane.ts";
 
@@ -55,12 +55,17 @@ export type ReportBucket = "needs-you" | "working" | "idle" | "exited";
 export const RECENT_TASKS_CAP = 20;
 
 /**
- * Backlog: tasks not yet dispatched, most urgent first and oldest first within a
- * priority. An untriaged backlog is still oldest-first, because unset priority sorts
- * as one rank - see `byPriorityThenAge`.
+ * Backlog: tasks not yet dispatched, in the order the OPERATOR arranged - see
+ * `byBacklogRank`. Priority no longer moves a card; it colours and filters it.
+ *
+ * The single chokepoint, and deliberately so. The board's Backlog column, the Line's
+ * drawer, the Sitrep, `plannableBacklog` and `readyBacklog` all read the backlog through
+ * here, so what the column draws and what Foreman schedules are one list in one order and
+ * cannot drift. Work that files itself arrives at the bottom because that is where the
+ * daemon ranks it, not because of anything this function does.
  */
 export function backlogTasks(tasks: Task[]): Task[] {
-  return tasks.filter((t) => t.status === "backlog").sort(byPriorityThenAge);
+  return tasks.filter((t) => t.status === "backlog").sort(byBacklogRank);
 }
 
 /**

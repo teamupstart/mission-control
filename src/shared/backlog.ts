@@ -47,7 +47,7 @@ export function planEntries(plan: BacklogPlan | null): Map<string, BacklogPlanEn
 }
 
 /**
- * How much of the backlog one plan covers: its head, oldest first.
+ * How much of the backlog one plan covers: its head, in the operator's order.
  *
  * Held BELOW `BacklogPlanSchema`'s `.max(500)` (src/shared/protocol.ts) on purpose: a
  * plan larger than the wire schema accepts is a body the daemon refuses every single
@@ -55,10 +55,10 @@ export function planEntries(plan: BacklogPlan | null): Map<string, BacklogPlanEn
  * one. `backlog-plan-http.test.ts` pins the two together, since nothing else would
  * notice them drifting apart.
  *
- * Everything past the limit is simply unplanned, which the readers below already have
- * an answer for: unnamed items are unblocked and go last, oldest first. So a 900-item
- * backlog gets a real dependency read on the part of it that is about to run, and the
- * tail is scheduled in age order with no dependency information at all.
+ * Everything past the limit is simply unplanned, which the readers below already have an
+ * answer for: an unnamed item is unblocked, and it sits wherever the operator put it. So a
+ * 900-item backlog gets a real dependency read on the part of it that is about to run, and
+ * the tail is scheduled in the same order as the head with no dependency information.
  *
  * That tail carries one ACCEPTED cost, written down here rather than left to be
  * rediscovered: `planStale` is coverage, so above the limit every dispatch promotes an
@@ -89,6 +89,10 @@ export const PLANNABLE_LIMIT = 400;
  * So a parked item keeps its plan entry and its share of the budget. That is the price
  * of a dependency graph that stays complete, and it is the cheaper of the two mistakes:
  * `readyBacklog` is the single gate that decides what actually runs.
+ *
+ * The head is the top `PLANNABLE_LIMIT` items BY RANK, which is what makes the limit
+ * defensible rather than merely bounded: the items the operator put at the top are the
+ * ones that get a dependency read, instead of the ones a priority chip happened to lift.
  */
 export function plannableBacklog(tasks: Task[]): Task[] {
   return backlogTasks(tasks).filter((task) => taskKindAllowsBacklog(task.kind)).slice(0, PLANNABLE_LIMIT);
@@ -266,35 +270,31 @@ function declaredReachable(
 }
 
 /**
- * The backlog items that could start right now, in the order the plan puts them.
+ * The backlog items that could start right now, in the order the OPERATOR arranged.
  *
- * Plan order first, then anything the plan does not name, oldest first. That tail is
- * not dead code: the machine only replans when coverage breaks, so between a task
- * being added and the next successful plan there are genuinely unplanned items - and
- * the fallback the machine drops to when planning has failed its cap has NO plan at
- * all and relies entirely on this ordering being sensible.
+ * A filter, and nothing but a filter. `backlogTasks` supplies the order (`byBacklogRank`),
+ * and the stored plan supplies EDGES - `backlogIndex` reads it for the inferred
+ * dependencies every blocker question is asked against. What the plan no longer decides is
+ * position. This used to walk `plan.entries` first and append the unnamed tail, which meant
+ * that for any item the plan covered, the priority chip moved the card and a model decided
+ * what Foreman actually took next. See `docs/plans/backlog-manual-order/plan.md`.
+ *
+ * DROPPING THE PLAN-WALK IS SAFE, AND NOT BY LUCK. The last line filters out every task
+ * with an unmet blocker, so a task in this list has ZERO unmet edges - and an edge from one
+ * ready item to another is impossible by construction, because the dependent would not be
+ * ready. The ready set therefore has no internal edges, and ANY total order over it is
+ * dependency-safe. `blockersIn` is the guard that makes that true, and the equivalence is
+ * pinned by a test in `test/backlog-plan.test.ts` rather than left as this comment.
  *
  * Disabled items are not here at all. This is the list the autopilot decides from for
  * both ways it can start work (a fresh worktree and an assign to an idle agent), so
  * neither action path needs a second copy of the scheduling gate.
  */
 export function readyBacklog(tasks: Task[], plan: BacklogPlan | null): Task[] {
-  const backlog = backlogTasks(tasks).filter(
-    (task) => task.enabled && taskKindAllowsBacklog(task.kind),
-  );
   const index = backlogIndex(tasks, plan);
-  // Consumed as they are placed, so a plan that names the same task twice cannot put it
-  // in the result twice, and what is left over is exactly the unnamed tail.
-  const unplaced = new Map(backlog.map((t) => [t.id, t]));
-  const ordered: Task[] = [];
-  for (const e of plan?.entries ?? []) {
-    const t = unplaced.get(e.taskId);
-    if (!t) continue;
-    unplaced.delete(t.id);
-    ordered.push(t);
-  }
-  for (const t of backlog) if (unplaced.has(t.id)) ordered.push(t);
-  return ordered.filter((t) => blockersIn(t, index).length === 0);
+  return backlogTasks(tasks)
+    .filter((task) => task.enabled && taskKindAllowsBacklog(task.kind))
+    .filter((task) => blockersIn(task, index).length === 0);
 }
 
 /**

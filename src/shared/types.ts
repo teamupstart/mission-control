@@ -1661,8 +1661,11 @@ export type WorktreeProvider = "treehouse" | "git" | "mission";
 
 /**
  * How urgent a task is, when somebody said. Never inferred: a task with no priority
- * carries `null`, which is a distinct answer from `low` and sorts differently (see
- * `priorityRank` in `@shared/task.ts`).
+ * carries `null`, which is a distinct answer from `low` - "nobody looked" against "somebody
+ * looked and it can wait" (see `priorityRank` in `@shared/task.ts`).
+ *
+ * Pure annotation. It colours the card and it filters; it does not decide where the task
+ * sits in the backlog, which is `backlogRank` and the operator's alone.
  */
 export type TaskPriority = "low" | "med" | "high" | "blocker";
 
@@ -1801,6 +1804,25 @@ export interface Task {
   labels: string[];
   /** Operator-declared prerequisites. Unmet entries force this task to stay backlogged. */
   dependencies: TaskDependency[];
+  /**
+   * Where this item sits in the backlog, ascending - the operator's order and the only one.
+   *
+   * Sparse by design (`RANK_STEP` apart, see `src/server/backlog-rank.ts`), so moving one
+   * card writes one row rather than renumbering the column. Only the daemon writes it, and
+   * only through `POST /api/tasks/:id/reorder` and the bottom-insertion every creator gets.
+   * It is not accepted on any create or update body: "where in the queue" is a statement
+   * about the queue, not about the task.
+   *
+   * NULL means unranked, which sorts LAST - a row written by a build that predates the
+   * column, or a restored one. It is a safety net rather than a supported state: the daemon
+   * repairs a backlog holding one (see `normalizeBacklogRanks`), because an unranked row
+   * would otherwise sit below every task filed after it and break the bottom-insertion rule.
+   *
+   * Meaningful only while `status === "backlog"`; on any other status it is left alone
+   * rather than nulled, so a task that comes back (a reschedule, a restart-recovered
+   * dispatch) reappears where it was instead of at the bottom of a queue it never left.
+   */
+  backlogRank: number | null;
   /**
    * Whether Foreman's backlog autopilot may schedule this item. True on every task
    * that has not been deliberately switched off - including every task filed before

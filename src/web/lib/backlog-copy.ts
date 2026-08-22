@@ -62,17 +62,18 @@ export interface PlannerFact {
 }
 
 /**
- * Why the head of the ready band is the head of the ready band, in facts a reader can
- * check against the rows underneath.
+ * What is true about the head of the ready band, in facts a reader can check against the
+ * rows underneath.
  *
- * These are deliberately NOT a justification of Foreman's ordering. The plan decides the
- * order (`readyBacklog` walks the plan first), and the plan's own `reason` is quoted
- * beside these in the planner - so what these lines owe the reader is the DATA the plan
- * was made from, stated honestly enough to disagree with it. That is why the priority
- * line reports how many ready items outrank this one rather than asserting it is the most
- * important: on a planned backlog, "first" and "highest priority" are routinely different
- * tasks, and a panel that only ever printed the flattering half would be the reason
- * somebody stopped trusting the plan.
+ * These are deliberately NOT a justification of the position. The head is the head because
+ * that is where the OPERATOR put it (`backlogRank`), which needs no defending and admits
+ * of no argument - so what these lines owe the reader is the data they would use to decide
+ * whether to move it, stated honestly enough to disagree with the arrangement. That is why
+ * the priority line reports how many ready items carry a higher priority rather than
+ * asserting this one is the most important: priority is annotation and does not decide
+ * position, so "first" and "highest priority" are routinely different tasks, and a panel
+ * that only ever printed the flattering half would be the reason somebody stopped trusting
+ * it.
  *
  * Pure, and given everything it needs: the drawer already holds the ordered ready band and
  * the backlog index `dependentsIn` reads, so nothing here re-derives what it just computed
@@ -98,8 +99,10 @@ export function plannerFacts({
   // ready" is a superlative over a set of one. State the facts and stop.
   const alone = ready.length <= 1;
 
-  // Unset ranks between `low` and `med` (see `priorityRank`), so "outranks" here is the
-  // same comparison the board's own sort makes rather than a second reading of it.
+  // Unset ranks between `low` and `med` (see `priorityRank`). This is a comparison of the
+  // ANNOTATION and not of the queue: priority no longer sorts anything, so a "3 rank
+  // higher" line is a prompt to consider moving this row, never a claim that it is
+  // misplaced.
   const rank = priorityRank(task.priority);
   const higher = ready.filter((t) => priorityRank(t.priority) > rank).length;
   // Lowercased: `PRIORITY_LABELS` is written for a chip, where the word stands alone, and
@@ -117,8 +120,9 @@ export function plannerFacts({
         : `${stated} - ${higher} of ${band} rank${higher === 1 ? "s" : ""} higher`,
   });
 
-  // Age is the tiebreak below priority in every ordering this app has, so it is worth a
-  // line whether or not this task wins it.
+  // Age no longer orders the backlog either, but it is the fact a reader reaches for
+  // second - "has this been sitting here?" - so it is worth a line whether or not this
+  // task wins it.
   const older = ready.filter((t) => t.createdAt < task.createdAt).length;
   const filed = `filed ${relativeTime(task.createdAt, now)}`;
   facts.push({
@@ -169,7 +173,7 @@ export function autopilotReadout({
   on: boolean;
   /** The daemon's derived counts, or null before the first poll answers. */
   status: ForemanStatus["autopilot"] | null;
-  /** False while Foreman is off or not in live mode: it orders the queue, nothing more. */
+  /** False while Foreman is off or not in live mode: it reads the queue, nothing more. */
   launches: boolean;
 }): string {
   if (!on) return "Autopilot off - nothing starts unless you start it";

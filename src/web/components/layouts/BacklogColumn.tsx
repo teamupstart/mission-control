@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import type { BacklogBlocker } from "@shared/backlog.ts";
 import type { AssignResetConfirm, BacklogPlan, Session, Task, TaskPriority } from "@shared/types.ts";
+import type { ReorderTask } from "@shared/protocol.ts";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
 import { backlogIndex, blockersIn, deadBlockersFor, nextUpTaskId } from "@shared/backlog.ts";
 import { workflowRunIsOpen } from "@shared/workflow.ts";
@@ -54,6 +55,13 @@ import { Tooltip } from "../Tooltip.tsx";
  * saying whether the autopilot may schedule this item at all. It is a hold, not a
  * cancel - the launch button and the drag gesture keep working on a parked card,
  * because they are you, and the switch only ever speaks for the machine.
+ *
+ * AND THE COLUMN IS IN YOUR ORDER. Not priority, not age, not a model's: `backlogTasks`
+ * sorts by `backlogRank`, the four move controls on each card write it, and the scheduler
+ * reads the same list through the same comparator - so what this column draws IS what
+ * Foreman takes next. See docs/plans/backlog-manual-order/plan.md. The controls are
+ * ordinary buttons rather than a mouse-only gesture, because a reorder that only exists
+ * as a drag is one half the surfaces cannot test and some people cannot perform.
  */
 export function BacklogColumn({
   tasks,
@@ -109,13 +117,19 @@ export function BacklogColumn({
         {tasks.length === 0 ? (
           <p className="board-col-empty">Nothing queued</p>
         ) : (
-          tasks.map((t) => (
+          tasks.map((t, i) => (
             <BacklogCard
               key={t.id}
               task={t}
               blockers={blockersIn(t, index)}
               deadBlockers={deadBlockersFor(t, index)}
               nextUp={t.id === nextUp}
+              // The cards this one is drawn BETWEEN, which is what the move controls send
+              // as their anchor. Read off the rendered list rather than off the raw
+              // backlog, so "move above the card above me" means the card the operator can
+              // actually see - the same place a drag would land it.
+              above={tasks[i - 1] ?? null}
+              below={tasks[i + 1] ?? null}
               onAssignError={onAssignError}
               onDragging={onDragging}
               onEdit={() => onEdit(t.id)}
@@ -132,11 +146,91 @@ export function BacklogColumn({
   );
 }
 
+/**
+ * The four ways to move a card, as data rather than as four near-identical blocks of JSX.
+ *
+ * `up`/`down` are `before`/`after` against the neighbour the operator can SEE, not against
+ * an index: an index is a claim about the list this browser last rendered, and the daemon's
+ * has moved on since. `top`/`bottom` need no anchor at all - "first" and "last" mean the
+ * same thing in both lists whatever has happened in between.
+ *
+ * The wording of the `aria-label` this feeds - `Move "Fix the flaky test" up` - is a
+ * cross-phase contract: phase 2's drag work and the e2e spec both select by it.
+ */
+/**
+ * The two cards this one sits between, as a value that can be compared across renders.
+ *
+ * `null` at an end is spelled out rather than left blank, so the top of the column and a
+ * card whose neighbour happens to be missing cannot produce the same key.
+ */
+const neighbourKey = (above: Task | null, below: Task | null): string =>
+  `${above?.id ?? "-"}|${below?.id ?? "-"}`;
+
+/** The tail of a move control's `aria-label`, and the identity focus restoration works in. */
+type MoveKey = "up" | "down" | "to top" | "to bottom";
+
+const MOVES: ReadonlyArray<{
+  /** The tail of the `aria-label`, and the key React draws the list by. */
+  key: MoveKey;
+  /** What the button reads as. Lowercase, like every other word on this card. */
+  text: string;
+  tip: (title: string) => string;
+  /** The request body, or null when there is nowhere to go. */
+  target: (above: Task | null, below: Task | null) => ReorderTask | null;
+  /** True when the card is already where this control would send it. */
+  atEnd: (above: Task | null, below: Task | null) => boolean;
+  /**
+   * Where focus goes when pressing this control DISABLES it.
+   *
+   * Pressing `up` on the second card lands it at the top, and the control that was under
+   * the finger is now disabled - which drops focus to `<body>` and throws a keyboard user
+   * to the top of the document, on the one gesture that exists for them. The counterpart
+   * is the opposite direction, which is the one button in the group guaranteed to be live
+   * afterwards: a card cannot be at both ends of a column it is not alone in.
+   */
+  counterpart: MoveKey;
+}> = [
+  {
+    key: "to top",
+    text: "top",
+    tip: (title) => `Move "${title}" to the top of the backlog - Foreman takes it first`,
+    target: () => ({ position: "top" }),
+    atEnd: (above) => above === null,
+    counterpart: "to bottom",
+  },
+  {
+    key: "up",
+    text: "up",
+    tip: (title) => `Move "${title}" one place up the backlog`,
+    target: (above) => (above ? { position: "before", anchorTaskId: above.id } : null),
+    atEnd: (above) => above === null,
+    counterpart: "down",
+  },
+  {
+    key: "down",
+    text: "down",
+    tip: (title) => `Move "${title}" one place down the backlog`,
+    target: (_above, below) => (below ? { position: "after", anchorTaskId: below.id } : null),
+    atEnd: (_above, below) => below === null,
+    counterpart: "up",
+  },
+  {
+    key: "to bottom",
+    text: "bottom",
+    tip: (title) => `Move "${title}" to the bottom of the backlog`,
+    target: () => ({ position: "bottom" }),
+    atEnd: (_above, below) => below === null,
+    counterpart: "to top",
+  },
+];
+
 function BacklogCard({
   task,
   blockers,
   deadBlockers,
   nextUp,
+  above,
+  below,
   onAssignError,
   onDragging,
   onEdit,
@@ -149,6 +243,10 @@ function BacklogCard({
   deadBlockers: Task[];
   /** True on the item Foreman's autopilot would pick up next. */
   nextUp: boolean;
+  /** The card drawn directly above this one, or null when this is the first. */
+  above: Task | null;
+  /** The card drawn directly below this one, or null when this is the last. */
+  below: Task | null;
   onAssignError: (message: string) => void;
   onDragging: (repoRoot: string | null) => void;
   onEdit: () => void;
@@ -156,6 +254,18 @@ function BacklogCard({
   scheduleNameById?: ReadonlyMap<string, string>;
 }): React.JSX.Element {
   const [busy, setBusy] = useState(false);
+  /** The move-control group, so focus can be put back on it after a move redraws it. */
+  const moveGroup = useRef<HTMLSpanElement>(null);
+  /** Which control was pressed, and where focus should fall if it ends up disabled. */
+  const wantFocus = useRef<{
+    pressed: MoveKey;
+    counterpart: MoveKey;
+    /**
+     * The neighbours at the moment of the press, so the redraw can be recognised - or
+     * `null` for a REFUSED move, which redraws nothing and so has nothing to wait for.
+     */
+    neighbours: string | null;
+  } | null>(null);
   const [deadBlockerOpen, setDeadBlockerOpen] = useState(false);
   const blocked = blockers.length > 0;
   const declaredBlocked = blockers.some((blocker) => blocker.source === "declared");
@@ -203,6 +313,86 @@ function BacklogCard({
     if (!r.ok) onAssignError(r.error ?? "could not change that");
     setBusy(false);
   }
+
+  /**
+   * Move this card in the operator's order.
+   *
+   * `setEnabled`'s pattern exactly: nothing optimistic, the card re-renders off the next
+   * snapshot, and a refusal is SURFACED. The route is status-guarded, so a card that
+   * dispatched between the render and the click comes back 409 - and a control that
+   * silently sprang back would look broken rather than late.
+   */
+  async function move(body: ReorderTask, pressed: MoveKey, counterpart: MoveKey): Promise<void> {
+    // Recorded BEFORE the request, together with the neighbours this card had when the
+    // operator pressed - which is how the effect below tells the render that merely cleared
+    // `busy` from the later one that actually redrew the column.
+    wantFocus.current = { pressed, counterpart, neighbours: neighbourKey(above, below) };
+    setBusy(true);
+    const r = await api.reorderTask(task.id, body);
+    if (!r.ok) {
+      onAssignError(r.error ?? "could not move that");
+      // A refusal moves nothing, so this card's neighbours never change and the effect
+      // below would wait forever for a redraw that is not coming. Focus still has to come
+      // back: the button spent the request disabled by `busy`, which dropped it to
+      // `<body>` exactly as a successful move does. Flagged rather than focused here,
+      // because `busy` is still true until React re-renders and every button in the group
+      // is still disabled at this instant.
+      wantFocus.current = { pressed, counterpart, neighbours: null };
+    }
+    setBusy(false);
+  }
+
+  /**
+   * Put focus back on the move controls after a move redraws them.
+   *
+   * Every button in this group spends the request disabled by `busy`, and the pressed one
+   * may STAY disabled afterwards because the card reached the end it was sent to. A
+   * disabled button cannot hold focus, so without this the browser drops focus to `<body>`
+   * and a keyboard user is thrown to the top of the document - on the gesture that exists
+   * for them specifically. Reordering a column would mean re-Tabbing to it after every
+   * single press.
+   *
+   * It runs on every render rather than on a completion callback because the render that
+   * disables the button is the one driven by the daemon's `task_upsert`, which lands after
+   * the request resolves. `wantFocus` is set only by a press on THIS card's own group, is
+   * cleared as soon as it has acted, and stands down entirely if focus has meanwhile moved
+   * somewhere else - so no other re-render can pull focus around.
+   *
+   * `useLayoutEffect`, not `useEffect`: focus has to be restored in the same frame the
+   * button was disabled in, or the paint in between shows a focus ring vanishing.
+   */
+  useLayoutEffect(() => {
+    const want = wantFocus.current;
+    if (!want || busy) return;
+    const group = moveGroup.current;
+    if (!group) return;
+    // The request resolving is NOT the column being redrawn: the new order arrives on the
+    // daemon's `task_upsert`, which can land either side of it. Waiting for this card's
+    // neighbours to actually change is what stops focus being restored to a button that is
+    // about to be disabled by the render after this one - which is the whole failure being
+    // repaired, one frame later.
+    if (want.neighbours !== null && neighbourKey(above, below) === want.neighbours) return;
+    // Somewhere else has focus, so the operator moved on while the move was in flight.
+    // Restoring here would be a yank, not a repair.
+    const active = document.activeElement;
+    if (active && active !== document.body && !group.contains(active)) {
+      wantFocus.current = null;
+      return;
+    }
+    // Matched in JS rather than with an attribute selector: the label embeds a task title
+    // a person typed, and a title containing a quote would break the selector's own quoting.
+    const buttons = [...group.querySelectorAll<HTMLButtonElement>("button.bl-move-btn")];
+    const button = (key: MoveKey): HTMLButtonElement | undefined =>
+      buttons.find((el) => el.getAttribute("aria-label") === `Move "${task.title}" ${key}`);
+    const target = [want.pressed, want.counterpart]
+      .map((key) => button(key))
+      .find((el): el is HTMLButtonElement => el !== undefined && !el.disabled);
+    // Nothing live to hold it means this card is alone in the column, where all four are
+    // disabled and no press could have happened. Clear regardless, so a stale intent can
+    // never take focus off something the operator moved to later.
+    target?.focus();
+    wantFocus.current = null;
+  });
 
   return (
     <article
@@ -260,9 +450,10 @@ function BacklogCard({
             actually happens, so its one priority affordance is the editable one, and it
             wears the same colour the read-only `PriorityChip` uses elsewhere.
 
-            Changing it re-sorts the column on the next snapshot (the list arrives
-            through `backlogTasks`), so the card moves under your cursor - which is the
-            feedback that makes it obvious the field does something.
+            It is annotation and it moves nothing: the column is in the order the operator
+            arranged (see the move controls below), so setting a priority recolours this
+            card and leaves it exactly where it is. That is the trade the feature took
+            deliberately - an order a chip could rearrange is not an order you set.
 
             Both handlers stop propagation and they stop two DIFFERENT things. The card
             is `draggable`, so without `onMouseDown` the browser starts a drag instead of
@@ -274,7 +465,7 @@ function BacklogCard({
           onMouseDown={(e) => e.stopPropagation()}
           onClick={(e) => e.stopPropagation()}
         >
-          <Tooltip label={`Priority for "${task.title}" - decides where it sits in the backlog`}>
+          <Tooltip label={`Priority for "${task.title}" - a triage mark, not its place in the backlog`}>
           <select
             aria-label={`Priority for ${task.title}`}
             value={task.priority ?? ""}
@@ -300,6 +491,48 @@ function BacklogCard({
             drawn on, and the chip component reports the remainder as "+N" rather than
             dropping it, so a heavily-tagged task never looks lightly tagged. */}
         <LabelChips labels={task.labels} max={3} />
+      </span>
+      {/* The order, as controls rather than as a gesture.
+
+          A reorder that existed only as a drag would be a reorder half the surfaces cannot
+          test and some people cannot perform, so the keyboard route is the primary one and
+          the drag (phase 2) is the shortcut on top of it. These are ordinary focusable
+          buttons in DOM order, so Tab reaches them and Enter or Space presses them with no
+          key handling of our own. The one thing this card does add is putting focus back
+          after a press - see the effect above, and why losing it is not cosmetic.
+
+          `aria-label`s name the task because the app selects by role and label and never by
+          `data-testid`, and because four unlabelled arrows repeated down a column say
+          nothing to a screen reader about WHICH card they move.
+
+          Both hazards the priority picker above already teaches apply here, and they stop
+          two different things: the card is `draggable`, so without `onMouseDown` the
+          browser starts a drag instead of pressing the button; and the card is
+          click-to-edit, so without `onClick` the move would open the dispatch modal on the
+          way past. The group carries both once rather than each button carrying them. */}
+      <span
+        className="bl-move"
+        ref={moveGroup}
+        onMouseDown={(e) => e.stopPropagation()}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {MOVES.map(({ key, text, tip, target, atEnd, counterpart }) => (
+          <Tooltip key={key} label={tip(task.title)}>
+            <button
+              className="bl-move-btn"
+              aria-label={`Move "${task.title}" ${key}`}
+              // At the end it is already where this would send it, so the honest control is
+              // a disabled one saying so rather than a live one that does nothing.
+              disabled={busy || atEnd(above, below)}
+              onClick={() => {
+                const body = target(above, below);
+                if (body) void move(body, key, counterpart);
+              }}
+            >
+              {text}
+            </button>
+          </Tooltip>
+        ))}
       </span>
       <span className="bl-foot">
         <span className={`bl-kind bl-kind-${task.kind}`}>{task.kind}</span>

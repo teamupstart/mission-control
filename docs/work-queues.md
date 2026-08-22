@@ -281,20 +281,22 @@ constraint and blocks every scheduling path, manual ones included.
 automated wrap-up actions clear, for the same reason. Launching an agent starts unattended
 work, and handing a task to a running agent types a whole prompt into a pane you may be
 sitting in front of; both are more consequential than answering a prompt. In **dry-run**
-and **semi-auto** it still *plans*, so you see the ordering and the dependency read on the
-board and can click **launch new agent** yourself. Dry-run means dry-run.
+and **semi-auto** it still *plans*, so you see the dependency read on the board and can
+click **launch new agent** yourself. Dry-run means dry-run.
 
 **Foreman's inferred dependencies come from a model, and are treated as one.** A fresh,
 tool-less call through the effective Foreman Provider sees every planning
-item's title and intent and returns an order plus, for each item, what it must
-wait for. The reply isn't trusted as written: ids that aren't in the backlog are dropped,
+item's title and intent and returns, for each item, what it must wait for. The reply isn't trusted as written: ids that aren't in the backlog are dropped,
 self-references are dropped, **only the edges that close a cycle** are cut, and any item
 the model forgot is appended unblocked. A cycle would deadlock two cards forever and look
 exactly like two cards waiting their turn;
 a forgotten item would leave the plan permanently stale, which is an unbounded replanning
 loop. Every dependency that isn't part of a cycle survives, whatever order the model listed
-the items in, and the plan is stored in dependency order. The read re-runs only when the
-planning head **gains an uncovered item**, so a steady backlog costs nothing.
+the items in. **The plan supplies edges and never position** - what runs first is
+[the order you arranged](dispatch-and-backlog.md#the-backlog-order-is-the-one-you-set),
+and no model has an opinion about it. The read re-runs only when the planning head
+**gains an uncovered item**, so a steady backlog costs nothing - and reordering the
+backlog is not a change the planner has to see, so a move costs zero model calls.
 
 Claude enforces the planner's JSON Schema through its structured-output contract. Codex
 receives the same schema through `codex exec --output-schema`, using a per-run temporary
@@ -320,9 +322,9 @@ a handful takes seconds. A fixed cap worked on a short backlog and then stopped 
 good once one grew past it - every read timed out, so no plan was ever stored, so the
 autopilot re-read the same backlog every tick and scheduled nothing while the board showed
 ready items and an idle fleet. Three failures in a row and
-Foreman stops asking and schedules **one task at a time, oldest first** - serial execution
-satisfies any dependency order by construction, so a broken planner degrades to slow rather
-than to wrong. That's a cooldown, not a latch: after `FOREMAN_BACKLOG_RETRY_MS` (10 min)
+Foreman stops asking and schedules **one task at a time, top-ranked first** - serial
+execution satisfies any dependency order by construction, so a broken planner degrades to
+slow rather than to wrong, and your order still decides which task that one is. That's a cooldown, not a latch: after `FOREMAN_BACKLOG_RETRY_MS` (10 min)
 one fresh read is tried, so an API blip heals itself instead of waiting for a restart. A
 daemon that refuses to *store* a plan degrades the same way rather than halting, on its own
 counter and its own backoff.
@@ -344,15 +346,16 @@ must also be accepted by the daemon. The worker reports this process-local circu
 localhost and never opens SQLite. The daemon exposes the bounded status and retry signal but
 does not make scheduling decisions, so there is still one scheduler source of truth.
 
-One read, one model call, over the **first 400 backlog items**, including any
+One read, one model call, over the **top 400 backlog items by your order**, including any
 [held back](dispatch-and-backlog.md#hold-a-backlog-item-back) - they stay in the read so the edges pointing at
 them survive it. Reading a
 longer backlog in several calls was tried and taken back out: they run on the Foreman
 worker's single loop, which also drives queue drain and needs-you triage, so each extra call
 is another span in which nothing else in the fleet is attended to. Past 400 the
-tail is scheduled **oldest first with no dependency information** - and, since staleness
+tail is scheduled **in your order with no dependency information** - and, since staleness
 is coverage, a dispatch while the backlog is that long promotes an unplanned item
-into the head and costs one replan.
+into the head and costs one replan. The 400 that get a dependency read are the 400 you put
+at the top, which is what makes the limit defensible rather than merely bounded.
 That is the accepted trade: one call, only above 400, in exchange for a bounded worst case
 on the shared loop.
 
@@ -398,5 +401,6 @@ launched or assigned early. The Foreman popover carries the live readout -
 `2/3 agents · 4 ready · 1 blocked · 1 disabled` - so "why is nothing launching?" is
 answerable without reading a log. The Line's [Backlog drawer](ui.md#the-autopilot-planner) answers
 the same question in the place the queue is actually read: the capacity half of that readout
-sits in its footer beside the switch, and its **next up** mark opens the reason Foreman
-recorded for planning that item first.
+sits in its footer beside the switch, and its **next up** mark opens what Foreman
+recorded about that item. It is the head because that is where you put it; the recorded
+reason explains its *dependencies*, not its position.

@@ -4,12 +4,21 @@ import type { Task } from "@shared/types.ts";
 // The backlog planner's prompt, handed to a fresh tool-less `claude -p`. Unlike the
 // reviewer, which judges one session's transcript, this reads a LIST OF INTENTS a human
 // typed and answers one question about it: which of these have to happen before which
-// others, and in what order should they be picked up.
+// others.
 //
 // It is asked for a graph, not a schedule. Capacity, the repo allowlist and Foreman's
 // mode are decided in code (backlog-machine.ts) where they can be tested as a table;
 // the model has no business knowing how many agents are free, and a prompt that told it
 // would invite it to make the ceiling's decision badly.
+//
+// THE REPLY'S ARRAY ORDER NO LONGER SCHEDULES ANYTHING. The backlog runs in the order the
+// operator arranged (`Task.backlogRank`, see docs/plans/backlog-manual-order/plan.md), and
+// `readyBacklog` does not read the stored plan for position at all. The prompt below still
+// asks for an order, and that is deliberate rather than an oversight: `sanitizePlan` uses
+// the array as the tie-break for the topological sort it stores, so a plan someone opens
+// reads as a graph instead of as a shuffled list. Teaching this prompt about rank was
+// explicitly ruled out of scope - the model is asked for edges, and the order is the
+// operator's and needs no model's opinion folded into it.
 
 /** How much of one task's intent the prompt carries. Enough to see the shape of the work. */
 const INTENT_CAP = 1200;
@@ -70,8 +79,8 @@ export function buildBacklogPrompt(tasks: Task[]): string {
     // missing case but a WRONG one: every kind that was not `ship` was described to the
     // model as "investigate and report", so a third kind would have been actively
     // mislabelled rather than merely unmentioned - and a mislabelled kind is worse here
-    // than an absent one, since the planner orders the backlog by what it believes each
-    // task is for. `purpose` rather than `blurb`: see `TaskKindInfo`.
+    // than an absent one, since the planner reasons about what each task is FOR when
+    // deciding what it must wait for. `purpose` rather than `blurb`: see `TaskKindInfo`.
     lines.push(`kind: ${t.kind} (${TASK_KIND_INFO[t.kind].purpose})`);
     lines.push(`repo: ${t.repoRoot}`);
     const declared = t.dependencies.filter((dependency) => dependency.satisfiedAt === null);

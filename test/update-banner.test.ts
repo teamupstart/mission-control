@@ -60,6 +60,23 @@ test("the banner covers transient, outcome, empty, and truncated states", () => 
     retryable: true,
     lastOutcome: null,
   });
+  // Reachable only since a background check may surface a standing, user-actionable failure.
+  const backgroundAuthError = render({
+    phase: "error",
+    currentVersion: "0.1.0",
+    message: "GitHub CLI is not authenticated. Run `gh auth login`, then check again.",
+    manual: false,
+    retryable: true,
+    lastOutcome: null,
+  });
+  const unretryableError = render({
+    phase: "error",
+    currentVersion: "0.1.0",
+    message: "Could not check for updates.",
+    manual: true,
+    retryable: false,
+    lastOutcome: null,
+  });
   const previousFailure = render({
     phase: "idle",
     currentVersion: "0.1.0",
@@ -105,6 +122,10 @@ test("the banner covers transient, outcome, empty, and truncated states", () => 
     controls(applying).length === 0,
     text(manualError).includes("Could not check for updates. Try again."),
     controls(manualError).join(",") === "Retry,Dismiss",
+    text(backgroundAuthError).includes("gh auth login"),
+    // The state we chose to interrupt someone with is the one that most needs a way forward.
+    controls(backgroundAuthError).join(",") === "Retry,Dismiss",
+    controls(unretryableError).join(",") === "Dismiss",
     text(previousFailure).includes("The update did not complete. Your previous version is still installed."),
     controls(previousFailure).join(",") === "Retry,Dismiss",
     text(previousSuccess).includes("Mission Control updated successfully to 0.2.0."),
@@ -112,5 +133,5 @@ test("the banner covers transient, outcome, empty, and truncated states", () => 
     idle === "",
     text(longNotes).includes("VISIBLE_RELEASE_SUMMARY"),
     !text(longNotes).includes(distinctiveSuffix),
-  ], Array.from({ length: 11 }, () => true));
+  ], Array.from({ length: 14 }, () => true));
 });

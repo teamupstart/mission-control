@@ -203,7 +203,29 @@ automation, under the engine's own figures.
 
 ## Quick start
 
-Mission Control needs Node.js 24 or newer.
+There are two paths through this repository, and which one you want depends on whether you are
+*using* Mission Control or *working on* it.
+
+**To use it**, install the macOS app. This is the only path that receives updates.
+
+```sh
+git clone <internal-repository-url>
+cd ai-harness
+make install
+```
+
+That builds Mission Control in a clone only the updater ever touches, verifies the packaged
+version, and installs `/Applications/Mission Control.app` - a menu-bar app that supervises the
+daemon and delivers alerts with the window closed. From then on it checks for new releases on
+its own and offers them in the app. Prerequisites, checked before anything long-running starts:
+an Apple Silicon Mac, Node.js 24 or newer, `git`, an authenticated `gh` (`gh auth login`), and
+the Xcode command line tools (`xcode-select --install`). See
+[Desktop app](docs/overview.md#desktop-app-macos) for what each step does, `--ref`, and the
+install receipt.
+
+**To work on it**, run the dev server against this checkout. It needs Node.js 24 or newer and
+the Xcode command line tools, receives no updates, and writes no install receipt - so the
+updater deliberately stays off for a work-in-progress build.
 
 ```sh
 git clone <internal-repository-url>

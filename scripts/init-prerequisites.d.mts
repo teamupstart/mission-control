@@ -11,3 +11,7 @@ export function ghPrerequisiteMessage(state: {
   installed: boolean;
   authenticated: boolean;
 }): string | null;
+export function xcodeToolsPrerequisiteMessage(state: {
+  platform: string;
+  installed: boolean;
+}): string | null;

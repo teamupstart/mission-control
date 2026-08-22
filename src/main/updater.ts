@@ -119,8 +119,34 @@ export const UPDATE_GH_ARGS = {
   ],
 };
 
+/**
+ * What KIND of thing went wrong, as distinct from whether trying again might help.
+ *
+ * `retryable` answers "should this offer a retry"; it says nothing about whether the failure
+ * will still be there in six hours. That distinction is what decides whether a background check
+ * may interrupt someone: a lapsed credential is a standing condition only they can clear, while
+ * a rate limit or a bad minute on the network clears itself.
+ */
+export type UpdateErrorKind = "gh-missing" | "gh-auth" | "gh-rate-limited" | "gh-failed";
+
+/**
+ * The kinds a background check is allowed to surface.
+ *
+ * Everything else stays quiet and goes back to idle, because a banner that appears for a
+ * transient failure trains people to dismiss the one that matters.
+ */
+const PERSISTENT_ERROR_KINDS: ReadonlySet<UpdateErrorKind> = new Set(["gh-missing", "gh-auth"]);
+
+export function surfacesFromBackgroundCheck(kind: UpdateErrorKind): boolean {
+  return PERSISTENT_ERROR_KINDS.has(kind);
+}
+
 class UpdateError extends Error {
-  constructor(message: string, readonly retryable = true) {
+  constructor(
+    message: string,
+    readonly retryable = true,
+    readonly kind: UpdateErrorKind = "gh-failed",
+  ) {
     super(message);
   }
 }
@@ -131,11 +157,32 @@ function firstLine(value: string): string {
 
 function ghFailure(result: CommandResult): UpdateError {
   if (result.errorCode === "ENOENT" || result.code === 127) {
-    return new UpdateError("GitHub CLI (gh) is not installed. Install gh, then check again.");
+    return new UpdateError(
+      "GitHub CLI (gh) is not installed. Install gh, then check again.",
+      true,
+      "gh-missing",
+    );
   }
   const detail = firstLine(result.stderr || result.stdout);
-  if (/auth|login|credential|HTTP 401/i.test(detail)) {
-    return new UpdateError("GitHub CLI is not authenticated. Run `gh auth login`, then check again.");
+  // Rate limiting first. GitHub's own 403 body reads "higher rate limits apply to authenticated
+  // requests", so an auth test run first would claim a working credential had lapsed.
+  if (/rate limit|HTTP 403|HTTP 429|abuse detection/i.test(detail)) {
+    return new UpdateError(
+      "GitHub's API rate limit is reached, so releases cannot be checked right now. It resets within the hour and Mission Control will check again on its own.",
+      true,
+      "gh-rate-limited",
+    );
+  }
+  // Narrower than it was. The old test matched a bare `login` or `auth` anywhere in the line,
+  // so any URL containing "login" - and every `oauth`, `author`, and repository named for one -
+  // read as a lapsed credential. That was survivable while this class only ever answered a
+  // manual check; it is not, now that it is allowed to interrupt someone unprompted.
+  if (/HTTP 401|credential|authenticat|not logged in|gh auth login/i.test(detail)) {
+    return new UpdateError(
+      "GitHub CLI is not authenticated. Run `gh auth login`, then check again.",
+      true,
+      "gh-auth",
+    );
   }
   return new UpdateError(`GitHub CLI cannot list releases here (exit ${result.code}). Try again.`);
 }
@@ -311,10 +358,18 @@ function idleSnapshot(
   return { phase: "idle", currentVersion, lastCheckedAt, lastOutcome };
 }
 
-function safeUpdateError(error: unknown): { message: string; retryable: boolean } {
+function safeUpdateError(error: unknown): {
+  message: string;
+  retryable: boolean;
+  kind: UpdateErrorKind;
+} {
   return error instanceof UpdateError
-    ? { message: error.message, retryable: error.retryable }
-    : { message: "The update check failed unexpectedly. Check the update log and try again.", retryable: true };
+    ? { message: error.message, retryable: error.retryable, kind: error.kind }
+    : {
+        message: "The update check failed unexpectedly. Check the update log and try again.",
+        retryable: true,
+        kind: "gh-failed",
+      };
 }
 
 export class UpdateController {
@@ -469,14 +524,19 @@ export class UpdateController {
       } catch (error) {
         const safe = safeUpdateError(error);
         this.port.log(`update check failed: ${error instanceof Error ? error.message : String(error)}`);
-        if (!this.manualCheckRequested) {
+        const manual = this.manualCheckRequested;
+        // A background check used to return to idle unconditionally, which made a lapsed `gh`
+        // credential invisible by construction: it can only be noticed by someone who happens
+        // to run a manual check. A standing, user-actionable condition now reaches the banner
+        // on its own, while transient failures still go quietly back to idle.
+        if (!manual && !surfacesFromBackgroundCheck(safe.kind)) {
           return this.publish(idleSnapshot(currentVersion, lastOutcome, previousCheckedAt));
         }
         return this.publish({
           phase: "error",
           currentVersion,
           message: safe.message,
-          manual: true,
+          manual,
           retryable: safe.retryable,
           lastOutcome,
         });

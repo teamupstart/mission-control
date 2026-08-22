@@ -46,3 +46,24 @@ export function ghPrerequisiteMessage({ installed, authenticated }) {
   if (!authenticated) return "gh is not authenticated - run `gh auth login`";
   return null;
 }
+
+/**
+ * The Xcode command line tools prerequisite, asked before anything long-running starts.
+ *
+ * Both `npm run build` and `npm run package` compile `native/keep-awake` with node-gyp
+ * (`scripts/build-keep-awake-native.mjs`), and node-gyp cannot run without a toolchain. Without
+ * this check that fails at the very end of a clone, a `npm ci`, and a full Electron package -
+ * and it fails as node-gyp's own `gyp: No Xcode or CLT version detected!` buried in inherited
+ * output, under the installer's generic "`npm run package` failed".
+ *
+ * `git` being present is not evidence of the tools: Homebrew's git needs none of them. That is
+ * why this is a check of its own rather than a sentence inside `gitPrerequisiteMessage`.
+ *
+ * Darwin-only by construction, because `nativeBuildTarget` skips the native build entirely on
+ * every other platform, so there is nothing to be missing.
+ */
+export function xcodeToolsPrerequisiteMessage({ platform, installed }) {
+  if (platform !== "darwin") return null;
+  if (installed) return null;
+  return "the Xcode command line tools are not installed - run `xcode-select --install`, let it finish, then rerun this command. Mission Control compiles a small native module during the build, and node-gyp cannot do that without them.";
+}

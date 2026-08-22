@@ -1,0 +1,372 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Phased implementation: capacity-first Worktrees pane</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --page-bg: #f7f8fa;
+    --page-fg: #1b2028;
+    --page-muted: #59616e;
+    --page-dim: #7b838f;
+    --page-line: #dde1e7;
+    --page-card: #ffffff;
+    --page-accent: #1f6f4f;
+    --page-code-bg: #f0f2f5;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --page-bg: #0d1013;
+      --page-fg: #e7ebf1;
+      --page-muted: #99a3b1;
+      --page-dim: #7c8798;
+      --page-line: #242b34;
+      --page-card: #14181e;
+      --page-accent: #35c08a;
+      --page-code-bg: #11151a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--page-bg);
+    color: var(--page-fg);
+    font: 15px/1.65 var(--sans);
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 56px 28px 120px; }
+  header.doc { border-bottom: 1px solid var(--page-line); padding-bottom: 28px; margin-bottom: 36px; }
+  h1 { font-size: 30px; line-height: 1.2; margin: 0 0 14px; letter-spacing: -0.02em; }
+  h2 { font-size: 21px; margin: 52px 0 14px; letter-spacing: -0.01em; padding-top: 14px; border-top: 1px solid var(--page-line); }
+  h2:first-of-type { border-top: 0; }
+  h3 { font-size: 17px; margin: 34px 0 10px; }
+  h4 { font-size: 14px; margin: 22px 0 8px; text-transform: uppercase; letter-spacing: .07em; color: var(--page-dim); }
+  p { margin: 0 0 14px; }
+  ul { margin: 0 0 14px; padding-left: 22px; }
+  li { margin-bottom: 6px; }
+  a { color: var(--page-accent); }
+  code {
+    font: 12.5px/1.5 var(--mono);
+    background: var(--page-code-bg);
+    border: 1px solid var(--page-line);
+    border-radius: 4px;
+    padding: 1px 5px;
+  }
+  .meta { list-style: none; padding: 0; margin: 0; color: var(--page-muted); font-size: 14px; }
+  .meta li { margin-bottom: 4px; }
+  .scroll { overflow-x: auto; margin: 0 0 18px; border: 1px solid var(--page-line); border-radius: 10px; background: var(--page-card); }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+  th, td { text-align: left; padding: 9px 13px; border-bottom: 1px solid var(--page-line); vertical-align: top; }
+  th { background: var(--page-code-bg); font-weight: 620; white-space: nowrap; }
+  tbody tr:last-child td { border-bottom: 0; }
+  pre {
+    margin: 0 0 18px;
+    padding: 16px 18px;
+    background: var(--page-code-bg);
+    border: 1px solid var(--page-line);
+    border-radius: 10px;
+    overflow-x: auto;
+    font: 12px/1.55 var(--mono);
+  }
+  pre code { background: none; border: 0; padding: 0; font-size: inherit; }
+  blockquote { margin: 0 0 18px; padding: 12px 16px; border-left: 3px solid var(--page-accent); background: var(--page-code-bg); border-radius: 0 8px 8px 0; }
+  .thesis { font-size: 16px; color: var(--page-fg); border-left: 3px solid var(--page-accent); padding-left: 14px; margin: 0 0 20px; }
+  .cg { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); margin-bottom: 20px; }
+  .cg > div { border: 1px solid var(--page-line); border-radius: 10px; padding: 13px 16px; background: var(--page-card); font-size: 13.5px; }
+  .cg h5 { margin: 0 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .07em; color: var(--page-dim); }
+  .cg p { margin: 0; color: var(--page-muted); }
+
+  /* ------------------------------------------------------------------
+     Mockup frames. These reproduce Mission Control's real dark theme
+     tokens verbatim (src/web/styles.css :root), because the product is
+     dark-only - a light rendering of the mockups would show a surface
+     that does not exist. The page around them still follows the
+     reader's own colour scheme.
+     ------------------------------------------------------------------ */
+  .mock {
+    --bg: #0a0c0f; --bg-2: #0e1116; --panel: #14181e; --panel-2: #171c23;
+    --border: #232a33; --border-soft: #1b2129;
+    --fg: #e7ebf1; --muted: #939eae; --dim: #7c8798;
+    --working: #4a9eff; --idle: #35c08a; --attention: #f6a733; --danger: #f85149;
+    --neutral: #8b94a3; --select: #35c08a; --purple: #a371f7;
+    --radius: 13px;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+    background: var(--bg);
+    color: var(--fg);
+    border: 1px solid var(--page-line);
+    border-radius: 12px;
+    padding: 22px 26px 34px;
+    margin: 0 0 10px;
+    font: 13px/1.5 var(--sans);
+    overflow-x: auto;
+  }
+  .mock-cap { font-size: 12.5px; color: var(--page-dim); margin: 0 0 26px; }
+  .mock-inner { max-width: 900px; }
+  .mock-inner.wide { max-width: none; }
+
+  /* page head */
+  .m-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+  .m-head h3 { margin: 0; font-size: 13px; font-weight: 600; color: var(--fg); }
+  .m-scope {
+    font-size: 9.5px; font-weight: 640; text-transform: uppercase; letter-spacing: .05em;
+    padding: 2px 6px; border-radius: 5px;
+    border: 1px solid color-mix(in oklab, var(--idle) 34%, var(--border));
+    background: color-mix(in oklab, var(--idle) 9%, transparent);
+    color: color-mix(in oklab, var(--idle) 55%, var(--fg));
+  }
+  .m-lead { font-size: 11.5px; line-height: 1.5; color: var(--muted); margin: 0 0 18px; max-width: 76ch; }
+  .m-lead strong { color: var(--fg); font-weight: 600; }
+  .m-group { margin-top: 20px; }
+  .m-group-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+  .m-group-head h4 { margin: 0; font-size: 12px; font-weight: 600; color: var(--fg); text-transform: none; letter-spacing: 0; }
+  .m-hint { font-size: 11.5px; line-height: 1.5; color: var(--dim); margin: 14px 0 0; }
+  .m-btn {
+    font: 11.5px var(--sans); color: var(--muted); background: none;
+    border: 1px solid transparent; border-radius: 7px; padding: 4px 9px; cursor: default;
+  }
+  .m-btn:hover { background: var(--panel-2); }
+  .m-btn-solid { border-color: var(--border); background: var(--bg-2); color: var(--fg); }
+  .m-btn-danger { border-color: color-mix(in oklab, var(--danger) 34%, var(--border)); color: var(--danger); background: color-mix(in oklab, var(--danger) 8%, transparent); }
+
+  /* rows */
+  .m-row { display: flex; align-items: center; gap: 14px; padding: 9px 10px; border-radius: 9px; border: 1px solid transparent; }
+  .m-row + .m-row { margin-top: 2px; }
+  .m-row:hover { background: var(--panel-2); }
+  .m-row-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+  .m-row-label { font-size: 12.5px; font-weight: 540; color: var(--fg); display: flex; align-items: center; gap: 7px; }
+  .m-row-desc { font-size: 11.5px; line-height: 1.4; color: var(--muted); }
+  .m-row-ctl { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+  .m-check { width: 15px; height: 15px; border-radius: 4px; background: var(--working); border: 1px solid var(--working); position: relative; }
+  .m-check::after { content: "✓"; position: absolute; inset: 0; color: #fff; font-size: 11px; line-height: 13px; text-align: center; }
+  .m-num { width: 62px; padding: 5px 8px; border-radius: 7px; border: 1px solid var(--border); background: var(--bg-2); color: var(--fg); font: 12px var(--mono); text-align: right; }
+  .m-qual { font-size: 9.5px; font-weight: 640; text-transform: uppercase; letter-spacing: .05em; color: var(--dim); }
+
+  /* badges */
+  .m-badge {
+    font: 640 9.5px/1.5 var(--sans); text-transform: uppercase; letter-spacing: .05em;
+    padding: 2px 6px; border-radius: 5px; border: 1px solid var(--border);
+    color: var(--muted); background: var(--bg-2); white-space: nowrap;
+  }
+  .m-badge.ok { color: color-mix(in oklab, var(--idle) 55%, var(--fg)); border-color: color-mix(in oklab, var(--idle) 34%, var(--border)); background: color-mix(in oklab, var(--idle) 9%, transparent); }
+  .m-badge.busy { color: color-mix(in oklab, var(--working) 62%, var(--fg)); border-color: color-mix(in oklab, var(--working) 34%, var(--border)); background: color-mix(in oklab, var(--working) 9%, transparent); }
+  .m-badge.warn { color: color-mix(in oklab, var(--attention) 62%, var(--fg)); border-color: color-mix(in oklab, var(--attention) 34%, var(--border)); background: color-mix(in oklab, var(--attention) 9%, transparent); }
+  .m-badge.bad { color: color-mix(in oklab, var(--danger) 62%, var(--fg)); border-color: color-mix(in oklab, var(--danger) 34%, var(--border)); background: color-mix(in oklab, var(--danger) 9%, transparent); }
+
+  .m-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; background: var(--neutral); }
+  .m-dot.ok { background: var(--idle); }
+  .m-dot.busy { background: var(--working); }
+  .m-dot.warn { background: var(--attention); }
+  .m-dot.bad { background: var(--danger); }
+
+  /* cards (direction A) */
+  .m-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; margin-top: 4px; }
+  .m-card { border: 1px solid var(--border); border-left: 3px solid var(--neutral); border-radius: 10px; background: var(--bg-2); padding: 13px 16px 14px; }
+  .m-card.ok { border-left-color: var(--idle); }
+  .m-card.warn { border-left-color: var(--attention); }
+  .m-card.bad { border-left-color: var(--danger); }
+  .m-card-head { display: flex; align-items: center; gap: 8px; margin-bottom: 11px; }
+  .m-card-name { font-size: 13px; font-weight: 600; }
+  .m-card-spacer { flex: 1; }
+  .m-card-grid { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; align-items: baseline; }
+  .m-card-k { font-size: 11px; color: var(--dim); }
+  .m-card-v { font-size: 12px; color: var(--fg); font-variant-numeric: tabular-nums; }
+  .m-card-path { font: 10.5px var(--mono); color: var(--dim); margin: 9px 0 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .m-disclose { margin-top: 11px; display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--muted); border-top: 1px solid var(--border-soft); padding-top: 10px; }
+  .m-chev { color: var(--dim); }
+
+  /* capacity bar (direction B) */
+  .m-pool { padding: 12px 12px 13px; border-radius: 10px; border: 1px solid transparent; }
+  .m-pool:hover { background: var(--panel-2); }
+  .m-pool + .m-pool { margin-top: 4px; }
+  .m-pool-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 9px; }
+  .m-pool-name { font-size: 12.5px; font-weight: 560; color: var(--fg); }
+  .m-pool-sub { font: 10.5px var(--mono); color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .m-pool-counts { margin-left: auto; font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .m-bar { display: flex; height: 12px; border-radius: 6px; overflow: hidden; background: var(--bg-2); border: 1px solid var(--border); position: relative; }
+  .m-seg { height: 100%; }
+  .m-seg.leased { background: color-mix(in oklab, var(--working) 78%, var(--bg)); }
+  .m-seg.free { background: color-mix(in oklab, var(--idle) 70%, var(--bg)); }
+  .m-seg.quar { background: color-mix(in oklab, var(--danger) 72%, var(--bg)); }
+  .m-seg.over { background: repeating-linear-gradient(135deg, color-mix(in oklab, var(--attention) 80%, var(--bg)) 0 4px, color-mix(in oklab, var(--attention) 45%, var(--bg)) 4px 8px); }
+  .m-seg.grow { background: repeating-linear-gradient(135deg, transparent 0 5px, color-mix(in oklab, var(--border) 85%, transparent) 5px 10px); }
+  .m-legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 7px; font-size: 10.5px; color: var(--dim); }
+  .m-legend span { display: inline-flex; align-items: center; gap: 5px; }
+  .m-key { width: 9px; height: 9px; border-radius: 2px; }
+  .m-key.leased { background: color-mix(in oklab, var(--working) 78%, var(--bg)); }
+  .m-key.free { background: color-mix(in oklab, var(--idle) 70%, var(--bg)); }
+  .m-key.grow { background: repeating-linear-gradient(135deg, transparent 0 3px, var(--border) 3px 6px); border: 1px solid var(--border); }
+  .m-key.quar { background: color-mix(in oklab, var(--danger) 72%, var(--bg)); }
+  .m-key.over { background: repeating-linear-gradient(135deg, color-mix(in oklab, var(--attention) 80%, var(--bg)) 0 3px, color-mix(in oklab, var(--attention) 45%, var(--bg)) 3px 6px); }
+  .m-max { margin-left: auto; display: inline-flex; align-items: center; gap: 5px; color: var(--muted); }
+  .m-max b { color: var(--fg); font-weight: 600; }
+
+  /* master-detail (direction C) */
+  .m-md { display: grid; grid-template-columns: minmax(0, 1fr) 330px; gap: 16px; align-items: start; }
+  .m-filters { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+  .m-filter { font-size: 11px; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--border); background: var(--bg-2); color: var(--muted); }
+  .m-filter.on { border-color: color-mix(in oklab, var(--working) 45%, var(--border)); background: color-mix(in oklab, var(--working) 12%, transparent); color: color-mix(in oklab, var(--working) 62%, var(--fg)); }
+  .m-search { width: 100%; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg-2); color: var(--dim); font-size: 11.5px; margin-bottom: 12px; }
+  .m-poolhead { display: flex; align-items: baseline; gap: 10px; padding: 10px 4px 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); border-bottom: 1px solid var(--border-soft); }
+  .m-poolhead b { color: var(--muted); font-weight: 620; letter-spacing: .06em; }
+  .m-poolhead span { margin-left: auto; font-variant-numeric: tabular-nums; }
+  .m-slot { display: flex; align-items: center; gap: 10px; padding: 7px 8px; border-radius: 8px; border: 1px solid transparent; }
+  .m-slot:hover { background: var(--panel-2); }
+  .m-slot.sel { background: color-mix(in oklab, var(--working) 11%, transparent); border-color: color-mix(in oklab, var(--working) 36%, var(--border)); }
+  .m-slot-id { font-size: 11.5px; color: var(--fg); width: 52px; flex-shrink: 0; }
+  .m-slot-path { font: 10.5px var(--mono); color: var(--dim); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .m-slot-age { font: 10.5px var(--mono); color: var(--dim); width: 42px; text-align: right; flex-shrink: 0; }
+  .m-detail { border: 1px solid var(--border); border-radius: 10px; background: var(--bg-2); padding: 14px 16px 15px; position: sticky; top: 0; }
+  .m-detail-head { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+  .m-detail-title { font-size: 12.5px; font-weight: 600; }
+  .m-dl { display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; align-items: baseline; margin: 0 0 13px; }
+  .m-dl dt { font-size: 11px; color: var(--dim); }
+  .m-dl dd { margin: 0; font-size: 11.5px; color: var(--fg); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .m-dl dd.mono { font-family: var(--mono); font-size: 10.5px; }
+  .m-safety { font-size: 11px; line-height: 1.5; color: var(--dim); border-top: 1px solid var(--border-soft); padding-top: 11px; margin: 0 0 12px; }
+  .m-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+
+  /* current-state callout */
+  .m-current { background: var(--bg); }
+  .m-old-intro { border: 1px solid var(--border); border-left: 3px solid var(--select); background: linear-gradient(110deg, color-mix(in srgb, var(--select) 9%, transparent), transparent 65%); padding: 18px 20px; margin-bottom: 24px; }
+  .m-old-kicker { color: var(--select); font: 700 10px var(--mono); letter-spacing: .13em; text-transform: uppercase; margin: 0; }
+  .m-old-intro p:not(.m-old-kicker) { max-width: 76ch; margin: 5px 0 15px; color: var(--muted); line-height: 1.55; font-size: 13px; }
+  .m-old-stats { display: flex; flex-wrap: wrap; gap: 8px; }
+  .m-old-stats span { border: 1px solid var(--border); background: color-mix(in srgb, var(--panel-2) 82%, transparent); color: var(--muted); font: 11px var(--mono); padding: 7px 9px; }
+  .m-old-stats b { color: var(--fg); margin-right: 5px; font-size: 15px; }
+  .m-old-section { border-top: 1px solid var(--border); padding: 22px 0 28px; }
+  .m-old-section:last-child { padding-bottom: 4px; }
+  .m-old-h { margin: 2px 0 0; font-size: 16px; font-weight: 700; color: var(--fg); text-transform: none; letter-spacing: 0; }
+  .m-old-policy { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(220px, .6fr); gap: 10px; margin-top: 12px; }
+  .m-old-policy > label { background: var(--panel-2); border: 1px solid var(--border); display: flex; gap: 16px; justify-content: space-between; align-items: center; padding: 13px 14px; }
+  .m-old-policy strong { display: block; font-size: 14px; }
+  .m-old-policy small { display: block; color: var(--dim); font-size: 11px; line-height: 1.4; margin-top: 3px; }
+
+  .flags { list-style: none; padding: 0; margin: 0 0 18px; }
+  .flags li { display: flex; gap: 10px; align-items: baseline; margin-bottom: 8px; font-size: 13.5px; }
+  .flags b { flex-shrink: 0; width: 20px; color: var(--page-dim); font-variant-numeric: tabular-nums; }
+  footer.doc { margin-top: 64px; padding-top: 20px; border-top: 1px solid var(--page-line); color: var(--page-dim); font-size: 13px; }
+  @media (max-width: 760px) {
+    .wrap { padding: 32px 16px 80px; }
+    .m-md { grid-template-columns: minmax(0, 1fr); }
+  }
+
+  /* Decision record and states */
+  .decided { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); margin: 0 0 22px; }
+  .decided > div { border: 1px solid var(--page-line); border-left: 3px solid var(--page-accent); border-radius: 0 10px 10px 0; padding: 11px 14px; background: var(--page-card); }
+  .decided h5 { margin: 0 0 4px; font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: var(--page-dim); }
+  .decided p { margin: 0; font-size: 14px; font-weight: 600; }
+  .notaken { opacity: .96; }
+  .notaken .mock { filter: saturate(.82); }
+  .tag-no { display: inline-block; font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .07em; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--page-line); color: var(--page-dim); vertical-align: middle; margin-left: 10px; }
+  .m-skel { height: 9px; border-radius: 5px; background: linear-gradient(90deg, var(--panel-2), var(--panel), var(--panel-2)); }
+  .m-empty { border: 1px dashed var(--border); border-radius: 10px; padding: 18px 20px; text-align: center; }
+  .m-empty p { margin: 0; font-size: 11.5px; color: var(--dim); line-height: 1.5; }
+  .m-empty b { display: block; color: var(--muted); font-size: 12.5px; font-weight: 560; margin-bottom: 3px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="doc">
+  <h1>Phased implementation: capacity-first Worktrees pane</h1>
+  <ul class="meta">
+    <li><strong>Source plan:</strong> <a href="plan.md">plan.md</a> (rendered: <a href="plan.html">plan.html</a>)</li>
+    <li><strong>Date:</strong> 2026-08-21</li>
+    <li><strong>Phases:</strong> 1</li>
+    <li><strong>Tasks:</strong> 1</li>
+  </ul>
+</header>
+
+<h2>Incorporated human decisions</h2>
+<p>All four were submitted in Mission Control on 2026-08-21 and are treated as requirements, not open questions.</p>
+<div class="decided">
+  <div><h5>Layout direction</h5><p>B - Capacity-first</p></div>
+  <div><h5>Safety callout</h5><p>Demote to the lead paragraph</p></div>
+  <div><h5>Scope</h5><p>Restyle plus empty and loading states</p></div>
+  <div><h5>Follow-up</h5><p>Create phased implementation plan</p></div>
+</div>
+
+<h2>Repository findings</h2>
+<p>Investigated at <code>HEAD</code> on this session's branch. Three findings changed the shape of the plan.</p>
+<ol>
+  <li><strong>No backend work is required, and the source plan's assumption holds.</strong> <code>WorktreeRepositoryView</code> in <code>src/shared/worktrees.ts:56-73</code> already carries <code>policy.maxSlots</code> and <code>counts { total, leased, available, quarantined, overCapacity }</code> - every input the capacity bar needs. Nothing in <code>src/shared/</code>, <code>src/server/</code>, the routes, or the database is touched by this change. It is entirely browser-side.</li>
+  <li><strong>The "inventory unavailable" state already has a wire representation.</strong> <code>WorktreeRepositoryView.status</code> is <code>"ready" | "attention" | "unavailable"</code> (<code>src/shared/worktrees.ts:71</code>), and <code>useWorktrees</code> exposes <code>error</code> separately from a resolved empty <code>repositories</code> array (<code>src/web/useWorktrees.ts:32-45</code>). The three states the scope decision asks for - loading, empty, and unavailable - are therefore all distinguishable today. The gap is presentational only: the panel renders nothing for them.</li>
+  <li><strong>The blast radius is two files plus their tests.</strong> <code>src/web/components/WorktreeSettingsPanel.tsx</code> (382 lines) and the <code>wt-</code> block in <code>src/web/styles.css</code> (lines 403-781, 379 lines). <code>SlotCard</code> and <code>ActionDialog</code> inside the panel are structurally unaffected and only inherit the radius and token corrections. The three <code>data-anchor</code> values in <code>src/web/lib/settings-search.ts:175,184,193</code> keep their slugs; only the order of the sections they point at changes, so no registry edit is needed.</li>
+</ol>
+
+<h2>Sizing and phase-count rationale</h2>
+<p class="thesis"><strong>Estimate: 400-500 gross non-test implementation lines</strong> added or materially changed.</p>
+<p>Assumptions behind the range: the <code>wt-</code> CSS block is largely rewritten (~280 lines materially changed, of 379), and the panel's top-level structure, the pool row, the new capacity bar, and the three states account for ~180 lines of TSX. <code>SlotCard</code> and <code>ActionDialog</code> are assumed to survive with token-level edits only. Tests are excluded from the count.</p>
+<p>That is above the 200-line one-shot threshold, so a split was considered and rejected. <strong>One phase.</strong></p>
+<ul>
+  <li>There is <strong>no layer boundary to split on.</strong> Verified above: no shared contract, server, route, schema, or migration work exists in this change. The usual foundation-then-consumer boundary has nothing to separate.</li>
+  <li>Splitting the capacity bar from the pane would <strong>create a dead surface</strong> - a component nothing renders - which is exactly the split the phasing rules forbid.</li>
+  <li>Splitting the empty and loading states from the restyle would touch the same two files twice in sequence, guarantee a conflict between the two pull requests, and produce no independently valuable intermediate state. The states are presentation of the same pane.</li>
+  <li>The CSS block and the component that consumes it <strong>must move together.</strong> Landing either alone leaves unstyled markup or dead rules on the default branch.</li>
+  <li>One pane, one CSS block, one e2e spec, and one component test is well within what a mid-tier model can implement, verify, and explain in one session.</li>
+</ul>
+
+<h2>Phases</h2>
+<div class="scroll">
+<table>
+<thead><tr><th>#</th><th>Phase</th><th>File</th><th>Direct prerequisites</th><th>Repository</th></tr></thead>
+<tbody>
+<tr><td>1</td><td>Capacity-first Worktrees pane</td><td><a href="phase-1-capacity-first-worktrees-pane.md">phase-1-capacity-first-worktrees-pane.md</a></td><td>None (beyond this planning session)</td><td><code>ai-harness</code> only</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2>Dependency graph</h2>
+<svg viewBox="0 0 660 96" width="100%" style="max-width:660px;height:auto;display:block;margin:0 0 18px" role="img" aria-label="The planning session pull request publishes the artifacts, which releases the single Phase 1 task.">
+  <defs>
+    <marker id="ar" markerWidth="9" markerHeight="9" refX="8" refY="3.2" orient="auto">
+      <path d="M0,0 L8,3.2 L0,6.4 z" fill="currentColor"/>
+    </marker>
+  </defs>
+  <g fill="none" stroke="currentColor" stroke-width="1.5" opacity=".55">
+    <rect x="1" y="20" width="250" height="56" rx="10"/>
+    <rect x="409" y="20" width="250" height="56" rx="10"/>
+    <line x1="253" y1="48" x2="399" y2="48" marker-end="url(#ar)"/>
+  </g>
+  <g fill="currentColor" font-family="system-ui, sans-serif" font-size="12.5" text-anchor="middle">
+    <text x="126" y="44">Planning session PR</text>
+    <text x="126" y="62" opacity=".65" font-size="11.5">publishes the artifacts</text>
+    <text x="534" y="44">Phase 1</text>
+    <text x="534" y="62" opacity=".65" font-size="11.5">Capacity-first Worktrees pane</text>
+  </g>
+</svg>
+<p>There is one phase, so there is no concurrency group and no merge ordering beyond the planning session's own pull request. The phase task is gated on this session so it cannot start before the phase file it names exists on the default branch.</p>
+
+<h2>Cross-phase contracts</h2>
+<p>With a single phase there are no inter-phase contracts. The contracts the phase must <strong>preserve</strong> are inherited from the source plan and from <code>docs/plans/native-worktree-management/phase-4-settings-worktree-operations.md</code>:</p>
+<ul>
+  <li>Preview-first mutation: preview, server-supplied acknowledgement keys, opaque token, <code>409</code> as a stale preview rather than a failure.</li>
+  <li>No <code>data-testid</code>; selection by role, label, and placeholder.</li>
+  <li>The three <code>data-anchor</code> slugs keep resolving.</li>
+  <li>Colour never carries state without a word beside it.</li>
+  <li>Inventory stays out of <code>MissionState</code>; only <code>worktreesRevision</code> lives there.</li>
+  <li>Lowering the maximum never prunes as a side effect.</li>
+</ul>
+
+<h2>Final verification strategy</h2>
+<p>Owned by Phase 1 in full, since it is the only phase:</p>
+<ul>
+  <li><code>e2e/specs/settings-worktrees.spec.ts</code> extended to cover the loading, empty, and unavailable states, a populated pool's bar and legend counts, an over-capacity pool offering the prune preview, the disclosure into slot detail, and one preview-and-cancel round trip.</li>
+  <li><code>test/worktree-settings-panel.test.ts</code> extended with a <code>renderToStaticMarkup</code> case pinning the bar's segment widths and its composed <code>role="img"</code> label against a known inventory.</li>
+  <li><code>npm run typecheck</code>, <code>npm run lint</code>, <code>npm test</code>, <code>npm run build</code>, <code>npm run test:e2e</code>.</li>
+  <li>Screenshots of the pane loading, empty, populated, and over capacity, attached to the pull request rather than committed.</li>
+</ul>
+
+<footer class="doc">
+  Source: <code>docs/plans/worktrees-settings-layout/phased-plan.md</code>. This page is a rendering
+  of that file; the markdown stays the source of truth. The detailed implementation route lives in
+  <a href="phase-1-capacity-first-worktrees-pane.md">phase-1-capacity-first-worktrees-pane.md</a>.
+</footer>
+
+</div>
+</body>
+</html>

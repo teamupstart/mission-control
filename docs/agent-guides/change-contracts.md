@@ -41,14 +41,26 @@ When adding a dashboard preference to `UiConfig`, three edits are one obligation
 
 Read it through one hook per preference (`useRichText`, `useGuidedDispatch`), never a `useState` over the same key: several surfaces may offer one preference, and two of them must not be able to disagree.
 
-**A new board card item is added to the registry, or it ships un-toggleable.** The optional
-items a session card draws live in one list, `DISPLAY_ITEMS` in `src/web/lib/board-card.ts`,
-with the ids the operator's `hiddenDisplayItems` stores and the prose Settings prints.
-`SessionTile` gates each one on `useDisplayItems()` and `BoardCardPanel` draws a checkbox per
-entry, so all three move together or the item is compulsory for everyone. `test/board-card-items.test.ts`
-is the source scan that fails on it, and it also pins the two things the list may not become:
-the attention flags in `.tile-marks` stay always on, and the shipped default is the card the
-previous release drew rather than everything this build can draw.
+**A new optional display item is added to the registry, or it ships un-toggleable.** The
+optional items a session draws about itself live in one list, `DISPLAY_ITEMS` in
+`src/web/lib/board-card.ts`, with the ids the operator's `hiddenDisplayItems` stores and the
+prose Settings prints. Each entry names the surface it is drawn on through `group`, and the
+panel sections by whatever groups it finds - `"card"` for `SessionTile`, `"conversation"` for
+the `PATH`/`BRANCH` band in `ConsoleDetail`. The drawing surface gates each one on
+`useDisplayItems()` and `BoardCardPanel` draws a checkbox per entry, so all three move
+together or the item is compulsory for everyone. A third surface adds a third `group` value
+and a `DISPLAY_GROUP_COPY` entry, and needs no schema field, route or migration - the ids
+share one array. `test/board-card-items.test.ts` is the source scan that fails on it, and it
+also pins the things the list may not become: the attention flags in `.tile-marks` stay
+always on, no two entries may share a label (a checkbox's `aria-label` is its whole
+accessible name), and the shipped default is the session the previous release drew rather
+than everything this build can draw.
+
+A container that can end up with nothing in it is guarded in the component, never with CSS
+`:empty` - the `.detail-sub` band carries padding and a border, so an empty one is a bar of
+chrome saying nothing, and the whitespace JSX leaves between children defeats `:empty`
+anyway. Ask whether the container has an occupant, which is not the same question as whether
+the preferences are off: that band also hosts the task chip and `TaskRepoPrs`.
 
 MCP arguments are deliberately validated twice: in `src/shared/protocol.ts` and `src/mcp/server.ts`. Change both.
 

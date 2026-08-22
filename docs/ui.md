@@ -475,11 +475,12 @@ available:
   <kbd>k</kbd> pressed on the overview drill in and then do what they say. The one exception
   is <kbd>⇧</kbd><kbd>Tab</kbd>, which cycles the selected tile's permission mode in place
   without opening its detail.
-- **You choose what a card draws.** **Settings → Display → Board card** is a checklist of
-  every optional item a session card can state - goal, live activity, workflow, model,
-  context meter, reasoning effort, permission mode, cost, branch, worktree and last seen -
-  and unchecking one applies to every card in every column immediately. A live preview card
-  sits in the panel and redraws as you toggle, so you can see what you are trading without
+- **You choose what a session draws.** **Settings → Display → Session display** is a
+  checklist of every optional item a session states about itself. Under **Board card** sit
+  the card's own - goal, live activity, workflow, model, context meter, reasoning effort,
+  permission mode, cost, branch, worktree and last seen - and unchecking one applies to
+  every card in every column immediately. A live preview card sits in the panel and redraws
+  as you toggle, so you can see what you are trading without
   leaving Settings. Two things are deliberately not on the list. The **attention flags** -
   a draft or escalated note, a review, a queued turn, a pull request, an Inspector verdict,
   a recurring mission, an ensemble - are always drawn, because no preference should be able
@@ -493,6 +494,17 @@ available:
   line. The choice is per browser and stored through the daemon, so it survives a reload;
   a second dashboard tab already open picks it up on its next load rather than live, which
   is true of every Display preference.
+- **The same panel governs the conversation header.** Under **Conversation header** in that
+  checklist sit the console detail's two facts above the transcript - the session's
+  **working directory** and its **Git branch**. Both ship visible, so nothing moves until you
+  ask. Switch both off and the whole band stops rendering, giving its height back to the
+  conversation - **but only when nothing else is in it.** That band is also where a task's
+  chip and its pull requests go, so an ordinary dispatched session collapses it while a
+  scout task, a session re-assigned to a later task, a task carrying an outcome link, a
+  scheduled task and a multi-repo task each keep it. The panel says so where you choose.
+  These two switches are separate from the card's **Branch** and **Worktree** items on
+  purpose: you can keep the path on the card and drop it from the console, have it in both
+  places, or have it in neither.
 - **An [ensemble](ensembles.md#multi-agent-ensembles)'s members are drawn together, in every layout.**
   Sibling candidates of one run used to scatter through the fleet like unrelated work; now one
   ordering decides where every session goes, and it puts them adjacent. On the **Board** they

@@ -10,11 +10,11 @@ import { renderToStaticMarkup } from "react-dom/server";
  * next one added has to be in it too.
  *
  * `src/web/lib/board-card.ts` holds the ids, the labels and the prose. `SessionTile` gates
- * each optional item on the same ids, and `BoardCardPanel` draws a checkbox per entry. Any
- * one of those three can be edited without the other two and still typecheck, lint, build
- * and pass every rendering test - and the result is a card item nobody can turn off, or a
- * checkbox that governs nothing. Neither failure is visible in a diff that adds one line to
- * a 400-line component.
+ * each optional CARD item on the same ids, `ConsoleDetail` gates each CONVERSATION one, and
+ * `BoardCardPanel` draws a checkbox per entry. Any one of those four can be edited without
+ * the others and still typecheck, lint, build and pass every rendering test - and the result
+ * is an item nobody can turn off, or a checkbox that governs nothing. Neither failure is
+ * visible in a diff that adds one line to a 400-line component.
  *
  * So this is a source scan, for the same reason `tooltip-coverage.test.ts` is one: a render
  * test can only check the items a test happens to name, and the failure being prevented
@@ -47,7 +47,9 @@ Object.defineProperty(globalThis, "fetch", {
     }),
 });
 
-const { DISPLAY_ITEMS, isDisplayItemShown } = await import("../src/web/lib/board-card.ts");
+const { DISPLAY_GROUP_COPY, DISPLAY_ITEMS, isDisplayItemShown } = await import(
+  "../src/web/lib/board-card.ts",
+);
 const { BoardCardPanel } = await import("../src/web/components/BoardCardPanel.tsx");
 const { updateUiConfig } = await import("../src/web/lib/uiConfig.ts");
 const { UI_CONFIG_DEFAULTS } = await import("../src/shared/protocol.ts");
@@ -64,6 +66,7 @@ function code(relative: string): string {
 }
 
 const CARD_ITEMS = DISPLAY_ITEMS.filter((item) => item.group === "card");
+const CONVERSATION_ITEMS = DISPLAY_ITEMS.filter((item) => item.group === "conversation");
 
 /** React's text escaping, so prose with an apostrophe can be looked for in the markup. */
 function escaped(text: string): string {
@@ -195,13 +198,104 @@ test("the attention flags are not customizable", () => {
   );
 });
 
-test("registry ids are unique and this phase ships only card entries", () => {
+test("registry ids are unique, and both groups carry entries", () => {
   const ids = DISPLAY_ITEMS.map((item) => item.id as string);
   assert.equal(new Set(ids).size, ids.length, "two registry entries share an id");
-  // The `"conversation"` group is declared and deliberately empty until the console
-  // detail's header band becomes optional. An entry here before the panel's other half
-  // exists would be a checkbox that governs nothing.
-  assert.deepEqual([...new Set(DISPLAY_ITEMS.map((item) => item.group))], ["card"]);
+  // One array, two groups. The console detail's band joined as ENTRIES rather than as a
+  // second config key, which is why it needed no schema field and no migration - and the
+  // panel sections by whatever groups it finds, so a third surface adds a third value here
+  // and is sectioned without the panel being touched.
+  assert.deepEqual([...new Set(DISPLAY_ITEMS.map((item) => item.group))], [
+    "card",
+    "conversation",
+  ]);
+  assert.ok(CONVERSATION_ITEMS.length > 0, "the conversation group lost its entries");
+});
+
+test("no two items announce the same name", () => {
+  // A checkbox inside a `<label>` takes its explicit `aria-label` as its whole accessible
+  // name, so two items sharing a label are two controls a screen reader cannot tell apart -
+  // and that `getByRole("checkbox", { name })` cannot address either. The card's "Branch"
+  // and the console band's branch are exactly that collision, which is why the latter is
+  // "Git branch".
+  const labels = DISPLAY_ITEMS.map((item) => item.label);
+  assert.equal(new Set(labels).size, labels.length, "two registry entries share a label");
+});
+
+test("the conversation band's two cells are the conversation group, and are their own switches", () => {
+  // Named exactly, because the pair is the whole feature: `detailPath` and `detailBranch`
+  // are DISTINCT from the card's `worktree` and `branch`. Coupling either pair would make
+  // one checkbox mean two surfaces, with no way to express "the path on the card and not
+  // over the conversation" - or "neither".
+  assert.deepEqual(CONVERSATION_ITEMS.map((item) => item.id), ["detailPath", "detailBranch"]);
+  const ids = new Set(DISPLAY_ITEMS.map((item) => item.id as string));
+  assert.ok(ids.has("branch") && ids.has("worktree"), "the card's own pair has been renamed");
+});
+
+test("each conversation cell is gated on its own registry id in ConsoleDetail", () => {
+  // The same direction the tile scan above runs in: a cell whose id nothing gates is an
+  // item the panel cannot govern, and that is invisible in a diff of a 900-line component.
+  const detail = code("web/components/layouts/ConsoleDetail.tsx");
+  for (const item of CONVERSATION_ITEMS) {
+    assert.ok(
+      detail.includes(`shown("${item.id}")`),
+      `ConsoleDetail draws no gate for the registry item "${item.id}"`,
+    );
+  }
+  const known = new Set(CONVERSATION_ITEMS.map((item) => item.id as string));
+  for (const [, id] of detail.matchAll(/shown\("([^"]+)"\)/g)) {
+    assert.ok(known.has(id!), `ConsoleDetail gates on "${id}", which is in no conversation entry`);
+  }
+});
+
+test("ConsoleDetail holds no second copy of the registry", () => {
+  const detail = code("web/components/layouts/ConsoleDetail.tsx");
+  assert.ok(
+    detail.includes("useDisplayItems()"),
+    "ConsoleDetail no longer reads the shared registry hook",
+  );
+  assert.ok(
+    !detail.includes("hiddenDisplayItems"),
+    "ConsoleDetail reads the stored config directly instead of going through the registry",
+  );
+});
+
+test("both conversation cells ship visible", () => {
+  // D2 for this phase's half. The band is byte-identical to the previous release on a
+  // profile that has never opened this panel, which is what keeps the three e2e specs that
+  // read `.detail-sub` unmodified.
+  for (const item of CONVERSATION_ITEMS) {
+    assert.ok(
+      isDisplayItemShown(UI_CONFIG_DEFAULTS.hiddenDisplayItems, item.id),
+      `"${item.id}" does not ship visible`,
+    );
+  }
+});
+
+test("every conversation item is reachable from the panel, under its own heading", async () => {
+  const html = await panelWith([]);
+  for (const item of CONVERSATION_ITEMS) {
+    assert.ok(html.includes(escaped(item.label)), `the panel prints no label for "${item.id}"`);
+    assert.ok(
+      html.includes(escaped(item.description.slice(0, 40))),
+      `the panel prints no description for "${item.id}"`,
+    );
+  }
+  // Two groups means two sections, and a section that does not name itself is a list of
+  // checkboxes an operator cannot tell apart from the one above it.
+  assert.ok(html.includes("Board card"), "the card section lost its heading");
+  assert.ok(html.includes("Conversation header"), "the conversation section lost its heading");
+});
+
+test("the conversation section says the height is conditional rather than promising it", async () => {
+  // The review's second requirement, pinned where an editor would see it. The band also
+  // hosts a task's chip and its pull requests, so hiding both cells collapses it only when
+  // nothing else is in it - and a preference that promises height unconditionally is a bug
+  // report waiting to be filed.
+  const html = await panelWith([]);
+  const blurb = DISPLAY_GROUP_COPY.conversation.blurb;
+  assert.ok(html.includes(escaped(blurb)), "the conversation section prints no blurb");
+  assert.match(blurb, /not always|only collapses|when nothing else/i);
 });
 
 test("the preview mounts the real tile rather than a picture of one", () => {

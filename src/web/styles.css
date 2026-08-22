@@ -24914,11 +24914,23 @@ span.line-run-prov {
   gap: 8px;
   min-width: 0;
 }
+/* A group label INSIDE the section, so it has to read as subordinate to the section's own
+   `h3` rather than as a peer of it. At 12px/620 against an `h3` of 13px/600 it was actually
+   the heavier of the two, which reads as two competing titles rather than as a section with
+   two groups - and this rule never rendered before the conversation group had entries, so
+   that was never on screen to see. The cap treatment is the one this panel already uses for
+   `PREVIEW`, and the margin is what separates the second group from the last row of the
+   first; `:first-child` keeps the top group tight under the section head. */
 .board-card-checklist .settings-subhead {
-  margin: 6px 0 0;
-  font-size: 12px;
+  margin: 16px 0 0;
+  font-size: 10px;
   font-weight: 620;
-  color: var(--fg);
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.board-card-checklist .settings-subhead:first-child {
+  margin-top: 0;
 }
 .board-card-checklist .settings-blurb {
   margin: 0 0 2px;

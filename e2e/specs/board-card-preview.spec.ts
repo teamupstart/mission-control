@@ -26,11 +26,11 @@ test("the preview redraws as items are toggled, and never navigates", async ({
   page,
   daemon,
 }) => {
-  // Tall enough for the whole panel to be on screen at once. The checklist is eleven rows
-  // of label-over-prose beside a sticky card, and a screenshot of it taken across a scroll
-  // is stitched rather than photographed - which is not what a frame meant for pixel review
-  // should be.
-  await page.setViewportSize({ width: 1500, height: 1400 });
+  // Tall enough for the whole panel to be on screen at once. The checklist is thirteen rows
+  // of label-over-prose across two sections, beside a sticky card, and a screenshot of it
+  // taken across a scroll is stitched rather than photographed - which is not what a frame
+  // meant for pixel review should be.
+  await page.setViewportSize({ width: 1500, height: 1700 });
 
   // The preview's workflow panel is drawn from a run SUMMARY, and there is no run behind
   // it. Recorded from before the navigation, because the failure this guards against is a
@@ -51,8 +51,16 @@ test("the preview redraws as items are toggled, and never navigates", async ({
 
   // Every registry item has a reachable checkbox, and the LAST one is reachable too - the
   // panel is the tallest thing in Display and its final row is the one a layout mistake
-  // would push off the end of the section rather than merely below the fold.
-  await expect(panel.getByRole("checkbox")).toHaveCount(11);
+  // would push off the end of the section rather than merely below the fold. Thirteen now:
+  // eleven card items and the console band's two, which share this panel rather than a
+  // second one.
+  await expect(panel.getByRole("checkbox")).toHaveCount(13);
+  await expect(panel.getByRole("checkbox", { name: "Git branch", exact: true }))
+    .toBeVisible();
+  // Both sections name themselves, which is what tells the card's "Branch" apart from the
+  // console band's "Git branch" three rows below it.
+  await expect(panel.getByRole("heading", { name: "Board card" })).toBeVisible();
+  await expect(panel.getByRole("heading", { name: "Conversation header" })).toBeVisible();
   await expect(panel.getByRole("checkbox", { name: "Last seen", exact: true }))
     .toBeVisible();
 
@@ -72,6 +80,32 @@ test("the preview redraws as items are toggled, and never navigates", async ({
     await panel.screenshot({ path: `${EVIDENCE}01-defaults.png` });
     // eslint-disable-next-line no-console
     console.log("CAPTURED e2e/.artifacts/board-card-preview/01-defaults.png");
+
+    // And the conversation section on its own, large enough to read. The whole-panel frame
+    // above proves the two sections sit together; this one is where a reviewer can actually
+    // read the sentence that says the reclaimed height is CONDITIONAL, which is the claim
+    // the copy is carrying. Clipped from the section heading to the last row of the section
+    // rather than screenshotting an element, because the heading, the blurb and the two rows
+    // are siblings in the checklist rather than one container.
+    const heading = panel.getByRole("heading", { name: "Conversation header" });
+    const lastRow = panel.getByRole("checkbox", { name: "Git branch", exact: true });
+    const top = await heading.boundingBox();
+    const bottom = await lastRow.boundingBox();
+    const column = await panel.locator(".board-card-checklist").boundingBox();
+    if (top && bottom && column) {
+      await page.screenshot({
+        path: `${EVIDENCE}03-conversation-header-section.png`,
+        clip: {
+          x: column.x - 4,
+          y: top.y - 10,
+          width: column.width + 8,
+          // Past the last checkbox's own row, so its wrapped description is in frame too.
+          height: bottom.y + 64 - top.y,
+        },
+      });
+      // eslint-disable-next-line no-console
+      console.log("CAPTURED e2e/.artifacts/board-card-preview/03-conversation-header-section.png");
+    }
   }
 
   // In place: no navigation, no reload. The URL is checked after each toggle because the

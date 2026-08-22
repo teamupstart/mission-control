@@ -495,12 +495,41 @@ subdirectory to stand in, so a losing subdirectory override never lends it one.
 
 Resolution is therefore three rungs, in this order: the longest matching subdirectory or
 repository override, then the slot's global default, then *skipped*. Everything after that -
-consent, Trust, the platform floor, the runtime - is unchanged, and a configured default still
-runs only in a repository that holds the Workflows grant.
+consent, Trust, the run budget, the platform floor, the runtime - is unchanged, and a
+configured default still runs only in a repository that holds the Workflows grant.
 
-Saving a slot replaces its default and its complete override list in one compare-and-swap, so
-the two halves are never stored apart and a second window's save is refused rather than
-silently overwriting unsaved typing.
+Saving a slot replaces its default, its complete override list and its run budget in one
+compare-and-swap, so the parts are never stored apart and a second window's save is refused
+rather than silently overwriting unsaved typing.
+
+**A Command runs once per workflow run by default.** Beside the command itself, each slot
+carries **how often this Command may run** - how many times it may actually execute inside a
+single workflow run, counted across every repair round. The default is **once**, and the
+ceiling is 21, which is the initial submission plus the repair-round ceiling and therefore
+means "every round, without ever being skipped".
+
+This exists because a slow gate is slow in every round. A twenty-minute test suite that
+re-runs on each repair round is the largest fixed cost in a long workflow, and the rounds after
+the first are usually re-proving the same passing paths. Once a run has spent the budget, the
+gate is *skipped* with a note naming the limit, the graph advances, and the remaining coverage
+comes from CI, which runs the full suite against the merge commit anyway. Raising the number
+buys re-validation of a repair at the cost of running the command again.
+
+The budget counts **executions, not opportunities**. A round in which the gate was skipped for
+an unconfigured slot, an unauthorized repository, a platform that cannot run Commands, or an
+already-spent budget never reached a command, so none of them spend a run. Infrastructure
+retries are the same execution asked again and have their own separate budget.
+
+Two operator actions start the count over, because both are explicit requests for another real
+attempt: **granting a run more repair rounds**, and the **full restart** out of a GitHub
+Inspector-only repair. Ordinary repair rounds do not, since bounding those is what the setting
+is for.
+
+The budget belongs to the Command rather than to the node that names it, and it is **shared by
+every check node that resolves to that slot**. A graph gating on `test` in two places spends one
+allowance between them, so with the default of one the second gate is skipped even in the same
+round. That is the setting meaning what it says: the maximum is configured on the Command, so it
+is a maximum on the Command, not on each place a workflow happens to name it.
 
 Worktrees of a configured repository count too,
 wherever they live on disk: a dispatched session usually stands in a native pooled checkout under
@@ -512,10 +541,11 @@ checkout's `packages/web` resolves the command configured for the repository's
 
 **An unrun gate passes, with a note saying why.** A slot with no override for this repository
 and no global default is *skipped*; a repository that has not been authorized is *not run*; a
-platform that cannot run Commands, or an executable that is not there, is *not run* too. All of
-them pass, because a workflow that failed on every unconfigured machine would be broken by
-default, and each says which of them happened so it is never mistaken for a gate that ran.
-Only a command that ran and exited non-zero fails.
+platform that cannot run Commands, or an executable that is not there, is *not run* too; and a
+Command that has already run as often as this run allows is *skipped* with its own distinct
+reason. All of them pass, because a workflow that failed on every unconfigured machine would be
+broken by default, and each says which of them happened so it is never mistaken for a gate that
+ran. Only a command that ran and exited non-zero fails.
 
 An infrastructure problem is never a fail either. A timeout, a kill, a pool with no worktree to
 give: none of them is a statement about the change under review, so they retry and then block

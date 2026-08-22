@@ -4556,10 +4556,16 @@ export const WorkflowCommandOverrideSchema = z.object({
 /**
  * One atomic replacement of a Command slot's COMPLETE state.
  *
- * Both fields are required rather than defaulted, and that is the safety property: a caller
+ * Every field is required rather than defaulted, and that is the safety property: a caller
  * who omits `overrides` would otherwise silently clear every exception an operator wrote,
  * and a caller who omits `defaultCommand` would silently clear the machine-wide command. A
- * partial write of a slot is not expressible, so the two halves can never be committed apart.
+ * partial write of a slot is not expressible, so the halves can never be committed apart.
+ *
+ * `maxRuns` joins them under the same rule, and pointedly does NOT carry
+ * `WORKFLOW_COMMAND_DEFAULT_MAX_RUNS` as a zod default. A default here would mean a caller
+ * that has never heard of the run budget silently resets an operator's configured `5` to `1`
+ * every time it saves an unrelated override - a slow suite quietly stops re-running and
+ * nothing in the response says so. Refusing the write instead is a 400 an operator can read.
  *
  * `expectedRevision` is compare-and-swap, exactly as the Persona and SessionAction catalogs
  * do it: two open windows editing one slot must not silently overwrite one another.
@@ -4567,6 +4573,11 @@ export const WorkflowCommandOverrideSchema = z.object({
 export const UpdateWorkflowCommandSchema = z.object({
   expectedRevision: z.number().int().min(1),
   defaultCommand: WorkflowCommandArgvSchema.nullable(),
+  maxRuns: z
+    .number()
+    .int()
+    .min(WORKFLOW_LIMITS.commandMaxRunsMin)
+    .max(WORKFLOW_LIMITS.commandMaxRunsMax),
   overrides: z
     .array(WorkflowCommandOverrideSchema)
     .max(WORKFLOW_LIMITS.commandOverrides)

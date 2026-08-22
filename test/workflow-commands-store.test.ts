@@ -33,7 +33,7 @@ test("seeding is idempotent and never resets a slot somebody configured", () => 
   const s = store();
   assert.equal(s.seedWorkflowCommands(2_000), false, "a seeded catalog is no longer empty");
   assert.equal(
-    s.replaceWorkflowCommandCas("test", 1, { defaultCommand: ["npm", "test"], overrides: [] }, 3_000)
+    s.replaceWorkflowCommandCas("test", 1, { defaultCommand: ["npm", "test"], overrides: [], maxRuns: 1 }, 3_000)
       .ok,
     true,
   );
@@ -47,6 +47,7 @@ test("a replacement swaps the whole slot and refuses a stale or duplicate write"
   const s = store();
   const first = s.replaceWorkflowCommandCas("lint", 1, {
     defaultCommand: ["npm", "run", "lint"],
+    maxRuns: 1,
     overrides: [
       { repoRoot: "/repo/packages/web", command: ["pnpm", "lint"] },
       { repoRoot: "/repo", command: ["eslint", "."] },
@@ -60,7 +61,7 @@ test("a replacement swaps the whole slot and refuses a stale or duplicate write"
     "/repo/packages/web",
   ]);
 
-  const stale = s.replaceWorkflowCommandCas("lint", 1, { defaultCommand: null, overrides: [] });
+  const stale = s.replaceWorkflowCommandCas("lint", 1, { defaultCommand: null, overrides: [], maxRuns: 1 });
   assert.equal(stale.ok, false);
   assert.equal(stale.ok === false && stale.reason, "revision_conflict");
   assert.deepEqual(
@@ -73,6 +74,7 @@ test("a replacement swaps the whole slot and refuses a stale or duplicate write"
   // row anyway, but as a constraint violation rather than an answer a caller can read.
   const duplicate = s.replaceWorkflowCommandCas("lint", 2, {
     defaultCommand: null,
+    maxRuns: 1,
     overrides: [
       { repoRoot: "/repo", command: ["a"] },
       { repoRoot: "/repo", command: ["b"] },
@@ -83,7 +85,7 @@ test("a replacement swaps the whole slot and refuses a stale or duplicate write"
   assert.deepEqual(s.getWorkflowCommand("lint")?.overrides.length, 2, "nothing was written");
 
   assert.equal(
-    s.replaceWorkflowCommandCas("deploy", 1, { defaultCommand: null, overrides: [] }).ok,
+    s.replaceWorkflowCommandCas("deploy", 1, { defaultCommand: null, overrides: [], maxRuns: 1 }).ok,
     false,
     "the four slots are built in; a write cannot mint a fifth",
   );
@@ -94,10 +96,12 @@ test("an untouched override keeps its creation instant across a neighbour's edit
   const s = store();
   s.replaceWorkflowCommandCas("test", 1, {
     defaultCommand: null,
+    maxRuns: 1,
     overrides: [{ repoRoot: "/repo", command: ["npm", "test"] }],
   }, 5_000);
   s.replaceWorkflowCommandCas("test", 2, {
     defaultCommand: null,
+    maxRuns: 1,
     overrides: [
       { repoRoot: "/repo", command: ["npm", "test"] },
       { repoRoot: "/other", command: ["make", "test"] },
@@ -118,6 +122,7 @@ test("an unreadable row degrades what it holds, not the catalog around it", () =
   const s = store();
   s.replaceWorkflowCommandCas("build", 1, {
     defaultCommand: ["npm", "run", "build"],
+    maxRuns: 1,
     overrides: [],
   }, 7_000);
   // A downgrade, or a hand-edited row: an argv that never passed the write schema.
@@ -150,10 +155,12 @@ test("an unreadable command degrades the FIELD, so the slot can still be repaire
   const s = store();
   s.replaceWorkflowCommandCas("test", 1, {
     defaultCommand: ["npm", "test"],
+    maxRuns: 1,
     overrides: [{ repoRoot: "/repo", command: ["npm", "test"] }],
   }, 8_000);
   s.replaceWorkflowCommandCas("test", 2, {
     defaultCommand: ["npm", "test"],
+    maxRuns: 1,
     overrides: [{ repoRoot: "/repo", command: ["npm", "run", "test:ci"] }],
   }, 9_000);
   db.prepare(`UPDATE workflow_commands SET default_command_json = ? WHERE slot = 'test'`)
@@ -168,6 +175,7 @@ test("an unreadable command degrades the FIELD, so the slot can still be repaire
 
   const repaired = s.replaceWorkflowCommandCas("test", damaged.revision, {
     defaultCommand: ["npm", "test"],
+    maxRuns: 1,
     overrides: [],
   }, 10_000);
   assert.equal(repaired.ok, true, "the slot is writable, so the damage is recoverable");

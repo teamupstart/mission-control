@@ -82,6 +82,12 @@ test("workflow limits are finite front-door contracts", () => {
     checkRepoRoot: 4_096,
     checkCommands: 200,
     commandOverrides: 200,
+    // A Command's per-run execution budget. The floor is one rather than zero because "never
+    // run this gate" is already expressible by leaving the slot unconfigured, and the ceiling
+    // is `repairRoundsMax` so that a budget set there can never be spent - which is the only
+    // honest way to say "run it every round, as it always did".
+    commandMaxRunsMin: 1,
+    commandMaxRunsMax: 21,
     checkCommandArgs: 32,
     checkCommandArg: 1_000,
     checkCommandLength: 4_000,

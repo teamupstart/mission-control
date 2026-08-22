@@ -1090,9 +1090,15 @@ export function openDb(): DatabaseSync {
     --
     -- default_command_json is nullable and stores an argv array; NULL is "no machine-wide
     -- command", which is a different fact from an empty argv and is the fresh-install state.
+    --
+    -- max_runs is how many times this command may actually execute inside one workflow run,
+    -- across every repair round. It defaults to 1 in the column as well as in the schema, so
+    -- an upgrading database adopts the same budget a fresh install gets rather than keeping
+    -- the old unbounded behaviour under a column that claims to bound it.
     CREATE TABLE IF NOT EXISTS workflow_commands (
       slot                 TEXT PRIMARY KEY,
       default_command_json TEXT,
+      max_runs             INTEGER NOT NULL DEFAULT 1,
       revision             INTEGER NOT NULL DEFAULT 1,
       created_at           INTEGER NOT NULL,
       updated_at           INTEGER NOT NULL
@@ -1201,7 +1207,8 @@ export function openDb(): DatabaseSync {
       completed_at          INTEGER,
       evidence_pruned_at    INTEGER,
       disabled_nodes_json   TEXT,
-      persona_directives_json TEXT
+      persona_directives_json TEXT,
+      check_budget_epoch_round INTEGER
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_runs_trigger
       ON workflow_runs(trigger_key);
@@ -1385,6 +1392,12 @@ export function openDb(): DatabaseSync {
       operator_directive_json TEXT,
       -- Same-submission Check outcomes frozen when a Persona first became runnable.
       check_evidence_json     TEXT,
+      -- The Command slot this attempt RESERVED an execution of, or NULL for every attempt
+      -- that never reached one. It is the durable claim on a Command's per-run budget, and
+      -- it is a slot rather than a flag because the budget belongs to the Command: two check
+      -- nodes naming the same slot spend one shared allowance, so the count has to be
+      -- answerable without knowing which node asked.
+      check_run_slot          TEXT,
       runner_id             TEXT,
       model_id              TEXT,
       verdict_json          TEXT,
@@ -3008,6 +3021,26 @@ function migrate(d: DatabaseSync): void {
   // attempts snapshot the bytes they used separately, so changing this active set never
   // rewrites a completed review.
   addColumn(d, "workflow_runs", "persona_directives_json", "TEXT");
+
+  // ---- Command run budgets ------------------------------------------------------------
+  //
+  // How many times one Command may execute inside a single run. NOT NULL DEFAULT 1 gives an
+  // upgrading catalog the same budget a fresh install gets - deliberately a behaviour change,
+  // since a gate that re-ran on every repair round is the cost this bounds - and it needs no
+  // backfill because the default IS the migrated value for every existing slot.
+  addColumn(d, "workflow_commands", "max_runs", "INTEGER NOT NULL DEFAULT 1");
+  // One attempt's claim on a Command's per-run execution budget. Nullable with no default and
+  // no backfill: an attempt written before this column existed reserved nothing, and inventing
+  // a reservation for it would spend a budget against work whose cost is already paid.
+  addColumn(d, "workflow_node_attempts", "check_run_slot", "TEXT");
+  // Where the run's command budget starts counting from, as a repair round number.
+  //
+  // Nullable with no default, and the two absences mean the same thing on purpose: a run
+  // written before this column existed, and a run nobody has granted rounds to, both count
+  // every execution the run has ever made. A grant or a full restart writes the round its
+  // new submission will carry, which is what makes those two escape hatches able to buy a
+  // real re-validation instead of handing an operator more rounds that all skip the gate.
+  addColumn(d, "workflow_runs", "check_budget_epoch_round", "INTEGER");
 
   // ---- SessionAction continuation segments -------------------------------------------
   //

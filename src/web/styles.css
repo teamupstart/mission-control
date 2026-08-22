@@ -15122,6 +15122,25 @@ button.lib-chip:focus-visible {
   line-height: 1.55;
   color: var(--dim);
 }
+/* The per-run execution budget: a label, a bounded select, and the sentence that says what
+   spending it does. Laid out as a column rather than a row so the hint sits under BOTH the
+   label and the control at every width - the sentence is long enough that a row would wrap
+   it beside a 220px select and leave a ragged gap the table below does not have. The select
+   is held to its content width because twenty short options do not need the full column. */
+.wf-command-budget {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.wf-command-budget > label {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.wf-command-budget > select {
+  width: max-content;
+  min-width: 200px;
+}
 .wf-command-hint strong {
   font-weight: 600;
   color: var(--muted);

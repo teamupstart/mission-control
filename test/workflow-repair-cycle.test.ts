@@ -91,8 +91,16 @@ setWorkflowPolicy({
 // The command itself now lives in the Global Command catalog rather than beside the consent
 // switches, so the fixture writes it there. An OVERRIDE and not the global default, because
 // what this file drives is a repository-scoped gate.
+//
+// TWO runs of the budget, not the default one. What this file drives is a gate that fails in
+// round 1 and is re-run in round 2 against the repair, and the shipped default deliberately
+// skips that second execution and leans on CI instead. Pinning the budget here keeps this
+// file about the repair CYCLE - the packet, the re-capture, the second verdict - and leaves
+// the budget's own behaviour to `workflow-check-run-budget-engine`, rather than letting one
+// setting silently decide what two different suites are testing.
 new CommandStore().replaceWorkflowCommandCas("test", 1, {
   defaultCommand: null,
+  maxRuns: 2,
   overrides: [{ repoRoot: "/repo", command: CHECK_COMMAND }],
 });
 setForemanConfig({ enabled: true, mode: "live", repoAllowlist: ["/repo"] });

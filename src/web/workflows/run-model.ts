@@ -662,6 +662,17 @@ const CHECK_OUTCOME_STATUSES: Record<WorkflowCheckStatus, PipelineStatus | null>
     skipKind: "unavailable_check",
     degraded: true,
   },
+  // Configured, authorized, and genuinely run earlier in THIS run - so the tooltip names the
+  // cap and where to change it rather than describing an absence. Still `degraded`: the stage
+  // fold must keep counting this as a gate that did not run, because it did not.
+  budget_spent: {
+    tone: "waiting",
+    label: "Skipped",
+    tooltip: "Already ran the most times this run allows. Change the limit in Library › "
+      + "Commands.",
+    skipKind: "budget_check",
+    degraded: true,
+  },
 };
 
 /**
@@ -1482,13 +1493,15 @@ export function attemptStateLabel(state: WorkflowNodeAttemptState): string {
 /**
  * What each check status MEANS, as the sentence a reader gets under the outcome.
  *
- * A `Record` over the durable enum, so a fifth status added to `WORKFLOW_CHECK_STATUSES`
- * fails typecheck here until somebody says what it means to a human - which is the whole
- * reason vocabulary lives in this file rather than inline in the component.
+ * A `Record` over the durable enum, so a status added to `WORKFLOW_CHECK_STATUSES` fails
+ * typecheck here until somebody says what it means to a human - which is the whole reason
+ * vocabulary lives in this file rather than inline in the component. `budget_spent` arrived
+ * through exactly that door.
  *
- * Three of the four are passes, and each says so differently on purpose: a reader has to be
+ * Four of the five are passes, and each says so differently on purpose: a reader has to be
  * able to tell a gate that ran and was satisfied from one that never ran at all, and the
- * two ways of never running need different things done about them.
+ * three ways of never running need different things done about them - configure a command,
+ * authorize the repository, or raise the run budget.
  */
 const CHECK_STATUS_SENTENCES: Record<WorkflowCheckStatus, { label: string; sentence: string }> = {
   passed: {
@@ -1507,6 +1520,11 @@ const CHECK_STATUS_SENTENCES: Record<WorkflowCheckStatus, { label: string; sente
   unavailable: {
     label: "Not run",
     sentence: "The gate could not run and passed rather than blocking. The note says why.",
+  },
+  budget_spent: {
+    label: "Skipped",
+    sentence: "This Command already ran the most times this run allows, so the gate passed "
+      + "without running it again. CI still runs the full suite against the merge commit.",
   },
 };
 

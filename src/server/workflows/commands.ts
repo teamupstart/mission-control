@@ -50,7 +50,11 @@ export class WorkflowCommandManager {
     return this.publish(this.store.replaceWorkflowCommandCas(
       slot,
       input.expectedRevision,
-      { defaultCommand: input.defaultCommand, overrides: input.overrides },
+      {
+        defaultCommand: input.defaultCommand,
+        overrides: input.overrides,
+        maxRuns: input.maxRuns,
+      },
       now,
     ));
   }

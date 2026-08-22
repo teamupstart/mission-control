@@ -45,6 +45,7 @@ test("snapshot, upsert and reconnect produce one equivalent catalog", () => {
     manager.replace("test", {
       expectedRevision: 1,
       defaultCommand: ["npm", "test"],
+      maxRuns: 1,
       overrides: [{ repoRoot: "/repo", command: ["npm", "run", "test:ci"] }],
     }, 100).ok,
     true,
@@ -52,11 +53,11 @@ test("snapshot, upsert and reconnect produce one equivalent catalog", () => {
   // A refusal must publish nothing: every open window would otherwise redraw a slot that
   // never moved.
   assert.equal(
-    manager.replace("test", { expectedRevision: 1, defaultCommand: null, overrides: [] }, 200).ok,
+    manager.replace("test", { expectedRevision: 1, defaultCommand: null, overrides: [], maxRuns: 1 }, 200).ok,
     false,
   );
   assert.equal(
-    manager.replace("build", { expectedRevision: 1, defaultCommand: ["npm", "run", "build"], overrides: [] }, 300).ok,
+    manager.replace("build", { expectedRevision: 1, defaultCommand: ["npm", "run", "build"], overrides: [], maxRuns: 1 }, 300).ok,
     true,
   );
   unsubscribe();
@@ -110,6 +111,7 @@ test("the collection is bounded by the slot list rather than by operator data", 
   manager.replace("test", {
     expectedRevision: 1,
     defaultCommand: ["npm", "test"],
+    maxRuns: 1,
     overrides: Array.from({ length: 20 }, (_, index) => ({
       repoRoot: `/repos/project-${index}`,
       command: ["npm", "test"],

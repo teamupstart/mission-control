@@ -868,9 +868,11 @@ test("timeline events are phrased in names and carry their round forward", () =>
 //
 // Vocabulary lives in this module so a new durable enum value fails typecheck until somebody
 // says what it means to a human. The reason a check needs its own entry rather than borrowing
-// the verdict's two words is that three of its four statuses PASS, and they are not the same
-// kind of pass: "the command ran and was satisfied", "nobody configured one", and "nobody
-// authorized one" send an operator to three different places.
+// the verdict's two words is that four of its five statuses PASS, and they are not the same
+// kind of pass: "the command ran and was satisfied", "nobody configured one", "nobody
+// authorized one", and "it already ran as often as this run allows" send an operator to four
+// different places. Two of them share the LABEL "Skipped", which is why the assertion below
+// is on the sentence: both are genuinely skips, and what differs is the reason.
 
 test("every check status has a distinct label and sentence", () => {
   const seen = new Map<string, string>();

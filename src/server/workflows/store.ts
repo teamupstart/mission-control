@@ -57,6 +57,8 @@ import {
   LEGACY_WORKFLOW_RESUMPTION_POLICY,
   SESSION_ACTION_COMPLETION_KINDS,
   emptyWorkflowCommandView,
+  checkRunBudgetSpent,
+  WORKFLOW_COMMAND_DEFAULT_MAX_RUNS,
   workflowRoundLimitParkedPhase,
   workflowRunResumesItself,
   personaOriginRank,
@@ -596,6 +598,16 @@ const COMMAND_ARGV_JSON_BYTES =
 const WorkflowCommandRowSchema = z.object({
   slot: z.enum(WORKFLOW_CHECK_SLOTS),
   default_command_json: nullableText,
+  /*
+   * Deliberately UNTYPED in the row schema, and read by `readCommandMaxRuns` instead.
+   *
+   * The same field-level tolerance `default_command_json` gets from `readCommandArgv`, for
+   * the same reason: a slot whose budget is unreadable must still project the command an
+   * operator configured, so they can see it and repair it. Bounding the column here would
+   * make a database mid-upgrade (no column at all) or one hand-edited to `0` degrade the
+   * WHOLE slot to "Not configured", hiding a command that is perfectly good.
+   */
+  max_runs: z.unknown().optional(),
   revision: positive,
   created_at: integer,
   updated_at: integer,
@@ -633,6 +645,24 @@ function readCommandArgv(
     diagnose(error);
     return null;
   }
+}
+
+/**
+ * A Command's per-run execution budget, or the default when the column cannot supply one.
+ *
+ * Answers all four absences with one rule - the column missing on a database mid-upgrade, a
+ * NULL, a non-number, and a number outside the range the write path enforces. The last is a
+ * clamp rather than a rejection because both directions have a safe reading: `0` or a
+ * negative means "never run", which this catalog expresses by leaving the slot unconfigured
+ * and must not silently become a permanently dead gate, and a number above the ceiling means
+ * "always run", which the ceiling already is.
+ */
+function readCommandMaxRuns(raw: unknown): number {
+  if (typeof raw !== "number" || !Number.isFinite(raw)) return WORKFLOW_COMMAND_DEFAULT_MAX_RUNS;
+  return Math.min(
+    Math.max(Math.round(raw), WORKFLOW_LIMITS.commandMaxRunsMin),
+    WORKFLOW_LIMITS.commandMaxRunsMax,
+  );
 }
 
 /** An override, or null when its argv is unreadable - in which case it is not projected. */
@@ -689,6 +719,7 @@ function parseWorkflowCommandRow(
       "default_command_json",
       row.default_command_json,
     ),
+    maxRuns: readCommandMaxRuns(row.max_runs),
     overrides,
     revision: row.revision,
     createdAt: row.created_at,
@@ -873,6 +904,7 @@ const WorkflowRunRowSchema = z.object({
   evidence_pruned_at: nullableInteger.optional().default(null),
   disabled_nodes_json: nullableText.optional().default(null),
   persona_directives_json: nullableText.optional().default(null),
+  check_budget_epoch_round: nullableInteger.optional().default(null),
 });
 
 /** Node ids an operator disabled for one run. Bounded by the graph's own node ceiling. */
@@ -919,6 +951,7 @@ export function parseWorkflowRunRow(value: unknown): WorkflowRun {
       PersonaDirectivesSchema,
       PERSONA_DIRECTIVES_JSON_BYTES,
     ) ?? [],
+    checkBudgetEpochRound: row.check_budget_epoch_round ?? null,
     startedAt: row.started_at,
     updatedAt: row.updated_at,
     completedAt: row.completed_at,
@@ -2627,7 +2660,11 @@ export class WorkflowStore {
   replaceWorkflowCommandCas(
     slot: string,
     expectedRevision: number,
-    next: { defaultCommand: string[] | null; overrides: readonly WorkflowCommandOverride[] },
+    next: {
+      defaultCommand: string[] | null;
+      overrides: readonly WorkflowCommandOverride[];
+      maxRuns: number;
+    },
     now = Date.now(),
   ): WorkflowCommandStoreWrite {
     if (!(WORKFLOW_CHECK_SLOTS as readonly string[]).includes(slot)) {
@@ -2652,13 +2689,20 @@ export class WorkflowStore {
       const updated = this.db
         .prepare(
           `UPDATE workflow_commands
-              SET default_command_json = ?, revision = revision + 1, updated_at = ?
+              SET default_command_json = ?, max_runs = ?, revision = revision + 1, updated_at = ?
             WHERE slot = ? AND revision = ?`,
         )
         .run(
           next.defaultCommand && next.defaultCommand.length > 0
             ? JSON.stringify(next.defaultCommand)
             : null,
+          // Clamped rather than refused, because the route's schema has already refused
+          // anything outside the range and this is the second boundary a future caller
+          // reaches without passing it. A stored zero would be a gate that never runs again.
+          Math.min(
+            Math.max(next.maxRuns, WORKFLOW_LIMITS.commandMaxRunsMin),
+            WORKFLOW_LIMITS.commandMaxRunsMax,
+          ),
           now,
           key,
           expectedRevision,
@@ -4745,6 +4789,26 @@ export class WorkflowStore {
    * `setRunDisabledNodes` gives - a grant reported as applied to a finished run would put
    * a line in its history about a budget it never spent.
    */
+  /**
+   * Move where this run's Command run budgets start counting, without touching anything else.
+   *
+   * The full restart's half of the same escape hatch `grantRunRepairRounds` carries inline.
+   * It is a separate write because a restart is not a grant: it buys no extra rounds, it
+   * abandons an Inspector-only repair for a real one, and a real repair round that skipped
+   * every gate it was created to re-run would be the restart failing at the one thing it was
+   * asked to do.
+   *
+   * Silently a no-op on a finished run, matching every other run mutation here: a run that
+   * completed between the decision and the write has nothing left to budget.
+   */
+  setRunCheckBudgetEpoch(id: string, round: number, now = Date.now()): void {
+    this.db.prepare(
+      `UPDATE workflow_runs
+          SET check_budget_epoch_round = ?, updated_at = ?
+        WHERE id = ? AND status NOT IN ('completed', 'cancelled', 'failed')`,
+    ).run(round, now, id);
+  }
+
   grantRunRepairRounds(
     id: string,
     maxRepairRounds: number,
@@ -4760,15 +4824,26 @@ export class WorkflowStore {
      * its new budget re-blocks on the very next head.
      */
     restore: { status: WorkflowRun["status"]; phase: string; gateState: WorkflowJson | null } | null,
+    /**
+     * The round the granted rounds start at, which is also where Command run budgets start
+     * counting again.
+     *
+     * In THIS transaction rather than a call beside it, for the reason `restore` is: a run
+     * that took its new rounds but not its new budget epoch would spend every one of them
+     * skipping the gates whose budget was already exhausted - the operator would watch the
+     * rounds they asked for go by without a single test suite running, and nothing would say
+     * why. The two writes describe one decision, so they commit together or not at all.
+     */
+    checkBudgetEpochRound: number,
     event: { kind: string; payload: WorkflowJson },
     now = Date.now(),
   ): WorkflowRun | null {
     return transaction(this.db, () => {
       const result = this.db.prepare(
         `UPDATE workflow_runs
-            SET max_repair_rounds = ?, updated_at = ?
+            SET max_repair_rounds = ?, check_budget_epoch_round = ?, updated_at = ?
           WHERE id = ? AND status NOT IN ('completed', 'cancelled', 'failed')`,
-      ).run(maxRepairRounds, now, id);
+      ).run(maxRepairRounds, checkBudgetEpochRound, now, id);
       if (Number(result.changes) !== 1) return null;
       if (restore) {
         this.db.prepare(
@@ -5540,6 +5615,83 @@ export class WorkflowStore {
         WHERE submission_id = ? AND node_id = ? ORDER BY attempt DESC LIMIT 1`,
     ).get(submissionId, nodeId);
     return row ? parseWorkflowNodeAttemptRow(row) : null;
+  }
+
+  /**
+   * Claim one execution of a Command against its per-run budget, or refuse.
+   *
+   * Scoped to the COMMAND SLOT, not to the node that named it. The budget is stored with the
+   * command and an operator reads it as "the test suite runs once per run", so two check nodes
+   * both resolving to `test` spend ONE shared allowance - the second is skipped even inside
+   * the same round. Scoping it per node would let a graph that gates on `test` twice execute
+   * it twice under a limit of one, which is the setting not being enforced at the level it is
+   * configured at.
+   *
+   * A RESERVATION rather than a count taken beforehand, and that is what makes a shared budget
+   * hold. Two checks in one stage run concurrently, so a caller that counted, awaited its
+   * command and only then recorded the execution would let both read the same zero and both
+   * run. Here the count and the claim are one synchronous transaction: `check_run_slot` is
+   * written before this returns, so the sibling asking a moment later sees it. Nothing can
+   * interleave between them - the daemon holds one `DatabaseSync` connection and every
+   * statement in this block is synchronous, so there is no await for another attempt to run
+   * inside.
+   *
+   * Counts reservations, never attempts or outcomes. An attempt that never reached a command -
+   * an unconfigured slot, an unauthorized repository, a budget already spent - never reserves,
+   * so a round in which nothing ran costs nothing. An attempt whose state is `error` is
+   * excluded because an infrastructure failure is the same execution asked again rather than a
+   * second one, and its retry must not be refused a budget the first try never really spent;
+   * `cancelled` is excluded because a submission that stopped discards the answer it bought.
+   *
+   * `round >= epoch` implements the two operator escape hatches. A null epoch counts the whole
+   * run, which is both the pre-column behaviour and the behaviour of a run nobody intervened in.
+   */
+  reserveCheckRun(
+    runId: string,
+    attemptId: string,
+    slot: string,
+    maxRuns: number,
+    epochRound: number | null,
+  ): { granted: boolean; spent: number } {
+    return transaction(this.db, () => {
+      const row = this.db.prepare(
+        `SELECT COUNT(*) AS n
+           FROM workflow_node_attempts a
+           JOIN workflow_submissions s ON s.id = a.submission_id
+          WHERE s.run_id = ?
+            AND a.check_run_slot = ?
+            AND s.round >= ?
+            AND a.state NOT IN ('error', 'cancelled')
+            AND a.id <> ?`,
+      ).get(runId, slot, epochRound ?? 0, attemptId) as { n: number };
+      const spent = Number(row.n);
+      // The shared rule, applied here rather than restated: it clamps a `maxRuns` of zero or
+      // below toward running, so a hand-edited catalog row cannot switch a gate off forever.
+      if (checkRunBudgetSpent(spent, maxRuns)) return { granted: false, spent };
+      this.db
+        .prepare(`UPDATE workflow_node_attempts SET check_run_slot = ? WHERE id = ?`)
+        .run(slot, attemptId);
+      return { granted: true, spent };
+    });
+  }
+
+  /**
+   * Reservations a run has already spent on one Command, for a reader that is not claiming one.
+   *
+   * Exists for tests and diagnostics. The engine never asks: a caller that counted and then
+   * decided would be the race `reserveCheckRun` exists to close.
+   */
+  checkRunsSpent(runId: string, slot: string, epochRound: number | null): number {
+    const row = this.db.prepare(
+      `SELECT COUNT(*) AS n
+         FROM workflow_node_attempts a
+         JOIN workflow_submissions s ON s.id = a.submission_id
+        WHERE s.run_id = ?
+          AND a.check_run_slot = ?
+          AND s.round >= ?
+          AND a.state NOT IN ('error', 'cancelled')`,
+    ).get(runId, slot, epochRound ?? 0) as { n: number };
+    return Number(row.n);
   }
 
   listAttempts(submissionId: string): WorkflowNodeAttempt[] {

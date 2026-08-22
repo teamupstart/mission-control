@@ -400,8 +400,24 @@ html[data-mc-tour-dispatch-surface="true"] .driver-overlay path {
   }
 }
 
-/* Settings > Worktrees. The left rule is a lifecycle ledger: green can be reused,
-   amber needs a decision, red is preserved until ownership becomes provable. */
+/* ---- Settings > Worktrees (capacity first) ----
+   An operator arrives here with one question: do I have room, and what is holding the
+   rest? The pane answers it in its first screenful, with one capacity bar per pool whose
+   TRACK WIDTH IS THAT POOL'S CONFIGURED MAXIMUM - so free capacity, leased slots,
+   quarantine, and overflow are one glance, and `Default maximum` becomes a number the
+   operator can watch reflow every bar.
+
+   The bar is the one new primitive here and the only place this pane's boldness is spent.
+   Everything around it is a house primitive borrowed verbatim: `.settings-blurb` for the
+   lead, `.kb-row` for the two defaults, `.settings-section-head` + a 12px `h4` for group
+   heads (the shape `.harnesses-subhead` uses), `.harness-card`'s left accent and 10px
+   radius for the pool row, and `.skill-badge`'s 5px radius for the chips.
+
+   The left rule is a lifecycle ledger: green can be reused, amber needs a decision, red is
+   preserved until ownership becomes provable. Every one of those tones is paired with a
+   word, and none of them is the keyboard-selection accent: that token shares a hex with
+   `--idle`, which this pane also uses to mean "slot is available", so painting anything
+   here with it made one green mean two things on one screen. */
 .wt-settings {
   --wt-ready: var(--idle);
   --wt-attention: var(--attention);
@@ -409,152 +425,177 @@ html[data-mc-tour-dispatch-surface="true"] .driver-overlay path {
   min-width: 0;
 }
 
-.wt-intro {
-  border: 1px solid var(--border);
-  border-left: 3px solid var(--select);
-  background: linear-gradient(110deg, color-mix(in srgb, var(--select) 9%, transparent), transparent 65%);
-  padding: 18px 20px;
-  margin-bottom: 24px;
+/* Groups are separated by space, the way every other settings pane separates its groups.
+   No rules, no numbered eyebrows: `01 · Policy` / `02 · Native inventory` /
+   `03 · Legacy drain` were never a sequence anybody walked in order. */
+.wt-group {
+  margin-top: 26px;
 }
 
-.wt-intro > p:not(.wt-kicker) {
-  max-width: 76ch;
-  margin: 5px 0 15px;
-  color: var(--muted);
-  line-height: 1.55;
+.wt-group-head {
+  align-items: flex-end;
+  gap: 12px;
+  margin-bottom: 10px;
 }
 
-.wt-kicker {
-  color: var(--select);
-  font-family: var(--mono);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: .13em;
+.wt-group-head h4 {
   margin: 0;
-  text-transform: uppercase;
-}
-
-.wt-overview,
-.wt-ledger,
-.wt-legacy-counts {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.wt-overview span,
-.wt-ledger span,
-.wt-legacy-counts span {
-  border: 1px solid var(--border);
-  background: color-mix(in srgb, var(--panel-2) 82%, transparent);
-  color: var(--muted);
-  font-family: var(--mono);
-  font-size: 11px;
-  padding: 7px 9px;
-}
-
-.wt-overview b,
-.wt-ledger b,
-.wt-legacy-counts b {
+  font-size: 12px;
+  font-weight: 600;
   color: var(--fg);
-  margin-right: 5px;
 }
 
-.wt-section {
-  border-top: 1px solid var(--border);
-  padding: 22px 0 28px;
+.wt-group-note {
+  margin: 3px 0 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--dim);
 }
 
-.wt-section .settings-section-head {
-  align-items: end;
-  margin-bottom: 12px;
+.wt-group-diagnostic {
+  margin-top: 0;
 }
 
-.wt-section .settings-section-head h4 {
-  margin: 2px 0 0;
+/* Loading, empty, and unavailable each get copy. A group head over nothing is the one
+   thing this pane is not allowed to render. */
+.wt-state {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-2);
+  padding: 13px 16px;
 }
 
-.wt-global-policy {
+.wt-state p {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.wt-state p + p {
+  margin-top: 6px;
+  color: var(--dim);
+}
+
+.wt-state-unavailable {
+  border-color: color-mix(in oklab, var(--attention) 40%, var(--border));
+  background: color-mix(in oklab, var(--attention) 7%, var(--bg-2));
+}
+
+.wt-skeletons {
   display: grid;
-  grid-template-columns: minmax(0, 1.4fr) minmax(220px, .6fr);
   gap: 10px;
 }
 
-.wt-global-policy > label,
-.wt-policy-grid > label {
-  align-items: center;
-  background: var(--panel-2);
+.wt-skeleton {
   border: 1px solid var(--border);
-  display: flex;
-  gap: 16px;
-  justify-content: space-between;
-  min-width: 0;
-  padding: 13px 14px;
-}
-
-.wt-global-policy label > span,
-.wt-global-policy small {
-  display: block;
-}
-
-.wt-global-policy small {
-  color: var(--dim);
-  font-size: 11px;
-  font-weight: 400;
-  line-height: 1.4;
-  margin-top: 3px;
-}
-
-.wt-global-policy input[type="number"],
-.wt-policy-grid input[type="number"] {
-  width: 76px;
-}
-
-.wt-repositories,
-.wt-legacy-list {
+  border-radius: 10px;
+  background: var(--bg-2);
   display: grid;
-  gap: 9px;
+  gap: 10px;
+  padding: 14px 16px;
 }
 
-.wt-repo {
+.wt-skeleton-name,
+.wt-skeleton-bar {
+  background: var(--panel-2);
+  border-radius: 6px;
+  height: 10px;
+}
+
+.wt-skeleton-name { width: 148px; }
+.wt-skeleton-bar { border-radius: 7px; height: 14px; width: 100%; }
+
+/* ---- The pool row ----
+   Full width rather than a card grid, because the bar needs the width. The frame, the
+   radius, and the 3px LEFT accent are `.harness-card`'s, so a pool reads as the same kind
+   of object as a harness default. */
+.wt-pools {
+  display: grid;
+  gap: 10px;
+}
+
+.wt-pool {
   border: 1px solid var(--border);
   border-left: 3px solid var(--dim);
-  background: var(--panel-2);
+  border-radius: 10px;
+  background: var(--bg-2);
   min-width: 0;
+  padding: 13px 16px 14px;
 }
 
-.wt-repo-ready { border-left-color: var(--wt-ready); }
-.wt-repo-attention { border-left-color: var(--wt-attention); }
-.wt-repo-danger { border-left-color: var(--wt-danger); }
+.wt-pool-ready { border-left-color: var(--wt-ready); }
+.wt-pool-attention { border-left-color: var(--wt-attention); }
+.wt-pool-danger { border-left-color: var(--wt-danger); }
 
-.wt-repo-head {
+.wt-pool-head {
+  align-items: flex-start;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.wt-pool-state {
   align-items: center;
   display: flex;
-  gap: 10px;
-  padding: 13px 14px 9px;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
 }
 
-.wt-repo-state { align-items: center; display: flex; flex-wrap: wrap; gap: 6px; }
+.wt-pool-summary {
+  color: var(--muted);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
 
 .wt-disclosure {
   align-items: flex-start;
   background: none;
   border: 0;
+  border-radius: 8px;
   color: var(--fg);
   cursor: pointer;
   display: flex;
   flex: 1;
-  gap: 9px;
+  gap: 8px;
   min-width: 0;
   padding: 0;
   text-align: left;
 }
 
-.wt-disclosure > span:last-child {
+.wt-caret {
+  color: var(--dim);
+  font-size: 10px;
+  line-height: 1.6;
+}
+
+.wt-pool-name {
   display: grid;
   gap: 3px;
   min-width: 0;
 }
+
+.wt-pool-name strong {
+  align-items: center;
+  display: flex;
+  font-size: 13px;
+  font-weight: 600;
+  gap: 7px;
+}
+
+.wt-dot {
+  background: var(--dim);
+  border-radius: 50%;
+  flex: none;
+  height: 7px;
+  width: 7px;
+}
+
+.wt-dot-ready { background: var(--wt-ready); }
+.wt-dot-attention { background: var(--wt-attention); }
+.wt-dot-danger { background: var(--wt-danger); }
 
 .wt-disclosure code,
 .wt-path,
@@ -568,34 +609,166 @@ html[data-mc-tour-dispatch-surface="true"] .driver-overlay path {
   white-space: nowrap;
 }
 
-.wt-ledger {
-  padding: 0 14px 13px;
+/* ---- The capacity bar ----
+   The track's full width is the pool's CONFIGURED MAXIMUM, always - see
+   `worktree-capacity.ts` for why that is the load-bearing decision and what it costs. So
+   the composition segments (leased, available, quarantined) plus room-to-grow sum to
+   exactly 100% of the track, one slot is the same fraction of every bar sharing a maximum,
+   and lowering `Default maximum` rewidths each bar drawn against it instead of sliding a
+   marker along one. Over capacity is NOT a fourth segment and not a proportional overlay:
+   a track that is already the ceiling has no room to lay the excess out in, so the spill is
+   marked by a fixed-width hatched cap at the track's end and counted in words beside it.
+
+   The two hatched states share one angle so they read as the same idea in two tones:
+   `--border` means "could exist", `--attention` means "exists past the maximum". */
+.wt-bar {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  display: flex;
+  height: 14px;
+  overflow: hidden;
+  position: relative;
+  width: 100%;
 }
 
-.wt-ledger span {
-  background: var(--bg);
-  padding: 5px 7px;
+.wt-bar-seg {
+  height: 100%;
+  min-width: 0;
 }
+
+.wt-bar-leased { background: var(--working); }
+.wt-bar-available { background: var(--wt-ready); }
+.wt-bar-quarantined { background: var(--wt-danger); }
+
+.wt-bar-room {
+  background: repeating-linear-gradient(
+    -45deg,
+    color-mix(in oklab, var(--border) 85%, transparent) 0 3px,
+    transparent 3px 7px
+  );
+}
+
+/* Pinned to the track's end, at a fixed width, because the track IS the configured maximum:
+   there is no proportional room left inside it to give the excess, and inventing some would
+   put the ceiling somewhere other than the bar's right edge. The cap says "this pool is past
+   its maximum"; the legend, the sentence beneath, and the composed image label say by how
+   many. */
+.wt-bar-over {
+  background: repeating-linear-gradient(
+    -45deg,
+    color-mix(in oklab, var(--attention) 62%, transparent) 0 3px,
+    transparent 3px 7px
+  );
+  border-left: 1px solid var(--attention);
+  bottom: 0;
+  position: absolute;
+  right: 0;
+  top: 0;
+  width: 13px;
+}
+
+/* Every segment's count restated as text. This is the bar's meaning; the fill is the
+   shortcut to it, never the carrier of it. */
+.wt-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+}
+
+.wt-legend-item {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  font-size: 11px;
+  gap: 6px;
+}
+
+.wt-swatch {
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  flex: none;
+  height: 9px;
+  width: 9px;
+}
+
+.wt-legend-leased .wt-swatch { background: var(--working); }
+.wt-legend-available .wt-swatch { background: var(--wt-ready); }
+.wt-legend-quarantined .wt-swatch { background: var(--wt-danger); }
+.wt-legend-room .wt-swatch {
+  background: repeating-linear-gradient(
+    -45deg,
+    color-mix(in oklab, var(--border) 85%, transparent) 0 2px,
+    transparent 2px 4px
+  );
+}
+/* A count of zero is still an answer, so it stays legible rather than being dropped or
+   greyed out of reading range - only quiet enough that the non-zero states lead. */
+.wt-legend-zero {
+  color: var(--dim);
+}
+
+.wt-legend-over {
+  color: var(--wt-attention);
+}
+.wt-legend-over .wt-swatch {
+  background: repeating-linear-gradient(
+    -45deg,
+    color-mix(in oklab, var(--attention) 62%, transparent) 0 2px,
+    transparent 2px 4px
+  );
+  border-color: color-mix(in oklab, var(--attention) 45%, var(--border));
+}
+
+/* Over capacity is stated in words and offered a remedy on the row where it is learned.
+   Lowering the maximum makes this visible; it never prunes as a side effect, which is
+   what the second clause of the sentence is for. */
+.wt-over {
+  align-items: center;
+  background: color-mix(in oklab, var(--attention) 8%, transparent);
+  border: 1px solid color-mix(in oklab, var(--attention) 38%, var(--border));
+  border-radius: 9px;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  margin-top: 10px;
+  padding: 8px 10px;
+}
+
+.wt-over p {
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.45;
+  margin: 0;
+}
+
+.wt-over strong { color: var(--wt-attention); }
 
 .wt-chip {
   border: 1px solid var(--border);
+  border-radius: 5px;
   color: var(--muted);
-  font-family: var(--mono);
-  font-size: 9px;
-  letter-spacing: .06em;
-  padding: 3px 6px;
+  font-size: 9.5px;
+  font-weight: 640;
+  letter-spacing: 0.05em;
+  padding: 2px 6px;
   text-transform: uppercase;
   white-space: nowrap;
 }
 
-.wt-chip-ready { border-color: color-mix(in srgb, var(--wt-ready) 50%, var(--border)); color: var(--wt-ready); }
-.wt-chip-working { border-color: color-mix(in srgb, var(--working) 50%, var(--border)); color: var(--working); }
-.wt-chip-attention { border-color: color-mix(in srgb, var(--wt-attention) 55%, var(--border)); color: var(--wt-attention); }
-.wt-chip-danger { border-color: color-mix(in srgb, var(--wt-danger) 55%, var(--border)); color: var(--wt-danger); }
+.wt-chip-ready { border-color: color-mix(in oklab, var(--wt-ready) 34%, var(--border)); color: var(--wt-ready); background: color-mix(in oklab, var(--wt-ready) 9%, transparent); }
+.wt-chip-working { border-color: color-mix(in oklab, var(--working) 34%, var(--border)); color: var(--working); background: color-mix(in oklab, var(--working) 9%, transparent); }
+.wt-chip-attention { border-color: color-mix(in oklab, var(--wt-attention) 34%, var(--border)); color: var(--wt-attention); background: color-mix(in oklab, var(--wt-attention) 9%, transparent); }
+.wt-chip-danger { border-color: color-mix(in oklab, var(--wt-danger) 34%, var(--border)); color: var(--wt-danger); background: color-mix(in oklab, var(--wt-danger) 9%, transparent); }
 
-.wt-repo-detail {
+/* ---- Pool disclosure: overrides, maintenance, and bounded slot detail ---- */
+.wt-pool-detail {
   border-top: 1px solid var(--border);
-  padding: 14px;
+  margin-top: 12px;
+  padding-top: 13px;
 }
 
 .wt-policy-grid {
@@ -604,8 +777,43 @@ html[data-mc-tour-dispatch-surface="true"] .driver-overlay path {
   gap: 8px;
 }
 
+.wt-policy-grid > label {
+  align-items: center;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+  min-width: 0;
+  padding: 10px 12px;
+  font-size: 12px;
+}
+
+/* Sized to the value it holds - three digits at most - and framed the way Shipping's
+   soak field is (`.sc-number`), so a number in a `.kb-row` reads as this app's number
+   input rather than the browser's. */
+.wt-policy-grid input[type="number"],
+.wt-number {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 4px 8px;
+  text-align: right;
+  width: 76px;
+}
+
+.wt-policy-grid input[type="number"]:disabled,
+.wt-number:disabled {
+  opacity: 0.55;
+}
+
 .wt-argv {
   border: 1px solid var(--border);
+  border-radius: 9px;
   margin: 10px 0;
   padding: 10px;
 }
@@ -645,6 +853,7 @@ html[data-mc-tour-dispatch-surface="true"] .driver-overlay path {
 }
 
 .wt-slot-scroll {
+  border-radius: 9px;
   max-width: 100%;
   overflow-x: auto;
   overscroll-behavior-inline: contain;
@@ -659,19 +868,23 @@ html[data-mc-tour-dispatch-surface="true"] .driver-overlay path {
   min-width: min-content;
 }
 
+/* Slot cards take the same LEFT accent as the pool row and `.harness-card`. The pane used
+   to run a top accent here and a left accent there, which is two accent directions on one
+   screen saying the same thing. */
 .wt-slot {
   background: var(--bg);
   border: 1px solid var(--border);
-  border-top: 2px solid var(--dim);
+  border-left: 3px solid var(--dim);
+  border-radius: 10px;
   max-width: 390px;
   min-width: 300px;
-  padding: 11px;
+  padding: 11px 13px;
 }
 
-.wt-slot-ready { border-top-color: var(--wt-ready); }
-.wt-slot-working { border-top-color: var(--working); }
-.wt-slot-attention { border-top-color: var(--wt-attention); }
-.wt-slot-danger { border-top-color: var(--wt-danger); }
+.wt-slot-ready { border-left-color: var(--wt-ready); }
+.wt-slot-working { border-left-color: var(--working); }
+.wt-slot-attention { border-left-color: var(--wt-attention); }
+.wt-slot-danger { border-left-color: var(--wt-danger); }
 
 .wt-slot-head {
   align-items: center;
@@ -714,11 +927,11 @@ html[data-mc-tour-dispatch-surface="true"] .driver-overlay path {
   color: var(--muted);
   font-size: 11px;
   line-height: 1.45;
-  margin: 8px 0;
+  margin: 8px 0 0;
 }
 
 .wt-owner span {
-  color: var(--select);
+  color: var(--dim);
   font-family: var(--mono);
   margin-right: 5px;
   text-transform: uppercase;
@@ -726,25 +939,57 @@ html[data-mc-tour-dispatch-surface="true"] .driver-overlay path {
 
 .wt-diagnostic { color: var(--wt-attention); }
 
-.wt-legacy-counts { margin: 10px 0; }
-.wt-legacy-counts span { display: grid; gap: 2px; }
-.wt-legacy-counts b { font-size: 15px; }
+/* ---- Treehouse ---- */
+.wt-legacy-totals {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  list-style: none;
+  margin: 10px 0;
+  padding: 0;
+}
+
+.wt-legacy-totals li {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  color: var(--muted);
+  font-size: 11px;
+  padding: 5px 9px;
+}
+
+.wt-legacy-totals b { color: var(--fg); margin-right: 3px; }
+
+.wt-legacy-list {
+  display: grid;
+  gap: 9px;
+}
 
 .wt-legacy-row {
   align-items: center;
-  background: var(--panel-2);
+  background: var(--bg-2);
   border: 1px solid var(--border);
+  border-radius: 10px;
   display: flex;
   gap: 15px;
   justify-content: space-between;
   min-width: 0;
-  padding: 11px 12px;
+  padding: 11px 13px;
 }
 
 .wt-legacy-row > div { min-width: 0; }
-.wt-legacy-row code { display: inline-block; margin-left: 7px; max-width: min(62vw, 680px); vertical-align: middle; }
+.wt-legacy-row code { display: inline-block; margin-left: 7px; max-width: min(62vw, 620px); vertical-align: middle; }
 .wt-legacy-row p { color: var(--dim); font-size: 11px; margin: 6px 0 0; }
-.wt-legacy-blocked { border-left: 2px solid var(--wt-attention); }
+.wt-legacy-blocked { border-left: 3px solid var(--wt-attention); }
+
+/* ---- The preview dialog. Unchanged in behaviour; corrected in radius and palette. ---- */
+.wt-eyebrow {
+  color: var(--dim);
+  font-size: 9.5px;
+  font-weight: 640;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+}
 
 .wt-action-modal { max-width: 720px; width: min(720px, calc(100vw - 30px)); }
 .wt-action-modal .modal-head h3 { margin: 2px 0 0; text-transform: capitalize; }
@@ -752,22 +997,24 @@ html[data-mc-tour-dispatch-surface="true"] .driver-overlay path {
 .wt-action-body section h4 { margin: 0 0 8px; }
 .wt-action-body ul { color: var(--muted); margin: 0; padding-left: 20px; }
 .wt-affected { display: grid; gap: 7px; list-style: none; padding: 0 !important; }
-.wt-affected li { background: var(--bg); border: 1px solid var(--border); display: grid; gap: 3px; padding: 9px; }
+.wt-affected li { background: var(--bg); border: 1px solid var(--border); border-radius: 9px; display: grid; gap: 3px; padding: 9px; }
 .wt-affected code { font-size: 11px; overflow-wrap: anywhere; }
 .wt-affected span { color: var(--dim); font-size: 10px; }
-.wt-blockers { background: color-mix(in srgb, var(--danger) 8%, transparent); border-left: 3px solid var(--danger); padding: 12px; }
-.wt-acknowledgements { border: 1px solid var(--danger); display: grid; gap: 8px; padding: 11px; }
+.wt-blockers { background: color-mix(in srgb, var(--danger) 8%, transparent); border-left: 3px solid var(--danger); border-radius: 9px; padding: 12px; }
+.wt-acknowledgements { border: 1px solid var(--danger); border-radius: 9px; display: grid; gap: 8px; padding: 11px; }
 .wt-acknowledgements legend { color: var(--danger); padding: 0 5px; }
 .wt-acknowledgements label { align-items: flex-start; display: flex; gap: 8px; }
-.wt-changed { background: color-mix(in srgb, var(--attention) 10%, transparent); border: 1px solid var(--attention); padding: 12px; }
+.wt-changed { background: color-mix(in srgb, var(--attention) 10%, transparent); border: 1px solid var(--attention); border-radius: 9px; padding: 12px; }
 .wt-changed p { color: var(--muted); }
-.wt-preview-loading { background: var(--panel-2); border: 1px solid var(--border); color: var(--muted); margin: 12px 0 0; padding: 9px 12px; }
+.wt-preview-loading { background: var(--panel-2); border: 1px solid var(--border); border-radius: 9px; color: var(--muted); margin: 12px 0 0; padding: 9px 12px; }
 
 @media (max-width: 760px) {
-  .wt-global-policy,
   .wt-policy-grid { grid-template-columns: minmax(0, 1fr); }
-  .wt-repo-head,
+  .wt-pool-head,
   .wt-legacy-row { align-items: flex-start; }
+  .wt-pool-head { flex-direction: column; }
+  .wt-pool-state { justify-content: flex-start; }
+  .wt-over { align-items: flex-start; flex-direction: column; }
   .wt-legacy-row { flex-direction: column; }
   .wt-legacy-row code { display: block; margin: 6px 0 0; max-width: 100%; }
   .wt-argv-row { grid-template-columns: minmax(0, 1fr) auto; }

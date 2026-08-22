@@ -14,7 +14,7 @@ export interface ApplyOperations {
   copy(from: string, to: string): void;
   nowIso(): string;
   waitForParent(pid: number): Promise<void>;
-  install(node: string, script: string, tag: string): void;
+  install(node: string, script: string, tag: string, appsDir: string): void;
   launch(appPath: string): void;
   log(line: string): void;
 }

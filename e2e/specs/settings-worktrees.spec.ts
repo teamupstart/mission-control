@@ -35,9 +35,9 @@ test("Settings Worktrees configures, inventories, previews, blocks, launches, an
   await dashboard.getByRole("option", { name: /Native worktree pools/ }).click();
   await expect(dashboard).toHaveURL(/#\/settings\/worktrees$/);
   await expect(dashboard.getByRole("tab", { name: /Worktrees/ })).toHaveAttribute("aria-selected", "true");
-  await expect(dashboard.getByText("Manager-owned paths only")).toBeVisible();
+  await expect(dashboard.getByText(/Mission Control owns these checkouts/)).toBeVisible();
 
-  const repo = dashboard.locator(".wt-repo", { hasText: "demo-repo" });
+  const repo = dashboard.locator(".wt-pool", { hasText: "demo-repo" });
   await expect(repo).toBeVisible();
   await repo.getByRole("button", { name: /demo-repo/ }).click();
   await expect(repo.getByText(lease.path)).toBeVisible();
@@ -74,6 +74,20 @@ test("Settings Worktrees configures, inventories, previews, blocks, launches, an
     .toMatchObject({ config: { maxSlots: 4 } });
   await expect(secondMax).toHaveValue("4");
   await second.close();
+
+  // The capacity bar is the pane's answer to "do I have room". Its track width is the
+  // configured maximum, so raising it to four leaves this one live lease holding a quarter
+  // of the track - and every count on it is restated as text beside it, never by fill alone.
+  const bar = repo.getByRole("img");
+  await expect(bar).toHaveAttribute("aria-label", "1 leased, 0 available, 0 quarantined, 3 more may be created, maximum 4");
+  // All four lifecycle counts are readable as text, zeroes included: the track has no
+  // width to draw "0 quarantined" with, and that is exactly why the legend has to say it.
+  for (const words of ["1 leased", "0 available", "0 quarantined", "3 more may be created"]) {
+    await expect(repo.getByText(words, { exact: true })).toBeVisible();
+  }
+  await expect(repo.getByText("1 of 4 slots", { exact: true })).toBeVisible();
+  await dashboard.getByText(/Mission Control owns these checkouts/).scrollIntoViewIfNeeded();
+  await shoot(dashboard, "00-pools-populated");
 
   // Clipboard feedback and terminal opening both use their established abstractions. The
   // daemon's fake cmux records the latter, so no real external window opens in this suite.
@@ -122,7 +136,7 @@ test("Settings Worktrees configures, inventories, previews, blocks, launches, an
 
   // Legacy capability is isolated from native inventory, which stays fully usable whether
   // this machine has the compatibility binary or not.
-  await expect(dashboard.getByText("03 · Legacy drain", { exact: true })).toBeVisible();
+  await expect(dashboard.getByRole("heading", { name: "Treehouse", exact: true })).toBeVisible();
   await shoot(dashboard, "01-desktop-inventory-and-legacy", true);
 
   // A missing binary has a direct remediation and does not erase the native ledger.
@@ -141,7 +155,7 @@ test("Settings Worktrees configures, inventories, previews, blocks, launches, an
   }));
   await missingPage.goto(`${daemon.baseURL}/#/settings/worktrees`);
   await expect(missingPage.getByText(/Treehouse is not installed/)).toBeVisible();
-  await expect(missingPage.getByText("Pool ledger", { exact: true })).toBeVisible();
+  await expect(missingPage.getByRole("heading", { name: "Pools", exact: true })).toBeVisible();
   await missingPage.close();
 
   // The built panel renders the complete legacy classification vocabulary. Only an exact
@@ -196,7 +210,7 @@ test("refreshing a preview drops acknowledgements that the new token does not re
   writeFileSync(dirtyFile, "preview this risk\n");
 
   await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
-  const repo = dashboard.locator(".wt-repo", { hasText: "demo-repo" });
+  const repo = dashboard.locator(".wt-pool", { hasText: "demo-repo" });
   await repo.getByRole("button", { name: /demo-repo/ }).click();
   await repo.getByRole("button", { name: "Return", exact: true }).click();
   const preview = dashboard.getByRole("dialog", { name: "return worktree preview" });
@@ -213,4 +227,117 @@ test("refreshing a preview drops acknowledgements that the new token does not re
   await expect(preview.getByRole("button", { name: "Execute" })).toBeEnabled();
   await preview.getByRole("button", { name: "Execute" }).click();
   await expect(preview).toHaveCount(0);
+});
+
+/**
+ * The three states the pane used to render as a heading over nothing, plus the one state
+ * a number input cannot express.
+ *
+ * Loading, empty, and unavailable are three distinguishable conditions on the wire and
+ * must look like three different things: an outage and an empty machine especially must
+ * never read alike. Over capacity is driven from a routed inventory rather than the live
+ * one because the only way to reach it for real is a maximum below the live slot count,
+ * and the input's floor is one - which is the point, since lowering the maximum is allowed
+ * to make the state visible and is never allowed to prune to fix it.
+ *
+ * The right-size preview at the end goes to the real daemon with the real pool id, so the
+ * unchanged preview-first protocol is proved under the new presentation.
+ */
+test("Settings Worktrees gives loading, empty, unavailable, and over capacity real copy", async ({
+  dashboard,
+  daemon,
+  context,
+}) => {
+  // A pool exists only once something has needed a checkout, which is the empty state's
+  // whole point - so acquire one lease first and read the real inventory back.
+  const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+    data: { repositoryPath: daemon.repo, label: "capacity states" },
+  });
+  expect(acquired.status()).toBe(201);
+  const current = await (await dashboard.request.get(`${daemon.baseURL}/api/worktrees`)).json() as WorktreeInventory;
+  const pool = current.repositories[0];
+  expect(pool).toBeDefined();
+
+  // Loading: the group has shape - skeleton rows and a sentence - before the fetch lands.
+  let release = (): void => {};
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const slowPage = await context.newPage();
+  await slowPage.route("**/api/worktrees", async (route) => {
+    await gate;
+    await route.continue();
+  });
+  await slowPage.goto(`${daemon.baseURL}/#/settings/worktrees`);
+  await expect(slowPage.getByRole("heading", { name: "Pools", exact: true })).toBeVisible();
+  await expect(slowPage.getByText("Observing Git, process, and provider state…")).toBeVisible();
+  await expect(slowPage.locator(".wt-skeleton")).toHaveCount(2);
+  await shoot(slowPage, "06-pools-loading");
+  release();
+  await expect(slowPage.getByText("Observing Git, process, and provider state…")).toHaveCount(0);
+  await slowPage.close();
+
+  // Empty: an invitation to act, not a report of absence.
+  const emptyPage = await context.newPage();
+  await emptyPage.route("**/api/worktrees", (route) => route.fulfill({
+    contentType: "application/json",
+    body: JSON.stringify({ ...current, repositories: [] } satisfies WorktreeInventory),
+  }));
+  await emptyPage.goto(`${daemon.baseURL}/#/settings/worktrees`);
+  await expect(emptyPage.getByText("No pools yet.")).toBeVisible();
+  await expect(emptyPage.getByText(/the first time something needs a checkout in a repository/)).toBeVisible();
+  await shoot(emptyPage, "07-pools-empty");
+  await emptyPage.close();
+
+  // Unavailable: says the state could not be observed and offers Refresh. It must not
+  // claim zero pools, which is what an operator would act on by creating one.
+  const downPage = await context.newPage();
+  await downPage.route("**/api/worktrees", (route) => route.fulfill({ status: 503, contentType: "application/json", body: "{}" }));
+  await downPage.goto(`${daemon.baseURL}/#/settings/worktrees`);
+  await expect(downPage.getByText("Pool capacity could not be observed.")).toBeVisible();
+  await expect(downPage.getByText(/This is an outage, not an empty machine/)).toBeVisible();
+  await expect(downPage.getByRole("button", { name: "Refresh" })).toBeEnabled();
+  await expect(downPage.getByText("No pools yet.")).toHaveCount(0);
+  await shoot(downPage, "09-pools-unavailable");
+  await downPage.close();
+
+  // Over capacity: labelled in words on the bar, in the legend, and in the row's sentence.
+  const overPage = await context.newPage();
+  await overPage.route("**/api/worktrees", (route) => route.fulfill({
+    contentType: "application/json",
+    body: JSON.stringify({
+      ...current,
+      repositories: [{
+        ...pool!,
+        status: "attention",
+        policy: { ...pool!.policy, maxSlots: 16 },
+        counts: { total: 18, leased: 17, available: 0, quarantined: 1, overCapacity: 2 },
+      }],
+    } satisfies WorktreeInventory),
+  }));
+  await overPage.goto(`${daemon.baseURL}/#/settings/worktrees`);
+  const overRow = overPage.locator(".wt-pool", { hasText: "demo-repo" });
+  await expect(overRow.getByRole("img", { name: "17 leased, 0 available, 1 quarantined, 0 more may be created, 2 over the maximum, maximum 16" })).toBeVisible();
+  for (const words of ["17 leased", "0 available", "1 quarantined", "0 more may be created", "2 over the maximum"]) {
+    await expect(overRow.getByText(words, { exact: true })).toBeVisible();
+  }
+  await expect(overRow.getByText(/2 slots are over the maximum of 16\. Nothing was pruned to say so\./)).toBeVisible();
+  await shoot(overPage, "08-pool-over-capacity");
+
+  // The track is the configured maximum, so 17 leased against a ceiling of 16 saturates it
+  // rather than rescaling it to the 18 slots that exist. The spill is the fixed-width cap
+  // at the track's end plus the counts in words above - never a wider bar.
+  await expect.poll(() => overRow.locator(".wt-bar-seg").evaluateAll(
+    (nodes) => nodes.map((node) => (node as HTMLElement).style.width),
+  )).toEqual(["100%"]);
+  await expect(overRow.locator(".wt-bar-over")).toHaveCSS("width", "13px");
+
+  // The row's own remedy is preview-first against the real pool, and cancelling changes
+  // nothing - the same protocol the rest of this pane has always used.
+  await overRow.getByRole("button", { name: "Preview right-size" }).click();
+  const rightSize = overPage.getByRole("dialog", { name: "prune worktree preview" });
+  await expect(rightSize).toBeVisible();
+  await expect(rightSize.getByRole("heading", { name: /Prune worktree/ })).toBeVisible();
+  await rightSize.getByRole("button", { name: "Cancel" }).click();
+  await expect(rightSize).toHaveCount(0);
+  await expect(overRow.getByRole("button", { name: "Preview right-size" })).toBeFocused();
+  await overPage.close();
 });

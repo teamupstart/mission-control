@@ -519,3 +519,32 @@ test("release notes and diagnostics leave only bounded plain safe text", () => {
   );
   assert.doesNotMatch(log, /abc|gho_secret|\/Users\/person|\/private\/tmp|hush/);
 });
+
+test("the release-please signature is cut from the notes, but a real horizontal rule is not", () => {
+  // Every body release-please writes ends this way, so without this the banner and the native
+  // dialog both told the person that their update "was generated with Release Please" as
+  // though it were one of the changes. Verified against the real v1.0.1 release body.
+  const generated = sanitizeReleaseNotes(
+    [
+      "## [1.0.1](https://github.com/o/r/compare/v1.0.0...v1.0.1) (2026-08-22)",
+      "",
+      "### Bug Fixes",
+      "",
+      "* **release:** unpin release-as ([#732](https://github.com/o/r/issues/732))",
+      "",
+      "---",
+      "This PR was generated with [Release Please](https://github.com/googleapis/release-please)." +
+        " See [documentation](https://github.com/googleapis/release-please).",
+      "",
+      "<!-- codesmith:footer -->",
+      "",
+    ].join("\n"),
+  );
+  assert.doesNotMatch(generated, /Release Please|codesmith|---/);
+  assert.match(generated, /unpin release-as/);
+
+  // A rule that separates real content is content, and stays.
+  const authored = sanitizeReleaseNotes("### Features\n\n* a thing\n\n---\n\nUpgrade notes: migrate first.");
+  assert.match(authored, /---/);
+  assert.match(authored, /Upgrade notes: migrate first\./);
+});

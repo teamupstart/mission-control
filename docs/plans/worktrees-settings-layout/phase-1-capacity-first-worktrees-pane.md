@@ -17,18 +17,39 @@ has that was previously unreadable becomes readable.
 ## Entry criteria and direct phase dependencies
 
 - **No phase dependencies.** This is the only phase.
-- Gated on the planning session's pull request merging, so the documents named below exist on the
-  default branch before the work starts.
-- Re-read before starting:
-  - [`plan.md`](plan.md) - the approved goal and the adopted direction.
-  - [`phased-plan.md`](phased-plan.md) - sizing and why this is one phase.
-  - `docs/plans/native-worktree-management/phase-4-settings-worktree-operations.md` - the safety,
-    ownership, and preview contracts this pane must not weaken.
-  - `e2e/README.md` before writing the spec.
-  - `.agents/memory/MEMORY.md`.
-- Read `src/web/components/HarnessesPanel.tsx` and the `.kb-row` / `.harness-card` / `.skill-badge`
-  rules in `src/web/styles.css`. They are the house primitives this phase adopts, and reusing them
-  verbatim is preferred over writing new equivalents.
+- Gated on the planning session's pull request merging, so this document exists on the default
+  branch before the work starts.
+
+### Inherited contracts, stated here in full
+
+This phase inherits safety contracts from the native-worktree-management work. They are restated
+here rather than referenced, so this document is sufficient on its own:
+
+- **Preview-first mutation.** Every mutation requests a preview, shows affected paths, blockers and
+  consequences, requires the acknowledgement keys the server supplies, executes against the opaque
+  short-lived token, and treats a `409` as a stale preview needing a refresh rather than a failure.
+  This phase changes none of it.
+- **Domain ownership is never bypassed.** A task-owned slot goes through the existing task cleanup
+  path; a check-owned slot through `CheckLeaseManager` recovery; unknown occupancy is never
+  overrideable. The panel does not decide ownership.
+- **Legacy rows without provable identity get an explanation, not a disabled `Force` button.**
+- **Colour never carries state alone.** Every tone is paired with a word.
+- **Inventory is an observation.** It stays out of `MissionState`; only the `worktreesRevision`
+  counter lives there.
+- **Lowering the maximum never prunes as a side effect.**
+
+### Optional context
+
+Useful background, not required reading - everything load-bearing is already in this document:
+
+- [`plan.md`](plan.md) - the approved goal, the nine catalogued theme breaks, and the two directions
+  that were not taken.
+- [`phased-plan.md`](phased-plan.md) - sizing and why this is one phase.
+- `docs/plans/native-worktree-management/phase-4-settings-worktree-operations.md` - the origin of
+  the contracts restated above.
+- `src/web/components/HarnessesPanel.tsx` and the `.kb-row` / `.harness-card` / `.skill-badge` rules
+  in `src/web/styles.css` - the house primitives this phase adopts. Reusing them verbatim is
+  preferred over writing new equivalents.
 
 ## Scope
 
@@ -51,7 +72,7 @@ has that was previously unreadable becomes readable.
 - Do not change the `SETTINGS_CATEGORIES` entry or the three `data-anchor` slugs.
 - Do not add a filterable cross-pool slot list. Slot detail stays behind the pool's disclosure.
 
-## Repository findings and inherited contracts
+## Repository findings
 
 Verified at `HEAD` while writing this plan. Treat these as starting facts, not as guarantees - check
 them again, and record any that have moved.
@@ -97,8 +118,9 @@ Correct across everything that remains:
 Add the capacity bar rules. Composition segments are flex children of a rounded track; leased,
 available and quarantined are solid tone fills, and room-to-grow is a hatched
 `repeating-linear-gradient` in `--border`. The over-capacity overlay is **not** a flex child - it is
-absolutely positioned within the track from the maximum marker to the right edge, hatched in
-`--attention`, so it re-tints the segments beneath it without contributing width. Keep the hatch
+absolutely positioned within the track, anchored to the right edge and beginning at the configured
+maximum, with **translucent** `--attention` hatching so it re-tints the segments beneath it without
+contributing width or hiding them. Keep the hatch
 angles identical so the two hatched states read as the same idea in two tones. Respect
 `prefers-reduced-motion` if any transition is added to the segments; a width transition on a data
 change is optional and must not be the only cue.
@@ -257,6 +279,14 @@ There is no later phase. What a future change may rely on:
 
 ## Cross-phase audit record
 
+- **2026-08-21, review round 2.** The Inspector flagged the entry criteria for directing a future
+  agent to read a list of files. Partially accepted. Two of the four reads (`e2e/README.md`,
+  `.agents/memory/MEMORY.md`) are already standing repository-wide instructions in `AGENTS.md:209`
+  and `:285`, so naming them here added nothing and they are dropped. The remainder were demoted
+  from directives to optional context, and the inherited preview, ownership, colour, state, and
+  prune contracts are now restated in full in this document rather than referenced - which is what
+  the phasing rules asked for anyway ("write each phase file to stand on its own"). No contract was
+  weakened; the section gained six that were previously only reachable through a link.
 - **2026-08-21, review round 1.** The Inspector found a real arithmetic defect in step 3: overflow
   was specified as a fourth segment appended after leased/available/quarantined, which sum to
   `total` already. Against a denominator of `max(maxSlots, total)` that lays out

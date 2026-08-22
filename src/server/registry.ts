@@ -55,6 +55,7 @@ import {
 import type {
   HookIngest,
   OtlpMetrics,
+  PromptedCompletionDisposition,
   RecordEpisode,
   ResolveEpisode,
   SetGoal,
@@ -7191,6 +7192,7 @@ export class Registry extends EventEmitter {
       promptedLegacyCutoverGeneration: row?.promptedLegacyCutoverGeneration ?? null,
       promptedConsumedGeneration: row?.promptedConsumedGeneration ?? null,
       promptedDirectHandoff: row?.promptedDirectHandoff ?? null,
+      promptedDecision: row?.promptedDecision ?? null,
       updatedAt: row?.updatedAt ?? 0,
       items,
     };
@@ -7285,6 +7287,10 @@ export class Registry extends EventEmitter {
       // Carried through, never re-derived: this row's whole purpose here is to refresh
       // cwd/branch, and dropping the latch would re-arm a direct handoff that already ran.
       promptedDirectHandoff: prev?.promptedDirectHandoff ?? null,
+      // Carried for the same reason, and the reason is stronger here: this decision is the
+      // only durable record of why the current generation stopped, and a cwd refresh has
+      // learned nothing that could revise it.
+      promptedDecision: prev?.promptedDecision ?? null,
       updatedAt: now,
     });
     return key;
@@ -7351,6 +7357,11 @@ export class Registry extends EventEmitter {
       ask: boolean;
       /** Record a direct-shipping handoff in the same write, or null to consume only. */
       directHandoff: PromptedDirectHandoffKind | null;
+      /**
+       * Why this generation stopped, stored in the same write. Null only for a wire caller
+       * that predates the field; nothing here invents one.
+       */
+      decision: PromptedCompletionDisposition | null;
     },
     now = Date.now(),
   ): boolean {
@@ -7387,6 +7398,7 @@ export class Registry extends EventEmitter {
       directHandoff: input.directHandoff
         ? { kind: input.directHandoff, episodeKey: input.expectedIntent.episodeKey }
         : null,
+      decision: input.decision,
       now,
     });
     if (consumed) this.syncSessionsForQueue(input.logicalKey);
@@ -7556,6 +7568,12 @@ export class Registry extends EventEmitter {
         promptedActivityAt: row.promptedActivityAt,
         promptedLegacyCutoverGeneration: row.promptedLegacyCutoverGeneration,
         promptedConsumedGeneration: row.promptedConsumedGeneration,
+        // DROPPED, like the latch below and for a related reason: a decision NAMES the
+        // logical key it was decided about, and no decision migrates across keys. Carried
+        // onto `toKey` it would fail its own key check on every read and log a diagnostic
+        // for state that is not corrupt, merely re-homed. The re-attached row reads exactly
+        // like a legacy one - consumed, historical reason unknown - which is the truth.
+        promptedDecision: null,
         // DROPPED, not carried. Every other guard on this row is a statement about the
         // SOURCE logical key's own lifecycle, and re-keying moves it wholesale. The
         // direct-shipping latch is a statement about an INTENT EPISODE, and episode keys

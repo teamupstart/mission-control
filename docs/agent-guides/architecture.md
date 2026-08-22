@@ -142,6 +142,40 @@ while a later completed generation naturally becomes eligible. A null or mismatc
 cycle, or completion newer than a known watermark stays eligible. New decisions never use the
 legacy intent/evidence columns as a fallback trigger.
 
+### Task completion contract
+
+`src/shared/task-completion.ts` owns one browser-safe, exhaustive `Record<TaskKind,
+TaskCompletionContract | null>` describing what "complete" means for a task kind's initial
+delivered turn: what must be done, and what post-completion work is explicitly deferred to a
+later owner. `ship` is the only kind that defers anything today. The delivered handoff appendix
+(`src/server/task-contract.ts`) and Foreman's verify prompt render from that one record, so the
+boundary an agent is told and the boundary it is judged against cannot drift apart.
+
+Prompted completion supplies the contract to `verifyItem` as an optional trusted-policy input,
+resolved from the durable task kind on the live session. It is rendered above the untrusted
+evidence fence, alongside the objective and never in place of it. Queue-item verification and
+personal sessions pass no contract, so their behavior is unchanged. Trusted policy is never
+derived from transcript prose.
+
+### Prompted completion disposition
+
+`foreman_queues.prompted_decision` holds one validated JSON record - logical key, generation,
+outcome, bounded summary, bounded blocking gaps, decision time - describing why the current
+consumed generation stopped. Outcomes are append-only:
+`held`, `workflow_claimed`, `asked`, `direct_handoff`, `retired`, `empty`, `verification_failed`.
+
+It is written by the same statement that consumes the generation, on both atomic boundaries: the
+ordinary consume route and the Workflow completion claim transaction. A refused or rolled-back
+claim writes neither. It is current projection, replaced by the next generation, while
+`foreman_episodes` remains the append-only history of what Foreman did.
+
+Reads fail closed. Unparseable JSON, an outcome this build cannot interpret, a logical key that is
+not the row's own, or a generation that is not the row's consumed generation all read as no
+actionable decision and emit one bounded diagnostic; the generation stays consumed either way, so
+nothing replays a spent turn. A legacy row with no decision is consumed with an unknown reason and
+is not fresh work. A context-key rotation selects another row, and no disposition migrates across
+logical keys.
+
 ## GitHub Inspector and PR provenance
 
 The workflow's Code Quality Judge and GitHub Inspector have different owners. Code Quality Judge

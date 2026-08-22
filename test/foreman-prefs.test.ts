@@ -207,21 +207,47 @@ test("prose ABOUT the operator's instructions survives; only the frame is redact
 });
 
 /**
- * The fastest of `runs` samples, in milliseconds.
+ * The fastest of `runs` samples of EACH of two workloads, in milliseconds, measured
+ * alternately.
  *
  * The MINIMUM rather than a mean, because the noise being rejected is one-sided: the scheduler
  * can steal a sample and inflate it without bound, but nothing makes the work finish faster
  * than it is. On a contended machine the mean tracks the contention and the minimum tracks the
  * algorithm, and the algorithm is what is under test.
+ *
+ * ALTERNATELY, rather than all of one and then all of the other, because the caller divides
+ * these two numbers and contention does not divide out of a ratio unless both sides met the
+ * same contention. Run in blocks, they do not: the larger workload occupies a longer window,
+ * so it is likelier to be interrupted in EVERY one of its samples while the smaller one still
+ * catches a clean slot between interruptions. That bias is systematic and it only ever points
+ * one way - it inflates the numerator - which is exactly how a linear matcher reported 9.5x
+ * growth (155ms -> 1470ms, against ~80ms and ~300ms idle) on a box running the whole suite
+ * beside a stuck load generator. Interleaving costs nothing and puts both sides in the same
+ * weather.
+ *
+ * `runs` carries the rest of the load: a minimum is only as good as its cleanest sample, and
+ * the longer workload needs an uninterrupted window four times as wide to produce one. More
+ * samples is more chances at that window, which is why the caller pays for twelve rather than
+ * the five that were enough on an idle machine. Interleaved twelve held 8/8 under eight
+ * competing spinners; interleaved five still lost one in six there, and blocked five lost
+ * one in one.
  */
-function fastestMs(runs: number, work: () => void): number {
-  let best = Infinity;
+function fastestPairMs(
+  runs: number,
+  first: () => void,
+  second: () => void,
+): { first: number; second: number } {
+  let bestFirst = Infinity;
+  let bestSecond = Infinity;
   for (let index = 0; index < runs; index += 1) {
-    const started = performance.now();
-    work();
-    best = Math.min(best, performance.now() - started);
+    const startedFirst = performance.now();
+    first();
+    bestFirst = Math.min(bestFirst, performance.now() - startedFirst);
+    const startedSecond = performance.now();
+    second();
+    bestSecond = Math.min(bestSecond, performance.now() - startedSecond);
   }
-  return best;
+  return { first: bestFirst, second: bestSecond };
 }
 
 test("a long rule cannot stall the worker - the matcher stays linear", () => {
@@ -240,8 +266,17 @@ test("a long rule cannot stall the worker - the matcher stays linear", () => {
   // because a uniform slowdown scales both terms and cancels. Four times the input costs about
   // four times as long if the matcher is linear and about sixteen if it is quadratic - measured
   // here across eight trials the ratio sat between 3.4 and 4.5, so 8 splits the two cleanly.
-  const small = fastestMs(5, () => stripPrefsMarkers("-".repeat(15_000)));
-  const large = fastestMs(5, () => stripPrefsMarkers("-".repeat(60_000)));
+  //
+  // The threshold survived contact with contention; the MEASUREMENT did not. Sampling the two
+  // sizes in blocks let the larger one absorb more interruptions than the smaller, which
+  // inflates this ratio without anything about the matcher changing - see `fastestPairMs`,
+  // which now interleaves them. Neither bound below moved: a quadratic matcher still fails
+  // both, and that is the point of leaving them where the measurements put them.
+  const { first: small, second: large } = fastestPairMs(
+    12,
+    () => stripPrefsMarkers("-".repeat(15_000)),
+    () => stripPrefsMarkers("-".repeat(60_000)),
+  );
   const growth = large / small;
   assert.ok(
     growth < 8,

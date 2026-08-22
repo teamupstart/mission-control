@@ -28,6 +28,7 @@ import type {
   ForemanInstructionsView,
   ForemanLeaseResult,
   ForemanPlannerControl,
+  PromptedCompletionDisposition,
   RecordEpisode,
   SetNote,
   SetWorkItemState,
@@ -1361,12 +1362,20 @@ export class ForemanClient implements ForemanActions {
     logicalKey: string,
     generation: number,
     expectedIntent: SessionIntentGuard,
+    /**
+     * Why this generation stopped. REQUIRED, and positional rather than tucked into
+     * `opts`, so a new consumption path cannot be written without answering it - the
+     * whole point of the projection is that every consumed generation has a reason
+     * beside it, and an optional parameter is a reason that gets forgotten.
+     */
+    decision: PromptedCompletionDisposition,
     opts?: { ask?: boolean; directHandoff?: PromptedDirectHandoffKind },
   ): Promise<void> {
     const res = await send("POST", `/api/sessions/${enc(sessionId)}/queue/wrapup/prompted`, {
       logicalKey,
       generation,
       expectedIntent,
+      decision,
       ...(opts?.ask ? { ask: true } : {}),
       ...(opts?.directHandoff ? { directHandoff: opts.directHandoff } : {}),
     });

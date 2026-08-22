@@ -160,6 +160,7 @@ test("prompted consumption survives delivery; only a natural work cycle re-arms 
     promptedLegacyCutoverGeneration: null,
     promptedConsumedGeneration: 2,
     promptedDirectHandoff: null,
+    promptedDecision: null,
     updatedAt: 10,
   });
 

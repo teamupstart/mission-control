@@ -48,6 +48,7 @@ import { SCOUT_REPORT_PATH_SHAPE, SCOUT_SUBMISSION_LIMITS, scoutReportSlug } fro
 import { TERMINAL_BACKEND_IDS } from "./terminal.ts";
 import {
   AGENT_TYPES,
+  PROMPTED_COMPLETION_OUTCOMES,
   PROMPTED_DIRECT_HANDOFF_KINDS,
   SESSION_RUNTIMES,
   TASK_KINDS,
@@ -3198,6 +3199,51 @@ const SessionIntentGuardSchema = z.object({
  */
 export const PromptedDirectHandoffKindSchema = z.enum(PROMPTED_DIRECT_HANDOFF_KINDS);
 
+/** Bounds on the stored reason. See `PromptedCompletionDispositionSchema`. */
+export const PROMPTED_DECISION_SUMMARY_MAX = 2000;
+export const PROMPTED_DECISION_GAPS_MAX = 3;
+export const PROMPTED_DECISION_GAP_ID_MAX = 120;
+export const PROMPTED_DECISION_GAP_PATH_MAX = 400;
+export const PROMPTED_DECISION_GAP_DETAIL_MAX = 600;
+
+/**
+ * WHY a consumption is happening, supplied by the caller and stored beside the generation
+ * it consumes.
+ *
+ * The caller sends only the REASON. `logicalKey` and `generation` are not accepted here:
+ * the daemon already re-verified both against live lifecycle state at this boundary, so
+ * taking them from the request would let a caller label a decision with a key or a
+ * generation the write did not actually spend. The stored
+ * `PromptedCompletionDecision` is composed from the verified values instead, which is what
+ * makes "the decision belongs to the consumed generation" a property of the transaction
+ * rather than a claim a reader has to trust.
+ *
+ * Every bound is enforced here and not merely hoped for: the summary and gap text are
+ * model-authored, they are persisted onto a row every queue read re-serves, and Phase 2
+ * types the gaps back into a tool-enabled agent.
+ */
+export const PromptedCompletionDispositionSchema = z.object({
+  outcome: z.enum(PROMPTED_COMPLETION_OUTCOMES),
+  summary: z.string().max(PROMPTED_DECISION_SUMMARY_MAX).default(""),
+  gaps: z
+    .array(
+      z.object({
+        id: z.string().min(1).max(PROMPTED_DECISION_GAP_ID_MAX),
+        path: z.string().max(PROMPTED_DECISION_GAP_PATH_MAX).default(""),
+        detail: z.string().min(1).max(PROMPTED_DECISION_GAP_DETAIL_MAX),
+      }),
+    )
+    .max(PROMPTED_DECISION_GAPS_MAX)
+    .optional()
+    .default([]),
+}).refine(
+  // Only a verifier verdict produces gaps. A `retired` or `empty` consumption carrying
+  // "blocking gaps" would hand Phase 2 feedback no model ever wrote.
+  (decision) => decision.outcome === "held" || decision.gaps.length === 0,
+  { message: "Only a held prompted completion may carry blocking gaps" },
+);
+export type PromptedCompletionDisposition = z.infer<typeof PromptedCompletionDispositionSchema>;
+
 /**
  * Consume one completed work-cycle generation for the `prompted` trigger.
  *
@@ -3221,9 +3267,34 @@ export const PromptedWrapupSchema = z.object({
   // A constrained kind rather than a boolean so the durable row says which handoff it
   // was. Foreman supplies it over this route; Foreman never writes SQLite itself.
   directHandoff: PromptedDirectHandoffKindSchema.nullable().optional().default(null),
+  // WHY this generation stopped here, written in the same statement that consumes it.
+  //
+  // Nullable and defaulted for WIRE compatibility only - a request from a build that
+  // predates this field still consumes, and consuming CLEARS any stale decision rather
+  // than leaving one that claims to describe a generation it never saw. Nothing
+  // synthesizes a reason from the shape of the request: a `held` invented for a caller
+  // that never said so is exactly the false state Phase 2 would then act on. Every
+  // in-repository caller passes one, and `ForemanClient.consumePromptedGeneration`
+  // requires it in its signature so a new call site cannot forget.
+  decision: PromptedCompletionDispositionSchema.nullable().optional().default(null),
 }).refine(
   (body) => !(body.ask && body.directHandoff),
   { message: "A prompted consumption cannot both raise the Ship it? card and hand off to direct shipping" },
+).refine(
+  // The two action latches and the recorded reason are three views of ONE consumption, so
+  // a request that disagrees with itself is refused rather than half-applied. Checked on
+  // the wire because this is the boundary where the caller's intent is still legible.
+  (body) => !body.decision || !body.ask || body.decision.outcome === "asked",
+  { message: "A prompted consumption that raises the Ship it? card must record the asked outcome" },
+).refine(
+  (body) => !body.decision || !body.directHandoff || body.decision.outcome === "direct_handoff",
+  { message: "A prompted consumption that latches a direct handoff must record the direct_handoff outcome" },
+).refine(
+  // `workflow_claimed` is written only inside the Workflow claim transaction, which never
+  // travels over this route. Accepting it here would let an ordinary consume forge a claim
+  // that no run exists for.
+  (body) => body.decision?.outcome !== "workflow_claimed",
+  { message: "Only the Workflow claim transaction may record a workflow_claimed outcome" },
 );
 export type PromptedWrapup = z.infer<typeof PromptedWrapupSchema>;
 

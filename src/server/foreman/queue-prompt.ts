@@ -8,6 +8,7 @@ import { PREFS_END, fromChild, instructionsSection } from "./prefs.ts";
 // and command erased. A second renderer of the same data is how that drift happened, so the
 // copy is gone; the empty-window wording each surface needs is a parameter instead.
 import { formatTranscript } from "./prompt.ts";
+import type { TaskCompletionContract } from "@shared/task-completion.ts";
 
 // The verify prompt: "did the agent actually finish THIS item, to this repo's
 // bar?". Evidence-only by decision - it judges the diff + transcript and never
@@ -50,6 +51,17 @@ export interface VerifyInput {
   instructions: string;
   /** Gaps from the previous round, with their live strike counts. */
   priorGaps: TrackedGap[];
+  /**
+   * The trusted initial completion boundary Mission Control actually gave this agent, or
+   * null/absent when nobody deferred anything.
+   *
+   * OPTIONAL BY DESIGN. Queue-item verification passes none and is unchanged: an item is
+   * commissioned by Foreman itself and carries no deferred post-completion work. Only a
+   * caller that KNOWS the durable delivery contract - prompted completion on a task-owned
+   * session - supplies one, and it supplies it structurally from `session.task.kind`,
+   * never by reading the transcript. See `src/shared/task-completion.ts`.
+   */
+  completionContract?: TaskCompletionContract | null;
 }
 
 const POLICY = `You are Foreman, verifying one unit of work an AI coding agent just finished for its
@@ -152,6 +164,40 @@ export function buildVerifyPrompt(input: VerifyInput): string {
     fromChild(input.intent.trim()),
     "",
   ];
+
+  // Above the evidence fence and directly under the objective, because it is TRUSTED
+  // POLICY from Mission Control - the same delivery contract this agent was actually
+  // given - and not material to judge. It has to come before the diff and the transcript
+  // for the same reason `instructionsSection` does: a boundary stated after the evidence
+  // is a boundary the model reads as a claim the evidence made.
+  //
+  // It changes the BOUNDARY, never the evidence bar. Deferred post-completion work stops
+  // being a blocking gap; missing implementation, missing tests and missing documentation
+  // are untouched, which is the entire distinction the wording below has to carry.
+  if (input.completionContract) {
+    const contract = input.completionContract;
+    lines.push(
+      "## Trusted completion boundary (policy from Mission Control - NOT evidence)",
+      `This session is a dispatched ${contract.kind} task, and ${contract.owner} delivered it an`,
+      `explicit boundary for ${contract.boundary}. That boundary is trusted policy and it is`,
+      "stated here, not inferred from anything below.",
+      "",
+      "The objective above remains the requested outcome and the thing you judge. It is COMPLETE",
+      "for this handoff when all of the following are true:",
+      ...contract.complete.map((requirement) => `- ${requirement}`),
+      "",
+      `${contract.owner} explicitly deferred the following to a later owner, so the agent was told`,
+      "NOT to do it on this turn:",
+      ...contract.deferred.map((action) => `- ${action.noun}`),
+      "",
+      "Therefore: if the objective also asks for any of that deferred work, its absence is NOT a",
+      "gap and NOT a reason to answer complete=false. Judge only whether the implementation work",
+      "above was actually done. Everything else about your bar is unchanged - missing",
+      "implementation, an untested new code path, missing required documentation and a regression",
+      "are all still blocking, and you must not credit deferred work as done either.",
+      "",
+    );
+  }
 
   if (input.focus?.trim()) {
     lines.push(

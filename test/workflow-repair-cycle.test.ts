@@ -30,7 +30,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { LlmRunner } from "../src/shared/llm.ts";
-import type { PromptedDirectHandoff, Session, SessionQueue } from "../src/shared/types.ts";
+import type {
+  PromptedCompletionDecision,
+  PromptedDirectHandoff,
+  Session,
+  SessionQueue,
+} from "../src/shared/types.ts";
 import type { InjectDeps, PromptWriteGuard } from "../src/server/actions.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
 
@@ -390,9 +395,11 @@ function guard(noteKey: string): {
   promptedGoal: string | null;
   promptedConsumedGeneration: number | null;
   promptedDirectHandoff: PromptedDirectHandoff | null;
+  promptedDecision: PromptedCompletionDecision | null;
 } {
   const row = getQueueRow(noteKey);
   return {
+    promptedDecision: row?.promptedDecision ?? null,
     wrapupAskedAt: row?.wrapupAskedAt ?? null,
     wrapupAnswer: row?.wrapupAnswer ?? null,
     promptedGoal: row?.promptedGoal ?? null,
@@ -537,6 +544,19 @@ test("an item-less session resumes prompted completion through a new natural wor
     assert.equal(claimed.claimed, true, "the prompted completion claim was refused");
 
     assert.equal(guard(h.noteKey).promptedConsumedGeneration, 1);
+    // The generation and the REASON it was spent are one durable fact, written by the same
+    // transaction that created the run. Routing this through the ordinary consume route
+    // afterwards would split one atomic claim into two writes a crash could land between,
+    // leaving a spent generation nobody can explain - the exact state the reported deadlock
+    // was invisible in.
+    assert.deepEqual(guard(h.noteKey).promptedDecision, {
+      logicalKey: h.noteKey,
+      generation: 1,
+      outcome: "workflow_claimed",
+      summary: "complete",
+      gaps: [],
+      decidedAt: guard(h.noteKey).promptedDecision!.decidedAt,
+    });
     const roundTwo = h.store.latestSubmission(runId)!;
     assert.equal(roundTwo.round, 2);
 
@@ -589,6 +609,10 @@ test("an item-less session resumes prompted completion through a new natural wor
     }));
     assert.equal(next.claimed, true, "the naturally completed second generation was refused");
     assert.equal(guard(h.noteKey).promptedConsumedGeneration, 2);
+    // A later generation REPLACES the current reason, atomically and in place. History
+    // belongs to the episode ledger; this row is current projection only.
+    assert.equal(guard(h.noteKey).promptedDecision?.generation, 2);
+    assert.equal(guard(h.noteKey).promptedDecision?.summary, "repair complete");
     // A Workflow claim is not a direct-shipping handoff. Latching one here would disarm
     // every later repair round in this intent episode against an instruction Foreman
     // never typed - which is the mirror image of the loop the latch exists to close.

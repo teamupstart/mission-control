@@ -73,13 +73,26 @@ async function captureRequestInput(
 
   try {
     const port = await listen(daemon);
-    const childEnv = {
+    const childEnv: Record<string, string | undefined> = {
       ...process.env,
       ...identityEnv,
       MISSION_HOME: missionHome,
       MISSION_PORT: String(port),
     };
     if (!identityEnv.MISSION_SESSION_ID) delete childEnv.MISSION_SESSION_ID;
+    // The case above states the WHOLE terminal identity this child may report, so anything
+    // `captureTerminalEnv` reads that the case did not set has to go - it inherits
+    // `process.env`, and the operator's own terminal sets these too.
+    //
+    // `TERM_PROGRAM` is the one that actually bit: it is unset under CI's piped shell and
+    // set to `WezTerm`, `iTerm.app`, `Apple_Terminal` or `vscode` whenever the suite is run
+    // from a real terminal, so this assertion's exactness was really an assertion about
+    // where it happened to be running. Deleting rather than pinning an expected value keeps
+    // the test's point intact: the child reports the identity it was GIVEN and nothing the
+    // machine underneath it happened to export.
+    for (const name of ["TMUX_PANE", "WEZTERM_PANE", "TERM_PROGRAM"] as const) {
+      if (!(name in identityEnv)) delete childEnv[name];
+    }
     transport = new StdioClientTransport({
       command: process.execPath,
       args: [

@@ -173,6 +173,7 @@ function mkFake(over: { session?: Session; items?: WorkItem[]; injectFailure?: u
       promptedLegacyCutoverGeneration: null,
       promptedConsumedGeneration: null,
       promptedDirectHandoff: null,
+      promptedDecision: null,
       updatedAt: 0,
       items,
     }),

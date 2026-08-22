@@ -4320,6 +4320,13 @@ export function buildApp(
   // and then permanently lose its question on a daemon error. The Registry rechecks the
   // logical key, generation and resolved intent at this daemon-owned write boundary.
   //
+  // `decision` records, in that same statement, WHY this generation stopped - the verifier
+  // summary and blocking gaps of a hold, or the terminal disposition of any other outcome.
+  // Same one-write argument as `ask`: a reason persisted afterwards can be lost by the very
+  // failure that makes it matter, leaving a spent generation nobody can explain. It is
+  // nullable on the wire for a caller from an older build, and a null CLEARS the stored
+  // reason rather than leaving one that describes a generation this write just replaced.
+  //
   // `directHandoff` records, in that same statement, that Foreman is about to type the
   // direct shipping instruction. It is a request field rather than a second call because
   // the ordering IS the safety property: the mark must be durable before anything types,

@@ -131,6 +131,7 @@ function mkQueue(over: Partial<SessionQueue> = {}): SessionQueue {
     promptedLegacyCutoverGeneration: null,
     promptedConsumedGeneration: null,
     promptedDirectHandoff: null,
+    promptedDecision: null,
     updatedAt: 0,
     items: [],
     ...over,
@@ -512,6 +513,98 @@ test("the prompted consume wire contract constrains the handoff it can authorize
   );
 });
 
+test("the prompted consume wire contract records a reason it cannot disagree with", () => {
+  const base = {
+    logicalKey: "agent-1",
+    generation: 1,
+    expectedIntent: {
+      objective: GOAL,
+      objectiveVersion: 1,
+      promptRevision: 1,
+      episodeKey: "intent:1:1",
+    },
+  };
+
+  // Absent stays legal for WIRE compatibility with a build that predates the field, and
+  // means exactly "record no reason" - nothing synthesizes a `held` that no one decided.
+  const legacy = PromptedWrapupSchema.safeParse(base);
+  assert.equal(legacy.success && legacy.data.decision, null);
+
+  const held = PromptedWrapupSchema.safeParse({
+    ...base,
+    decision: {
+      outcome: "held",
+      summary: "the retry path has no test",
+      gaps: [{ id: "retry-untested", path: "src/up.ts", detail: "no test covers the 500 retry" }],
+    },
+  });
+  assert.equal(held.success, true);
+  assert.equal(held.success && held.data.decision?.gaps.length, 1);
+
+  // Append-only vocabulary, not a free string: an outcome this build cannot interpret must
+  // be refused at the boundary rather than stored for a reader to guess at.
+  assert.equal(
+    PromptedWrapupSchema.safeParse({ ...base, decision: { outcome: "escalated" } }).success,
+    false,
+  );
+
+  // Only a verifier verdict produces gaps. A retire carrying "blocking gaps" would hand a
+  // later recovery feedback no model ever wrote.
+  assert.equal(
+    PromptedWrapupSchema.safeParse({
+      ...base,
+      decision: { outcome: "retired", gaps: [{ id: "g", path: "p", detail: "d" }] },
+    }).success,
+    false,
+  );
+
+  // The text bounds are a defence, not a hope: this is model-authored, it rides every
+  // queue read, and a later phase types the gaps into a tool-enabled agent.
+  assert.equal(
+    PromptedWrapupSchema.safeParse({
+      ...base,
+      decision: { outcome: "held", summary: "x".repeat(2001) },
+    }).success,
+    false,
+  );
+  assert.equal(
+    PromptedWrapupSchema.safeParse({
+      ...base,
+      decision: {
+        outcome: "held",
+        gaps: Array.from({ length: 4 }, (_, i) => ({ id: `g${i}`, path: "p", detail: "d" })),
+      },
+    }).success,
+    false,
+  );
+
+  // The two action latches and the recorded reason are three views of ONE consumption, so
+  // a request that disagrees with itself is refused rather than half-applied.
+  assert.equal(
+    PromptedWrapupSchema.safeParse({ ...base, ask: true, decision: { outcome: "held" } }).success,
+    false,
+  );
+  assert.equal(
+    PromptedWrapupSchema.safeParse({ ...base, ask: true, decision: { outcome: "asked" } }).success,
+    true,
+  );
+  assert.equal(
+    PromptedWrapupSchema.safeParse({
+      ...base,
+      directHandoff: "direct-ship",
+      decision: { outcome: "retired" },
+    }).success,
+    false,
+  );
+
+  // `workflow_claimed` is written only inside the Workflow claim transaction. Accepting it
+  // here would let an ordinary consume forge a claim that no run exists for.
+  assert.equal(
+    PromptedWrapupSchema.safeParse({ ...base, decision: { outcome: "workflow_claimed" } }).success,
+    false,
+  );
+});
+
 test("missing, active, or mismatched work-cycle state fails closed", () => {
   assert.equal(decide({ session: mkSession({ workCycle: undefined }) }).kind, "skip");
   assert.equal(
@@ -537,6 +630,7 @@ test("legacy intent and evidence fields are not an active fallback trigger", () 
         promptedActivityAt: null,
         promptedConsumedGeneration: null,
         promptedDirectHandoff: null,
+        promptedDecision: null,
       }),
     }).kind,
     "check",

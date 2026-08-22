@@ -105,6 +105,10 @@ Persisted ID tuples are append-only. Never rename, reorder, or reuse values. Thi
   and upserted. That is what makes a cache of another program's files safe to hang a ledger
   write off. It also has no backfill arm and never will - the figures come from records the
   engine commits in feature worktrees, which are gone by the time a merge lands
+- Prompted completion outcomes (`PROMPTED_COMPLETION_OUTCOMES` in `src/shared/types.ts`) - stored
+  inside `foreman_queues.prompted_decision` and read back by exact value. Append beside the
+  existing values; an older build that meets a newer one reads the whole decision as absent
+  rather than coercing it to a value it does have, and the generation stays consumed either way
 - Schedule enum values
 - Foreman invite sources (`FOREMAN_INVITES` in `src/shared/types.ts`, plus the persisted
   `foreman_invites.source` domain, which additionally contains `'withdrawn'`) - the stored
@@ -606,6 +610,20 @@ wrong page with no error anywhere.
 
 `PipelineRunView`'s header takes an `actions` slot that renders nothing today. It is the
 place the engine's control verbs go; filling it must not restructure the header around it.
+
+## Prompted completion: one generation, one reason, one write
+
+A completed prompted work-cycle generation is consumed by exactly one compare-and-set, and that
+same statement records WHY it stopped. There are two such boundaries and both must keep the pair
+atomic: `consumePromptedGeneration` on the ordinary route, and the Workflow completion claim
+transaction, which writes `workflow_claimed` beside the run it created. Never write the reason
+afterwards - the failure that loses it is exactly the failure that makes it matter - and never
+synthesize one for a caller that supplied none. `held` means a model judged the work unfinished;
+`verification_failed` means verification infrastructure gave up and nobody judged it, so the two
+must not be collapsed.
+
+The decision is CURRENT PROJECTION on `foreman_queues`. History belongs to `foreman_episodes`. Do
+not add a second decision ledger, and do not carry a decision across logical keys.
 
 ## Ledger tables
 

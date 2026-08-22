@@ -42,7 +42,7 @@ function mkDiscovered(over: Partial<DiscoveredSession> = {}): DiscoveredSession 
 let n = 0;
 /** A queue at `key` holding one waiting item, as a dead session would leave it. */
 function seedQueue(key: string, cwd: string): void {
-  upsertQueue({ noteKey: key, cwd, branch: "feature", wrapupAskedAt: null, wrapupAnswer: null, promptedGoal: null, promptedEvidence: null, promptedActivityAt: null, promptedLegacyCutoverGeneration: null, promptedConsumedGeneration: null, promptedDirectHandoff: null, updatedAt: 1000 });
+  upsertQueue({ noteKey: key, cwd, branch: "feature", wrapupAskedAt: null, wrapupAnswer: null, promptedGoal: null, promptedEvidence: null, promptedActivityAt: null, promptedLegacyCutoverGeneration: null, promptedConsumedGeneration: null, promptedDirectHandoff: null, promptedDecision: null, updatedAt: 1000 });
   const item: WorkItem = {
     id: `orphan-${++n}`,
     noteKey: key,

@@ -164,6 +164,23 @@ the applicable **Approve & send / Dismiss** controls. An answered session carrie
 Foreman's completion checks use the session detail's [durable Goal](sessions.md#goal), while its latest tactical
 focus remains separate.
 
+**A dispatched `ship` task is judged at the boundary Mission Control gave it.** Foreman hands
+the verifier the task kind's completion contract as trusted policy beside the durable Goal:
+implementation, required repository documentation, focused verification and evidence
+registration are what "complete" means on the first delivered turn, while commit, push,
+pull-request creation, review follow-through and CI are explicitly deferred to whoever owns
+completion next. So a Goal that also says "open a pull request" is satisfied when the
+implementation is, because that clause was deferred - and nothing else about the bar changes.
+The contract comes from the task's durable `Kind`, never from transcript prose, so personal
+sessions and every other kind are judged exactly as before. See
+[work queues](work-queues.md) for the whole prompted path.
+
+**Each consumed completion records why it stopped.** The queue row carries the current
+generation's outcome - `held`, `workflow_claimed`, `asked`, `direct_handoff`, `retired`,
+`empty`, or `verification_failed` - with a bounded summary and, for a hold, its blocking gaps.
+It is written by the same statement that consumes the generation, and replaced by the next
+one; the Foreman episode ledger below remains the history of what Foreman *did*.
+
 **Settings → Foreman** groups its durable controls into four tabs: **Posture** for the cheap
 tier, **Models** for the provider and four Foreman roles, **Launches** for the three
 per-harness task-agent launch models, and **Safety** for the completion safeguards. Each tab shows how

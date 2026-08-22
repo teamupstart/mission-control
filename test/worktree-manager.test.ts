@@ -444,9 +444,28 @@ test("an ambiguous native acquisition never creates a disposable task or check t
   assert.equal(new CheckLeaseStore(db).get("check-unknown"), null);
 });
 
+/**
+ * How long a NON-BLOCKED acquisition or release is given to settle while the slow fetch is
+ * still held open.
+ *
+ * The property is an ordering one - "this work did not queue behind that fetch" - and the
+ * only lever a test has on it is a budget, because the two are concurrent. What makes a
+ * generous budget correct rather than merely lenient is the gate below: `finishSlowFetch()`
+ * is called only AFTER both of these have been waited on, so work that genuinely serialized
+ * behind the fetch cannot settle at ANY budget, while work that did not needs milliseconds.
+ * The number therefore only decides how long a real regression takes to report.
+ *
+ * It was 1000ms, which is inside the range a release doing real git work in a temp repository
+ * reaches on a loaded machine - so it reported "blocked" for work that was merely slow, and
+ * did it about a third of the time when this file's own sibling cases ran beside it. Sized
+ * well clear of that, and still comfortably inside the case timeout so a true failure is this
+ * assertion's sentence rather than an anonymous runner timeout.
+ */
+const CONCURRENT_SETTLE_MS = 10_000;
+
 test(
   "a slow release fetch does not block another slot acquisition or release",
-  { timeout: 10_000 },
+  { timeout: 30_000 },
   async () => {
     const { clone, sha } = repository("mission-native-slot-concurrency-");
     let fetchCalls = 0;
@@ -495,8 +514,8 @@ test(
         );
       });
     const [acquireProgressed, releaseProgressed] = await Promise.all([
-      settlesBefore(thirdAcquire, 1_000),
-      settlesBefore(secondRelease, 1_000),
+      settlesBefore(thirdAcquire, CONCURRENT_SETTLE_MS),
+      settlesBefore(secondRelease, CONCURRENT_SETTLE_MS),
     ]);
     finishSlowFetch();
 

@@ -40,6 +40,8 @@ import type {
   CostBasis,
   SessionGoal,
   SessionNote,
+  PromptedCompletionDecision,
+  PromptedCompletionOutcome,
   PromptedDirectHandoff,
   PromptedDirectHandoffKind,
   SessionQueue,
@@ -54,7 +56,19 @@ import type {
   WorkCycleSummary,
   WorktreeProvider,
 } from "@shared/types.ts";
-import { DEFAULT_TASK_KIND, TASK_KINDS } from "@shared/types.ts";
+import {
+  DEFAULT_TASK_KIND,
+  PROMPTED_COMPLETION_OUTCOMES,
+  TASK_KINDS,
+} from "@shared/types.ts";
+import {
+  PROMPTED_DECISION_GAPS_MAX,
+  PROMPTED_DECISION_GAP_DETAIL_MAX,
+  PROMPTED_DECISION_GAP_ID_MAX,
+  PROMPTED_DECISION_GAP_PATH_MAX,
+  PROMPTED_DECISION_SUMMARY_MAX,
+  type PromptedCompletionDisposition,
+} from "@shared/protocol.ts";
 import { readPersistedEnum } from "@shared/schedules.ts";
 import { HUMAN_REVIEW_STATUSES, isHumanResolvedReview } from "@shared/review-item.ts";
 import { IN_FLIGHT_ITEM_STATES, TERMINAL_ITEM_STATES } from "@shared/queue.ts";
@@ -1774,6 +1788,13 @@ export function openDb(): DatabaseSync {
       prompted_direct_handoff_kind TEXT,
       prompted_direct_handoff_episode TEXT,
       prompted_direct_handoff_generation INTEGER,
+      -- WHY the current prompted_consumed_generation stopped where it did, as one
+      -- validated JSON payload. One column rather than a scalar group because the record
+      -- is all-or-nothing by nature and nothing queries its parts: a partially-written
+      -- reason is not a reason, and a column set that could disagree with itself would be
+      -- one more thing for a reader to reconcile. See toPromptedDecision below, which
+      -- refuses a payload whose logical key or generation is not this row's own.
+      prompted_decision TEXT,
       updated_at      INTEGER NOT NULL
     );
 
@@ -3258,6 +3279,19 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "foreman_queues", "prompted_direct_handoff_kind", "TEXT");
   addColumn(d, "foreman_queues", "prompted_direct_handoff_episode", "TEXT");
   addColumn(d, "foreman_queues", "prompted_direct_handoff_generation", "INTEGER");
+
+  // The prompted completion REASON for the current consumed generation.
+  //
+  // `prompted_consumed_generation` says a settled completion was handled and deliberately
+  // says nothing about how, which is what made a false hold invisible: the generation was
+  // spent, every later tick skipped it as handled, and what the verifier believed was
+  // missing existed only in a log line. This column keeps that reason durable.
+  //
+  // Nullable with no default, and NULL is the truthful answer for a row written before the
+  // column existed: consumed, reason unknown. That is deliberately NOT the same as fresh
+  // work - `prompted_consumed_generation` remains the replay guard - so an upgrade cannot
+  // re-run a spent generation merely because nobody recorded why it stopped.
+  addColumn(d, "foreman_queues", "prompted_decision", "TEXT");
 
   // `decisions`: the structured questions of a `plan-decisions` review, as a JSON
   // array. Added to `reviews` after it shipped, so an upgraded DB only gets it via
@@ -9170,6 +9204,7 @@ interface QueueRow {
   prompted_direct_handoff_kind: string | null;
   prompted_direct_handoff_episode: string | null;
   prompted_direct_handoff_generation: number | null;
+  prompted_decision: string | null;
   updated_at: number;
 }
 
@@ -9193,8 +9228,113 @@ function toQueueRow(r: QueueRow): Omit<SessionQueue, "items"> {
     promptedLegacyCutoverGeneration: r.prompted_legacy_cutover_generation,
     promptedConsumedGeneration: r.prompted_consumed_generation,
     promptedDirectHandoff: toPromptedDirectHandoff(r),
+    promptedDecision: toPromptedDecision(r),
     updatedAt: r.updated_at,
   };
+}
+
+/**
+ * The stored prompted decision, or null - and null for BOTH "there is none" and "what is
+ * there cannot be trusted".
+ *
+ * FAIL CLOSED, and fail closed loudly for the second case. Every rejection below describes
+ * state that no writer in this build can produce, so it is either a hand-edited database
+ * or a payload from a build whose vocabulary this one does not have. Coercing any of it
+ * into a readable decision would hand Phase 2 recovery a reason to act on that nothing
+ * ever decided:
+ *
+ * - unparseable JSON, or a non-object;
+ * - an `outcome` this build cannot interpret (the vocabulary is append-only, so a NEWER
+ *   build's value lands here and must read as unknown rather than as the nearest match);
+ * - a `logicalKey` that is not this row's own - a decision never migrates across keys, and
+ *   a context clear selects a different row entirely;
+ * - a `generation` that is not the row's current consumed generation, which is the whole
+ *   invariant: a decision is about the generation the queue says was spent, or it is
+ *   about nothing.
+ *
+ * The bounds are re-applied on READ as well as on write, because the write bound only ever
+ * held for payloads this build wrote.
+ */
+function toPromptedDecision(r: QueueRow): PromptedCompletionDecision | null {
+  const raw = r.prompted_decision;
+  if (!raw) return null;
+  const reject = (why: string): null => {
+    // Bounded, and once per read: this runs on every queue read the worker polls.
+    warnOnce(
+      `prompted-decision:${r.note_key}:${why}`,
+      `foreman_queues ${r.note_key}: ignoring unreadable prompted decision (${why})`,
+    );
+    return null;
+  };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return reject("invalid JSON");
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return reject("not an object");
+  const d = parsed as Record<string, unknown>;
+  if (typeof d.outcome !== "string" || !isPromptedCompletionOutcome(d.outcome)) {
+    return reject("unknown outcome");
+  }
+  if (d.logicalKey !== r.note_key) return reject("logical key mismatch");
+  if (typeof d.generation !== "number" || d.generation !== r.prompted_consumed_generation) {
+    return reject("generation does not match the consumed generation");
+  }
+  if (typeof d.decidedAt !== "number" || !Number.isFinite(d.decidedAt)) {
+    return reject("missing decision time");
+  }
+  const gaps = Array.isArray(d.gaps) ? d.gaps : [];
+  const summary = typeof d.summary === "string" ? d.summary : "";
+  return {
+    logicalKey: r.note_key,
+    generation: d.generation,
+    outcome: d.outcome,
+    summary: summary.slice(0, PROMPTED_DECISION_SUMMARY_MAX),
+    gaps: gaps
+      .filter((g): g is Record<string, unknown> => Boolean(g) && typeof g === "object")
+      .flatMap((g) =>
+        typeof g.id === "string" && g.id && typeof g.detail === "string" && g.detail
+          ? [{
+            id: g.id.slice(0, PROMPTED_DECISION_GAP_ID_MAX),
+            path: (typeof g.path === "string" ? g.path : "").slice(0, PROMPTED_DECISION_GAP_PATH_MAX),
+            detail: g.detail.slice(0, PROMPTED_DECISION_GAP_DETAIL_MAX),
+          }]
+          : []
+      )
+      .slice(0, PROMPTED_DECISION_GAPS_MAX),
+    decidedAt: d.decidedAt,
+  };
+}
+
+/**
+ * Diagnostics for unreadable persisted state, at most once per distinct fact.
+ *
+ * `toPromptedDecision` runs on EVERY queue read, and the worker polls queues on every
+ * tick, so an unbounded warn would turn one hand-edited row into a log flood that hides
+ * the very thing it is reporting. The set is process-local and unbounded only in the
+ * number of distinct broken rows, which is bounded by the table.
+ */
+const warnedOnce = new Set<string>();
+function warnOnce(key: string, message: string): void {
+  if (warnedOnce.has(key)) return;
+  warnedOnce.add(key);
+  console.warn(`[queues] ${message}`);
+}
+
+function isPromptedCompletionOutcome(value: string): value is PromptedCompletionOutcome {
+  return (PROMPTED_COMPLETION_OUTCOMES as readonly string[]).includes(value);
+}
+
+/**
+ * Serialize one decision for storage, from values the writer has already verified.
+ *
+ * One serializer, module-private, paired with `toPromptedDecision` above: both write paths
+ * - the consume statement and an ordinary row refresh - go through it, so there is exactly
+ * one shape the reader has to accept.
+ */
+function serializePromptedDecision(decision: PromptedCompletionDecision): string {
+  return JSON.stringify(decision);
 }
 
 /**
@@ -9280,8 +9420,9 @@ export function upsertQueue(q: Omit<SessionQueue, "items">): void {
          (note_key, cwd, branch, wrapup_asked_at, wrapup_answer, prompted_goal,
           prompted_evidence, prompted_activity_at, prompted_legacy_cutover_generation,
           prompted_consumed_generation, prompted_direct_handoff_kind,
-          prompted_direct_handoff_episode, prompted_direct_handoff_generation, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          prompted_direct_handoff_episode, prompted_direct_handoff_generation,
+          prompted_decision, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(note_key) DO UPDATE SET
          cwd=excluded.cwd, branch=excluded.branch, wrapup_asked_at=excluded.wrapup_asked_at,
          wrapup_answer=excluded.wrapup_answer, prompted_goal=excluded.prompted_goal,
@@ -9292,6 +9433,7 @@ export function upsertQueue(q: Omit<SessionQueue, "items">): void {
          prompted_direct_handoff_kind=excluded.prompted_direct_handoff_kind,
          prompted_direct_handoff_episode=excluded.prompted_direct_handoff_episode,
          prompted_direct_handoff_generation=excluded.prompted_direct_handoff_generation,
+         prompted_decision=excluded.prompted_decision,
          updated_at=excluded.updated_at`,
     )
     .run(
@@ -9308,6 +9450,11 @@ export function upsertQueue(q: Omit<SessionQueue, "items">): void {
       q.promptedDirectHandoff?.kind ?? null,
       q.promptedDirectHandoff?.episodeKey ?? null,
       q.promptedDirectHandoff?.generation ?? null,
+      // Re-serialized from the READ model, which already refused anything it could not
+      // trust - so a row rewritten by an ordinary cwd/branch refresh cannot launder an
+      // unreadable payload back into storage, and cannot carry a decision onto a row whose
+      // consumed generation has moved.
+      q.promptedDecision ? serializePromptedDecision(q.promptedDecision) : null,
       q.updatedAt,
     );
 }
@@ -9400,6 +9547,18 @@ export interface ConsumePromptedGenerationInput {
    * workflow is not a direct-shipping handoff and must not latch one.
    */
   directHandoff: { kind: PromptedDirectHandoffKind; episodeKey: string } | null;
+  /**
+   * WHY this generation is being consumed, written in the SAME statement, or null to
+   * consume without recording one.
+   *
+   * Required of every in-repository caller and defaulted nowhere: a synthesized reason is
+   * indistinguishable from a decided one once it is on the row, and Phase 2's recovery
+   * reads exactly this field to choose what to send back. Null is reserved for a wire
+   * caller from a build that predates the field, and it CLEARS any stored decision - the
+   * previous one described an older generation, and a decision that outlives its
+   * generation is precisely the state `toPromptedDecision` refuses to return.
+   */
+  decision: PromptedCompletionDisposition | null;
   now: number;
 }
 
@@ -9418,18 +9577,32 @@ export function consumePromptedGeneration(
   const ask = input.ask ? 1 : 0;
   const handoffKind = input.directHandoff?.kind ?? null;
   const handoffEpisode = input.directHandoff?.episodeKey ?? null;
+  // Composed from the arguments this statement is ABOUT to compare, not from anything the
+  // caller labelled it with: the stored key and generation are therefore the ones actually
+  // spent, which is what lets every reader treat placement as proof.
+  const decision = input.decision
+    ? serializePromptedDecision({
+      logicalKey: input.noteKey,
+      generation: input.generation,
+      outcome: input.decision.outcome,
+      summary: input.decision.summary,
+      gaps: input.decision.gaps,
+      decidedAt: input.now,
+    })
+    : null;
   const result = d.prepare(
     `INSERT INTO foreman_queues (
        note_key, cwd, branch, wrapup_asked_at, wrapup_answer, prompted_goal,
        prompted_evidence, prompted_activity_at, prompted_legacy_cutover_generation,
        prompted_consumed_generation, prompted_direct_handoff_kind,
-       prompted_direct_handoff_episode, prompted_direct_handoff_generation, updated_at
+       prompted_direct_handoff_episode, prompted_direct_handoff_generation,
+       prompted_decision, updated_at
      )
      SELECT ?, ?, NULL,
             CASE WHEN ? = 1 THEN ? ELSE NULL END,
             NULL, NULL, NULL, NULL, NULL, generation,
             ?, ?, CASE WHEN ? IS NULL THEN NULL ELSE generation END,
-            ?
+            ?, ?
        FROM session_work_cycles
       WHERE logical_key = ?
         AND generation = ?
@@ -9441,6 +9614,14 @@ export function consumePromptedGeneration(
         )
      ON CONFLICT(note_key) DO UPDATE SET
        prompted_consumed_generation = excluded.prompted_consumed_generation,
+       -- ASSIGNMENT, not COALESCE, and the opposite choice from the handoff latch three
+       -- lines below - deliberately. The latch records an instruction that was already
+       -- TYPED and must survive a later consumption that types nothing. This records why
+       -- the CURRENT generation stopped, so it moves with that generation or it lies: a
+       -- preserved older reason would describe work the session has since finished, and
+       -- Phase 2 would send its gaps back into a session that already addressed them.
+       -- Clearing on a null decision is the same rule, applied to a caller that gave none.
+       prompted_decision = excluded.prompted_decision,
        -- COALESCE, not assignment: a consumption that makes no handoff must not ERASE
        -- one. It would be erasing the record of an instruction that was already typed,
        -- and the next tick would type it again. Preserving is safe because eligibility
@@ -9475,6 +9656,7 @@ export function consumePromptedGeneration(
     handoffKind,
     handoffEpisode,
     handoffKind,
+    decision,
     input.now,
     input.noteKey,
     input.generation,

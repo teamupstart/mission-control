@@ -52,6 +52,7 @@ import type {
   WorkflowLlmCallPage,
   WorkflowExportEnvelope,
   WorkflowStatus,
+  TestEvidenceAuditAggregate,
   WorkflowSubmission,
   WorkflowSummary,
   WorkflowValidationResult,
@@ -105,6 +106,10 @@ import {
   createReviewScheduler,
   type ReviewScheduler,
 } from "../llm/review-scheduler.ts";
+import {
+  TEST_EVIDENCE_AUDIT_SCAN_LIMIT,
+  aggregateTestEvidenceAudit,
+} from "./test-evidence-audit.ts";
 import type { CheckRunDeps, CheckScheduler } from "./checks.ts";
 import type { CheckAttemptRef } from "./check-runtime.ts";
 import {
@@ -929,6 +934,21 @@ export class WorkflowManager {
 
   llmCalls(runId: string, after: string | null, limit: number): WorkflowLlmCallPage | null {
     return this.store.getRun(runId) ? this.store.listLlmCallPage(runId, after, limit) : null;
+  }
+
+  /**
+   * What the built-in Test Evidence Auditor's own telemetry adds up to, fleet-wide.
+   *
+   * Advisory and read-only. It reads events the engine already appended; it never re-runs a
+   * Persona, never rewrites a verdict, and holds no state of its own, so a caller polling it
+   * cannot perturb a run.
+   */
+  testEvidenceAudit(limit = TEST_EVIDENCE_AUDIT_SCAN_LIMIT): TestEvidenceAuditAggregate {
+    const window = this.store.listEventsOfKind("test_evidence_audit", limit);
+    return aggregateTestEvidenceAudit(window.rows, {
+      scanLimit: limit,
+      truncated: window.truncated,
+    });
   }
 
   status(): WorkflowStatus {

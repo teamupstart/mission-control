@@ -523,7 +523,12 @@ test("a changed-file chat retires before verification or shipping", async () => 
     port: stub.port,
     claudeBin: fake.bin,
     claudeLog: fake.log,
-    ms: 5_000,
+    // A CEILING, not a wait: `runWorker` returns the moment `until` flips, so this only
+    // decides how long a machine is given before the case calls the retirement lost. Five
+    // seconds was the smallest budget in this file - every sibling allows 9 to 30 - and it
+    // had to cover spawning a tsx worker plus the 1000ms settle gate above, which a loaded
+    // full-suite run exceeded. Brought in line with the others.
+    ms: 20_000,
     until: () => retired,
   });
   await stub.close();

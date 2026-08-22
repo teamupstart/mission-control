@@ -18288,6 +18288,18 @@ select.foreman-model-input {
 .wf-settings-readout .sc-health-row + .sc-health-row {
   margin-top: 6px;
 }
+/* The caption on a readout block, for the readiness card's three of them. Without one, three
+   bordered blocks of rows leave a reader to work out from the row wording which population
+   each block is over - and the three populations there (attempts, failing attempts, first
+   submissions) are exactly what must not be guessed at. */
+.wf-evidence-caption {
+  margin: 0 0 8px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
 /* A card body is a flex column, so a bare button in one stretches edge to edge and reads as
    the panel's primary action rather than as this card's Save. */
 .wf-settings-apply {

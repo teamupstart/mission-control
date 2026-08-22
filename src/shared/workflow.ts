@@ -3691,6 +3691,121 @@ export interface WorkflowStatus {
   orphanedEvidenceImages: number;
 }
 
+/**
+ * Why a built-in Test Evidence Auditor attempt asked for changes.
+ *
+ * A durable enum, not a display string: it is written into every `test_evidence_audit`
+ * workflow event and read back months later by the aggregate below, so a rename here
+ * silently reclassifies history. Add a member rather than re-spelling one.
+ */
+export type TestEvidenceRequestCategory =
+  | "visual_artifact"
+  | "focused_execution"
+  | "downstream_proof"
+  | "other";
+
+/** Every category, in the order the readiness panel lists them. */
+export const TEST_EVIDENCE_REQUEST_CATEGORIES = [
+  "visual_artifact",
+  "focused_execution",
+  "downstream_proof",
+  "other",
+] as const satisfies readonly TestEvidenceRequestCategory[];
+
+/**
+ * A share, carried with the population it was taken over.
+ *
+ * `rate` is null when `total` is zero rather than 0, because "no auditor attempt has been
+ * recorded" and "every attempt passed" are the two readings this telemetry exists to tell
+ * apart, and a bare `0` renders identically for both. The panel draws null as "no reading".
+ * Never pre-rounded: the caller decides how many digits its surface can honestly show.
+ */
+export interface TestEvidenceAuditRate {
+  count: number;
+  total: number;
+  rate: number | null;
+}
+
+/** One rejection reason's share of the failing attempts in the window. */
+export interface TestEvidenceAuditCategoryShare {
+  category: TestEvidenceRequestCategory;
+  /** Failing attempts citing this category, over all failing attempts. Categories overlap. */
+  failures: TestEvidenceAuditRate;
+}
+
+/**
+ * One guidance-revision slice, which is the whole reason the identity fields exist.
+ *
+ * The scout report's rollout criterion is a before/after comparison across guidance
+ * revisions ("compare the next 30 runs"), and an aggregate that only reports one fleet-wide
+ * number cannot answer it. `guidanceDigest` is a short content hash of the immutable Persona
+ * guidance the attempt actually ran with - identity, never prose - so two revisions of the
+ * same Persona separate here without any guidance text entering the event.
+ *
+ * Every field is nullable because events appended before those identifiers existed are still
+ * counted; they collect in one slice whose identity is unknown rather than being dropped.
+ */
+export interface TestEvidenceAuditSlice {
+  workflowId: string | null;
+  workflowVersion: number | null;
+  personaId: string | null;
+  personaRevision: number | null;
+  guidanceDigest: string | null;
+  attempts: number;
+  /** Passing first submissions over all first submissions in this slice. */
+  firstSubmissionAccepted: TestEvidenceAuditRate;
+  /** Failing attempts over all attempts in this slice. */
+  attemptFailures: TestEvidenceAuditRate;
+}
+
+/** Evidence-readiness adoption, all measured over FIRST submissions (round 1, segment 0). */
+export interface TestEvidenceAuditReadiness {
+  withoutImages: TestEvidenceAuditRate;
+  withoutTextArtifacts: TestEvidenceAuditRate;
+  withoutChecks: TestEvidenceAuditRate;
+  transcriptTruncated: TestEvidenceAuditRate;
+  /** Total bytes upstream Check retention dropped across first submissions. */
+  checkOmittedBytes: number;
+  /** Total transcript head bytes dropped across first submissions. */
+  transcriptOmittedHeadBytes: number;
+}
+
+/**
+ * What the `test_evidence_audit` events add up to, for the built-in Test Evidence Auditor.
+ *
+ * Advisory telemetry over already-written events. Nothing here re-runs, re-judges or
+ * rewrites a Persona verdict, and no operator or session content reaches it - only the
+ * bounded counts and durable enums the event itself carries.
+ */
+export interface TestEvidenceAuditAggregate {
+  /** Auditor attempts in the window. */
+  attempts: number;
+  /** Distinct runs those attempts belong to - the denominator of `attemptsPerRun`. */
+  runs: number;
+  /** The report's "at most 1.5 attempts per run" target, or null with no attempts. */
+  attemptsPerRun: number | null;
+  /** Events in the window whose payload could not be read back. Counted, never guessed at. */
+  malformed: number;
+  /** True when older events fell outside the scan cap below, so the window is partial. */
+  truncated: boolean;
+  /** The newest-first cap the window was taken with. */
+  scanLimit: number;
+  oldestAt: number | null;
+  newestAt: number | null;
+  /** The report's headline: passing first submissions over all first submissions. */
+  firstSubmissionAccepted: TestEvidenceAuditRate;
+  /** Failing attempts over all attempts. */
+  attemptFailures: TestEvidenceAuditRate;
+  rejectionCategories: TestEvidenceAuditCategoryShare[];
+  readiness: TestEvidenceAuditReadiness;
+  /** Attempts that asked for later-stage proof the original intent never named. */
+  possibleOverreach: TestEvidenceAuditRate;
+  /** Busiest slices first. */
+  slices: TestEvidenceAuditSlice[];
+  /** Slices past the cap. Reported rather than silently truncated. */
+  slicesOmitted: number;
+}
+
 export interface WorkflowExportEnvelope<T> {
   schemaVersion: 1;
   exportedAt: number;

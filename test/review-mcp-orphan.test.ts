@@ -73,13 +73,23 @@ async function captureRequestInput(
 
   try {
     const port = await listen(daemon);
-    const childEnv = {
+    const childEnv: Record<string, string | undefined> = {
       ...process.env,
       ...identityEnv,
       MISSION_HOME: missionHome,
       MISSION_PORT: String(port),
     };
     if (!identityEnv.MISSION_SESSION_ID) delete childEnv.MISSION_SESSION_ID;
+    // Every terminal-identity variable this case does not SET is removed, not inherited.
+    // `captureTerminalEnv()` reads all three out of its own process, so a suite run from
+    // inside WezTerm or tmux handed the child a `TERM_PROGRAM` (or a real pane id) nobody
+    // asked for, and the exact-equality assertions below then compared what the test set
+    // against what the operator's terminal happened to be. This case failed exactly that
+    // way on a WezTerm runner while passing everywhere TERM_PROGRAM is unset. The child
+    // now carries the identity this test states and nothing else.
+    for (const name of ["TMUX_PANE", "WEZTERM_PANE", "TERM_PROGRAM"]) {
+      if (!(name in identityEnv)) delete childEnv[name];
+    }
     transport = new StdioClientTransport({
       command: process.execPath,
       args: [

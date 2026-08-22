@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { WorkflowConfig, WorkflowStatus } from "@shared/workflow.ts";
+import type {
+  TestEvidenceAuditAggregate,
+  WorkflowConfig,
+  WorkflowStatus,
+} from "@shared/workflow.ts";
 import { workflowRequest } from "./workflows/workflowApi.ts";
 
 // The Workflow subsystem's config plus its health counters, for the Workflows settings
@@ -21,6 +25,15 @@ export interface WorkflowSettingsState {
   /** Health counters, or null when the manager is unavailable or has not answered yet. */
   status: WorkflowStatus | null;
   /**
+   * The Test Evidence Auditor's own telemetry, aggregated, or null when unread.
+   *
+   * Read on the same tick as the two above and treated exactly as they are: a failed read
+   * is "unknown" and REPLACES the last good reading, because a readiness panel presenting a
+   * stale first-pass rate as current is the failure the null handling below exists to
+   * prevent. Never raced by a write - nothing on this panel writes it.
+   */
+  testEvidenceAudit: TestEvidenceAuditAggregate | null;
+  /**
    * Write the whole config, resolving to whether the daemon accepted it. The route is a
    * PUT of the complete blob (not a patch), so callers spread the config they were handed.
    */
@@ -37,6 +50,7 @@ function why(caught: unknown, fallback: string): string {
 export interface WorkflowPollReads {
   config: WorkflowConfig | null;
   status: WorkflowStatus | null;
+  testEvidenceAudit: TestEvidenceAuditAggregate | null;
 }
 
 /**
@@ -67,6 +81,7 @@ export function applyWorkflowPoll(
   return {
     config: racedByWrite ? displayedConfig : reads.config,
     status: reads.status,
+    testEvidenceAudit: reads.testEvidenceAudit,
   };
 }
 
@@ -129,6 +144,9 @@ export function pollIsLatest(id: number, lastApplied: number): boolean {
 export function useWorkflowSettings(): WorkflowSettingsState {
   const [config, setConfigState] = useState<WorkflowConfig | null>(null);
   const [status, setStatus] = useState<WorkflowStatus | null>(null);
+  const [testEvidenceAudit, setTestEvidenceAudit] = useState<TestEvidenceAuditAggregate | null>(
+    null,
+  );
   const [error, setError] = useState<string | null>(null);
   const configRef = useRef<WorkflowConfig | null>(null);
   /**
@@ -159,12 +177,14 @@ export function useWorkflowSettings(): WorkflowSettingsState {
     const tick = async (): Promise<void> => {
       const id = ++pollsStarted.current;
       const before = readClock();
-      const [config, status] = await Promise.all([
+      const [config, status, testEvidenceAudit] = await Promise.all([
         // A refusal is not thrown at the operator: it becomes a null reading, which is what
         // every "the daemon has not said" affordance in the panel is keyed on. 503 while the
         // manager is starting is the ordinary case, and the next tick asks again.
         workflowRequest<WorkflowConfig>("/api/workflows/config").catch(() => null),
         workflowRequest<WorkflowStatus>("/api/workflows/status").catch(() => null),
+        workflowRequest<TestEvidenceAuditAggregate>("/api/workflows/test-evidence-audit")
+          .catch(() => null),
       ]);
       if (!alive) return;
       // A poll that has been overtaken is dropped whole - both readings, not just the
@@ -174,11 +194,12 @@ export function useWorkflowSettings(): WorkflowSettingsState {
       // The second clock reading sits directly after the await with nothing between them,
       // so no write can slip in unseen between the reads landing and being judged.
       const next = applyWorkflowPoll(
-        { config, status },
+        { config, status, testEvidenceAudit },
         pollRacedByWrite(before, readClock()),
         configRef.current,
       );
       setStatus(next.status);
+      setTestEvidenceAudit(next.testEvidenceAudit);
       setConfig(next.config);
     };
     void tick();
@@ -227,5 +248,5 @@ export function useWorkflowSettings(): WorkflowSettingsState {
     [setConfig],
   );
 
-  return { config, status, update, error };
+  return { config, status, testEvidenceAudit, update, error };
 }

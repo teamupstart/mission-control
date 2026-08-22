@@ -1075,6 +1075,7 @@ export class WorkflowEngine {
       verdict,
       checkEvidence: claimed.checkEvidence ?? [],
       operatorDirective: claimed.operatorDirective?.feedback ?? null,
+      version,
     });
     if (evidenceAudit) {
       this.store.appendEvent(run.id, "test_evidence_audit", jsonValue(evidenceAudit), this.now());

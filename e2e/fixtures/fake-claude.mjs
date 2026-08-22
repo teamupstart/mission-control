@@ -401,6 +401,31 @@ function headlessAnswer(prompt) {
       confidence: 0.9,
     });
   }
+  /*
+   * The BUILT-IN Test Evidence Auditor, which cannot be steered the usual way.
+   *
+   * Every other reviewer in this suite is answered by a marker a spec planted in the Persona
+   * it created. That is impossible for this one: it is the shipped built-in, `personas.update`
+   * refuses a builtin, and its NAME is what makes the engine treat an attempt as an auditor
+   * attempt and append the `test_evidence_audit` telemetry - so a spec measuring that telemetry
+   * has to run this exact Persona and no copy of it. It is recognised by a distinctive line of
+   * its own published guidance instead, and answered with a fixed, schema-valid refusal that
+   * asks for the missing artifact the scout report found most often: rendered pixels.
+   */
+  if (prompt.includes("Asks whether the submitted work has been shown to do what was asked")) {
+    return JSON.stringify({
+      verdict: "fail",
+      summary: "Deterministic e2e evidence objection",
+      requestedChanges: [
+        {
+          title: "Attach a screenshot of the rendered result",
+          rationale: "Nothing in this submission shows the rendered pixels a person would see.",
+          evidence: [{ kind: "goal", quote: "deterministic e2e evidence" }],
+        },
+      ],
+      confidence: 0.9,
+    });
+  }
   if (prompt.includes("E2E_FAIL_VERDICT")) {
     return JSON.stringify({
       verdict: "fail",

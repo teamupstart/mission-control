@@ -245,7 +245,18 @@ test("concurrent acquires receive different exact slots and respect capacity", a
     acquire(m, clone, sha, "task-3"),
   ]);
   const acquired = results.filter((result) => result.outcome === "acquired");
-  assert.equal(acquired.length, 2);
+  // The refusals are named in the message, not just counted. This case failed once under a
+  // loaded full-suite run with a bare `1 !== 2`, which says nothing about WHY a second slot
+  // was not handed out - a genuine capacity refusal, a quarantined slot and a git subprocess
+  // that fell over under load are three different bugs and that assertion could not tell
+  // them apart. The assertion itself is unchanged; only its diagnosis is.
+  assert.equal(
+    acquired.length,
+    2,
+    `expected two of three concurrent acquires to win a slot, got: ${JSON.stringify(
+      results.map((result) => (result.outcome === "acquired" ? "acquired" : [result.outcome, result.reason])),
+    )}`,
+  );
   assert.equal(new Set(acquired.map((result) => result.lease.path)).size, 2);
   assert.equal(results.filter((result) => result.outcome === "notAcquired").length, 1);
   for (const result of acquired) {
@@ -494,9 +505,15 @@ test(
           },
         );
       });
+    // The budget is generous on purpose, and it cannot make a blocked operation look
+    // unblocked: the slow fetch is held open until `finishSlowFetch()` below, so anything
+    // genuinely waiting on it waits forever regardless of the number here. What the number
+    // has to survive is the OTHER direction - a real git subprocess on a loaded machine
+    // taking longer than the deadline and reporting a serialized pool that is not. At one
+    // second this case failed exactly that way during a full-suite run.
     const [acquireProgressed, releaseProgressed] = await Promise.all([
-      settlesBefore(thirdAcquire, 1_000),
-      settlesBefore(secondRelease, 1_000),
+      settlesBefore(thirdAcquire, 15_000),
+      settlesBefore(secondRelease, 15_000),
     ]);
     finishSlowFetch();
 

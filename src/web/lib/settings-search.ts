@@ -329,6 +329,19 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     kind: "jump",
   },
   {
+    id: "workflow-test-evidence",
+    label: "Test evidence readiness",
+    description:
+      "First-pass acceptance, rejection reasons and evidence adoption for the Test Evidence Auditor.",
+    category: "workflows",
+    anchor: "workflows/test-evidence",
+    keywords: [
+      "test evidence", "auditor", "readiness", "rejection", "first pass", "screenshot",
+      "artifact", "evidence", "overreach", "telemetry",
+    ],
+    kind: "jump",
+  },
+  {
     id: "workflow-checks",
     label: "Allow workflow Commands",
     description: "Whether a Command node may run its configured argv, executing branch-authored code.",

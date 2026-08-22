@@ -236,7 +236,12 @@ test("SIGTERM to the group reaches a grandchild, and emptiness waits for it", as
       command: ["sh", "-c", 'sleep 30 & echo $! > "$1"; wait', "sh", pidFile],
       leasePath: dir,
       workingSubpath: "",
-      timeoutMs: 700,
+      // Long enough that `sh` has certainly spawned and written the pid file before the
+      // timeout tears the group down. The grandchild sleeps for 30 seconds, so every
+      // assertion below is unchanged by a longer budget - but at 700ms a loaded machine
+      // reached the timeout before the pid file existed and the case died on ENOENT
+      // reading it, which is a measurement of scheduler latency and not of teardown.
+      timeoutMs: 5_000,
     },
     { registry, daemonToken: "" },
   );

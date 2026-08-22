@@ -1459,6 +1459,11 @@ export function openDb(): DatabaseSync {
     );
     CREATE INDEX IF NOT EXISTS idx_workflow_events_run
       ON workflow_events(run_id, id);
+    -- The fleet-wide read: the newest events OF ONE KIND, across every run. The run index
+    -- above cannot serve it - it is ordered by run first - so the test_evidence_audit
+    -- aggregate would otherwise scan the busiest table this subsystem writes on every poll.
+    CREATE INDEX IF NOT EXISTS idx_workflow_events_kind
+      ON workflow_events(event_kind, id);
 
     -- One external orchestrator's durable claim on exactly one Workflow binding.
     --

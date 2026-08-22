@@ -933,10 +933,18 @@ and nothing is withheld:
 
 - the agent received the complete composed prompt, exactly as it always did;
 - the harness's own transcript file still holds that turn in full, byte for byte;
-- every server-side reader still sees the full text - Goal derivation, Foreman triage,
-  Workflow evidence, the Scout archive, review windows, and retro worthiness;
+- every server-side reader still sees the full text - Foreman triage, Workflow evidence,
+  the Scout archive, review windows, and retro worthiness;
 - `GET /api/sessions/:id/transcript` serves the full turn, so an export or an audit is
   unaffected.
+
+[Goal](#goal) is the one reader that treats the launch as a single event rather than as text
+to read twice. A managed launch reaches it by two doors - the driver acknowledging your
+request, and the harness prompt hook reporting the composed prompt that was built from it -
+and it counts whichever arrives first. On a dispatch that is the driver, so your request is
+what enters the reconciliation queue and the platform's own contract sections do not arrive
+behind it as though you had amended yourself. The refiner's conversation window still reads
+the transcript, so nothing about the turn is hidden from the model that derives the sentence.
 
 The substitution is a display projection, applied in the browser and applied once, so the
 Chat rendering, the Terminal rendering,
@@ -1226,6 +1234,31 @@ the agent accepts it, the instruction leaves the outbox, enters the reconciliati
 can update the session detail's tactical focus immediately. Agent SDK delivery records that boundary
 directly from the driver's acknowledgement; terminal delivery observes it through the
 harness's prompt hook.
+
+**A dispatched launch is counted once, not twice.** Those two doors both open on an Agent
+SDK dispatch: the driver acknowledges your task request, and then the composed prompt built
+from it - your request plus the platform context that
+[dispatching an agent](dispatch-and-backlog.md) itemizes - is delivered and reported back by
+the prompt hook. The second arrival is recognized as that same launch returning, and is not
+queued again. Without that rule it read as a fresh instruction amending the first, the
+amendment could not retain the objective as its prefix because most of it was text you never
+wrote, and the session was left with a permanently unresolved relationship - which pauses
+prompted automatic wrap-up for good, so a dispatched task would go idle and never reach the
+Workflow it was bound to.
+
+Which door counts is whichever one arrives first, not the driver by definition. Recognition
+suppresses an arrival only once a revision already exists, so the first delivery is always
+the one that enters the queue. On a dispatch that is the driver's, because the bind arrives
+on its init frame and the prompt hook cannot fire until the agent already has the prompt. If
+that order ever inverted, the composed prompt would establish the objective and your request
+would follow it as a second revision - not the outcome above, but a narrower ask against a
+broader objective, which is the ordinary steering case the reconciler is built to read. The
+fallback is always to capture rather than to discard: a prompt that cannot be recognized as
+the launch is queued.
+
+A launch that has no driver door, such as a terminal paste, is unaffected for the same
+reason: its hook delivery is the first arrival and so is the capture, and a redelivery of the
+identical prompt is recognized as the same launch rather than counted again.
 
 Each reconciliation records one of five relationships:
 

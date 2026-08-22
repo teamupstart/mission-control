@@ -39,7 +39,7 @@ const {
   moveSessionLaunchTurn,
   pruneSessionLaunchTurns,
 } = await import("../src/server/db.ts");
-const { launchTextFingerprint, launchPresentationFor } = await import(
+const { launchTextFingerprint, launchEchoFingerprint, launchPresentationFor } = await import(
   "../src/server/launch-presentation.ts"
 );
 const { attributeTranscript } = await import("../src/server/transcript-attribution.ts");
@@ -87,6 +87,7 @@ function mkMarker(
   return {
     noteKey,
     fingerprint: launchTextFingerprint(over.prompt ?? COMPOSED),
+    echoFingerprint: launchEchoFingerprint(over.prompt ?? COMPOSED),
     displayText: over.displayText === undefined ? HUMAN : over.displayText,
     messageId: over.messageId === undefined ? null : over.messageId,
     createdAt: 100,
@@ -238,6 +239,7 @@ test("marker rows round-trip, replace, and delete", () => {
   assert.deepEqual(getSessionLaunchTurn(k), {
     noteKey: k,
     fingerprint: "beef",
+    echoFingerprint: marker.echoFingerprint,
     displayText: "later",
     messageId: null,
     createdAt: 100,
@@ -1016,4 +1018,189 @@ test("the anchor survives the initial bind, so a bound conversation stays projec
 
   assert.equal(registry.launchTurnFor(d.syntheticId)?.messageId, "turn-one");
   assert.equal(getSessionLaunchTurn(native)?.messageId, "turn-one");
+});
+
+// ---- the launch echo, and the completion deadlock it used to cause ----
+//
+// A managed launch reaches the Goal pipeline through two doors that cannot see each other:
+// the supervisor captures the operator's own request when the conversation binds, and the
+// composed prompt built from that request is then delivered to the agent, whose prompt hook
+// reports it back. Both look like accepted human instructions, so both opened a revision.
+//
+// The second one is not a cosmetic duplicate. `refine` has to reconcile it against the
+// first, reads the platform's contract sections as an `amend` that does not preserve the
+// objective, and parks the revision unresolved with `relationship: "unclear"` - permanently,
+// because the retry key is set and nothing clears it. `resolvedSessionIntent` then returns
+// null for the rest of the session's life, and Foreman's prompted wrap-up skips it at "the
+// latest instruction has unresolved intent" on every tick, so a dispatched ship task never
+// reaches the Workflow it was bound to and simply sits idle.
+
+/** Bind a native conversation so the marker, the goal and the hook share one note key. */
+function boundSession(
+  registry: InstanceType<typeof Registry>,
+): { id: string; noteKey: string; cwd: string } {
+  const d = mkDiscovered();
+  const cwd = d.cwd!;
+  registry.applyDiscovery([d]);
+  const native = `agent-echo-${seq}`;
+  registry.applyHook({
+    agent: "claude",
+    event: "SessionStart",
+    sessionId: native,
+    cwd,
+    transcriptPath: null,
+    env: { tmuxPane: (d.terminals[0] as { paneId: string }).paneId },
+  });
+  return { id: d.syntheticId, noteKey: native, cwd };
+}
+
+function submitPrompt(
+  registry: InstanceType<typeof Registry>,
+  noteKey: string,
+  cwd: string,
+  prompt: string,
+): void {
+  registry.applyHook({
+    agent: "claude",
+    event: "UserPromptSubmit",
+    sessionId: noteKey,
+    cwd,
+    transcriptPath: null,
+    prompt,
+    env: {},
+  });
+}
+
+test("a launch already seeded into the Goal does not open a second revision from its hook echo", () => {
+  const registry = new Registry();
+  const { id, noteKey, cwd } = boundSession(registry);
+
+  // The supervisor's door: the operator's own words, captured when the conversation bound.
+  registry.recordLaunchTurn(id, COMPOSED, HUMAN);
+  registry.captureAcceptedPrompt(id, HUMAN, noteKey);
+  assert.equal(registry.getGoal(id)?.promptRevision, 1);
+
+  // The agent's door: the SAME launch, whitespace-collapsed by `substantivePrompt`.
+  submitPrompt(registry, noteKey, cwd, COMPOSED);
+
+  const goal = registry.getGoal(id);
+  assert.equal(goal?.promptRevision, 1, "the launch echo must not open a second revision");
+  assert.equal(goal?.pendingPrompts.length, 1, "and must not queue a second reconciliation");
+  assert.equal(goal?.pendingPrompts[0]?.prompt, HUMAN);
+});
+
+test("the echo guard needs a seeded Goal, so a hook-only launch still captures one", () => {
+  // Terminal and Pi launches have no supervisor door - the hook IS the only capture. A
+  // guard keyed on the fingerprint alone would leave those sessions with no Goal at all.
+  const registry = new Registry();
+  const { id, noteKey, cwd } = boundSession(registry);
+  registry.recordLaunchTurn(id, COMPOSED, HUMAN);
+
+  submitPrompt(registry, noteKey, cwd, COMPOSED);
+
+  assert.equal(registry.getGoal(id)?.promptRevision, 1, "the first delivery must still land");
+
+  // Only the duplicate is refused - which also absorbs the identical turn `deliverIntent`
+  // writes when it retries an unacknowledged paste.
+  submitPrompt(registry, noteKey, cwd, COMPOSED);
+  assert.equal(registry.getGoal(id)?.promptRevision, 1, "a retried paste is not a new ask");
+});
+
+test("the inverted ordering falls back to capturing, and lands in the reconciler's easy direction", () => {
+  // The guard needs a revision to already exist, so which door counts is WHICHEVER ARRIVES
+  // FIRST rather than the supervisor by definition. On a dispatch that is the supervisor -
+  // the bind rides the driver's init frame and the hook cannot fire until the agent holds
+  // the prompt - but the fallback is documented in docs/sessions.md as a guarantee, so it is
+  // pinned here rather than left to the ordering holding forever.
+  //
+  // What matters is the DIRECTION of the failure. Inverted, the composed prompt establishes
+  // the objective and the operator's request follows as revision two: still two revisions,
+  // but a narrower ask against a broader objective, which is the ordinary `steer` the
+  // reconciler reads - not the `amend` that could not keep the objective as its prefix and
+  // wedged the session. Nothing is discarded either way.
+  const registry = new Registry();
+  const { id, noteKey, cwd } = boundSession(registry);
+  registry.recordLaunchTurn(id, COMPOSED, HUMAN);
+
+  // The hook's own text, which reaches the Registry already whitespace-collapsed.
+  const echoed = COMPOSED.replace(/\s+/g, " ").trim();
+
+  submitPrompt(registry, noteKey, cwd, COMPOSED);
+  assert.equal(registry.getGoal(id)?.promptRevision, 1, "an unseeded hook echo is the capture");
+  assert.equal(registry.getGoal(id)?.objective, echoed);
+
+  registry.captureAcceptedPrompt(id, HUMAN, noteKey);
+
+  const goal = registry.getGoal(id);
+  assert.equal(goal?.promptRevision, 2, "the late supervisor prompt is queued, never dropped");
+  assert.equal(goal?.pendingPrompts.at(-1)?.prompt, HUMAN);
+  assert.equal(goal?.objective, echoed, "and the first arrival keeps the objective");
+});
+
+test("a real instruction after the launch still opens its own revision", () => {
+  const registry = new Registry();
+  const { id, noteKey, cwd } = boundSession(registry);
+  registry.recordLaunchTurn(id, COMPOSED, HUMAN);
+  registry.captureAcceptedPrompt(id, HUMAN, noteKey);
+
+  submitPrompt(registry, noteKey, cwd, COMPOSED);
+  submitPrompt(registry, noteKey, cwd, "also rename the helper");
+
+  const goal = registry.getGoal(id);
+  assert.equal(goal?.promptRevision, 2, "the human's next ask is not the launch");
+  assert.equal(goal?.pendingPrompts.at(-1)?.prompt, "also rename the helper");
+});
+
+test("a marker written before the echo fingerprint existed degrades to capturing", () => {
+  // No backfill is possible - the composed prompt is deliberately never stored, so the value
+  // cannot be recomputed for an existing row and a guessed one would suppress a real
+  // instruction. An upgraded database must therefore fall back to the duplicate that shipped
+  // without the column rather than to silence.
+  //
+  // The null has to arrive through the LOAD, not through a mutation of a live marker: it is
+  // the boot path that an upgraded install actually takes, and it is the one that would
+  // regress if `rowToLaunchTurn` ever started defaulting the column instead of carrying it.
+  const legacyKey = key("legacy-echo");
+  upsertSessionLaunchTurn({ ...mkMarker(legacyKey), echoFingerprint: null });
+
+  const registry = new Registry();
+  assert.equal(registry.launchTurnFor(legacyKey), null, "not a session yet, just a row");
+  const d = mkDiscovered();
+  const cwd = d.cwd!;
+  registry.applyDiscovery([d]);
+  registry.applyHook({
+    agent: "claude",
+    event: "SessionStart",
+    sessionId: legacyKey,
+    cwd,
+    transcriptPath: null,
+    env: { tmuxPane: (d.terminals[0] as { paneId: string }).paneId },
+  });
+  assert.equal(registry.launchTurnFor(d.syntheticId)?.echoFingerprint, null, "loaded as null");
+
+  registry.captureAcceptedPrompt(d.syntheticId, HUMAN, legacyKey);
+  submitPrompt(registry, legacyKey, cwd, COMPOSED);
+
+  assert.equal(
+    registry.getGoal(d.syntheticId)?.promptRevision,
+    2,
+    "an unrecognizable echo captures rather than disappearing",
+  );
+});
+
+test("launchEchoFingerprint matches across the whitespace collapse, and only that", () => {
+  // What the hook does to a prompt: `substantivePrompt` flattens every whitespace run to a
+  // single space, so a launch composed with `\n\n` between its sections arrives as one line.
+  assert.equal(
+    launchEchoFingerprint(COMPOSED),
+    launchEchoFingerprint(COMPOSED.replace(/\s+/g, " ")),
+  );
+  assert.notEqual(
+    launchTextFingerprint(COMPOSED),
+    launchTextFingerprint(COMPOSED.replace(/\s+/g, " ")),
+    "the byte-exact fingerprint is why a second one was needed",
+  );
+  // Still a fingerprint, not a similarity score: text the launch merely resembles must miss.
+  assert.notEqual(launchEchoFingerprint(COMPOSED), launchEchoFingerprint(`${COMPOSED} and more`));
+  assert.notEqual(launchEchoFingerprint(HUMAN), launchEchoFingerprint(COMPOSED));
 });

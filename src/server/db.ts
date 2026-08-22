@@ -67,6 +67,7 @@ import {
   PROMPTED_DECISION_GAP_ID_MAX,
   PROMPTED_DECISION_GAP_PATH_MAX,
   PROMPTED_DECISION_SUMMARY_MAX,
+  PromptedCompletionDispositionSchema,
   type PromptedCompletionDisposition,
 } from "@shared/protocol.ts";
 import { readPersistedEnum } from "@shared/schedules.ts";
@@ -9250,10 +9251,24 @@ function toQueueRow(r: QueueRow): Omit<SessionQueue, "items"> {
  *   a context clear selects a different row entirely;
  * - a `generation` that is not the row's current consumed generation, which is the whole
  *   invariant: a decision is about the generation the queue says was spent, or it is
- *   about nothing.
+ *   about nothing;
+ * - a reason that does not satisfy `PromptedCompletionDispositionSchema` - most sharply, a
+ *   non-`held` outcome carrying gaps. Only a verifier verdict produces gaps, so gaps on a
+ *   `retired` or `empty` consumption are feedback no model ever wrote, and Phase 2 reads
+ *   exactly this field to decide what to send back to an agent.
  *
- * The bounds are re-applied on READ as well as on write, because the write bound only ever
- * held for payloads this build wrote.
+ * That last check runs the WRITE schema over the stored payload rather than restating its
+ * rules here. A reader with its own idea of what a decision may contain is a second
+ * contract that drifts from the first, and it drifts in the one direction that matters:
+ * accepting what the writer would have refused. Silently normalizing instead - dropping a
+ * malformed gap, or clearing gaps the outcome may not carry - is worse than refusing,
+ * because it manufactures a decision that is well-formed, actionable, and not what the row
+ * says.
+ *
+ * Bounds are the deliberate exception, clamped rather than refused: an over-long summary
+ * from a build with a larger bound is the same decision, described at greater length, and
+ * the write bound only ever held for payloads this build wrote. The rule is that LENGTH is
+ * clamped and CONTRADICTION is refused.
  */
 function toPromptedDecision(r: QueueRow): PromptedCompletionDecision | null {
   const raw = r.prompted_decision;
@@ -9284,25 +9299,36 @@ function toPromptedDecision(r: QueueRow): PromptedCompletionDecision | null {
   if (typeof d.decidedAt !== "number" || !Number.isFinite(d.decidedAt)) {
     return reject("missing decision time");
   }
-  const gaps = Array.isArray(d.gaps) ? d.gaps : [];
-  const summary = typeof d.summary === "string" ? d.summary : "";
+  // Clamp first, then validate: a length this build would not have written is trimmed to
+  // one it would, and everything the schema still refuses after that is a contradiction
+  // rather than an overflow. Non-strings are passed through untouched for the schema to
+  // reject - coercing them here is the silent normalization this reader exists to avoid.
+  const clamp = (value: unknown, max: number): unknown =>
+    typeof value === "string" ? value.slice(0, max) : value;
+  const clampGap = (gap: unknown): unknown => {
+    if (!gap || typeof gap !== "object" || Array.isArray(gap)) return gap;
+    const g = gap as Record<string, unknown>;
+    return {
+      ...g,
+      id: clamp(g.id, PROMPTED_DECISION_GAP_ID_MAX),
+      path: clamp(g.path, PROMPTED_DECISION_GAP_PATH_MAX),
+      detail: clamp(g.detail, PROMPTED_DECISION_GAP_DETAIL_MAX),
+    };
+  };
+  const reason = PromptedCompletionDispositionSchema.safeParse({
+    outcome: d.outcome,
+    summary: clamp(d.summary, PROMPTED_DECISION_SUMMARY_MAX),
+    gaps: Array.isArray(d.gaps) ? d.gaps.slice(0, PROMPTED_DECISION_GAPS_MAX).map(clampGap) : d.gaps,
+  });
+  if (!reason.success) {
+    return reject(`invalid reason: ${reason.error.issues[0]?.message ?? "unreadable"}`);
+  }
   return {
     logicalKey: r.note_key,
     generation: d.generation,
-    outcome: d.outcome,
-    summary: summary.slice(0, PROMPTED_DECISION_SUMMARY_MAX),
-    gaps: gaps
-      .filter((g): g is Record<string, unknown> => Boolean(g) && typeof g === "object")
-      .flatMap((g) =>
-        typeof g.id === "string" && g.id && typeof g.detail === "string" && g.detail
-          ? [{
-            id: g.id.slice(0, PROMPTED_DECISION_GAP_ID_MAX),
-            path: (typeof g.path === "string" ? g.path : "").slice(0, PROMPTED_DECISION_GAP_PATH_MAX),
-            detail: g.detail.slice(0, PROMPTED_DECISION_GAP_DETAIL_MAX),
-          }]
-          : []
-      )
-      .slice(0, PROMPTED_DECISION_GAPS_MAX),
+    outcome: reason.data.outcome,
+    summary: reason.data.summary,
+    gaps: reason.data.gaps,
     decidedAt: d.decidedAt,
   };
 }

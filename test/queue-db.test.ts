@@ -1188,6 +1188,21 @@ test("unreadable prompted decision state reads as absent, and never as fresh wor
     ["another key's decision", JSON.stringify({ logicalKey: "somewhere-else", generation: 1, outcome: "held", summary: "", gaps: [], decidedAt: 1 })],
     ["a generation that was never consumed", JSON.stringify({ logicalKey: key, generation: 7, outcome: "held", summary: "", gaps: [], decidedAt: 1 })],
     ["no decision time", JSON.stringify({ logicalKey: key, generation: 1, outcome: "held", summary: "", gaps: [] })],
+    // Only a verifier verdict produces gaps. A `retired` or `empty` consumption carrying
+    // "blocking gaps" is feedback no model ever wrote, and Phase 2 reads exactly this
+    // field to decide what to send back to an agent - so it is refused rather than
+    // stripped. Stripping would leave a decision that is well-formed, actionable, and not
+    // what the row says.
+    ["gaps on a retired outcome", JSON.stringify({ logicalKey: key, generation: 1, outcome: "retired", summary: "", gaps: [{ id: "tests", path: "a.ts", detail: "no tests" }], decidedAt: 1 })],
+    ["gaps on an empty outcome", JSON.stringify({ logicalKey: key, generation: 1, outcome: "empty", summary: "", gaps: [{ id: "tests", path: "a.ts", detail: "no tests" }], decidedAt: 1 })],
+    // A malformed gap is refused whole, for the same reason: this build's writer cannot
+    // produce one, and dropping it would silently shorten a list a reader then trusts.
+    ["a gap that is not an object", JSON.stringify({ logicalKey: key, generation: 1, outcome: "held", summary: "", gaps: ["tests"], decidedAt: 1 })],
+    ["a gap with no id", JSON.stringify({ logicalKey: key, generation: 1, outcome: "held", summary: "", gaps: [{ path: "a.ts", detail: "no tests" }], decidedAt: 1 })],
+    ["a gap with an empty id", JSON.stringify({ logicalKey: key, generation: 1, outcome: "held", summary: "", gaps: [{ id: "", path: "a.ts", detail: "no tests" }], decidedAt: 1 })],
+    ["a gap with no detail", JSON.stringify({ logicalKey: key, generation: 1, outcome: "held", summary: "", gaps: [{ id: "tests", path: "a.ts" }], decidedAt: 1 })],
+    ["gaps that are not a list", JSON.stringify({ logicalKey: key, generation: 1, outcome: "held", summary: "", gaps: { id: "tests" }, decidedAt: 1 })],
+    ["a summary that is not text", JSON.stringify({ logicalKey: key, generation: 1, outcome: "held", summary: 7, gaps: [], decidedAt: 1 })],
   ];
   for (const [why, payload] of cases) {
     poison(payload);
@@ -1198,8 +1213,9 @@ test("unreadable prompted decision state reads as absent, and never as fresh wor
     assert.equal(row?.promptedConsumedGeneration, 1, `${why} must not re-arm the generation`);
   }
 
-  // Bounds are re-applied on READ, because a write bound only ever held for payloads this
-  // build wrote.
+  // Length is clamped where contradiction is refused, and that difference is deliberate:
+  // an over-long summary from a build with a larger bound is the same decision described
+  // at greater length, while gaps an outcome may not carry are a different decision.
   poison(JSON.stringify({
     logicalKey: key,
     generation: 1,
@@ -1212,6 +1228,27 @@ test("unreadable prompted decision state reads as absent, and never as fresh wor
   assert.equal(bounded?.summary.length, 2000);
   assert.equal(bounded?.gaps.length, 3);
   assert.equal(bounded?.gaps[0]?.detail.length, 600);
+  assert.equal(bounded?.gaps[0]?.id, "g0", "clamping must not reorder or invent gaps");
+
+  // A held decision with well-formed gaps is the one shape that DOES survive, so none of
+  // the refusals above are passing by refusing everything.
+  poison(JSON.stringify({
+    logicalKey: key,
+    generation: 1,
+    outcome: "held",
+    summary: "the pull request is still open",
+    gaps: [{ id: "tests", path: "src/a.ts", detail: "the new branch is untested" }],
+    decidedAt: 44,
+  }));
+  const readable = getQueueRow(key)?.promptedDecision;
+  assert.deepEqual(readable, {
+    logicalKey: key,
+    generation: 1,
+    outcome: "held",
+    summary: "the pull request is still open",
+    gaps: [{ id: "tests", path: "src/a.ts", detail: "the new branch is untested" }],
+    decidedAt: 44,
+  });
 
   // An ordinary row refresh re-serializes from the READ model, so it cannot launder an
   // unreadable payload back into storage.

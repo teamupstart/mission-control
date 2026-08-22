@@ -170,9 +170,14 @@ claim writes neither. It is current projection, replaced by the next generation,
 `foreman_episodes` remains the append-only history of what Foreman did.
 
 Reads fail closed. Unparseable JSON, an outcome this build cannot interpret, a logical key that is
-not the row's own, or a generation that is not the row's consumed generation all read as no
+not the row's own, a generation that is not the row's consumed generation, or a reason the write
+schema would have refused - most sharply, a non-`held` outcome carrying gaps - all read as no
 actionable decision and emit one bounded diagnostic; the generation stays consumed either way, so
-nothing replays a spent turn. A legacy row with no decision is consumed with an unknown reason and
+nothing replays a spent turn. The reader runs the write schema over the stored payload rather than
+restating its rules, so length is clamped and contradiction is refused: an over-long summary is the
+same decision described at greater length, while gaps an outcome may not carry are feedback no
+verifier wrote, and normalizing them away would manufacture a decision that is well-formed,
+actionable, and not what the row says. A legacy row with no decision is consumed with an unknown reason and
 is not fresh work. A context-key rotation selects another row, and no disposition migrates across
 logical keys.
 

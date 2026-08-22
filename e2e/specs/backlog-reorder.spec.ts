@@ -1,4 +1,9 @@
-import { mkdirSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { execPath } from "node:process";
+import { fileURLToPath } from "node:url";
 import type { Locator, Page } from "@playwright/test";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
@@ -23,7 +28,10 @@ import { expect, test } from "../fixtures/test.ts";
  *
  * NO MODEL TOKENS. Every agent binary is redirected at a fake by `fixtures/fake-agents.ts`,
  * which covers both paths a launch takes - the one-shot `claude -p` titler and the SDK
- * session - so the autopilot case at the bottom launches a fake and costs nothing.
+ * session - so the autopilot case launches a fake and costs nothing. The handover case at
+ * the bottom stands its agent up a third way, `node` under a symlink named `claude`
+ * (`fixtures/pane-agent.mjs`), which spends nothing either and is the only kind of session
+ * a handover can complete against - see that block's own header.
  */
 
 const EVIDENCE = artifactsDir("backlog-reorder");
@@ -506,107 +514,210 @@ test("dropping a card where it already is sends nothing", async ({ dashboard, da
 });
 
 /**
- * Dispatch one agent and wait for it to settle, so there is an idle tile to drop onto.
+ * The other ending of the same drag, proved against an agent that can actually take the card.
  *
- * `__none` on the workflow selector matters: the configured default arms Live delivery,
- * which this repo is not allowlisted for, and the dispatch would be refused. The agent is
- * a fake (`fixtures/fake-agents.ts`), so this costs no model tokens.
+ * ## Why this one test runs its daemon differently
+ *
+ * A handover ends by typing a task's intent into a live agent's terminal, and only ONE kind
+ * of session can be typed into: `controlFor` gives an Agent SDK session `stream-json`
+ * control and `paneAcceptsPrompt` admits `keystroke` only, so a dispatched agent - the kind
+ * every other spec in this suite stands up - is refused by construction. The kind that is
+ * accepted is `runtime: "terminal"`, and that value is stamped in exactly one place
+ * (`registry.ts:mergeDiscovered`), which makes passive discovery the only door to one.
+ *
+ * The suite turns discovery off everywhere else (`MISSION_POLL_MS: "0"`, `daemon.ts`) and
+ * that default is safety-critical: a machine-wide sweep adopts whatever agents the developer
+ * happens to be running. This block turns it back on for its own daemon and pays for it the
+ * way `session-interrupt-terminal.spec.ts` does - by never asserting on the fleet as a
+ * whole. It addresses ONE card, found by the tmux session name it just generated, and
+ * touches nothing else. The task it drags is in this daemon's throwaway fixture repo, so
+ * even a mis-aimed drop could not reach a real agent: `assignReserved` refuses any session
+ * whose `repoRoot` differs from the task's.
+ *
+ * NO MODEL TOKENS. The thing in the pane is `node` under a symlink named `claude` - the
+ * shape `harnessOf` detects - running `fixtures/pane-agent.mjs`.
  */
-async function dispatchIdleAgent(page: Page, daemon: DaemonHandle): Promise<string> {
-  await page.getByRole("button", { name: "Dispatch" }).click();
-  const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
-  await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
-  await page.keyboard.press("Escape");
-  await dialog.getByPlaceholder("What should this agent do?").fill("wait for a handover");
-  await dialog.locator("select").filter({ hasText: "finish without a Workflow" })
-    .selectOption("__none");
-  await dialog.getByRole("button", { name: "Dispatch now" }).click();
-  await expect(dialog).toBeHidden();
-  let sessionId = "";
-  await expect
-    .poll(
-      async () => {
-        const sessions = await api<Array<{ id: string; state: string }>>(daemon, "/api/sessions");
-        const live = sessions.find((s) => s.state !== "exited");
-        sessionId = live?.id ?? "";
-        return live?.state ?? "";
-      },
-      { timeout: 60_000 },
-    )
-    .toBe("idle");
-  return sessionId;
-}
+test.describe("dropped on an idle agent", () => {
+  /** Discovery, on and brisk - this block's daemon only. See the header for why that is safe. */
+  test.use({ daemonEnv: { MISSION_POLL_MS: "400" } });
 
-test("the same drag still hands a card to an idle agent", async ({ dashboard, daemon }) => {
-  // THE regression that matters. One drag now has two possible endings, and nothing else in
-  // the suite would notice the assign one breaking: every layer below this sees a card that
-  // is `draggable` and a tile that has an `onDrop`, and none of them can see that a drop
-  // target added to the column ate the drop meant for the agent - or that the tile's drop
-  // quietly started reordering instead of handing the task over.
-  const task = await seedTask(daemon, "Hand me over");
-  await useBoardLayout(dashboard, daemon);
-  await expect.poll(() => cardTitles(dashboard)).toEqual(["Hand me over"]);
-  const dispatched = await dispatchIdleAgent(dashboard, daemon);
+  /**
+   * Skipped rather than failed when tmux is absent, so a contributor without it is not
+   * blocked. CI installs tmux for this suite, which is what stops the skip from quietly
+   * turning this into decoration - see `session-interrupt-terminal.spec.ts`, which makes the
+   * same trade for the same reason.
+   */
+  test.skip(
+    spawnSync("tmux", ["-V"], { stdio: "ignore" }).status !== 0,
+    "tmux is not installed on this machine",
+  );
 
-  // Every request the drop makes, so the ENDING can be named rather than inferred from a
-  // side effect two layers away.
-  const posted: string[] = [];
-  dashboard.on("request", (r) => {
-    if (r.method() !== "POST") return;
-    if (/\/api\/tasks\/[^/]+\/(assign|reorder)$/.test(new URL(r.url()).pathname)) {
-      posted.push(`${new URL(r.url()).pathname} ${r.postData() ?? ""}`);
-    }
+  let pane: { name: string; id: string; screen: () => string; cleanup: () => void } | undefined;
+  test.afterEach(() => {
+    pane?.cleanup();
+    pane = undefined;
   });
 
-  const tile = dashboard.locator("section.board-col.tone-idle .tile").first();
-  await expect(tile).toBeVisible();
+  /**
+   * A real tmux pane running something the daemon discovers as an idle Claude session.
+   *
+   * Two spawns, not one, and the second is the point: the pane agent has to be told its own
+   * pane id so its hooks bind to this card, and tmux only issues that id once the pane
+   * exists. `respawn-pane -k` replaces the placeholder in place, which keeps the pane id
+   * stable - re-creating the session would mint a new one and the hooks would address a
+   * pane that no longer exists.
+   *
+   * The session name is unique per run so a parallel worker's pane, or a stray one from an
+   * earlier run, can never be the card this test drives.
+   */
+  function startPane(daemon: DaemonHandle): NonNullable<typeof pane> {
+    const dir = mkdtempSync(join(tmpdir(), "mc-e2e-handover-"));
+    const bin = join(dir, "fake-bin");
+    mkdirSync(bin);
+    // argv0's basename is what `harnessOf` matches, so the LINK's name is the whole disguise.
+    symlinkSync(execPath, join(bin, "claude"));
+    const agent = fileURLToPath(new URL("../fixtures/pane-agent.mjs", import.meta.url));
+    const token = readFileSync(join(daemon.home, "token"), "utf8").trim();
+    const name = `mc-e2e-handover-${process.pid}-${Date.now()}`;
+    const run = (paneId: string): string =>
+      `${join(bin, "claude")} ${agent} ${daemon.baseURL} ${token} ${paneId} ${daemon.repo} ${dir}`;
 
-  const drag = await lift(dashboard, card(dashboard, "Hand me over"));
-  // The tile lights up because the board knows a card is in the air and which repo it is
-  // for - the same `dragstart`, and the same one notion of what is in the air, that the
-  // column now also reads to light its own gaps.
-  await expect(tile).toHaveClass(/can-drop/);
-  await expect(tile.locator(".tile-drop-hint")).toHaveText("↳ drop to hand this over");
-  await shoot(dashboard, "drag-over-the-idle-agent");
-  await drag.drop(tile);
-  await drag.end();
+    const tmux = (args: string[]): string =>
+      execFileSync("tmux", args, { encoding: "utf8", stdio: "pipe" });
+    tmux(["new-session", "-d", "-s", name, "-x", "120", "-y", "40", "-c", daemon.repo, run("%0")]);
+    const id = tmux(["list-panes", "-t", name, "-F", "#{pane_id}"]).trim();
+    tmux(["respawn-pane", "-k", "-t", id, "-c", daemon.repo, run(id)]);
 
-  // The drop went to the AGENT. One POST, naming this task and this session, on the assign
-  // route - and no reorder, so the column's new drop targets did not take a drag that was
-  // aimed past them.
-  await expect.poll(() => posted).toEqual([
-    `/api/tasks/${task.id}/assign {"sessionId":"${dispatched}","overrideDisabled":true,"confirmReset":false}`,
-  ]);
+    return {
+      name,
+      id,
+      screen: () => {
+        try {
+          return tmux(["capture-pane", "-p", "-t", id]);
+        } catch {
+          return "";
+        }
+      },
+      /**
+       * Killed by PANE ID, never by the session name.
+       *
+       * A handover renames the agent's terminal after the task it just took, so by the time
+       * this runs the name above no longer addresses anything - `kill-session -t <name>`
+       * exits non-zero and the pane is left running on the developer's machine forever,
+       * where the next run with discovery on cards it as a stray idle agent. A pane id is
+       * stable across renames, and killing the session's last pane takes the session with
+       * it.
+       */
+      cleanup: () => {
+        spawnSync("tmux", ["kill-pane", "-t", id], { stdio: "ignore" });
+        rmSync(dir, { recursive: true, force: true });
+      },
+    };
+  }
 
-  // And the daemon answered, in the browser, about THIS agent - the answer names the task
-  // it is already carrying, which nothing but the assign path could have produced.
-  //
-  // WHY THE ANSWER IS A REFUSAL, and where the rest of this claim is proved. The handover
-  // ends by typing into a live agent's terminal, and nothing in this repository can host
-  // one: `paneAcceptsPrompt` refuses any session whose control is not `keystroke`, this
-  // daemon's only terminal backend is a recording fake, and passive discovery is off
-  // (`MISSION_POLL_MS=0`, so a suite run never cards the operator's own agents). So the
-  // only agent an e2e run can stand up is a dispatched SDK one, which is also carrying its
-  // own task in its own checkout - and `TaskManager.assign` refuses it a second one, a
-  // CAPACITY rule older than this phase and untouched by it. Freeing that checkout ("Clean
-  // up") stops the agent, so there is no order of operations that reaches a free one.
-  //
-  // The claim is therefore split, with ONE stubbed hop between the halves and no gap:
-  //   here          - a card dropped on an idle agent's tile produces exactly one
-  //                   `POST /api/tasks/:id/assign` naming that session, and no reorder;
-  //   test/task-assign.test.ts, "the drop's own arguments hand the task to the agent"
-  //                 - that exact request hands the task over: status running, on that
-  //                   session, owning no checkout of its own.
-  // Every case in that file stubs the pane for the same reason this one cannot avoid the
-  // refusal, and it is the same single hop in both places.
-  await expect(
-    dashboard.getByRole("status").filter({ hasText: "it takes one task at a time" }),
-  ).toBeVisible();
-  await shoot(dashboard, "drag-assigned-to-the-agent");
+  test("the same drag hands the card to an idle agent, and never reorders it", async ({
+    dashboard,
+    daemon,
+  }) => {
+    // THE regression that matters. One drag now has two possible endings, and nothing else
+    // in the suite would notice the assign one breaking: every layer below this sees a card
+    // that is `draggable` and a tile that has an `onDrop`, and none of them can see that a
+    // drop target added to the column ate the drop meant for the agent - or that the tile's
+    // drop quietly started reordering instead of handing the task over.
+    const agent = startPane(daemon);
+    pane = agent;
+    const task = await seedTask(daemon, "Hand me over");
+    await useBoardLayout(dashboard, daemon);
+    await expect.poll(() => cardTitles(dashboard)).toEqual(["Hand me over"]);
 
-  // The card is exactly where it was. A drop that fell through to a reorder would have
-  // moved it, and a drop that did nothing at all would look the same from here - which is
-  // why the request above is asserted rather than only the absence of movement.
-  expect(await cardTitles(dashboard)).toEqual(["Hand me over"]);
-  expect(await storedOrder(daemon)).toEqual(["Hand me over"]);
+    // OUR card, by the tmux session name just generated. Never "the only tile": discovery is
+    // on, so the developer's own agents are on this fleet too.
+    const tile = dashboard.locator("section.board-col .tile").filter({ hasText: agent.name });
+    await expect(tile).toHaveCount(1, { timeout: 30_000 });
+    // IDLE is the precondition the whole gesture rests on - `assignReserved` refuses any other
+    // state in those words - so it is asserted rather than waited out.
+    await expect(
+      dashboard.locator("section.board-col.tone-idle .tile").filter({ hasText: agent.name }),
+    ).toHaveCount(1, { timeout: 30_000 });
+
+    // Every request the drop makes, so the ENDING can be named rather than inferred from a
+    // side effect two layers away.
+    const posted: string[] = [];
+    dashboard.on("request", (r) => {
+      if (r.method() !== "POST") return;
+      if (/\/api\/tasks\/[^/]+\/(assign|reorder)$/.test(new URL(r.url()).pathname)) {
+        posted.push(`${new URL(r.url()).pathname} ${r.postData() ?? ""}`);
+      }
+    });
+
+    const drag = await lift(dashboard, card(dashboard, "Hand me over"));
+    // The tile lights up because the board knows a card is in the air and which repo it is
+    // for - the same `dragstart`, and the same one notion of what is in the air, that the
+    // column now also reads to light its own gaps.
+    await expect(tile).toHaveClass(/can-drop/);
+    await expect(tile.locator(".tile-drop-hint")).toHaveText("↳ drop to hand this over");
+    await shoot(dashboard, "drag-over-the-idle-agent");
+    await drag.drop(tile);
+    await drag.end();
+
+    // THE ENDING, in the daemon's own words: the task is RUNNING, and it is running on the
+    // session that lives in our pane. Polled on the API rather than the DOM because
+    // "assigned" is a fact about the task row; the board's rendering of it is asserted
+    // further down as a separate claim.
+    const handover = async (): Promise<string> => {
+      const tasks = await api<Array<{ title: string; status: string; sessionId: string | null }>>(
+        daemon,
+        "/api/tasks",
+      );
+      const mine = tasks.find((t) => t.title === "Hand me over");
+      if (!mine) return "no such task";
+      if (!mine.sessionId) return `${mine.status}, bound to nothing`;
+      const sessions = await api<Array<{ id: string; terminals: Array<{ paneId?: string }> }>>(
+        daemon,
+        "/api/sessions",
+      );
+      const on = sessions.find((session) => session.id === mine.sessionId);
+      // Identified by PANE, not by session id, so this says "OUR agent took it" rather than
+      // "some agent did" - which is the assertion worth making on a fleet where discovery is
+      // switched on and the developer's own agents are carded alongside this one.
+      const ours = on?.terminals?.some((t) => t.paneId === agent.id);
+      return `${mine.status}, on ${ours ? "our agent" : "another agent"}`;
+    };
+    await expect.poll(handover, { timeout: 30_000 }).toBe("running, on our agent");
+    const sessionId = (
+      await api<Array<{ id: string; task: { title: string } | null }>>(daemon, "/api/sessions")
+    ).find((session) => session.task?.title === "Hand me over")?.id;
+
+    // Exactly one POST, on the assign route, naming this task and this session - and NO
+    // reorder, so the column's new drop targets did not take a drag aimed past them.
+    expect(posted).toEqual([
+      `/api/tasks/${task.id}/assign {"sessionId":"${sessionId}","overrideDisabled":true,"confirmReset":false}`,
+    ]);
+
+    // And it arrived where a handover actually ends: typed into the pane, on the far side of
+    // a real pty. The transcript records lengths rather than text (see `pane-agent.mjs`), so
+    // this asserts that a body the size of the intent was submitted after the `/clear` - the
+    // one thing no request log can show.
+    const clearLength = "/clear".length;
+    await expect
+      .poll(() => agent.screen(), { timeout: 15_000 })
+      .toMatch(new RegExp(`\\[took ${clearLength} chars\\][\\s\\S]*\\[took (?!0 )\\d+ chars\\]`));
+
+    // The board says the same thing the API does: the card has left the Backlog column, and
+    // a tile now carries the task.
+    //
+    // Found by the TASK's title rather than through `tile` above, because a handover renames
+    // the agent's terminal after the task it just took - so the tmux session name that
+    // located the tile before the drop is exactly what the tile stops saying afterwards.
+    // Unique on this board: the title belongs to a task this daemon seeded a moment ago.
+    await expect.poll(() => cardTitles(dashboard)).toEqual([]);
+    await expect(
+      dashboard.locator("section.board-col .tile").filter({ hasText: "Hand me over" }),
+    ).toHaveCount(1, { timeout: 15_000 });
+    await shoot(dashboard, "drag-assigned-to-the-agent");
+
+    // Nothing was reordered on the way past. The backlog is empty because the card was taken,
+    // not because it was moved somewhere this spec stopped looking.
+    expect(await storedOrder(daemon)).toEqual([]);
+  });
 });

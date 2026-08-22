@@ -815,13 +815,12 @@ test("a clean, queue-less agent takes the drop with no confirmation at all", asy
  * dropped on an idle agent's tile produces exactly that request and no reorder; this is the
  * other half of the same claim - that this request HANDS THE TASK OVER.
  *
- * The two halves are split because the last hop cannot be hosted anywhere in this repo: a
- * handover ends by typing into a live agent's terminal, and `paneAcceptsPrompt` refuses any
- * session whose control is not `keystroke`. The e2e daemon runs with passive discovery off
- * (`MISSION_POLL_MS=0`, so a suite run never cards the operator's own agents) and its only
- * terminal backend is a recording fake, so no keystroke-capable session can exist there -
- * which is why every case in this file stubs the pane too. The stub is the same one hop in
- * both places, and it is the only one.
+ * The browser proves that end to end, against a real tmux pane - so this is not standing in
+ * for a claim nothing else can reach. It is here for what a unit test is good at and a
+ * browser is not: naming the EXACT arguments the drop sends, and pinning each field of the
+ * resulting state on its own, in milliseconds and without a terminal. `worktreePath: null`
+ * is the one worth stating - an assignment reuses the agent's checkout rather than
+ * provisioning one, which is what makes it a different operation from a dispatch.
  */
 test("the drop's own arguments hand the task to the agent", async () => {
   const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-drop-args-");

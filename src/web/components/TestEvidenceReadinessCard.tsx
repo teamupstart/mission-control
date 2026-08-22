@@ -1,9 +1,11 @@
 import type {
+  WorkflowSummary,
   TestEvidenceAuditAggregate,
   TestEvidenceAuditRate,
   TestEvidenceAuditSlice,
   TestEvidenceRequestCategory,
 } from "@shared/workflow.ts";
+import { TEST_EVIDENCE_AUDITOR_PERSONA_ID } from "@shared/workflow.ts";
 import { ConsoleCard, ConsoleState } from "./settings-console.tsx";
 
 // What the built-in Test Evidence Auditor's own telemetry says, as a card an operator can
@@ -72,19 +74,43 @@ const CATEGORY_LABELS: Record<TestEvidenceRequestCategory, string> = {
 /**
  * One slice's identity as a label.
  *
- * The digest is truncated again for display - the full twelve characters are for telling two
- * revisions apart in an export, and eight is enough to do it by eye. A slice from before the
- * identity fields existed says so rather than being drawn as version 0 or an empty string.
+ * Every field the slice is grouped by that could differ between two rows has to appear here,
+ * or the panel draws two rates side by side with no way to tell what either describes. Two
+ * different workflows both reviewing with the built-in auditor is the ordinary case of that,
+ * not a corner: they are separate slices on purpose, and "v1 · guidance 3ae57ddb" twice is
+ * not a comparison an operator can act on.
+ *
+ * What is left out is left out because it cannot vary visibly. The Persona appears only when
+ * it is NOT the built-in auditor, since that one is named in the card's own description and
+ * repeating it on every row is noise; anything else is worth seeing precisely because it is
+ * unexpected. The digest is truncated to eight characters - the stored twelve are for telling
+ * revisions apart in an export, and eight does it by eye.
+ *
+ * `workflowName` is the live catalog's name for the slice's workflow when it still exists.
+ * History outlives the workflow it was written for, so a slice whose workflow has since been
+ * deleted falls back to a short id rather than losing its identity or claiming another's.
  */
-export function sliceLabel(slice: TestEvidenceAuditSlice): string {
-  if (slice.workflowVersion === null && slice.guidanceDigest === null) {
+export function sliceLabel(slice: TestEvidenceAuditSlice, workflowName?: string | null): string {
+  if (
+    slice.workflowId === null
+    && slice.workflowVersion === null
+    && slice.guidanceDigest === null
+  ) {
     return "Before guidance identity was recorded";
   }
-  const version = slice.workflowVersion === null ? "unknown version" : `v${slice.workflowVersion}`;
-  const digest = slice.guidanceDigest === null
-    ? "unknown guidance"
-    : `guidance ${slice.guidanceDigest.slice(0, 8)}`;
-  return `${version} · ${digest}`;
+  const parts: string[] = [];
+  if (workflowName) parts.push(workflowName);
+  else if (slice.workflowId) parts.push(`workflow ${slice.workflowId.slice(0, 8)}`);
+  parts.push(slice.workflowVersion === null ? "unknown version" : `v${slice.workflowVersion}`);
+  if (slice.personaId && slice.personaId !== TEST_EVIDENCE_AUDITOR_PERSONA_ID) {
+    parts.push(`persona ${slice.personaId.slice(0, 12)}`);
+  }
+  parts.push(
+    slice.guidanceDigest === null
+      ? "unknown guidance"
+      : `guidance ${slice.guidanceDigest.slice(0, 8)}`,
+  );
+  return parts.join(" · ");
 }
 
 /**
@@ -138,10 +164,19 @@ function Row({ label, value }: { label: string; value: string }): React.JSX.Elem
 
 export function TestEvidenceReadinessCard({
   aggregate,
+  workflows = [],
 }: {
   /** Null while the daemon has not answered, which is stated rather than drawn as zeros. */
   aggregate: TestEvidenceAuditAggregate | null;
+  /**
+   * The live catalog, used only to name the workflow a slice belongs to.
+   *
+   * Optional and defaulted: a row that cannot be named still identifies its workflow by id,
+   * so an unloaded catalog costs legibility and never correctness.
+   */
+  workflows?: WorkflowSummary[];
 }): React.JSX.Element {
+  const workflowNames = new Map(workflows.map((workflow) => [workflow.id as string, workflow.name]));
   const acceptance = aggregate?.firstSubmissionAccepted.rate ?? null;
   const perRun = aggregate?.attemptsPerRun ?? null;
   const acceptanceMet = meetsTarget(
@@ -256,7 +291,9 @@ export function TestEvidenceReadinessCard({
               {aggregate.slices.map((slice) => (
                 <Row
                   key={sliceIdentity(slice)}
-                  label={sliceLabel(slice)}
+                  label={sliceLabel(slice, slice.workflowId === null
+                    ? null
+                    : workflowNames.get(slice.workflowId) ?? null)}
                   value={`${slice.attempts} attempts · first pass `
                     + formatAuditRate(slice.firstSubmissionAccepted, "first submissions")}
                 />

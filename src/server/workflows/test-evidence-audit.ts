@@ -1,6 +1,9 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { TEST_EVIDENCE_REQUEST_CATEGORIES } from "@shared/workflow.ts";
+import {
+  TEST_EVIDENCE_AUDITOR_PERSONA_ID,
+  TEST_EVIDENCE_REQUEST_CATEGORIES,
+} from "@shared/workflow.ts";
 import type {
   PersonaSnapshot,
   PersonaVerdict,
@@ -14,7 +17,8 @@ import type {
   WorkflowVersion,
 } from "@shared/workflow.ts";
 
-export const TEST_EVIDENCE_AUDITOR_PERSONA_ID = "builtin:test-evidence-auditor";
+// Re-exported so this module stays the one place the daemon reaches for it.
+export { TEST_EVIDENCE_AUDITOR_PERSONA_ID };
 
 /**
  * How many of the newest `test_evidence_audit` events one aggregate reads.

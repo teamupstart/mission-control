@@ -3745,6 +3745,14 @@ export interface TestEvidenceAuditCategoryShare {
  * Every field is nullable because events appended before those identifiers existed are still
  * counted; they collect in one slice whose identity is unknown rather than being dropped.
  */
+/**
+ * The built-in Test Evidence Auditor's Persona id - the only Persona whose attempts append
+ * `test_evidence_audit`. It lives here because both the daemon that classifies attempts and
+ * the panel that reads them back need it, and two copies of an identity string is one copy
+ * too many.
+ */
+export const TEST_EVIDENCE_AUDITOR_PERSONA_ID = "builtin:test-evidence-auditor";
+
 export interface TestEvidenceAuditSlice {
   workflowId: string | null;
   workflowVersion: number | null;

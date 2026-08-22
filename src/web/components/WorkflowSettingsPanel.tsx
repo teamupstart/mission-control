@@ -666,7 +666,7 @@ export function WorkflowSettingsPanel({
             questions - health is "is the subsystem working", this is "is the evidence
             contract working" - and the second is the one an operator opens this panel to ask
             after a run was rejected. */}
-        <TestEvidenceReadinessCard aggregate={testEvidenceAudit} />
+        <TestEvidenceReadinessCard aggregate={testEvidenceAudit} workflows={workflows} />
 
         {/* The strip sits ABOVE the health card rather than inside it: it is the escalation
             summary, and the card under it is the residue - throughput and sweep bookkeeping

@@ -1565,7 +1565,10 @@ Persona and guidance digest, which is what makes a guidance revision comparable 
 before it. The Persona *revision* is not part of that grouping: the digest identifies the exact
 guidance bytes, so a Persona edit that left the guidance alone keeps its attempts in the same row
 rather than halving the population behind two identically labelled ones. A row reports the newest
-revision seen carrying its guidance.
+revision seen carrying its guidance, and is labelled with the workflow's name from the live
+catalog (a short id when that workflow no longer exists), its version, and the guidance digest -
+so two workflows reviewing with the same auditor are never two rows an operator cannot tell
+apart. A Persona is named on the row only when it is not the built-in auditor.
 
 It is advisory and strictly read-only. It re-runs no Persona, rewrites no verdict, gates nothing,
 and holds no state; the Persona's published judgment is unaffected by anything shown here. Only

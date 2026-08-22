@@ -51,6 +51,13 @@ async function api<T>(daemon: DaemonHandle, path: string, body?: unknown): Promi
 
 /** Dispatch one agent from the modal - the sanctioned way to get a live, bindable session. */
 async function dispatch(page: Page, daemon: DaemonHandle): Promise<string> {
+  // Which sessions existed BEFORE this dispatch, so the poll below returns the one this call
+  // created rather than the first live one it happens to see. A second dispatch in the same
+  // test otherwise re-binds the first test's session, which the daemon correctly refuses with
+  // `workflow_conflict` - a real guarantee, reported as a spec failure.
+  const existing = new Set(
+    (await api<Array<{ id: string }>>(daemon, "/api/sessions")).map((session) => session.id),
+  );
   await page.getByRole("button", { name: "Dispatch" }).click();
   const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
   await expect(dialog).toBeVisible();
@@ -66,7 +73,9 @@ async function dispatch(page: Page, daemon: DaemonHandle): Promise<string> {
   let sessionId = "";
   await expect.poll(async () => {
     const sessions = await api<Array<{ id: string; state: string }>>(daemon, "/api/sessions");
-    const live = sessions.find((session) => session.state !== "exited");
+    const live = sessions.find(
+      (session) => session.state !== "exited" && !existing.has(session.id),
+    );
     sessionId = live?.id ?? "";
     return live?.state ?? "";
   }).toBe("idle");
@@ -82,11 +91,15 @@ async function dispatch(page: Page, daemon: DaemonHandle): Promise<string> {
  * and the fake `claude` binary answers this one by its published guidance instead of by a
  * planted marker.
  */
-async function seedRejectedRun(page: Page, daemon: DaemonHandle): Promise<string> {
+async function seedRejectedRun(
+  page: Page,
+  daemon: DaemonHandle,
+  workflowName = "E2E readiness telemetry",
+): Promise<string> {
   const sessionId = await dispatch(page, daemon);
   const persona = { id: "builtin:test-evidence-auditor" };
   const workflow = await api<{ workflow: { id: string } }>(daemon, "/api/workflows", {
-    name: "E2E readiness telemetry",
+    name: workflowName,
     draft: {
       nodes: [
         { id: "session", kind: "session", position: { x: 0, y: 0 } },
@@ -131,7 +144,7 @@ async function seedRejectedRun(page: Page, daemon: DaemonHandle): Promise<string
   const submitted = await api<{ run: { id: string } }>(
     daemon,
     `/api/workflow-bindings/${binding.id}/submit`,
-    { requestId: "e2e-test-evidence-readiness" },
+    { requestId: `e2e-test-evidence-readiness-${workflowName}` },
   );
   try {
     await expect.poll(async () =>
@@ -217,4 +230,37 @@ test("a refused first submission reaches the readiness panel as a rate an operat
   // can check this without an agent" actually rests on.
   await card.scrollIntoViewIfNeeded();
   await shoot(dashboard, "settings-in-place");
+});
+
+/**
+ * Two workflows, one built-in auditor - the fleet shape that made the by-revision rows
+ * ambiguous.
+ *
+ * The rows are separate slices on purpose, and until the label carried the workflow they both
+ * read "v1 · guidance <digest>": two different rates, identical captions, no way to tell which
+ * described which. Only a browser can show that the name reaching the row is the one the live
+ * workflow catalog holds, because the aggregate carries an id and nothing else - the join
+ * happens in the panel.
+ */
+test("two workflows sharing the auditor draw two rows an operator can tell apart", async ({
+  dashboard,
+  daemon,
+}) => {
+  await seedRejectedRun(dashboard, daemon, "E2E readiness alpha");
+  await seedRejectedRun(dashboard, daemon, "E2E readiness beta");
+  await dashboard.goto(`${daemon.baseURL}/#/settings/workflows`);
+  const card = readinessCard(dashboard);
+
+  const slices = card.getByRole("group", { name: "By guidance revision" });
+  await expect(slices).toBeVisible();
+  // Named from the catalog, so neither row is the other's twin.
+  await expect(slices.locator("p").filter({ hasText: "E2E readiness alpha" })).toHaveCount(1);
+  await expect(slices.locator("p").filter({ hasText: "E2E readiness beta" })).toHaveCount(1);
+  // Both are the same auditor at the same guidance, which is precisely why the workflow name
+  // is the only thing separating them.
+  await expect(slices.locator("p").filter({ hasText: "E2E readiness alpha" }))
+    .toContainText("1 attempts · first pass 0% (0 of 1 first submissions)");
+  await expect(slices.getByText("persona")).toHaveCount(0);
+
+  await shoot(card, "two-workflows");
 });

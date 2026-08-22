@@ -104,8 +104,14 @@ const MEASURED: TestEvidenceAuditAggregate = {
   ],
 };
 
-function render(aggregate: TestEvidenceAuditAggregate | null): string {
-  return renderToStaticMarkup(createElement(TestEvidenceReadinessCard, { aggregate }));
+function render(
+  aggregate: TestEvidenceAuditAggregate | null,
+  workflows: Array<{ id: string; name: string }> = [],
+): string {
+  return renderToStaticMarkup(createElement(TestEvidenceReadinessCard, {
+    aggregate,
+    workflows: workflows as never,
+  }));
 }
 
 test("the card is drawn on its settings anchor before the daemon has answered", () => {
@@ -176,6 +182,12 @@ test("the card reads out every number the report's rollout criterion is written 
   // The before/after comparison the identity fields exist for.
   assert.match(html, /v8 · guidance aaaaaaaa/);
   assert.match(html, /v10 · guidance bbbbbbbb/);
+  // Named from the live catalog when it carries the workflow, so two workflows never draw
+  // the same row. Unnamed above because that render passes no catalog.
+  assert.match(
+    render(MEASURED, [{ id: "workflow-review", name: "Review" }]),
+    /Review · v8 · guidance aaaaaaaa/,
+  );
 });
 
 test("a capped window and unreadable rows are stated instead of quietly narrowing the rates", () => {
@@ -191,20 +203,28 @@ test("a one-revision fleet is not given a by-revision list that restates its hea
 });
 
 /**
- * Two slices the panel labels identically must still be distinct React keys.
+ * A label is a caption, not an identity, so the React key is built independently.
  *
- * `sliceLabel` deliberately omits the Persona and truncates the digest, so it is a caption and
- * not an identity - keying rows by it would collide. The key carries every field the aggregate
- * groups by instead, which is the same tuple, so a row can never duplicate another's key.
+ * The label truncates - eight characters of workflow id, eight of digest - so two rows CAN
+ * still read alike where those prefixes coincide, and it drops the Persona entirely for the
+ * built-in auditor. The key carries every grouping field untruncated, so rows that a caption
+ * cannot separate still reconcile correctly across a refresh.
  */
-test("a slice key carries every grouping field, not just the visible label", () => {
+test("a slice key carries every grouping field untruncated, unlike the label", () => {
   const base = MEASURED.slices[0]!;
-  const other = { ...base, personaId: "persona-other" };
-  assert.equal(sliceLabel(base), sliceLabel(other), "the labels are the same by design");
-  assert.notEqual(sliceIdentity(base), sliceIdentity(other));
+  const twin = { ...base, guidanceDigest: "aaaaaaaabbbb" };
+  assert.equal(sliceLabel(base), sliceLabel(twin), "eight characters cannot separate these");
+  assert.notEqual(sliceIdentity(base), sliceIdentity(twin), "the key must still separate them");
+  // The revision is not a grouping field, so it must not enter the key.
   assert.equal(sliceIdentity(base), sliceIdentity({ ...base, personaRevision: 99 }));
-  const html = render({ ...MEASURED, slices: [base, other] });
-  assert.match(html, /By guidance revision/);
+  // Every field that IS one does.
+  for (const changed of [
+    { workflowId: "other" },
+    { workflowVersion: 99 },
+    { personaId: "persona-other" },
+  ]) {
+    assert.notEqual(sliceIdentity(base), sliceIdentity({ ...base, ...changed }));
+  }
 });
 
 test("no reading is never spelled as a zero reading", () => {
@@ -222,11 +242,54 @@ test("no reading is never spelled as a zero reading", () => {
 
 test("history from before the identity fields existed is labelled, not drawn as version 0", () => {
   assert.equal(
-    sliceLabel({ ...MEASURED.slices[0]!, workflowVersion: null, guidanceDigest: null }),
+    sliceLabel({
+      ...MEASURED.slices[0]!,
+      workflowId: null,
+      workflowVersion: null,
+      guidanceDigest: null,
+    }),
     "Before guidance identity was recorded",
   );
   assert.equal(
     sliceLabel({ ...MEASURED.slices[0]!, guidanceDigest: null }),
-    "v8 · unknown guidance",
+    "workflow workflow · v8 · unknown guidance",
   );
+});
+
+/**
+ * The case GitHub Inspector named on #737: two workflows, one built-in auditor.
+ *
+ * Slices are kept apart by workflow on purpose, but the label used to show only the version
+ * and the digest - so two workflows reviewing with the same auditor at the same version drew
+ * two rows reading "v8 · guidance aaaaaaaa", with no way to tell which rate described which.
+ * That is not a corner case; it is what a fleet with two review workflows looks like.
+ */
+test("two workflows sharing one auditor are told apart in the label", () => {
+  const left = MEASURED.slices[0]!;
+  const right = { ...left, workflowId: "workflow-release" };
+  const named = (slice: typeof left, name: string | null) => sliceLabel(slice, name);
+  assert.notEqual(named(left, "Review"), named(right, "Release"));
+  assert.equal(named(left, "Review"), "Review · v8 · guidance aaaaaaaa");
+  // A workflow the live catalog no longer carries keeps its identity as a short id rather
+  // than borrowing the other row's name or losing the distinction entirely.
+  assert.equal(named(right, null), "workflow workflow · v8 · guidance aaaaaaaa");
+  assert.notEqual(named(left, null), named({ ...left, workflowId: "abcdefghij" }, null));
+
+  const html = render({ ...MEASURED, slices: [left, right] }, [
+    { id: "workflow-review", name: "Review" },
+    { id: "workflow-release", name: "Release" },
+  ]);
+  assert.match(html, /Review · v8 · guidance aaaaaaaa/);
+  assert.match(html, /Release · v8 · guidance aaaaaaaa/);
+});
+
+/**
+ * The auditor is named once in the card's own description, so repeating it on every row is
+ * noise - but any OTHER Persona in this telemetry is worth seeing precisely because it is
+ * unexpected, and it is a grouping field, so two rows could otherwise be identical.
+ */
+test("only a Persona that is not the built-in auditor is named on the row", () => {
+  const base = MEASURED.slices[0]!;
+  assert.doesNotMatch(sliceLabel(base, "Review"), /persona/);
+  assert.match(sliceLabel({ ...base, personaId: "persona-custom" }, "Review"), /persona persona-cus/);
 });

@@ -146,10 +146,28 @@ export function TestEvidenceReadinessCard({
 
       {!aggregate ? (
         <ConsoleState tone="unknown">Unknown - the daemon has not answered</ConsoleState>
-      ) : aggregate.attempts === 0 ? (
+      ) : aggregate.attempts === 0 && aggregate.malformed === 0 ? (
         <ConsoleState tone="off">
           No Test Evidence Auditor attempt has been recorded yet
         </ConsoleState>
+      ) : aggregate.attempts === 0 ? (
+        /* Events exist and NONE of them could be read back. The empty state above is wrong
+           here in the way that matters: it reports an auditor nobody has run, when what is
+           actually true is that every recorded attempt is unreadable - a corrupted or
+           unrecognisable payload, which is a thing to investigate rather than a quiet
+           nothing. Reserving "no attempt recorded" for zero valid AND zero malformed rows is
+           the same rule the rates follow, that an absence of readings must never be dressed
+           up as a reading. */
+        <>
+          <ConsoleState tone="attention">
+            No Test Evidence Auditor attempt could be read back
+          </ConsoleState>
+          <p className="settings-warn">
+            {aggregate.malformed} recorded {aggregate.malformed === 1 ? "attempt" : "attempts"}
+            {" "}could not be read back, so no rate can be computed. This is a malformed or
+            unrecognised telemetry payload, not an auditor that has never run.
+          </p>
+        </>
       ) : (
         <>
           <ConsoleState tone={targetTone(acceptanceMet)}>
@@ -242,7 +260,8 @@ export function TestEvidenceReadinessCard({
           )}
           {aggregate.malformed > 0 && (
             <p className="settings-warn">
-              {aggregate.malformed} recorded attempts could not be read back and are excluded
+              {aggregate.malformed} recorded {aggregate.malformed === 1 ? "attempt" : "attempts"}
+              {" "}could not be read back and {aggregate.malformed === 1 ? "is" : "are"} excluded
               from every rate above.
             </p>
           )}

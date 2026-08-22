@@ -121,6 +121,38 @@ test("a daemon that has answered nothing yet says so, rather than reading as 0%"
   assert.doesNotMatch(html, /0%/);
 });
 
+/**
+ * The state GitHub Inspector caught on #737: every recorded event unreadable.
+ *
+ * `attempts` is the count of events that PARSED, so a window whose rows are all malformed
+ * has `attempts === 0` alongside `malformed > 0` - and the empty state then reported an
+ * auditor nobody had run while the malformed warning, which only rendered beside real
+ * readings, never appeared at all. That is the one reading this card must never produce:
+ * corrupted telemetry disguised as a quiet nothing. The empty state is now reserved for zero
+ * valid AND zero malformed rows.
+ */
+test("a window whose every event is unreadable says so, not that the auditor never ran", () => {
+  const html = render({ ...EMPTY, attempts: 0, malformed: 3 });
+  assert.match(html, /No Test Evidence Auditor attempt could be read back/);
+  assert.match(html, /3 recorded attempts.*could not be read back/s);
+  assert.match(html, /not an auditor that has never run/);
+  assert.doesNotMatch(
+    html,
+    /No Test Evidence Auditor attempt has been recorded yet/,
+    "an unreadable window must not borrow the never-ran sentence",
+  );
+  // Still no rate anywhere: nothing parsed, so there is nothing to average.
+  assert.doesNotMatch(html, /%/);
+});
+
+test("one unreadable attempt is described in the singular", () => {
+  assert.match(render({ ...EMPTY, attempts: 0, malformed: 1 }), /1 recorded attempt\s+could not/);
+  assert.match(
+    render({ ...MEASURED, malformed: 1 }),
+    /1 recorded attempt\s+could not be read back and\s+is excluded/,
+  );
+});
+
 test("the card reads out every number the report's rollout criterion is written in", () => {
   const html = render(MEASURED);
   assert.match(html, /First-pass acceptance 33% \(1 of 3 first submissions\)/);

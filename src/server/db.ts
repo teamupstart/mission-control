@@ -928,6 +928,7 @@ export function openDb(): DatabaseSync {
     CREATE TABLE IF NOT EXISTS session_launch_turns (
       note_key     TEXT PRIMARY KEY,   -- noteKeyFor(s), same key as session_notes
       fingerprint  TEXT NOT NULL,      -- sha256 of the trimmed prompt delivered to the agent
+      echo_fingerprint TEXT,           -- sha256 of that prompt whitespace-collapsed, or NULL
       display_text TEXT,               -- the human request, or NULL to omit the turn
       message_id   TEXT,               -- native id of the projected turn, NULL until seen
       created_at   INTEGER NOT NULL,
@@ -3530,6 +3531,12 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "session_goals", "prompt_revision", "INTEGER NOT NULL DEFAULT 0");
   addColumn(d, "session_goals", "resolved_prompt_revision", "INTEGER NOT NULL DEFAULT 0");
   addColumn(d, "session_goals", "pending_prompts", "TEXT NOT NULL DEFAULT '[]'");
+  // Nullable with no backfill, and both halves of that are the design. The value is a
+  // fingerprint of the prompt that was delivered, which is deliberately not stored, so an
+  // existing row cannot be recomputed - and a guessed one would suppress a real instruction.
+  // A marker written before this column simply cannot recognize its echo, which is the
+  // behaviour that shipped without it.
+  addColumn(d, "session_launch_turns", "echo_fingerprint", "TEXT");
   //
   // `usage_sources` is new; its defensive cursor-state migrations above also make
   // intermediate development databases safe to reopen. `usage_ledger` does need a user
@@ -7964,6 +7971,7 @@ export function pruneForemanInvites(liveKeys: Iterable<string>, olderThan: numbe
 interface SessionLaunchTurnRow {
   note_key: string;
   fingerprint: string;
+  echo_fingerprint: string | null;
   display_text: string | null;
   message_id: string | null;
   created_at: number;
@@ -7974,6 +7982,7 @@ function rowToLaunchTurn(r: SessionLaunchTurnRow): LaunchTurnMarker {
   return {
     noteKey: r.note_key,
     fingerprint: r.fingerprint,
+    echoFingerprint: r.echo_fingerprint,
     displayText: r.display_text,
     messageId: r.message_id,
     createdAt: r.created_at,
@@ -7993,10 +8002,12 @@ export function upsertSessionLaunchTurn(marker: LaunchTurnMarker): void {
   openDb()
     .prepare(
       `INSERT INTO session_launch_turns
-         (note_key, fingerprint, display_text, message_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?)
+         (note_key, fingerprint, echo_fingerprint, display_text, message_id,
+          created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(note_key) DO UPDATE SET
          fingerprint=excluded.fingerprint,
+         echo_fingerprint=excluded.echo_fingerprint,
          display_text=excluded.display_text,
          message_id=excluded.message_id,
          updated_at=excluded.updated_at`,
@@ -8004,6 +8015,7 @@ export function upsertSessionLaunchTurn(marker: LaunchTurnMarker): void {
     .run(
       marker.noteKey,
       marker.fingerprint,
+      marker.echoFingerprint,
       marker.displayText,
       marker.messageId,
       marker.createdAt,
@@ -8014,7 +8026,8 @@ export function upsertSessionLaunchTurn(marker: LaunchTurnMarker): void {
 export function getSessionLaunchTurn(noteKey: string): LaunchTurnMarker | undefined {
   const r = openDb()
     .prepare(
-      `SELECT note_key, fingerprint, display_text, message_id, created_at, updated_at
+      `SELECT note_key, fingerprint, echo_fingerprint, display_text, message_id,
+              created_at, updated_at
          FROM session_launch_turns WHERE note_key = ?`,
     )
     .get(noteKey) as unknown as SessionLaunchTurnRow | undefined;
@@ -8025,7 +8038,8 @@ export function getSessionLaunchTurn(noteKey: string): LaunchTurnMarker | undefi
 export function loadSessionLaunchTurns(): LaunchTurnMarker[] {
   const rows = openDb()
     .prepare(
-      `SELECT note_key, fingerprint, display_text, message_id, created_at, updated_at
+      `SELECT note_key, fingerprint, echo_fingerprint, display_text, message_id,
+              created_at, updated_at
          FROM session_launch_turns ORDER BY updated_at DESC`,
     )
     .all() as unknown as SessionLaunchTurnRow[];

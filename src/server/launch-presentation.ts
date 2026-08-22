@@ -18,6 +18,14 @@ export interface LaunchTurnMarker {
   /** `launchTextFingerprint` of the complete prompt that crossed into the runtime. */
   fingerprint: string;
   /**
+   * `launchEchoFingerprint` of that same prompt - the recognizer for the launch coming back
+   * through a channel that collapsed its whitespace.
+   *
+   * Null on a marker recorded before this field existed, and on nothing else. Absence means
+   * "cannot recognize the echo", which degrades to the behaviour that shipped without it.
+   */
+  echoFingerprint: string | null;
+  /**
    * The operator's own request, as captured at dispatch. Null when the launch had no
    * distinct human-authored request, which omits the turn rather than exposing the
    * platform contract.
@@ -75,6 +83,32 @@ export interface LaunchPresentationInput {
  */
 export function launchTextFingerprint(text: string): string {
   return createHash("sha256").update(text.trim(), "utf8").digest("hex");
+}
+
+/**
+ * The recognizer for "this whitespace-collapsed text is that launch".
+ *
+ * A SECOND fingerprint rather than a laxer first one, because the two answer different
+ * questions and only one of them may ever move a rendered turn. `launchTextFingerprint`
+ * guards the transcript projection, where matching a turn we merely resemble would hide a
+ * real human message; it stays byte-exact for that reason. This one guards the Goal
+ * pipeline, where the same launch arrives having been through a harness prompt-hook
+ * normalizer, and byte-exactness is not available to it at all.
+ *
+ * Concretely: Claude's `substantivePrompt` strips the scaffolding Claude Code injects around
+ * a turn and then flattens every whitespace run to a single space, so the launch prompt this
+ * daemon composed with `\n\n` between its sections reaches the hook as one long line. Trimming
+ * alone can never match that, which is why a dispatched SDK session was opening a SECOND
+ * prompt revision for a launch the supervisor had already captured - and why the reconciler
+ * was then asked to treat the platform's own contract sections as a human amendment.
+ *
+ * Collapsing whitespace is the whole of the normalization, deliberately. It is exactly the
+ * transform the hook path applies, so this recognizes that channel and no other; anything
+ * further (case, punctuation, prefixes) would start matching text the launch merely
+ * resembles, and dropping a real instruction is the failure this must not have.
+ */
+export function launchEchoFingerprint(text: string): string {
+  return createHash("sha256").update(text.replace(/\s+/g, " ").trim(), "utf8").digest("hex");
 }
 
 /**

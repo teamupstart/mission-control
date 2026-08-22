@@ -1645,8 +1645,22 @@ async function processPromptedWrapup(
   } catch (err) {
     // Never retry: a retry IS the double-push. Fall back to the card, which is exactly
     // `ask` mode and puts this same text one click away.
+    //
+    // And correct the record while doing it. The generation was consumed with
+    // `direct_handoff` a moment ago, before anything typed, because that ordering is what
+    // stops the instruction being sent twice - so the mark cannot be rolled back now. What
+    // it CAN stop doing is claiming the agent received something it never received, which
+    // is the difference between a later reader seeing handed-over work and seeing work
+    // still waiting on this card. Best-effort on purpose: it corrects a record, the card
+    // above is the recovery, and this must not throw over the top of an injection failure
+    // the caller is already reporting.
     log(`${session.name}: could not send the prompted wrap-up (${String(err)}) - asking instead`);
     await client.markWrapupAsked(current.session.id, { clearAnswer: true }).catch(() => {});
+    await client.markPromptedHandoffUndelivered(
+      current.session.id,
+      current.candidate.logicalKey,
+      current.candidate.generation,
+    );
     return true;
   }
 

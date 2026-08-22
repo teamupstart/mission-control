@@ -155,6 +155,7 @@ import {
   completeWorkCycle,
   bootstrapPromptedConsumedGeneration,
   consumePromptedGeneration as dbConsumePromptedGeneration,
+  markPromptedHandoffUndelivered as dbMarkPromptedHandoffUndelivered,
   recordAgentBinding,
   rekeyQueue,
   listQueueRowsForCwd,
@@ -7403,6 +7404,30 @@ export class Registry extends EventEmitter {
     });
     if (consumed) this.syncSessionsForQueue(input.logicalKey);
     return consumed;
+  }
+
+  /**
+   * Correct a recorded direct handoff whose instruction never reached the agent.
+   *
+   * A much lighter guard than `consumePromptedGeneration`, and deliberately so. That one
+   * decides whether a generation may be SPENT, so it re-verifies intent, idleness, report
+   * bucket and the live work cycle. This one spends nothing and can only narrow a decision
+   * the daemon already wrote: the caller is Foreman, one statement after its own injection
+   * threw, and by then the session may be anything at all - that failure is often the
+   * session going away. Insisting it still looks idle would refuse exactly the case this
+   * exists for.
+   *
+   * The key check stays, because a decision belongs to a logical key. The rest is the
+   * compare-and-set in `db.ts`, which refuses anything that is not this generation's own
+   * `direct_handoff`.
+   */
+  markPromptedHandoffUndelivered(id: string, logicalKey: string, generation: number, now = Date.now()): boolean {
+    const session = this.sessions.get(id);
+    if (!session) return false;
+    if (noteKeyFor(session) !== logicalKey) return false;
+    const marked = dbMarkPromptedHandoffUndelivered(logicalKey, generation, now);
+    if (marked) this.syncSessionsForQueue(logicalKey);
+    return marked;
   }
 
   /**

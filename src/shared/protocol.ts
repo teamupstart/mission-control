@@ -3251,6 +3251,21 @@ export type PromptedCompletionDisposition = z.infer<typeof PromptedCompletionDis
  * rotated conversation, changed intent, restarted turn, or newer completion therefore
  * cannot spend either the stale or current generation.
  */
+/**
+ * Correct a recorded direct handoff whose instruction never reached the agent.
+ *
+ * The REASON only - no disposition, and no way to name one. The single legal transition is
+ * `direct_handoff` -> `direct_handoff_undelivered` for the generation the row already
+ * consumed, and the daemon derives both ends from stored state, so this route cannot be
+ * used to write a decision, to spend a generation, or to relabel one that stopped for some
+ * other reason.
+ */
+export const PromptedHandoffUndeliveredSchema = z.object({
+  logicalKey: z.string().min(1).max(NOTE_KEY_MAX),
+  generation: z.number().int().min(1),
+});
+export type PromptedHandoffUndelivered = z.infer<typeof PromptedHandoffUndeliveredSchema>;
+
 export const PromptedWrapupSchema = z.object({
   logicalKey: z.string().min(1).max(NOTE_KEY_MAX),
   generation: z.number().int().min(1),

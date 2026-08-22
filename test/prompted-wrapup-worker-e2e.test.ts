@@ -771,6 +771,120 @@ test("direct wrap-up consumes the expected generation before injecting", async (
   assert.equal(claudeCalls(fake.log).length, 1, out);
 });
 
+test("a direct handoff whose instruction never lands stops claiming it did", async () => {
+  // Mark-before-inject cannot be undone: the latch is durable before anything types,
+  // because a retried direct injection is the double push. So when the injection fails,
+  // the stored reason is the only thing that can still tell the truth. It has to stop
+  // saying the agent was handed the work - a later reader that believes it skips a session
+  // that is in fact still sitting on the Ship it? card this same path raises.
+  const repo = tmp("pw-repo-");
+  const fake = mkFakeClaude({ fail: false });
+  const session = mkSession(repo);
+  let queue = mkQueue(repo);
+  let injectAttempts = 0;
+  const undelivered: { logicalKey: string; generation: number }[] = [];
+
+  const stub = await startStub((req, url, raw) => {
+    const p = url.pathname;
+    if (p === "/api/foreman/config") {
+      return { status: 200, json: cfg({ mode: "live", repoAllowlist: [repo], wrapup: "pr" }) };
+    }
+    if (p === "/api/foreman/heartbeat") return { status: 200, json: { leader: true } };
+    if (p === "/api/sessions") {
+      return { status: 200, json: [{ ...session, lastSeen: Date.now() }] };
+    }
+    if (p === "/api/reviews") return { status: 200, json: [] };
+    if (p === "/api/queues") return { status: 200, json: [] };
+    if (p === "/api/sessions/s1/queue") return { status: 200, json: queue };
+    if (p === "/api/sessions/s1/goal") return { status: 200, json: goalRecord };
+    if (p === "/api/sessions/s1/diff") {
+      return {
+        status: 200,
+        json: { ok: true, patch: "diff --git a/up.ts b/up.ts\n+retry();\n", truncated: false, headSha: "abc" },
+      };
+    }
+    if (p === "/api/sessions/s1/transcript/size") return { status: 200, json: { size: 100 } };
+    if (p === "/api/sessions/s1/transcript") {
+      return {
+        status: 200,
+        json: { messages: [{ role: "user", text: GOAL, tools: [] }], truncated: false },
+      };
+    }
+    if (p === "/api/sessions/s1/standards") return { status: 200, json: { docs: [], truncated: false } };
+    if (p === "/api/sessions/s1/workflow-completion") {
+      return { status: 200, json: { claimed: false, reason: "no_binding" } };
+    }
+    if (p === "/api/sessions/s1/queue/wrapup/prompted") {
+      const body = JSON.parse(raw) as { generation: number; decision: { outcome: string } | null };
+      queue = {
+        ...queue,
+        promptedConsumedGeneration: body.generation,
+        promptedDirectHandoff: null,
+        promptedDecision: body.decision
+          ? {
+            logicalKey: queue.noteKey,
+            generation: body.generation,
+            outcome: body.decision.outcome as never,
+            summary: "",
+            gaps: [],
+            decidedAt: Date.now(),
+          }
+          : null,
+        updatedAt: Date.now(),
+      };
+      return { status: 200, json: queue };
+    }
+    // The failure this is all about. A daemon that cannot type into the session.
+    if (p === "/api/sessions/s1/inject") {
+      injectAttempts += 1;
+      return { status: 500, json: { error: "the session went away" } };
+    }
+    if (p === "/api/sessions/s1/queue/wrapup/prompted/undelivered") {
+      const body = JSON.parse(raw) as { logicalKey: string; generation: number };
+      undelivered.push(body);
+      queue = {
+        ...queue,
+        promptedDecision: queue.promptedDecision
+          ? { ...queue.promptedDecision, outcome: "direct_handoff_undelivered" }
+          : null,
+        updatedAt: Date.now(),
+      };
+      return { status: 200, json: queue };
+    }
+    if (p === "/api/sessions/s1/queue/wrapup/asked") return { status: 200, json: queue };
+    if (p === "/api/sessions/s1/queue/wrapup") return { status: 200, json: queue };
+    return { status: 200, json: null };
+  });
+
+  const out = await runWorker({
+    port: stub.port,
+    claudeBin: fake.bin,
+    claudeLog: fake.log,
+    ms: 20_000,
+    until: () => undelivered.length > 0,
+  });
+  await stub.close();
+
+  const consume = stub.to("POST", "/api/sessions/s1/queue/wrapup/prompted");
+  assert.equal(consume.length, 1, out);
+  assert.equal(
+    (consume[0]!.body as { decision: { outcome: string } }).decision.outcome,
+    "direct_handoff",
+    `the handoff was not recorded before the instruction was typed\n${out}`,
+  );
+  // Never retried. A retry IS the double push, and that is true whether or not the first
+  // attempt actually reached the agent - which is exactly what a 500 leaves unknown.
+  assert.equal(injectAttempts, 1, `the failed injection was retried\n${out}`);
+  // The card, which is the actual recovery: the same text, one click away.
+  assert.equal(stub.to("POST", "/api/sessions/s1/queue/wrapup/asked").length, 1, out);
+  // And the correction, naming the generation it corrects.
+  assert.deepEqual(undelivered, [{ logicalKey: queue.noteKey, generation: 1 }], out);
+  assert.equal(queue.promptedDecision?.outcome, "direct_handoff_undelivered", out);
+  // The generation stays consumed. Correcting the reason must never re-arm the trigger,
+  // or the next tick types the instruction the failure was ambiguous about.
+  assert.equal(queue.promptedConsumedGeneration, 1, out);
+});
+
 test("a direct shipping handoff fires once per human episode, and re-arms on the next", async () => {
   // THE REPORTED LOOP, end to end and across every real boundary it crossed.
   //

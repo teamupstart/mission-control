@@ -33,6 +33,7 @@ const {
   completeWorkCycle,
   bootstrapPromptedConsumedGeneration,
   consumePromptedGeneration,
+  markPromptedHandoffUndelivered,
 } = await import("../src/server/db.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
@@ -1256,6 +1257,78 @@ test("unreadable prompted decision state reads as absent, and never as fresh wor
   const refreshed = getQueueRow(key)!;
   upsertQueue({ ...refreshed, branch: "renamed", updatedAt: 99 });
   assert.equal(getQueueRow(key)?.promptedDecision, null);
+});
+
+test("an undelivered direct handoff is corrected in place, and only ever narrowed", () => {
+  // The one amendment to a stored decision. Mark-before-inject means the latch is durable
+  // before the instruction types, so a failed injection cannot roll it back - the record
+  // stops claiming delivery instead.
+  const key = "prompted-handoff-undelivered";
+  markWorkCycleActive(key, 10);
+  completeWorkCycle(key, 11, 11);
+  assert.equal(
+    consumePromptedGeneration({
+      noteKey: key,
+      sessionCwd: "/repo",
+      generation: 1,
+      ask: false,
+      directHandoff: { kind: "direct-ship", episodeKey: "ep-1" },
+      decision: { outcome: "direct_handoff", summary: "shipping it directly", gaps: [] },
+      now: 12,
+    }),
+    true,
+  );
+
+  // A generation that is not the one the row consumed cannot be corrected, so a stale
+  // caller cannot rewrite the reason of a generation that has since been replaced.
+  assert.equal(markPromptedHandoffUndelivered(key, 2, 13), false);
+  assert.equal(getQueueRow(key)?.promptedDecision?.outcome, "direct_handoff");
+  assert.equal(markPromptedHandoffUndelivered("no-such-key", 1, 13), false);
+
+  assert.equal(markPromptedHandoffUndelivered(key, 1, 14), true);
+  const corrected = getQueueRow(key)!;
+  assert.equal(corrected.promptedDecision?.outcome, "direct_handoff_undelivered");
+  // Everything else about the decision is left alone: it is the same decision, told
+  // truthfully, not a new one.
+  assert.equal(corrected.promptedDecision?.summary, "shipping it directly");
+  assert.equal(corrected.promptedDecision?.generation, 1);
+  // The generation stays consumed and the latch stays latched. Correcting the record must
+  // never re-arm the trigger, or the next tick types the instruction again - which is the
+  // double push this whole ordering exists to prevent.
+  assert.equal(corrected.promptedConsumedGeneration, 1);
+  assert.equal(corrected.promptedDirectHandoff?.kind, "direct-ship");
+  assert.equal(corrected.promptedDirectHandoff?.generation, 1);
+
+  // Idempotent: a second call finds no `direct_handoff` to narrow and refuses, which is
+  // what makes the caller's best-effort retry harmless.
+  assert.equal(markPromptedHandoffUndelivered(key, 1, 15), false);
+  assert.equal(getQueueRow(key)?.promptedDecision?.outcome, "direct_handoff_undelivered");
+
+  // It can only ever NARROW a handoff. No other outcome is reachable through it, so it
+  // cannot relabel a hold, a claim, or a generation that stopped for some other reason.
+  const other = "prompted-handoff-not-a-handoff";
+  markWorkCycleActive(other, 20);
+  completeWorkCycle(other, 21, 21);
+  assert.equal(
+    consumePromptedGeneration({
+      noteKey: other,
+      sessionCwd: "/repo",
+      generation: 1,
+      ask: false,
+      directHandoff: null,
+      decision: { outcome: "held", summary: "the branch is untested", gaps: [{ id: "tests", path: "a.ts", detail: "no tests" }] },
+      now: 22,
+    }),
+    true,
+  );
+  assert.equal(markPromptedHandoffUndelivered(other, 1, 23), false);
+  assert.equal(getQueueRow(other)?.promptedDecision?.outcome, "held");
+
+  // And it cannot CREATE one. A row with a consumed generation and no readable decision
+  // stays that way rather than gaining a reason nothing decided.
+  openDb().prepare(`UPDATE foreman_queues SET prompted_decision = NULL WHERE note_key = ?`).run(other);
+  assert.equal(markPromptedHandoffUndelivered(other, 1, 24), false);
+  assert.equal(getQueueRow(other)?.promptedDecision, null);
 });
 
 test("a database that predates the decision column upgrades, reads null, and stays consumed", () => {

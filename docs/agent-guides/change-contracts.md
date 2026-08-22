@@ -622,6 +622,14 @@ synthesize one for a caller that supplied none. `held` means a model judged the 
 `verification_failed` means verification infrastructure gave up and nobody judged it, so the two
 must not be collapsed.
 
+One amendment exists, and it NARROWS: a `direct_handoff` whose instruction failed to reach the
+agent becomes `direct_handoff_undelivered` for that same generation. It is a correction, not a
+third writer - it cannot create a decision, spend a generation, or produce any other outcome, and
+it is refused unless the row's consumed generation and the stored decision's generation are both
+the one named. It exists because mark-before-inject cannot be rolled back: the handoff is durable
+before anything types, so the only honest response to a failed injection is to say so. Do not add
+a second amendment without the same three properties.
+
 The decision is CURRENT PROJECTION on `foreman_queues`. History belongs to `foreman_episodes`. Do
 not add a second decision ledger, and do not carry a decision across logical keys.
 

@@ -93,6 +93,7 @@ import {
   SetPermissionModeSchema,
   SetSessionEffortSchema,
   SetWorkItemStateSchema,
+  PromptedHandoffUndeliveredSchema,
   PromptedWrapupSchema,
   WrapupAskedSchema,
   PushTaskSchema,
@@ -4340,6 +4341,35 @@ export function buildApp(
     const now = Date.now();
     if (!registry.consumePromptedGeneration(session.id, parsed.data, now)) {
       return c.json({ error: "prompted work-cycle generation is no longer current" }, 409);
+    }
+    return c.json(queues.get(session.id));
+  });
+
+  // Correct a recorded direct handoff whose instruction never reached the agent.
+  //
+  // Mark-before-inject is not negotiable - the mark must be durable before anything types,
+  // because a retried direct injection IS the double push - so a failed injection cannot be
+  // undone by rolling the mark back. It is undone by telling the truth about it instead:
+  // the generation stays consumed, the latch stays latched, and the stored reason stops
+  // claiming the agent was handed anything. Foreman calls this one statement after its own
+  // injection threw, beside the Ship it? card that is the actual recovery.
+  //
+  // A 409 here is not worth acting on and the caller ignores it: it means the row already
+  // moved on - another generation was consumed, or this correction already landed - and in
+  // both cases the stored reason is one nobody should overwrite.
+  app.post("/api/sessions/:id/queue/wrapup/prompted/undelivered", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const parsed = await parseBody(c, PromptedHandoffUndeliveredSchema);
+    if (!parsed.ok) return parsed.res;
+    if (
+      !registry.markPromptedHandoffUndelivered(
+        session.id,
+        parsed.data.logicalKey,
+        parsed.data.generation,
+      )
+    ) {
+      return c.json({ error: "no current direct handoff decision for that generation" }, 409);
     }
     return c.json(queues.get(session.id));
   });

@@ -1186,6 +1186,102 @@ test("the prompted endpoint consumes exact work-cycle generations and raises its
   assert.equal(queue.wrapupAnswer, null, "the previous generation's answer cannot hide the new card");
 });
 
+test("an undelivered direct handoff is corrected over its own route, and only that transition", async () => {
+  seedSession();
+  const agentSessionId = "agent-prompted-undelivered";
+  const goal = "ship the retry directly";
+  const prompt = await app.request("/hooks/UserPromptSubmit", {
+    method: "POST",
+    headers: authed,
+    body: JSON.stringify({ env: { tmuxPane: "%3" }, sessionId: agentSessionId, prompt: goal }),
+  });
+  assert.equal(prompt.status, 204);
+  registry.upsertGoal("sess-1", {
+    prompt: goal,
+    text: goal,
+    objective: goal,
+    focus: goal,
+    relationship: "initial",
+    rationale: "Initial objective",
+    objectiveVersion: 1,
+    promptRevision: 1,
+    resolvedPromptRevision: 1,
+    pendingPrompts: [],
+    source: "heuristic",
+  }, Date.now());
+  const stop = await app.request("/hooks/Stop", {
+    method: "POST",
+    headers: authed,
+    body: JSON.stringify({ env: { tmuxPane: "%3" }, sessionId: agentSessionId }),
+  });
+  assert.equal(stop.status, 204);
+
+  const session = registry.getSession("sess-1")!;
+  const currentGoal = registry.getGoal("sess-1")!;
+  const logicalKey = session.workCycle!.logicalKey;
+  const expectedIntent = {
+    objective: currentGoal.objective,
+    objectiveVersion: currentGoal.objectiveVersion,
+    promptRevision: currentGoal.promptRevision,
+    episodeKey: `intent:${currentGoal.objectiveVersion}:${currentGoal.promptRevision}`,
+  };
+
+  // Nothing to correct yet: the route can only ever narrow a handoff that exists.
+  const early = await app.request("/api/sessions/sess-1/queue/wrapup/prompted/undelivered", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ logicalKey, generation: 1 }),
+  });
+  assert.equal(early.status, 409, "a correction cannot create a decision nothing decided");
+
+  const consumed = await app.request("/api/sessions/sess-1/queue/wrapup/prompted", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({
+      logicalKey,
+      generation: 1,
+      expectedIntent,
+      directHandoff: "direct-ship",
+      decision: { outcome: "direct_handoff", summary: "typing the shipping instruction", gaps: [] },
+    }),
+  });
+  assert.equal(consumed.status, 200);
+  const marked = (await consumed.json()) as { promptedDecision: { outcome: string } | null };
+  assert.equal(marked.promptedDecision?.outcome, "direct_handoff");
+
+  const wrongGeneration = await app.request("/api/sessions/sess-1/queue/wrapup/prompted/undelivered", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ logicalKey, generation: 2 }),
+  });
+  assert.equal(wrongGeneration.status, 409, "only the generation that recorded it may correct it");
+
+  const corrected = await app.request("/api/sessions/sess-1/queue/wrapup/prompted/undelivered", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ logicalKey, generation: 1 }),
+  });
+  assert.equal(corrected.status, 200);
+  const queue = (await corrected.json()) as {
+    promptedConsumedGeneration: number | null;
+    promptedDecision: { outcome: string; summary: string } | null;
+    promptedDirectHandoff: { kind: string } | null;
+  };
+  assert.equal(queue.promptedDecision?.outcome, "direct_handoff_undelivered");
+  assert.equal(queue.promptedDecision?.summary, "typing the shipping instruction");
+  // The generation stays consumed and the latch stays latched: the correction tells the
+  // truth about a delivery, it does not re-arm the trigger that would type it again.
+  assert.equal(queue.promptedConsumedGeneration, 1);
+  assert.equal(queue.promptedDirectHandoff?.kind, "direct-ship");
+
+  const again = await app.request("/api/sessions/sess-1/queue/wrapup/prompted/undelivered", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ logicalKey, generation: 1 }),
+  });
+  assert.equal(again.status, 409, "the correction is idempotent, so a best-effort retry is safe");
+});
+
 test("a second in-flight item is refused with a clean 409, not a raw 500", async () => {
   // The single-flight index is the enforcement and must stay that way - but the
   // raw ERR_SQLITE_ERROR escaping the route meant the daemon logged a stack trace

@@ -134,7 +134,11 @@ Foreman episode ledger remains the history. It exists because a silent hold used
 completed generation and leave nothing behind: every later tick skipped the generation as already
 handled, and what the verifier believed was missing survived only in a log line.
 `verification_failed` is deliberately distinct from `held` - infrastructure giving up is not a
-model's verdict, and it carries no gaps because nobody judged the work. Only a hold may carry
+model's verdict, and it carries no gaps because nobody judged the work. `direct_handoff_undelivered`
+is the same kind of distinction on the shipping path: the handoff is recorded before the instruction
+is typed, so that it can never be typed twice, and when the typing then fails the record says so
+instead of claiming the agent was handed work it never received. The Ship it? card is the recovery,
+exactly as it always was. Only a hold may carry
 gaps, and that holds on the way back out too: a stored reason that breaks it is read as no
 decision at all rather than quietly stripped of the gaps it should not have had. A row written before this
 was recorded reads as consumed with an unknown reason, which is not the same as fresh work, so an

@@ -9693,6 +9693,68 @@ export function consumePromptedGeneration(
   return Number(result.changes) === 1;
 }
 
+/**
+ * Downgrade a `direct_handoff` decision to `direct_handoff_undelivered`, for the generation
+ * that already recorded it.
+ *
+ * The one amendment to a stored decision, and it exists because the mark it corrects CANNOT
+ * be rolled back. Direct shipping is mark-before-inject on purpose: the latch is durable
+ * before the instruction types, because a retried direct injection is the double push. So
+ * when the injection then fails, the honest options are to leave a record saying Foreman
+ * handed the task off when the agent received nothing, or to say what actually happened.
+ * This says what happened. The generation stays consumed, the latch stays latched, and the
+ * Ship it? card the caller raises alongside remains the recovery.
+ *
+ * It NARROWS; it can never create. The update requires the row's consumed generation to be
+ * the named one, and the stored decision to be a `direct_handoff` for that same generation,
+ * so it cannot invent a decision for a generation that was never spent, cannot touch a
+ * different generation's reason, and cannot overwrite a `held` or a `workflow_claimed`. A
+ * second call after the first is a no-op rather than an error, which is what makes the
+ * caller's retry safe. Everything else about the row - the latch triple, the ask stamp, the
+ * summary and gaps of the decision itself - is left exactly as it was.
+ *
+ * Read-modify-write inside one transaction because the amendment is a function of the
+ * stored payload: SQLite's JSON functions could express it, but the payload is validated
+ * TypeScript on the way in and on the way out, and a second, SQL-shaped definition of the
+ * record's shape is the drift this file has already paid for once.
+ */
+export function markPromptedHandoffUndelivered(
+  noteKey: string,
+  generation: number,
+  now: number,
+  d: DatabaseSync = openDb(),
+): boolean {
+  d.exec("BEGIN IMMEDIATE");
+  try {
+    const row = d
+      .prepare(`SELECT * FROM foreman_queues WHERE note_key = ?`)
+      .get(noteKey) as unknown as QueueRow | undefined;
+    const decision = row ? toPromptedDecision(row) : null;
+    if (
+      !row ||
+      !decision ||
+      row.prompted_consumed_generation !== generation ||
+      decision.generation !== generation ||
+      decision.outcome !== "direct_handoff"
+    ) {
+      d.exec("ROLLBACK");
+      return false;
+    }
+    d.prepare(
+      `UPDATE foreman_queues SET prompted_decision = ?, updated_at = ? WHERE note_key = ?`,
+    ).run(
+      serializePromptedDecision({ ...decision, outcome: "direct_handoff_undelivered" }),
+      now,
+      noteKey,
+    );
+    d.exec("COMMIT");
+    return true;
+  } catch (err) {
+    d.exec("ROLLBACK");
+    throw err;
+  }
+}
+
 /** Every stored queue (without items) - for the orphan sweep + the session list. */
 export function listQueueRows(): Omit<SessionQueue, "items">[] {
   const rows = openDb()

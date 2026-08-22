@@ -162,11 +162,23 @@ derived from transcript prose.
 `foreman_queues.prompted_decision` holds one validated JSON record - logical key, generation,
 outcome, bounded summary, bounded blocking gaps, decision time - describing why the current
 consumed generation stopped. Outcomes are append-only:
-`held`, `workflow_claimed`, `asked`, `direct_handoff`, `retired`, `empty`, `verification_failed`.
+`held`, `workflow_claimed`, `asked`, `direct_handoff`, `retired`, `empty`, `verification_failed`,
+`direct_handoff_undelivered`.
 
 It is written by the same statement that consumes the generation, on both atomic boundaries: the
 ordinary consume route and the Workflow completion claim transaction. A refused or rolled-back
-claim writes neither. It is current projection, replaced by the next generation, while
+claim writes neither.
+
+There is exactly one amendment, and it narrows rather than writes. Direct shipping is
+mark-before-inject: the handoff is durable before the instruction types, because a retried direct
+injection is the double push, so a failed injection cannot be rolled back. Foreman instead corrects
+the record over `POST /api/sessions/:id/queue/wrapup/prompted/undelivered`, which moves that
+generation's `direct_handoff` to `direct_handoff_undelivered` and nothing else. It requires the row's
+consumed generation and the stored decision's own generation to be the one named, so it cannot
+create a decision, spend a generation, touch another generation's reason, or relabel an outcome that
+is not a handoff. The generation stays consumed, the latch stays latched, and the Ship it? card
+raised alongside is the recovery. A second call is refused, which is what makes the caller's
+best-effort retry safe. It is current projection, replaced by the next generation, while
 `foreman_episodes` remains the append-only history of what Foreman did.
 
 Reads fail closed. Unparseable JSON, an outcome this build cannot interpret, a logical key that is

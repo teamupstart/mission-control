@@ -1350,6 +1350,11 @@ export interface SessionQueue {
  * - `workflow_claimed`: a bound Workflow claimed the completion and owns the session.
  * - `asked`: Foreman raised the Ship it? card for a human instead of acting.
  * - `direct_handoff`: Foreman typed the direct shipping instruction for this generation.
+ * - `direct_handoff_undelivered`: the handoff was recorded and the instruction then FAILED to
+ *   reach the agent. The mark is written before anything types, deliberately, because a
+ *   retried direct injection is the double push - so the mark cannot be rolled back and this
+ *   is what keeps the record honest instead. The generation stays consumed and the Ship it?
+ *   card is the recovery; a later reader must not treat this as work that was handed over.
  * - `retired`: consumed with no wrap-up action - a scout report, a review-only artifact,
  *   or another non-shipping settled turn.
  * - `empty`: the session changed nothing, so there was nothing to ship.
@@ -1365,6 +1370,7 @@ export const PROMPTED_COMPLETION_OUTCOMES = [
   "retired",
   "empty",
   "verification_failed",
+  "direct_handoff_undelivered",
 ] as const;
 export type PromptedCompletionOutcome = (typeof PROMPTED_COMPLETION_OUTCOMES)[number];
 

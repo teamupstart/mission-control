@@ -28,6 +28,7 @@ import type {
   ForemanInstructionsView,
   ForemanLeaseResult,
   ForemanPlannerControl,
+  PromptedCompletionDisposition,
   RecordEpisode,
   SetNote,
   SetWorkItemState,
@@ -1348,6 +1349,28 @@ export class ForemanClient implements ForemanActions {
   }
 
   /**
+   * Say that a recorded direct handoff never reached the agent.
+   *
+   * Returns whether the correction landed, and never throws for a refusal: the caller is
+   * already handling an injection failure, and a 409 here means the row moved on to a
+   * reason nobody should overwrite. A transport failure is reported the same way, because
+   * there is nothing useful this caller could do differently either way - the Ship it? card
+   * it raises next is the recovery, with or without the correction.
+   */
+  async markPromptedHandoffUndelivered(
+    sessionId: string,
+    logicalKey: string,
+    generation: number,
+  ): Promise<boolean> {
+    const res = await send(
+      "POST",
+      `/api/sessions/${enc(sessionId)}/queue/wrapup/prompted/undelivered`,
+      { logicalKey, generation },
+    ).catch(() => null);
+    return Boolean(res?.ok);
+  }
+
+  /**
    * Consume one expected completed work-cycle generation, optionally raising its ask or
    * recording the direct-shipping handoff that is about to be typed.
    *
@@ -1361,12 +1384,20 @@ export class ForemanClient implements ForemanActions {
     logicalKey: string,
     generation: number,
     expectedIntent: SessionIntentGuard,
+    /**
+     * Why this generation stopped. REQUIRED, and positional rather than tucked into
+     * `opts`, so a new consumption path cannot be written without answering it - the
+     * whole point of the projection is that every consumed generation has a reason
+     * beside it, and an optional parameter is a reason that gets forgotten.
+     */
+    decision: PromptedCompletionDisposition,
     opts?: { ask?: boolean; directHandoff?: PromptedDirectHandoffKind },
   ): Promise<void> {
     const res = await send("POST", `/api/sessions/${enc(sessionId)}/queue/wrapup/prompted`, {
       logicalKey,
       generation,
       expectedIntent,
+      decision,
       ...(opts?.ask ? { ask: true } : {}),
       ...(opts?.directHandoff ? { directHandoff: opts.directHandoff } : {}),
     });

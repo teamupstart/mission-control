@@ -1,7 +1,16 @@
 import { randomUUID } from "node:crypto";
-import type { ForemanConfig } from "@shared/protocol.ts";
+import type { ForemanConfig, PromptedCompletionDisposition } from "@shared/protocol.ts";
+import {
+  PROMPTED_DECISION_GAPS_MAX,
+  PROMPTED_DECISION_GAP_DETAIL_MAX,
+  PROMPTED_DECISION_GAP_ID_MAX,
+  PROMPTED_DECISION_GAP_PATH_MAX,
+  PROMPTED_DECISION_SUMMARY_MAX,
+} from "@shared/protocol.ts";
+import { taskCompletionContract } from "@shared/task-completion.ts";
 import type {
   AgentType,
+  PromptedCompletionGap,
   PromptedDirectHandoffKind,
   ReviewItem,
   Session,
@@ -49,7 +58,7 @@ import {
   planFromVerify,
   tickTargets,
 } from "./queue-machine.ts";
-import type { QueueConfig } from "./queue-machine.ts";
+import type { QueueConfig, QueueVerdict } from "./queue-machine.ts";
 import {
   PromptedFailureTracker,
   decidePromptedWrapup,
@@ -202,6 +211,11 @@ async function consumePromptedCycle(
   client: ForemanClient,
   session: Session,
   candidate: Extract<PromptedCandidate, { kind: "check" | "retire" }>,
+  /**
+   * WHY this generation is being consumed. Required at every call site, because the
+   * generation and its reason are one durable fact - see `SessionQueue.promptedDecision`.
+   */
+  decision: PromptedCompletionDisposition,
   opts?: { ask?: boolean; directHandoff?: PromptedDirectHandoffKind },
 ): Promise<boolean> {
   const expectedIntent = {
@@ -216,6 +230,7 @@ async function consumePromptedCycle(
       candidate.logicalKey,
       candidate.generation,
       expectedIntent,
+      boundedDecision(decision),
       opts,
     );
     promptedFailures.onConsumed(candidate.logicalKey);
@@ -1332,7 +1347,14 @@ async function processPromptedWrapup(
   if (candidate.kind === "skip") return false;
   if (candidate.kind === "retire") {
     const current = await refreshPromptedCandidate(client, pcfg, candidate);
-    if (!current || !(await consumePromptedCycle(client, current.session, current.candidate))) {
+    if (
+      !current ||
+      !(await consumePromptedCycle(client, current.session, current.candidate, {
+        outcome: "retired",
+        summary: candidate.why,
+        gaps: [],
+      }))
+    ) {
       return false;
     }
     log(`${session.name}: prompted automatic wrap-up skipped - ${candidate.why}`);
@@ -1389,7 +1411,17 @@ async function processPromptedWrapup(
     // four loopback reads a pass against the daemon's single synchronous handle, which
     // also serves hook ingest and SSE - for as long as the write stays broken.
     const current = await refreshPromptedCandidate(client, pcfg, candidate);
-    if (!current || !(await consumePromptedCycle(client, current.session, current.candidate))) {
+    if (
+      !current ||
+      // `empty`, never `held`: no verifier ever ran, so there is no summary to send back
+      // and nothing for recovery to ask the session to finish. The distinction is the
+      // whole reason the outcome vocabulary is wider than a boolean.
+      !(await consumePromptedCycle(client, current.session, current.candidate, {
+        outcome: "empty",
+        summary: "the session changed nothing",
+        gaps: [],
+      }))
+    ) {
       return false;
     }
     log(`${session.name}: prompted wrap-up held - the session changed nothing`);
@@ -1410,7 +1442,14 @@ async function processPromptedWrapup(
   });
   if (block) {
     const current = await refreshPromptedCandidate(client, pcfg, candidate);
-    if (!current || !(await consumePromptedCycle(client, current.session, current.candidate))) {
+    if (
+      !current ||
+      !(await consumePromptedCycle(client, current.session, current.candidate, {
+        outcome: "retired",
+        summary: block.reason,
+        gaps: [],
+      }))
+    ) {
       return false;
     }
     log(`${session.name}: prompted automatic wrap-up skipped - ${block.reason}`);
@@ -1445,6 +1484,20 @@ async function processPromptedWrapup(
     standardsTruncated: standards.truncated,
     instructions,
     priorGaps: [],
+    // The trusted boundary this session's task was actually delivered, resolved
+    // STRUCTURALLY from the durable task kind on the live session Foreman just re-read -
+    // never from transcript prose, which is evidence being judged.
+    //
+    // This is what closes the reported deadlock. A dispatched ship task's objective very
+    // often still says "open a reviewable pull request", while `withTaskKindContract` told
+    // that agent in the same delivery not to. Without the contract the verifier is right
+    // by its own lights and wrong about the boundary: it answers incomplete, the hold
+    // spends the generation, and the bound workflow never gets the finished work.
+    //
+    // A personal session has no task and gets none, so the generic prompted trigger's
+    // behavior is untouched - and so is every other task kind, because only `ship` has a
+    // contract to give.
+    completionContract: taskCompletionContract(session.task?.kind),
   }, verifyModel(cfg), triageRunnerId);
   if (result.kind === "failed") {
     // Unlike the queue there is no item to escalate, but the failure is bounded the
@@ -1454,7 +1507,17 @@ async function processPromptedWrapup(
     const failures = promptedFailures.onFailure(candidate.logicalKey, candidate.generation);
     if (failures >= VERIFY_FAILURE_CAP) {
       const current = await refreshPromptedCandidate(client, pcfg, candidate);
-      if (current) await consumePromptedCycle(client, current.session, current.candidate);
+      if (current) {
+        // `verification_failed`, and deliberately NOT `held`. A hold is a MODEL's verdict
+        // that the work is unfinished; this is the verifier infrastructure failing enough
+        // times to give up, and no one has judged this work at all. Labelling it `held`
+        // would let a later recovery send "blocking gaps" that no verifier ever wrote.
+        await consumePromptedCycle(client, current.session, current.candidate, {
+          outcome: "verification_failed",
+          summary: `verification failed ${failures}x: ${result.reason}`,
+          gaps: [],
+        });
+      }
       log(
         `${session.name}: prompted wrap-up gave up - verify failed ${failures}x (${result.reason})`,
       );
@@ -1504,7 +1567,13 @@ async function processPromptedWrapup(
       current = await refreshPromptedCandidate(client, pcfg, candidate);
       if (
         !current ||
-        !(await consumePromptedCycle(client, current.session, current.candidate, { ask: true }))
+        !(await consumePromptedCycle(
+          client,
+          current.session,
+          current.candidate,
+          { outcome: "asked", summary: result.verdict.summary, gaps: [] },
+          { ask: true },
+        ))
       ) return false;
       log(`${session.name}: existing workflow is Manual - asked about wrapping up`);
       return true;
@@ -1522,7 +1591,15 @@ async function processPromptedWrapup(
   if (plan.kind === "ask-wrapup") {
     // The card and consumed generation are one durable fact: a failure must leave both
     // absent so this verified boundary remains retryable.
-    if (!(await consumePromptedCycle(client, current.session, current.candidate, { ask: true }))) {
+    if (
+      !(await consumePromptedCycle(
+        client,
+        current.session,
+        current.candidate,
+        { outcome: "asked", summary: result.verdict.summary, gaps: [] },
+        { ask: true },
+      ))
+    ) {
       return false;
     }
     log(`${session.name}: prompted work looks complete - asked about wrapping up`);
@@ -1548,6 +1625,12 @@ async function processPromptedWrapup(
       client,
       current.session,
       current.candidate,
+      plan.kind === "auto-wrapup"
+        ? { outcome: "direct_handoff", summary: result.verdict.summary, gaps: [] }
+        // The hold's reason, stored rather than only logged. `plan.why` is the verifier's
+        // own words for what is missing, and the blocking gaps beside it are what Phase 2
+        // sends back - so this is the one outcome that carries them.
+        : { outcome: "held", summary: plan.why, gaps: blockingDecisionGaps(result.verdict) },
       plan.kind === "auto-wrapup" ? { directHandoff: "direct-ship" } : undefined,
     ))
   ) return false;
@@ -1562,8 +1645,22 @@ async function processPromptedWrapup(
   } catch (err) {
     // Never retry: a retry IS the double-push. Fall back to the card, which is exactly
     // `ask` mode and puts this same text one click away.
+    //
+    // And correct the record while doing it. The generation was consumed with
+    // `direct_handoff` a moment ago, before anything typed, because that ordering is what
+    // stops the instruction being sent twice - so the mark cannot be rolled back now. What
+    // it CAN stop doing is claiming the agent received something it never received, which
+    // is the difference between a later reader seeing handed-over work and seeing work
+    // still waiting on this card. Best-effort on purpose: it corrects a record, the card
+    // above is the recovery, and this must not throw over the top of an injection failure
+    // the caller is already reporting.
     log(`${session.name}: could not send the prompted wrap-up (${String(err)}) - asking instead`);
     await client.markWrapupAsked(current.session.id, { clearAnswer: true }).catch(() => {});
+    await client.markPromptedHandoffUndelivered(
+      current.session.id,
+      current.candidate.logicalKey,
+      current.candidate.generation,
+    );
     return true;
   }
 
@@ -1579,6 +1676,47 @@ async function processPromptedWrapup(
   await client.setWrapupAnswer(current.session.id, plan.payload).catch(() => {});
   log(`${session.name}: prompted work complete - sent "${plan.payload}"`);
   return true;
+}
+
+/**
+ * Clamp a reason to the wire schema's bounds, HERE, before it can be rejected.
+ *
+ * The schema refuses over-long text rather than truncating it, and this reason travels
+ * inside the consume - so an unbounded summary would not merely lose the reason, it would
+ * fail the consume itself, leave the generation armed, and spend a full evidence gather
+ * plus a model call every unhurried tick until the strike cap. Most of these summaries come
+ * from the verifier and are already clamped; `verification_failed` carries a runner failure
+ * reason, which is whatever a broken child process wrote to stderr, and that is exactly the
+ * case where a reason must not be able to break the write it rides on.
+ */
+function boundedDecision(decision: PromptedCompletionDisposition): PromptedCompletionDisposition {
+  const clamp = (value: string, max: number): string =>
+    value.length > max ? value.slice(0, max) : value;
+  return {
+    outcome: decision.outcome,
+    summary: clamp(decision.summary, PROMPTED_DECISION_SUMMARY_MAX),
+    gaps: decision.gaps.slice(0, PROMPTED_DECISION_GAPS_MAX).map((gap) => ({
+      id: clamp(gap.id, PROMPTED_DECISION_GAP_ID_MAX),
+      path: clamp(gap.path, PROMPTED_DECISION_GAP_PATH_MAX),
+      detail: clamp(gap.detail, PROMPTED_DECISION_GAP_DETAIL_MAX),
+    })),
+  };
+}
+
+/**
+ * The verdict's BLOCKING gaps, bounded, as the durable record of what is missing.
+ *
+ * Blocking only: an advisory gap is by definition something the human's request did not
+ * depend on, and storing one would put "rename this variable" in front of Phase 2 as a
+ * reason a task is stuck. The count and text bounds are the schema's, re-stated nowhere -
+ * `PromptedCompletionDispositionSchema` refuses anything past them at the write boundary,
+ * and the verifier has already clamped each field to the same lengths.
+ */
+function blockingDecisionGaps(verdict: QueueVerdict): PromptedCompletionGap[] {
+  return verdict.gaps
+    .filter((gap) => gap.severity === "blocking")
+    .slice(0, PROMPTED_DECISION_GAPS_MAX)
+    .map((gap) => ({ id: gap.id, path: gap.path, detail: gap.detail }));
 }
 
 /** What triage needs to know about the item Foreman commissioned, if any. */

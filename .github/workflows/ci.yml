@@ -287,16 +287,19 @@ jobs:
         if: steps.pw-cache.outputs.cache-hit != 'true'
         run: npx playwright install --with-deps chromium
 
-      # tmux, for `session-interrupt-terminal.spec.ts` and nothing else yet.
+      # tmux, for the two specs that need a session whose runtime is `terminal`:
+      # `session-interrupt-terminal.spec.ts` and the handover case at the bottom of
+      # `backlog-reorder.spec.ts`.
       #
-      # That spec needs a session whose runtime is `terminal`, and there is exactly one way
-      # one comes into being: passive discovery correlating a real agent process on a real
-      # tty to a real multiplexer pane. tmux is the multiplexer that cannot be faked - its
+      # There is exactly one way such a session comes into being: passive discovery
+      # correlating a real agent process on a real tty to a real multiplexer pane. tmux is the multiplexer that cannot be faked - its
       # `BinSpec` declares `env: null`, so unlike `CMUX_BIN` there is no override to point
       # at a stand-in - and a real pty is also what makes that spec's central assertion
       # ("exactly one 0x1B arrived") a fact about the product rather than about a fixture.
+      # The handover spec needs the same pty for the same reason: an assignment is only
+      # accepted for a `keystroke` session, and it ends by typing into one.
       #
-      # The spec skips itself when tmux is absent, so a contributor without it is not
+      # Both specs skip themselves when tmux is absent, so a contributor without it is not
       # blocked. This step is what stops that skip from silently applying HERE, where the
       # gate is supposed to hold.
       #
@@ -304,7 +307,7 @@ jobs:
       # terms: `apt-get update` is ~10s of billed vCPU on EVERY shard, and it buys nothing
       # on an image that already carries tmux. The guard costs milliseconds and pays for
       # itself the moment the image gains it.
-      - name: Install tmux for the terminal-runtime e2e spec
+      - name: Install tmux for the terminal-runtime e2e specs
         run: command -v tmux || { sudo apt-get update && sudo apt-get install -y tmux; }
 
       - name: Build

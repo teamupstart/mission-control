@@ -47,11 +47,32 @@ test("Settings Worktrees configures, inventories, previews, blocks, launches, an
   // place, and a second open dashboard converges through the content-free SSE invalidation.
   const second = await context.newPage();
   await second.goto(`${daemon.baseURL}/#/settings/worktrees`);
+  const secondMax = second.getByLabel("Default maximum native slots");
+
+  // This page can only converge through an invalidation it is SUBSCRIBED to, and `goto`
+  // resolves long before the stream is up. Editing in the gap sends the one event this
+  // page needed while nothing is listening, after which it sits on the value it first
+  // fetched and the assertion below waits out its timeout - a race in the fixture, not a
+  // regression, and the one that made this spec fail under a loaded machine.
+  //
+  // Two readiness facts, because they are different claims and only both together close
+  // the gap: the value proves this page's own fetch has LANDED (so a pass cannot be it
+  // simply never having shown the old number), and the connection segment proves the
+  // stream is UP - it is the app's own published state, and it names "reconnecting" for
+  // exactly the window in which an invalidation would be dropped.
+  const before = (await (await dashboard.request.get(`${daemon.baseURL}/api/worktrees`)).json()) as {
+    config: { maxSlots: number };
+  };
+  await expect(secondMax).toHaveValue(String(before.config.maxSlots));
+  await expect(
+    second.getByRole("button", { name: /^Keep awake - (?!Mission Control is reconnecting)/ }),
+  ).toBeVisible();
+
   const defaultMax = dashboard.getByLabel("Default maximum native slots");
   await defaultMax.fill("4");
   await expect.poll(async () => (await dashboard.request.get(`${daemon.baseURL}/api/worktrees`)).json())
     .toMatchObject({ config: { maxSlots: 4 } });
-  await expect(second.getByLabel("Default maximum native slots")).toHaveValue("4");
+  await expect(secondMax).toHaveValue("4");
   await second.close();
 
   // Clipboard feedback and terminal opening both use their established abstractions. The

@@ -21,6 +21,7 @@ const queue: SessionQueue = {
   promptedLegacyCutoverGeneration: null,
   promptedConsumedGeneration: null,
   promptedDirectHandoff: null,
+  promptedDecision: null,
   updatedAt: 42,
   items: [{
     id: "item",

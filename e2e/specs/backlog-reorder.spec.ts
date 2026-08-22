@@ -1,4 +1,9 @@
-import { mkdirSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { execPath } from "node:process";
+import { fileURLToPath } from "node:url";
 import type { Locator, Page } from "@playwright/test";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
@@ -14,13 +19,19 @@ import { expect, test } from "../fixtures/test.ts";
  * machine tests know `decideBacklogTick` takes the head. Only here does pressing `top` on
  * a card end with Foreman launching a different task.
  *
- * Driven with the KEYBOARD on purpose. Dragging arrives in phase 2, and the keyboard route
- * is the one that ships first for the reason it exists: a reorder that is only a mouse
- * gesture is one some people cannot perform and no spec can drive.
+ * Driven BOTH ways, because the feature is both. The keyboard route shipped first for the
+ * reason it exists - a reorder that is only a mouse gesture is one some people cannot
+ * perform - and the drag is the one the feature was asked for. The cases at the bottom
+ * cover the drag, including the one that matters most: the SAME drag still hands a card to
+ * an idle agent when it is dropped on one, because which drop target it lands on is the
+ * only thing that decides which of the two things happens.
  *
  * NO MODEL TOKENS. Every agent binary is redirected at a fake by `fixtures/fake-agents.ts`,
  * which covers both paths a launch takes - the one-shot `claude -p` titler and the SDK
- * session - so the autopilot case at the bottom launches a fake and costs nothing.
+ * session - so the autopilot case launches a fake and costs nothing. The handover case at
+ * the bottom stands its agent up a third way, `node` under a symlink named `claude`
+ * (`fixtures/pane-agent.mjs`), which spends nothing either and is the only kind of session
+ * a handover can complete against - see that block's own header.
  */
 
 const EVIDENCE = artifactsDir("backlog-reorder");
@@ -372,4 +383,341 @@ test("autopilot launches the card the operator moved up, not the one filed first
   // And the one that would have gone first is still queued, still exactly where it was put.
   expect(await storedOrder(daemon)).toEqual(["Would have gone first"]);
   await shoot(dashboard, "autopilot-took-the-moved-card");
+});
+
+/**
+ * One HTML5 drag, dispatched as the browser dispatches one.
+ *
+ * A real `DataTransfer`, created in the page, carried from `dragstart` through `dragover`
+ * to `drop` - so the handlers under test are exactly the handlers a person's drag runs,
+ * reading the payload the card actually wrote. Playwright's `dragTo` and a synthetic
+ * `mouse.down`/`move`/`up` both drive Chromium's own drag machinery, which does not
+ * reliably raise native HTML5 drag events through CDP; the repo already drags this way in
+ * `board-held-by-workflow.spec.ts` for that reason.
+ */
+async function lift(page: Page, source: Locator): Promise<{
+  over: (target: Locator) => Promise<void>;
+  drop: (target: Locator) => Promise<void>;
+  end: () => Promise<void>;
+}> {
+  const dataTransfer = await page.evaluateHandle(() => new DataTransfer());
+  await source.dispatchEvent("dragstart", { dataTransfer });
+  return {
+    over: (target) => target.dispatchEvent("dragover", { dataTransfer }),
+    drop: async (target) => {
+      await target.dispatchEvent("dragover", { dataTransfer });
+      await target.dispatchEvent("drop", { dataTransfer });
+    },
+    end: () => source.dispatchEvent("dragend", { dataTransfer }),
+  };
+}
+
+/** The N+1 places a card can be dropped, in column order: above the first, then downward. */
+const gaps = (page: Page): Locator => column(page).locator(".bl-gap");
+
+test("dragging a card up the column moves it, and the move is on the row", async ({
+  dashboard,
+  daemon,
+}) => {
+  await seedTask(daemon, "Filed first");
+  await seedTask(daemon, "Filed second");
+  await seedTask(daemon, "Filed third");
+  await useBoardLayout(dashboard, daemon);
+  await expect.poll(() => cardTitles(dashboard)).toEqual([
+    "Filed first",
+    "Filed second",
+    "Filed third",
+  ]);
+
+  // Three cards, four places to put one: the column offers the drag every position the
+  // move buttons can reach, including above the first card.
+  await expect(gaps(dashboard)).toHaveCount(4);
+
+  const drag = await lift(dashboard, card(dashboard, "Filed third"));
+
+  // The column knows what is in the air. This is not decoration: the gaps are inert -
+  // `pointer-events: none` - until it does, so that a card click and a file dropped on the
+  // dashboard cannot be swallowed by a target that is invisible the rest of the time.
+  await expect(column(dashboard)).toHaveClass(/is-reordering/);
+  await expect(gaps(dashboard).first()).toHaveCSS("pointer-events", "auto");
+  // And the card being moved is dimmed, so the gesture reads as a move rather than a copy.
+  await expect(card(dashboard, "Filed third")).toHaveClass(/is-lifted/);
+
+  // Over the topmost gap, the column draws ONE line, where the card would land.
+  await drag.over(gaps(dashboard).first());
+  await expect(gaps(dashboard).first()).toHaveClass(/is-over/);
+  await expect(column(dashboard).locator(".bl-gap.is-over")).toHaveCount(1);
+  await shoot(dashboard, "drag-over-the-top-gap", column(dashboard));
+
+  await drag.drop(gaps(dashboard).first());
+  await drag.end();
+
+  // It stays where it was dropped - because the DAEMON moved it. Nothing is drawn
+  // optimistically, so this order arriving at all is the whole round trip.
+  await expect.poll(() => cardTitles(dashboard)).toEqual([
+    "Filed third",
+    "Filed first",
+    "Filed second",
+  ]);
+  await expect(column(dashboard).locator(".bl-gap.is-over")).toHaveCount(0);
+  await expect(card(dashboard, "Filed third").getByText("next up")).toBeVisible();
+  await shoot(dashboard, "drag-reordered", column(dashboard));
+  await shoot(dashboard, "board-after-drag-reorder");
+
+  // The order is a fact on the row, not a state of this DOM: it survives a reload, and the
+  // daemon's own list - the one Foreman reads over loopback - already agreed before it.
+  expect(await storedOrder(daemon)).toEqual(["Filed third", "Filed first", "Filed second"]);
+  await dashboard.reload();
+  await expect.poll(() => cardTitles(dashboard)).toEqual([
+    "Filed third",
+    "Filed first",
+    "Filed second",
+  ]);
+
+  // A drag DOWN the column, through the gap between two cards rather than an end - the
+  // `before`-an-anchor case, which is the one an index would have got wrong.
+  const back = await lift(dashboard, card(dashboard, "Filed third"));
+  await back.drop(gaps(dashboard).nth(2));
+  await back.end();
+  await expect.poll(() => cardTitles(dashboard)).toEqual([
+    "Filed first",
+    "Filed third",
+    "Filed second",
+  ]);
+});
+
+test("dropping a card where it already is sends nothing", async ({ dashboard, daemon }) => {
+  await seedTask(daemon, "Stays exactly here");
+  await seedTask(daemon, "Its neighbour");
+  await useBoardLayout(dashboard, daemon);
+  await expect.poll(() => cardTitles(dashboard)).toEqual(["Stays exactly here", "Its neighbour"]);
+
+  const reorders: string[] = [];
+  dashboard.on("request", (r) => {
+    if (r.url().includes("/reorder")) reorders.push(r.url());
+  });
+
+  // Both gaps either side of the first card are where it already is. A request here would
+  // burn a rank allocation and push a `task_upsert` to every connected dashboard to
+  // redraw exactly what they are already drawing.
+  const drag = await lift(dashboard, card(dashboard, "Stays exactly here"));
+  await drag.over(gaps(dashboard).first());
+  // No line is drawn either: there is nowhere for it to go, so nothing promises a move.
+  await expect(column(dashboard).locator(".bl-gap.is-over")).toHaveCount(0);
+  await drag.drop(gaps(dashboard).first());
+  await drag.drop(gaps(dashboard).nth(1));
+  await drag.end();
+
+  expect(reorders, "a no-op drop asks the daemon for nothing").toEqual([]);
+  expect(await cardTitles(dashboard)).toEqual(["Stays exactly here", "Its neighbour"]);
+  expect(await storedOrder(daemon)).toEqual(["Stays exactly here", "Its neighbour"]);
+});
+
+/**
+ * The other ending of the same drag, proved against an agent that can actually take the card.
+ *
+ * ## Why this one test runs its daemon differently
+ *
+ * A handover ends by typing a task's intent into a live agent's terminal, and only ONE kind
+ * of session can be typed into: `controlFor` gives an Agent SDK session `stream-json`
+ * control and `paneAcceptsPrompt` admits `keystroke` only, so a dispatched agent - the kind
+ * every other spec in this suite stands up - is refused by construction. The kind that is
+ * accepted is `runtime: "terminal"`, and that value is stamped in exactly one place
+ * (`registry.ts:mergeDiscovered`), which makes passive discovery the only door to one.
+ *
+ * The suite turns discovery off everywhere else (`MISSION_POLL_MS: "0"`, `daemon.ts`) and
+ * that default is safety-critical: a machine-wide sweep adopts whatever agents the developer
+ * happens to be running. This block turns it back on for its own daemon and pays for it the
+ * way `session-interrupt-terminal.spec.ts` does - by never asserting on the fleet as a
+ * whole. It addresses ONE card, found by the tmux session name it just generated, and
+ * touches nothing else. The task it drags is in this daemon's throwaway fixture repo, so
+ * even a mis-aimed drop could not reach a real agent: `assignReserved` refuses any session
+ * whose `repoRoot` differs from the task's.
+ *
+ * NO MODEL TOKENS. The thing in the pane is `node` under a symlink named `claude` - the
+ * shape `harnessOf` detects - running `fixtures/pane-agent.mjs`.
+ */
+test.describe("dropped on an idle agent", () => {
+  /** Discovery, on and brisk - this block's daemon only. See the header for why that is safe. */
+  test.use({ daemonEnv: { MISSION_POLL_MS: "400" } });
+
+  /**
+   * Skipped rather than failed when tmux is absent, so a contributor without it is not
+   * blocked. CI installs tmux for this suite, which is what stops the skip from quietly
+   * turning this into decoration - see `session-interrupt-terminal.spec.ts`, which makes the
+   * same trade for the same reason.
+   */
+  test.skip(
+    spawnSync("tmux", ["-V"], { stdio: "ignore" }).status !== 0,
+    "tmux is not installed on this machine",
+  );
+
+  let pane: { name: string; id: string; screen: () => string; cleanup: () => void } | undefined;
+  test.afterEach(() => {
+    pane?.cleanup();
+    pane = undefined;
+  });
+
+  /**
+   * A real tmux pane running something the daemon discovers as an idle Claude session.
+   *
+   * Two spawns, not one, and the second is the point: the pane agent has to be told its own
+   * pane id so its hooks bind to this card, and tmux only issues that id once the pane
+   * exists. `respawn-pane -k` replaces the placeholder in place, which keeps the pane id
+   * stable - re-creating the session would mint a new one and the hooks would address a
+   * pane that no longer exists.
+   *
+   * The session name is unique per run so a parallel worker's pane, or a stray one from an
+   * earlier run, can never be the card this test drives.
+   */
+  function startPane(daemon: DaemonHandle): NonNullable<typeof pane> {
+    const dir = mkdtempSync(join(tmpdir(), "mc-e2e-handover-"));
+    const bin = join(dir, "fake-bin");
+    mkdirSync(bin);
+    // argv0's basename is what `harnessOf` matches, so the LINK's name is the whole disguise.
+    symlinkSync(execPath, join(bin, "claude"));
+    const agent = fileURLToPath(new URL("../fixtures/pane-agent.mjs", import.meta.url));
+    const token = readFileSync(join(daemon.home, "token"), "utf8").trim();
+    const name = `mc-e2e-handover-${process.pid}-${Date.now()}`;
+    const run = (paneId: string): string =>
+      `${join(bin, "claude")} ${agent} ${daemon.baseURL} ${token} ${paneId} ${daemon.repo} ${dir}`;
+
+    const tmux = (args: string[]): string =>
+      execFileSync("tmux", args, { encoding: "utf8", stdio: "pipe" });
+    tmux(["new-session", "-d", "-s", name, "-x", "120", "-y", "40", "-c", daemon.repo, run("%0")]);
+    const id = tmux(["list-panes", "-t", name, "-F", "#{pane_id}"]).trim();
+    tmux(["respawn-pane", "-k", "-t", id, "-c", daemon.repo, run(id)]);
+
+    return {
+      name,
+      id,
+      screen: () => {
+        try {
+          return tmux(["capture-pane", "-p", "-t", id]);
+        } catch {
+          return "";
+        }
+      },
+      /**
+       * Killed by PANE ID, never by the session name.
+       *
+       * A handover renames the agent's terminal after the task it just took, so by the time
+       * this runs the name above no longer addresses anything - `kill-session -t <name>`
+       * exits non-zero and the pane is left running on the developer's machine forever,
+       * where the next run with discovery on cards it as a stray idle agent. A pane id is
+       * stable across renames, and killing the session's last pane takes the session with
+       * it.
+       */
+      cleanup: () => {
+        spawnSync("tmux", ["kill-pane", "-t", id], { stdio: "ignore" });
+        rmSync(dir, { recursive: true, force: true });
+      },
+    };
+  }
+
+  test("the same drag hands the card to an idle agent, and never reorders it", async ({
+    dashboard,
+    daemon,
+  }) => {
+    // THE regression that matters. One drag now has two possible endings, and nothing else
+    // in the suite would notice the assign one breaking: every layer below this sees a card
+    // that is `draggable` and a tile that has an `onDrop`, and none of them can see that a
+    // drop target added to the column ate the drop meant for the agent - or that the tile's
+    // drop quietly started reordering instead of handing the task over.
+    const agent = startPane(daemon);
+    pane = agent;
+    const task = await seedTask(daemon, "Hand me over");
+    await useBoardLayout(dashboard, daemon);
+    await expect.poll(() => cardTitles(dashboard)).toEqual(["Hand me over"]);
+
+    // OUR card, by the tmux session name just generated. Never "the only tile": discovery is
+    // on, so the developer's own agents are on this fleet too.
+    const tile = dashboard.locator("section.board-col .tile").filter({ hasText: agent.name });
+    await expect(tile).toHaveCount(1, { timeout: 30_000 });
+    // IDLE is the precondition the whole gesture rests on - `assignReserved` refuses any other
+    // state in those words - so it is asserted rather than waited out.
+    await expect(
+      dashboard.locator("section.board-col.tone-idle .tile").filter({ hasText: agent.name }),
+    ).toHaveCount(1, { timeout: 30_000 });
+
+    // Every request the drop makes, so the ENDING can be named rather than inferred from a
+    // side effect two layers away.
+    const posted: string[] = [];
+    dashboard.on("request", (r) => {
+      if (r.method() !== "POST") return;
+      if (/\/api\/tasks\/[^/]+\/(assign|reorder)$/.test(new URL(r.url()).pathname)) {
+        posted.push(`${new URL(r.url()).pathname} ${r.postData() ?? ""}`);
+      }
+    });
+
+    const drag = await lift(dashboard, card(dashboard, "Hand me over"));
+    // The tile lights up because the board knows a card is in the air and which repo it is
+    // for - the same `dragstart`, and the same one notion of what is in the air, that the
+    // column now also reads to light its own gaps.
+    await expect(tile).toHaveClass(/can-drop/);
+    await expect(tile.locator(".tile-drop-hint")).toHaveText("↳ drop to hand this over");
+    await shoot(dashboard, "drag-over-the-idle-agent");
+    await drag.drop(tile);
+    await drag.end();
+
+    // THE ENDING, in the daemon's own words: the task is RUNNING, and it is running on the
+    // session that lives in our pane. Polled on the API rather than the DOM because
+    // "assigned" is a fact about the task row; the board's rendering of it is asserted
+    // further down as a separate claim.
+    const handover = async (): Promise<string> => {
+      const tasks = await api<Array<{ title: string; status: string; sessionId: string | null }>>(
+        daemon,
+        "/api/tasks",
+      );
+      const mine = tasks.find((t) => t.title === "Hand me over");
+      if (!mine) return "no such task";
+      if (!mine.sessionId) return `${mine.status}, bound to nothing`;
+      const sessions = await api<Array<{ id: string; terminals: Array<{ paneId?: string }> }>>(
+        daemon,
+        "/api/sessions",
+      );
+      const on = sessions.find((session) => session.id === mine.sessionId);
+      // Identified by PANE, not by session id, so this says "OUR agent took it" rather than
+      // "some agent did" - which is the assertion worth making on a fleet where discovery is
+      // switched on and the developer's own agents are carded alongside this one.
+      const ours = on?.terminals?.some((t) => t.paneId === agent.id);
+      return `${mine.status}, on ${ours ? "our agent" : "another agent"}`;
+    };
+    await expect.poll(handover, { timeout: 30_000 }).toBe("running, on our agent");
+    const sessionId = (
+      await api<Array<{ id: string; task: { title: string } | null }>>(daemon, "/api/sessions")
+    ).find((session) => session.task?.title === "Hand me over")?.id;
+
+    // Exactly one POST, on the assign route, naming this task and this session - and NO
+    // reorder, so the column's new drop targets did not take a drag aimed past them.
+    expect(posted).toEqual([
+      `/api/tasks/${task.id}/assign {"sessionId":"${sessionId}","overrideDisabled":true,"confirmReset":false}`,
+    ]);
+
+    // And it arrived where a handover actually ends: typed into the pane, on the far side of
+    // a real pty. The transcript records lengths rather than text (see `pane-agent.mjs`), so
+    // this asserts that a body the size of the intent was submitted after the `/clear` - the
+    // one thing no request log can show.
+    const clearLength = "/clear".length;
+    await expect
+      .poll(() => agent.screen(), { timeout: 15_000 })
+      .toMatch(new RegExp(`\\[took ${clearLength} chars\\][\\s\\S]*\\[took (?!0 )\\d+ chars\\]`));
+
+    // The board says the same thing the API does: the card has left the Backlog column, and
+    // a tile now carries the task.
+    //
+    // Found by the TASK's title rather than through `tile` above, because a handover renames
+    // the agent's terminal after the task it just took - so the tmux session name that
+    // located the tile before the drop is exactly what the tile stops saying afterwards.
+    // Unique on this board: the title belongs to a task this daemon seeded a moment ago.
+    await expect.poll(() => cardTitles(dashboard)).toEqual([]);
+    await expect(
+      dashboard.locator("section.board-col .tile").filter({ hasText: "Hand me over" }),
+    ).toHaveCount(1, { timeout: 15_000 });
+    await shoot(dashboard, "drag-assigned-to-the-agent");
+
+    // Nothing was reordered on the way past. The backlog is empty because the card was taken,
+    // not because it was moved somewhere this spec stopped looking.
+    expect(await storedOrder(daemon)).toEqual([]);
+  });
 });

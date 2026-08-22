@@ -806,6 +806,48 @@ test("a clean, queue-less agent takes the drop with no confirmation at all", asy
  * about an assign already says "fresh start" (branch back to origin's default, queue
  * dropped, context cleared); the name was the one thing left behind.
  */
+/**
+ * The board's drag, in the arguments the drop actually sends.
+ *
+ * `dropTaskOnSession` calls `api.assignTask(id, session.id, true)`, which posts
+ * `{sessionId, overrideDisabled: true, confirmReset: false}`, and the route forwards those
+ * two flags verbatim. `e2e/specs/backlog-reorder.spec.ts` proves in a browser that a card
+ * dropped on an idle agent's tile produces exactly that request and no reorder; this is the
+ * other half of the same claim - that this request HANDS THE TASK OVER.
+ *
+ * The browser proves that end to end, against a real tmux pane - so this is not standing in
+ * for a claim nothing else can reach. It is here for what a unit test is good at and a
+ * browser is not: naming the EXACT arguments the drop sends, and pinning each field of the
+ * resulting state on its own, in milliseconds and without a terminal. `worktreePath: null`
+ * is the one worth stating - an assignment reuses the agent's checkout rather than
+ * provisioning one, which is what makes it a different operation from a dispatch.
+ */
+test("the drop's own arguments hand the task to the agent", async () => {
+  const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-drop-args-");
+  gitIn(clone, "checkout", "-q", "--detach");
+  r.upsertTask(mkTask({ repoRoot: clone, title: "Hand me over" }));
+
+  const res = await tasks.assign("t1", sessionId, {
+    // Exactly what `POST /api/tasks/:id/assign` derives from the drop's body.
+    overrideDisabled: true,
+    confirmReset: false,
+    paneReady,
+    reset: cleanReset,
+    inject: async () => ({ ok: true, pasted: true, submitVerified: true }),
+  });
+
+  assert.equal(res.ok, true, res.error);
+  assert.equal(res.resetConfirm, undefined, "a clean agent is handed the task with no question");
+  // The outcome the gesture promises: the task is no longer in the backlog, and it is on
+  // the agent that was dropped onto.
+  const handed = r.getTask("t1");
+  assert.equal(handed?.status, "running");
+  assert.equal(handed?.sessionId, sessionId);
+  // And it owns no checkout of its own - the agent kept the one it had, which is the
+  // difference between a handover and a dispatch.
+  assert.equal(handed?.worktreePath, null);
+});
+
 test("a handover names the agent's terminal after the task it just took", async () => {
   const { r, tasks, sessionId, clone } = setupOnTmux("mission-assign-rename-", "pool-worktree-3");
   gitIn(clone, "checkout", "-q", "--detach");

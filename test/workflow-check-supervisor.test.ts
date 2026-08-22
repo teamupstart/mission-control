@@ -223,6 +223,26 @@ test("the identity survives the gate release - the regression an exec-ing shim w
 
 // ---- teardown reaches descendants ------------------------------------------
 
+/**
+ * The floor under a command timeout in this file, and the reason it is not milliseconds.
+ *
+ * A check's timeout is ALSO the supervisor's start-up budget until the gate is released.
+ * `check-spawn.ts` says so at its `runTimer` and handles it deliberately: with no supervisor
+ * yet, the timeout aborts before release - `emptiness: "empty"`, `supervisor: null`, "the
+ * check supervisor did not start within the command's Nms timeout" - rather than tearing down
+ * a group that was never released. That is real behaviour with its own coverage; it is simply
+ * not what the cases below mean to exercise.
+ *
+ * Which branch a case takes is therefore decided by how long `node` takes to start. That is a
+ * few hundred milliseconds idle and several times that on a machine running the whole suite,
+ * so a sub-second budget here is not a test of the supervisor at all - it is a test of the
+ * load average. This is what a 300ms timeout did: green locally and on a quiet CI runner, and
+ * an unexplained `emptiness: "empty"` in a check worktree running 9000 tests beside several
+ * agents. Sized as one loaded `node` start plus room, because every case below needs the
+ * command to reach its timeout WITH the gate open.
+ */
+const COMMAND_TIMEOUT_MS = 3_000;
+
 test("SIGTERM to the group reaches a grandchild, and emptiness waits for it", async () => {
   const dir = workspace();
   const pidFile = join(dir, "grandchild.pid");
@@ -236,12 +256,7 @@ test("SIGTERM to the group reaches a grandchild, and emptiness waits for it", as
       command: ["sh", "-c", 'sleep 30 & echo $! > "$1"; wait', "sh", pidFile],
       leasePath: dir,
       workingSubpath: "",
-      // Long enough that `sh` has certainly spawned and written the pid file before the
-      // timeout tears the group down. The grandchild sleeps for 30 seconds, so every
-      // assertion below is unchanged by a longer budget - but at 700ms a loaded machine
-      // reached the timeout before the pid file existed and the case died on ENOENT
-      // reading it, which is a measurement of scheduler latency and not of teardown.
-      timeoutMs: 5_000,
+      timeoutMs: COMMAND_TIMEOUT_MS,
     },
     { registry, daemonToken: "" },
   );
@@ -679,11 +694,18 @@ test("a group that could NOT be proven empty stays watched for the exit hook", a
       command: ["sh", "-c", 'sleep 30 & echo $! > "$1"; wait', "sh", pidFile],
       leasePath: dir,
       workingSubpath: "",
-      timeoutMs: 300,
+      timeoutMs: COMMAND_TIMEOUT_MS,
     },
     { registry, daemonToken: "", teardown: { graceMs: 0, confirmMs: 0, pollMs: 1 } },
   );
 
+  // Said first, and as its own assertion: everything below is about what happens AFTER the
+  // gate opened, and a supervisor that never started reaches the same `notEqual` line with a
+  // perfectly true "empty" and no hint as to why. See COMMAND_TIMEOUT_MS.
+  assert.ok(
+    outcome.supervisor,
+    "the supervisor never started, so this case never reached the behaviour it covers",
+  );
   assert.notEqual(outcome.emptiness, "empty");
   // The point: something may still be writing into the leased worktree, so an orderly daemon
   // exit must still know to signal it. Dropping it here would leave nothing to kill on the way

@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState } from "react";
+import { Fragment, useLayoutEffect, useRef, useState } from "react";
 import type { BacklogBlocker } from "@shared/backlog.ts";
 import type { AssignResetConfirm, BacklogPlan, Session, Task, TaskPriority } from "@shared/types.ts";
 import type { ReorderTask } from "@shared/protocol.ts";
@@ -62,6 +62,13 @@ import { Tooltip } from "../Tooltip.tsx";
  * Foreman takes next. See docs/plans/backlog-manual-order/plan.md. The controls are
  * ordinary buttons rather than a mouse-only gesture, because a reorder that only exists
  * as a drag is one half the surfaces cannot test and some people cannot perform.
+ *
+ * The order is ALSO a drag, and it is the same drag. A card carries one payload and starts
+ * one `dragstart`; what decides whether it is assigned or reordered is WHERE it is dropped -
+ * an agent tile hands it over, a gap in this column moves it. No handle, no modifier, no
+ * mode, and deliberately no second MIME type: a second payload would mean the card had to
+ * know at `dragstart` what the drag was FOR, which is exactly the mode this avoids. Adding
+ * a third destination later means adding a drop target, not a second kind of drag.
  */
 export function BacklogColumn({
   tasks,
@@ -101,8 +108,109 @@ export function BacklogColumn({
 }): React.JSX.Element {
   const nextUp = nextUpTaskId(allTasks, plan);
   const index = backlogIndex(allTasks, plan);
+  /**
+   * The card in the air, by id, or null when nothing is being dragged.
+   *
+   * ONE notion of that, shared with the board: the card reports its drag start and end
+   * through the same `onDragging` call the tiles already listen to, widened to carry the id
+   * this column needs rather than given a second callback beside it. Two notions is how a
+   * board ends up with lit tiles and no dragged card, or the reverse.
+   */
+  const [lifted, setLifted] = useState<string | null>(null);
+  /**
+   * Which gap the cursor is over, by index, or null.
+   *
+   * Set on `dragover` rather than tracked with an enter/leave pair: `dragleave` fires when
+   * the cursor moves onto a child element, so a counting scheme flickers the indicator on
+   * every pixel of travel across a target that has one.
+   */
+  const [overGap, setOverGap] = useState<number | null>(null);
+  const liftedIndex = lifted === null ? -1 : tasks.findIndex((t) => t.id === lifted);
+  /**
+   * The same fact, but only while the card is still HERE to be moved.
+   *
+   * A drag that ends on an agent tile assigns the task, which takes it out of the backlog -
+   * and the `dragend` that would have cleared this can be swallowed by the re-render that
+   * removes the card (the same window `SessionTile` clears the board's own drag state in).
+   * Deriving it off the rendered list means the column cannot be left dimmed and lit up over
+   * a card that is no longer in it.
+   */
+  const inAir = liftedIndex >= 0 ? lifted : null;
+
+  const reportDragging = (repoRoot: string | null, taskId: string | null): void => {
+    setLifted(taskId);
+    if (taskId === null) setOverGap(null);
+    onDragging(repoRoot);
+  };
+
+  /**
+   * Where a drop into gap `i` puts the card, as a body the route understands.
+   *
+   * Anchors, never indices - an index is a claim about the list this browser last rendered,
+   * and the daemon's has moved on since. The two ends are `top`/`bottom` rather than
+   * `before`/`after` the current end cards, because the ends are the one place a second
+   * dashboard can change what "first" means between this render and this drop.
+   */
+  const gapTarget = (i: number): ReorderTask => {
+    if (i === 0) return { position: "top" };
+    const anchor = tasks[i];
+    return anchor ? { position: "before", anchorTaskId: anchor.id } : { position: "bottom" };
+  };
+
+  /**
+   * Take a dropped card into gap `i`.
+   *
+   * The two gaps either side of the dragged card are where it already is, so they answer
+   * with nothing rather than with a request that would change nothing - a 200 whose only
+   * effect is a wasted rank allocation and a `task_upsert` every dashboard has to redraw for.
+   *
+   * A refusal is SURFACED through the same channel the move buttons use. Phase 1's 409s are
+   * reachable here by ordinary racing - a card that dispatched while it was in the air, or
+   * an anchor that did - and a column that silently snapped back would look broken rather
+   * than late.
+   */
+  const dropInGap = async (e: React.DragEvent, i: number): Promise<void> => {
+    const id = e.dataTransfer.getData("application/x-mission-task");
+    if (!id) return;
+    const from = tasks.findIndex((t) => t.id === id);
+    if (from >= 0 && (i === from || i === from + 1)) return;
+    const r = await api.reorderTask(id, gapTarget(i));
+    if (!r.ok) onAssignError(r.error ?? "could not move that");
+  };
+
+  /** One gap's handlers, shared by the between-card slots and the empty column's message. */
+  const gapProps = (
+    i: number,
+  ): Pick<React.HTMLAttributes<HTMLElement>, "onDragOver" | "onDrop"> => ({
+    onDragOver: (e) => {
+      // Only the drag this column is about. Without the guard a file dragged onto the
+      // dashboard would be swallowed here, because `preventDefault` on `dragover` is what
+      // tells the browser a drop is welcome at all.
+      if (inAir === null) return;
+      e.preventDefault();
+      // The card itself and the body below both listen; stopping here is what lets the
+      // body's own handler mean "over the column but not over a gap" and clear the mark.
+      e.stopPropagation();
+      e.dataTransfer.dropEffect = "move";
+      // A gap the card is already beside draws nothing: that IS the feedback - there is
+      // nowhere for it to go, so no line is drawn promising a move.
+      setOverGap(i === liftedIndex || i === liftedIndex + 1 ? null : i);
+    },
+    onDrop: (e) => {
+      if (inAir === null) return;
+      e.preventDefault();
+      e.stopPropagation();
+      setOverGap(null);
+      void dropInGap(e, i);
+    },
+  });
+
   return (
-    <section className={`board-col board-backlog${wide ? " is-wide" : ""}`}>
+    <section
+      className={`board-col board-backlog${wide ? " is-wide" : ""}${
+        inAir === null ? "" : " is-reordering"
+      }`}
+    >
       {/* The same two ways in as every other column head - see BoardView. */}
       <header className="board-col-head" onDoubleClick={onToggleWide}>
         <span className="board-swatch" aria-hidden />
@@ -113,29 +221,64 @@ export function BacklogColumn({
         )}
         <span className="board-col-n">{tasks.length}</span>
       </header>
-      <div className="board-col-body">
+      <div
+        className="board-col-body"
+        // Over the column but not over a gap - a card, or the space beside one. The mark
+        // is cleared here rather than by each gap's own `dragleave`, so travelling from
+        // one gap to the next can never leave two lines drawn or none.
+        onDragOver={() => setOverGap(null)}
+        // And out of the column entirely, towards an agent tile. `dragleave` also fires
+        // on the way onto a child, which is why the relatedTarget is checked rather than
+        // trusted: without it the mark would blink out every time the cursor crossed a card.
+        onDragLeave={(e) => {
+          if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setOverGap(null);
+        }}
+      >
         {tasks.length === 0 ? (
-          <p className="board-col-empty">Nothing queued</p>
+          // The message IS the target when there is nothing to drop between, so the first
+          // card of an empty backlog has somewhere to land. `bottom` and `top` mean the
+          // same thing to an empty list; `bottom` is the one that stays right if a card
+          // arrived between this render and this drop.
+          <p className={`board-col-empty bl-drop-empty${overGap === 0 ? " is-over" : ""}`} {...gapProps(0)}>
+            Nothing queued
+          </p>
         ) : (
           tasks.map((t, i) => (
-            <BacklogCard
-              key={t.id}
-              task={t}
-              blockers={blockersIn(t, index)}
-              deadBlockers={deadBlockersFor(t, index)}
-              nextUp={t.id === nextUp}
-              // The cards this one is drawn BETWEEN, which is what the move controls send
-              // as their anchor. Read off the rendered list rather than off the raw
-              // backlog, so "move above the card above me" means the card the operator can
-              // actually see - the same place a drag would land it.
-              above={tasks[i - 1] ?? null}
-              below={tasks[i + 1] ?? null}
-              onAssignError={onAssignError}
-              onDragging={onDragging}
-              onEdit={() => onEdit(t.id)}
-              onOpenSchedule={onOpenSchedule}
-              scheduleNameById={scheduleNameById}
-            />
+            <Fragment key={t.id}>
+              {/* Above every card, and one more below the last: N cards, N+1 places to
+                  put one. Zero-height and inert until something is in the air, because a
+                  list that reflows under a drag is a list you cannot aim at. */}
+              <div
+                className={`bl-gap${overGap === i ? " is-over" : ""}`}
+                aria-hidden
+                {...gapProps(i)}
+              />
+              <BacklogCard
+                task={t}
+                blockers={blockersIn(t, index)}
+                deadBlockers={deadBlockersFor(t, index)}
+                nextUp={t.id === nextUp}
+                lifted={t.id === inAir}
+                // The cards this one is drawn BETWEEN, which is what the move controls send
+                // as their anchor. Read off the rendered list rather than off the raw
+                // backlog, so "move above the card above me" means the card the operator can
+                // actually see - the same place a drag would land it.
+                above={tasks[i - 1] ?? null}
+                below={tasks[i + 1] ?? null}
+                onAssignError={onAssignError}
+                onDragging={reportDragging}
+                onEdit={() => onEdit(t.id)}
+                onOpenSchedule={onOpenSchedule}
+                scheduleNameById={scheduleNameById}
+              />
+              {i === tasks.length - 1 && (
+                <div
+                  className={`bl-gap${overGap === tasks.length ? " is-over" : ""}`}
+                  aria-hidden
+                  {...gapProps(tasks.length)}
+                />
+              )}
+            </Fragment>
           ))
         )}
       </div>
@@ -229,6 +372,7 @@ function BacklogCard({
   blockers,
   deadBlockers,
   nextUp,
+  lifted,
   above,
   below,
   onAssignError,
@@ -243,12 +387,19 @@ function BacklogCard({
   deadBlockers: Task[];
   /** True on the item Foreman's autopilot would pick up next. */
   nextUp: boolean;
+  /** True while THIS card is the one in the air, so the column can dim it. */
+  lifted: boolean;
   /** The card drawn directly above this one, or null when this is the first. */
   above: Task | null;
   /** The card drawn directly below this one, or null when this is the last. */
   below: Task | null;
   onAssignError: (message: string) => void;
-  onDragging: (repoRoot: string | null) => void;
+  /**
+   * This card entering or leaving the air: its repo for the tiles that might accept it,
+   * and its id for the column's own gaps. One call, because there is one drag - see the
+   * component comment above.
+   */
+  onDragging: (repoRoot: string | null, taskId: string | null) => void;
   onEdit: () => void;
   onOpenSchedule?: (scheduleId: string, occurrenceId?: string, scheduledFor?: number) => void;
   scheduleNameById?: ReadonlyMap<string, string>;
@@ -398,7 +549,9 @@ function BacklogCard({
     <article
       className={`bl-card${busy ? " is-busy" : ""}${blocked ? " is-blocked" : ""}${
         nextUp ? " is-next" : ""
-      }${task.enabled ? "" : " is-disabled"}${deadBlockerOpen ? " is-deadblock-open" : ""}`}
+      }${task.enabled ? "" : " is-disabled"}${deadBlockerOpen ? " is-deadblock-open" : ""}${
+        lifted ? " is-lifted" : ""
+      }`}
       // Foreman's inferred edge remains overridable. An operator-declared dependency is
       // policy, so both drag-to-assign and launch are disabled until it completes.
       draggable={!busy && !declaredBlocked}
@@ -415,9 +568,12 @@ function BacklogCard({
         // already-running session can be given either. `TaskManager.assign` refuses one
         // server-side too, which is the enforcement; this is what stops the board offering
         // a gesture that could only ever end in an error toast.
-        onDragging(task.extraRepos.length > 0 ? null : task.repoRoot);
+        // The id goes up as well, and unconditionally: a multi-repo card announces no
+        // repo so no TILE lights up, but this column's own gaps must still take it.
+        // Reordering a dispatch-only task is fine; only assigning it is not.
+        onDragging(task.extraRepos.length > 0 ? null : task.repoRoot, task.id);
       }}
-      onDragEnd={() => onDragging(null)}
+      onDragEnd={() => onDragging(null, null)}
       // Anywhere on the card opens it, so the gesture matches what the whole card looks
       // like: one object. A drag doesn't fire this - the browser suppresses the click
       // that ends one - so dragging a card to an agent still only ever assigns it.

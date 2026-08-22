@@ -55,6 +55,7 @@ import {
 import type {
   HookIngest,
   OtlpMetrics,
+  PromptedCompletionDisposition,
   RecordEpisode,
   ResolveEpisode,
   SetGoal,
@@ -154,6 +155,7 @@ import {
   completeWorkCycle,
   bootstrapPromptedConsumedGeneration,
   consumePromptedGeneration as dbConsumePromptedGeneration,
+  markPromptedHandoffUndelivered as dbMarkPromptedHandoffUndelivered,
   recordAgentBinding,
   rekeyQueue,
   listQueueRowsForCwd,
@@ -7264,6 +7266,7 @@ export class Registry extends EventEmitter {
       promptedLegacyCutoverGeneration: row?.promptedLegacyCutoverGeneration ?? null,
       promptedConsumedGeneration: row?.promptedConsumedGeneration ?? null,
       promptedDirectHandoff: row?.promptedDirectHandoff ?? null,
+      promptedDecision: row?.promptedDecision ?? null,
       updatedAt: row?.updatedAt ?? 0,
       items,
     };
@@ -7358,6 +7361,10 @@ export class Registry extends EventEmitter {
       // Carried through, never re-derived: this row's whole purpose here is to refresh
       // cwd/branch, and dropping the latch would re-arm a direct handoff that already ran.
       promptedDirectHandoff: prev?.promptedDirectHandoff ?? null,
+      // Carried for the same reason, and the reason is stronger here: this decision is the
+      // only durable record of why the current generation stopped, and a cwd refresh has
+      // learned nothing that could revise it.
+      promptedDecision: prev?.promptedDecision ?? null,
       updatedAt: now,
     });
     return key;
@@ -7424,6 +7431,11 @@ export class Registry extends EventEmitter {
       ask: boolean;
       /** Record a direct-shipping handoff in the same write, or null to consume only. */
       directHandoff: PromptedDirectHandoffKind | null;
+      /**
+       * Why this generation stopped, stored in the same write. Null only for a wire caller
+       * that predates the field; nothing here invents one.
+       */
+      decision: PromptedCompletionDisposition | null;
     },
     now = Date.now(),
   ): boolean {
@@ -7460,10 +7472,35 @@ export class Registry extends EventEmitter {
       directHandoff: input.directHandoff
         ? { kind: input.directHandoff, episodeKey: input.expectedIntent.episodeKey }
         : null,
+      decision: input.decision,
       now,
     });
     if (consumed) this.syncSessionsForQueue(input.logicalKey);
     return consumed;
+  }
+
+  /**
+   * Correct a recorded direct handoff whose instruction never reached the agent.
+   *
+   * A much lighter guard than `consumePromptedGeneration`, and deliberately so. That one
+   * decides whether a generation may be SPENT, so it re-verifies intent, idleness, report
+   * bucket and the live work cycle. This one spends nothing and can only narrow a decision
+   * the daemon already wrote: the caller is Foreman, one statement after its own injection
+   * threw, and by then the session may be anything at all - that failure is often the
+   * session going away. Insisting it still looks idle would refuse exactly the case this
+   * exists for.
+   *
+   * The key check stays, because a decision belongs to a logical key. The rest is the
+   * compare-and-set in `db.ts`, which refuses anything that is not this generation's own
+   * `direct_handoff`.
+   */
+  markPromptedHandoffUndelivered(id: string, logicalKey: string, generation: number, now = Date.now()): boolean {
+    const session = this.sessions.get(id);
+    if (!session) return false;
+    if (noteKeyFor(session) !== logicalKey) return false;
+    const marked = dbMarkPromptedHandoffUndelivered(logicalKey, generation, now);
+    if (marked) this.syncSessionsForQueue(logicalKey);
+    return marked;
   }
 
   /**
@@ -7629,6 +7666,12 @@ export class Registry extends EventEmitter {
         promptedActivityAt: row.promptedActivityAt,
         promptedLegacyCutoverGeneration: row.promptedLegacyCutoverGeneration,
         promptedConsumedGeneration: row.promptedConsumedGeneration,
+        // DROPPED, like the latch below and for a related reason: a decision NAMES the
+        // logical key it was decided about, and no decision migrates across keys. Carried
+        // onto `toKey` it would fail its own key check on every read and log a diagnostic
+        // for state that is not corrupt, merely re-homed. The re-attached row reads exactly
+        // like a legacy one - consumed, historical reason unknown - which is the truth.
+        promptedDecision: null,
         // DROPPED, not carried. Every other guard on this row is a statement about the
         // SOURCE logical key's own lifecycle, and re-keying moves it wholesale. The
         // direct-shipping latch is a statement about an INTENT EPISODE, and episode keys

@@ -524,7 +524,12 @@ test("a changed-file chat retires before verification or shipping", async () => 
     port: stub.port,
     claudeBin: fake.bin,
     claudeLog: fake.log,
-    ms: 5_000,
+    // `until` ends this the moment the retire lands, so the ceiling only decides how long a
+    // real hang takes to report. At 5s it was 1.3s of headroom over a run that takes 2.7 to
+    // 3.7s on an idle machine, and it duly failed on a loaded one - reporting "the chat was
+    // never retired" for a worker that simply had not got there yet. Every sibling case in
+    // this file already sits at 20s or more.
+    ms: 20_000,
     until: () => retired,
   });
   await stub.close();

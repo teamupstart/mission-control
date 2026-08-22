@@ -165,8 +165,11 @@ The action authenticates with the `RELEASE_PLEASE_TOKEN` Actions secret, which c
 access token scoped to this repository with contents, issues, and pull-request write access. The
 organization policy prevents the default `GITHUB_TOKEN` from opening pull requests, so replacing
 the configured token with the default token makes the Release workflow fail on every push to
-`main`. The first release is pinned to `v1.0.0` through the package's `release-as` setting; remove
-that one-time pin after `v1.0.0` is published so later releases resume normal version calculation.
+`main`. The first release was pinned to `v1.0.0` through the package's `release-as` setting. That
+one-time pin was removed once `v1.0.0` published, so releases now resume normal version
+calculation from the conventional-commit history. Leaving it in place is not a cosmetic oversight:
+`release-as` forces the same version on every subsequent run, so with the manifest already at
+`1.0.0` release-please proposes `1.0.0` again and no later release can be cut at all.
 
 One equality is load-bearing and therefore enforced rather than assumed: the tag, `package.json`,
 and both version fields in `package-lock.json` must name the same version.

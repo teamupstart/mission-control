@@ -26,6 +26,21 @@ async function close(server: Server): Promise<void> {
   );
 }
 
+/**
+ * How long this fixture waits on its MCP child, and why it is not a small number.
+ *
+ * The child is `node --import tsx src/mcp/server.ts`: a cold Node start plus a TypeScript
+ * transform, spawned while the rest of the suite is running its own processes. Nothing here
+ * is testing how fast that is - the assertions are about which identity the child reports -
+ * so a tight budget can only ever convert "the machine was busy" into "the identity was
+ * wrong". At 5 seconds it did exactly that, failing 9 runs out of 10 against a concurrent
+ * full suite, always at the client timeout and never at an assertion. The generous value
+ * costs nothing on an idle machine, where these connect in well under a second.
+ */
+const MCP_TIMEOUT_MS = 60_000;
+/** Comfortably clear of two `MCP_TIMEOUT_MS` waits, so the case still fails as a case. */
+const CASE_TIMEOUT_MS = 150_000;
+
 async function captureRequestInput(
   identityEnv: {
     MISSION_SESSION_ID?: string;
@@ -105,14 +120,14 @@ async function captureRequestInput(
       stderr: "pipe",
     });
     client = new Client({ name: "review-identity-test", version: "1" });
-    await client.connect(transport, { timeout: 5_000 });
+    await client.connect(transport, { timeout: MCP_TIMEOUT_MS });
     await client.callTool(
       {
         name: "request_input",
         arguments: { question: "Which identity owns this review?" },
       },
       undefined,
-      { timeout: 5_000 },
+      { timeout: MCP_TIMEOUT_MS },
     );
     if (!captured.review) throw new Error("fake daemon did not capture the review request");
     return captured.review;
@@ -124,7 +139,7 @@ async function captureRequestInput(
   }
 }
 
-test("request_input prefers the Mission Control session identity", { timeout: 10_000 }, async () => {
+test("request_input prefers the Mission Control session identity", { timeout: CASE_TIMEOUT_MS }, async () => {
   const captured = await captureRequestInput({
     MISSION_SESSION_ID: "sdk:mission",
     CLAUDE_SESSION_ID: "claude:legacy",
@@ -144,7 +159,7 @@ test("request_input prefers the Mission Control session identity", { timeout: 10
   );
 });
 
-test("request_input preserves terminal identity without a Mission session", { timeout: 10_000 }, async () => {
+test("request_input preserves terminal identity without a Mission session", { timeout: CASE_TIMEOUT_MS }, async () => {
   const captured = await captureRequestInput({
     CLAUDE_SESSION_ID: "claude:terminal",
     TMUX_PANE: "%4",

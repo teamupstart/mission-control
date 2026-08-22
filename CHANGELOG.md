@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.1.0](https://github.com/mancej-cyc/ai-harness/compare/v1.0.1...v1.1.0) (2026-08-22)
+
+
+### Features
+
+* **workflows:** cap how often a Command runs per workflow run ([#739](https://github.com/mancej-cyc/ai-harness/issues/739)) ([3add02a](https://github.com/mancej-cyc/ai-harness/commit/3add02a9d32b6d392c9ab0a1ee3ffbcdbadad4b0))
+
+
+### Bug Fixes
+
+* recognize a dispatched launch coming back through the prompt hook ([#734](https://github.com/mancej-cyc/ai-harness/issues/734)) ([f9ec06a](https://github.com/mancej-cyc/ai-harness/commit/f9ec06ae4210c63f3fd9c5b128f522b3c7512a70))
+
 ## [1.0.1](https://github.com/mancej-cyc/ai-harness/compare/v1.0.0...v1.0.1) (2026-08-22)
 
 

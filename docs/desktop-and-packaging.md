@@ -194,6 +194,13 @@ versions agree, and uploads the dmg as a 90-day Actions artifact. This is a sepa
 check; the dmg is not attached to the GitHub Release. The package job can also be run manually
 through `workflow_dispatch`.
 
+Proving that the whole journey works - clone, install, be offered a real update, accept it, and
+come back on the new version, plus a failed update that leaves the previous app running - is a
+procedure rather than a test, because no automated layer touches the real `gh` call, the detached
+spawn, or the real clone-and-package build. It is written down in the
+[release verification runbook](runbooks/release-verification.md), along with the observed timings
+and the failure signatures that are easy to misread.
+
 See [Configuration and commands](configuration.md) for operating the app. Packaging and
 build-surface rules are authoritative in the [Electron and build surfaces contract](agent-guides/change-contracts.md#electron-and-build-surfaces)
 and [process-boundary guide](agent-guides/architecture.md#process-boundaries).

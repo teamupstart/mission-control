@@ -275,6 +275,11 @@ export function sanitizeReleaseNotes(notes: string): string {
     .replace(/&gt;/g, ">")
     .replace(/&amp;/g, "&")
     .replace(/\r/g, "")
+    // Release Please signs every release body it writes with a horizontal rule and a line
+    // about itself. It is addressed to whoever reviewed the release pull request, and in the
+    // banner and the native dialog it reads as part of what changed - so it is cut here,
+    // where every consumer of the notes already passes through, rather than at each surface.
+    .replace(/\n*-{3,}[ \t]*\n+This (?:PR|release) was generated with Release Please\b[^\n]*\s*$/i, "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
   return plain.length > MAX_RELEASE_NOTES

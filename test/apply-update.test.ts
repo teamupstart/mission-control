@@ -50,8 +50,8 @@ function operations(
       actions.push(`wait:${pid}`);
       if (options.waitFails) throw new Error("the app did not quit before the update timeout");
     },
-    install: (node: string, script: string, tag: string) => {
-      actions.push(`install:${node}:${script}:${tag}`);
+    install: (node: string, script: string, tag: string, appsDir: string) => {
+      actions.push(`install:${node}:${script}:${tag}:${appsDir}`);
       if (options.installFails) throw new Error("deliberate build failure at /tmp/private");
     },
     launch: (path: string) => {
@@ -96,10 +96,39 @@ test("the helper waits, backs up, installs the exact tag, records success, and r
     f.actions.some(
       (action) =>
         action.startsWith(`install:${process.execPath}:`) &&
-        action.endsWith("/scripts/install-app.mjs:v1.2.4"),
+        action.endsWith("/scripts/install-app.mjs:v1.2.4:/Applications"),
     ),
   );
   assert.ok(f.actions.includes("launch:/Applications/Mission Control.app"));
+});
+
+test("the rebuild targets the directory the receipt names, not /Applications by default", async (t) => {
+  // The backup, the rollback, and the relaunch all read `appPath` from the receipt, but the
+  // rebuild used to be spawned without `--apps-dir` and so always landed in `/Applications`.
+  // An install made anywhere else therefore reported success while the app that relaunched
+  // was still the old one - the exact shape that makes a verification run lie about itself.
+  const state = await mkdtemp(join(tmpdir(), "mission-apply-appsdir-"));
+  t.after(() => rm(state, { recursive: true, force: true }));
+  await writeFile(join(state, "install-receipt.json"), "old receipt");
+  const f = operations();
+
+  const result = await runApplyUpdate(
+    { ...args(state), appPath: "/Users/someone/phase4-sandbox/Applications/Mission Control.app" },
+    f.ops,
+  );
+
+  assert.deepEqual(result, { ok: true, message: null });
+  assert.ok(
+    f.actions.some((action) =>
+      action.endsWith(
+        "/scripts/install-app.mjs:v1.2.4:/Users/someone/phase4-sandbox/Applications",
+      ),
+    ),
+    `no install action carried the receipt's apps dir: ${f.actions.join(", ")}`,
+  );
+  assert.ok(
+    f.actions.includes("launch:/Users/someone/phase4-sandbox/Applications/Mission Control.app"),
+  );
 });
 
 test("a deliberate build failure restores both app and receipt before relaunching", async (t) => {
@@ -203,11 +232,11 @@ test("a hung build is bounded, and says so in its own words", async (t) => {
 
   const ops = realApplyOperations(logPath, 300);
   assert.throws(
-    () => ops.install(process.execPath, wedged, "v1.2.4"),
+    () => ops.install(process.execPath, wedged, "v1.2.4", "/Applications"),
     /did not finish within .* minutes and was stopped/,
   );
   // Not the message the app-did-not-quit timeout uses; these are different failures.
-  assert.throws(() => ops.install(process.execPath, wedged, "v1.2.4"), (error: unknown) => {
+  assert.throws(() => ops.install(process.execPath, wedged, "v1.2.4", "/Applications"), (error: unknown) => {
     assert.doesNotMatch(String((error as Error).message), /did not quit/);
     return true;
   });

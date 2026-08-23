@@ -60,7 +60,8 @@ first reading assumed.
 9. **Selection is not addressable.** Task sources holds it as plain local state keyed by id
    (`TaskSourcesPanel.tsx:936`), and the settings route grammar is category-only by design
    (`settings-registry.ts:317-322`). Conductor does the same, keyed by
-   `pipelineRepoKey(provider, repoRoot)`. Do not invent a hash form.
+   `pipelineRepoKey(provider, repoRoot)`, and a hash form for the selection would be a change to
+   that grammar rather than a detail of this work.
 10. **Test churn is smaller than the file sizes suggest.** 9 of 23 tests in
     `test/conductor-panel.test.ts` touch row markup, and 5 of 12 in
     `e2e/specs/settings-conductor.spec.ts`. `test/settings-sidebar-render.test.ts` fingerprints the

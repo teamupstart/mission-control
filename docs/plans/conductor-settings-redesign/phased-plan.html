@@ -106,7 +106,7 @@ first reading assumed.</p>
     slug. This disagrees with the approved mockup's "Open pipelines" button and is settled in the
     phase file.</li>
   <li><strong><code>settingsRailDot</code> already accepts <code>"conductor"</code></strong>
-    (<code>settings-dots.ts:59-61</code>). Add a <code>case</code>; no type widening.</li>
+    (<code>settings-dots.ts:59-61</code>). A <code>case</code> is enough, with no type widening.</li>
   <li><strong><code>dotLabel</code> switches on tone before category</strong>
     (<code>SettingsPage.tsx:81-108</code>). Reusing <code>armed</code> or <code>live</code> without a
     <code>category === "conductor"</code> arm makes a screen reader announce "YOLO mode is armed" on
@@ -117,13 +117,14 @@ first reading assumed.</p>
   <li><strong><code>.sc-seg</code> has no CSS of its own</strong> - layout comes from
     <code>.sc-field</code> and <code>.sc-seg-row</code>.
     <code>InspectorSettingsPanel.tsx:307-326</code> is already a two-option instance and is the
-    direct copy target.</li>
+    closest model.</li>
   <li><strong><code>ConsoleSwitch</code> replaces the borrowed <code>skill-switch</code></strong>
     (<code>settings-console.tsx:96</code>). Its track is 38x22px against the old 15x15px checkbox, so
     the row alignment needs a look.</li>
   <li><strong>Selection is not addressable.</strong> Task sources holds it as local state keyed by
     id, and the settings route grammar is category-only by design. Key by
-    <code>pipelineRepoKey(provider, repoRoot)</code>; do not invent a hash form.</li>
+    <code>pipelineRepoKey(provider, repoRoot)</code>, and a hash form for the selection would be a
+    change to that grammar rather than a detail of this work.</li>
   <li><strong>Test churn is smaller than the file sizes suggest.</strong> 9 of 23 tests in
     <code>conductor-panel.test.ts</code> touch row markup, and 5 of 12 in the e2e spec.
     <code>settings-sidebar-render.test.ts</code> fingerprints the panel by "Conductor commissioning

@@ -39,8 +39,9 @@ switch class and rolling its own radio group.
 ### Non-goals
 
 - **The lede, the `01/02/03` commissioning ladder and the plugin prose stay.** Trimming them was
-  explicitly deferred in the review. Do not remove or restructure them; `test/settings-sidebar-render.test.ts`
-  fingerprints the panel by the string "Conductor commissioning progress" and must keep passing.
+  explicitly deferred in the review, so they are out of scope here.
+  `test/settings-sidebar-render.test.ts` fingerprints the panel by the string "Conductor
+  commissioning progress", which keeps passing only while they remain.
 - **No repo-scoped pipelines deep link.** See the decision below.
 - **No server change.** No route, schema, migration, or worker moves. `MAX_PIPELINE_REPOS = 50` and
   the consent model are untouched.
@@ -49,46 +50,48 @@ switch class and rolling its own radio group.
 
 ## Repository findings
 
-Read these before writing code; several contradict what the design drawing implies.
+These were read in this repository. Several contradict what the design drawing implies, which is
+why they are recorded rather than left to be rediscovered.
 
 1. **All six `conductor/*` anchors already render statically.** `ConductorPanel` has one
    unconditional `return` (`:385`), `.sc-controls` (`:438`) is not behind a config guard, and
    `ConsoleCard` always emits `data-anchor={anchor}` (`settings-console.tsx:77`). The five new
-   search entries therefore need no new markup. Keep it that way: `renderToStaticMarkup` runs no
-   effects, so an anchor moved behind a "config loaded" conditional fails
+   search entries therefore need no new markup. That property is load-bearing:
+   `renderToStaticMarkup` runs no effects, so an anchor moved behind a "config loaded" conditional fails
    `test/settings-search.test.ts:124-132` with *"a jump to nothing"*.
 2. **The master-detail precedent** is `TaskSourcesPanel.tsx:1067-1162` with
    `.ts-master-detail` / `.ts-list-col` / `.ts-detail-col` (`styles.css:18019-18032`).
    `.ts-list-col` is `flex: 0 0 clamp(260px, 32%, 360px)`; the stack breakpoint is
-   `@media (max-width: 900px)` at `styles.css:18053-18059`. Mirror the shape, but **do not reuse the
-   `ts-` classes** - borrowing another panel's vocabulary is exactly the drift this phase removes
-   from `skill-switch`.
+   `@media (max-width: 900px)` at `styles.css:18053-18059`. The shape is the model; the `ts-`
+   classes are not, because borrowing another panel's vocabulary is exactly the drift this phase
+   removes from `skill-switch`.
 3. **The width opt-out.** `.settings-pane > .settings-section` caps at 900px (`styles.css:17024`)
    and `.sc-solo` caps this panel at 760px (`styles.css:18636`). Task sources opts out with
    `.settings-pane > .ts-panel { max-width: none }` (`styles.css:17027`). This panel needs the
-   same: drop `sc-solo` from its class list and add its own opt-out rule.
+   same treatment: `sc-solo` leaves its class list, and the panel gains its own opt-out rule.
 4. **Selection is plain local state, keyed by id, and is not addressable.** Task sources holds
    `useState<string | null>` (`:936`) with two effects that matter here:
    - drop the selection and hand focus back when the selected item disappears between polls
      (`:1008-1017`);
    - auto-select the first item so master-detail always has a detail (`:1019-1024`).
-   The settings route grammar is category-only by design (`settings-registry.ts:317-322`) - do not
-   add a hash form for the selected repository. Key by
-   `pipelineRepoKey(provider, repoRoot)`, never by list index: `useConductor` polls every
-   `POLL_MS = 4000`.
+   The settings route grammar is category-only by design (`settings-registry.ts:317-322`), so the
+   selected repository has no hash form and gaining one would be a change to that grammar. The
+   key is `pipelineRepoKey(provider, repoRoot)` rather than a list index, because `useConductor`
+   polls every `POLL_MS = 4000`.
 5. **The counts and the filter are one fold.** `healthCounts` (`TaskSourcesPanel.tsx:786-804`)
-   exists as one function precisely so a strip and a chip cannot disagree. Do the same here.
+   exists as one function precisely so a strip and a chip cannot disagree. The same reasoning
+   applies here.
 6. **`ConsoleStrip` is the tile component** (`settings-console.tsx:169`), with `aria-pressed`
-   tiles that *are* the filter. Prefer it over a read-only metric row.
+   tiles that *are* the filter, which is what a read-only metric row would not be.
 7. **`.sc-seg` has no CSS of its own**; layout comes from `.sc-field` (`styles.css:18881`) and
    `.sc-seg-row` / `.sc-seg-opt` (`:18943-18988`). `InspectorSettingsPanel.tsx:307-326` is already a
-   two-option instance - copy it. `is-on` is applied by hand; there is no `:has(input:checked)`
-   rule.
+   two-option instance and is the closest model. `is-on` is applied by hand; there is no
+   `:has(input:checked)` rule.
 8. **`ConsoleSwitch` replaces `skill-switch`** (`settings-console.tsx:96`, `tone="ok"`). Its track
    is 38x22px against the old 15x15px checkbox, so the row's vertical alignment needs adjusting
    rather than assuming.
-9. **`settingsRailDot`'s `id` already accepts `"conductor"`** (`settings-dots.ts:59-61`) - add a
-   `case`, no type widening. But `dotLabel` (`SettingsPage.tsx:81-108`) switches on **tone** before
+9. **`settingsRailDot`'s `id` already accepts `"conductor"`** (`settings-dots.ts:59-61`) - a
+   `case` is enough, with no type widening. But `dotLabel` (`SettingsPage.tsx:81-108`) switches on **tone** before
    category, so reusing `live` or `armed` without a `category === "conductor"` arm makes a screen
    reader announce the Inspector's or YOLO's sentence on the Conductor row. A *new* tone instead
    needs a new `.settings-dot-<tone>` rule and a rank slot in `settingsGearDot`
@@ -96,7 +99,7 @@ Read these before writing code; several contradict what the design drawing impli
 10. **Both test fixtures build `pipelines: { present: true, observing: 0 }` only**
     (`test/settings-search.test.ts:65-70`, `test/settings-sidebar-render.test.ts:88-96`) - no
     `observedRepoKeys`, no `launchRuntime`. A dot keyed off `observedRepoKeys` reads `undefined`
-    there. Prefer `observing`, or extend the fixtures deliberately.
+    there, which makes `observing` the safer field unless the fixtures are extended deliberately.
 
 ## Decisions this phase makes
 
@@ -112,13 +115,13 @@ no run slug to build the two-segment address with. `PipelineRuns` has no repo-sc
 - it renders every observed repository and auto-picks a cross-repository lead run
 (`PipelineRuns.tsx:59-63`).
 
-**Ship the tab-level link.** `{ page: "runs", kind: "pipelines" }` already exists and is exactly
-what `App.tsx:2870` navigates to in the opposite direction. Wire it the way `onOpenRuns` is wired
+**The tab-level link is what ships.** `{ page: "runs", kind: "pipelines" }` already exists and is exactly
+what `App.tsx:2870` navigates to in the opposite direction. The wiring follows `onOpenRuns`
 (`WorkflowSettingsPanel.tsx:265-276`, `SettingsPage.tsx:192`, `App.tsx:3007-3014`): an optional
 callback prop, separate from `SettingsNavigate`, which is typed to settings categories and cannot
 express a route that leaves settings. Optional so the render tests mount the panel without a router.
 
-**Label it for what it does.** A button in a repository's detail pane saying "Open pipelines" that
+**The label has to match.** A button in a repository's detail pane saying "Open pipelines" that
 lands on a cross-repository tab is a small lie. Prefer copy that does not promise scoping.
 Repo-scoped navigation is a legitimate follow-up and is out of scope here.
 
@@ -129,79 +132,84 @@ attention) *and* a filter chip row (Managed / All / Ready / Failing). The plan's
 "the filter tiles are the counts", and two rows of numbers a few pixels apart is the disagreement
 `healthCounts` exists to prevent.
 
-**Render one `ConsoleStrip`** whose tiles are the filter: **Managed**, **All**, **Ready**,
+**One `ConsoleStrip` carries the tiles, and they are the filter:** **Managed**, **All**, **Ready**,
 **Failing**, each carrying its count from the shared fold, with **Managed** active on first render.
 If the implementer finds a read-only summary genuinely earns its space alongside, that is a
 judgement call to make and record - but it must not restate a number a tile already shows.
 
-## Implementation steps
+## Implementation shape
 
-1. **Partition and count.** Add one fold over `offeredRepos(...)` that returns the four buckets and
-   their counts. *Managed* is `registered || enabled`. *Ready* is the existing "dispatch ready"
-   condition (`config?.enabled && repo.enabled`). *Failing* is a repository whose
-   `PipelineRepoStatus` carries an error. One function, read by both the tiles and the list.
+The route below is the order the work falls into, not a script. Each item names what the finished
+state looks like; where the repository disagrees with one, the repository wins.
+
+1. **Partition and count.** One fold over `offeredRepos(...)` returns the four buckets and their
+   counts. *Managed* is `registered || enabled`. *Ready* is the existing dispatch-ready condition
+   (`config?.enabled && repo.enabled`). *Failing* is a repository whose `PipelineRepoStatus` carries
+   an error. It is one function, read by both the tiles and the list.
 2. **Filter state.** A single object holding the active tile and the query, mirroring
    `SourceDirectoryFilters` (`TaskSourcesPanel.tsx:780-784`). The search haystack spans the whole
    union regardless of the active tile - name and `repoRoot`, lowercased substring, as today
    (`ConductorPanel.tsx:366-371`).
-3. **Selection state.** `useState<string | null>` keyed by `pipelineRepoKey`, plus the
-   drop-when-gone and auto-select-first effects from findings 4. Restore focus to the row, falling
+3. **Selection state.** `useState<string | null>` keyed by `pipelineRepoKey`, with the
+   drop-when-gone and auto-select-first effects from finding 4. Focus returns to the row, falling
    back to the list container, as `TaskSourcesPanel.tsx:847-853` does.
-4. **The directory column.** Search input on `.field-input`, the `ConsoleStrip` tiles, then a list
-   of short rows - name, a status dot, and the ready mark. Rows are buttons carrying
-   `aria-current` for the selected one (`TaskSourcesPanel.tsx:906-909` explains why `aria-current`
-   and not `aria-selected`). Bound the list's height so it scrolls in its own column. Under the
-   list, a count sentence that names both the filter and the whole: the empty case on a fresh
-   machine must read as "nothing registered yet", not as a broken page.
+4. **The directory column.** A search input on `.field-input`, the `ConsoleStrip` tiles, then a list
+   of short rows - name, a status dot, and the ready mark. Rows are buttons carrying `aria-current`
+   for the selected one (`TaskSourcesPanel.tsx:906-909` explains why `aria-current` and not
+   `aria-selected`). The list's height is bounded so it scrolls in its own column. Under it, a count
+   sentence naming both the filter and the whole, so the empty case on a fresh machine reads as
+   "nothing registered yet" rather than as a broken page.
 5. **The detail column.** For the selected repository: name, path, the three setup facts, the
-   observation switch, the health line from the existing `repoHealthLine`, the ingest mode, the
-   last read, any row error, and the primary action - **Register and observe**, **Enable
-   observation**, or the ready state - reusing the existing handlers unchanged. Keep
-   `aria-label={`Observe pipelines in ${repo.name}`}` on the switch.
-6. **Layout.** Wrap the two columns; move the four `ConsoleCard`s below them; drop `sc-solo` and
-   add the width opt-out. Leave the lede, the ladder and the plugin prose where they are.
-7. **The switch and the radios.** Replace `skill-switch` with `ConsoleSwitch` (`tone="ok"`) and fix
-   the row alignment for the larger track. Replace `.conductor-runtime-choice` with the
-   `sc-field sc-seg` structure copied from `InspectorSettingsPanel.tsx:307-326`, and delete the
-   now-dead CSS.
-8. **CSS.** Add the Conductor master-detail, directory, row and empty-state rules with a stack
-   breakpoint. Remove `.conductor-repos`, `.conductor-repo*` and `.conductor-runtime-choice` rules
-   that no longer have markup.
-9. **Search entries.** Five new `kind: "jump"`, non-risky entries in `settings-search.ts` for
+   observation switch, the health line from the existing `repoHealthLine`, the ingest mode, the last
+   read, any row error, and the primary action - **Register and observe**, **Enable observation**,
+   or the ready state - reusing the existing handlers unchanged. The switch keeps
+   `aria-label={`Observe pipelines in ${repo.name}`}`.
+6. **Layout.** The two columns are wrapped together, the four `ConsoleCard`s move below them,
+   `sc-solo` goes and the width opt-out arrives. The lede, the ladder and the plugin prose stay put.
+7. **The switch and the radios.** `ConsoleSwitch` (`tone="ok"`) takes over from `skill-switch`, with
+   the row alignment adjusted for the larger track. `.conductor-runtime-choice` gives way to the
+   `sc-field sc-seg` structure modelled on `InspectorSettingsPanel.tsx:307-326`, and its CSS goes
+   with it.
+8. **CSS.** The Conductor master-detail, directory, row and empty-state rules arrive with a stack
+   breakpoint; `.conductor-repos`, `.conductor-repo*` and `.conductor-runtime-choice` leave, having
+   no markup left.
+9. **Search entries.** Five `kind: "jump"`, non-risky entries in `settings-search.ts` for
    `conductor/pipelines`, `/detection`, `/enabled`, `/launch-runtime` and `/foreman-triage`, each
    with a distinct id, a label that collides with nothing, and honest keywords.
-10. **The rail dot.** A `conductor` case in `settingsRailDot` and its `dotLabel` arm. Decide from
-    findings 9 and 10 whether to reuse a tone or add one, and say which in the pull request.
-11. **The pipelines callback.** New optional prop on `ConductorPanel`, passed through
+10. **The rail dot.** A `conductor` case in `settingsRailDot` and its `dotLabel` arm. Findings 9 and
+    10 frame the tone choice; whichever way it goes is worth stating in the pull request.
+11. **The pipelines callback.** A new optional prop on `ConductorPanel`, passed through
     `SettingsPage`'s `case "conductor"`, supplied by `App` as
     `navigate({ page: "runs", kind: "pipelines" })`.
-12. **Docs.** Rewrite `docs/pipelines.md:110-140`. It currently says "The panel holds five cards";
-    it will not, and the "Workspace repositories" bullet describes a list that no longer exists.
+12. **Docs.** `docs/pipelines.md:110-140` currently says "The panel holds five cards"; it will not,
+    and its "Workspace repositories" bullet describes a list that no longer exists.
 
 ## Tests and verification
 
 - **Unit** (`test/conductor-panel.test.ts`, 23 tests): roughly 9 touch row markup - `:319`, `:346`,
   `:370`, `:390`, `:404`, `:432`, `:448`, plus the two launch-runtime cases at `:143` and `:165`
-  once the radios become `sc-seg`. Rework them against the new markup; the detection and installer
-  cases should survive untouched. Add a case pinning that the directory defaults to the managed
-  filter.
+  once the radios become `sc-seg`. Those need reworking against the new markup; the detection and
+  installer cases should survive untouched. A new case pins that the directory defaults to the
+  managed filter.
 - **Registry tests**: `test/settings-search.test.ts`, `test/settings-dots.test.ts` and
   `test/settings-sidebar-render.test.ts` must all stay green. The last one still expects
   "Conductor commissioning progress".
 - **E2E** (`e2e/specs/settings-conductor.spec.ts`, 12 tests): 5 reach rows through
   `page.locator("li.conductor-repo")` or the `Search workspace repositories` placeholder (`:44`,
-  `:273`, `:287`, `:380`, plus `:210`'s neighbours). Rework them to select from the directory and
-  act in the detail pane. `:210`'s stale-consent test finds rows by the
+  `:273`, `:287`, `:380`, plus `:210`'s neighbours). Those become selecting from the directory and
+  acting in the detail pane. `:210`'s stale-consent test finds rows by the
   `Observe pipelines in <name>` aria-label and survives if that label is kept.
-- **The bound spec, which is the point of the change.** Seed many repositories through the daemon
-  fixture and assert the page does not render them all - that the directory opens on the managed
-  set and the DOM row count stays small. This is the assertion that fails today, so write it first
-  and watch it fail against the current panel before changing anything.
+- **The bound spec, which is the point of the change.** It seeds many repositories through the daemon
+  fixture and asserts the page does not render them all - that the directory opens on the managed
+  set and the DOM row count stays small. This is the assertion that fails against the panel as it
+  stands today, which is what makes it the useful one to have first.
 - **A selection spec**: choosing a repository shows it in the detail pane, and the selection
   survives a poll rather than jumping.
 - Commands: `npm run typecheck`, `npm run lint`, `npm test`, then `npm run build` before
-  `npm run test:e2e`. Never spend model tokens - every agent binary is redirected by
-  `e2e/fixtures/fake-agents.ts`. Never add a `data-testid`; select by role, label or placeholder.
+  `npm run test:e2e`. Two standing repository constraints apply here, both from `AGENTS.md`:
+  e2e spends no model tokens, because every agent binary is redirected by
+  `e2e/fixtures/fake-agents.ts`, and `e2e/` selects by role, label or placeholder rather than
+  by `data-testid`.
 
 ## Merge and exit criteria
 

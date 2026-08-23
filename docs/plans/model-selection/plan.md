@@ -279,8 +279,13 @@ have as siblings in `HarnessesConfig`. Foreman's four gain a `runner` beside eac
 
 ### The home - one page
 
-**Adopted: every app-owned model choice moves onto Settings → Models**, grouped by the subsystem
-that spends it, each row carrying a Provider and a Model.
+**Adopted: every app-owned model choice that is an app *setting* moves onto Settings → Models**,
+grouped by the subsystem that spends it, each row carrying a Provider and a Model. That is the ten
+fixed slots in the inventory above - five background jobs, Foreman's four roles, the Inspector's
+review model. Personas and Ensemble judges are excluded by construction rather than by omission:
+their model is a field on a persona or role definition, one per row and unbounded in number, so
+there is no fixed place for it on a settings page and the Library and the Ensemble editor remain
+its home.
 
 ```
 PROVIDER          (the default anything below on Inherit follows)

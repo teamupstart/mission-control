@@ -4,10 +4,15 @@
 
 Foreman's Review, Verify, Triage and Backlog each choose their own provider instead of sharing
 one, the Inspector stops ignoring the environment when its provider is unset, and every app-owned
-model choice becomes visible on a single page.
+model choice that is an app *setting* becomes visible on a single page.
 
-After this phase, Settings → Models answers "what is this app spending, and on whose account?" in
-one screen.
+After this phase, Settings → Models answers "what is this app spending, and on whose account?" for
+every fixed slot in the product: the five background jobs, Foreman's four roles and the Inspector's
+review model. Personas and Ensemble judges stay where they are and are not a gap in that claim -
+their model is a field on a persona or role definition, one per row and unbounded in number, so it
+is not an app setting and has no fixed place on a settings page. The source plan's group inventory
+(*The pattern is already three-fifths built*) draws the same line: the first three groups have a
+fixed slot count, the last two are "one per Persona" and "one per judge".
 
 ## Entry criteria and dependencies
 
@@ -159,6 +164,11 @@ Explicit non-goals:
   and the pinning invariant, and adds no second clear-on-change. The per-role ladder adds one rung
   (role → Foreman group → app-wide) to Phase 1's two; that is an extension of Phase 1's rule, not a
   competing one, and Phase 1's handoff is worded to allow it.
+- Review round 4 flagged that the outcome claimed every app-owned model choice on one page while
+  the plan leaves Personas and Ensemble judges where they are. The exit criteria already carried
+  the exclusion; the outcome did not, and the two now agree. The exclusion itself is unchanged and
+  is not an omission - an unbounded per-row field is not an app setting, which is the same reason
+  the source plan never moved it.
 - Reconciled with Phase 3: both edit `LlmSettingsPanel.tsx`, `settings-search.ts` and
   `docs/models.md`. Ownership is by section; neither touches the other's group. Phase 3 owns the
   Models **category blurb** in `settings-registry.ts`; this phase does not edit that file.

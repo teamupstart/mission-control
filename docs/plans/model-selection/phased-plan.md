@@ -88,7 +88,7 @@ the way because its page has three tables.
 | # | Phase | File | Depends on | Delivers |
 |---|---|---|---|---|
 | 1 | A provider per background job | [`phase-1-background-job-providers.md`](phase-1-background-job-providers.md) | - | Per-job providers; the shared settings matrix; the pinning rule; the workflow-context provenance fix |
-| 2 | Foreman's four roles and the Inspector, on the Models page | [`phase-2-foreman-inspector-providers.md`](phase-2-foreman-inspector-providers.md) | 1 | Per-role Foreman providers; the Inspector fallback fix; every app-owned model choice on one page |
+| 2 | Foreman's four roles and the Inspector, on the Models page | [`phase-2-foreman-inspector-providers.md`](phase-2-foreman-inspector-providers.md) | 1 | Per-role Foreman providers; the Inspector fallback fix; every app-owned model *setting* on one page |
 | 3 | An agent, model and effort per task kind | [`phase-3-task-kind-defaults.md`](phase-3-task-kind-defaults.md) | 1 | The kind tier, the agent seed, and the Task kinds matrix |
 
 ## Dependency graph

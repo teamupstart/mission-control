@@ -169,6 +169,47 @@ test("the inherited row sends the operator somewhere that can actually change ea
   assert.match(plain, new RegExp(`${AGENT_IDENTITY.claude.label} is`));
 });
 
+test("a stored effort the row's model cannot offer is kept and named, not drawn as inherited", () => {
+  // The failure this guards is silent and reversible, which is what makes it expensive: a
+  // `<select>` whose value matches no option renders its FIRST option instead. Here that is
+  // "Inherit", so a row storing `max` against a model that stopped offering it would READ as
+  // inheriting while the daemon still held the pin - and the pin comes back the moment the
+  // model changes back, from a panel that never showed it.
+  const html = render({
+    config: config({
+      kindDefaults: {
+        ...config().kindDefaults,
+        // `max` is offered by Codex on its newest two models and by no other Codex model.
+        plan: { agent: "codex", model: "gpt-5.6-luna", effort: "max" },
+      },
+    }),
+  });
+  const effort = select(html, `Effort for ${TASK_KIND_INFO.plan.label} tasks`);
+  assert.match(effort, /max/, "the stored level is still on the list");
+  assert.match(effort, /not offered for this model/, "and says it is not applying");
+  // Disabled, so it can be read and kept but not newly chosen - nothing could act on it.
+  assert.match(effort, /value="max"[^>]*disabled/);
+  // And the control explains itself where a keyboard user will actually meet the sentence.
+  assert.match(
+    describedText(html, `Effort for ${TASK_KIND_INFO.plan.label} tasks`),
+    /kept but not applying/,
+  );
+
+  // A level the model DOES offer is an ordinary option, with no warning attached.
+  const ordinary = select(
+    render({
+      config: config({
+        kindDefaults: {
+          ...config().kindDefaults,
+          plan: { agent: "codex", model: "gpt-5.6-luna", effort: "high" },
+        },
+      }),
+    }),
+    `Effort for ${TASK_KIND_INFO.plan.label} tasks`,
+  );
+  assert.doesNotMatch(ordinary, /not offered for this model/);
+});
+
 test("with no answer from the daemon every control is disabled, not showing defaults as fact", () => {
   const html = render({ config: null });
   const controls = html.match(/<select[^>]*>/g) ?? [];

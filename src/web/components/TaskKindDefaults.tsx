@@ -172,6 +172,13 @@ export function TaskKindDefaultsGroup({ state }: { state: HarnessesState }): Rea
     const agent = agentForRow(row);
     const modelWhy = modelUnavailableWhy(row);
     const levels = launchEffortLevels(agent, row.model);
+    // A stored level this row's CURRENT model does not offer. It is not dropped - the row's
+    // model can change back, and `max` on `gpt-5.6-sol` is a real setting the moment it does -
+    // so it stays stored, stays selected, and says out loud that it is not applying right now.
+    // Rendered as an option rather than left to fall off the list: a `<select>` whose value
+    // matches no option draws its FIRST option instead, which here is "Inherit" - the panel
+    // would be showing an inherited effort while the daemon held a pinned one.
+    const strandedEffort = row.effort && !levels.includes(row.effort) ? row.effort : null;
     const commit = (patch: Partial<TaskKindDefault>): void => {
       void update({ kindDefaults: { [kind]: patch } });
     };
@@ -232,7 +239,11 @@ export function TaskKindDefaultsGroup({ state }: { state: HarnessesState }): Rea
         ),
         effort: (
           <Tooltip
-            label={`How much reasoning a ${TASK_KIND_INFO[kind].label} task launches with. Kept even when this row inherits its agent - the levels mean the same thing on any harness.`}
+            label={
+              strandedEffort
+                ? `${strandedEffort} is kept but not applying: the model this row launches on does not offer it, so the launch falls back to the harness default. Choose a model that offers it, or pick another level.`
+                : `How much reasoning a ${TASK_KIND_INFO[kind].label} task launches with. Kept even when this row inherits its agent - the levels mean the same thing on any harness.`
+            }
           >
             <select
               aria-label={`Effort for ${TASK_KIND_INFO[kind].label} tasks`}
@@ -244,6 +255,16 @@ export function TaskKindDefaultsGroup({ state }: { state: HarnessesState }): Rea
               }
             >
               <option value="">{inheritedEffortLabel(agent, config?.defaultEffort ?? null)}</option>
+              {/* Disabled, unlike the off-catalog MODEL option beside it, and the difference is
+                  deliberate: an unknown model id may well be one this build has not heard of
+                  and is legitimately choosable, while a level the harness does not offer for
+                  this model is one nothing can act on. It can be kept and read; it cannot be
+                  newly chosen. */}
+              {strandedEffort && (
+                <option value={strandedEffort} disabled>
+                  {strandedEffort} - not offered for this model
+                </option>
+              )}
               {levels.map((level) => (
                 <option key={level} value={level}>
                   {level}

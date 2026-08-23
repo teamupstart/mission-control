@@ -209,6 +209,13 @@ export function ScheduleEditor({
   const effortLevels = draft.agent
     ? capabilitiesFor(draft.agent).effort?.levels ?? []
     : portableEffortLevels();
+  // A level this mission STORES that the list above does not offer - a template saved on
+  // Claude at `max` and later moved to Inherit, whose portable list has no `max`. Kept and
+  // shown rather than dropped: a `<select>` whose value matches no option draws its first
+  // one, so the form would say "harness default" over a stored `max` and save that erasure
+  // the next time anything else on the form changed.
+  const strandedEffort =
+    draft.effort && !effortLevels.includes(draft.effort) ? draft.effort : null;
   // A model id belongs to one harness, so an inheriting template cannot name one. Said here,
   // on the control, rather than left to the save route to refuse.
   const modelWhy = draft.agent
@@ -466,14 +473,25 @@ export function ScheduleEditor({
               </Tooltip>
             </Field>
             <Field label="Effort" hint={draft.effort ? "overriding harness default" : "harness default"}>
-              <Tooltip label="How much reasoning effort each run spends, overriding the harness default">
+              <Tooltip
+                label={
+                  strandedEffort
+                    ? `${strandedEffort} is kept but not offered by every harness this mission could run on, so a run that resolves to one without it falls back to that harness's default.`
+                    : "How much reasoning effort each run spends, overriding the harness default"
+                }
+              >
                 <select
                   className="field-input"
                   value={draft.effort}
                   onChange={(event) => update({ effort: event.target.value as ThinkingLevel | "" })}
-                  disabled={effortLevels.length === 0}
+                  disabled={effortLevels.length === 0 && !strandedEffort}
                 >
                   <option value="">harness default</option>
+                  {strandedEffort && (
+                    <option value={strandedEffort} disabled>
+                      {strandedEffort} - not offered here
+                    </option>
+                  )}
                   {effortLevels.map((level) => (
                     <option key={level} value={level}>
                       {level}

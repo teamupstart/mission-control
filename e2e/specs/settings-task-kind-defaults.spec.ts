@@ -150,6 +150,39 @@ test("a kind's row is written per field, and its neighbours are left alone", asy
   await expect(dashboard.getByRole("combobox", { name: "Effort for plan tasks" })).toHaveValue("high");
 });
 
+test("a level the row's model stopped offering is kept, named, and comes back", async ({
+  dashboard,
+  daemon,
+}) => {
+  // Codex offers `max` on its two newest models and on no other, so this pair is reachable
+  // by two ordinary clicks: pick a model that offers it, pick the level, then change the
+  // model. What must not happen is the panel quietly drawing "Inherit" over a pin the daemon
+  // still holds - a `<select>` whose value matches no option renders its FIRST option, and
+  // the pin comes back the moment the model changes back, from a control that never showed it.
+  await openModels(dashboard, daemon.baseURL);
+  const model = dashboard.getByRole("combobox", { name: "Model for plan tasks" });
+  const effort = dashboard.getByRole("combobox", { name: "Effort for plan tasks" });
+  await dashboard.getByRole("combobox", { name: "Agent for plan tasks" }).selectOption("codex");
+  await model.selectOption("gpt-5.6-sol");
+  await effort.selectOption("max");
+  await expect.poll(async () => (await kindDefaults(daemon)).plan.effort).toBe("max");
+
+  await model.selectOption("gpt-5.6-luna");
+  // Still stored, because the row's model can change back and nothing was thrown away.
+  await expect.poll(async () => (await kindDefaults(daemon)).plan.effort).toBe("max");
+  // Still SHOWN, and shown as not applying rather than as an inherit.
+  await expect(effort).toHaveValue("max");
+  await expect(effort.getByRole("option", { name: /max - not offered for this model/ }))
+    .toHaveCount(1);
+  await expect(effort).toHaveAccessibleDescription(/kept but not applying/);
+  await shoot(dashboard, "05-stranded-effort", kindsGroup(dashboard));
+
+  // Back to a model that offers it, and it is an ordinary selected level again.
+  await model.selectOption("gpt-5.6-sol");
+  await expect(effort).toHaveValue("max");
+  await expect(effort.getByRole("option", { name: /not offered for this model/ })).toHaveCount(0);
+});
+
 test("the dispatch form follows the kind, and names the row as the source", async ({
   dashboard,
   daemon,

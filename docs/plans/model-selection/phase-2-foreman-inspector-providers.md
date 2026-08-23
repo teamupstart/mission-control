@@ -95,7 +95,10 @@ Explicit non-goals:
    group-level provider may disturb a role that has pinned a model, while changing a *role's own*
    provider resets that role's model unless the new provider offers it. Reuse Phase 1's helper
    rather than re-deriving the rule - a Foreman role that answered it differently from a background
-   job would be the same screen behaving two ways.
+   job would be the same screen behaving two ways. Phase 1's **pin-on-provider-change** obligation
+   comes with it: a patch that changes Foreman's group-level `runner` must first materialise the
+   outgoing provider onto every role that has a model and no provider of its own, or an existing
+   installation's four role models are stranded the first time that select moves.
 3. **`src/server/foreman/config.ts`** - resolve per role and report each role's resolved provider so
    the panel and the worker cannot print different answers.
 4. **`src/server/foreman/worker.ts`** - replace the single `triageRunnerId` with a per-role
@@ -128,7 +131,9 @@ Explicit non-goals:
 
 - **No migration.** Per-role `runner` keys are additive and default to inherit.
 - **An installation that already set Foreman's provider keeps it.** Its four roles inherit from the
-  group-level value, so behaviour is unchanged until a role is overridden.
+  group-level value, so behaviour is unchanged until a role is overridden - and when that group-level
+  value is next changed, the roles carrying a model are pinned to the outgoing provider first, per
+  Phase 1's rule.
 - **The Inspector fix changes behaviour** for an installation that set `MISSION_LLM_RUNNER` and left
   the Inspector's provider unset: the Inspector now honours it. That is the intended fix, and it is
   the one place in this phase where an upgrade is not a no-op.
@@ -152,6 +157,8 @@ Explicit non-goals:
 ## Merge and exit criteria
 
 - Foreman's four roles can run on different providers, and the worker spawns each on the one shown.
+- An installation with Foreman role models already saved keeps running them on the provider they
+  were saved under, including after Foreman's group-level provider is changed.
 - An unset Inspector provider follows `MISSION_LLM_RUNNER` and the app config.
 - Every app-owned model choice except Personas and Ensemble judges is visible on Settings → Models.
 - Foreman and Inspector panels point at it; no anchor is orphaned.
@@ -165,6 +172,10 @@ Explicit non-goals:
 
 ## Cross-phase audit record
 
+- Review round 7's upgrade case applies here too and is handled by consuming Phase 1's
+  pin-on-provider-change helper rather than by a second rule; step 2 and the compatibility notes say
+  so. Foreman's blob has the same shape of legacy state - role models saved under a group-level
+  provider that has no per-role record of itself.
 - Reconciled with Phase 1: this phase consumes `SettingsMatrix`, `ModelSlotRow`, the inherit rule
   and both halves of the pinning invariant, and adds no second clear-on-change. Phase 1's review
   round 6 settled the per-slot half after this file was written; step 2 was updated to consume it

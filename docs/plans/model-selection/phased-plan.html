@@ -360,6 +360,11 @@ reconciling back into Phase 1's file.</p>
     <td>The <em>app-wide</em> default never disturbs a pinned slot; a <em>slot's own</em> provider
     control resets that slot's model unless the new provider offers it. No phase reintroduces the
     blanket clear-on-change, and none answers the per-slot case differently</td></tr>
+  <tr><td>Pin-on-provider-change, and the resolver guard</td><td>Phase 1</td><td>2</td>
+    <td>Changing a group-level provider first materialises the outgoing one onto everything below it
+    that has a model and no provider of its own, in <code>setLlmConfig</code> rather than a click
+    handler. Resolution separately refuses a model positively known to belong to another provider,
+    and reports what it dropped</td></tr>
   <tr><td>Sibling-map storage</td><td>Phase 1</td><td>2</td>
     <td>Additive record beside the existing model keys, merged per key, no migration</td></tr>
   <tr><td><code>llmJobRunner</code>, widened <code>LlmStatus</code></td><td>Phase 1</td><td>-</td>
@@ -384,7 +389,10 @@ intermediate state.</p>
 <ul>
   <li>The five background jobs, Foreman's four roles and the Inspector's review model each resolve
   their own provider, falling back to the app-wide radio when unset.</li>
-  <li>Changing the app-wide provider clears nothing.</li>
+  <li>Changing the app-wide provider clears nothing, and an installation that upgrades with models
+  already saved keeps running them on the provider they were saved under.</li>
+  <li>No reachable configuration - upgraded, hand-edited, or env-driven - lets an app-owned call
+  receive a model its provider cannot run.</li>
   <li>An unset Inspector provider honours <code>MISSION_LLM_RUNNER</code>.</li>
   <li>A dispatched <code>plan</code> task runs on its configured agent, model and effort; a kind
   default whose agent does not match the task's falls through to the harness default for the model,

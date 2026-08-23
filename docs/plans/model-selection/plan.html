@@ -990,6 +990,22 @@ silently - naming the model it reset is the same courtesy <code>modelChoicesFor<
 extends to an id it does not recognise, which it keeps and marks "not in this build" instead of
 discarding.</p>
 
+<p><strong>Installations that already have models saved need that provenance recorded once.</strong>
+Today a saved model is implicitly bound to the app-wide runner <em>because</em> the clearing rule
+kept it that way, so after the upgrade every slot has a model and no provider of its own - and the
+next move of the radio would strand it under a provider that cannot run it. The fix is not a
+migration: the moment the radio changes is the one moment that provenance is both needed and still
+knowable, so <code>setLlmConfig</code> materialises the outgoing resolved provider onto every slot
+that has a model and no provider first, then applies the change. Server-side, because the route and
+a second dashboard tab are writers too.</p>
+
+<p>And because an environment variable can move the effective provider between restarts without any
+config write at all, resolution itself refuses a pair no provider can honour: a model positively
+known to belong to a different provider falls back to that provider's default and <strong>says what
+it dropped</strong>. Only positively - model ids are free text, and an id in no catalog is a new or
+custom model that must pass through untouched. That last hole exists on today's build for the same
+reason, so it is a fix carried along rather than a regression introduced.</p>
+
 <h3>The app-wide Provider radio stays</h3>
 
 <p>Demoted, not deleted. It becomes the answer for every slot left on Inherit, which is what an

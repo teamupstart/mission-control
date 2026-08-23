@@ -90,6 +90,11 @@ Export `resolveStandingInstructions(config, repoPath)` returning `ResolvedStandi
   **they were two answers to one question before.**"* Take both `cwd` and `repoRoot` the way
   `defaultCheckoutSubpath` does, discard a `cwd` whose repository is not the session's, and match
   on the re-rooted path.
+- **One door, three callers.** Every path entering this feature is canonicalized by
+  `resolveRepoPath` and used as `.path` - the PUT that stores a key (step 7), the composer that
+  matches at launch (this step), and the resolved route that previews one (step 7). A surface that
+  skips it does not fail loudly; it reports that nothing applies, which is the one answer an
+  operator does not go on to check.
 - Longest matching key wins. `~/ws/mono/packages/api` beats `~/ws/mono`.
 - Match on the path **boundary**, not `startsWith`, so `/repo-backup` never matches `/repo`. Reuse
   the rule `src/shared/allowlist.ts` already defines rather than writing a second one.
@@ -261,6 +266,16 @@ The snapshot read route is step 8's, and sits with the session routes rather tha
   ordered list, so the preview cannot drift from the delivery. Zero `repoPath` values is a `400`;
   more than the manifest's own cap is a `400`.
 
+  **Every `repoPath` is canonicalized here too, before the composer sees it.** Run each one through
+  `resolveRepoPath` and use `.path`, refusing an unresolvable value with `400`, exactly as the PUT
+  does. The route takes a path the browser had lying around - a picker selection, a session's cwd -
+  and `resolveRepoPath`'s own comment says which case that is in practice: *"Sessions normally run
+  in pooled worktrees, so this is the common case, not an exotic one."* A raw
+  `~/.treehouse/<pool>/16/mono/packages/api` matches no stored key, because keys are rooted on the
+  main checkout, so the note would say **nothing will be sent** while the launch canonicalizes the
+  same checkout and sends the block. That is the third time this feature can lie in the "nothing"
+  direction, which is why it is now stated as an invariant rather than three separate rules.
+
   **The response is the same type the snapshot stores.** That is deliberate: `what will be sent`
   and `what was sent` are one shape, so Phase 2 renders both markers through one component and
   neither can acquire a field the other lacks.
@@ -409,7 +424,7 @@ node --test --import ./test/setup-state.mjs --import tsx test/<file>.test.ts
 | **Exactly-once** | for every one of the five pairs, the block appears in **exactly one** channel: a pair with an out-of-band channel has it there and **not** in turn one, a pair without has it in turn one and nowhere else. Assert on the composed prompt and the launch payload together, so neither a double send nor a silent drop can pass |
 | Store | ETag changes with the document; a stale `expectedEtag` performs no write; empty-vs-absent round-trips |
 | Routes | `409` carries the current view; oversize body is `413`; an unresolvable repo key is `400`; an unknown `agent` or an unsupported `runtime` is `400`; the resolved route's reported mechanism matches what the composer actually did for that same pair |
-| **Resolved route** | one `repoPath` and several behave the same way the launch does, byte for byte against `compose.ts`; a two-repo preview where only the *second* repository has rules returns that repository's block rather than nothing; order follows the manifest; zero `repoPath` values is a `400` |
+| **Resolved route** | one `repoPath` and several behave the same way the launch does, byte for byte against `compose.ts`; **a pool-slot path previews the same block the launch delivers from that slot**, and an unresolvable one is `400`; a two-repo preview where only the *second* repository has rules returns that repository's block rather than nothing; order follows the manifest; zero `repoPath` values is a `400` |
 | **Snapshot** | the row records exactly the text and mechanism the launch delivered, for each of the five pairs; **a multi-repo dispatch's row holds the whole composed block and one `sources` entry per contributing repository, in manifest order**; **editing the config afterwards does not change it, and removing the repository's override does not delete it**; a session with no standing instruction writes no row and the route is `404`; the row survives the first `agentSessionId` bind **and every subsequent native-to-native rotation**, and is reachable under the new key each time - drive at least two `/clear`s, because a hook copied from `moveLaunchTurnOnInitialBind` passes the first move and fails the second; a pruned session's row goes with it |
 
 The byte-identical case is the decisive regression guard for the whole feature. Write it first.
@@ -434,6 +449,8 @@ is no UI yet; Phase 2 owns the browser proof.
 - A repository with no standing instructions dispatches a byte-identical prompt and argv to `main`.
 - The configuration routes behave as the cross-phase contract states, including CAS and the size
   limit.
+- The resolved route previews, for a pool-slot checkout, exactly what a launch from that slot
+  delivers.
 - A launch snapshot records what was delivered - the whole composed block for a multi-repo dispatch,
   not one repository's share - survives the first agent-session bind, and does not move when the
   configuration is later edited or removed.

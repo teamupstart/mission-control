@@ -367,10 +367,14 @@ saves one repository by sending that one key, and <strong>must not</strong> send
 doing so persists every other repository's unsaved text as though the operator had committed to
 it.</li>
 <li>Resolution is longest-path-match on the <strong>canonical repo-rooted path</strong>,
-boundary-matched. Both the stored key and the lookup argument are
-<code>resolveRepoPath(...).path</code>, never <code>.repoRoot</code> - collapsing to the root on
-either side makes a monorepo package key unreachable, and on the write side silently overwrites the
-parent's rule with it.</li>
+boundary-matched.
+<p><strong>Every path entering this feature goes through <code>resolveRepoPath</code> and is used as
+<code>.path</code></strong> - the PUT that stores a key, the composer that matches at launch, and the
+resolved route that previews one. Never <code>.repoRoot</code>: collapsing to the root makes a
+monorepo package key unreachable on the read side and silently overwrites the parent's rule on the
+write side. Never the raw string either: sessions normally run in pooled worktrees, so an
+uncanonicalized preview matches no stored key and reports that nothing applies while the launch
+delivers a block.</p></li>
 <li>The PUT is compare-and-swap on <code>expectedEtag</code>; a stale caller gets <code>409</code>
 with the current view and performs no write.</li>
 <li><code>resolveStandingInstructions</code> is a pure function exported from shared code. Phase 2

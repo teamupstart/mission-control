@@ -263,10 +263,14 @@ export interface StandingInstructionsDelivery {
    it, and `null` removes it. A caller therefore saves one repository by sending that one key, and
    **must not** send its whole draft map - doing so persists every other repository's unsaved text
    as though the operator had committed to it.
-2. Resolution is longest-path-match on the **canonical repo-rooted path**, boundary-matched. Both
-   the stored key and the lookup argument are `resolveRepoPath(...).path`, never `.repoRoot` -
-   collapsing to the root on either side makes a monorepo package key unreachable, and on the write
-   side silently overwrites the parent's rule with it.
+2. Resolution is longest-path-match on the **canonical repo-rooted path**, boundary-matched.
+
+   **Every path entering this feature goes through `resolveRepoPath` and is used as `.path`** -
+   the PUT that stores a key, the composer that matches at launch, and the resolved route that
+   previews one. Never `.repoRoot`: collapsing to the root makes a monorepo package key unreachable
+   on the read side and silently overwrites the parent's rule on the write side. Never the raw
+   string either: sessions normally run in pooled worktrees, so an uncanonicalized preview matches
+   no stored key and reports that nothing applies while the launch delivers a block.
 3. The PUT is compare-and-swap on `expectedEtag`; a stale caller gets `409` with the current view
    and performs no write.
 4. `resolveStandingInstructions` is a pure function exported from shared code. Phase 2 calls the

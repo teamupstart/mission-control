@@ -278,6 +278,31 @@ test("a confirmed non-delivery retries the same attempt and marker", () => {
   }
 });
 
+test("an audited reviewer escalation suppresses later review and recovery", () => {
+  const marker = shipRecoveryMarker({
+    taskId: "task-1",
+    logicalKey: NOTE_KEY,
+    generation: 1,
+    reason: "idle_ambiguous",
+    attempt: 4,
+  });
+  const out = decideShipShepherd(input({
+    session: session({
+      note: {
+        purpose: "Pre-PR ship recovery: ambiguous implementation state, escalation.",
+        brief: "The bounded reviewer declined to choose a safe recovery turn.",
+        recommendation: null,
+        disposition: "escalated",
+        lastAction: "Pre-PR recovery escalated",
+        handledMarker: marker,
+        updatedAt: NOW - 1,
+      },
+    }),
+    diffHasChanges: true,
+  }));
+  assert.deepEqual(out, { kind: "skip", why: "ship recovery is already escalated" });
+});
+
 test("verification infrastructure failure escalates without sending a recovery turn", () => {
   const failed = decision("verification_failed");
   const out = decideShipShepherd(input({ queue: queue({ promptedDecision: failed }) }));

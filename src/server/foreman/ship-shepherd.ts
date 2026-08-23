@@ -126,6 +126,20 @@ export function decideShipShepherd(input: ShipShepherdInput): ShipShepherdDecisi
 
   const cause = recoveryCause(queue, cycle.generation, input.diffHasChanges);
   if (!cause) return skip("prompted completion or another owner still owns this state");
+  const terminalMarker = shipRecoveryMarker({
+    taskId: task.id,
+    logicalKey: queue.noteKey,
+    generation: cycle.generation,
+    reason: cause.reason,
+    attempt: SHIP_RECOVERY_ATTEMPT_LIMIT + 1,
+  });
+  // A bounded ambiguous-diff reviewer may escalate before a delivery attempt exists. Its
+  // exact marker is persisted in the Foreman note/episode audit rather than accepted from
+  // the recovery-claim request. Consult that durable terminal fact here so a later fleet
+  // pass cannot spend the reviewer again or turn its refusal into a recovery send.
+  if (s.note?.disposition === "escalated" && s.note.handledMarker === terminalMarker) {
+    return skip("ship recovery is already escalated");
+  }
 
   const current = queue.promptedRecovery;
   let attempt = 1;

@@ -28,6 +28,8 @@ const BASE: ForemanConfig = {
   wrapup: "ask",
   trackReviewFeedback: true,
   trackCiFailures: true,
+  keepShipTasksMoving: true,
+  shipRecoveryMinutes: 20,
   autoBacklog: false,
   backlogRespectOpenPrs: true,
   backlogDefaultModel: { claude: null, codex: null, pi: null },
@@ -389,10 +391,11 @@ test("with no trigger armed the action group is disabled and says so", () => {
   assert.match(html, /<fieldset class="foreman-wrapup-action" disabled=""/);
 });
 
-test("review comments and CI render as independent default-on follow-through settings", () => {
+test("pre-PR recovery, review comments, and CI render as independent default-on settings", () => {
   const html = renderPopover(mkState());
   assert.match(html, /<legend>Pull requests<\/legend>/);
   for (const label of [
+    "Keep pre-PR ship tasks moving",
     "Keep sessions on track with review comments",
     "Keep sessions on track with CI",
   ]) {
@@ -400,6 +403,8 @@ test("review comments and CI render as independent default-on follow-through set
     assert.notEqual(at, -1, label);
     assert.match(html.slice(0, at).split("<input").pop() ?? "", /checked/, label);
   }
+  assert.match(html, /Invited managed Ship tasks only, in Live trusted repos/);
+  assert.match(html, /Stops as soon as any\s+task-owned pull request appears/);
   assert.match(html, /Does not create a PR\. Once one exists, sends failing CI back to its session/);
 });
 
@@ -420,14 +425,25 @@ test("a daemon too old to know the follow-through keys still renders them as on"
   const state = mkState();
   delete (state.config as Partial<ForemanConfig>).trackReviewFeedback;
   delete (state.config as Partial<ForemanConfig>).trackCiFailures;
+  delete (state.config as Partial<ForemanConfig>).keepShipTasksMoving;
   const html = renderPopover(state);
   for (const label of [
+    "Keep pre-PR ship tasks moving",
     "Keep sessions on track with review comments",
     "Keep sessions on track with CI",
   ]) {
     const at = html.indexOf(label);
     assert.match(html.slice(0, at).split("<input").pop() ?? "", /checked/, label);
   }
+});
+
+test("Foreman Safety renders the bounded recovery threshold and fixed retry policy", () => {
+  const html = renderPanel(mkState({ shipRecoveryMinutes: 37 }));
+  assert.match(html, /Pre-PR ship recovery/);
+  assert.match(html, /value="37"/);
+  assert.match(html, /Quiet minutes before first recovery/);
+  assert.match(html, /fixed 40 and 80 minutes/);
+  assert.match(html, /After three sends Foreman\s+escalates without typing again/);
 });
 
 test("the follow-through hint warns when it cannot type outside Live mode", () => {

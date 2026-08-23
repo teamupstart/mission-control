@@ -56,6 +56,9 @@ case "$(cat ${modeFile} 2>/dev/null)" in
       *"also expose the current intent in the Foreman drawer"*)
         printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"amend\\",\\"objective\\":\\"Ship the Goal feature end to end. Also expose its intent in the Foreman drawer\\",\\"goal\\":\\"Ship the Goal feature and expose intent in the Foreman drawer\\",\\"focus\\":\\"Expose current intent in the drawer\\",\\"reason\\":\\"The instruction adds a required surface to the existing outcome.\\"}\\n\`\`\`"}' ;;
       *)
+        # Cross the debounce floor while this exact revision remains unresolved. The refiner
+        # must hold one in-flight call per session instead of paying for the same prompt twice.
+        sleep 0.4
         printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"steer\\",\\"objective\\":\\"Ship the Goal feature end to end\\",\\"goal\\":\\"Ship the Goal feature end to end\\",\\"focus\\":\\"Finish the current instruction\\",\\"reason\\":\\"The instruction refines the existing work.\\"}\\n\`\`\`"}' ;;
     esac
     ;;
@@ -339,6 +342,8 @@ test("a rapid amendment followed by steering preserves and applies both transiti
         prompt: "then add one focused regression test before running the full suite",
       }),
     );
+    // The fake steering call deliberately lasts longer than the debounce floor. That makes
+    // duplicate admission deterministic instead of depending on suite contention.
     assert.deepEqual(r.getGoal(s.id)?.pendingPrompts, [
       { revision: 2, prompt: "also expose the current intent in the Foreman drawer" },
       {

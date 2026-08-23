@@ -46,7 +46,7 @@ export function CompleteModal({
   const task = session.task;
   const tourPreview = tourOutcome !== undefined;
   const [outcome, setOutcome] = useState(tourOutcome ?? "");
-  const tourTargetRef = useTourTaskTargetRef<HTMLElement>("complete-modal", task?.id);
+  const tourTargetRef = useTourTaskTargetRef<HTMLElement>("see-work:complete-modal", task?.id);
   // Never pre-ticked. Releasing dependents without a merge is a claim only a human can
   // make, so it is always an explicit act.
   //

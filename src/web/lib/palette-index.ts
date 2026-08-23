@@ -36,6 +36,8 @@ import {
 import { personaRoutingLabel } from "../library/library-model.ts";
 import { runTriageRound, runTriageSentence } from "../workflows/run-model.ts";
 import type { MissionRoute } from "../workflows/useWorkflowRoute.ts";
+import type { TourId } from "../tour/contracts.ts";
+import { TOUR_ENTRIES, tourEntry } from "../tour/entries.ts";
 import { SETTINGS_CATEGORIES, settingsCategory } from "./settings-registry.ts";
 import { SETTINGS_CONTROLS, type SettingsBindings } from "./settings-search.ts";
 
@@ -132,7 +134,7 @@ export type PaletteTarget =
   | { kind: "dispatch" }
   | { kind: "launch-ensemble"; strategyId: EnsembleStrategyId }
   | { kind: "bind-workflow" }
-  | { kind: "start-see-work-tour" }
+  | { kind: "start-tour"; tourId: TourId }
   | { kind: "report-product-issue" }
   | { kind: "open-mission"; scheduleId: string };
 
@@ -488,20 +490,21 @@ const strategyProvider: PaletteProvider = {
  *
  * The production commands already exist as a single click somewhere: the topbar's Dispatch
  * button, the Library's ＋ New cards, and the binding dialog. The one explicit exception is
- * the temporary Driver.js comparison spike, whose brief requires a palette-only entry and no
- * permanent top-bar chrome. Removing that spike removes one row and one target arm.
+ * the guided tours, which are palette-and-Settings entries with no permanent top-bar chrome.
+ * Their rows are derived from the tour registry, so a registered tour has exactly one row
+ * here and an unregistered one has none.
  */
 const commandProvider: PaletteProvider = {
   id: "commands",
   rows: () => [
-    {
-      id: "command:see-work-tour",
+    ...TOUR_ENTRIES.map((tour): PaletteRow => ({
+      id: tour.palette.rowId,
       kind: "command",
-      title: "Start See the work tour",
-      detail: "Preview how the Fleet, Board, and one session desk fit together.",
-      keywords: ["tour", "product tour", "onboarding", "fleet", "board", "session detail"],
-      target: { kind: "start-see-work-tour" },
-    },
+      title: tour.palette.title,
+      detail: tour.palette.detail,
+      keywords: tour.palette.keywords,
+      target: { kind: "start-tour", tourId: tour.id },
+    })),
     {
       id: "command:dispatch",
       kind: "command",
@@ -693,8 +696,8 @@ export function paletteRowHint(row: PaletteRow): string {
       return "Open Dispatch already in Ensemble mode on this strategy.";
     case "bind-workflow":
       return "Open the binding dialog to pick a session and a published workflow version.";
-    case "start-see-work-tour":
-      return "Start the temporary guided See the work comparison tour.";
+    case "start-tour":
+      return tourEntry(row.target.tourId).palette.hint;
     case "report-product-issue":
       return "Open the Feedback form to file a public GitHub issue about Mission Control.";
     case "open-mission":

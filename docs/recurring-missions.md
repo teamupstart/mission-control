@@ -23,7 +23,11 @@ The overlay has three screens:
   never runs an agent).
 - **Create / edit** - a configuration form (not a compose surface) in five groups: the task
   template, the cadence and time zone, laptop availability, overlap and missed-run
-  guardrails, and preview-and-enable. Readable presets (daily / weekdays / weekly / monthly)
+  guardrails, and preview-and-enable. The template's **Agent** may be left on *Inherit*, which
+  takes the [task kind's agent](models.md#task-kinds) as each run fires rather than pinning a
+  harness here - so repointing that kind moves a mission written months earlier. An inheriting
+  mission cannot pin a Model (a model id belongs to one harness) and its Effort offers only the
+  levels every harness has, since the one it will get is not known until the run. Readable presets (daily / weekdays / weekly / monthly)
   and an Advanced cron mode both resolve to the same validated five-field expression. The
   preview rail lists the next 10-50 occurrences with local time, UTC and DST shifts, plus a
   non-mutating standby simulation: give it a sleep window and it shows what the missed-run

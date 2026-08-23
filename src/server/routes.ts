@@ -24,13 +24,16 @@ import {
   DispatchBacklogTaskSchema,
   DispatchSchema,
   ResolveRepoSchema,
-  SEE_WORK_TOUR_DEMO_INTENT,
-  SEE_WORK_TOUR_PREVIEW_INTENT,
-  SeeWorkTourDispatchSchema,
+  TourDispatchSchema,
   EditWorkItemSchema,
   FOREMAN_INSTRUCTIONS_CONFLICT_CODE,
   FOREMAN_INSTRUCTIONS_CONFLICT_MESSAGE,
   FOREMAN_INSTRUCTIONS_MAX_LENGTH,
+  MAX_TASK_EXTRA_REPOS,
+  STANDING_INSTRUCTIONS_CONFLICT_CODE,
+  STANDING_INSTRUCTIONS_CONFLICT_MESSAGE,
+  StandingInstructionsUpdateSchema,
+  type StandingInstructionsConflict,
   ForemanConfigPatchSchema,
   ForemanInstructionsSchema,
   ForemanHeartbeatSchema,
@@ -96,6 +99,8 @@ import {
   SetSessionEffortSchema,
   SetWorkItemStateSchema,
   PromptedHandoffUndeliveredSchema,
+  PromptedRecoveryClaimSchema,
+  PromptedRecoveryDeliverySchema,
   PromptedWrapupSchema,
   WrapupAskedSchema,
   PushTaskSchema,
@@ -178,9 +183,11 @@ import {
   MANUAL_DISPATCH_TASK_CREATE,
   ScoutArchiveNotReadyError,
   TaskDependencyError,
+  TaskEffortUnsupportedError,
   TaskStatusConflictError,
   type TaskManager,
 } from "./tasks.ts";
+import { serverTour, tourRecipeFor, type TourOperation } from "./tours.ts";
 import { sseHandler } from "./sse.ts";
 import type { KeepAwakeManager } from "./keep-awake.ts";
 import { archiveErrorStatus, type ArchiveManager } from "./archives/manager.ts";
@@ -192,12 +199,27 @@ import { recordInjection } from "./injections.ts";
 import { runRetro } from "./retro.ts";
 import { harnessFor, resumeArgvFor, sessionMessages } from "./harness/index.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
-import { activePaneDialog } from "@shared/session.ts";
+import { activePaneDialog, reportBucket } from "@shared/session.ts";
 import {
   capabilitiesFor,
+  harnessOffersRuntime,
   interruptUnsupportedWhy,
   workQueueBlockedReason,
 } from "@shared/harness-capabilities.ts";
+import { AGENT_TYPES, SESSION_RUNTIMES } from "@shared/types.ts";
+import {
+  STANDING_INSTRUCTIONS_MAX_KEY_LENGTH,
+  STANDING_INSTRUCTIONS_MAX_LENGTH,
+  STANDING_INSTRUCTIONS_MAX_REPOSITORIES,
+  type StandingInstructionsDelivery,
+} from "@shared/standing-instructions.ts";
+import {
+  standingInstructionsConfig,
+  standingInstructionsView,
+  updateStandingInstructions,
+} from "./instructions/config.ts";
+import { composeStandingInstructions } from "./instructions/compose.ts";
+import { canonicalRepoPath } from "./instructions/resolve.ts";
 import { transcriptStreamHandler } from "./transcript-stream.ts";
 import { attributeTranscript } from "./transcript-attribution.ts";
 import { bindLaunchTurnMessage, resolveLaunchMarker } from "./launch-presentation.ts";
@@ -217,7 +239,12 @@ import { getAwayConfig, setAwayConfig } from "./away/config.ts";
 import { buildDigest } from "./away/digest.ts";
 import { summarizeBuffer } from "@shared/away-buffer.ts";
 import type { AwayWatcher } from "./away/watcher.ts";
-import { getHarnessesConfig, setHarnessesConfig } from "./harnesses.ts";
+import {
+  getHarnessesConfig,
+  HarnessesConfigError,
+  resolveTaskAgent,
+  setHarnessesConfig,
+} from "./harnesses.ts";
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
 import type { HarnessModelCatalogService } from "./harness/model-catalog-service.ts";
 import { FileCommentError, type FileCommentManager } from "./file-comments.ts";
@@ -311,7 +338,13 @@ import {
   recordEpisode as recordForemanEpisode,
 } from "./db.ts";
 import { recordSpendReport } from "./spend-ledger.ts";
-import { FOREMAN_EPISODE_LEDGER } from "@shared/foreman.ts";
+import { FOREMAN_EPISODE_LEDGER, noteAwaitsYou } from "@shared/foreman.ts";
+import { foremanMayActLive } from "./foreman/verdict.ts";
+import {
+  activeWorkflowOwnsSession,
+  followupPrs,
+} from "./foreman/review-followup.ts";
+import { decideShipShepherd } from "./foreman/ship-shepherd.ts";
 import {
   cyclePermissionMode,
   focus,
@@ -423,6 +456,28 @@ const PERSONA_BODY_MAX_BYTES = WORKFLOW_LIMITS.personaGuidanceBytes * 6 + 16 * 1
  */
 const FOREMAN_INSTRUCTIONS_BODY_MAX_BYTES =
   FOREMAN_INSTRUCTIONS_MAX_LENGTH * 6 + 16 * 1024;
+/**
+ * The same ×6 escape headroom, sized for the patch the SCHEMA accepts rather than for the
+ * one-box save a panel usually sends.
+ *
+ * `StandingInstructionsUpdateSchema` permits up to `STANDING_INSTRUCTIONS_MAX_REPOSITORIES`
+ * keys in one request, each a key of up to `STANDING_INSTRUCTIONS_MAX_KEY_LENGTH` and a box
+ * of up to `STANDING_INSTRUCTIONS_MAX_LENGTH`, plus the machine-wide default. Budgeting for
+ * a single box and a single key made a bulk write - eleven full repositories is enough - a
+ * 413 BEFORE the schema it satisfies was ever consulted, which is the worst kind of refusal:
+ * the API says yes and the transport says no, with no way for a caller to tell which limit it
+ * hit. Derived from the same three constants for that reason, so raising a cap cannot leave
+ * this behind.
+ *
+ * A ceiling, not an allocation: `bodyLimit` refuses past it while streaming, so an ordinary
+ * one-repository save still costs a few hundred bytes.
+ */
+const STANDING_INSTRUCTIONS_BODY_MAX_BYTES =
+  (STANDING_INSTRUCTIONS_MAX_LENGTH + STANDING_INSTRUCTIONS_MAX_KEY_LENGTH) *
+    STANDING_INSTRUCTIONS_MAX_REPOSITORIES *
+    6 +
+  STANDING_INSTRUCTIONS_MAX_LENGTH * 6 +
+  16 * 1024;
 /**
  * The same ×6 headroom as a Persona's, and derived from the prompt ceiling rather than
  * copied from it: JSON string escaping can expand a UTF-8 byte several times over, so a
@@ -2957,6 +3012,141 @@ export function buildApp(
     return c.json(conflict, 409);
   });
 
+
+  // Repository standing instructions - one box per repository, in the operator's own words,
+  // sent to every session Mission Control opens into that checkout.
+  //
+  // MACHINE-LOCAL and per-repository, which is the intersection nothing else here covers:
+  // `AGENTS.md` is per-repository and committed, so it reaches every teammate on every
+  // machine, and Foreman's instructions are machine-local but global and never reach a
+  // session at all.
+  app.get("/api/instructions", (c) => c.json(standingInstructionsView()));
+
+  // Compare-and-swap, from the exact view the caller read. `repositories` is a PATCH: an
+  // absent key is left alone, a string sets it, and `null` removes it - so a panel saving
+  // one repository sends that one key and cannot persist a neighbouring box's unsaved draft.
+  app.put(
+    "/api/instructions",
+    bodyLimit({
+      maxSize: STANDING_INSTRUCTIONS_BODY_MAX_BYTES,
+      onError: (c) => c.json({ error: "Standing instructions request is too large" }, 413),
+    }),
+    async (c) => {
+      const parsed = await parseBody(c, StandingInstructionsUpdateSchema);
+      if (!parsed.ok) return parsed.res;
+
+      // Every repository key is canonicalized HERE, on the way in, and the stored key is
+      // `.path` and never `.repoRoot`. The two differ in exactly the way that breaks this
+      // feature: `resolveRepoRoot` is lossy by design, so `<root>/packages/api` would
+      // collapse to `<root>` - the package rule silently becomes the monorepo rule,
+      // overwrites whatever was there, and the longest-match behaviour the store advertises
+      // cannot be configured at all. `.path` still carries the guard that matters, re-rooting
+      // a pooled worktree onto its owning main checkout so a throwaway path never reaches
+      // durable config.
+      const repositories: Record<string, string | null> = {};
+      for (const [key, value] of Object.entries(parsed.data.repositories ?? {})) {
+        const repoPath = await canonicalRepoPath(key);
+        if (!repoPath) return c.json({ error: `not a git repository: ${key}` }, 400);
+        // Two spellings of one checkout in a single patch - a symlink and its target, a
+        // pool slot and its main checkout - would otherwise be last-wins in whatever order
+        // the object happened to iterate.
+        if (repoPath in repositories && repositories[repoPath] !== value) {
+          return c.json({ error: `listed twice, as the same repository: ${repoPath}` }, 400);
+        }
+        repositories[repoPath] = value;
+      }
+
+      const result = updateStandingInstructions({
+        expectedEtag: parsed.data.expectedEtag,
+        ...(parsed.data.default !== undefined ? { default: parsed.data.default } : {}),
+        ...(parsed.data.repositories !== undefined ? { repositories } : {}),
+      });
+      if (result.ok) return c.json(result.view);
+      if ("refusal" in result) return c.json({ error: result.refusal }, 400);
+      const conflict = {
+        error: STANDING_INSTRUCTIONS_CONFLICT_MESSAGE,
+        code: STANDING_INSTRUCTIONS_CONFLICT_CODE,
+        current: result.conflict,
+      } satisfies StandingInstructionsConflict;
+      return c.json(conflict, 409);
+    },
+  );
+
+  /**
+   * What a session launched into these checkouts WOULD be sent, from live configuration.
+   *
+   * `repoPath` repeats, once per attached repository in the launch manifest's order,
+   * because a launch composes a block for EVERY attached repository that has rules. A
+   * preview of one would tell a two-repo dispatch that nothing will be sent while the launch
+   * sends the second repository's rules - and a marker saying "nothing" is the reason an
+   * operator stops looking.
+   *
+   * `agent` and `runtime` are required and validated, because the MECHANISM is a property of
+   * the pair rather than of the repository: the same text is a system prompt on
+   * `claude · terminal`, developer instructions on `codex · sdk`, and turn-one prose on
+   * `pi · terminal`. An unknown agent, or a runtime the harness does not offer, is a refusal
+   * rather than a default - `resolveSessionRuntime` already owns that degradation and the
+   * answer must not be invented a second time here.
+   *
+   * Composed through the SAME `compose.ts` a launch uses, over the same ordered list, so the
+   * preview cannot drift from the delivery. This answers "what WILL a session get"; what a
+   * session DID get is the launch snapshot below, whose text and provenance are immutable.
+   */
+  app.get("/api/instructions/resolved", async (c) => {
+    const repoPaths = c.req.queries("repoPath") ?? [];
+    if (repoPaths.length === 0) return c.json({ error: "repoPath is required" }, 400);
+    // The launch manifest's own cap - primary plus the secondaries a dispatch may attach.
+    const maxPreview = MAX_TASK_EXTRA_REPOS + 1;
+    if (repoPaths.length > maxPreview) {
+      return c.json({ error: `at most ${maxPreview} repositories may be previewed` }, 400);
+    }
+    const agentParam = c.req.query("agent") ?? "";
+    const agent = AGENT_TYPES.find((a) => a === agentParam);
+    if (!agent) return c.json({ error: `unknown agent: ${agentParam}` }, 400);
+    const runtimeParam = c.req.query("runtime") ?? "";
+    const runtime = SESSION_RUNTIMES.find((r) => r === runtimeParam);
+    if (!runtime || !harnessOffersRuntime(agent, runtime)) {
+      return c.json({ error: `${agent} cannot be driven over runtime: ${runtimeParam}` }, 400);
+    }
+    // Canonicalized for the reason the PUT is, and one more: the browser hands this route a
+    // path it had lying around - a picker selection, a session's cwd - and sessions normally
+    // run in pooled worktrees. A raw `~/.treehouse/<pool>/16/mono/packages/api` matches no
+    // stored key, so an uncanonicalized preview would report that nothing will be sent while
+    // the launch from that very slot delivers the block.
+    const candidates: { repoPath: string }[] = [];
+    for (const raw of repoPaths) {
+      const repoPath = await canonicalRepoPath(raw);
+      if (!repoPath) return c.json({ error: `not a git repository: ${raw}` }, 400);
+      candidates.push({ repoPath });
+    }
+    return c.json(
+      composeStandingInstructions(standingInstructionsConfig(), candidates, agent, runtime),
+    );
+  });
+
+  /**
+   * What THIS session was actually sent at launch, or 404.
+   *
+   * Read back by identity and never re-resolved: a session outlives the setting that
+   * launched it, so live configuration would quote a running session a text it never saw the
+   * moment the operator edits the rule - or show nothing at all once the override is removed.
+   *
+   * A dedicated fetch rather than a field on the session wire type. The text runs to 8,000
+   * characters and `session_upsert` is broadcast over SSE for every session on every change,
+   * so a field would put the whole corpus on the wire repeatedly to serve one detail view.
+   */
+  app.get("/api/sessions/:id/standing-instructions", (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const snapshot = registry.standingInstructionsFor(session.id);
+    if (!snapshot) return c.json({ error: "this session received no standing instructions" }, 404);
+    return c.json({
+      text: snapshot.text,
+      mechanism: snapshot.mechanism,
+      sources: snapshot.sources,
+    } satisfies StandingInstructionsDelivery);
+  });
+
   // Diff of a session's worktree/branch vs its source branch (localhost read).
   app.get("/api/sessions/:id/diff", async (c) => {
     const session = registry.getSession(c.req.param("id"));
@@ -3163,7 +3353,9 @@ export function buildApp(
         title: parsed.data.title,
         intent: parsed.data.intent,
         kind: "ship",
-        agent: "claude",
+        // No agent: an agent filing work through MCP has no opinion about which harness
+        // runs it, so it takes whatever `ship` is configured to run on. Naming "claude"
+        // here was that opinion, expressed by accident.
         backlog: true,
         dependencies,
       });
@@ -4450,6 +4642,77 @@ export function buildApp(
     return c.json(queues.get(session.id));
   });
 
+  // Claim one exact pre-PR recovery attempt before Foreman types. The worker's earlier
+  // snapshot is never authority: re-read every live owner and the checkout diff here, then
+  // let the database compare-and-set the exact current recovery sequence.
+  app.post("/api/sessions/:id/queue/ship-recovery/claim", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const parsed = await parseBody(c, PromptedRecoveryClaimSchema);
+    if (!parsed.ok) return parsed.res;
+    const manager = workflowManager();
+    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+    const queue = queues.get(session.id);
+    const task = registry.getTask(parsed.data.taskId);
+    if (
+      !queue
+      || !task
+      || session.task?.id !== task.id
+      || task.kind !== "ship"
+      || !["running", "dispatching"].includes(task.status)
+    ) {
+      return c.json({ error: "the managed ship task is no longer current" }, 409);
+    }
+    const diff = await computeSessionDiff(session.cwd);
+    if (!diff.ok) return c.json({ error: "the current checkout diff is unavailable" }, 409);
+    const cfg = getForemanConfig();
+    const runs = manager.runs().filter(
+      (run) => run.noteKey === parsed.data.logicalKey || run.sessionId === session.id,
+    );
+    const decision = decideShipShepherd({
+      session,
+      queue,
+      humanOwnsSession:
+        reportBucket(session, registry.snapshot().sessions) === "needs-you"
+        || Boolean(session.note && noteAwaitsYou(session.note.disposition)),
+      workflowOwnsSession: activeWorkflowOwnsSession(runs),
+      hasTaskOwnedOpenPr: followupPrs(session).length > 0,
+      diffHasChanges: diff.filesChanged > 0 || diff.insertions > 0 || diff.deletions > 0,
+      featureEnabled: cfg.keepShipTasksMoving,
+      mayActLive: foremanMayActLive(cfg, session.cwd, session.repoRoot),
+      recoveryMinutes: cfg.shipRecoveryMinutes,
+      now: Date.now(),
+    });
+    if (
+      decision.kind === "skip"
+      || decision.reason !== parsed.data.reason
+      || decision.attempt !== parsed.data.attempt
+      || decision.marker !== parsed.data.marker
+      || (decision.decision?.generation ?? null) !== parsed.data.decisionGeneration
+      || (decision.decision?.outcome ?? null) !== parsed.data.decisionOutcome
+    ) {
+      return c.json({ error: "the ship recovery attempt is no longer eligible" }, 409);
+    }
+    const claimed = registry.claimPromptedRecovery(session.id, parsed.data);
+    return claimed
+      ? c.json(claimed)
+      : c.json({ error: "the ship recovery state changed before it could be claimed" }, 409);
+  });
+
+  // A success confirms the audit projection. Only positive evidence that nothing reached
+  // the child releases the exact claim; a lost/unknown result sends no request and remains
+  // durably spent.
+  app.post("/api/sessions/:id/queue/ship-recovery/delivery", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const parsed = await parseBody(c, PromptedRecoveryDeliverySchema);
+    if (!parsed.ok) return parsed.res;
+    const resolved = registry.resolvePromptedRecoveryDelivery(session.id, parsed.data);
+    return resolved
+      ? c.json(resolved)
+      : c.json({ error: "no matching current ship recovery claim" }, 409);
+  });
+
   // The full intent record, including its durable objective and latest human prompt.
   // Loopback-only like the rest of the worker's surface: `SessionGoal.prompt` is
   // deliberately never denormalized onto a card (it can be 4KB of someone's paste),
@@ -4899,7 +5162,15 @@ export function buildApp(
   app.put("/api/harnesses/config", async (c) => {
     const parsed = await parseBody(c, HarnessesConfigPatchSchema);
     if (!parsed.ok) return parsed.res;
-    const next = setHarnessesConfig(parsed.data);
+    let next;
+    try {
+      next = setHarnessesConfig(parsed.data);
+    } catch (error) {
+      // A pair only the merge can judge - a model landing on a row that inherits its agent.
+      // A refusal the panel can print, not a 500.
+      if (error instanceof HarnessesConfigError) return c.json({ error: error.message }, 400);
+      throw error;
+    }
     // Announced like every sibling settings route publishes its own change. Without this the
     // settings panel learned of another tab's edit only on its next poll, and an already-open
     // dispatch modal - which reads these defaults once, when it opens - never learned at all
@@ -5414,13 +5685,20 @@ export function buildApp(
     if (!resolved.ok) return c.json({ error: resolved.error }, 400);
     const repoRoot = resolved.repoRoot;
     const extraRepoRoots = resolved.extraRepoRoots;
+    // Resolved HERE rather than left to `TaskManager.create`, because the three checks below
+    // - the multi-repo capability, the Workflow dispatch block, and the plan-skill block -
+    // are all questions about the harness this task will actually get, and an omitted agent
+    // is exactly the case where that is the kind's answer rather than Claude. Passed on
+    // explicitly, so the route and the task agree by construction rather than by both
+    // running the same resolution and hoping the config did not move between them.
+    const agent = resolveTaskAgent(parsed.data.kind, parsed.data.agent);
     // The harness has to be able to hold write access outside its cwd, or the secondary
     // worktrees would be provisioned and then be unreachable to the agent standing in the
     // primary. Refused here as well as hidden in the modal, so the capability gates the
     // API rather than only the button.
-    if (extraRepoRoots.length > 0 && !capabilitiesFor(parsed.data.agent).multiRepoDispatch) {
+    if (extraRepoRoots.length > 0 && !capabilitiesFor(agent).multiRepoDispatch) {
       return c.json(
-        { error: `${parsed.data.agent} cannot be given write access to more than one repo` },
+        { error: `${agent} cannot be given write access to more than one repo` },
         400,
       );
     }
@@ -5429,7 +5707,7 @@ export function buildApp(
       if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
       const blocked = parsed.data.backlog
         ? manager.workflowSelectionBlock(workflowId)
-        : manager.dispatchWorkflowBlock(workflowId, parsed.data.agent, repoRoot);
+        : manager.dispatchWorkflowBlock(workflowId, agent, repoRoot);
       if (blocked) return c.json({ error: blocked }, 409);
     }
     // A plan task's intent invokes the planning skills instead of restating them, so a
@@ -5438,108 +5716,79 @@ export function buildApp(
     // up. Only when it would DISPATCH: backlogging is not dispatching, the toggle can be
     // flipped before the task launches, and `TaskManager.dispatch` asks again at that moment.
     if (!parsed.data.backlog) {
-      const planBlock = planDispatchBlock(parsed.data);
+      const planBlock = planDispatchBlock({ ...parsed.data, agent });
       if (planBlock) return c.json({ error: planBlock }, 409);
     }
     let task;
     try {
       task = tasks.create(
-        { ...parsed.data, repoRoot, extraRepoRoots, workflowId },
+        { ...parsed.data, agent, repoRoot, extraRepoRoots, workflowId },
         undefined,
         MANUAL_DISPATCH_TASK_CREATE,
       );
     } catch (error) {
       if (error instanceof TaskDependencyError) return c.json({ error: error.message }, 409);
+      // The pair only `TaskManager.create` can judge: an effort chosen with no agent named,
+      // against the harness the kind turned out to resolve to. A refusal, not a 500.
+      if (error instanceof TaskEffortUnsupportedError) return c.json({ error: error.message }, 400);
       throw error;
     }
     return c.json(task);
   });
 
-  // Temporary comparison-spike doorway for Chapter 1 of the product tour. This is not a
-  // second dispatch API: the body chooses only a repository, while this route fixes the
-  // harmless prompt, Codex Terra model, no-Workflow posture, and required review tool.
-  app.post("/api/tours/see-work/dispatch", async (c) => {
-    const parsed = await parseBody(c, SeeWorkTourDispatchSchema);
+  // The tour route family. Not a second dispatch API: the body chooses only a repository,
+  // while `SERVER_TOURS` fixes the prompt, agent, model, kind, Workflow posture, and MCP tool
+  // list of every task a tour may create. An unknown tour, or an operation a tour does not
+  // declare, is refused here rather than falling through to general dispatch.
+  async function runTourRecipe(c: Context, operation: TourOperation) {
+    const tour = serverTour(c.req.param("tourId"));
+    if (!tour) return c.json({ ok: false, error: "no such tour" }, 404);
+    const recipe = tour.operations[operation];
+    if (!recipe) {
+      return c.json({ ok: false, error: `that tour does not support ${operation}` }, 404);
+    }
+    const parsed = await parseBody(c, TourDispatchSchema);
     if (!parsed.ok) return parsed.res;
     const resolved = await resolveTaskRepoRoot(parsed.data.repoRoot);
     if (!resolved.ok) return c.json({ error: resolved.error }, 400);
 
     const task = tasks.create(
-      {
-        repoRoot: resolved.repoRoot,
-        extraRepoRoots: [],
-        title: "Tour demo",
-        intent: SEE_WORK_TOUR_DEMO_INTENT,
-        kind: "ship",
-        agent: "codex",
-        model: "gpt-5.6-terra",
-        workflowId: null,
-        backlog: true,
-        dependencies: [],
-        priority: null,
-        labels: ["tour-demo"],
-      },
+      { ...recipe.create, repoRoot: resolved.repoRoot, extraRepoRoots: [] },
       undefined,
       MANUAL_DISPATCH_TASK_CREATE,
     );
+    if (!recipe.dispatch) return c.json({ ok: true, task });
     const launched = await tasks.dispatch(task.id, {
-      overrideDisabled: true,
-      missionMcp: { tools: ["request_input"] },
+      overrideDisabled: recipe.dispatch.overrideDisabled,
+      missionMcp: recipe.dispatch.missionMcp,
     });
     if (!launched.ok) {
-      await tasks.complete(task.id, "Tour demo");
+      await tasks.complete(task.id, recipe.outcome);
       return c.json({ ok: false, error: launched.error, task: tasks.get(task.id) ?? task }, 409);
     }
     return c.json({ ok: true, task: launched.task ?? task });
-  });
+  }
 
-  // An empty fleet has no real desk for stop three to reveal. Create one fixed Chat task
-  // through the manual-dispatch capability, which is the only supported way Chat can launch.
-  // The browser still chooses only an existing repository; agent, prompt, kind, Workflow,
-  // and the no-MCP posture remain server-owned.
-  app.post("/api/tours/see-work/preview", async (c) => {
-    const parsed = await parseBody(c, SeeWorkTourDispatchSchema);
-    if (!parsed.ok) return parsed.res;
-    const resolved = await resolveTaskRepoRoot(parsed.data.repoRoot);
-    if (!resolved.ok) return c.json({ error: resolved.error }, 400);
+  app.post("/api/tours/:tourId/dispatch", (c) => runTourRecipe(c, "dispatch"));
 
-    const task = tasks.create(
-      {
-        repoRoot: resolved.repoRoot,
-        extraRepoRoots: [],
-        title: "Tour conversation",
-        intent: SEE_WORK_TOUR_PREVIEW_INTENT,
-        kind: "chat",
-        agent: "codex",
-        workflowId: null,
-        backlog: false,
-        dependencies: [],
-        priority: null,
-        labels: ["tour-demo", "tour-preview"],
-      },
-      undefined,
-      MANUAL_DISPATCH_TASK_CREATE,
-    );
-    return c.json({ ok: true, task });
-  });
+  // An empty fleet has no real desk for See the work's third stop to reveal. Its preview
+  // recipe creates one fixed Chat task through the manual-dispatch capability, which is the
+  // only supported way Chat can launch.
+  app.post("/api/tours/:tourId/preview", (c) => runTourRecipe(c, "preview"));
 
-  // The tour's single terminal path for both its Chat preview and live Ship task. A live demo
-  // follows CompleteModal's ordering: record the outcome, then stop the session. An Exit
-  // during provisioning has no session to stop, so cancellation first closes that race.
-  app.post("/api/tours/see-work/tasks/:id/complete", async (c) => {
+  // A tour's single terminal path for every task it created. A live demo follows
+  // CompleteModal's ordering: record the outcome, then stop the session. An Exit during
+  // provisioning has no session to stop, so cancellation first closes that race.
+  app.post("/api/tours/:tourId/tasks/:id/complete", async (c) => {
+    const tour = serverTour(c.req.param("tourId"));
+    if (!tour) return c.json({ ok: false, error: "no such tour" }, 404);
     const id = c.req.param("id");
     const task = tasks.get(id);
     if (!task) return c.json({ ok: false, error: "no such task" }, 404);
-    const isShipDemo =
-      task.title === "Tour demo" &&
-      task.labels.includes("tour-demo") &&
-      task.intent.startsWith("[Mission Control See the work tour demo]");
-    const isChatPreview =
-      task.title === "Tour conversation" &&
-      task.kind === "chat" &&
-      task.labels.includes("tour-preview") &&
-      task.intent.startsWith("[Mission Control See the work tour conversation]");
-    if (!isShipDemo && !isChatPreview) {
+    // The identity check is what keeps this route off a task the tour did not create. It
+    // reads the title, labels, and intent prefix the recipe itself wrote, never the caller.
+    const recipe = tourRecipeFor(tour, task);
+    if (!recipe) {
       return c.json({ ok: false, error: "that task does not belong to the tour" }, 409);
     }
 
@@ -5548,8 +5797,7 @@ export function buildApp(
       const cancelled = await tasks.cancel(id);
       if (!cancelled.ok) return c.json(cancelled, 500);
     }
-    const outcome = isChatPreview ? "Tour conversation" : "Tour demo";
-    const completed = await tasks.complete(id, outcome);
+    const completed = await tasks.complete(id, recipe.outcome);
     if (!completed) return c.json({ ok: false, error: "no such task" }, 404);
     session ??= completed.sessionId ? registry.getSession(completed.sessionId) : null;
     if (session) {

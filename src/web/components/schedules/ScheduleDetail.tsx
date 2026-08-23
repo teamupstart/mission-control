@@ -115,7 +115,9 @@ export function ScheduleDetail({
           </p>
           <div className="rm-detail-chips">
             <RepositoryName path={template?.repoRoot} className="rm-chip" />
-            {template && <span className="rm-chip">{template.agent}</span>}
+            {template && (
+              <span className="rm-chip">{template.agent ?? "agent follows kind"}</span>
+            )}
             {template && <span className="rm-chip">{template.kind}</span>}
             {template?.model && <span className="rm-chip">{template.model}</span>}
             <span className="rm-chip">revision {schedule.revision}</span>
@@ -228,7 +230,7 @@ export function ScheduleDetail({
                 </dd>
                 <dt>Task defaults</dt>
                 <dd>
-                  {template.agent} · {template.kind}
+                  {template.agent ?? "agent follows kind"} · {template.kind}
                   {template.priority ? ` · ${template.priority}` : ""}
                   {template.model ? ` · ${template.model}` : " · model follows harness default"}
                 </dd>

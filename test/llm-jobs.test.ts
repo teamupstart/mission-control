@@ -81,16 +81,19 @@ test("the ladder is config, then env, then the shipped default", () => {
     job: "goal",
     id: "cfg",
     source: "config",
+    unsupported: null,
   });
   assert.deepEqual(resolveLlmJobModel("goal", {}, "env"), {
     job: "goal",
     id: "env",
     source: "env",
+    unsupported: null,
   });
   assert.deepEqual(resolveLlmJobModel("goal", {}, undefined), {
     job: "goal",
     id: LLM_JOB_SPECS.goal.fallback,
     source: "default",
+    unsupported: null,
   });
 });
 

@@ -72,6 +72,16 @@ export function startGoalRefiner(registry: Registry): () => void {
   const limit = createLimiter(GOAL_CONCURRENCY);
   const debounce = new EvaluationDebounce(GOAL_REFRESH_MS);
   /**
+   * Sessions with a refinement already inside the limiter or provider call.
+   *
+   * The debounce is a launch-rate floor, not an in-flight lock. A provider call that lasts
+   * longer than that floor leaves the same durable prompt due on a later poll, which used to
+   * launch a duplicate call for the same session. The durable compare-and-set discarded the
+   * second result, but it could not unspend the second model run. Keep concurrency across
+   * different sessions while admitting only one refinement per session at a time.
+   */
+  const refining = new Set<string>();
+  /**
    * The pending revision whose intent reconciliation last failed, per session.
    *
    * This closes the retry race around the durable `unclear` stamp below. Without either
@@ -92,10 +102,12 @@ export function startGoalRefiner(registry: Registry): () => void {
       for (const s of live) {
         const pending = dueForRefine(registry, s, failedFor);
         if (!pending) continue;
+        if (refining.has(s.id)) continue;
         // Claimed only once everything else says go, because a claim consumes the window
         // whether or not any work follows it.
         if (!debounce.claim(s.id)) continue;
-        void refine(registry, s, pending, limit, failedFor);
+        refining.add(s.id);
+        void refine(registry, s, pending, limit, failedFor).finally(() => refining.delete(s.id));
       }
       const liveIds = new Set(live.map((x) => x.id));
       for (const id of failedFor.keys()) if (!liveIds.has(id)) failedFor.delete(id);
@@ -118,6 +130,12 @@ export function startGoalRefiner(registry: Registry): () => void {
         // property - a third timer would be a third place to get that property wrong.
         const launches = registry.pruneLaunchTurns(now - GOAL_PRUNE_AGE_MS);
         if (launches > 0) console.log(`[goal] pruned ${launches} orphaned launch marker(s)`);
+        // And the launch standing-instruction snapshots, which accumulate identically -
+        // one row per session that ever received one, up to 8,000 characters each. Same
+        // tick, same window, same live-key safety property.
+        const standing = registry.pruneStandingInstructions(now - GOAL_PRUNE_AGE_MS);
+        if (standing > 0)
+          console.log(`[goal] pruned ${standing} orphaned standing-instruction snapshot(s)`);
       }
     } catch (err) {
       console.error("[goal] poll failed:", err);

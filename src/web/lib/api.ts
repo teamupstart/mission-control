@@ -79,6 +79,7 @@ import type {
   EnsembleRun,
   EnsembleSummary,
 } from "@shared/ensemble.ts";
+import type { TourId } from "../tour/contracts.ts";
 import type {
   EnsembleArtifactPatch,
   EnsemblePreviewResult,
@@ -1523,16 +1524,28 @@ export const api = {
     post(`/api/reviews/${encodeURIComponent(id)}/resolve`, { action, response, selections }),
   // --- dispatch (agents) ---
   dispatch: (input: DispatchInput) => post(`/api/tasks`, input),
-  /** Launch the fixed, read-only Terra task used only by the See the work tour spike. */
-  startSeeWorkTourDemo: (repoRoot: string) =>
-    post<ActionResult & { task?: Task }>("/api/tours/see-work/dispatch", { repoRoot }),
-  /** Launch the fixed Chat conversation used when the tour starts on an empty fleet. */
-  startSeeWorkTourPreview: (repoRoot: string) =>
-    post<ActionResult & { task?: Task }>("/api/tours/see-work/preview", { repoRoot }),
-  /** Record the fixed Tour demo outcome and close any session the spike launched. */
-  completeSeeWorkTourDemo: (taskId: string) =>
+  /**
+   * A tour's own task family, addressed by tour id.
+   *
+   * The body still chooses only a repository. Every other launch property - prompt, agent,
+   * model, kind, Workflow, MCP posture - is fixed by the named tour's server-side recipe, so
+   * these stay one narrow doorway per tour rather than a second general dispatcher.
+   */
+  startTourDemo: (tourId: TourId, repoRoot: string) =>
     post<ActionResult & { task?: Task }>(
-      `/api/tours/see-work/tasks/${encodeURIComponent(taskId)}/complete`,
+      `/api/tours/${encodeURIComponent(tourId)}/dispatch`,
+      { repoRoot },
+    ),
+  /** Launch the fixed conversation a tour uses when it starts on an empty fleet. */
+  startTourPreview: (tourId: TourId, repoRoot: string) =>
+    post<ActionResult & { task?: Task }>(
+      `/api/tours/${encodeURIComponent(tourId)}/preview`,
+      { repoRoot },
+    ),
+  /** Record the tour's fixed outcome and close any session it launched. */
+  completeTourTask: (tourId: TourId, taskId: string) =>
+    post<ActionResult & { task?: Task }>(
+      `/api/tours/${encodeURIComponent(tourId)}/tasks/${encodeURIComponent(taskId)}/complete`,
     ),
   /**
    * Launch an existing task. Dashboard callers claim `overrideDisabled` for this manual

@@ -11,6 +11,7 @@ import type {
 // `AGENT_IDENTITY`'s job - a second register on a capability object is the exact defect
 // Phase 0 collapsed.
 import { AGENT_IDENTITY } from "./agent.ts";
+import type { StandingInstructionsMechanism } from "./standing-instructions.ts";
 
 // The Harness axis' PURE half: what an agent can do, spelled as data, with no `node:`
 // imports and no filesystem.
@@ -373,6 +374,30 @@ export interface InterruptSpec {
   runtimes: readonly SessionRuntime[];
 }
 
+/**
+ * How this harness carries the operator's REPOSITORY STANDING INSTRUCTIONS - text that is
+ * not a conversation turn - per runtime.
+ *
+ * A spec rather than a boolean for the reason `permissionModes` is one: the answer the
+ * composer needs is not "yes" but "which channel", and the channel differs by RUNTIME
+ * within a single harness. Claude carries it as a system-prompt append on both of its
+ * runtimes, by two different spellings; Codex has a channel on its embedded driver and
+ * none in a terminal; Pi has none at all.
+ *
+ * A runtime ABSENT from the record has no such channel, and the text is composed into turn
+ * one instead. That is not a degradation - it is the other half of the same contract, and
+ * it is why this is a record of what EXISTS rather than a nullable capability: a pair with
+ * no entry still receives the instruction.
+ *
+ * Read ONCE, here, by everything that needs the answer - the launch composer, the resolved
+ * route's preview, and the snapshot. Two independent readings of "does this pair have a
+ * channel" are exactly how a future harness ends up either double-delivered (the agent
+ * reads the same rule twice in its first turn) or silently undelivered.
+ */
+export interface StandingInstructionsSpec {
+  outOfBand: Partial<Record<SessionRuntime, StandingInstructionsMechanism>>;
+}
+
 /** One agent's capabilities, as far as they can be stated without touching a disk. */
 export interface HarnessCapabilities {
   /** Matches this entry's key in `HARNESS_CAPABILITIES`. */
@@ -421,6 +446,11 @@ export interface HarnessCapabilities {
   multiRepoDispatch: MultiRepoDispatchSpec | null;
   /** Null for a harness whose running turn cannot be stopped on any runtime. */
   interrupt: InterruptSpec | null;
+  /**
+   * Which channel carries repository standing instructions, per runtime. Never null: a
+   * harness with no out-of-band channel declares an empty record and is prefixed instead.
+   */
+  standingInstructions: StandingInstructionsSpec;
 }
 
 const CODEX_EFFORT_LEVELS = THINKING_LEVELS.filter((level) => level !== "max");
@@ -517,6 +547,18 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     // open. `terminal` is `Escape` into the bound pane, measured live against the TUI: a
     // streaming turn stops and the session takes a next prompt.
     interrupt: { runtimes: ["terminal", "sdk"] },
+    // Claude carries operator text that is not a turn on BOTH runtimes, by two different
+    // spellings. `--append-system-prompt` is single-valued and the CLI carries no guard
+    // against the flag being repeated against itself, so a second flag silently discards
+    // the first - measured against 2.1.239. The terminal launch therefore composes ONE
+    // value from every contributor (the ask-channel redirect and this), which is why the
+    // mechanism names the flag rather than the contributor.
+    standingInstructions: {
+      outOfBand: {
+        terminal: "claude-append-system-prompt",
+        sdk: "claude-sdk-system-prompt-append",
+      },
+    },
   },
   codex: {
     id: "codex",
@@ -645,6 +687,9 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     // TUI's own footer advertises "esc to interrupt", and it answers with
     // "Conversation interrupted" while the session stays open.
     interrupt: { runtimes: ["terminal", "sdk"] },
+    // Only the embedded driver. `thread/start` takes `developerInstructions`; a terminal
+    // Codex has no equivalent, so that pair is prefixed into turn one instead.
+    standingInstructions: { outOfBand: { sdk: "codex-developer-instructions" } },
   },
   pi: {
     id: "pi",
@@ -729,6 +774,9 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     // This is the declaration that took `interrupt` off `harness-capabilities.test.ts`'s
     // real-null-declarer list; the slot's null path is a named fixture there now.
     interrupt: { runtimes: ["terminal"] },
+    // Pi has no channel on any runtime: its only door is turn one, which is also what
+    // makes it the harness that proves the prefix path works.
+    standingInstructions: { outOfBand: {} },
   },
 };
 
@@ -743,6 +791,44 @@ export function capabilitiesFor(agent: "claude"): HarnessCapabilities & { skills
 export function capabilitiesFor(agent: AgentType): HarnessCapabilities;
 export function capabilitiesFor(agent: AgentType): HarnessCapabilities {
   return HARNESS_CAPABILITIES[agent];
+}
+
+/**
+ * The effort levels this harness offers AT LAUNCH for a given model.
+ *
+ * The launch-time twin of `sessionEffortLevels`, and separate from it for the reason
+ * `EffortSpec.levelsFor` already gives: the live picker also has to answer where the
+ * session's CURRENT level sits and which neighbours it may step to, none of which exists
+ * before a session does. A launch has only two facts - the harness and the model - and both
+ * are known here.
+ *
+ * Empty for a harness with no launch-time effort control at all, which is the honest answer
+ * and the one every caller wants: nothing is offered, so nothing may be passed.
+ */
+export function launchEffortLevels(
+  agent: AgentType,
+  modelId: string | null,
+): readonly ThinkingLevel[] {
+  return HARNESS_CAPABILITIES[agent].effort?.levelsFor(modelId) ?? [];
+}
+
+/**
+ * The effort levels EVERY harness offers at launch, for a caller that does not yet know
+ * which one it will get.
+ *
+ * A recurring mission or a task source may inherit its agent from the task kind, and the kind
+ * can be repointed after the mission is written - so the harness is genuinely unknown until
+ * the run fires. Offering one harness's levels there would offer a level that silently falls
+ * back on another, and offering the whole vocabulary would do it more often. The intersection
+ * is the set that survives whichever harness the kind resolves to.
+ */
+export function portableEffortLevels(): readonly ThinkingLevel[] {
+  const agents = Object.keys(HARNESS_CAPABILITIES) as AgentType[];
+  const [first, ...rest] = agents;
+  if (!first) return [];
+  return launchEffortLevels(first, null).filter((level) =>
+    rest.every((agent) => launchEffortLevels(agent, null).includes(level)),
+  );
 }
 
 export function supportsEffort(agent: AgentType, level: ThinkingLevel): boolean {
@@ -792,6 +878,22 @@ export interface ResolvedSessionRuntime {
   unknown: string | null;
   /** A runtime this build knows that this harness does not offer, if that is what happened. */
   unsupported: SessionRuntime | null;
+}
+
+/**
+ * The out-of-band channel this harness · runtime pair carries standing instructions on, or
+ * null when it has none and the text belongs in turn one instead.
+ *
+ * The ONE reading of that question. The launch composer asks it to decide whether to
+ * prefix, the resolved route asks it to label a preview, and the snapshot records what it
+ * answered - so a marker and a delivery cannot disagree about the mechanism, and adding a
+ * harness cannot silently double-deliver or silently drop.
+ */
+export function standingInstructionsChannel(
+  agent: AgentType,
+  runtime: SessionRuntime,
+): StandingInstructionsMechanism | null {
+  return HARNESS_CAPABILITIES[agent].standingInstructions.outOfBand[runtime] ?? null;
 }
 
 /** Whether this harness can be driven over `runtime` at all. */

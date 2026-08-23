@@ -15,6 +15,8 @@ const { ensureToken } = await import("../src/server/auth.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
+const { setHarnessesConfig } = await import("../src/server/harnesses.ts");
+const { openDb } = await import("../src/server/db.ts");
 
 after(() => {
   rmSync(home, { recursive: true, force: true });
@@ -100,4 +102,31 @@ test("MCP task creation combines phase prerequisites with the calling session", 
     ),
     [`task:${prerequisite.id}`, `session:${planningSession.id}`],
   );
+});
+
+test("a task filed through MCP takes the kind's agent, not a hardcoded Claude", async () => {
+  // An agent filing work through MCP has no opinion about which harness runs it - the tool
+  // has no `agent` field at all - so it must take whatever `ship` is configured to run on.
+  // The route used to say `agent: "claude"` here, which was an opinion expressed by accident
+  // and one no setting could reach.
+  openDb().exec("DELETE FROM app_config");
+  setHarnessesConfig({ kindDefaults: { ship: { agent: "codex" } } });
+  const repo = gitRepo();
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+  const app = buildApp(registry, {} as ReviewManager, tasks, {} as QueueManager);
+  const response = await app.request("/mcp/tasks", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-harness-token": ensureToken() },
+    body: JSON.stringify({
+      env: {},
+      cwd: repo,
+      repoRoot: repo,
+      title: "Filed by an agent",
+      intent: "Do the thing",
+    }),
+  });
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).agent, "codex");
+  openDb().exec("DELETE FROM app_config");
 });

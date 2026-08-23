@@ -3,13 +3,21 @@ import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import { ConductorPanel, detectionReading, offeredRepos, repoHealthLine } from "../src/web/components/ConductorPanel.tsx";
+import {
+  ConductorPanel,
+  conductorBuckets,
+  conductorRowState,
+  detectionReading,
+  offeredRepos,
+  repoHealthLine,
+} from "../src/web/components/ConductorPanel.tsx";
+import { CONSOLE_PAGE_SIZE } from "../src/web/components/settings-console.tsx";
 import {
   PipelineDispatchConstraint,
   pipelineAgentForKindTransition,
 } from "../src/web/components/DispatchModal.tsx";
 import { configWithObservation, type ConductorState } from "../src/web/useConductor.ts";
-import type { PipelineProbe, PipelinesView } from "../src/shared/pipeline.ts";
+import { pipelineRepoKey, type PipelineProbe, type PipelinesView } from "../src/shared/pipeline.ts";
 
 // What is at stake: this panel is the CONSENT surface, and consent has to be legible in
 // both directions. Three different things can be false - the engine may not be installed,
@@ -92,6 +100,26 @@ function render(state: ConductorState): string {
   return renderToStaticMarkup(createElement(ConductorPanel, { state }));
 }
 
+/**
+ * The `<input>` behind one `ConsoleSwitch`, found by the accessible name it carries.
+ *
+ * The switch's name lives in an `.sr-only` span AFTER the input, so this walks forward
+ * from the label to that name rather than matching the input alone - which is the only way
+ * to tell three identically-shaped checkboxes on this panel apart.
+ */
+function switchInput(html: string, label: string): string {
+  const found = html.match(
+    new RegExp(`<label class="sc-switch[^"]*"[^>]*>(<input[^>]*>)(?:(?!</label>)[\\s\\S])*?${label}</span>`),
+  );
+  assert.ok(found, `no ConsoleSwitch named "${label}"`);
+  return found[1]!;
+}
+
+/** How many directory rows the DOM actually holds - the whole point of the change. */
+function rowCount(html: string): number {
+  return (html.match(/class="conductor-row(?: is-active)?"/g) ?? []).length;
+}
+
 test("with no answer from the daemon, the panel says so rather than showing defaults as fact", () => {
   const html = render(unanswered());
   assert.match(html, /conductor-unknown/);
@@ -120,9 +148,14 @@ test("the panel ships off, and says which of the three reasons applies", () => {
   // the repositories, because that is the control an operator has to move first.
   const off = render(answered());
   assert.match(off, /Off - no pipeline state is being read/);
-  const toggles = off.match(/<input[^>]*type="checkbox"[^>]*>/g) ?? [];
-  assert.ok(toggles.length > 0, "the panel has a master switch");
-  assert.doesNotMatch(toggles[0]!, /checked/, "the master switch ships off");
+  // Named rather than taken by position: the detail pane now draws the SELECTED
+  // repository's observation switch above these cards, so "the first checkbox" is no
+  // longer the master one and a positional assertion would silently move house.
+  assert.doesNotMatch(
+    switchInput(off, "Observe conductor pipelines"),
+    /checked/,
+    "the master switch ships off",
+  );
   assert.match(off, /Foreman does not act on pipeline halts/);
 
   // Master on, nothing consented to: a different sentence, because the next move differs.
@@ -484,4 +517,227 @@ test("detection before the first read is unknown, not absent", () => {
   assert.match(html, /Looking for the engine/);
   // And it must not read as "not installed" - the two send an operator to different places.
   assert.doesNotMatch(html, /Not installed/);
+});
+
+// ---- the directory and the detail pane ----
+//
+// What is at stake: `GET /api/repos` walks the workspace roots and returns every checkout
+// with no cap - 202 on the machine this was written against, of which ONE was registered -
+// and the panel used to render the union as one flat list. The rest of this file is about
+// what the panel SAYS; these are about how much of the workspace it is willing to draw.
+
+/** A workspace of `count` checkouts, none of them registered or consented to. */
+function bulkWorkspace(count: number): string[] {
+  return Array.from({ length: count }, (_, i) => `/w/bulk-${String(i).padStart(3, "0")}`);
+}
+
+test("the directory opens on what Conductor manages, not on the whole workspace", () => {
+  const state = answered({
+    config: {
+      enabled: true,
+      launchRuntime: "agent-sdk",
+      foremanMechanicalTriage: false,
+      repos: [{ provider: "ai-conductor", repoRoot: "/w/demo", enabled: true }],
+    },
+    probes: [probe({ projects: [{ name: "demo", path: "/w/demo", remote: null, status: "registered" }] })],
+  });
+  state.workspaceRepos = [...bulkWorkspace(60), "/w/demo"];
+  const html = render(state);
+
+  // One row for the one managed repository, out of 61 offered. The old panel drew 61.
+  assert.equal(rowCount(html), 1, "the default view draws the managed repositories only");
+  assert.doesNotMatch(html, /bulk-042/, "an unmanaged workspace checkout is one tile away, not on screen");
+  // The tiles are the counts, and they describe the whole population each names - so the
+  // 60 are visible AS A NUMBER even though none of them is a row.
+  assert.match(html, /<b>61<\/b><span>All<\/span>/);
+  assert.match(html, /<b>1<\/b><span>Managed<\/span>/);
+  assert.match(html, /1-1 of 1 in Managed, of 61 in the workspace/);
+});
+
+test("no filter can make the directory draw more than one page of rows", () => {
+  // The bound that matters is the COMPONENT's, not the default filter's: a directory that
+  // opened on Managed and then emitted a row per checkout the moment All was picked would
+  // be the same defect wearing a different filter. `consolePage` is what stops it, and the
+  // browser spec drives the tile switch that proves it end to end.
+  const state = answered({
+    config: {
+      enabled: true,
+      launchRuntime: "agent-sdk",
+      foremanMechanicalTriage: false,
+      repos: bulkWorkspace(60).map((repoRoot) => ({ provider: "ai-conductor" as const, repoRoot, enabled: true })),
+    },
+    probes: [
+      probe({
+        projects: bulkWorkspace(60).map((path) => ({ name: path.slice(3), path, remote: null, status: "registered" })),
+      }),
+    ],
+  });
+  state.workspaceRepos = bulkWorkspace(60);
+  const html = render(state);
+  assert.equal(rowCount(html), CONSOLE_PAGE_SIZE, "one page, however many repositories are managed");
+  assert.match(html, /1-25 of 60 in Managed/);
+  // And the pager is REACHABLE: it is a sibling of the bounded scroller, not inside it.
+  assert.match(html, /sc-pager-range"[^>]*>1-25 of 60</);
+  assert.match(html, />Next</);
+});
+
+test("the buckets a tile names are one fold, so a count cannot disagree with its rows", () => {
+  const repos = offeredRepos(
+    ["/w/plain"],
+    {
+      enabled: true,
+      launchRuntime: "agent-sdk",
+      foremanMechanicalTriage: false,
+      repos: [
+        { provider: "ai-conductor", repoRoot: "/w/observed", enabled: true },
+        { provider: "ai-conductor", repoRoot: "/w/broken", enabled: true },
+        { provider: "ai-conductor", repoRoot: "/w/consented-only", enabled: true },
+      ],
+    },
+    [
+      probe({
+        projects: [
+          { name: "observed", path: "/w/observed", remote: null, status: "registered" },
+          { name: "broken", path: "/w/broken", remote: null, status: "registered" },
+          { name: "idle", path: "/w/idle", remote: null, status: "registered" },
+        ],
+      }),
+    ],
+  );
+  const statuses = new Map([
+    [
+      pipelineRepoKey("ai-conductor", "/w/broken"),
+      {
+        provider: "ai-conductor" as const,
+        repoRoot: "/w/broken",
+        daemon: "running" as const,
+        runs: 0,
+        halted: 0,
+        lastReadAt: 1,
+        error: "could not read the pipeline directory",
+      },
+    ],
+  ]);
+  const buckets = conductorBuckets(repos, { enabled: true, launchRuntime: "agent-sdk", foremanMechanicalTriage: false, repos: [] }, statuses);
+  assert.deepEqual(buckets.all.map((r) => r.repoRoot), [
+    "/w/broken",
+    "/w/consented-only",
+    "/w/idle",
+    "/w/observed",
+    "/w/plain",
+  ]);
+  // Managed is registered OR consented, which is what keeps a de-registered repository's
+  // consent withdrawable. `/w/plain` is a workspace checkout and neither.
+  assert.deepEqual(buckets.managed.map((r) => r.repoRoot), [
+    "/w/broken",
+    "/w/consented-only",
+    "/w/idle",
+    "/w/observed",
+  ]);
+  assert.deepEqual(buckets.ready.map((r) => r.repoRoot), ["/w/broken", "/w/consented-only", "/w/observed"]);
+  assert.deepEqual(buckets.failing.map((r) => r.repoRoot), ["/w/broken"]);
+});
+
+test("the master switch being off takes every repository out of Ready, and says so once", () => {
+  const config = {
+    enabled: false,
+    launchRuntime: "agent-sdk" as const,
+    foremanMechanicalTriage: false,
+    repos: [{ provider: "ai-conductor" as const, repoRoot: "/w/demo", enabled: true }],
+  };
+  const repos = offeredRepos([], config, [
+    probe({ projects: [{ name: "demo", path: "/w/demo", remote: null, status: "registered" }] }),
+  ]);
+  const buckets = conductorBuckets(repos, config, new Map());
+  assert.equal(buckets.managed.length, 1);
+  assert.equal(buckets.ready.length, 0, "nothing is being read while the master switch is off");
+});
+
+test("the detail pane holds what a row could not: the facts, the switch and the action", () => {
+  const html = render(
+    answered({
+      config: {
+        enabled: true,
+        launchRuntime: "agent-sdk",
+        foremanMechanicalTriage: false,
+        repos: [{ provider: "ai-conductor", repoRoot: "/w/demo", enabled: true }],
+      },
+      probes: [probe({ projects: [{ name: "demo", path: "/w/demo", remote: null, status: "registered" }] })],
+      status: [
+        {
+          provider: "ai-conductor",
+          repoRoot: "/w/demo",
+          daemon: "running",
+          runs: 3,
+          halted: 1,
+          lastReadAt: Date.now() - 90_000,
+          error: null,
+          ingest: "live",
+        },
+      ],
+    }),
+  );
+  assert.match(html, /Registered with Conductor<\/span><span class="sc-health-value">Yes/);
+  assert.match(html, /Dispatch ready<\/span><span class="sc-health-value">Yes/);
+  assert.match(html, /Events arrive by<\/span><span class="sc-health-value">Live events/);
+  assert.match(html, /Last read<\/span><span class="sc-health-value">1m ago/);
+  assert.match(html, /engine daemon running · 3 pipelines, 1 halted/);
+  // The switch keeps the accessible name the browser suite reaches rows through.
+  assert.match(switchInput(html, "Observe pipelines in demo"), /checked/);
+  // Ready, so the primary action is the state rather than a button that would do it again.
+  assert.match(html, /conductor-ready-mark">Ready/);
+});
+
+test("a fresh machine reads as \"nothing registered yet\", with the way on from there", () => {
+  // The managed-first default hides 201 rows by design on the machine this was written
+  // against, so on a machine with NOTHING registered it hides everything - and an empty
+  // directory that did not say why would read as a broken page rather than as a starting
+  // point.
+  const state = answered();
+  state.workspaceRepos = ["/w/fresh"];
+  state.view = {
+    config: { enabled: true, launchRuntime: "agent-sdk", foremanMechanicalTriage: false, repos: [] },
+    probes: [probe({ projects: [] })],
+    status: [],
+  };
+  const html = render(state);
+  assert.equal(rowCount(html), 0);
+  assert.match(html, /Conductor manages nothing here yet/);
+  assert.match(html, /Pick <strong>All<\/strong> above/);
+  // Nothing is selected, so the pane offers guidance rather than a repository nobody chose
+  // - deliberately not `union[0]`, which would put an off-filter checkout in the pane on
+  // first paint.
+  assert.match(html, /Select a repository on the left/);
+  assert.doesNotMatch(html, /Open Pipelines tab/);
+});
+
+test("a directory row says what state it is in, in one word", () => {
+  const config = {
+    enabled: true,
+    launchRuntime: "agent-sdk" as const,
+    foremanMechanicalTriage: false,
+    repos: [],
+  };
+  const repo = {
+    provider: "ai-conductor" as const,
+    repoRoot: "/w/a",
+    enabled: false,
+    registered: false,
+    workspace: true,
+    name: "a",
+  };
+  const failing = {
+    provider: "ai-conductor" as const,
+    repoRoot: "/w/a",
+    daemon: "running" as const,
+    runs: 0,
+    halted: 0,
+    lastReadAt: 1,
+    error: "boom",
+  };
+  assert.equal(conductorRowState(repo, config, undefined).label, "Unmanaged");
+  assert.equal(conductorRowState({ ...repo, registered: true }, config, undefined).label, "Registered");
+  assert.equal(conductorRowState({ ...repo, registered: true, enabled: true }, config, undefined).label, "Ready");
+  // An error outranks every other reading: it is the one an operator has to act on.
+  assert.equal(conductorRowState({ ...repo, registered: true, enabled: true }, config, failing).tone, "failing");
 });

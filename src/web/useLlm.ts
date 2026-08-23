@@ -82,16 +82,27 @@ export function useLlm(): LlmState {
   /**
    * Apply a change optimistically, and take it back if the daemon refuses.
    *
-   * `models` merges per key on this side too, matching `setLlmConfig` on the server: the
-   * optimistic value has to be the one the server will arrive at, or committing one field
-   * would visibly blank the others for a poll interval before they came back.
+   * `models` and `runners` both merge per key on this side too, matching `setLlmConfig` on
+   * the server: the optimistic value has to be the one the server will arrive at, or
+   * committing one field would visibly blank the others for a poll interval before they came
+   * back.
+   *
+   * The optimistic guess is deliberately NOT a copy of the server's pin-on-provider-change
+   * rule. It is a write the server performs and this cannot see the outcome of, and the
+   * re-read below lands within the same interaction; a second implementation of that rule
+   * here is a second thing to keep in step, for one frame of accuracy.
    */
   const update = useCallback(
     async (patch: LlmConfigPatch): Promise<void> => {
       const before = configRef.current;
       if (!before) return;
       writes.current += 1;
-      setConfig({ ...before, ...patch, models: { ...before.models, ...patch.models } });
+      setConfig({
+        ...before,
+        ...patch,
+        models: { ...before.models, ...patch.models },
+        runners: { ...before.runners, ...patch.runners },
+      });
       const res = await api.setLlmConfig(patch);
       if (!res.ok) {
         setConfig(before);

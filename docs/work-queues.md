@@ -153,6 +153,30 @@ decision at all rather than quietly stripped of the gaps it should not have had.
 was recorded reads as consumed with an unknown reason, which is not the same as fresh work, so an
 upgrade never replays a spent generation.
 
+### Pre-PR ship recovery
+
+Prompted completion decides whether the first implementation turn is complete and records why it
+stopped. The pre-PR ship shepherd is a later, bounded owner that can resume only a current managed
+`ship` task after that session has remained settled-idle past its configured quiet window. It does
+not re-run or rewrite completion truth. A held decision relays its bounded gaps structurally; an
+empty checkout receives a structural resume instruction; an ambiguous non-empty checkout receives
+one bounded tool-less review; and an existing direct-shipping handoff can be continued only while
+no task-owned pull request exists.
+
+Ownership order is strict. PR follow-through runs first. Human attention, queue items, pending
+turns, active Workflow runs, and any open pull request across every task repository all suppress
+pre-PR recovery. When a bound Workflow has parked but is still active, Workflow owns the session.
+Once any task-owned pull request appears, the shepherd stops and the existing review-comment and
+CI follow-through path owns later idle periods. It never adds a second PR poller.
+
+The daemon stores the current recovery attempt beside the prompted decision. Its identity is task,
+logical key, current work-cycle generation, reason, and attempt. The worker must claim that exact
+identity through the daemon before injection. A positive non-delivery releases only that identity;
+an unknown result remains claimed. Attempts are capped at three sends: the configured first quiet
+window, then fixed waits of 40 and 80 minutes, followed by one no-send escalation. A new completed
+generation begins a new reason-specific sequence and returns through ordinary prompted completion
+before it can be recovered.
+
 The action is the same whichever trigger fired:
 
 | Then | What it does |

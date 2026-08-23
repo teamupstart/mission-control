@@ -108,8 +108,50 @@ registered but not observed and offers **Enable observation**. It does not repea
 A reload derives the same partial state by taking registration from the provider probe and
 observation from Mission Control config.
 
-The panel holds five cards, because different things can be false and an
-operator who sees no pipelines has to be able to tell which:
+The panel is a **repository directory beside a detail pane**, with four configuration cards
+under them.
+
+The directory is the answer to a workspace scan with no cap: `GET /api/repos` walks the
+workspace roots and returns every checkout it finds, which on a developer machine is
+routinely two hundred, of which one is registered. So the directory opens on the
+repositories Conductor **manages** - registered with the engine, or carrying stored
+observation consent - and the rest of the catalogue is one filter tile away:
+
+- **Managed**, **All**, **Ready** and **Failing** are count tiles that are also the filter,
+  fed by one fold over the union so a tile's number and the rows it selects cannot
+  disagree. A tile counts the whole population it names, which is why its number does not
+  move while a search is typed.
+- **Search narrows the active tile rather than escaping it.** A query matching only an
+  unmanaged repository therefore finds nothing while *Managed* is active; when it would
+  match under a wider tile, the empty state says how many and offers that tile.
+- **Every tile is paged at 25 rows**, the same `CONSOLE_PAGE_SIZE` every settings ledger
+  uses, so no filter can put a row per checkout in the DOM. The list also scrolls inside a
+  height budget, which is a different bound and not a substitute for this one.
+- **A repository you pick is held by provider and root**, not by list position, so the
+  four-second poll cannot move it. Once picked, changing the tile, the query or the page
+  does not change it either; it clears only when that provider and root stop appearing in
+  the union *altogether* - that is, in the workspace catalog, in the engine's registered
+  projects, and in stored consent. Withdrawing consent or de-registering a checkout that the
+  workspace scan still finds therefore leaves the pick alone: the repository is still there
+  to read, and to change your mind about. A pick that is still valid but outside the current
+  filter is kept too, and the pane says so and offers the tile that holds its row.
+- **Until you pick one, the pane shows the first row of the current filtered list**, so
+  master-detail always has a detail and never opens on a repository that is not on screen.
+  That standing-in selection follows the list: changing the tile or the query changes which
+  repository the pane describes, up to the moment you choose one. Nothing is selected at all
+  when the filtered list is empty, which is what a fresh machine with nothing registered
+  reads as.
+
+The detail pane holds one repository's whole setup: whether it is **registered with
+Conductor**, its **observation** switch, whether it is **dispatch ready**, how events are
+arriving (live events, file tail, or file tail with the plugin quiet), when it was last
+read, its health line, any row error, and the primary action - **Register and observe**, the
+partial-state recovery **Enable observation**, or the ready state. An observed repository
+also offers **Open Pipelines tab**, which is named for where it lands: the Pipelines route
+is fleet-wide, and there is no repository-scoped pipelines address to link to.
+
+Under the directory sit four cards, because different things can be false and an operator
+who sees no pipelines has to be able to tell which:
 
 - **The engine** - whether the binary was found, where, which version, and how many
   repositories it says it manages. It also prints where the registry was looked for, because
@@ -117,22 +159,19 @@ operator who sees no pipelines has to be able to tell which:
   **Check again** re-runs the probe immediately rather than waiting out its cache.
 - **Observe pipelines** - the master switch. Turning it off stops every repository at once
   *without forgetting which ones you chose*, so turning it back on restores exactly that set.
-- **Launch runtime** - which Mission Control host starts Engineer. Managed Agent SDK is the
-  shipped default and lets each Pipeline task select an eligible Claude or Codex host. Terminal
-  is the explicit Claude-only compatibility choice. The setting does not replace the
-  ai-conductor build daemon's own tmux supervision.
+- **Launch runtime** - which Mission Control host starts Engineer, as the same segmented
+  control the other console panels use. Managed Agent SDK is the shipped default and lets
+  each Pipeline task select an eligible Claude or Codex host. Terminal is the explicit
+  Claude-only compatibility choice. The setting does not replace the ai-conductor build
+  daemon's own tmux supervision.
 - **Foreman triage** - a separate switch, off by default. When both it and Foreman are on,
   Foreman may unpark only a halt classified exactly `mechanical`, through the same daemon
   action route the dashboard uses. `needs-human`, `protected-artifact`, `legacy`,
   `unclassified`, and future classes remain operator work by default. Every attempted action
   is recorded in Foreman's episode ledger through the daemon; the standalone worker never
   opens SQLite.
-- **Workspace repositories** - the union of Mission Control's workspace catalog, the
-  provider's registered projects, and stored observation rows. Each row says **Registered**,
-  **Observed**, and **Dispatch ready** independently, carries the reversible observation
-  switch and health line, and offers **Register and observe** or the partial-state recovery
-  **Enable observation** as appropriate. Search filters the existing workspace catalog; it
-  does not add a second repository scanner.
+
+Search filters the existing workspace catalog; it does not add a second repository scanner.
 
 Provider registration and Mission Control observation are separate state changes. Withdrawing
 observation takes effect in the same request: the projection rows, the live catalog entries

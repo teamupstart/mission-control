@@ -43,5 +43,11 @@ enabled, and never expose Pi's process output.
 
 A saved model absent from the current response is appended once as **not currently reported**. It
 remains selected and submit-safe in Harnesses Settings, ordinary and guided dispatch, recurring
-missions, Ensemble member rows and summaries, Personas, Foreman, and the GitHub Inspector. Catalog
-absence is therefore not revocation and never rewrites an operator's selection.
+missions, Ensemble member rows and summaries, Personas, Foreman, the GitHub Inspector, and the
+per-task-kind rows under [Settings → Models → Task kinds](models.md#task-kinds). Catalog absence is
+therefore not revocation and never rewrites an operator's selection.
+
+The per-harness **Default model** and **Default effort** on this page are the bottom of the
+dispatch ladder rather than the whole of it: a task kind can name its own harness, model and
+effort, and those sit one tier above these. See [Which model
+wins](dispatch-and-backlog.md#default-model).

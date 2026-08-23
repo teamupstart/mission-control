@@ -174,6 +174,8 @@ async function launch(
     permissionMode: null,
     mcp: null,
     extraDirs: [],
+    standingInstructions: "",
+    standingInstructionsPrompt: "",
     resume: null,
     ...opts,
   });
@@ -247,6 +249,147 @@ test("a launch preserves developer instructions and routes discrete choices thro
     String(start.developerInstructions),
     "Keep this operator instruction.\n\nWhenever the operator chooses among discrete options, call the Mission Control request_input MCP tool. Pass the choices through the tool's options field and wait for the structured response before continuing. Never end a turn by asking for a numbered or prose reply when the MCP tool is available.",
   );
+});
+
+test("standing instructions reach developerInstructions WITHOUT the MCP gate", async (t) => {
+  // Finding 3. The whole `config/read` + merge block used to sit inside `if (opts.mcp)`,
+  // which is coherent for the review instruction - it tells the agent to call a tool that
+  // would not otherwise exist - and silently fatal for a standing instruction: no
+  // `missionMcp` is the ORDINARY dispatch, so the operator's own words would never have been
+  // sent on most of them, with nothing saying so.
+  const server = new FakeServer(
+    defaultReplies({
+      "config/read": {
+        config: { developer_instructions: "Keep this operator instruction." },
+        origins: {},
+      },
+    }),
+  );
+  const { handle, drained } = await launch(server, {
+    mcp: null,
+    standingInstructions: "## Standing instructions for this repository\n\nNever run E2E locally.",
+  });
+  t.after(async () => {
+    await handle.stop();
+    await drained;
+  });
+
+  const start = server.calls("thread/start")[0]?.params as Record<string, unknown>;
+  // Merged, never replaced: this channel overwrites whatever the operator configured, so a
+  // bare assignment would silently delete their own developer instructions.
+  assert.equal(
+    String(start.developerInstructions),
+    "Keep this operator instruction.\n\n## Standing instructions for this repository\n\nNever run E2E locally.",
+  );
+  // And the review instruction stays gated: no MCP, no tool to call, no sentence about it.
+  assert.equal(String(start.developerInstructions).includes("request_input"), false);
+});
+
+test("an unusable config/read delivers standing instructions in turn one instead", async (t) => {
+  // The channel cannot be used safely - `developerInstructions` REPLACES the operator's own
+  // configured value, so one we could not read is one we must not overwrite. What must not
+  // follow is dropping the operator's words: the dispatcher has already left the block out of
+  // turn one on the strength of this channel, so a bare warning delivers them NOWHERE.
+  for (const reply of [
+    // Invalid content.
+    { config: { developer_instructions: 42 }, origins: {} },
+    // And a read that fails outright.
+    () => {
+      throw new Error("config/read is not supported by this build");
+    },
+  ]) {
+    const server = new FakeServer(defaultReplies({ "config/read": reply }));
+    const { handle, drained } = await launch(server, {
+      mcp: null,
+      standingInstructions: "Never run E2E locally.",
+      standingInstructionsPrompt: "## Standing instructions\n\nNever run E2E locally.\n\n---\n\ndo the thing",
+    });
+    t.after(async () => {
+      await handle.stop();
+      await drained;
+    });
+
+    const start = server.calls("thread/start")[0]?.params as Record<string, unknown>;
+    assert.equal(start.developerInstructions, undefined, "the operator's own value is untouched");
+    // Turn one carries the block instead - and carries the CALLER's composition of it, so it
+    // still sits below the repository manifest and above the request.
+    const turn = server.calls("turn/start")[0]?.params as { input: { text?: string }[] };
+    assert.equal(
+      turn.input[0]?.text,
+      "## Standing instructions\n\nNever run E2E locally.\n\n---\n\ndo the thing",
+    );
+    // And the handle SAYS so, because the launch snapshot records the channel that really
+    // carried the text and an assignment later reads it to decide whether to repeat the rule.
+    assert.equal(handle.standingInstructionsMechanism, "prompt-prefix");
+  }
+});
+
+test("a RESUMED thread whose config/read is unusable is sent the block as prose", async (t) => {
+  // The reachable gap a fresh-launch-only fallback leaves. A daemon restart resumes a session
+  // that was launched under the operator's rules; if the channel is unusable now, the session
+  // comes back running under NONE of them, and a restart nobody asked for is the last place an
+  // operator would look. So the block is sent as prose here too.
+  //
+  // The block ALONE, without the original intent: that intent is already in the conversation
+  // this resume reopens, and re-sending it would make the agent start its task over.
+  const server = new FakeServer(
+    defaultReplies({ "config/read": { config: { developer_instructions: 42 }, origins: {} } }),
+  );
+  const { handle, drained } = await launch(server, {
+    prompt: "",
+    resume: "thread-1",
+    standingInstructions: "Never run E2E locally.",
+    standingInstructionsPrompt: "## Standing instructions\n\nNever run E2E locally.",
+  });
+  t.after(async () => {
+    await handle.stop();
+    await drained;
+  });
+  const resume = server.calls("thread/resume")[0]?.params as Record<string, unknown>;
+  assert.equal(resume.developerInstructions, undefined, "the operator's own value is untouched");
+  const turn = server.calls("turn/start")[0]?.params as { input: { text?: string }[] };
+  assert.equal(turn.input[0]?.text, "## Standing instructions\n\nNever run E2E locally.");
+  assert.equal(handle.standingInstructionsMechanism, "prompt-prefix");
+});
+
+test("with nothing to fall back into, an unusable config/read sends nothing and claims nothing", async (t) => {
+  // The caller composed no fallback, which is what a launch with no standing instructions to
+  // deliver looks like. The adapter must not invent a message this conversation never asked
+  // for, nor report a delivery that did not happen.
+  const server = new FakeServer(
+    defaultReplies({ "config/read": { config: { developer_instructions: 42 }, origins: {} } }),
+  );
+  const { handle, drained } = await launch(server, {
+    prompt: "",
+    resume: "thread-1",
+    standingInstructions: "Never run E2E locally.",
+    standingInstructionsPrompt: "",
+  });
+  t.after(async () => {
+    await handle.stop();
+    await drained;
+  });
+  const resume = server.calls("thread/resume")[0]?.params as Record<string, unknown>;
+  assert.equal(resume.developerInstructions, undefined);
+  assert.equal(server.calls("turn/start").length, 0, "no turn was invented");
+  assert.equal(handle.standingInstructionsMechanism, undefined);
+});
+
+test("a resumed thread carries the standing instructions its launch installed", async (t) => {
+  // The value lives on the mutated `LaunchConfig`, so `thread/resume` and `clearContext`
+  // rebuild their params from it. Verified rather than assumed: a `/clear` that dropped the
+  // operator's rule would be indistinguishable from one that never had it.
+  const server = new FakeServer(defaultReplies());
+  const { handle, drained } = await launch(server, {
+    resume: "thread-1",
+    standingInstructions: "Never force-push.",
+  });
+  t.after(async () => {
+    await handle.stop();
+    await drained;
+  });
+  const resume = server.calls("thread/resume")[0]?.params as Record<string, unknown>;
+  assert.equal(String(resume.developerInstructions), "Never force-push.");
 });
 
 test("a launch with no permission mode sends no posture at all", async () => {
@@ -1491,7 +1634,9 @@ test("a launch whose handshake fails throws and leaves no subprocess behind", as
         permissionMode: null,
         mcp: null,
         extraDirs: [],
-        resume: null,
+        standingInstructions: "",
+    standingInstructionsPrompt: "",
+    resume: null,
       }),
     /no fake reply for initialize/,
   );
@@ -1532,6 +1677,8 @@ test("the MCP descriptor becomes launch-scoped config, all three keys or none", 
     permissionMode: null,
     mcp: { serverName: "mission-control", command: "/usr/bin/node", args: ["/d/mcp.mjs"], env: {} },
     extraDirs: [],
+    standingInstructions: "",
+    standingInstructionsPrompt: "",
     resume: null,
   });
   // Rendered by `mission-mcp.ts`, not composed here: one descriptor, whichever launch
@@ -1670,7 +1817,9 @@ test("a subprocess spawn error rejects launch with its diagnostic", async () => 
         permissionMode: null,
         mcp: null,
         extraDirs: [],
-        resume: null,
+        standingInstructions: "",
+    standingInstructionsPrompt: "",
+    resume: null,
       }),
     (err: unknown) => {
       assert.ok(err instanceof Error);

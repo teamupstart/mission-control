@@ -207,54 +207,33 @@ test("prose ABOUT the operator's instructions survives; only the frame is redact
 });
 
 /**
- * The fastest of `runs` samples of EACH of two workloads, in milliseconds of CPU THIS PROCESS
- * actually spent, measured alternately.
+ * The fastest process-CPU cost of `runs` samples of each workload, in milliseconds, measured
+ * alternately.
  *
- * **`process.cpuUsage()` rather than `performance.now()`, and that is the whole point.** This
- * test asks a question about an algorithm - does four times the input cost about four times the
- * work, or about sixteen - and a wall clock cannot answer it on a machine doing anything else,
- * because it measures the workload plus every interruption the scheduler chose to insert. Two
- * previous attempts here tried to sample around that: first a deadline, which a busy box broke;
- * then the minimum of many interleaved wall-clock samples, which is what this replaces. The
- * minimum is the right statistic and interleaving is the right shape, and it still failed at
- * 9.3x during a full-suite run, because a minimum over wall time is not an unbiased estimator
- * when the samples can be preempted: the larger workload occupies a window four times as wide,
- * so it is likelier to be interrupted in EVERY one of its samples while the smaller one still
- * catches a clean slot. More samples raise the odds of a clean window; they never guarantee one.
+ * Process CPU time excludes time when another test or process deschedules this worker. That is
+ * the exact noise a wall-clock ratio mistook for matcher growth in the full review run. The
+ * minimum still rejects one-sided in-process noise such as garbage collection and warmup.
  *
- * CPU time removes the bias at the source instead of sampling against it. `process.cpuUsage()`
- * counts only the user and system time THIS process was actually on a core, so time spent
- * descheduled while five other test workers run is not counted at all - a sample that was
- * interrupted ten times reports the same figure as one that was never interrupted. There is no
- * clean window to wait for, because every window is clean. The workload is pure CPU-bound regex
- * matching in-process, which is exactly what this instrument measures well.
- *
- * The minimum is kept, and it still earns its place: it rejects the occasional sample that
- * catches a GC pause INSIDE this process, which is our own time and does count against us.
- * `runs` came down from twelve to five with the instrument change, because twelve existed to
- * buy enough chances at an uninterrupted wall-clock window and there is no such thing to wait
- * for any more. Measured across 3, 5 and 12 runs the ratio moved between 4.04 and 4.14 on an
- * idle box and between 3.91 and 4.35 under eight competing spinners - flat in both directions -
- * while the wall-clock cost of the test scaled straight down with the sample count.
+ * Alternating keeps runtime warmup and local CPU effects distributed across both sizes. The
+ * ratio then describes work the regex engine actually performed, not how long the test waited
+ * to be scheduled.
  */
-function fastestPairCpuMs(
+function fastestPairMs(
   runs: number,
   first: () => void,
   second: () => void,
 ): { first: number; second: number } {
-  const cpuMsSince = (mark: NodeJS.CpuUsage): number => {
-    const spent = process.cpuUsage(mark);
-    return (spent.user + spent.system) / 1000;
-  };
   let bestFirst = Infinity;
   let bestSecond = Infinity;
   for (let index = 0; index < runs; index += 1) {
     const startedFirst = process.cpuUsage();
     first();
-    bestFirst = Math.min(bestFirst, cpuMsSince(startedFirst));
+    const firstUsage = process.cpuUsage(startedFirst);
+    bestFirst = Math.min(bestFirst, (firstUsage.user + firstUsage.system) / 1000);
     const startedSecond = process.cpuUsage();
     second();
-    bestSecond = Math.min(bestSecond, cpuMsSince(startedSecond));
+    const secondUsage = process.cpuUsage(startedSecond);
+    bestSecond = Math.min(bestSecond, (secondUsage.user + secondUsage.system) / 1000);
   }
   return { first: bestFirst, second: bestSecond };
 }
@@ -267,23 +246,10 @@ test("a long rule cannot stall the worker - the matcher stays linear", () => {
   // validates only as `z.string().min(1)` and stores verbatim, so a session reporting a long
   // enough status could stall the loop that answers every other session.
   //
-  // Asserted as GROWTH rather than against a deadline, because the deadline version was a real
-  // flake: it failed at 3324ms against its 2s ceiling on a machine running three other test
-  // suites. That ceiling described itself as "two seconds against a measured ~80ms", but 60k
-  // characters actually cost ~300ms here, so the true headroom was about 6.6x and contention
-  // ate it. A wall-clock ceiling cannot tell a quadratic matcher from a busy box; a ratio can,
-  // because a uniform slowdown scales both terms and cancels. Four times the input costs about
-  // four times as long if the matcher is linear and about sixteen if it is quadratic - measured
-  // here across eight trials the ratio sat between 3.4 and 4.5, so 8 splits the two cleanly.
-  //
-  // The threshold survived contact with contention; the MEASUREMENT did not, twice. Wall-clock
-  // sampling inflates the larger workload's figure more than the smaller one's, because a wider
-  // window is likelier to be interrupted - which is how a linear matcher reported 9.3x growth
-  // during a full-suite run. The fix was to stop measuring the scheduler: `fastestPairCpuMs`
-  // reads CPU time this process actually spent, so an interrupted sample and a clean one report
-  // the same figure. Neither bound below moved: a quadratic matcher still fails both, and that
-  // is the point of leaving them where the measurements put them.
-  const { first: small, second: large } = fastestPairCpuMs(
+  // Asserted as CPU GROWTH rather than a wall-clock deadline. Four times the input costs about
+  // four times as much engine work if the matcher is linear and about sixteen if it is
+  // quadratic. Process CPU time keeps scheduler contention out of both terms.
+  const { first: small, second: large } = fastestPairMs(
     5,
     () => stripPrefsMarkers("-".repeat(15_000)),
     () => stripPrefsMarkers("-".repeat(60_000)),
@@ -291,14 +257,13 @@ test("a long rule cannot stall the worker - the matcher stays linear", () => {
   const growth = large / small;
   assert.ok(
     growth < 8,
-    `4x the input cost ${growth.toFixed(1)}x the time ` +
-      `(${small.toFixed(0)}ms -> ${large.toFixed(0)}ms) - quadratic?`,
+    `4x the input cost ${growth.toFixed(1)}x the CPU time ` +
+      `(${small.toFixed(0)}ms CPU -> ${large.toFixed(0)}ms CPU) - quadratic?`,
   );
   // The backstop a ratio cannot provide: something uniformly pathological, or an outright
-  // hang, keeps its shape while growing. An order of magnitude above the ~300ms of CPU this
-  // really costs, and still below the ~12s the old quadratic pattern would reach at this size.
-  // Also CPU time, so a busy machine cannot trip it either.
-  assert.ok(large < 10_000, `60k rule characters took ${large.toFixed(0)}ms of CPU - stalled?`);
+  // hang, keeps its shape while growing. An order of magnitude above the ~300ms this really
+  // costs, and still below the ~12s the old quadratic pattern would reach at this size.
+  assert.ok(large < 10_000, `60k rule characters took ${large.toFixed(0)}ms CPU - stalled?`);
 
   // And bounding the run did not cost coverage: a rule longer than the bound still reads as a
   // frame, because the flank swallows whatever the quantifier does not.

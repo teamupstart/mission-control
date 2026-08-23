@@ -501,4 +501,4 @@ sees what was chosen rather than the choice:
 | Engine scope | **Full extraction now.** One engine plus two definitions, with the existing tour's spec unchanged as the gate. |
 | How editing is shown | **Spotlight built-ins only, never type.** The tour writes nothing, so it can never raise the unsaved-changes gate. |
 | Tour shape | **One 15-stop tour**, cut to what each chapter needs to teach. |
-| Follow-up | **Stop after this plan.** No implementation phases or scheduled tasks are created from it. |
+| Follow-up | **Create a phased implementation plan and schedule it.** The operator explicitly resumed this work on 23 August 2026 after confirming that only the plan had merged. |

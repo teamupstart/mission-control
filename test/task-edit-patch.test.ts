@@ -165,7 +165,9 @@ test("every field on the form reaches the patch", () => {
   // is a field that displays, edits, and never saves - no error, nothing to notice. A new
   // key here fails this test until somebody writes down what changing it looks like, and
   // then fails it again if the patch ignores that change.
-  const changed: { [K in keyof Omit<DispatchDraft, "attachments">]: DispatchDraft[K] } = {
+  const changed: {
+    [K in keyof Omit<DispatchDraft, "attachments" | "agentPinned">]: DispatchDraft[K];
+  } = {
     repoRoot: "/Users/dev/work/elsewhere",
     extraRepoRoots: ["/Users/dev/work/sibling"],
     intent: "something else entirely",
@@ -180,9 +182,14 @@ test("every field on the form reaches the patch", () => {
     enabled: false,
     dependencies: [{ type: "task", taskId: "prerequisite" }],
   };
-  // Attachments are excluded on purpose: they are not a task field, they are how the
-  // intent gets composed, which the `intent` case above covers.
-  const formFields = Object.keys(EMPTY_DISPATCH_DRAFT).filter((k) => k !== "attachments");
+  // Two exclusions, both because the field is not a task field:
+  //  - `attachments` is how the intent gets composed, which the `intent` case above covers.
+  //  - `agentPinned` records WHERE the agent beside it came from - a choice made, or one the
+  //    form resolved - so that reopening the surface does not re-resolve it over the
+  //    operator. The task stores the agent, never its provenance, so a patch carrying this
+  //    would be a column that does not exist.
+  const excluded = new Set(["attachments", "agentPinned"]);
+  const formFields = Object.keys(EMPTY_DISPATCH_DRAFT).filter((k) => !excluded.has(k));
   assert.deepEqual(
     formFields.sort(),
     Object.keys(changed).sort(),

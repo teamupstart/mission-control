@@ -81,6 +81,54 @@ desktop app and in a browser, and they survive an upgrade. The browser keeps a c
 `localStorage`, but only as a cache so the dashboard paints your layout in the first
 frame; deleting it costs one request, not a preference.
 
+### Repository standing instructions
+
+One box per repository, in your own words, that every session Mission Control opens into
+that checkout is told before it starts work - *"never run the E2E suite locally, it only
+runs in CI"*, *"always prove a bug with a failing test first"*.
+
+Machine-local and per-repository, which is the gap nothing else fills: a repository's
+committed `AGENTS.md` reaches every teammate on every machine, and Foreman's standing
+guidance is machine-local but global and never reaches a session at all.
+
+| | |
+|---|---|
+| Stored under | the `instructions.standing` key in `app_config` |
+| Shape | one machine-wide `default`, plus a map of repository path to text |
+| Per-box limit | 8,000 characters |
+| Repository limit | 200 configured repositories |
+| Reaches | only sessions Mission Control launches - dispatch, and a task assigned into one of them. Never a session it merely discovered |
+
+A repository is matched by its **longest** configured path, so a rule on
+`~/ws/mono/packages/api` beats one on `~/ws/mono`, and matching is on the path boundary -
+`/repo-backup` never inherits `/repo`'s rule. A repository configured with an **empty** box
+means "send nothing here" and beats the machine-wide default; a repository you have not
+configured at all inherits it.
+
+A dispatch that attaches several repositories sends **all** of their rules, since it hands the
+agent write access to all of them. Checkouts that resolve to the same words - the machine-wide
+default is the ordinary case - share one block rather than repeating it once per checkout; where
+they differ, each block is labelled with the checkouts it governs.
+
+How the text reaches the agent depends on the harness and the runtime, and it is delivered
+exactly once either way:
+
+| Harness · runtime | Carried as |
+|---|---|
+| `claude` · terminal | one `--append-system-prompt`, composed with the ask-channel redirect |
+| `claude` · Agent SDK | `systemPrompt.append` on the Claude Code preset |
+| `codex` · Agent SDK | `developerInstructions`, merged with whatever you configured in Codex. That channel replaces your configured value, so when Codex cannot report it the merge is skipped rather than overwriting it - and the instructions are sent as prose instead, so they are never dropped. On a fresh launch that is turn one, with the block in the same slot the rows below put it; on a resume after a daemon restart it is the block by itself, because that conversation's request is already in the transcript being reopened |
+| `codex` · terminal | turn one, above the request |
+| `pi` · terminal | turn one, above the request |
+
+**A session keeps the standing instructions it launched with.** An edit takes effect on the
+next session, not a running one - a live agent's system prompt cannot be rewritten, so the
+alternative would be edits reaching two of those five pairs and not the other three. What
+each session actually received is recorded at launch and read back unchanged - the only
+thing that can move afterwards is which channel carried it, when a restart forces the Codex
+fallback above, because a later assignment repeats a rule that rode prose and never repeats
+one still installed on the process.
+
 [Cost telemetry](sessions.md#cost-telemetry) is not configured by the environment - it is a switch in
 **Settings → Cost** (or `npm run install-telemetry`), which writes these keys into your
 `~/.claude/settings.json` `env` block so that every Claude Code session on the machine

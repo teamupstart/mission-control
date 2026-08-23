@@ -23,6 +23,7 @@ import {
 } from "../lib/foreman-settings-tabs.ts";
 import { ago } from "./InspectorSettingsPanel.tsx";
 import { foremanInstructionsSourceLabel } from "../lib/foreman-profile.ts";
+import { NumberSetting } from "./ForemanBar.tsx";
 import {
   ConsoleCard,
   ConsoleState,
@@ -429,6 +430,7 @@ export function ForemanSettingsPanel({
   // while the server is enforcing it.
   const skipScoutWrapup = config?.skipScoutWrapup !== false;
   const skipReviewArtifactWrapup = config?.skipReviewArtifactWrapup !== false;
+  const shipRecoveryMinutes = config?.shipRecoveryMinutes ?? 20;
   const now = Date.now();
   const [tab, setTab] = useState<ForemanSettingsTabId>(FOREMAN_DEFAULT_TAB);
   const tabRefs = useRef(new Map<ForemanSettingsTabId, HTMLButtonElement>());
@@ -779,6 +781,23 @@ export function ForemanSettingsPanel({
                     </label>
                   </Tooltip>
                 </div>
+              </div>
+
+              <div className="sc-field" data-anchor="foreman/ship-recovery-minutes">
+                <span className="sc-field-label">Pre-PR ship recovery</span>
+                <NumberSetting
+                  value={shipRecoveryMinutes}
+                  min={1}
+                  max={1440}
+                  disabled={!config}
+                  label="Quiet minutes before first recovery"
+                  onCommit={(next) => void update({ shipRecoveryMinutes: next })}
+                />
+                <p className="settings-hint">
+                  Later sends wait a fixed 40 and 80 minutes. After three sends Foreman
+                  escalates without typing again. The topbar switch grants or withdraws this
+                  permission.
+                </p>
               </div>
             </ConsoleCard>
           </div>

@@ -9,6 +9,11 @@ import { RANK_STEP, repairBacklogRanks } from "./backlog-rank.ts";
 import { supportsEffort } from "@shared/harness-capabilities.ts";
 import type { LaunchTurnMarker } from "./launch-presentation.ts";
 import {
+  STANDING_INSTRUCTIONS_MECHANISMS,
+  type StandingInstructionsMechanism,
+  type StandingInstructionsSource,
+} from "@shared/standing-instructions.ts";
+import {
   isPipelineProviderId,
   type PipelineProviderId,
   type PipelineRun,
@@ -45,6 +50,7 @@ import type {
   PromptedCompletionOutcome,
   PromptedDirectHandoff,
   PromptedDirectHandoffKind,
+  PromptedRecoveryState,
   SessionQueue,
   Task,
   TaskAutomaticCleanup,
@@ -68,9 +74,14 @@ import {
   PROMPTED_DECISION_GAP_ID_MAX,
   PROMPTED_DECISION_GAP_PATH_MAX,
   PROMPTED_DECISION_SUMMARY_MAX,
+  PromptedRecoveryStateSchema,
   PromptedCompletionDispositionSchema,
   type PromptedCompletionDisposition,
+  type PromptedRecoveryClaim,
+  type PromptedRecoveryDelivery,
 } from "@shared/protocol.ts";
+import { shipRecoveryMarker } from "@shared/ship-recovery.ts";
+import { nextShipRecoveryAt } from "./foreman/ship-shepherd.ts";
 import { readPersistedEnum } from "@shared/schedules.ts";
 import { HUMAN_REVIEW_STATUSES, isHumanResolvedReview } from "@shared/review-item.ts";
 import { IN_FLIGHT_ITEM_STATES, TERMINAL_ITEM_STATES } from "@shared/queue.ts";
@@ -952,6 +963,53 @@ export function openDb(): DatabaseSync {
     CREATE INDEX IF NOT EXISTS idx_session_launch_turns_age
       ON session_launch_turns(updated_at);
 
+    -- WHAT STANDING INSTRUCTIONS THIS SESSION ACTUALLY RECEIVED, recorded at launch.
+    --
+    -- A session outlives the setting that launched it. Reading live configuration back to a
+    -- session header would quote a running session text it never saw the moment the operator
+    -- edits the rule, or show nothing at all once the override is removed - and a marker that
+    -- lies is worse than no marker, because it sends the operator looking for the cause of a
+    -- behaviour in a rule that was not in effect. So this is a RECORD of something that
+    -- happened, which is also why it has no updated_at: a row that can be updated is a row
+    -- that can be made to disagree with the launch it describes.
+    --
+    -- text and sources are therefore immutable, and so is created_at. The ONE field that can
+    -- be corrected afterwards is mechanism, and only toward prompt-prefix: a resumed Codex
+    -- session can find developerInstructions unusable on the new connection and be sent the
+    -- same stored block as prose instead. That is not a disagreement with the launch, it is
+    -- the launch's own delivery being re-decided by the same rule start applies - and the
+    -- field is not decoration, because tasks.ts reads it to decide whether a later assignment
+    -- repeats the rule, and a prefix governs only the turn it rode in. Still no updated_at:
+    -- the correction says what happened, and re-aging the row would only hide it from the
+    -- prune window it belongs to.
+    --
+    -- text is the WHOLE composed block, multi-repo labelled parts included, byte for byte
+    -- as the agent read it - not one repository's resolution. One row rather than one per
+    -- repository, so nothing has to re-assemble the labelled blocks anywhere else; the
+    -- provenance that is still needed, which stored key produced each repository's part,
+    -- is the sources JSON beside it (session_goals.pending_prompts is the precedent for
+    -- a small ordered JSON column here).
+    --
+    -- mechanism is an APPEND-ONLY vocabulary from STANDING_INSTRUCTIONS_MECHANISMS,
+    -- queried back by exact value - see docs/agent-guides/change-contracts.md.
+    --
+    -- Keyed like session_notes, session_goals and foreman_invites (noteKeyFor = agentSessionId
+    -- ?? synthetic id). Its own table rather than a column on one of those for the reason
+    -- session_goals records: a second writer sharing another table's disposition and
+    -- updated_at corrupts both meanings.
+    --
+    -- An empty table is the shipped state of every existing installation, and a session with
+    -- no standing instruction writes no row at all.
+    CREATE TABLE IF NOT EXISTS session_standing_instructions (
+      note_key   TEXT PRIMARY KEY,   -- noteKeyFor(s), same key as session_notes
+      text       TEXT NOT NULL,      -- the composed block EXACTLY as delivered
+      mechanism  TEXT NOT NULL,      -- which channel carried it
+      sources    TEXT NOT NULL,      -- JSON, manifest order: [{repoPath, matchedKey|null}]
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_session_standing_instructions_age
+      ON session_standing_instructions(created_at);
+
     CREATE TABLE IF NOT EXISTS app_config (
       key   TEXT PRIMARY KEY,
       value TEXT NOT NULL
@@ -1816,6 +1874,8 @@ export function openDb(): DatabaseSync {
       -- one more thing for a reader to reconcile. See toPromptedDecision below, which
       -- refuses a payload whose logical key or generation is not this row's own.
       prompted_decision TEXT,
+      -- Current bounded pre-PR recovery projection. History remains in foreman_episodes.
+      prompted_recovery TEXT,
       updated_at      INTEGER NOT NULL
     );
 
@@ -3357,6 +3417,10 @@ function migrate(d: DatabaseSync): void {
   // work - `prompted_consumed_generation` remains the replay guard - so an upgrade cannot
   // re-run a spent generation merely because nobody recorded why it stopped.
   addColumn(d, "foreman_queues", "prompted_decision", "TEXT");
+
+  // Current pre-PR ship recovery claim. One validated JSON object because every field is
+  // one CAS identity and a partial scalar group has no safe interpretation.
+  addColumn(d, "foreman_queues", "prompted_recovery", "TEXT");
 
   // `decisions`: the structured questions of a `plan-decisions` review, as a JSON
   // array. Added to `reviews` after it shipped, so an upgraded DB only gets it via
@@ -8189,6 +8253,188 @@ export function pruneSessionLaunchTurns(liveKeys: Iterable<string>, olderThan: n
   return Number(r.changes);
 }
 
+// ---- session standing instructions (what a launch actually delivered) ----
+
+/** One session's launch snapshot: what was delivered, how, and from which stored keys. */
+export interface StandingInstructionsSnapshot {
+  noteKey: string;
+  /** The composed block exactly as the agent received it. */
+  text: string;
+  mechanism: StandingInstructionsMechanism;
+  /** One entry per contributing repository, in the launch manifest's order. */
+  sources: StandingInstructionsSource[];
+  createdAt: number;
+}
+
+interface StandingInstructionsRow {
+  note_key: string;
+  text: string;
+  mechanism: string;
+  sources: string;
+  created_at: number;
+}
+
+/**
+ * Read a row back, tolerating anything a NEWER build could have written.
+ *
+ * An unreadable `sources` degrades to an empty array and an unknown `mechanism` degrades to
+ * `"prompt-prefix"` rather than dropping the row: the text is the part that matters here -
+ * it is what an assignment replays and what the header shows - and discarding a real
+ * delivery record because its provenance column could not be parsed would lose the only
+ * evidence of what a session was told.
+ */
+function rowToStandingInstructions(r: StandingInstructionsRow): StandingInstructionsSnapshot {
+  let sources: StandingInstructionsSource[] = [];
+  try {
+    const parsed: unknown = JSON.parse(r.sources);
+    if (Array.isArray(parsed)) {
+      sources = parsed.flatMap((entry): StandingInstructionsSource[] => {
+        if (typeof entry !== "object" || entry === null) return [];
+        const repoPath = (entry as { repoPath?: unknown }).repoPath;
+        const matchedKey = (entry as { matchedKey?: unknown }).matchedKey;
+        if (typeof repoPath !== "string") return [];
+        return [{ repoPath, matchedKey: typeof matchedKey === "string" ? matchedKey : null }];
+      });
+    }
+  } catch {
+    sources = [];
+  }
+  const mechanism = (STANDING_INSTRUCTIONS_MECHANISMS as readonly string[]).includes(r.mechanism)
+    ? (r.mechanism as StandingInstructionsMechanism)
+    : "prompt-prefix";
+  return {
+    noteKey: r.note_key,
+    text: r.text,
+    mechanism,
+    sources,
+    createdAt: r.created_at,
+  };
+}
+
+/**
+ * Record what a launch delivered, or correct the CHANNEL a recovery had to use.
+ *
+ * A row already under this key belongs to an earlier launch into the same pane and is
+ * replaced whole. The only in-place amendment is `Registry.markStandingInstructionsPrefixed`,
+ * which rewrites `mechanism` alone and preserves the text, sources and `created_at` - see the
+ * table comment for why there is still no `updated_at`.
+ */
+export function insertStandingInstructions(snapshot: StandingInstructionsSnapshot): void {
+  openDb()
+    .prepare(
+      `INSERT INTO session_standing_instructions (note_key, text, mechanism, sources, created_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(note_key) DO UPDATE SET
+         text=excluded.text,
+         mechanism=excluded.mechanism,
+         sources=excluded.sources,
+         created_at=excluded.created_at`,
+    )
+    .run(
+      snapshot.noteKey,
+      snapshot.text,
+      snapshot.mechanism,
+      JSON.stringify(snapshot.sources),
+      snapshot.createdAt,
+    );
+}
+
+/** One session's snapshot, by note key. */
+export function getStandingInstructions(noteKey: string): StandingInstructionsSnapshot | undefined {
+  const row = openDb()
+    .prepare(
+      `SELECT note_key, text, mechanism, sources, created_at
+         FROM session_standing_instructions WHERE note_key = ?`,
+    )
+    .get(noteKey) as unknown as StandingInstructionsRow | undefined;
+  return row ? rowToStandingInstructions(row) : undefined;
+}
+
+/** All snapshots, reloaded into the registry on start - the notes/goals/invites boot pattern. */
+export function loadStandingInstructions(): StandingInstructionsSnapshot[] {
+  const rows = openDb()
+    .prepare(
+      `SELECT note_key, text, mechanism, sources, created_at
+         FROM session_standing_instructions ORDER BY created_at DESC`,
+    )
+    .all() as unknown as StandingInstructionsRow[];
+  return rows.map(rowToStandingInstructions);
+}
+
+/** Drop a snapshot whose launch did not happen. */
+export function deleteStandingInstructions(noteKey: string): void {
+  openDb().prepare(`DELETE FROM session_standing_instructions WHERE note_key = ?`).run(noteKey);
+}
+
+/**
+ * Carry a snapshot across a note-key rotation - EVERY rotation, not only the first bind.
+ *
+ * `moveForemanInvite`'s policy, deliberately, and NOT `moveSessionLaunchTurn`'s. The launch
+ * turn is a projection into one conversation and must not be carried into the next, so it
+ * strands on a native-to-native rotation. This is a record of what governs the PROCESS -
+ * `--append-system-prompt` is a flag on the running CLI, and Codex's value lives on the
+ * mutated `LaunchConfig` that survives `clearContext` - and a `/clear` does not end the
+ * process. Attach this to the initial-bind policy instead and the header goes blank on the
+ * first `/clear` while the instruction it described is still in force.
+ *
+ * Last-write-wins on the destination, for `moveForemanInvite`'s reason: the moved row
+ * followed the process, and anything already under the target key is that process's own
+ * earlier state.
+ */
+export function moveStandingInstructions(fromKey: string, toKey: string): void {
+  if (fromKey === toKey) return;
+  const d = openDb();
+  const row = getStandingInstructions(fromKey);
+  if (!row) return;
+  d.exec("BEGIN IMMEDIATE");
+  try {
+    d.prepare(
+      `INSERT INTO session_standing_instructions (note_key, text, mechanism, sources, created_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(note_key) DO UPDATE SET
+         text=excluded.text,
+         mechanism=excluded.mechanism,
+         sources=excluded.sources,
+         created_at=excluded.created_at`,
+    ).run(toKey, row.text, row.mechanism, JSON.stringify(row.sources), row.createdAt);
+    d.prepare(`DELETE FROM session_standing_instructions WHERE note_key = ?`).run(fromKey);
+    d.exec("COMMIT");
+  } catch (err) {
+    if (d.isTransaction) d.exec("ROLLBACK");
+    throw err;
+  }
+}
+
+/**
+ * Delete snapshots that belong to no live session and have gone stale. Returns how many.
+ *
+ * A row whose key still belongs to a session is never touched however old it is - that half
+ * is `pruneSessionLaunchTurns`' and it is the half that matters.
+ *
+ * The other half is DELIBERATELY different, and the difference is the whole comment. Its
+ * neighbours treat an empty `liveKeys` as "liveness unknown" and delete nothing, because
+ * they are reachable from callers that cannot prove the session map has been swept. This one
+ * is not: its only caller is `Registry.pruneStandingInstructions`, which returns early unless
+ * `sweptSessions` is true, so by the time the set arrives here an empty one MEANS nothing is
+ * live. Repeating the neighbours' guard would make the table unprunable in exactly the state
+ * that most needs it - a daemon whose sessions have all exited - and every completed launch
+ * that carried standing text would leave up to 8,000 characters behind for good.
+ *
+ * So liveness is proven by the CALLER and stated once, rather than inferred twice from the
+ * shape of the argument.
+ */
+export function pruneStandingInstructions(liveKeys: Iterable<string>, olderThan: number): number {
+  const keys = [...new Set(liveKeys)];
+  const placeholders = keys.map(() => "?").join(",");
+  const r = openDb()
+    .prepare(
+      `DELETE FROM session_standing_instructions
+         WHERE created_at < ?${keys.length ? ` AND note_key NOT IN (${placeholders})` : ""}`,
+    )
+    .run(olderThan, ...keys);
+  return Number(r.changes);
+}
+
 // ---- usage ledger (API-equivalent estimates and token usage) ----
 
 /**
@@ -9338,6 +9584,7 @@ interface QueueRow {
   prompted_direct_handoff_episode: string | null;
   prompted_direct_handoff_generation: number | null;
   prompted_decision: string | null;
+  prompted_recovery: string | null;
   updated_at: number;
 }
 
@@ -9362,6 +9609,7 @@ function toQueueRow(r: QueueRow): Omit<SessionQueue, "items"> {
     promptedConsumedGeneration: r.prompted_consumed_generation,
     promptedDirectHandoff: toPromptedDirectHandoff(r),
     promptedDecision: toPromptedDecision(r),
+    promptedRecovery: toPromptedRecovery(r),
     updatedAt: r.updated_at,
   };
 }
@@ -9495,6 +9743,34 @@ function serializePromptedDecision(decision: PromptedCompletionDecision): string
   return JSON.stringify(decision);
 }
 
+/** Read one all-or-nothing recovery projection, failing closed on every contradiction. */
+function toPromptedRecovery(r: QueueRow): PromptedRecoveryState | null {
+  if (!r.prompted_recovery) return null;
+  const reject = (why: string): null => {
+    warnOnce(
+      `prompted-recovery:${r.note_key}:${why}`,
+      `foreman_queues ${r.note_key}: ignoring unreadable prompted recovery (${why})`,
+    );
+    return null;
+  };
+  let value: unknown;
+  try {
+    value = JSON.parse(r.prompted_recovery);
+  } catch {
+    return reject("invalid JSON");
+  }
+  const parsed = PromptedRecoveryStateSchema.safeParse(value);
+  if (!parsed.success) return reject(parsed.error.issues[0]?.message ?? "invalid state");
+  const state = parsed.data;
+  if (state.logicalKey !== r.note_key) return reject("logical key mismatch");
+  if (state.marker !== shipRecoveryMarker(state)) return reject("marker mismatch");
+  return state;
+}
+
+function serializePromptedRecovery(state: PromptedRecoveryState): string {
+  return JSON.stringify(state);
+}
+
 /**
  * The three latch columns as the one all-or-nothing fact they are.
  *
@@ -9579,8 +9855,8 @@ export function upsertQueue(q: Omit<SessionQueue, "items">): void {
           prompted_evidence, prompted_activity_at, prompted_legacy_cutover_generation,
           prompted_consumed_generation, prompted_direct_handoff_kind,
           prompted_direct_handoff_episode, prompted_direct_handoff_generation,
-          prompted_decision, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          prompted_decision, prompted_recovery, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(note_key) DO UPDATE SET
          cwd=excluded.cwd, branch=excluded.branch, wrapup_asked_at=excluded.wrapup_asked_at,
          wrapup_answer=excluded.wrapup_answer, prompted_goal=excluded.prompted_goal,
@@ -9592,6 +9868,13 @@ export function upsertQueue(q: Omit<SessionQueue, "items">): void {
          prompted_direct_handoff_episode=excluded.prompted_direct_handoff_episode,
          prompted_direct_handoff_generation=excluded.prompted_direct_handoff_generation,
          prompted_decision=excluded.prompted_decision,
+         -- Undefined is the rolling-upgrade shape from a caller that does not know this
+         -- projection. It has learned nothing that can release an unknown delivery claim.
+         -- Null remains the explicit clear; objects remain explicit replacements.
+         prompted_recovery=CASE
+           WHEN ? = 1 THEN foreman_queues.prompted_recovery
+           ELSE excluded.prompted_recovery
+         END,
          updated_at=excluded.updated_at`,
     )
     .run(
@@ -9613,7 +9896,9 @@ export function upsertQueue(q: Omit<SessionQueue, "items">): void {
       // unreadable payload back into storage, and cannot carry a decision onto a row whose
       // consumed generation has moved.
       q.promptedDecision ? serializePromptedDecision(q.promptedDecision) : null,
+      q.promptedRecovery ? serializePromptedRecovery(q.promptedRecovery) : null,
       q.updatedAt,
+      q.promptedRecovery === undefined ? 1 : 0,
     );
 }
 
@@ -9754,13 +10039,13 @@ export function consumePromptedGeneration(
        prompted_evidence, prompted_activity_at, prompted_legacy_cutover_generation,
        prompted_consumed_generation, prompted_direct_handoff_kind,
        prompted_direct_handoff_episode, prompted_direct_handoff_generation,
-       prompted_decision, updated_at
+       prompted_decision, prompted_recovery, updated_at
      )
      SELECT ?, ?, NULL,
             CASE WHEN ? = 1 THEN ? ELSE NULL END,
             NULL, NULL, NULL, NULL, NULL, generation,
             ?, ?, CASE WHEN ? IS NULL THEN NULL ELSE generation END,
-            ?, ?
+            ?, NULL, ?
        FROM session_work_cycles
       WHERE logical_key = ?
         AND generation = ?
@@ -9780,6 +10065,9 @@ export function consumePromptedGeneration(
        -- Phase 2 would send its gaps back into a session that already addressed them.
        -- Clearing on a null decision is the same rule, applied to a caller that gave none.
        prompted_decision = excluded.prompted_decision,
+       -- A newly consumed completion generation owns a new recovery sequence. Clear the
+       -- prior current projection in the same statement so its attempt cannot carry over.
+       prompted_recovery = NULL,
        -- COALESCE, not assignment: a consumption that makes no handoff must not ERASE
        -- one. It would be erasing the record of an instruction that was already typed,
        -- and the next tick would type it again. Preserving is safe because eligibility
@@ -9823,6 +10111,173 @@ export function consumePromptedGeneration(
     ask,
   );
   return Number(result.changes) === 1;
+}
+
+/**
+ * Claim one exact pre-PR recovery attempt before injection.
+ *
+ * This is the durable CAS half only. The Registry/route boundary re-resolves task,
+ * authorization, human, queue, Workflow, PR and idle ownership before it calls here. This
+ * statement then makes a lost worker response conservative: the claim is already `unknown`
+ * and a restart cannot send it again.
+ */
+export function claimPromptedRecovery(
+  input: PromptedRecoveryClaim,
+  now: number,
+  d: DatabaseSync = openDb(),
+): PromptedRecoveryState | null {
+  d.exec("BEGIN IMMEDIATE");
+  try {
+    const row = d.prepare(`SELECT * FROM foreman_queues WHERE note_key = ?`)
+      .get(input.logicalKey) as unknown as QueueRow | undefined;
+    if (!row) {
+      d.exec("ROLLBACK");
+      return null;
+    }
+    const expectedMarker = shipRecoveryMarker(input);
+    const decision = toPromptedDecision(row);
+    const decisionMatches = input.decisionGeneration === null
+      ? decision === null && input.decisionOutcome === null
+      : decision?.generation === input.decisionGeneration
+        && decision.outcome === input.decisionOutcome;
+    const cycle = d.prepare(
+      `SELECT generation, active, completed_at FROM session_work_cycles WHERE logical_key = ?`,
+    ).get(input.logicalKey) as unknown as {
+      generation: number;
+      active: number;
+      completed_at: number | null;
+    } | undefined;
+    if (
+      expectedMarker !== input.marker
+      || !decisionMatches
+      || !cycle
+      || cycle.generation !== input.generation
+      || cycle.active !== 0
+      || cycle.completed_at === null
+    ) {
+      d.exec("ROLLBACK");
+      return null;
+    }
+
+    const previous = toPromptedRecovery(row);
+    // Null in storage is the legacy/no-attempt case. Non-null storage that the validated
+    // reader rejected is a different fact: this build cannot prove which attempt was
+    // spent, so it must not overwrite the evidence with a fresh attempt-one claim.
+    if (row.prompted_recovery !== null && previous === null) {
+      d.exec("ROLLBACK");
+      return null;
+    }
+    const sameSequence = previous !== null
+      && previous.taskId === input.taskId
+      && previous.logicalKey === input.logicalKey
+      && previous.generation === input.generation
+      && previous.reason === input.reason
+      && previous.decisionGeneration === input.decisionGeneration
+      && previous.decisionOutcome === input.decisionOutcome;
+    let allowed = false;
+    if (!sameSequence) {
+      allowed = input.attempt === 1
+        || (input.attempt === 4 && input.reason === "verification_failed");
+    } else if (previous.lastDelivery !== "escalated") {
+      const due = previous.nextEligibleAt !== null && now >= previous.nextEligibleAt;
+      allowed = due && (
+        (previous.lastDelivery === "confirmed_undelivered"
+          ? input.attempt === previous.attempt
+          : input.attempt === previous.attempt + 1)
+      );
+    }
+    if (
+      !allowed
+      || (
+        input.attempt === 4
+        && input.reason !== "verification_failed"
+        && previous?.attempt !== 3
+      )
+    ) {
+      d.exec("ROLLBACK");
+      return null;
+    }
+
+    const next: PromptedRecoveryState = {
+      taskId: input.taskId,
+      logicalKey: input.logicalKey,
+      generation: input.generation,
+      decisionGeneration: input.decisionGeneration,
+      decisionOutcome: input.decisionOutcome,
+      reason: input.reason,
+      marker: input.marker,
+      attempt: input.attempt,
+      payloadSummary: input.payloadSummary,
+      claimedAt: now,
+      nextEligibleAt: input.attempt === 4 ? null : nextShipRecoveryAt(input.attempt, now),
+      lastDelivery: input.attempt === 4 ? "escalated" : "unknown",
+    };
+    const parsed = PromptedRecoveryStateSchema.safeParse(next);
+    if (!parsed.success) {
+      d.exec("ROLLBACK");
+      return null;
+    }
+    const changed = d.prepare(
+      `UPDATE foreman_queues SET prompted_recovery = ?, updated_at = ? WHERE note_key = ?`,
+    ).run(serializePromptedRecovery(next), now, input.logicalKey);
+    if (Number(changed.changes) !== 1) {
+      d.exec("ROLLBACK");
+      return null;
+    }
+    d.exec("COMMIT");
+    return next;
+  } catch (err) {
+    d.exec("ROLLBACK");
+    throw err;
+  }
+}
+
+/** Confirm success or positively release one exact recovery delivery claim. */
+export function resolvePromptedRecoveryDelivery(
+  input: PromptedRecoveryDelivery,
+  now: number,
+  d: DatabaseSync = openDb(),
+): PromptedRecoveryState | null {
+  d.exec("BEGIN IMMEDIATE");
+  try {
+    const row = d.prepare(`SELECT * FROM foreman_queues WHERE note_key = ?`)
+      .get(input.logicalKey) as unknown as QueueRow | undefined;
+    const current = row ? toPromptedRecovery(row) : null;
+    if (
+      !current
+      || current.taskId !== input.taskId
+      || current.logicalKey !== input.logicalKey
+      || current.generation !== input.generation
+      || current.decisionGeneration !== input.decisionGeneration
+      || current.decisionOutcome !== input.decisionOutcome
+      || current.reason !== input.reason
+      || current.attempt !== input.attempt
+      || current.marker !== input.marker
+      || current.marker !== shipRecoveryMarker(input)
+      || current.lastDelivery === "escalated"
+    ) {
+      d.exec("ROLLBACK");
+      return null;
+    }
+    const desired = input.delivery;
+    if (current.lastDelivery !== "unknown" && current.lastDelivery !== desired) {
+      d.exec("ROLLBACK");
+      return null;
+    }
+    const next: PromptedRecoveryState = {
+      ...current,
+      lastDelivery: desired,
+      nextEligibleAt: desired === "confirmed_undelivered" ? now : current.nextEligibleAt,
+    };
+    d.prepare(
+      `UPDATE foreman_queues SET prompted_recovery = ?, updated_at = ? WHERE note_key = ?`,
+    ).run(serializePromptedRecovery(next), now, input.logicalKey);
+    d.exec("COMMIT");
+    return next;
+  } catch (err) {
+    d.exec("ROLLBACK");
+    throw err;
+  }
 }
 
 /**

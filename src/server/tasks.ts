@@ -82,7 +82,9 @@ import {
   freezeScoutPromptBoundary,
 } from "./scouts/prompt-journal.ts";
 import { withTaskKindContract } from "./task-contract.ts";
+import { withStandingInstructions } from "./instructions/compose.ts";
 import { TASK_KIND_BEHAVIOR } from "@shared/task.ts";
+import { resolveTaskAgent } from "./harnesses.ts";
 
 /**
  * What a SATISFIED quorum records as the task's outcome: every pull request that landed, in
@@ -129,7 +131,16 @@ export interface CreateTaskInput {
   intent: string;
   title?: string;
   kind: TaskKind;
-  agent: AgentType;
+  /**
+   * Which harness files this task. OMITTED means "whatever this kind is configured to run
+   * on" (`resolveTaskAgent`), which is what an MCP `create_task` and any other creator with
+   * no opinion should get; a caller that names one is making a pin and always wins.
+   *
+   * Resolved at CREATION rather than at launch, and that asymmetry with `model`/`effort`
+   * below is forced by the schema: `tasks.agent` is `TEXT NOT NULL`, so there is no "unset"
+   * for a row to carry. See `resolveTaskAgent`.
+   */
+  agent?: AgentType;
   /** Optional urgency. Omitted means unset, which is not the same as `low`. */
   priority?: TaskPriority | null;
   /** Optional tags, already normalized by the schema that parsed them. */
@@ -223,6 +234,9 @@ export interface Ok {
   error?: string;
 }
 
+/** The merge identity needed to close the session after its task finishes. */
+type MergedSessionRef = Pick<TaskPrMerged, "taskId" | "sessionId" | "episodeId">;
+
 /**
  * What `reorder` answers with. The status is chosen HERE rather than reverse-engineered
  * from the sentence at the route, because the two refusals read the same to a string match
@@ -238,6 +252,9 @@ export class TaskDependencyError extends Error {}
 
 /** A chat task was sent through a surface without the manual Dispatch capability. */
 export class TaskKindBacklogError extends Error {}
+
+/** A launch effort named for a harness that cannot be launched with it. */
+export class TaskEffortUnsupportedError extends Error {}
 
 /**
  * Capability held only by the localhost manual Dispatch route. Requiring the exact symbol
@@ -817,7 +834,7 @@ export class TaskManager {
     });
 
     // The other way a task ends: its work landed. See `settleMergedTask`.
-    registry.onTaskPrMerged((e) => void this.settleMergedTask(e));
+    registry.onTaskPrMerged((e) => this.settleMergedTask(e));
     // And the periodic backstop for the tasks that announcement cannot reach: whatever the
     // by-URL poller recorded this tick. No timer of its own - the poller's tick is it.
     registry.onPrMergesRecorded(() => this.reconcileMergedTasks());
@@ -1047,16 +1064,16 @@ export class TaskManager {
    * session is left alone, while a session that later disappears settles through
    * `agentWentAway`.
    *
-   * The disposition of the agent remains a separate preference. With
-   * `closeSessionAfterMerge` enabled, an idle merged session is closed only AFTER its
-   * task has been recorded done, and only if it still matches that task and episode
-   * after the asynchronous checkout-safety probe. Work resuming during that probe
-   * reopens the inferred completion and cancels the close.
+   * The disposition of the agent remains a separate preference. The shared idle-completion
+   * path below applies it only AFTER the task has been recorded done, whether idleness came
+   * before this event or later. `closeMergedSession` then rechecks the task and episode after
+   * its asynchronous checkout-safety probe. Work resuming during that probe reopens the
+   * inferred completion and cancels the close.
    *
    * Errors are swallowed to a log line: this runs inside the PR poller's reconciliation,
    * where a throw would abandon the rest of the sweep.
    */
-  private async settleMergedTask(e: TaskPrMerged): Promise<void> {
+  private settleMergedTask(e: TaskPrMerged): void {
     try {
       const t = this.registry.getTask(e.taskId);
       if (!t || (t.status !== "running" && t.status !== "dispatching")) return;
@@ -1068,21 +1085,8 @@ export class TaskManager {
       // asked here too or the task stays running for ever. Both callers land on one
       // predicate rather than two that could drift.
       if (session) this.settleIfEpisodeFinished(session);
-      if (!getShippingConfig().closeSessionAfterMerge) return;
-      // This preference is "complete, then close", never Kill's "stop and let the task
-      // settle as failed". `settleIfEpisodeFinished` is deliberately narrower than
-      // "not working": awaiting input/review is still an unfinished turn. Requiring the
-      // completion it just recorded keeps those states out of the terminal kill path.
-      if (
-        session?.state !== "idle" ||
-        this.registry.getTask(e.taskId)?.status !== "done" ||
-        this.autoCompleted.get(e.taskId) !== e.sessionId
-      ) {
-        return;
-      }
-      await this.closeMergedSession(e);
     } catch (error) {
-      console.error("[merge] closing merged session failed:", e.taskId, error);
+      console.error("[merge] settling merged task failed:", e.taskId, error);
     }
   }
 
@@ -1148,6 +1152,12 @@ export class TaskManager {
       requireStopped: false,
       confirmIncompleteScout: false,
       inferredFrom: s.id,
+    }, undefined, () => {
+      this.closeMergedSessionAfterCompletion({
+        taskId: t.id,
+        sessionId: s.id,
+        episodeId: binding.episodeId,
+      });
     });
   }
 
@@ -1429,6 +1439,14 @@ export class TaskManager {
     );
   }
 
+  /** Apply the operator's preference after either merge/idle event ordering completes. */
+  private closeMergedSessionAfterCompletion(e: MergedSessionRef): void {
+    if (!getShippingConfig().closeSessionAfterMerge) return;
+    void this.closeMergedSession(e).catch((error: unknown) => {
+      console.error("[merge] closing merged session failed:", e.taskId, error);
+    });
+  }
+
   /**
    * Close the agent of a task that was completed after its merge, and reclaim its
    * checkout if that is safe.
@@ -1447,7 +1465,7 @@ export class TaskManager {
    * session's does. That is the house rule holding: freeing a tree is the operator's call
    * whenever anything could be lost by it.
    */
-  private async closeMergedSession(e: TaskPrMerged): Promise<void> {
+  private async closeMergedSession(e: MergedSessionRef): Promise<void> {
     const session = this.registry.getSession(e.sessionId);
     if (!session) return;
     // Probed BEFORE the kill: the answer is about the checkout, and asking first keeps
@@ -1908,6 +1926,26 @@ export class TaskManager {
     }
     const now = Date.now();
     const explicitTitle = input.title?.trim();
+    // The ONE place an omitted agent becomes a real one, so every creator - the dispatch
+    // route, an MCP `create_task`, a task source sweep, a recurring mission, a retro
+    // follow-up, an ensemble member - inherits the kind default without any of them
+    // learning that kind defaults exist. A caller that named an agent keeps it verbatim.
+    const agent = resolveTaskAgent(input.kind, input.agent);
+    // The half of `DispatchSchema`'s effort refinement that a browser-safe schema cannot run:
+    // with the agent omitted there, the harness the level was chosen for is not known until
+    // this line.
+    //
+    // Applied to EVERY caller, including one whose agent was inherited. An earlier draft let
+    // an inheriting creator through on the reasoning that its author never made the
+    // resolution - but the task row it writes is a PIN, and a stored pin is the one thing the
+    // launch ladder used to pass on without checking. Refusing here is where the operator can
+    // still act on it: `PUT /api/schedules` and the task-source save answer 400, naming the
+    // level and the harness, instead of a mission that files silently and launches wrong.
+    if (input.effort && !supportsEffort(agent, input.effort)) {
+      throw new TaskEffortUnsupportedError(
+        `reasoning effort ${input.effort} is not supported by ${agent}`,
+      );
+    }
     const id = internal?.id ?? randomUUID();
     if (internal) {
       // Two producer-specific identity checks, with the same recovery rule. A scheduled id
@@ -1935,7 +1973,7 @@ export class TaskManager {
             existing.intent !== input.intent ||
             existing.title !== explicitTitle ||
             existing.kind !== input.kind ||
-            existing.agent !== input.agent ||
+            existing.agent !== agent ||
             existing.model !== (input.model ?? null) ||
             existing.effort !== (input.effort ?? null) ||
             existing.workflowId !== workflowId ||
@@ -1973,7 +2011,7 @@ export class TaskManager {
       title: explicitTitle || deriveTitle(input.intent),
       intent: input.intent,
       kind: input.kind,
-      agent: input.agent,
+      agent,
       priority: input.priority ?? null,
       labels: input.labels ?? [],
       dependencies,
@@ -2965,9 +3003,23 @@ export class TaskManager {
     // reject; the dispatcher's seam guards the same risk the same way.
     let r: InjectResult;
     try {
+      // AN ASSIGNMENT RESOLVES NOTHING. The repository cannot have changed - `assign`
+      // refuses a multi-repo task and stands in the session's own checkout - so the only
+      // thing that could have is the configuration, and a live process's system prompt
+      // cannot be rewritten. Re-resolving here would give the pairs with a durable channel
+      // one mid-session semantic and the pairs without one another, for the same feature.
+      // One boundary instead: a session keeps the standing instructions it launched with.
+      //
+      // So this replays the session's own launch snapshot, and only for a session whose
+      // pair had no out-of-band channel. On the three pairs that do, the block is still
+      // installed on that process - that is what "durable" means - and prefixing it again
+      // would have the agent read the same rule twice. A session with no snapshot acquires
+      // nothing mid-life.
+      const launched = this.registry.standingInstructionsFor(s.id);
+      const standingPrefix = launched?.mechanism === "prompt-prefix" ? launched.text : "";
       r = await inject(
         this.registry.getSession(s.id) ?? s,
-        withTaskKindContract(ready, ready.intent, {
+        withTaskKindContract(ready, withStandingInstructions(standingPrefix, ready.intent), {
           fallbackRoot: s.cwd,
           planSkills: planSkills?.ok ? planSkills.commands : null,
           workflowEvidence,
@@ -3469,8 +3521,12 @@ export class TaskManager {
     id: string,
     input: CompletionInput,
     onScoutRefusal?: (problems: string[]) => void,
+    onCompleted?: (task: Task) => void,
   ): void {
     void this.runCompletion(id, input)
+      .then((task) => {
+        if (task) onCompleted?.(task);
+      })
       .catch((error: unknown) => {
         if (error instanceof ScoutArchiveNotReadyError) {
           // Ordinary while a scout is still working: the merge landed but the report has not

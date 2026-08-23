@@ -18,6 +18,7 @@ import { changedPaths } from "../inspector/diff-lines.ts";
 import { getLlmConfig, llmJobModel, llmRunnerChoice } from "../llm/config.ts";
 import { providerJsonSchema } from "../llm/json-schema.ts";
 import { runJobStructured } from "../llm/jobs.ts";
+import type { JobExecution } from "../llm/jobs.ts";
 import { parseModelJson } from "../llm/structured.ts";
 import type { StructuredAttemptObserver, StructuredResult } from "../llm/structured.ts";
 import type { Registry } from "../registry.ts";
@@ -63,6 +64,13 @@ export interface WorkflowCompactionDeps {
   runner?: WorkflowContextSnapshot["compaction"]["runner"];
   model?: string;
   observer?: StructuredAttemptObserver;
+  /**
+   * Told the pair the call resolved, before its first attempt runs.
+   *
+   * Forwarded straight to `runJobStructured`. The engine's `llm_calls` row is written from
+   * inside `observer.start`, which is earlier than this function's own return value.
+   */
+  onExecution?: (execution: JobExecution) => void;
 }
 
 export interface RawWorkflowContext {
@@ -299,24 +307,38 @@ export async function compactWorkflowContext(
   raw: RawWorkflowContext,
   deps: WorkflowCompactionDeps = {},
 ): Promise<WorkflowContextSnapshot> {
-  const cfg = getLlmConfig();
-  const runner = deps.runner ?? llmRunnerChoice(cfg).id;
-  const model = deps.model ?? llmJobModel("workflow-context", cfg).id;
   const prompt = compactPrompt(raw);
-  const result = deps.execute
-    ? await deps.execute(prompt)
-    : await runJobStructured<typeof CompactionSchema>(
-        "workflow-context",
-        prompt,
-        (text) => parseModelJson(text, CompactionSchema),
-        "Workflow context compaction",
-        {
-          timeoutMs: WORKFLOW_CONTEXT_TIMEOUT_MS,
-          observer: deps.observer,
-          schema: COMPACTION_JSON_SCHEMA,
-          shapeGuaranteed: true,
-        },
-      );
+  let result: StructuredResult<CompactionValue>;
+  /** What the call reported it ran on, or null when a test supplied its own executor. */
+  let ran: JobExecution | null = null;
+  if (deps.execute) {
+    result = await deps.execute(prompt);
+  } else {
+    const call = await runJobStructured<typeof CompactionSchema>(
+      "workflow-context",
+      prompt,
+      (text) => parseModelJson(text, CompactionSchema),
+      "Workflow context compaction",
+      {
+        timeoutMs: WORKFLOW_CONTEXT_TIMEOUT_MS,
+        observer: deps.observer,
+        onExecution: deps.onExecution,
+        schema: COMPACTION_JSON_SCHEMA,
+        shapeGuaranteed: true,
+      },
+    );
+    ran = call.execution;
+    result = call;
+  }
+  // The pair the CALL reported, never a second resolution of the same config. Re-deriving it
+  // was merely redundant while every job shared one provider; with a provider per job the
+  // re-derived label names the app-wide one while the call used this job's own, so an
+  // installation with an override set stamped every snapshot wrong. Only the callee knows -
+  // it also absorbs `guardProviderModel` substituting a fallback. The two `??` tails below
+  // are for the injected-executor path alone, where no real call was made to ask.
+  const cfg = deps.execute ? getLlmConfig() : null;
+  const runner = deps.runner ?? ran?.runner ?? llmRunnerChoice(cfg ?? undefined).id;
+  const model = deps.model ?? ran?.model ?? llmJobModel("workflow-context", cfg ?? undefined).id;
   if (result.kind === "failed") {
     return {
       ...fallbackWorkflowContext(raw, result.reason),

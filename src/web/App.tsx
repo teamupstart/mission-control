@@ -127,11 +127,15 @@ import { useDesktopUpdates } from "./useDesktopUpdates.ts";
 import { UpdateBanner } from "./components/UpdateBanner.tsx";
 import { useGuidedDispatch } from "./lib/guided-dispatch.ts";
 import { activateDeleteShortcut, deleteShortcutMatchesChord } from "./lib/delete-shortcut.ts";
+import { GuidedTourController } from "./tour/GuidedTourController.tsx";
+import type { TourId } from "./tour/contracts.ts";
+import { TOUR_DEFINITIONS } from "./tour/definitions.ts";
+import { tourEntry } from "./tour/entries.ts";
 import {
-  SeeWorkTourController,
+  SEE_WORK_TOUR,
   type SeeWorkTourNavigation,
   type SeeWorkTourRuntime,
-} from "./tour/SeeWorkTourController.tsx";
+} from "./tour/tours/see-work.ts";
 import { createTourTargetRegistry } from "./tour/target-registry.ts";
 import { TourTargetHost, useOwnedTourTargetRef } from "./tour/target-context.tsx";
 import {
@@ -225,7 +229,14 @@ const PAGE_SEGMENTS = [
   hint: string;
 }[];
 
-interface SeeWorkTourSnapshot {
+/**
+ * Everything a tour moves and therefore owes back.
+ *
+ * The complete `MissionRoute` is the authority - it already carries the Library shelf and the
+ * asset a surface has open - so a tour that navigates anywhere is restored by replaying one
+ * value rather than by a per-tour list of fields to put back.
+ */
+interface TourSnapshot {
   route: MissionRoute;
   layout: LayoutMode;
   selectedId: string | null;
@@ -234,11 +245,31 @@ interface SeeWorkTourSnapshot {
   lineDrawer: LineDrawerStage | null;
 }
 
-interface SeeWorkTourRun {
+/** The one active tour run. Which tour it is lives in `tourId`, never in a second state slot. */
+interface TourRun {
   id: string;
-  snapshot: SeeWorkTourSnapshot;
+  tourId: TourId;
+  snapshot: TourSnapshot;
+  /** A resource the starting tour picked out for itself, such as a session to open on. */
   sessionId: string | null;
   focus: FocusBookmark;
+}
+
+/**
+ * What App supplies for one tour.
+ *
+ * `mount` is a plain factory rather than a runtime/navigator pair so each tour keeps its own
+ * `Runtime` and `Navigation` types all the way to the controller. Generic tour code holds a
+ * `TourBinding` without ever naming a concrete tour, and without a cast that would let a
+ * definition meet a runtime it was not written against.
+ */
+interface TourBinding {
+  /** The task this run created, so its task-scoped targets can pick their one owner. */
+  activeTaskId: string | null;
+  /** Reclaim everything the run created. Throwing leaves the run installed and retryable. */
+  cleanup: () => Promise<void>;
+  /** Null while this tour is not ready to be driven yet. */
+  mount: (props: { isTop: boolean; onFinish: () => Promise<void> }) => React.JSX.Element | null;
 }
 
 export function App(): React.JSX.Element {
@@ -377,25 +408,29 @@ export function App(): React.JSX.Element {
   /** The one Line drawer state is also part of the temporary tour's restoration snapshot. */
   const [lineDrawer, setLineDrawer] = useState<LineDrawerStage | null>(null);
   const tourTargets = useMemo(createTourTargetRegistry, []);
-  const [seeWorkTour, setSeeWorkTour] = useState<SeeWorkTourRun | null>(null);
+  /** The one active tour run, whichever tour it is. A second activation is a no-op. */
+  const [activeTour, setActiveTour] = useState<TourRun | null>(null);
   const [seeWorkTourPreviewTaskId, setSeeWorkTourPreviewTaskId] = useState<string | null>(null);
   const [seeWorkTourPreviewError, setSeeWorkTourPreviewError] = useState<string | null>(null);
   const [seeWorkTourTaskId, setSeeWorkTourTaskId] = useState<string | null>(null);
   const [seeWorkTourBriefReady, setSeeWorkTourBriefReady] = useState(false);
   const [seeWorkTourRepoRoot, setSeeWorkTourRepoRoot] = useState<string | null>(null);
-  const seeWorkTourSequence = useRef(0);
-  const seeWorkTourRef = useRef<SeeWorkTourRun | null>(null);
+  const tourSequence = useRef(0);
+  const activeTourRef = useRef<TourRun | null>(null);
+  const tourBindingsRef = useRef<Record<TourId, TourBinding> | null>(null);
   const seeWorkTourPreviewTaskIdRef = useRef<string | null>(null);
   const seeWorkTourPreviewStartedRef = useRef<string | null>(null);
   const seeWorkTourTaskIdRef = useRef<string | null>(null);
   const sessionsRef = useRef(sessions);
   const tasksRef = useRef(tasks);
-  seeWorkTourRef.current = seeWorkTour;
+  activeTourRef.current = activeTour;
+  /** The active run, only when it is See the work's. Every other tour reads null here. */
+  const seeWorkRun = activeTour?.tourId === "see-work" ? activeTour : null;
   seeWorkTourPreviewTaskIdRef.current = seeWorkTourPreviewTaskId;
   seeWorkTourTaskIdRef.current = seeWorkTourTaskId;
   sessionsRef.current = sessions;
   tasksRef.current = tasks;
-  const dispatchTourRef = useOwnedTourTargetRef<HTMLButtonElement>(tourTargets, "dispatch");
+  const dispatchTourRef = useOwnedTourTargetRef<HTMLButtonElement>(tourTargets, "see-work:dispatch");
   // The settings control the palette last asked to land on, if any.
   //
   // The anchor is deliberately not in the hash (the settings route is category-only), so it
@@ -812,56 +847,86 @@ export function App(): React.JSX.Element {
     ],
   );
 
-  const startSeeWorkTour = useCallback((focus = paletteInvokerRef.current): void => {
-    const preferredSession = selectedId && sessions.some((session) => session.id === selectedId)
+  /**
+   * The session See the work opens its third stop on, chosen before the run is committed.
+   * An empty fleet answers null, which is what makes the tour start its own Chat preview.
+   */
+  const pickSeeWorkSession = useCallback((): string | null => (
+    selectedId && sessions.some((session) => session.id === selectedId)
       ? selectedId
-      : (sessions[0]?.id ?? null);
-    if (seeWorkTourRef.current) return;
-    const id = `see-work-${++seeWorkTourSequence.current}`;
-    const run: SeeWorkTourRun = {
-      id,
-      snapshot: {
-        route,
-        layout,
-        selectedId,
-        boardOpen,
-        filter,
-        lineDrawer,
-      },
-      sessionId: preferredSession,
-      focus,
-    };
-    // Set the ref in the same turn as state so a fast second activation cannot start a
-    // second controller before React commits this one.
-    seeWorkTourRef.current = run;
+      : (sessions[0]?.id ?? null)
+  ), [selectedId, sessions]);
+
+  /** Clear the previous See the work run's temporary state and resolve the repo it needs. */
+  const beginSeeWorkRun = useCallback((run: TourRun): void => {
     seeWorkTourPreviewTaskIdRef.current = null;
     seeWorkTourPreviewStartedRef.current = null;
     setSeeWorkTourPreviewTaskId(null);
     setSeeWorkTourPreviewError(null);
     setSeeWorkTourTaskId(null);
     setSeeWorkTourBriefReady(false);
-    const preferredRepo = preferredSession
-      ? sessions.find((session) => session.id === preferredSession)?.repoRoot ?? null
+    const preferredRepo = run.sessionId
+      ? sessions.find((session) => session.id === run.sessionId)?.repoRoot ?? null
       : tasks.find((task) => task.repoRoot)?.repoRoot ?? null;
     setSeeWorkTourRepoRoot(preferredRepo);
-    setSeeWorkTour(run);
-    if (!preferredRepo) {
-      void fetchRepos().then((repos) => {
-        if (seeWorkTourRef.current?.id !== id) return;
-        const repoRoot = repos[0] ?? null;
-        setSeeWorkTourRepoRoot(repoRoot);
-        if (!repoRoot && preferredSession === null) {
-          setSeeWorkTourPreviewError("No git repository is available for the tour conversation.");
-        }
-      });
-    }
-  }, [boardOpen, filter, layout, lineDrawer, route, selectedId, sessions, tasks]);
+    if (preferredRepo) return;
+    void fetchRepos().then((repos) => {
+      if (activeTourRef.current?.id !== run.id) return;
+      const repoRoot = repos[0] ?? null;
+      setSeeWorkTourRepoRoot(repoRoot);
+      if (!repoRoot && run.sessionId === null) {
+        setSeeWorkTourPreviewError("No git repository is available for the tour conversation.");
+      }
+    });
+  }, [sessions, tasks]);
+
+  /**
+   * How each tour opens: the resource it wants to point at, and the run state it seeds.
+   *
+   * Keyed by `TourId`, so a new tour cannot be registered without saying both, and the
+   * generic start path below never learns which tour it is starting.
+   */
+  const tourStarters = useMemo<Record<TourId, {
+    resource: () => string | null;
+    begin: (run: TourRun) => void;
+  }>>(() => ({
+    "see-work": { resource: pickSeeWorkSession, begin: beginSeeWorkRun },
+  }), [beginSeeWorkRun, pickSeeWorkSession]);
+
+  /**
+   * Start a tour. One active run at a time, whichever tour asks.
+   *
+   * The entry route transition is a PREFLIGHT: it runs before any tour state is committed, so
+   * a dirty draft raises the existing leave dialog with no tour active and the ordinary route
+   * flow owns the answer. Only a transition the app accepted commits a run.
+   */
+  const startTour = useCallback((
+    tourId: TourId,
+    focus = paletteInvokerRef.current,
+  ): void => {
+    if (activeTourRef.current) return;
+    const snapshot: TourSnapshot = { route, layout, selectedId, boardOpen, filter, lineDrawer };
+    if (!navigate(tourEntry(tourId).entryRoute)) return;
+    const starter = tourStarters[tourId];
+    const run: TourRun = {
+      id: `${tourId}-${++tourSequence.current}`,
+      tourId,
+      snapshot,
+      sessionId: starter.resource(),
+      focus,
+    };
+    // Set the ref in the same turn as state so a fast second activation cannot start a
+    // second controller before React commits this one.
+    activeTourRef.current = run;
+    starter.begin(run);
+    setActiveTour(run);
+  }, [boardOpen, filter, layout, lineDrawer, navigate, route, selectedId, tourStarters]);
 
   // Only an empty fleet needs a synthetic desk. Start its fixed Chat session as soon as the
   // repository is known, while the operator is reading the Line and Board stops. A late
   // response after Exit is reclaimed immediately instead of appearing off-screen.
   useEffect(() => {
-    const run = seeWorkTour;
+    const run = seeWorkRun;
     const repoRoot = seeWorkTourRepoRoot;
     if (
       !run ||
@@ -870,30 +935,30 @@ export function App(): React.JSX.Element {
       seeWorkTourPreviewStartedRef.current === run.id
     ) return;
     seeWorkTourPreviewStartedRef.current = run.id;
-    void api.startSeeWorkTourPreview(repoRoot).then(async (result) => {
+    void api.startTourPreview("see-work", repoRoot).then(async (result) => {
       const taskId = result.task?.id ?? null;
       if (!result.ok || !taskId) {
-        if (seeWorkTourRef.current === run) {
+        if (activeTourRef.current === run) {
           setSeeWorkTourPreviewError(
             result.error ?? "Mission Control did not return a tour conversation.",
           );
         }
         return;
       }
-      if (seeWorkTourRef.current !== run) {
-        await api.completeSeeWorkTourDemo(taskId);
+      if (activeTourRef.current !== run) {
+        await api.completeTourTask("see-work", taskId);
         return;
       }
       seeWorkTourPreviewTaskIdRef.current = taskId;
       setSeeWorkTourPreviewTaskId(taskId);
     }).catch((error: unknown) => {
-      if (seeWorkTourRef.current === run) {
+      if (activeTourRef.current === run) {
         setSeeWorkTourPreviewError(
           error instanceof Error ? error.message : "The tour conversation could not start.",
         );
       }
     });
-  }, [seeWorkTour, seeWorkTourRepoRoot]);
+  }, [seeWorkRun, seeWorkTourRepoRoot]);
 
   const dispatchSeeWorkTourDemo = useCallback(async (repoRoot: string) => {
     if (seeWorkTourTaskIdRef.current) {
@@ -902,17 +967,17 @@ export function App(): React.JSX.Element {
         task: tasksRef.current.find((task) => task.id === seeWorkTourTaskIdRef.current),
       };
     }
-    const run = seeWorkTourRef.current;
+    const run = activeTourRef.current;
     if (!run) return { ok: false, error: "the tour is no longer active" };
-    const result = await api.startSeeWorkTourDemo(repoRoot);
+    const result = await api.startTourDemo("see-work", repoRoot);
     const taskId = result.task?.id ?? null;
     if (!result.ok || !taskId) {
       return { ok: false, error: result.error ?? "Mission Control did not return a demo task." };
     }
     // A slow response can land after Exit. Close that task instead of attaching it to a
     // newer run or leaving it alive off-screen.
-    if (seeWorkTourRef.current !== run) {
-      await api.completeSeeWorkTourDemo(taskId);
+    if (activeTourRef.current !== run) {
+      await api.completeTourTask("see-work", taskId);
       return { ok: false, error: "The tour ended while the demo task was starting." };
     }
     seeWorkTourTaskIdRef.current = taskId;
@@ -921,7 +986,7 @@ export function App(): React.JSX.Element {
   }, []);
 
   const seeWorkNavigation = useMemo<SeeWorkTourNavigation | null>(() => {
-    if (!seeWorkTour) return null;
+    if (!seeWorkRun) return null;
     const enterFleet = (): boolean => {
       if (!navigate({ page: "fleet" })) return false;
       setFilter("");
@@ -943,8 +1008,8 @@ export function App(): React.JSX.Element {
       showSessionDetail: () => {
         if (!enterFleet()) return false;
         setLayout("board");
-        const previewSession = seeWorkTour.sessionId
-          ? sessionsRef.current.find((session) => session.id === seeWorkTour.sessionId) ?? null
+        const previewSession = seeWorkRun.sessionId
+          ? sessionsRef.current.find((session) => session.id === seeWorkRun.sessionId) ?? null
           : sessionsRef.current.find(
               (session) => session.task?.id === seeWorkTourPreviewTaskIdRef.current,
             ) ?? null;
@@ -1011,19 +1076,60 @@ export function App(): React.JSX.Element {
       },
       closeComplete,
     };
-  }, [closeComplete, closeDispatch, navigate, openDispatch, seeWorkTour, setLayout]);
+  }, [closeComplete, closeDispatch, navigate, openDispatch, seeWorkRun, setLayout]);
 
-  const finishSeeWorkTour = useCallback(async (): Promise<void> => {
-    const run = seeWorkTourRef.current;
+  /**
+   * Reclaim everything a See the work run created, and forget the run once it has.
+   *
+   * Kept whole and separate from the generic close below because a refusal here is the one
+   * case the operator can retry: the surface is already restored, the ids are still held, and
+   * the same controller offers Retry cleanup against the same two tasks.
+   */
+  const cleanupSeeWorkRun = useCallback(async (): Promise<void> => {
+    const taskIds = [
+      seeWorkTourPreviewTaskIdRef.current,
+      seeWorkTourTaskIdRef.current,
+    ].filter((taskId): taskId is string => taskId !== null);
+    const failures: string[] = [];
+    for (const taskId of new Set(taskIds)) {
+      try {
+        const result = await api.completeTourTask("see-work", taskId);
+        if (!result.ok) failures.push(result.error ?? `task ${taskId} could not be closed`);
+      } catch (error) {
+        failures.push(error instanceof Error ? error.message : String(error));
+      }
+    }
+    if (failures.length > 0) throw new Error(failures.join("; "));
+
+    seeWorkTourPreviewTaskIdRef.current = null;
+    seeWorkTourPreviewStartedRef.current = null;
+    seeWorkTourTaskIdRef.current = null;
+    setSeeWorkTourPreviewTaskId(null);
+    setSeeWorkTourPreviewError(null);
+    setSeeWorkTourTaskId(null);
+    setSeeWorkTourBriefReady(false);
+    setSeeWorkTourRepoRoot(null);
+  }, []);
+
+  /**
+   * Close whichever tour is active.
+   *
+   * The order is the promise the popover makes while it says "Completing": put the operator
+   * back where they started FIRST, then ask the tour to reclaim what it made. A tour that
+   * cannot finish reclaiming leaves the run installed again so its controller can retry
+   * against the same resources rather than stranding them.
+   */
+  const finishTour = useCallback(async (): Promise<void> => {
+    const run = activeTourRef.current;
     if (!run) return;
     // A slow preview or Dispatch response must see the tour as closed while cleanup runs, so
     // it reclaims its own task instead of attaching it to a controller that is leaving.
-    // Restore the operator's surface before the request as promised, but retain the run and
-    // task ids until every temporary session has actually closed so a refusal can be retried.
-    seeWorkTourRef.current = null;
+    activeTourRef.current = null;
     const { snapshot, focus } = run;
     cancelPending();
-    delete document.documentElement.dataset.mcTourReview;
+    for (const flag of TOUR_DEFINITIONS[run.tourId].documentFlags) {
+      delete document.documentElement.dataset[flag];
+    }
     closeComplete();
     closeDispatch();
     setReviewSessionId(null);
@@ -1034,33 +1140,13 @@ export function App(): React.JSX.Element {
     setFilter(snapshot.filter);
     setLineDrawer(snapshot.lineDrawer);
 
-    const taskIds = [
-      seeWorkTourPreviewTaskIdRef.current,
-      seeWorkTourTaskIdRef.current,
-    ].filter((taskId): taskId is string => taskId !== null);
-    const failures: string[] = [];
-    for (const taskId of new Set(taskIds)) {
-      try {
-        const result = await api.completeSeeWorkTourDemo(taskId);
-        if (!result.ok) failures.push(result.error ?? `task ${taskId} could not be closed`);
-      } catch (error) {
-        failures.push(error instanceof Error ? error.message : String(error));
-      }
+    try {
+      await tourBindingsRef.current?.[run.tourId].cleanup();
+    } catch (error) {
+      activeTourRef.current = run;
+      throw error;
     }
-    if (failures.length > 0) {
-      seeWorkTourRef.current = run;
-      throw new Error(failures.join("; "));
-    }
-
-    seeWorkTourPreviewTaskIdRef.current = null;
-    seeWorkTourPreviewStartedRef.current = null;
-    seeWorkTourTaskIdRef.current = null;
-    setSeeWorkTourPreviewTaskId(null);
-    setSeeWorkTourPreviewError(null);
-    setSeeWorkTourTaskId(null);
-    setSeeWorkTourBriefReady(false);
-    setSeeWorkTourRepoRoot(null);
-    setSeeWorkTour(null);
+    setActiveTour(null);
 
     // Route restoration can remount the invoking control. Try the original node first, then
     // its semantic replacement for a few frames while the restored page commits.
@@ -1115,8 +1201,8 @@ export function App(): React.JSX.Element {
           // drawer open it: the dialog asks for the session and the published version itself.
           setWorkflowBindingTarget({});
           return;
-        case "start-see-work-tour":
-          startSeeWorkTour();
+        case "start-tour":
+          startTour(target.tourId);
           return;
         case "report-product-issue":
           openFeedback();
@@ -1139,7 +1225,7 @@ export function App(): React.JSX.Element {
       launchEnsemble,
       onOpenSchedule,
       paletteBindings,
-      startSeeWorkTour,
+      startTour,
     ],
   );
   /**
@@ -1655,8 +1741,8 @@ export function App(): React.JSX.Element {
   const seeWorkPreviewTask = seeWorkTourPreviewTaskId
     ? tasks.find((task) => task.id === seeWorkTourPreviewTaskId) ?? null
     : null;
-  const seeWorkPreviewSession = seeWorkTour?.sessionId
-    ? sessions.find((session) => session.id === seeWorkTour.sessionId) ?? null
+  const seeWorkPreviewSession = seeWorkRun?.sessionId
+    ? sessions.find((session) => session.id === seeWorkRun.sessionId) ?? null
     : seeWorkTourPreviewTaskId
       ? sessions.find((session) => session.task?.id === seeWorkTourPreviewTaskId) ?? null
       : null;
@@ -1707,14 +1793,41 @@ export function App(): React.JSX.Element {
     ),
     error: seeWorkDemoTask?.error ?? null,
   };
-  const seeWorkTourDispatchPreview = seeWorkTour
+  const seeWorkTourDispatchPreview = seeWorkRun
     ? {
-        id: seeWorkTour.id,
+        id: seeWorkRun.id,
         briefReady: seeWorkTourBriefReady,
         repoRoot: seeWorkTourRepoRoot,
         dispatch: dispatchSeeWorkTourDemo,
       }
     : null;
+
+  /**
+   * Every tour's binding, keyed by `TourId`.
+   *
+   * The record type is the contract: a tour cannot be registered without saying how it is
+   * driven and how it is cleaned up. `mount` closes over this render's runtime, so the
+   * controller receives a fresh reading without generic App code touching it.
+   */
+  const tourBindings: Record<TourId, TourBinding> = {
+    "see-work": {
+      activeTaskId: seeWorkTourTaskId,
+      cleanup: cleanupSeeWorkRun,
+      mount: ({ isTop, onFinish }) => seeWorkNavigation && (
+        <GuidedTourController
+          definition={SEE_WORK_TOUR}
+          registry={tourTargets}
+          navigation={seeWorkNavigation}
+          runtime={seeWorkTourRuntime}
+          isTop={isTop}
+          onFinish={onFinish}
+        />
+      ),
+    },
+  };
+  tourBindingsRef.current = tourBindings;
+  const activeTourBinding = activeTour ? tourBindings[activeTour.tourId] : null;
+
   const selected = selectedId ? visible.find((s) => s.id === selectedId) ?? null : null;
   const visibleSelectedId = selected?.id ?? null;
   const resetSession = resetSessionId ? sessions.find((s) => s.id === resetSessionId) ?? null : null;
@@ -2672,7 +2785,7 @@ export function App(): React.JSX.Element {
 
   return (
     <OverlayHost value={overlays}>
-      <TourTargetHost registry={tourTargets} activeTaskId={seeWorkTourTaskId}>
+      <TourTargetHost registry={tourTargets} activeTaskId={activeTourBinding?.activeTaskId ?? null}>
       <ContextMenuHost ref={contextMenuRef} />
       <div className={`app app-${layout}`}>
         <header className="topbar" ref={topbarRef}>
@@ -3047,6 +3160,8 @@ export function App(): React.JSX.Element {
                 page: "runs",
                 ...(Object.keys(filters).length > 0 ? { filters } : {}),
               })}
+              // The return leg of the Pipelines tab's own "Conductor settings" button.
+              onOpenPipelines={() => navigate({ page: "runs", kind: "pipelines" })}
               onLeave={() => navigate({ page: "fleet" })}
               foreman={foreman}
               cost={cost}
@@ -3058,8 +3173,8 @@ export function App(): React.JSX.Element {
               worktreesRevision={worktreesRevision}
               workflowSummaries={workflowSummaries}
               onOpenPalette={openPalette}
-              onStartSeeWorkTour={() => {
-                startSeeWorkTour(captureFocusBookmark(document.activeElement));
+              onStartTour={(tourId) => {
+                startTour(tourId, captureFocusBookmark(document.activeElement));
               }}
               onOpenForemanProfile={() => navigate({
                 page: "library",
@@ -3304,17 +3419,10 @@ export function App(): React.JSX.Element {
                 stores={paletteStores}
               />
 
-              {seeWorkTour && seeWorkNavigation && (
-                <OverlayRegistration id={OVERLAY_IDS.seeWorkTour}>
-                  {(isTop) => (
-                    <SeeWorkTourController
-                      registry={tourTargets}
-                      navigation={seeWorkNavigation}
-                      runtime={seeWorkTourRuntime}
-                      isTop={isTop}
-                      onFinish={finishSeeWorkTour}
-                    />
-                  )}
+              {/* One overlay slot for one active tour, whichever tour is running. */}
+              {activeTourBinding && (
+                <OverlayRegistration id={OVERLAY_IDS.tour}>
+                  {(isTop) => activeTourBinding.mount({ isTop, onFinish: finishTour })}
                 </OverlayRegistration>
               )}
 

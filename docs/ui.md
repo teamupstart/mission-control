@@ -290,7 +290,7 @@ chip** and a second line saying what the thing is, or what it is doing right now
 | Group | Kinds | The second line says |
 | --- | --- | --- |
 | **Jump to** | `page`, `workflow`, `run`, `ensemble`, `persona`, `action`, `mission` | The authored fact for an asset (version and reviewer count, provider and model, cadence); the **live state** for a run or an ensemble - the same sentence its own page reads, and for a run the session it is reviewing, so four runs of one workflow are four different rows |
-| **Do** | `strategy`, `command` | Launch an ensemble on a strategy, dispatch an agent, bind a workflow to a session, open a blank draft on a Library shelf, [report product feedback](#report-product-feedback), or start the temporary **See the work** comparison tour |
+| **Do** | `strategy`, `command` | Launch an ensemble on a strategy, dispatch an agent, bind a workflow to a session, open a blank draft on a Library shelf, [report product feedback](#report-product-feedback), or start a guided tour |
 | **Settings** | `setting` | The category and what the control does, plus its current value where the palette can flip it |
 
 Rows that need an answer - an ensemble awaiting your decision, a mission that is unhealthy, a
@@ -335,7 +335,47 @@ Sources card points too. Sessions and backlog tasks are not searchable kinds yet
 borrows its session's name, but that is a label, not an index - and they are the next kinds
 the provider registry behind the palette is built to take.
 
-### Comparison spike: See the work
+### Guided tours
+
+Mission Control runs at most one tour at a time, from one engine. A tour is a **definition**
+registered under a `TourId`: its stops, what each stop needs on screen, what it says while
+that is still arriving, and where it goes when the fleet moves underneath it. Everything a
+tour is discovered through is derived from that registration - the Settings rail's **Help &
+tours** footer draws one row per registered tour, the palette's **Do** group draws one command
+row per registered tour, and both hand the engine a tour id. There is no per-tour Settings
+row, palette provider, overlay, controller, or target registry.
+
+Three engine properties are worth stating because tours are written against them:
+
+- **The engine's cursor is a stable stop id plus a beat, not an index.** Driver's own active
+  index updates only after a transition commits, and React state can arrive inside that
+  window, so the engine keeps its own cursor authoritative and a refresh cannot land the
+  operator on a different stop than the one they asked for. Driver is still *told* an index -
+  it has no other vocabulary - but that index is derived from the cursor at the moment of the
+  call rather than stored, so a definition that gains, loses, or reorders a beat cannot
+  renumber a cursor out from under a running tour.
+- **A stop may spotlight up to two elements in turn.** Back and Next walk those beats before
+  they walk stops, while the progress rail counts stops - so a two-look stop reads as one step.
+- **A stop may deliberately have no target at all**, which renders a centered card that still
+  offers Back, Next, and Exit tour.
+
+Semantic targets are namespaced by the tour that owns them (`see-work:line`), so two tours can
+want the same target name without either one spotlighting the other's. Each target declares
+whether it is page-scoped or task-scoped beside its name; a task-scoped target registers only
+the owner belonging to the task the active run created.
+
+Starting a tour is a **preflight**: the entry route transition runs before any tour state is
+committed, so a dirty draft raises the existing leave dialog with no tour active and the
+ordinary route flow owns the answer. Only a transition the app accepted commits a run.
+
+Each tour's own task family is addressed by tour id -
+`POST /api/tours/:tourId/dispatch`, `/preview`, and `/tasks/:id/complete`. The body still
+chooses only a repository; the daemon's tour registry fixes the prompt, agent, model, kind,
+Workflow posture, and MCP tool list. An unknown tour, or an operation a tour did not declare,
+is refused before any task is created rather than falling through to general dispatch, and
+cleanup refuses a task whose title, labels, and intent prefix are not the recipe's own.
+
+#### Comparison spike: See the work
 
 **See the work** in the Settings rail's **Help & tours** footer, or **Start See the work tour**
 in the palette's **Do** group, runs an isolated evaluation of `driver.js@1.8.0`. It is
@@ -384,8 +424,10 @@ traces the active area, while the coachmark uses the existing panel tokens, a qu
 and a fourteen-segment pipeline rail in its header. Past segments stay muted amber, the current
 segment glows, and the footer keeps Exit separate from the Back and primary actions.
 
-The controller snapshots the route, layout, selection, Board drill-in,
-filter, and open Line drawer before it moves anything. Exit tour, backdrop dismissal,
+The run snapshots the complete route, layout, selection, Board drill-in,
+filter, and open Line drawer before it moves anything. The route is the authority - it already
+carries the Library shelf and the asset a surface has open - so restoration replays one value
+rather than a per-tour list of fields. Exit tour, backdrop dismissal,
 <kbd>Esc</kbd>, completion, and controller errors all restore that snapshot. Every terminal
 path records fixed outcomes and stops both temporary sessions when they exist: `Tour
 conversation` for the empty-fleet Chat preview and `Tour demo` for the Ship walkthrough. Exit
@@ -405,7 +447,8 @@ Control's overlay stack. The real review modal temporarily becomes the top regis
 the adapter extends containment across that modal and the coachmark while leaving Escape to
 peel the review before the tour. Its `onDestroyed` hook can also be skipped when an immediate
 exit occurs before the active step is committed, so the adapter finalizes its own exit paths
-directly. This is an adapter around the library, not a general tooltip or tour engine.
+directly. This is an adapter around the library rather than a general tooltip framework, and
+it is now the one adapter every tour shares.
 Reduced-motion preference turns off both Driver.js animation and the spike's transitions.
 
 ## Layout (console or board in Settings)

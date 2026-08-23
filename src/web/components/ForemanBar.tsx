@@ -609,6 +609,20 @@ export function ForemanPopover({
       */}
       <fieldset className="foreman-modes" disabled={!enabled}>
         <legend>Pull requests</legend>
+        <Tooltip label="Resume an eligible invited ship task after its quiet window, only before its first task-owned pull request">
+          <label className="alert-row">
+            <input
+              type="checkbox"
+              checked={config.keepShipTasksMoving !== false}
+              onChange={(e) => void update({ keepShipTasksMoving: e.target.checked })}
+            />
+            Keep pre-PR ship tasks moving
+          </label>
+        </Tooltip>
+        <p className="alert-hint dim">
+          Invited managed Ship tasks only, in Live trusted repos. Stops as soon as any
+          task-owned pull request appears.
+        </p>
         <Tooltip label="Nudge a parked session back onto its open PR to resolve GitHub Inspector comments">
           <label className="alert-row">
             {/*
@@ -638,6 +652,11 @@ export function ForemanPopover({
         <p className="alert-hint dim">
           Does not create a PR. Once one exists, sends failing CI back to its session.
         </p>
+        {enabled && config.keepShipTasksMoving !== false && mode !== "live" && (
+          <p className="alert-hint dim">
+            Pre-PR recovery types only in Live mode on an allowlisted repo.
+          </p>
+        )}
         {enabled &&
           (config.trackReviewFeedback !== false || config.trackCiFailures !== false) &&
           mode !== "live" && (

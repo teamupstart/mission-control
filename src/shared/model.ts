@@ -5,9 +5,12 @@
 // source of truth for how a model id like "claude-opus-4-8[1m]" becomes "Opus 4.8"
 // + a 1M window, and for the rows available before or without live discovery.
 //
-// The one import is type-only, so this stays dependency-free at runtime.
+// The only runtime import is `LLM_RUNNER_IDS`, a frozen tuple of string literals, so this
+// stays free of behaviour at import time. `llm.ts` does not import back; the pairing guard
+// below needs to enumerate the providers whose catalogs it compares.
 
 import type { AgentType } from "./types.ts";
+import { LLM_RUNNER_IDS } from "./llm.ts";
 import type { LlmRunnerId } from "./llm.ts";
 
 /** The context-window budget for a model with no size hint (standard Claude). */
@@ -174,6 +177,24 @@ export function modelChoicesFor(
   return [...known, { id: extra, label: modelLabel(extra) ?? extra, hint: "not in this build" }];
 }
 
+/**
+ * Whether this id is one some OTHER harness ships and this one does not.
+ *
+ * The narrow question on purpose, and the same one the settings panels already answer when
+ * they decide whether an agent change strands a model: a model id is free text, because a
+ * newer build's id and every model Pi mirrors from its account are legitimate values this
+ * build's table has never heard of. Refusing everything absent from `MODEL_CATALOG[agent]`
+ * would refuse those. Refusing an id that positively belongs somewhere else refuses only
+ * the pairing that can never work - `claude-opus-4-8` on Codex, which reaches the CLI as a
+ * `--model` flag naming a model it has never heard of.
+ */
+export function modelBelongsToAnotherHarness(agent: AgentType, modelId: string): boolean {
+  if (MODEL_CATALOG[agent].some((choice) => choice.id === modelId)) return false;
+  return Object.entries(MODEL_CATALOG).some(
+    ([other, choices]) => other !== agent && choices.some((choice) => choice.id === modelId),
+  );
+}
+
 /** Provider-compatible shipped defaults for Mission Control's own model calls. */
 export function providerModelDefault(
   provider: LlmRunnerId,
@@ -183,6 +204,54 @@ export function providerModelDefault(
     return tier === "deep" ? "gpt-5.6-sol" : tier === "balanced" ? "gpt-5.6-terra" : "gpt-5.6-luna";
   }
   return tier === "deep" ? "claude-opus-5" : tier === "balanced" ? "claude-sonnet-5" : "claude-haiku-4-5";
+}
+
+/** A model id a provider can actually run, and the one it could not, when they differ. */
+export interface GuardedProviderModel {
+  /** The id to spawn with. Never empty. */
+  id: string;
+  /**
+   * The id that was asked for and could not be honoured, or null when nothing was dropped.
+   *
+   * Reported rather than swallowed, the same contract `ResolvedLlmRunner.unknown` and
+   * `ResolvedSessionRuntime.unsupported` keep: a substituted default is indistinguishable
+   * from an unset field once it is silent, and the operator would read it as their own pick.
+   */
+  unsupported: string | null;
+}
+
+/**
+ * Refuse a (provider, model) pair no provider can honour, and say what was dropped.
+ *
+ * This is where the pairing invariant LIVES - at resolution, not at the write path. Every
+ * slot in the app that pairs a provider with a model resolves through here, so it is the
+ * only layer that covers all the ways the two can drift apart: an upgrade that changes what
+ * a stored model means, a hand-edited blob, a second writer, and `MISSION_LLM_RUNNER`
+ * moving between daemon restarts - which shifts the effective provider with no config write
+ * at all, so no write-path fix could ever reach it. A rule enforced only where the config is
+ * written has as many back doors as it has writers.
+ *
+ * NARROW on purpose. It acts only on an id POSITIVELY KNOWN to belong to another provider -
+ * present in another runner's catalog and absent from this one. Model ids are free text
+ * (`resolveModelChoice`), and `modelChoicesFor` deliberately keeps an id it does not
+ * recognise rather than discarding it, so an id in no catalog is a new or custom model and
+ * passes through untouched. Rejecting those would be a worse failure than the one prevented.
+ *
+ * Only the two RUNNER catalogs are consulted, never `pi`'s: `pi` is a harness, not a
+ * provider the app's own calls can spawn through, and its provider-qualified ids belong to
+ * nobody here.
+ */
+export function guardProviderModel(provider: LlmRunnerId, modelId: string): GuardedProviderModel {
+  const asked = modelId.trim();
+  if (!asked) return { id: providerModelDefault(provider, "cheap"), unsupported: null };
+  if (MODEL_CATALOG[provider].some((choice) => choice.id === asked)) {
+    return { id: asked, unsupported: null };
+  }
+  const belongsElsewhere = LLM_RUNNER_IDS.some(
+    (other) => other !== provider && MODEL_CATALOG[other].some((choice) => choice.id === asked),
+  );
+  if (!belongsElsewhere) return { id: asked, unsupported: null };
+  return { id: providerModelDefault(provider, "cheap"), unsupported: asked };
 }
 
 /**

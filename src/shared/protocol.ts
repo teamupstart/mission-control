@@ -1,12 +1,14 @@
 import { z } from "zod";
 import { WRAPUP_MODES, WRAPUP_TRIGGERS } from "./queue.ts";
 import {
+  HARNESS_LAUNCHED_TASK_KINDS,
   MAX_LABELS,
   TASK_KIND_BACKLOG_REFUSAL,
   TASK_PRIORITIES,
   normalizeLabels,
   taskKindAllowsBacklog,
 } from "./task.ts";
+import type { HarnessLaunchedTaskKind } from "./task.ts";
 import {
   PipelineActionRequestSchema,
   PipelineConsoleRequestSchema,
@@ -18,6 +20,13 @@ import { CHEAP_ACTIONS, DIVERGENCE_KINDS, SKIP_REASONS } from "./foreman.ts";
 import { LLM_JOB_IDS } from "./llm-jobs.ts";
 import { CLAUDE_TRANSPORTS, CODEX_TRANSPORTS, LLM_RUNNER_IDS } from "./llm.ts";
 import { RASTER_IMAGE_MIME_TYPES } from "./images.ts";
+import {
+  type StandingInstructionsDelivery,
+  STANDING_INSTRUCTIONS_MAX_KEY_LENGTH,
+  STANDING_INSTRUCTIONS_MAX_LENGTH,
+  STANDING_INSTRUCTIONS_MAX_REPOSITORIES,
+  STANDING_INSTRUCTIONS_MECHANISMS,
+} from "./standing-instructions.ts";
 import { LLM_SPEND_ROLES } from "./llm-spend.ts";
 import { OPEN_TARGET_IDS } from "./open-targets.ts";
 import {
@@ -50,6 +59,8 @@ import {
   AGENT_TYPES,
   PROMPTED_COMPLETION_OUTCOMES,
   PROMPTED_DIRECT_HANDOFF_KINDS,
+  PROMPTED_RECOVERY_DELIVERY_STATES,
+  PROMPTED_RECOVERY_REASONS,
   SESSION_RUNTIMES,
   TASK_KINDS,
   THINKING_LEVELS,
@@ -931,6 +942,17 @@ export const HarnessModelCatalogQuerySchema = z
   .object({ refresh: z.literal("1").optional() })
   .strict();
 
+
+/**
+ * How many SECONDARY repositories one request may attach.
+ *
+ * A sanity bound on a request body rather than a product limit on how many repositories a
+ * task may coordinate - nothing downstream reads it as a maximum. Named because a second
+ * surface now bounds the same list: the standing-instructions preview, which is asked about
+ * one launch's whole manifest and would otherwise carry its own copy of the number.
+ */
+export const MAX_TASK_EXTRA_REPOS = 8;
+
 /**
  * Dispatch (or shelve) a new agent: launch an agent in an isolated worktree of
  * `repoRoot` with `intent` as its first prompt. `backlog: true` only adds it to
@@ -946,11 +968,20 @@ export const DispatchSchema = z
      * The cap of 8 is a sanity bound on a request body, not a product limit on how many
      * repos a task may coordinate - nothing downstream reads it as a maximum.
      */
-    extraRepoRoots: z.array(z.string().min(1)).max(8).default([]),
+    extraRepoRoots: z.array(z.string().min(1)).max(MAX_TASK_EXTRA_REPOS).default([]),
     intent: z.string().min(1),
     title: z.string().optional(),
     kind: z.enum(TASK_KINDS).default("ship"),
-    agent: z.enum(AGENT_TYPES).default("claude"),
+    /**
+     * Which harness to file this on. OPTIONAL, and the absence is load-bearing: it used to
+     * carry `.default("claude")`, which meant that by the time a route saw a parsed body an
+     * omitted agent had already become an explicit Claude and nothing downstream could
+     * recover the difference - so no per-kind default could ever have been consulted by any
+     * caller, which is all of them. The default now lives at the single convergence point
+     * that can read the kind (`resolveTaskAgent`), and `kind` keeps its own `.default`, so
+     * the kind is always known when the agent is resolved.
+     */
+    agent: z.enum(AGENT_TYPES).optional(),
     /**
      * Run this agent on a specific model instead of the harness default. Omitted
      * means "whatever `harnesses.defaultModel` says at dispatch time" - which is
@@ -974,7 +1005,11 @@ export const DispatchSchema = z
     dependencies: TaskDependenciesSchema.optional().default([]),
     ...TASK_TRIAGE_FIELDS,
   })
-  .refine((o) => o.effort === undefined || supportsEffort(o.agent, o.effort), {
+  // Only when the harness is NAMED. An effort sent with no agent is a level chosen against
+  // whichever harness the kind resolves to, and that harness is not knowable in a browser-safe
+  // schema - so the check moves to the one place that knows it, `TaskManager.create`, which
+  // refuses the same pair with the same sentence.
+  .refine((o) => o.effort === undefined || o.agent === undefined || supportsEffort(o.agent, o.effort), {
     path: ["effort"],
     message: "reasoning effort is not supported by this harness",
   })
@@ -1013,16 +1048,16 @@ export const SEE_WORK_TOUR_PREVIEW_INTENT = [
 ].join("\n\n");
 
 /**
- * The comparison spike's one deliberately narrow dispatch input.
+ * A tour's one deliberately narrow dispatch input.
  *
  * The browser chooses an existing repository, while the daemon owns every other launch
  * property. Keeping model, prompt, tools, and outcome off this body prevents a temporary
  * product-tour route from becoming a second general-purpose dispatcher.
  */
-export const SeeWorkTourDispatchSchema = z.object({
+export const TourDispatchSchema = z.object({
   repoRoot: z.string().min(1),
 });
-export type SeeWorkTourDispatch = z.infer<typeof SeeWorkTourDispatchSchema>;
+export type TourDispatch = z.infer<typeof TourDispatchSchema>;
 
 /**
  * Resolve a typed path to a canonical git repo root, so the Foreman allowlist
@@ -1185,7 +1220,7 @@ export const UpdateTaskSchema = z
      * naming this one makes the patch a provisioning change by construction and it stays
      * refused once the task has left the backlog. That is the behaviour we want, for free.
      */
-    extraRepoRoots: z.array(z.string().min(1)).max(8).optional(),
+    extraRepoRoots: z.array(z.string().min(1)).max(MAX_TASK_EXTRA_REPOS).optional(),
     intent: z.string().min(1).optional(),
     title: z.string().optional(),
     kind: z
@@ -1600,6 +1635,10 @@ export const ForemanConfigSchema = z.object({
    * failing episode until CI recovers and fails again.
    */
   trackCiFailures: z.boolean().default(true),
+  /** Permission for bounded recovery before the first task-owned pull request exists. */
+  keepShipTasksMoving: z.boolean().default(true),
+  /** Quiet minutes before the first pre-PR recovery attempt. */
+  shipRecoveryMinutes: z.number().int().min(1).max(1440).default(20),
   /**
    * Whether Foreman schedules the BACKLOG on its own - reading every item, working out
    * what depends on what, and then handing one at a time to an idle agent or to a fresh
@@ -1790,6 +1829,124 @@ export const ForemanInstructionsSchema = z.union([
   }).strict(),
 ]);
 export type ForemanInstructionsUpdate = z.infer<typeof ForemanInstructionsSchema>;
+
+// ---- repository standing instructions ----
+//
+// The operator's own words, per repository, held on THIS machine and sent to every session
+// Mission Control opens into that checkout. The constants and the matching rule live in
+// `src/shared/standing-instructions.ts`; only the wire shapes are here.
+
+const StandingInstructionsRepositoryKeySchema = z
+  .string()
+  .min(1)
+  .max(STANDING_INSTRUCTIONS_MAX_KEY_LENGTH);
+
+const StandingInstructionsTextSchema = z.string().max(STANDING_INSTRUCTIONS_MAX_LENGTH);
+
+/**
+ * The stored document.
+ *
+ * An `app_config` blob, so there is no migration: zod defaults apply on every read, and the
+ * shipped state - an empty default and no repositories - resolves to nothing everywhere.
+ */
+export const StandingInstructionsConfigSchema = z
+  .object({
+    default: StandingInstructionsTextSchema.default(""),
+    repositories: z
+      .record(StandingInstructionsRepositoryKeySchema, StandingInstructionsTextSchema)
+      .default({}),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (Object.keys(value.repositories).length > STANDING_INSTRUCTIONS_MAX_REPOSITORIES) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["repositories"],
+        message: `at most ${STANDING_INSTRUCTIONS_MAX_REPOSITORIES} repositories may carry standing instructions`,
+      });
+    }
+  });
+
+/** The whole document plus the opaque compare-and-swap token a mutation must echo. */
+export const StandingInstructionsViewSchema = z
+  .object({
+    default: z.string(),
+    repositories: z.record(z.string(), z.string()),
+    etag: z.string().min(1),
+  })
+  .strict();
+export type StandingInstructionsView = z.infer<typeof StandingInstructionsViewSchema>;
+
+/**
+ * A partial update, following `WorktreesConfigPatchSchema`.
+ *
+ * `repositories` is a PATCH: an absent key leaves the stored value alone, a string sets it,
+ * and `null` removes it. A caller therefore saves one repository by sending that one key and
+ * must not send its whole draft map - doing so would persist every other repository's
+ * unsaved text as though the operator had committed to it.
+ *
+ * The empty string is a real value here and is NOT a removal: it means "send nothing for
+ * this repository", which beats the machine-wide default. That is the whole reason the
+ * removal spelling is `null` rather than `""`.
+ */
+export const StandingInstructionsUpdateSchema = z
+  .object({
+    expectedEtag: z.string().min(1),
+    default: StandingInstructionsTextSchema.optional(),
+    repositories: z
+      .record(StandingInstructionsRepositoryKeySchema, StandingInstructionsTextSchema.nullable())
+      .optional(),
+  })
+  .strict()
+  .refine(
+    (value) => value.default !== undefined || value.repositories !== undefined,
+    "standing instructions update must change at least one field",
+  )
+  .superRefine((value, ctx) => {
+    if (
+      value.repositories &&
+      Object.keys(value.repositories).length > STANDING_INSTRUCTIONS_MAX_REPOSITORIES
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["repositories"],
+        message: `at most ${STANDING_INSTRUCTIONS_MAX_REPOSITORIES} repository patches are allowed`,
+      });
+    }
+  });
+export type StandingInstructionsUpdate = z.infer<typeof StandingInstructionsUpdateSchema>;
+
+/** The stable conflict vocabulary, matching Foreman's standing-guidance editor. */
+export const STANDING_INSTRUCTIONS_CONFLICT_MESSAGE =
+  "Standing instructions changed in another window";
+export const STANDING_INSTRUCTIONS_CONFLICT_CODE = "standing_instructions_revision_conflict";
+
+export const StandingInstructionsConflictSchema = z
+  .object({
+    error: z.literal(STANDING_INSTRUCTIONS_CONFLICT_MESSAGE),
+    code: z.literal(STANDING_INSTRUCTIONS_CONFLICT_CODE),
+    current: StandingInstructionsViewSchema,
+  })
+  .strict();
+export type StandingInstructionsConflict = z.infer<typeof StandingInstructionsConflictSchema>;
+
+/**
+ * What a session gets, composed - the resolved route's answer and the snapshot's row.
+ *
+ * Annotated against the interface rather than inferred from the schema, so the two spellings
+ * of this one shape are pinned together by the checker: the composer and the snapshot are
+ * written against the interface in browser-safe code, and a field added to one without the
+ * other stops compiling here.
+ */
+export const StandingInstructionsDeliverySchema: z.ZodType<StandingInstructionsDelivery> = z
+  .object({
+    text: z.string(),
+    mechanism: z.enum(STANDING_INSTRUCTIONS_MECHANISMS),
+    sources: z.array(
+      z.object({ repoPath: z.string(), matchedKey: z.string().nullable() }).strict(),
+    ),
+  })
+  .strict();
 
 /** Partial update of the away config from the dashboard. */
 export const AwayConfigPatchSchema = AwayConfigSchema.partial().refine(
@@ -2029,6 +2186,72 @@ export const DEFAULT_HARNESSES_SESSION_RUNTIMES = {
 } as const satisfies Record<AgentType, SessionRuntime>;
 
 /**
+ * One task kind's launch defaults: which harness files it, and what that harness launches on.
+ *
+ * All three nullable, and null means INHERIT - the per-harness default below for the model
+ * and the effort, and `"claude"` for the agent. The three are deliberately not symmetric
+ * in when they are read, which is the one thing an operator has to know about this row:
+ * `tasks.agent` is NOT NULL, so the agent is a SEED written at creation, while `model` and
+ * `effort` stay nullable on the row and resolve at LAUNCH. A change to the agent therefore
+ * reaches the next task filed; a change to the model reaches a task already shelved.
+ *
+ * `model` requires `agent`, and that rule is enforced on the way IN rather than here: a model
+ * id is agent-namespaced (`claude-opus-4-8` is not a thing Codex can run), so a model stored
+ * against no agent is a value that can never apply to anything. The patch schema below
+ * refuses the contradiction stated in one write, and `setHarnessesConfig` refuses the one
+ * only the MERGE can see - a model landing on a row whose stored agent is already null.
+ *
+ * The READ path stays tolerant, because it runs on the dispatch path: an entry a newer build
+ * persisted that breaks the rule drops its model and keeps its agent and effort, rather than
+ * throwing the whole blob away over a key the caller never asked about.
+ *
+ * `effort` carries no such constraint and is deliberately settable on a row that inherits
+ * its agent: the levels are one shared vocabulary (`THINKING_LEVELS`), so "plan with high"
+ * is meaningful whichever harness ends up running it. What narrows it is a capability check
+ * at launch (`resolveDispatchEffort`), against the model that launch actually resolved.
+ */
+const TaskKindDefaultSchema = z
+  .object({
+    agent: z.enum(AGENT_TYPES).nullable().default(null),
+    model: ModelIdSchema.nullable().default(null),
+    effort: EffortLevelSchema.nullable().default(null),
+  })
+  .transform((entry) => (entry.agent === null ? { ...entry, model: null } : entry));
+
+/** The same entry as a PATCH: every field optional, and the model rule enforced. */
+const TaskKindDefaultPatchSchema = z
+  .object({
+    agent: z.enum(AGENT_TYPES).nullable().optional(),
+    model: ModelIdSchema.nullable().optional(),
+    effort: EffortLevelSchema.nullable().optional(),
+  })
+  .refine((entry) => !entry.model || entry.agent !== null, {
+    path: ["model"],
+    message: "a task kind that inherits its agent cannot pin a model",
+  });
+
+/**
+ * The kind rows, keyed by the kinds THIS APP LAUNCHES (`HARNESS_LAUNCHED_TASK_KINDS`).
+ *
+ * Built from the registry rather than spelled out, the same construction
+ * `harnessModelCatalogShape` uses over `AGENT_TYPES`: `pipeline` has no row because
+ * Conductor owns its downstream launch, and a kind added later joins or stays out by
+ * answering `TASK_KIND_BEHAVIOR` alone.
+ *
+ * The cast is what keeps that runtime filter HONEST in the types rather than papering over
+ * it. `HarnessLaunchedTaskKind` is itself derived from `TASK_KIND_BEHAVIOR`'s literal types,
+ * so this record's keys are exactly the kinds that have a row - `kindDefaults.pipeline` does
+ * not type-check, instead of type-checking and being `undefined`. A `TaskKind` in hand goes
+ * through `taskKindDefaultFor` (`@shared/kind-defaults.ts`) to ask whether there is a row.
+ */
+const taskKindDefaultsShape = Object.fromEntries(
+  HARNESS_LAUNCHED_TASK_KINDS.map((kind) => [kind, TaskKindDefaultSchema.default({})]),
+) as Record<HarnessLaunchedTaskKind, z.ZodDefault<typeof TaskKindDefaultSchema>>;
+const taskKindDefaultsPatchShape = Object.fromEntries(
+  HARNESS_LAUNCHED_TASK_KINDS.map((kind) => [kind, TaskKindDefaultPatchSchema.optional()]),
+) as Record<HarnessLaunchedTaskKind, z.ZodOptional<typeof TaskKindDefaultPatchSchema>>;
+
+/**
  * Defaults the harness applies to the sessions IT dispatches - never to the
  * sessions it merely discovered. A schema-validated blob over the `app_config` KV,
  * exactly like ForemanConfig/SkillsConfig, so a new key needs no migration.
@@ -2096,8 +2319,32 @@ export const HarnessesConfigSchema = z.object({
       pi: StoredSessionRuntimeSchema.default(DEFAULT_HARNESSES_SESSION_RUNTIMES.pi),
     })
     .default(DEFAULT_HARNESSES_SESSION_RUNTIMES),
+  /**
+   * What a dispatched task of each KIND runs as, when the task itself did not say.
+   *
+   * Additive with a default, so an untouched installation resolves exactly as it did
+   * before this key existed, and a build that predates it simply ignores it and falls back
+   * to `defaultModel` / `defaultEffort`. `TASK_KINDS` is append-only, so a key here can be
+   * added but can never come to mean a different kind later.
+   */
+  kindDefaults: z.object(taskKindDefaultsShape).default({}),
 });
 export type HarnessesConfig = z.infer<typeof HarnessesConfigSchema>;
+/** One task kind's stored launch defaults, as read. */
+export type TaskKindDefault = HarnessesConfig["kindDefaults"][HarnessLaunchedTaskKind];
+
+/**
+ * Every harness-launched kind inheriting everything - what an untouched installation holds.
+ *
+ * Exported so a fixture, and a panel rendering before the daemon has answered, describe the
+ * unset state the same way the schema does rather than each spelling out a row set that
+ * would go stale the moment a kind is added.
+ */
+export function emptyTaskKindDefaults(): HarnessesConfig["kindDefaults"] {
+  return Object.fromEntries(
+    HARNESS_LAUNCHED_TASK_KINDS.map((kind) => [kind, { agent: null, model: null, effort: null }]),
+  ) as HarnessesConfig["kindDefaults"];
+}
 
 /**
  * Bounds for daemon-owned worktree policy. Kept beside the schemas so a later Settings
@@ -2318,6 +2565,13 @@ export const HarnessesConfigPatchSchema = z
         pi: SessionRuntimeSchema.optional(),
       })
       .optional(),
+    /**
+     * Spelled out per kind for the reason the maps above are, and merged per KIND by
+     * `setHarnessesConfig`: a panel that moved the `plan` row must not clear the `ship` row
+     * it never showed. Within one row the fields merge too, so setting an effort cannot
+     * blank the agent beside it.
+     */
+    kindDefaults: z.object(taskKindDefaultsPatchShape).strict().optional(),
   })
   .refine((o) => Object.keys(o).length > 0, { message: "empty config update" });
 export type HarnessesConfigPatch = z.infer<typeof HarnessesConfigPatchSchema>;
@@ -2658,11 +2912,19 @@ export const LlmConfigSchema = z.object({
    * route, the titler, the goal refiner and the digest at once, over a preference. Falling
    * back is the honest degradation, and `resolveLlmRunner` reports what it dropped so the
    * panel can say so rather than presenting the fallback as the operator's own choice.
+   *
+   * A permissive STRING rather than the enum, and the `.catch("")` kept: those two answer
+   * different failures and both are needed. The enum shape defeated the promise in the
+   * paragraph above - an unresolvable stored id degraded to `""` here, `resolveLlmRunner`
+   * skips an empty value, and the `unknown` branch was therefore dead for every stored
+   * value, so the panel presented the fallback as the operator's own pick after all. A
+   * string reaches the resolver intact and gets reported. The `.catch("")` still guards the
+   * other failure - a persisted NON-string, from a hand edit or a future build, which would
+   * otherwise fail the whole parse and take `getLlmConfig()` down with it. So: an
+   * unreadable string is a choice somebody plausibly made and is said out loud; a non-string
+   * is corruption and is recovered from silently. The PATCH below stays strict.
    */
-  runner: z
-    .union([z.enum(LLM_RUNNER_IDS), z.literal("")])
-    .catch("")
-    .default(""),
+  runner: z.string().catch("").default(""),
   /**
    * Claude's headless wire protocol, or empty for the config -> env -> default ladder.
    *
@@ -2685,8 +2947,30 @@ export const LlmConfigSchema = z.object({
    * still parse here, and `resolveLlmJobModels` simply never asks for a job it does not
    * declare. The PATCH below does validate them, so a typo from the dashboard is a 400
    * rather than a key that sits in the config forever doing nothing.
+   *
+   * The `.catch` sits on the VALUE, not only on the record, and the placement is the point.
+   * A record-level `.catch` alone is all or nothing: one id that fails `ModelIdSchema` -
+   * a hand edit, or a vocabulary a newer build introduced - silently discards EVERY other
+   * job's override. Per value, that entry recovers to "inherit" and its neighbours survive.
+   * The record-level `.catch({})` is kept behind it for the one thing a value catch cannot
+   * reach: a stored `models` that is not an object at all.
    */
-  models: z.record(z.string(), ModelOverrideSchema).catch({}).default({}),
+  models: z.record(z.string(), ModelOverrideSchema.catch("")).catch({}).default({}),
+  /**
+   * Per-job PROVIDER overrides, keyed by `LlmJobId`. Empty or absent means inherit `runner`.
+   *
+   * The sibling of `models`, and deliberately its own map rather than a field per job: the
+   * job ids are already a declared list and the panel writes one key at a time, so a per-key
+   * merge in `setLlmConfig` makes two tabs editing different jobs commute.
+   *
+   * Value-level `.catch("")` for the reason spelled out on `runner`: an unreadable string
+   * passes through so `llmJobRunner` can report it, a non-string recovers to inherit, and
+   * neither can fail the parse or disturb another job's override. What an unreadable
+   * override falls back to is the rest of the LADDER - the app-wide provider - not the
+   * shipped default; "I cannot read your choice here" is much closer to "you did not choose
+   * here" than to "use whatever ships".
+   */
+  runners: z.record(z.string(), z.string().catch("")).catch({}).default({}),
 });
 export type LlmConfig = z.infer<typeof LlmConfigSchema>;
 
@@ -2705,6 +2989,12 @@ export const LlmConfigPatchSchema = z
     codexTransport: z.union([z.enum(CODEX_TRANSPORTS), z.literal("")]),
     models: z
       .record(z.string(), ModelOverrideSchema)
+      .refine((m) => Object.keys(m).every((k) => (LLM_JOB_IDS as readonly string[]).includes(k)), {
+        message: "unknown job id",
+      }),
+    /** Per-job providers. Strict on both halves, for `models`' reason: a typo is a 400. */
+    runners: z
+      .record(z.string(), z.union([z.enum(LLM_RUNNER_IDS), z.literal("")]))
       .refine((m) => Object.keys(m).every((k) => (LLM_JOB_IDS as readonly string[]).includes(k)), {
         message: "unknown job id",
       }),
@@ -3292,6 +3582,52 @@ export const PromptedHandoffUndeliveredSchema = z.object({
   generation: z.number().int().min(1),
 });
 export type PromptedHandoffUndelivered = z.infer<typeof PromptedHandoffUndeliveredSchema>;
+
+/** Bounds for the recovery projection and its loopback mutation requests. */
+export const PROMPTED_RECOVERY_PAYLOAD_SUMMARY_MAX = 600;
+export const PROMPTED_RECOVERY_ATTEMPT_MAX = 4;
+
+const PromptedRecoveryIdentitySchema = z.object({
+  taskId: z.string().min(1).max(200),
+  logicalKey: z.string().min(1).max(NOTE_KEY_MAX),
+  generation: z.number().int().min(1),
+  decisionGeneration: z.number().int().min(1).nullable(),
+  decisionOutcome: z.enum(PROMPTED_COMPLETION_OUTCOMES).nullable(),
+  reason: z.enum(PROMPTED_RECOVERY_REASONS),
+  attempt: z.number().int().min(1).max(PROMPTED_RECOVERY_ATTEMPT_MAX),
+  marker: z.string().min(1).max(200),
+});
+
+/** Whole persisted recovery projection. Readers reject contradictions rather than coerce. */
+export const PromptedRecoveryStateSchema = PromptedRecoveryIdentitySchema.extend({
+  claimedAt: z.number().int().nonnegative(),
+  nextEligibleAt: z.number().int().nonnegative().nullable(),
+  lastDelivery: z.enum(PROMPTED_RECOVERY_DELIVERY_STATES),
+  payloadSummary: z.string().max(PROMPTED_RECOVERY_PAYLOAD_SUMMARY_MAX),
+}).refine(
+  (state) => (state.decisionGeneration === null) === (state.decisionOutcome === null),
+  { message: "Recovery decision generation and outcome must be present together" },
+).refine(
+  (state) => state.attempt === 4
+    ? state.lastDelivery === "escalated" && state.nextEligibleAt === null
+    : state.lastDelivery !== "escalated" && state.nextEligibleAt !== null,
+  { message: "Recovery escalation state contradicts its attempt" },
+);
+
+/** Claim one exact recovery attempt before anything reaches the child session. */
+export const PromptedRecoveryClaimSchema = PromptedRecoveryIdentitySchema.extend({
+  payloadSummary: z.string().max(PROMPTED_RECOVERY_PAYLOAD_SUMMARY_MAX),
+});
+export type PromptedRecoveryClaim = z.infer<typeof PromptedRecoveryClaimSchema>;
+
+/**
+ * Resolve the delivery knowledge for one exact claim. Unknown outcomes deliberately make
+ * no second request and remain `unknown`, which is the conservative durable answer.
+ */
+export const PromptedRecoveryDeliverySchema = PromptedRecoveryIdentitySchema.extend({
+  delivery: z.enum(["delivered", "confirmed_undelivered"]),
+});
+export type PromptedRecoveryDelivery = z.infer<typeof PromptedRecoveryDeliverySchema>;
 
 export const PromptedWrapupSchema = z.object({
   logicalKey: z.string().min(1).max(NOTE_KEY_MAX),
@@ -5668,13 +6004,32 @@ const ScheduleTemplateSchema = z
       .enum(TASK_KINDS)
       .refine(taskKindAllowsBacklog, TASK_KIND_BACKLOG_REFUSAL)
       .default("ship"),
-    agent: z.enum(AGENT_TYPES).default("claude"),
+    /**
+     * `null` means INHERIT - the kind's row on Settings -> Models decides, at the moment
+     * each run files its task.
+     *
+     * Nullable rather than defaulted, and for the same reason `DispatchSchema.agent` is:
+     * `.default("claude")` here turned "the operator never chose" into an explicit Claude
+     * pin before the store could tell the two apart, which made a recurring mission the one
+     * creator the kind default could never reach. An operator who DID choose still gets a
+     * pin - that is what choosing means - and a stored template that names an agent keeps
+     * it untouched, so nothing already scheduled changes behaviour.
+     */
+    agent: z.enum(AGENT_TYPES).nullable().default(null),
     priority: z.enum(TASK_PRIORITIES).nullable().default(null),
     labels: z.array(z.string()).max(MAX_LABELS).default([]).transform(normalizeLabels),
     model: ModelIdSchema.nullable().default(null),
     effort: EffortLevelSchema.nullable().default(null),
   })
-  .refine((t) => t.effort === null || supportsEffort(t.agent, t.effort), {
+  // The same split the kind rows keep, because it is the same fact about the two fields: a
+  // model id is agent-namespaced, so an inheriting template cannot name one; an effort is
+  // one shared vocabulary, so it can, and is checked at launch against the harness the kind
+  // actually resolved.
+  .refine((t) => t.model === null || t.agent !== null, {
+    path: ["model"],
+    message: "a template that inherits its agent cannot pin a model",
+  })
+  .refine((t) => t.effort === null || t.agent === null || supportsEffort(t.agent, t.effort), {
     path: ["effort"],
     message: "reasoning effort is not supported by this harness",
   });

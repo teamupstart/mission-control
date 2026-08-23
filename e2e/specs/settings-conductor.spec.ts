@@ -1,11 +1,21 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
+import { join } from "node:path";
 
 import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { FAKE_CONDUCTOR_VERSION, readConductorInvocations } from "../fixtures/conductor.ts";
+import {
+  conductorDetail as detail,
+  conductorDirectoryEmpty as empty,
+  conductorFact,
+  conductorRepoRow as repoRow,
+  conductorRows as rows,
+  conductorTile as tile,
+  toggleConductorObservation,
+} from "../fixtures/conductor-panel.ts";
 import { recordsIn } from "../fixtures/records.ts";
 
 // The installed-engine Phase 1 vertical slice. The fake CLI records argv and owns its project
@@ -37,6 +47,22 @@ async function openConductor(page: Page, baseURL: string): Promise<void> {
   );
 }
 
+/**
+ * Workspace checkouts, in bulk, so a spec can ask what the panel does with 60 of them.
+ *
+ * A directory holding a `.git` entry IS a repository to the workspace scan
+ * (`src/server/repos.ts`), and nothing in this panel runs git against one - it lists them.
+ * So this is a `mkdir`, not sixty `git init`s, and the spec stays a few hundred
+ * milliseconds rather than a minute.
+ */
+function seedBulkRepos(workspace: string, count: number): string[] {
+  return Array.from({ length: count }, (_, i) => {
+    const name = `bulk-${String(i).padStart(3, "0")}`;
+    mkdirSync(join(workspace, name, ".git"), { recursive: true });
+    return join(workspace, name);
+  });
+}
+
 function installerTerminals(recordDir: string): { argv: string[] }[] {
   return recordsIn<{ argv: string[] }>(recordDir, (file) => file.startsWith("cmux-"));
 }
@@ -50,23 +76,27 @@ test("an installed engine registers a workspace and observes it through one hone
   await expect(page.getByText(/Installed at .*conduct-ts/)).toBeVisible();
   await expect(page.getByText(new RegExp(`version ${FAKE_CONDUCTOR_VERSION}`))).toBeVisible();
 
+  // The directory opens on what Conductor MANAGES, which on a fresh daemon is nothing at
+  // all - so the workspace catalogue is one tile away rather than the first thing drawn.
+  await expect(empty(page)).toContainText("Conductor manages nothing here yet");
+  await tile(page, "All").click();
   const search = page.getByPlaceholder("Search workspace repositories");
   await search.fill("demo-repo");
-  const row = page.locator("li.conductor-repo").filter({ hasText: daemon.repo });
-  await expect(row).toContainText("Not registered");
-  await expect(row).toContainText("Not observed");
-  await expect(row).toContainText("Dispatch not ready");
-  await expect(row.getByRole("button", { name: "Register and observe" })).toBeEnabled();
+  await repoRow(page, daemon.repo).click();
+
+  await expect(conductorFact(page, "Registered with Conductor")).toContainText("No");
+  await expect(conductorFact(page, "Dispatch ready")).toContainText("No");
+  await expect(detail(page)).toContainText("Conductor does not manage this repository yet");
+  const register = detail(page).getByRole("button", { name: "Register and observe" });
+  await expect(register).toBeEnabled();
   await shoot(page, "01-ready-to-register");
 
   await page.setViewportSize({ width: 680, height: 900 });
   expect(
     await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
-    "the commissioning line and repository actions must not create horizontal clipping",
+    "the commissioning line, directory and detail pane must not create horizontal clipping",
   ).toBe(true);
-  await search.focus();
-  await page.keyboard.press("Tab");
-  await expect(row.getByRole("button", { name: "Register and observe" })).toBeFocused();
+  await expect(register).toBeVisible();
 
   const registrationResponse = page.waitForResponse(
     (response) =>
@@ -76,14 +106,17 @@ test("an installed engine registers a workspace and observes it through one hone
     (response) =>
       response.url().endsWith("/api/pipelines/config") && response.request().method() === "PUT",
   );
-  await row.getByRole("button", { name: "Register and observe" }).click();
+  await register.click();
   expect((await (await registrationResponse).json()).registration.ok).toBe(true);
-  await expect(row).toContainText("Registered", { timeout: 20_000 });
+  await expect(conductorFact(page, "Registered with Conductor")).toContainText("Yes", { timeout: 20_000 });
   expect((await observationResponse).ok()).toBe(true);
-  await expect(row).toContainText("Observed", { timeout: 15_000 });
-  await expect(row).toContainText("Dispatch ready", { timeout: 15_000 });
-  await expect(row.getByText("Ready", { exact: true })).toBeVisible();
+  await expect(conductorFact(page, "Dispatch ready")).toContainText("Yes", { timeout: 15_000 });
+  await expect(detail(page).getByText("Ready", { exact: true })).toBeVisible();
   await expect(page.getByText(/Registered and observed/)).toBeVisible();
+  // The repository the pane is showing is the one that was picked, and registering it
+  // moved it into Managed without moving the pane off it.
+  await expect(detail(page).getByRole("heading", { name: "demo-repo" })).toBeVisible();
+  await expect(tile(page, "Managed")).toHaveAccessibleName("1 Managed");
 
   const calls = readConductorInvocations(daemon.home);
   expect(calls.filter((call) => call.argv[0] === "register")).toEqual([
@@ -95,7 +128,7 @@ test("an installed engine registers a workspace and observes it through one hone
     repos: [{ provider: "ai-conductor", repoRoot: daemon.repo, enabled: true }],
   });
 
-  await expect(row.getByText("Ready", { exact: true })).toBeVisible();
+  await expect(detail(page).getByText("Ready", { exact: true })).toBeVisible();
 
   await page.goto(`${daemon.baseURL}/#/fleet`);
   await page.getByRole("button", { name: "Dispatch" }).click();
@@ -250,16 +283,24 @@ test("a stale consent response never replaces or restores a newer repository edi
   });
 
   await openConductor(page, daemon.baseURL);
-  const first = page.getByRole("checkbox", { name: "Observe pipelines in demo-repo" });
-  const second = page.getByRole("checkbox", { name: "Observe pipelines in second-repo" });
+  // Both are registered, so both are in the default Managed list; the pane shows one at a
+  // time, so the second write is made by selecting the other row - which is what makes the
+  // two writes overlap here exactly as two fast clicks used to.
+  await repoRow(page, daemon.repo).click();
+  const first = detail(page).getByRole("checkbox", { name: "Observe pipelines in demo-repo" });
   await expect(first).toBeEnabled();
+  await toggleConductorObservation(page);
+  await repoRow(page, daemon.secondRepo).click();
+  const second = detail(page).getByRole("checkbox", { name: "Observe pipelines in second-repo" });
   await expect(second).toBeEnabled();
-  await first.click();
-  await second.click();
+  await toggleConductorObservation(page);
 
   await expect(page.getByText(/forced second consent refusal/)).toBeVisible();
-  await expect(first).toBeChecked();
   await expect(second).not.toBeChecked();
+  await repoRow(page, daemon.repo).click();
+  await expect(
+    detail(page).getByRole("checkbox", { name: "Observe pipelines in demo-repo" }),
+  ).toBeChecked();
   const config = await page.request.get(`${daemon.baseURL}/api/pipelines/config`);
   expect((await config.json()).config.repos).toEqual([
     { provider: "ai-conductor", repoRoot: daemon.secondRepo, enabled: false },
@@ -272,13 +313,14 @@ test.describe("when the provider does not confirm registration", () => {
 
   test("observation is never granted", async ({ page, daemon }) => {
     await openConductor(page, daemon.baseURL);
+    await tile(page, "All").click();
     await page.getByPlaceholder("Search workspace repositories").fill("demo-repo");
-    const row = page.locator("li.conductor-repo").filter({ hasText: daemon.repo });
-    await row.getByRole("button", { name: "Register and observe" }).click();
+    await repoRow(page, daemon.repo).click();
+    await detail(page).getByRole("button", { name: "Register and observe" }).click();
 
     await expect(page.getByText(/without confirming this exact repository/)).toBeVisible();
-    await expect(row).toContainText("Not registered");
-    await expect(row).toContainText("Not observed");
+    await expect(conductorFact(page, "Registered with Conductor")).toContainText("No");
+    await expect(conductorFact(page, "Dispatch ready")).toContainText("No");
     const config = await page.request.get(`${daemon.baseURL}/api/pipelines/config`);
     expect((await config.json()).config).toMatchObject({ enabled: false, repos: [] });
   });
@@ -304,19 +346,20 @@ test("partial success stays registered and recovers without a second registratio
   });
 
   await openConductor(page, daemon.baseURL);
+  await tile(page, "All").click();
   await page.getByPlaceholder("Search workspace repositories").fill("demo-repo");
-  const row = page.locator("li.conductor-repo").filter({ hasText: daemon.repo });
-  await row.getByRole("button", { name: "Register and observe" }).click();
+  await repoRow(page, daemon.repo).click();
+  await detail(page).getByRole("button", { name: "Register and observe" }).click();
 
   await expect(page.getByText(/Registered with Conductor; Mission Control observation/)).toBeVisible();
-  await expect(row).toContainText("Registered");
-  await expect(row).toContainText("Not observed");
-  await expect(row.getByRole("button", { name: "Enable observation" })).toBeVisible();
+  await expect(conductorFact(page, "Registered with Conductor")).toContainText("Yes");
+  await expect(conductorFact(page, "Dispatch ready")).toContainText("No");
+  await expect(detail(page).getByRole("button", { name: "Enable observation" })).toBeVisible();
   await shoot(page, "03-partial-success");
 
   await page.unroute("**/api/pipelines/config");
-  await row.getByRole("button", { name: "Enable observation" }).click();
-  await expect(row).toContainText("Dispatch ready", { timeout: 15_000 });
+  await detail(page).getByRole("button", { name: "Enable observation" }).click();
+  await expect(conductorFact(page, "Dispatch ready")).toContainText("Yes", { timeout: 15_000 });
   expect(
     readConductorInvocations(daemon.home).filter((call) => call.argv[0] === "register"),
   ).toHaveLength(1);
@@ -430,10 +473,11 @@ test.describe("with a verified local Conductor checkout", () => {
     await expect(page.getByText(new RegExp(`version ${FAKE_CONDUCTOR_VERSION}`))).toBeVisible();
     await expect(page.getByRole("button", { name: "Review installer" })).toHaveCount(0);
 
+    await tile(page, "All").click();
     await page.getByPlaceholder("Search workspace repositories").fill("demo-repo");
-    const row = page.locator("li.conductor-repo").filter({ hasText: daemon.repo });
-    await row.getByRole("button", { name: "Register and observe" }).click();
-    await expect(row).toContainText("Dispatch ready", { timeout: 15_000 });
+    await repoRow(page, daemon.repo).click();
+    await detail(page).getByRole("button", { name: "Register and observe" }).click();
+    await expect(conductorFact(page, "Dispatch ready")).toContainText("Yes", { timeout: 15_000 });
 
     await page.goto(`${daemon.baseURL}/#/fleet`);
     await page.getByRole("button", { name: "Dispatch" }).click();
@@ -544,5 +588,162 @@ test.describe("with a verified checkout and an unresponsive hosted terminal", ()
       timeout: 20_000,
     });
     await expect(page.getByRole("status")).not.toContainText("Installer terminal opened");
+  });
+});
+
+// ---- the bound: what the page does with a workspace it does not manage ----
+//
+// `GET /api/repos` walks the workspace roots and returns every checkout with no cap. On the
+// machine this change was written against that is 202, of which ONE was registered, and the
+// panel rendered the whole union as one flat list. These are the specs that fail against
+// that panel, and the reason the directory exists.
+test.describe("with a workspace full of unmanaged checkouts", () => {
+  // The repo scan is cached for 30s by default, and these specs create their checkouts after
+  // the daemon is already up.
+  test.use({ daemonEnv: { MISSION_PIPELINE_TICK_MS: "1000", MISSION_REPOS_CACHE_MS: "0" } });
+
+  /**
+ * How many of the bulk checkouts the page has actually drawn.
+ *
+ * Deliberately shape-agnostic - it reads the pane's text rather than a row selector - so
+ * the assertion is about the DEFECT and not about this change's markup: the panel this
+ * replaced put all sixty on screen, and would fail this line rather than fail to have a
+ * selector. A bounded scroller would pass a height check and fail this one.
+ */
+async function bulkRowsDrawn(page: Page): Promise<number> {
+  return await page.evaluate(() => {
+    const text = document.querySelector(".settings-pane")?.textContent ?? "";
+    // Distinct names, because one drawn repository contributes its name, its path and its
+    // hover copy - what is being counted is repositories on screen, not mentions.
+    return new Set(text.match(/bulk-\d{3}/g) ?? []).size;
+  });
+}
+
+/** Register and observe one repository the way the panel's own two writes do. */
+  async function manage(page: Page, baseURL: string, repoRoot: string): Promise<void> {
+    const registration = await page.request.post(`${baseURL}/api/pipelines/register`, {
+      data: { provider: "ai-conductor", repoRoot },
+    });
+    expect((await registration.json()).registration.ok).toBe(true);
+    const consent = await page.request.put(`${baseURL}/api/pipelines/config`, {
+      data: {
+        enabled: true,
+        foremanMechanicalTriage: false,
+        repos: [{ provider: "ai-conductor", repoRoot, enabled: true }],
+      },
+    });
+    expect(consent.ok()).toBe(true);
+  }
+
+  test("the directory opens on the managed repositories, and no tile draws more than a page", async ({
+    page,
+    daemon,
+  }) => {
+    seedBulkRepos(daemon.workspace, 60);
+    await manage(page, daemon.baseURL, daemon.repo);
+    const workspaceScan = page.waitForResponse((response) => response.url().includes("/api/repos"));
+    await openConductor(page, daemon.baseURL);
+    // The scan has landed and the page has drawn what it intends to draw, so a count of
+    // zero below means "not drawn" rather than "not fetched yet".
+    await workspaceScan;
+    await expect(page.getByText(daemon.repo).first()).toBeVisible();
+
+    // The whole point, said first and without reference to this panel's own markup.
+    expect(await bulkRowsDrawn(page), "the workspace scan must not be printed").toBe(0);
+
+    // The workspace really is large - the tile says so - and the page still draws one row.
+    const workspaceCount = Number((await tile(page, "All").innerText()).split(/\s+/)[0]);
+    expect(workspaceCount).toBeGreaterThanOrEqual(61);
+    await expect(rows(page)).toHaveCount(1);
+    await expect(repoRow(page, daemon.repo)).toHaveAttribute("aria-current", "true");
+    await shoot(page, "08-directory-managed-default");
+
+    // The load-bearing half: asserting only the managed default would pass against a
+    // directory that still emits a row per checkout the moment All is picked.
+    await tile(page, "All").click();
+    await expect(rows(page)).toHaveCount(25);
+    expect(await bulkRowsDrawn(page), "one page of rows, on every tile").toBeLessThanOrEqual(25);
+    await expect(page.getByText(new RegExp(`1-25 of ${workspaceCount} in All`))).toBeVisible();
+
+    // And paging keeps the repository the operator picked in the pane beside the list.
+    const picked = await rows(page).first().innerText();
+    await rows(page).first().click();
+    const heading = await detail(page).getByRole("heading").first().innerText();
+    expect(picked).toContain(heading);
+    await page.getByRole("button", { name: "Next" }).click();
+    await expect(page.getByText(new RegExp(`26-50 of ${workspaceCount} in All`))).toBeVisible();
+    await expect(rows(page)).toHaveCount(25);
+    await expect(detail(page).getByRole("heading").first()).toHaveText(heading);
+    await shoot(page, "09-directory-paged");
+  });
+
+  test("a selection survives the four-second poll rather than jumping", async ({ page, daemon }) => {
+    seedBulkRepos(daemon.workspace, 30);
+    await manage(page, daemon.baseURL, daemon.repo);
+    await openConductor(page, daemon.baseURL);
+    await tile(page, "All").click();
+    await page.getByPlaceholder("Search workspace repositories").fill("second-repo");
+    await repoRow(page, daemon.secondRepo).click();
+    const heading = detail(page).getByRole("heading").first();
+    await expect(heading).toHaveText("second-repo");
+    // Longer than `useConductor`'s POLL_MS, so at least one whole view replacement lands
+    // underneath the selection. Keyed by `pipelineRepoKey`, an index would have moved.
+    await page.waitForTimeout(6_000);
+    await expect(heading).toHaveText("second-repo");
+    await expect(repoRow(page, daemon.secondRepo)).toHaveAttribute("aria-current", "true");
+  });
+
+  test("a repository picked under All keeps its pane under Managed, and says where its row went", async ({
+    page,
+    daemon,
+  }) => {
+    seedBulkRepos(daemon.workspace, 10);
+    await manage(page, daemon.baseURL, daemon.repo);
+    await openConductor(page, daemon.baseURL);
+
+    await tile(page, "All").click();
+    await repoRow(page, daemon.secondRepo).click();
+    await expect(detail(page).getByRole("heading").first()).toHaveText("second-repo");
+
+    // Back to the narrow default. The key is still perfectly valid, so nothing clears it -
+    // and the pane says the repository is not in the list beside it rather than showing a
+    // row that is not there, or silently swapping to a repository nobody chose.
+    await tile(page, "Managed").click();
+    await expect(detail(page).getByRole("heading").first()).toHaveText("second-repo");
+    await expect(detail(page)).toContainText("is not in the Managed list beside this pane");
+    // The Managed list is not empty - it holds the repository that IS managed - it simply
+    // does not hold the one the pane is showing.
+    await expect(repoRow(page, daemon.repo)).toBeVisible();
+    await expect(repoRow(page, daemon.secondRepo)).toHaveCount(0);
+    await shoot(page, "10-off-filter-selection");
+
+    await detail(page).getByRole("button", { name: "Show it in All" }).click();
+    await expect(repoRow(page, daemon.secondRepo)).toHaveAttribute("aria-current", "true");
+    await expect(detail(page).getByRole("heading").first()).toHaveText("second-repo");
+    await expect(detail(page)).not.toContainText("is not in the Managed list");
+  });
+
+  test("search narrows the active tile rather than escaping it, and says so when that finds nothing", async ({
+    page,
+    daemon,
+  }) => {
+    seedBulkRepos(daemon.workspace, 10);
+    await manage(page, daemon.baseURL, daemon.repo);
+    await openConductor(page, daemon.baseURL);
+
+    // Managed is active and holds one repository. A query matching only an unmanaged one
+    // finds nothing - that is the conjunction working - so the empty state has to name the
+    // tile that would find it rather than leave an operator at a bare empty list.
+    await expect(tile(page, "Managed")).toHaveAccessibleName("1 Managed");
+    await page.getByPlaceholder("Search workspace repositories").fill("second-repo");
+    await expect(rows(page)).toHaveCount(0);
+    await expect(empty(page)).toContainText("No Managed repository matches that search");
+    // The count describes the population the tile names, not the rows a query leaves on
+    // screen - which is the half of the rule the empty state cannot show.
+    await expect(tile(page, "Managed")).toHaveAccessibleName("1 Managed");
+
+    await empty(page).getByRole("button", { name: /Show 1 under All/ }).click();
+    await expect(repoRow(page, daemon.secondRepo)).toBeVisible();
+    await expect(rows(page)).toHaveCount(1);
   });
 });

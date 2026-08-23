@@ -312,6 +312,15 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     kind: "jump",
   },
   {
+    id: "foreman-ship-recovery-minutes",
+    label: "Pre-PR ship recovery wait",
+    description: "Set the quiet window before Foreman resumes an eligible managed Ship task.",
+    category: "foreman",
+    anchor: "foreman/ship-recovery-minutes",
+    keywords: ["ship", "recovery", "idle", "quiet", "minutes", "pull request", "escalation"],
+    kind: "jump",
+  },
+  {
     id: "foreman-episodes",
     label: "Foreman decisions",
     description: "Every prompt Foreman has decided on, across every session, newest first.",
@@ -430,19 +439,123 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
   {
     id: "conductor-repos",
     label: "Conductor repositories",
-    description: "Which repositories an external SDLC engine's pipelines are observed in.",
+    description: "The repository directory: which checkouts Conductor manages, and which are observed.",
     category: "conductor",
     anchor: "conductor/repos",
-    keywords: ["ai-conductor", "pipeline", "sdlc", "engine", "repository", "consent", "observe"],
+    keywords: ["ai-conductor", "pipeline", "sdlc", "engine", "repository", "consent", "observe", "directory"],
+    kind: "jump",
+  },
+  // The other five anchors this panel renders. It drew six and indexed one, so the engine,
+  // the master switch, the Engineer host and Foreman triage were reachable only by opening
+  // the category and scrolling - which is what the palette exists to replace. Every one is
+  // a `jump`: none is a boolean the palette could honestly flip from a search row, and the
+  // consent switch is exactly the kind whose copy has to be on screen when it moves.
+  {
+    id: "conductor-overview",
+    label: "Conductor commissioning",
+    description: "Where an external SDLC engine's setup stands: engine, registration, observation.",
+    category: "conductor",
+    anchor: "conductor/pipelines",
+    keywords: ["ai-conductor", "pipeline", "sdlc", "commissioning", "setup", "register", "overview"],
+    kind: "jump",
+  },
+  {
+    id: "conductor-detection",
+    label: "Conductor engine detection",
+    description: "Whether conduct-ts was found, where, which version, and which registry it read.",
+    category: "conductor",
+    anchor: "conductor/detection",
+    keywords: ["conduct-ts", "engine", "install", "installer", "version", "registry", "probe", "path"],
+    kind: "jump",
+  },
+  {
+    id: "conductor-enabled",
+    label: "Observe Conductor pipelines",
+    description: "The master consent switch for reading any Conductor pipeline state at all.",
+    category: "conductor",
+    anchor: "conductor/enabled",
+    keywords: ["observe", "consent", "master switch", "pipeline", "ai-conductor", "read"],
+    kind: "jump",
+  },
+  {
+    id: "conductor-launch-runtime",
+    label: "Conductor Engineer host",
+    description: "Which Mission Control host starts Engineer: the managed Agent SDK, or a terminal.",
+    category: "conductor",
+    anchor: "conductor/launch-runtime",
+    keywords: ["engineer", "launch", "runtime", "agent sdk", "terminal", "host", "pipeline"],
+    kind: "jump",
+  },
+  {
+    id: "conductor-foreman-triage",
+    label: "Foreman pipeline triage",
+    description: "Whether Foreman may unpark mechanical pipeline halts on its own.",
+    category: "conductor",
+    anchor: "conductor/foreman-triage",
+    keywords: ["foreman", "triage", "halt", "unpark", "mechanical", "pipeline"],
+    kind: "jump",
+  },
+  // Two entries, because there are now two controls and `models/provider` only names one of
+  // them. That anchor is the APP-WIDE radio; the per-job providers live in the matrix below
+  // it, and an operator searching "run the goal job on Codex" who lands on the radio has been
+  // sent to the control that specifically does not answer that.
+  {
+    id: "llm-runner",
+    label: "App-wide model provider",
+    description: "Which provider the app's own calls use when a job hasn't chosen its own.",
+    category: "models",
+    anchor: "models/provider",
+    keywords: ["provider", "runner", "claude", "codex", "app-wide", "default"],
     kind: "jump",
   },
   {
     id: "llm-jobs",
-    label: "Background job models",
-    description: "The provider and models behind the app's own titling, goals, and digests.",
+    label: "Background job providers and models",
+    description: "A provider and a model per job - titling, goals, digests, workflow context.",
     category: "models",
-    anchor: "models/provider",
-    keywords: ["title", "goal", "digest", "workflow", "provider", "runner", "job"],
+    anchor: "models/jobs",
+    keywords: [
+      "title",
+      "goal",
+      "digest",
+      "workflow",
+      "provider",
+      "runner",
+      "job",
+      "per job",
+      "override",
+      "inherit",
+    ],
+    kind: "jump",
+  },
+  // A third entry on this category, because the grid below the jobs answers a different
+  // question from either control above it: not "what does the app spend on itself" but "what
+  // does a dispatched plan run as". Someone searching "plan model" wants this row and nothing
+  // else on the page.
+  {
+    id: "task-kind-defaults",
+    label: "Agent, model and effort per task kind",
+    description: "What a dispatched plan, ship, scout or chat task is filed on and launches with.",
+    category: "models",
+    anchor: "models/task-kinds",
+    // Kind names appear only inside phrases ("plan model"), never as the bare ids. Listing
+    // them bare would restate the kind vocabulary outside its registry, which
+    // `task-kinds.test.ts` refuses precisely so a stale copy cannot silently drop a kind.
+    keywords: [
+      "task kind",
+      "plan model",
+      "plan agent",
+      "ship model",
+      "scout model",
+      "chat model",
+      "dispatch default",
+      "harness",
+      "agent",
+      "effort",
+      "reasoning",
+      "per kind",
+      "inherit",
+    ],
     kind: "jump",
   },
   {

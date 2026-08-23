@@ -53,11 +53,16 @@ const CONTENTS = [
 const OTHER = "docs/plans/other.md";
 const OTHER_CONTENTS = "# Something else entirely\n\nNot the file the comment is about.\n";
 
+/** A file with nothing to quote, which is the one file that takes no comment at all. */
+const HOLLOW = "docs/plans/hollow.md";
+const HOLLOW_CONTENTS = "\n\n   \n\n";
+
 const COMMENT = "This contradicts the table three screens down.";
 /** One sentence, deliberately written into two different drafts. See the last test. */
 const ECHO = "Both of these say thirty seconds.";
 const FIRST_DRAFT = "Something to change my mind about later.";
 const REPLY = "And the diagram disagrees with both of them.";
+const RETRY_REPLY = "Retyped after the daemon came back.";
 
 async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {
   await page.getByRole("button", { name: "Dispatch" }).click();
@@ -757,12 +762,33 @@ test.describe("line comments in the Files editor", () => {
       .toHaveValue(REPLY);
     expect(storedThreads(daemon)[0]!.messages, "nothing was appended").toBe(1);
 
-    // And the retry works from the text still sitting there, once the route is let go.
+    // ---- and a reply in flight owns its box, so nothing typed is lost to a success ----
+    // A slow request used to leave the box editable, and the success handler then emptied
+    // whatever was in it - including a sentence typed after the click, which had never been
+    // sent anywhere.
     await page.unroute("**/api/file-comments/*/messages");
+    await page.route("**/api/file-comments/*/messages", async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 1_500));
+      await route.continue();
+    });
+    await replyBox.fill(REPLY);
+    await thread.getByRole("button", { name: "Reply", exact: true }).click();
+    await expect(replyBox, "a reply in flight must not take further typing")
+      .toHaveAttribute("readonly", "");
+    await expect(replyBox).toHaveValue(REPLY);
+    await expect(replyBox).toBeEnabled();
+    // Once it lands, the box empties - it is emptying the sentence that was actually sent.
+    await expect(replyBox).toHaveValue("", { timeout: 10_000 });
+    await expect
+      .poll(() => storedThreads(daemon)[0]?.messages, { message: "the reply never landed" })
+      .toBe(2);
+
+    // And the retry works from the text still sitting there, once the route is let go.
+    await replyBox.fill(RETRY_REPLY);
     await thread.getByRole("button", { name: "Reply", exact: true }).click();
     await expect
       .poll(() => storedThreads(daemon)[0]?.messages, { message: "the retry never landed" })
-      .toBe(2);
+      .toBe(3);
     await expect(replyBox).toHaveValue("");
   });
 
@@ -812,5 +838,143 @@ test.describe("line comments in the Files editor", () => {
     // the marker - which is why `mousedown` is defended even though it no longer activates.
     await marker.click();
     await expect(thread).toContainText(COMMENT);
+  });
+
+  test("a blank line borrows the nearest line that speaks, and an empty file takes nothing", async ({
+    dashboard: page,
+    daemon,
+  }) => {
+    /*
+     * The two exceptions `docs/ui.md` now states, driven rather than asserted in prose.
+     *
+     * A thread has to quote something - the create route refuses a quote that normalizes to
+     * nothing, and it is right to, because such a thread is born unanchorable and no edit
+     * could repair it. So a blank line extends to the nearest line that says something, and a
+     * file of nothing but blank lines refuses instead of writing a comment that could never
+     * point anywhere.
+     */
+    await dispatch(page, daemon);
+    const cwd = await sessionCwd(daemon);
+    mkdirSync(join(cwd, dirname(SOURCE)), { recursive: true });
+    writeFileSync(join(cwd, SOURCE), CONTENTS);
+    writeFileSync(join(cwd, HOLLOW), HOLLOW_CONTENTS);
+
+    await useConsoleLayout(page, daemon);
+    await openTheFile(page);
+    await page.getByRole("button", { name: "Comment mode" }).click();
+
+    /*
+     * ---- an interior blank line, which reaches DOWN ----
+     *
+     * The range starts where the click landed, so the marker stays on the blank line. This
+     * half is here because the documentation once claimed the opposite - that the marker
+     * moved to the line whose text was quoted - which is only true of the backward case
+     * below. A rule with one tested half is a rule half stated.
+     */
+    await lineNumber(page, 2).click();
+    const spanning = page.getByRole("textbox", { name: "Comment on lines 2-3" });
+    await expect(spanning, "a blank line reaches DOWN for its quote").toBeVisible();
+    await spanning.fill(FIRST_DRAFT);
+    await page.getByRole("button", { name: "Comment", exact: true }).click();
+    await expect(
+      page.getByRole("button", { name: /^Comment MC-\w+ on line 2, queued$/ }),
+      "reaching down leaves the marker on the line that was clicked",
+    ).toBeVisible();
+    expect(storedThreads(daemon)[0]!.start_line).toBe(2);
+    expect(storedThreads(daemon)[0]!.quote).toContain("The retry budget is thirty seconds.");
+
+    // ---- the trailing blank line, which has nothing below it to borrow ----
+    await lineNumber(page, 6).click();
+    const box = page.getByRole("textbox", { name: "Comment on lines 5-6" });
+    await expect(box, "a trailing blank line reaches BACKWARD for its quote").toBeVisible();
+    await box.fill(COMMENT);
+    await page.getByRole("button", { name: "Comment", exact: true }).click();
+
+    // The marker belongs to the anchor, not to the line that was clicked - which is exactly
+    // the surprise the documentation now warns about.
+    await expect(page.getByRole("button", { name: /^Comment MC-\w+ on line 5, queued$/ }))
+      .toBeVisible();
+    const stored = storedThreads(daemon);
+    expect(stored).toHaveLength(2);
+    const trailing = stored.find((row) => row.start_line === 5);
+    expect(trailing, "the backward anchor starts on the line above the click").toBeDefined();
+    expect(trailing!.quote).toContain("The table below has no units column.");
+
+    // ---- and a file with nothing to quote anywhere ----
+    await page
+      .getByRole("listbox", { name: "Session files" })
+      .getByRole("option", { name: HOLLOW })
+      .click();
+    await expect(page.getByLabel(`Editor for ${HOLLOW}`)).toBeVisible();
+    await lineNumber(page, 1).click();
+    await expect(page.getByText("This file has no text to anchor a comment to.")).toBeVisible();
+    expect(storedThreads(daemon), "no unanchorable thread was written").toHaveLength(2);
+  });
+
+  test("a refused save is never submitted as the text it replaced", async ({
+    dashboard: page,
+    daemon,
+  }) => {
+    /*
+     * The dangerous half of a failed edit is not the failure - it is what gets sent instead.
+     *
+     * A draft is saved as you type, so by the time you revise it the daemon already holds an
+     * earlier version. `persist` answered the thread id whether or not the revision landed,
+     * and `submit` read an id as "saved" and queued immediately: the agent received the text
+     * the reader had just replaced, while the replacement sat on screen looking submitted.
+     * A wrong comment sent under the reader's name is worse than a comment that failed to
+     * send, and the failure was silent.
+     */
+    await dispatch(page, daemon);
+    const cwd = await sessionCwd(daemon);
+    mkdirSync(join(cwd, dirname(SOURCE)), { recursive: true });
+    writeFileSync(join(cwd, SOURCE), CONTENTS);
+
+    await useConsoleLayout(page, daemon);
+    await openTheFile(page);
+    await page.getByRole("button", { name: "Comment mode" }).click();
+
+    // ---- a draft the daemon already holds ----
+    await lineNumber(page, 3).click();
+    const box = page.getByRole("textbox", { name: "Comment on line 3" });
+    await box.fill(FIRST_DRAFT);
+    await expect
+      .poll(() => storedOpeningBodies(daemon).map((row) => row.body), {
+        message: "the first version was never saved",
+      })
+      .toEqual([FIRST_DRAFT]);
+
+    // ---- the revision is refused ----
+    await page.route("**/api/file-comment-messages/*", (route) =>
+      route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "the daemon refused this edit" }),
+      }));
+    await box.fill(COMMENT);
+    await page.getByRole("button", { name: "Comment", exact: true }).click();
+
+    await expect(page.getByRole("alert")).toBeVisible();
+    // Not queued. The row still says draft, and it still holds the OLD body - which is
+    // exactly why queueing it would have sent the wrong thing.
+    const afterFailure = storedThreads(daemon);
+    expect(afterFailure).toHaveLength(1);
+    expect(afterFailure[0]!.status, "a comment whose save failed must not be submitted")
+      .toBe("draft");
+    expect(afterFailure[0]!.queue_seq).toBeNull();
+    expect(storedOpeningBodies(daemon)[0]!.body).toBe(FIRST_DRAFT);
+
+    // The composer is still there, still holding the reader's words, and editable again -
+    // the submission is over, so the freeze is over with it.
+    await expect(box).toHaveValue(COMMENT);
+    await expect(box).not.toHaveAttribute("readonly", "");
+
+    // ---- and the same click works once the daemon will take it ----
+    await page.unroute("**/api/file-comment-messages/*");
+    await page.getByRole("button", { name: "Comment", exact: true }).click();
+    await expect(page.getByRole("button", { name: /^Comment MC-\w+ on line 3, queued$/ }))
+      .toBeVisible();
+    expect(storedOpeningBodies(daemon)[0]!.body, "the queued comment is what the reader wrote")
+      .toBe(COMMENT);
   });
 });

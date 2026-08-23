@@ -280,6 +280,7 @@ export function FileEditor({
   path,
   value,
   readOnly,
+  wrap = false,
   lineSeparator,
   comments,
   onChange,
@@ -288,6 +289,15 @@ export function FileEditor({
   path: string;
   value: string;
   readOnly: boolean;
+  /**
+   * Wrap long lines instead of scrolling them sideways.
+   *
+   * Off for the Editor, where a horizontal scroll is the honest rendering of source and
+   * wrapping would misrepresent what the file says. On for the source column Comment mode
+   * puts beside a preview: it is half as wide, it is read-only, and it exists to be POINTED
+   * AT - a marker that has scrolled off the right edge is a marker nobody can click.
+   */
+  wrap?: boolean;
   /** Preserve a caller's exact newline convention when CodeMirror serializes an edit. */
   lineSeparator?: "\n" | "\r\n" | "\r";
   /** Line-comment markers and the open panel. Absent when nothing has comments to draw. */
@@ -349,6 +359,7 @@ export function FileEditor({
           syntaxHighlighting(missionHighlight),
           language.of([]),
           editable.of(EditorView.editable.of(!readOnly)),
+          ...(wrap ? [EditorView.lineWrapping] : []),
           EditorView.contentAttributes.of({ spellcheck: "false", "aria-label": `Editor for ${path}` }),
           EditorView.updateListener.of((update) => {
             if (update.docChanged && !syncing.current) {
@@ -400,7 +411,7 @@ export function FileEditor({
       editor.destroy();
       view.current = null;
     };
-  }, [lineSeparator, path, readOnly]);
+  }, [lineSeparator, path, readOnly, wrap]);
 
   useEffect(() => {
     const editor = view.current;

@@ -684,17 +684,32 @@ or network access. A slow stylesheet read therefore delays styling, not the docu
 ### Comment on a line
 
 **Comment** in the Files toolbar turns on comment mode (<kbd>m</kbd>, in the integrated tab)
-for any file that has lines. With it on, clicking a line number opens a box under that line.
+for any file with source to read. With it on, clicking a line number opens a box under that
+line. An image has no lines and shows the control disabled with that as the reason.
 
 **This works in Preview as well as in the Editor.** A comment names a line and quotes it, so
 something with line numbers has to be on screen to click - but turning the control on over a
 rendered Markdown or HTML document no longer takes that document away. The preview keeps its
 half of the pane and the source appears beside it, read-only, carrying the line numbers and
 the markers. You stay in Preview; **Preview** stays the pressed view; <kbd>e</kbd> is one key
-away if you meant to edit. On a phone-width window the two stack instead. What you write there is saved from the first keystroke as a *draft* - it is a real
-row in the daemon's state, not a string in the browser tab, so closing the file, reloading the
-page, or closing the extracted Files window does not lose it. **Comment** submits it into that
-session's review queue, and it stays on the line as a marker.
+away if you meant to edit. On a phone-width window the two stack instead.
+
+What you write is saved from the first keystroke as a *draft* - it is a real row in the
+daemon's state, not a string in the browser tab, so closing the file, reloading the page, or
+closing the extracted Files window does not lose it. **Comment** submits it into that
+session's review queue, and it stays in the file as a marker.
+
+**A comment has to quote something, so a blank line borrows the nearest line that speaks.**
+Clicking one quotes a range rather than the empty line alone: down to the next line with text
+on it, or - when the blank line is last, with nothing below - up to the line above. The panel
+names the range it took, so you can see what you are commenting on before you write.
+
+The marker goes on the range's **first** line. Reaching down, that is still the blank line you
+clicked, and the marker sits there. Reaching up, from a blank line at the end of the file, the
+range starts above and the marker sits on that line instead - one line up from the click.
+
+A file of nothing but blank lines has nothing to anchor to at all, and says so instead of
+writing a comment that could never point anywhere.
 
 A marker is a small button at the end of the line it is about, and its accessible name says
 which comment it is, which line it is on and what state it is in - queued, answered, moved, or
@@ -714,8 +729,7 @@ looking at, not a permanent fixture of the toolbar.
 Two things comment mode is not, yet. Nothing is sent to any agent: the queue accumulates and is
 delivered separately. And a marker is drawn on the *source*, not yet on the rendered document
 beside it, so in Preview you click a line in the source column rather than a paragraph in the
-preview. An image - which has no lines at all - shows the control disabled with the reason
-rather than hiding it.
+preview.
 
 Markdown in the Files **Preview** has one additional capability: a fenced block tagged exactly
 `mermaid` renders automatically as a local diagram. Each diagram runs in its own opaque,

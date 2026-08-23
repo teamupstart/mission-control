@@ -172,7 +172,10 @@ export function FileCommentThreadCard({
     setSending(true);
     const ok = await onReply(body);
     setSending(false);
-    if (ok) setReply("");
+    // Clear the box only if it still holds WHAT WAS SENT. The freeze below is what normally
+    // guarantees that, and this is the second half of the same rule: emptying the box on
+    // success is only correct for the sentence that succeeded, never for one typed since.
+    if (ok) setReply((current) => (current.trim() === body ? "" : current));
   };
   // A thread past the wire cap arrives carrying its NEWEST messages, not all of them.
   // Saying so is the honest thing: the alternative is a reader counting replies and
@@ -217,6 +220,11 @@ export function FileCommentThreadCard({
         value={reply}
         placeholder="Reply…"
         aria-label={`Reply to comment ${thread.shortId}`}
+        // Frozen while the reply is out, for the reason the composer is - a reply in flight
+        // owns this box. Typing into it during a slow request meant the success handler
+        // emptied a sentence that had never been sent. Read-only rather than disabled, so
+        // the words stay selectable and stay readable while the reader waits.
+        readOnly={sending}
         onChange={(event) => setReply(event.currentTarget.value)}
         onKeyDown={(event) => {
           if (event.key === "Escape") {
@@ -225,7 +233,7 @@ export function FileCommentThreadCard({
             onClose();
             return;
           }
-          if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && reply.trim()) {
+          if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && reply.trim() && !sending) {
             event.preventDefault();
             void send();
           }

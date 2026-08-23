@@ -255,6 +255,10 @@ export function useFileCommentDraft(input: {
   /**
    * Bring the daemon's copy of the opening message up to the text in the given composer.
    *
+   * Answers the thread id only when the daemon HOLDS that text - so a caller may treat an id
+   * as permission to act on the row, and null as "not saved", whether that is because there
+   * was nothing to write, because the create failed, or because the edit was refused.
+   *
    * The snapshot is an argument rather than a read of the ref, because `dismiss` closes the
    * composer and persists what was in it - and by the time the queued job runs, the ref it
    * would otherwise read has already been cleared by that close.
@@ -311,7 +315,13 @@ export function useFileCommentDraft(input: {
     const edited = await editFileCommentMessage(known.messageId, body);
     if (!edited.ok) {
       patch({ error: edited.error });
-      return known.threadId;
+      // NULL, not the thread id. The row exists but the daemon does not hold what the reader
+      // is looking at, and the caller cannot tell those apart from an id alone: `submit`
+      // read one as "saved" and queued the previous body - sending the agent text the
+      // reader had just replaced, with the correction sitting on screen looking submitted.
+      // Nothing was written, so nothing is submittable; the composer keeps the error and
+      // stays editable so the same click can be tried again.
+      return null;
     }
     written.current = { messageId: known.messageId, instance: current.instance, body };
     patch({ error: null });

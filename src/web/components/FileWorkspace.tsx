@@ -778,6 +778,7 @@ export function FileWorkspace({
               path={buffer.document.path}
               value={buffer.text}
               readOnly={commentSourceShowing || !buffer.document.editable || buffer.saveState === "conflict"}
+              wrap={commentSourceShowing}
               comments={editorComments}
               onChange={(text) => controller.edit(session.id, buffer.document.path, text)}
               onBlur={() => controller.flush(session.id, buffer.document.path)}

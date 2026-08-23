@@ -261,7 +261,7 @@ async function stallFor(sessionCwd: string | null): Promise<string> {
 // that is no repository, a git that failed - is already driven against real repositories by
 // `test/unpushed.test.ts`, and every sentence those shapes produce is already pinned by
 // `test/stall.test.ts`. Re-seeding a repository per shape here would re-prove both against a
-// third copy of the same fixtures, and it is not free: `npm test` runs two files at a time,
+// third copy of the same fixtures, and it is not free: `npm test` runs six files at a time,
 // and a file that spawns git in a loop steals the CPU that the process-lifecycle suites
 // (SIGTERM grace periods, process-group emptiness, subprocess timeouts) measure their
 // deadlines with. So this file seeds exactly the two cases that prove the COMPOSITION works

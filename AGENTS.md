@@ -92,9 +92,10 @@ operator's state exactly as it always has.
 at once, so naming a single file makes it inert, and carrying it here implied a single-file
 run reproduces the suite's concurrency when it cannot.
 
-`npm test` runs two files at a time. `MISSION_TEST_CONCURRENCY` changes that, and CI sets it
-to 6, which is where the suite stops getting faster on a 4 vCPU runner. A failure that only
-appears under that contention needs the whole suite, not one file:
+`npm test` runs six files at a time by default. `MISSION_TEST_CONCURRENCY` changes that,
+and CI explicitly pins it to 6, which is where the suite stops getting faster on its 4 vCPU
+runner. CI therefore does not inherit future changes to the local fallback. A failure that
+only appears under that contention needs the whole suite, not one file:
 
 ```sh
 MISSION_TEST_CONCURRENCY=6 npm test

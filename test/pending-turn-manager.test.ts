@@ -39,7 +39,7 @@ const tick = (ms = 8) => new Promise<void>((resolve) => setTimeout(resolve, ms))
  * the async work that timer starts, because then the number has to be bigger than the
  * machine's worst moment rather than bigger than a tick. One case here waited 30ms for a
  * 10ms pickup timeout to fire AND its transition to land, which held on an idle machine and
- * failed under `npm test`, where two test files run concurrently and other suites are
+ * failed under `npm test`, where six test files run concurrently and other suites are
  * spawning child processes.
  *
  * Deliberately does NOT assert on timeout. It returns and lets the caller's own assertion

@@ -59,6 +59,11 @@ uses real Electron geometry tests. In the Codex Seatbelt sandbox, run Electron
 tests with the required scoped outside-sandbox approval; do not bypass the
 preflight or add Chromium flags.
 
+`npm test` runs six test files concurrently by default. Set
+`MISSION_TEST_CONCURRENCY` to override that local worker count. CI pins its own
+six-worker value in `.github/workflows/ci.yml`, so the hosted runner tuning does
+not depend on the local fallback.
+
 ## Test layers
 
 The repository has four complementary test layers:

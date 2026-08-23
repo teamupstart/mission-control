@@ -340,6 +340,99 @@ export function consolePage<Row>(
   };
 }
 
+/**
+ * The pager under a bounded list: where you are in the record, and the two ways to move.
+ *
+ * Extracted from `ConsoleTable` rather than copied, because the thing worth sharing is not
+ * the four class names - it is the FOCUS HANDOFF. Reaching the first or last page disables
+ * the button that was just pressed, a browser blurs a control that becomes disabled, and a
+ * keyboard reader is returned to the top of the document on the one screen whose whole
+ * point is not losing your place. A second list that re-implemented `.sc-pager` would get
+ * the markup right and that rule wrong, silently.
+ *
+ * Absent on a single page, rather than present with both buttons dead: there is nothing to
+ * page and nothing the reader has not already been shown.
+ *
+ * The two direction words are the caller's, because they are a CLAIM about the ordering.
+ * A ledger is newest-first, so it says Newer/Older - a direction the reader can check
+ * against the timestamps in the last column. A directory sorted by path is neither, so it
+ * says Previous/Next.
+ */
+export function ConsolePager({
+  view,
+  back,
+  forward,
+  backHint,
+  forwardHint,
+  onGo,
+}: {
+  view: ConsolePage<unknown>;
+  back: string;
+  forward: string;
+  backHint: string;
+  forwardHint: string;
+  onGo: (page: number) => void;
+}): React.JSX.Element | null {
+  const backRef = useRef<HTMLButtonElement>(null);
+  const forwardRef = useRef<HTMLButtonElement>(null);
+  /** Which button was pressed, so the effect below can tell whether it just went dead. */
+  const pressed = useRef<"back" | "forward" | null>(null);
+  const go = (next: number): void => {
+    pressed.current = next < view.page ? "back" : "forward";
+    onGo(next);
+  };
+
+  // Focus survives reaching the end of the list. After the commit rather than in the
+  // handler: the button is still enabled while the handler runs, so focus moved there
+  // would simply be dropped a moment later.
+  useEffect(() => {
+    const which = pressed.current;
+    pressed.current = null;
+    if (which === null) return;
+    const used = which === "back" ? backRef.current : forwardRef.current;
+    // It kept the focus, or the press came from a pointer and never held it. Either way
+    // there is nothing to rescue, and stealing focus would be worse than leaving it.
+    if (!used || !used.disabled || document.activeElement !== document.body) return;
+    (which === "back" ? forwardRef : backRef).current?.focus();
+  }, [view.page]);
+
+  if (view.pages <= 1) return null;
+  return (
+    <div className="sc-pager">
+      {/* Announced, because the number is the only thing that changes when you page: the
+          rows above it are the same shape and, to a screen reader moving by landmark, the
+          same list. */}
+      <span className="sc-pager-range" aria-live="polite">
+        {view.from}-{view.to} of {view.total}
+      </span>
+      <div className="sc-pager-nav">
+        <Tooltip label={backHint}>
+          <button
+            type="button"
+            ref={backRef}
+            className="sc-pager-btn"
+            disabled={view.page === 1}
+            onClick={() => go(view.page - 1)}
+          >
+            {back}
+          </button>
+        </Tooltip>
+        <Tooltip label={forwardHint}>
+          <button
+            type="button"
+            ref={forwardRef}
+            className="sc-pager-btn"
+            disabled={view.page === view.pages}
+            onClick={() => go(view.page + 1)}
+          >
+            {forward}
+          </button>
+        </Tooltip>
+      </div>
+    </div>
+  );
+}
+
 /** One column name in a ledger's header row. `className` is the cell class it labels. */
 export interface ConsoleColumn {
   label: string;
@@ -407,14 +500,6 @@ export function ConsoleTable<Row>({
   }
   const view = consolePage(rows, page);
   const scroller = useRef<HTMLDivElement>(null);
-  const newerRef = useRef<HTMLButtonElement>(null);
-  const olderRef = useRef<HTMLButtonElement>(null);
-  /** Which button was pressed, so the effect below can tell whether it just went dead. */
-  const pressed = useRef<"newer" | "older" | null>(null);
-  const go = (next: number): void => {
-    pressed.current = next < view.page ? "newer" : "older";
-    setPage(next);
-  };
 
   // A replaced list opens at its top.
   //
@@ -434,27 +519,6 @@ export function ConsoleTable<Row>({
   useEffect(() => {
     scroller.current?.scrollTo({ top: 0 });
   }, [view.page, pagedKey]);
-
-  // Focus survives reaching the end of the list.
-  //
-  // On a two-page ledger - which the Inspector's and Shipping's 50 rows make the ordinary
-  // case - pressing Older lands on the last page and disables Older in the same commit. A
-  // browser blurs a control that becomes disabled, so a keyboard reader who pressed it is
-  // returned to the top of the document, on the one screen whose whole point is that you
-  // do not lose your place in a long list. Hand the focus to the button that can still act.
-  //
-  // After the commit rather than in the handler: the button is still enabled while the
-  // handler runs, so focus moved there would simply be dropped a moment later.
-  useEffect(() => {
-    const which = pressed.current;
-    pressed.current = null;
-    if (which === null) return;
-    const used = which === "newer" ? newerRef.current : olderRef.current;
-    // It kept the focus, or the press came from a pointer and never held it. Either way
-    // there is nothing to rescue, and stealing focus would be worse than leaving it.
-    if (!used || !used.disabled || document.activeElement !== document.body) return;
-    (which === "newer" ? olderRef : newerRef).current?.focus();
-  }, [view.page]);
 
   return (
     <>
@@ -490,43 +554,16 @@ export function ConsoleTable<Row>({
             view.rows.map((row) => <Fragment key={rowKey(row)}>{renderRow(row)}</Fragment>)
           )}
         </div>
-        {/* Absent on a single page, rather than present with both buttons dead. There is
-            nothing to page and nothing the reader has not already been shown, so a range
-            that can only ever read "1-6 of 6" is a control that has never done anything. */}
-        {view.pages > 1 && (
-          <div className="sc-pager">
-            {/* Announced, because the number is the only thing that changes when you page:
-                the rows above it are the same shape and, to a screen reader moving by
-                landmark, the same table. */}
-            <span className="sc-pager-range" aria-live="polite">
-              {view.from}-{view.to} of {view.total}
-            </span>
-            <div className="sc-pager-nav">
-              <Tooltip label="Show the page of more recent rows">
-                <button
-                  type="button"
-                  ref={newerRef}
-                  className="sc-pager-btn"
-                  disabled={view.page === 1}
-                  onClick={() => go(view.page - 1)}
-                >
-                  Newer
-                </button>
-              </Tooltip>
-              <Tooltip label="Show the page of older rows">
-                <button
-                  type="button"
-                  ref={olderRef}
-                  className="sc-pager-btn"
-                  disabled={view.page === view.pages}
-                  onClick={() => go(view.page + 1)}
-                >
-                  Older
-                </button>
-              </Tooltip>
-            </div>
-          </div>
-        )}
+        {/* Absent on a single page - see `ConsolePager`, which owns that rule and the
+            focus handoff a second copy of this markup would not have. */}
+        <ConsolePager
+          view={view}
+          back="Newer"
+          forward="Older"
+          backHint="Show the page of more recent rows"
+          forwardHint="Show the page of older rows"
+          onGo={setPage}
+        />
       </div>
       <p className="settings-hint sc-foot">{foot}</p>
     </>

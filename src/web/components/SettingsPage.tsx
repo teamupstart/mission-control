@@ -92,8 +92,16 @@ function dotLabel(
   category: SettingsCategoryId,
 ): string {
   switch (tone) {
-    case "live":
+    case "live": {
+      // `live` now belongs to two rows, so it switches on the category for `armed`'s
+      // reason: without this, a screen reader announced the Inspector's sentence on the
+      // Conductor row - a reading a sighted operator never gets.
+      if (category === "conductor") {
+        const n = status?.pipelines.observing ?? 0;
+        return `Conductor pipelines are being read in ${n} ${n === 1 ? "repository" : "repositories"}`;
+      }
       return "GitHub Inspector is live - reviews post to GitHub";
+    }
     case "armed":
       return category === "trust"
         ? "Trust needs a look - a repository grant is armed"
@@ -161,6 +169,7 @@ export function SettingsPage({
   category,
   onNavigate,
   onOpenRuns,
+  onOpenPipelines,
   onLeave,
   foreman,
   cost,
@@ -190,6 +199,15 @@ export function SettingsPage({
    * the rail can reach, so this is a second, honestly-typed prop instead.
    */
   onOpenRuns?: (filters: WorkflowRunFilters) => void;
+  /**
+   * Leave settings for the Pipelines tab. The Conductor panel's detail pane uses it.
+   *
+   * A third navigation prop rather than a widening of either of the two above, for
+   * `onOpenRuns`' own reason: `onNavigate` is typed to settings categories, and the
+   * Pipelines tab is a `runs` route with no filter to carry. Optional, so the render tests
+   * mount the page without a router.
+   */
+  onOpenPipelines?: () => void;
   /** Escape, and the page's own way back. App points this at the fleet route. */
   onLeave: () => void;
   /**
@@ -523,7 +541,7 @@ export function SettingsPage({
       case "task-sources":
         return <TaskSourcesPanel state={taskSources} />;
       case "conductor":
-        return <ConductorPanel state={conductor} />;
+        return <ConductorPanel state={conductor} onOpenPipelines={onOpenPipelines} />;
       case "models":
         return <LlmSettingsPanel state={llm} />;
       case "foreman":

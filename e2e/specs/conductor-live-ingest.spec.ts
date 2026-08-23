@@ -12,6 +12,7 @@ import {
   seedConductorRun,
   writeConductorProjects,
 } from "../fixtures/conductor.ts";
+import { observeConductorRepo, selectConductorRepo } from "../fixtures/conductor-panel.ts";
 
 /**
  * Pushed pipeline events, end to end: a batch over HTTP, a daemon that folds it, and a panel
@@ -133,8 +134,11 @@ test("a pushed batch projects a run the daemon has not polled for", async ({ pag
 
   // Consent, in two acts, exactly as the operator gives it.
   await page.locator('.sc-card[data-anchor="conductor/enabled"] label.sc-switch').click();
+  // The repository's own switch lives in the detail pane beside the directory now, so
+  // consent is "pick the row, move the control" rather than one click on a list row.
+  await observeConductorRepo(page, daemon.repo);
   const repoSwitch = page.getByRole("checkbox", { name: "Observe pipelines in demo-repo" });
-  await repoSwitch.check();
+  await expect(repoSwitch).toBeChecked();
   await expect(page.getByText("On - reading 1 repository.")).toBeVisible();
 
   // Waited for from the DAEMON's side, not the panel's. Saves are applied optimistically and
@@ -243,7 +247,9 @@ test("a push for a repository nobody consented to is dropped", async ({ page, da
 
   await page.goto(`${daemon.baseURL}/#/settings/conductor`);
   await page.locator('.sc-card[data-anchor="conductor/enabled"] label.sc-switch').click();
-  await page.getByRole("checkbox", { name: "Observe pipelines in demo-repo" }).check();
+  await observeConductorRepo(page, daemon.repo);
+  await expect(page.getByRole("checkbox", { name: "Observe pipelines in demo-repo" })).toBeChecked();
+  await selectConductorRepo(page, daemon.secondRepo);
   const second = page.getByRole("checkbox", { name: "Observe pipelines in second-repo" });
   await expect(second).not.toBeChecked();
 

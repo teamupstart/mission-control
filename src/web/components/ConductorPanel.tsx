@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   PIPELINE_INSTALLER_CHANGE_INFO,
   PIPELINE_LAUNCH_RUNTIMES,
@@ -15,8 +15,16 @@ import {
 import type { TerminalBackendId } from "@shared/terminal.ts";
 import type { ConductorState } from "../useConductor.ts";
 import { COPY_FEEDBACK_LABEL, useCopyFeedback } from "../lib/clipboard.ts";
+import { relativeTime, shortenCwd } from "../lib/format.ts";
 import { useTerminalTargets } from "../lib/terminalTargets.ts";
-import { ConsoleCard, ConsoleState, ConsoleSwitch } from "./settings-console.tsx";
+import {
+  ConsoleCard,
+  ConsolePager,
+  ConsoleState,
+  ConsoleStrip,
+  ConsoleSwitch,
+  consolePage,
+} from "./settings-console.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
 // Conductor's permanent commissioning destination. Registration changes the provider through its
@@ -339,7 +347,122 @@ function ConductorInstallerSetup({ state }: { state: ConductorState }): React.JS
   );
 }
 
-export function ConductorPanel({ state }: { state: ConductorState }): React.JSX.Element {
+/** The four buckets the directory's tiles name. `all` is the whole union, unfiltered. */
+export type ConductorTile = "managed" | "all" | "ready" | "failing";
+
+/** Tile order, which is also the order a repository's "home" tile is looked for in. */
+export const CONDUCTOR_TILES: readonly ConductorTile[] = ["managed", "all", "ready", "failing"];
+
+export const CONDUCTOR_TILE_LABEL: Record<ConductorTile, string> = {
+  managed: "Managed",
+  all: "All",
+  ready: "Ready",
+  failing: "Failing",
+};
+
+/**
+ * The union, partitioned once - the tiles' counts and the rows they select are the same fold.
+ *
+ * One function for the reason `healthCounts` is one in the task sources panel: a strip
+ * saying "Ready 1" over a list of none is the kind of disagreement nobody reports and
+ * everybody distrusts. A tile counts the whole union it names, never the rows a query has
+ * left on screen, so the number does not move while an operator types.
+ */
+export function conductorBuckets(
+  repos: readonly ConductorRepoCandidate[],
+  config: PipelinesConfig | null,
+  statusByRepo: ReadonlyMap<string, PipelineRepoStatus>,
+): Record<ConductorTile, ConductorRepoCandidate[]> {
+  const buckets: Record<ConductorTile, ConductorRepoCandidate[]> = {
+    managed: [],
+    all: [],
+    ready: [],
+    failing: [],
+  };
+  for (const repo of repos) {
+    const status = statusByRepo.get(pipelineRepoKey(repo.provider, repo.repoRoot));
+    buckets.all.push(repo);
+    // Managed is "Conductor knows about it OR this machine consented to it" - the same
+    // union the de-registered row survives in, so withdrawing consent stays reachable.
+    if (repo.registered || repo.enabled) buckets.managed.push(repo);
+    if (Boolean(config?.enabled) && repo.enabled) buckets.ready.push(repo);
+    if (status?.error) buckets.failing.push(repo);
+  }
+  return buckets;
+}
+
+/** Lowercased substring over the two fields an operator recognises a checkout by. */
+export function conductorRepoMatches(repo: ConductorRepoCandidate, needle: string): boolean {
+  if (!needle) return true;
+  return `${repo.name} ${repo.repoRoot}`.toLocaleLowerCase().includes(needle);
+}
+
+/** What a directory row's dot says, in one word an operator can act on. */
+export function conductorRowState(
+  repo: ConductorRepoCandidate,
+  config: PipelinesConfig | null,
+  status: PipelineRepoStatus | undefined,
+): { tone: "failing" | "ready" | "registered" | "unmanaged"; label: string } {
+  if (status?.error) return { tone: "failing", label: "Failing" };
+  if (config?.enabled && repo.enabled) return { tone: "ready", label: "Ready" };
+  if (repo.registered) return { tone: "registered", label: "Registered" };
+  if (repo.enabled) return { tone: "registered", label: "Consented" };
+  return { tone: "unmanaged", label: "Unmanaged" };
+}
+
+/**
+ * Where a checkout lives, short enough for a 300px row.
+ *
+ * The row's name is the checkout's leaf, so printing the whole absolute path beside it
+ * spends the row on a prefix every repository in a workspace shares. The parent is what
+ * actually tells two same-named checkouts apart, and the full path is a hover and the
+ * first line of the detail pane away.
+ */
+export function repoParentLabel(repoRoot: string): string {
+  const parent = repoRoot.replace(/\/+$/, "").split("/").slice(0, -1).join("/");
+  return shortenCwd(parent) || "/";
+}
+
+/** How this repository's pipeline state is reaching Mission Control, as a short noun. */
+export function conductorIngestReading(status: PipelineRepoStatus | undefined): string {
+  if (!status || status.lastReadAt === null) return "Not read yet";
+  if (status.ingest === "live") return "Live events";
+  if (status.ingest === "quiet") return "File tail (the plugin has gone quiet)";
+  return "File tail";
+}
+
+/** One fact in the detail pane: a label, and the reading beside it. */
+function DetailFact({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}): React.JSX.Element {
+  return (
+    <p className="sc-health-row conductor-fact">
+      <span>{label}</span>
+      <span className="sc-health-value">{children}</span>
+    </p>
+  );
+}
+
+export function ConductorPanel({
+  state,
+  onOpenPipelines,
+}: {
+  state: ConductorState;
+  /**
+   * Leave settings for the Pipelines tab. Optional, so a render test can mount this panel
+   * with no router - and separate from `SettingsNavigate`, which is typed to settings
+   * categories and cannot express a destination outside them.
+   *
+   * Tab-level rather than repository-scoped on purpose: the route grammar has only
+   * `#/runs/pipeline` and `#/runs/pipeline/:repoKey/:slug`, so there is no address for
+   * "this repository's pipelines" to link to, and a button promising one would be a lie.
+   */
+  onOpenPipelines?: () => void;
+}): React.JSX.Element {
   const {
     view,
     workspaceRepos,
@@ -355,6 +478,10 @@ export function ConductorPanel({ state }: { state: ConductorState }): React.JSX.
     error,
   } = state;
   const [query, setQuery] = useState("");
+  const [tile, setTile] = useState<ConductorTile>("managed");
+  const [page, setPage] = useState(1);
+  const [picked, setPicked] = useState<string | null>(null);
+  const directoryRef = useRef<HTMLDivElement>(null);
   const config = view?.config ?? null;
   const probes = view?.probes ?? [];
   const probe = probes.find((candidate) => candidate.provider === "ai-conductor");
@@ -363,12 +490,55 @@ export function ConductorPanel({ state }: { state: ConductorState }): React.JSX.
     (view?.status ?? []).map((status) => [pipelineRepoKey(status.provider, status.repoRoot), status]),
   );
   const repos = offeredRepos(workspaceRepos, config, probes);
+  const buckets = conductorBuckets(repos, config, statusByRepo);
   const normalizedQuery = query.trim().toLocaleLowerCase();
-  const filteredRepos = normalizedQuery
-    ? repos.filter((repo) =>
-        `${repo.name} ${repo.repoRoot}`.toLocaleLowerCase().includes(normalizedQuery),
-      )
-    : repos;
+  const visible = buckets[tile].filter((repo) => conductorRepoMatches(repo, normalizedQuery));
+
+  // Changing the tile or the query starts a NEW list, so it starts at its first page.
+  // Reconciled during render (React's documented "adjust state when a prop changes"
+  // pattern) rather than in an effect, which would paint page 4 of a one-page filter for a
+  // frame first. `ConsoleTable` does the same thing for the same reason.
+  const listKey = `${tile} ${normalizedQuery}`;
+  const [pagedKey, setPagedKey] = useState(listKey);
+  if (pagedKey !== listKey) {
+    setPagedKey(listKey);
+    setPage(1);
+  }
+  const pageView = consolePage(visible, page);
+
+  // Selection is DERIVED rather than an effect's output, and keyed by `pipelineRepoKey`.
+  //
+  // An explicit pick wins while the repository is still in the union - so turning the page,
+  // changing the tile, typing a query and a four-second poll all leave the pane alone. When
+  // there is no live pick, the first row of the CURRENT FILTERED SET stands in, so
+  // master-detail always has a detail without ever selecting something that is not on
+  // screen. Both halves are computed here rather than in an effect, which means a static
+  // render (and a first paint) shows the same pane a settled one does.
+  const unionKeys = new Set(repos.map((repo) => pipelineRepoKey(repo.provider, repo.repoRoot)));
+  const selectedKey =
+    picked && unionKeys.has(picked)
+      ? picked
+      : visible[0]
+        ? pipelineRepoKey(visible[0].provider, visible[0].repoRoot)
+        : null;
+  const selected =
+    repos.find((repo) => pipelineRepoKey(repo.provider, repo.repoRoot) === selectedKey) ?? null;
+
+  // The picked repository LEFT THE UNION - that is, a poll stopped returning it from ALL
+  // THREE of the workspace catalog, the engine's projects and stored consent, so there is
+  // no row for it under any filter. Withdrawing consent on its own does not do this while
+  // the workspace scan still finds the checkout, which is the point: the row stays, and so
+  // does the pane. Forget the pick and hand focus back to the list rather than leaving it
+  // on a button that no longer exists. Leaving the FILTER is a different thing entirely,
+  // and deliberately does none of this.
+  const inUnion = picked === null || unionKeys.has(picked);
+  useEffect(() => {
+    if (picked !== null && !inUnion) {
+      setPicked(null);
+      directoryRef.current?.focus();
+    }
+  }, [picked, inUnion]);
+
   const active = config ? activePipelineRepos(config).length : 0;
   const registered = repos.filter((repo) => repo.registered).length;
   const info = PIPELINE_PROVIDER_INFO["ai-conductor"];
@@ -382,8 +552,45 @@ export function ConductorPanel({ state }: { state: ConductorState }): React.JSX.
     void save({ ...config, repos: [...kept, { provider: repo.provider, repoRoot: repo.repoRoot, enabled }] });
   };
 
+  // The selected repository is in the union but not in the list beside it, which is an
+  // ORDINARY flow here rather than a corner: the default tile is Managed, so "open All,
+  // pick something, go back" reaches it in three clicks. Silently discarding the selection
+  // and silently showing a repository with no row are both worse than saying so and
+  // offering the tile that holds it.
+  const offFilter =
+    selected !== null &&
+    !visible.some((repo) => pipelineRepoKey(repo.provider, repo.repoRoot) === selectedKey);
+  const selectedHome = selected
+    ? CONDUCTOR_TILES.find((candidate) =>
+        buckets[candidate].some((repo) => pipelineRepoKey(repo.provider, repo.repoRoot) === selectedKey),
+      ) ?? "all"
+    : "all";
+  const queryHidesSelected = selected !== null && !conductorRepoMatches(selected, normalizedQuery);
+  const showSelectedRow = (): void => {
+    setTile(selectedHome);
+    if (queryHidesSelected) setQuery("");
+  };
+
+  // How many the same query would find under All - the answer the conjunction of tile and
+  // query owes an operator whose search matched only unmanaged repositories.
+  const widerMatches = buckets.all.filter((repo) => conductorRepoMatches(repo, normalizedQuery)).length;
+
+  const selectedStatus = selected
+    ? statusByRepo.get(pipelineRepoKey(selected.provider, selected.repoRoot))
+    : undefined;
+  const selectedObserved = Boolean(config?.enabled && selected?.enabled);
+  const selectedObservation: RepoObservation = !config?.enabled
+    ? "master-off"
+    : selected?.enabled
+      ? "on"
+      : "repo-off";
+  const selectedBusy = selected !== null && setup?.repoRoot === selected.repoRoot;
+  const canToggleSelected = Boolean(
+    config && selected && (selected.registered || selected.enabled) && !setupBusy,
+  );
+
   return (
-    <section className="settings-section sc-section sc-solo" data-anchor="conductor/pipelines">
+    <section className="settings-section sc-section conductor-panel" data-anchor="conductor/pipelines">
       <p className="settings-hint sc-lede">
         <strong>{info.label}</strong> {info.blurb} Mission Control registers a repository through
         Conductor's own CLI, then separately asks to observe that exact repository. It never edits
@@ -427,12 +634,291 @@ export function ConductorPanel({ state }: { state: ConductorState }): React.JSX.
         </div>
       )}
 
+      {/* The directory beside the repository it is showing. The workspace scan is unbounded
+          - 202 checkouts on the machine this was written against, of which one was
+          registered - so the directory opens on what Conductor MANAGES and pages every
+          tile, including All. A bounded scroller alone would have stopped the page growing
+          while the DOM still held a row per checkout, which is the defect itself. */}
+      <div className="conductor-master-detail">
+        <div className="conductor-list-col" data-anchor="conductor/repos">
+          <div className="conductor-list-head">
+            <h3>Repositories</h3>
+          </div>
+          <p className="settings-hint">
+            Registration and observation are separate; Pipeline dispatch appears only after
+            observation succeeds.
+          </p>
+          <input
+            className="field-input conductor-repo-search"
+            type="search"
+            placeholder="Search workspace repositories"
+            aria-label="Search workspace repositories"
+            value={query}
+            disabled={!view}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+          {/* Only once the daemon has answered. Four tiles reading zero before the first
+              read are not a tally, they are defaults drawn as fact - the same claim this
+              panel refuses to make with its switches. */}
+          {view && (
+            <ConsoleStrip
+              stats={[
+                {
+                  id: "managed",
+                  count: buckets.managed.length,
+                  label: "Managed",
+                  tone: "ok",
+                  hint: "Show only repositories Conductor has registered, or this machine has consented to",
+                },
+                {
+                  id: "all",
+                  count: buckets.all.length,
+                  label: "All",
+                  hint: "Show every repository in the workspace catalog, registered or not",
+                },
+                {
+                  id: "ready",
+                  count: buckets.ready.length,
+                  label: "Ready",
+                  tone: "ok",
+                  hint: "Show only repositories that are being read right now",
+                },
+                {
+                  id: "failing",
+                  count: buckets.failing.length,
+                  label: "Failing",
+                  tone: "attention",
+                  hint: "Show only repositories whose last read reported an error",
+                },
+              ]}
+              active={tile}
+              // A tile is always active, so clicking the active one clears back to the whole
+              // catalog rather than to no filter at all - the strip's own "there is no state
+              // it cannot leave", said in this panel's vocabulary.
+              onPick={(id) => setTile((id as ConductorTile | null) ?? "all")}
+            />
+          )}
+
+          {repos.length === 0 ? (
+            <p className="settings-hint conductor-empty">
+              {view
+                ? "No workspace repositories are available yet. Open or dispatch from a repository, then check again."
+                : "The repository list is unknown until the daemon answers."}
+            </p>
+          ) : (
+            <>
+              {/* The empty state is a SIBLING of the list, never a child of it: a
+                  `role="list"` whose child is a paragraph is a list with a non-item in it,
+                  and the guidance here is not one of the things being listed. */}
+              {visible.length === 0 ? (
+                <div className="conductor-directory conductor-directory-empty">
+                  {normalizedQuery && tile !== "all" && widerMatches > 0 ? (
+                    <>
+                      <p>
+                        No {CONDUCTOR_TILE_LABEL[tile]} repository matches that search, but{" "}
+                        {widerMatches} {widerMatches === 1 ? "repository does" : "repositories do"}{" "}
+                        under All.
+                      </p>
+                      <Tooltip label="Widen the filter to every workspace repository, keeping this search">
+                        <button type="button" className="btn" onClick={() => setTile("all")}>
+                          Show {widerMatches} under All
+                        </button>
+                      </Tooltip>
+                    </>
+                  ) : normalizedQuery ? (
+                    <p>No repositories match that search.</p>
+                  ) : tile === "managed" ? (
+                    <p>
+                      Conductor manages nothing here yet. Pick <strong>All</strong> above to find a
+                      repository to register.
+                    </p>
+                  ) : (
+                    <p>No repositories are {CONDUCTOR_TILE_LABEL[tile].toLocaleLowerCase()}.</p>
+                  )}
+                </div>
+              ) : (
+                <div
+                  className="conductor-directory"
+                  ref={directoryRef}
+                  role="list"
+                  aria-label="Conductor repositories"
+                  tabIndex={-1}
+                >
+                  {pageView.rows.map((repo) => {
+                    const key = pipelineRepoKey(repo.provider, repo.repoRoot);
+                    const row = conductorRowState(repo, config, statusByRepo.get(key));
+                    return (
+                      <div className="conductor-directory-item" role="listitem" key={key}>
+                        <Tooltip
+                          label={`Open ${repo.name} - ${row.label.toLocaleLowerCase()} - ${repo.repoRoot}`}
+                        >
+                          <button
+                            type="button"
+                            className={`conductor-row${selectedKey === key ? " is-active" : ""}`}
+                            // The pane beside this list shows what the row names, so the
+                            // row is "current" rather than "selected": one of a set of
+                            // destinations, the way a nav item is, not a checkbox.
+                            aria-current={selectedKey === key}
+                            onClick={() => setPicked(key)}
+                          >
+                            <span className="conductor-row-main">
+                              <strong>{repo.name}</strong>
+                              <span>{repoParentLabel(repo.repoRoot)}</span>
+                            </span>
+                            <span className={`conductor-mark conductor-mark-${row.tone}`}>
+                              <i />
+                              {row.label}
+                            </span>
+                          </button>
+                        </Tooltip>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              <ConsolePager
+                view={pageView}
+                back="Previous"
+                forward="Next"
+                backHint="Show the previous page of repositories"
+                forwardHint="Show the next page of repositories"
+                onGo={setPage}
+              />
+              <p className="settings-hint conductor-count">
+                {visible.length === 0
+                  ? `None of ${repos.length} workspace ${repos.length === 1 ? "repository" : "repositories"} match.`
+                  : `${pageView.from}-${pageView.to} of ${pageView.total} in ${CONDUCTOR_TILE_LABEL[tile]}, of ${repos.length} in the workspace.`}
+              </p>
+            </>
+          )}
+        </div>
+
+        {/* A labelled region rather than a bare column: it is the answer to the list
+            beside it, it can be reached on its own by a screen reader's landmark walk, and
+            the browser suite selects it by that name instead of by a class. */}
+        <div className="conductor-detail-col" role="region" aria-label="Selected repository">
+          {!selected ? (
+            <p className="settings-hint conductor-empty">
+              {repos.length === 0
+                ? "Nothing to show until a repository is available."
+                : "Select a repository on the left to see how it is set up."}
+            </p>
+          ) : (
+            <>
+              <div className="conductor-detail-head">
+                <h3>{selected.name}</h3>
+                <code>{selected.repoRoot}</code>
+              </div>
+
+              {offFilter && (
+                <p className="settings-hint conductor-off-filter">
+                  {selected.name} is not in the {CONDUCTOR_TILE_LABEL[tile]} list beside this pane.{" "}
+                  <Tooltip
+                    label={`Show ${selected.name} in the ${CONDUCTOR_TILE_LABEL[selectedHome]} list`}
+                  >
+                    <button type="button" className="btn btn-ghost" onClick={showSelectedRow}>
+                      Show it in {CONDUCTOR_TILE_LABEL[selectedHome]}
+                    </button>
+                  </Tooltip>
+                </p>
+              )}
+
+              <DetailFact label="Registered with Conductor">
+                {selected.registered ? "Yes" : "No"}
+              </DetailFact>
+              <p className="sc-health-row conductor-fact">
+                <span>Observed by Mission Control</span>
+                <span className="sc-health-value">
+                  <ConsoleSwitch
+                    label={`Observe pipelines in ${selected.name}`}
+                    tooltip={
+                      selected.enabled
+                        ? `Observation choice is on for ${selected.repoRoot}. Click to withdraw it.`
+                        : selected.registered
+                          ? `Observation choice is off for ${selected.repoRoot}.`
+                          : `Register ${selected.repoRoot} before enabling observation.`
+                    }
+                    checked={selected.enabled}
+                    disabled={!canToggleSelected}
+                    tone="ok"
+                    onChange={(next) => setRepoEnabled(selected, next)}
+                  />
+                </span>
+              </p>
+              <DetailFact label="Dispatch ready">{selectedObserved ? "Yes" : "No"}</DetailFact>
+              <DetailFact label="Events arrive by">
+                {conductorIngestReading(selectedStatus)}
+              </DetailFact>
+              <DetailFact label="Last read">
+                {selectedStatus?.lastReadAt ? relativeTime(selectedStatus.lastReadAt) : "Never"}
+              </DetailFact>
+
+              <p className="conductor-detail-health">
+                {selected.registered
+                  ? repoHealthLine(selectedStatus, selectedObservation)
+                  : "Conductor does not manage this repository yet."}
+              </p>
+              {selectedStatus?.error && (
+                <p className="settings-error conductor-repo-error">{selectedStatus.error}</p>
+              )}
+
+              <div className="conductor-detail-actions">
+                {!selected.registered ? (
+                  <Tooltip
+                    label={`Register ${selected.name} with Conductor, then enable Mission Control observation`}
+                  >
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      disabled={!engineFound || setupBusy || !config}
+                      onClick={() => void registerAndObserve(selected.provider, selected.repoRoot)}
+                    >
+                      {selectedBusy && setup?.phase === "registering"
+                        ? "Registering…"
+                        : "Register and observe"}
+                    </button>
+                  </Tooltip>
+                ) : !selectedObserved ? (
+                  <Tooltip
+                    label={`Enable Mission Control observation for registered repository ${selected.name}`}
+                  >
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      disabled={setupBusy || !config}
+                      onClick={() => void enableObservation(selected.provider, selected.repoRoot)}
+                    >
+                      {selectedBusy && setup?.phase === "observing"
+                        ? "Enabling…"
+                        : "Enable observation"}
+                    </button>
+                  </Tooltip>
+                ) : (
+                  <span className="conductor-ready-mark">Ready</span>
+                )}
+                {/* Named for where it actually lands. The Pipelines tab is fleet-wide -
+                    there is no repository-scoped pipelines address in the route grammar -
+                    so a button saying "Open pipelines" here would promise one. */}
+                {onOpenPipelines && selectedObserved && (
+                  <Tooltip label="Open the fleet-wide Pipelines tab, which lists every observed repository">
+                    <button type="button" className="btn btn-ghost" onClick={onOpenPipelines}>
+                      Open Pipelines tab
+                      <span aria-hidden> &rarr;</span>
+                    </button>
+                  </Tooltip>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+
       <p className="settings-hint conductor-ingest-hint">
-        Reading files on a cadence needs nothing installed, and each row below says so. To have the
-        engine push its events instead - the same picture, without the wait - copy{" "}
-        <code>integrations/ai-conductor/mission-control/</code> from the Mission Control checkout
-        into <code>~/.ai-conductor/plugins/mission-control/</code> and give it this daemon's URL and
-        token. The engine's files stay the source of truth either way.
+        Reading files on a cadence needs nothing installed, and the pane above says so per
+        repository. To have the engine push its events instead - the same picture, without the
+        wait - copy <code>integrations/ai-conductor/mission-control/</code> from the Mission
+        Control checkout into <code>~/.ai-conductor/plugins/mission-control/</code> and give it
+        this daemon's URL and token. The engine's files stay the source of truth either way.
       </p>
 
       <div className="sc-controls">
@@ -483,7 +969,7 @@ export function ConductorPanel({ state }: { state: ConductorState }): React.JSX.
               label="Observe conductor pipelines"
               tooltip={
                 config?.enabled
-                  ? "On - repositories enabled below are read. Click to stop every observation."
+                  ? "On - repositories enabled in the directory are read. Click to stop every observation."
                   : "Off - no repository is read. Click to restore enabled repository choices."
               }
               checked={config?.enabled ?? false}
@@ -511,36 +997,42 @@ export function ConductorPanel({ state }: { state: ConductorState }): React.JSX.
         </ConsoleCard>
 
         <ConsoleCard title="Launch runtime" anchor="conductor/launch-runtime">
-          <fieldset className="settings-radios conductor-runtime-options">
-            <legend>Engineer host</legend>
-            {PIPELINE_LAUNCH_RUNTIMES.map((runtime) => {
-              const choice = LAUNCH_RUNTIME_COPY[runtime];
-              return (
-                <Tooltip
-                  key={runtime}
-                  label={`Use ${choice.label} as the Engineer host. ${choice.detail}`}
-                >
-                  <label
-                    className={`conductor-runtime-choice${config?.launchRuntime === runtime ? " is-selected" : ""}`}
+          {/* The shared segmented control, not a bespoke radio list: the other three console
+              panels ask a two-option question exactly this way, and a panel that draws its
+              own says the choice works differently when it does not. Real radios still - the
+              segmented look is `appearance: none` over the inputs, so arrow keys walk the
+              group and the legend names it. */}
+          <fieldset className="sc-field sc-seg">
+            <legend className="sc-field-label">Engineer host</legend>
+            <div className="sc-seg-row">
+              {PIPELINE_LAUNCH_RUNTIMES.map((runtime) => {
+                const choice = LAUNCH_RUNTIME_COPY[runtime];
+                const on = config?.launchRuntime === runtime;
+                return (
+                  <Tooltip
+                    key={runtime}
+                    label={`Use ${choice.label} as the Engineer host. ${choice.detail}`}
                   >
-                    <input
-                      type="radio"
-                      name="conductor-launch-runtime"
-                      value={runtime}
-                      checked={config?.launchRuntime === runtime}
-                      disabled={!config || setupBusy}
-                      onChange={() => {
-                        if (config) void save({ ...config, launchRuntime: runtime });
-                      }}
-                    />
-                    <span>
-                      <strong>{choice.label}</strong>
-                      <small>{choice.detail}</small>
-                    </span>
-                  </label>
-                </Tooltip>
-              );
-            })}
+                    <label className={`sc-seg-opt${on ? " is-on" : ""}`}>
+                      <input
+                        type="radio"
+                        name="conductor-launch-runtime"
+                        value={runtime}
+                        checked={on}
+                        disabled={!config || setupBusy}
+                        onChange={() => {
+                          if (config) void save({ ...config, launchRuntime: runtime });
+                        }}
+                      />
+                      <span>{choice.label}</span>
+                    </label>
+                  </Tooltip>
+                );
+              })}
+            </div>
+            <p className="settings-hint">
+              {LAUNCH_RUNTIME_COPY[config?.launchRuntime ?? "agent-sdk"].detail}
+            </p>
           </fieldset>
           <p className="settings-hint">
             This controls Engineer's Mission Control host only. Conductor's background build
@@ -581,128 +1073,7 @@ export function ConductorPanel({ state }: { state: ConductorState }): React.JSX.
               : "Off - Foreman does not act on pipeline halts."}
           </ConsoleState>
         </ConsoleCard>
-
-        <ConsoleCard title="Workspace repositories" anchor="conductor/repos">
-          <p className="settings-hint">
-            Choose a repository already known to Mission Control. Registration and observation are
-            shown separately; Pipeline dispatch appears only after observation succeeds.
-          </p>
-          <label className="conductor-repo-search">
-            <span className="sr-only">Search workspace repositories</span>
-            <input
-              type="search"
-              placeholder="Search workspace repositories"
-              value={query}
-              disabled={!view}
-              onChange={(event) => setQuery(event.target.value)}
-            />
-          </label>
-          {repos.length === 0 ? (
-            <p className="settings-hint conductor-empty">
-              {view
-                ? "No workspace repositories are available yet. Open or dispatch from a repository, then check again."
-                : "The repository list is unknown until the daemon answers."}
-            </p>
-          ) : filteredRepos.length === 0 ? (
-            <p className="settings-hint conductor-empty">No repositories match that search.</p>
-          ) : (
-            <ul className="conductor-repos" aria-label="Conductor repositories">
-              {filteredRepos.map((repo) => {
-                const key = pipelineRepoKey(repo.provider, repo.repoRoot);
-                const status = statusByRepo.get(key);
-                const observed = Boolean(config?.enabled && repo.enabled);
-                const observation: RepoObservation = !config?.enabled
-                  ? "master-off"
-                  : repo.enabled
-                    ? "on"
-                    : "repo-off";
-                const busy = setup?.repoRoot === repo.repoRoot;
-                const canToggle = Boolean(config && (repo.registered || repo.enabled) && !setupBusy);
-                return (
-                  <li className="conductor-repo" key={key}>
-                    <label className="skill-switch">
-                      <Tooltip
-                        label={
-                          repo.enabled
-                            ? `Observation choice is on for ${repo.repoRoot}. Click to withdraw it.`
-                            : repo.registered
-                              ? `Observation choice is off for ${repo.repoRoot}.`
-                              : `Register ${repo.repoRoot} before enabling observation.`
-                        }
-                      >
-                        <input
-                          type="checkbox"
-                          checked={repo.enabled}
-                          disabled={!canToggle}
-                          aria-label={`Observe pipelines in ${repo.name}`}
-                          onChange={(event) => setRepoEnabled(repo, event.target.checked)}
-                        />
-                      </Tooltip>
-                    </label>
-                    <div className="conductor-repo-body">
-                      <span className="conductor-repo-name">{repo.name}</span>
-                      <code className="conductor-repo-path">{repo.repoRoot}</code>
-                      <span className="conductor-repo-facts" aria-label={`Setup status for ${repo.name}`}>
-                        <span className={repo.registered ? "is-ready" : ""}>
-                          {repo.registered ? "Registered" : "Not registered"}
-                        </span>
-                        <span className={observed ? "is-ready" : ""}>
-                          {observed ? "Observed" : "Not observed"}
-                        </span>
-                        <span className={observed ? "is-ready" : ""}>
-                          {observed ? "Dispatch ready" : "Dispatch not ready"}
-                        </span>
-                      </span>
-                      <span className="conductor-repo-health">
-                        {repo.registered
-                          ? repoHealthLine(status, observation)
-                          : "Conductor does not manage this repository yet."}
-                      </span>
-                      {status?.error && <span className="settings-error conductor-repo-error">{status.error}</span>}
-                    </div>
-                    <div className="conductor-repo-action">
-                      {!repo.registered ? (
-                        <Tooltip
-                          label={`Register ${repo.name} with Conductor, then enable Mission Control observation`}
-                        >
-                          <button
-                            type="button"
-                            className="btn btn-primary"
-                            disabled={!engineFound || setupBusy || !config}
-                            onClick={() => void registerAndObserve(repo.provider, repo.repoRoot)}
-                          >
-                            {busy && setup?.phase === "registering"
-                              ? "Registering…"
-                              : "Register and observe"}
-                          </button>
-                        </Tooltip>
-                      ) : !observed ? (
-                        <Tooltip
-                          label={`Enable Mission Control observation for registered repository ${repo.name}`}
-                        >
-                          <button
-                            type="button"
-                            className="btn btn-primary"
-                            disabled={setupBusy || !config}
-                            onClick={() => void enableObservation(repo.provider, repo.repoRoot)}
-                          >
-                            {busy && setup?.phase === "observing"
-                              ? "Enabling…"
-                              : "Enable observation"}
-                          </button>
-                        </Tooltip>
-                      ) : (
-                        <span className="conductor-ready-mark">Ready</span>
-                      )}
-                    </div>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </ConsoleCard>
       </div>
-
     </section>
   );
 }

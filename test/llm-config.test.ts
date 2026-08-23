@@ -32,6 +32,7 @@ const {
   codexTransportChoice,
   getLlmConfig,
   llmJobModel,
+  llmJobRunner,
   llmRunnerChoice,
   llmStatus,
   setLlmConfig,
@@ -50,6 +51,7 @@ const {
   "../src/shared/llm.ts"
 );
 const { LlmConfigPatchSchema } = await import("../src/shared/protocol.ts");
+const { MODEL_CATALOG } = await import("../src/shared/model.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -140,6 +142,7 @@ test("Codex background-job defaults are persisted and provider-compatible", () =
     job: "goal",
     id: "gpt-5.6-luna",
     source: "default",
+    unsupported: null,
   });
 });
 
@@ -224,6 +227,194 @@ test("the status route carries every job, the runner, and the providers this bui
 
   setLlmConfig({ claudeTransport: "sdk" });
   assert.equal(llmStatus().claudeTransport, "sdk", "the resolved transport did not reach status");
+});
+
+// ---- A provider per background job ----
+//
+// What is at stake: the five jobs were the only model slots in the product with no provider
+// of their own, so "run the Goal job on Claude while Workflow context runs on Codex" was
+// unsayable - and the workaround the panel used, wiping every model box whenever the app-wide
+// radio moved, was the only thing keeping a stored `claude-*` id from being handed to `codex`.
+// Removing that wipe is what makes the pair able to disagree, so every assertion below is
+// about a way the two halves can drift apart and what says so out loud.
+
+test("a job runs on its own provider, and its neighbours do not move", () => {
+  setLlmConfig({ runners: { goal: "codex" } });
+  assert.equal(llmJobRunner("goal").id, "codex");
+  assert.equal(llmJobRunner("goal").source, "config");
+  for (const job of LLM_JOB_IDS.filter((j) => j !== "goal")) {
+    assert.equal(llmJobRunner(job).id, DEFAULT_LLM_RUNNER_ID, `${job} followed goal's override`);
+  }
+  // ...and the MODEL re-bases onto that provider, or the job spawns Codex with a Claude id.
+  assert.equal(llmJobModel("goal").id, "gpt-5.6-luna");
+  assert.equal(llmJobModel("task-title").id, "claude-haiku-4-5");
+});
+
+test("an unset job resolves exactly as it did before any of this existed", () => {
+  setLlmConfig({ runner: "codex" });
+  for (const job of LLM_JOB_IDS) {
+    assert.equal(llmJobRunner(job).id, "codex", job);
+    assert.equal(llmJobRunner(job).source, llmRunnerChoice().source, job);
+  }
+});
+
+test("the per-job ladder is the job's override, then app-wide, then the shipped default", () => {
+  assert.equal(llmJobRunner("goal").id, DEFAULT_LLM_RUNNER_ID);
+  setLlmConfig({ runner: "codex" });
+  assert.equal(llmJobRunner("goal").id, "codex", "the app-wide rung was skipped");
+  setLlmConfig({ runners: { goal: "claude" } });
+  assert.equal(llmJobRunner("goal").id, "claude", "the job's own rung must outrank app-wide");
+});
+
+test("the runners map merges per key, so two panels editing different jobs commute", () => {
+  setLlmConfig({ runners: { goal: "codex" } });
+  setLlmConfig({ runners: { "task-title": "claude" } });
+  const cfg = getLlmConfig();
+  assert.equal(cfg.runners.goal, "codex", "a later write cleared an earlier, unrelated one");
+  assert.equal(cfg.runners["task-title"], "claude");
+});
+
+test("an unreadable per-job override is REPORTED, and inherits rather than dropping to the default", () => {
+  // The rungs beneath an override this build cannot read are the rest of the ladder, not the
+  // bottom of it: "I cannot read your choice here" is much closer to "you did not choose
+  // here" than to "use whatever ships".
+  setAppConfig("llm", { runner: "codex", runners: { goal: "ollama" } });
+  assert.doesNotThrow(() => getLlmConfig());
+  const resolved = llmJobRunner("goal");
+  assert.equal(resolved.unknown, "ollama", "a dropped choice must not be silently swallowed");
+  assert.equal(resolved.id, "codex", "it inherited the shipped default instead of app-wide");
+});
+
+test("an unreadable APP-WIDE provider is reported too, which the old enum schema could not do", () => {
+  // Pre-existing and closed on the way past: `.catch("")` sanitised the stored id before
+  // `resolveLlmRunner` saw it, the ladder skips an empty value, and the `unknown` branch was
+  // dead for every stored value - so the panel printed the fallback as the operator's choice
+  // while the field's own comment promised the opposite.
+  setAppConfig("llm", { runner: "ollama" });
+  const resolved = llmRunnerChoice();
+  assert.equal(resolved.unknown, "ollama");
+  assert.equal(resolved.id, DEFAULT_LLM_RUNNER_ID);
+});
+
+test("one unreadable entry leaves every OTHER slot's override intact", () => {
+  // A record-level `.catch` is all or nothing. One id a build cannot read used to discard the
+  // whole map, silently, which is indistinguishable from never having configured anything.
+  setAppConfig("llm", {
+    runners: { goal: "ollama", "task-title": "codex" },
+    models: { goal: "not a valid model id!!", "task-title": "gpt-5.6-sol" },
+  });
+  const cfg = getLlmConfig();
+  assert.equal(cfg.runners["task-title"], "codex", "a neighbour's provider was discarded");
+  assert.equal(cfg.models["task-title"], "gpt-5.6-sol", "a neighbour's model was discarded");
+  assert.equal(cfg.models.goal, "", "the malformed id recovered to inherit rather than persisting");
+  assert.equal(llmJobModel("task-title").id, "gpt-5.6-sol");
+});
+
+test("a NON-STRING persisted override recovers that entry instead of taking getLlmConfig down", () => {
+  // The difference between a `.catch` on the value and no `.catch` at all. `getLlmConfig` is
+  // on the path of every titling, goal refresh, digest and the settings route; a throw here
+  // is a daemon that cannot do its own bookkeeping, over a hand edit.
+  setAppConfig("llm", { runners: { goal: 7, "task-title": "codex" }, models: { goal: null } });
+  assert.doesNotThrow(() => getLlmConfig());
+  assert.equal(getLlmConfig().runners.goal, "");
+  assert.equal(getLlmConfig().runners["task-title"], "codex");
+  assert.equal(llmJobRunner("goal").id, DEFAULT_LLM_RUNNER_ID);
+  assert.equal(llmJobRunner("goal").unknown, null, "corruption is recovered from, not reported");
+});
+
+test("a legacy config's models are pinned to the OUTGOING provider when the app-wide radio moves", () => {
+  // The upgrade case. Before this change a saved model was implicitly bound to the app-wide
+  // runner, because the panel wiped the map whenever that runner changed. With the wipe gone,
+  // the moment the radio moves is the only moment that provenance is both needed and still
+  // knowable.
+  setAppConfig("llm", { runner: "claude", models: { goal: "claude-sonnet-5" }, runners: {} });
+  setLlmConfig({ runner: "codex" });
+  const cfg = getLlmConfig();
+  assert.equal(cfg.runners.goal, "claude", "a deliberate Claude model was carried over to Codex");
+  assert.equal(cfg.models.goal, "claude-sonnet-5", "the model itself must survive untouched");
+  assert.equal(llmJobRunner("goal").id, "claude");
+  assert.equal(llmJobModel("goal").id, "claude-sonnet-5");
+  // A job with nothing to preserve is left alone rather than acquiring a pin it never asked for.
+  assert.equal(cfg.runners["task-title"], undefined);
+  assert.equal(llmJobRunner("task-title").id, "codex");
+});
+
+test("the pin uses the RESOLVED outgoing provider, so an env-driven installation pins correctly", () => {
+  // The stored field is empty on an installation driven by `MISSION_LLM_RUNNER`; pinning what
+  // it says would record "" and preserve nothing.
+  process.env.MISSION_LLM_RUNNER = "codex";
+  setAppConfig("llm", { runner: "", models: { goal: "gpt-5.6-sol" }, runners: {} });
+  setLlmConfig({ runner: "claude" });
+  assert.equal(getLlmConfig().runners.goal, "codex");
+  delete process.env.MISSION_LLM_RUNNER;
+});
+
+test("a model pinned to one provider survives an app-wide provider change", () => {
+  setLlmConfig({ runners: { goal: "claude" }, models: { goal: "claude-sonnet-5" } });
+  setLlmConfig({ runner: "codex" });
+  assert.equal(getLlmConfig().models.goal, "claude-sonnet-5", "the app-wide radio cleared a pin");
+  assert.equal(llmJobModel("goal").id, "claude-sonnet-5");
+  // Only the Inherit slots re-resolved.
+  assert.equal(llmJobModel("task-title").id, "gpt-5.6-luna");
+});
+
+test("a model belonging to another provider falls back to that provider's default, and says so", () => {
+  // Reachable with no config write at all: `MISSION_LLM_RUNNER` moving between daemon restarts
+  // shifts the effective provider under a saved model, which is why the guard lives at
+  // resolution rather than in the write path. Broken on the build before this one, too.
+  setAppConfig("llm", { runners: { goal: "codex" }, models: { goal: "claude-sonnet-5" } });
+  const resolved = llmJobModel("goal");
+  assert.equal(resolved.id, "gpt-5.6-luna", "Codex was handed a Claude model id");
+  assert.equal(resolved.unsupported, "claude-sonnet-5", "the dropped id must be reported");
+  assert.equal(resolved.source, "default", "a substituted default must not be credited to config");
+});
+
+test("an id in NO catalog passes through untouched, because model ids are free text", () => {
+  // The guard acts only on an id positively known to belong to another provider. A new or
+  // custom id is not that, and rejecting it would be the worse failure of the two.
+  setLlmConfig({ runners: { goal: "codex" }, models: { goal: "gpt-6-unreleased" } });
+  const resolved = llmJobModel("goal");
+  assert.equal(resolved.id, "gpt-6-unreleased");
+  assert.equal(resolved.unsupported, null);
+  assert.equal(resolved.source, "config");
+});
+
+test("no reachable pair reaches a runner that cannot honour it", () => {
+  // The exit criterion, swept: every combination of a stored provider and a stored model from
+  // the other provider's catalog resolves to something the resolved provider actually offers.
+  for (const provider of LLM_RUNNER_IDS) {
+    for (const other of LLM_RUNNER_IDS) {
+      for (const choice of MODEL_CATALOG[other]) {
+        setAppConfig("llm", { runners: { goal: provider }, models: { goal: choice.id } });
+        const resolved = llmJobModel("goal");
+        assert.ok(
+          MODEL_CATALOG[provider].some((c) => c.id === resolved.id),
+          `${provider} was left holding ${resolved.id}`,
+        );
+      }
+    }
+  }
+});
+
+test("the status route carries each job's provider beside its model, and Foreman's three fields still parse", () => {
+  setLlmConfig({ runners: { goal: "codex" } });
+  const status = llmStatus();
+  assert.deepEqual(Object.keys(status.jobRunners).sort(), [...LLM_JOB_IDS].sort());
+  assert.equal(status.jobRunners.goal.id, "codex");
+  assert.equal(status.jobRunners["task-title"].id, DEFAULT_LLM_RUNNER_ID);
+  assert.equal(status.models.goal.id, "gpt-5.6-luna", "the per-job model must use the per-job provider");
+  // Foreman reads exactly these three off this payload from another process; widening the
+  // shape must not move them.
+  assert.equal(status.runner.id, DEFAULT_LLM_RUNNER_ID, "the app-wide runner must stay app-wide");
+  assert.ok(typeof status.claudeTransport === "string");
+  assert.ok(typeof status.codexTransport === "string");
+});
+
+test("the runners PATCH refuses what the config tolerates", () => {
+  assert.equal(LlmConfigPatchSchema.safeParse({ runners: { goal: "codex" } }).success, true);
+  assert.equal(LlmConfigPatchSchema.safeParse({ runners: { goal: "" } }).success, true, "clearing");
+  assert.equal(LlmConfigPatchSchema.safeParse({ runners: { goal: "ollama" } }).success, false);
+  assert.equal(LlmConfigPatchSchema.safeParse({ runners: { "not-a-job": "codex" } }).success, false);
 });
 
 /**

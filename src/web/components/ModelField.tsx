@@ -63,6 +63,7 @@ export function ModelField({
   disabled,
   onCommit,
   blurb = "block",
+  label = "block",
 }: {
   /** DOM id for the label association. Unique within the panel. */
   id: string;
@@ -93,18 +94,33 @@ export function ModelField({
    * on focus, and in the hidden portal an assertion can reach.
    */
   blurb?: "block" | "hover";
+  /**
+   * Where the field's NAME is spent. `block` prints the spec's label above the select, as
+   * every stacked panel does; `none` drops the visible label and moves it onto the select as
+   * `<name> model`, for a caller whose own row heading already names the slot.
+   *
+   * Not the same knob as `blurb`, and both are needed: a matrix row wants the label off (the
+   * `<th>` beside it already says "Goal") but must keep an accessible name, because a
+   * `<select>` named only by a table header is a control no assertion and no screen-reader
+   * user can address by itself.
+   */
+  label?: "block" | "none";
 }): React.JSX.Element {
   const note = modelSourceNote(resolved, spec.envVar);
   const { resolve: resolveModels } = useHarnessModelCatalogs();
   const models = resolveModels(runner, value);
+  const rowClass = label === "none" ? "foreman-model-row is-unlabelled" : "foreman-model-row";
   return (
-    <div className="foreman-model-row" data-anchor={anchor ?? undefined}>
-      <label className="foreman-model-label" htmlFor={id}>
-        {spec.label}
-      </label>
+    <div className={rowClass} data-anchor={anchor ?? undefined}>
+      {label === "block" && (
+        <label className="foreman-model-label" htmlFor={id}>
+          {spec.label}
+        </label>
+      )}
       <Tooltip label={spec.blurb}>
         <select
           id={id}
+          aria-label={label === "none" ? `${spec.label} model` : undefined}
           className="field-input mono foreman-model-input"
           value={value}
           disabled={disabled}

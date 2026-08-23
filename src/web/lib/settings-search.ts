@@ -495,13 +495,37 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     keywords: ["foreman", "triage", "halt", "unpark", "mechanical", "pipeline"],
     kind: "jump",
   },
+  // Two entries, because there are now two controls and `models/provider` only names one of
+  // them. That anchor is the APP-WIDE radio; the per-job providers live in the matrix below
+  // it, and an operator searching "run the goal job on Codex" who lands on the radio has been
+  // sent to the control that specifically does not answer that.
   {
-    id: "llm-jobs",
-    label: "Background job models",
-    description: "The provider and models behind the app's own titling, goals, and digests.",
+    id: "llm-runner",
+    label: "App-wide model provider",
+    description: "Which provider the app's own calls use when a job hasn't chosen its own.",
     category: "models",
     anchor: "models/provider",
-    keywords: ["title", "goal", "digest", "workflow", "provider", "runner", "job"],
+    keywords: ["provider", "runner", "claude", "codex", "app-wide", "default"],
+    kind: "jump",
+  },
+  {
+    id: "llm-jobs",
+    label: "Background job providers and models",
+    description: "A provider and a model per job - titling, goals, digests, workflow context.",
+    category: "models",
+    anchor: "models/jobs",
+    keywords: [
+      "title",
+      "goal",
+      "digest",
+      "workflow",
+      "provider",
+      "runner",
+      "job",
+      "per job",
+      "override",
+      "inherit",
+    ],
     kind: "jump",
   },
   {

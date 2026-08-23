@@ -1,7 +1,9 @@
+import { useState } from "react";
 import { LLM_JOB_IDS, LLM_JOB_SPECS } from "@shared/llm-jobs.ts";
-import { LLM_RUNNER_ENV_VAR } from "@shared/llm.ts";
+import type { LlmJobId } from "@shared/llm-jobs.ts";
+import { isLlmRunnerId, LLM_RUNNER_ENV_VAR } from "@shared/llm.ts";
 import type { LlmState } from "../useLlm.ts";
-import { ModelField, ModelSuggestions } from "./ModelField.tsx";
+import { modelSlotRow, SettingsMatrix } from "./SettingsMatrix.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
 // The Models category: which provider does the app's OWN offline work, and on which model.
@@ -36,12 +38,32 @@ function runnerNote(state: LlmState): string | null {
 export function LlmSettingsPanel({ state }: { state: LlmState }): React.JSX.Element {
   const { config, status, update, error } = state;
   const runners = status?.runners ?? [];
-  const active = status?.runner.id ?? null;
+  // The operator's OWN stored choice first, then what the daemon resolved.
+  //
+  // Not `status.runner.id` alone, which is what this was: the status is re-read from the
+  // daemon after every write, so a radio driven by it does not move on the click that changed
+  // it - it moves a round trip later. The model boxes beside it were already optimistic, so
+  // the one control on the page that lagged was the one being clicked.
+  //
+  // Reading config first cannot disagree with the daemon, because the config value is the TOP
+  // rung of `resolveLlmRunner`: whenever it names a provider this build has, the resolved
+  // answer is that same provider. An env-pinned installation is exactly the case where the
+  // config value is empty, so it falls through here and the daemon's answer shows.
+  const stored = config?.runner.trim() ?? "";
+  const active = (stored && isLlmRunnerId(stored) ? stored : null) ?? status?.runner.id ?? null;
   const note = runnerNote(state);
+  /**
+   * What a row's own provider change just reset, per job.
+   *
+   * Held here rather than derived, because after the write there is nothing left to derive
+   * from - the model is simply empty again, which is indistinguishable from never having set
+   * one. Dropping a configured id with no explanation is the failure this exists to avoid;
+   * the next edit to that row clears the line.
+   */
+  const [reset, setReset] = useState<Partial<Record<LlmJobId, string>>>({});
   // An env var outranks anything typed here, so the picker must not pretend otherwise -
   // a control that silently loses to the environment is worse than a disabled one.
   const runnerPinned = status?.runner.source === "env";
-  const modelRunner = active ?? "claude";
 
   return (
     <section className="settings-section">
@@ -94,12 +116,12 @@ export function LlmSettingsPanel({ state }: { state: LlmState }): React.JSX.Elem
                   name="llm-runner"
                   checked={active === r.id}
                   disabled={!config || runnerPinned}
-                  onChange={() =>
-                    void update({
-                      runner: r.id,
-                      models: Object.fromEntries(LLM_JOB_IDS.map((job) => [job, ""])),
-                    })
-                  }
+                  // Nothing is cleared. This picker says which provider a job runs on when
+                  // the job has not said for itself, so it has no business disturbing one
+                  // that has: a model set in a row below is a pinned pair, and the write
+                  // path records the outgoing provider onto any legacy row that has a model
+                  // but no provider yet. Only Inherit rows re-resolve.
+                  onChange={() => void update({ runner: r.id })}
                 />
                 <span>{r.label}</span>
               </label>
@@ -117,36 +139,71 @@ export function LlmSettingsPanel({ state }: { state: LlmState }): React.JSX.Elem
         )}
       </fieldset>
 
-      <div className="foreman-models">
+      <div className="foreman-models" data-anchor="models/jobs">
         <p className="settings-group-label">Background jobs</p>
         <p className="settings-hint foreman-models-hint">
           Most are a single cheap call with a deterministic fallback behind them - if the model
           can't be reached, you get a rougher title or a terser digest, never an error. The
           ensemble comparison is a review instead: if it can't produce a valid ranking, it fails
-          the comparison rather than guessing a winner. Leave a field empty to accept the value
-          shown in it.
+          the comparison rather than guessing a winner. Leave a row on Inherit to accept the
+          value shown in it.
         </p>
-        <ModelSuggestions
-          providerLabel={runners.find((provider) => provider.id === modelRunner)?.label ?? modelRunner}
+        <p className="settings-hint foreman-models-hint">
+          Each job can run on its own provider - name a task with Claude while compacting
+          Workflow context with Codex. Pinning a model pins its provider, literally: choosing a
+          model on an Inherit row records the provider it belongs to, so the app-wide picker
+          above leaves that row alone and only re-resolves the rows still on Inherit. Changing a
+          row's OWN provider works the other way and sends that row's model back to Inherit,
+          unless the new provider offers the same id.
+        </p>
+        <SettingsMatrix
+          caption="Background jobs, and what each one runs on"
+          columns={[
+            { key: "provider", label: "Provider" },
+            { key: "model", label: "Model" },
+          ]}
+          rows={LLM_JOB_IDS.map((job) =>
+            modelSlotRow({
+              key: `llm-${job}`,
+              anchor: `models/job-${job}`,
+              spec: LLM_JOB_SPECS[job],
+              providers: runners,
+              runnerValue: config?.runners[job] ?? "",
+              runnerResolved: status?.jobRunners[job],
+              // The app-wide resolution, which is exactly what `llmJobRunner` falls back to
+              // when a job has no override - so it is what this row's Inherit option means.
+              inheritedRunner: status?.runner,
+              modelValue: config?.models[job] ?? "",
+              modelResolved: status?.models[job],
+              disabled: !config,
+              reset: reset[job] ?? null,
+              onCommit: (patch) => {
+                const dropped =
+                  patch.model === "" && patch.runner !== undefined
+                    ? (config?.models[job] ?? "")
+                    : "";
+                setReset((prev) => ({
+                  ...prev,
+                  [job]: dropped
+                    ? `${dropped} isn't offered by this provider, so this job is back on Inherit.`
+                    : undefined,
+                }));
+                // Empty is STORED as empty, the same rule Foreman's and the Inspector's
+                // fields follow: it means "clear my override and go back to the ladder", and
+                // dropping it from the patch would leave the old id in place while the box
+                // looks cleared. Both halves go in ONE write, so a provider change and the
+                // model reset it forces can never land as two states an operator sees.
+                void update({
+                  ...(patch.runner !== undefined ? { runners: { [job]: patch.runner } } : {}),
+                  ...(patch.model !== undefined ? { models: { [job]: patch.model } } : {}),
+                });
+              },
+            }),
+          )}
         />
-        {LLM_JOB_IDS.map((job) => (
-          <ModelField
-            key={job}
-            anchor={`models/job-${job}`}
-            id={`llm-model-${job}`}
-            spec={LLM_JOB_SPECS[job]}
-            value={config?.models[job] ?? ""}
-            resolved={status?.models[job]}
-            runner={modelRunner}
-            disabled={!config}
-            onCommit={(next) =>
-              // Empty is STORED as empty, the same rule Foreman's and the Inspector's fields
-              // follow: it means "clear my override and go back to the ladder", and dropping
-              // it from the patch would leave the old id in place while the box looks cleared.
-              void update({ models: { [job]: next } })
-            }
-          />
-        ))}
+        <p className="settings-hint foreman-models-hint">
+          Model choices come from the provider selected in each row.
+        </p>
       </div>
 
       <p className="settings-hint llm-elsewhere">

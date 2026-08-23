@@ -18425,6 +18425,146 @@ button.wf-carried.is-link:focus-visible {
   border: 1px solid var(--border-soft);
   border-radius: 8px;
 }
+/* ---- The settings matrix: a grid of slots and the choices that make one up ---- */
+/* Scrolls INSIDE its own box. Phase 3's grid is four columns wide, and a settings page that
+   scrolls sideways takes the rail and the search box off screen with it. */
+.settings-matrix-scroll {
+  max-width: 100%;
+  margin-top: 8px;
+  overflow-x: auto;
+}
+/* `border-spacing: 0`, with the gap between rows drawn as a transparent bottom BORDER on
+   each card's last element. Uniform border-spacing cannot skip one join, and a row whose
+   explanatory note sat 6px below its own card read as belonging to neither row. */
+.settings-matrix {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+/* Present, and read by assistive tech, but not drawn: the group already carries a visible
+   "Background jobs" heading directly above, and printing the caption too would be the same
+   sentence twice inside 40px. `clip` rather than `display: none`, which removes it from the
+   accessibility tree as well and would leave the table nameless. */
+.settings-matrix-caption {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.settings-matrix thead th {
+  padding: 0 10px 2px;
+  font-size: 11px;
+  font-weight: 560;
+  color: var(--muted);
+  text-align: left;
+}
+.settings-matrix-corner {
+  width: 40%;
+  min-width: 180px;
+}
+.settings-matrix-row > th,
+.settings-matrix-row > td {
+  padding: 10px;
+  background: var(--bg-2);
+  /* So the transparent spacer border below shows the page through, not the card. */
+  background-clip: padding-box;
+  border-top: 1px solid var(--border-soft);
+  border-bottom: 6px solid transparent;
+  vertical-align: top;
+}
+.settings-matrix-row > th:first-child {
+  border-left: 1px solid var(--border-soft);
+  border-radius: 8px 0 0 8px;
+}
+.settings-matrix-row > td:last-child {
+  border-right: 1px solid var(--border-soft);
+  border-radius: 0 8px 8px 0;
+}
+/* The card stays open at the bottom and the note row below closes it. */
+.settings-matrix-row.has-note > th,
+.settings-matrix-row.has-note > td {
+  border-bottom-width: 0;
+}
+.settings-matrix-row.has-note > th:first-child {
+  border-radius: 8px 0 0;
+}
+.settings-matrix-row.has-note > td:last-child {
+  border-radius: 0 8px 0 0;
+}
+/* An inherited row states what the rows below it fall back to; it is context, not a control,
+   so it recedes rather than competing with the slots that are actually editable. */
+.settings-matrix-row.is-inherited > th,
+.settings-matrix-row.is-inherited > td {
+  background: transparent;
+  opacity: 0.72;
+}
+.settings-matrix-slot {
+  font-weight: 500;
+  text-align: left;
+}
+.settings-matrix-slot-label {
+  display: block;
+  font-size: 12.5px;
+  color: var(--fg);
+}
+.settings-matrix-slot-blurb {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.45;
+  color: var(--dim);
+}
+select.settings-matrix-provider {
+  max-width: 200px;
+}
+/* The 260px cap on `.foreman-model-input` is sized for a stacked settings card, where a model
+   id sits alone on its own line. In a matrix cell the column is already the constraint, and
+   the label can carry a catalog miss's "- not currently reported" suffix, so the cap only
+   makes a long one collide with the chevron sooner. Fill the column instead.
+   This narrows the collision; it does not close it. Under `appearance: base-select` Chromium
+   draws the selected label in an inner box that the `text-overflow: ellipsis` on the select
+   cannot reach, and `::selectedcontent` - the pseudo-element that would - is not supported in
+   the Chromium this ships against (`CSS.supports("selector(::selectedcontent)")` is false).
+   That is an app-wide property of every select with a label longer than its track, not
+   something this table introduced. */
+.settings-matrix select.foreman-model-input {
+  width: 100%;
+  max-width: none;
+}
+/* The pair, not either control, so it spans the row - see the component comment. */
+.settings-matrix-note {
+  padding: 0 10px 9px;
+  background: var(--bg-2);
+  background-clip: padding-box;
+  border-right: 1px solid var(--border-soft);
+  border-bottom: 6px solid transparent;
+  border-left: 1px solid var(--border-soft);
+  border-radius: 0 0 8px 8px;
+}
+.settings-matrix-note-row.is-inherited > .settings-matrix-note {
+  background: transparent;
+  opacity: 0.72;
+}
+.settings-matrix-reset {
+  display: block;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: color-mix(in oklab, var(--attention) 86%, var(--fg));
+}
+/* Inside a matrix cell the row heading beside it is already the field's name, so the card
+   chrome and the label slot both come off and only the control is left. */
+.foreman-model-row.is-unlabelled {
+  padding: 0;
+  margin-top: 0;
+  background: none;
+  border: 0;
+  border-radius: 0;
+}
 .foreman-model-label {
   display: block;
   margin-bottom: 6px;

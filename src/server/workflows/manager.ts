@@ -99,7 +99,7 @@ import { recordInjection } from "../injections.ts";
 import { QueueManager } from "../queue.ts";
 import { getForemanConfig } from "../foreman/config.ts";
 import { harnessFor, sessionMessages } from "../harness/index.ts";
-import { getLlmConfig, llmJobModel, llmRunnerChoice } from "../llm/config.ts";
+import type { JobExecution } from "../llm/jobs.ts";
 import type { StructuredAttemptObserver } from "../llm/structured.ts";
 import {
   DEFAULT_REVIEW_CONCURRENCY,
@@ -5701,13 +5701,21 @@ export class WorkflowManager {
       if (compact) {
         context = await this.schedule(() => compact(captured.raw), "capture");
       } else {
-        const config = getLlmConfig();
-        const contextRunner = llmRunnerChoice(config);
-        const contextModel = llmJobModel("workflow-context", config);
+        // What the compaction call REPORTS it resolved, filled in by `onExecution` before its
+        // first attempt runs. Not re-derived from a second config read here: with a provider
+        // per job, an app-wide re-resolution names a different provider than the one the call
+        // used on every installation that set an override, so every row it wrote was wrong.
+        let contextExecution: JobExecution | null = null;
         const contextCallIds = new Map<number, string>();
         const observer: StructuredAttemptObserver = {
           start: (attempt, prompt) => {
             if (!this.captureIsActive(run.id, submission.id)) return false;
+            // `onExecution` fires ahead of the first attempt, so this is populated by now. If
+            // it somehow is not, skip the row rather than labelling it with a guess - `finish`
+            // finds no id and does nothing, and a missing ledger row is far easier to read
+            // than one that confidently names the wrong provider.
+            const execution = contextExecution;
+            if (!execution) return;
             const id = randomUUID();
             contextCallIds.set(attempt, id);
             this.store.insertLlmCall({
@@ -5716,8 +5724,8 @@ export class WorkflowManager {
               submissionId: submission.id,
               nodeAttemptId: null,
               purpose: "context_compaction",
-              runner: contextRunner.id,
-              model: contextModel.id,
+              runner: execution.runner,
+              model: execution.model,
               attempt,
               state: "running",
               startedAt: Date.now(),
@@ -5745,10 +5753,13 @@ export class WorkflowManager {
             );
           },
         };
+        // No `runner`/`model` override: the compaction stamps the snapshot from the pair the
+        // call itself reports, which is the same one this ledger row is written from.
         context = await this.schedule(() => compactWorkflowContext(captured.raw, {
-          runner: contextRunner.id,
-          model: contextModel.id,
           observer,
+          onExecution: (execution) => {
+            contextExecution = execution;
+          },
         }), "capture");
       }
       const currentRun = this.store.getRun(run.id);

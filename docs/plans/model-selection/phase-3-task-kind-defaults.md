@@ -82,7 +82,7 @@ Explicit non-goals:
    write schema should refuse it rather than saving a control that silently does nothing. `effort`
    carries no such constraint - it is a shared vocabulary and is deliberately settable on a row that
    inherits its agent. Keep the read side tolerant: an entry persisted by a newer build that breaks
-   the rule drops its model and keeps the rest, rather than failing the whole config open.
+   the rule drops its model and keeps the rest, rather than discarding the whole blob.
 2. **`src/server/harnesses.ts`** - merge `kindDefaults` per key in `setHarnessesConfig`. Add the
    kind tier to `resolveDispatchModel` and `resolveDispatchEffort`, both taking the task's kind.
    The tier sits **below** the launch-only Foreman backlog model and **above** the per-harness
@@ -100,7 +100,9 @@ Explicit non-goals:
      spec, or one that does not offer the level, falls through to `defaultEffort[agent]` rather than
      launching with a flag the CLI will reject.
 3. **`src/web/harnesses-reconcile.ts`** - teach `mergeHarnessesPatch` the new key.
-4. **`src/server/dispatcher.ts:449-450`** - pass the task's kind to both resolvers.
+4. **`src/server/dispatcher.ts:449-450`** - pass the task's kind to both resolvers, and the model
+   the first one returned into the second. The two calls sit side by side today and become ordered,
+   which is the one signature change in this phase a caller cannot ignore.
 5. **Task creation** - resolve an omitted agent from the kind default instead of defaulting to
    `"claude"`. Do it where every creator converges so MCP `create_task`, task sources and Recurring
    Missions inherit it without each learning about it. Once written, the agent is an ordinary pin.
